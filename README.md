@@ -72,8 +72,6 @@ skills/to-prd/
 skills/to-milestones/
 skills/to-issues/
 skills/tdd/
-skills/test-driven-development/
-skills/mattpocock-skills/
 ```
 
 Workflow scripts:
@@ -94,7 +92,7 @@ grill-me / grill-with-docs
 -> to-prd
 -> to-milestones
 -> to-issues
--> tdd / test-driven-development
+-> tdd
 -> ralph-loop
 -> review-pr / pr
 -> review-fix

@@ -52,13 +52,6 @@ required=(
   "skills/tdd/mocking.md"
   "skills/tdd/refactoring.md"
   "skills/tdd/tests.md"
-  "skills/test-driven-development/SKILL.md"
-  "skills/test-driven-development/agents/openai.yaml"
-  "skills/test-driven-development/testing-anti-patterns.md"
-  "skills/mattpocock-skills/engineering/tdd/SKILL.md"
-  "skills/mattpocock-skills/engineering/setup-matt-pocock-skills/SKILL.md"
-  "skills/mattpocock-skills/engineering/grill-with-docs/SKILL.md"
-  "skills/mattpocock-skills/productivity/grill-me/SKILL.md"
 )
 
 for file in "${required[@]}"; do
@@ -75,7 +68,7 @@ for script in ralph-loop afk-workflow review-pr pr; do
   fi
 done
 
-for skill in grill-me grill-with-docs to-prd to-milestones to-issues tdd test-driven-development; do
+for skill in grill-me grill-with-docs to-prd to-milestones to-issues tdd; do
   if ! grep -q -- "$skill" "${tmp_dir}/AGENTS.md"; then
     echo "AGENTS.md does not mention required skill: ${skill}" >&2
     exit 1

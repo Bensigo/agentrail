@@ -37,13 +37,11 @@ Use these repo-local skills when the task matches them:
 - `to-milestones`: split a PRD into vertical, testable milestones under `docs/milestones/`.
 - `to-issues`: turn one milestone at a time into independently grabbable implementation issues.
 - `tdd`: design testable interfaces and drive implementation with tests.
-- `test-driven-development`: strict red-green-refactor loop. Use before behavior changes and bug fixes.
-- `mattpocock-skills/...`: full vendored Matt Pocock skill bundle for agents that support nested project-local skills.
 
 Preferred sequence:
 
 ```text
-grill-me / grill-with-docs -> to-prd -> to-milestones -> to-issues -> tdd / test-driven-development -> ralph-loop -> review-pr / pr -> review-fix
+grill-me / grill-with-docs -> to-prd -> to-milestones -> to-issues -> tdd -> ralph-loop -> review-pr / pr -> review-fix
 ```
 
 Skip steps only when the work is genuinely small enough to implement directly.

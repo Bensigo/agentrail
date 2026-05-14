@@ -99,6 +99,67 @@ grill-with-docs
 
 For small edits, skip the heavy planning steps and implement directly with tests.
 
+## How To Use It With An Agent
+
+Start with `CONTEXT.md`. Keep the product, domain language, constraints, and repo-specific decisions there. The workflow works poorly if `CONTEXT.md` is empty or stale.
+
+When you want to work on a new feature, ask the agent to grill the idea first:
+
+```text
+Use grill-with-docs. I want to build <feature idea>. Challenge the idea against this repo's CONTEXT.md and codebase before we write a PRD.
+```
+
+Use `grill-with-docs` when:
+
+- the feature is vague
+- the user, outcome, or non-goals are unclear
+- the change touches important domain behavior
+- you are not sure what should be built first
+
+After the idea is clear, turn it into a PRD:
+
+```text
+Use to-prd. Turn the clarified feature into a PRD under docs/prd/.
+```
+
+Then split the PRD into vertical milestones:
+
+```text
+Use to-milestones on docs/prd/<file>. Create testable vertical milestones.
+```
+
+Then create implementation issues from one milestone at a time:
+
+```text
+Use to-issues on docs/milestones/001-<file>. Create independently grabbable GitHub issues with acceptance criteria and verification steps.
+```
+
+When implementing an issue, use TDD:
+
+```text
+Use tdd. Implement issue #123 with a red-green-refactor loop. Do not write production code before a failing test.
+```
+
+For one bounded implementation run:
+
+```bash
+scripts/ralph-loop --issue 123 --print-prompt
+```
+
+For unattended batches of approved work:
+
+```bash
+scripts/afk-workflow run --concurrency 2 --max-waves 5
+```
+
+Review PRs before merge:
+
+```bash
+scripts/review-pr --pr 123
+```
+
+Use the full flow for meaningful product work. For tiny fixes, ask for a direct TDD implementation instead of creating PRDs and milestones.
+
 ## Common Commands
 
 Print a Ralph implementation prompt for one issue:

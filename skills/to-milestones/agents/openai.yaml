@@ -1,0 +1,4 @@
+interface:
+  display_name: "To Milestones"
+  short_description: "Convert PRDs into vertical, testable milestone markdown files."
+  default_prompt: "Convert this PRD into vertical milestones saved as local markdown."

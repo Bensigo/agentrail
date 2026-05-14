@@ -1,0 +1,64 @@
+# PR Review
+
+PR review exists to catch defects, unclear behavior, missing verification, and avoidable operational risk.
+
+Review should be direct and actionable. Do not use review as a place for vague taste comments.
+
+## Review Priorities
+
+Inspect in this order:
+
+1. Correctness and regressions.
+2. Security, privacy, and data loss risk.
+3. Missing tests or weak verification.
+4. Product behavior mismatches.
+5. Maintainability issues that will matter soon.
+6. Style only when it affects clarity or consistency.
+
+## Required Review Checks
+
+Confirm:
+
+- PR links the relevant issue.
+- Scope matches the issue.
+- Acceptance criteria are satisfied.
+- Verification commands or manual checks are listed.
+- UI-visible work includes visual evidence.
+- No unrelated files or refactors are included.
+- No secrets, credentials, or sensitive customer data are committed.
+
+## Finding Format
+
+Use this structure for actionable findings:
+
+- Severity: `P0`, `P1`, `P2`, or `P3`.
+- File and line, when possible.
+- Concrete problem.
+- Why it matters.
+- Suggested correction.
+
+Severity guide:
+
+- `P0`: must fix immediately; breaks production, security, or data integrity.
+- `P1`: must fix before merge.
+- `P2`: should fix before merge unless explicitly accepted.
+- `P3`: minor improvement or follow-up.
+
+## Review Output Routing
+
+After an agent review is complete, apply `pr-reviewed` to the PR or linked tracking issue if the workflow supports it.
+
+- `P0` findings must create a new GitHub issue labeled `review-fix` and `ready-for-agent`.
+- Non-`P0` findings should be left as PR review comments unless the maintainer explicitly wants a tracking issue.
+- Do not bury production-breaking, security, data-loss, or merge-blocking findings in PR comments only.
+
+## Non-Findings
+
+Do not block a PR for:
+
+- Personal style preferences.
+- Broad rewrites unrelated to the issue.
+- Speculative architecture concerns without concrete risk.
+- Missing work that was explicitly out of scope.
+
+Document those as follow-ups only when they are worth tracking.

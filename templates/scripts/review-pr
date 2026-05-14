@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/review-pr --pr NUMBER [--base main] [--engine codex] [--output FILE]
+  review/pr.sh NUMBER
+
+Runs a pull request review in a fresh agent context window.
+
+Options:
+  --pr NUMBER       Pull request number to review. Required.
+  --base BRANCH     Base branch to review against. Default: PR base branch.
+  --engine ENGINE   Review engine. Supported: codex. Default: codex.
+  --output FILE     Write the review agent's final message to FILE.
+
+Environment:
+  REVIEW_CODEX_ARGS Extra arguments passed to `codex exec review`.
+
+Examples:
+  scripts/review-pr --pr 15
+  review/pr.sh 15
+USAGE
+}
+
+die() {
+  echo "review-pr: $*" >&2
+  exit 1
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+repo_root() {
+  git rev-parse --show-toplevel
+}
+
+ensure_clean_tree() {
+  local status
+  status="$(git status --porcelain)"
+  [[ -z "$status" ]] || die "working tree is dirty; commit, stash, or clean changes before reviewing"
+}
+
+review_prompt() {
+  local pr="$1"
+  local title="$2"
+  local url="$3"
+  local prompt_file="review/prompt.md"
+
+  cat <<PROMPT
+Review exactly one pull request: #${pr}.
+
+Pull request title: ${title}
+Pull request URL: ${url}
+
+Use the review instructions below:
+
+$(cat "$prompt_file")
+
+Repo-specific instructions:
+
+- Start from a clean checkout of the pull request head branch.
+- Compare against the pull request base branch.
+- Read the PR body, linked issue, milestone, PRD, architecture baseline, and agent docs.
+- Do not edit files.
+- Do not commit, push, close, or merge anything.
+- Return findings first, ordered by severity.
+PROMPT
+}
+
+run_codex_review() {
+  local base="$1"
+  local pr="$2"
+  local title="$3"
+  local url="$4"
+  local output_file="$5"
+  local prompt
+  prompt="$(review_prompt "$pr" "$title" "$url")"
+
+  local extra_args=()
+  if [[ -n "${REVIEW_CODEX_ARGS:-}" ]]; then
+    # shellcheck disable=SC2206
+    extra_args=(${REVIEW_CODEX_ARGS})
+  fi
+
+  local output_args=()
+  if [[ -n "$output_file" ]]; then
+    mkdir -p "$(dirname "$output_file")"
+    output_args=(-o "$output_file")
+  fi
+
+  if [[ ${#extra_args[@]} -gt 0 ]]; then
+    codex exec review --base "$base" "${output_args[@]}" "${extra_args[@]}" "$prompt"
+  else
+    codex exec review --base "$base" "${output_args[@]}" "$prompt"
+  fi
+}
+
+main() {
+  local pr=""
+  local base=""
+  local engine="codex"
+  local output_file=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --pr)
+        pr="${2:-}"
+        [[ -n "$pr" ]] || die "--pr requires a number"
+        shift 2
+        ;;
+      --base)
+        base="${2:-}"
+        [[ -n "$base" ]] || die "--base requires a branch"
+        shift 2
+        ;;
+      --engine)
+        engine="${2:-}"
+        [[ -n "$engine" ]] || die "--engine requires a value"
+        shift 2
+        ;;
+      --output)
+        output_file="${2:-}"
+        [[ -n "$output_file" ]] || die "--output requires a file path"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown option: $1"
+        ;;
+    esac
+  done
+
+  [[ -n "$pr" ]] || { usage; exit 1; }
+  [[ "$engine" == "codex" ]] || die "unsupported review engine: $engine"
+
+  need git
+  need gh
+  need jq
+  need codex
+
+  local root
+  root="$(repo_root)"
+  cd "$root"
+
+  ensure_clean_tree
+
+  local pr_json title url head_ref base_ref
+  pr_json="$(gh pr view "$pr" --json number,title,url,headRefName,baseRefName,state)"
+  title="$(jq -r '.title' <<< "$pr_json")"
+  url="$(jq -r '.url' <<< "$pr_json")"
+  head_ref="$(jq -r '.headRefName' <<< "$pr_json")"
+  base_ref="$(jq -r '.baseRefName' <<< "$pr_json")"
+  base="${base:-$base_ref}"
+
+  git fetch origin "$base"
+  git fetch origin "$head_ref"
+  git switch "$head_ref"
+  git pull --ff-only origin "$head_ref"
+  ensure_clean_tree
+
+  echo "==> Review PR #${pr}: ${title}"
+  echo "    ${url}"
+  echo "    base: ${base}"
+  echo "    head: ${head_ref}"
+
+  run_codex_review "$base" "$pr" "$title" "$url" "$output_file"
+}
+
+main "$@"

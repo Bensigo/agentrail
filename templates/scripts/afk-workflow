@@ -1,0 +1,398 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/afk-workflow run [--concurrency 2] [--max-waves 20] [--base main] [--engine codex] [--afk-label afk] [--dry-run]
+
+Runs the full AFK issue workflow:
+
+1. Pick up to N queued GitHub issues.
+2. Claim each issue so another worker does not pick it.
+3. Run one Ralph implementation loop per issue in an isolated git worktree.
+4. Find the PR opened for the issue.
+5. Review the PR in a fresh context.
+6. Convert machine-readable review findings into new review-fix issues.
+7. Repeat until the queue is empty or max waves is reached.
+
+Defaults:
+  --concurrency 2
+  --max-waves 20
+  --base main
+  --engine codex
+  --afk-label afk
+  --queue-labels review-fix,ready-for-agent
+
+Environment:
+  AFK_WORKFLOW_MOCK_QUEUE  Test-only TSV queue: number, title, url, labels_csv.
+  AFK_WORKFLOW_REVIEW     Set to 0 to skip review. Default: 1.
+
+Examples:
+  scripts/afk-workflow run
+  scripts/afk-workflow run --concurrency 2 --max-waves 5
+  scripts/afk-workflow run --dry-run
+USAGE
+}
+
+die() {
+  echo "afk-workflow: $*" >&2
+  exit 1
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+repo_root() {
+  git rev-parse --show-toplevel
+}
+
+ensure_clean_tree() {
+  local status
+  status="$(git status --porcelain)"
+  [[ -z "$status" ]] || die "working tree is dirty; commit, stash, or clean changes before running AFK workflow"
+}
+
+ensure_label() {
+  local name="$1"
+  local color="$2"
+  local description="$3"
+
+  gh label list --limit 200 --json name --jq '.[].name' | grep -Fxq "$name" && return 0
+  gh label create "$name" --color "$color" --description "$description" >/dev/null
+}
+
+ensure_workflow_labels() {
+  local afk_label="$1"
+
+  ensure_label "$afk_label" "5319E7" "Issue is approved for unattended AFK agent execution."
+  ensure_label "afk-in-progress" "BFDADC" "Issue is currently claimed by the AFK workflow."
+  ensure_label "pr-reviewed" "C5DEF5" "Implementation PR has completed automated review."
+  ensure_label "review-fix" "D93F0B" "Follow-up issue created from PR review feedback."
+  ensure_label "ready-for-agent" "0E8A16" "Issue is ready for an agent to implement."
+}
+
+queue_issues() {
+  local labels_csv="$1"
+  local limit="$2"
+  local afk_label="$3"
+
+  if [[ -n "${AFK_WORKFLOW_MOCK_QUEUE:-}" ]]; then
+    local emitted=0
+    local number title url mock_labels
+    while IFS=$'\t' read -r number title url mock_labels; do
+      [[ -n "$number" ]] || continue
+      if [[ ",${mock_labels}," == *",${afk_label},"* ]]; then
+        printf '%s\t%s\t%s\n' "$number" "$title" "$url"
+        emitted=$((emitted + 1))
+        [[ "$emitted" -lt "$limit" ]] || break
+      fi
+    done <<< "$AFK_WORKFLOW_MOCK_QUEUE"
+    return 0
+  fi
+
+  local labels=()
+  IFS=',' read -r -a labels <<< "$labels_csv"
+
+  local candidate_limit=$((limit * 10))
+  [[ "$candidate_limit" -lt 20 ]] && candidate_limit=20
+
+  local emitted=0
+  local number title url
+  while IFS=$'\t' read -r number title url; do
+    [[ -n "$number" ]] || continue
+    if [[ -z "$(detect_pr_for_issue "$number")" ]]; then
+      printf '%s\t%s\t%s\n' "$number" "$title" "$url"
+      emitted=$((emitted + 1))
+      [[ "$emitted" -lt "$limit" ]] || break
+    fi
+  done < <(
+    local label
+    for label in "${labels[@]}"; do
+      gh issue list \
+        --state open \
+        --label "$afk_label" \
+        --label "$label" \
+        --search "sort:created-asc -label:afk-in-progress" \
+        --limit "$candidate_limit" \
+        --json number,title,url \
+        | jq -r 'sort_by(.number)[] | [.number, .title, .url] | @tsv'
+    done | awk -F '\t' 'NF >= 3 && !seen[$1]++'
+  )
+}
+
+claim_issue() {
+  local issue="$1"
+
+  gh issue edit "$issue" --add-label "afk-in-progress" >/dev/null
+}
+
+mark_issue_reviewed() {
+  local issue="$1"
+  local labels_csv="$2"
+
+  local labels=()
+  IFS=',' read -r -a labels <<< "$labels_csv"
+
+  gh issue edit "$issue" --remove-label "afk-in-progress" >/dev/null 2>&1 || true
+  local label
+  for label in "${labels[@]}"; do
+    gh issue edit "$issue" --remove-label "$label" >/dev/null 2>&1 || true
+  done
+  gh issue edit "$issue" --add-label "pr-reviewed" >/dev/null
+}
+
+release_issue_to_queue() {
+  local issue="$1"
+
+  gh issue edit "$issue" --remove-label "afk-in-progress" >/dev/null 2>&1 || true
+}
+
+detect_pr_for_issue() {
+  local issue="$1"
+
+  gh pr list \
+    --state open \
+    --limit 100 \
+    --json number,title,url,body,createdAt \
+    --jq "map(select(((.body // \"\") | contains(\"#${issue}\")) or ((.title // \"\") | contains(\"#${issue}\")))) | sort_by(.createdAt) | last | .number // empty"
+}
+
+extract_review_fix_json() {
+  local review_file="$1"
+
+  awk '
+    /BEGIN_REVIEW_FIX_ISSUES_JSON/ { in_json = 1; next }
+    /END_REVIEW_FIX_ISSUES_JSON/ { in_json = 0; exit }
+    in_json { print }
+  ' "$review_file"
+}
+
+create_review_fix_issues() {
+  local source_issue="$1"
+  local pr="$2"
+  local review_file="$3"
+  local afk_label="$4"
+
+  local json
+  json="$(extract_review_fix_json "$review_file")"
+  [[ -n "$json" ]] || return 0
+
+  if ! jq -e '.fix_issues | type == "array"' >/dev/null <<< "$json"; then
+    echo "review for PR #${pr} did not include valid fix issue JSON; leaving review output at ${review_file}" >&2
+    return 0
+  fi
+
+  local count
+  count="$(jq '.fix_issues | length' <<< "$json")"
+  [[ "$count" -gt 0 ]] || return 0
+
+  local i title body severity file
+  for ((i = 0; i < count; i++)); do
+    title="$(jq -r ".fix_issues[$i].title" <<< "$json")"
+    body="$(jq -r ".fix_issues[$i].body" <<< "$json")"
+    severity="$(jq -r ".fix_issues[$i].severity // \"review-fix\"" <<< "$json")"
+    file="$(jq -r ".fix_issues[$i].file // \"\"" <<< "$json")"
+
+    gh issue create \
+      --title "[review-fix] PR #${pr}: ${title}" \
+      --body "$(cat <<BODY
+Created from automated PR review.
+
+Source issue: #${source_issue}
+Source PR: #${pr}
+Severity: ${severity}
+File: ${file}
+
+${body}
+
+Run this through the Ralph loop as a small follow-up issue.
+BODY
+)" \
+      --label "review-fix" \
+      --label "$afk_label" \
+      --label "ready-for-agent" >/dev/null
+  done
+}
+
+worker_run() {
+  local root="$1"
+  local run_dir="$2"
+  local slot="$3"
+  local issue="$4"
+  local title="$5"
+  local base="$6"
+  local engine="$7"
+  local review_enabled="$8"
+  local queue_labels="$9"
+  local afk_label="${10}"
+
+  local worktree="${run_dir}/worktrees/slot-${slot}-issue-${issue}"
+  local logs_dir="${run_dir}/logs"
+  mkdir -p "$logs_dir"
+
+  echo "worker ${slot}: issue #${issue} ${title}"
+
+  git -C "$root" fetch origin "$base"
+  git -C "$root" worktree add --detach "$worktree" "origin/${base}" >/dev/null
+  cleanup_worktree() {
+    git -C "$root" worktree remove --force "$worktree" >/dev/null 2>&1 || true
+  }
+  trap cleanup_worktree RETURN
+
+  (
+    cd "$worktree"
+    scripts/ralph-loop run --issue "$issue" --engine "$engine" --base "$base" \
+      >"${logs_dir}/issue-${issue}-ralph.log" 2>&1
+
+    local pr
+    pr="$(detect_pr_for_issue "$issue")"
+    [[ -n "$pr" ]] || die "could not find an open PR for issue #${issue}"
+
+    echo "worker ${slot}: issue #${issue} opened PR #${pr}"
+
+    if [[ "$review_enabled" == "1" ]]; then
+      scripts/review-pr --pr "$pr" --output "${logs_dir}/pr-${pr}-review.md" \
+        >"${logs_dir}/pr-${pr}-review.log" 2>&1
+      create_review_fix_issues "$issue" "$pr" "${logs_dir}/pr-${pr}-review.md" "$afk_label"
+    fi
+
+    mark_issue_reviewed "$issue" "$queue_labels"
+  )
+}
+
+main() {
+  local command="${1:-}"
+  [[ -n "$command" ]] || { usage; exit 1; }
+  shift || true
+
+  local concurrency="2"
+  local max_waves="20"
+  local base="main"
+  local engine="codex"
+  local queue_labels="review-fix,ready-for-agent"
+  local afk_label="afk"
+  local dry_run="0"
+  local review_enabled="${AFK_WORKFLOW_REVIEW:-1}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --concurrency)
+        concurrency="${2:-}"
+        [[ -n "$concurrency" ]] || die "--concurrency requires a number"
+        shift 2
+        ;;
+      --max-waves)
+        max_waves="${2:-}"
+        [[ -n "$max_waves" ]] || die "--max-waves requires a number"
+        shift 2
+        ;;
+      --base)
+        base="${2:-}"
+        [[ -n "$base" ]] || die "--base requires a branch"
+        shift 2
+        ;;
+      --engine)
+        engine="${2:-}"
+        [[ -n "$engine" ]] || die "--engine requires a value"
+        shift 2
+        ;;
+      --queue-labels)
+        queue_labels="${2:-}"
+        [[ -n "$queue_labels" ]] || die "--queue-labels requires comma-separated labels"
+        shift 2
+        ;;
+      --afk-label)
+        afk_label="${2:-}"
+        [[ -n "$afk_label" ]] || die "--afk-label requires a label"
+        shift 2
+        ;;
+      --dry-run)
+        dry_run="1"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown option: $1"
+        ;;
+    esac
+  done
+
+  [[ "$command" == "run" ]] || { usage; exit 1; }
+  [[ "$concurrency" =~ ^[0-9]+$ && "$concurrency" -gt 0 ]] || die "--concurrency must be a positive number"
+  [[ "$max_waves" =~ ^[0-9]+$ && "$max_waves" -gt 0 ]] || die "--max-waves must be a positive number"
+  [[ "$engine" == "codex" || "$engine" == "claude" ]] || die "unsupported engine: $engine"
+
+  local root
+  root="$(repo_root)"
+  cd "$root"
+
+  if [[ "$dry_run" == "0" ]]; then
+    need git
+    need gh
+    need jq
+    [[ "$engine" != "codex" ]] || need codex
+    ensure_clean_tree
+    ensure_workflow_labels "$afk_label"
+  fi
+
+  local run_dir="${root}/.afk-workflow/$(date +%Y%m%d-%H%M%S)"
+  if [[ "$dry_run" == "0" ]]; then
+    mkdir -p "$run_dir"
+  fi
+
+  local wave
+  for ((wave = 1; wave <= max_waves; wave++)); do
+    local queue
+    queue="$(queue_issues "$queue_labels" "$concurrency" "$afk_label")"
+
+    if [[ -z "$queue" ]]; then
+      echo "NO MORE TASKS"
+      exit 0
+    fi
+
+    local pids=()
+    local slot=0
+    while IFS=$'\t' read -r issue title url; do
+      [[ -n "$issue" ]] || continue
+      slot=$((slot + 1))
+      echo "wave ${wave}: selected issue #${issue} ${title}"
+      echo "wave ${wave}: ${url}"
+
+      if [[ "$dry_run" == "1" ]]; then
+        echo "dry-run: would claim issue #${issue}"
+        echo "dry-run: would run Ralph for issue #${issue}"
+        echo "dry-run: would review PR for issue #${issue}"
+        continue
+      fi
+
+      claim_issue "$issue"
+      (
+        if ! worker_run "$root" "$run_dir" "$slot" "$issue" "$title" "$base" "$engine" "$review_enabled" "$queue_labels" "$afk_label"; then
+          release_issue_to_queue "$issue"
+          exit 1
+        fi
+      ) &
+      pids+=("$!")
+    done <<< "$queue"
+
+    if [[ ${#pids[@]} -gt 0 ]]; then
+      local pid
+      local failed=0
+      for pid in "${pids[@]}"; do
+        if ! wait "$pid"; then
+          failed=1
+        fi
+      done
+      [[ "$failed" == "0" ]] || exit 1
+    fi
+  done
+
+  echo "Reached max waves (${max_waves}) before queue was empty."
+}
+
+main "$@"

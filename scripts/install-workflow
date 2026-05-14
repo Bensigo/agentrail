@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: install-workflow [--target DIR] [--force] [--github-labels]
+
+Installs the Bensigo AI workflow templates into a project.
+
+Options:
+  --target DIR      Project directory to install into. Defaults to current directory.
+  --force           Overwrite existing files.
+  --github-labels   Create/update GitHub labels with gh CLI.
+  -h, --help        Show this help.
+USAGE
+}
+
+target_dir="$(pwd)"
+force=0
+github_labels=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target)
+      target_dir="${2:-}"
+      [[ -n "$target_dir" && "$target_dir" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
+      shift 2
+      ;;
+    --force)
+      force=1
+      shift
+      ;;
+    --github-labels)
+      github_labels=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_dir="$(cd "${script_dir}/.." && pwd)"
+templates_dir="${repo_dir}/templates"
+skills_dir="${repo_dir}/skills"
+
+[[ -d "$templates_dir" ]] || { echo "Missing templates directory: $templates_dir" >&2; exit 1; }
+[[ -d "$skills_dir" ]] || { echo "Missing skills directory: $skills_dir" >&2; exit 1; }
+mkdir -p "$target_dir"
+
+copy_file() {
+  local src_root="$1"
+  local dest_root="$2"
+  local src="$3"
+  local rel="${src#"$src_root"/}"
+  local dest="${dest_root}/${rel}"
+  mkdir -p "$(dirname "$dest")"
+
+  if [[ -e "$dest" && "$force" -ne 1 ]]; then
+    echo "skip existing: ${rel}"
+    return
+  fi
+
+  cp "$src" "$dest"
+  echo "installed: ${rel}"
+}
+
+copy_tree() {
+  local src_root="$1"
+  local dest_root="$2"
+
+  while IFS= read -r -d '' file; do
+    copy_file "$src_root" "$dest_root" "$file"
+  done < <(find "$src_root" -type f -print0 | sort -z)
+}
+
+copy_tree "$templates_dir" "$target_dir"
+copy_tree "$skills_dir" "${target_dir}/skills"
+
+if [[ "$github_labels" -eq 1 ]]; then
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "gh CLI is not installed; skipping labels" >&2
+    exit 0
+  fi
+
+  (
+    cd "$target_dir"
+    gh label create ready-for-agent --color 0E8A16 --description "Fully specified, ready for an agent to implement." --force
+    gh label create afk --color 5319E7 --description "Approved for unattended AFK agent execution." --force
+    gh label create afk-in-progress --color BFDADC --description "Currently claimed by AFK workflow." --force
+    gh label create review-fix --color D93F0B --description "Follow-up issue created from PR review." --force
+    gh label create pr-reviewed --color 1D76DB --description "Implementation PR has been reviewed." --force
+  )
+fi
+
+echo
+echo "Bensigo AI workflow installed in: ${target_dir}"
+echo "Next: edit CONTEXT.md for your project, then create a PRD under docs/prd/."

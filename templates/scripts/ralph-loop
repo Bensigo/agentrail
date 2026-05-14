@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/ralph-loop [--issue NUMBER] [--afk] [--agent-command CMD] [--print-prompt]
+
+Runs one bounded Ralph implementation loop for a GitHub issue.
+
+Options:
+  --issue NUMBER       GitHub issue number to implement.
+  --afk                Pick only issues labeled both ready-for-agent and afk.
+  --agent-command CMD  Command that receives the Ralph prompt on stdin.
+                       Defaults to RALPH_AGENT_COMMAND when set.
+  --print-prompt       Print the generated prompt instead of running an agent.
+  -h, --help           Show this help.
+
+Examples:
+  scripts/ralph-loop --issue 123 --print-prompt
+  RALPH_AGENT_COMMAND='codex exec -' scripts/ralph-loop --issue 123
+  scripts/ralph-loop --afk --agent-command 'codex exec -'
+USAGE
+}
+
+issue_number=""
+afk=0
+print_prompt=0
+agent_command="${RALPH_AGENT_COMMAND:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --issue)
+      issue_number="${2:-}"
+      [[ -n "$issue_number" ]] || { echo "--issue requires a number" >&2; exit 2; }
+      shift 2
+      ;;
+    --afk)
+      afk=1
+      shift
+      ;;
+    --agent-command)
+      agent_command="${2:-}"
+      [[ -n "$agent_command" ]] || { echo "--agent-command requires a command" >&2; exit 2; }
+      shift 2
+      ;;
+    --print-prompt)
+      print_prompt=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$repo_root"
+
+if [[ ! -f "CONTEXT.md" ]]; then
+  echo "Missing CONTEXT.md. Run the workflow installer from the project root first." >&2
+  exit 1
+fi
+
+if [[ ! -f "docs/agents/ralph-loop.md" ]]; then
+  echo "Missing docs/agents/ralph-loop.md. Run the workflow installer first." >&2
+  exit 1
+fi
+
+if [[ -z "$issue_number" ]]; then
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "gh CLI is required to auto-pick an issue. Pass --issue NUMBER instead." >&2
+    exit 1
+  fi
+
+  labels=(--label ready-for-agent)
+  if [[ "$afk" -eq 1 ]]; then
+    labels+=(--label afk)
+  fi
+
+  issue_number="$(gh issue list "${labels[@]}" --state open --limit 1 --json number --jq '.[0].number // empty')"
+  if [[ -z "$issue_number" ]]; then
+    if [[ "$afk" -eq 1 ]]; then
+      echo "No open issue found with labels: ready-for-agent, afk" >&2
+    else
+      echo "No open issue found with label: ready-for-agent" >&2
+    fi
+    exit 1
+  fi
+fi
+
+if ! [[ "$issue_number" =~ ^[0-9]+$ ]]; then
+  echo "--issue must be a numeric GitHub issue number" >&2
+  exit 2
+fi
+
+if command -v gh >/dev/null 2>&1; then
+  issue_body="$(gh issue view "$issue_number" --json number,title,body,labels,url --template '{{printf "#%v %s\n%s\n\n" .number .title .url}}{{range .labels}}{{printf "label: %s\n" .name}}{{end}}{{printf "\n%s\n" .body}}' 2>/dev/null || true)"
+else
+  issue_body=""
+fi
+
+if [[ -z "$issue_body" ]]; then
+  issue_body="Issue #${issue_number}. GitHub issue details were not loaded, so read the issue manually before implementing."
+fi
+
+prompt="$(cat <<PROMPT
+You are running one Ralph implementation loop.
+
+Hard limits:
+- Handle exactly one issue: #${issue_number}
+- Do not continue into unrelated issues.
+- Read CONTEXT.md and docs/agents/ralph-loop.md before editing.
+- Preserve existing user changes.
+- Implement the smallest coherent change that satisfies the issue.
+- Run relevant verification.
+- For UI-visible changes, capture visual evidence.
+- Open or update a PR and include linked issue, summary, verification, visual evidence, and risks.
+- Stop when the PR is ready or when blocked.
+
+Issue:
+${issue_body}
+PROMPT
+)"
+
+if [[ "$print_prompt" -eq 1 || -z "$agent_command" ]]; then
+  printf '%s\n' "$prompt"
+  if [[ -z "$agent_command" && "$print_prompt" -ne 1 ]]; then
+    echo
+    echo "No agent command configured. Set RALPH_AGENT_COMMAND or pass --agent-command to run it."
+  fi
+  exit 0
+fi
+
+if [[ "$afk" -eq 1 && command -v gh >/dev/null 2>&1 ]]; then
+  gh issue edit "$issue_number" --add-label afk-in-progress >/dev/null
+fi
+
+set +e
+printf '%s\n' "$prompt" | bash -lc "$agent_command"
+status=$?
+set -e
+
+if [[ "$afk" -eq 1 && command -v gh >/dev/null 2>&1 ]]; then
+  gh issue edit "$issue_number" --remove-label afk-in-progress >/dev/null || true
+fi
+
+exit "$status"

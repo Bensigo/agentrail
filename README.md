@@ -66,7 +66,6 @@ Project-local skills:
 
 ```text
 skills/bensigo-ai-workflow/
-skills/grill-me/
 skills/grill-with-docs/
 skills/to-prd/
 skills/to-milestones/
@@ -88,7 +87,7 @@ scripts/review-pr
 Use the full workflow for product features, risky changes, or work that needs agent handoff:
 
 ```text
-grill-me / grill-with-docs
+grill-with-docs
 -> to-prd
 -> to-milestones
 -> to-issues

@@ -37,8 +37,6 @@ required=(
   "scripts/ralph-loop"
   "scripts/review-pr"
   "skills/bensigo-ai-workflow/SKILL.md"
-  "skills/grill-me/SKILL.md"
-  "skills/grill-me/agents/openai.yaml"
   "skills/grill-with-docs/SKILL.md"
   "skills/grill-with-docs/ADR-FORMAT.md"
   "skills/grill-with-docs/CONTEXT-FORMAT.md"
@@ -68,7 +66,7 @@ for script in ralph-loop afk-workflow review-pr pr; do
   fi
 done
 
-for skill in grill-me grill-with-docs to-prd to-milestones to-issues tdd; do
+for skill in grill-with-docs to-prd to-milestones to-issues tdd; do
   if ! grep -q -- "$skill" "${tmp_dir}/AGENTS.md"; then
     echo "AGENTS.md does not mention required skill: ${skill}" >&2
     exit 1

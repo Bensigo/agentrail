@@ -31,7 +31,6 @@ Read `CONTEXT.md` before making non-trivial changes. If domain docs exist, prefe
 
 Use these repo-local skills when the task matches them:
 
-- `grill-me`: stress-test a plan, product idea, workflow, proposal, strategy, or design one question at a time.
 - `grill-with-docs`: stress-test a fuzzy idea against `CONTEXT.md`, current docs, and code before writing a PRD.
 - `to-prd`: turn clarified context into a buildable PRD under `docs/prd/`.
 - `to-milestones`: split a PRD into vertical, testable milestones under `docs/milestones/`.
@@ -41,7 +40,7 @@ Use these repo-local skills when the task matches them:
 Preferred sequence:
 
 ```text
-grill-me / grill-with-docs -> to-prd -> to-milestones -> to-issues -> tdd -> ralph-loop -> review-pr / pr -> review-fix
+grill-with-docs -> to-prd -> to-milestones -> to-issues -> tdd -> ralph-loop -> review-pr / pr -> review-fix
 ```
 
 Skip steps only when the work is genuinely small enough to implement directly.

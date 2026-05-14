@@ -12,29 +12,16 @@ It installs:
 
 ## Install
 
-Install directly into the current project with npm:
+Install directly into the current project with `npx` from GitHub:
 
 ```bash
-npx @bensigo/coding-ai-workflow --target .
+npx github:Bensigo/coding-ai-workflow --target .
 ```
 
 Install into another project:
 
 ```bash
-npx @bensigo/coding-ai-workflow --target /path/to/project
-```
-
-If the package has not been published to npm yet, install from GitHub:
-
-```bash
 npx github:Bensigo/coding-ai-workflow --target /path/to/project
-```
-
-You can also install the command globally:
-
-```bash
-npm install -g @bensigo/coding-ai-workflow
-coding-ai-workflow --target /path/to/project
 ```
 
 From a local checkout of this repo:
@@ -52,7 +39,7 @@ scripts/install-workflow --target /path/to/project --force
 Create or update the expected GitHub labels too:
 
 ```bash
-npx @bensigo/coding-ai-workflow --target /path/to/project --github-labels
+npx github:Bensigo/coding-ai-workflow --target /path/to/project --github-labels
 ```
 
 After install, go to the target project:
@@ -167,35 +154,3 @@ npm test
 ```
 
 from this workflow repo to verify the installer.
-
-## Publishing
-
-The npm package name is:
-
-```text
-@bensigo/coding-ai-workflow
-```
-
-The installed command is:
-
-```bash
-coding-ai-workflow
-```
-
-The old command name is also available as an alias:
-
-```bash
-bensigo-ai-workflow
-```
-
-Before publishing, verify the package contents:
-
-```bash
-npm pack --dry-run
-```
-
-Publish:
-
-```bash
-npm publish --access public
-```

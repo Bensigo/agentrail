@@ -16,6 +16,6 @@
     "skills/"
   ],
   "scripts": {
-    "test": "bash scripts/test-install"
+    "test": "bash scripts/test-install && bash scripts/test-promote-unblocked-issues"
   }
 }

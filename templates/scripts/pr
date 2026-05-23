@@ -249,6 +249,17 @@ issue_has_label_json() {
   jq -e --arg label "$label" 'any(.labels[]?; .name == $label)' <<< "$issue_json" >/dev/null
 }
 
+issue_conflicting_triage_label_json() {
+  local issue_json="$1"
+
+  jq -r '
+    first(
+      .labels[]?.name
+      | select(. == "needs-info" or . == "needs-triage" or . == "ready-for-human" or . == "wontfix")
+    ) // ""
+  ' <<< "$issue_json"
+}
+
 issue_is_closed() {
   local issue="$1"
   local state
@@ -319,6 +330,13 @@ promote_unblocked_issues_after_merge() {
 
     if issue_has_label_json "$issue_json" "ready-for-agent"; then
       echo "Issue #$number is unblocked and already has ready-for-agent."
+      continue
+    fi
+
+    local conflicting_label
+    conflicting_label=$(issue_conflicting_triage_label_json "$issue_json")
+    if [ -n "$conflicting_label" ]; then
+      echo "Issue #$number is unblocked but has conflicting label $conflicting_label; not promoting."
       continue
     fi
 
@@ -1300,4 +1318,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

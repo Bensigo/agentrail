@@ -6,6 +6,7 @@ It installs:
 
 - `AGENTS.md` and `CONTEXT.md`
 - agent docs under `docs/agents/`
+- project memory under `docs/memory/`
 - PRD and milestone folders under `docs/`
 - project-local skills under `skills/`
 - workflow scripts under `scripts/`
@@ -58,6 +59,7 @@ Project docs:
 AGENTS.md
 CONTEXT.md
 docs/agents/
+docs/memory/
 docs/prd/
 docs/milestones/
 ```
@@ -77,6 +79,7 @@ Workflow scripts:
 
 ```text
 scripts/afk-workflow
+scripts/memory
 scripts/pr
 scripts/ralph-loop
 scripts/review-pr
@@ -102,6 +105,14 @@ For small edits, skip the heavy planning steps and implement directly with tests
 ## How To Use It With An Agent
 
 Start with `CONTEXT.md`. Keep the product, domain language, constraints, and repo-specific decisions there. The workflow works poorly if `CONTEXT.md` is empty or stale.
+
+Use `docs/memory/` for source-linked lessons, preferences, and recurring failure patterns that should survive across agent runs. Memory is advisory; agents still need to verify it against current code and canonical docs.
+
+Recall project memory before non-trivial work:
+
+```bash
+scripts/memory recall "<feature, issue, PR, or keyword>"
+```
 
 When you want to work on a new feature, ask the agent to grill the idea first:
 

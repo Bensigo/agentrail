@@ -64,7 +64,7 @@ Acceptance criteria are the implementation contract. Before publishing an issue:
 
 - Label each criterion as `AC1`, `AC2`, `AC3`, etc.
 - Make each criterion observable and testable from the user's, operator's, or system's point of view.
-- Include at least one criterion that names the expected verification evidence.
+- Document the expected verification evidence in the separate `Verification evidence` section.
 - Do not use vague criteria like "works correctly", "is polished", or "handles edge cases" without naming the concrete behavior.
 - Do not apply `ready-for-agent` or `afk` if the criteria cannot be verified without guessing.
 
@@ -83,7 +83,11 @@ Avoid specific file paths or code snippets — they go stale fast. Exception: if
 
 - [ ] AC1: <Observable behavior>
 - [ ] AC2: <State, persistence, permission, or error behavior if relevant>
-- [ ] AC3: <Required verification evidence, such as test command, browser check, screenshot, log, or manual path>
+- [ ] AC3: <Another observable behavior, if needed>
+
+## Verification evidence
+
+- Required test command, browser check, screenshot, log, or manual path.
 
 ## Blocked by
 

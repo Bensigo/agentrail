@@ -22,10 +22,25 @@ This repo uses a GitHub-first agent workflow.
 - Milestones live in `docs/milestones/`.
 - Repo-local workflow skills live in `skills/`.
 - Agent workflow docs live in `docs/agents/`.
+- Project memory lives in `docs/memory/`.
 - GitHub issues are the source of truth for implementation tasks.
 - Pull requests are the source of truth for review and merge readiness.
 
 Read `CONTEXT.md` before making non-trivial changes. If domain docs exist, prefer them over assumptions.
+
+## Project Memory
+
+Project memory is repo-owned context for future agent runs. It is not hidden chat memory and it is not automatically true.
+
+Before non-trivial planning, implementation, or review, run:
+
+```bash
+scripts/memory recall "<task, issue, PR, feature, or keyword>"
+```
+
+Use relevant memory as advisory context only. Verify it against the current code, `CONTEXT.md`, ADRs, issues, and PRs before relying on it.
+
+When you learn something that should help future agents, propose a source-linked entry under `docs/memory/` as a normal diff. Do not store secrets, credentials, customer data, or unsourced guesses.
 
 ## Workflow Skills
 
@@ -65,8 +80,9 @@ Only unattended workers may pick issues labeled `afk`.
 Before editing:
 
 1. Read the relevant issue, PRD, milestone, and context docs.
-2. Inspect the current code and tests.
-3. Identify the smallest coherent change that satisfies the request.
+2. Run `scripts/memory recall` for the task and inspect relevant memory.
+3. Inspect the current code and tests.
+4. Identify the smallest coherent change that satisfies the request.
 
 While editing:
 
@@ -111,9 +127,11 @@ See:
 - `docs/agents/pr-review.md`
 - `docs/agents/visual-evidence.md`
 - `docs/agents/triage-labels.md`
+- `docs/memory/README.md`
 
 Installed scripts:
 
+- `scripts/memory`
 - `scripts/ralph-loop`
 - `scripts/afk-workflow`
 - `scripts/review-pr`

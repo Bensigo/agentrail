@@ -66,6 +66,8 @@ Repo-specific instructions:
 - Start from a clean checkout of the pull request head branch.
 - Compare against the pull request base branch.
 - Read the PR body, linked issue, milestone, PRD, architecture baseline, and agent docs.
+- Run scripts/memory recall for the PR title, linked issue, and key terms.
+- Treat project memory as advisory; verify it against current code, docs, issue, PRD, and ADRs.
 - Do not edit files.
 - Do not commit, push, close, or merge anything.
 - Return findings first, ordered by severity.

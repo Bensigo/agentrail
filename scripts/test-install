@@ -73,4 +73,19 @@ for skill in grill-with-docs to-prd to-milestones to-issues tdd; do
   fi
 done
 
+if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/docs/agents/ralph-loop.md"; then
+  echo "ralph-loop docs do not require acceptance criteria coverage" >&2
+  exit 1
+fi
+
+if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/docs/agents/pr-review.md"; then
+  echo "pr-review docs do not require acceptance criteria coverage checks" >&2
+  exit 1
+fi
+
+if ! grep -q -- "AC1" "${tmp_dir}/skills/to-issues/SKILL.md"; then
+  echo "to-issues skill does not require labeled acceptance criteria" >&2
+  exit 1
+fi
+
 echo "install test passed"

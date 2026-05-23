@@ -29,7 +29,7 @@ Optional:
 6. Capture visual evidence for UI-visible changes.
 7. Open or update a pull request.
 8. Link the issue.
-9. Record verification and evidence in the PR.
+9. Record acceptance criteria coverage, verification, and evidence in the PR.
 10. Stop.
 
 Do not continue into unrelated issues in the same loop. One loop handles one issue.
@@ -66,12 +66,28 @@ Verification should match the change:
 
 Never write "tested" without saying how.
 
+## Acceptance Criteria Coverage
+
+Every implementation PR must map the linked issue's acceptance criteria to concrete implementation and verification evidence. Use this table in the PR body:
+
+```markdown
+## Acceptance Criteria Coverage
+
+| Criterion | Implementation Evidence | Verification |
+|---|---|---|
+| AC1 | <What changed to satisfy it> | <Test, check, screenshot, log, or manual path> |
+| AC2 | <What changed to satisfy it> | <Test, check, screenshot, log, or manual path> |
+```
+
+If an acceptance criterion cannot be satisfied or verified, stop and mark the issue blocked instead of opening a PR that claims completion.
+
 ## PR Output
 
 The PR body should include:
 
 - Linked issue.
 - Summary.
+- Acceptance criteria coverage.
 - Verification.
 - Visual evidence.
 - Known risks or follow-ups.

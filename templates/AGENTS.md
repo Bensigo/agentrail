@@ -79,7 +79,8 @@ Before finishing:
 
 1. Run the relevant checks.
 2. Capture visual evidence for UI-visible work.
-3. Summarize what changed and how it was verified.
+3. Map each acceptance criterion to implementation evidence and verification evidence.
+4. Summarize what changed and how it was verified.
 
 ## Quality Bar
 
@@ -95,6 +96,7 @@ Every implementation PR must include:
 
 - Problem being solved.
 - Summary of changes.
+- Acceptance criteria coverage.
 - Verification commands and results.
 - Visual evidence section.
 - Linked issue.

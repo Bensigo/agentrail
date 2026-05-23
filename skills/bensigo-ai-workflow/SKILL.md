@@ -15,7 +15,8 @@ Run this workflow only when the work is large enough to benefit from staged thin
 
 2. Create durable context.
    - Capture domain facts, decisions, constraints, terminology, and unresolved questions in durable project docs.
-   - Prefer repo-native context files and architecture docs over chat-only memory.
+   - Prefer repo-native context files, ADRs, and source-linked `docs/memory/` entries over chat-only memory.
+   - Keep `CONTEXT.md` canonical; use `docs/memory/` for reusable lessons, preferences, and failure patterns that future agents should recall.
 
 3. Write the PRD.
    - Convert the clarified idea into a focused PRD with goals, non-goals, user flows, requirements, acceptance criteria, risks, and verification expectations.
@@ -31,6 +32,7 @@ Run this workflow only when the work is large enough to benefit from staged thin
 
 6. Run the Ralph implementation loop.
    - Use the repo's Ralph runner to pick ready issues, implement, verify, and open or update PRs.
+   - Recall relevant project memory before editing, then verify it against current code and docs.
    - Bound the run: choose one issue or a small fixed batch. Do not launch unbounded agent loops.
 
 7. Require PR visual evidence.
@@ -58,5 +60,6 @@ Run this workflow only when the work is large enough to benefit from staged thin
 - Stop and ask when the idea lacks a real user, measurable outcome, or buildable scope.
 - Prefer vertical slices over broad platform rewrites.
 - Preserve existing edits by others. Own only the files or issues explicitly in scope.
+- Treat project memory as advisory unless it is backed by current source links.
 - Do not claim completion without verification evidence.
 - Do not let agent loops run without a cap, checkpoint, or human-readable output.

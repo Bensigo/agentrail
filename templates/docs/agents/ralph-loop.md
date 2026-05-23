@@ -11,6 +11,7 @@ Required:
 - One GitHub issue labeled `ready-for-agent`.
 - Acceptance criteria.
 - Repository context from `CONTEXT.md`.
+- Relevant project memory from `scripts/memory recall`.
 
 Optional:
 
@@ -23,14 +24,16 @@ Optional:
 
 1. Select one eligible issue.
 2. Read the issue, context docs, and relevant code.
-3. Create or switch to a task branch.
-4. Implement the smallest coherent change.
-5. Run relevant tests and checks.
-6. Capture visual evidence for UI-visible changes.
-7. Open or update a pull request.
-8. Link the issue.
-9. Record verification and evidence in the PR.
-10. Stop.
+3. Run `scripts/memory recall "<issue title, feature, or key terms>"`.
+4. Verify relevant memory against current code and docs before using it.
+5. Create or switch to a task branch.
+6. Implement the smallest coherent change.
+7. Run relevant tests and checks.
+8. Capture visual evidence for UI-visible changes.
+9. Open or update a pull request.
+10. Link the issue.
+11. Record verification and evidence in the PR.
+12. Stop.
 
 Do not continue into unrelated issues in the same loop. One loop handles one issue.
 
@@ -44,6 +47,14 @@ For unattended runs:
 - If completed, open or update a PR and remove `afk-in-progress`.
 
 Do not guess through missing product decisions. A blocked issue is better than a wrong implementation.
+
+## Project Memory
+
+Project memory lives in `docs/memory/` and is searched through `scripts/memory recall`.
+
+Use it to avoid repeated mistakes and preserve durable project preferences across agent runs. Treat it as advisory unless backed by current source links. If memory conflicts with code, `CONTEXT.md`, ADRs, the issue, or the PRD, stop and surface the conflict instead of guessing.
+
+If implementation reveals a reusable lesson or decision, propose a source-linked memory entry in the PR. Do not silently add broad advice or unsourced assumptions.
 
 ## Branch Naming
 
@@ -74,4 +85,5 @@ The PR body should include:
 - Summary.
 - Verification.
 - Visual evidence.
+- Memory updates, if any.
 - Known risks or follow-ups.

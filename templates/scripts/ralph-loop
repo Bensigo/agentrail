@@ -116,11 +116,13 @@ Hard limits:
 - Handle exactly one issue: #${issue_number}
 - Do not continue into unrelated issues.
 - Read CONTEXT.md and docs/agents/ralph-loop.md before editing.
+- Run scripts/memory recall for the issue title and key terms before editing.
+- Treat project memory as advisory; verify it against current code, docs, issue, PRD, and ADRs.
 - Preserve existing user changes.
 - Implement the smallest coherent change that satisfies the issue.
 - Run relevant verification.
 - For UI-visible changes, capture visual evidence.
-- Open or update a PR and include linked issue, summary, verification, visual evidence, and risks.
+- Open or update a PR and include linked issue, summary, verification, visual evidence, memory updates if any, and risks.
 - Stop when the PR is ready or when blocked.
 
 Issue:

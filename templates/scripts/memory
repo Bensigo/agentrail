@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/memory recall QUERY
+  scripts/memory capture KIND TITLE
+
+Commands:
+  recall   Search docs/memory for relevant source-linked memory.
+  capture  Print a memory entry template. It does not edit files.
+
+Examples:
+  scripts/memory recall "billing validation"
+  scripts/memory capture lesson "Normalize imported emails before matching users"
+USAGE
+}
+
+die() {
+  echo "memory: $*" >&2
+  exit 1
+}
+
+repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null || pwd
+}
+
+command="${1:-}"
+[[ -n "$command" ]] || { usage; exit 1; }
+shift || true
+
+root="$(repo_root)"
+memory_dir="${root}/docs/memory"
+
+case "$command" in
+  recall)
+    query="$*"
+    [[ -n "$query" ]] || die "recall requires a query"
+
+    if [[ ! -d "$memory_dir" ]]; then
+      echo "No docs/memory directory found."
+      exit 0
+    fi
+
+    if command -v rg >/dev/null 2>&1; then
+      exact_matches="$(rg --line-number --context 3 --ignore-case --fixed-strings -- "$query" "$memory_dir" || true)"
+      if [[ -n "$exact_matches" ]]; then
+        printf '%s\n' "$exact_matches"
+        exit 0
+      fi
+
+      term_args=()
+      for term in $query; do
+        [[ "${#term}" -ge 3 ]] || continue
+        term_args+=(-e "$term")
+      done
+
+      if [[ "${#term_args[@]}" -gt 0 ]]; then
+        rg --line-number --context 3 --ignore-case --fixed-strings "${term_args[@]}" "$memory_dir" || true
+      fi
+    else
+      exact_matches="$(grep -Rni -C 3 -- "$query" "$memory_dir" || true)"
+      if [[ -n "$exact_matches" ]]; then
+        printf '%s\n' "$exact_matches"
+        exit 0
+      fi
+
+      for term in $query; do
+        [[ "${#term}" -ge 3 ]] || continue
+        grep -Rni -C 3 -- "$term" "$memory_dir" || true
+      done
+    fi
+    ;;
+  capture|new)
+    kind="${1:-}"
+    shift || true
+    title="$*"
+
+    [[ -n "$kind" ]] || die "capture requires a kind"
+    [[ -n "$title" ]] || die "capture requires a title"
+
+    cat <<TEMPLATE
+## ${title}
+
+- kind: ${kind}
+- source: <issue, PR, ADR, file path, or doc link>
+- confidence: verified
+- created_at: $(date +%Y-%m-%d)
+- expires_at:
+
+<What future agents need to know, when it applies, and what to verify before using it.>
+TEMPLATE
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

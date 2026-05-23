@@ -21,11 +21,25 @@ Confirm:
 
 - PR links the relevant issue.
 - Scope matches the issue.
+- Relevant project memory was recalled or the PR explains why none applied.
 - Acceptance criteria are satisfied.
 - Verification commands or manual checks are listed.
 - UI-visible work includes visual evidence.
+- Memory changes, if present, are source-linked and not generic advice.
 - No unrelated files or refactors are included.
 - No secrets, credentials, or sensitive customer data are committed.
+
+## Project Memory Checks
+
+Before reviewing, run:
+
+```bash
+scripts/memory recall "<PR title, linked issue, feature, or key terms>"
+```
+
+Use relevant memory to check whether the PR repeats known mistakes or violates source-linked project preferences. Memory is advisory: if it conflicts with current code, `CONTEXT.md`, ADRs, the issue, or the PRD, call out the conflict and prefer the current source of truth.
+
+Block memory changes when they are unsourced, too broad to be useful, duplicate canonical docs, or contain secrets, customer data, credentials, or private personal data.
 
 ## Finding Format
 

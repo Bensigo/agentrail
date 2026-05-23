@@ -116,6 +116,35 @@ MEMORY
     echo "memory recall did not handle multiple non-adjacent query terms" >&2
     exit 1
   fi
+
+  cat >> docs/memory/lessons.md <<'MEMORY'
+
+## [codex] Bracketed PR titles stay literal
+
+- kind: lesson
+- source: PR #4
+- confidence: verified
+
+Recall queries should treat bracketed PR title prefixes as literal text.
+MEMORY
+
+  no_rg_bin="${tmp_dir}/no-rg-bin"
+  mkdir -p "$no_rg_bin"
+  for binary in bash git grep; do
+    ln -s "$(command -v "$binary")" "${no_rg_bin}/${binary}"
+  done
+
+  PATH="$no_rg_bin" scripts/memory recall "[codex]" > "${tmp_dir}/bracketed-recall.out"
+
+  if ! grep -q -- "Bracketed PR titles stay literal" "${tmp_dir}/bracketed-recall.out"; then
+    echo "memory recall grep fallback did not find a bracketed literal query" >&2
+    exit 1
+  fi
+
+  if grep -q -- "# Project Memory" "${tmp_dir}/bracketed-recall.out"; then
+    echo "memory recall grep fallback treated bracketed query as a regex" >&2
+    exit 1
+  fi
 )
 
 echo "install test passed"

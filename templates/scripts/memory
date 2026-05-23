@@ -60,7 +60,7 @@ case "$command" in
         rg --line-number --context 3 --ignore-case --fixed-strings "${term_args[@]}" "$memory_dir" || true
       fi
     else
-      exact_matches="$(grep -Rni -C 3 -- "$query" "$memory_dir" || true)"
+      exact_matches="$(grep -RFni -C 3 -- "$query" "$memory_dir" || true)"
       if [[ -n "$exact_matches" ]]; then
         printf '%s\n' "$exact_matches"
         exit 0
@@ -68,7 +68,7 @@ case "$command" in
 
       for term in $query; do
         [[ "${#term}" -ge 3 ]] || continue
-        grep -Rni -C 3 -- "$term" "$memory_dir" || true
+        grep -RFni -C 3 -- "$term" "$memory_dir" || true
       done
     fi
     ;;

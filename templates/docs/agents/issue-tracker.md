@@ -34,6 +34,23 @@ Use these labels consistently:
 5. Review: PR is opened and verification evidence is attached.
 6. Done: PR is merged and the issue is closed.
 
+## Blocked Issues
+
+Use the `## Blocked by` section to record issue dependencies.
+
+Example:
+
+```text
+## Blocked by
+
+- #123
+- #124
+```
+
+Do not apply `ready-for-agent` while any blocker is still open.
+
+After a PR is merged, `scripts/pr merge-run <PR>` checks issues closed by that PR. Any open issue that references one of those issues in `## Blocked by` is promoted with `ready-for-agent` only when every blocker listed there is closed.
+
 ## AFK Rules
 
 Only mark an issue `afk` when:

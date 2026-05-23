@@ -17,6 +17,8 @@ Apply when:
 
 Do not apply when the issue still needs product decisions.
 
+Do not apply while the issue has open blockers in its `## Blocked by` section. Merge tooling may apply this label automatically after the blocking PR closes its issue and all listed blockers are closed.
+
 ### `afk`
 
 The issue can be picked up by an unattended agent workflow.

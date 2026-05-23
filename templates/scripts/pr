@@ -212,6 +212,130 @@ merge_author_email_candidates() {
     "${reviewer}@users.noreply.github.com" | awk 'NF && !seen[$0]++'
 }
 
+pr_closing_issue_numbers() {
+  local pr="$1"
+  local refs
+
+  refs=$(gh pr view "$pr" --json closingIssuesReferences --jq '.closingIssuesReferences[]?.number' 2>/dev/null || true)
+  if [ -n "$refs" ]; then
+    printf '%s\n' "$refs" | sort -nu
+    return 0
+  fi
+
+  gh pr view "$pr" --json title,body --jq '[.title, (.body // "")] | join("\n")' \
+    | rg -io '(close[sd]?|fix(e[sd])?|resolve[sd]?)[^#\n]*(#[0-9]+[ ,]*)+' \
+    | rg -o '#[0-9]+' \
+    | tr -d '#' \
+    | sort -nu || true
+}
+
+extract_blocker_numbers_from_body() {
+  awk '
+    BEGIN { in_blocked_by = 0 }
+    /^[[:space:]]*##[[:space:]]+Blocked by[[:space:]]*$/ { in_blocked_by = 1; next }
+    in_blocked_by && /^[[:space:]]*##[[:space:]]+/ { in_blocked_by = 0 }
+    in_blocked_by { print }
+    /^[[:space:]-]*Blocked by[[:space:]]*:/ { print }
+  ' \
+    | rg -o '#[0-9]+' \
+    | tr -d '#' \
+    | sort -nu || true
+}
+
+issue_has_label_json() {
+  local issue_json="$1"
+  local label="$2"
+
+  jq -e --arg label "$label" 'any(.labels[]?; .name == $label)' <<< "$issue_json" >/dev/null
+}
+
+issue_is_closed() {
+  local issue="$1"
+  local state
+
+  state=$(gh issue view "$issue" --json state --jq .state 2>/dev/null || true)
+  [ "$state" = "CLOSED" ]
+}
+
+wait_for_issue_closures() {
+  local issue
+
+  for issue in "$@"; do
+    local attempt
+    for attempt in $(seq 1 12); do
+      if issue_is_closed "$issue"; then
+        break
+      fi
+      [ "$attempt" -eq 12 ] || sleep 5
+    done
+  done
+}
+
+promote_unblocked_issues_after_merge() {
+  local pr="$1"
+  local pr_url="$2"
+  shift 2
+
+  if [ "$#" -eq 0 ]; then
+    echo "No closing issues found for PR #$pr; skipping dependent issue promotion."
+    return 0
+  fi
+
+  wait_for_issue_closures "$@" || true
+
+  local open_issues
+  open_issues=$(gh issue list --state open --limit 1000 --json number,title,url,body,labels)
+
+  local issue_json
+  while IFS= read -r issue_json; do
+    [ -n "$issue_json" ] || continue
+
+    local number title body blockers blocker all_closed references_closed_issue
+    number=$(jq -r .number <<< "$issue_json")
+    title=$(jq -r .title <<< "$issue_json")
+    body=$(jq -r '.body // ""' <<< "$issue_json")
+    blockers=$(printf '%s\n' "$body" | extract_blocker_numbers_from_body)
+    [ -n "$blockers" ] || continue
+
+    references_closed_issue=0
+    for blocker in "$@"; do
+      if printf '%s\n' "$blockers" | grep -Fxq "$blocker"; then
+        references_closed_issue=1
+        break
+      fi
+    done
+    [ "$references_closed_issue" -eq 1 ] || continue
+
+    all_closed=1
+    while IFS= read -r blocker; do
+      [ -n "$blocker" ] || continue
+      if ! issue_is_closed "$blocker"; then
+        all_closed=0
+        echo "Issue #$number still blocked by #$blocker; not promoting."
+        break
+      fi
+    done <<< "$blockers"
+    [ "$all_closed" -eq 1 ] || continue
+
+    if issue_has_label_json "$issue_json" "ready-for-agent"; then
+      echo "Issue #$number is unblocked and already has ready-for-agent."
+      continue
+    fi
+
+    gh issue edit "$number" --add-label "ready-for-agent" >/dev/null
+
+    local comment_body
+    comment_body=$(cat <<EOF_COMMENT
+Unblocked after ${pr_url} merged and all blockers in the Blocked by section are closed.
+
+Added \`ready-for-agent\`.
+EOF_COMMENT
+)
+    gh issue comment "$number" --body "$comment_body" >/dev/null 2>&1 || true
+    echo "Promoted issue #$number to ready-for-agent: $title"
+  done < <(jq -c '.[]' <<< "$open_issues")
+}
+
 checkout_prep_branch() {
   local pr="$1"
   require_artifact .local/prep-context.env
@@ -1089,6 +1213,17 @@ EOF_COMMENT
 
   local pr_url
   pr_url=$(gh pr view "$pr" --json url --jq .url)
+
+  local closing_issues=()
+  local closing_issue
+  while IFS= read -r closing_issue; do
+    [ -n "$closing_issue" ] || continue
+    closing_issues+=("$closing_issue")
+  done < <(pr_closing_issue_numbers "$pr")
+
+  if ! promote_unblocked_issues_after_merge "$pr" "$pr_url" "${closing_issues[@]}"; then
+    echo "Dependent issue promotion failed after merge; inspect blocked issues manually."
+  fi
 
   echo "merge-run complete for PR #$pr"
   echo "merge commit: $merge_sha"

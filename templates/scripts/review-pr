@@ -47,7 +47,9 @@ review_prompt() {
   local pr="$1"
   local title="$2"
   local url="$3"
-  local prompt_file="review/prompt.md"
+  local prompt_file="docs/agents/pr-review.md"
+
+  [[ -f "$prompt_file" ]] || die "missing PR review instructions: $prompt_file"
 
   cat <<PROMPT
 Review exactly one pull request: #${pr}.

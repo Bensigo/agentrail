@@ -122,7 +122,8 @@ Hard limits:
 - Implement the smallest coherent change that satisfies the issue.
 - Run relevant verification.
 - For UI-visible changes, capture visual evidence.
-- Open or update a PR and include linked issue, summary, verification, visual evidence, memory updates if any, and risks.
+- Open or update a PR and include linked issue, summary, acceptance criteria coverage, verification, visual evidence, memory updates if any, and risks.
+- In the PR body, map every acceptance criterion to implementation evidence and verification evidence.
 - Stop when the PR is ready or when blocked.
 
 Issue:

@@ -79,6 +79,41 @@ for skill in grill-with-docs to-prd to-milestones to-issues tdd; do
   fi
 done
 
+if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/docs/agents/ralph-loop.md"; then
+  echo "ralph-loop docs do not require acceptance criteria coverage" >&2
+  exit 1
+fi
+
+if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/docs/agents/pr-review.md"; then
+  echo "pr-review docs do not require acceptance criteria coverage checks" >&2
+  exit 1
+fi
+
+if ! grep -q -- "docs/agents/pr-review.md" "${tmp_dir}/scripts/review-pr"; then
+  echo "review-pr script does not load installed PR review instructions" >&2
+  exit 1
+fi
+
+if grep -q -- "review/prompt.md" "${tmp_dir}/scripts/review-pr"; then
+  echo "review-pr script still depends on missing review/prompt.md" >&2
+  exit 1
+fi
+
+if ! grep -q -- "AC1" "${tmp_dir}/skills/to-issues/SKILL.md"; then
+  echo "to-issues skill does not require labeled acceptance criteria" >&2
+  exit 1
+fi
+
+if ! grep -q -- "## Verification evidence" "${tmp_dir}/skills/to-issues/SKILL.md"; then
+  echo "to-issues skill does not separate verification evidence from acceptance criteria" >&2
+  exit 1
+fi
+
+if grep -q -- "AC3: <Required verification evidence" "${tmp_dir}/skills/to-issues/SKILL.md"; then
+  echo "to-issues skill still models verification evidence as an acceptance criterion" >&2
+  exit 1
+fi
+
 if ! grep -q -- "scripts/memory recall" "${tmp_dir}/AGENTS.md"; then
   echo "AGENTS.md does not tell agents to recall project memory" >&2
   exit 1

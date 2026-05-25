@@ -1,4 +1,4 @@
-# Bensigo AI Workflow
+# Coding AI Workflow
 
 A project-local workflow kit for using AI coding agents with less guessing and more verified output.
 
@@ -6,6 +6,7 @@ It installs:
 
 - `AGENTS.md` and `CONTEXT.md`
 - agent docs under `docs/agents/`
+- custom subagent adapters under `.codex/agents/` and `.claude/agents/`
 - project memory under `docs/memory/`
 - PRD and milestone folders under `docs/`
 - project-local skills under `skills/`
@@ -58,6 +59,8 @@ Project docs:
 ```text
 AGENTS.md
 CONTEXT.md
+.codex/agents/
+.claude/agents/
 docs/agents/
 docs/memory/
 docs/prd/
@@ -67,12 +70,20 @@ docs/milestones/
 Project-local skills:
 
 ```text
-skills/bensigo-ai-workflow/
+skills/ai-workflow/
 skills/grill-with-docs/
 skills/to-prd/
 skills/to-milestones/
 skills/to-issues/
 skills/tdd/
+skills/visual-evidence-for-prs/
+```
+
+Custom subagents:
+
+```text
+.codex/agents/github-pr-reviewer.md
+.claude/agents/github-pr-reviewer.md
 ```
 
 Workflow scripts:
@@ -96,6 +107,7 @@ grill-with-docs
 -> to-issues
 -> tdd
 -> ralph-loop
+-> visual-evidence-for-prs
 -> review-pr / pr
 -> review-fix
 ```
@@ -149,6 +161,12 @@ When implementing an issue, use TDD:
 
 ```text
 Use tdd. Implement issue #123 with a red-green-refactor loop. Do not write production code before a failing test.
+```
+
+Before opening or updating an implementation PR, capture PR evidence:
+
+```text
+Use visual-evidence-for-prs. Capture the screenshots, videos, desktop evidence, or non-visual fallback needed for this PR.
 ```
 
 For one bounded implementation run:

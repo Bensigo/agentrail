@@ -4,6 +4,8 @@ PR review exists to catch defects, unclear behavior, missing verification, and a
 
 Review should be direct and actionable. Do not use review as a place for vague taste comments.
 
+For bounded custom subagent runs, see `docs/agents/github-pr-reviewer.md`.
+
 ## Review Priorities
 
 Inspect in this order:

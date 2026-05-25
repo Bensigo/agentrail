@@ -51,11 +51,12 @@ Use these repo-local skills when the task matches them:
 - `to-milestones`: split a PRD into vertical, testable milestones under `docs/milestones/`.
 - `to-issues`: turn one milestone at a time into independently grabbable implementation issues.
 - `tdd`: design testable interfaces and drive implementation with tests.
+- `visual-evidence-for-prs`: capture PR-ready screenshots, videos, desktop evidence, or non-visual verification notes before opening or updating implementation PRs.
 
 Preferred sequence:
 
 ```text
-grill-with-docs -> to-prd -> to-milestones -> to-issues -> tdd -> ralph-loop -> review-pr / pr -> review-fix
+grill-with-docs -> to-prd -> to-milestones -> to-issues -> tdd -> ralph-loop -> visual-evidence-for-prs -> review-pr / pr -> review-fix
 ```
 
 Skip steps only when the work is genuinely small enough to implement directly.
@@ -121,10 +122,13 @@ If there is no visual surface, say so explicitly and include verification notes 
 
 See:
 
+- `.codex/agents/github-pr-reviewer.md`
+- `.claude/agents/github-pr-reviewer.md`
 - `docs/agents/issue-tracker.md`
 - `docs/agents/milestones.md`
 - `docs/agents/ralph-loop.md`
 - `docs/agents/pr-review.md`
+- `docs/agents/github-pr-reviewer.md`
 - `docs/agents/visual-evidence.md`
 - `docs/agents/triage-labels.md`
 - `docs/memory/README.md`

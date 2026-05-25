@@ -3,8 +3,7 @@
   "version": "0.1.0",
   "description": "Project workflow kit for using AI coding agents with context, issues, review, and visual evidence.",
   "bin": {
-    "coding-ai-workflow": "./scripts/install-workflow",
-    "bensigo-ai-workflow": "./scripts/install-workflow"
+    "coding-ai-workflow": "./scripts/install-workflow"
   },
   "publishConfig": {
     "access": "public"

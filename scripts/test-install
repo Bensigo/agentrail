@@ -22,12 +22,15 @@ if ! grep -q -- "--target requires a directory" "${tmp_dir}/missing-target.out";
 fi
 
 required=(
+  ".codex/agents/github-pr-reviewer.md"
+  ".claude/agents/github-pr-reviewer.md"
   "AGENTS.md"
   "CONTEXT.md"
   "docs/agents/issue-tracker.md"
   "docs/agents/milestones.md"
   "docs/agents/ralph-loop.md"
   "docs/agents/pr-review.md"
+  "docs/agents/github-pr-reviewer.md"
   "docs/agents/visual-evidence.md"
   "docs/agents/triage-labels.md"
   "docs/memory/README.md"
@@ -42,7 +45,7 @@ required=(
   "scripts/pr"
   "scripts/ralph-loop"
   "scripts/review-pr"
-  "skills/bensigo-ai-workflow/SKILL.md"
+  "skills/ai-workflow/SKILL.md"
   "skills/grill-with-docs/SKILL.md"
   "skills/grill-with-docs/ADR-FORMAT.md"
   "skills/grill-with-docs/CONTEXT-FORMAT.md"
@@ -56,6 +59,7 @@ required=(
   "skills/tdd/mocking.md"
   "skills/tdd/refactoring.md"
   "skills/tdd/tests.md"
+  "skills/visual-evidence-for-prs/SKILL.md"
 )
 
 for file in "${required[@]}"; do
@@ -72,12 +76,22 @@ for script in memory ralph-loop afk-workflow review-pr pr; do
   fi
 done
 
-for skill in grill-with-docs to-prd to-milestones to-issues tdd; do
+for skill in grill-with-docs to-prd to-milestones to-issues tdd visual-evidence-for-prs; do
   if ! grep -q -- "$skill" "${tmp_dir}/AGENTS.md"; then
     echo "AGENTS.md does not mention required skill: ${skill}" >&2
     exit 1
   fi
 done
+
+if grep -Rqi -- "bensigo" "${tmp_dir}/skills"; then
+  echo "installed skills contain project-owner branding" >&2
+  exit 1
+fi
+
+if ! grep -q -- "No visual surface" "${tmp_dir}/skills/visual-evidence-for-prs/SKILL.md"; then
+  echo "visual-evidence-for-prs skill does not include a non-visual fallback" >&2
+  exit 1
+fi
 
 if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/docs/agents/ralph-loop.md"; then
   echo "ralph-loop docs do not require acceptance criteria coverage" >&2
@@ -86,6 +100,36 @@ fi
 
 if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/docs/agents/pr-review.md"; then
   echo "pr-review docs do not require acceptance criteria coverage checks" >&2
+  exit 1
+fi
+
+if ! grep -q -- '"repo": "owner/name"' "${tmp_dir}/docs/agents/github-pr-reviewer.md"; then
+  echo "github-pr-reviewer docs do not define repo input" >&2
+  exit 1
+fi
+
+if ! grep -q -- "name: github-pr-reviewer" "${tmp_dir}/.claude/agents/github-pr-reviewer.md"; then
+  echo "github-pr-reviewer custom subagent does not define its name" >&2
+  exit 1
+fi
+
+if ! grep -q -- "name: github-pr-reviewer" "${tmp_dir}/.codex/agents/github-pr-reviewer.md"; then
+  echo "github-pr-reviewer Codex subagent adapter does not define its name" >&2
+  exit 1
+fi
+
+if ! grep -q -- '"pr_number": 123' "${tmp_dir}/docs/agents/github-pr-reviewer.md"; then
+  echo "github-pr-reviewer docs do not define PR number input" >&2
+  exit 1
+fi
+
+if ! grep -q -- '"fix_issue": null' "${tmp_dir}/docs/agents/github-pr-reviewer.md"; then
+  echo "github-pr-reviewer docs do not define fix_issue output" >&2
+  exit 1
+fi
+
+if ! grep -q -- "must not:" "${tmp_dir}/docs/agents/github-pr-reviewer.md"; then
+  echo "github-pr-reviewer docs do not state review bounds" >&2
   exit 1
 fi
 

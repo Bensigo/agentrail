@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: install-workflow [--target DIR] [--force] [--github-labels]
 
-Installs the Bensigo AI workflow templates into a project.
+Installs the Coding AI Workflow templates into a project.
 
 Options:
   --target DIR      Project directory to install into. Defaults to current directory.
@@ -101,5 +101,5 @@ if [[ "$github_labels" -eq 1 ]]; then
 fi
 
 echo
-echo "Bensigo AI workflow installed in: ${target_dir}"
+echo "Coding AI Workflow installed in: ${target_dir}"
 echo "Next: edit CONTEXT.md for your project, then create a PRD under docs/prd/."

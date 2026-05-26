@@ -17,7 +17,7 @@ if ! grep -q -- '"agentrail": "./scripts/install-workflow"' package.json; then
 fi
 
 legacy_product_name="Bensigo"" harness"
-if rg -q "$legacy_product_name" README.md package.json templates skills scripts; then
+if grep -R -q -- "$legacy_product_name" README.md package.json templates skills scripts; then
   echo "public docs still use the legacy Bensigo product name" >&2
   exit 1
 fi

@@ -1,0 +1,366 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  agentrail install [--target DIR] [--force] [--github-labels]
+  agentrail doctor [--target DIR]
+
+Commands:
+  install   Install AgentRail workflow files.
+  doctor    Inspect AgentRail installation health.
+USAGE
+}
+
+source_path="${BASH_SOURCE[0]}"
+while [[ -L "$source_path" ]]; do
+  source_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+  linked_path="$(readlink "$source_path")"
+  if [[ "$linked_path" == /* ]]; then
+    source_path="$linked_path"
+  else
+    source_path="${source_dir}/${linked_path}"
+  fi
+done
+
+script_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+repo_dir="$(cd "${script_dir}/.." && pwd)"
+installer="${script_dir}/install-workflow"
+
+parse_target() {
+  local target_var="$1"
+  shift
+
+  printf -v "$target_var" '%s' "$(pwd)"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --target)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
+        printf -v "$target_var" '%s' "$value"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown option: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+  done
+}
+
+run_install() {
+  "$installer" "$@"
+}
+
+print_path_status() {
+  local target_dir="$1"
+  local label="$2"
+  local path="$3"
+  local kind="$4"
+  local full_path="${target_dir}/${path}"
+
+  case "$kind" in
+    file)
+      [[ -f "$full_path" ]] || { echo "  missing ${label}"; return 1; }
+      ;;
+    dir)
+      [[ -d "$full_path" ]] || { echo "  missing ${label}"; return 1; }
+      ;;
+    executable)
+      [[ -x "$full_path" ]] || { echo "  missing ${label}"; return 1; }
+      ;;
+  esac
+
+  echo "  ok ${label}"
+}
+
+remote_is_github() {
+  local target_dir="$1"
+  local remote
+  remote="$(git -C "$target_dir" remote get-url origin 2>/dev/null || true)"
+  [[ "$remote" == *github.com* ]]
+}
+
+check_github_labels() {
+  local target_dir="$1"
+
+  echo "github:"
+  if ! command -v gh >/dev/null 2>&1 || ! remote_is_github "$target_dir"; then
+    echo "  skipped no connected GitHub repo"
+    return
+  fi
+
+  local labels_json
+  if ! labels_json="$(cd "$target_dir" && gh label list --limit 200 --json name 2>/dev/null)"; then
+    echo "  warn could not read GitHub labels"
+    return
+  fi
+
+  LABELS_JSON="$labels_json" node <<'NODE'
+const labels = new Set(JSON.parse(process.env.LABELS_JSON).map((label) => label.name));
+const required = ["ready-for-agent", "afk", "afk-in-progress", "review-fix", "pr-reviewed"];
+const missing = required.filter((label) => !labels.has(label));
+if (missing.length === 0) {
+  console.log("  ok GitHub labels");
+} else {
+  console.log(`  warn missing GitHub labels: ${missing.join(", ")}`);
+}
+NODE
+}
+
+inspect_state() {
+  local target_dir="$1"
+
+  AGENTRAIL_REPO_DIR="$repo_dir" \
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+
+const repoDir = process.env.AGENTRAIL_REPO_DIR;
+const targetDir = process.env.AGENTRAIL_TARGET_DIR;
+const statePath = path.join(targetDir, ".agentrail/state.json");
+const currentVersion = JSON.parse(fs.readFileSync(path.join(repoDir, "package.json"), "utf8")).version;
+
+function sha256(file) {
+  return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}`;
+}
+
+let state;
+try {
+  state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+} catch (error) {
+  if (error.code === "ENOENT") {
+    console.log("STATE=missing");
+    process.exit(0);
+  }
+  console.log(`STATE=invalid:${error.message}`);
+  process.exit(0);
+}
+
+console.log("STATE=ok");
+if (!Array.isArray(state.managedFiles)) {
+  console.log("STATE_SHAPE=invalid:managedFiles must be an array");
+  process.exit(0);
+}
+
+if (state.agentrailVersion === currentVersion) {
+  console.log("VERSION=ok");
+} else {
+  console.log(`VERSION=outdated:${state.agentrailVersion || ""}`);
+}
+
+let hashMismatch = false;
+let sourceMismatch = false;
+let missingManaged = false;
+
+for (const file of state.managedFiles) {
+  if (!file || typeof file.path !== "string" || typeof file.contentHash !== "string") {
+    console.log("STATE_SHAPE=invalid:managedFiles entries require path and contentHash");
+    continue;
+  }
+
+  const targetPath = path.join(targetDir, file.path);
+  if (!fs.existsSync(targetPath)) {
+    missingManaged = true;
+    console.log(`MISSING_MANAGED=${file.path}`);
+    continue;
+  }
+
+  const currentHash = sha256(targetPath);
+  if (currentHash !== file.contentHash) {
+    hashMismatch = true;
+    console.log(`HASH_MISMATCH=${file.path}`);
+  }
+
+  const userOwnedStatus = file.installStatus === "legacy-adopted" || file.installStatus === "preserved";
+  if (!userOwnedStatus && typeof file.source === "string") {
+    const sourcePath = path.join(repoDir, file.source);
+    if (fs.existsSync(sourcePath) && sha256(sourcePath) !== file.contentHash) {
+      sourceMismatch = true;
+      console.log(`SOURCE_MISMATCH=${file.path}`);
+    }
+  }
+}
+
+if (!hashMismatch && !missingManaged) console.log("HASHES=ok");
+if (!sourceMismatch) console.log("SOURCE_HASHES=ok");
+NODE
+}
+
+run_doctor() {
+  local target_dir
+  parse_target target_dir "$@"
+
+  local hash_output
+  hash_output="$(inspect_state "$target_dir")"
+
+  local state_status="missing"
+  local version_status=""
+  local invalid_state=0
+  local required_missing=0
+  local hash_mismatch=0
+  local source_mismatch=0
+  local missing_managed=0
+
+  while IFS= read -r line; do
+    case "$line" in
+      STATE=ok)
+        state_status="ok"
+        ;;
+      STATE=missing)
+        state_status="missing"
+        ;;
+      STATE=invalid:*)
+        state_status="invalid"
+        invalid_state=1
+        ;;
+      VERSION=ok)
+        version_status="ok"
+        ;;
+      VERSION=outdated:*)
+        version_status="outdated"
+        ;;
+      HASH_MISMATCH=*)
+        hash_mismatch=1
+        ;;
+      SOURCE_MISMATCH=*)
+        source_mismatch=1
+        ;;
+      MISSING_MANAGED=*)
+        missing_managed=1
+        ;;
+      STATE_SHAPE=*)
+        invalid_state=1
+        ;;
+    esac
+  done <<<"$hash_output"
+
+  local status="installed"
+  if [[ "$invalid_state" -eq 1 ]]; then
+    status="corrupt"
+  elif [[ "$state_status" == "missing" ]]; then
+    status="missing"
+  elif [[ "$hash_mismatch" -eq 1 || "$missing_managed" -eq 1 ]]; then
+    status="modified"
+  elif [[ "$version_status" == "outdated" || "$source_mismatch" -eq 1 ]]; then
+    status="outdated"
+  fi
+
+  echo "AgentRail doctor: ${target_dir}"
+  echo "status: ${status}"
+
+  echo "core:"
+  local -a required_paths=(
+    "AGENTS.md|AGENTS.md|file"
+    "CONTEXT.md|CONTEXT.md|file"
+    "docs/memory/|docs/memory|dir"
+    "docs/prd/|docs/prd|dir"
+    "docs/milestones/|docs/milestones|dir"
+    "skills/|skills|dir"
+    "scripts/memory|scripts/memory|executable"
+    "scripts/afk-workflow|scripts/afk-workflow|executable"
+    "scripts/pr|scripts/pr|executable"
+    "scripts/ralph-loop|scripts/ralph-loop|executable"
+    "scripts/review-pr|scripts/review-pr|executable"
+  )
+
+  local item label path kind
+  for item in "${required_paths[@]}"; do
+    IFS="|" read -r label path kind <<<"$item"
+    if ! print_path_status "$target_dir" "$label" "$path" "$kind"; then
+      required_missing=1
+    fi
+  done
+
+  if [[ -f "${target_dir}/TASTE.md" ]]; then
+    echo "  ok TASTE.md"
+  else
+    echo "  optional-missing TASTE.md"
+  fi
+
+  echo "state:"
+  if [[ "$state_status" == "ok" ]]; then
+    echo "  ok .agentrail/state.json"
+  elif [[ "$state_status" == "invalid" ]]; then
+    echo "  error invalid .agentrail/state.json"
+  else
+    echo "  missing .agentrail/state.json"
+  fi
+
+  if [[ "$version_status" == "outdated" ]]; then
+    echo "  warn AgentRail version differs from current package"
+  elif [[ "$version_status" == "ok" ]]; then
+    echo "  ok AgentRail version"
+  fi
+
+  while IFS= read -r line; do
+    case "$line" in
+      HASHES=ok)
+        echo "  ok managed hashes match"
+        ;;
+      SOURCE_HASHES=ok)
+        echo "  ok current package hashes match"
+        ;;
+      HASH_MISMATCH=*)
+        echo "  warn hash mismatch: ${line#HASH_MISMATCH=}"
+        ;;
+      SOURCE_MISMATCH=*)
+        echo "  warn current package mismatch: ${line#SOURCE_MISMATCH=}"
+        ;;
+      MISSING_MANAGED=*)
+        echo "  warn missing managed file: ${line#MISSING_MANAGED=}"
+        ;;
+      STATE=invalid:*)
+        echo "  error ${line#STATE=invalid:}"
+        ;;
+      STATE_SHAPE=invalid:*)
+        echo "  error ${line#STATE_SHAPE=invalid:}"
+        ;;
+    esac
+  done <<<"$hash_output"
+
+  check_github_labels "$target_dir"
+
+  echo "recommendations:"
+  if [[ "$invalid_state" -eq 1 ]]; then
+    echo "  - repair or remove .agentrail/state.json, then rerun install"
+  elif [[ "$state_status" == "missing" || "$required_missing" -eq 1 ]]; then
+    echo "  - run agentrail install --target ${target_dir}"
+  elif [[ "$hash_mismatch" -eq 1 || "$source_mismatch" -eq 1 || "$missing_managed" -eq 1 || "$version_status" == "outdated" ]]; then
+    echo "  - run agentrail install --target ${target_dir} --force after reviewing local edits"
+  else
+    echo "  - no blocking action"
+  fi
+
+  if [[ "$invalid_state" -eq 1 ]]; then
+    exit 1
+  fi
+}
+
+case "${1:-}" in
+  install)
+    shift
+    run_install "$@"
+    ;;
+  doctor)
+    shift
+    run_doctor "$@"
+    ;;
+  ""|-h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "Unknown command: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -79,6 +79,7 @@ skills/tdd/
 Workflow scripts:
 
 ```text
+scripts/agentrail
 scripts/afk-workflow
 scripts/memory
 scripts/pr
@@ -93,6 +94,14 @@ Durable project state:
 ```
 
 The state file records the AgentRail version, install timestamps, managed file inventory, file hashes, and the current workflow pointer. Its format is documented in `docs/agents/agentrail-state.md`.
+
+Check an installed or partially installed project:
+
+```bash
+scripts/agentrail doctor --target /path/to/project
+```
+
+`agentrail doctor` reports missing core files, optional `TASTE.md`, state health, managed file hash drift, and GitHub label gaps when `gh` is available in a connected GitHub repo. Missing recommendations are warnings; invalid usage and corrupt state fail non-zero.
 
 ## Recommended Flow
 
@@ -198,6 +207,12 @@ Run the AFK issue workflow:
 
 ```bash
 scripts/afk-workflow run --concurrency 2 --max-waves 5
+```
+
+Inspect an AgentRail install:
+
+```bash
+scripts/agentrail doctor --target .
 ```
 
 Review one PR:

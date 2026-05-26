@@ -53,6 +53,7 @@ skills_dir="${repo_dir}/skills"
 
 [[ -d "$templates_dir" ]] || { echo "Missing templates directory: $templates_dir" >&2; exit 1; }
 [[ -d "$skills_dir" ]] || { echo "Missing skills directory: $skills_dir" >&2; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "node is required to install AgentRail state" >&2; exit 1; }
 mkdir -p "$target_dir"
 state_manifest="$(mktemp)"
 existing_before_manifest="$(mktemp)"
@@ -103,8 +104,6 @@ copy_tree "$templates_dir" "$target_dir"
 copy_tree "$skills_dir" "${target_dir}/skills" "skills"
 
 write_agentrail_state() {
-  command -v node >/dev/null 2>&1 || { echo "node is required to write .agentrail/state.json" >&2; exit 1; }
-
   AGENTRAIL_REPO_DIR="$repo_dir" \
   AGENTRAIL_TARGET_DIR="$target_dir" \
   AGENTRAIL_STATE_MANIFEST="$state_manifest" \

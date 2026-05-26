@@ -8,6 +8,28 @@ cleanup() {
 trap cleanup EXIT
 
 installer="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install-workflow"
+package_json="$(dirname "$installer")/../package.json"
+
+json_value() {
+  local file="$1"
+  local expression="$2"
+
+  node - "$file" "$expression" <<'NODE'
+const fs = require("fs");
+const file = process.argv[2];
+const expression = process.argv[3];
+const data = JSON.parse(fs.readFileSync(file, "utf8"));
+const fn = new Function("data", `"use strict"; return (${expression});`);
+const value = fn(data);
+if (typeof value === "boolean") {
+  console.log(value ? "true" : "false");
+} else if (value === null || value === undefined) {
+  console.log("");
+} else {
+  console.log(String(value));
+}
+NODE
+}
 
 git -C "$tmp_dir" init --quiet
 "$installer" --target "$tmp_dir"
@@ -92,22 +114,22 @@ if ! grep -q -- ".agentrail/state.json" "${tmp_dir}/docs/agents/agentrail-state.
   exit 1
 fi
 
-if [[ "$(jq -r '.agentrailVersion' "${tmp_dir}/.agentrail/state.json")" != "$(jq -r '.version' "$(dirname "$installer")/../package.json")" ]]; then
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.agentrailVersion")" != "$(json_value "$package_json" "data.version")" ]]; then
   echo "state file does not record the AgentRail version" >&2
   exit 1
 fi
 
-if [[ "$(jq -r '.managedFiles[] | select(.path == "AGENTS.md") | .contentHash' "${tmp_dir}/.agentrail/state.json")" != sha256:* ]]; then
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.find((file) => file.path === 'AGENTS.md')?.contentHash")" != sha256:* ]]; then
   echo "state file does not record content hashes for managed files" >&2
   exit 1
 fi
 
-if [[ "$(jq -r '.workflow | has("phase") and has("activeIssue") and has("activePullRequest") and has("activePrd") and has("activeMilestone") and has("lastCompletedStep") and has("nextSuggestedAction")' "${tmp_dir}/.agentrail/state.json")" != "true" ]]; then
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "['phase', 'activeIssue', 'activePullRequest', 'activePrd', 'activeMilestone', 'lastCompletedStep', 'nextSuggestedAction'].every((field) => Object.prototype.hasOwnProperty.call(data.workflow, field))")" != "true" ]]; then
   echo "state file does not include resumable workflow fields" >&2
   exit 1
 fi
 
-if [[ "$(jq -r '.legacyAdopted' "${tmp_dir}/.agentrail/state.json")" != "false" ]]; then
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.legacyAdopted")" != "false" ]]; then
   echo "fresh install was incorrectly marked as legacy-adopted" >&2
   exit 1
 fi
@@ -241,12 +263,12 @@ if ! grep -q -- "Keep this local workflow edit." "${legacy_dir}/docs/agents/ralp
   exit 1
 fi
 
-if [[ "$(jq -r '.legacyAdopted' "${legacy_dir}/.agentrail/state.json")" != "true" ]]; then
+if [[ "$(json_value "${legacy_dir}/.agentrail/state.json" "data.legacyAdopted")" != "true" ]]; then
   echo "legacy install without prior state was not marked as adopted" >&2
   exit 1
 fi
 
-if [[ "$(jq -r '.managedFiles[] | select(.path == "AGENTS.md") | .installStatus' "${legacy_dir}/.agentrail/state.json")" != "legacy-adopted" ]]; then
+if [[ "$(json_value "${legacy_dir}/.agentrail/state.json" "data.managedFiles.find((file) => file.path === 'AGENTS.md')?.installStatus")" != "legacy-adopted" ]]; then
   echo "legacy AGENTS.md was not recorded as adopted" >&2
   exit 1
 fi

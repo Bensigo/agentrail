@@ -65,6 +65,7 @@ required=(
   "docs/agents/milestones.md"
   "docs/agents/ralph-loop.md"
   "docs/agents/pr-review.md"
+  "docs/agents/skill-registry.json"
   "docs/agents/visual-evidence.md"
   "docs/agents/triage-labels.md"
   "docs/memory/README.md"
@@ -81,6 +82,11 @@ required=(
   "scripts/pr"
   "scripts/ralph-loop"
   "scripts/review-pr"
+  "skills/backend-api/SKILL.md"
+  "skills/desktop-tauri/SKILL.md"
+  "skills/devops-deploy/SKILL.md"
+  "skills/docs-current/SKILL.md"
+  "skills/frontend-web/SKILL.md"
   "skills/bensigo-ai-workflow/SKILL.md"
   "skills/grill-with-docs/SKILL.md"
   "skills/grill-with-docs/ADR-FORMAT.md"
@@ -191,6 +197,16 @@ fi
 
 if ! grep -q -- "scripts/memory recall" "${tmp_dir}/docs/agents/ralph-loop.md"; then
   echo "ralph-loop docs do not require project memory recall" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === 'docs/agents/skill-registry.json' && file.source === 'templates/docs/agents/skill-registry.json')")" != "true" ]]; then
+  echo "state file does not track the managed skill registry" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === 'skills/frontend-web/SKILL.md' && file.source === 'skills/frontend-web/SKILL.md')")" != "true" ]]; then
+  echo "state file does not track bundled skill files" >&2
   exit 1
 fi
 

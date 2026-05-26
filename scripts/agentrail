@@ -9,6 +9,7 @@ Usage:
   agentrail upgrade [--target DIR] [--force]
   agentrail doctor [--target DIR]
   agentrail status [--target DIR]
+  agentrail skills validate [--target DIR]
   agentrail resume [--target DIR] [--output FILE]
   agentrail labels sync [--target DIR]
   agentrail prompt grill "<idea>" [--agent codex|claude] [--target DIR]
@@ -22,6 +23,7 @@ Commands:
   upgrade   Upgrade managed AgentRail files without overwriting local edits.
   doctor    Inspect AgentRail installation health.
   status    Print install status and current workflow state.
+  skills    Inspect or validate AgentRail-managed skills.
   resume    Print and write an agent handoff summary.
   labels    Sync expected GitHub labels.
   prompt    Print an agent-ready prompt without executing an agent.
@@ -346,6 +348,179 @@ if (missing.length === 0) {
 NODE
 }
 
+validate_skill_registry() {
+  local target_dir="$1"
+
+  AGENTRAIL_REPO_DIR="$repo_dir" \
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const repoDir = process.env.AGENTRAIL_REPO_DIR;
+const targetDir = process.env.AGENTRAIL_TARGET_DIR;
+const installedRegistry = path.join(targetDir, "docs/agents/skill-registry.json");
+const sourceRegistry = path.join(repoDir, "templates/docs/agents/skill-registry.json");
+const validateSourceRegistry = !fs.existsSync(installedRegistry) && path.resolve(targetDir) === path.resolve(repoDir);
+const registryPath = validateSourceRegistry ? sourceRegistry : installedRegistry;
+const skillRoot = validateSourceRegistry ? repoDir : targetDir;
+const errors = [];
+
+function fail(message) {
+  errors.push(message);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isStringArray(value) {
+  return Array.isArray(value) && value.every(isNonEmptyString);
+}
+
+function isSafeRelativePath(value) {
+  return isNonEmptyString(value) &&
+    !path.isAbsolute(value) &&
+    !value.split(/[\\/]+/).includes("..") &&
+    value.endsWith("/SKILL.md");
+}
+
+let registry;
+let parsedRegistry = false;
+try {
+  registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+  parsedRegistry = true;
+} catch (error) {
+  fail(`cannot read registry: ${error.message}`);
+}
+
+if (parsedRegistry && (registry === null || typeof registry !== "object" || Array.isArray(registry))) {
+  fail("registry root must be an object");
+} else if (parsedRegistry) {
+  if (registry.schemaVersion !== 1) fail("schemaVersion must be 1");
+  if (!Array.isArray(registry.skills)) {
+    fail("skills must be an array");
+  } else {
+    const names = new Set();
+    for (const [index, skill] of registry.skills.entries()) {
+      const label = skill && isNonEmptyString(skill.name) ? skill.name : `entry ${index}`;
+      if (!skill || typeof skill !== "object" || Array.isArray(skill)) {
+        fail(`${label}: skill entry must be an object`);
+        continue;
+      }
+
+      for (const field of ["name", "localPath", "description", "licenseStatus", "auditStatus"]) {
+        if (!isNonEmptyString(skill[field])) fail(`${label}: missing required field ${field}`);
+      }
+
+      if (isNonEmptyString(skill.name)) {
+        if (names.has(skill.name)) fail(`${skill.name}: duplicate skill name`);
+        names.add(skill.name);
+      }
+
+      if (typeof skill.bundledByDefault !== "boolean") {
+        fail(`${label}: bundledByDefault must be boolean`);
+      }
+
+      if (!isSafeRelativePath(skill.localPath)) {
+        fail(`${label}: invalid localPath`);
+      } else if (!fs.existsSync(path.join(skillRoot, skill.localPath))) {
+        fail(`${label}: localPath does not exist: ${skill.localPath}`);
+      }
+
+      if (!skill.triggers || typeof skill.triggers !== "object" || Array.isArray(skill.triggers)) {
+        fail(`${label}: triggers must be an object`);
+      } else {
+        const triggerKeys = ["keywords", "fileGlobs", "projectSignals"];
+        let triggerCount = 0;
+        for (const key of triggerKeys) {
+          if (!Object.prototype.hasOwnProperty.call(skill.triggers, key)) {
+            fail(`${label}: triggers.${key} is required`);
+          } else if (!isStringArray(skill.triggers[key])) {
+            fail(`${label}: triggers.${key} must be an array of non-empty strings`);
+          } else {
+            triggerCount += skill.triggers[key].length;
+          }
+        }
+        if (triggerCount === 0) fail(`${label}: triggers must include at least one trigger`);
+      }
+
+      if (!skill.provenance || typeof skill.provenance !== "object" || Array.isArray(skill.provenance)) {
+        fail(`${label}: provenance must be an object`);
+      } else if (!Array.isArray(skill.provenance.candidates) || skill.provenance.candidates.length === 0) {
+        fail(`${label}: provenance.candidates must be a non-empty array`);
+      } else {
+        for (const [candidateIndex, candidate] of skill.provenance.candidates.entries()) {
+          const candidateLabel = `${label}: provenance.candidates[${candidateIndex}]`;
+          for (const field of ["sourceName", "url", "relationship", "verifiedStatus", "auditNotes"]) {
+            if (!isNonEmptyString(candidate?.[field])) fail(`${candidateLabel} missing ${field}`);
+          }
+          if (candidate?.autoInstall === true) {
+            fail(`${candidateLabel} must not be marked autoInstall`);
+          }
+        }
+      }
+    }
+  }
+}
+
+if (errors.length > 0) {
+  console.log("SKILL_REGISTRY=invalid");
+  for (const error of errors) console.log(`SKILL_REGISTRY_ERROR=${error}`);
+  process.exit(1);
+}
+
+console.log("SKILL_REGISTRY=ok");
+console.log(`SKILL_REGISTRY_PATH=${path.relative(targetDir, registryPath) || registryPath}`);
+NODE
+}
+
+run_skills() {
+  local kind="${1:-}"
+  [[ -n "$kind" ]] || { usage; exit 1; }
+  shift || true
+
+  case "$kind" in
+    validate)
+      local target_dir
+      parse_target target_dir "$@"
+      local output
+      if output="$(validate_skill_registry "$target_dir")"; then
+        echo "AgentRail skills validate: ${target_dir}"
+        while IFS= read -r line; do
+          case "$line" in
+            SKILL_REGISTRY=ok)
+              echo "  ok skill registry"
+              ;;
+            SKILL_REGISTRY_PATH=*)
+              echo "  path ${line#SKILL_REGISTRY_PATH=}"
+              ;;
+          esac
+        done <<<"$output"
+      else
+        echo "AgentRail skills validate: ${target_dir}"
+        while IFS= read -r line; do
+          case "$line" in
+            SKILL_REGISTRY_ERROR=*)
+              echo "  error ${line#SKILL_REGISTRY_ERROR=}"
+              ;;
+          esac
+        done <<<"$output"
+        return 1
+      fi
+      ;;
+    ""|-h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown skills command: $kind" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
 sync_github_labels() {
   local target_dir
   parse_target target_dir "$@"
@@ -474,6 +649,7 @@ run_doctor() {
   local hash_mismatch=0
   local source_mismatch=0
   local missing_managed=0
+  local registry_invalid=0
 
   while IFS= read -r line; do
     case "$line" in
@@ -508,11 +684,18 @@ run_doctor() {
     esac
   done <<<"$hash_output"
 
+  local registry_output
+  if [[ "$state_status" != "missing" ]] && ! registry_output="$(validate_skill_registry "$target_dir")"; then
+    registry_invalid=1
+  fi
+
   local status="installed"
   if [[ "$invalid_state" -eq 1 ]]; then
     status="corrupt"
   elif [[ "$state_status" == "missing" ]]; then
     status="missing"
+  elif [[ "$registry_invalid" -eq 1 ]]; then
+    status="corrupt"
   elif [[ "$hash_mismatch" -eq 1 || "$missing_managed" -eq 1 ]]; then
     status="modified"
   elif [[ "$version_status" == "outdated" || "$source_mismatch" -eq 1 ]]; then
@@ -535,6 +718,7 @@ run_doctor() {
     "scripts/pr|scripts/pr|executable"
     "scripts/ralph-loop|scripts/ralph-loop|executable"
     "scripts/review-pr|scripts/review-pr|executable"
+    "docs/agents/skill-registry.json|docs/agents/skill-registry.json|file"
   )
 
   local item label path kind
@@ -592,11 +776,28 @@ run_doctor() {
     esac
   done <<<"$hash_output"
 
+  echo "skills:"
+  if [[ "$state_status" == "missing" ]]; then
+    echo "  skipped no AgentRail install"
+  elif [[ "$registry_invalid" -eq 1 ]]; then
+    while IFS= read -r line; do
+      case "$line" in
+        SKILL_REGISTRY_ERROR=*)
+          echo "  error ${line#SKILL_REGISTRY_ERROR=}"
+          ;;
+      esac
+    done <<<"$registry_output"
+  else
+    echo "  ok skill registry"
+  fi
+
   check_github_labels "$target_dir"
 
   echo "recommendations:"
   if [[ "$invalid_state" -eq 1 ]]; then
     echo "  - repair or remove .agentrail/state.json, then rerun install"
+  elif [[ "$registry_invalid" -eq 1 ]]; then
+    echo "  - repair docs/agents/skill-registry.json or rerun agentrail upgrade --target ${target_dir}"
   elif [[ "$state_status" == "missing" || "$required_missing" -eq 1 ]]; then
     echo "  - run agentrail install --target ${target_dir}"
   elif [[ "$hash_mismatch" -eq 1 || "$source_mismatch" -eq 1 || "$missing_managed" -eq 1 || "$version_status" == "outdated" ]]; then
@@ -605,7 +806,7 @@ run_doctor() {
     echo "  - no blocking action"
   fi
 
-  if [[ "$invalid_state" -eq 1 ]]; then
+  if [[ "$invalid_state" -eq 1 || "$registry_invalid" -eq 1 ]]; then
     exit 1
   fi
 }
@@ -1295,6 +1496,10 @@ case "${1:-}" in
   status)
     shift
     run_status "$@"
+    ;;
+  skills)
+    shift
+    run_skills "$@"
     ;;
   resume)
     shift

@@ -4,6 +4,8 @@ AgentRail stores repo-local project state in `.agentrail/state.json`.
 
 This file is intended for manual inspection by agents and maintainers. It records installation metadata, the files AgentRail manages, and the current workflow pointer so work can resume without relying on chat memory.
 
+AgentRail also installs `docs/agents/skill-registry.json`. The registry is a managed artifact that describes bundled skills, their local `SKILL.md` paths, activation triggers, provenance candidates, license status, audit status, and default bundling behavior.
+
 ## Top-Level Fields
 
 - `schemaVersion`: state file format version.
@@ -38,3 +40,5 @@ The installer preserves local edits unless run with `--force`. When a project al
 - `nextSuggestedAction`
 
 Install and upgrade flows preserve existing workflow fields when updating state.
+
+The managed inventory includes the skill registry and bundled skill files under `skills/`. Local edits are preserved by `agentrail upgrade` unless `--force` is used.

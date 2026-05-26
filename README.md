@@ -29,6 +29,8 @@ npx --package github:Bensigo/agentrail agentrail init --target /path/to/project
 
 The CLI command is `agentrail`.
 
+Immediate GitHub package path: `npx github:Bensigo/agentrail`.
+
 From a local checkout of this repo:
 
 ```bash
@@ -210,6 +212,46 @@ scripts/review-pr --pr 123
 ```
 
 Use the full flow for meaningful product work. For tiny fixes, ask for a direct TDD implementation instead of creating PRDs and milestones.
+
+## Codex Desktop Workflow
+
+AgentRail does not replace Codex Desktop or Claude Code. Codex or Claude remains the worker. AgentRail provides the rails around that worker: repo-owned state, prompt generation, checks, GitHub labels, review loops, and verification gates.
+
+In a Codex Desktop project session, start by checking durable state:
+
+```bash
+agentrail status --target .
+agentrail resume --target .
+```
+
+Use `status` to inspect the installed AgentRail state and the current workflow pointer. Use `resume` after chat compaction, a new session, or an interrupted run. The resume output tells Codex Desktop to recover from `.agentrail/state.json`, source files, docs, and GitHub state instead of trusting previous chat context.
+
+Generate prompts when you want to inspect or hand off the next step before executing it:
+
+```bash
+agentrail prompt grill "Build <feature idea>" --agent codex --target .
+agentrail prompt issue 123 --agent codex --target .
+agentrail prompt review 456 --agent codex --target .
+```
+
+Run a bounded worker command when the prompt is already clear:
+
+```bash
+agentrail run issue 123 --agent codex --target .
+```
+
+AgentRail routes Codex prompts toward repo-local skills and docs. For example, a grill prompt points Codex at `grill-with-docs`; an issue prompt points it at the Ralph implementation loop; a review prompt points it at PR review instructions. Claude prompts use the same AgentRail intent but refer to local instruction files instead of Codex-specific skill mechanics.
+
+The main context files fit together like this:
+
+- `AGENTS.md`: operating rules agents should follow in this repo.
+- `CONTEXT.md`: product, domain, architecture, and repository facts.
+- `TASTE.md`: optional product quality, UI, copy, interaction, and visual evidence guidance.
+- `docs/memory/`: source-linked lessons, decisions, preferences, and failure patterns to recall before non-trivial work.
+- GitHub issues: implementation source of truth, acceptance criteria, blockers, and AFK eligibility.
+- `.agentrail/state.json`: durable workflow pointer for compaction recovery, handoffs, active issue/PR state, and next suggested action.
+
+AgentRail is local CLI workflow infrastructure, not a hosted orchestration platform. Keep runs bounded, review PRs before merge, and verify changes with the commands recorded in each PR.
 
 ## Common Commands
 

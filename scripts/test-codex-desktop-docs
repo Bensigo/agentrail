@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+assert_readme() {
+  local pattern="$1"
+  local message="$2"
+
+  if ! grep -q -- "$pattern" README.md; then
+    echo "$message" >&2
+    exit 1
+  fi
+}
+
+assert_readme "## Codex Desktop Workflow" "README does not include Codex Desktop usage section"
+assert_readme "agentrail status --target ." "README does not document agentrail status"
+assert_readme "agentrail resume --target ." "README does not document agentrail resume"
+assert_readme "agentrail prompt issue 123 --agent codex --target ." "README does not document issue prompt generation"
+assert_readme "agentrail run issue 123 --agent codex --target ." "README does not document runner execution"
+assert_readme "npx github:Bensigo/agentrail" "README does not include immediate GitHub package path"
+assert_readme "AGENTS.md" "README does not explain AGENTS.md"
+assert_readme "CONTEXT.md" "README does not explain CONTEXT.md"
+assert_readme "TASTE.md" "README does not explain TASTE.md"
+assert_readme "docs/memory/" "README does not explain project memory"
+assert_readme ".agentrail/state.json" "README does not explain durable state"
+assert_readme "not a hosted orchestration platform" "README does not clarify AgentRail is not hosted orchestration"
+
+echo "codex desktop docs test passed"

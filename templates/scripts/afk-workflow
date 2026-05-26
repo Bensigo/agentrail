@@ -44,6 +44,39 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+script_path() {
+  local root="$1"
+  local script_name="$2"
+
+  if [[ -x "${root}/scripts/${script_name}" ]]; then
+    printf '%s\n' "${root}/scripts/${script_name}"
+    return 0
+  fi
+
+  if [[ -x "${root}/templates/scripts/${script_name}" ]]; then
+    printf '%s\n' "${root}/templates/scripts/${script_name}"
+    return 0
+  fi
+
+  die "missing workflow script: ${script_name}"
+}
+
+agent_command_for_engine() {
+  local engine="$1"
+
+  case "$engine" in
+    codex)
+      printf '%s\n' "${RALPH_AGENT_COMMAND:-codex exec -}"
+      ;;
+    claude)
+      printf '%s\n' "${RALPH_AGENT_COMMAND:-claude -p}"
+      ;;
+    *)
+      die "unsupported engine: ${engine}"
+      ;;
+  esac
+}
+
 repo_root() {
   git rev-parse --show-toplevel
 }
@@ -243,7 +276,12 @@ worker_run() {
 
   (
     cd "$worktree"
-    scripts/ralph-loop run --issue "$issue" --engine "$engine" --base "$base" \
+    local ralph_runner
+    local agent_command
+    ralph_runner="$(script_path "$root" "ralph-loop")"
+    agent_command="$(agent_command_for_engine "$engine")"
+
+    "$ralph_runner" --issue "$issue" --agent-command "$agent_command" \
       >"${logs_dir}/issue-${issue}-ralph.log" 2>&1
 
     local pr
@@ -253,9 +291,24 @@ worker_run() {
     echo "worker ${slot}: issue #${issue} opened PR #${pr}"
 
     if [[ "$review_enabled" == "1" ]]; then
-      scripts/review-pr --pr "$pr" --output "${logs_dir}/pr-${pr}-review.md" \
-        >"${logs_dir}/pr-${pr}-review.log" 2>&1
-      create_review_fix_issues "$issue" "$pr" "${logs_dir}/pr-${pr}-review.md" "$afk_label"
+      local review_runner
+      local review_output
+      local review_log
+      review_runner="$(script_path "$root" "review-pr")"
+      review_output="${logs_dir}/pr-${pr}-review.md"
+      review_log="${logs_dir}/pr-${pr}-review.log"
+
+      if ! "$review_runner" --pr "$pr" --output "$review_output" >"$review_log" 2>&1; then
+        echo "worker ${slot}: review failed for PR #${pr}; see ${review_log}" >&2
+        return 1
+      fi
+
+      if [[ ! -s "$review_output" ]]; then
+        echo "worker ${slot}: review for PR #${pr} did not produce ${review_output}" >&2
+        return 1
+      fi
+
+      create_review_fix_issues "$issue" "$pr" "$review_output" "$afk_label"
     fi
 
     mark_issue_reviewed "$issue" "$queue_labels"

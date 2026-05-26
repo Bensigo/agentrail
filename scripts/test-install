@@ -8,7 +8,30 @@ cleanup() {
 trap cleanup EXIT
 
 installer="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install-workflow"
+package_json="$(dirname "$installer")/../package.json"
 
+json_value() {
+  local file="$1"
+  local expression="$2"
+
+  node - "$file" "$expression" <<'NODE'
+const fs = require("fs");
+const file = process.argv[2];
+const expression = process.argv[3];
+const data = JSON.parse(fs.readFileSync(file, "utf8"));
+const fn = new Function("data", `"use strict"; return (${expression});`);
+const value = fn(data);
+if (typeof value === "boolean") {
+  console.log(value ? "true" : "false");
+} else if (value === null || value === undefined) {
+  console.log("");
+} else {
+  console.log(String(value));
+}
+NODE
+}
+
+git -C "$tmp_dir" init --quiet
 "$installer" --target "$tmp_dir"
 
 symlink_bin="${tmp_dir}/node_modules/.bin"
@@ -35,7 +58,9 @@ fi
 required=(
   "AGENTS.md"
   "CONTEXT.md"
+  "TASTE.md"
   "docs/agents/issue-tracker.md"
+  "docs/agents/agentrail-state.md"
   "docs/agents/milestones.md"
   "docs/agents/ralph-loop.md"
   "docs/agents/pr-review.md"
@@ -67,6 +92,7 @@ required=(
   "skills/tdd/mocking.md"
   "skills/tdd/refactoring.md"
   "skills/tdd/tests.md"
+  ".agentrail/state.json"
 )
 
 for file in "${required[@]}"; do
@@ -92,6 +118,31 @@ done
 
 if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/docs/agents/ralph-loop.md"; then
   echo "ralph-loop docs do not require acceptance criteria coverage" >&2
+  exit 1
+fi
+
+if ! grep -q -- ".agentrail/state.json" "${tmp_dir}/docs/agents/agentrail-state.md"; then
+  echo "agentrail state docs do not describe the state file path" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.agentrailVersion")" != "$(json_value "$package_json" "data.version")" ]]; then
+  echo "state file does not record the AgentRail version" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.find((file) => file.path === 'AGENTS.md')?.contentHash")" != sha256:* ]]; then
+  echo "state file does not record content hashes for managed files" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "['phase', 'activeIssue', 'activePullRequest', 'activePrd', 'activeMilestone', 'lastCompletedStep', 'nextSuggestedAction'].every((field) => Object.prototype.hasOwnProperty.call(data.workflow, field))")" != "true" ]]; then
+  echo "state file does not include resumable workflow fields" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.legacyAdopted")" != "false" ]]; then
+  echo "fresh install was incorrectly marked as legacy-adopted" >&2
   exit 1
 fi
 
@@ -132,6 +183,16 @@ fi
 
 if ! grep -q -- "scripts/memory recall" "${tmp_dir}/docs/agents/ralph-loop.md"; then
   echo "ralph-loop docs do not require project memory recall" >&2
+  exit 1
+fi
+
+if ! grep -q -- "product quality" "${tmp_dir}/TASTE.md"; then
+  echo "TASTE.md does not describe product quality guidance" >&2
+  exit 1
+fi
+
+if ! grep -q -- "TASTE.md" "${tmp_dir}/AGENTS.md"; then
+  echo "AGENTS.md does not tell agents to read TASTE.md when present" >&2
   exit 1
 fi
 
@@ -192,5 +253,46 @@ MEMORY
     exit 1
   fi
 )
+
+legacy_dir="$(mktemp -d "${tmp_dir}/legacy.XXXXXX")"
+git -C "$legacy_dir" init --quiet
+mkdir -p "${legacy_dir}/docs/agents"
+cat > "${legacy_dir}/AGENTS.md" <<'LEGACY'
+# Local agent instructions
+
+Do not delete this local edit.
+LEGACY
+cat > "${legacy_dir}/docs/agents/ralph-loop.md" <<'LEGACY'
+# Local Ralph Loop
+
+Keep this local workflow edit.
+LEGACY
+
+"$installer" --target "$legacy_dir" >"${tmp_dir}/legacy-install.out"
+
+if [[ ! -e "${legacy_dir}/.agentrail/state.json" ]]; then
+  echo "legacy adoption did not create .agentrail/state.json" >&2
+  exit 1
+fi
+
+if ! grep -q -- "Do not delete this local edit." "${legacy_dir}/AGENTS.md"; then
+  echo "legacy adoption deleted local AGENTS.md edits" >&2
+  exit 1
+fi
+
+if ! grep -q -- "Keep this local workflow edit." "${legacy_dir}/docs/agents/ralph-loop.md"; then
+  echo "legacy adoption deleted local ralph-loop edits" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${legacy_dir}/.agentrail/state.json" "data.legacyAdopted")" != "true" ]]; then
+  echo "legacy install without prior state was not marked as adopted" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${legacy_dir}/.agentrail/state.json" "data.managedFiles.find((file) => file.path === 'AGENTS.md')?.installStatus")" != "legacy-adopted" ]]; then
+  echo "legacy AGENTS.md was not recorded as adopted" >&2
+  exit 1
+fi
 
 echo "install test passed"

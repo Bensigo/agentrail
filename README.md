@@ -5,24 +5,26 @@ AgentRail is a repo-native harness for AI coding agents. It gives agents durable
 It installs:
 
 - `AGENTS.md` and `CONTEXT.md`
+- optional product quality guidance in `TASTE.md`
 - agent docs under `docs/agents/`
 - project memory under `docs/memory/`
 - PRD and milestone folders under `docs/`
 - project-local skills under `skills/`
 - workflow scripts under `scripts/`
+- durable AgentRail state under `.agentrail/state.json`
 
 ## Install
 
 Install directly into the current project with `npx` from GitHub:
 
 ```bash
-npx github:Bensigo/agentrail --target .
+npx --package github:Bensigo/agentrail agentrail init --target .
 ```
 
 Install into another project:
 
 ```bash
-npx github:Bensigo/agentrail --target /path/to/project
+npx --package github:Bensigo/agentrail agentrail init --target /path/to/project
 ```
 
 The CLI command is `agentrail`.
@@ -42,7 +44,7 @@ scripts/install-workflow --target /path/to/project --force
 Create or update the expected GitHub labels too:
 
 ```bash
-npx github:Bensigo/agentrail --target /path/to/project --github-labels
+npx --package github:Bensigo/agentrail agentrail init --target /path/to/project --github-labels
 ```
 
 After install, go to the target project:
@@ -60,6 +62,7 @@ Project docs:
 ```text
 AGENTS.md
 CONTEXT.md
+TASTE.md
 docs/agents/
 docs/memory/
 docs/prd/
@@ -80,12 +83,37 @@ skills/tdd/
 Workflow scripts:
 
 ```text
+scripts/agentrail
 scripts/afk-workflow
 scripts/memory
 scripts/pr
 scripts/ralph-loop
 scripts/review-pr
 ```
+
+Durable project state:
+
+```text
+.agentrail/state.json
+```
+
+The state file records the AgentRail version, install timestamps, managed file inventory, file hashes, and the current workflow pointer. Its format is documented in `docs/agents/agentrail-state.md`.
+
+Check an installed or partially installed project:
+
+```bash
+scripts/agentrail doctor --target /path/to/project
+```
+
+`agentrail doctor` reports missing core files, optional `TASTE.md`, state health, managed file hash drift, and GitHub label gaps when `gh` is available in a connected GitHub repo. Missing recommendations are warnings; invalid usage and corrupt state fail non-zero.
+
+Upgrade managed AgentRail files without overwriting local edits:
+
+```bash
+scripts/agentrail upgrade --target /path/to/project
+```
+
+Use `--force` only after reviewing reported local modifications.
 
 ## Recommended Flow
 
@@ -107,6 +135,8 @@ For small edits, skip the heavy planning steps and implement directly with tests
 ## How To Use It With An Agent
 
 Start with `CONTEXT.md`. Keep the product, domain language, constraints, and repo-specific decisions there. The workflow works poorly if `CONTEXT.md` is empty or stale.
+
+Customize `TASTE.md` when the project has product quality expectations that should guide agents: UI standards, copy tone, interaction preferences, visual evidence expectations, and anti-patterns. If the project is backend-only or has no useful taste guidance yet, missing `TASTE.md` is only a recommendation, not a blocker.
 
 Use `docs/memory/` for source-linked lessons, preferences, and recurring failure patterns that should survive across agent runs. Memory is advisory; agents still need to verify it against current code and canonical docs.
 
@@ -191,6 +221,18 @@ Run the AFK issue workflow:
 
 ```bash
 scripts/afk-workflow run --concurrency 2 --max-waves 5
+```
+
+Inspect an AgentRail install:
+
+```bash
+scripts/agentrail doctor --target .
+```
+
+Upgrade an AgentRail install:
+
+```bash
+scripts/agentrail upgrade --target .
 ```
 
 Review one PR:

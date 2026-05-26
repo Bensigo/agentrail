@@ -59,36 +59,146 @@ skills_dir="${repo_dir}/skills"
 
 [[ -d "$templates_dir" ]] || { echo "Missing templates directory: $templates_dir" >&2; exit 1; }
 [[ -d "$skills_dir" ]] || { echo "Missing skills directory: $skills_dir" >&2; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "node is required to install AgentRail state" >&2; exit 1; }
 mkdir -p "$target_dir"
+state_manifest="$(mktemp)"
+existing_before_manifest="$(mktemp)"
+cleanup_state_temp() {
+  rm -f "$state_manifest" "$existing_before_manifest"
+}
+trap cleanup_state_temp EXIT
 
 copy_file() {
   local src_root="$1"
   local dest_root="$2"
   local src="$3"
+  local inventory_prefix="$4"
   local rel="${src#"$src_root"/}"
   local dest="${dest_root}/${rel}"
+  local inventory_path="${rel}"
+  if [[ -n "$inventory_prefix" ]]; then
+    inventory_path="${inventory_prefix}/${rel}"
+  fi
+
+  printf '%s\t%s\n' "$inventory_path" "$src" >>"$state_manifest"
+  if [[ -e "$dest" ]]; then
+    printf '%s\n' "$inventory_path" >>"$existing_before_manifest"
+  fi
+
   mkdir -p "$(dirname "$dest")"
 
   if [[ -e "$dest" && "$force" -ne 1 ]]; then
-    echo "skip existing: ${rel}"
+    echo "skip existing: ${inventory_path}"
     return
   fi
 
   cp "$src" "$dest"
-  echo "installed: ${rel}"
+  echo "installed: ${inventory_path}"
 }
 
 copy_tree() {
   local src_root="$1"
   local dest_root="$2"
+  local inventory_prefix="${3:-}"
 
   while IFS= read -r -d '' file; do
-    copy_file "$src_root" "$dest_root" "$file"
+    copy_file "$src_root" "$dest_root" "$file" "$inventory_prefix"
   done < <(find "$src_root" -type f -print0 | sort -z)
 }
 
 copy_tree "$templates_dir" "$target_dir"
-copy_tree "$skills_dir" "${target_dir}/skills"
+copy_tree "$skills_dir" "${target_dir}/skills" "skills"
+
+write_agentrail_state() {
+  AGENTRAIL_REPO_DIR="$repo_dir" \
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  AGENTRAIL_STATE_MANIFEST="$state_manifest" \
+  AGENTRAIL_EXISTING_BEFORE_MANIFEST="$existing_before_manifest" \
+  AGENTRAIL_FORCE="$force" \
+  node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+
+const repoDir = process.env.AGENTRAIL_REPO_DIR;
+const targetDir = process.env.AGENTRAIL_TARGET_DIR;
+const manifestPath = process.env.AGENTRAIL_STATE_MANIFEST;
+const existingBeforePath = process.env.AGENTRAIL_EXISTING_BEFORE_MANIFEST;
+const force = process.env.AGENTRAIL_FORCE === "1";
+const stateDir = path.join(targetDir, ".agentrail");
+const statePath = path.join(stateDir, "state.json");
+const packageJson = JSON.parse(fs.readFileSync(path.join(repoDir, "package.json"), "utf8"));
+
+function readJsonIfPresent(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function sha256(file) {
+  return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}`;
+}
+
+const previousState = readJsonIfPresent(statePath);
+const now = new Date().toISOString();
+const existingBefore = new Set(
+  fs.readFileSync(existingBeforePath, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+);
+
+const managedFiles = fs.readFileSync(manifestPath, "utf8")
+  .split(/\r?\n/)
+  .filter(Boolean)
+  .map((line) => {
+    const [relativePath, sourcePath] = line.split("\t");
+    const targetPath = path.join(targetDir, relativePath);
+    const existedBefore = existingBefore.has(relativePath);
+    let installStatus = "installed";
+    if (existedBefore && previousState) installStatus = force ? "updated" : "preserved";
+    if (existedBefore && !previousState) installStatus = force ? "updated" : "legacy-adopted";
+
+    return {
+      path: relativePath,
+      source: path.relative(repoDir, sourcePath),
+      contentHash: sha256(targetPath),
+      installStatus,
+    };
+  });
+
+const defaultWorkflow = {
+  phase: "idle",
+  activeIssue: null,
+  activePullRequest: null,
+  activePrd: null,
+  activeMilestone: null,
+  lastCompletedStep: null,
+  nextSuggestedAction: "Pick a ready-for-agent issue or create a PRD/milestone before starting implementation.",
+};
+
+const state = {
+  schemaVersion: 1,
+  agentrailVersion: packageJson.version,
+  installedAt: previousState?.installedAt || now,
+  updatedAt: now,
+  legacyAdopted: Boolean(previousState?.legacyAdopted || (!previousState && existingBefore.size > 0)),
+  managedFiles,
+  workflow: {
+    ...defaultWorkflow,
+    ...(previousState?.workflow || {}),
+  },
+};
+
+fs.mkdirSync(stateDir, { recursive: true });
+fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+console.log("updated: .agentrail/state.json");
+NODE
+}
+
+write_agentrail_state
 
 if [[ "$github_labels" -eq 1 ]]; then
   if ! command -v gh >/dev/null 2>&1; then

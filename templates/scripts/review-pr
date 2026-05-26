@@ -48,8 +48,17 @@ review_prompt() {
   local title="$2"
   local url="$3"
   local prompt_file="docs/agents/pr-review.md"
+  local memory_command="scripts/memory"
 
-  [[ -f "$prompt_file" ]] || die "missing PR review instructions: $prompt_file"
+  if [[ ! -f "$prompt_file" && -f "templates/docs/agents/pr-review.md" ]]; then
+    prompt_file="templates/docs/agents/pr-review.md"
+  fi
+
+  if [[ ! -x "$memory_command" && -x "templates/scripts/memory" ]]; then
+    memory_command="templates/scripts/memory"
+  fi
+
+  [[ -f "$prompt_file" ]] || die "missing PR review instructions: docs/agents/pr-review.md or templates/docs/agents/pr-review.md"
 
   cat <<PROMPT
 Review exactly one pull request: #${pr}.
@@ -66,7 +75,7 @@ Repo-specific instructions:
 - Start from a clean checkout of the pull request head branch.
 - Compare against the pull request base branch.
 - Read the PR body, linked issue, milestone, PRD, architecture baseline, and agent docs.
-- Run scripts/memory recall for the PR title, linked issue, and key terms.
+- Run ${memory_command} recall for the PR title, linked issue, and key terms when that command is available.
 - Treat project memory as advisory; verify it against current code, docs, issue, PRD, and ADRs.
 - Do not edit files.
 - Do not commit, push, close, or merge anything.
@@ -96,9 +105,9 @@ run_codex_review() {
   fi
 
   if [[ ${#extra_args[@]} -gt 0 ]]; then
-    codex exec review --base "$base" "${output_args[@]}" "${extra_args[@]}" "$prompt"
+    printf '%s\n' "$prompt" | codex exec review --base "$base" "${output_args[@]}" "${extra_args[@]}"
   else
-    codex exec review --base "$base" "${output_args[@]}" "$prompt"
+    printf '%s\n' "$prompt" | codex exec review --base "$base" "${output_args[@]}"
   fi
 }
 

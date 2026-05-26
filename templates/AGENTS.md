@@ -23,10 +23,11 @@ This repo uses a GitHub-first agent workflow.
 - Repo-local workflow skills live in `skills/`.
 - Agent workflow docs live in `docs/agents/`.
 - Project memory lives in `docs/memory/`.
+- Durable AgentRail state lives in `.agentrail/state.json`.
 - GitHub issues are the source of truth for implementation tasks.
 - Pull requests are the source of truth for review and merge readiness.
 
-Read `CONTEXT.md` before making non-trivial changes. If domain docs exist, prefer them over assumptions.
+Read `CONTEXT.md` before making non-trivial changes. Then read `TASTE.md` when present, especially for product, UI, copy, interaction, or visual evidence decisions. If domain docs exist, prefer them over assumptions.
 
 ## Project Memory
 
@@ -80,9 +81,10 @@ Only unattended workers may pick issues labeled `afk`.
 Before editing:
 
 1. Read the relevant issue, PRD, milestone, and context docs.
-2. Run `scripts/memory recall` for the task and inspect relevant memory.
-3. Inspect the current code and tests.
-4. Identify the smallest coherent change that satisfies the request.
+2. Read `TASTE.md` when present and relevant to product quality, UI, copy, interaction, or visual evidence.
+3. Run `scripts/memory recall` for the task and inspect relevant memory.
+4. Inspect the current code and tests.
+5. Identify the smallest coherent change that satisfies the request.
 
 While editing:
 
@@ -122,6 +124,7 @@ If there is no visual surface, say so explicitly and include verification notes 
 See:
 
 - `docs/agents/issue-tracker.md`
+- `docs/agents/agentrail-state.md`
 - `docs/agents/milestones.md`
 - `docs/agents/ralph-loop.md`
 - `docs/agents/pr-review.md`

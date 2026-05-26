@@ -205,6 +205,22 @@ For unattended batches of approved work:
 scripts/afk-workflow run --concurrency 2 --max-waves 5
 ```
 
+## Dogfooding AgentRail
+
+Maintainers can run the AFK workflow from this AgentRail source repo without installing generated project templates over the source checkout. Use the template runner directly:
+
+```bash
+templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --dry-run
+```
+
+For a bounded real wave, keep the run small:
+
+```bash
+templates/scripts/afk-workflow run --concurrency 1 --max-waves 1
+```
+
+The source repo does not need root-level `scripts/ralph-loop`, `scripts/review-pr`, or `scripts/memory` files. The AFK runner resolves those helpers from `templates/scripts/` when the installed `scripts/` copies are not present. That keeps source-repo self-hosting separate from installing AgentRail into a target project.
+
 Review PRs before merge:
 
 ```bash

@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+source_repo="${tmp_dir}/source"
+mkdir -p "$source_repo/templates"
+cp -R "${repo_dir}/templates/CONTEXT.md" "${source_repo}/templates/CONTEXT.md"
+cp -R "${repo_dir}/templates/docs" "${source_repo}/templates/docs"
+cp -R "${repo_dir}/templates/scripts" "${source_repo}/templates/scripts"
+
+git -C "$source_repo" init --initial-branch=main --quiet
+git -C "$source_repo" config user.email agentrail@example.com
+git -C "$source_repo" config user.name "AgentRail Test"
+git -C "$source_repo" add templates
+git -C "$source_repo" commit --quiet -m "seed source repo"
+
+origin="${tmp_dir}/origin.git"
+git clone --quiet --bare "$source_repo" "$origin"
+git -C "$source_repo" remote add origin "$origin"
+git -C "$source_repo" fetch --quiet origin main
+
+if [[ -e "${source_repo}/scripts/ralph-loop" ]]; then
+  echo "source dogfood fixture unexpectedly has root scripts/ralph-loop" >&2
+  exit 1
+fi
+
+fake_bin="${tmp_dir}/fake-bin"
+mkdir -p "$fake_bin"
+cat >"${fake_bin}/gh" <<'GH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "$1 $2" in
+  "label list")
+    printf 'ready-for-agent\nafk\nafk-in-progress\nreview-fix\nmemory-suggestion\npr-reviewed\n'
+    exit 0
+    ;;
+  "issue edit")
+    printf 'issue edit %s\n' "$*" >>"${AFK_FAKE_GH_LOG:?}"
+    exit 0
+    ;;
+esac
+
+echo "unexpected gh invocation: $*" >&2
+exit 1
+GH
+chmod +x "${fake_bin}/gh"
+
+agent_marker="${tmp_dir}/agent-marker.txt"
+agent_command='cat > "$AFK_AGENT_MARKER"; exit 42'
+mock_queue=$'4242\tDogfood source AFK\thttps://github.com/acme/repo/issues/4242\tafk,ready-for-agent'
+
+set +e
+AFK_WORKFLOW_MOCK_QUEUE="$mock_queue" \
+AFK_WORKFLOW_REVIEW=0 \
+AFK_AGENT_MARKER="$agent_marker" \
+AFK_FAKE_GH_LOG="${tmp_dir}/gh.log" \
+RALPH_AGENT_COMMAND="$agent_command" \
+SOURCE_REPO="$source_repo" \
+PATH="${fake_bin}:$PATH" \
+  bash -c 'cd "$SOURCE_REPO" && templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --engine claude' >"${tmp_dir}/afk-real.out" 2>&1
+status=$?
+set -e
+
+if [[ "$status" -eq 0 ]]; then
+  echo "test AFK wave unexpectedly succeeded; expected configured agent command to stop after marker" >&2
+  exit 1
+fi
+
+assert_grep "worker 1: issue #4242 Dogfood source AFK" "${tmp_dir}/afk-real.out" "AFK worker did not start selected issue"
+if grep -q -- "missing workflow script: ralph-loop" "${tmp_dir}/afk-real.out"; then
+  echo "AFK source dogfood still failed on missing ralph-loop" >&2
+  cat "${tmp_dir}/afk-real.out" >&2
+  exit 1
+fi
+
+[[ -s "$agent_marker" ]] || { echo "AFK worker did not reach configured agent execution" >&2; cat "${tmp_dir}/afk-real.out" >&2; exit 1; }
+assert_grep "Handle exactly one issue: #4242" "$agent_marker" "Ralph prompt did not reach configured agent command"
+
+(
+  cd "$repo_dir"
+  templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --dry-run >"${tmp_dir}/source-dry-run.out"
+)
+assert_grep "dry-run: would run Ralph" "${tmp_dir}/source-dry-run.out" "Source dry-run did not show Ralph execution step"
+
+echo "source AFK dogfood test passed"

@@ -10,6 +10,7 @@ Usage:
   agentrail doctor [--target DIR]
   agentrail status [--target DIR]
   agentrail resume [--target DIR] [--output FILE]
+  agentrail labels sync [--target DIR]
   agentrail prompt grill "<idea>" [--agent codex|claude] [--target DIR]
   agentrail prompt issue NUMBER [--agent codex|claude] [--target DIR]
   agentrail prompt review PR_NUMBER [--agent codex|claude] [--target DIR]
@@ -22,6 +23,7 @@ Commands:
   doctor    Inspect AgentRail installation health.
   status    Print install status and current workflow state.
   resume    Print and write an agent handoff summary.
+  labels    Sync expected GitHub labels.
   prompt    Print an agent-ready prompt without executing an agent.
   run       Generate a bounded prompt and execute a configured agent command.
 USAGE
@@ -334,7 +336,7 @@ check_github_labels() {
 
   LABELS_JSON="$labels_json" node <<'NODE'
 const labels = new Set(JSON.parse(process.env.LABELS_JSON).map((label) => label.name));
-const required = ["ready-for-agent", "afk", "afk-in-progress", "review-fix", "pr-reviewed"];
+const required = ["ready-for-agent", "afk", "afk-in-progress", "review-fix", "memory-suggestion", "pr-reviewed"];
 const missing = required.filter((label) => !labels.has(label));
 if (missing.length === 0) {
   console.log("  ok GitHub labels");
@@ -342,6 +344,30 @@ if (missing.length === 0) {
   console.log(`  warn missing GitHub labels: ${missing.join(", ")}`);
 }
 NODE
+}
+
+sync_github_labels() {
+  local target_dir
+  parse_target target_dir "$@"
+
+  command -v gh >/dev/null 2>&1 || { echo "labels sync: gh CLI is required" >&2; exit 1; }
+  if ! (cd "$target_dir" && gh auth status >/dev/null 2>&1); then
+    echo "labels sync: gh CLI is not authenticated or cannot access GitHub" >&2
+    exit 1
+  fi
+  remote_is_github "$target_dir" || { echo "labels sync: ${target_dir} does not have a GitHub origin remote" >&2; exit 1; }
+
+  (
+    cd "$target_dir"
+    gh label create ready-for-agent --color 0E8A16 --description "Fully specified, ready for an agent to implement." --force
+    gh label create afk --color 5319E7 --description "Approved for unattended AFK agent execution." --force
+    gh label create afk-in-progress --color BFDADC --description "Currently claimed by AFK workflow." --force
+    gh label create review-fix --color D93F0B --description "Follow-up issue created from PR review." --force
+    gh label create memory-suggestion --color FBCA04 --description "Suggested project memory update for human review." --force
+    gh label create pr-reviewed --color 1D76DB --description "Implementation PR has been reviewed." --force
+  )
+
+  echo "labels sync: ok"
 }
 
 inspect_state() {
@@ -1273,6 +1299,24 @@ case "${1:-}" in
   resume)
     shift
     run_resume "$@"
+    ;;
+  labels)
+    shift
+    case "${1:-}" in
+      sync)
+        shift
+        sync_github_labels "$@"
+        ;;
+      ""|-h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown labels command: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
     ;;
   prompt)
     shift

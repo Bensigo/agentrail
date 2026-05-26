@@ -47,6 +47,14 @@ Create or update the expected GitHub labels too:
 npx --package github:Bensigo/agentrail agentrail init --target /path/to/project --github-labels
 ```
 
+Sync labels later without reinstalling AgentRail:
+
+```bash
+scripts/agentrail labels sync --target /path/to/project
+```
+
+Run label sync after connecting a repository to GitHub, after adding a new AgentRail workflow label, or when `agentrail doctor` reports missing GitHub labels.
+
 After install, go to the target project:
 
 ```bash

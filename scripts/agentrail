@@ -11,6 +11,7 @@ Usage:
   agentrail prompt grill "<idea>" [--agent codex|claude] [--target DIR]
   agentrail prompt issue NUMBER [--agent codex|claude] [--target DIR]
   agentrail prompt review PR_NUMBER [--agent codex|claude] [--target DIR]
+  agentrail run issue NUMBER [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
 
 Commands:
   init      Initialize AgentRail workflow files.
@@ -18,6 +19,7 @@ Commands:
   upgrade   Upgrade managed AgentRail files without overwriting local edits.
   doctor    Inspect AgentRail installation health.
   prompt    Print an agent-ready prompt without executing an agent.
+  run       Generate a bounded prompt and execute a configured agent command.
 USAGE
 }
 
@@ -849,6 +851,220 @@ run_prompt() {
   esac
 }
 
+agent_command_env_name() {
+  local agent="$1"
+  case "$agent" in
+    codex)
+      echo "AGENTRAIL_CODEX_COMMAND"
+      ;;
+    claude)
+      echo "AGENTRAIL_CLAUDE_COMMAND"
+      ;;
+  esac
+}
+
+default_agent_command() {
+  local agent="$1"
+  case "$agent" in
+    codex)
+      echo "codex exec -"
+      ;;
+    claude)
+      echo "claude -p"
+      ;;
+  esac
+}
+
+configured_agent_command() {
+  local agent="$1"
+  local explicit_command="$2"
+
+  if [[ -n "$explicit_command" ]]; then
+    echo "$explicit_command"
+    return
+  fi
+
+  local env_name
+  env_name="$(agent_command_env_name "$agent")"
+  local agent_specific="${!env_name:-}"
+  if [[ -n "$agent_specific" ]]; then
+    echo "$agent_specific"
+    return
+  fi
+
+  if [[ -n "${AGENTRAIL_AGENT_COMMAND:-}" ]]; then
+    echo "$AGENTRAIL_AGENT_COMMAND"
+    return
+  fi
+
+  default_agent_command "$agent"
+}
+
+ensure_command_available() {
+  local command_line="$1"
+  local binary
+
+  # shellcheck disable=SC2086
+  set -- $command_line
+  binary="${1:-}"
+  [[ -n "$binary" ]] || { echo "run command is empty" >&2; exit 2; }
+  command -v "$binary" >/dev/null 2>&1 || { echo "missing required command: $binary" >&2; exit 1; }
+}
+
+parse_run_options() {
+  local agent_var="$1"
+  local target_var="$2"
+  local command_var="$3"
+  local log_dir_var="$4"
+  shift 4
+
+  printf -v "$agent_var" '%s' "codex"
+  printf -v "$target_var" '%s' "$(pwd)"
+  printf -v "$command_var" '%s' ""
+  printf -v "$log_dir_var" '%s' ""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --agent)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--agent requires codex or claude" >&2; exit 2; }
+        [[ "$value" == "codex" || "$value" == "claude" ]] || { echo "--agent must be codex or claude" >&2; exit 2; }
+        printf -v "$agent_var" '%s' "$value"
+        shift 2
+        ;;
+      --target)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
+        printf -v "$target_var" '%s' "$value"
+        shift 2
+        ;;
+      --command)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--command requires a command" >&2; exit 2; }
+        printf -v "$command_var" '%s' "$value"
+        shift 2
+        ;;
+      --log-dir)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--log-dir requires a directory" >&2; exit 2; }
+        printf -v "$log_dir_var" '%s' "$value"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown option: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+  done
+}
+
+write_run_metadata() {
+  local metadata_file="$1"
+  local started_at="$2"
+  local issue="$3"
+  local agent="$4"
+  local command_line="$5"
+  local prompt_file="$6"
+
+  command -v node >/dev/null 2>&1 || {
+    cat >"$metadata_file" <<METADATA
+{
+  "startedAt": "${started_at}",
+  "targetType": "issue",
+  "targetIssue": ${issue},
+  "agent": "${agent}",
+  "command": "${command_line}",
+  "promptFile": "${prompt_file}"
+}
+METADATA
+    return
+  }
+
+  RUN_STARTED_AT="$started_at" \
+  RUN_ISSUE="$issue" \
+  RUN_AGENT="$agent" \
+  RUN_COMMAND="$command_line" \
+  RUN_PROMPT_FILE="$prompt_file" \
+  node >"$metadata_file" <<'NODE'
+const metadata = {
+  startedAt: process.env.RUN_STARTED_AT,
+  targetType: "issue",
+  targetIssue: Number(process.env.RUN_ISSUE),
+  agent: process.env.RUN_AGENT,
+  command: process.env.RUN_COMMAND,
+  promptFile: process.env.RUN_PROMPT_FILE,
+};
+console.log(JSON.stringify(metadata, null, 2));
+NODE
+}
+
+run_issue() {
+  local issue="$1"
+  shift
+  [[ "$issue" =~ ^[0-9]+$ ]] || { echo "run issue argument must be numeric" >&2; exit 2; }
+
+  local agent target_dir explicit_command log_dir
+  parse_run_options agent target_dir explicit_command log_dir "$@"
+
+  local agent_command
+  agent_command="$(configured_agent_command "$agent" "$explicit_command")"
+  ensure_command_available "$agent_command"
+
+  local prompt
+  if ! prompt="$(prompt_issue "$agent" "$target_dir" "$issue")"; then
+    echo "failed to generate issue prompt for #${issue}" >&2
+    exit 1
+  fi
+
+  local started_at run_dir prompt_file metadata_file
+  started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  if [[ -z "$log_dir" ]]; then
+    log_dir="${target_dir}/.agentrail/runs"
+  fi
+  run_dir="${log_dir}/$(date -u +"%Y%m%d-%H%M%S")-issue-${issue}-${agent}-$$"
+  mkdir -p "$run_dir"
+
+  prompt_file="${run_dir}/prompt.md"
+  metadata_file="${run_dir}/run.json"
+  printf '%s\n' "$prompt" >"$prompt_file"
+  write_run_metadata "$metadata_file" "$started_at" "$issue" "$agent" "$agent_command" "$prompt_file"
+
+  echo "AgentRail run: issue #${issue}"
+  echo "agent: ${agent}"
+  echo "prompt: ${prompt_file}"
+  echo "metadata: ${metadata_file}"
+
+  printf '%s\n' "$prompt" | bash -lc "$agent_command"
+}
+
+run_agentrail_run() {
+  local kind="${1:-}"
+  [[ -n "$kind" ]] || { usage; exit 1; }
+  shift || true
+
+  case "$kind" in
+    issue)
+      local issue="${1:-}"
+      [[ -n "$issue" && "$issue" != --* ]] || { echo "run issue requires a number" >&2; exit 2; }
+      shift
+      run_issue "$issue" "$@"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown run type: $kind" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
 case "${1:-}" in
   init)
     shift
@@ -869,6 +1085,10 @@ case "${1:-}" in
   prompt)
     shift
     run_prompt "$@"
+    ;;
+  run)
+    shift
+    run_agentrail_run "$@"
     ;;
   ""|-h|--help)
     usage

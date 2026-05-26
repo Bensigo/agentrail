@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+agentrail="${repo_dir}/scripts/agentrail"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+target="${tmp_dir}/target"
+log_dir="${tmp_dir}/runs"
+mkdir -p "$target/.agentrail" "$log_dir"
+cat >"${target}/.agentrail/state.json" <<'JSON'
+{
+  "agentrailVersion": "0.1.0",
+  "workflow": {
+    "phase": "idle",
+    "activeIssue": null,
+    "activePullRequest": null,
+    "activePrd": null,
+    "activeMilestone": null,
+    "lastCompletedStep": null,
+    "nextSuggestedAction": "Pick a ready-for-agent issue."
+  }
+}
+JSON
+
+"$agentrail" run issue 12 --agent codex --target "$target" --command cat --log-dir "$log_dir" >"${tmp_dir}/codex-run.out"
+assert_grep "AgentRail run: issue #12" "${tmp_dir}/codex-run.out" "Codex run did not announce issue"
+assert_grep "agent: codex" "${tmp_dir}/codex-run.out" "Codex run did not announce agent"
+assert_grep "Run one bounded Ralph implementation loop for exactly one GitHub issue: #12" "${tmp_dir}/codex-run.out" "Codex run did not pipe generated issue prompt"
+assert_grep "AgentRail state: present" "${tmp_dir}/codex-run.out" "Codex run prompt did not include state summary"
+
+codex_metadata="$(find "$log_dir" -name run.json -print | head -1)"
+codex_prompt="$(find "$log_dir" -name prompt.md -print | head -1)"
+[[ -n "$codex_metadata" && -n "$codex_prompt" ]] || { echo "Codex run did not write prompt and metadata logs" >&2; exit 1; }
+assert_grep '"targetIssue": 12' "$codex_metadata" "Codex metadata did not record target issue"
+assert_grep '"agent": "codex"' "$codex_metadata" "Codex metadata did not record agent"
+assert_grep '"command": "cat"' "$codex_metadata" "Codex metadata did not record command"
+assert_grep "prompt.md" "$codex_metadata" "Codex metadata did not record prompt reference"
+
+AGENTRAIL_CLAUDE_COMMAND=cat "$agentrail" run issue 12 --agent claude --target "$target" --log-dir "$log_dir" >"${tmp_dir}/claude-run.out"
+assert_grep "agent: claude" "${tmp_dir}/claude-run.out" "Claude run did not announce agent"
+assert_grep "Use Claude Code to run one bounded implementation loop for exactly one GitHub issue: #12" "${tmp_dir}/claude-run.out" "Claude run did not use Claude-oriented prompt"
+
+if "$agentrail" run issue 12 --agent codex --target "$target" --command definitely-not-agentrail-runner --log-dir "$log_dir" >"${tmp_dir}/missing-command.out" 2>&1; then
+  echo "Runner accepted a missing command" >&2
+  exit 1
+fi
+assert_grep "missing required command: definitely-not-agentrail-runner" "${tmp_dir}/missing-command.out" "Runner did not reject missing command"
+
+if "$agentrail" run issue nope --agent codex --target "$target" --command cat --log-dir "$log_dir" >"${tmp_dir}/invalid-issue.out" 2>&1; then
+  echo "Runner accepted a non-numeric issue" >&2
+  exit 1
+fi
+assert_grep "run issue argument must be numeric" "${tmp_dir}/invalid-issue.out" "Runner did not reject non-numeric issue"
+
+echo "runner adapter test passed"

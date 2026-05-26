@@ -17,13 +17,13 @@ It installs:
 Install directly into the current project with `npx` from GitHub:
 
 ```bash
-npx github:Bensigo/coding-ai-workflow --target .
+npx --package github:Bensigo/agentrail agentrail init --target .
 ```
 
 Install into another project:
 
 ```bash
-npx github:Bensigo/coding-ai-workflow --target /path/to/project
+npx --package github:Bensigo/agentrail agentrail init --target /path/to/project
 ```
 
 From a local checkout of this repo:
@@ -41,7 +41,7 @@ scripts/install-workflow --target /path/to/project --force
 Create or update the expected GitHub labels too:
 
 ```bash
-npx github:Bensigo/coding-ai-workflow --target /path/to/project --github-labels
+npx --package github:Bensigo/agentrail agentrail init --target /path/to/project --github-labels
 ```
 
 After install, go to the target project:
@@ -102,6 +102,14 @@ scripts/agentrail doctor --target /path/to/project
 ```
 
 `agentrail doctor` reports missing core files, optional `TASTE.md`, state health, managed file hash drift, and GitHub label gaps when `gh` is available in a connected GitHub repo. Missing recommendations are warnings; invalid usage and corrupt state fail non-zero.
+
+Upgrade managed AgentRail files without overwriting local edits:
+
+```bash
+scripts/agentrail upgrade --target /path/to/project
+```
+
+Use `--force` only after reviewing reported local modifications.
 
 ## Recommended Flow
 
@@ -213,6 +221,12 @@ Inspect an AgentRail install:
 
 ```bash
 scripts/agentrail doctor --target .
+```
+
+Upgrade an AgentRail install:
+
+```bash
+scripts/agentrail upgrade --target .
 ```
 
 Review one PR:

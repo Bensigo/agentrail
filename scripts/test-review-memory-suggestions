@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+sed '$d' "${repo_dir}/templates/scripts/afk-workflow" >"${tmp_dir}/afk-workflow-lib"
+
+# shellcheck disable=SC1090
+source "${tmp_dir}/afk-workflow-lib"
+
+CREATED_ISSUES=()
+
+gh() {
+  if [[ "$1" == "issue" && "$2" == "create" ]]; then
+    local title=""
+    local body=""
+    local labels=()
+
+    shift 2
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --title)
+          title="$2"
+          shift 2
+          ;;
+        --body)
+          body="$2"
+          shift 2
+          ;;
+        --label)
+          labels+=("$2")
+          shift 2
+          ;;
+        *)
+          echo "unexpected gh issue create arg: $1" >&2
+          return 1
+          ;;
+      esac
+    done
+
+    CREATED_ISSUES+=("${title}"$'\t'"${body}"$'\t'"$(IFS=,; echo "${labels[*]}")")
+    return 0
+  fi
+
+  echo "unexpected gh invocation: $*" >&2
+  return 1
+}
+
+review_file="${tmp_dir}/review.md"
+cat >"$review_file" <<'REVIEW'
+Findings omitted for test.
+
+BEGIN_REVIEW_FIX_ISSUES_JSON
+{
+  "fix_issues": [
+    {
+      "title": "Missing verification for AC2",
+      "severity": "P1",
+      "file": "README.md",
+      "body": "AC2 needs concrete verification evidence."
+    }
+  ],
+  "memory_suggestions": [
+    {
+      "kind": "failure-pattern",
+      "title": "Do not claim ACs without evidence",
+      "target_file": "docs/memory/failure-patterns.md",
+      "source": "PR #9 review finding: Missing verification for AC2",
+      "body": "Future PRs must map each acceptance criterion to implementation and verification evidence."
+    }
+  ]
+}
+END_REVIEW_FIX_ISSUES_JSON
+REVIEW
+
+create_review_fix_issues 7 9 "$review_file" "afk"
+create_memory_suggestion_issues 7 9 "$review_file" "afk"
+
+if [[ "${#CREATED_ISSUES[@]}" -ne 2 ]]; then
+  echo "expected two created issues, got ${#CREATED_ISSUES[@]}" >&2
+  exit 1
+fi
+
+if [[ "${CREATED_ISSUES[0]}" != *"[review-fix] PR #9: Missing verification for AC2"* ]]; then
+  echo "review-fix issue title was not created from fix_issues JSON" >&2
+  exit 1
+fi
+
+if [[ "${CREATED_ISSUES[0]}" != *"review-fix,afk,ready-for-agent"* ]]; then
+  echo "review-fix issue labels are wrong" >&2
+  exit 1
+fi
+
+if [[ "${CREATED_ISSUES[1]}" != *"[memory-suggestion] PR #9: Do not claim ACs without evidence"* ]]; then
+  echo "memory-suggestion issue title was not created from memory_suggestions JSON" >&2
+  exit 1
+fi
+
+if [[ "${CREATED_ISSUES[1]}" != *"memory-suggestion,afk,ready-for-agent"* ]]; then
+  echo "memory-suggestion issue labels are wrong" >&2
+  exit 1
+fi
+
+if [[ "${CREATED_ISSUES[1]}" != *"Target file: docs/memory/failure-patterns.md"* ]]; then
+  echo "memory-suggestion issue body does not include target memory file" >&2
+  exit 1
+fi
+
+if [[ "${CREATED_ISSUES[1]}" != *"Future PRs must map each acceptance criterion"* ]]; then
+  echo "memory-suggestion issue body does not include proposed memory text" >&2
+  exit 1
+fi
+
+echo "review memory suggestions test passed"

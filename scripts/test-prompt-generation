@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+agentrail="${repo_dir}/scripts/agentrail"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+without_state="${tmp_dir}/without-state"
+mkdir -p "$without_state"
+
+"$agentrail" prompt grill "Build better agent handoffs" --agent codex --target "$without_state" >"${tmp_dir}/codex-grill.out"
+assert_grep "Use the repo-local skill 'grill-with-docs'" "${tmp_dir}/codex-grill.out" "Codex grill prompt did not route to grill-with-docs"
+assert_grep "Read CONTEXT.md first" "${tmp_dir}/codex-grill.out" "Codex grill prompt did not require CONTEXT.md"
+assert_grep "Read TASTE.md if present" "${tmp_dir}/codex-grill.out" "Codex grill prompt did not mention TASTE.md"
+assert_grep "scripts/memory recall" "${tmp_dir}/codex-grill.out" "Codex grill prompt did not mention memory recall"
+assert_grep "AgentRail state: not found" "${tmp_dir}/codex-grill.out" "Codex grill prompt did not report missing state"
+
+"$agentrail" prompt issue 11 --agent codex --target "$without_state" >"${tmp_dir}/codex-issue.out"
+assert_grep "exactly one GitHub issue: #11" "${tmp_dir}/codex-issue.out" "Codex issue prompt was not bounded to one issue"
+assert_grep "templates/docs/agents/ralph-loop.md" "${tmp_dir}/codex-issue.out" "Codex issue prompt did not reference Ralph instructions"
+assert_grep "acceptance criteria coverage" "${tmp_dir}/codex-issue.out" "Codex issue prompt did not require acceptance coverage"
+
+"$agentrail" prompt review 17 --agent codex --target "$without_state" >"${tmp_dir}/codex-review.out"
+assert_grep "Review exactly one pull request: #17" "${tmp_dir}/codex-review.out" "Codex review prompt was not bounded to one PR"
+assert_grep "Do not edit files" "${tmp_dir}/codex-review.out" "Codex review prompt did not prohibit edits"
+assert_grep "templates/docs/agents/pr-review.md" "${tmp_dir}/codex-review.out" "Codex review prompt did not reference PR review instructions"
+
+"$agentrail" prompt grill "Build better agent handoffs" --agent claude --target "$without_state" >"${tmp_dir}/claude-grill.out"
+assert_grep "Use Claude Code" "${tmp_dir}/claude-grill.out" "Claude grill prompt was not Claude-oriented"
+assert_grep "skills/grill-with-docs/SKILL.md" "${tmp_dir}/claude-grill.out" "Claude grill prompt did not point to local skill docs"
+if grep -q -- "Use the repo-local skill" "${tmp_dir}/claude-grill.out"; then
+  echo "Claude grill prompt assumes Codex-specific skill mechanics" >&2
+  exit 1
+fi
+
+"$agentrail" prompt issue 11 --agent claude --target "$without_state" >"${tmp_dir}/claude-issue.out"
+assert_grep "Use Claude Code" "${tmp_dir}/claude-issue.out" "Claude issue prompt was not Claude-oriented"
+assert_grep "Handle only issue #11" "${tmp_dir}/claude-issue.out" "Claude issue prompt was not bounded to one issue"
+
+"$agentrail" prompt review 17 --agent claude --target "$without_state" >"${tmp_dir}/claude-review.out"
+assert_grep "Use Claude Code" "${tmp_dir}/claude-review.out" "Claude review prompt was not Claude-oriented"
+assert_grep "Review only PR #17" "${tmp_dir}/claude-review.out" "Claude review prompt was not bounded to one PR"
+
+with_state="${tmp_dir}/with-state"
+mkdir -p "$with_state/.agentrail"
+cat >"${with_state}/.agentrail/state.json" <<'JSON'
+{
+  "agentrailVersion": "0.1.0",
+  "workflow": {
+    "phase": "implementation",
+    "activeIssue": 11,
+    "activePullRequest": 17,
+    "activePrd": "docs/prd/agentrail.md",
+    "activeMilestone": "docs/milestones/001-agentrail.md",
+    "lastCompletedStep": "issue-selection",
+    "nextSuggestedAction": "Generate an implementation prompt."
+  }
+}
+JSON
+
+"$agentrail" prompt issue 11 --agent codex --target "$with_state" >"${tmp_dir}/stateful-issue.out"
+assert_grep "AgentRail state: present" "${tmp_dir}/stateful-issue.out" "Prompt did not include state summary"
+assert_grep "phase: implementation" "${tmp_dir}/stateful-issue.out" "Prompt did not include workflow phase"
+assert_grep "active issue: 11" "${tmp_dir}/stateful-issue.out" "Prompt did not include active issue"
+assert_grep "next suggested action: Generate an implementation prompt." "${tmp_dir}/stateful-issue.out" "Prompt did not include next action"
+
+if "$agentrail" prompt issue not-a-number --agent codex >"${tmp_dir}/invalid-issue.out" 2>&1; then
+  echo "prompt issue accepted a non-numeric issue" >&2
+  exit 1
+fi
+assert_grep "prompt issue argument must be numeric" "${tmp_dir}/invalid-issue.out" "Prompt issue did not reject non-numeric input"
+
+if "$agentrail" prompt grill "x" --agent cursor >"${tmp_dir}/invalid-agent.out" 2>&1; then
+  echo "prompt accepted an unsupported agent" >&2
+  exit 1
+fi
+assert_grep "--agent must be codex or claude" "${tmp_dir}/invalid-agent.out" "Prompt did not reject unsupported agent"
+
+echo "prompt generation test passed"

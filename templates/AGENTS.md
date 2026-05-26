@@ -23,6 +23,7 @@ This repo uses a GitHub-first agent workflow.
 - Repo-local workflow skills live in `skills/`.
 - Agent workflow docs live in `docs/agents/`.
 - Project memory lives in `docs/memory/`.
+- Durable AgentRail state lives in `.agentrail/state.json`.
 - GitHub issues are the source of truth for implementation tasks.
 - Pull requests are the source of truth for review and merge readiness.
 
@@ -122,6 +123,7 @@ If there is no visual surface, say so explicitly and include verification notes 
 See:
 
 - `docs/agents/issue-tracker.md`
+- `docs/agents/agentrail-state.md`
 - `docs/agents/milestones.md`
 - `docs/agents/ralph-loop.md`
 - `docs/agents/pr-review.md`

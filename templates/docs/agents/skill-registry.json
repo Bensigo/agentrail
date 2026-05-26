@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "description": "AgentRail-managed bundled skill registry. Upstream entries are provenance candidates and audit notes only; AgentRail does not auto-install third-party skill sources.",
+  "skills": [
+    {
+      "name": "frontend-web",
+      "localPath": "skills/frontend-web/SKILL.md",
+      "description": "Build and modify web frontends with attention to existing UI patterns, accessible interactions, responsive layout, and visual verification.",
+      "bundledByDefault": true,
+      "licenseStatus": "agentrail-authored; upstream candidates require license review before reuse",
+      "auditStatus": "approved-first-party-skill; provenance candidates verified for existence only",
+      "triggers": {
+        "keywords": ["frontend", "react", "next.js", "ui", "css", "component", "responsive"],
+        "fileGlobs": ["**/*.tsx", "**/*.jsx", "**/*.css", "**/app/**", "**/components/**"],
+        "projectSignals": ["package.json dependencies include react, next, vite, or tailwindcss"]
+      },
+      "provenance": {
+        "candidates": [
+          {
+            "sourceName": "Anthropic Claude Code frontend design skill",
+            "url": "https://github.com/anthropics/claude-code/blob/main/plugins/frontend-design/skills/frontend-design/SKILL.md",
+            "relationship": "candidate-reference-only",
+            "verifiedStatus": "path exists; content SHA observed through GitHub API",
+            "observedSha": "600b6db41fac7e2081c7528ec6982960892c819d",
+            "license": "not audited for AgentRail reuse",
+            "auditNotes": "Represented only as a provenance candidate. Do not auto-install or copy without license and content review.",
+            "autoInstall": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "desktop-tauri",
+      "localPath": "skills/desktop-tauri/SKILL.md",
+      "description": "Work on Tauri desktop applications across the web frontend, Rust backend, permissions, capabilities, packaging, and platform verification.",
+      "bundledByDefault": true,
+      "licenseStatus": "agentrail-authored; Apache-2.0 candidate source noted for future audit",
+      "auditStatus": "approved-first-party-skill; candidate paths verified for existence only",
+      "triggers": {
+        "keywords": ["tauri", "desktop", "rust", "capabilities", "permissions", "webview"],
+        "fileGlobs": ["**/src-tauri/**", "**/tauri.conf.json", "**/Cargo.toml"],
+        "projectSignals": ["src-tauri directory or @tauri-apps dependency"]
+      },
+      "provenance": {
+        "candidates": [
+          {
+            "sourceName": "Mindrally skills",
+            "url": "https://github.com/Mindrally/skills",
+            "relationship": "candidate-reference-only",
+            "verifiedStatus": "repository exists; candidate path tauri-development/SKILL.md observed",
+            "license": "Apache-2.0",
+            "auditNotes": "Use as an audit candidate only. AgentRail ships an authored local skill and does not auto-install from this repository.",
+            "autoInstall": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "backend-api",
+      "localPath": "skills/backend-api/SKILL.md",
+      "description": "Implement backend APIs with explicit contracts, validation, persistence boundaries, error handling, and focused integration tests.",
+      "bundledByDefault": true,
+      "licenseStatus": "agentrail-authored; Apache-2.0 candidate source noted for future audit",
+      "auditStatus": "approved-first-party-skill; candidate paths verified for existence only",
+      "triggers": {
+        "keywords": ["api", "backend", "server", "endpoint", "database", "auth", "validation"],
+        "fileGlobs": ["**/api/**", "**/server/**", "**/routes/**", "**/controllers/**", "**/prisma/**"],
+        "projectSignals": ["server framework dependency, database schema, route directory, or API test fixture"]
+      },
+      "provenance": {
+        "candidates": [
+          {
+            "sourceName": "Mindrally skills",
+            "url": "https://github.com/Mindrally/skills",
+            "relationship": "candidate-reference-only",
+            "verifiedStatus": "repository exists; candidate path backend-development/SKILL.md observed",
+            "license": "Apache-2.0",
+            "auditNotes": "Use as an audit candidate only. AgentRail ships an authored local skill and does not auto-install from this repository.",
+            "autoInstall": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "devops-deploy",
+      "localPath": "skills/devops-deploy/SKILL.md",
+      "description": "Change deployment, CI, infrastructure, environment, and release automation with rollback-aware verification.",
+      "bundledByDefault": true,
+      "licenseStatus": "agentrail-authored; upstream candidates require review before reuse",
+      "auditStatus": "approved-first-party-skill; candidate repositories verified for existence only",
+      "triggers": {
+        "keywords": ["deploy", "ci", "github actions", "docker", "infrastructure", "environment", "release"],
+        "fileGlobs": ["**/.github/workflows/**", "**/Dockerfile", "**/docker-compose.yml", "**/vercel.json", "**/infra/**"],
+        "projectSignals": ["CI workflow, deployment config, container config, or infrastructure directory"]
+      },
+      "provenance": {
+        "candidates": [
+          {
+            "sourceName": "Mindrally skills",
+            "url": "https://github.com/Mindrally/skills",
+            "relationship": "candidate-reference-only",
+            "verifiedStatus": "repository exists; candidate path devops/SKILL.md observed",
+            "license": "Apache-2.0",
+            "auditNotes": "Use as an audit candidate only. AgentRail ships an authored local skill and does not auto-install from this repository.",
+            "autoInstall": false
+          },
+          {
+            "sourceName": "Vercel skills CLI",
+            "url": "https://github.com/vercel-labs/skills",
+            "relationship": "ux-reference-only",
+            "verifiedStatus": "repository exists on default branch main",
+            "license": "not audited for AgentRail reuse",
+            "auditNotes": "Use only as command UX reference unless a later license review approves content reuse.",
+            "autoInstall": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "docs-current",
+      "localPath": "skills/docs-current/SKILL.md",
+      "description": "Verify current external documentation, API behavior, licenses, and source links before making dependency-sensitive claims or changes.",
+      "bundledByDefault": true,
+      "licenseStatus": "agentrail-authored; MIT reference sources noted for future audit",
+      "auditStatus": "approved-first-party-skill; candidate repositories verified for existence only",
+      "triggers": {
+        "keywords": ["docs", "documentation", "current", "latest", "api", "sdk", "license", "provenance"],
+        "fileGlobs": ["**/docs/**", "**/*.md", "**/package.json", "**/pnpm-lock.yaml", "**/package-lock.json"],
+        "projectSignals": ["task asks for current docs, external API behavior, dependency metadata, or license verification"]
+      },
+      "provenance": {
+        "candidates": [
+          {
+            "sourceName": "Upstash Context7",
+            "url": "https://github.com/upstash/context7",
+            "relationship": "tooling-reference-only",
+            "verifiedStatus": "repository exists on default branch master; README SHA observed",
+            "observedSha": "afe64f44a7d2e79370b5c79623b328b34382ae49",
+            "license": "MIT",
+            "auditNotes": "Reference for current-doc retrieval workflow only. AgentRail does not configure or auto-install Context7.",
+            "autoInstall": false
+          },
+          {
+            "sourceName": "GitHub awesome-copilot",
+            "url": "https://github.com/github/awesome-copilot",
+            "relationship": "additional-reference-source",
+            "verifiedStatus": "repository exists on default branch main",
+            "license": "MIT",
+            "auditNotes": "Reference source for future skill audits only; not trusted as an auto-install source.",
+            "autoInstall": false
+          }
+        ]
+      }
+    }
+  ]
+}

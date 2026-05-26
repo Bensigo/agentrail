@@ -113,6 +113,7 @@ const statePath = process.argv[2];
 const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
 state.agentrailVersion = "0.0.0";
 state.managedFiles = state.managedFiles.filter((file) => file.path !== "docs/agents/triage-labels.md" && file.path !== "docs/agents/issue-tracker.md");
+state.managedFiles = state.managedFiles.filter((file) => file.path !== "docs/agents/skill-registry.json" && file.path !== "skills/frontend-web/SKILL.md");
 const ralph = state.managedFiles.find((file) => file.path === "docs/agents/ralph-loop.md");
 ralph.contentHash = "sha256:old-package-hash";
 const context = state.managedFiles.find((file) => file.path === "CONTEXT.md");
@@ -123,6 +124,8 @@ NODE
 "$agentrail" upgrade --target "$upgrade_repo" >"${tmp_dir}/upgrade.out"
 
 assert_grep "added: docs/agents/triage-labels.md" "${tmp_dir}/upgrade.out" "upgrade did not report added managed files"
+assert_grep "added: docs/agents/skill-registry.json" "${tmp_dir}/upgrade.out" "upgrade did not report the skill registry as an added managed file"
+assert_grep "added: skills/frontend-web/SKILL.md" "${tmp_dir}/upgrade.out" "upgrade did not report bundled skill files as added managed files"
 assert_grep "changed: docs/agents/ralph-loop.md" "${tmp_dir}/upgrade.out" "upgrade did not report changed package files"
 assert_grep "changed: CONTEXT.md" "${tmp_dir}/upgrade.out" "upgrade treated preserved managed file as local edit"
 assert_grep "missing: docs/agents/visual-evidence.md" "${tmp_dir}/upgrade.out" "upgrade did not report missing managed files"

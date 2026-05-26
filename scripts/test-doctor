@@ -48,6 +48,7 @@ assert_grep "ok AGENTS.md" "${tmp_dir}/installed-doctor.out" "installed repo did
 assert_grep "ok TASTE.md" "${tmp_dir}/installed-doctor.out" "doctor did not report installed TASTE.md"
 assert_grep "ok .agentrail/state.json" "${tmp_dir}/installed-doctor.out" "installed repo did not report state"
 assert_grep "ok managed hashes match" "${tmp_dir}/installed-doctor.out" "installed repo did not report matching hashes"
+assert_grep "ok skill registry" "${tmp_dir}/installed-doctor.out" "installed repo did not report a valid skill registry"
 
 rm "${installed_repo}/TASTE.md"
 "$agentrail" doctor --target "$installed_repo" >"${tmp_dir}/missing-taste-doctor.out"

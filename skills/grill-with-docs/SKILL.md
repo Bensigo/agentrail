@@ -26,6 +26,7 @@ Most repos have a single context:
 ```
 /
 ├── CONTEXT.md
+├── TASTE.md
 ├── docs/
 │   └── adr/
 │       ├── 0001-event-sourced-orders.md
@@ -38,6 +39,7 @@ If a `CONTEXT-MAP.md` exists at the root, the repo has multiple contexts. The ma
 ```
 /
 ├── CONTEXT-MAP.md
+├── TASTE.md
 ├── docs/
 │   └── adr/                          ← system-wide decisions
 ├── src/
@@ -49,7 +51,7 @@ If a `CONTEXT-MAP.md` exists at the root, the repo has multiple contexts. The ma
 │       └── docs/adr/
 ```
 
-Create files lazily — only when you have something to write. If no `CONTEXT.md` exists, create one when the first term is resolved. If no `docs/adr/` exists, create it when the first ADR is needed.
+Create files lazily — only when you have something to write. If no `CONTEXT.md` exists, create one when the first term is resolved. If no `TASTE.md` exists, do not create it unless product quality, UI standards, copy tone, interaction standards, or visual evidence expectations are part of the decision. If no `docs/adr/` exists, create it when the first ADR is needed.
 
 ## During the session
 

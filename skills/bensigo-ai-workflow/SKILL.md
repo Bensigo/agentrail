@@ -17,6 +17,7 @@ Run this workflow only when the work is large enough to benefit from staged thin
    - Capture domain facts, decisions, constraints, terminology, and unresolved questions in durable project docs.
    - Prefer repo-native context files, ADRs, and source-linked `docs/memory/` entries over chat-only memory.
    - Keep `CONTEXT.md` canonical; use `docs/memory/` for reusable lessons, preferences, and failure patterns that future agents should recall.
+   - Use `TASTE.md` when product quality, UI standards, copy tone, interaction standards, or visual evidence expectations affect the work.
 
 3. Write the PRD.
    - Convert the clarified idea into a focused PRD with goals, non-goals, user flows, requirements, acceptance criteria, risks, and verification expectations.
@@ -39,6 +40,7 @@ Run this workflow only when the work is large enough to benefit from staged thin
    - Every implementation PR needs a visual evidence section.
    - For UI-visible work, include a screenshot or short video of the completed behavior.
    - For non-UI work, explicitly say there is no visual surface and include verification notes instead.
+   - Check `TASTE.md` before judging product-quality or UI-visible work when that file exists.
 
 8. Review the PR.
    - Run review in a fresh context using the repo's review runner when available.

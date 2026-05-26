@@ -45,9 +45,14 @@ git -C "$installed_repo" init --quiet
 "$agentrail" doctor --target "$installed_repo" >"${tmp_dir}/installed-doctor.out"
 assert_grep "status: installed" "${tmp_dir}/installed-doctor.out" "installed repo was not reported as installed"
 assert_grep "ok AGENTS.md" "${tmp_dir}/installed-doctor.out" "installed repo did not report AGENTS.md"
-assert_grep "optional-missing TASTE.md" "${tmp_dir}/installed-doctor.out" "doctor did not report optional TASTE.md"
+assert_grep "ok TASTE.md" "${tmp_dir}/installed-doctor.out" "doctor did not report installed TASTE.md"
 assert_grep "ok .agentrail/state.json" "${tmp_dir}/installed-doctor.out" "installed repo did not report state"
 assert_grep "ok managed hashes match" "${tmp_dir}/installed-doctor.out" "installed repo did not report matching hashes"
+
+rm "${installed_repo}/TASTE.md"
+"$agentrail" doctor --target "$installed_repo" >"${tmp_dir}/missing-taste-doctor.out"
+assert_grep "status: installed" "${tmp_dir}/missing-taste-doctor.out" "missing optional TASTE.md should not make repo modified"
+assert_grep "optional-missing TASTE.md" "${tmp_dir}/missing-taste-doctor.out" "doctor did not report missing TASTE.md as optional"
 
 printf '\nlocal edit\n' >>"${installed_repo}/AGENTS.md"
 "$agentrail" doctor --target "$installed_repo" >"${tmp_dir}/modified-doctor.out"

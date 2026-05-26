@@ -4,11 +4,15 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
+  agentrail init [--target DIR] [--force] [--github-labels]
   agentrail install [--target DIR] [--force] [--github-labels]
+  agentrail upgrade [--target DIR] [--force]
   agentrail doctor [--target DIR]
 
 Commands:
+  init      Initialize AgentRail workflow files.
   install   Install AgentRail workflow files.
+  upgrade   Upgrade managed AgentRail files without overwriting local edits.
   doctor    Inspect AgentRail installation health.
 USAGE
 }
@@ -54,8 +58,224 @@ parse_target() {
   done
 }
 
+parse_upgrade_args() {
+  local target_var="$1"
+  local force_var="$2"
+  shift 2
+
+  printf -v "$target_var" '%s' "$(pwd)"
+  printf -v "$force_var" '%s' "0"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --target)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
+        printf -v "$target_var" '%s' "$value"
+        shift 2
+        ;;
+      --force)
+        printf -v "$force_var" '%s' "1"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown option: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+  done
+}
+
 run_install() {
   "$installer" "$@"
+}
+
+run_upgrade() {
+  local target_dir force
+  parse_upgrade_args target_dir force "$@"
+
+  AGENTRAIL_REPO_DIR="$repo_dir" \
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  AGENTRAIL_FORCE="$force" \
+  node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+
+const repoDir = process.env.AGENTRAIL_REPO_DIR;
+const targetDir = process.env.AGENTRAIL_TARGET_DIR;
+const force = process.env.AGENTRAIL_FORCE === "1";
+const statePath = path.join(targetDir, ".agentrail/state.json");
+const packageJson = JSON.parse(fs.readFileSync(path.join(repoDir, "package.json"), "utf8"));
+const roots = [
+  { root: path.join(repoDir, "templates"), prefix: "" },
+  { root: path.join(repoDir, "skills"), prefix: "skills" },
+];
+
+function sha256Buffer(buffer) {
+  return `sha256:${crypto.createHash("sha256").update(buffer).digest("hex")}`;
+}
+
+function sha256File(file) {
+  return sha256Buffer(fs.readFileSync(file));
+}
+
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new Error("missing .agentrail/state.json; run agentrail init first");
+    }
+    throw error;
+  }
+}
+
+function walkFiles(root) {
+  const results = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...walkFiles(fullPath));
+    } else if (entry.isFile()) {
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
+
+function copyFile(sourcePath, targetPath) {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.copyFileSync(sourcePath, targetPath);
+  const mode = fs.statSync(sourcePath).mode & 0o777;
+  fs.chmodSync(targetPath, mode);
+}
+
+const state = readJson(statePath);
+if (!Array.isArray(state.managedFiles)) {
+  throw new Error("invalid .agentrail/state.json: managedFiles must be an array");
+}
+
+const previousByPath = new Map(state.managedFiles.map((file) => [file.path, file]));
+const legacyAdoptedState = Boolean(state.legacyAdopted);
+const inventory = [];
+for (const { root, prefix } of roots) {
+  for (const sourcePath of walkFiles(root).sort()) {
+    const relativeToRoot = path.relative(root, sourcePath);
+    const managedPath = prefix ? path.join(prefix, relativeToRoot) : relativeToRoot;
+    inventory.push({
+      path: managedPath.split(path.sep).join("/"),
+      source: path.relative(repoDir, sourcePath).split(path.sep).join("/"),
+      sourcePath,
+      sourceHash: sha256File(sourcePath),
+    });
+  }
+}
+
+const now = new Date().toISOString();
+const nextManagedFiles = [];
+
+console.log(`AgentRail upgrade: ${targetDir}`);
+
+for (const item of inventory) {
+  const previous = previousByPath.get(item.path);
+  const targetPath = path.join(targetDir, item.path);
+  const targetExists = fs.existsSync(targetPath);
+  const currentHash = targetExists ? sha256File(targetPath) : null;
+  const userOwned = previous && (
+    previous.installStatus === "legacy-adopted" ||
+    (previous.installStatus === "preserved" && legacyAdoptedState)
+  );
+
+  let category = "unchanged";
+  let installStatus = previous?.installStatus || "preserved";
+  let shouldCopy = false;
+
+  if (!previous) {
+    category = "added";
+    installStatus = targetExists && currentHash !== item.sourceHash && !force ? "legacy-adopted" : "added";
+    shouldCopy = !targetExists || force || currentHash === item.sourceHash;
+  } else if (!targetExists) {
+    category = "missing";
+    installStatus = "restored";
+    shouldCopy = true;
+  } else if (userOwned && item.sourceHash !== previous.contentHash) {
+    category = "locally modified";
+    installStatus = force ? "forced" : "preserved";
+    shouldCopy = force;
+  } else if (currentHash !== previous.contentHash && currentHash !== item.sourceHash) {
+    category = "locally modified";
+    installStatus = force ? "forced" : "preserved";
+    shouldCopy = force;
+  } else if (item.sourceHash !== previous.contentHash) {
+    category = "changed";
+    installStatus = "updated";
+    shouldCopy = true;
+  }
+
+  if (category !== "unchanged") {
+    console.log(`${category}: ${item.path}`);
+  }
+
+  if (shouldCopy) {
+    copyFile(item.sourcePath, targetPath);
+    if (installStatus === "forced") {
+      console.log(`forced: ${item.path}`);
+    } else if (installStatus === "restored") {
+      console.log(`restored: ${item.path}`);
+    } else if (installStatus === "updated") {
+      console.log(`updated: ${item.path}`);
+    } else {
+      console.log(`installed: ${item.path}`);
+    }
+  } else if (category === "locally modified") {
+    console.log(`preserved local: ${item.path}`);
+  } else if (category === "added") {
+    console.log(`preserved existing untracked: ${item.path}`);
+  }
+
+  const finalHash = category === "locally modified" && !force && previous
+    ? previous.contentHash
+    : (fs.existsSync(targetPath) ? sha256File(targetPath) : item.sourceHash);
+  nextManagedFiles.push({
+    path: item.path,
+    source: item.source,
+    contentHash: finalHash,
+    installStatus,
+  });
+}
+
+const defaultWorkflow = {
+  phase: "idle",
+  activeIssue: null,
+  activePullRequest: null,
+  activePrd: null,
+  activeMilestone: null,
+  lastCompletedStep: null,
+  nextSuggestedAction: "Pick a ready-for-agent issue or create a PRD/milestone before starting implementation.",
+};
+
+const nextState = {
+  schemaVersion: 1,
+  agentrailVersion: packageJson.version,
+  installedAt: state.installedAt || now,
+  updatedAt: now,
+  legacyAdopted: Boolean(state.legacyAdopted),
+  managedFiles: nextManagedFiles,
+  workflow: {
+    ...defaultWorkflow,
+    ...(state.workflow || {}),
+  },
+};
+
+fs.mkdirSync(path.dirname(statePath), { recursive: true });
+fs.writeFileSync(statePath, `${JSON.stringify(nextState, null, 2)}\n`);
+console.log("updated: .agentrail/state.json");
+NODE
 }
 
 print_path_status() {
@@ -346,9 +566,17 @@ run_doctor() {
 }
 
 case "${1:-}" in
+  init)
+    shift
+    run_install "$@"
+    ;;
   install)
     shift
     run_install "$@"
+    ;;
+  upgrade)
+    shift
+    run_upgrade "$@"
     ;;
   doctor)
     shift

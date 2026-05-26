@@ -17,6 +17,6 @@
     "skills/"
   ],
   "scripts": {
-    "test": "bash scripts/test-install && bash scripts/test-promote-unblocked-issues && bash scripts/test-doctor && bash scripts/test-upgrade && bash scripts/test-public-positioning && bash scripts/test-prompt-generation && bash scripts/test-runner-adapter"
+    "test": "bash scripts/test-install && bash scripts/test-promote-unblocked-issues && bash scripts/test-doctor && bash scripts/test-upgrade && bash scripts/test-public-positioning && bash scripts/test-prompt-generation && bash scripts/test-runner-adapter && bash scripts/test-resume-handoff"
   }
 }

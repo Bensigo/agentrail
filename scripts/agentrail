@@ -8,6 +8,8 @@ Usage:
   agentrail install [--target DIR] [--force] [--github-labels]
   agentrail upgrade [--target DIR] [--force]
   agentrail doctor [--target DIR]
+  agentrail status [--target DIR]
+  agentrail resume [--target DIR] [--output FILE]
   agentrail prompt grill "<idea>" [--agent codex|claude] [--target DIR]
   agentrail prompt issue NUMBER [--agent codex|claude] [--target DIR]
   agentrail prompt review PR_NUMBER [--agent codex|claude] [--target DIR]
@@ -18,6 +20,8 @@ Commands:
   install   Install AgentRail workflow files.
   upgrade   Upgrade managed AgentRail files without overwriting local edits.
   doctor    Inspect AgentRail installation health.
+  status    Print install status and current workflow state.
+  resume    Print and write an agent handoff summary.
   prompt    Print an agent-ready prompt without executing an agent.
   run       Generate a bounded prompt and execute a configured agent command.
 USAGE
@@ -645,6 +649,186 @@ try {
 NODE
 }
 
+parse_resume_args() {
+  local target_var="$1"
+  local output_var="$2"
+  shift 2
+
+  printf -v "$target_var" '%s' "$(pwd)"
+  printf -v "$output_var" '%s' ""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --target)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
+        printf -v "$target_var" '%s' "$value"
+        shift 2
+        ;;
+      --output)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--output requires a file path" >&2; exit 2; }
+        printf -v "$output_var" '%s' "$value"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown option: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+  done
+}
+
+state_recommendation() {
+  local target_dir="$1"
+
+  cat <<RECOMMENDATION
+AgentRail state was not found at .agentrail/state.json.
+
+Recommendation:
+- If this repo has not been initialized, run: agentrail init --target ${target_dir}
+- If this repo already has AgentRail files but no state, run: agentrail install --target ${target_dir}
+- Then rerun: agentrail status --target ${target_dir}
+RECOMMENDATION
+}
+
+run_status() {
+  local target_dir
+  parse_target target_dir "$@"
+
+  local state_file="${target_dir}/.agentrail/state.json"
+  echo "AgentRail status: ${target_dir}"
+
+  if [[ ! -f "$state_file" ]]; then
+    echo "install status: missing-state"
+    echo
+    state_recommendation "$target_dir"
+    return 0
+  fi
+
+  command -v node >/dev/null 2>&1 || { echo "install status: unknown"; echo "node is required to read .agentrail/state.json"; return 1; }
+
+  node - "$state_file" <<'NODE'
+const fs = require("fs");
+const statePath = process.argv[2];
+
+try {
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  const workflow = state.workflow || {};
+  console.log("install status: state-present");
+  console.log(`agentrail version: ${state.agentrailVersion || "unknown"}`);
+  console.log(`installed at: ${state.installedAt || "unknown"}`);
+  console.log(`updated at: ${state.updatedAt || "unknown"}`);
+  console.log(`legacy adopted: ${Boolean(state.legacyAdopted)}`);
+  console.log("workflow:");
+  console.log(`  phase: ${workflow.phase || "unknown"}`);
+  console.log(`  active issue: ${workflow.activeIssue ?? "none"}`);
+  console.log(`  active pull request: ${workflow.activePullRequest ?? "none"}`);
+  console.log(`  active PRD: ${workflow.activePrd ?? "none"}`);
+  console.log(`  active milestone: ${workflow.activeMilestone ?? "none"}`);
+  console.log(`  last completed step: ${workflow.lastCompletedStep ?? "none"}`);
+  console.log(`  next action: ${workflow.nextSuggestedAction || "none"}`);
+} catch (error) {
+  console.log("install status: corrupt-state");
+  console.log(`state error: ${error.message}`);
+  process.exitCode = 1;
+}
+NODE
+}
+
+resume_body() {
+  local target_dir="$1"
+  local state_file="${target_dir}/.agentrail/state.json"
+
+  if [[ ! -f "$state_file" ]]; then
+    cat <<RESUME
+# AgentRail Resume
+
+Codex Desktop instruction: do not rely on previous chat context. Recover from durable state and source files only.
+
+$(state_recommendation "$target_dir")
+
+Relevant docs to inspect after initialization:
+- CONTEXT.md
+- TASTE.md when present
+- docs/agents/
+- docs/memory/
+- docs/prd/
+- docs/milestones/
+
+Verification commands:
+- agentrail doctor --target ${target_dir}
+- npm test
+RESUME
+    return 0
+  fi
+
+  command -v node >/dev/null 2>&1 || { echo "node is required to read .agentrail/state.json" >&2; return 1; }
+
+  node - "$state_file" "$target_dir" <<'NODE'
+const fs = require("fs");
+const statePath = process.argv[2];
+const targetDir = process.argv[3];
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+const workflow = state.workflow || {};
+
+console.log("# AgentRail Resume");
+console.log("");
+console.log("Codex Desktop instruction: do not rely on previous chat context. Recover from durable state and source files only.");
+console.log("");
+console.log("Current task:");
+console.log(`- workflow phase: ${workflow.phase || "unknown"}`);
+console.log(`- active issue: ${workflow.activeIssue ?? "none"}`);
+console.log(`- active pull request: ${workflow.activePullRequest ?? "none"}`);
+console.log(`- active PRD: ${workflow.activePrd ?? "none"}`);
+console.log(`- active milestone: ${workflow.activeMilestone ?? "none"}`);
+console.log(`- last completed step: ${workflow.lastCompletedStep ?? "none"}`);
+console.log(`- next action: ${workflow.nextSuggestedAction || "none"}`);
+console.log("");
+console.log("Relevant docs:");
+console.log("- CONTEXT.md");
+console.log("- TASTE.md when present");
+console.log("- docs/agents/agentrail-state.md");
+console.log("- docs/agents/issue-tracker.md");
+console.log("- docs/agents/ralph-loop.md");
+console.log("- docs/agents/pr-review.md");
+console.log("- docs/memory/");
+console.log("- docs/prd/");
+console.log("- docs/milestones/");
+console.log("");
+console.log("Verification commands:");
+console.log(`- agentrail status --target ${targetDir}`);
+console.log(`- agentrail doctor --target ${targetDir}`);
+console.log("- npm test");
+console.log("");
+console.log("Resume rules:");
+console.log("- Read source files and GitHub issue or PR state before acting.");
+console.log("- Treat this handoff as a pointer to durable state, not as hidden truth.");
+console.log("- Continue only the active issue or PR unless the durable state says otherwise.");
+NODE
+}
+
+run_resume() {
+  local target_dir output_file
+  parse_resume_args target_dir output_file "$@"
+
+  local handoff_dir default_output
+  handoff_dir="${target_dir}/.agentrail/handoffs"
+  default_output="${handoff_dir}/$(date -u +"%Y%m%d-%H%M%S")-resume.md"
+  if [[ -z "$output_file" ]]; then
+    output_file="$default_output"
+  fi
+
+  mkdir -p "$(dirname "$output_file")"
+  resume_body "$target_dir" | tee "$output_file"
+  echo
+  echo "handoff: ${output_file}"
+}
+
 prompt_common_header() {
   local agent="$1"
   local target_dir="$2"
@@ -1081,6 +1265,14 @@ case "${1:-}" in
   doctor)
     shift
     run_doctor "$@"
+    ;;
+  status)
+    shift
+    run_status "$@"
+    ;;
+  resume)
+    shift
+    run_resume "$@"
     ;;
   prompt)
     shift

@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+agentrail="${repo_dir}/scripts/agentrail"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+repo="${tmp_dir}/repo"
+mkdir -p "$repo"
+git -C "$repo" init --quiet
+git -C "$repo" remote add origin https://github.com/acme/repo.git
+
+fake_bin="${tmp_dir}/fake-bin"
+mkdir -p "$fake_bin"
+cat >"${fake_bin}/gh" <<'GH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+log="${AGENTRAIL_FAKE_GH_LOG:?}"
+
+case "$1 $2" in
+  "auth status")
+    echo "auth status" >>"$log"
+    exit 0
+    ;;
+  "label create")
+    printf 'label create %s' "$3" >>"$log"
+    shift 3
+    while [[ $# -gt 0 ]]; do
+      printf ' %s' "$1" >>"$log"
+      shift
+    done
+    printf '\n' >>"$log"
+    exit 0
+    ;;
+esac
+
+echo "unexpected gh invocation: $*" >&2
+exit 1
+GH
+chmod +x "${fake_bin}/gh"
+
+AGENTRAIL_FAKE_GH_LOG="${tmp_dir}/gh.log" PATH="${fake_bin}:$PATH" "$agentrail" labels sync --target "$repo" >"${tmp_dir}/sync.out"
+assert_grep "labels sync: ok" "${tmp_dir}/sync.out" "labels sync did not report success"
+
+for label in ready-for-agent afk afk-in-progress review-fix memory-suggestion pr-reviewed; do
+  assert_grep "label create ${label}" "${tmp_dir}/gh.log" "labels sync did not create ${label}"
+  assert_grep "label create ${label} .* --force" "${tmp_dir}/gh.log" "labels sync did not force-update ${label}"
+done
+
+AGENTRAIL_FAKE_GH_LOG="${tmp_dir}/gh-second.log" PATH="${fake_bin}:$PATH" "$agentrail" labels sync --target "$repo" >"${tmp_dir}/sync-second.out"
+assert_grep "labels sync: ok" "${tmp_dir}/sync-second.out" "second labels sync did not report success"
+assert_grep "label create memory-suggestion" "${tmp_dir}/gh-second.log" "second labels sync did not remain idempotent"
+
+if PATH="/usr/bin:/bin" "$agentrail" labels sync --target "$repo" >"${tmp_dir}/missing-gh.out" 2>&1; then
+  echo "labels sync succeeded without gh" >&2
+  exit 1
+fi
+assert_grep "gh CLI is required" "${tmp_dir}/missing-gh.out" "labels sync did not explain missing gh"
+
+cat >"${fake_bin}/gh" <<'GH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$1" == "auth" && "$2" == "status" ]]; then
+  exit 1
+fi
+
+echo "unexpected gh invocation: $*" >&2
+exit 1
+GH
+chmod +x "${fake_bin}/gh"
+
+if PATH="${fake_bin}:$PATH" "$agentrail" labels sync --target "$repo" >"${tmp_dir}/unauth.out" 2>&1; then
+  echo "labels sync succeeded with unauthenticated gh" >&2
+  exit 1
+fi
+assert_grep "not authenticated" "${tmp_dir}/unauth.out" "labels sync did not explain unauthenticated gh"
+
+echo "label sync test passed"

@@ -103,6 +103,7 @@ ensure_workflow_labels() {
   ensure_label "afk-in-progress" "BFDADC" "Issue is currently claimed by the AFK workflow."
   ensure_label "pr-reviewed" "C5DEF5" "Implementation PR has completed automated review."
   ensure_label "review-fix" "D93F0B" "Follow-up issue created from PR review feedback."
+  ensure_label "memory-suggestion" "FBCA04" "Suggested project memory update for human review."
   ensure_label "ready-for-agent" "0E8A16" "Issue is ready for an agent to implement."
 }
 

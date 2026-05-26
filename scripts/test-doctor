@@ -101,7 +101,7 @@ GH
 chmod +x "${fake_bin}/gh"
 
 PATH="${fake_bin}:$PATH" "$agentrail" doctor --target "$labels_repo" >"${tmp_dir}/labels-doctor.out"
-assert_grep "warn missing GitHub labels: afk-in-progress, review-fix, pr-reviewed" "${tmp_dir}/labels-doctor.out" "doctor did not report missing GitHub labels"
+assert_grep "warn missing GitHub labels: afk-in-progress, review-fix, memory-suggestion, pr-reviewed" "${tmp_dir}/labels-doctor.out" "doctor did not report missing GitHub labels"
 
 if "$agentrail" doctor --target >"${tmp_dir}/invalid.out" 2>&1; then
   echo "doctor accepted --target without a directory" >&2

@@ -62,13 +62,29 @@ done
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$repo_root"
 
-if [[ ! -f "CONTEXT.md" ]]; then
-  echo "Missing CONTEXT.md. Run the workflow installer from the project root first." >&2
+context_file="CONTEXT.md"
+ralph_docs_file="docs/agents/ralph-loop.md"
+memory_command="scripts/memory"
+
+if [[ ! -f "$context_file" && -f "templates/CONTEXT.md" ]]; then
+  context_file="templates/CONTEXT.md"
+fi
+
+if [[ ! -f "$ralph_docs_file" && -f "templates/docs/agents/ralph-loop.md" ]]; then
+  ralph_docs_file="templates/docs/agents/ralph-loop.md"
+fi
+
+if [[ ! -x "$memory_command" && -x "templates/scripts/memory" ]]; then
+  memory_command="templates/scripts/memory"
+fi
+
+if [[ ! -f "$context_file" ]]; then
+  echo "Missing CONTEXT.md. Run the workflow installer from the project root first, or run from the AgentRail source repo with templates/CONTEXT.md present." >&2
   exit 1
 fi
 
-if [[ ! -f "docs/agents/ralph-loop.md" ]]; then
-  echo "Missing docs/agents/ralph-loop.md. Run the workflow installer first." >&2
+if [[ ! -f "$ralph_docs_file" ]]; then
+  echo "Missing docs/agents/ralph-loop.md. Run the workflow installer first, or run from the AgentRail source repo with templates/docs/agents/ralph-loop.md present." >&2
   exit 1
 fi
 
@@ -115,8 +131,8 @@ You are running one Ralph implementation loop.
 Hard limits:
 - Handle exactly one issue: #${issue_number}
 - Do not continue into unrelated issues.
-- Read CONTEXT.md and docs/agents/ralph-loop.md before editing.
-- Run scripts/memory recall for the issue title and key terms before editing.
+- Read ${context_file} and ${ralph_docs_file} before editing.
+- Run ${memory_command} recall for the issue title and key terms before editing when that command is available.
 - Treat project memory as advisory; verify it against current code, docs, issue, PRD, and ADRs.
 - Preserve existing user changes.
 - Implement the smallest coherent change that satisfies the issue.
@@ -140,7 +156,7 @@ if [[ "$print_prompt" -eq 1 || -z "$agent_command" ]]; then
   exit 0
 fi
 
-if [[ "$afk" -eq 1 && command -v gh >/dev/null 2>&1 ]]; then
+if [[ "$afk" -eq 1 ]] && command -v gh >/dev/null 2>&1; then
   gh issue edit "$issue_number" --add-label afk-in-progress >/dev/null
 fi
 
@@ -149,7 +165,7 @@ printf '%s\n' "$prompt" | bash -lc "$agent_command"
 status=$?
 set -e
 
-if [[ "$afk" -eq 1 && command -v gh >/dev/null 2>&1 ]]; then
+if [[ "$afk" -eq 1 ]] && command -v gh >/dev/null 2>&1; then
   gh issue edit "$issue_number" --remove-label afk-in-progress >/dev/null || true
 fi
 

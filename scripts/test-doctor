@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+agentrail="${repo_dir}/scripts/agentrail"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+clean_repo="${tmp_dir}/clean"
+mkdir -p "$clean_repo"
+git -C "$clean_repo" init --quiet
+
+"$agentrail" doctor --target "$clean_repo" >"${tmp_dir}/clean-doctor.out"
+assert_grep "status: missing" "${tmp_dir}/clean-doctor.out" "clean repo was not reported as missing AgentRail"
+assert_grep "missing AGENTS.md" "${tmp_dir}/clean-doctor.out" "clean repo did not report missing AGENTS.md"
+assert_grep "missing .agentrail/state.json" "${tmp_dir}/clean-doctor.out" "clean repo did not report missing state"
+
+bin_dir="${tmp_dir}/node_modules/.bin"
+mkdir -p "$bin_dir"
+ln -s "$agentrail" "${bin_dir}/agentrail"
+"${bin_dir}/agentrail" doctor --target "$clean_repo" >"${tmp_dir}/symlink-doctor.out"
+assert_grep "status: missing" "${tmp_dir}/symlink-doctor.out" "agentrail bin symlink did not resolve package paths"
+
+installed_repo="${tmp_dir}/installed"
+mkdir -p "$installed_repo"
+git -C "$installed_repo" init --quiet
+"$agentrail" install --target "$installed_repo" >"${tmp_dir}/install.out"
+"$agentrail" doctor --target "$installed_repo" >"${tmp_dir}/installed-doctor.out"
+assert_grep "status: installed" "${tmp_dir}/installed-doctor.out" "installed repo was not reported as installed"
+assert_grep "ok AGENTS.md" "${tmp_dir}/installed-doctor.out" "installed repo did not report AGENTS.md"
+assert_grep "optional-missing TASTE.md" "${tmp_dir}/installed-doctor.out" "doctor did not report optional TASTE.md"
+assert_grep "ok .agentrail/state.json" "${tmp_dir}/installed-doctor.out" "installed repo did not report state"
+assert_grep "ok managed hashes match" "${tmp_dir}/installed-doctor.out" "installed repo did not report matching hashes"
+
+printf '\nlocal edit\n' >>"${installed_repo}/AGENTS.md"
+"$agentrail" doctor --target "$installed_repo" >"${tmp_dir}/modified-doctor.out"
+assert_grep "status: modified" "${tmp_dir}/modified-doctor.out" "modified repo was not reported as modified"
+assert_grep "warn hash mismatch: AGENTS.md" "${tmp_dir}/modified-doctor.out" "doctor did not report AGENTS.md hash mismatch"
+if grep -q -- "current package mismatch: AGENTS.md" "${tmp_dir}/modified-doctor.out"; then
+  echo "doctor treated a local AGENTS.md edit as package drift" >&2
+  exit 1
+fi
+
+adopted_repo="${tmp_dir}/adopted"
+mkdir -p "$adopted_repo"
+git -C "$adopted_repo" init --quiet
+cat >"${adopted_repo}/AGENTS.md" <<'AGENTS'
+# Local agent instructions
+
+Keep these project-specific instructions.
+AGENTS
+"$agentrail" install --target "$adopted_repo" >"${tmp_dir}/adopted-install.out"
+"$agentrail" doctor --target "$adopted_repo" >"${tmp_dir}/adopted-doctor.out"
+assert_grep "status: installed" "${tmp_dir}/adopted-doctor.out" "adopted repo was incorrectly marked stale"
+if grep -q -- "current package mismatch: AGENTS.md" "${tmp_dir}/adopted-doctor.out"; then
+  echo "doctor treated adopted AGENTS.md as a package mismatch" >&2
+  exit 1
+fi
+
+labels_repo="${tmp_dir}/labels"
+mkdir -p "$labels_repo"
+git -C "$labels_repo" init --quiet
+git -C "$labels_repo" remote add origin https://github.com/acme/repo.git
+"$agentrail" install --target "$labels_repo" >"${tmp_dir}/labels-install.out"
+fake_bin="${tmp_dir}/fake-bin"
+mkdir -p "$fake_bin"
+cat >"${fake_bin}/gh" <<'GH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$1" == "label" && "$2" == "list" ]]; then
+  printf '[{"name":"ready-for-agent"},{"name":"afk"}]\n'
+  exit 0
+fi
+
+echo "unexpected gh invocation: $*" >&2
+exit 1
+GH
+chmod +x "${fake_bin}/gh"
+
+PATH="${fake_bin}:$PATH" "$agentrail" doctor --target "$labels_repo" >"${tmp_dir}/labels-doctor.out"
+assert_grep "warn missing GitHub labels: afk-in-progress, review-fix, pr-reviewed" "${tmp_dir}/labels-doctor.out" "doctor did not report missing GitHub labels"
+
+if "$agentrail" doctor --target >"${tmp_dir}/invalid.out" 2>&1; then
+  echo "doctor accepted --target without a directory" >&2
+  exit 1
+fi
+assert_grep "--target requires a directory" "${tmp_dir}/invalid.out" "doctor did not reject missing --target value"
+
+echo "doctor test passed"

@@ -10,6 +10,7 @@ It installs:
 - PRD and milestone folders under `docs/`
 - project-local skills under `skills/`
 - workflow scripts under `scripts/`
+- durable AgentRail state under `.agentrail/state.json`
 
 ## Install
 
@@ -84,6 +85,14 @@ scripts/pr
 scripts/ralph-loop
 scripts/review-pr
 ```
+
+Durable project state:
+
+```text
+.agentrail/state.json
+```
+
+The state file records the AgentRail version, install timestamps, managed file inventory, file hashes, and the current workflow pointer. Its format is documented in `docs/agents/agentrail-state.md`.
 
 ## Recommended Flow
 

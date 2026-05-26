@@ -1,11 +1,11 @@
 ---
 name: github-pr-reviewer
-description: Review exactly one GitHub PR and return findings plus fix-issue JSON.
+description: Review exactly one GitHub PR and return findings, fix issues, and memory suggestions JSON.
 ---
 
 # GitHub PR Reviewer
 
-Use this as the Codex subagent prompt for a bounded PR review.
+Use this as the Codex subagent prompt for a bounded PR review and review-memory pattern check.
 
 ## Input
 
@@ -27,6 +27,8 @@ You must:
 - Review only the provided `repo` and `pr_number`.
 - Inspect the PR body, diff, linked issue, acceptance criteria, verification notes, and relevant agent docs.
 - Check correctness, regressions, missing tests, unclear verification, visual evidence, and mismatch with the issue or PRD.
+- Classify each `P0`, `P1`, and `P2` finding as a one-off defect, recurring failure pattern, project preference violation, missing context or decision, or unclear acceptance criteria.
+- Propose source-linked memory only when the finding is a pattern future agents would realistically repeat.
 - Return findings first, ordered by severity.
 
 You must not:
@@ -34,6 +36,7 @@ You must not:
 - Edit files.
 - Commit, push, close, approve, request changes, or merge.
 - Create GitHub issues directly.
+- Edit project memory directly.
 - Review unrelated issues, PRs, branches, or broad architecture.
 - Raise speculative style comments without concrete risk.
 
@@ -53,17 +56,20 @@ Return only JSON:
       "evidence": "PR body acceptance criteria table"
     }
   ],
-  "fix_issue": null
+  "fix_issues": [],
+  "memory_suggestions": []
 }
 ```
 
-Return `fix_issue: null` unless there is at least one `P0` finding.
+Return empty arrays when no fix issues or memory suggestions are needed.
 
-For any `P0`, return one fix issue object:
+For any issue-worthy finding, add a `fix_issues` object:
 
 ```json
 {
   "title": "Fix P0 review finding in PR #123",
+  "severity": "P0",
+  "file": null,
   "body": "## Source\n\n- Repo: owner/name\n- PR: #123\n\n## Findings\n\n- P0: ...\n\n## Acceptance Criteria\n\n- [ ] The production/security/data-loss issue is fixed.\n- [ ] Regression coverage proves the fix.\n- [ ] Verification evidence is added.\n\n## Verification\n\n- Command or manual check required.\n",
   "labels": ["review-fix", "ready-for-agent"],
   "source": {
@@ -71,5 +77,17 @@ For any `P0`, return one fix issue object:
     "pr_number": 123,
     "finding_severities": ["P0"]
   }
+}
+```
+
+For a reusable review pattern, add a `memory_suggestions` object:
+
+```json
+{
+  "kind": "failure-pattern",
+  "title": "Do not claim acceptance criteria without verification evidence",
+  "target_file": "docs/memory/failure-patterns.md",
+  "source": "PR #123 review finding: Missing verification for AC2",
+  "body": "When implementing GitHub issues, do not mark an acceptance criterion complete unless the PR maps it to implementation evidence and verification evidence."
 }
 ```

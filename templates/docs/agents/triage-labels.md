@@ -47,6 +47,18 @@ Apply when:
 - The fix is scoped.
 - The originating PR is linked.
 
+### `memory-suggestion`
+
+The issue proposes source-linked project memory from review or implementation feedback.
+
+Apply when:
+
+- The source issue, PR, review finding, ADR, or file is linked.
+- The proposed memory entry uses the standard `docs/memory/` format.
+- The lesson is specific enough to help future agents avoid a repeated mistake or preserve a real project preference.
+
+Do not apply to generic engineering advice, unsourced guesses, secrets, customer data, or private personal data.
+
 ### `pr-reviewed`
 
 The PR has received an agent review.

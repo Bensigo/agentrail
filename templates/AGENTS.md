@@ -71,6 +71,7 @@ Canonical labels:
 - `afk`: issue may be picked up by an unattended agent workflow.
 - `afk-in-progress`: issue is currently being handled by an unattended agent workflow.
 - `review-fix`: issue was created from pull request review feedback.
+- `memory-suggestion`: issue proposes source-linked project memory from review or implementation feedback.
 - `pr-reviewed`: pull request has received an agent review.
 
 Do not pick issues without `ready-for-agent` unless explicitly asked.
@@ -97,7 +98,8 @@ Before finishing:
 1. Run the relevant checks.
 2. Capture visual evidence for UI-visible work.
 3. Map each acceptance criterion to implementation evidence and verification evidence.
-4. Summarize what changed and how it was verified.
+4. Propose source-linked project memory when the work reveals a reusable lesson, preference, decision, or failure pattern.
+5. Summarize what changed and how it was verified.
 
 ## Quality Bar
 

@@ -109,6 +109,7 @@ grill-with-docs
 -> ralph-loop
 -> visual-evidence-for-prs
 -> review-pr / pr
+-> memory-suggestion
 -> review-fix
 ```
 
@@ -186,6 +187,8 @@ Review PRs before merge:
 ```bash
 scripts/review-pr --pr 123
 ```
+
+When review finds a repeated error pattern, the AFK workflow creates a `memory-suggestion` issue with a proposed source-linked memory entry. Review that issue before adding it to `docs/memory/`; do not let agents silently mutate project memory from review output.
 
 Use the full flow for meaningful product work. For tiny fixes, ask for a direct TDD implementation instead of creating PRDs and milestones.
 

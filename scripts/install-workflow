@@ -96,6 +96,7 @@ if [[ "$github_labels" -eq 1 ]]; then
     gh label create afk --color 5319E7 --description "Approved for unattended AFK agent execution." --force
     gh label create afk-in-progress --color BFDADC --description "Currently claimed by AFK workflow." --force
     gh label create review-fix --color D93F0B --description "Follow-up issue created from PR review." --force
+    gh label create memory-suggestion --color FBCA04 --description "Source-linked project memory suggested from review feedback." --force
     gh label create pr-reviewed --color 1D76DB --description "Implementation PR has been reviewed." --force
   )
 fi

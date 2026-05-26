@@ -23,6 +23,7 @@ Use these labels consistently:
 - `afk`: eligible for unattended agent execution.
 - `afk-in-progress`: currently being handled by unattended automation.
 - `review-fix`: created from PR review feedback.
+- `memory-suggestion`: proposes source-linked project memory from review or implementation feedback.
 - `pr-reviewed`: PR has received an agent review.
 
 ## Issue Lifecycle
@@ -74,3 +75,17 @@ Each review-fix issue should include:
 - Verification needed after the fix.
 
 Do not create review-fix issues for vague preferences or non-actionable comments.
+
+## Memory Suggestion Issues
+
+Use `memory-suggestion` when review or implementation reveals a reusable lesson, failure pattern, project preference, or decision that should be considered for `docs/memory/`.
+
+Each memory-suggestion issue should include:
+
+- Source issue or PR.
+- Review finding, implementation evidence, ADR, or file that proves the pattern.
+- Target memory file.
+- Proposed memory entry in the standard memory format.
+- Reason this is likely to help future agents.
+
+Do not create memory-suggestion issues for generic engineering advice, one-off mistakes, secrets, customer data, private personal data, or unsourced assumptions.

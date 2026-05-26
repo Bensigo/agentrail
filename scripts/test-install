@@ -123,8 +123,28 @@ if ! grep -q -- '"pr_number": 123' "${tmp_dir}/docs/agents/github-pr-reviewer.md
   exit 1
 fi
 
-if ! grep -q -- '"fix_issue": null' "${tmp_dir}/docs/agents/github-pr-reviewer.md"; then
-  echo "github-pr-reviewer docs do not define fix_issue output" >&2
+if ! grep -q -- '"fix_issues": \[\]' "${tmp_dir}/docs/agents/github-pr-reviewer.md"; then
+  echo "github-pr-reviewer docs do not define fix_issues output" >&2
+  exit 1
+fi
+
+if grep -q -- '"fix_issue": null' "${tmp_dir}/docs/agents/github-pr-reviewer.md"; then
+  echo "github-pr-reviewer docs still use singular fix_issue output" >&2
+  exit 1
+fi
+
+if ! grep -q -- '"memory_suggestions": \[\]' "${tmp_dir}/docs/agents/github-pr-reviewer.md"; then
+  echo "github-pr-reviewer docs do not define memory_suggestions output" >&2
+  exit 1
+fi
+
+if ! grep -q -- "Memory Pattern Check" "${tmp_dir}/docs/agents/pr-review.md"; then
+  echo "pr-review docs do not require memory pattern classification" >&2
+  exit 1
+fi
+
+if ! grep -q -- "memory-suggestion" "${tmp_dir}/scripts/afk-workflow"; then
+  echo "afk-workflow does not handle memory-suggestion issues" >&2
   exit 1
 fi
 

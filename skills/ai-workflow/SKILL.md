@@ -43,10 +43,12 @@ Run this workflow only when the work is large enough to benefit from staged thin
 8. Review the PR.
    - Run review in a fresh context using the repo's review runner when available.
    - Prioritize correctness, regressions, missing tests, unclear verification, and mismatch with the issue or PRD.
+   - Classify serious findings to decide whether they reveal a reusable failure pattern, project preference violation, missing context, or unclear acceptance criteria.
 
 9. Convert review findings.
    - P0 findings create new GitHub issues immediately.
    - Non-P0 findings become PR review comments.
+   - Reusable failure patterns become memory suggestion issues, not silent memory edits.
    - Do not bury severe follow-up work in a comment thread.
 
 10. Run the review-fix follow-up.
@@ -100,12 +102,14 @@ Steps:
 Outputs:
 - PR review comments or approval notes.
 - New P0 issue links when applicable.
+- Memory suggestion issue links when review identifies a reusable pattern.
 - Review summary with verification gaps and residual risks.
 
 Guardrails:
 - Keep `github-pr-reviewer` bounded to the named PR and review scope.
 - Do not rewrite or fix code during this loop.
 - Do not convert speculative preferences into findings.
+- Do not edit project memory directly from review. Propose a source-linked memory suggestion issue instead.
 
 ## Review-Fix Loop
 

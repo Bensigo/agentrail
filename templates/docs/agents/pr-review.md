@@ -57,6 +57,20 @@ Use relevant memory to check whether the PR repeats known mistakes or violates s
 
 Block memory changes when they are unsourced, too broad to be useful, duplicate canonical docs, or contain secrets, customer data, credentials, or private personal data.
 
+## Memory Pattern Check
+
+For each `P0`, `P1`, or `P2` finding, classify whether it is:
+
+- One-off defect.
+- Recurring failure pattern.
+- Project preference violation.
+- Missing context or decision.
+- Unclear acceptance criteria.
+
+If the finding is a recurring failure pattern, project preference violation, or missing context that future agents would realistically repeat, propose a source-linked memory entry for `docs/memory/failure-patterns.md`, `docs/memory/project-preferences.md`, or the appropriate memory file.
+
+Do not propose memory for generic engineering advice, speculative preferences, or one-off mistakes. Memory suggestions must cite the source PR, issue, review finding, ADR, or file that proves the pattern.
+
 ## Finding Format
 
 Use this structure for actionable findings:
@@ -80,7 +94,19 @@ After an agent review is complete, apply `pr-reviewed` to the PR or linked track
 
 - `P0` findings must create a new GitHub issue labeled `review-fix` and `ready-for-agent`.
 - Non-`P0` findings should be left as PR review comments unless the maintainer explicitly wants a tracking issue.
+- Recurring failure patterns should create a memory suggestion issue labeled `memory-suggestion` and `ready-for-agent`, not silently edit memory.
 - Do not bury production-breaking, security, data-loss, or merge-blocking findings in PR comments only.
+
+For workflow automation, include a machine-readable block when fix issues or memory suggestions are needed:
+
+```text
+BEGIN_REVIEW_FIX_ISSUES_JSON
+{
+  "fix_issues": [],
+  "memory_suggestions": []
+}
+END_REVIEW_FIX_ISSUES_JSON
+```
 
 ## Non-Findings
 

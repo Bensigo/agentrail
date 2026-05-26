@@ -8,12 +8,16 @@ Usage:
   agentrail install [--target DIR] [--force] [--github-labels]
   agentrail upgrade [--target DIR] [--force]
   agentrail doctor [--target DIR]
+  agentrail prompt grill "<idea>" [--agent codex|claude] [--target DIR]
+  agentrail prompt issue NUMBER [--agent codex|claude] [--target DIR]
+  agentrail prompt review PR_NUMBER [--agent codex|claude] [--target DIR]
 
 Commands:
   init      Initialize AgentRail workflow files.
   install   Install AgentRail workflow files.
   upgrade   Upgrade managed AgentRail files without overwriting local edits.
   doctor    Inspect AgentRail installation health.
+  prompt    Print an agent-ready prompt without executing an agent.
 USAGE
 }
 
@@ -574,6 +578,277 @@ run_doctor() {
   fi
 }
 
+parse_prompt_options() {
+  local agent_var="$1"
+  local target_var="$2"
+  shift 2
+
+  printf -v "$agent_var" '%s' "codex"
+  printf -v "$target_var" '%s' "$(pwd)"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --agent)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--agent requires codex or claude" >&2; exit 2; }
+        [[ "$value" == "codex" || "$value" == "claude" ]] || { echo "--agent must be codex or claude" >&2; exit 2; }
+        printf -v "$agent_var" '%s' "$value"
+        shift 2
+        ;;
+      --target)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
+        printf -v "$target_var" '%s' "$value"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown option: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+  done
+}
+
+print_state_summary() {
+  local target_dir="$1"
+  local state_file="${target_dir}/.agentrail/state.json"
+
+  [[ -f "$state_file" ]] || return 0
+  command -v node >/dev/null 2>&1 || { echo "- AgentRail state exists at .agentrail/state.json, but node is not available to summarize it."; return 0; }
+
+  node - "$state_file" <<'NODE'
+const fs = require("fs");
+const statePath = process.argv[2];
+
+try {
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  const workflow = state.workflow || {};
+  console.log("- AgentRail state: present");
+  console.log(`- version: ${state.agentrailVersion || "unknown"}`);
+  console.log(`- phase: ${workflow.phase || "unknown"}`);
+  console.log(`- active issue: ${workflow.activeIssue ?? "none"}`);
+  console.log(`- active pull request: ${workflow.activePullRequest ?? "none"}`);
+  console.log(`- active PRD: ${workflow.activePrd ?? "none"}`);
+  console.log(`- active milestone: ${workflow.activeMilestone ?? "none"}`);
+  console.log(`- last completed step: ${workflow.lastCompletedStep ?? "none"}`);
+  console.log(`- next suggested action: ${workflow.nextSuggestedAction || "none"}`);
+} catch (error) {
+  console.log("- AgentRail state: present but unreadable");
+  console.log(`- state error: ${error.message}`);
+}
+NODE
+}
+
+prompt_common_header() {
+  local agent="$1"
+  local target_dir="$2"
+
+  cat <<PROMPT
+You are working in an AgentRail-managed repository.
+
+Agent target: ${agent}
+
+Read these before acting:
+- CONTEXT.md
+- TASTE.md when present
+- relevant docs under docs/agents/
+- relevant project memory from scripts/memory recall
+
+AgentRail state summary:
+PROMPT
+  if [[ -f "${target_dir}/.agentrail/state.json" ]]; then
+    print_state_summary "$target_dir"
+  else
+    echo "- AgentRail state: not found at .agentrail/state.json"
+  fi
+  echo
+}
+
+prompt_grill() {
+  local agent="$1"
+  local target_dir="$2"
+  local idea="$3"
+
+  prompt_common_header "$agent" "$target_dir"
+  if [[ "$agent" == "codex" ]]; then
+    cat <<PROMPT
+Use the repo-local skill 'grill-with-docs'.
+
+Goal:
+Stress-test this idea before any PRD or implementation work:
+
+${idea}
+
+Instructions:
+- Read CONTEXT.md first.
+- Read TASTE.md if present.
+- Run scripts/memory recall for the idea and key terms when available.
+- Challenge vague users, outcomes, non-goals, constraints, domain terms, and risky assumptions.
+- If a question can be answered from the repo, inspect the repo instead of asking.
+- Ask one direct question at a time and include your recommended answer.
+- Do not write implementation code.
+PROMPT
+  else
+    cat <<PROMPT
+Use Claude Code to run a grill-with-docs style planning pass. If skills/grill-with-docs/SKILL.md exists, read it and follow its workflow as local project instructions.
+
+Goal:
+Stress-test this idea before any PRD or implementation work:
+
+${idea}
+
+Instructions:
+- Read CONTEXT.md first.
+- Read TASTE.md if present.
+- Run scripts/memory recall for the idea and key terms when available.
+- Challenge vague users, outcomes, non-goals, constraints, domain terms, and risky assumptions.
+- If a question can be answered from the repo, inspect the repo instead of asking.
+- Ask one direct question at a time and include your recommended answer.
+- Do not write implementation code.
+PROMPT
+  fi
+}
+
+prompt_issue() {
+  local agent="$1"
+  local target_dir="$2"
+  local issue="$3"
+
+  prompt_common_header "$agent" "$target_dir"
+  if [[ "$agent" == "codex" ]]; then
+    cat <<PROMPT
+Run one bounded Ralph implementation loop for exactly one GitHub issue: #${issue}.
+
+Use these local instructions:
+- templates/docs/agents/ralph-loop.md when running from the AgentRail source repo
+- docs/agents/ralph-loop.md when running from an installed target repo
+- repo-local implementation skills such as tdd when they match the work
+
+Hard limits:
+- Handle only issue #${issue}.
+- Read the issue body, comments, labels, and linked PRD or milestone before editing.
+- Read CONTEXT.md, TASTE.md if present, and relevant project memory.
+- Run scripts/memory recall for the issue title and key terms when available.
+- Implement the smallest coherent change that satisfies the issue acceptance criteria.
+- Run relevant verification.
+- Open or update one PR linked to #${issue}.
+- Include summary, acceptance criteria coverage, verification, visual evidence, memory updates, and risks in the PR body.
+- Stop when the PR is ready or when blocked.
+PROMPT
+  else
+    cat <<PROMPT
+Use Claude Code to run one bounded implementation loop for exactly one GitHub issue: #${issue}.
+
+Use these local instructions when present:
+- templates/docs/agents/ralph-loop.md or docs/agents/ralph-loop.md
+- repo-local TDD and workflow docs under skills/ and docs/agents/
+
+Hard limits:
+- Handle only issue #${issue}.
+- Read the issue body, comments, labels, and linked PRD or milestone before editing.
+- Read CONTEXT.md, TASTE.md if present, and relevant project memory.
+- Run scripts/memory recall for the issue title and key terms when available.
+- Implement the smallest coherent change that satisfies the issue acceptance criteria.
+- Run relevant verification.
+- Open or update one PR linked to #${issue}.
+- Include summary, acceptance criteria coverage, verification, visual evidence, memory updates, and risks in the PR body.
+- Stop when the PR is ready or when blocked.
+PROMPT
+  fi
+}
+
+prompt_review() {
+  local agent="$1"
+  local target_dir="$2"
+  local pr="$3"
+
+  prompt_common_header "$agent" "$target_dir"
+  if [[ "$agent" == "codex" ]]; then
+    cat <<PROMPT
+Review exactly one pull request: #${pr}.
+
+Use these local instructions:
+- templates/docs/agents/pr-review.md when running from the AgentRail source repo
+- docs/agents/pr-review.md when running from an installed target repo
+
+Hard limits:
+- Review only PR #${pr}.
+- Compare the PR head branch against its base branch.
+- Read the PR body, linked issue, milestone, PRD, CONTEXT.md, TASTE.md if present, and relevant project memory.
+- Run scripts/memory recall for the PR title, linked issue, and key terms when available.
+- Do not edit files, commit, push, close, or merge anything.
+- Return findings first, ordered by severity with concrete file and line references.
+- Call out missing acceptance criteria coverage, missing verification, and missing visual evidence when relevant.
+PROMPT
+  else
+    cat <<PROMPT
+Use Claude Code to review exactly one pull request: #${pr}.
+
+Use these local instructions when present:
+- templates/docs/agents/pr-review.md or docs/agents/pr-review.md
+- repo-local review and visual evidence docs under docs/agents/
+
+Hard limits:
+- Review only PR #${pr}.
+- Compare the PR head branch against its base branch.
+- Read the PR body, linked issue, milestone, PRD, CONTEXT.md, TASTE.md if present, and relevant project memory.
+- Run scripts/memory recall for the PR title, linked issue, and key terms when available.
+- Do not edit files, commit, push, close, or merge anything.
+- Return findings first, ordered by severity with concrete file and line references.
+- Call out missing acceptance criteria coverage, missing verification, and missing visual evidence when relevant.
+PROMPT
+  fi
+}
+
+run_prompt() {
+  local kind="${1:-}"
+  [[ -n "$kind" ]] || { usage; exit 1; }
+  shift || true
+
+  local subject=""
+  case "$kind" in
+    grill|issue|review)
+      subject="${1:-}"
+      [[ -n "$subject" && "$subject" != --* ]] || { echo "prompt ${kind} requires an argument" >&2; exit 2; }
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown prompt type: $kind" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+
+  local agent target_dir
+  parse_prompt_options agent target_dir "$@"
+
+  case "$kind" in
+    issue|review)
+      [[ "$subject" =~ ^[0-9]+$ ]] || { echo "prompt ${kind} argument must be numeric" >&2; exit 2; }
+      ;;
+  esac
+
+  case "$kind" in
+    grill)
+      prompt_grill "$agent" "$target_dir" "$subject"
+      ;;
+    issue)
+      prompt_issue "$agent" "$target_dir" "$subject"
+      ;;
+    review)
+      prompt_review "$agent" "$target_dir" "$subject"
+      ;;
+  esac
+}
+
 case "${1:-}" in
   init)
     shift
@@ -590,6 +865,10 @@ case "${1:-}" in
   doctor)
     shift
     run_doctor "$@"
+    ;;
+  prompt)
+    shift
+    run_prompt "$@"
     ;;
   ""|-h|--help)
     usage

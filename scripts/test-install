@@ -47,6 +47,7 @@ fi
 required=(
   "AGENTS.md"
   "CONTEXT.md"
+  "TASTE.md"
   "docs/agents/issue-tracker.md"
   "docs/agents/agentrail-state.md"
   "docs/agents/milestones.md"
@@ -171,6 +172,16 @@ fi
 
 if ! grep -q -- "scripts/memory recall" "${tmp_dir}/docs/agents/ralph-loop.md"; then
   echo "ralph-loop docs do not require project memory recall" >&2
+  exit 1
+fi
+
+if ! grep -q -- "product quality" "${tmp_dir}/TASTE.md"; then
+  echo "TASTE.md does not describe product quality guidance" >&2
+  exit 1
+fi
+
+if ! grep -q -- "TASTE.md" "${tmp_dir}/AGENTS.md"; then
+  echo "AGENTS.md does not tell agents to read TASTE.md when present" >&2
   exit 1
 fi
 

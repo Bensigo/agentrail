@@ -5,6 +5,7 @@ A project-local workflow kit for using AI coding agents with less guessing and m
 It installs:
 
 - `AGENTS.md` and `CONTEXT.md`
+- optional product quality guidance in `TASTE.md`
 - agent docs under `docs/agents/`
 - project memory under `docs/memory/`
 - PRD and milestone folders under `docs/`
@@ -59,6 +60,7 @@ Project docs:
 ```text
 AGENTS.md
 CONTEXT.md
+TASTE.md
 docs/agents/
 docs/memory/
 docs/prd/
@@ -131,6 +133,8 @@ For small edits, skip the heavy planning steps and implement directly with tests
 ## How To Use It With An Agent
 
 Start with `CONTEXT.md`. Keep the product, domain language, constraints, and repo-specific decisions there. The workflow works poorly if `CONTEXT.md` is empty or stale.
+
+Customize `TASTE.md` when the project has product quality expectations that should guide agents: UI standards, copy tone, interaction preferences, visual evidence expectations, and anti-patterns. If the project is backend-only or has no useful taste guidance yet, missing `TASTE.md` is only a recommendation, not a blocker.
 
 Use `docs/memory/` for source-linked lessons, preferences, and recurring failure patterns that should survive across agent runs. Memory is advisory; agents still need to verify it against current code and canonical docs.
 

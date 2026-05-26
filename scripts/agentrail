@@ -380,6 +380,7 @@ if (state.agentrailVersion === currentVersion) {
 let hashMismatch = false;
 let sourceMismatch = false;
 let missingManaged = false;
+const optionalManagedPaths = new Set(["TASTE.md"]);
 
 for (const file of state.managedFiles) {
   if (!file || typeof file.path !== "string" || typeof file.contentHash !== "string") {
@@ -389,6 +390,10 @@ for (const file of state.managedFiles) {
 
   const targetPath = path.join(targetDir, file.path);
   if (!fs.existsSync(targetPath)) {
+    if (optionalManagedPaths.has(file.path)) {
+      console.log(`OPTIONAL_MISSING=${file.path}`);
+      continue;
+    }
     missingManaged = true;
     console.log(`MISSING_MANAGED=${file.path}`);
     continue;
@@ -396,6 +401,10 @@ for (const file of state.managedFiles) {
 
   const currentHash = sha256(targetPath);
   if (currentHash !== file.contentHash) {
+    if (optionalManagedPaths.has(file.path)) {
+      console.log(`OPTIONAL_MODIFIED=${file.path}`);
+      continue;
+    }
     hashMismatch = true;
     console.log(`HASH_MISMATCH=${file.path}`);
   }

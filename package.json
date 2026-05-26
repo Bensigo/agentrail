@@ -1,8 +1,9 @@
 {
-  "name": "@bensigo/coding-ai-workflow",
+  "name": "@bensigo/agentrail",
   "version": "0.1.0",
-  "description": "Project workflow kit for using AI coding agents with context, issues, review, and visual evidence.",
+  "description": "Repo-native harness for AI coding agents with durable context, bounded issue execution, review loops, and verification gates.",
   "bin": {
+    "agentrail": "./scripts/install-workflow",
     "coding-ai-workflow": "./scripts/install-workflow",
     "bensigo-ai-workflow": "./scripts/install-workflow"
   },
@@ -16,6 +17,6 @@
     "skills/"
   ],
   "scripts": {
-    "test": "bash scripts/test-install && bash scripts/test-promote-unblocked-issues"
+    "test": "bash scripts/test-install && bash scripts/test-promote-unblocked-issues && bash scripts/test-public-positioning"
   }
 }

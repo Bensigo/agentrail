@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! grep -q -- "# AgentRail" README.md; then
+  echo "README does not present the project as AgentRail" >&2
+  exit 1
+fi
+
+if ! grep -q -- "npx github:Bensigo/agentrail --target ." README.md; then
+  echo "README does not document the immediate AgentRail install path" >&2
+  exit 1
+fi
+
+if ! grep -q -- '"agentrail": "./scripts/install-workflow"' package.json; then
+  echo "package.json does not expose the agentrail CLI command" >&2
+  exit 1
+fi
+
+legacy_product_name="Bensigo"" harness"
+if rg -q "$legacy_product_name" README.md package.json templates skills scripts; then
+  echo "public docs still use the legacy Bensigo product name" >&2
+  exit 1
+fi
+
+echo "public positioning test passed"

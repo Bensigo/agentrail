@@ -1,9 +1,9 @@
 ---
 name: bensigo-ai-workflow
-description: Use when shaping a substantial Bensigo product or engineering idea into durable context, PRD, milestones, GitHub issues, implementation PRs, review, and follow-up fix issues. Trigger when the user asks to run Bensigo's AI workflow, convert an idea into implementation work, create PRD/milestones/issues, orchestrate Ralph, or manage review-fix loops. Do not use for tiny edits, one-off bug fixes, simple copy changes, or tasks that can be completed directly in one context.
+description: Use when shaping a substantial product or engineering idea into durable context, PRD, milestones, GitHub issues, implementation PRs, review, and follow-up fix issues. Trigger when the user asks to run AgentRail, convert an idea into implementation work, create PRD/milestones/issues, orchestrate Ralph, or manage review-fix loops. Do not use for tiny edits, one-off bug fixes, simple copy changes, or tasks that can be completed directly in one context.
 ---
 
-# Bensigo AI Workflow
+# AgentRail Workflow
 
 Run this workflow only when the work is large enough to benefit from staged thinking and agent handoffs. The goal is to keep agents in the smart zone: clear context, bounded tasks, concrete verification, and no open-ended autonomous wandering.
 

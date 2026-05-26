@@ -1,6 +1,6 @@
-# Bensigo AI Workflow
+# AgentRail
 
-A project-local workflow kit for using AI coding agents with less guessing and more verified output.
+AgentRail is a repo-native harness for AI coding agents. It gives agents durable context, workflow state, bounded issue execution, review loops, and verification gates so agent work is easier to inspect, resume, and trust.
 
 It installs:
 
@@ -26,6 +26,8 @@ Install into another project:
 ```bash
 npx --package github:Bensigo/agentrail agentrail init --target /path/to/project
 ```
+
+The CLI command is `agentrail`.
 
 From a local checkout of this repo:
 

@@ -34,6 +34,17 @@ NODE
 git -C "$tmp_dir" init --quiet
 "$installer" --target "$tmp_dir"
 
+symlink_bin="${tmp_dir}/node_modules/.bin"
+mkdir -p "$symlink_bin"
+ln -s "$installer" "${symlink_bin}/agentrail"
+symlink_target="${tmp_dir}/symlink-install"
+"${symlink_bin}/agentrail" --target "$symlink_target"
+
+if [[ ! -e "${symlink_target}/AGENTS.md" ]]; then
+  echo "installer did not work through a package bin symlink" >&2
+  exit 1
+fi
+
 if "$installer" --target --force >"${tmp_dir}/missing-target.out" 2>&1; then
   echo "--target accepted another option as its directory argument" >&2
   exit 1

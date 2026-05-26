@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: install-workflow [--target DIR] [--force] [--github-labels]
 
-Installs the Bensigo AI workflow templates into a project.
+Installs the AgentRail workflow templates into a project.
 
 Options:
   --target DIR      Project directory to install into. Defaults to current directory.
@@ -46,7 +46,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_source="${BASH_SOURCE[0]}"
+while [[ -L "$script_source" ]]; do
+  script_dir="$(cd "$(dirname "$script_source")" && pwd)"
+  script_source="$(readlink "$script_source")"
+  [[ "$script_source" == /* ]] || script_source="${script_dir}/${script_source}"
+done
+script_dir="$(cd "$(dirname "$script_source")" && pwd)"
 repo_dir="$(cd "${script_dir}/.." && pwd)"
 templates_dir="${repo_dir}/templates"
 skills_dir="${repo_dir}/skills"
@@ -211,5 +217,5 @@ if [[ "$github_labels" -eq 1 ]]; then
 fi
 
 echo
-echo "Bensigo AI workflow installed in: ${target_dir}"
+echo "AgentRail installed in: ${target_dir}"
 echo "Next: edit CONTEXT.md for your project, then create a PRD under docs/prd/."

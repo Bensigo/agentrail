@@ -250,6 +250,66 @@ BODY
   done
 }
 
+create_memory_suggestion_issues() {
+  local source_issue="$1"
+  local pr="$2"
+  local review_file="$3"
+  local afk_label="$4"
+
+  local json
+  json="$(extract_review_fix_json "$review_file")"
+  [[ -n "$json" ]] || return 0
+
+  if ! jq -e '.memory_suggestions | type == "array"' >/dev/null <<< "$json"; then
+    return 0
+  fi
+
+  local count
+  count="$(jq '.memory_suggestions | length' <<< "$json")"
+  [[ "$count" -gt 0 ]] || return 0
+
+  local i kind title target_file source body
+  for ((i = 0; i < count; i++)); do
+    kind="$(jq -r ".memory_suggestions[$i].kind // \"failure-pattern\"" <<< "$json")"
+    title="$(jq -r ".memory_suggestions[$i].title" <<< "$json")"
+    target_file="$(jq -r ".memory_suggestions[$i].target_file // \"docs/memory/failure-patterns.md\"" <<< "$json")"
+    source="$(jq -r ".memory_suggestions[$i].source // \"PR #${pr} review\"" <<< "$json")"
+    body="$(jq -r ".memory_suggestions[$i].body" <<< "$json")"
+
+    gh issue create \
+      --title "[memory-suggestion] PR #${pr}: ${title}" \
+      --body "$(cat <<BODY
+Created from automated PR review.
+
+Source issue: #${source_issue}
+Source PR: #${pr}
+Memory kind: ${kind}
+Target file: ${target_file}
+Source: ${source}
+
+Proposed memory entry:
+
+\`\`\`md
+## ${title}
+
+- kind: ${kind}
+- source: ${source}
+- confidence: verified
+- created_at: $(date +%Y-%m-%d)
+- expires_at:
+
+${body}
+\`\`\`
+
+Review this suggestion before adding it to project memory. Do not store secrets, customer data, private personal data, generic advice, or unsourced assumptions.
+BODY
+)" \
+      --label "memory-suggestion" \
+      --label "$afk_label" \
+      --label "ready-for-agent" >/dev/null
+  done
+}
+
 worker_run() {
   local root="$1"
   local run_dir="$2"
@@ -310,6 +370,7 @@ worker_run() {
       fi
 
       create_review_fix_issues "$issue" "$pr" "$review_output" "$afk_label"
+      create_memory_suggestion_issues "$issue" "$pr" "$review_output" "$afk_label"
     fi
 
     mark_issue_reviewed "$issue" "$queue_labels"

@@ -55,6 +55,8 @@ Use relevant memory to check whether the PR repeats known mistakes or violates s
 
 Block memory changes when they are unsourced, too broad to be useful, duplicate canonical docs, or contain secrets, customer data, credentials, or private personal data.
 
+When a review reveals a recurring pattern that future agents would realistically repeat, propose a source-linked memory suggestion instead of editing memory directly. Use `docs/agents/github-pr-reviewer.md` for the machine-readable schema when an AFK workflow needs to create follow-up `memory-suggestion` issues.
+
 ## Finding Format
 
 Use this structure for actionable findings:
@@ -77,8 +79,20 @@ Severity guide:
 After an agent review is complete, apply `pr-reviewed` to the PR or linked tracking issue if the workflow supports it.
 
 - `P0` findings must create a new GitHub issue labeled `review-fix` and `ready-for-agent`.
+- Reusable review patterns may create a new issue labeled `memory-suggestion` and `ready-for-agent` for human review before memory is edited.
 - Non-`P0` findings should be left as PR review comments unless the maintainer explicitly wants a tracking issue.
 - Do not bury production-breaking, security, data-loss, or merge-blocking findings in PR comments only.
+
+For AFK review workflows, include one machine-readable block when follow-up work exists:
+
+```text
+BEGIN_REVIEW_FIX_ISSUES_JSON
+{
+  "fix_issues": [],
+  "memory_suggestions": []
+}
+END_REVIEW_FIX_ISSUES_JSON
+```
 
 ## Non-Findings
 

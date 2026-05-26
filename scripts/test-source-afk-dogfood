@@ -99,7 +99,7 @@ assert_grep "Handle exactly one issue: #4242" "$agent_marker" "Ralph prompt did 
 
 (
   cd "$repo_dir"
-  templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --dry-run >"${tmp_dir}/source-dry-run.out"
+  AFK_WORKFLOW_MOCK_QUEUE="$mock_queue" templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --dry-run >"${tmp_dir}/source-dry-run.out"
 )
 assert_grep "dry-run: would run Ralph" "${tmp_dir}/source-dry-run.out" "Source dry-run did not show Ralph execution step"
 

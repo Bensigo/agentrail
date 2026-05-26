@@ -61,6 +61,7 @@ required=(
   "TASTE.md"
   "docs/agents/issue-tracker.md"
   "docs/agents/agentrail-state.md"
+  "docs/agents/github-pr-reviewer.md"
   "docs/agents/milestones.md"
   "docs/agents/ralph-loop.md"
   "docs/agents/pr-review.md"
@@ -73,6 +74,8 @@ required=(
   "docs/memory/project-preferences.md"
   "docs/prd/.gitkeep"
   "docs/milestones/.gitkeep"
+  ".claude/agents/github-pr-reviewer.md"
+  ".codex/agents/github-pr-reviewer.md"
   "scripts/memory"
   "scripts/afk-workflow"
   "scripts/pr"
@@ -118,6 +121,11 @@ done
 
 if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/docs/agents/ralph-loop.md"; then
   echo "ralph-loop docs do not require acceptance criteria coverage" >&2
+  exit 1
+fi
+
+if ! grep -q -- "memory_suggestions" "${tmp_dir}/docs/agents/github-pr-reviewer.md"; then
+  echo "github-pr-reviewer docs do not describe memory suggestions" >&2
   exit 1
 fi
 

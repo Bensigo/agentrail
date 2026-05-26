@@ -46,7 +46,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_source="${BASH_SOURCE[0]}"
+while [[ -L "$script_source" ]]; do
+  script_dir="$(cd "$(dirname "$script_source")" && pwd)"
+  script_source="$(readlink "$script_source")"
+  [[ "$script_source" == /* ]] || script_source="${script_dir}/${script_source}"
+done
+script_dir="$(cd "$(dirname "$script_source")" && pwd)"
 repo_dir="$(cd "${script_dir}/.." && pwd)"
 templates_dir="${repo_dir}/templates"
 skills_dir="${repo_dir}/skills"

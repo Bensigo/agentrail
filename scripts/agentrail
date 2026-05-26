@@ -386,13 +386,17 @@ function isSafeRelativePath(value) {
 }
 
 let registry;
+let parsedRegistry = false;
 try {
   registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+  parsedRegistry = true;
 } catch (error) {
   fail(`cannot read registry: ${error.message}`);
 }
 
-if (registry) {
+if (parsedRegistry && (registry === null || typeof registry !== "object" || Array.isArray(registry))) {
+  fail("registry root must be an object");
+} else if (parsedRegistry) {
   if (registry.schemaVersion !== 1) fail("schemaVersion must be 1");
   if (!Array.isArray(registry.skills)) {
     fail("skills must be an array");

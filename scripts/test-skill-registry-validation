@@ -45,6 +45,13 @@ fs.writeFileSync(file, `${JSON.stringify(registry, null, 2)}\n`);
 NODE
 }
 
+write_registry_root() {
+  local fixture="$1"
+  local json="$2"
+
+  printf '%s\n' "$json" >"${fixture}/docs/agents/skill-registry.json"
+}
+
 expect_invalid() {
   local fixture="$1"
   local pattern="$2"
@@ -64,6 +71,13 @@ valid="${tmp_dir}/valid"
 make_fixture "$valid"
 "$agentrail" skills validate --target "$valid" >"${tmp_dir}/valid.out"
 assert_grep "ok skill registry" "${tmp_dir}/valid.out" "valid registry was not accepted"
+
+for root_case in null false 0 '""' '[]'; do
+  root_fixture="${tmp_dir}/root-${root_case//[^a-zA-Z0-9]/root}"
+  make_fixture "$root_fixture"
+  write_registry_root "$root_fixture" "$root_case"
+  expect_invalid "$root_fixture" "registry root must be an object" "registry root ${root_case} was not rejected as a non-object"
+done
 
 duplicate="${tmp_dir}/duplicate"
 make_fixture "$duplicate"
@@ -87,13 +101,13 @@ expect_invalid "$malformed_trigger" "triggers.keywords must be an array" "malfor
 
 doctor_invalid="${tmp_dir}/doctor-invalid"
 make_fixture "$doctor_invalid"
-mutate_registry "$doctor_invalid" "registry.skills[0].triggers.fileGlobs = [42];"
+write_registry_root "$doctor_invalid" "null"
 if "$agentrail" doctor --target "$doctor_invalid" >"${tmp_dir}/doctor-invalid.out" 2>&1; then
   echo "doctor did not reject an invalid registry" >&2
   cat "${tmp_dir}/doctor-invalid.out" >&2
   exit 1
 fi
 assert_grep "status: corrupt" "${tmp_dir}/doctor-invalid.out" "doctor did not mark invalid registry as corrupt"
-assert_grep "triggers.fileGlobs must be an array" "${tmp_dir}/doctor-invalid.out" "doctor did not print registry validation errors"
+assert_grep "registry root must be an object" "${tmp_dir}/doctor-invalid.out" "doctor did not print invalid registry root errors"
 
 echo "skill registry validation test passed"

@@ -585,10 +585,25 @@ const installedRegistry = path.join(targetDir, "docs/agents/skill-registry.json"
 const sourceRegistry = path.join(repoDir, "templates/docs/agents/skill-registry.json");
 const registryPath = fs.existsSync(installedRegistry) ? installedRegistry : sourceRegistry;
 const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
-const skills = registry.skills.filter((skill) => skill.bundledByDefault);
-const skillsByName = new Map(skills.map((skill) => [skill.name, skill]));
+const allBundledSkills = registry.skills.filter((skill) => skill.bundledByDefault);
+const skillsByName = new Map(allBundledSkills.map((skill) => [skill.name, skill]));
 const lowerTask = taskText.toLowerCase();
 const maxAutoSkills = 4;
+
+function localSkillPath(skill) {
+  return path.join(targetDir, skill.localPath);
+}
+
+function isSkillAvailable(skill) {
+  return fs.existsSync(localSkillPath(skill));
+}
+
+const unavailable = [];
+const skills = allBundledSkills.filter((skill) => {
+  if (isSkillAvailable(skill)) return true;
+  unavailable.push({ name: skill.name, localPath: skill.localPath });
+  return false;
+});
 
 function addReason(bucket, reason) {
   if (!bucket.includes(reason)) bucket.push(reason);
@@ -606,6 +621,10 @@ for (const name of explicitNames) {
   const skill = skillsByName.get(name);
   if (!skill) {
     console.error(`Unknown skill: ${name}`);
+    process.exit(1);
+  }
+  if (!isSkillAvailable(skill)) {
+    console.error(`Unavailable skill: ${name} (${skill.localPath} not found under target)`);
     process.exit(1);
   }
   includeSkill(skill, "explicit --skill");
@@ -736,6 +755,7 @@ console.log(JSON.stringify({
   targetDir,
   autoSkills,
   maxAutoSkills,
+  unavailable,
   resolved: Array.from(resolved.values()),
 }, null, 2));
 NODE
@@ -760,14 +780,17 @@ const taskText = process.env.AGENTRAIL_TASK_TEXT || "";
 const mode = process.env.AGENTRAIL_MODE || "cli";
 
 if (mode === "prompt") {
-  console.log("Resolved AgentRail skills:");
-  if (!resolution.autoSkills) console.log("- Automatic skill resolution disabled.");
   if (resolution.resolved.length === 0) {
+    console.log("Resolved AgentRail skills:");
+    if (!resolution.autoSkills) console.log("- Automatic skill resolution disabled.");
     console.log("- No skills resolved.");
   } else {
+    console.log("Resolved AgentRail skills:");
+    console.log("Read these SKILL.md files before editing. If a resolved skill does not apply after inspection, report that in the PR or run notes.");
     for (const skill of resolution.resolved) {
-      console.log(`- ${skill.name} (${skill.localPath})`);
-      for (const reason of skill.reasons) console.log(`  - ${reason}`);
+      console.log(`- ${skill.name}`);
+      console.log(`  path: ${skill.localPath}`);
+      for (const reason of skill.reasons) console.log(`  reason: ${reason}`);
     }
   }
   console.log("");
@@ -1563,6 +1586,7 @@ Hard limits:
 - Compare the PR head branch against its base branch.
 - Read the PR body, linked issue, milestone, PRD, CONTEXT.md, TASTE.md if present, and relevant project memory.
 - Run scripts/memory recall for the PR title, linked issue, and key terms when available.
+- Inspect resolved skill evidence when available in the PR body or AgentRail run logs, including resolved-skills metadata; absence of this evidence does not mean the implementation is invalid.
 - Do not edit files, commit, push, close, or merge anything.
 - Return findings first, ordered by severity with concrete file and line references.
 - Call out missing acceptance criteria coverage, missing verification, and missing visual evidence when relevant.
@@ -1580,6 +1604,7 @@ Hard limits:
 - Compare the PR head branch against its base branch.
 - Read the PR body, linked issue, milestone, PRD, CONTEXT.md, TASTE.md if present, and relevant project memory.
 - Run scripts/memory recall for the PR title, linked issue, and key terms when available.
+- Inspect resolved skill evidence when available in the PR body or AgentRail run logs, including resolved-skills metadata; absence of this evidence does not mean the implementation is invalid.
 - Do not edit files, commit, push, close, or merge anything.
 - Return findings first, ordered by severity with concrete file and line references.
 - Call out missing acceptance criteria coverage, missing verification, and missing visual evidence when relevant.
@@ -1750,6 +1775,8 @@ write_run_metadata() {
   local agent="$4"
   local command_line="$5"
   local prompt_file="$6"
+  local resolved_skills_file="$7"
+  local resolved_skills_json="$8"
 
   command -v node >/dev/null 2>&1 || {
     cat >"$metadata_file" <<METADATA
@@ -1759,7 +1786,9 @@ write_run_metadata() {
   "targetIssue": ${issue},
   "agent": "${agent}",
   "command": "${command_line}",
-  "promptFile": "${prompt_file}"
+  "promptFile": "${prompt_file}",
+  "resolvedSkillsFile": "${resolved_skills_file}",
+  "resolvedSkills": []
 }
 METADATA
     return
@@ -1770,7 +1799,10 @@ METADATA
   RUN_AGENT="$agent" \
   RUN_COMMAND="$command_line" \
   RUN_PROMPT_FILE="$prompt_file" \
+  RUN_RESOLVED_SKILLS_FILE="$resolved_skills_file" \
+  RUN_RESOLVED_SKILLS_JSON="$resolved_skills_json" \
   node >"$metadata_file" <<'NODE'
+const resolution = JSON.parse(process.env.RUN_RESOLVED_SKILLS_JSON || "{}");
 const metadata = {
   startedAt: process.env.RUN_STARTED_AT,
   targetType: "issue",
@@ -1778,6 +1810,8 @@ const metadata = {
   agent: process.env.RUN_AGENT,
   command: process.env.RUN_COMMAND,
   promptFile: process.env.RUN_PROMPT_FILE,
+  resolvedSkillsFile: process.env.RUN_RESOLVED_SKILLS_FILE,
+  resolvedSkills: Array.isArray(resolution.resolved) ? resolution.resolved : [],
 };
 console.log(JSON.stringify(metadata, null, 2));
 NODE
@@ -1795,13 +1829,19 @@ run_issue() {
   agent_command="$(configured_agent_command "$agent" "$explicit_command")"
   ensure_command_available "$agent_command"
 
-  local prompt
+  local resolution_text skill_resolution prompt
+  resolution_text="$(issue_resolution_text "$target_dir" "$issue")"
+  if ! skill_resolution="$(resolve_skills_json "$target_dir" "$resolution_text" "1" "")"; then
+    echo "failed to resolve skills for issue #${issue}" >&2
+    exit 1
+  fi
+
   if ! prompt="$(prompt_issue "$agent" "$target_dir" "$issue")"; then
     echo "failed to generate issue prompt for #${issue}" >&2
     exit 1
   fi
 
-  local started_at run_dir prompt_file metadata_file
+  local started_at run_dir prompt_file resolved_skills_file metadata_file
   started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   if [[ -z "$log_dir" ]]; then
     log_dir="${target_dir}/.agentrail/runs"
@@ -1810,13 +1850,16 @@ run_issue() {
   mkdir -p "$run_dir"
 
   prompt_file="${run_dir}/prompt.md"
+  resolved_skills_file="${run_dir}/resolved-skills.json"
   metadata_file="${run_dir}/run.json"
   printf '%s\n' "$prompt" >"$prompt_file"
-  write_run_metadata "$metadata_file" "$started_at" "$issue" "$agent" "$agent_command" "$prompt_file"
+  printf '%s\n' "$skill_resolution" >"$resolved_skills_file"
+  write_run_metadata "$metadata_file" "$started_at" "$issue" "$agent" "$agent_command" "$prompt_file" "$resolved_skills_file" "$skill_resolution"
 
   echo "AgentRail run: issue #${issue}"
   echo "agent: ${agent}"
   echo "prompt: ${prompt_file}"
+  echo "resolved skills: ${resolved_skills_file}"
   echo "metadata: ${metadata_file}"
 
   printf '%s\n' "$prompt" | bash -lc "$agent_command"

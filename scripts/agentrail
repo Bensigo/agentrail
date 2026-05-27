@@ -10,10 +10,12 @@ Usage:
   agentrail doctor [--target DIR]
   agentrail status [--target DIR]
   agentrail skills validate [--target DIR]
+  agentrail skills list [--target DIR]
+  agentrail skills resolve "<task text>" [--target DIR] [--skill NAME] [--no-auto-skills]
   agentrail resume [--target DIR] [--output FILE]
   agentrail labels sync [--target DIR]
   agentrail prompt grill "<idea>" [--agent codex|claude] [--target DIR]
-  agentrail prompt issue NUMBER [--agent codex|claude] [--target DIR]
+  agentrail prompt issue NUMBER [--agent codex|claude] [--target DIR] [--skill NAME] [--no-auto-skills]
   agentrail prompt review PR_NUMBER [--agent codex|claude] [--target DIR]
   agentrail run issue NUMBER [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
 
@@ -475,12 +477,326 @@ console.log(`SKILL_REGISTRY_PATH=${path.relative(targetDir, registryPath) || reg
 NODE
 }
 
+run_skill_list() {
+  local target_dir
+  parse_target target_dir "$@"
+
+  AGENTRAIL_REPO_DIR="$repo_dir" \
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const repoDir = process.env.AGENTRAIL_REPO_DIR;
+const targetDir = process.env.AGENTRAIL_TARGET_DIR;
+const installedRegistry = path.join(targetDir, "docs/agents/skill-registry.json");
+const sourceRegistry = path.join(repoDir, "templates/docs/agents/skill-registry.json");
+const registryPath = fs.existsSync(installedRegistry) ? installedRegistry : sourceRegistry;
+const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+
+console.log(`AgentRail skills list: ${targetDir}`);
+for (const skill of registry.skills.filter((entry) => entry.bundledByDefault)) {
+  console.log(`- ${skill.name}`);
+  console.log(`  path: ${skill.localPath}`);
+  console.log(`  description: ${skill.description}`);
+}
+NODE
+}
+
+parse_skill_resolution_options() {
+  local target_var="$1"
+  local auto_var="$2"
+  local explicit_var="$3"
+  shift 3
+
+  printf -v "$target_var" '%s' "$(pwd)"
+  printf -v "$auto_var" '%s' "1"
+  printf -v "$explicit_var" '%s' ""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --target)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
+        printf -v "$target_var" '%s' "$value"
+        shift 2
+        ;;
+      --skill)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--skill requires a skill name" >&2; exit 2; }
+        if [[ -n "${!explicit_var}" ]]; then
+          printf -v "$explicit_var" '%s' "${!explicit_var}"$'\n'"$value"
+        else
+          printf -v "$explicit_var" '%s' "$value"
+        fi
+        shift 2
+        ;;
+      --no-auto-skills)
+        printf -v "$auto_var" '%s' "0"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown option: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+  done
+}
+
+resolve_skills_json() {
+  local target_dir="$1"
+  local task_text="$2"
+  local auto_skills="$3"
+  local explicit_skills="$4"
+
+  AGENTRAIL_REPO_DIR="$repo_dir" \
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  AGENTRAIL_TASK_TEXT="$task_text" \
+  AGENTRAIL_AUTO_SKILLS="$auto_skills" \
+  AGENTRAIL_EXPLICIT_SKILLS="$explicit_skills" \
+  node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const repoDir = process.env.AGENTRAIL_REPO_DIR;
+const targetDir = process.env.AGENTRAIL_TARGET_DIR;
+const taskText = process.env.AGENTRAIL_TASK_TEXT || "";
+const autoSkills = process.env.AGENTRAIL_AUTO_SKILLS !== "0";
+const explicitNames = (process.env.AGENTRAIL_EXPLICIT_SKILLS || "").split(/\n+/).map((name) => name.trim()).filter(Boolean);
+const installedRegistry = path.join(targetDir, "docs/agents/skill-registry.json");
+const sourceRegistry = path.join(repoDir, "templates/docs/agents/skill-registry.json");
+const registryPath = fs.existsSync(installedRegistry) ? installedRegistry : sourceRegistry;
+const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+const skills = registry.skills.filter((skill) => skill.bundledByDefault);
+const skillsByName = new Map(skills.map((skill) => [skill.name, skill]));
+const lowerTask = taskText.toLowerCase();
+const maxAutoSkills = 4;
+
+function addReason(bucket, reason) {
+  if (!bucket.includes(reason)) bucket.push(reason);
+}
+
+const resolved = new Map();
+function includeSkill(skill, reason) {
+  if (!resolved.has(skill.name)) {
+    resolved.set(skill.name, { name: skill.name, localPath: skill.localPath, description: skill.description, reasons: [] });
+  }
+  addReason(resolved.get(skill.name).reasons, reason);
+}
+
+for (const name of explicitNames) {
+  const skill = skillsByName.get(name);
+  if (!skill) {
+    console.error(`Unknown skill: ${name}`);
+    process.exit(1);
+  }
+  includeSkill(skill, "explicit --skill");
+}
+
+function walkFiles(root) {
+  const ignored = new Set([".git", "node_modules", ".agentrail", "dist", "build", ".next", "target"]);
+  const files = [];
+  function walk(dir) {
+    if (files.length >= 1000) return;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (files.length >= 1000) return;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!ignored.has(entry.name)) walk(fullPath);
+      } else if (entry.isFile()) {
+        files.push(path.relative(root, fullPath).split(path.sep).join("/"));
+      }
+    }
+  }
+  walk(root);
+  return files;
+}
+
+function readPackageSignals(root) {
+  const packagePath = path.join(root, "package.json");
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    const deps = { ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) };
+    return Object.keys(deps).sort();
+  } catch {
+    return [];
+  }
+}
+
+function hasSegment(file, segment) {
+  return file === segment || file.startsWith(`${segment}/`) || file.includes(`/${segment}/`);
+}
+
+function matchFileSignal(skillName, file) {
+  if (skillName === "frontend-web") {
+    return /\.(tsx|jsx|css)$/.test(file) || hasSegment(file, "app") || hasSegment(file, "components");
+  }
+  if (skillName === "desktop-tauri") {
+    return file.startsWith("src-tauri/") || file.includes("/src-tauri/") || file === "tauri.conf.json" || file.endsWith("/tauri.conf.json");
+  }
+  if (skillName === "backend-api") {
+    return hasSegment(file, "api") || hasSegment(file, "server") || hasSegment(file, "routes") || hasSegment(file, "controllers") || hasSegment(file, "prisma");
+  }
+  if (skillName === "devops-deploy") {
+    return file.startsWith(".github/workflows/") || file.endsWith("/.github/workflows/ci.yml") || file === "Dockerfile" || file.endsWith("/Dockerfile") || file === "docker-compose.yml" || file.endsWith("/docker-compose.yml") || file === "vercel.json" || file.endsWith("/vercel.json") || hasSegment(file, "infra");
+  }
+  if (skillName === "docs-current") {
+    return hasSegment(file, "docs");
+  }
+  return false;
+}
+
+function packageReason(skillName, deps) {
+  const hasAny = (names) => names.find((name) => deps.includes(name));
+  if (skillName === "frontend-web") {
+    const dep = hasAny(["react", "next", "vite", "tailwindcss"]);
+    return dep ? `project dependency: ${dep} in package.json` : null;
+  }
+  if (skillName === "desktop-tauri") {
+    const dep = deps.find((name) => name.startsWith("@tauri-apps/"));
+    return dep ? `project dependency: ${dep} in package.json` : null;
+  }
+  if (skillName === "backend-api") {
+    const dep = hasAny(["express", "fastify", "hono", "@nestjs/core", "prisma", "@prisma/client"]);
+    return dep ? `project dependency: ${dep} in package.json` : null;
+  }
+  return null;
+}
+
+function keywordMatches(keyword) {
+  const normalized = keyword.toLowerCase();
+  if (!/^[a-z0-9]+(?: [a-z0-9]+)*$/.test(normalized)) {
+    return lowerTask.includes(normalized);
+  }
+  return new RegExp(`\\b${normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(lowerTask);
+}
+
+function shouldUseKeyword(skillName, keyword) {
+  if (skillName !== "docs-current") return true;
+  return ["current", "latest", "docs", "documentation", "sdk", "license", "provenance"].includes(keyword.toLowerCase());
+}
+
+if (autoSkills) {
+  const files = walkFiles(targetDir);
+  const deps = readPackageSignals(targetDir);
+  const candidates = [];
+
+  for (const skill of skills) {
+    const reasons = [];
+    for (const keyword of skill.triggers.keywords) {
+      if (shouldUseKeyword(skill.name, keyword) && keywordMatches(keyword)) addReason(reasons, `task keyword: ${keyword.toLowerCase()}`);
+    }
+
+    const depReason = packageReason(skill.name, deps);
+    if (depReason) addReason(reasons, depReason);
+
+    const fileMatch = files.find((file) => matchFileSignal(skill.name, file));
+    if (fileMatch) {
+      if (skill.name !== "docs-current" || /\b(current|latest|docs|documentation|sdk|license|provenance)\b/.test(lowerTask)) {
+        addReason(reasons, `file signal: ${fileMatch}`);
+      }
+    }
+
+    if (reasons.length > 0) {
+      candidates.push({ skill, reasons });
+    }
+  }
+
+  for (const candidate of candidates.slice(0, maxAutoSkills)) {
+    for (const reason of candidate.reasons.slice(0, 4)) includeSkill(candidate.skill, reason);
+  }
+}
+
+console.log(JSON.stringify({
+  registryPath,
+  targetDir,
+  autoSkills,
+  maxAutoSkills,
+  resolved: Array.from(resolved.values()),
+}, null, 2));
+NODE
+}
+
+print_skill_resolution() {
+  local target_dir="$1"
+  local task_text="$2"
+  local auto_skills="$3"
+  local explicit_skills="$4"
+  local mode="${5:-cli}"
+
+  local resolution
+  resolution="$(resolve_skills_json "$target_dir" "$task_text" "$auto_skills" "$explicit_skills")" || return 1
+
+  AGENTRAIL_SKILL_RESOLUTION="$resolution" \
+  AGENTRAIL_TASK_TEXT="$task_text" \
+  AGENTRAIL_MODE="$mode" \
+  node <<'NODE'
+const resolution = JSON.parse(process.env.AGENTRAIL_SKILL_RESOLUTION);
+const taskText = process.env.AGENTRAIL_TASK_TEXT || "";
+const mode = process.env.AGENTRAIL_MODE || "cli";
+
+if (mode === "prompt") {
+  console.log("Resolved AgentRail skills:");
+  if (!resolution.autoSkills) console.log("- Automatic skill resolution disabled.");
+  if (resolution.resolved.length === 0) {
+    console.log("- No skills resolved.");
+  } else {
+    for (const skill of resolution.resolved) {
+      console.log(`- ${skill.name} (${skill.localPath})`);
+      for (const reason of skill.reasons) console.log(`  - ${reason}`);
+    }
+  }
+  console.log("");
+  process.exit(0);
+}
+
+console.log(`AgentRail skills resolve: ${resolution.targetDir}`);
+console.log(`task: ${taskText}`);
+if (!resolution.autoSkills) console.log("Automatic skill resolution disabled.");
+if (resolution.resolved.length === 0) {
+  console.log("No skills resolved.");
+} else {
+  for (const skill of resolution.resolved) {
+    console.log(`- ${skill.name}`);
+    console.log(`  path: ${skill.localPath}`);
+    for (const reason of skill.reasons) console.log(`  reason: ${reason}`);
+  }
+}
+NODE
+}
+
+run_skill_resolve() {
+  local task_text="${1:-}"
+  [[ -n "$task_text" && "$task_text" != --* ]] || { echo "skills resolve requires task text" >&2; exit 2; }
+  shift
+
+  local target_dir auto_skills explicit_skills
+  parse_skill_resolution_options target_dir auto_skills explicit_skills "$@"
+  print_skill_resolution "$target_dir" "$task_text" "$auto_skills" "$explicit_skills"
+}
+
 run_skills() {
   local kind="${1:-}"
   [[ -n "$kind" ]] || { usage; exit 1; }
   shift || true
 
   case "$kind" in
+    list)
+      run_skill_list "$@"
+      ;;
+    resolve)
+      run_skill_resolve "$@"
+      ;;
     validate)
       local target_dir
       parse_target target_dir "$@"
@@ -814,10 +1130,14 @@ run_doctor() {
 parse_prompt_options() {
   local agent_var="$1"
   local target_var="$2"
-  shift 2
+  local auto_var="$3"
+  local explicit_var="$4"
+  shift 4
 
   printf -v "$agent_var" '%s' "codex"
   printf -v "$target_var" '%s' "$(pwd)"
+  printf -v "$auto_var" '%s' "1"
+  printf -v "$explicit_var" '%s' ""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --agent)
@@ -832,6 +1152,20 @@ parse_prompt_options() {
         [[ -n "$value" && "$value" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
         printf -v "$target_var" '%s' "$value"
         shift 2
+        ;;
+      --skill)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--skill requires a skill name" >&2; exit 2; }
+        if [[ -n "${!explicit_var}" ]]; then
+          printf -v "$explicit_var" '%s' "${!explicit_var}"$'\n'"$value"
+        else
+          printf -v "$explicit_var" '%s' "$value"
+        fi
+        shift 2
+        ;;
+      --no-auto-skills)
+        printf -v "$auto_var" '%s' "0"
+        shift
         ;;
       -h|--help)
         usage
@@ -874,6 +1208,21 @@ try {
   console.log(`- state error: ${error.message}`);
 }
 NODE
+}
+
+issue_resolution_text() {
+  local target_dir="$1"
+  local issue="$2"
+
+  if command -v gh >/dev/null 2>&1 && remote_is_github "$target_dir"; then
+    local issue_text
+    if issue_text="$(cd "$target_dir" && gh issue view "$issue" --json title,body --jq '.title + "\n" + (.body // "")' 2>/dev/null)"; then
+      printf '%s\n' "$issue_text"
+      return 0
+    fi
+  fi
+
+  printf 'GitHub issue #%s\n' "$issue"
 }
 
 parse_resume_args() {
@@ -1130,8 +1479,15 @@ prompt_issue() {
   local agent="$1"
   local target_dir="$2"
   local issue="$3"
+  local auto_skills="${4:-1}"
+  local explicit_skills="${5:-}"
+  local resolution_text
+  resolution_text="$(issue_resolution_text "$target_dir" "$issue")"
+
+  resolve_skills_json "$target_dir" "$resolution_text" "$auto_skills" "$explicit_skills" >/dev/null
 
   prompt_common_header "$agent" "$target_dir"
+  print_skill_resolution "$target_dir" "$resolution_text" "$auto_skills" "$explicit_skills" "prompt"
   if [[ "$agent" == "codex" ]]; then
     cat <<PROMPT
 Run one bounded Ralph implementation loop for exactly one GitHub issue: #${issue}.
@@ -1240,8 +1596,8 @@ run_prompt() {
       ;;
   esac
 
-  local agent target_dir
-  parse_prompt_options agent target_dir "$@"
+  local agent target_dir auto_skills explicit_skills
+  parse_prompt_options agent target_dir auto_skills explicit_skills "$@"
 
   case "$kind" in
     issue|review)
@@ -1254,7 +1610,7 @@ run_prompt() {
       prompt_grill "$agent" "$target_dir" "$subject"
       ;;
     issue)
-      prompt_issue "$agent" "$target_dir" "$subject"
+      prompt_issue "$agent" "$target_dir" "$subject" "$auto_skills" "$explicit_skills"
       ;;
     review)
       prompt_review "$agent" "$target_dir" "$subject"

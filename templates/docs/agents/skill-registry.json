@@ -37,7 +37,7 @@
       "licenseStatus": "agentrail-authored; Apache-2.0 candidate source noted for future audit",
       "auditStatus": "approved-first-party-skill; candidate paths verified for existence only",
       "triggers": {
-        "keywords": ["tauri", "desktop", "rust", "capabilities", "permissions", "webview"],
+        "keywords": ["tauri", "desktop", "capabilities", "permissions", "webview"],
         "fileGlobs": ["**/src-tauri/**", "**/tauri.conf.json"],
         "projectSignals": ["src-tauri directory or @tauri-apps dependency"]
       },

@@ -80,7 +80,7 @@ name = "plain-rust"
 version = "0.1.0"
 edition = "2021"
 TOML
-"$agentrail" skills resolve "Refactor error handling" --target "$rust" >"${tmp_dir}/resolve-rust.out"
+"$agentrail" skills resolve "Refactor Rust error handling" --target "$rust" >"${tmp_dir}/resolve-rust.out"
 assert_not_grep "desktop-tauri" "${tmp_dir}/resolve-rust.out" "Plain Rust fixture resolved desktop-tauri unexpectedly"
 
 tauri_src="${tmp_dir}/tauri-src"

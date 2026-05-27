@@ -1,6 +1,6 @@
 ---
 name: to-milestones
-description: Convert a PRD, product spec, plan, or feature brief into local markdown milestone files under `milestones/`, where each milestone is a vertical, testable software increment. Use before `to-issues` when the user wants a PRD converted to milestones and then issues, asks to create milestones, or wants work split into demoable product increments instead of horizontal phases like database first, backend first, frontend first.
+description: Convert a PRD, product spec, plan, or feature brief into local markdown milestone files under `docs/milestones/`, where each milestone is a vertical, testable software increment. Use before `to-issues` when the user wants a PRD converted to milestones and then issues, asks to create milestones, or wants work split into demoable product increments instead of horizontal phases like database first, backend first, frontend first.
 ---
 
 # To Milestones
@@ -27,12 +27,16 @@ If the PRD is missing core facts, ask only for blockers that change the mileston
 
 Before drafting milestones, inspect enough of the repo to understand its current shape:
 
-- existing `milestones/` directory and naming conventions
+- existing `docs/milestones/` directory and naming conventions
 - `docs/agents/` setup docs, if present
-- `CONTEXT.md`, `CONTEXT-MAP.md`, and `docs/adr/`, if present
+- `CONTEXT.md` in full; this is mandatory project context, not optional background
+- `TASTE.md` in full when present; apply it to product quality, UI, copy, interaction, and visual evidence decisions
+- `CONTEXT-MAP.md`, `docs/adr/`, and domain docs, if present
 - app surfaces, API boundaries, data/storage layer, test commands, and existing feature patterns
 
 Use the project's domain vocabulary in milestone titles and acceptance criteria.
+
+If `CONTEXT.md` or `TASTE.md` conflicts with the PRD, source issue, or conversation instructions, stop and surface the conflict before drafting milestones. Do not silently choose one source or create milestones that skip documented project requirements.
 
 ### 3. Draft vertical milestones
 
@@ -78,11 +82,11 @@ Ask whether the sequence is right and whether any milestone is too broad to demo
 
 ### 5. Write local markdown files
 
-Create `milestones/` at the repo root if missing. Save one file per approved milestone:
+Create `docs/milestones/` at the repo root if missing. Save one file per approved milestone:
 
 ```text
-milestones/001-<slug>.md
-milestones/002-<slug>.md
+docs/milestones/001-<slug>.md
+docs/milestones/002-<slug>.md
 ```
 
 Use this template:
@@ -93,6 +97,11 @@ Use this template:
 ## Source PRD
 
 <Path, issue, URL, or "conversation context">
+
+## Required Context
+
+- `CONTEXT.md`: <Specific constraints, domain facts, terminology, or implementation requirements this milestone must respect>
+- `TASTE.md`: <Specific product quality, UI, copy, interaction, or visual evidence requirements this milestone must respect; write "Not present" only if the file does not exist>
 
 ## Outcome
 
@@ -143,6 +152,6 @@ None.
 
 ### 6. Hand off to `to-issues`
 
-Tell the user which milestone file to feed into `to-issues` first. Usually start with `milestones/001-*.md`.
+Tell the user which milestone file to feed into `to-issues` first. Usually start with `docs/milestones/001-*.md`.
 
 `to-issues` should create tracer-bullet issues from one milestone at a time, not from the whole PRD, unless the user explicitly asks for all milestones at once.

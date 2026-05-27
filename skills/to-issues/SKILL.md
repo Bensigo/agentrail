@@ -1,6 +1,6 @@
 ---
 name: to-issues
-description: Break a milestone, plan, spec, or PRD into independently-grabbable issues on the project issue tracker using tracer-bullet vertical slices. Use when user wants to convert a milestone file from `milestones/`, a PRD, or a plan into implementation tickets, create issues, or break down work into issues.
+description: Break a milestone, plan, spec, or PRD into independently-grabbable issues on the project issue tracker using tracer-bullet vertical slices. Use when user wants to convert a milestone file from `docs/milestones/`, a PRD, or a plan into implementation tickets, create issues, or break down work into issues.
 ---
 
 # To Issues
@@ -17,7 +17,15 @@ The issue tracker and triage label vocabulary should have been provided to you â
 
 Work from whatever is already in the conversation context. If the user passes a milestone path, PRD path, issue reference, issue number, URL, or local markdown path, fetch it and read its full body and comments.
 
-If a `milestones/` directory exists and the user asks to create issues from "the PRD" or "the plan", check whether there is a relevant milestone file. Prefer one milestone at a time so issue batches stay coherent and independently reviewable.
+If a `docs/milestones/` directory exists and the user asks to create issues from "the PRD" or "the plan", check whether there is a relevant milestone file. Prefer one milestone at a time so issue batches stay coherent and independently reviewable.
+
+Before drafting or publishing issues, read these project context files from the target repo:
+
+- `CONTEXT.md` in full. This is mandatory; do not rely only on the milestone or PRD summary.
+- `TASTE.md` in full when present. Apply it to product quality, UI, copy, interaction, and visual evidence requirements.
+- `docs/agents/issue-tracker.md`, `docs/agents/milestones.md`, `docs/agents/visual-evidence.md`, and `docs/agents/triage-labels.md`, if present.
+
+If `CONTEXT.md` or `TASTE.md` introduces requirements that are missing from the milestone or PRD, carry those requirements into the issue acceptance criteria or verification evidence when they affect implementation. If the sources conflict, stop and ask for a decision before creating issues. Do not silently skip documented project requirements.
 
 ### 2. Explore the codebase (optional)
 
@@ -71,7 +79,12 @@ Acceptance criteria are the implementation contract. Before publishing an issue:
 <issue-template>
 ## Parent
 
-A reference to the source milestone file, PRD, or parent issue. If the source is a local milestone, link the `milestones/NNN-slug.md` path.
+A reference to the source milestone file, PRD, or parent issue. If the source is a local milestone, link the `docs/milestones/NNN-slug.md` path.
+
+## Required context
+
+- `CONTEXT.md`: <Specific constraints, domain facts, terminology, or implementation requirements this issue must respect>
+- `TASTE.md`: <Specific product quality, UI, copy, interaction, or visual evidence requirements this issue must respect; write "Not present" only if the file does not exist>
 
 ## What to build
 

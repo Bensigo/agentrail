@@ -180,6 +180,21 @@ if ! grep -q -- "AC1" "${tmp_dir}/skills/to-issues/SKILL.md"; then
   exit 1
 fi
 
+if ! grep -q -- "CONTEXT.md.*mandatory" "${tmp_dir}/skills/to-issues/SKILL.md"; then
+  echo "to-issues skill does not require mandatory CONTEXT.md ingestion" >&2
+  exit 1
+fi
+
+if ! grep -q -- "TASTE.md.*when present" "${tmp_dir}/skills/to-issues/SKILL.md"; then
+  echo "to-issues skill does not require TASTE.md ingestion when present" >&2
+  exit 1
+fi
+
+if ! grep -q -- "## Required context" "${tmp_dir}/skills/to-issues/SKILL.md"; then
+  echo "to-issues skill issue template does not carry required context into issues" >&2
+  exit 1
+fi
+
 if ! grep -q -- "## Verification evidence" "${tmp_dir}/skills/to-issues/SKILL.md"; then
   echo "to-issues skill does not separate verification evidence from acceptance criteria" >&2
   exit 1
@@ -187,6 +202,31 @@ fi
 
 if grep -q -- "AC3: <Required verification evidence" "${tmp_dir}/skills/to-issues/SKILL.md"; then
   echo "to-issues skill still models verification evidence as an acceptance criterion" >&2
+  exit 1
+fi
+
+if ! grep -q -- "CONTEXT.md.*mandatory" "${tmp_dir}/skills/to-milestones/SKILL.md"; then
+  echo "to-milestones skill does not require mandatory CONTEXT.md ingestion" >&2
+  exit 1
+fi
+
+if ! grep -q -- "TASTE.md.*when present" "${tmp_dir}/skills/to-milestones/SKILL.md"; then
+  echo "to-milestones skill does not require TASTE.md ingestion when present" >&2
+  exit 1
+fi
+
+if ! grep -q -- "## Required Context" "${tmp_dir}/skills/to-milestones/SKILL.md"; then
+  echo "to-milestones skill template does not record required context" >&2
+  exit 1
+fi
+
+if ! grep -q -- "docs/milestones/001-" "${tmp_dir}/skills/to-milestones/SKILL.md"; then
+  echo "to-milestones skill does not use docs/milestones path convention" >&2
+  exit 1
+fi
+
+if ! grep -q -- "docs/milestones/NNN-slug.md" "${tmp_dir}/skills/to-issues/SKILL.md"; then
+  echo "to-issues skill does not use docs/milestones path convention" >&2
   exit 1
 fi
 

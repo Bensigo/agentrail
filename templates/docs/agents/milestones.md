@@ -19,6 +19,8 @@ For small one-off fixes, a GitHub issue is enough.
 
 Each milestone should include:
 
+- Required context from `CONTEXT.md`.
+- Required product quality, UI, copy, interaction, or visual evidence guidance from `TASTE.md` when present.
 - Goal.
 - User or business outcome.
 - Scope.
@@ -51,10 +53,14 @@ Technical work is valid, but it should be tied to a visible or testable outcome.
 
 After a milestone is clear:
 
-1. Create one GitHub issue per independently shippable slice.
-2. Add acceptance criteria to each issue.
-3. Apply `ready-for-agent` only when the issue is implementable.
-4. Apply `afk` only when the issue can be completed without live clarification.
+1. Re-read `CONTEXT.md` and `TASTE.md` when present before drafting issue bodies.
+2. Create one GitHub issue per independently shippable slice.
+3. Carry relevant context and taste requirements into each issue's acceptance criteria or verification evidence.
+4. Add acceptance criteria to each issue.
+5. Apply `ready-for-agent` only when the issue is implementable.
+6. Apply `afk` only when the issue can be completed without live clarification.
+
+If `CONTEXT.md`, `TASTE.md`, the PRD, and the milestone disagree, resolve the conflict before creating issues. Do not publish issues that silently ignore documented project requirements.
 
 ## Completion
 

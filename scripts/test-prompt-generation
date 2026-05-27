@@ -42,6 +42,7 @@ assert_grep "acceptance criteria coverage" "${tmp_dir}/codex-issue.out" "Codex i
 assert_grep "Review exactly one pull request: #17" "${tmp_dir}/codex-review.out" "Codex review prompt was not bounded to one PR"
 assert_grep "Do not edit files" "${tmp_dir}/codex-review.out" "Codex review prompt did not prohibit edits"
 assert_grep "templates/docs/agents/pr-review.md" "${tmp_dir}/codex-review.out" "Codex review prompt did not reference PR review instructions"
+assert_grep "Inspect resolved skill evidence when available" "${tmp_dir}/codex-review.out" "Codex review prompt did not mention optional resolved skill evidence"
 
 "$agentrail" prompt grill "Build better agent handoffs" --agent claude --target "$without_state" >"${tmp_dir}/claude-grill.out"
 assert_grep "Use Claude Code" "${tmp_dir}/claude-grill.out" "Claude grill prompt was not Claude-oriented"
@@ -58,6 +59,7 @@ assert_grep "Handle only issue #11" "${tmp_dir}/claude-issue.out" "Claude issue 
 "$agentrail" prompt review 17 --agent claude --target "$without_state" >"${tmp_dir}/claude-review.out"
 assert_grep "Use Claude Code" "${tmp_dir}/claude-review.out" "Claude review prompt was not Claude-oriented"
 assert_grep "Review only PR #17" "${tmp_dir}/claude-review.out" "Claude review prompt was not bounded to one PR"
+assert_grep "absence of this evidence does not mean the implementation is invalid" "${tmp_dir}/claude-review.out" "Claude review prompt required AgentRail run evidence"
 
 with_state="${tmp_dir}/with-state"
 mkdir -p "$with_state/.agentrail"

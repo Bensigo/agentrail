@@ -25,18 +25,12 @@ assert_grep() {
 
 target="${tmp_dir}/target"
 log_dir="${tmp_dir}/runs"
-mkdir -p "$target/.agentrail" "$log_dir"
-cat >"${target}/.agentrail/state.json" <<'JSON'
+mkdir -p "$target" "$log_dir"
+"$agentrail" install --target "$target" >/dev/null
+cat >"${target}/package.json" <<'JSON'
 {
-  "agentrailVersion": "0.1.0",
-  "workflow": {
-    "phase": "idle",
-    "activeIssue": null,
-    "activePullRequest": null,
-    "activePrd": null,
-    "activeMilestone": null,
-    "lastCompletedStep": null,
-    "nextSuggestedAction": "Pick a ready-for-agent issue."
+  "dependencies": {
+    "react": "latest"
   }
 }
 JSON
@@ -46,14 +40,21 @@ assert_grep "AgentRail run: issue #12" "${tmp_dir}/codex-run.out" "Codex run did
 assert_grep "agent: codex" "${tmp_dir}/codex-run.out" "Codex run did not announce agent"
 assert_grep "Run one bounded Ralph implementation loop for exactly one GitHub issue: #12" "${tmp_dir}/codex-run.out" "Codex run did not pipe generated issue prompt"
 assert_grep "AgentRail state: present" "${tmp_dir}/codex-run.out" "Codex run prompt did not include state summary"
+assert_grep "Resolved AgentRail skills" "${tmp_dir}/codex-run.out" "Codex run prompt did not include resolved skills"
+assert_grep "frontend-web" "${tmp_dir}/codex-run.out" "Codex run prompt did not include resolved frontend-web skill"
 
 codex_metadata="$(find "$log_dir" -name run.json -print | head -1)"
 codex_prompt="$(find "$log_dir" -name prompt.md -print | head -1)"
-[[ -n "$codex_metadata" && -n "$codex_prompt" ]] || { echo "Codex run did not write prompt and metadata logs" >&2; exit 1; }
+codex_resolved_skills="$(find "$log_dir" -name resolved-skills.json -print | head -1)"
+[[ -n "$codex_metadata" && -n "$codex_prompt" && -n "$codex_resolved_skills" ]] || { echo "Codex run did not write prompt, resolved skills, and metadata logs" >&2; exit 1; }
 assert_grep '"targetIssue": 12' "$codex_metadata" "Codex metadata did not record target issue"
 assert_grep '"agent": "codex"' "$codex_metadata" "Codex metadata did not record agent"
 assert_grep '"command": "cat"' "$codex_metadata" "Codex metadata did not record command"
 assert_grep "prompt.md" "$codex_metadata" "Codex metadata did not record prompt reference"
+assert_grep "resolved-skills.json" "$codex_metadata" "Codex metadata did not record resolved skills reference"
+assert_grep '"resolvedSkills"' "$codex_metadata" "Codex metadata did not include resolved skills"
+assert_grep '"frontend-web"' "$codex_metadata" "Codex metadata did not include frontend-web resolution"
+assert_grep '"frontend-web"' "$codex_resolved_skills" "Resolved skills log did not include frontend-web"
 
 AGENTRAIL_CLAUDE_COMMAND=cat "$agentrail" run issue 12 --agent claude --target "$target" --log-dir "$log_dir" >"${tmp_dir}/claude-run.out"
 assert_grep "agent: claude" "${tmp_dir}/claude-run.out" "Claude run did not announce agent"

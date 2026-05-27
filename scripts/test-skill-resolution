@@ -143,16 +143,32 @@ assert_not_grep "frontend-web" "${tmp_dir}/resolve-empty.out" "Unrelated fixture
 
 "$agentrail" prompt issue 123 --skill frontend-web --no-auto-skills --target "$base" >"${tmp_dir}/prompt-explicit.out"
 assert_grep "frontend-web" "${tmp_dir}/prompt-explicit.out" "Explicit prompt skill was not included"
+assert_grep "path: skills/frontend-web/SKILL.md" "${tmp_dir}/prompt-explicit.out" "Explicit prompt skill did not include the local SKILL.md path"
 assert_grep "explicit --skill" "${tmp_dir}/prompt-explicit.out" "Explicit prompt skill did not include a reason"
+assert_grep "Read these SKILL.md files before editing" "${tmp_dir}/prompt-explicit.out" "Prompt did not tell workers to read resolved skills before editing"
+assert_grep "does not apply after inspection" "${tmp_dir}/prompt-explicit.out" "Prompt did not tell workers to report non-applicable resolved skills"
 
 "$agentrail" prompt issue 123 --no-auto-skills --target "$tauri" >"${tmp_dir}/prompt-no-auto.out"
 assert_not_grep "desktop-tauri" "${tmp_dir}/prompt-no-auto.out" "--no-auto-skills did not disable automatic matches"
 assert_grep "Automatic skill resolution disabled" "${tmp_dir}/prompt-no-auto.out" "--no-auto-skills was not visible in the prompt"
+
+"$agentrail" prompt issue 123 --target "$tauri" >"${tmp_dir}/prompt-tauri.out"
+assert_grep "desktop-tauri" "${tmp_dir}/prompt-tauri.out" "Tauri prompt did not include desktop-tauri"
+assert_grep "frontend-web" "${tmp_dir}/prompt-tauri.out" "Tauri prompt did not include frontend-web"
+assert_grep "reason:" "${tmp_dir}/prompt-tauri.out" "Tauri prompt did not include reasons"
 
 if "$agentrail" prompt issue 123 --skill does-not-exist --target "$base" >"${tmp_dir}/unknown-skill.out" 2>&1; then
   echo "prompt issue accepted an unknown explicit skill" >&2
   exit 1
 fi
 assert_grep "Unknown skill: does-not-exist" "${tmp_dir}/unknown-skill.out" "Unknown explicit skill did not fail clearly"
+
+uninstalled="${tmp_dir}/uninstalled"
+mkdir -p "$uninstalled"
+if "$agentrail" prompt issue 123 --skill frontend-web --target "$uninstalled" >"${tmp_dir}/unavailable-skill.out" 2>&1; then
+  echo "prompt issue accepted an unavailable explicit skill" >&2
+  exit 1
+fi
+assert_grep "Unavailable skill: frontend-web" "${tmp_dir}/unavailable-skill.out" "Unavailable explicit skill did not fail clearly"
 
 echo "skill resolution test passed"

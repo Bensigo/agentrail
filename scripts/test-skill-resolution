@@ -72,6 +72,42 @@ touch "$tauri/src-tauri/tauri.conf.json" "$tauri/src/App.tsx"
 assert_grep "desktop-tauri" "${tmp_dir}/resolve-tauri.out" "Tauri fixture did not resolve desktop-tauri"
 assert_grep "frontend-web" "${tmp_dir}/resolve-tauri.out" "Tauri fixture did not also resolve frontend-web"
 
+rust="${tmp_dir}/rust"
+make_fixture "$rust"
+cat >"${rust}/Cargo.toml" <<'TOML'
+[package]
+name = "plain-rust"
+version = "0.1.0"
+edition = "2021"
+TOML
+"$agentrail" skills resolve "Refactor Rust error handling" --target "$rust" >"${tmp_dir}/resolve-rust.out"
+assert_not_grep "desktop-tauri" "${tmp_dir}/resolve-rust.out" "Plain Rust fixture resolved desktop-tauri unexpectedly"
+
+tauri_src="${tmp_dir}/tauri-src"
+make_fixture "$tauri_src"
+mkdir -p "$tauri_src/src-tauri"
+touch "$tauri_src/src-tauri/Cargo.toml"
+"$agentrail" skills resolve "Fix app window behavior" --target "$tauri_src" >"${tmp_dir}/resolve-tauri-src.out"
+assert_grep "desktop-tauri" "${tmp_dir}/resolve-tauri-src.out" "src-tauri fixture did not resolve desktop-tauri"
+
+tauri_config="${tmp_dir}/tauri-config"
+make_fixture "$tauri_config"
+touch "$tauri_config/tauri.conf.json"
+"$agentrail" skills resolve "Fix app window behavior" --target "$tauri_config" >"${tmp_dir}/resolve-tauri-config.out"
+assert_grep "desktop-tauri" "${tmp_dir}/resolve-tauri-config.out" "Tauri config fixture did not resolve desktop-tauri"
+
+tauri_dep="${tmp_dir}/tauri-dep"
+make_fixture "$tauri_dep"
+cat >"${tauri_dep}/package.json" <<'JSON'
+{
+  "dependencies": {
+    "@tauri-apps/api": "latest"
+  }
+}
+JSON
+"$agentrail" skills resolve "Fix app window behavior" --target "$tauri_dep" >"${tmp_dir}/resolve-tauri-dep.out"
+assert_grep "desktop-tauri" "${tmp_dir}/resolve-tauri-dep.out" "@tauri-apps dependency fixture did not resolve desktop-tauri"
+
 backend="${tmp_dir}/backend"
 make_fixture "$backend"
 mkdir -p "$backend/server/routes"

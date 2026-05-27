@@ -72,6 +72,12 @@ touch "$tauri/src-tauri/tauri.conf.json" "$tauri/src/App.tsx"
 assert_grep "desktop-tauri" "${tmp_dir}/resolve-tauri.out" "Tauri fixture did not resolve desktop-tauri"
 assert_grep "frontend-web" "${tmp_dir}/resolve-tauri.out" "Tauri fixture did not also resolve frontend-web"
 
+"$agentrail" skills resolve "fix Tauri desktop UI bug" --target "$tauri" >"${tmp_dir}/resolve-tauri-ui.out"
+assert_grep "desktop-tauri" "${tmp_dir}/resolve-tauri-ui.out" "Requested Tauri UI fixture did not resolve desktop-tauri"
+assert_grep "frontend-web" "${tmp_dir}/resolve-tauri-ui.out" "Requested Tauri UI fixture did not resolve frontend-web"
+assert_grep "docs-current" "${tmp_dir}/resolve-tauri-ui.out" "Requested Tauri UI fixture did not resolve docs-current"
+assert_grep "reason:" "${tmp_dir}/resolve-tauri-ui.out" "Requested Tauri UI fixture did not include resolution reasons"
+
 rust="${tmp_dir}/rust"
 make_fixture "$rust"
 cat >"${rust}/Cargo.toml" <<'TOML'

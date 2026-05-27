@@ -387,6 +387,15 @@ function isSafeRelativePath(value) {
     value.endsWith("/SKILL.md");
 }
 
+const requiredSkillSections = [
+  "## Activation Guidance",
+  "## Context To Inspect",
+  "## Constraints",
+  "## Verification Requirements",
+  "## Expected PR Evidence",
+  "## Provenance / Audit",
+];
+
 let registry;
 let parsedRegistry = false;
 try {
@@ -428,6 +437,11 @@ if (parsedRegistry && (registry === null || typeof registry !== "object" || Arra
         fail(`${label}: invalid localPath`);
       } else if (!fs.existsSync(path.join(skillRoot, skill.localPath))) {
         fail(`${label}: localPath does not exist: ${skill.localPath}`);
+      } else {
+        const skillBody = fs.readFileSync(path.join(skillRoot, skill.localPath), "utf8");
+        for (const section of requiredSkillSections) {
+          if (!skillBody.includes(section)) fail(`${label}: missing SKILL.md section ${section}`);
+        }
       }
 
       if (!skill.triggers || typeof skill.triggers !== "object" || Array.isArray(skill.triggers)) {
@@ -683,7 +697,7 @@ function keywordMatches(keyword) {
 
 function shouldUseKeyword(skillName, keyword) {
   if (skillName !== "docs-current") return true;
-  return ["current", "latest", "docs", "documentation", "sdk", "license", "provenance"].includes(keyword.toLowerCase());
+  return ["current", "latest", "docs", "documentation", "sdk", "license", "provenance", "tauri"].includes(keyword.toLowerCase());
 }
 
 if (autoSkills) {

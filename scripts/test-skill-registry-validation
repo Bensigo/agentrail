@@ -94,6 +94,15 @@ make_fixture "$invalid_path"
 mutate_registry "$invalid_path" "registry.skills[0].localPath = 'skills/nope/SKILL.md';"
 expect_invalid "$invalid_path" "localPath does not exist" "invalid registry local paths were not rejected"
 
+missing_skill_content="${tmp_dir}/missing-skill-content"
+make_fixture "$missing_skill_content"
+cat >"${missing_skill_content}/skills/frontend-web/SKILL.md" <<'EOF'
+# Frontend Web
+
+Use this skill when changing frontend code.
+EOF
+expect_invalid "$missing_skill_content" "missing SKILL.md section ## Provenance / Audit" "local skill files without required audit/provenance sections were not rejected"
+
 malformed_trigger="${tmp_dir}/malformed-trigger"
 make_fixture "$malformed_trigger"
 mutate_registry "$malformed_trigger" "registry.skills[0].triggers.keywords = 'frontend';"

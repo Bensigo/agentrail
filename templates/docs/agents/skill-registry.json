@@ -124,7 +124,7 @@
       "licenseStatus": "agentrail-authored; MIT reference sources noted for future audit",
       "auditStatus": "approved-first-party-skill; candidate repositories verified for existence only",
       "triggers": {
-        "keywords": ["docs", "documentation", "current", "latest", "api", "sdk", "license", "provenance"],
+        "keywords": ["docs", "documentation", "current", "latest", "api", "sdk", "license", "provenance", "tauri"],
         "fileGlobs": ["**/docs/**", "**/*.md", "**/package.json", "**/pnpm-lock.yaml", "**/package-lock.json"],
         "projectSignals": ["task asks for current docs, external API behavior, dependency metadata, or license verification"]
       },

@@ -38,7 +38,7 @@
       "auditStatus": "approved-first-party-skill; candidate paths verified for existence only",
       "triggers": {
         "keywords": ["tauri", "desktop", "rust", "capabilities", "permissions", "webview"],
-        "fileGlobs": ["**/src-tauri/**", "**/tauri.conf.json", "**/Cargo.toml"],
+        "fileGlobs": ["**/src-tauri/**", "**/tauri.conf.json"],
         "projectSignals": ["src-tauri directory or @tauri-apps dependency"]
       },
       "provenance": {

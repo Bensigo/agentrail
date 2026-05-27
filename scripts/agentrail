@@ -642,7 +642,7 @@ function matchFileSignal(skillName, file) {
     return /\.(tsx|jsx|css)$/.test(file) || hasSegment(file, "app") || hasSegment(file, "components");
   }
   if (skillName === "desktop-tauri") {
-    return file.startsWith("src-tauri/") || file.endsWith("/src-tauri/tauri.conf.json") || file === "tauri.conf.json" || file.endsWith("/tauri.conf.json") || file === "Cargo.toml" || file.endsWith("/Cargo.toml");
+    return file.startsWith("src-tauri/") || file.includes("/src-tauri/") || file === "tauri.conf.json" || file.endsWith("/tauri.conf.json");
   }
   if (skillName === "backend-api") {
     return hasSegment(file, "api") || hasSegment(file, "server") || hasSegment(file, "routes") || hasSegment(file, "controllers") || hasSegment(file, "prisma");

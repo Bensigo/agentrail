@@ -53,6 +53,10 @@ Use these repo-local skills when the task matches them:
 - `to-issues`: turn one milestone at a time into independently grabbable implementation issues.
 - `tdd`: design testable interfaces and drive implementation with tests.
 
+AgentRail also installs curated first-party skills for common implementation contexts, such as frontend web, Tauri desktop, backend APIs, devops/deploy work, and current-docs verification. These are reviewed local files under `skills/`, not arbitrary third-party hot installs.
+
+Skill supply-chain rule: borrow aggressively, vendor carefully, update intentionally, never auto-trust. Treat upstream skill repositories as provenance candidates until reviewed. When updating provenance, verify the upstream source still exists before editing docs/agents/skill-registry.json, record the source URL and observed commit or content SHA when available, check license/audit status, update the local vendored skill deliberately, and include verification evidence in the PR.
+
 Preferred sequence:
 
 ```text

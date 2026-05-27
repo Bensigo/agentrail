@@ -94,6 +94,34 @@ make_fixture "$invalid_path"
 mutate_registry "$invalid_path" "registry.skills[0].localPath = 'skills/nope/SKILL.md';"
 expect_invalid "$invalid_path" "localPath does not exist" "invalid registry local paths were not rejected"
 
+missing_registry="${tmp_dir}/missing-registry"
+make_fixture "$missing_registry"
+rm "${missing_registry}/docs/agents/skill-registry.json"
+expect_invalid "$missing_registry" "cannot read registry" "missing registry file was not rejected"
+
+doctor_missing_registry="${tmp_dir}/doctor-missing-registry"
+make_fixture "$doctor_missing_registry"
+rm "${doctor_missing_registry}/docs/agents/skill-registry.json"
+if "$agentrail" doctor --target "$doctor_missing_registry" >"${tmp_dir}/doctor-missing-registry.out" 2>&1; then
+  echo "doctor did not reject a missing skill registry" >&2
+  cat "${tmp_dir}/doctor-missing-registry.out" >&2
+  exit 1
+fi
+assert_grep "status: corrupt" "${tmp_dir}/doctor-missing-registry.out" "doctor did not mark missing registry as corrupt"
+assert_grep "missing docs/agents/skill-registry.json" "${tmp_dir}/doctor-missing-registry.out" "doctor did not report missing registry core file"
+assert_grep "cannot read registry" "${tmp_dir}/doctor-missing-registry.out" "doctor did not print missing registry validation error"
+
+doctor_broken_skill_path="${tmp_dir}/doctor-broken-skill-path"
+make_fixture "$doctor_broken_skill_path"
+mutate_registry "$doctor_broken_skill_path" "registry.skills[0].localPath = 'skills/nope/SKILL.md';"
+if "$agentrail" doctor --target "$doctor_broken_skill_path" >"${tmp_dir}/doctor-broken-skill-path.out" 2>&1; then
+  echo "doctor did not reject a broken skill path" >&2
+  cat "${tmp_dir}/doctor-broken-skill-path.out" >&2
+  exit 1
+fi
+assert_grep "status: corrupt" "${tmp_dir}/doctor-broken-skill-path.out" "doctor did not mark broken skill paths as corrupt"
+assert_grep "localPath does not exist: skills/nope/SKILL.md" "${tmp_dir}/doctor-broken-skill-path.out" "doctor did not report the broken skill path clearly"
+
 missing_skill_content="${tmp_dir}/missing-skill-content"
 make_fixture "$missing_skill_content"
 cat >"${missing_skill_content}/skills/frontend-web/SKILL.md" <<'EOF'

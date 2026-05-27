@@ -83,12 +83,19 @@ Project-local skills:
 
 ```text
 skills/bensigo-ai-workflow/
+skills/backend-api/
+skills/desktop-tauri/
+skills/devops-deploy/
+skills/docs-current/
+skills/frontend-web/
 skills/grill-with-docs/
 skills/to-prd/
 skills/to-milestones/
 skills/to-issues/
 skills/tdd/
 ```
+
+AgentRail ships curated first-party skills, not arbitrary third-party hot installs. Upstream projects may be listed in `docs/agents/skill-registry.json` as provenance candidates, but those references are audit notes, not trusted install sources. The installed `skills/` files are the reviewed local copies that prompts point agents to read.
 
 Workflow scripts:
 
@@ -117,6 +124,8 @@ scripts/agentrail doctor --target /path/to/project
 
 `agentrail doctor` reports missing core files, optional `TASTE.md`, state health, managed file hash drift, and GitHub label gaps when `gh` is available in a connected GitHub repo. Missing recommendations are warnings; invalid usage and corrupt state fail non-zero.
 
+It also validates the managed skill registry for installed targets. Missing registry files are reported under `core:`; invalid registry data or broken `localPath` entries are reported under `skills:` and make `doctor` fail.
+
 Upgrade managed AgentRail files without overwriting local edits:
 
 ```bash
@@ -124,6 +133,42 @@ scripts/agentrail upgrade --target /path/to/project
 ```
 
 Use `--force` only after reviewing reported local modifications.
+
+## Curated Skills
+
+Inspect the bundled skills in an installed project:
+
+```bash
+agentrail skills list --target .
+```
+
+Preview the resolver for a task before generating or running a prompt:
+
+```bash
+agentrail skills resolve "fix Tauri desktop UI" --target .
+```
+
+The resolver combines task keywords, installed project files, and package signals. Output includes each selected skill, its local `SKILL.md` path, and the reason it matched.
+
+Force a skill when the resolver misses useful context:
+
+```bash
+agentrail prompt issue 123 --skill frontend-web --target .
+```
+
+Disable automatic skill matching when a task should stay narrow:
+
+```bash
+agentrail prompt issue 123 --no-auto-skills --target .
+```
+
+Use both flags to include only explicit skills:
+
+```bash
+agentrail prompt issue 123 --skill frontend-web --no-auto-skills --target .
+```
+
+Maintainers should treat upstream skill material as supply-chain input: borrow aggressively, vendor carefully, update intentionally, never auto-trust. Before changing `docs/agents/skill-registry.json`, verify the upstream source still exists, record the current URL or observed commit/SHA when available, check the license and audit status, then update the local skill file and tests in the same PR.
 
 ## Recommended Flow
 

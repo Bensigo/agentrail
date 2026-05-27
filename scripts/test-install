@@ -220,6 +220,16 @@ if ! grep -q -- "TASTE.md" "${tmp_dir}/AGENTS.md"; then
   exit 1
 fi
 
+if ! grep -q -- "borrow aggressively, vendor carefully, update intentionally, never auto-trust" "${tmp_dir}/AGENTS.md"; then
+  echo "AGENTS.md does not document the skill supply-chain rule" >&2
+  exit 1
+fi
+
+if ! grep -q -- "verify the upstream source still exists before editing docs/agents/skill-registry.json" "${tmp_dir}/AGENTS.md"; then
+  echo "AGENTS.md does not document safe provenance update expectations" >&2
+  exit 1
+fi
+
 if ! grep -q -- "source:" "${tmp_dir}/docs/memory/README.md"; then
   echo "memory README does not require source-linked entries" >&2
   exit 1

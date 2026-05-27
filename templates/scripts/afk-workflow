@@ -93,7 +93,7 @@ ensure_label() {
   local description="$3"
 
   gh label list --limit 200 --json name --jq '.[].name' | grep -Fxq "$name" && return 0
-  gh label create "$name" --color "$color" --description "$description" >/dev/null
+  gh label create "$name" --color "$color" --description "$description" --force >/dev/null
 }
 
 ensure_workflow_labels() {

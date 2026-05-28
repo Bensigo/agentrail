@@ -37,6 +37,29 @@ cat >"${target}/.agentrail/state.json" <<'JSON'
     "activePullRequest": 23,
     "activePrd": "docs/prd/agentrail.md",
     "activeMilestone": "docs/milestones/001-agentrail.md",
+    "activeRun": {
+      "runId": "20260526-110000-issue-13-codex-100",
+      "targetType": "issue",
+      "targetIssue": 13,
+      "agent": "codex",
+      "status": "running",
+      "pickedAt": "2026-05-26T11:00:00Z",
+      "promptFile": ".agentrail/runs/20260526-110000-issue-13-codex-100/prompt.md",
+      "metadataFile": ".agentrail/runs/20260526-110000-issue-13-codex-100/run.json"
+    },
+    "completedRuns": [
+      {
+        "runId": "20260526-100000-issue-8-codex-99",
+        "targetType": "issue",
+        "targetIssue": 8,
+        "agent": "codex",
+        "status": "completed",
+        "pickedAt": "2026-05-26T10:00:00Z",
+        "completedAt": "2026-05-26T10:20:00Z",
+        "promptFile": ".agentrail/runs/20260526-100000-issue-8-codex-99/prompt.md",
+        "metadataFile": ".agentrail/runs/20260526-100000-issue-8-codex-99/run.json"
+      }
+    ],
     "lastCompletedStep": "runner-adapter-merged",
     "nextSuggestedAction": "Implement resume and handoff support."
   }
@@ -49,6 +72,8 @@ assert_grep "install status: state-present" "${tmp_dir}/status.out" "status did 
 assert_grep "phase: implementation" "${tmp_dir}/status.out" "status did not print workflow phase"
 assert_grep "active issue: 13" "${tmp_dir}/status.out" "status did not print active issue"
 assert_grep "active pull request: 23" "${tmp_dir}/status.out" "status did not print active PR"
+assert_grep "active run: issue #13 via codex (running)" "${tmp_dir}/status.out" "status did not print active run"
+assert_grep "completed run: issue #8 via codex (completed)" "${tmp_dir}/status.out" "status did not print completed run"
 assert_grep "last completed step: runner-adapter-merged" "${tmp_dir}/status.out" "status did not print last completed step"
 assert_grep "next action: Implement resume and handoff support." "${tmp_dir}/status.out" "status did not print next action"
 
@@ -57,6 +82,8 @@ handoff_file="${tmp_dir}/handoff.md"
 assert_grep "Codex Desktop instruction: do not rely on previous chat context" "${tmp_dir}/resume.out" "resume did not warn against chat-history reliance"
 assert_grep "active issue: 13" "${tmp_dir}/resume.out" "resume did not include active issue"
 assert_grep "active pull request: 23" "${tmp_dir}/resume.out" "resume did not include active PR"
+assert_grep "active run: issue #13 via codex (running)" "${tmp_dir}/resume.out" "resume did not include active run"
+assert_grep "completed run: issue #8 via codex (completed)" "${tmp_dir}/resume.out" "resume did not include completed run"
 assert_grep "last completed step: runner-adapter-merged" "${tmp_dir}/resume.out" "resume did not include last completed step"
 assert_grep "next action: Implement resume and handoff support." "${tmp_dir}/resume.out" "resume did not include next action"
 assert_grep "Verification commands:" "${tmp_dir}/resume.out" "resume did not include verification commands"

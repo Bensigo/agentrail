@@ -285,7 +285,7 @@ agentrail status --target .
 agentrail resume --target .
 ```
 
-Use `status` to inspect the installed AgentRail state and the current workflow pointer. Use `resume` after chat compaction, a new session, or an interrupted run. The resume output tells Codex Desktop to recover from `.agentrail/state.json`, source files, docs, and GitHub state instead of trusting previous chat context.
+Use `status` to inspect the installed AgentRail state, current workflow pointer, active run, and recent completed runs. Use `resume` after chat compaction, a new session, or an interrupted run. The resume output tells Codex Desktop to recover from `.agentrail/state.json`, source files, docs, run metadata, and GitHub state instead of trusting previous chat context.
 
 Generate prompts when you want to inspect or hand off the next step before executing it:
 
@@ -310,7 +310,7 @@ The main context files fit together like this:
 - `TASTE.md`: optional product quality, UI, copy, interaction, and visual evidence guidance.
 - `docs/memory/`: source-linked lessons, decisions, preferences, and failure patterns to recall before non-trivial work.
 - GitHub issues: implementation source of truth, acceptance criteria, blockers, and AFK eligibility.
-- `.agentrail/state.json`: durable workflow pointer for compaction recovery, handoffs, active issue/PR state, and next suggested action.
+- `.agentrail/state.json`: durable workflow pointer for compaction recovery, handoffs, active issue/PR state, active run state, recent completed/failed runs, and next suggested action.
 
 AgentRail is local CLI workflow infrastructure, not a hosted orchestration platform. Keep runs bounded, review PRs before merge, and verify changes with the commands recorded in each PR.
 

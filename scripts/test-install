@@ -170,6 +170,21 @@ if ! grep -q -- "docs/agents/pr-review.md" "${tmp_dir}/scripts/review-pr"; then
   exit 1
 fi
 
+if ! grep -q -- "docs/agents/github-pr-reviewer.md" "${tmp_dir}/scripts/review-pr"; then
+  echo "review-pr script does not load installed GitHub PR reviewer contract" >&2
+  exit 1
+fi
+
+if ! grep -q -- "--machine-readable" "${tmp_dir}/scripts/review-pr"; then
+  echo "review-pr script does not expose machine-readable review mode" >&2
+  exit 1
+fi
+
+if ! grep -q -- "--machine-readable" "${tmp_dir}/scripts/afk-workflow"; then
+  echo "afk-workflow does not request machine-readable PR reviews" >&2
+  exit 1
+fi
+
 if grep -q -- "review/prompt.md" "${tmp_dir}/scripts/review-pr"; then
   echo "review-pr script still depends on missing review/prompt.md" >&2
   exit 1

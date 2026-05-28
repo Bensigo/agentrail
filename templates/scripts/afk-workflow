@@ -359,7 +359,7 @@ worker_run() {
       review_output="${logs_dir}/pr-${pr}-review.md"
       review_log="${logs_dir}/pr-${pr}-review.log"
 
-      if ! "$review_runner" --pr "$pr" --output "$review_output" >"$review_log" 2>&1; then
+      if ! "$review_runner" --pr "$pr" --output "$review_output" --machine-readable >"$review_log" 2>&1; then
         echo "worker ${slot}: review failed for PR #${pr}; see ${review_log}" >&2
         return 1
       fi

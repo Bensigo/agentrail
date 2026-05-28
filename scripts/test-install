@@ -150,7 +150,7 @@ if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.find((
   exit 1
 fi
 
-if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "['phase', 'activeIssue', 'activePullRequest', 'activePrd', 'activeMilestone', 'lastCompletedStep', 'nextSuggestedAction'].every((field) => Object.prototype.hasOwnProperty.call(data.workflow, field))")" != "true" ]]; then
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "['phase', 'activeIssue', 'activePullRequest', 'activePrd', 'activeMilestone', 'activeRun', 'completedRuns', 'lastCompletedStep', 'nextSuggestedAction'].every((field) => Object.prototype.hasOwnProperty.call(data.workflow, field))")" != "true" ]]; then
   echo "state file does not include resumable workflow fields" >&2
   exit 1
 fi

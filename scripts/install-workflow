@@ -175,6 +175,8 @@ const defaultWorkflow = {
   activePullRequest: null,
   activePrd: null,
   activeMilestone: null,
+  activeRun: null,
+  completedRuns: [],
   lastCompletedStep: null,
   nextSuggestedAction: "Pick a ready-for-agent issue or create a PRD/milestone before starting implementation.",
 };
@@ -189,6 +191,7 @@ const state = {
   workflow: {
     ...defaultWorkflow,
     ...(previousState?.workflow || {}),
+    completedRuns: Array.isArray(previousState?.workflow?.completedRuns) ? previousState.workflow.completedRuns : [],
   },
 };
 

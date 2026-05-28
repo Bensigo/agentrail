@@ -56,9 +56,56 @@ assert_grep '"resolvedSkills"' "$codex_metadata" "Codex metadata did not include
 assert_grep '"frontend-web"' "$codex_metadata" "Codex metadata did not include frontend-web resolution"
 assert_grep '"frontend-web"' "$codex_resolved_skills" "Resolved skills log did not include frontend-web"
 
+state_file="${target}/.agentrail/state.json"
+if [[ "$(node - "$state_file" <<'NODE'
+const fs = require("fs");
+const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const workflow = state.workflow || {};
+const completedRun = Array.isArray(workflow.completedRuns) && workflow.completedRuns.find((run) => run.targetIssue === 12 && run.agent === "codex");
+console.log(Boolean(
+  workflow.phase === "completed" &&
+  workflow.activeRun === null &&
+  workflow.activeIssue === null &&
+  completedRun &&
+  completedRun.status === "completed" &&
+  completedRun.completedAt &&
+  completedRun.promptFile &&
+  completedRun.metadataFile
+));
+NODE
+)" != "true" ]]; then
+  echo "AgentRail run did not persist completed run state" >&2
+  cat "$state_file" >&2
+  exit 1
+fi
+
 AGENTRAIL_CLAUDE_COMMAND=cat "$agentrail" run issue 12 --agent claude --target "$target" --log-dir "$log_dir" >"${tmp_dir}/claude-run.out"
 assert_grep "agent: claude" "${tmp_dir}/claude-run.out" "Claude run did not announce agent"
 assert_grep "Use Claude Code to run one bounded implementation loop for exactly one GitHub issue: #12" "${tmp_dir}/claude-run.out" "Claude run did not use Claude-oriented prompt"
+
+if "$agentrail" run issue 12 --agent codex --target "$target" --command false --log-dir "$log_dir" >"${tmp_dir}/failed-run.out" 2>&1; then
+  echo "Runner accepted a failing agent command" >&2
+  exit 1
+fi
+
+if [[ "$(node - "$state_file" <<'NODE'
+const fs = require("fs");
+const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const workflow = state.workflow || {};
+const failedRun = Array.isArray(workflow.completedRuns) && workflow.completedRuns.find((run) => run.targetIssue === 12 && run.status === "failed");
+console.log(Boolean(
+  workflow.phase === "blocked" &&
+  workflow.activeRun === null &&
+  failedRun &&
+  failedRun.exitStatus === 1 &&
+  /failed/.test(workflow.nextSuggestedAction || "")
+));
+NODE
+)" != "true" ]]; then
+  echo "AgentRail run did not persist failed run state" >&2
+  cat "$state_file" >&2
+  exit 1
+fi
 
 if "$agentrail" run issue 12 --agent codex --target "$target" --command definitely-not-agentrail-runner --log-dir "$log_dir" >"${tmp_dir}/missing-command.out" 2>&1; then
   echo "Runner accepted a missing command" >&2

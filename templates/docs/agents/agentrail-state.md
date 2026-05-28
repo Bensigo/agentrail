@@ -36,9 +36,17 @@ The installer preserves local edits unless run with `--force`. When a project al
 - `activePullRequest`
 - `activePrd`
 - `activeMilestone`
+- `activeRun`
+- `completedRuns`
 - `lastCompletedStep`
 - `nextSuggestedAction`
 
 Install and upgrade flows preserve existing workflow fields when updating state.
+
+`activeRun` records the issue an agent has picked and is currently working on. It includes the run id, target issue, agent name, status, picked timestamp, prompt file, metadata file, and run directory. `agentrail run issue` writes this before invoking the agent command so a crash, failed compaction, or interrupted terminal still leaves a durable pointer to the in-flight work.
+
+`completedRuns` is an append-only recent history, capped to the latest 20 runs. Completed and failed runs include completion timestamp and exit status. Failed runs are kept here too because they are part of the recovery trail.
+
+On resume, treat an `activeRun` with no matching live process as stale but useful: inspect its prompt and metadata files, compare with GitHub issue or PR state, then decide whether to rerun, mark blocked, or continue manually. Do not trust chat memory over these files.
 
 The managed inventory includes the skill registry and bundled skill files under `skills/`. Local edits are preserved by `agentrail upgrade` unless `--force` is used.

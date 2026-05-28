@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/review-pr --pr NUMBER [--base main] [--engine codex] [--output FILE]
+  scripts/review-pr --pr NUMBER [--base main] [--engine codex] [--output FILE] [--machine-readable]
   review/pr.sh NUMBER
 
 Runs a pull request review in a fresh agent context window.
@@ -14,6 +14,8 @@ Options:
   --base BRANCH     Base branch to review against. Default: PR base branch.
   --engine ENGINE   Review engine. Supported: codex. Default: codex.
   --output FILE     Write the review agent's final message to FILE.
+  --machine-readable
+                    Include the GitHub PR reviewer JSON contract for AFK follow-up issue creation.
 
 Environment:
   REVIEW_CODEX_ARGS Extra arguments passed to `codex exec review`.
@@ -47,11 +49,17 @@ review_prompt() {
   local pr="$1"
   local title="$2"
   local url="$3"
+  local machine_readable="$4"
   local prompt_file="docs/agents/pr-review.md"
+  local machine_prompt_file="docs/agents/github-pr-reviewer.md"
   local memory_command="scripts/memory"
 
   if [[ ! -f "$prompt_file" && -f "templates/docs/agents/pr-review.md" ]]; then
     prompt_file="templates/docs/agents/pr-review.md"
+  fi
+
+  if [[ ! -f "$machine_prompt_file" && -f "templates/docs/agents/github-pr-reviewer.md" ]]; then
+    machine_prompt_file="templates/docs/agents/github-pr-reviewer.md"
   fi
 
   if [[ ! -x "$memory_command" && -x "templates/scripts/memory" ]]; then
@@ -59,6 +67,9 @@ review_prompt() {
   fi
 
   [[ -f "$prompt_file" ]] || die "missing PR review instructions: docs/agents/pr-review.md or templates/docs/agents/pr-review.md"
+  if [[ "$machine_readable" == "1" ]]; then
+    [[ -f "$machine_prompt_file" ]] || die "missing GitHub PR reviewer contract: docs/agents/github-pr-reviewer.md or templates/docs/agents/github-pr-reviewer.md"
+  fi
 
   cat <<PROMPT
 Review exactly one pull request: #${pr}.
@@ -69,6 +80,20 @@ Pull request URL: ${url}
 Use the review instructions below:
 
 $(cat "$prompt_file")
+PROMPT
+
+  if [[ "$machine_readable" == "1" ]]; then
+    cat <<PROMPT
+
+Use the machine-readable GitHub PR reviewer contract below. You must include the marked JSON block with both \`fix_issues\` and \`memory_suggestions\` arrays in the final output, even when both arrays are empty:
+
+Machine-readable contract source: ${machine_prompt_file}
+
+$(cat "$machine_prompt_file")
+PROMPT
+  fi
+
+  cat <<PROMPT
 
 Repo-specific instructions:
 
@@ -89,8 +114,9 @@ run_codex_review() {
   local title="$3"
   local url="$4"
   local output_file="$5"
+  local machine_readable="$6"
   local prompt
-  prompt="$(review_prompt "$pr" "$title" "$url")"
+  prompt="$(review_prompt "$pr" "$title" "$url" "$machine_readable")"
 
   local extra_args=()
   if [[ -n "${REVIEW_CODEX_ARGS:-}" ]]; then
@@ -116,6 +142,7 @@ main() {
   local base=""
   local engine="codex"
   local output_file=""
+  local machine_readable="0"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -138,6 +165,10 @@ main() {
         output_file="${2:-}"
         [[ -n "$output_file" ]] || die "--output requires a file path"
         shift 2
+        ;;
+      --machine-readable)
+        machine_readable="1"
+        shift
         ;;
       -h|--help)
         usage
@@ -182,7 +213,7 @@ main() {
   echo "    base: ${base}"
   echo "    head: ${head_ref}"
 
-  run_codex_review "$base" "$pr" "$title" "$url" "$output_file"
+  run_codex_review "$base" "$pr" "$title" "$url" "$output_file" "$machine_readable"
 }
 
 main "$@"

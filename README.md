@@ -112,9 +112,24 @@ Durable project state:
 
 ```text
 .agentrail/state.json
+.agentrail/config.json
 ```
 
 The state file records the AgentRail version, install timestamps, managed file inventory, file hashes, and the current workflow pointer. Its format is documented in `docs/agents/agentrail-state.md`.
+
+The config file stores the single active project runner. New installs default to Codex:
+
+```json
+{
+  "schemaVersion": 1,
+  "runner": {
+    "name": "codex",
+    "command": "codex exec -"
+  }
+}
+```
+
+Built-in runner names are `codex`, `claude`, `cursor`, and `hermes`. Use `custom` with a command string for unsupported tools. The configured runner is used by `agentrail run` unless you pass an explicit command for a local test or one-off execution.
 
 Check an installed or partially installed project:
 
@@ -186,6 +201,24 @@ grill-with-docs
 ```
 
 For small edits, skip the heavy planning steps and implement directly with tests.
+
+## Run Work
+
+Use the state-first runner when you want AgentRail to decide what needs attention:
+
+```bash
+agentrail run
+```
+
+It reads `.agentrail/state.json` first. If an active run exists, it prints the issue, run directory, prompt, metadata, and next action instead of starting new work. If no active run exists, it selects the next open GitHub issue labeled `afk` and `ready-for-agent`, excluding issues already labeled `afk-in-progress`.
+
+Run a specific issue when you already know the target:
+
+```bash
+agentrail run issue 123
+```
+
+The explicit issue path still checks durable state first and refuses to start conflicting active work.
 
 ## How To Use It With An Agent
 

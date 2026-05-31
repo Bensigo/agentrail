@@ -35,6 +35,20 @@ cat >"${target}/package.json" <<'JSON'
 }
 JSON
 
+config_file="${target}/.agentrail/config.json"
+[[ -f "$config_file" ]] || { echo "AgentRail install did not create .agentrail/config.json" >&2; exit 1; }
+
+if [[ "$(node - "$config_file" <<'NODE'
+const fs = require("fs");
+const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(Boolean(config.runner && config.runner.name === "codex" && config.runner.command === "codex exec -"));
+NODE
+)" != "true" ]]; then
+  echo "Default runner config was not written" >&2
+  cat "$config_file" >&2
+  exit 1
+fi
+
 "$agentrail" run issue 12 --agent codex --target "$target" --command cat --log-dir "$log_dir" >"${tmp_dir}/codex-run.out"
 assert_grep "AgentRail run: issue #12" "${tmp_dir}/codex-run.out" "Codex run did not announce issue"
 assert_grep "agent: codex" "${tmp_dir}/codex-run.out" "Codex run did not announce agent"
@@ -78,6 +92,120 @@ NODE
   cat "$state_file" >&2
   exit 1
 fi
+
+cat >"$state_file" <<'JSON'
+{
+  "workflow": {
+    "phase": "implementation",
+    "activeIssue": 34,
+    "activeRun": {
+      "runId": "active-34",
+      "targetType": "issue",
+      "targetIssue": 34,
+      "agent": "codex",
+      "status": "running",
+      "pickedAt": "2026-05-31T08:00:00Z",
+      "promptFile": ".agentrail/runs/active-34/prompt.md",
+      "metadataFile": ".agentrail/runs/active-34/run.json",
+      "runDir": ".agentrail/runs/active-34"
+    },
+    "completedRuns": [],
+    "nextSuggestedAction": "Continue issue #34."
+  }
+}
+JSON
+
+"$agentrail" run --target "$target" >"${tmp_dir}/active-run.out"
+assert_grep "active run exists" "${tmp_dir}/active-run.out" "State-first run did not report active run"
+assert_grep "issue #34 via codex (running)" "${tmp_dir}/active-run.out" "State-first run did not summarize active run"
+assert_grep ".agentrail/runs/active-34/run.json" "${tmp_dir}/active-run.out" "State-first run did not point at metadata"
+assert_grep ".agentrail/runs/active-34/prompt.md" "${tmp_dir}/active-run.out" "State-first run did not point at prompt"
+assert_grep "next action: Continue issue #34." "${tmp_dir}/active-run.out" "State-first run did not print next action"
+
+if "$agentrail" run issue 35 --target "$target" --command cat --log-dir "$log_dir" >"${tmp_dir}/conflicting-run.out" 2>&1; then
+  echo "Explicit issue run ignored conflicting active state" >&2
+  exit 1
+fi
+assert_grep "active run already exists for issue #34" "${tmp_dir}/conflicting-run.out" "Explicit issue run did not reject conflicting active run"
+
+rm -f "$state_file"
+if "$agentrail" run --target "$target" >"${tmp_dir}/missing-state-run.out" 2>&1; then
+  echo "State-first run accepted missing AgentRail state" >&2
+  exit 1
+fi
+assert_grep "AgentRail state was not found" "${tmp_dir}/missing-state-run.out" "State-first run did not explain missing state"
+
+"$agentrail" install --target "$target" --force >/dev/null
+
+fake_bin="${tmp_dir}/fake-bin"
+mkdir -p "$fake_bin"
+cat >"${fake_bin}/gh" <<'GH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$1 $2" == "issue list" ]]; then
+  printf '%s\n' "${AGENTRAIL_FAKE_ISSUES_JSON:-[]}"
+  exit 0
+fi
+
+echo "unexpected gh invocation: $*" >&2
+exit 1
+GH
+chmod +x "${fake_bin}/gh"
+
+AGENTRAIL_FAKE_ISSUES_JSON='[]' PATH="${fake_bin}:$PATH" "$agentrail" run --target "$target" >"${tmp_dir}/no-issues.out"
+assert_grep "No pickable GitHub issues found" "${tmp_dir}/no-issues.out" "State-first run did not handle empty queue"
+
+AGENTRAIL_FAKE_ISSUES_JSON='[{"number":77,"title":"Ready work","url":"https://github.com/acme/repo/issues/77"}]' \
+  PATH="${fake_bin}:$PATH" \
+  "$agentrail" run --target "$target" --command cat --log-dir "$log_dir" >"${tmp_dir}/picked-run.out"
+assert_grep "selected issue #77" "${tmp_dir}/picked-run.out" "State-first run did not pick the ready issue"
+assert_grep "AgentRail run: issue #77" "${tmp_dir}/picked-run.out" "State-first run did not execute selected issue"
+
+cat >"$config_file" <<'JSON'
+{
+  "schemaVersion": 1,
+  "runner": {
+    "name": "cursor",
+    "command": "cat"
+  }
+}
+JSON
+
+"$agentrail" run issue 78 --target "$target" --log-dir "$log_dir" >"${tmp_dir}/cursor-run.out"
+assert_grep "agent: cursor" "${tmp_dir}/cursor-run.out" "Configured cursor runner was not announced"
+cursor_metadata="$(grep -Rl '"targetIssue": 78' "$log_dir" | head -1)"
+[[ -n "$cursor_metadata" ]] || { echo "Configured cursor runner metadata was not found" >&2; exit 1; }
+assert_grep '"agent": "cursor"' "$cursor_metadata" "Configured cursor runner was not written to metadata"
+
+cat >"$config_file" <<'JSON'
+{
+  "schemaVersion": 1,
+  "runner": {
+    "name": "custom",
+    "command": "cat"
+  }
+}
+JSON
+
+"$agentrail" run issue 79 --target "$target" --log-dir "$log_dir" >"${tmp_dir}/custom-run.out"
+assert_grep "agent: custom" "${tmp_dir}/custom-run.out" "Configured custom runner was not announced"
+
+cat >"$config_file" <<'JSON'
+{
+  "schemaVersion": 1,
+  "runner": {
+    "name": "custom",
+    "command": ""
+  }
+}
+JSON
+
+if "$agentrail" run issue 80 --target "$target" --log-dir "$log_dir" >"${tmp_dir}/empty-custom.out" 2>&1; then
+  echo "Runner accepted an empty custom command" >&2
+  exit 1
+fi
+assert_grep "runner command is empty" "${tmp_dir}/empty-custom.out" "Runner did not reject empty custom command"
 
 AGENTRAIL_CLAUDE_COMMAND=cat "$agentrail" run issue 12 --agent claude --target "$target" --log-dir "$log_dir" >"${tmp_dir}/claude-run.out"
 assert_grep "agent: claude" "${tmp_dir}/claude-run.out" "Claude run did not announce agent"

@@ -87,6 +87,39 @@ parse_target() {
   done
 }
 
+is_agentrail_source_checkout() {
+  local target_dir="$1"
+
+  [[ -f "${target_dir}/package.json" ]] || return 1
+  [[ -d "${target_dir}/templates/scripts" ]] || return 1
+  [[ -x "${target_dir}/scripts/agentrail" ]] || return 1
+
+  node - "${target_dir}/package.json" <<'NODE'
+const fs = require("fs");
+const packageJson = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+process.exit(packageJson.name === "@bensigo/agentrail" ? 0 : 1);
+NODE
+}
+
+ensure_source_run_allowed() {
+  local target_dir="$1"
+  local action="$2"
+
+  if is_agentrail_source_checkout "$target_dir" && [[ "${AGENTRAIL_ALLOW_SOURCE_RUN:-0}" != "1" ]]; then
+    cat >&2 <<ERROR
+Refusing to ${action} in the AgentRail source checkout.
+
+This repo is the AgentRail package source, not an installed target project. A stray
+.agentrail/state.json here can make agents start the installed-project workflow
+against the workflow package itself.
+
+Use a real target project, or set AGENTRAIL_ALLOW_SOURCE_RUN=1 only for deliberate
+source dogfooding.
+ERROR
+    exit 1
+  fi
+}
+
 parse_upgrade_args() {
   local target_var="$1"
   local force_var="$2"
@@ -1923,6 +1956,19 @@ USAGE
       ;;
   esac
 
+  if is_agentrail_source_checkout "$(pwd -P)" && [[ "${AGENTRAIL_ALLOW_SOURCE_RUN:-0}" != "1" ]]; then
+    local arg
+    for arg in "$@"; do
+      if [[ "$arg" == "--dry-run" ]]; then
+        local afk_script="${repo_dir}/templates/scripts/afk-workflow"
+        [[ -x "$afk_script" ]] || { echo "missing AFK queue/worktree loop: ${afk_script}" >&2; exit 2; }
+        "$afk_script" run "$@"
+        return
+      fi
+    done
+    ensure_source_run_allowed "$(pwd -P)" "run AFK"
+  fi
+
   local afk_script="${repo_dir}/templates/scripts/afk-workflow"
   [[ -x "$afk_script" ]] || { echo "missing AFK queue/worktree loop: ${afk_script}" >&2; exit 2; }
   "$afk_script" run "$@"
@@ -2759,6 +2805,7 @@ run_issue() {
   fi
   local requested_agent="$agent"
   agent="$(configured_agent_name "$target_dir" "$agent")"
+  ensure_source_run_allowed "$target_dir" "run issue #${issue}"
   ensure_no_conflicting_active_run "$target_dir" "$issue"
 
   local agent_command
@@ -2917,6 +2964,8 @@ run_agentrail_run() {
       state_recommendation "$target_dir" >&2
       exit 1
     fi
+
+    ensure_source_run_allowed "$target_dir" "select queued issues"
 
     if active_run_summary "$target_dir"; then
       return 0

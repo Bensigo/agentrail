@@ -28,6 +28,7 @@ cp -R "${repo_dir}/templates/CONTEXT.md" "${source_repo}/templates/CONTEXT.md"
 cp -R "${repo_dir}/templates/docs" "${source_repo}/templates/docs"
 cp -R "${repo_dir}/templates/scripts" "${source_repo}/templates/scripts"
 cp "${repo_dir}/scripts/agentrail" "${source_repo}/scripts/agentrail"
+cp "${repo_dir}/package.json" "${source_repo}/package.json"
 chmod +x "${source_repo}/scripts/agentrail"
 
 git -C "$source_repo" init --initial-branch=main --quiet
@@ -83,9 +84,19 @@ JSON
   fi
 }
 
-git -C "$source_repo" add templates scripts
+git -C "$source_repo" add package.json templates scripts
 git -C "$source_repo" commit --quiet -m "seed source repo"
 write_agentrail_state 0
+
+set +e
+"${source_repo}/scripts/agentrail" run issue 4242 --target "$source_repo" --command true >"${tmp_dir}/source-run-guard.out" 2>&1
+status=$?
+set -e
+if [[ "$status" -eq 0 ]]; then
+  echo "source checkout issue execution did not require explicit opt-in" >&2
+  exit 1
+fi
+assert_grep "Refusing to run issue #4242 in the AgentRail source checkout" "${tmp_dir}/source-run-guard.out" "source run guard did not explain refusal"
 
 origin="${tmp_dir}/origin.git"
 git clone --quiet --bare "$source_repo" "$origin"

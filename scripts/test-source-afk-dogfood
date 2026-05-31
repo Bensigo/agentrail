@@ -55,6 +55,10 @@ case "$1 $2" in
     printf 'ready-for-agent\nafk\nafk-in-progress\nreview-fix\nmemory-suggestion\npr-reviewed\n'
     exit 0
     ;;
+  "label create")
+    printf 'label create %s\n' "$*" >>"${AFK_FAKE_GH_LOG:?}"
+    exit 0
+    ;;
   "issue edit")
     printf 'issue edit %s\n' "$*" >>"${AFK_FAKE_GH_LOG:?}"
     exit 0

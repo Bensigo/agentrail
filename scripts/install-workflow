@@ -171,6 +171,7 @@ const managedFiles = fs.readFileSync(manifestPath, "utf8")
 
 const defaultWorkflow = {
   phase: "idle",
+  activePhase: null,
   activeIssue: null,
   activePullRequest: null,
   activePrd: null,

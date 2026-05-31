@@ -23,15 +23,17 @@ assert_grep() {
 }
 
 source_repo="${tmp_dir}/source"
-mkdir -p "$source_repo/templates"
+mkdir -p "$source_repo/templates" "$source_repo/scripts"
 cp -R "${repo_dir}/templates/CONTEXT.md" "${source_repo}/templates/CONTEXT.md"
 cp -R "${repo_dir}/templates/docs" "${source_repo}/templates/docs"
 cp -R "${repo_dir}/templates/scripts" "${source_repo}/templates/scripts"
+cp "${repo_dir}/scripts/agentrail" "${source_repo}/scripts/agentrail"
+chmod +x "${source_repo}/scripts/agentrail"
 
 git -C "$source_repo" init --initial-branch=main --quiet
 git -C "$source_repo" config user.email agentrail@example.com
 git -C "$source_repo" config user.name "AgentRail Test"
-git -C "$source_repo" add templates
+git -C "$source_repo" add templates scripts
 git -C "$source_repo" commit --quiet -m "seed source repo"
 
 origin="${tmp_dir}/origin.git"
@@ -71,7 +73,18 @@ GH
 chmod +x "${fake_bin}/gh"
 
 agent_marker="${tmp_dir}/agent-marker.txt"
-agent_command='cat > "$AFK_AGENT_MARKER"; exit 42'
+agent_command="${tmp_dir}/agent-command"
+cat >"$agent_command" <<'AGENT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+prompt="$(cat)"
+printf '%s\n' "$prompt" >>"${AFK_AGENT_MARKER:?}"
+if grep -q "Handle exactly one issue: #4242" <<<"$prompt"; then
+  exit 42
+fi
+AGENT
+chmod +x "$agent_command"
 mock_queue=$'4242\tDogfood source AFK\thttps://github.com/acme/repo/issues/4242\tafk,ready-for-agent'
 
 set +e
@@ -97,14 +110,23 @@ if grep -q -- "missing workflow script: ralph-loop" "${tmp_dir}/afk-real.out"; t
   cat "${tmp_dir}/afk-real.out" >&2
   exit 1
 fi
+if grep -q -- "missing AgentRail CLI" "${tmp_dir}/afk-real.out"; then
+  echo "AFK source dogfood could not resolve AgentRail CLI" >&2
+  cat "${tmp_dir}/afk-real.out" >&2
+  exit 1
+fi
 
 [[ -s "$agent_marker" ]] || { echo "AFK worker did not reach configured agent execution" >&2; cat "${tmp_dir}/afk-real.out" >&2; exit 1; }
 assert_grep "Handle exactly one issue: #4242" "$agent_marker" "Ralph prompt did not reach configured agent command"
+agentrail_log="$(find "${source_repo}/.afk-workflow" -name 'issue-4242-agentrail.log' -print | head -1)"
+[[ -n "$agentrail_log" ]] || { echo "AFK worker did not write AgentRail execution log" >&2; cat "${tmp_dir}/afk-real.out" >&2; exit 1; }
+assert_grep "AgentRail run: issue #4242" "$agentrail_log" "AFK worker bypassed AgentRail issue execution"
+assert_grep ".agentrail/runs" "$agentrail_log" "AgentRail execution log did not reference run artifacts"
 
 (
   cd "$repo_dir"
   AFK_WORKFLOW_MOCK_QUEUE="$mock_queue" templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --dry-run >"${tmp_dir}/source-dry-run.out"
 )
-assert_grep "dry-run: would run Ralph" "${tmp_dir}/source-dry-run.out" "Source dry-run did not show Ralph execution step"
+assert_grep "dry-run: would run AgentRail issue execution" "${tmp_dir}/source-dry-run.out" "Source dry-run did not show AgentRail execution step"
 
 echo "source AFK dogfood test passed"

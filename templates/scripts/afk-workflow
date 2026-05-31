@@ -10,7 +10,7 @@ Runs the full AFK issue workflow:
 
 1. Pick up to N queued GitHub issues.
 2. Claim each issue so another worker does not pick it.
-3. Run one Ralph implementation loop per issue in an isolated git worktree.
+3. Run one AgentRail issue execution per issue in an isolated git worktree.
 4. Find the PR opened for the issue.
 5. Review the PR in a fresh context.
 6. Convert machine-readable review findings into new review-fix issues.
@@ -59,6 +59,22 @@ script_path() {
   fi
 
   die "missing workflow script: ${script_name}"
+}
+
+agentrail_path() {
+  local root="$1"
+
+  if [[ -x "${root}/scripts/agentrail" ]]; then
+    printf '%s\n' "${root}/scripts/agentrail"
+    return 0
+  fi
+
+  if command -v agentrail >/dev/null 2>&1; then
+    command -v agentrail
+    return 0
+  fi
+
+  die "missing AgentRail CLI: expected scripts/agentrail in source checkout or agentrail on PATH"
 }
 
 agent_command_for_engine() {
@@ -241,7 +257,7 @@ File: ${file}
 
 ${body}
 
-Run this through the Ralph loop as a small follow-up issue.
+Run this through AgentRail as a small follow-up issue.
 BODY
 )" \
       --label "review-fix" \
@@ -337,13 +353,13 @@ worker_run() {
 
   (
     cd "$worktree"
-    local ralph_runner
+    local agentrail_runner
     local agent_command
-    ralph_runner="$(script_path "$root" "ralph-loop")"
+    agentrail_runner="$(agentrail_path "$root")"
     agent_command="$(agent_command_for_engine "$engine")"
 
-    "$ralph_runner" --issue "$issue" --agent-command "$agent_command" \
-      >"${logs_dir}/issue-${issue}-ralph.log" 2>&1
+    "$agentrail_runner" run issue "$issue" --agent "$engine" --target "$worktree" --command "$agent_command" \
+      >"${logs_dir}/issue-${issue}-agentrail.log" 2>&1
 
     local pr
     pr="$(detect_pr_for_issue "$issue")"
@@ -480,7 +496,7 @@ main() {
 
       if [[ "$dry_run" == "1" ]]; then
         echo "dry-run: would claim issue #${issue}"
-        echo "dry-run: would run Ralph for issue #${issue}"
+        echo "dry-run: would run AgentRail issue execution for issue #${issue}"
         echo "dry-run: would review PR for issue #${issue}"
         continue
       fi

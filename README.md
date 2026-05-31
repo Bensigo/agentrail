@@ -195,7 +195,7 @@ grill-with-docs
 -> to-milestones
 -> to-issues
 -> tdd
--> ralph-loop
+-> agentrail run issue
 -> review-pr / pr
 -> review-fix
 ```
@@ -274,7 +274,7 @@ Use tdd. Implement issue #123 with a red-green-refactor loop. Do not write produ
 For one bounded implementation run:
 
 ```bash
-scripts/ralph-loop --issue 123 --print-prompt
+agentrail run issue 123
 ```
 
 For unattended batches of approved work:
@@ -334,7 +334,7 @@ Run a bounded worker command when the prompt is already clear:
 agentrail run issue 123 --agent codex --target .
 ```
 
-AgentRail routes Codex prompts toward repo-local skills and docs. For example, a grill prompt points Codex at `grill-with-docs`; an issue prompt points it at the Ralph implementation loop; a review prompt points it at PR review instructions. Claude prompts use the same AgentRail intent but refer to local instruction files instead of Codex-specific skill mechanics.
+AgentRail routes Codex prompts toward repo-local skills and docs. For example, a grill prompt points Codex at `grill-with-docs`; an issue prompt points it at AgentRail issue execution, which invokes Ralph internally during the execute phase; a review prompt points it at PR review instructions. Claude prompts use the same AgentRail intent but refer to local instruction files instead of Codex-specific skill mechanics.
 
 The main context files fit together like this:
 
@@ -349,13 +349,13 @@ AgentRail is local CLI workflow infrastructure, not a hosted orchestration platf
 
 ## Common Commands
 
-Print a Ralph implementation prompt for one issue:
+Run one issue through AgentRail:
 
 ```bash
-scripts/ralph-loop --issue 123 --print-prompt
+agentrail run issue 123
 ```
 
-Run Ralph through an agent command:
+Debug the internal Ralph executor directly:
 
 ```bash
 RALPH_AGENT_COMMAND='codex exec -' scripts/ralph-loop --issue 123

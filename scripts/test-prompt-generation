@@ -35,6 +35,7 @@ assert_grep "AgentRail state: not found" "${tmp_dir}/codex-grill.out" "Codex gri
 
 "$agentrail" prompt issue 11 --agent codex --target "$without_state" >"${tmp_dir}/codex-issue.out"
 assert_grep "exactly one GitHub issue: #11" "${tmp_dir}/codex-issue.out" "Codex issue prompt was not bounded to one issue"
+assert_grep "Run one bounded AgentRail issue execution for exactly one GitHub issue" "${tmp_dir}/codex-issue.out" "Codex issue prompt did not present AgentRail issue execution"
 assert_grep "templates/docs/agents/ralph-loop.md" "${tmp_dir}/codex-issue.out" "Codex issue prompt did not reference Ralph instructions"
 assert_grep "acceptance criteria coverage" "${tmp_dir}/codex-issue.out" "Codex issue prompt did not require acceptance coverage"
 

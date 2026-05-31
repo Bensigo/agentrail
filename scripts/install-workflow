@@ -108,6 +108,19 @@ copy_tree() {
 
 copy_tree "$templates_dir" "$target_dir"
 copy_tree "$skills_dir" "${target_dir}/skills" "skills"
+copy_file "$repo_dir" "$target_dir" "${repo_dir}/scripts/agentrail" ""
+
+source_support_dir="${target_dir}/.agentrail/source"
+if [[ "$(cd "$repo_dir" && pwd -P)" != "$(mkdir -p "$source_support_dir" && cd "$source_support_dir" && pwd -P)" ]]; then
+  mkdir -p "${source_support_dir}/scripts"
+  cp "${repo_dir}/package.json" "${source_support_dir}/package.json"
+  cp "${repo_dir}/scripts/agentrail" "${source_support_dir}/scripts/agentrail"
+  cp "${repo_dir}/scripts/install-workflow" "${source_support_dir}/scripts/install-workflow"
+  chmod +x "${source_support_dir}/scripts/agentrail" "${source_support_dir}/scripts/install-workflow"
+  rm -rf "${source_support_dir}/templates" "${source_support_dir}/skills"
+  cp -R "$templates_dir" "${source_support_dir}/templates"
+  cp -R "$skills_dir" "${source_support_dir}/skills"
+fi
 
 write_agentrail_state() {
   AGENTRAIL_REPO_DIR="$repo_dir" \

@@ -36,7 +36,7 @@ Project memory is repo-owned context for future agent runs. It is not hidden cha
 Before non-trivial planning, implementation, or review, run:
 
 ```bash
-scripts/agentrail memory recall "<task, issue, PR, feature, or keyword>"
+agentrail memory recall "<task, issue, PR, feature, or keyword>"
 ```
 
 Use relevant memory as advisory context only. Verify it against the current code, `CONTEXT.md`, ADRs, issues, and PRs before relying on it.
@@ -86,9 +86,10 @@ Before editing:
 
 1. Read the relevant issue, PRD, milestone, and context docs.
 2. Read `TASTE.md` when present and relevant to product quality, UI, copy, interaction, or visual evidence.
-3. Run `scripts/agentrail memory recall` for the task and inspect relevant memory.
-4. Inspect the current code and tests.
-5. Identify the smallest coherent change that satisfies the request.
+3. Run `agentrail status`, then `agentrail resume` when recovering an interrupted or compacted run.
+4. Run `agentrail memory recall` for the task and inspect relevant memory.
+5. Inspect the current code and tests.
+6. Identify the smallest coherent change that satisfies the request.
 
 While editing:
 
@@ -138,9 +139,15 @@ See:
 
 AgentRail CLI:
 
-- Use `scripts/agentrail memory recall` for project memory.
-- Use `scripts/agentrail run issue <number>` for bounded implementation.
-- Use `scripts/agentrail prompt review <number>` to generate review prompts.
-- Use `scripts/agentrail doctor` and `scripts/agentrail upgrade` for install health and migration.
+- Use `agentrail status` to inspect durable workflow state before starting new work.
+- Use `agentrail resume` after interruption, chat compaction, or session handoff.
+- Use `agentrail memory recall` for project memory.
+- Use `agentrail run` to let AgentRail pick the next eligible queued issue from state.
+- Use `agentrail run issue <number>` for bounded implementation of a known issue.
+- Use `agentrail afk` for the unattended queue/worktree loop.
+- Use `agentrail prompt review <number>` to generate review prompts.
+- Use `agentrail doctor` and `agentrail upgrade` for install health and migration.
+
+AgentRail is the harness. The configured runner is the worker. Ralph is the internal one-issue executor invoked by `agentrail run issue`. AFK is the queue/worktree loop invoked by `agentrail afk`.
 
 Raw workflow helpers are AgentRail internals. Do not call Ralph, AFK, PR, review, or memory scripts directly from an installed project unless a maintainer is debugging AgentRail itself.

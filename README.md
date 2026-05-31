@@ -2,6 +2,10 @@
 
 AgentRail is a repo-native harness for AI coding agents. It gives agents durable context, workflow state, bounded issue execution, review loops, and verification gates so agent work is easier to inspect, resume, and trust.
 
+AgentRail uses a state-first execution model. Start with `agentrail status` and `agentrail resume`, then let `agentrail run`, `agentrail run issue 123`, or `agentrail afk` decide the next safe execution step from `.agentrail/state.json` before any worker starts new work.
+
+AgentRail is the harness. The configured runner is the worker, such as Codex, Claude, Cursor, Hermes, or a custom command. Ralph is the internal one-issue executor AgentRail invokes during issue execution. AFK is the queue/worktree loop for unattended batches of eligible issues.
+
 It installs:
 
 - `AGENTS.md` and `CONTEXT.md`
@@ -201,13 +205,20 @@ For small edits, skip the heavy planning steps and implement directly with tests
 
 ## Run Work
 
-Use the state-first runner when you want AgentRail to decide what needs attention:
+Use the state-first execution model when you want AgentRail to decide what needs attention. Inspect state first:
+
+```bash
+agentrail status
+agentrail resume
+```
+
+Then run the next eligible issue:
 
 ```bash
 agentrail run
 ```
 
-It reads `.agentrail/state.json` first. If an active run exists, it prints the issue, run directory, prompt, metadata, and next action instead of starting new work. If no active run exists, it selects the next open GitHub issue labeled `afk` and `ready-for-agent`, excluding issues already labeled `afk-in-progress`.
+`agentrail run` reads `.agentrail/state.json` first. If an active run exists, it prints the issue, run directory, prompt, metadata, and next action instead of starting new work. If no active run exists, it selects the next open GitHub issue labeled `afk` and `ready-for-agent`, excluding issues already labeled `afk-in-progress`.
 
 Run a specific issue when you already know the target:
 
@@ -216,6 +227,12 @@ agentrail run issue 123
 ```
 
 The explicit issue path still checks durable state first and refuses to start conflicting active work.
+
+Run the AFK queue/worktree loop when you want unattended batches:
+
+```bash
+agentrail afk
+```
 
 Issue runs execute one plan phase, then repeat execute and verify until verification passes. When verify fails, AgentRail writes structured findings under the verify attempt directory and passes them into the next execute attempt. The default limit is 5 execution attempts; after that the run is marked blocked with the latest findings and next action in `.agentrail/state.json`.
 
@@ -230,7 +247,7 @@ Use `docs/memory/` for source-linked lessons, preferences, and recurring failure
 Recall project memory before non-trivial work in an installed project:
 
 ```bash
-scripts/agentrail memory recall "<feature, issue, PR, or keyword>"
+agentrail memory recall "<feature, issue, PR, or keyword>"
 ```
 
 When you want to work on a new feature, ask the agent to grill the idea first:
@@ -286,16 +303,22 @@ agentrail run
 
 ## Dogfooding AgentRail
 
-Maintainers can run the AFK workflow from this AgentRail source repo without installing generated project templates over the source checkout. Use the template runner directly:
+Maintainers can run the AFK workflow from this AgentRail source repo without installing generated project templates over the source checkout:
+
+```bash
+agentrail afk --dry-run
+```
+
+Internal/debug only: when debugging AgentRail source scripts themselves, maintainers may use the template runner directly:
 
 ```bash
 templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --dry-run
 ```
 
-For a bounded real wave, keep the run small:
+For a bounded real wave through the CLI, keep the run small:
 
 ```bash
-templates/scripts/afk-workflow run --concurrency 1 --max-waves 1
+agentrail afk --concurrency 1 --max-waves 1
 ```
 
 The source repo does not need root-level `scripts/ralph-loop`, `scripts/review-pr`, or `scripts/memory` files. The AFK runner resolves those helpers from `templates/scripts/` when the installed `scripts/` copies are not present. That keeps source-repo self-hosting separate from installing AgentRail into a target project.
@@ -352,10 +375,29 @@ AgentRail is local CLI workflow infrastructure, not a hosted orchestration platf
 
 ## Common Commands
 
+Check state and recover context:
+
+```bash
+agentrail status
+agentrail resume
+```
+
+Run the next queued issue:
+
+```bash
+agentrail run
+```
+
 Run one issue through AgentRail:
 
 ```bash
 agentrail run issue 123
+```
+
+Run the AFK queue/worktree loop:
+
+```bash
+agentrail afk
 ```
 
 Recall project memory:
@@ -384,22 +426,22 @@ agentrail prompt review 123
 
 ## Migration From Script-First Installs
 
-Older AgentRail installs placed raw workflow helpers under `scripts/`. New installs keep those helpers out of the normal project surface and route agents through the local `scripts/agentrail` CLI shim.
+Older AgentRail installs placed raw workflow helpers under `scripts/`. New installs keep those helpers out of the normal project surface and route agents through the `agentrail` CLI. The installed `scripts/agentrail` file is a compatibility shim for package installs; normal docs and prompts should say `agentrail ...`.
 
 Use these replacements:
 
 ```text
-scripts/memory recall ...        -> scripts/agentrail memory recall ...
-scripts/ralph-loop --issue 123   -> scripts/agentrail run issue 123
-scripts/afk-workflow run ...     -> scripts/agentrail run
-scripts/review-pr --pr 123       -> scripts/agentrail prompt review 123
-scripts/agentrail doctor ...     -> scripts/agentrail doctor ...
-scripts/agentrail upgrade ...    -> scripts/agentrail upgrade ...
+scripts/memory recall ...        -> agentrail memory recall ...
+scripts/ralph-loop --issue 123   -> agentrail run issue 123
+scripts/afk-workflow run ...     -> agentrail afk
+scripts/review-pr --pr 123       -> agentrail prompt review 123
+scripts/agentrail doctor ...     -> agentrail doctor ...
+scripts/agentrail upgrade ...    -> agentrail upgrade ...
 ```
 
-`scripts/agentrail doctor` reports legacy raw workflow scripts when it finds them. After checking for local edits, remove the old `scripts/memory`, `scripts/ralph-loop`, `scripts/afk-workflow`, `scripts/review-pr`, and `scripts/pr` files from installed projects. Keep `scripts/agentrail`; it is the supported local CLI entrypoint.
+`agentrail doctor` reports legacy raw workflow scripts when it finds them. After checking for local edits, remove the old `scripts/memory`, `scripts/ralph-loop`, `scripts/afk-workflow`, `scripts/review-pr`, and `scripts/pr` files from installed projects. Keep `scripts/agentrail`; it is the supported package shim behind the `agentrail` command.
 
-Maintainers debugging AgentRail itself can still use the internal helpers from a source checkout:
+Internal/debug only: maintainers debugging AgentRail itself can still use the internal helpers from a source checkout:
 
 ```bash
 templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --dry-run

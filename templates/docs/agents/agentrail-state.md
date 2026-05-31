@@ -2,6 +2,8 @@
 
 AgentRail stores repo-local project state in `.agentrail/state.json`.
 
+AgentRail is the harness around coding agents. The configured runner in `.agentrail/config.json` is the worker that receives generated prompts. Ralph is AgentRail's internal one-issue executor for bounded implementation. AFK is the queue/worktree loop for unattended batches of eligible issues.
+
 This file is intended for manual inspection by agents and maintainers. It records installation metadata, the files AgentRail manages, and the current workflow pointer so work can resume without relying on chat memory.
 
 AgentRail stores project runner configuration in `.agentrail/config.json`. The config is separate from state because it is a local execution preference, not workflow progress.
@@ -105,4 +107,4 @@ The managed inventory includes the skill registry and bundled skill files under 
 
 Built-in names are `codex`, `claude`, `cursor`, and `hermes`. Use `custom` with a command string for unsupported tools. `agentrail run` resolves this config once and uses the same runner for generated prompts and execution; it does not support separate runners per workflow phase.
 
-Before starting execution, `agentrail run` reads `.agentrail/state.json`. Active runs are reported with issue, run directory, prompt, metadata, and next action. When no active run exists, `agentrail run` selects the next open GitHub issue labeled `afk` and `ready-for-agent` while excluding `afk-in-progress`.
+Before starting execution, `agentrail run` reads `.agentrail/state.json`. Active runs are reported with issue, run directory, prompt, metadata, and next action. When no active run exists, `agentrail run` selects the next open GitHub issue labeled `afk` and `ready-for-agent` while excluding `afk-in-progress`. Use `agentrail run issue <number>` for a known issue and `agentrail afk` for the unattended queue/worktree loop.

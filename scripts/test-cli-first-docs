@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+agentrail="${repo_dir}/scripts/agentrail"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- ${file} ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+assert_not_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- ${file} ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+assert_grep "state-first execution model" "${repo_dir}/README.md" "README does not explain the state-first execution model"
+assert_grep "AgentRail is the harness" "${repo_dir}/README.md" "README does not define AgentRail as the harness"
+assert_grep "configured runner is the worker" "${repo_dir}/README.md" "README does not define the configured runner as the worker"
+assert_grep "Ralph is the internal one-issue executor" "${repo_dir}/README.md" "README does not define Ralph as the internal executor"
+assert_grep "AFK is the queue/worktree loop" "${repo_dir}/README.md" "README does not define AFK as the queue/worktree loop"
+
+for command in \
+  "agentrail status" \
+  "agentrail resume" \
+  "agentrail run" \
+  "agentrail run issue 123" \
+  "agentrail afk"; do
+  assert_grep "$command" "${repo_dir}/README.md" "README does not document ${command}"
+done
+
+assert_grep "agentrail resume" "${repo_dir}/templates/AGENTS.md" "Installed AGENTS.md does not tell agents to use agentrail resume"
+assert_grep "agentrail run issue <number>" "${repo_dir}/templates/AGENTS.md" "Installed AGENTS.md does not tell agents to use agentrail run issue"
+assert_not_grep "scripts/agentrail run issue" "${repo_dir}/templates/AGENTS.md" "Installed AGENTS.md still promotes scripts/agentrail run issue"
+assert_not_grep "scripts/agentrail prompt review" "${repo_dir}/templates/AGENTS.md" "Installed AGENTS.md still promotes scripts/agentrail prompt review"
+
+"$agentrail" --help >"${tmp_dir}/help.out"
+assert_grep "agentrail afk" "${tmp_dir}/help.out" "AgentRail CLI help does not expose agentrail afk"
+
+"$agentrail" afk --help >"${tmp_dir}/afk-help.out"
+assert_grep "agentrail afk" "${tmp_dir}/afk-help.out" "AgentRail AFK help does not use the CLI-first command"
+assert_not_grep "scripts/afk-workflow" "${tmp_dir}/afk-help.out" "AgentRail AFK help promotes the internal AFK script"
+
+without_state="${tmp_dir}/without-state"
+mkdir -p "$without_state"
+"$agentrail" prompt issue 57 --agent codex --target "$without_state" >"${tmp_dir}/issue.prompt"
+"$agentrail" prompt review 12 --agent codex --target "$without_state" >"${tmp_dir}/review.prompt"
+"$agentrail" prompt grill "Build queue runner" --agent codex --target "$without_state" >"${tmp_dir}/grill.prompt"
+
+for prompt in "${tmp_dir}/issue.prompt" "${tmp_dir}/review.prompt" "${tmp_dir}/grill.prompt"; do
+  assert_grep "agentrail status" "$prompt" "Generated prompt does not point agents to agentrail status"
+  assert_grep "agentrail resume" "$prompt" "Generated prompt does not point agents to agentrail resume"
+  assert_grep "agentrail memory recall" "$prompt" "Generated prompt does not use CLI-first memory recall"
+  assert_not_grep "scripts/agentrail memory recall" "$prompt" "Generated prompt still promotes scripts/agentrail memory recall"
+done
+
+assert_grep "agentrail run issue 57" "${tmp_dir}/issue.prompt" "Issue prompt does not point agents to agentrail run issue"
+assert_grep "agentrail prompt review 12" "${tmp_dir}/review.prompt" "Review prompt does not point agents to agentrail prompt review"
+
+echo "cli-first docs test passed"

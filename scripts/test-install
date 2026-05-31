@@ -265,12 +265,12 @@ if ! grep -q -- "docs/milestones/NNN-slug.md" "${tmp_dir}/skills/to-issues/SKILL
   exit 1
 fi
 
-if ! grep -q -- "scripts/agentrail memory recall" "${tmp_dir}/AGENTS.md"; then
+if ! grep -q -- "agentrail memory recall" "${tmp_dir}/AGENTS.md"; then
   echo "AGENTS.md does not tell agents to recall project memory" >&2
   exit 1
 fi
 
-if ! grep -q -- "scripts/agentrail memory recall" "${tmp_dir}/docs/agents/ralph-loop.md"; then
+if ! grep -q -- "agentrail memory recall" "${tmp_dir}/docs/agents/ralph-loop.md"; then
   echo "ralph-loop docs do not require project memory recall" >&2
   exit 1
 fi

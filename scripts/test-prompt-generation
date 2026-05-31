@@ -30,7 +30,7 @@ mkdir -p "$without_state"
 assert_grep "Use the repo-local skill 'grill-with-docs'" "${tmp_dir}/codex-grill.out" "Codex grill prompt did not route to grill-with-docs"
 assert_grep "Read CONTEXT.md first" "${tmp_dir}/codex-grill.out" "Codex grill prompt did not require CONTEXT.md"
 assert_grep "Read TASTE.md if present" "${tmp_dir}/codex-grill.out" "Codex grill prompt did not mention TASTE.md"
-assert_grep "scripts/agentrail memory recall" "${tmp_dir}/codex-grill.out" "Codex grill prompt did not mention memory recall"
+assert_grep "agentrail memory recall" "${tmp_dir}/codex-grill.out" "Codex grill prompt did not mention memory recall"
 assert_grep "AgentRail state: not found" "${tmp_dir}/codex-grill.out" "Codex grill prompt did not report missing state"
 
 "$agentrail" prompt issue 11 --agent codex --target "$without_state" >"${tmp_dir}/codex-issue.out"

@@ -1323,9 +1323,11 @@ print_state_summary() {
   [[ -f "$state_file" ]] || return 0
   command -v node >/dev/null 2>&1 || { echo "- AgentRail state exists at .agentrail/state.json, but node is not available to summarize it."; return 0; }
 
-  node - "$state_file" <<'NODE'
+  node - "$state_file" "$target_dir" <<'NODE'
 const fs = require("fs");
+const path = require("path");
 const statePath = process.argv[2];
+const targetDir = process.argv[3];
 
 try {
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
@@ -1341,9 +1343,15 @@ try {
     if (!run || typeof run !== "object" || !run.maxExecutionAttempts) return null;
     return `attempts: ${Number(run.executionAttempt || 0)}/${run.maxExecutionAttempts}; failed verify attempts: ${Number(run.failedVerificationAttempts || 0)}`;
   }
+  function staleSummary(run) {
+    if (!run || typeof run !== "object" || !run.runDir) return null;
+    const runDir = path.isAbsolute(run.runDir) ? run.runDir : path.join(targetDir, run.runDir);
+    return fs.existsSync(runDir) ? null : `run dir missing: ${run.runDir}`;
+  }
   console.log("- AgentRail state: present");
   console.log(`- version: ${state.agentrailVersion || "unknown"}`);
   console.log(`- phase: ${workflow.phase || "unknown"}`);
+  console.log(`- active phase: ${workflow.activePhase ?? "none"}`);
   console.log(`- active issue: ${workflow.activeIssue ?? "none"}`);
   console.log(`- active pull request: ${workflow.activePullRequest ?? "none"}`);
   console.log(`- active PRD: ${workflow.activePrd ?? "none"}`);
@@ -1351,11 +1359,14 @@ try {
   console.log(`- active run: ${activeRun ? runLabel(activeRun) : "none"}`);
   const activeAttempts = attemptSummary(activeRun);
   if (activeAttempts) console.log(`- active run ${activeAttempts}`);
+  const activeStale = staleSummary(activeRun);
+  if (activeStale) console.log(`- active run stale: ${activeStale}`);
   if (completedRuns.length > 0) {
     const lastRun = completedRuns[completedRuns.length - 1];
     console.log(`- last completed run: ${runLabel(lastRun)}`);
     const lastAttempts = attemptSummary(lastRun);
     if (lastAttempts) console.log(`- last completed run ${lastAttempts}`);
+    if (lastRun.blockedReason) console.log(`- last completed run blocked reason: ${lastRun.blockedReason}`);
   }
   console.log(`- last completed step: ${workflow.lastCompletedStep ?? "none"}`);
   console.log(`- next suggested action: ${workflow.nextSuggestedAction || "none"}`);
@@ -1444,9 +1455,11 @@ run_status() {
 
   command -v node >/dev/null 2>&1 || { echo "install status: unknown"; echo "node is required to read .agentrail/state.json"; return 1; }
 
-  node - "$state_file" <<'NODE'
+  node - "$state_file" "$target_dir" <<'NODE'
 const fs = require("fs");
+const path = require("path");
 const statePath = process.argv[2];
+const targetDir = process.argv[3];
 
 try {
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
@@ -1462,6 +1475,11 @@ try {
     if (!run || typeof run !== "object" || !run.maxExecutionAttempts) return null;
     return `attempts: ${Number(run.executionAttempt || 0)}/${run.maxExecutionAttempts}; failed verify attempts: ${Number(run.failedVerificationAttempts || 0)}`;
   }
+  function staleSummary(run) {
+    if (!run || typeof run !== "object" || !run.runDir) return null;
+    const runDir = path.isAbsolute(run.runDir) ? run.runDir : path.join(targetDir, run.runDir);
+    return fs.existsSync(runDir) ? null : `run dir missing: ${run.runDir}`;
+  }
   console.log("install status: state-present");
   console.log(`agentrail version: ${state.agentrailVersion || "unknown"}`);
   console.log(`installed at: ${state.installedAt || "unknown"}`);
@@ -1469,6 +1487,7 @@ try {
   console.log(`legacy adopted: ${Boolean(state.legacyAdopted)}`);
   console.log("workflow:");
   console.log(`  phase: ${workflow.phase || "unknown"}`);
+  console.log(`  active phase: ${workflow.activePhase ?? "none"}`);
   console.log(`  active issue: ${workflow.activeIssue ?? "none"}`);
   console.log(`  active pull request: ${workflow.activePullRequest ?? "none"}`);
   console.log(`  active PRD: ${workflow.activePrd ?? "none"}`);
@@ -1476,12 +1495,15 @@ try {
   console.log(`  active run: ${activeRun ? runLabel(activeRun) : "none"}`);
   const activeAttempts = attemptSummary(activeRun);
   if (activeAttempts) console.log(`  active run ${activeAttempts}`);
+  const activeStale = staleSummary(activeRun);
+  if (activeStale) console.log(`  active run stale: ${activeStale}`);
   if (completedRuns.length > 0) {
     const recentRuns = completedRuns.slice(-5);
     for (const run of recentRuns) {
       console.log(`  completed run: ${runLabel(run)}`);
       const attempts = attemptSummary(run);
       if (attempts) console.log(`  completed run ${attempts}`);
+      if (run.blockedReason) console.log(`  completed run blocked reason: ${run.blockedReason}`);
     }
   }
   console.log(`  last completed step: ${workflow.lastCompletedStep ?? "none"}`);
@@ -1560,6 +1582,7 @@ RESUME
 
   node - "$state_file" "$target_dir" <<'NODE'
 const fs = require("fs");
+const path = require("path");
 const statePath = process.argv[2];
 const targetDir = process.argv[3];
 const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
@@ -1575,6 +1598,11 @@ function attemptSummary(run) {
   if (!run || typeof run !== "object" || !run.maxExecutionAttempts) return null;
   return `attempts: ${Number(run.executionAttempt || 0)}/${run.maxExecutionAttempts}; failed verify attempts: ${Number(run.failedVerificationAttempts || 0)}`;
 }
+function staleSummary(run) {
+  if (!run || typeof run !== "object" || !run.runDir) return null;
+  const runDir = path.isAbsolute(run.runDir) ? run.runDir : path.join(targetDir, run.runDir);
+  return fs.existsSync(runDir) ? null : `run dir missing: ${run.runDir}`;
+}
 
 console.log("# AgentRail Resume");
 console.log("");
@@ -1582,6 +1610,7 @@ console.log("Codex Desktop instruction: do not rely on previous chat context. Re
 console.log("");
 console.log("Current task:");
 console.log(`- workflow phase: ${workflow.phase || "unknown"}`);
+console.log(`- active phase: ${workflow.activePhase ?? "none"}`);
 console.log(`- active issue: ${workflow.activeIssue ?? "none"}`);
 console.log(`- active pull request: ${workflow.activePullRequest ?? "none"}`);
 console.log(`- active PRD: ${workflow.activePrd ?? "none"}`);
@@ -1589,11 +1618,14 @@ console.log(`- active milestone: ${workflow.activeMilestone ?? "none"}`);
 console.log(`- active run: ${activeRun ? runLabel(activeRun) : "none"}`);
 const activeAttempts = attemptSummary(activeRun);
 if (activeAttempts) console.log(`- active run ${activeAttempts}`);
+const activeStale = staleSummary(activeRun);
+if (activeStale) console.log(`- active run stale: ${activeStale}`);
 if (completedRuns.length > 0) {
   for (const run of completedRuns.slice(-5)) {
     console.log(`- completed run: ${runLabel(run)}`);
     const attempts = attemptSummary(run);
     if (attempts) console.log(`- completed run ${attempts}`);
+    if (run.blockedReason) console.log(`- completed run blocked reason: ${run.blockedReason}`);
   }
 }
 console.log(`- last completed step: ${workflow.lastCompletedStep ?? "none"}`);

@@ -1,6 +1,6 @@
 # Ralph Loop
 
-The Ralph loop is a repeatable agent execution cycle for implementing one ready GitHub issue at a time.
+The Ralph loop is AgentRail's internal one-issue executor for implementing one ready GitHub issue at a time.
 
 It is designed for founder and small-team repos where agents need tight scope, visible progress, and reviewable output.
 
@@ -11,7 +11,7 @@ Required:
 - One GitHub issue labeled `ready-for-agent`.
 - Acceptance criteria.
 - Repository context from `CONTEXT.md`.
-- Relevant project memory from `scripts/agentrail memory recall`.
+- Relevant project memory from `agentrail memory recall`.
 
 Optional:
 
@@ -24,7 +24,7 @@ Optional:
 
 1. Select one eligible issue.
 2. Read the issue, context docs, and relevant code.
-3. Run `scripts/agentrail memory recall "<issue title, feature, or key terms>"`.
+3. Run `agentrail memory recall "<issue title, feature, or key terms>"`.
 4. Verify relevant memory against current code and docs before using it.
 5. Create or switch to a task branch.
 6. Implement the smallest coherent change.
@@ -39,6 +39,8 @@ Do not continue into unrelated issues in the same loop. One loop handles one iss
 
 ## AFK Behavior
 
+AFK is the AgentRail queue/worktree loop for unattended batches. Start it with `agentrail afk`; the AFK loop invokes `agentrail run issue <number>` inside isolated worktrees.
+
 For unattended runs:
 
 - Only pick issues labeled `afk`.
@@ -50,7 +52,7 @@ Do not guess through missing product decisions. A blocked issue is better than a
 
 ## Project Memory
 
-Project memory lives in `docs/memory/` and is searched through `scripts/agentrail memory recall`.
+Project memory lives in `docs/memory/` and is searched through `agentrail memory recall`.
 
 Use it to avoid repeated mistakes and preserve durable project preferences across agent runs. Treat it as advisory unless backed by current source links. If memory conflicts with code, `CONTEXT.md`, ADRs, the issue, or the PRD, stop and surface the conflict instead of guessing.
 

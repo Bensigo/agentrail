@@ -9,7 +9,7 @@ Usage:
   agentrail upgrade [--target DIR] [--force]
   agentrail doctor [--target DIR]
   agentrail status [--target DIR]
-  scripts/agentrail memory recall QUERY [--target DIR]
+  agentrail memory recall QUERY [--target DIR]
   agentrail memory capture KIND TITLE [--target DIR]
   agentrail skills validate [--target DIR]
   agentrail skills list [--target DIR]
@@ -19,6 +19,8 @@ Usage:
   agentrail prompt grill "<idea>" [--agent codex|claude] [--target DIR]
   agentrail prompt issue NUMBER [--agent codex|claude] [--target DIR] [--skill NAME] [--no-auto-skills]
   agentrail prompt review PR_NUMBER [--agent codex|claude] [--target DIR]
+  agentrail afk [--concurrency 2] [--max-waves 20] [--base main] [--engine codex] [--afk-label afk] [--dry-run]
+  agentrail run [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
   agentrail run issue NUMBER [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
 
 Commands:
@@ -32,6 +34,7 @@ Commands:
   resume    Print and write an agent handoff summary.
   labels    Sync expected GitHub labels.
   prompt    Print an agent-ready prompt without executing an agent.
+  afk       Run the AFK queue/worktree loop through the AgentRail CLI.
   run       Generate a bounded prompt and execute a configured agent command.
 USAGE
 }
@@ -1649,7 +1652,11 @@ Read these before acting:
 - CONTEXT.md
 - TASTE.md when present
 - relevant docs under docs/agents/
-- relevant project memory from scripts/agentrail memory recall
+- relevant project memory from agentrail memory recall
+
+Start with AgentRail CLI state:
+- agentrail status
+- agentrail resume
 
 AgentRail state summary:
 PROMPT
@@ -1679,7 +1686,7 @@ ${idea}
 Instructions:
 - Read CONTEXT.md first.
 - Read TASTE.md if present.
-- Run scripts/agentrail memory recall for the idea and key terms when available.
+- Run agentrail memory recall for the idea and key terms when available.
 - Challenge vague users, outcomes, non-goals, constraints, domain terms, and risky assumptions.
 - If a question can be answered from the repo, inspect the repo instead of asking.
 - Ask one direct question at a time and include your recommended answer.
@@ -1697,7 +1704,7 @@ ${idea}
 Instructions:
 - Read CONTEXT.md first.
 - Read TASTE.md if present.
-- Run scripts/agentrail memory recall for the idea and key terms when available.
+- Run agentrail memory recall for the idea and key terms when available.
 - Challenge vague users, outcomes, non-goals, constraints, domain terms, and risky assumptions.
 - If a question can be answered from the repo, inspect the repo instead of asking.
 - Ask one direct question at a time and include your recommended answer.
@@ -1732,7 +1739,8 @@ Hard limits:
 - Handle only issue #${issue}.
 - Read the issue body, comments, labels, and linked PRD or milestone before editing.
 - Read CONTEXT.md, TASTE.md if present, and relevant project memory.
-- Run scripts/agentrail memory recall for the issue title and key terms when available.
+- Run agentrail memory recall for the issue title and key terms when available.
+- If starting or resuming execution yourself, use agentrail run issue ${issue}; AgentRail invokes Ralph internally during the execute phase.
 - Implement the smallest coherent change that satisfies the issue acceptance criteria.
 - Run relevant verification.
 - Open or update one PR linked to #${issue}.
@@ -1751,7 +1759,8 @@ Hard limits:
 - Handle only issue #${issue}.
 - Read the issue body, comments, labels, and linked PRD or milestone before editing.
 - Read CONTEXT.md, TASTE.md if present, and relevant project memory.
-- Run scripts/agentrail memory recall for the issue title and key terms when available.
+- Run agentrail memory recall for the issue title and key terms when available.
+- If starting or resuming execution yourself, use agentrail run issue ${issue}; AgentRail invokes Ralph internally during the execute phase.
 - Implement the smallest coherent change that satisfies the issue acceptance criteria.
 - Run relevant verification.
 - Open or update one PR linked to #${issue}.
@@ -1779,7 +1788,8 @@ Hard limits:
 - Review only PR #${pr}.
 - Compare the PR head branch against its base branch.
 - Read the PR body, linked issue, milestone, PRD, CONTEXT.md, TASTE.md if present, and relevant project memory.
-- Run scripts/agentrail memory recall for the PR title, linked issue, and key terms when available.
+- Run agentrail memory recall for the PR title, linked issue, and key terms when available.
+- If generating this review prompt outside the current session, use agentrail prompt review ${pr}.
 - Inspect resolved skill evidence when available in the PR body or AgentRail run logs, including resolved-skills metadata; absence of this evidence does not mean the implementation is invalid.
 - Do not edit files, commit, push, close, or merge anything.
 - Return findings first, ordered by severity with concrete file and line references.
@@ -1797,7 +1807,8 @@ Hard limits:
 - Review only PR #${pr}.
 - Compare the PR head branch against its base branch.
 - Read the PR body, linked issue, milestone, PRD, CONTEXT.md, TASTE.md if present, and relevant project memory.
-- Run scripts/agentrail memory recall for the PR title, linked issue, and key terms when available.
+- Run agentrail memory recall for the PR title, linked issue, and key terms when available.
+- If generating this review prompt outside the current session, use agentrail prompt review ${pr}.
 - Inspect resolved skill evidence when available in the PR body or AgentRail run logs, including resolved-skills metadata; absence of this evidence does not mean the implementation is invalid.
 - Do not edit files, commit, push, close, or merge anything.
 - Return findings first, ordered by severity with concrete file and line references.
@@ -1849,6 +1860,40 @@ run_prompt() {
       prompt_review "$agent" "$target_dir" "$subject"
       ;;
   esac
+}
+
+run_afk() {
+  case "${1:-}" in
+    -h|--help|help)
+      cat <<'USAGE'
+Usage:
+  agentrail afk [--concurrency 2] [--max-waves 20] [--base main] [--engine codex] [--afk-label afk] [--dry-run]
+
+Runs the AFK queue/worktree loop through the AgentRail CLI:
+
+1. Pick queued GitHub issues.
+2. Claim each issue so another worker does not pick it.
+3. Run one AgentRail issue execution per issue in an isolated git worktree.
+4. Find the PR opened for the issue.
+5. Review the PR in a fresh context.
+6. Convert machine-readable review findings into new review-fix issues.
+7. Repeat until the queue is empty or max waves is reached.
+
+Defaults:
+  --concurrency 2
+  --max-waves 20
+  --base main
+  --engine codex
+  --afk-label afk
+  --queue-labels review-fix,ready-for-agent
+USAGE
+      exit 0
+      ;;
+  esac
+
+  local afk_script="${repo_dir}/templates/scripts/afk-workflow"
+  [[ -x "$afk_script" ]] || { echo "missing AFK queue/worktree loop: ${afk_script}" >&2; exit 2; }
+  "$afk_script" run "$@"
 }
 
 agent_command_env_name() {
@@ -2946,6 +2991,10 @@ case "${1:-}" in
   prompt)
     shift
     run_prompt "$@"
+    ;;
+  afk)
+    shift
+    run_afk "$@"
     ;;
   run)
     shift

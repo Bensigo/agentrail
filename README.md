@@ -220,6 +220,8 @@ agentrail run issue 123
 
 The explicit issue path still checks durable state first and refuses to start conflicting active work.
 
+Issue runs execute one plan phase, then repeat execute and verify until verification passes. When verify fails, AgentRail writes structured findings under the verify attempt directory and passes them into the next execute attempt. The default limit is 5 execution attempts; after that the run is marked blocked with the latest findings and next action in `.agentrail/state.json`.
+
 ## How To Use It With An Agent
 
 Start with `CONTEXT.md`. Keep the product, domain language, constraints, and repo-specific decisions there. The workflow works poorly if `CONTEXT.md` is empty or stale.
@@ -343,7 +345,7 @@ The main context files fit together like this:
 - `TASTE.md`: optional product quality, UI, copy, interaction, and visual evidence guidance.
 - `docs/memory/`: source-linked lessons, decisions, preferences, and failure patterns to recall before non-trivial work.
 - GitHub issues: implementation source of truth, acceptance criteria, blockers, and AFK eligibility.
-- `.agentrail/state.json`: durable workflow pointer for compaction recovery, handoffs, active issue/PR state, active run state, recent completed/failed runs, and next suggested action.
+- `.agentrail/state.json`: durable workflow pointer for compaction recovery, handoffs, active issue/PR state, active run state, retry attempts, recent completed/failed runs, and next suggested action.
 
 AgentRail is local CLI workflow infrastructure, not a hosted orchestration platform. Keep runs bounded, review PRs before merge, and verify changes with the commands recorded in each PR.
 

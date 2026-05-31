@@ -48,6 +48,8 @@ Install and upgrade flows preserve existing workflow fields when updating state.
 
 Issue execution runs through explicit `plan`, `execute`, and `verify` phases. `workflow.phase` and `workflow.activePhase` record the currently active phase while a phase is running. Completed issue runs return `workflow.phase` to `completed`; failed phase runs set it to `blocked`.
 
+When `verify` fails, AgentRail retries `execute` with the verifier findings as focused input. The default maximum is 5 execution attempts. `activeRun`, `completedRuns`, phase metadata, and `run.json` record `executionAttempt`, `maxExecutionAttempts`, and `failedVerificationAttempts`. After the final failed verify attempt, the run is blocked and `blockedReason` points at the latest verifier findings artifact.
+
 `activeRun` records the issue an agent has picked and is currently working on. It includes the run id, target issue, agent name, status, active phase, picked timestamp, prompt file, metadata file, and run directory. `agentrail run issue` writes this before each phase invocation so a crash, failed compaction, or interrupted terminal still leaves a durable pointer to the in-flight phase.
 
 `completedRuns` is an append-only recent history, capped to the latest 20 runs. Completed and failed runs include completion timestamp and exit status. Failed runs are kept here too because they are part of the recovery trail.
@@ -67,7 +69,19 @@ verify/prompt.md
 verify/output.md
 verify/status.json
 verify/metadata.json
+verify/findings.json
+execute-2/prompt.md
+execute-2/output.md
+execute-2/status.json
+execute-2/metadata.json
+verify-2/prompt.md
+verify-2/output.md
+verify-2/status.json
+verify-2/metadata.json
+verify-2/findings.json
 ```
+
+The first attempt keeps the compatibility paths `execute/` and `verify/`. Retry attempts use numbered directories such as `execute-2/` and `verify-2/`. Each failed verify directory gets `findings.json`. If the verifier output is missing or invalid, AgentRail writes fallback structured findings so the next execute attempt still has consumable recovery input.
 
 The top-level `prompt.md`, `resolved-skills.json`, and `run.json` remain as compatibility pointers for status, resume, and review workflows.
 

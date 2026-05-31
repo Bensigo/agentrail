@@ -54,6 +54,9 @@ cat >"${target}/.agentrail/state.json" <<'JSON'
         "targetIssue": 8,
         "agent": "codex",
         "status": "completed",
+        "executionAttempt": 2,
+        "maxExecutionAttempts": 5,
+        "failedVerificationAttempts": 1,
         "pickedAt": "2026-05-26T10:00:00Z",
         "completedAt": "2026-05-26T10:20:00Z",
         "promptFile": ".agentrail/runs/20260526-100000-issue-8-codex-99/prompt.md",
@@ -74,6 +77,7 @@ assert_grep "active issue: 13" "${tmp_dir}/status.out" "status did not print act
 assert_grep "active pull request: 23" "${tmp_dir}/status.out" "status did not print active PR"
 assert_grep "active run: issue #13 via codex (running)" "${tmp_dir}/status.out" "status did not print active run"
 assert_grep "completed run: issue #8 via codex (completed)" "${tmp_dir}/status.out" "status did not print completed run"
+assert_grep "completed run attempts: 2/5; failed verify attempts: 1" "${tmp_dir}/status.out" "status did not print retry attempts"
 assert_grep "last completed step: runner-adapter-merged" "${tmp_dir}/status.out" "status did not print last completed step"
 assert_grep "next action: Implement resume and handoff support." "${tmp_dir}/status.out" "status did not print next action"
 
@@ -84,6 +88,7 @@ assert_grep "active issue: 13" "${tmp_dir}/resume.out" "resume did not include a
 assert_grep "active pull request: 23" "${tmp_dir}/resume.out" "resume did not include active PR"
 assert_grep "active run: issue #13 via codex (running)" "${tmp_dir}/resume.out" "resume did not include active run"
 assert_grep "completed run: issue #8 via codex (completed)" "${tmp_dir}/resume.out" "resume did not include completed run"
+assert_grep "completed run attempts: 2/5; failed verify attempts: 1" "${tmp_dir}/resume.out" "resume did not include retry attempts"
 assert_grep "last completed step: runner-adapter-merged" "${tmp_dir}/resume.out" "resume did not include last completed step"
 assert_grep "next action: Implement resume and handoff support." "${tmp_dir}/resume.out" "resume did not include next action"
 assert_grep "Verification commands:" "${tmp_dir}/resume.out" "resume did not include verification commands"

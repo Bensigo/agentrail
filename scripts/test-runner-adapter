@@ -323,6 +323,137 @@ NODE
   exit 1
 fi
 
+cat >"${tmp_dir}/verify-retry-once" <<'RUNNER'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$(cat)"
+printf '%s\n' "$prompt"
+if [[ "$(printf '%s\n' "$prompt" | sed -n '1p')" == "This is phase 3 of 3: verify." ]]; then
+  count_file="${AGENTRAIL_RETRY_COUNT_FILE}"
+  count=0
+  [[ -f "$count_file" ]] && count="$(cat "$count_file")"
+  count=$((count + 1))
+  printf '%s\n' "$count" >"$count_file"
+  if [[ "$count" -eq 1 ]]; then
+    cat <<'JSON'
+{
+  "summary": "PR body is missing acceptance criteria coverage.",
+  "findings": [
+    {
+      "criterion": "Acceptance criteria coverage",
+      "evidence": "PR body has no AC table.",
+      "requestedAction": "Add the AC coverage table before verification."
+    }
+  ]
+}
+JSON
+    exit 9
+  fi
+fi
+RUNNER
+chmod +x "${tmp_dir}/verify-retry-once"
+
+"$agentrail" install --target "$target" --force >/dev/null
+AGENTRAIL_RETRY_COUNT_FILE="${tmp_dir}/retry-once-count" \
+  "$agentrail" run issue 83 --agent codex --target "$target" --command "${tmp_dir}/verify-retry-once" --log-dir "$log_dir" >"${tmp_dir}/retry-once.out"
+retry_once_run_dir="$(find "$log_dir" -path '*/run.json' -print | xargs grep -l '"targetIssue": 83' | head -1 | xargs dirname)"
+[[ -n "$retry_once_run_dir" ]] || { echo "Retry-once run directory was not found" >&2; exit 1; }
+[[ -f "${retry_once_run_dir}/execute-2/prompt.md" ]] || { echo "Second execute attempt prompt was not written" >&2; exit 1; }
+assert_grep "Verifier findings from previous failed verify attempt" "${retry_once_run_dir}/execute-2/prompt.md" "Second execute attempt did not receive verifier findings"
+assert_grep "PR body is missing acceptance criteria coverage" "${retry_once_run_dir}/execute-2/prompt.md" "Verifier findings summary was not passed to retry execute"
+assert_grep '"executionAttempt": 2' "${retry_once_run_dir}/execute-2/metadata.json" "Second execute metadata did not record attempt"
+
+if [[ "$(node - "$state_file" <<'NODE'
+const fs = require("fs");
+const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const workflow = state.workflow || {};
+const completedRun = Array.isArray(workflow.completedRuns) && workflow.completedRuns.find((run) => run.targetIssue === 83 && run.status === "completed");
+console.log(Boolean(
+  workflow.phase === "completed" &&
+  completedRun &&
+  completedRun.executionAttempt === 2 &&
+  completedRun.maxExecutionAttempts === 5 &&
+  completedRun.failedVerificationAttempts === 1
+));
+NODE
+)" != "true" ]]; then
+  echo "AgentRail run did not persist pass-after-retry state" >&2
+  cat "$state_file" >&2
+  exit 1
+fi
+
+cat >"${tmp_dir}/verify-always-fails" <<'RUNNER'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$(cat)"
+printf '%s\n' "$prompt"
+if [[ "$(printf '%s\n' "$prompt" | sed -n '1p')" == "This is phase 3 of 3: verify." ]]; then
+  printf '{"summary":"Still failing","findings":[{"requestedAction":"Fix remaining verifier finding."}]}\n'
+  exit 6
+fi
+RUNNER
+chmod +x "${tmp_dir}/verify-always-fails"
+
+"$agentrail" install --target "$target" --force >/dev/null
+if "$agentrail" run issue 84 --agent codex --target "$target" --command "${tmp_dir}/verify-always-fails" --log-dir "$log_dir" >"${tmp_dir}/retry-five.out" 2>&1; then
+  echo "Runner accepted verifier failures after max attempts" >&2
+  exit 1
+fi
+retry_five_run_dir="$(find "$log_dir" -path '*/run.json' -print | xargs grep -l '"targetIssue": 84' | head -1 | xargs dirname)"
+[[ -n "$retry_five_run_dir" ]] || { echo "Fail-after-5 run directory was not found" >&2; exit 1; }
+[[ -f "${retry_five_run_dir}/verify-5/status.json" ]] || { echo "Fifth verify attempt status was not written" >&2; exit 1; }
+[[ ! -e "${retry_five_run_dir}/execute-6" ]] || { echo "Runner executed more than five attempts" >&2; exit 1; }
+assert_grep '"status": "failed"' "${retry_five_run_dir}/verify-5/status.json" "Fifth verify attempt did not fail"
+
+if [[ "$(node - "$state_file" <<'NODE'
+const fs = require("fs");
+const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const workflow = state.workflow || {};
+const failedRun = Array.isArray(workflow.completedRuns) && workflow.completedRuns.find((run) => run.targetIssue === 84 && run.status === "failed");
+console.log(Boolean(
+  workflow.phase === "blocked" &&
+  failedRun &&
+  failedRun.activePhase === "verify" &&
+  failedRun.executionAttempt === 5 &&
+  failedRun.maxExecutionAttempts === 5 &&
+  failedRun.failedVerificationAttempts === 5 &&
+  /maximum verifier retry attempts/.test(failedRun.blockedReason || "") &&
+  /maximum verifier retry attempts/.test(workflow.nextSuggestedAction || "")
+));
+NODE
+)" != "true" ]]; then
+  echo "AgentRail run did not persist fail-after-5 blocked state" >&2
+  cat "$state_file" >&2
+  exit 1
+fi
+
+cat >"${tmp_dir}/verify-invalid-output" <<'RUNNER'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$(cat)"
+printf '%s\n' "$prompt"
+if [[ "$(printf '%s\n' "$prompt" | sed -n '1p')" == "This is phase 3 of 3: verify." ]]; then
+  count_file="${AGENTRAIL_INVALID_COUNT_FILE}"
+  count=0
+  [[ -f "$count_file" ]] && count="$(cat "$count_file")"
+  count=$((count + 1))
+  printf '%s\n' "$count" >"$count_file"
+  if [[ "$count" -eq 1 ]]; then
+    printf 'not json verifier output\n'
+    exit 5
+  fi
+fi
+RUNNER
+chmod +x "${tmp_dir}/verify-invalid-output"
+
+"$agentrail" install --target "$target" --force >/dev/null
+AGENTRAIL_INVALID_COUNT_FILE="${tmp_dir}/invalid-count" \
+  "$agentrail" run issue 85 --agent codex --target "$target" --command "${tmp_dir}/verify-invalid-output" --log-dir "$log_dir" >"${tmp_dir}/invalid-retry.out"
+invalid_retry_run_dir="$(find "$log_dir" -path '*/run.json' -print | xargs grep -l '"targetIssue": 85' | head -1 | xargs dirname)"
+[[ -n "$invalid_retry_run_dir" ]] || { echo "Invalid-output retry run directory was not found" >&2; exit 1; }
+assert_grep '"source": "fallback"' "${invalid_retry_run_dir}/verify/findings.json" "Invalid verifier output did not produce fallback findings"
+assert_grep "Verifier failed but did not provide structured JSON findings" "${invalid_retry_run_dir}/execute-2/prompt.md" "Fallback findings were not passed to retry execute"
+
 if "$agentrail" run issue 12 --agent codex --target "$target" --command definitely-not-agentrail-runner --log-dir "$log_dir" >"${tmp_dir}/missing-command.out" 2>&1; then
   echo "Runner accepted a missing command" >&2
   exit 1

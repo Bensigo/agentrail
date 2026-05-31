@@ -294,6 +294,19 @@ const nextState = {
 fs.mkdirSync(path.dirname(statePath), { recursive: true });
 fs.writeFileSync(statePath, `${JSON.stringify(nextState, null, 2)}\n`);
 console.log("updated: .agentrail/state.json");
+
+const configPath = path.join(targetDir, ".agentrail/config.json");
+if (!fs.existsSync(configPath) || force) {
+  const defaultConfig = {
+    schemaVersion: 1,
+    runner: {
+      name: "codex",
+      command: "codex exec -",
+    },
+  };
+  fs.writeFileSync(configPath, `${JSON.stringify(defaultConfig, null, 2)}\n`);
+  console.log("updated: .agentrail/config.json");
+}
 NODE
 }
 
@@ -1701,6 +1714,15 @@ agent_command_env_name() {
     claude)
       echo "AGENTRAIL_CLAUDE_COMMAND"
       ;;
+    cursor)
+      echo "AGENTRAIL_CURSOR_COMMAND"
+      ;;
+    hermes)
+      echo "AGENTRAIL_HERMES_COMMAND"
+      ;;
+    custom)
+      echo "AGENTRAIL_CUSTOM_COMMAND"
+      ;;
   esac
 }
 
@@ -1713,15 +1735,37 @@ default_agent_command() {
     claude)
       echo "claude -p"
       ;;
+    cursor)
+      echo "cursor-agent -p"
+      ;;
+    hermes)
+      echo "hermes -p"
+      ;;
+    custom)
+      echo ""
+      ;;
   esac
 }
 
 configured_agent_command() {
   local agent="$1"
   local explicit_command="$2"
+  local target_dir="$3"
 
   if [[ -n "$explicit_command" ]]; then
     echo "$explicit_command"
+    return
+  fi
+
+  if [[ -f "${target_dir}/.agentrail/config.json" && "$agent" == "__config__" ]]; then
+    local configured_command
+    configured_command="$(node - "${target_dir}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(config.runner?.command || "");
+NODE
+)"
+    echo "$configured_command"
     return
   fi
 
@@ -1741,6 +1785,27 @@ configured_agent_command() {
   default_agent_command "$agent"
 }
 
+configured_agent_name() {
+  local target_dir="$1"
+  local fallback="$2"
+
+  if [[ "$fallback" != "__config__" ]]; then
+    echo "$fallback"
+    return
+  fi
+
+  if [[ -f "${target_dir}/.agentrail/config.json" ]]; then
+    node - "${target_dir}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(config.runner?.name || "codex");
+NODE
+    return
+  fi
+
+  echo "codex"
+}
+
 ensure_command_available() {
   local command_line="$1"
   local binary
@@ -1748,7 +1813,7 @@ ensure_command_available() {
   # shellcheck disable=SC2086
   set -- $command_line
   binary="${1:-}"
-  [[ -n "$binary" ]] || { echo "run command is empty" >&2; exit 2; }
+  [[ -n "$binary" ]] || { echo "runner command is empty" >&2; exit 2; }
   command -v "$binary" >/dev/null 2>&1 || { echo "missing required command: $binary" >&2; exit 1; }
 }
 
@@ -1759,7 +1824,7 @@ parse_run_options() {
   local log_dir_var="$4"
   shift 4
 
-  printf -v "$agent_var" '%s' "codex"
+  printf -v "$agent_var" '%s' "__config__"
   printf -v "$target_var" '%s' "$(pwd)"
   printf -v "$command_var" '%s' ""
   printf -v "$log_dir_var" '%s' ""
@@ -1767,8 +1832,8 @@ parse_run_options() {
     case "$1" in
       --agent)
         local value="${2:-}"
-        [[ -n "$value" && "$value" != --* ]] || { echo "--agent requires codex or claude" >&2; exit 2; }
-        [[ "$value" == "codex" || "$value" == "claude" ]] || { echo "--agent must be codex or claude" >&2; exit 2; }
+        [[ -n "$value" && "$value" != --* ]] || { echo "--agent requires codex, claude, cursor, hermes, or custom" >&2; exit 2; }
+        [[ "$value" == "codex" || "$value" == "claude" || "$value" == "cursor" || "$value" == "hermes" || "$value" == "custom" ]] || { echo "--agent must be codex, claude, cursor, hermes, or custom" >&2; exit 2; }
         printf -v "$agent_var" '%s' "$value"
         shift 2
         ;;
@@ -1940,6 +2005,90 @@ fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
 NODE
 }
 
+active_run_summary() {
+  local target_dir="$1"
+  local state_file="${target_dir}/.agentrail/state.json"
+
+  [[ -f "$state_file" ]] || return 1
+  command -v node >/dev/null 2>&1 || return 1
+
+  node - "$state_file" <<'NODE'
+const fs = require("fs");
+const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const workflow = state.workflow || {};
+const run = workflow.activeRun;
+if (!run || typeof run !== "object") process.exit(1);
+const target = run.targetType === "issue" ? `issue #${run.targetIssue}` : (run.targetType || "target");
+console.log(`active run exists: ${target} via ${run.agent || "unknown"} (${run.status || "unknown"})`);
+console.log(`issue: ${run.targetIssue ?? workflow.activeIssue ?? "none"}`);
+console.log(`run id: ${run.runId || "unknown"}`);
+console.log(`run dir: ${run.runDir || "none"}`);
+console.log(`prompt: ${run.promptFile || "none"}`);
+console.log(`metadata: ${run.metadataFile || "none"}`);
+console.log(`next action: ${workflow.nextSuggestedAction || "Inspect the run metadata and continue or clear the active run."}`);
+NODE
+}
+
+active_run_issue() {
+  local target_dir="$1"
+  local state_file="${target_dir}/.agentrail/state.json"
+
+  [[ -f "$state_file" ]] || return 1
+  command -v node >/dev/null 2>&1 || return 1
+
+  node - "$state_file" <<'NODE'
+const fs = require("fs");
+const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const workflow = state.workflow || {};
+const run = workflow.activeRun;
+if (!run || typeof run !== "object") process.exit(1);
+console.log(run.targetIssue ?? workflow.activeIssue ?? "");
+NODE
+}
+
+ensure_no_conflicting_active_run() {
+  local target_dir="$1"
+  local issue="$2"
+
+  local active_issue
+  active_issue="$(active_run_issue "$target_dir" 2>/dev/null || true)"
+  [[ -z "$active_issue" ]] && return 0
+  if [[ "$active_issue" == "$issue" ]]; then
+    echo "active run already exists for issue #${issue}; resume or inspect it with: agentrail run --target ${target_dir}" >&2
+  else
+    echo "active run already exists for issue #${active_issue}; refusing to start issue #${issue}" >&2
+  fi
+  active_run_summary "$target_dir" >&2 || true
+  exit 1
+}
+
+next_pickable_issue() {
+  local target_dir="$1"
+
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "GitHub issue selection requires gh CLI." >&2
+    return 1
+  fi
+
+  (
+    cd "$target_dir"
+    local issues_json
+    issues_json="$(gh issue list \
+      --state open \
+      --label afk \
+      --label ready-for-agent \
+      --search "sort:created-asc -label:afk-in-progress" \
+      --limit 20 \
+      --json number,title,url)"
+    AGENTRAIL_ISSUES_JSON="$issues_json" node <<'NODE'
+const issues = JSON.parse(process.env.AGENTRAIL_ISSUES_JSON || "[]");
+const issue = issues.sort((a, b) => Number(a.number) - Number(b.number))[0];
+if (!issue) process.exit(0);
+console.log([issue.number, issue.title || "", issue.url || ""].join("\t"));
+NODE
+  )
+}
+
 run_issue() {
   local issue="$1"
   shift
@@ -1947,9 +2096,12 @@ run_issue() {
 
   local agent target_dir explicit_command log_dir
   parse_run_options agent target_dir explicit_command log_dir "$@"
+  local requested_agent="$agent"
+  agent="$(configured_agent_name "$target_dir" "$agent")"
+  ensure_no_conflicting_active_run "$target_dir" "$issue"
 
   local agent_command
-  agent_command="$(configured_agent_command "$agent" "$explicit_command")"
+  agent_command="$(configured_agent_command "$requested_agent" "$explicit_command" "$target_dir")"
   ensure_command_available "$agent_command"
 
   local resolution_text skill_resolution prompt
@@ -2000,7 +2152,45 @@ run_issue() {
 
 run_agentrail_run() {
   local kind="${1:-}"
-  [[ -n "$kind" ]] || { usage; exit 1; }
+  if [[ -z "$kind" || "$kind" == --* ]]; then
+    local agent target_dir explicit_command log_dir
+    parse_run_options agent target_dir explicit_command log_dir "$@"
+
+    if [[ ! -f "${target_dir}/.agentrail/state.json" ]]; then
+      state_recommendation "$target_dir" >&2
+      exit 1
+    fi
+
+    if active_run_summary "$target_dir"; then
+      return 0
+    fi
+
+    local picked number title url
+    picked="$(next_pickable_issue "$target_dir")"
+    if [[ -z "$picked" ]]; then
+      echo "No pickable GitHub issues found."
+      echo "Required labels: afk, ready-for-agent"
+      echo "Excluded label: afk-in-progress"
+      return 0
+    fi
+
+    IFS=$'\t' read -r number title url <<<"$picked"
+    echo "selected issue #${number}: ${title}"
+    [[ -z "$url" ]] || echo "$url"
+    local run_args=("--target" "$target_dir")
+    if [[ "$agent" != "__config__" ]]; then
+      run_args+=("--agent" "$agent")
+    fi
+    if [[ -n "$explicit_command" ]]; then
+      run_args+=("--command" "$explicit_command")
+    fi
+    if [[ -n "$log_dir" ]]; then
+      run_args+=("--log-dir" "$log_dir")
+    fi
+    run_issue "$number" "${run_args[@]}"
+    return $?
+  fi
+
   shift || true
 
   case "$kind" in

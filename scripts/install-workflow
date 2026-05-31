@@ -203,6 +203,21 @@ NODE
 
 write_agentrail_state
 
+config_file="${target_dir}/.agentrail/config.json"
+if [[ ! -e "$config_file" || "$force" -eq 1 ]]; then
+  mkdir -p "$(dirname "$config_file")"
+  cat >"$config_file" <<'JSON'
+{
+  "schemaVersion": 1,
+  "runner": {
+    "name": "codex",
+    "command": "codex exec -"
+  }
+}
+JSON
+  echo "updated: .agentrail/config.json"
+fi
+
 if [[ "$github_labels" -eq 1 ]]; then
   if ! command -v gh >/dev/null 2>&1; then
     echo "gh CLI is not installed; skipping labels" >&2

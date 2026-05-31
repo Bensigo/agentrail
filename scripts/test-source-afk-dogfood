@@ -33,8 +33,59 @@ chmod +x "${source_repo}/scripts/agentrail"
 git -C "$source_repo" init --initial-branch=main --quiet
 git -C "$source_repo" config user.email agentrail@example.com
 git -C "$source_repo" config user.name "AgentRail Test"
+
+write_agentrail_state() {
+  local state_file="${source_repo}/.agentrail/state.json"
+  local active="${1:-0}"
+  mkdir -p "$(dirname "$state_file")"
+
+  if [[ "$active" == "1" ]]; then
+    cat >"$state_file" <<'JSON'
+{
+  "schemaVersion": 1,
+  "agentrailVersion": "0.0.0-test",
+  "workflow": {
+    "phase": "implementation",
+    "activeIssue": 999,
+    "activeRun": {
+      "runId": "active-999",
+      "targetType": "issue",
+      "targetIssue": 999,
+      "agent": "codex",
+      "status": "running",
+      "runDir": ".agentrail/runs/active-999",
+      "metadataFile": ".agentrail/runs/active-999/run.json"
+    },
+    "completedRuns": [],
+    "nextSuggestedAction": "Continue issue #999."
+  }
+}
+JSON
+  else
+    cat >"$state_file" <<'JSON'
+{
+  "schemaVersion": 1,
+  "agentrailVersion": "0.0.0-test",
+  "workflow": {
+    "phase": "idle",
+    "activePhase": null,
+    "activeIssue": null,
+    "activePullRequest": null,
+    "activePrd": null,
+    "activeMilestone": null,
+    "activeRun": null,
+    "completedRuns": [],
+    "lastCompletedStep": null,
+    "nextSuggestedAction": "Pick a ready-for-agent issue."
+  }
+}
+JSON
+  fi
+}
+
 git -C "$source_repo" add templates scripts
 git -C "$source_repo" commit --quiet -m "seed source repo"
+write_agentrail_state 0
 
 origin="${tmp_dir}/origin.git"
 git clone --quiet --bare "$source_repo" "$origin"
@@ -122,11 +173,50 @@ agentrail_log="$(find "${source_repo}/.afk-workflow" -name 'issue-4242-agentrail
 [[ -n "$agentrail_log" ]] || { echo "AFK worker did not write AgentRail execution log" >&2; cat "${tmp_dir}/afk-real.out" >&2; exit 1; }
 assert_grep "AgentRail run: issue #4242" "$agentrail_log" "AFK worker bypassed AgentRail issue execution"
 assert_grep ".agentrail/runs" "$agentrail_log" "AgentRail execution log did not reference run artifacts"
+assert_grep "AgentRail state: present" "$agent_marker" "AFK worker did not seed AgentRail state into the issue worktree"
+worktree_state="$(find "${source_repo}/.afk-workflow" -path '*/worktrees/slot-1-issue-4242/.agentrail/state.json' -print | head -1)"
+[[ -n "$worktree_state" ]] || { echo "AFK worker did not leave updated AgentRail state in the issue worktree" >&2; cat "${tmp_dir}/afk-real.out" >&2; exit 1; }
+if [[ "$(node - "$worktree_state" <<'NODE'
+const fs = require("fs");
+const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const workflow = state.workflow || {};
+const run = Array.isArray(workflow.completedRuns) && workflow.completedRuns.find((item) => item.targetIssue === 4242);
+console.log(Boolean(
+  workflow.phase === "blocked" &&
+  workflow.activeRun === null &&
+  run &&
+  run.status === "failed" &&
+  run.metadataFile &&
+  run.promptFile
+));
+NODE
+)" != "true" ]]; then
+  echo "AFK issue worktree state was not updated by AgentRail" >&2
+  cat "$worktree_state" >&2
+  exit 1
+fi
 
 (
-  cd "$repo_dir"
+  cd "$source_repo"
   AFK_WORKFLOW_MOCK_QUEUE="$mock_queue" templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --dry-run >"${tmp_dir}/source-dry-run.out"
 )
 assert_grep "dry-run: would run AgentRail issue execution" "${tmp_dir}/source-dry-run.out" "Source dry-run did not show AgentRail execution step"
+
+write_agentrail_state 1
+set +e
+AFK_WORKFLOW_MOCK_QUEUE="$mock_queue" \
+AFK_WORKFLOW_REVIEW=0 \
+AFK_FAKE_GH_LOG="${tmp_dir}/gh.log" \
+SOURCE_REPO="$source_repo" \
+PATH="${fake_bin}:$PATH" \
+  bash -c 'cd "$SOURCE_REPO" && templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --dry-run' >"${tmp_dir}/active-state.out" 2>&1
+status=$?
+set -e
+
+if [[ "$status" -eq 0 ]]; then
+  echo "AFK dry-run ignored active AgentRail state" >&2
+  exit 1
+fi
+assert_grep "active AgentRail run exists for issue #999" "${tmp_dir}/active-state.out" "AFK did not check AgentRail state before selecting work"
 
 echo "source AFK dogfood test passed"

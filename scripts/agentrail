@@ -9,6 +9,8 @@ Usage:
   agentrail upgrade [--target DIR] [--force]
   agentrail doctor [--target DIR]
   agentrail status [--target DIR]
+  scripts/agentrail memory recall QUERY [--target DIR]
+  agentrail memory capture KIND TITLE [--target DIR]
   agentrail skills validate [--target DIR]
   agentrail skills list [--target DIR]
   agentrail skills resolve "<task text>" [--target DIR] [--skill NAME] [--no-auto-skills]
@@ -25,6 +27,7 @@ Commands:
   upgrade   Upgrade managed AgentRail files without overwriting local edits.
   doctor    Inspect AgentRail installation health.
   status    Print install status and current workflow state.
+  memory    Recall or template project memory entries.
   skills    Inspect or validate AgentRail-managed skills.
   resume    Print and write an agent handoff summary.
   labels    Sync expected GitHub labels.
@@ -138,6 +141,7 @@ const roots = [
   { root: path.join(repoDir, "templates"), prefix: "" },
   { root: path.join(repoDir, "skills"), prefix: "skills" },
 ];
+const hiddenTemplatePrefix = `scripts${path.sep}`;
 const extraFiles = [
   { sourcePath: path.join(repoDir, "scripts/agentrail"), path: "scripts/agentrail" },
 ];
@@ -192,6 +196,7 @@ const inventory = [];
 for (const { root, prefix } of roots) {
   for (const sourcePath of walkFiles(root).sort()) {
     const relativeToRoot = path.relative(root, sourcePath);
+    if (!prefix && relativeToRoot.startsWith(hiddenTemplatePrefix)) continue;
     const managedPath = prefix ? path.join(prefix, relativeToRoot) : relativeToRoot;
     inventory.push({
       path: managedPath.split(path.sep).join("/"),
@@ -327,6 +332,19 @@ if (!fs.existsSync(configPath) || force) {
   console.log("updated: .agentrail/config.json");
 }
 NODE
+
+  local source_support_dir="${target_dir}/.agentrail/source"
+  if [[ "$(cd "$repo_dir" && pwd -P)" != "$(mkdir -p "$source_support_dir" && cd "$source_support_dir" && pwd -P)" ]]; then
+    mkdir -p "${source_support_dir}/scripts"
+    cp "${repo_dir}/package.json" "${source_support_dir}/package.json"
+    cp "${repo_dir}/scripts/agentrail" "${source_support_dir}/scripts/agentrail"
+    cp "${repo_dir}/scripts/install-workflow" "${source_support_dir}/scripts/install-workflow"
+    chmod +x "${source_support_dir}/scripts/agentrail" "${source_support_dir}/scripts/install-workflow"
+    rm -rf "${source_support_dir}/templates" "${source_support_dir}/skills"
+    cp -R "${repo_dir}/templates" "${source_support_dir}/templates"
+    cp -R "${repo_dir}/skills" "${source_support_dir}/skills"
+    echo "updated: .agentrail/source"
+  fi
 }
 
 print_path_status() {
@@ -946,7 +964,12 @@ const crypto = require("crypto");
 const repoDir = process.env.AGENTRAIL_REPO_DIR;
 const targetDir = process.env.AGENTRAIL_TARGET_DIR;
 const statePath = path.join(targetDir, ".agentrail/state.json");
-const currentVersion = JSON.parse(fs.readFileSync(path.join(repoDir, "package.json"), "utf8")).version;
+let currentVersion = "";
+try {
+  currentVersion = JSON.parse(fs.readFileSync(path.join(repoDir, "package.json"), "utf8")).version;
+} catch (error) {
+  console.log(`SOURCE=missing:${path.join(repoDir, "package.json")}`);
+}
 
 function sha256(file) {
   return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}`;
@@ -970,10 +993,12 @@ if (!Array.isArray(state.managedFiles)) {
   process.exit(0);
 }
 
-if (state.agentrailVersion === currentVersion) {
-  console.log("VERSION=ok");
-} else {
-  console.log(`VERSION=outdated:${state.agentrailVersion || ""}`);
+if (currentVersion) {
+  if (state.agentrailVersion === currentVersion) {
+    console.log("VERSION=ok");
+  } else {
+    console.log(`VERSION=outdated:${state.agentrailVersion || ""}`);
+  }
 }
 
 let hashMismatch = false;
@@ -1038,9 +1063,14 @@ run_doctor() {
   local source_mismatch=0
   local missing_managed=0
   local registry_invalid=0
+  local legacy_scripts=0
+  local hidden_source_missing=0
 
   while IFS= read -r line; do
     case "$line" in
+      SOURCE=missing:*)
+        hidden_source_missing=1
+        ;;
       STATE=ok)
         state_status="ok"
         ;;
@@ -1084,7 +1114,7 @@ run_doctor() {
     status="missing"
   elif [[ "$registry_invalid" -eq 1 ]]; then
     status="corrupt"
-  elif [[ "$hash_mismatch" -eq 1 || "$missing_managed" -eq 1 ]]; then
+  elif [[ "$hash_mismatch" -eq 1 || "$missing_managed" -eq 1 || "$hidden_source_missing" -eq 1 ]]; then
     status="modified"
   elif [[ "$version_status" == "outdated" || "$source_mismatch" -eq 1 ]]; then
     status="outdated"
@@ -1097,15 +1127,20 @@ run_doctor() {
   local -a required_paths=(
     "AGENTS.md|AGENTS.md|file"
     "CONTEXT.md|CONTEXT.md|file"
+    "docs/agents/|docs/agents|dir"
     "docs/memory/|docs/memory|dir"
     "docs/prd/|docs/prd|dir"
     "docs/milestones/|docs/milestones|dir"
     "skills/|skills|dir"
-    "scripts/memory|scripts/memory|executable"
-    "scripts/afk-workflow|scripts/afk-workflow|executable"
-    "scripts/pr|scripts/pr|executable"
-    "scripts/ralph-loop|scripts/ralph-loop|executable"
-    "scripts/review-pr|scripts/review-pr|executable"
+    ".agentrail/config.json|.agentrail/config.json|file"
+    ".agentrail/source/package.json|.agentrail/source/package.json|file"
+    ".agentrail/source/scripts/agentrail|.agentrail/source/scripts/agentrail|executable"
+    ".agentrail/source/scripts/install-workflow|.agentrail/source/scripts/install-workflow|executable"
+    ".agentrail/source/templates/scripts/memory|.agentrail/source/templates/scripts/memory|executable"
+    ".agentrail/source/templates/scripts/ralph-loop|.agentrail/source/templates/scripts/ralph-loop|executable"
+    ".agentrail/source/templates/scripts/afk-workflow|.agentrail/source/templates/scripts/afk-workflow|executable"
+    ".agentrail/source/templates/scripts/review-pr|.agentrail/source/templates/scripts/review-pr|executable"
+    ".agentrail/source/templates/scripts/pr|.agentrail/source/templates/scripts/pr|executable"
     "docs/agents/skill-registry.json|docs/agents/skill-registry.json|file"
   )
 
@@ -1152,6 +1187,9 @@ run_doctor() {
       SOURCE_MISMATCH=*)
         echo "  warn current package mismatch: ${line#SOURCE_MISMATCH=}"
         ;;
+      SOURCE=missing:*)
+        echo "  warn missing AgentRail source package: ${line#SOURCE=missing:}"
+        ;;
       MISSING_MANAGED=*)
         echo "  warn missing managed file: ${line#MISSING_MANAGED=}"
         ;;
@@ -1163,6 +1201,27 @@ run_doctor() {
         ;;
     esac
   done <<<"$hash_output"
+
+  echo "legacy scripts:"
+  local -a raw_script_paths=(
+    "scripts/memory"
+    "scripts/afk-workflow"
+    "scripts/pr"
+    "scripts/ralph-loop"
+    "scripts/review-pr"
+  )
+  local raw_script found_scripts=()
+  for raw_script in "${raw_script_paths[@]}"; do
+    if [[ -e "${target_dir}/${raw_script}" ]]; then
+      found_scripts+=("$raw_script")
+    fi
+  done
+  if [[ "${#found_scripts[@]}" -gt 0 ]]; then
+    legacy_scripts=1
+    echo "  warn legacy raw workflow scripts present: ${found_scripts[*]}"
+  else
+    echo "  ok no raw workflow scripts in normal project surface"
+  fi
 
   echo "skills:"
   if [[ "$state_status" == "missing" ]]; then
@@ -1186,7 +1245,9 @@ run_doctor() {
     echo "  - repair or remove .agentrail/state.json, then rerun install"
   elif [[ "$registry_invalid" -eq 1 ]]; then
     echo "  - repair docs/agents/skill-registry.json or rerun agentrail upgrade --target ${target_dir}"
-  elif [[ "$state_status" == "missing" || "$required_missing" -eq 1 ]]; then
+  elif [[ "$legacy_scripts" -eq 1 ]]; then
+    echo "  - remove legacy raw workflow scripts after confirming local edits; use agentrail commands or .agentrail/source for compatibility"
+  elif [[ "$state_status" == "missing" || "$required_missing" -eq 1 || "$hidden_source_missing" -eq 1 ]]; then
     echo "  - run agentrail install --target ${target_dir}"
   elif [[ "$hash_mismatch" -eq 1 || "$source_mismatch" -eq 1 || "$missing_managed" -eq 1 || "$version_status" == "outdated" ]]; then
     echo "  - run agentrail install --target ${target_dir} --force after reviewing local edits"
@@ -1430,6 +1491,41 @@ try {
 NODE
 }
 
+run_memory() {
+  local kind="${1:-}"
+  [[ -n "$kind" ]] || { usage; exit 1; }
+  shift || true
+
+  local target_dir="$(pwd)"
+  local args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --target)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
+        target_dir="$value"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  local memory_script="${repo_dir}/templates/scripts/memory"
+  [[ -x "$memory_script" ]] || { echo "missing internal memory helper: ${memory_script}" >&2; exit 1; }
+
+  (
+    cd "$target_dir"
+    "$memory_script" "$kind" "${args[@]}"
+  )
+}
+
 resume_body() {
   local target_dir="$1"
   local state_file="${target_dir}/.agentrail/state.json"
@@ -1553,7 +1649,7 @@ Read these before acting:
 - CONTEXT.md
 - TASTE.md when present
 - relevant docs under docs/agents/
-- relevant project memory from scripts/memory recall
+- relevant project memory from scripts/agentrail memory recall
 
 AgentRail state summary:
 PROMPT
@@ -1583,7 +1679,7 @@ ${idea}
 Instructions:
 - Read CONTEXT.md first.
 - Read TASTE.md if present.
-- Run scripts/memory recall for the idea and key terms when available.
+- Run scripts/agentrail memory recall for the idea and key terms when available.
 - Challenge vague users, outcomes, non-goals, constraints, domain terms, and risky assumptions.
 - If a question can be answered from the repo, inspect the repo instead of asking.
 - Ask one direct question at a time and include your recommended answer.
@@ -1601,7 +1697,7 @@ ${idea}
 Instructions:
 - Read CONTEXT.md first.
 - Read TASTE.md if present.
-- Run scripts/memory recall for the idea and key terms when available.
+- Run scripts/agentrail memory recall for the idea and key terms when available.
 - Challenge vague users, outcomes, non-goals, constraints, domain terms, and risky assumptions.
 - If a question can be answered from the repo, inspect the repo instead of asking.
 - Ask one direct question at a time and include your recommended answer.
@@ -1636,7 +1732,7 @@ Hard limits:
 - Handle only issue #${issue}.
 - Read the issue body, comments, labels, and linked PRD or milestone before editing.
 - Read CONTEXT.md, TASTE.md if present, and relevant project memory.
-- Run scripts/memory recall for the issue title and key terms when available.
+- Run scripts/agentrail memory recall for the issue title and key terms when available.
 - Implement the smallest coherent change that satisfies the issue acceptance criteria.
 - Run relevant verification.
 - Open or update one PR linked to #${issue}.
@@ -1655,7 +1751,7 @@ Hard limits:
 - Handle only issue #${issue}.
 - Read the issue body, comments, labels, and linked PRD or milestone before editing.
 - Read CONTEXT.md, TASTE.md if present, and relevant project memory.
-- Run scripts/memory recall for the issue title and key terms when available.
+- Run scripts/agentrail memory recall for the issue title and key terms when available.
 - Implement the smallest coherent change that satisfies the issue acceptance criteria.
 - Run relevant verification.
 - Open or update one PR linked to #${issue}.
@@ -1683,7 +1779,7 @@ Hard limits:
 - Review only PR #${pr}.
 - Compare the PR head branch against its base branch.
 - Read the PR body, linked issue, milestone, PRD, CONTEXT.md, TASTE.md if present, and relevant project memory.
-- Run scripts/memory recall for the PR title, linked issue, and key terms when available.
+- Run scripts/agentrail memory recall for the PR title, linked issue, and key terms when available.
 - Inspect resolved skill evidence when available in the PR body or AgentRail run logs, including resolved-skills metadata; absence of this evidence does not mean the implementation is invalid.
 - Do not edit files, commit, push, close, or merge anything.
 - Return findings first, ordered by severity with concrete file and line references.
@@ -1701,7 +1797,7 @@ Hard limits:
 - Review only PR #${pr}.
 - Compare the PR head branch against its base branch.
 - Read the PR body, linked issue, milestone, PRD, CONTEXT.md, TASTE.md if present, and relevant project memory.
-- Run scripts/memory recall for the PR title, linked issue, and key terms when available.
+- Run scripts/agentrail memory recall for the PR title, linked issue, and key terms when available.
 - Inspect resolved skill evidence when available in the PR body or AgentRail run logs, including resolved-skills metadata; absence of this evidence does not mean the implementation is invalid.
 - Do not edit files, commit, push, close, or merge anything.
 - Return findings first, ordered by severity with concrete file and line references.
@@ -1873,8 +1969,8 @@ ralph_executor_path() {
 
   absolute_target_dir="$(cd "$target_dir" && pwd -P)" || return 1
 
-  if [[ -x "${absolute_target_dir}/scripts/ralph-loop" ]]; then
-    printf '%s\n' "${absolute_target_dir}/scripts/ralph-loop"
+  if [[ -x "${absolute_target_dir}/.agentrail/source/templates/scripts/ralph-loop" ]]; then
+    printf '%s\n' "${absolute_target_dir}/.agentrail/source/templates/scripts/ralph-loop"
     return 0
   fi
 
@@ -1883,7 +1979,12 @@ ralph_executor_path() {
     return 0
   fi
 
-  echo "missing Ralph executor: expected scripts/ralph-loop in target or templates/scripts/ralph-loop in AgentRail source" >&2
+  if [[ -x "${absolute_target_dir}/scripts/ralph-loop" ]]; then
+    printf '%s\n' "${absolute_target_dir}/scripts/ralph-loop"
+    return 0
+  fi
+
+  echo "missing Ralph executor: expected .agentrail/source/templates/scripts/ralph-loop in target or templates/scripts/ralph-loop in AgentRail source" >&2
   return 1
 }
 
@@ -2811,6 +2912,10 @@ case "${1:-}" in
   status)
     shift
     run_status "$@"
+    ;;
+  memory)
+    shift
+    run_memory "$@"
     ;;
   skills)
     shift

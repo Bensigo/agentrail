@@ -102,6 +102,10 @@ copy_tree() {
   local inventory_prefix="${3:-}"
 
   while IFS= read -r -d '' file; do
+    local rel="${file#"$src_root"/}"
+    if [[ -z "$inventory_prefix" && "$rel" == scripts/* ]]; then
+      continue
+    fi
     copy_file "$src_root" "$dest_root" "$file" "$inventory_prefix"
   done < <(find "$src_root" -type f -print0 | sort -z)
 }

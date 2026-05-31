@@ -48,7 +48,7 @@ Add the current architecture here:
 Agents should:
 
 - Read this file before non-trivial implementation.
-- Run `scripts/memory recall "<task>"` before non-trivial planning, implementation, or review.
+- Run `scripts/agentrail memory recall "<task>"` before non-trivial planning, implementation, or review.
 - Prefer existing docs and code over assumptions.
 - Use GitHub issues for task state.
 - Use PRs for review state.

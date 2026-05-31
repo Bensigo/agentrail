@@ -49,7 +49,7 @@ Example:
 
 Do not apply `ready-for-agent` while any blocker is still open.
 
-After a PR is merged, `scripts/pr merge-run <PR>` checks issues closed by that PR. Any open issue that references one of those issues in `## Blocked by` is promoted with `ready-for-agent` only when every blocker listed there is closed.
+After a PR is merged, AgentRail merge automation checks issues closed by that PR. Any open issue that references one of those issues in `## Blocked by` is promoted with `ready-for-agent` only when every blocker listed there is closed.
 
 ## AFK Rules
 

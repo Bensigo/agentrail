@@ -406,8 +406,9 @@ worker_run() {
     agentrail_runner="$(agentrail_path "$root")"
     agent_command="$(agent_command_for_engine "$engine")"
 
-    "$agentrail_runner" run issue "$issue" --agent "$engine" --target "$worktree" --command "$agent_command" \
-      >"${logs_dir}/issue-${issue}-agentrail.log" 2>&1
+    AGENTRAIL_ALLOW_SOURCE_RUN=1 \
+      "$agentrail_runner" run issue "$issue" --agent "$engine" --target "$worktree" --command "$agent_command" \
+        >"${logs_dir}/issue-${issue}-agentrail.log" 2>&1
 
     local pr
     pr="$(detect_pr_for_issue "$issue")"

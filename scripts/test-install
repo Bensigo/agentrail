@@ -77,12 +77,6 @@ required=(
   "docs/milestones/.gitkeep"
   ".claude/agents/github-pr-reviewer.md"
   ".codex/agents/github-pr-reviewer.md"
-  "scripts/memory"
-  "scripts/agentrail"
-  "scripts/afk-workflow"
-  "scripts/pr"
-  "scripts/ralph-loop"
-  "scripts/review-pr"
   "skills/backend-api/SKILL.md"
   "skills/desktop-tauri/SKILL.md"
   "skills/devops-deploy/SKILL.md"
@@ -103,6 +97,15 @@ required=(
   "skills/tdd/refactoring.md"
   "skills/tdd/tests.md"
   ".agentrail/state.json"
+  ".agentrail/config.json"
+  "scripts/agentrail"
+  ".agentrail/source/scripts/agentrail"
+  ".agentrail/source/scripts/install-workflow"
+  ".agentrail/source/templates/scripts/memory"
+  ".agentrail/source/templates/scripts/afk-workflow"
+  ".agentrail/source/templates/scripts/pr"
+  ".agentrail/source/templates/scripts/ralph-loop"
+  ".agentrail/source/templates/scripts/review-pr"
 )
 
 for file in "${required[@]}"; do
@@ -112,12 +115,21 @@ for file in "${required[@]}"; do
   fi
 done
 
-for script in memory agentrail ralph-loop afk-workflow review-pr pr; do
-  if [[ ! -x "${tmp_dir}/scripts/${script}" ]]; then
-    echo "installed script is not executable: scripts/${script}" >&2
+for script in memory ralph-loop afk-workflow review-pr pr; do
+  if [[ -e "${tmp_dir}/scripts/${script}" ]]; then
+    echo "raw workflow script was installed into normal project surface: scripts/${script}" >&2
+    exit 1
+  fi
+  if [[ ! -x "${tmp_dir}/.agentrail/source/templates/scripts/${script}" ]]; then
+    echo "hidden internal script is not executable: .agentrail/source/templates/scripts/${script}" >&2
     exit 1
   fi
 done
+
+if [[ ! -x "${tmp_dir}/scripts/agentrail" ]]; then
+  echo "agentrail CLI shim was not installed into normal project surface" >&2
+  exit 1
+fi
 
 "${tmp_dir}/scripts/agentrail" upgrade --target "$tmp_dir" >"${tmp_dir}/installed-agentrail-upgrade.out"
 if ! grep -q -- "AgentRail upgrade:" "${tmp_dir}/installed-agentrail-upgrade.out"; then
@@ -173,27 +185,27 @@ if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/docs/agents/pr-review
   exit 1
 fi
 
-if ! grep -q -- "docs/agents/pr-review.md" "${tmp_dir}/scripts/review-pr"; then
+if ! grep -q -- "docs/agents/pr-review.md" "${tmp_dir}/.agentrail/source/templates/scripts/review-pr"; then
   echo "review-pr script does not load installed PR review instructions" >&2
   exit 1
 fi
 
-if ! grep -q -- "docs/agents/github-pr-reviewer.md" "${tmp_dir}/scripts/review-pr"; then
+if ! grep -q -- "docs/agents/github-pr-reviewer.md" "${tmp_dir}/.agentrail/source/templates/scripts/review-pr"; then
   echo "review-pr script does not load installed GitHub PR reviewer contract" >&2
   exit 1
 fi
 
-if ! grep -q -- "--machine-readable" "${tmp_dir}/scripts/review-pr"; then
+if ! grep -q -- "--machine-readable" "${tmp_dir}/.agentrail/source/templates/scripts/review-pr"; then
   echo "review-pr script does not expose machine-readable review mode" >&2
   exit 1
 fi
 
-if ! grep -q -- "--machine-readable" "${tmp_dir}/scripts/afk-workflow"; then
+if ! grep -q -- "--machine-readable" "${tmp_dir}/.agentrail/source/templates/scripts/afk-workflow"; then
   echo "afk-workflow does not request machine-readable PR reviews" >&2
   exit 1
 fi
 
-if grep -q -- "review/prompt.md" "${tmp_dir}/scripts/review-pr"; then
+if grep -q -- "review/prompt.md" "${tmp_dir}/.agentrail/source/templates/scripts/review-pr"; then
   echo "review-pr script still depends on missing review/prompt.md" >&2
   exit 1
 fi
@@ -253,12 +265,12 @@ if ! grep -q -- "docs/milestones/NNN-slug.md" "${tmp_dir}/skills/to-issues/SKILL
   exit 1
 fi
 
-if ! grep -q -- "scripts/memory recall" "${tmp_dir}/AGENTS.md"; then
+if ! grep -q -- "scripts/agentrail memory recall" "${tmp_dir}/AGENTS.md"; then
   echo "AGENTS.md does not tell agents to recall project memory" >&2
   exit 1
 fi
 
-if ! grep -q -- "scripts/memory recall" "${tmp_dir}/docs/agents/ralph-loop.md"; then
+if ! grep -q -- "scripts/agentrail memory recall" "${tmp_dir}/docs/agents/ralph-loop.md"; then
   echo "ralph-loop docs do not require project memory recall" >&2
   exit 1
 fi
@@ -311,12 +323,12 @@ fi
 Keep validation rules server-side when they affect persisted business state.
 MEMORY
 
-  if ! scripts/memory recall "validation" | grep -q -- "Prefer server-side validation"; then
+  if ! "${tmp_dir}/scripts/agentrail" memory recall "validation" | grep -q -- "Prefer server-side validation"; then
     echo "memory recall did not find relevant installed memory" >&2
     exit 1
   fi
 
-  if ! scripts/memory recall "persisted validation" | grep -q -- "Prefer server-side validation"; then
+  if ! "${tmp_dir}/scripts/agentrail" memory recall "persisted validation" | grep -q -- "Prefer server-side validation"; then
     echo "memory recall did not handle multiple non-adjacent query terms" >&2
     exit 1
   fi
@@ -334,11 +346,11 @@ MEMORY
 
   no_rg_bin="${tmp_dir}/no-rg-bin"
   mkdir -p "$no_rg_bin"
-  for binary in bash git grep; do
+  for binary in bash dirname git grep node pwd readlink; do
     ln -s "$(command -v "$binary")" "${no_rg_bin}/${binary}"
   done
 
-  PATH="$no_rg_bin" scripts/memory recall "[codex]" > "${tmp_dir}/bracketed-recall.out"
+  PATH="$no_rg_bin" "${tmp_dir}/scripts/agentrail" memory recall "[codex]" > "${tmp_dir}/bracketed-recall.out"
 
   if ! grep -q -- "Bracketed PR titles stay literal" "${tmp_dir}/bracketed-recall.out"; then
     echo "memory recall grep fallback did not find a bracketed literal query" >&2

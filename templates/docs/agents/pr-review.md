@@ -48,7 +48,7 @@ Missing or weak acceptance criteria coverage is at least a `P1` when it blocks k
 Before reviewing, run:
 
 ```bash
-scripts/memory recall "<PR title, linked issue, feature, or key terms>"
+scripts/agentrail memory recall "<PR title, linked issue, feature, or key terms>"
 ```
 
 Use relevant memory to check whether the PR repeats known mistakes or violates source-linked project preferences. Memory is advisory: if it conflicts with current code, `CONTEXT.md`, ADRs, the issue, or the PRD, call out the conflict and prefer the current source of truth.

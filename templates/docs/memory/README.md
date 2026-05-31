@@ -32,7 +32,7 @@ Use this folder for operational lessons, durable preferences, recurring failure 
 Before non-trivial planning, implementation, or review, run:
 
 ```bash
-scripts/memory recall "<task, issue, PR, feature, or keyword>"
+scripts/agentrail memory recall "<task, issue, PR, feature, or keyword>"
 ```
 
 If the output is relevant, cite it in the PRD, issue, PR body, or review. If it conflicts with code or current docs, prefer the current source of truth and update the stale memory entry.

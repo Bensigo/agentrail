@@ -11,7 +11,7 @@ Required:
 - One GitHub issue labeled `ready-for-agent`.
 - Acceptance criteria.
 - Repository context from `CONTEXT.md`.
-- Relevant project memory from `scripts/memory recall`.
+- Relevant project memory from `scripts/agentrail memory recall`.
 
 Optional:
 
@@ -24,7 +24,7 @@ Optional:
 
 1. Select one eligible issue.
 2. Read the issue, context docs, and relevant code.
-3. Run `scripts/memory recall "<issue title, feature, or key terms>"`.
+3. Run `scripts/agentrail memory recall "<issue title, feature, or key terms>"`.
 4. Verify relevant memory against current code and docs before using it.
 5. Create or switch to a task branch.
 6. Implement the smallest coherent change.
@@ -50,7 +50,7 @@ Do not guess through missing product decisions. A blocked issue is better than a
 
 ## Project Memory
 
-Project memory lives in `docs/memory/` and is searched through `scripts/memory recall`.
+Project memory lives in `docs/memory/` and is searched through `scripts/agentrail memory recall`.
 
 Use it to avoid repeated mistakes and preserve durable project preferences across agent runs. Treat it as advisory unless backed by current source links. If memory conflicts with code, `CONTEXT.md`, ADRs, the issue, or the PRD, stop and surface the conflict instead of guessing.
 

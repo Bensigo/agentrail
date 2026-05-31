@@ -101,19 +101,40 @@ fi
 
 rm "${upgrade_repo}/docs/agents/visual-evidence.md"
 printf '\nlocal edit\n' >>"${upgrade_repo}/AGENTS.md"
+mkdir -p "${upgrade_repo}/scripts"
+cat >"${upgrade_repo}/scripts/ralph-loop" <<'LEGACY_SCRIPT'
+#!/usr/bin/env bash
+echo legacy ralph
+LEGACY_SCRIPT
+chmod +x "${upgrade_repo}/scripts/ralph-loop"
+printf 'stale hidden ralph\n' >"${upgrade_repo}/.agentrail/source/templates/scripts/ralph-loop"
 cat >"${upgrade_repo}/docs/agents/issue-tracker.md" <<'LOCAL'
 # Local issue tracker instructions
 
 Keep this pre-existing file.
 LOCAL
 
-node - "${upgrade_repo}/.agentrail/state.json" <<'NODE'
+legacy_script_hash="$(node - "${upgrade_repo}/scripts/ralph-loop" <<'NODE'
+const fs = require("fs");
+const crypto = require("crypto");
+console.log(`sha256:${crypto.createHash("sha256").update(fs.readFileSync(process.argv[2])).digest("hex")}`);
+NODE
+)"
+
+node - "${upgrade_repo}/.agentrail/state.json" "$legacy_script_hash" <<'NODE'
 const fs = require("fs");
 const statePath = process.argv[2];
+const legacyScriptHash = process.argv[3];
 const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
 state.agentrailVersion = "0.0.0";
 state.managedFiles = state.managedFiles.filter((file) => file.path !== "docs/agents/triage-labels.md" && file.path !== "docs/agents/issue-tracker.md");
 state.managedFiles = state.managedFiles.filter((file) => file.path !== "docs/agents/skill-registry.json" && file.path !== "skills/frontend-web/SKILL.md");
+state.managedFiles.push({
+  path: "scripts/ralph-loop",
+  source: "templates/scripts/ralph-loop",
+  contentHash: legacyScriptHash,
+  installStatus: "installed"
+});
 const ralph = state.managedFiles.find((file) => file.path === "docs/agents/ralph-loop.md");
 ralph.contentHash = "sha256:old-package-hash";
 const context = state.managedFiles.find((file) => file.path === "CONTEXT.md");
@@ -145,6 +166,26 @@ fi
 
 if [[ ! -f "${upgrade_repo}/docs/agents/visual-evidence.md" ]]; then
   echo "upgrade did not restore missing managed file" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${upgrade_repo}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === 'scripts/ralph-loop')")" != "false" ]]; then
+  echo "upgrade kept legacy raw scripts in managed inventory" >&2
+  exit 1
+fi
+
+if [[ ! -x "${upgrade_repo}/scripts/ralph-loop" ]]; then
+  echo "upgrade deleted legacy raw script instead of leaving migration cleanup to the user" >&2
+  exit 1
+fi
+
+if grep -q -- "stale hidden ralph" "${upgrade_repo}/.agentrail/source/templates/scripts/ralph-loop"; then
+  echo "upgrade did not refresh hidden AgentRail source internals" >&2
+  exit 1
+fi
+
+if [[ ! -x "${upgrade_repo}/.agentrail/source/templates/scripts/ralph-loop" ]]; then
+  echo "upgrade did not preserve executable mode on hidden Ralph helper" >&2
   exit 1
 fi
 

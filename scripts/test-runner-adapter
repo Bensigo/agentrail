@@ -38,6 +38,13 @@ JSON
 config_file="${target}/.agentrail/config.json"
 [[ -f "$config_file" ]] || { echo "AgentRail install did not create .agentrail/config.json" >&2; exit 1; }
 
+cat >"${target}/scripts/ralph-loop" <<'STALE_RALPH'
+#!/usr/bin/env bash
+echo stale legacy ralph should not run >&2
+exit 42
+STALE_RALPH
+chmod +x "${target}/scripts/ralph-loop"
+
 if [[ "$(node - "$config_file" <<'NODE'
 const fs = require("fs");
 const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
@@ -82,6 +89,7 @@ for phase in plan execute verify; do
   assert_grep '"finishedAt":' "${codex_run_dir}/${phase}/status.json" "${phase} phase status did not record finish timestamp"
   assert_grep "\"phase\": \"${phase}\"" "${codex_run_dir}/${phase}/metadata.json" "${phase} phase metadata did not record phase"
   if [[ "$phase" == "execute" ]]; then
+    assert_grep '.agentrail/source/templates/scripts/ralph-loop --issue 12 --agent-command cat' "${codex_run_dir}/${phase}/metadata.json" "Execute phase metadata did not use hidden Ralph executor"
     assert_grep 'ralph-loop --issue 12 --agent-command cat' "${codex_run_dir}/${phase}/metadata.json" "Execute phase metadata did not record Ralph executor command"
   else
     assert_grep '"command": "cat"' "${codex_run_dir}/${phase}/metadata.json" "${phase} phase metadata did not record command"

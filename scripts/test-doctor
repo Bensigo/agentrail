@@ -47,8 +47,32 @@ assert_grep "status: installed" "${tmp_dir}/installed-doctor.out" "installed rep
 assert_grep "ok AGENTS.md" "${tmp_dir}/installed-doctor.out" "installed repo did not report AGENTS.md"
 assert_grep "ok TASTE.md" "${tmp_dir}/installed-doctor.out" "doctor did not report installed TASTE.md"
 assert_grep "ok .agentrail/state.json" "${tmp_dir}/installed-doctor.out" "installed repo did not report state"
+assert_grep "ok .agentrail/config.json" "${tmp_dir}/installed-doctor.out" "installed repo did not report config"
 assert_grep "ok managed hashes match" "${tmp_dir}/installed-doctor.out" "installed repo did not report matching hashes"
 assert_grep "ok skill registry" "${tmp_dir}/installed-doctor.out" "installed repo did not report a valid skill registry"
+assert_grep "ok no raw workflow scripts in normal project surface" "${tmp_dir}/installed-doctor.out" "installed repo should not report raw workflow scripts"
+
+mv "${installed_repo}/.agentrail/source/package.json" "${installed_repo}/.agentrail/source/package.json.bak"
+if ! "${installed_repo}/scripts/agentrail" doctor --target "$installed_repo" >"${tmp_dir}/partial-source-doctor.out"; then
+  echo "installed doctor crashed when hidden source package was missing" >&2
+  cat "${tmp_dir}/partial-source-doctor.out" >&2
+  exit 1
+fi
+assert_grep "status: modified" "${tmp_dir}/partial-source-doctor.out" "partial hidden source should make repo modified"
+assert_grep "missing .agentrail/source/package.json" "${tmp_dir}/partial-source-doctor.out" "doctor did not report missing hidden source package"
+assert_grep "run agentrail install --target" "${tmp_dir}/partial-source-doctor.out" "doctor did not recommend reinstall for missing hidden source"
+mv "${installed_repo}/.agentrail/source/package.json.bak" "${installed_repo}/.agentrail/source/package.json"
+
+mkdir -p "${installed_repo}/scripts"
+cat >"${installed_repo}/scripts/ralph-loop" <<'SCRIPT'
+#!/usr/bin/env bash
+echo legacy
+SCRIPT
+chmod +x "${installed_repo}/scripts/ralph-loop"
+"$agentrail" doctor --target "$installed_repo" >"${tmp_dir}/legacy-script-doctor.out"
+assert_grep "warn legacy raw workflow scripts present: scripts/ralph-loop" "${tmp_dir}/legacy-script-doctor.out" "doctor did not report legacy raw scripts"
+assert_grep "remove legacy raw workflow scripts" "${tmp_dir}/legacy-script-doctor.out" "doctor did not recommend legacy script migration"
+rm -f "${installed_repo}/scripts/ralph-loop"
 
 rm "${installed_repo}/TASTE.md"
 "$agentrail" doctor --target "$installed_repo" >"${tmp_dir}/missing-taste-doctor.out"

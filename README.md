@@ -10,8 +10,8 @@ It installs:
 - project memory under `docs/memory/`
 - PRD and milestone folders under `docs/`
 - project-local skills under `skills/`
-- workflow scripts under `scripts/`
 - durable AgentRail state under `.agentrail/state.json`
+- AgentRail config under `.agentrail/config.json`
 
 ## Install
 
@@ -52,7 +52,7 @@ npx --package github:Bensigo/agentrail agentrail init --target /path/to/project 
 Sync labels later without reinstalling AgentRail:
 
 ```bash
-scripts/agentrail labels sync --target /path/to/project
+agentrail labels sync --target /path/to/project
 ```
 
 Run label sync after connecting a repository to GitHub, after adding a new AgentRail workflow label, or when `agentrail doctor` reports missing GitHub labels.
@@ -97,16 +97,13 @@ skills/tdd/
 
 AgentRail ships curated first-party skills, not arbitrary third-party hot installs. Upstream projects may be listed in `docs/agents/skill-registry.json` as provenance candidates, but those references are audit notes, not trusted install sources. The installed `skills/` files are the reviewed local copies that prompts point agents to read.
 
-Workflow scripts:
+Internal compatibility copy:
 
 ```text
-scripts/agentrail
-scripts/afk-workflow
-scripts/memory
-scripts/pr
-scripts/ralph-loop
-scripts/review-pr
+.agentrail/source/
 ```
+
+Installed projects should use the `agentrail` CLI. Raw Ralph, AFK, review, PR, and memory scripts are package internals and are kept under `.agentrail/source/` only for compatibility and upgrades.
 
 Durable project state:
 
@@ -134,17 +131,17 @@ Built-in runner names are `codex`, `claude`, `cursor`, and `hermes`. Use `custom
 Check an installed or partially installed project:
 
 ```bash
-scripts/agentrail doctor --target /path/to/project
+agentrail doctor --target /path/to/project
 ```
 
-`agentrail doctor` reports missing core files, optional `TASTE.md`, state health, managed file hash drift, and GitHub label gaps when `gh` is available in a connected GitHub repo. Missing recommendations are warnings; invalid usage and corrupt state fail non-zero.
+`agentrail doctor` reports missing core files, optional `TASTE.md`, state health, managed file hash drift, old script-first installs, and GitHub label gaps when `gh` is available in a connected GitHub repo. Missing recommendations are warnings; invalid usage and corrupt state fail non-zero.
 
 It also validates the managed skill registry for installed targets. Missing registry files are reported under `core:`; invalid registry data or broken `localPath` entries are reported under `skills:` and make `doctor` fail.
 
 Upgrade managed AgentRail files without overwriting local edits:
 
 ```bash
-scripts/agentrail upgrade --target /path/to/project
+agentrail upgrade --target /path/to/project
 ```
 
 Use `--force` only after reviewing reported local modifications.
@@ -196,7 +193,7 @@ grill-with-docs
 -> to-issues
 -> tdd
 -> agentrail run issue
--> review-pr / pr
+-> agentrail prompt review
 -> review-fix
 ```
 
@@ -230,10 +227,10 @@ Customize `TASTE.md` when the project has product quality expectations that shou
 
 Use `docs/memory/` for source-linked lessons, preferences, and recurring failure patterns that should survive across agent runs. Memory is advisory; agents still need to verify it against current code and canonical docs.
 
-Recall project memory before non-trivial work:
+Recall project memory before non-trivial work in an installed project:
 
 ```bash
-scripts/memory recall "<feature, issue, PR, or keyword>"
+scripts/agentrail memory recall "<feature, issue, PR, or keyword>"
 ```
 
 When you want to work on a new feature, ask the agent to grill the idea first:
@@ -282,10 +279,10 @@ agentrail run issue 123
 For unattended batches of approved work:
 
 ```bash
-scripts/afk-workflow run --concurrency 2 --max-waves 5
+agentrail run
 ```
 
-AFK reads `.agentrail/state.json` before selecting queued issues. If an active AgentRail run exists, it stops and reports the run metadata instead of using `.afk-workflow` logs as recovery state. Each selected issue still gets an isolated git worktree under the AFK run directory, and AFK seeds that worktree with AgentRail state before invoking `agentrail run issue NUMBER --target WORKTREE`. Those worktrees are left in place so each run's `.agentrail/state.json` remains available for recovery and audit.
+`agentrail run` reads `.agentrail/state.json` before selecting queued issues. If an active AgentRail run exists, it stops and reports the run metadata. If no active run exists, it selects the next open GitHub issue labeled `afk` and `ready-for-agent`, excluding `afk-in-progress`.
 
 ## Dogfooding AgentRail
 
@@ -303,12 +300,12 @@ templates/scripts/afk-workflow run --concurrency 1 --max-waves 1
 
 The source repo does not need root-level `scripts/ralph-loop`, `scripts/review-pr`, or `scripts/memory` files. The AFK runner resolves those helpers from `templates/scripts/` when the installed `scripts/` copies are not present. That keeps source-repo self-hosting separate from installing AgentRail into a target project.
 
-AFK dogfooding still requires `.agentrail/state.json` in the repo where the runner starts. Use `scripts/agentrail install --target .` when state has not been initialized.
+AFK dogfooding still requires `.agentrail/state.json` in the repo where the runner starts. Use `agentrail install --target .` when state has not been initialized.
 
 Review PRs before merge:
 
 ```bash
-scripts/review-pr --pr 123
+agentrail prompt review 123
 ```
 
 Use the full flow for meaningful product work. For tiny fixes, ask for a direct TDD implementation instead of creating PRDs and milestones.
@@ -361,42 +358,51 @@ Run one issue through AgentRail:
 agentrail run issue 123
 ```
 
-Debug the internal Ralph executor directly:
+Recall project memory:
 
 ```bash
-RALPH_AGENT_COMMAND='codex exec -' scripts/ralph-loop --issue 123
-```
-
-Run the AFK issue workflow:
-
-```bash
-scripts/afk-workflow run --concurrency 2 --max-waves 5
+agentrail memory recall "issue 123"
 ```
 
 Inspect an AgentRail install:
 
 ```bash
-scripts/agentrail doctor --target .
+agentrail doctor --target .
 ```
 
 Upgrade an AgentRail install:
 
 ```bash
-scripts/agentrail upgrade --target .
+agentrail upgrade --target .
 ```
 
-Review one PR:
+Generate a PR review prompt:
 
 ```bash
-scripts/review-pr --pr 123
+agentrail prompt review 123
 ```
 
-Use the PR helper:
+## Migration From Script-First Installs
+
+Older AgentRail installs placed raw workflow helpers under `scripts/`. New installs keep those helpers out of the normal project surface and route agents through the local `scripts/agentrail` CLI shim.
+
+Use these replacements:
+
+```text
+scripts/memory recall ...        -> scripts/agentrail memory recall ...
+scripts/ralph-loop --issue 123   -> scripts/agentrail run issue 123
+scripts/afk-workflow run ...     -> scripts/agentrail run
+scripts/review-pr --pr 123       -> scripts/agentrail prompt review 123
+scripts/agentrail doctor ...     -> scripts/agentrail doctor ...
+scripts/agentrail upgrade ...    -> scripts/agentrail upgrade ...
+```
+
+`scripts/agentrail doctor` reports legacy raw workflow scripts when it finds them. After checking for local edits, remove the old `scripts/memory`, `scripts/ralph-loop`, `scripts/afk-workflow`, `scripts/review-pr`, and `scripts/pr` files from installed projects. Keep `scripts/agentrail`; it is the supported local CLI entrypoint.
+
+Maintainers debugging AgentRail itself can still use the internal helpers from a source checkout:
 
 ```bash
-scripts/pr review-init 123
-scripts/pr review-checkout-pr 123
-scripts/pr review-validate-artifacts 123
+templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --dry-run
 ```
 
 ## Requirements

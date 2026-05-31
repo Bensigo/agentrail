@@ -36,7 +36,7 @@ Project memory is repo-owned context for future agent runs. It is not hidden cha
 Before non-trivial planning, implementation, or review, run:
 
 ```bash
-scripts/memory recall "<task, issue, PR, feature, or keyword>"
+scripts/agentrail memory recall "<task, issue, PR, feature, or keyword>"
 ```
 
 Use relevant memory as advisory context only. Verify it against the current code, `CONTEXT.md`, ADRs, issues, and PRs before relying on it.
@@ -60,7 +60,7 @@ Skill supply-chain rule: borrow aggressively, vendor carefully, update intention
 Preferred sequence:
 
 ```text
-grill-with-docs -> to-prd -> to-milestones -> to-issues -> tdd -> agentrail run issue -> review-pr / pr -> review-fix
+grill-with-docs -> to-prd -> to-milestones -> to-issues -> tdd -> agentrail run issue -> agentrail prompt review -> review-fix
 ```
 
 Skip steps only when the work is genuinely small enough to implement directly.
@@ -86,7 +86,7 @@ Before editing:
 
 1. Read the relevant issue, PRD, milestone, and context docs.
 2. Read `TASTE.md` when present and relevant to product quality, UI, copy, interaction, or visual evidence.
-3. Run `scripts/memory recall` for the task and inspect relevant memory.
+3. Run `scripts/agentrail memory recall` for the task and inspect relevant memory.
 4. Inspect the current code and tests.
 5. Identify the smallest coherent change that satisfies the request.
 
@@ -136,10 +136,11 @@ See:
 - `docs/agents/triage-labels.md`
 - `docs/memory/README.md`
 
-Installed scripts:
+AgentRail CLI:
 
-- `scripts/memory`
-- `scripts/ralph-loop`
-- `scripts/afk-workflow`
-- `scripts/review-pr`
-- `scripts/pr`
+- Use `scripts/agentrail memory recall` for project memory.
+- Use `scripts/agentrail run issue <number>` for bounded implementation.
+- Use `scripts/agentrail prompt review <number>` to generate review prompts.
+- Use `scripts/agentrail doctor` and `scripts/agentrail upgrade` for install health and migration.
+
+Raw workflow helpers are AgentRail internals. Do not call Ralph, AFK, PR, review, or memory scripts directly from an installed project unless a maintainer is debugging AgentRail itself.

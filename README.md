@@ -285,6 +285,8 @@ For unattended batches of approved work:
 scripts/afk-workflow run --concurrency 2 --max-waves 5
 ```
 
+AFK reads `.agentrail/state.json` before selecting queued issues. If an active AgentRail run exists, it stops and reports the run metadata instead of using `.afk-workflow` logs as recovery state. Each selected issue still gets an isolated git worktree under the AFK run directory, and AFK seeds that worktree with AgentRail state before invoking `agentrail run issue NUMBER --target WORKTREE`. Those worktrees are left in place so each run's `.agentrail/state.json` remains available for recovery and audit.
+
 ## Dogfooding AgentRail
 
 Maintainers can run the AFK workflow from this AgentRail source repo without installing generated project templates over the source checkout. Use the template runner directly:
@@ -300,6 +302,8 @@ templates/scripts/afk-workflow run --concurrency 1 --max-waves 1
 ```
 
 The source repo does not need root-level `scripts/ralph-loop`, `scripts/review-pr`, or `scripts/memory` files. The AFK runner resolves those helpers from `templates/scripts/` when the installed `scripts/` copies are not present. That keeps source-repo self-hosting separate from installing AgentRail into a target project.
+
+AFK dogfooding still requires `.agentrail/state.json` in the repo where the runner starts. Use `scripts/agentrail install --target .` when state has not been initialized.
 
 Review PRs before merge:
 

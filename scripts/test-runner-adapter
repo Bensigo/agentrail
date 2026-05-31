@@ -61,6 +61,7 @@ codex_metadata="$(find "$log_dir" -name run.json -print | head -1)"
 codex_prompt="$(find "$log_dir" -name prompt.md -print | head -1)"
 codex_resolved_skills="$(find "$log_dir" -name resolved-skills.json -print | head -1)"
 [[ -n "$codex_metadata" && -n "$codex_prompt" && -n "$codex_resolved_skills" ]] || { echo "Codex run did not write prompt, resolved skills, and metadata logs" >&2; exit 1; }
+codex_run_dir="$(dirname "$codex_metadata")"
 assert_grep '"targetIssue": 12' "$codex_metadata" "Codex metadata did not record target issue"
 assert_grep '"agent": "codex"' "$codex_metadata" "Codex metadata did not record agent"
 assert_grep '"command": "cat"' "$codex_metadata" "Codex metadata did not record command"
@@ -69,6 +70,30 @@ assert_grep "resolved-skills.json" "$codex_metadata" "Codex metadata did not rec
 assert_grep '"resolvedSkills"' "$codex_metadata" "Codex metadata did not include resolved skills"
 assert_grep '"frontend-web"' "$codex_metadata" "Codex metadata did not include frontend-web resolution"
 assert_grep '"frontend-web"' "$codex_resolved_skills" "Resolved skills log did not include frontend-web"
+for phase in plan execute verify; do
+  [[ -f "${codex_run_dir}/${phase}/prompt.md" ]] || { echo "${phase} phase prompt was not written" >&2; exit 1; }
+  [[ -f "${codex_run_dir}/${phase}/output.md" ]] || { echo "${phase} phase output was not written" >&2; exit 1; }
+  [[ -f "${codex_run_dir}/${phase}/status.json" ]] || { echo "${phase} phase status was not written" >&2; exit 1; }
+  [[ -f "${codex_run_dir}/${phase}/metadata.json" ]] || { echo "${phase} phase metadata was not written" >&2; exit 1; }
+  assert_grep "\"phase\": \"${phase}\"" "${codex_run_dir}/${phase}/status.json" "${phase} phase status did not record phase"
+  assert_grep '"status": "completed"' "${codex_run_dir}/${phase}/status.json" "${phase} phase status did not record completion"
+  assert_grep '"startedAt":' "${codex_run_dir}/${phase}/status.json" "${phase} phase status did not record start timestamp"
+  assert_grep '"finishedAt":' "${codex_run_dir}/${phase}/status.json" "${phase} phase status did not record finish timestamp"
+  assert_grep "\"phase\": \"${phase}\"" "${codex_run_dir}/${phase}/metadata.json" "${phase} phase metadata did not record phase"
+  assert_grep '"command": "cat"' "${codex_run_dir}/${phase}/metadata.json" "${phase} phase metadata did not record command"
+done
+assert_grep "Goal" "${codex_run_dir}/plan/prompt.md" "Plan prompt did not require goal"
+assert_grep "Non-goals" "${codex_run_dir}/plan/prompt.md" "Plan prompt did not require non-goals"
+assert_grep "Acceptance criteria mapping" "${codex_run_dir}/plan/prompt.md" "Plan prompt did not require acceptance criteria mapping"
+assert_grep "Expected files/areas" "${codex_run_dir}/plan/prompt.md" "Plan prompt did not require expected files/areas"
+assert_grep "Required skills" "${codex_run_dir}/plan/prompt.md" "Plan prompt did not require required skills"
+assert_grep "Verification commands" "${codex_run_dir}/plan/prompt.md" "Plan prompt did not require verification commands"
+assert_grep "Risks" "${codex_run_dir}/plan/prompt.md" "Plan prompt did not require risks"
+assert_grep "Approved plan from the plan phase" "${codex_run_dir}/execute/prompt.md" "Execute prompt did not include the approved plan"
+assert_grep "Issue context:" "${codex_run_dir}/execute/prompt.md" "Execute prompt did not include issue context"
+assert_grep "Implementation evidence from the working tree" "${codex_run_dir}/verify/prompt.md" "Verify prompt did not include implementation evidence"
+assert_grep "PR/diff references" "${codex_run_dir}/verify/prompt.md" "Verify prompt did not include PR/diff references"
+assert_grep "every acceptance criterion" "${codex_run_dir}/verify/prompt.md" "Verify prompt did not include acceptance criteria"
 
 state_file="${target}/.agentrail/state.json"
 if [[ "$(node - "$state_file" <<'NODE'
@@ -78,10 +103,12 @@ const workflow = state.workflow || {};
 const completedRun = Array.isArray(workflow.completedRuns) && workflow.completedRuns.find((run) => run.targetIssue === 12 && run.agent === "codex");
 console.log(Boolean(
   workflow.phase === "completed" &&
+  workflow.activePhase === null &&
   workflow.activeRun === null &&
   workflow.activeIssue === null &&
   completedRun &&
   completedRun.status === "completed" &&
+  completedRun.activePhase === "verify" &&
   completedRun.completedAt &&
   completedRun.promptFile &&
   completedRun.metadataFile
@@ -223,6 +250,7 @@ const workflow = state.workflow || {};
 const failedRun = Array.isArray(workflow.completedRuns) && workflow.completedRuns.find((run) => run.targetIssue === 12 && run.status === "failed");
 console.log(Boolean(
   workflow.phase === "blocked" &&
+  workflow.activePhase === null &&
   workflow.activeRun === null &&
   failedRun &&
   failedRun.exitStatus === 1 &&
@@ -231,6 +259,47 @@ console.log(Boolean(
 NODE
 )" != "true" ]]; then
   echo "AgentRail run did not persist failed run state" >&2
+  cat "$state_file" >&2
+  exit 1
+fi
+
+cat >"${tmp_dir}/fail-execute" <<'RUNNER'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$(cat)"
+printf '%s\n' "$prompt"
+if grep -q "This is phase 2 of 3: execute." <<<"$prompt"; then
+  exit 7
+fi
+RUNNER
+chmod +x "${tmp_dir}/fail-execute"
+
+"$agentrail" install --target "$target" --force >/dev/null
+if "$agentrail" run issue 81 --agent codex --target "$target" --command "${tmp_dir}/fail-execute" --log-dir "$log_dir" >"${tmp_dir}/failed-execute.out" 2>&1; then
+  echo "Runner accepted a failing execute phase" >&2
+  exit 1
+fi
+failed_execute_status="$(find "$log_dir" -path '*/execute/status.json' -print | xargs grep -l '"exitStatus": 7' | head -1)"
+[[ -n "$failed_execute_status" ]] || { echo "Failed execute phase status was not found" >&2; exit 1; }
+assert_grep '"status": "failed"' "$failed_execute_status" "Failed execute phase did not record failed status"
+
+if [[ "$(node - "$state_file" <<'NODE'
+const fs = require("fs");
+const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const workflow = state.workflow || {};
+const failedRun = Array.isArray(workflow.completedRuns) && workflow.completedRuns.find((run) => run.targetIssue === 81 && run.status === "failed");
+console.log(Boolean(
+  workflow.phase === "blocked" &&
+  workflow.activePhase === null &&
+  workflow.activeRun === null &&
+  failedRun &&
+  failedRun.activePhase === "execute" &&
+  failedRun.exitStatus === 7 &&
+  /execute phase/.test(workflow.nextSuggestedAction || "")
+));
+NODE
+)" != "true" ]]; then
+  echo "AgentRail run did not persist failed execute phase state" >&2
   cat "$state_file" >&2
   exit 1
 fi

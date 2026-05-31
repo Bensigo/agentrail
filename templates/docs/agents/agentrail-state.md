@@ -34,6 +34,7 @@ The installer preserves local edits unless run with `--force`. When a project al
 `workflow` can represent:
 
 - `phase`
+- `activePhase`
 - `activeIssue`
 - `activePullRequest`
 - `activePrd`
@@ -45,9 +46,30 @@ The installer preserves local edits unless run with `--force`. When a project al
 
 Install and upgrade flows preserve existing workflow fields when updating state.
 
-`activeRun` records the issue an agent has picked and is currently working on. It includes the run id, target issue, agent name, status, picked timestamp, prompt file, metadata file, and run directory. `agentrail run issue` writes this before invoking the agent command so a crash, failed compaction, or interrupted terminal still leaves a durable pointer to the in-flight work.
+Issue execution runs through explicit `plan`, `execute`, and `verify` phases. `workflow.phase` and `workflow.activePhase` record the currently active phase while a phase is running. Completed issue runs return `workflow.phase` to `completed`; failed phase runs set it to `blocked`.
+
+`activeRun` records the issue an agent has picked and is currently working on. It includes the run id, target issue, agent name, status, active phase, picked timestamp, prompt file, metadata file, and run directory. `agentrail run issue` writes this before each phase invocation so a crash, failed compaction, or interrupted terminal still leaves a durable pointer to the in-flight phase.
 
 `completedRuns` is an append-only recent history, capped to the latest 20 runs. Completed and failed runs include completion timestamp and exit status. Failed runs are kept here too because they are part of the recovery trail.
+
+Each issue run writes durable phase evidence under `.agentrail/runs/<run-id>/`:
+
+```text
+plan/prompt.md
+plan/output.md
+plan/status.json
+plan/metadata.json
+execute/prompt.md
+execute/output.md
+execute/status.json
+execute/metadata.json
+verify/prompt.md
+verify/output.md
+verify/status.json
+verify/metadata.json
+```
+
+The top-level `prompt.md`, `resolved-skills.json`, and `run.json` remain as compatibility pointers for status, resume, and review workflows.
 
 On resume, treat an `activeRun` with no matching live process as stale but useful: inspect its prompt and metadata files, compare with GitHub issue or PR state, then decide whether to rerun, mark blocked, or continue manually. Do not trust chat memory over these files.
 

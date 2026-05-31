@@ -267,6 +267,7 @@ for (const item of inventory) {
 
 const defaultWorkflow = {
   phase: "idle",
+  activePhase: null,
   activeIssue: null,
   activePullRequest: null,
   activePrd: null,
@@ -1917,18 +1918,220 @@ console.log(JSON.stringify(metadata, null, 2));
 NODE
 }
 
+write_phase_status() {
+  local status_file="$1"
+  local phase="$2"
+  local status="$3"
+  local started_at="$4"
+  local finished_at="$5"
+  local exit_status="$6"
+  local metadata_file="$7"
+  local output_file="$8"
+
+  PHASE_NAME="$phase" \
+  PHASE_STATUS="$status" \
+  PHASE_STARTED_AT="$started_at" \
+  PHASE_FINISHED_AT="$finished_at" \
+  PHASE_EXIT_STATUS="$exit_status" \
+  PHASE_METADATA_FILE="$metadata_file" \
+  PHASE_OUTPUT_FILE="$output_file" \
+  node >"$status_file" <<'NODE'
+const status = {
+  phase: process.env.PHASE_NAME,
+  status: process.env.PHASE_STATUS,
+  startedAt: process.env.PHASE_STARTED_AT,
+  finishedAt: process.env.PHASE_FINISHED_AT || null,
+  exitStatus: Number(process.env.PHASE_EXIT_STATUS || 0),
+  metadataFile: process.env.PHASE_METADATA_FILE,
+  outputFile: process.env.PHASE_OUTPUT_FILE,
+};
+console.log(JSON.stringify(status, null, 2));
+NODE
+}
+
+write_phase_metadata() {
+  local metadata_file="$1"
+  local phase="$2"
+  local started_at="$3"
+  local finished_at="$4"
+  local status="$5"
+  local exit_status="$6"
+  local issue="$7"
+  local agent="$8"
+  local command_line="$9"
+  local prompt_file="${10}"
+  local output_file="${11}"
+  local status_file="${12}"
+  local run_id="${13}"
+  local run_dir="${14}"
+
+  PHASE_NAME="$phase" \
+  PHASE_STARTED_AT="$started_at" \
+  PHASE_FINISHED_AT="$finished_at" \
+  PHASE_STATUS="$status" \
+  PHASE_EXIT_STATUS="$exit_status" \
+  PHASE_ISSUE="$issue" \
+  PHASE_AGENT="$agent" \
+  PHASE_COMMAND="$command_line" \
+  PHASE_PROMPT_FILE="$prompt_file" \
+  PHASE_OUTPUT_FILE="$output_file" \
+  PHASE_STATUS_FILE="$status_file" \
+  PHASE_RUN_ID="$run_id" \
+  PHASE_RUN_DIR="$run_dir" \
+  node >"$metadata_file" <<'NODE'
+const metadata = {
+  phase: process.env.PHASE_NAME,
+  startedAt: process.env.PHASE_STARTED_AT,
+  finishedAt: process.env.PHASE_FINISHED_AT || null,
+  status: process.env.PHASE_STATUS,
+  exitStatus: Number(process.env.PHASE_EXIT_STATUS || 0),
+  targetType: "issue",
+  targetIssue: Number(process.env.PHASE_ISSUE),
+  agent: process.env.PHASE_AGENT,
+  command: process.env.PHASE_COMMAND,
+  promptFile: process.env.PHASE_PROMPT_FILE,
+  outputFile: process.env.PHASE_OUTPUT_FILE,
+  statusFile: process.env.PHASE_STATUS_FILE,
+  runId: process.env.PHASE_RUN_ID,
+  runDir: process.env.PHASE_RUN_DIR,
+};
+console.log(JSON.stringify(metadata, null, 2));
+NODE
+}
+
+implementation_evidence() {
+  local target_dir="$1"
+
+  (
+    cd "$target_dir"
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      echo "target is not a git worktree"
+      return 0
+    fi
+    echo "git status --short:"
+    git status --short || true
+    echo
+    echo "git diff --stat:"
+    git diff --stat || true
+    echo
+    echo "git diff --name-only:"
+    git diff --name-only || true
+  )
+}
+
+pr_reference_text() {
+  local target_dir="$1"
+  local issue="$2"
+
+  if command -v gh >/dev/null 2>&1 && remote_is_github "$target_dir"; then
+    (
+      cd "$target_dir"
+      gh pr list \
+        --state open \
+        --limit 20 \
+        --json number,title,url,body,headRefName \
+        --jq "map(select(((.body // \"\") | contains(\"#${issue}\")) or ((.title // \"\") | contains(\"#${issue}\")))) | map(\"#\\(.number) \\(.title) \\(.url) head=\\(.headRefName)\") | .[]" 2>/dev/null \
+        || true
+    )
+    return
+  fi
+
+  echo "No GitHub PR reference available."
+}
+
+issue_run_phase_prompt() {
+  local phase="$1"
+  local issue="$2"
+  local target_dir="$3"
+  local issue_context="$4"
+  local base_prompt="$5"
+  local plan_output="${6:-}"
+  local evidence pr_refs
+
+  case "$phase" in
+    plan)
+      cat <<PROMPT
+This is phase 1 of 3: plan.
+
+Issue context:
+${issue_context}
+
+Base Ralph instructions:
+${base_prompt}
+
+Produce a durable implementation plan before code changes. Include these headings exactly:
+- Goal
+- Non-goals
+- Acceptance criteria mapping
+- Expected files/areas
+- Required skills
+- Verification commands
+- Risks
+
+Do not edit files in this phase.
+PROMPT
+      ;;
+    execute)
+      cat <<PROMPT
+This is phase 2 of 3: execute.
+
+Issue context:
+${issue_context}
+
+Approved plan from the plan phase:
+${plan_output}
+
+Base Ralph instructions:
+${base_prompt}
+
+Implement the approved plan only. Keep the work scoped to issue #${issue}. Run relevant verification when implementation is ready.
+PROMPT
+      ;;
+    verify)
+      evidence="$(implementation_evidence "$target_dir")"
+      pr_refs="$(pr_reference_text "$target_dir" "$issue")"
+      cat <<PROMPT
+This is phase 3 of 3: verify.
+
+Issue context:
+${issue_context}
+
+Approved plan from the plan phase:
+${plan_output}
+
+Implementation evidence from the working tree:
+${evidence}
+
+PR/diff references:
+${pr_refs}
+
+Base Ralph instructions:
+${base_prompt}
+
+Compare the issue, plan, implementation evidence, PR or diff references, and every acceptance criterion.
+Confirm whether the PR body evidence is sufficient or state exactly what is missing. Do not continue into unrelated issues.
+PROMPT
+      ;;
+    *)
+      echo "unknown issue run phase: $phase" >&2
+      return 2
+      ;;
+  esac
+}
+
 update_run_state() {
   local target_dir="$1"
   local event="$2"
   local run_id="$3"
   local issue="$4"
   local agent="$5"
-  local picked_at="$6"
-  local finished_at="$7"
-  local exit_status="$8"
-  local prompt_file="$9"
-  local metadata_file="${10}"
-  local run_dir="${11}"
+  local phase="$6"
+  local picked_at="$7"
+  local finished_at="$8"
+  local exit_status="$9"
+  local prompt_file="${10}"
+  local metadata_file="${11}"
+  local run_dir="${12}"
 
   local state_file="${target_dir}/.agentrail/state.json"
   [[ -f "$state_file" ]] || return 0
@@ -1939,6 +2142,7 @@ update_run_state() {
   AGENTRAIL_RUN_ID="$run_id" \
   AGENTRAIL_RUN_ISSUE="$issue" \
   AGENTRAIL_RUN_AGENT="$agent" \
+  AGENTRAIL_RUN_PHASE="$phase" \
   AGENTRAIL_RUN_PICKED_AT="$picked_at" \
   AGENTRAIL_RUN_FINISHED_AT="$finished_at" \
   AGENTRAIL_RUN_EXIT_STATUS="$exit_status" \
@@ -1954,6 +2158,7 @@ const statePath = path.join(targetDir, ".agentrail/state.json");
 const event = process.env.AGENTRAIL_STATE_EVENT;
 const issue = Number(process.env.AGENTRAIL_RUN_ISSUE);
 const exitStatus = Number(process.env.AGENTRAIL_RUN_EXIT_STATUS || 0);
+const activePhase = process.env.AGENTRAIL_RUN_PHASE || null;
 
 function relative(file) {
   return path.relative(targetDir, file).split(path.sep).join("/");
@@ -1968,6 +2173,7 @@ const run = {
   targetIssue: issue,
   agent: process.env.AGENTRAIL_RUN_AGENT,
   status: event === "start" ? "running" : (exitStatus === 0 ? "completed" : "failed"),
+  activePhase,
   pickedAt: process.env.AGENTRAIL_RUN_PICKED_AT,
   promptFile: relative(process.env.AGENTRAIL_RUN_PROMPT_FILE),
   metadataFile: relative(process.env.AGENTRAIL_RUN_METADATA_FILE),
@@ -1980,18 +2186,25 @@ if (event !== "start") {
 }
 
 if (event === "start") {
-  workflow.phase = "implementation";
+  workflow.phase = activePhase || "implementation";
+  workflow.activePhase = activePhase;
   workflow.activeIssue = issue;
-  workflow.activeRun = run;
-  workflow.nextSuggestedAction = `Continue issue #${issue}; active run metadata is ${run.metadataFile}.`;
+  const previousRun = workflow.activeRun && workflow.activeRun.runId === run.runId ? workflow.activeRun : {};
+  workflow.activeRun = {
+    ...previousRun,
+    ...run,
+    phases: Array.isArray(previousRun.phases) ? previousRun.phases : [],
+  };
+  workflow.nextSuggestedAction = `Continue issue #${issue}${activePhase ? ` ${activePhase} phase;` : ";"} active run metadata is ${run.metadataFile}.`;
 } else {
   workflow.activeRun = null;
+  workflow.activePhase = null;
   if (workflow.activeIssue === issue) workflow.activeIssue = null;
   workflow.phase = exitStatus === 0 ? "completed" : "blocked";
-  workflow.lastCompletedStep = `issue-${issue}-${run.status}`;
+  workflow.lastCompletedStep = activePhase ? `issue-${issue}-${activePhase}-${run.status}` : `issue-${issue}-${run.status}`;
   workflow.nextSuggestedAction = exitStatus === 0
     ? `Review or merge the PR for issue #${issue}, then pick the next ready issue.`
-    : `Agent run for issue #${issue} failed; inspect ${run.metadataFile} and rerun or mark blocked.`;
+    : `Agent run for issue #${issue}${activePhase ? ` failed during ${activePhase} phase` : " failed"}; inspect ${run.metadataFile} and rerun or mark blocked.`;
   completedRuns.push(run);
   workflow.completedRuns = completedRuns.slice(-20);
 }
@@ -2104,14 +2317,14 @@ run_issue() {
   agent_command="$(configured_agent_command "$requested_agent" "$explicit_command" "$target_dir")"
   ensure_command_available "$agent_command"
 
-  local resolution_text skill_resolution prompt
+  local resolution_text skill_resolution base_prompt
   resolution_text="$(issue_resolution_text "$target_dir" "$issue")"
   if ! skill_resolution="$(resolve_skills_json "$target_dir" "$resolution_text" "1" "")"; then
     echo "failed to resolve skills for issue #${issue}" >&2
     exit 1
   fi
 
-  if ! prompt="$(prompt_issue "$agent" "$target_dir" "$issue")"; then
+  if ! base_prompt="$(prompt_issue "$agent" "$target_dir" "$issue")"; then
     echo "failed to generate issue prompt for #${issue}" >&2
     exit 1
   fi
@@ -2128,10 +2341,9 @@ run_issue() {
   prompt_file="${run_dir}/prompt.md"
   resolved_skills_file="${run_dir}/resolved-skills.json"
   metadata_file="${run_dir}/run.json"
-  printf '%s\n' "$prompt" >"$prompt_file"
+  printf '%s\n' "$base_prompt" >"$prompt_file"
   printf '%s\n' "$skill_resolution" >"$resolved_skills_file"
   write_run_metadata "$metadata_file" "$started_at" "$issue" "$agent" "$agent_command" "$prompt_file" "$resolved_skills_file" "$skill_resolution"
-  update_run_state "$target_dir" "start" "$run_id" "$issue" "$agent" "$started_at" "" "0" "$prompt_file" "$metadata_file" "$run_dir"
 
   echo "AgentRail run: issue #${issue}"
   echo "agent: ${agent}"
@@ -2139,14 +2351,50 @@ run_issue() {
   echo "resolved skills: ${resolved_skills_file}"
   echo "metadata: ${metadata_file}"
 
-  set +e
-  printf '%s\n' "$prompt" | bash -lc "$agent_command"
-  local status=$?
-  set -e
+  local status=0 phase phase_dir phase_prompt phase_prompt_file phase_output_file phase_status_file phase_metadata_file phase_started_at phase_finished_at plan_output
+  phase="verify"
+  plan_output=""
+  for phase in plan execute verify; do
+    phase_dir="${run_dir}/${phase}"
+    mkdir -p "$phase_dir"
+    phase_prompt_file="${phase_dir}/prompt.md"
+    phase_output_file="${phase_dir}/output.md"
+    phase_status_file="${phase_dir}/status.json"
+    phase_metadata_file="${phase_dir}/metadata.json"
+    phase_started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    phase_prompt="$(issue_run_phase_prompt "$phase" "$issue" "$target_dir" "$resolution_text" "$base_prompt" "$plan_output")"
+    printf '%s\n' "$phase_prompt" >"$phase_prompt_file"
+    write_phase_status "$phase_status_file" "$phase" "running" "$phase_started_at" "" "0" "$phase_metadata_file" "$phase_output_file"
+    write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "" "running" "0" "$issue" "$agent" "$agent_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir"
+    update_run_state "$target_dir" "start" "$run_id" "$issue" "$agent" "$phase" "$started_at" "" "0" "$phase_prompt_file" "$metadata_file" "$run_dir"
+
+    echo "phase: ${phase}"
+    echo "phase prompt: ${phase_prompt_file}"
+    echo "phase output: ${phase_output_file}"
+    echo "phase metadata: ${phase_metadata_file}"
+
+    set +e
+    printf '%s\n' "$phase_prompt" | bash -lc "$agent_command" 2>&1 | tee "$phase_output_file"
+    status=$?
+    set -e
+
+    phase_finished_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    if [[ "$status" -eq 0 ]]; then
+      write_phase_status "$phase_status_file" "$phase" "completed" "$phase_started_at" "$phase_finished_at" "$status" "$phase_metadata_file" "$phase_output_file"
+      write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "$phase_finished_at" "completed" "$status" "$issue" "$agent" "$agent_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir"
+      if [[ "$phase" == "plan" ]]; then
+        plan_output="$(cat "$phase_output_file")"
+      fi
+    else
+      write_phase_status "$phase_status_file" "$phase" "failed" "$phase_started_at" "$phase_finished_at" "$status" "$phase_metadata_file" "$phase_output_file"
+      write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "$phase_finished_at" "failed" "$status" "$issue" "$agent" "$agent_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir"
+      break
+    fi
+  done
 
   local finished_at
   finished_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  update_run_state "$target_dir" "finish" "$run_id" "$issue" "$agent" "$started_at" "$finished_at" "$status" "$prompt_file" "$metadata_file" "$run_dir"
+  update_run_state "$target_dir" "finish" "$run_id" "$issue" "$agent" "$phase" "$started_at" "$finished_at" "$status" "$prompt_file" "$metadata_file" "$run_dir"
   return "$status"
 }
 

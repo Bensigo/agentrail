@@ -78,6 +78,7 @@ required=(
   ".claude/agents/github-pr-reviewer.md"
   ".codex/agents/github-pr-reviewer.md"
   "scripts/memory"
+  "scripts/agentrail"
   "scripts/afk-workflow"
   "scripts/pr"
   "scripts/ralph-loop"
@@ -111,12 +112,19 @@ for file in "${required[@]}"; do
   fi
 done
 
-for script in memory ralph-loop afk-workflow review-pr pr; do
+for script in memory agentrail ralph-loop afk-workflow review-pr pr; do
   if [[ ! -x "${tmp_dir}/scripts/${script}" ]]; then
     echo "installed script is not executable: scripts/${script}" >&2
     exit 1
   fi
 done
+
+"${tmp_dir}/scripts/agentrail" upgrade --target "$tmp_dir" >"${tmp_dir}/installed-agentrail-upgrade.out"
+if ! grep -q -- "AgentRail upgrade:" "${tmp_dir}/installed-agentrail-upgrade.out"; then
+  echo "installed agentrail CLI could not run upgrade" >&2
+  cat "${tmp_dir}/installed-agentrail-upgrade.out" >&2
+  exit 1
+fi
 
 for skill in grill-with-docs to-prd to-milestones to-issues tdd; do
   if ! grep -q -- "$skill" "${tmp_dir}/AGENTS.md"; then

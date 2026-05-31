@@ -60,7 +60,7 @@ Skill supply-chain rule: borrow aggressively, vendor carefully, update intention
 Preferred sequence:
 
 ```text
-grill-with-docs -> to-prd -> to-milestones -> to-issues -> tdd -> ralph-loop -> review-pr / pr -> review-fix
+grill-with-docs -> to-prd -> to-milestones -> to-issues -> tdd -> agentrail run issue -> review-pr / pr -> review-fix
 ```
 
 Skip steps only when the work is genuinely small enough to implement directly.

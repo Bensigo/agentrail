@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/ralph-loop [--issue NUMBER] [--afk] [--agent-command CMD] [--print-prompt]
+Usage: scripts/ralph-loop [--issue NUMBER] [--afk] [--agent-command CMD] [--prefix-prompt-file FILE] [--print-prompt]
 
 Runs one bounded Ralph implementation loop for a GitHub issue.
 
@@ -12,6 +12,8 @@ Options:
   --afk                Pick only issues labeled both ready-for-agent and afk.
   --agent-command CMD  Command that receives the Ralph prompt on stdin.
                        Defaults to RALPH_AGENT_COMMAND when set.
+  --prefix-prompt-file FILE
+                       Extra AgentRail instructions to include in the Ralph prompt.
   --print-prompt       Print the generated prompt instead of running an agent.
   -h, --help           Show this help.
 
@@ -26,6 +28,7 @@ issue_number=""
 afk=0
 print_prompt=0
 agent_command="${RALPH_AGENT_COMMAND:-}"
+prefix_prompt_file=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +44,11 @@ while [[ $# -gt 0 ]]; do
     --agent-command)
       agent_command="${2:-}"
       [[ -n "$agent_command" ]] || { echo "--agent-command requires a command" >&2; exit 2; }
+      shift 2
+      ;;
+    --prefix-prompt-file)
+      prefix_prompt_file="${2:-}"
+      [[ -n "$prefix_prompt_file" && "$prefix_prompt_file" != --* ]] || { echo "--prefix-prompt-file requires a file" >&2; exit 2; }
       shift 2
       ;;
     --print-prompt)
@@ -125,6 +133,12 @@ if [[ -z "$issue_body" ]]; then
   issue_body="Issue #${issue_number}. GitHub issue details were not loaded, so read the issue manually before implementing."
 fi
 
+prefix_prompt=""
+if [[ -n "$prefix_prompt_file" ]]; then
+  [[ -f "$prefix_prompt_file" ]] || { echo "--prefix-prompt-file does not exist: ${prefix_prompt_file}" >&2; exit 2; }
+  prefix_prompt="$(cat "$prefix_prompt_file")"
+fi
+
 prompt="$(cat <<PROMPT
 You are running one Ralph implementation loop.
 
@@ -141,6 +155,9 @@ Hard limits:
 - Open or update a PR and include linked issue, summary, acceptance criteria coverage, verification, visual evidence, memory updates if any, and risks.
 - In the PR body, map every acceptance criterion to implementation evidence and verification evidence.
 - Stop when the PR is ready or when blocked.
+
+AgentRail phase instructions:
+${prefix_prompt}
 
 Issue:
 ${issue_body}

@@ -46,7 +46,13 @@ done
 
 script_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
 repo_dir="$(cd "${script_dir}/.." && pwd)"
+if [[ -f "${repo_dir}/.agentrail/source/package.json" ]]; then
+  repo_dir="$(cd "${repo_dir}/.agentrail/source" && pwd)"
+fi
 installer="${script_dir}/install-workflow"
+if [[ -x "${repo_dir}/scripts/install-workflow" ]]; then
+  installer="${repo_dir}/scripts/install-workflow"
+fi
 
 parse_target() {
   local target_var="$1"
@@ -131,6 +137,9 @@ const roots = [
   { root: path.join(repoDir, "templates"), prefix: "" },
   { root: path.join(repoDir, "skills"), prefix: "skills" },
 ];
+const extraFiles = [
+  { sourcePath: path.join(repoDir, "scripts/agentrail"), path: "scripts/agentrail" },
+];
 
 function sha256Buffer(buffer) {
   return `sha256:${crypto.createHash("sha256").update(buffer).digest("hex")}`;
@@ -190,6 +199,14 @@ for (const { root, prefix } of roots) {
       sourceHash: sha256File(sourcePath),
     });
   }
+}
+for (const item of extraFiles) {
+  inventory.push({
+    path: item.path,
+    source: path.relative(repoDir, item.sourcePath).split(path.sep).join("/"),
+    sourcePath: item.sourcePath,
+    sourceHash: sha256File(item.sourcePath),
+  });
 }
 
 const now = new Date().toISOString();
@@ -1576,7 +1593,7 @@ prompt_issue() {
   print_skill_resolution "$target_dir" "$resolution_text" "$auto_skills" "$explicit_skills" "prompt"
   if [[ "$agent" == "codex" ]]; then
     cat <<PROMPT
-Run one bounded Ralph implementation loop for exactly one GitHub issue: #${issue}.
+Run one bounded AgentRail issue execution for exactly one GitHub issue: #${issue}.
 
 Use these local instructions:
 - templates/docs/agents/ralph-loop.md when running from the AgentRail source repo
@@ -1596,7 +1613,7 @@ Hard limits:
 PROMPT
   else
     cat <<PROMPT
-Use Claude Code to run one bounded implementation loop for exactly one GitHub issue: #${issue}.
+Use Claude Code through AgentRail to run one bounded implementation loop for exactly one GitHub issue: #${issue}.
 
 Use these local instructions when present:
 - templates/docs/agents/ralph-loop.md or docs/agents/ralph-loop.md
@@ -1816,6 +1833,26 @@ ensure_command_available() {
   binary="${1:-}"
   [[ -n "$binary" ]] || { echo "runner command is empty" >&2; exit 2; }
   command -v "$binary" >/dev/null 2>&1 || { echo "missing required command: $binary" >&2; exit 1; }
+}
+
+ralph_executor_path() {
+  local target_dir="$1"
+  local absolute_target_dir
+
+  absolute_target_dir="$(cd "$target_dir" && pwd -P)" || return 1
+
+  if [[ -x "${absolute_target_dir}/scripts/ralph-loop" ]]; then
+    printf '%s\n' "${absolute_target_dir}/scripts/ralph-loop"
+    return 0
+  fi
+
+  if [[ -x "${repo_dir}/templates/scripts/ralph-loop" ]]; then
+    printf '%s\n' "${repo_dir}/templates/scripts/ralph-loop"
+    return 0
+  fi
+
+  echo "missing Ralph executor: expected scripts/ralph-loop in target or templates/scripts/ralph-loop in AgentRail source" >&2
+  return 1
 }
 
 parse_run_options() {
@@ -2084,7 +2121,8 @@ ${plan_output}
 Base Ralph instructions:
 ${base_prompt}
 
-Implement the approved plan only. Keep the work scoped to issue #${issue}. Run relevant verification when implementation is ready.
+AgentRail will invoke the Ralph one-issue executor for this phase and capture its output under this run directory.
+Ralph must implement the approved plan only, keep the work scoped to issue #${issue}, and run relevant verification when implementation is ready.
 PROMPT
       ;;
     verify)
@@ -2309,6 +2347,12 @@ run_issue() {
 
   local agent target_dir explicit_command log_dir
   parse_run_options agent target_dir explicit_command log_dir "$@"
+  local invocation_dir
+  invocation_dir="$(pwd -P)"
+  target_dir="$(cd "$target_dir" && pwd -P)" || exit 1
+  if [[ -n "$log_dir" && "$log_dir" != /* ]]; then
+    log_dir="${invocation_dir}/${log_dir}"
+  fi
   local requested_agent="$agent"
   agent="$(configured_agent_name "$target_dir" "$agent")"
   ensure_no_conflicting_active_run "$target_dir" "$issue"
@@ -2351,9 +2395,10 @@ run_issue() {
   echo "resolved skills: ${resolved_skills_file}"
   echo "metadata: ${metadata_file}"
 
-  local status=0 phase phase_dir phase_prompt phase_prompt_file phase_output_file phase_status_file phase_metadata_file phase_started_at phase_finished_at plan_output
+  local status=0 phase phase_dir phase_prompt phase_prompt_file phase_output_file phase_status_file phase_metadata_file phase_started_at phase_finished_at plan_output ralph_executor phase_command
   phase="verify"
   plan_output=""
+  ralph_executor="$(ralph_executor_path "$target_dir")" || exit 1
   for phase in plan execute verify; do
     phase_dir="${run_dir}/${phase}"
     mkdir -p "$phase_dir"
@@ -2365,7 +2410,12 @@ run_issue() {
     phase_prompt="$(issue_run_phase_prompt "$phase" "$issue" "$target_dir" "$resolution_text" "$base_prompt" "$plan_output")"
     printf '%s\n' "$phase_prompt" >"$phase_prompt_file"
     write_phase_status "$phase_status_file" "$phase" "running" "$phase_started_at" "" "0" "$phase_metadata_file" "$phase_output_file"
-    write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "" "running" "0" "$issue" "$agent" "$agent_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir"
+    if [[ "$phase" == "execute" ]]; then
+      phase_command="${ralph_executor} --issue ${issue} --agent-command ${agent_command} --prefix-prompt-file ${phase_prompt_file}"
+    else
+      phase_command="$agent_command"
+    fi
+    write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "" "running" "0" "$issue" "$agent" "$phase_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir"
     update_run_state "$target_dir" "start" "$run_id" "$issue" "$agent" "$phase" "$started_at" "" "0" "$phase_prompt_file" "$metadata_file" "$run_dir"
 
     echo "phase: ${phase}"
@@ -2374,20 +2424,27 @@ run_issue() {
     echo "phase metadata: ${phase_metadata_file}"
 
     set +e
-    printf '%s\n' "$phase_prompt" | bash -lc "$agent_command" 2>&1 | tee "$phase_output_file"
+    if [[ "$phase" == "execute" ]]; then
+      (
+        cd "$target_dir" &&
+          "$ralph_executor" --issue "$issue" --agent-command "$agent_command" --prefix-prompt-file "$phase_prompt_file"
+      ) 2>&1 | tee "$phase_output_file"
+    else
+      printf '%s\n' "$phase_prompt" | bash -lc "$agent_command" 2>&1 | tee "$phase_output_file"
+    fi
     status=$?
     set -e
 
     phase_finished_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
     if [[ "$status" -eq 0 ]]; then
       write_phase_status "$phase_status_file" "$phase" "completed" "$phase_started_at" "$phase_finished_at" "$status" "$phase_metadata_file" "$phase_output_file"
-      write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "$phase_finished_at" "completed" "$status" "$issue" "$agent" "$agent_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir"
+      write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "$phase_finished_at" "completed" "$status" "$issue" "$agent" "$phase_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir"
       if [[ "$phase" == "plan" ]]; then
         plan_output="$(cat "$phase_output_file")"
       fi
     else
       write_phase_status "$phase_status_file" "$phase" "failed" "$phase_started_at" "$phase_finished_at" "$status" "$phase_metadata_file" "$phase_output_file"
-      write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "$phase_finished_at" "failed" "$status" "$issue" "$agent" "$agent_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir"
+      write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "$phase_finished_at" "failed" "$status" "$issue" "$agent" "$phase_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir"
       break
     fi
   done

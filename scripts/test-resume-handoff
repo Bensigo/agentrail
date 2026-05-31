@@ -33,6 +33,7 @@ cat >"${target}/.agentrail/state.json" <<'JSON'
   "legacyAdopted": false,
   "workflow": {
     "phase": "implementation",
+    "activePhase": "execute",
     "activeIssue": 13,
     "activePullRequest": 23,
     "activePrd": "docs/prd/agentrail.md",
@@ -45,7 +46,8 @@ cat >"${target}/.agentrail/state.json" <<'JSON'
       "status": "running",
       "pickedAt": "2026-05-26T11:00:00Z",
       "promptFile": ".agentrail/runs/20260526-110000-issue-13-codex-100/prompt.md",
-      "metadataFile": ".agentrail/runs/20260526-110000-issue-13-codex-100/run.json"
+      "metadataFile": ".agentrail/runs/20260526-110000-issue-13-codex-100/run.json",
+      "runDir": ".agentrail/runs/20260526-110000-issue-13-codex-100"
     },
     "completedRuns": [
       {
@@ -61,6 +63,22 @@ cat >"${target}/.agentrail/state.json" <<'JSON'
         "completedAt": "2026-05-26T10:20:00Z",
         "promptFile": ".agentrail/runs/20260526-100000-issue-8-codex-99/prompt.md",
         "metadataFile": ".agentrail/runs/20260526-100000-issue-8-codex-99/run.json"
+      },
+      {
+        "runId": "20260526-103000-issue-9-codex-98",
+        "targetType": "issue",
+        "targetIssue": 9,
+        "agent": "codex",
+        "status": "failed",
+        "activePhase": "verify",
+        "executionAttempt": 5,
+        "maxExecutionAttempts": 5,
+        "failedVerificationAttempts": 5,
+        "blockedReason": "maximum verifier retry attempts reached after 5 execution attempts",
+        "pickedAt": "2026-05-26T10:30:00Z",
+        "completedAt": "2026-05-26T10:50:00Z",
+        "promptFile": ".agentrail/runs/20260526-103000-issue-9-codex-98/prompt.md",
+        "metadataFile": ".agentrail/runs/20260526-103000-issue-9-codex-98/run.json"
       }
     ],
     "lastCompletedStep": "runner-adapter-merged",
@@ -73,22 +91,30 @@ JSON
 assert_grep "AgentRail status:" "${tmp_dir}/status.out" "status did not print header"
 assert_grep "install status: state-present" "${tmp_dir}/status.out" "status did not report install state"
 assert_grep "phase: implementation" "${tmp_dir}/status.out" "status did not print workflow phase"
+assert_grep "active phase: execute" "${tmp_dir}/status.out" "status did not print active phase"
 assert_grep "active issue: 13" "${tmp_dir}/status.out" "status did not print active issue"
 assert_grep "active pull request: 23" "${tmp_dir}/status.out" "status did not print active PR"
 assert_grep "active run: issue #13 via codex (running)" "${tmp_dir}/status.out" "status did not print active run"
+assert_grep "active run stale: run dir missing: .agentrail/runs/20260526-110000-issue-13-codex-100" "${tmp_dir}/status.out" "status did not print stale active run"
 assert_grep "completed run: issue #8 via codex (completed)" "${tmp_dir}/status.out" "status did not print completed run"
 assert_grep "completed run attempts: 2/5; failed verify attempts: 1" "${tmp_dir}/status.out" "status did not print retry attempts"
+assert_grep "completed run: issue #9 via codex (failed)" "${tmp_dir}/status.out" "status did not print failed completed run"
+assert_grep "completed run blocked reason: maximum verifier retry attempts reached after 5 execution attempts" "${tmp_dir}/status.out" "status did not print failed run blocked reason"
 assert_grep "last completed step: runner-adapter-merged" "${tmp_dir}/status.out" "status did not print last completed step"
 assert_grep "next action: Implement resume and handoff support." "${tmp_dir}/status.out" "status did not print next action"
 
 handoff_file="${tmp_dir}/handoff.md"
 "$agentrail" resume --target "$target" --output "$handoff_file" >"${tmp_dir}/resume.out"
 assert_grep "Codex Desktop instruction: do not rely on previous chat context" "${tmp_dir}/resume.out" "resume did not warn against chat-history reliance"
+assert_grep "active phase: execute" "${tmp_dir}/resume.out" "resume did not include active phase"
 assert_grep "active issue: 13" "${tmp_dir}/resume.out" "resume did not include active issue"
 assert_grep "active pull request: 23" "${tmp_dir}/resume.out" "resume did not include active PR"
 assert_grep "active run: issue #13 via codex (running)" "${tmp_dir}/resume.out" "resume did not include active run"
+assert_grep "active run stale: run dir missing: .agentrail/runs/20260526-110000-issue-13-codex-100" "${tmp_dir}/resume.out" "resume did not include stale active run"
 assert_grep "completed run: issue #8 via codex (completed)" "${tmp_dir}/resume.out" "resume did not include completed run"
 assert_grep "completed run attempts: 2/5; failed verify attempts: 1" "${tmp_dir}/resume.out" "resume did not include retry attempts"
+assert_grep "completed run: issue #9 via codex (failed)" "${tmp_dir}/resume.out" "resume did not include failed completed run"
+assert_grep "completed run blocked reason: maximum verifier retry attempts reached after 5 execution attempts" "${tmp_dir}/resume.out" "resume did not include failed run blocked reason"
 assert_grep "last completed step: runner-adapter-merged" "${tmp_dir}/resume.out" "resume did not include last completed step"
 assert_grep "next action: Implement resume and handoff support." "${tmp_dir}/resume.out" "resume did not include next action"
 assert_grep "Verification commands:" "${tmp_dir}/resume.out" "resume did not include verification commands"

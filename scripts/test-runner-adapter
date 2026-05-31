@@ -265,6 +265,12 @@ AGENTRAIL_CLAUDE_COMMAND=cat "$agentrail" run issue 12 --agent claude --target "
 assert_grep "agent: claude" "${tmp_dir}/claude-run.out" "Claude run did not announce agent"
 assert_grep "Use Claude Code through AgentRail to run one bounded implementation loop for exactly one GitHub issue: #12" "${tmp_dir}/claude-run.out" "Claude run did not use Claude-oriented prompt"
 
+AGENTRAIL_HERMES_COMMAND=cat "$agentrail" run issue 12 --agent hermes --target "$target" --log-dir "$log_dir" >"${tmp_dir}/hermes-run.out"
+assert_grep "agent: hermes" "${tmp_dir}/hermes-run.out" "Hermes run did not announce agent"
+hermes_metadata="$(grep -Rl '"agent": "hermes"' "$log_dir" | head -1)"
+[[ -n "$hermes_metadata" ]] || { echo "Hermes runner metadata was not found" >&2; exit 1; }
+assert_grep '"command": "cat"' "$hermes_metadata" "Hermes runner command was not written to metadata"
+
 if "$agentrail" run issue 12 --agent codex --target "$target" --command false --log-dir "$log_dir" >"${tmp_dir}/failed-run.out" 2>&1; then
   echo "Runner accepted a failing agent command" >&2
   exit 1

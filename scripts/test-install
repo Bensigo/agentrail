@@ -126,6 +126,19 @@ for script in memory ralph-loop afk-workflow review-pr pr; do
   fi
 done
 
+sed '$d' "${tmp_dir}/.agentrail/source/templates/scripts/afk-workflow" >"${tmp_dir}/.agentrail/source/templates/scripts/afk-workflow-lib"
+# shellcheck disable=SC1090
+source "${tmp_dir}/.agentrail/source/templates/scripts/afk-workflow-lib"
+hidden_scripts_dir="$(cd -P "${tmp_dir}/.agentrail/source/templates/scripts" && pwd)"
+if [[ "$(script_path "$tmp_dir" pr)" != "${hidden_scripts_dir}/pr" ]]; then
+  echo "afk-workflow did not resolve adjacent internal pr helper" >&2
+  exit 1
+fi
+if [[ "$(script_path "$tmp_dir" review-pr)" != "${hidden_scripts_dir}/review-pr" ]]; then
+  echo "afk-workflow did not resolve adjacent internal review-pr helper" >&2
+  exit 1
+fi
+
 if [[ ! -x "${tmp_dir}/scripts/agentrail" ]]; then
   echo "agentrail CLI shim was not installed into normal project surface" >&2
   exit 1

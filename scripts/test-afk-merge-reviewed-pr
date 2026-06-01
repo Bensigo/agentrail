@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    if [[ -f "$file" ]]; then
+      echo "--- ${file} ---" >&2
+      cat "$file" >&2
+    fi
+    exit 1
+  fi
+}
+
+sed '$d' "${repo_dir}/templates/scripts/afk-workflow" >"${tmp_dir}/afk-workflow-lib"
+# shellcheck disable=SC1090
+source "${tmp_dir}/afk-workflow-lib"
+
+root="${tmp_dir}/repo"
+origin="${tmp_dir}/origin.git"
+run_dir="${tmp_dir}/run"
+mkdir -p "$root" "$run_dir/logs"
+
+git -C "$root" init --initial-branch=main --quiet
+git -C "$root" config user.email agentrail@example.com
+git -C "$root" config user.name "AgentRail Test"
+printf 'seed\n' >"${root}/README.md"
+git -C "$root" add README.md
+git -C "$root" commit --quiet -m "seed"
+git clone --quiet --bare "$root" "$origin"
+git -C "$root" remote add origin "$origin"
+git -C "$root" fetch --quiet origin main
+
+mkdir -p "${root}/.agentrail"
+cat >"${root}/.agentrail/state.json" <<'JSON'
+{
+  "schemaVersion": 1,
+  "agentrailVersion": "0.0.0-test",
+  "workflow": {
+    "phase": "idle",
+    "activeRun": null,
+    "completedRuns": []
+  }
+}
+JSON
+
+agentrail_fake="${tmp_dir}/agentrail"
+cat >"$agentrail_fake" <<'AGENTRAIL'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'agentrail %s\n' "$*" >>"${AFK_TEST_AGENTRAIL_LOG:?}"
+AGENTRAIL
+chmod +x "$agentrail_fake"
+
+review_fake="${tmp_dir}/review-pr"
+cat >"$review_fake" <<'REVIEW'
+#!/usr/bin/env bash
+set -euo pipefail
+
+output_file=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output)
+      output_file="${2:-}"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$output_file" ]] || { echo "missing --output" >&2; exit 1; }
+cat >"$output_file" <<'OUT'
+Findings: none.
+
+BEGIN_REVIEW_FIX_ISSUES_JSON
+{
+  "fix_issues": [],
+  "memory_suggestions": []
+}
+END_REVIEW_FIX_ISSUES_JSON
+OUT
+REVIEW
+chmod +x "$review_fake"
+
+pr_fake="${tmp_dir}/pr"
+cat >"$pr_fake" <<'PR'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s %s\n' "${1:-}" "${2:-}" >>"${AFK_TEST_PR_LOG:?}"
+
+case "${1:-}" in
+  review-init)
+    mkdir -p "${AFK_TEST_ROOT:?}/.worktrees/pr-${2}/.local"
+    printf 'PR_NUMBER=%s\n' "$2" >"${AFK_TEST_ROOT}/.worktrees/pr-${2}/.local/pr-meta.env"
+    ;;
+  review-validate-artifacts)
+    test -s "${AFK_TEST_ROOT:?}/.worktrees/pr-${2}/.local/review.md"
+    jq . "${AFK_TEST_ROOT}/.worktrees/pr-${2}/.local/review.json" >/dev/null
+    ;;
+  prepare-run|merge-run)
+    ;;
+  *)
+    echo "unexpected pr invocation: $*" >&2
+    exit 1
+    ;;
+esac
+PR
+chmod +x "$pr_fake"
+
+gh() {
+  if [[ "$1" == "issue" && "$2" == "edit" ]]; then
+    printf '%s\n' "$*" >>"${AFK_TEST_GH_LOG:?}"
+    return 0
+  fi
+
+  if [[ "$1" == "issue" && "$2" == "create" ]]; then
+    printf '%s\n' "$*" >>"${AFK_TEST_GH_LOG:?}"
+    return 0
+  fi
+
+  echo "unexpected gh invocation: $*" >&2
+  return 1
+}
+
+agentrail_path() {
+  printf '%s\n' "$agentrail_fake"
+}
+
+script_path() {
+  case "$2" in
+    review-pr)
+      printf '%s\n' "$review_fake"
+      ;;
+    pr)
+      printf '%s\n' "$pr_fake"
+      ;;
+    *)
+      echo "unexpected script_path lookup: $*" >&2
+      return 1
+      ;;
+  esac
+}
+
+detect_pr_for_issue() {
+  local issue="$1"
+  [[ "$issue" == "101" ]] || return 1
+  printf '17\n'
+}
+
+export AFK_TEST_AGENTRAIL_LOG="${tmp_dir}/agentrail.log"
+export AFK_TEST_GH_LOG="${tmp_dir}/gh.log"
+export AFK_TEST_PR_LOG="${tmp_dir}/pr.log"
+export AFK_TEST_ROOT="$root"
+
+worker_run "$root" "$run_dir" 1 101 "Reviewed PR" main claude 1 "review-fix,ready-for-agent" "afk" >"${tmp_dir}/worker.out"
+
+assert_grep "prepare-run 17" "$AFK_TEST_PR_LOG" "AFK worker did not prepare a reviewed PR with no fix issues"
+assert_grep "merge-run 17" "$AFK_TEST_PR_LOG" "AFK worker did not merge a reviewed PR with no fix issues"
+assert_grep "issue edit 101" "$AFK_TEST_GH_LOG" "AFK worker did not mark the source issue reviewed"
+
+echo "AFK reviewed PR merge test passed"

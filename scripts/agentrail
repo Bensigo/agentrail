@@ -361,7 +361,7 @@ if (!fs.existsSync(configPath) || force) {
     schemaVersion: 1,
     runner: {
       name: "codex",
-      command: "codex exec -",
+      command: "codex exec --sandbox danger-full-access -",
     },
   };
   fs.writeFileSync(configPath, `${JSON.stringify(defaultConfig, null, 2)}\n`);
@@ -1999,7 +1999,7 @@ default_agent_command() {
   local agent="$1"
   case "$agent" in
     codex)
-      echo "codex exec -"
+      echo "codex exec --sandbox danger-full-access -"
       ;;
     claude)
       echo "claude -p"

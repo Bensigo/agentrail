@@ -133,7 +133,7 @@ agent_command_for_engine() {
 
   case "$engine" in
     codex)
-      printf '%s\n' "${RALPH_AGENT_COMMAND:-codex exec -}"
+      printf '%s\n' "${RALPH_AGENT_COMMAND:-codex exec --sandbox danger-full-access -}"
       ;;
     claude)
       printf '%s\n' "${RALPH_AGENT_COMMAND:-claude -p}"

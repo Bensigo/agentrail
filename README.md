@@ -125,7 +125,7 @@ The config file stores the single active project runner. New installs default to
   "schemaVersion": 1,
   "runner": {
     "name": "codex",
-    "command": "codex exec -"
+    "command": "codex exec --sandbox danger-full-access -"
   }
 }
 ```

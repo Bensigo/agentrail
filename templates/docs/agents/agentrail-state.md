@@ -100,7 +100,7 @@ The managed inventory includes the skill registry and bundled skill files under 
   "schemaVersion": 1,
   "runner": {
     "name": "codex",
-    "command": "codex exec -"
+    "command": "codex exec --sandbox danger-full-access -"
   }
 }
 ```

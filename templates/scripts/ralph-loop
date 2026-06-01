@@ -19,8 +19,8 @@ Options:
 
 Examples:
   scripts/ralph-loop --issue 123 --print-prompt
-  RALPH_AGENT_COMMAND='codex exec -' scripts/ralph-loop --issue 123
-  scripts/ralph-loop --afk --agent-command 'codex exec -'
+  RALPH_AGENT_COMMAND='codex exec --sandbox danger-full-access -' scripts/ralph-loop --issue 123
+  scripts/ralph-loop --afk --agent-command 'codex exec --sandbox danger-full-access -'
 USAGE
 }
 

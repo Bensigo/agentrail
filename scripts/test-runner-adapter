@@ -48,7 +48,7 @@ chmod +x "${target}/scripts/ralph-loop"
 if [[ "$(node - "$config_file" <<'NODE'
 const fs = require("fs");
 const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-console.log(Boolean(config.runner && config.runner.name === "codex" && config.runner.command === "codex exec -"));
+console.log(Boolean(config.runner && config.runner.name === "codex" && config.runner.command === "codex exec --sandbox danger-full-access -"));
 NODE
 )" != "true" ]]; then
   echo "Default runner config was not written" >&2

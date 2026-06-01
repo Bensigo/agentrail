@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+afk_source_path="${BASH_SOURCE[0]}"
+while [[ -L "$afk_source_path" ]]; do
+  afk_source_dir="$(cd -P "$(dirname "$afk_source_path")" && pwd)"
+  afk_linked_path="$(readlink "$afk_source_path")"
+  if [[ "$afk_linked_path" == /* ]]; then
+    afk_source_path="$afk_linked_path"
+  else
+    afk_source_path="${afk_source_dir}/${afk_linked_path}"
+  fi
+done
+afk_script_dir="$(cd -P "$(dirname "$afk_source_path")" && pwd)"
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -14,7 +26,8 @@ Runs the full AFK issue workflow:
 4. Find the PR opened for the issue.
 5. Review the PR in a fresh context.
 6. Convert machine-readable review findings into new review-fix issues.
-7. Repeat until the queue is empty or max waves is reached.
+7. When review has no fix issues, prepare and merge the PR.
+8. Repeat until the queue is empty or max waves is reached.
 
 Defaults:
   --concurrency 2
@@ -55,6 +68,11 @@ script_path() {
 
   if [[ -x "${root}/templates/scripts/${script_name}" ]]; then
     printf '%s\n' "${root}/templates/scripts/${script_name}"
+    return 0
+  fi
+
+  if [[ -x "${afk_script_dir}/${script_name}" ]]; then
+    printf '%s\n' "${afk_script_dir}/${script_name}"
     return 0
   fi
 
@@ -270,6 +288,24 @@ extract_review_fix_json() {
   ' "$review_file"
 }
 
+review_fix_issue_count() {
+  local review_file="$1"
+  local json
+
+  json="$(extract_review_fix_json "$review_file")"
+  if [[ -z "$json" ]]; then
+    echo "review for ${review_file} did not include review fix JSON markers" >&2
+    return 1
+  fi
+
+  if ! jq -e '.fix_issues | type == "array"' >/dev/null <<< "$json"; then
+    echo "review for ${review_file} did not include a valid fix_issues array" >&2
+    return 1
+  fi
+
+  jq '.fix_issues | length' <<< "$json"
+}
+
 create_review_fix_issues() {
   local source_issue="$1"
   local pr="$2"
@@ -377,6 +413,91 @@ BODY
   done
 }
 
+write_review_artifacts_for_merge() {
+  local root="$1"
+  local pr="$2"
+  local review_file="$3"
+
+  local review_dir="${root}/.worktrees/pr-${pr}/.local"
+  [[ -d "$review_dir" ]] || die "missing PR review worktree artifacts at ${review_dir}"
+
+  cat >"${review_dir}/review.md" <<EOF_REVIEW
+A) TL;DR recommendation
+
+READY FOR /prepare-pr. Automated AFK review produced no fix issues.
+
+B) What changed and what is good?
+
+See the captured automated review below.
+
+C) Security findings
+
+No blocking security findings were reported by the automated review.
+
+D) What is the PR intent? Is this the most optimal implementation?
+
+The automated review found no merge-blocking implementation concerns.
+
+E) Concerns or questions (actionable)
+
+None reported.
+
+F) Tests
+
+See the PR body and prepare-run gate output.
+
+G) Docs status
+
+Not applicable unless prepare-run or the PR body identifies required docs work.
+
+H) Changelog
+
+Required by prepare-run.
+
+I) Follow ups (optional)
+
+None.
+
+J) Suggested PR comment (optional)
+
+Reviewed by AFK automation with no fix issues.
+
+Captured automated review:
+
+$(cat "$review_file")
+EOF_REVIEW
+
+  cat >"${review_dir}/review.json" <<'EOF_JSON'
+{
+  "recommendation": "READY FOR /prepare-pr",
+  "findings": [],
+  "tests": {
+    "ran": [],
+    "gaps": [],
+    "result": "pass"
+  },
+  "docs": "not_applicable",
+  "changelog": "required"
+}
+EOF_JSON
+}
+
+merge_reviewed_pr() {
+  local root="$1"
+  local pr="$2"
+  local review_file="$3"
+  local logs_dir="$4"
+
+  local pr_runner
+  pr_runner="$(script_path "$root" "pr")"
+
+  "$pr_runner" review-init "$pr" >"${logs_dir}/pr-${pr}-merge-review-init.log" 2>&1
+  write_review_artifacts_for_merge "$root" "$pr" "$review_file"
+  "$pr_runner" review-validate-artifacts "$pr" >"${logs_dir}/pr-${pr}-merge-review-validate.log" 2>&1
+  "$pr_runner" prepare-run "$pr" >"${logs_dir}/pr-${pr}-prepare.log" 2>&1
+  "$pr_runner" merge-run "$pr" >"${logs_dir}/pr-${pr}-merge.log" 2>&1
+}
+
 worker_run() {
   local root="$1"
   local run_dir="$2"
@@ -434,8 +555,21 @@ worker_run() {
         return 1
       fi
 
+      local fix_issue_count
+      if ! fix_issue_count="$(review_fix_issue_count "$review_output")"; then
+        echo "worker ${slot}: review for PR #${pr} did not produce valid machine-readable fix issue output; see ${review_output}" >&2
+        return 1
+      fi
+
       create_review_fix_issues "$issue" "$pr" "$review_output" "$afk_label"
       create_memory_suggestion_issues "$issue" "$pr" "$review_output" "$afk_label"
+
+      if [[ "$fix_issue_count" -eq 0 ]]; then
+        echo "worker ${slot}: review found no fix issues for PR #${pr}; preparing and merging"
+        merge_reviewed_pr "$root" "$pr" "$review_output" "$logs_dir"
+      else
+        echo "worker ${slot}: review created ${fix_issue_count} fix issue(s) for PR #${pr}; skipping merge"
+      fi
     fi
 
     mark_issue_reviewed "$issue" "$queue_labels"

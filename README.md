@@ -234,6 +234,8 @@ Run the AFK queue/worktree loop when you want unattended batches:
 agentrail afk
 ```
 
+AFK runs each issue, reviews the resulting PR, creates review-fix issues when the review finds blockers, and prepares/merges reviewed PRs that have no fix issues. Merge automation then promotes any newly unblocked dependent issues back into the ready queue.
+
 Issue runs execute one plan phase, then repeat execute and verify until verification passes. When verify fails, AgentRail writes structured findings under the verify attempt directory and passes them into the next execute attempt. The default limit is 5 execution attempts; after that the run is marked blocked with the latest findings and next action in `.agentrail/state.json`.
 
 ## How To Use It With An Agent

@@ -1942,7 +1942,8 @@ Runs the AFK queue/worktree loop through the AgentRail CLI:
 4. Find the PR opened for the issue.
 5. Review the PR in a fresh context.
 6. Convert machine-readable review findings into new review-fix issues.
-7. Repeat until the queue is empty or max waves is reached.
+7. When review has no fix issues, prepare and merge the PR.
+8. Repeat until the queue is empty or max waves is reached.
 
 Defaults:
   --concurrency 2

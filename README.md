@@ -323,7 +323,7 @@ For a bounded real wave through the CLI, keep the run small:
 agentrail afk --concurrency 1 --max-waves 1
 ```
 
-The source repo does not need root-level `scripts/ralph-loop`, `scripts/review-pr`, or `scripts/memory` files. The AFK runner resolves those helpers from `templates/scripts/` when the installed `scripts/` copies are not present. That keeps source-repo self-hosting separate from installing AgentRail into a target project.
+The source repo does not need root-level raw workflow helpers such as `scripts/ralph-loop`, `scripts/review-pr`, or `scripts/memory`. AFK runs through the `agentrail` CLI and keeps helper resolution inside AgentRail source assets. That keeps source-repo self-hosting separate from installing AgentRail into a target project.
 
 AFK dogfooding still requires `.agentrail/state.json` in the repo where the runner starts, but do not run `agentrail install --target .` in this source checkout. That installs target-project templates over the package source and can send agents down the wrong workflow. Create source dogfood state deliberately, keep `.agentrail/` and `.afk-workflow/` untracked, and set `AGENTRAIL_ALLOW_SOURCE_RUN=1` only for intentional source dogfooding.
 
@@ -436,7 +436,7 @@ Use these replacements:
 scripts/memory recall ...        -> agentrail memory recall ...
 scripts/ralph-loop --issue 123   -> agentrail run issue 123
 scripts/afk-workflow run ...     -> agentrail afk
-scripts/review-pr --pr 123       -> agentrail prompt review 123
+legacy PR review helper          -> agentrail prompt review 123
 scripts/agentrail doctor ...     -> agentrail doctor ...
 scripts/agentrail upgrade ...    -> agentrail upgrade ...
 ```

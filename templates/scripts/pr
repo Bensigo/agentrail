@@ -705,7 +705,7 @@ prepare_init() {
   pr_head_sha_before=$(printf '%s\n' "$json" | jq -r .headRefOid)
 
   if [ -n "${PR_HEAD:-}" ] && [ "$head" != "$PR_HEAD" ]; then
-    echo "PR head branch changed from $PR_HEAD to $head. Re-run review-pr."
+    echo "PR head branch changed from $PR_HEAD to $head. Re-run the AgentRail PR review."
     exit 1
   fi
 
@@ -1117,7 +1117,7 @@ merge_run() {
   local reviewer_coauthor_email="${reviewer_id}+${reviewer}@users.noreply.github.com"
 
   cat > .local/merge-body.txt <<EOF_BODY
-Merged via /review-pr -> /prepare-pr -> /merge-pr.
+Merged via AgentRail review -> prepare -> merge.
 
 Prepared head SHA: $PREP_HEAD_SHA
 Co-authored-by: $contrib <$contrib_coauthor_email>

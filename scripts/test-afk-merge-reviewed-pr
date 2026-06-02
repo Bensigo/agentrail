@@ -61,13 +61,10 @@ cat >"$agentrail_fake" <<'AGENTRAIL'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'agentrail %s\n' "$*" >>"${AFK_TEST_AGENTRAIL_LOG:?}"
-AGENTRAIL
-chmod +x "$agentrail_fake"
 
-review_fake="${tmp_dir}/review-pr"
-cat >"$review_fake" <<'REVIEW'
-#!/usr/bin/env bash
-set -euo pipefail
+if [[ "${1:-}" != "internal" || "${2:-}" != "review-pr" ]]; then
+  exit 0
+fi
 
 output_file=""
 while [[ $# -gt 0 ]]; do
@@ -83,7 +80,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$output_file" ]] || { echo "missing --output" >&2; exit 1; }
-cat >"$output_file" <<'OUT'
+case "${AFK_TEST_REVIEW_MODE:-valid}" in
+  valid)
+    cat >"$output_file" <<'OUT'
 Findings: none.
 
 BEGIN_REVIEW_FIX_ISSUES_JSON
@@ -93,8 +92,19 @@ BEGIN_REVIEW_FIX_ISSUES_JSON
 }
 END_REVIEW_FIX_ISSUES_JSON
 OUT
-REVIEW
-chmod +x "$review_fake"
+    ;;
+  missing-contract)
+    cat >"$output_file" <<'OUT'
+Findings: none.
+OUT
+    ;;
+  *)
+    echo "unexpected AFK_TEST_REVIEW_MODE=${AFK_TEST_REVIEW_MODE:-}" >&2
+    exit 1
+    ;;
+esac
+AGENTRAIL
+chmod +x "$agentrail_fake"
 
 pr_fake="${tmp_dir}/pr"
 cat >"$pr_fake" <<'PR'
@@ -143,9 +153,6 @@ agentrail_path() {
 
 script_path() {
   case "$2" in
-    review-pr)
-      printf '%s\n' "$review_fake"
-      ;;
     pr)
       printf '%s\n' "$pr_fake"
       ;;
@@ -158,19 +165,39 @@ script_path() {
 
 detect_pr_for_issue() {
   local issue="$1"
-  [[ "$issue" == "101" ]] || return 1
-  printf '17\n'
+  case "$issue" in
+    101)
+      printf '17\n'
+      ;;
+    102)
+      printf '18\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 export AFK_TEST_AGENTRAIL_LOG="${tmp_dir}/agentrail.log"
 export AFK_TEST_GH_LOG="${tmp_dir}/gh.log"
 export AFK_TEST_PR_LOG="${tmp_dir}/pr.log"
 export AFK_TEST_ROOT="$root"
+export AFK_TEST_REVIEW_MODE="valid"
 
 worker_run "$root" "$run_dir" 1 101 "Reviewed PR" main claude 1 "review-fix,ready-for-agent" "afk" >"${tmp_dir}/worker.out"
 
+assert_grep "agentrail internal review-pr --pr 17" "$AFK_TEST_AGENTRAIL_LOG" "AFK worker did not run review through the AgentRail CLI"
 assert_grep "prepare-run 17" "$AFK_TEST_PR_LOG" "AFK worker did not prepare a reviewed PR with no fix issues"
 assert_grep "merge-run 17" "$AFK_TEST_PR_LOG" "AFK worker did not merge a reviewed PR with no fix issues"
 assert_grep "issue edit 101" "$AFK_TEST_GH_LOG" "AFK worker did not mark the source issue reviewed"
+
+export AFK_TEST_REVIEW_MODE="missing-contract"
+if worker_run "$root" "$run_dir" 2 102 "Unstructured review" main claude 1 "review-fix,ready-for-agent" "afk" >"${tmp_dir}/missing-contract-worker.out" 2>&1; then
+  echo "AFK worker accepted a machine-readable review without JSON markers" >&2
+  exit 1
+fi
+
+assert_grep "agentrail internal review-pr --pr 18" "$AFK_TEST_AGENTRAIL_LOG" "AFK worker did not run failing review through the AgentRail CLI"
+assert_grep "did not produce valid machine-readable fix issue output" "${tmp_dir}/missing-contract-worker.out" "AFK worker did not reject unstructured review output"
 
 echo "AFK reviewed PR merge test passed"

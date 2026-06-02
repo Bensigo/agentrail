@@ -4,10 +4,10 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/review-pr --pr NUMBER [--base main] [--engine codex] [--output FILE] [--machine-readable]
-  review/pr.sh NUMBER
+  agentrail internal review-pr --pr NUMBER [--base main] [--engine codex] [--output FILE] [--machine-readable]
 
-Runs a pull request review in a fresh agent context window.
+Internal AgentRail helper for running a pull request review in a fresh agent context window.
+Use agentrail prompt review for public prompt generation and agentrail afk for automated review loops.
 
 Options:
   --pr NUMBER       Pull request number to review. Required.
@@ -21,13 +21,12 @@ Environment:
   REVIEW_CODEX_ARGS Extra arguments passed to `codex exec review`.
 
 Examples:
-  scripts/review-pr --pr 15
-  review/pr.sh 15
+  agentrail internal review-pr --pr 15
 USAGE
 }
 
 die() {
-  echo "review-pr: $*" >&2
+  echo "agentrail review: $*" >&2
   exit 1
 }
 
@@ -43,6 +42,34 @@ ensure_clean_tree() {
   local status
   status="$(git status --porcelain)"
   [[ -z "$status" ]] || die "working tree is dirty; commit, stash, or clean changes before reviewing"
+}
+
+extract_machine_readable_review_json() {
+  local review_file="$1"
+
+  awk '
+    /BEGIN_REVIEW_FIX_ISSUES_JSON/ { in_json = 1; next }
+    /END_REVIEW_FIX_ISSUES_JSON/ { in_json = 0; exit }
+    in_json { print }
+  ' "$review_file"
+}
+
+validate_machine_readable_review_output() {
+  local review_file="$1"
+  local json
+
+  [[ -s "$review_file" ]] || die "machine-readable review output is missing or empty: ${review_file}"
+
+  json="$(extract_machine_readable_review_json "$review_file")"
+  [[ -n "$json" ]] || die "machine-readable review output missing BEGIN_REVIEW_FIX_ISSUES_JSON block: ${review_file}"
+
+  if ! jq -e '
+    type == "object"
+    and (.fix_issues | type == "array")
+    and (.memory_suggestions | type == "array")
+  ' >/dev/null <<< "$json"; then
+    die "machine-readable review output must include fix_issues and memory_suggestions arrays: ${review_file}"
+  fi
 }
 
 review_prompt() {
@@ -182,6 +209,9 @@ main() {
 
   [[ -n "$pr" ]] || { usage; exit 1; }
   [[ "$engine" == "codex" ]] || die "unsupported review engine: $engine"
+  if [[ "$machine_readable" == "1" && -z "$output_file" ]]; then
+    die "--machine-readable requires --output so AgentRail can validate the review contract"
+  fi
 
   need git
   need gh
@@ -214,6 +244,9 @@ main() {
   echo "    head: ${head_ref}"
 
   run_codex_review "$base" "$pr" "$title" "$url" "$output_file" "$machine_readable"
+  if [[ "$machine_readable" == "1" ]]; then
+    validate_machine_readable_review_output "$output_file"
+  fi
 }
 
 main "$@"

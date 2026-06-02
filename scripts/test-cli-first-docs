@@ -58,10 +58,18 @@ assert_not_grep "scripts/agentrail prompt review" "${repo_dir}/templates/AGENTS.
 
 "$agentrail" --help >"${tmp_dir}/help.out"
 assert_grep "agentrail afk" "${tmp_dir}/help.out" "AgentRail CLI help does not expose agentrail afk"
+assert_not_grep "internal review-pr" "${tmp_dir}/help.out" "AgentRail CLI help exposes internal review helper"
+assert_not_grep "scripts/review-pr" "${tmp_dir}/help.out" "AgentRail CLI help promotes the internal review script"
 
 "$agentrail" afk --help >"${tmp_dir}/afk-help.out"
 assert_grep "agentrail afk" "${tmp_dir}/afk-help.out" "AgentRail AFK help does not use the CLI-first command"
 assert_not_grep "scripts/afk-workflow" "${tmp_dir}/afk-help.out" "AgentRail AFK help promotes the internal AFK script"
+
+if "$agentrail" internal review-pr --pr 12 --machine-readable >"${tmp_dir}/internal-review.out" 2>&1; then
+  echo "internal review command accepted machine-readable mode without an output artifact" >&2
+  exit 1
+fi
+assert_grep "--machine-readable requires --output" "${tmp_dir}/internal-review.out" "Internal review command did not route through AgentRail CLI validation"
 
 without_state="${tmp_dir}/without-state"
 mkdir -p "$without_state"

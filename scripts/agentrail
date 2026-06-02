@@ -1975,6 +1975,34 @@ USAGE
   "$afk_script" run "$@"
 }
 
+run_internal_review_pr() {
+  local review_script="${repo_dir}/templates/scripts/review-pr"
+  [[ -x "$review_script" ]] || { echo "missing internal review helper: ${review_script}" >&2; exit 2; }
+
+  "$review_script" "$@"
+}
+
+run_internal() {
+  local command="${1:-}"
+  [[ -n "$command" ]] || { usage; exit 1; }
+  shift || true
+
+  case "$command" in
+    review-pr)
+      run_internal_review_pr "$@"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown internal command: $command" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
 agent_command_env_name() {
   local agent="$1"
   case "$agent" in
@@ -3077,6 +3105,10 @@ case "${1:-}" in
   afk)
     shift
     run_afk "$@"
+    ;;
+  internal)
+    shift
+    run_internal "$@"
     ;;
   run)
     shift

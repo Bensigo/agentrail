@@ -126,6 +126,36 @@ REVIEW
 create_review_fix_issues 7 9 "$review_file" "afk"
 create_memory_suggestion_issues 7 9 "$review_file" "afk"
 
+missing_contract_review="${tmp_dir}/missing-contract-review.md"
+cat >"$missing_contract_review" <<'REVIEW'
+Findings: none.
+REVIEW
+
+if (validate_machine_readable_review_output "$missing_contract_review") >"${tmp_dir}/missing-contract.out" 2>&1; then
+  echo "machine-readable review validation accepted output without JSON markers" >&2
+  exit 1
+fi
+assert_grep "missing BEGIN_REVIEW_FIX_ISSUES_JSON block" "${tmp_dir}/missing-contract.out" "missing contract validation did not explain missing markers"
+
+malformed_contract_review="${tmp_dir}/malformed-contract-review.md"
+cat >"$malformed_contract_review" <<'REVIEW'
+Findings: none.
+
+BEGIN_REVIEW_FIX_ISSUES_JSON
+{
+  "fix_issues": []
+}
+END_REVIEW_FIX_ISSUES_JSON
+REVIEW
+
+if (validate_machine_readable_review_output "$malformed_contract_review") >"${tmp_dir}/malformed-contract.out" 2>&1; then
+  echo "machine-readable review validation accepted JSON without memory_suggestions" >&2
+  exit 1
+fi
+assert_grep "must include fix_issues and memory_suggestions arrays" "${tmp_dir}/malformed-contract.out" "malformed contract validation did not explain required arrays"
+
+validate_machine_readable_review_output "$review_file"
+
 if [[ "${#CREATED_ISSUES[@]}" -ne 2 ]]; then
   echo "expected two created issues, got ${#CREATED_ISSUES[@]}" >&2
   exit 1

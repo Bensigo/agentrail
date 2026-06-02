@@ -83,7 +83,7 @@ After an agent review is complete, apply `pr-reviewed` to the PR or linked track
 - Non-`P0` findings should be left as PR review comments unless the maintainer explicitly wants a tracking issue.
 - Do not bury production-breaking, security, data-loss, or merge-blocking findings in PR comments only.
 
-For AFK review workflows, include one machine-readable block when follow-up work exists:
+For AFK review workflows, always include one machine-readable block, even when both arrays are empty:
 
 ```text
 BEGIN_REVIEW_FIX_ISSUES_JSON

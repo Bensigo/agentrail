@@ -43,6 +43,7 @@ The installer preserves local edits unless run with `--force`. When a project al
 - `activeMilestone`
 - `activeRun`
 - `completedRuns`
+- `worktrees`
 - `lastCompletedStep`
 - `nextSuggestedAction`
 
@@ -55,6 +56,10 @@ When `verify` fails, AgentRail retries `execute` with the verifier findings as f
 `activeRun` records the issue an agent has picked and is currently working on. It includes the run id, target issue, agent name, status, active phase, picked timestamp, prompt file, metadata file, and run directory. `agentrail run issue` writes this before each phase invocation so a crash, failed compaction, or interrupted terminal still leaves a durable pointer to the in-flight phase.
 
 `completedRuns` is an append-only recent history, capped to the latest 20 runs. Completed and failed runs include completion timestamp and exit status. Failed runs are kept here too because they are part of the recovery trail.
+
+`worktrees` records every issue worktree AgentRail creates for AFK execution. Each entry records the issue, optional PR, path, run directory, base branch, timestamps, and lifecycle status. Valid lifecycle statuses are `running`, `completed`, `merged`, `abandoned`, and `failed`.
+
+Merged worktrees are safe cleanup candidates. Failed, abandoned, running, and unmerged completed worktrees are retained unless a maintainer explicitly cleans them. `agentrail cleanup --dry-run --merged` previews merged cleanup candidates. `agentrail cleanup --merged` removes only clean merged worktrees, marks the state entry with `removedAt`, and runs `git worktree prune` first so stale registrations such as `/private/tmp/usePlatoAI-*` are pruned. Use `--force` only when intentionally deleting a merged worktree with uncommitted changes.
 
 Each issue run writes durable phase evidence under `.agentrail/runs/<run-id>/`:
 

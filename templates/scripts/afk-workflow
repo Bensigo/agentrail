@@ -516,26 +516,39 @@ worker_run() {
 
   echo "worker ${slot}: issue #${issue} ${title}"
 
+  local agentrail_runner
+  agentrail_runner="$(agentrail_path "$root")"
+
   git -C "$root" fetch origin "$base"
   git -C "$root" worktree add --detach "$worktree" "origin/${base}" >/dev/null
+  "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status running --issue "$issue" --run-dir "$run_dir" --base "$base" --slot "$slot"
   prepare_worktree_agentrail_state "$root" "$worktree"
 
   (
     cd "$worktree"
-    local agentrail_runner
     local agent_command
-    agentrail_runner="$(agentrail_path "$root")"
     agent_command="$(agent_command_for_engine "$engine")"
 
+    set +e
     AGENTRAIL_ALLOW_SOURCE_RUN=1 \
       "$agentrail_runner" run issue "$issue" --agent "$engine" --target "$worktree" --command "$agent_command" \
         >"${logs_dir}/issue-${issue}-agentrail.log" 2>&1
+    local agentrail_status=$?
+    set -e
+    if [[ "$agentrail_status" -ne 0 ]]; then
+      "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status failed --issue "$issue" --run-dir "$run_dir" --base "$base" --slot "$slot"
+      return "$agentrail_status"
+    fi
 
     local pr
     pr="$(detect_pr_for_issue "$issue")"
-    [[ -n "$pr" ]] || die "could not find an open PR for issue #${issue}"
+    if [[ -z "$pr" ]]; then
+      "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status failed --issue "$issue" --run-dir "$run_dir" --base "$base" --slot "$slot"
+      die "could not find an open PR for issue #${issue}"
+    fi
 
     echo "worker ${slot}: issue #${issue} opened PR #${pr}"
+    "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status completed --issue "$issue" --pr "$pr" --run-dir "$run_dir" --base "$base" --slot "$slot"
 
     if [[ "$review_enabled" == "1" ]]; then
       local review_output
@@ -545,17 +558,20 @@ worker_run() {
 
       if ! "$agentrail_runner" internal review-pr --pr "$pr" --output "$review_output" --machine-readable >"$review_log" 2>&1; then
         echo "worker ${slot}: review failed for PR #${pr}; see ${review_log}" >&2
+        "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status failed --issue "$issue" --pr "$pr" --run-dir "$run_dir" --base "$base" --slot "$slot"
         return 1
       fi
 
       if [[ ! -s "$review_output" ]]; then
         echo "worker ${slot}: review for PR #${pr} did not produce ${review_output}" >&2
+        "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status failed --issue "$issue" --pr "$pr" --run-dir "$run_dir" --base "$base" --slot "$slot"
         return 1
       fi
 
       local fix_issue_count
       if ! fix_issue_count="$(review_fix_issue_count "$review_output")"; then
         echo "worker ${slot}: review for PR #${pr} did not produce valid machine-readable fix issue output; see ${review_output}" >&2
+        "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status failed --issue "$issue" --pr "$pr" --run-dir "$run_dir" --base "$base" --slot "$slot"
         return 1
       fi
 
@@ -564,7 +580,12 @@ worker_run() {
 
       if [[ "$fix_issue_count" -eq 0 ]]; then
         echo "worker ${slot}: review found no fix issues for PR #${pr}; preparing and merging"
-        merge_reviewed_pr "$root" "$pr" "$review_output" "$logs_dir"
+        if ! merge_reviewed_pr "$root" "$pr" "$review_output" "$logs_dir"; then
+          "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status failed --issue "$issue" --pr "$pr" --run-dir "$run_dir" --base "$base" --slot "$slot"
+          return 1
+        fi
+        "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status merged --issue "$issue" --pr "$pr" --run-dir "$run_dir" --base "$base" --slot "$slot"
+        "$agentrail_runner" cleanup --target "$root" --merged
       else
         echo "worker ${slot}: review created ${fix_issue_count} fix issue(s) for PR #${pr}; skipping merge"
       fi

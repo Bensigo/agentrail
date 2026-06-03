@@ -303,6 +303,17 @@ agentrail run
 
 `agentrail run` reads `.agentrail/state.json` before selecting queued issues. If an active AgentRail run exists, it stops and reports the run metadata. If no active run exists, it selects the next open GitHub issue labeled `afk` and `ready-for-agent`, excluding `afk-in-progress`.
 
+AFK issue worktrees are AgentRail-owned state. AgentRail records each created issue worktree in `.agentrail/state.json` with lifecycle status `running`, `completed`, `merged`, `abandoned`, or `failed`. After a reviewed PR is merged, AgentRail marks the issue worktree `merged` and runs merged cleanup. Failed and unmerged worktrees are retained for inspection.
+
+Preview and run merged worktree cleanup:
+
+```bash
+agentrail cleanup --dry-run --merged
+agentrail cleanup --merged
+```
+
+Cleanup prunes stale git worktree registrations first. It never removes a worktree with uncommitted changes unless `--force` is passed.
+
 ## Dogfooding AgentRail
 
 Maintainers can run the AFK workflow from this AgentRail source repo without installing generated project templates over the source checkout:
@@ -371,7 +382,7 @@ The main context files fit together like this:
 - `TASTE.md`: optional product quality, UI, copy, interaction, and visual evidence guidance.
 - `docs/memory/`: source-linked lessons, decisions, preferences, and failure patterns to recall before non-trivial work.
 - GitHub issues: implementation source of truth, acceptance criteria, blockers, and AFK eligibility.
-- `.agentrail/state.json`: durable workflow pointer for compaction recovery, handoffs, active issue/PR state, active run state, retry attempts, recent completed/failed runs, and next suggested action.
+- `.agentrail/state.json`: durable workflow pointer for compaction recovery, handoffs, active issue/PR state, active run state, AgentRail-owned worktree lifecycle, retry attempts, recent completed/failed runs, and next suggested action.
 
 AgentRail is local CLI workflow infrastructure, not a hosted orchestration platform. Keep runs bounded, review PRs before merge, and verify changes with the commands recorded in each PR.
 

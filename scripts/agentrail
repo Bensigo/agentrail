@@ -20,6 +20,7 @@ Usage:
   agentrail prompt issue NUMBER [--agent codex|claude] [--target DIR] [--skill NAME] [--no-auto-skills]
   agentrail prompt review PR_NUMBER [--agent codex|claude] [--target DIR]
   agentrail afk [--concurrency 2] [--max-waves 20] [--base main] [--engine codex] [--afk-label afk] [--dry-run]
+  agentrail cleanup [--target DIR] [--dry-run] [--merged] [--force]
   agentrail run [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
   agentrail run issue NUMBER [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
 
@@ -35,6 +36,7 @@ Commands:
   labels    Sync expected GitHub labels.
   prompt    Print an agent-ready prompt without executing an agent.
   afk       Run the AFK queue/worktree loop through the AgentRail CLI.
+  cleanup   Inspect or remove AgentRail-owned worktrees.
   run       Generate a bounded prompt and execute a configured agent command.
 USAGE
 }
@@ -333,6 +335,7 @@ const defaultWorkflow = {
   activeMilestone: null,
   activeRun: null,
   completedRuns: [],
+  worktrees: [],
   lastCompletedStep: null,
   nextSuggestedAction: "Pick a ready-for-agent issue or create a PRD/milestone before starting implementation.",
 };
@@ -348,6 +351,7 @@ const nextState = {
     ...defaultWorkflow,
     ...(state.workflow || {}),
     completedRuns: Array.isArray(state.workflow?.completedRuns) ? state.workflow.completedRuns : [],
+    worktrees: Array.isArray(state.workflow?.worktrees) ? state.workflow.worktrees : [],
   },
 };
 
@@ -1367,6 +1371,7 @@ try {
   const workflow = state.workflow || {};
   const activeRun = workflow.activeRun;
   const completedRuns = Array.isArray(workflow.completedRuns) ? workflow.completedRuns : [];
+  const worktrees = Array.isArray(workflow.worktrees) ? workflow.worktrees : [];
   function runLabel(run) {
     if (!run || typeof run !== "object") return "none";
     const target = run.targetType === "issue" ? `issue #${run.targetIssue}` : (run.targetType || "target");
@@ -1400,6 +1405,10 @@ try {
     const lastAttempts = attemptSummary(lastRun);
     if (lastAttempts) console.log(`- last completed run ${lastAttempts}`);
     if (lastRun.blockedReason) console.log(`- last completed run blocked reason: ${lastRun.blockedReason}`);
+  }
+  if (worktrees.length > 0) {
+    const activeWorktrees = worktrees.filter((worktree) => worktree && !worktree.removedAt);
+    console.log(`- AgentRail worktrees: ${activeWorktrees.length} active / ${worktrees.length} tracked`);
   }
   console.log(`- last completed step: ${workflow.lastCompletedStep ?? "none"}`);
   console.log(`- next suggested action: ${workflow.nextSuggestedAction || "none"}`);
@@ -1499,6 +1508,7 @@ try {
   const workflow = state.workflow || {};
   const activeRun = workflow.activeRun;
   const completedRuns = Array.isArray(workflow.completedRuns) ? workflow.completedRuns : [];
+  const worktrees = Array.isArray(workflow.worktrees) ? workflow.worktrees : [];
   function runLabel(run) {
     if (!run || typeof run !== "object") return "none";
     const target = run.targetType === "issue" ? `issue #${run.targetIssue}` : (run.targetType || "target");
@@ -1539,6 +1549,16 @@ try {
       if (run.blockedReason) console.log(`  completed run blocked reason: ${run.blockedReason}`);
     }
   }
+  if (worktrees.length > 0) {
+    console.log("  worktrees:");
+    for (const worktree of worktrees.slice(-5)) {
+      if (!worktree || typeof worktree !== "object") continue;
+      const target = worktree.issue ? `issue #${worktree.issue}` : "issue";
+      const pr = worktree.pr ? ` PR #${worktree.pr}` : "";
+      const removed = worktree.removedAt ? ` removed ${worktree.removedAt}` : "";
+      console.log(`    ${target}${pr}: ${worktree.status || "unknown"} ${worktree.path || worktree.absolutePath || "unknown"}${removed}`);
+    }
+  }
   console.log(`  last completed step: ${workflow.lastCompletedStep ?? "none"}`);
   console.log(`  next action: ${workflow.nextSuggestedAction || "none"}`);
 } catch (error) {
@@ -1546,6 +1566,188 @@ try {
   console.log(`state error: ${error.message}`);
   process.exitCode = 1;
 }
+NODE
+}
+
+parse_cleanup_args() {
+  local target_var="$1"
+  local dry_run_var="$2"
+  local merged_var="$3"
+  local force_var="$4"
+  shift 4
+
+  printf -v "$target_var" '%s' "$(pwd)"
+  printf -v "$dry_run_var" '%s' "0"
+  printf -v "$merged_var" '%s' "0"
+  printf -v "$force_var" '%s' "0"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --target)
+        local value="${2:-}"
+        [[ -n "$value" && "$value" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
+        printf -v "$target_var" '%s' "$value"
+        shift 2
+        ;;
+      --dry-run)
+        printf -v "$dry_run_var" '%s' "1"
+        shift
+        ;;
+      --merged)
+        printf -v "$merged_var" '%s' "1"
+        shift
+        ;;
+      --force)
+        printf -v "$force_var" '%s' "1"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown option: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+  done
+}
+
+run_cleanup() {
+  local target_dir dry_run merged force
+  parse_cleanup_args target_dir dry_run merged force "$@"
+  target_dir="$(cd "$target_dir" && pwd -P)" || exit 1
+
+  local state_file="${target_dir}/.agentrail/state.json"
+  [[ -f "$state_file" ]] || { state_recommendation "$target_dir" >&2; exit 1; }
+  command -v node >/dev/null 2>&1 || { echo "node is required to read .agentrail/state.json" >&2; exit 1; }
+  command -v git >/dev/null 2>&1 || { echo "git is required for worktree cleanup" >&2; exit 1; }
+  [[ "$merged" == "1" || "$dry_run" == "1" ]] || { echo "cleanup requires --dry-run or --merged" >&2; exit 2; }
+
+  git -C "$target_dir" worktree prune
+
+  local candidates_file removed_file
+  candidates_file="$(mktemp)"
+  removed_file="$(mktemp)"
+  cleanup_cleanup_temp() {
+    rm -f "$candidates_file" "$removed_file"
+  }
+  trap cleanup_cleanup_temp RETURN
+
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  AGENTRAIL_CLEANUP_MERGED="$merged" \
+  node <<'NODE' >"$candidates_file"
+const fs = require("fs");
+const path = require("path");
+
+const targetDir = process.env.AGENTRAIL_TARGET_DIR;
+const statePath = path.join(targetDir, ".agentrail/state.json");
+const mergedOnly = process.env.AGENTRAIL_CLEANUP_MERGED === "1";
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+const workflow = state.workflow && typeof state.workflow === "object" ? state.workflow : {};
+const worktrees = Array.isArray(workflow.worktrees) ? workflow.worktrees : [];
+
+for (const worktree of worktrees) {
+  if (!worktree || typeof worktree !== "object") continue;
+  if (worktree.removedAt) continue;
+  if (mergedOnly && worktree.status !== "merged") continue;
+  const storedPath = worktree.path || worktree.worktreePath;
+  if (!storedPath) continue;
+  const absolutePath = path.isAbsolute(storedPath) ? storedPath : path.join(targetDir, storedPath);
+  console.log(JSON.stringify({
+    id: worktree.id || "",
+    issue: worktree.issue ?? worktree.targetIssue ?? "",
+    pr: worktree.pr ?? worktree.pullRequest ?? "",
+    status: worktree.status || "unknown",
+    path: absolutePath,
+  }));
+}
+NODE
+
+  echo "AgentRail cleanup: ${target_dir}"
+  if [[ ! -s "$candidates_file" ]]; then
+    echo "No matching AgentRail-owned worktrees found."
+    return 0
+  fi
+
+  local line path status issue pr dirty
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    path="$(node -e 'const item=JSON.parse(process.argv[1]); console.log(item.path)' "$line")"
+    status="$(node -e 'const item=JSON.parse(process.argv[1]); console.log(item.status)' "$line")"
+    issue="$(node -e 'const item=JSON.parse(process.argv[1]); console.log(item.issue)' "$line")"
+    pr="$(node -e 'const item=JSON.parse(process.argv[1]); console.log(item.pr)' "$line")"
+
+    local label="worktree"
+    [[ -z "$issue" ]] || label="${label} issue #${issue}"
+    [[ -z "$pr" ]] || label="${label} PR #${pr}"
+    echo "${label}: ${path} (${status})"
+
+    if [[ "$dry_run" == "1" ]]; then
+      if [[ -d "$path" ]]; then
+        dirty="$(git -C "$path" status --porcelain 2>/dev/null || true)"
+        [[ -z "$dirty" ]] || echo "  dirty: would skip without --force"
+      else
+        echo "  missing: stale state entry"
+      fi
+      continue
+    fi
+
+    [[ "$status" == "merged" ]] || { echo "  skip: not merged"; continue; }
+
+    if [[ -d "$path" ]]; then
+      dirty="$(git -C "$path" status --porcelain 2>/dev/null || true)"
+      if [[ -n "$dirty" && "$force" != "1" ]]; then
+        echo "  skip: uncommitted changes; rerun with --force to remove"
+        continue
+      fi
+      if [[ "$force" == "1" ]]; then
+        git -C "$target_dir" worktree remove --force "$path"
+      else
+        git -C "$target_dir" worktree remove "$path"
+      fi
+      echo "  removed"
+    else
+      echo "  already missing"
+    fi
+
+    printf '%s\n' "$path" >>"$removed_file"
+  done <"$candidates_file"
+
+  [[ -s "$removed_file" ]] || return 0
+
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  AGENTRAIL_REMOVED_WORKTREES_FILE="$removed_file" \
+  node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const targetDir = process.env.AGENTRAIL_TARGET_DIR;
+const statePath = path.join(targetDir, ".agentrail/state.json");
+const removed = new Set(
+  fs.readFileSync(process.env.AGENTRAIL_REMOVED_WORKTREES_FILE, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((entry) => path.resolve(entry))
+);
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+const workflow = state.workflow && typeof state.workflow === "object" ? state.workflow : {};
+const now = new Date().toISOString();
+workflow.worktrees = (Array.isArray(workflow.worktrees) ? workflow.worktrees : []).map((worktree) => {
+  if (!worktree || typeof worktree !== "object") return worktree;
+  const storedPath = worktree.path || worktree.worktreePath;
+  if (!storedPath) return worktree;
+  const absolutePath = path.resolve(path.isAbsolute(storedPath) ? storedPath : path.join(targetDir, storedPath));
+  if (!removed.has(absolutePath)) return worktree;
+  return {
+    ...worktree,
+    removedAt: now,
+    cleanupStatus: "removed",
+  };
+});
+state.workflow = workflow;
+state.updatedAt = now;
+fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
 NODE
 }
 
@@ -1982,6 +2184,79 @@ run_internal_review_pr() {
   "$review_script" "$@"
 }
 
+run_internal_worktree() {
+  local action="${1:-}"
+  [[ -n "$action" ]] || { echo "internal worktree requires an action" >&2; exit 2; }
+  shift || true
+
+  local target_dir="$(pwd)"
+  local worktree_path=""
+  local status=""
+  local issue=""
+  local pr=""
+  local run_dir=""
+  local base=""
+  local slot=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --target)
+        target_dir="${2:-}"
+        [[ -n "$target_dir" && "$target_dir" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
+        shift 2
+        ;;
+      --path)
+        worktree_path="${2:-}"
+        [[ -n "$worktree_path" && "$worktree_path" != --* ]] || { echo "--path requires a directory" >&2; exit 2; }
+        shift 2
+        ;;
+      --status)
+        status="${2:-}"
+        [[ -n "$status" && "$status" != --* ]] || { echo "--status requires a lifecycle value" >&2; exit 2; }
+        shift 2
+        ;;
+      --issue)
+        issue="${2:-}"
+        [[ -n "$issue" && "$issue" != --* ]] || { echo "--issue requires a number" >&2; exit 2; }
+        shift 2
+        ;;
+      --pr)
+        pr="${2:-}"
+        [[ -n "$pr" && "$pr" != --* ]] || { echo "--pr requires a number" >&2; exit 2; }
+        shift 2
+        ;;
+      --run-dir)
+        run_dir="${2:-}"
+        [[ -n "$run_dir" && "$run_dir" != --* ]] || { echo "--run-dir requires a directory" >&2; exit 2; }
+        shift 2
+        ;;
+      --base)
+        base="${2:-}"
+        [[ -n "$base" && "$base" != --* ]] || { echo "--base requires a branch" >&2; exit 2; }
+        shift 2
+        ;;
+      --slot)
+        slot="${2:-}"
+        [[ -n "$slot" && "$slot" != --* ]] || { echo "--slot requires a number" >&2; exit 2; }
+        shift 2
+        ;;
+      *)
+        echo "Unknown internal worktree option: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  [[ "$action" == "mark" ]] || { echo "unknown internal worktree action: $action" >&2; exit 2; }
+  [[ -n "$worktree_path" ]] || { echo "internal worktree mark requires --path" >&2; exit 2; }
+  [[ -n "$status" ]] || { echo "internal worktree mark requires --status" >&2; exit 2; }
+  target_dir="$(cd "$target_dir" && pwd -P)" || exit 1
+  if [[ "$worktree_path" != /* ]]; then
+    worktree_path="${target_dir}/${worktree_path}"
+  fi
+  update_worktree_state "$target_dir" "$worktree_path" "$status" "$issue" "$pr" "$run_dir" "$base" "$slot"
+}
+
 run_internal() {
   local command="${1:-}"
   [[ -n "$command" ]] || { usage; exit 1; }
@@ -1990,6 +2265,9 @@ run_internal() {
   case "$command" in
     review-pr)
       run_internal_review_pr "$@"
+      ;;
+    worktree)
+      run_internal_worktree "$@"
       ;;
     -h|--help)
       usage
@@ -2731,6 +3009,105 @@ fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
 NODE
 }
 
+update_worktree_state() {
+  local target_dir="$1"
+  local worktree_path="$2"
+  local status="$3"
+  local issue="${4:-}"
+  local pr="${5:-}"
+  local run_dir="${6:-}"
+  local base="${7:-}"
+  local slot="${8:-}"
+
+  local state_file="${target_dir}/.agentrail/state.json"
+  [[ -f "$state_file" ]] || return 0
+  command -v node >/dev/null 2>&1 || return 0
+
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  AGENTRAIL_WORKTREE_PATH="$worktree_path" \
+  AGENTRAIL_WORKTREE_STATUS="$status" \
+  AGENTRAIL_WORKTREE_ISSUE="$issue" \
+  AGENTRAIL_WORKTREE_PR="$pr" \
+  AGENTRAIL_WORKTREE_RUN_DIR="$run_dir" \
+  AGENTRAIL_WORKTREE_BASE="$base" \
+  AGENTRAIL_WORKTREE_SLOT="$slot" \
+  node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const targetDir = process.env.AGENTRAIL_TARGET_DIR;
+const statePath = path.join(targetDir, ".agentrail/state.json");
+const absolutePath = path.resolve(process.env.AGENTRAIL_WORKTREE_PATH);
+const status = process.env.AGENTRAIL_WORKTREE_STATUS;
+const issueText = process.env.AGENTRAIL_WORKTREE_ISSUE || "";
+const prText = process.env.AGENTRAIL_WORKTREE_PR || "";
+const runDir = process.env.AGENTRAIL_WORKTREE_RUN_DIR || "";
+const base = process.env.AGENTRAIL_WORKTREE_BASE || "";
+const slotText = process.env.AGENTRAIL_WORKTREE_SLOT || "";
+const now = new Date().toISOString();
+const issue = issueText ? Number(issueText) : null;
+const pr = prText ? Number(prText) : null;
+const slot = slotText ? Number(slotText) : null;
+
+const allowed = new Set(["running", "completed", "merged", "abandoned", "failed"]);
+if (!allowed.has(status)) {
+  throw new Error(`invalid worktree lifecycle status: ${status}`);
+}
+
+function relativeToTarget(file) {
+  return path.relative(targetDir, file).split(path.sep).join("/");
+}
+
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+const workflow = state.workflow && typeof state.workflow === "object" ? state.workflow : {};
+const worktrees = Array.isArray(workflow.worktrees) ? workflow.worktrees : [];
+const existingIndex = worktrees.findIndex((worktree) => {
+  if (!worktree || typeof worktree !== "object") return false;
+  const storedPath = worktree.path || worktree.worktreePath;
+  if (!storedPath) return false;
+  return path.resolve(path.isAbsolute(storedPath) ? storedPath : path.join(targetDir, storedPath)) === absolutePath;
+});
+const previous = existingIndex >= 0 ? worktrees[existingIndex] : {};
+const record = {
+  ...previous,
+  id: previous.id || `issue-${issue ?? "unknown"}-${path.basename(absolutePath)}`,
+  type: previous.type || "issue",
+  status,
+  path: relativeToTarget(absolutePath),
+  absolutePath,
+  updatedAt: now,
+};
+if (!previous.createdAt) record.createdAt = now;
+if (issue !== null && Number.isFinite(issue)) record.issue = issue;
+if (pr !== null && Number.isFinite(pr)) record.pr = pr;
+if (runDir) record.runDir = path.isAbsolute(runDir) ? relativeToTarget(runDir) : runDir;
+if (base) record.base = base;
+if (slot !== null && Number.isFinite(slot)) record.slot = slot;
+if (status === "running") {
+  delete record.completedAt;
+  delete record.mergedAt;
+  delete record.failedAt;
+  delete record.abandonedAt;
+  delete record.removedAt;
+  delete record.cleanupStatus;
+}
+if (status === "completed" && !record.completedAt) record.completedAt = now;
+if (status === "merged") record.mergedAt = now;
+if (status === "failed") record.failedAt = now;
+if (status === "abandoned") record.abandonedAt = now;
+
+if (existingIndex >= 0) {
+  worktrees[existingIndex] = record;
+} else {
+  worktrees.push(record);
+}
+workflow.worktrees = worktrees;
+state.workflow = workflow;
+state.updatedAt = now;
+fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+NODE
+}
+
 active_run_summary() {
   local target_dir="$1"
   local state_file="${target_dir}/.agentrail/state.json"
@@ -3105,6 +3482,10 @@ case "${1:-}" in
   afk)
     shift
     run_afk "$@"
+    ;;
+  cleanup)
+    shift
+    run_cleanup "$@"
     ;;
   internal)
     shift

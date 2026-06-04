@@ -36,6 +36,50 @@ def _print_json(value: object) -> None:
     print(json.dumps(value, indent=2))
 
 
+def _usage() -> str:
+    return """Usage:
+  agentrail init [--target DIR] [--force] [--github-labels]
+  agentrail install [--target DIR] [--force] [--github-labels]
+  agentrail upgrade [--target DIR] [--force]
+  agentrail doctor [--target DIR]
+  agentrail status [--target DIR]
+  agentrail context sources [--target DIR]
+  agentrail context index [--target DIR]
+  agentrail context embed [--target DIR]
+  agentrail context query "<task>" [--target DIR] [--json] [--limit N]
+  agentrail context build issue NUMBER --phase PHASE [--target DIR] [--json]
+  agentrail memory recall QUERY [--target DIR]
+  agentrail memory capture KIND TITLE [--target DIR]
+  agentrail skills validate [--target DIR]
+  agentrail skills list [--target DIR]
+  agentrail skills resolve "<task text>" [--target DIR] [--skill NAME] [--no-auto-skills]
+  agentrail resume [--target DIR] [--output FILE]
+  agentrail labels sync [--target DIR]
+  agentrail prompt grill "<idea>" [--agent codex|claude] [--target DIR]
+  agentrail prompt issue NUMBER [--agent codex|claude] [--target DIR] [--skill NAME] [--no-auto-skills]
+  agentrail prompt review PR_NUMBER [--agent codex|claude] [--target DIR]
+  agentrail afk [--concurrency 2] [--max-waves 20] [--base main] [--engine codex] [--afk-label afk] [--dry-run]
+  agentrail cleanup [--target DIR] [--dry-run] [--merged] [--force]
+  agentrail run [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
+  agentrail run issue NUMBER [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
+
+Commands:
+  init      Initialize AgentRail workflow files.
+  install   Install AgentRail workflow files.
+  upgrade   Upgrade managed AgentRail files without overwriting local edits.
+  doctor    Inspect AgentRail installation health.
+  status    Print install status and current workflow state.
+  context   Inspect local context engine sources.
+  memory    Recall or template project memory entries.
+  skills    Inspect or validate AgentRail-managed skills.
+  resume    Print and write an agent handoff summary.
+  labels    Sync expected GitHub labels.
+  prompt    Print an agent-ready prompt without executing an agent.
+  afk       Run the AFK queue/worktree loop through the AgentRail CLI.
+  cleanup   Inspect or remove AgentRail-owned worktrees.
+  run       Generate a bounded prompt and execute a configured agent command."""
+
+
 def run_context(args: List[str]) -> int:
     kind = args[0] if args else ""
     rest = args[1:] if args else []
@@ -138,8 +182,11 @@ def run_context(args: List[str]) -> int:
                 print(f"markdownPath={output['markdownPath']}")
             return 0
         if kind in {"", "-h", "--help"}:
-            return 64
-        raise SystemExit(f"Unknown context command: {kind}")
+            print(_usage())
+            return 0
+        print(f"Unknown context command: {kind}", file=sys.stderr)
+        print(_usage(), file=sys.stderr)
+        return 2
     except SystemExit as error:
         message = str(error)
         if message and message != "0":

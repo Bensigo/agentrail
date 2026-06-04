@@ -316,6 +316,26 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         chunk = entry["chunk"]
         score = {key: (None if value is None else round(float(value), 6)) for key, value in entry["score"].items()}
         formatted.append({"rank": rank, "kind": "indexed_context", "sourceType": source.get("sourceType"), "path": source.get("path"), "sourceId": source.get("id"), "chunkId": (chunk or {}).get("id"), "citation": (chunk or {}).get("citation") or source.get("path"), "reason": build_reason(entry["reasons"]), "contentHash": source.get("contentHash"), "textHash": (chunk or {}).get("textHash"), "headingPath": (chunk or {}).get("headingPath", []), "parentContext": (chunk or {}).get("parentContext") or source.get("path"), "matchContext": " > ".join([value for value in [source.get("path"), (chunk or {}).get("parentContext"), *((chunk or {}).get("headingPath", []))] if value]), "symbolHints": (chunk or {}).get("symbolHints", []), "importHints": (chunk or {}).get("importHints", []), "memory": (chunk or {}).get("memory") or source.get("memory"), "priorMistake": (chunk or {}).get("priorMistake") or source.get("priorMistake"), "content": bounded_content(source, chunk), "score": score})
-    output = {"schemaVersion": 1, "query": query, "generatedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"), "index": {"version": index.get("version"), "builtAt": index.get("builtAt")}, "provider": provider, "results": formatted, "excluded": excluded}
-    append_audit(root, {"event": "context_query", "queryHash": sha256_text(query), "resultCount": len(formatted), "excludedCount": len(excluded), "providerMode": provider.get("mode") or embedding_mode})
+    audit = {
+        "event": "context_query",
+        "citation": ".agentrail/context/audit/events.jsonl",
+        "queryHash": sha256_text(query),
+        "resultCount": len(formatted),
+        "excludedCount": len(excluded),
+        "providerMode": provider.get("mode") or embedding_mode,
+    }
+    output = {
+        "schemaVersion": 1,
+        "command": "context.query",
+        "target": {"kind": "query", "query": query},
+        "query": query,
+        "limit": limit,
+        "generatedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "index": {"version": index.get("version"), "builtAt": index.get("builtAt")},
+        "provider": provider,
+        "audit": audit,
+        "results": formatted,
+        "excluded": excluded,
+    }
+    append_audit(root, audit)
     return output

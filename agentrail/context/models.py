@@ -57,6 +57,7 @@ class SourceRecord:
     redactions: List[RedactionFinding] = field(default_factory=list)
     content: Optional[str] = None
     memory: Optional[Dict[str, str]] = None
+    priorMistake: Optional[Dict[str, Any]] = None
 
     def to_json(self, include_content: bool = True) -> Dict[str, JsonValue]:
         value: Dict[str, JsonValue] = {
@@ -78,6 +79,8 @@ class SourceRecord:
             value["content"] = self.content
         if self.memory is not None:
             value["memory"] = self.memory
+        if self.priorMistake is not None:
+            value["priorMistake"] = self.priorMistake
         return value
 
 
@@ -99,9 +102,10 @@ class ChunkRecord:
     citation: str
     content: str
     memory: Optional[Dict[str, str]] = None
+    priorMistake: Optional[Dict[str, Any]] = None
 
     def to_json(self) -> Dict[str, JsonValue]:
-        return {
+        value: Dict[str, JsonValue] = {
             "id": self.id,
             "sourceId": self.sourceId,
             "sourceType": self.sourceType,
@@ -119,3 +123,6 @@ class ChunkRecord:
             "content": self.content,
             "memory": self.memory,
         }
+        if self.priorMistake is not None:
+            value["priorMistake"] = self.priorMistake
+        return value

@@ -71,6 +71,11 @@ def _normalized_item(item: Dict[str, Any], kind: str, fallback_reason: str) -> D
     value["kind"] = kind
     value["reason"] = _reason_for(value, fallback_reason)
     value["citation"] = _citation_for(value)
+    prior_mistake = value.get("priorMistake")
+    if kind == "priorMistakes" and isinstance(prior_mistake, dict):
+        value["source"] = prior_mistake.get("source") or value.get("path")
+        value["whyItMatters"] = prior_mistake.get("whyItMatters") or value["reason"]
+        value["preventionGuidance"] = prior_mistake.get("preventionGuidance") or "Review this prior mistake before repeating the same workflow."
     return value
 
 
@@ -83,6 +88,8 @@ def _bounded_content(content: Any) -> Any:
 def _section_for(item: Dict[str, Any]) -> str:
     source_type = str(item.get("sourceType") or "")
     path = str(item.get("path") or "")
+    if item.get("priorMistake"):
+        return "priorMistakes"
     if source_type in {"context_doc", "taste_doc"}:
         return "requiredContext"
     if source_type == "code":
@@ -146,6 +153,7 @@ def _record_text(source: Dict[str, Any], chunk: Dict[str, Any] | None) -> str:
             json.dumps((chunk or {}).get("headingPath", [])),
             json.dumps((chunk or {}).get("symbolHints", [])),
             json.dumps((chunk or {}).get("importHints", [])),
+            json.dumps((chunk or {}).get("priorMistake") or source.get("priorMistake") or {}),
             json.dumps(source.get("linkedIssues", [])),
             json.dumps(source.get("linkedPullRequests", [])),
         ]
@@ -185,6 +193,7 @@ def _target_linked_items(index: Dict[str, Any], target_kind: str, target_number:
                 "symbolHints": (chunk or {}).get("symbolHints", []),
                 "importHints": (chunk or {}).get("importHints", []),
                 "memory": (chunk or {}).get("memory") or source.get("memory"),
+                "priorMistake": (chunk or {}).get("priorMistake") or source.get("priorMistake"),
                 "redactions": source.get("redactions", []),
                 "content": _bounded_content((chunk or {}).get("content") if chunk else source.get("content")),
                 "score": {"deterministic": 1.0, "keyword": 1.0, "embedding": None, "authorityBoost": 0.0, "final": 2.0},

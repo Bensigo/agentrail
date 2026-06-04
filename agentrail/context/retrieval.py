@@ -108,6 +108,23 @@ def freshness_demotion(record: Dict[str, Any], chunk: Optional[Dict[str, Any]]) 
     return demotion + memory_demotion, reasons + memory_reasons
 
 
+def prior_mistake_demotion(prior_mistake: Optional[Dict[str, Any]], effective_issue_refs: List[int]) -> Tuple[float, List[str]]:
+    if not prior_mistake:
+        return 0.0, []
+    issue = prior_mistake.get("issue")
+    same_issue = isinstance(issue, int) and issue in effective_issue_refs
+    status = str(prior_mistake.get("status") or "").lower()
+    if same_issue:
+        return 0.0, []
+    if status in {"stale", "expired"}:
+        return 1.25, ["stale prior mistake"]
+    if status in {"resolved", "closed", "done", "fixed", "merged"}:
+        return 1.5, ["resolved prior mistake"]
+    if isinstance(issue, int):
+        return 2.0, ["unrelated prior mistake"]
+    return 0.0, []
+
+
 def record_text(source: Dict[str, Any], chunk: Optional[Dict[str, Any]]) -> str:
     return "\n".join([
         str(source.get("path", "")),
@@ -120,6 +137,7 @@ def record_text(source: Dict[str, Any], chunk: Optional[Dict[str, Any]]) -> str:
         json.dumps((chunk or {}).get("headingPath", [])),
         json.dumps((chunk or {}).get("symbolHints", [])),
         json.dumps((chunk or {}).get("importHints", [])),
+        json.dumps((chunk or {}).get("priorMistake") or source.get("priorMistake") or {}),
         json.dumps(source.get("linkedIssues", [])),
         json.dumps(source.get("linkedPullRequests", [])),
     ])
@@ -130,7 +148,7 @@ def reciprocal_rank(rank: int) -> float:
 
 
 def build_reason(parts: Set[str]) -> str:
-    ordered = ["deterministic required context", "active workflow state", "same issue prior failure", "linked issue", "linked pull request", "exact identifier", "exact path", "BM25 keyword match", "embedding similarity", "high authority source", "current memory", "stale memory", "expired memory", "low authority source"]
+    ordered = ["deterministic required context", "active workflow state", "same issue prior failure", "prior mistake", "linked issue", "linked pull request", "exact identifier", "exact path", "BM25 keyword match", "embedding similarity", "high authority source", "current memory", "stale memory", "expired memory", "stale prior mistake", "resolved prior mistake", "unrelated prior mistake", "low authority source"]
     return "; ".join(item for item in ordered if item in parts) or "Included by hybrid retrieval score."
 
 
@@ -227,12 +245,17 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
             reasons.add("low authority source")
         freshness_penalty, freshness_reasons = freshness_demotion(source, chunk)
         reasons.update(freshness_reasons)
+        prior_mistake = (chunk or {}).get("priorMistake") or source.get("priorMistake")
+        prior_penalty, prior_reasons = prior_mistake_demotion(prior_mistake, effective_issue_refs)
+        reasons.update(prior_reasons)
+        if prior_mistake:
+            reasons.add("prior mistake")
         if ((chunk or {}).get("memory") or source.get("memory")) and freshness_penalty == 0:
             reasons.add("current memory")
         item_id = (chunk or {}).get("id") or source.get("id")
         lexical = deterministic + keyword + bm25
         lexical_raw[str(item_id)] = lexical
-        scored.append({"source": source, "chunk": chunk, "reasons": reasons, "score": {"deterministic": deterministic, "keyword": keyword, "bm25": bm25, "embedding": None, "rrf": 0.0, "authorityBoost": authority_boost, "authorityDemotion": 0 if authority_penalty >= 999 else authority_penalty, "freshnessDemotion": freshness_penalty, "final": 0.0}})
+        scored.append({"source": source, "chunk": chunk, "reasons": reasons, "score": {"deterministic": deterministic, "keyword": keyword, "bm25": bm25, "embedding": None, "rrf": 0.0, "authorityBoost": authority_boost, "authorityDemotion": 0 if authority_penalty >= 999 else authority_penalty, "freshnessDemotion": freshness_penalty, "priorMistakeDemotion": prior_penalty, "final": 0.0}})
 
     lexical_rank = {str((entry["chunk"] or {}).get("id") or entry["source"].get("id")): idx + 1 for idx, entry in enumerate(sorted([entry for entry in scored if lexical_raw[str((entry["chunk"] or {}).get("id") or entry["source"].get("id"))] > 0], key=lambda entry: lexical_raw[str((entry["chunk"] or {}).get("id") or entry["source"].get("id"))], reverse=True))}
     provider: Dict[str, Any] = {"mode": "disabled", "provider": None, "model": None}
@@ -283,7 +306,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         item_id = str((entry["chunk"] or {}).get("id") or source.get("id"))
         entry["score"]["rrf"] = reciprocal_rank(lexical_rank.get(item_id, 0)) + reciprocal_rank(semantic_rank.get(item_id, 0))
         semantic = entry["score"]["embedding"] or 0.0
-        entry["score"]["final"] = lexical_raw[item_id] + semantic * 2 + entry["score"]["rrf"] * 10 + entry["score"]["authorityBoost"] - entry["score"]["authorityDemotion"] - entry["score"]["freshnessDemotion"]
+        entry["score"]["final"] = lexical_raw[item_id] + semantic * 2 + entry["score"]["rrf"] * 10 + entry["score"]["authorityBoost"] - entry["score"]["authorityDemotion"] - entry["score"]["freshnessDemotion"] - entry["score"]["priorMistakeDemotion"]
         if entry["score"]["final"] > 0:
             results.append(entry)
     results.sort(key=lambda entry: (-entry["score"]["final"], str((entry["chunk"] or {}).get("citation") or entry["source"].get("path"))))
@@ -292,7 +315,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         source = entry["source"]
         chunk = entry["chunk"]
         score = {key: (None if value is None else round(float(value), 6)) for key, value in entry["score"].items()}
-        formatted.append({"rank": rank, "kind": "indexed_context", "sourceType": source.get("sourceType"), "path": source.get("path"), "sourceId": source.get("id"), "chunkId": (chunk or {}).get("id"), "citation": (chunk or {}).get("citation") or source.get("path"), "reason": build_reason(entry["reasons"]), "contentHash": source.get("contentHash"), "textHash": (chunk or {}).get("textHash"), "headingPath": (chunk or {}).get("headingPath", []), "parentContext": (chunk or {}).get("parentContext") or source.get("path"), "matchContext": " > ".join([value for value in [source.get("path"), (chunk or {}).get("parentContext"), *((chunk or {}).get("headingPath", []))] if value]), "symbolHints": (chunk or {}).get("symbolHints", []), "importHints": (chunk or {}).get("importHints", []), "memory": (chunk or {}).get("memory") or source.get("memory"), "content": bounded_content(source, chunk), "score": score})
+        formatted.append({"rank": rank, "kind": "indexed_context", "sourceType": source.get("sourceType"), "path": source.get("path"), "sourceId": source.get("id"), "chunkId": (chunk or {}).get("id"), "citation": (chunk or {}).get("citation") or source.get("path"), "reason": build_reason(entry["reasons"]), "contentHash": source.get("contentHash"), "textHash": (chunk or {}).get("textHash"), "headingPath": (chunk or {}).get("headingPath", []), "parentContext": (chunk or {}).get("parentContext") or source.get("path"), "matchContext": " > ".join([value for value in [source.get("path"), (chunk or {}).get("parentContext"), *((chunk or {}).get("headingPath", []))] if value]), "symbolHints": (chunk or {}).get("symbolHints", []), "importHints": (chunk or {}).get("importHints", []), "memory": (chunk or {}).get("memory") or source.get("memory"), "priorMistake": (chunk or {}).get("priorMistake") or source.get("priorMistake"), "content": bounded_content(source, chunk), "score": score})
     output = {"schemaVersion": 1, "query": query, "generatedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"), "index": {"version": index.get("version"), "builtAt": index.get("builtAt")}, "provider": provider, "results": formatted, "excluded": excluded}
     append_audit(root, {"event": "context_query", "queryHash": sha256_text(query), "resultCount": len(formatted), "excludedCount": len(excluded), "providerMode": provider.get("mode") or embedding_mode})
     return output

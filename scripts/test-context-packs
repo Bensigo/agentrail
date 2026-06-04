@@ -33,6 +33,8 @@ mkdir -p \
   "${fixture}/docs/memory" \
   "${fixture}/docs/prd" \
   "${fixture}/.agentrail/runs/issue-79-retry" \
+  "${fixture}/.agentrail/runs/issue-79-blocked" \
+  "${fixture}/.agentrail/runs/issue-12-retry" \
   "${fixture}/src"
 
 cat >"${fixture}/docs/agents/issue-79.md" <<'DOC'
@@ -77,6 +79,68 @@ cat >"${fixture}/.agentrail/runs/issue-79-retry/findings.json" <<'JSON'
   ]
 }
 JSON
+
+cat >"${fixture}/.agentrail/runs/issue-79-blocked/run.json" <<'JSON'
+{
+  "targetIssue": 79,
+  "status": "blocked",
+  "blockedReason": "Blocked run for issue #79: context pack output omitted verifier failure evidence."
+}
+JSON
+
+cat >"${fixture}/.agentrail/runs/issue-12-retry/findings.json" <<'JSON'
+{
+  "issue": 12,
+  "findings": [
+    {
+      "severity": "high",
+      "message": "Unrelated deployment verifier failure: missing production rollout check."
+    }
+  ]
+}
+JSON
+
+cat >"${fixture}/docs/agents/review-fix-context-pack.md" <<'DOC'
+# [review-fix] PR #179: Missing context-pack verification evidence
+
+Labels: review-fix, ready-for-agent
+Linked issue: #79
+State: OPEN
+
+Expected correction: include the fixture command output that proves context-pack acceptance criteria.
+DOC
+
+cat >"${fixture}/docs/agents/memory-suggestion-context-pack.md" <<'DOC'
+# [memory-suggestion] PR #179: Do not omit prior verifier failures
+
+Labels: memory-suggestion, ready-for-agent
+Linked issue: #79
+State: OPEN
+
+Proposed memory: Context-pack changes must include same-issue verifier failures on retry.
+DOC
+
+cat >"${fixture}/docs/memory/failure-patterns.md" <<'DOC'
+# Failure Patterns
+
+## Missing context-pack verifier evidence
+
+- kind: failure-pattern
+- source: issue-79
+- confidence: verified
+- created_at: 2026-06-04
+
+Agents may omit failed verifier findings when retrying context-pack work. Prevention: include the matching findings.json artifact in prior mistakes before retrying.
+
+## Stale deployment rollout note
+
+- kind: failure-pattern
+- source: issue-12
+- confidence: stale
+- created_at: 2024-01-01
+
+Old deployment review notes should be demoted for context-pack tasks.
+DOC
 
 cat >"${fixture}/src/context_pack.py" <<'PY'
 def issue_79_context_pack_subject():
@@ -161,6 +225,34 @@ if (!issue.priorMistakes.some((item) => item.path.endsWith("findings.json"))) {
   console.error("issue pack did not include prior mistake artifact");
   process.exit(1);
 }
+if (!issue.priorMistakes.some((item) => item.path.endsWith("run.json"))) {
+  console.error("issue pack did not include blocked run reason");
+  process.exit(1);
+}
+if (!issue.priorMistakes.some((item) => item.path === "docs/agents/review-fix-context-pack.md")) {
+  console.error("issue pack did not include related review-fix issue");
+  process.exit(1);
+}
+if (!issue.priorMistakes.some((item) => item.path === "docs/agents/memory-suggestion-context-pack.md")) {
+  console.error("issue pack did not include related memory-suggestion issue");
+  process.exit(1);
+}
+if (!issue.priorMistakes.some((item) => item.path === "docs/memory/failure-patterns.md")) {
+  console.error("issue pack did not include failure-pattern memory");
+  process.exit(1);
+}
+if (issue.priorMistakes.some((item) => item.path.includes("issue-12-retry"))) {
+  console.error("issue pack included unrelated verifier failure");
+  process.exit(1);
+}
+for (const item of issue.priorMistakes) {
+  for (const field of ["source", "whyItMatters", "preventionGuidance"]) {
+    if (!item[field]) {
+      console.error(`prior mistake missing ${field}: ${JSON.stringify(item)}`);
+      process.exit(1);
+    }
+  }
+}
 if (!issue.availableSkills.some((item) => item.path.endsWith("SKILL.md"))) {
   console.error("issue pack did not include available skills");
   process.exit(1);
@@ -189,6 +281,7 @@ console.log(JSON.stringify({
   target: pack.target,
   requiredContext: pack.requiredContext.map((item) => ({ path: item.path, reason: item.reason, citation: item.citation })),
   likelyFiles: pack.likelyFiles.map((item) => ({ path: item.path, reason: item.reason, citation: item.citation })),
+  priorMistakes: pack.priorMistakes.map((item) => ({ path: item.path, source: item.source, whyItMatters: item.whyItMatters, preventionGuidance: item.preventionGuidance, score: item.score?.final })),
   excludedContext: pack.excludedContext.slice(0, 3).map((item) => ({ path: item.path, reason: item.reason, citation: item.citation })),
 }, null, 2));
 NODE

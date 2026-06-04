@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+agentrail="${repo_dir}/scripts/agentrail"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+fixture="${tmp_dir}/installed"
+mkdir -p "$fixture"
+git -C "$fixture" init --quiet
+"$agentrail" install --target "$fixture" >"${tmp_dir}/install.out"
+
+mkdir -p \
+  "${fixture}/docs/agents" \
+  "${fixture}/docs/memory" \
+  "${fixture}/docs/prd" \
+  "${fixture}/.agentrail/runs/issue-84-retry" \
+  "${fixture}/src"
+
+cat >"${fixture}/docs/agents/issue-84.md" <<'DOC'
+# Issue 84 Retrieval Evaluation
+
+Issue #84 adds retrieval quality evaluation with recall@5, recall@10, citation coverage, required source inclusion, and excluded source checks.
+DOC
+
+cat >"${fixture}/docs/prd/context-engine.md" <<'DOC'
+# Context Engine PRD
+
+Context engine evaluation for issue #84 must stay local-first and auditable.
+DOC
+
+cat >"${fixture}/src/retrieval_eval.py" <<'PY'
+def issue_84_retrieval_quality_suite():
+    return "issue #84 retrieval quality evaluation recall@5 recall@10 citation coverage"
+PY
+
+cat >"${fixture}/docs/memory/retrieval-evaluation.md" <<'DOC'
+---
+kind: lesson
+source: issue-84
+confidence: high
+created_at: 2026-06-04T09:00:00Z
+expires_at: 2026-12-31T00:00:00Z
+---
+# Retrieval Evaluation Lesson
+
+For issue #84, retrieval evaluation evidence must map expected sources to command output.
+DOC
+
+cat >"${fixture}/docs/memory/expired-retrieval.md" <<'DOC'
+---
+kind: lesson
+source: issue-12
+confidence: low
+created_at: 2024-01-01T00:00:00Z
+expires_at: 2024-02-01T00:00:00Z
+---
+# Expired Retrieval Lesson
+
+This stale source mentions retrieval quality evaluation but must not be required by issue #84 evaluation.
+DOC
+
+cat >"${fixture}/.agentrail/runs/issue-84-retry/findings.json" <<'JSON'
+{
+  "issue": 84,
+  "findings": [
+    {
+      "severity": "high",
+      "message": "Prior mistake for issue #84: evaluation report omitted citation coverage."
+    }
+  ]
+}
+JSON
+
+cat >"${fixture}/.env" <<'ENV'
+TOKEN=must-not-appear
+ENV
+
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.externalSources = [
+  {
+    id: "external:denied-eval",
+    uri: "external://denied-eval",
+    authority: "denied",
+    visibility: "denied",
+    linkedIssues: [84],
+    note: "issue #84 denied retrieval evaluation source"
+  }
+];
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+cat >"${fixture}/retrieval-fixtures.json" <<'JSON'
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "name": "issue-84-local-quality",
+      "task": "issue #84 retrieval quality evaluation recall@5 recall@10 citation coverage src/retrieval_eval.py",
+      "requiredSources": [
+        "docs/agents/issue-84.md",
+        "src/retrieval_eval.py",
+        "docs/memory/retrieval-evaluation.md",
+        ".agentrail/runs/issue-84-retry/findings.json"
+      ],
+      "expectedFiles": ["src/retrieval_eval.py"],
+      "expectedDocs": ["docs/agents/issue-84.md", "docs/prd/context-engine.md"],
+      "expectedMemory": ["docs/memory/retrieval-evaluation.md"],
+      "expectedPriorMistakes": [".agentrail/runs/issue-84-retry/findings.json"],
+      "expectedExcludedSources": [".env", "external://denied-eval"]
+    },
+    {
+      "name": "issue-84-optional-embedding",
+      "task": "semantic-only issue #84 retrieval evaluation",
+      "optionalProviderEnv": ["AGENTRAIL_CONTEXT_EVAL_EMBEDDINGS"],
+      "requiredSources": ["docs/agents/issue-84.md"],
+      "expectedFiles": [],
+      "expectedDocs": ["docs/agents/issue-84.md"],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": ["external://denied-eval"]
+    }
+  ]
+}
+JSON
+
+"$agentrail" context evaluate "${fixture}/retrieval-fixtures.json" --target "$fixture" --json >"${tmp_dir}/eval.json"
+"$agentrail" context evaluate "${fixture}/retrieval-fixtures.json" --target "$fixture" >"${tmp_dir}/eval.txt"
+
+node - "${tmp_dir}/eval.json" <<'NODE'
+const fs = require("fs");
+const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (!report.passed) {
+  console.error(JSON.stringify(report, null, 2));
+  process.exit(1);
+}
+if (report.summary.fixtures !== 2 || report.summary.passed !== 1 || report.summary.skipped !== 1) {
+  console.error(`unexpected summary: ${JSON.stringify(report.summary)}`);
+  process.exit(1);
+}
+const local = report.fixtures.find((fixture) => fixture.name === "issue-84-local-quality");
+if (!local || local.status !== "passed") {
+  console.error("local evaluation fixture did not pass");
+  process.exit(1);
+}
+for (const field of ["requiredSourceInclusion", "recallAt5", "recallAt10", "staleSourceExclusion", "citationCoverage"]) {
+  if (!(field in local.metrics)) {
+    console.error(`evaluation report missing ${field}`);
+    process.exit(1);
+  }
+}
+if (!local.metrics.requiredSourceInclusion.passed) {
+  console.error("required source inclusion did not pass");
+  process.exit(1);
+}
+if (!local.metrics.staleSourceExclusion.passed) {
+  console.error("stale/denied source exclusion did not pass");
+  process.exit(1);
+}
+if (local.topResults.some((item) => item.path === ".env" || item.path === "external://denied-eval")) {
+  console.error("denied source appeared in top results");
+  process.exit(1);
+}
+const optional = report.fixtures.find((fixture) => fixture.name === "issue-84-optional-embedding");
+if (!optional || optional.status !== "skipped") {
+  console.error("optional embedding fixture was not skipped without provider env");
+  process.exit(1);
+}
+NODE
+
+cat >"${fixture}/broken-fixtures.json" <<'JSON'
+{
+  "fixtures": [
+    {
+      "name": "missing-required-context",
+      "task": "issue #84 retrieval quality evaluation",
+      "requiredSources": ["docs/agents/missing-required.md"],
+      "expectedFiles": [],
+      "expectedDocs": ["docs/agents/missing-required.md"],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": []
+    }
+  ]
+}
+JSON
+
+if "$agentrail" context evaluate "${fixture}/broken-fixtures.json" --target "$fixture" --json >"${tmp_dir}/broken.json"; then
+  echo "context evaluation did not fail when required context was missed" >&2
+  cat "${tmp_dir}/broken.json" >&2
+  exit 1
+fi
+assert_grep "docs/agents/missing-required.md" "${tmp_dir}/broken.json" "missing required source was not reported"
+
+echo "context evaluation test passed"
+echo "evaluation report output:"
+cat "${tmp_dir}/eval.txt"

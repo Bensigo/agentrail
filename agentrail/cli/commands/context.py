@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 from agentrail.context.embeddings import embed_context
+from agentrail.context.evaluation import evaluate_retrieval, format_evaluation_report
 from agentrail.context.index import build_index
 from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
 from agentrail.context.retrieval import query_context
@@ -47,6 +48,7 @@ def _usage() -> str:
   agentrail context index [--target DIR]
   agentrail context embed [--target DIR]
   agentrail context query "<task>" [--target DIR] [--json] [--limit N]
+  agentrail context evaluate FIXTURE [--target DIR] [--json]
   agentrail context build issue NUMBER --phase PHASE [--target DIR] [--json]
   agentrail context build pr NUMBER --phase review [--target DIR] [--json]
   agentrail context show PACK [--target DIR] [--json]
@@ -143,6 +145,31 @@ def run_context(args: List[str]) -> int:
                     for item in output["excluded"]:
                         print(f"- {item['path']}: {item['reason']}")
             return 0
+        if kind == "evaluate":
+            if not rest or rest[0].startswith("--"):
+                raise SystemExit("context evaluate requires a fixture file")
+            fixture = rest[0]
+            target: str | None = None
+            json_output = False
+            index = 1
+            while index < len(rest):
+                arg = rest[index]
+                if arg == "--target":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--target requires a directory")
+                    target = rest[index + 1]
+                    index += 2
+                elif arg == "--json":
+                    json_output = True
+                    index += 1
+                else:
+                    raise SystemExit(f"Unknown context evaluate option: {arg}")
+            output = evaluate_retrieval(_resolve_target(target), Path(fixture))
+            if json_output:
+                _print_json(output)
+            else:
+                print(format_evaluation_report(output))
+            return 0 if output.get("passed") else 1
         if kind == "build":
             if len(rest) < 2:
                 raise SystemExit("context build requires target kind: issue or pr")

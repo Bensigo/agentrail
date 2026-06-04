@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from agentrail.context.index import build_index
+from agentrail.context.evaluation import evaluate_retrieval, format_evaluation_report
 from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
 from agentrail.context.redaction import redact_text
 from agentrail.context.retrieval import query_context
@@ -186,6 +187,55 @@ class ContextModuleTests(unittest.TestCase):
         self.assertGreater(explained["includedCount"], 0)
         self.assertGreaterEqual(explained["excludedCount"], 1)
         self.assertTrue(explained["sections"]["likelyDocs"])
+
+    def test_retrieval_evaluation_reports_quality_metrics(self) -> None:
+        root = self.make_repo()
+        fixture = root / "eval-fixtures.json"
+        fixture.write_text(json.dumps({
+            "schemaVersion": 1,
+            "fixtures": [
+                {
+                    "name": "issue-92-main-path",
+                    "task": "issue #92 context engine missing citations src/app.py",
+                    "requiredSources": ["docs/agents/issue-92.md", "src/app.py"],
+                    "expectedFiles": ["src/app.py"],
+                    "expectedDocs": ["docs/agents/issue-92.md"],
+                    "expectedMemory": ["docs/memory/lesson.md"],
+                    "expectedPriorMistakes": [".agentrail/runs/issue-92-retry/findings.json"],
+                    "expectedExcludedSources": [".env"],
+                }
+            ],
+        }), encoding="utf-8")
+        report = evaluate_retrieval(root, fixture)
+        self.assertTrue(report["passed"], format_evaluation_report(report))
+        fixture_report = report["fixtures"][0]
+        self.assertEqual(fixture_report["status"], "passed")
+        self.assertTrue(fixture_report["metrics"]["requiredSourceInclusion"]["passed"])
+        self.assertGreater(fixture_report["metrics"]["recallAt5"], 0)
+        self.assertEqual(fixture_report["metrics"]["citationCoverage"], 1)
+        self.assertTrue(fixture_report["metrics"]["staleSourceExclusion"]["passed"])
+
+    def test_retrieval_evaluation_fails_when_required_context_is_missed(self) -> None:
+        root = self.make_repo()
+        fixture = root / "bad-eval-fixtures.json"
+        fixture.write_text(json.dumps({
+            "fixtures": [
+                {
+                    "name": "missing-required-source",
+                    "task": "issue #92 context engine",
+                    "requiredSources": ["docs/agents/missing.md"],
+                    "expectedFiles": [],
+                    "expectedDocs": ["docs/agents/missing.md"],
+                    "expectedMemory": [],
+                    "expectedPriorMistakes": [],
+                    "expectedExcludedSources": [],
+                }
+            ],
+        }), encoding="utf-8")
+        report = evaluate_retrieval(root, fixture)
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["summary"]["failed"], 1)
+        self.assertIn("docs/agents/missing.md", report["fixtures"][0]["metrics"]["requiredSourceInclusion"]["missing"])
 
 
 if __name__ == "__main__":

@@ -358,4 +358,41 @@ Reports should include:
 - stale-source exclusion
 - citation coverage
 
-CI must fail when required context is missed or denied sources appear in results. Embedding-backed evaluation runs only when provider environment variables are configured.
+Run fixture evaluation with:
+
+```bash
+agentrail context evaluate docs/agents/context-retrieval-fixtures.json --target . --json
+```
+
+A fixture file is JSON with a top-level `fixtures` array:
+
+```json
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "name": "issue-84-local-quality",
+      "task": "issue #84 retrieval quality evaluation recall@5 recall@10",
+      "requiredSources": ["docs/agents/issue-84.md", "src/retrieval_eval.py"],
+      "expectedFiles": ["src/retrieval_eval.py"],
+      "expectedDocs": ["docs/agents/issue-84.md"],
+      "expectedMemory": ["docs/memory/retrieval-evaluation.md"],
+      "expectedPriorMistakes": [".agentrail/runs/issue-84-retry/findings.json"],
+      "expectedExcludedSources": [".env", "external://denied-eval"]
+    }
+  ]
+}
+```
+
+`requiredSources` are hard requirements. If omitted, AgentRail treats expected files, docs, memory, and prior mistakes as required. `expectedExcludedSources` are hard exclusions; these are normally stale, denied, expired, secret-bearing, or otherwise off-limits sources.
+
+To add a fixture:
+
+1. Add local repo content for the behavior under test.
+2. Write task text that matches the real agent request.
+3. Fill every expected source bucket, using an empty array when a bucket does not apply.
+4. Put denied, stale, expired, or secret-bearing sources in `expectedExcludedSources`.
+5. Run `agentrail context evaluate <fixture-file> --target . --json`.
+6. Add the fixture command or script to CI when it protects a business-critical path or failure-prone retrieval edge.
+
+CI must fail when required context is missed, denied sources appear in results, or top-10 results lack citations. Embedding-backed evaluation fixtures should set `optionalProviderEnv`, for example `["OPENAI_API_KEY"]` or a local mock provider env. AgentRail skips those fixtures unless every listed provider environment variable is configured.

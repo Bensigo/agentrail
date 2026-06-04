@@ -194,6 +194,7 @@ AgentRail can build local, auditable context packs for issue execution and PR re
 
 ```bash
 agentrail context query "issue 123 payment retry tests" --target . --json
+agentrail context evaluate docs/agents/context-retrieval-fixtures.json --target . --json
 agentrail context build issue 123 --phase execute --target . --json
 agentrail context build pr 45 --phase review --target . --json
 agentrail context show issue-123-execute-20260604T120000000Z --target . --json
@@ -203,6 +204,8 @@ agentrail context explain issue-123-execute-20260604T120000000Z --target . --jso
 Generated packs include cited required context, likely files and docs, memory, prior mistakes, active state, available tools and skills, exclusions, open questions, retrieval budget, index metadata, provider mode, and audit metadata.
 
 Provider-facing JSON includes command, target, provider, and audit metadata so agents can request context without parsing Markdown. The future MCP-compatible surface should map to narrow tools such as `context_research`, `context_get_sources`, `context_build_pack`, and `context_explain_pack`; those tools use AgentRail allow/deny and redaction controls rather than unrestricted filesystem access.
+
+Retrieval evaluation fixtures define task text, expected files, expected docs, expected memory, expected prior mistakes, and expected excluded sources. Reports include required-source inclusion, recall@5, recall@10, stale-source exclusion, and citation coverage. CI should run these fixtures for business-critical context paths so missed required context and denied-source leaks fail before review.
 
 ## Recommended Flow
 

@@ -27,9 +27,11 @@ mkdir -p "$source_repo/templates" "$source_repo/scripts"
 cp -R "${repo_dir}/templates/CONTEXT.md" "${source_repo}/templates/CONTEXT.md"
 cp -R "${repo_dir}/templates/docs" "${source_repo}/templates/docs"
 cp -R "${repo_dir}/templates/scripts" "${source_repo}/templates/scripts"
+cp -R "${repo_dir}/agentrail" "${source_repo}/agentrail"
 cp "${repo_dir}/scripts/agentrail" "${source_repo}/scripts/agentrail"
+cp "${repo_dir}/scripts/agentrail-legacy" "${source_repo}/scripts/agentrail-legacy"
 cp "${repo_dir}/package.json" "${source_repo}/package.json"
-chmod +x "${source_repo}/scripts/agentrail"
+chmod +x "${source_repo}/scripts/agentrail" "${source_repo}/scripts/agentrail-legacy"
 
 git -C "$source_repo" init --initial-branch=main --quiet
 git -C "$source_repo" config user.email agentrail@example.com
@@ -84,7 +86,7 @@ JSON
   fi
 }
 
-git -C "$source_repo" add package.json templates scripts
+git -C "$source_repo" add agentrail package.json templates scripts
 git -C "$source_repo" commit --quiet -m "seed source repo"
 write_agentrail_state 0
 

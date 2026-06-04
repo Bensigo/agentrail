@@ -119,11 +119,13 @@ if [[ "$(cd "$repo_dir" && pwd -P)" != "$(mkdir -p "$source_support_dir" && cd "
   mkdir -p "${source_support_dir}/scripts"
   cp "${repo_dir}/package.json" "${source_support_dir}/package.json"
   cp "${repo_dir}/scripts/agentrail" "${source_support_dir}/scripts/agentrail"
+  cp "${repo_dir}/scripts/agentrail-legacy" "${source_support_dir}/scripts/agentrail-legacy"
   cp "${repo_dir}/scripts/install-workflow" "${source_support_dir}/scripts/install-workflow"
-  chmod +x "${source_support_dir}/scripts/agentrail" "${source_support_dir}/scripts/install-workflow"
-  rm -rf "${source_support_dir}/templates" "${source_support_dir}/skills"
+  chmod +x "${source_support_dir}/scripts/agentrail" "${source_support_dir}/scripts/agentrail-legacy" "${source_support_dir}/scripts/install-workflow"
+  rm -rf "${source_support_dir}/templates" "${source_support_dir}/skills" "${source_support_dir}/agentrail"
   cp -R "$templates_dir" "${source_support_dir}/templates"
   cp -R "$skills_dir" "${source_support_dir}/skills"
+  cp -R "${repo_dir}/agentrail" "${source_support_dir}/agentrail"
 fi
 
 write_agentrail_state() {

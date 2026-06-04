@@ -77,6 +77,7 @@ assert_grep "prompt.md" "$codex_metadata" "Codex metadata did not record prompt 
 assert_grep "resolved-skills.json" "$codex_metadata" "Codex metadata did not record resolved skills reference"
 assert_grep '"resolvedSkills"' "$codex_metadata" "Codex metadata did not include resolved skills"
 assert_grep '"frontend-web"' "$codex_metadata" "Codex metadata did not include frontend-web resolution"
+assert_grep '"contextPackFile": ".agentrail/context/packs/issue-12-plan-' "$codex_metadata" "Codex metadata did not record the issue context pack"
 assert_grep '"frontend-web"' "$codex_resolved_skills" "Resolved skills log did not include frontend-web"
 for phase in plan execute verify; do
   [[ -f "${codex_run_dir}/${phase}/prompt.md" ]] || { echo "${phase} phase prompt was not written" >&2; exit 1; }
@@ -88,6 +89,7 @@ for phase in plan execute verify; do
   assert_grep '"startedAt":' "${codex_run_dir}/${phase}/status.json" "${phase} phase status did not record start timestamp"
   assert_grep '"finishedAt":' "${codex_run_dir}/${phase}/status.json" "${phase} phase status did not record finish timestamp"
   assert_grep "\"phase\": \"${phase}\"" "${codex_run_dir}/${phase}/metadata.json" "${phase} phase metadata did not record phase"
+  assert_grep '"contextPackFile": ".agentrail/context/packs/issue-12-'"${phase}"'-' "${codex_run_dir}/${phase}/metadata.json" "${phase} phase metadata did not record context pack file"
   if [[ "$phase" == "execute" ]]; then
     assert_grep '.agentrail/source/templates/scripts/ralph-loop --issue 12 --agent-command cat' "${codex_run_dir}/${phase}/metadata.json" "Execute phase metadata did not use hidden Ralph executor"
     assert_grep 'ralph-loop --issue 12 --agent-command cat' "${codex_run_dir}/${phase}/metadata.json" "Execute phase metadata did not record Ralph executor command"
@@ -96,6 +98,8 @@ for phase in plan execute verify; do
   fi
 done
 assert_grep "Goal" "${codex_run_dir}/plan/prompt.md" "Plan prompt did not require goal"
+assert_grep "Context pack:" "${codex_run_dir}/plan/prompt.md" "Plan prompt did not include context pack summary"
+assert_grep "Pack file: .agentrail/context/packs/issue-12-plan-" "${codex_run_dir}/plan/prompt.md" "Plan prompt did not point to issue plan context pack"
 assert_grep "Non-goals" "${codex_run_dir}/plan/prompt.md" "Plan prompt did not require non-goals"
 assert_grep "Acceptance criteria mapping" "${codex_run_dir}/plan/prompt.md" "Plan prompt did not require acceptance criteria mapping"
 assert_grep "Expected files/areas" "${codex_run_dir}/plan/prompt.md" "Plan prompt did not require expected files/areas"

@@ -4592,6 +4592,19 @@ function staleSummary(run) {
   const runDir = path.isAbsolute(run.runDir) ? run.runDir : path.join(targetDir, run.runDir);
   return fs.existsSync(runDir) ? null : `run dir missing: ${run.runDir}`;
 }
+function activeContextPack(run) {
+  if (!run || typeof run !== "object") return null;
+  if (run.contextPackFile) return run.contextPackFile;
+  if (!run.metadataFile) return null;
+  const metadataPath = path.isAbsolute(run.metadataFile) ? run.metadataFile : path.join(targetDir, run.metadataFile);
+  if (!fs.existsSync(metadataPath)) return null;
+  try {
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+    return metadata.contextPackFile || null;
+  } catch {
+    return null;
+  }
+}
 function goalLabel(goal) {
   const issue = goal.activeIssue ? ` issue #${goal.activeIssue}` : "";
   const summary = goal.summary || goal.source || goal.id || "goal";
@@ -4610,6 +4623,8 @@ console.log(`- active pull request: ${workflow.activePullRequest ?? "none"}`);
 console.log(`- active PRD: ${workflow.activePrd ?? "none"}`);
 console.log(`- active milestone: ${workflow.activeMilestone ?? "none"}`);
 console.log(`- active run: ${activeRun ? runLabel(activeRun) : "none"}`);
+const contextPackFile = activeContextPack(activeRun);
+if (contextPackFile) console.log(`- active context pack: ${contextPackFile}`);
 const activeGoals = goals.filter((goal) => goal && goal.status === "active");
 for (const goal of activeGoals.slice(0, 5)) {
   const successCount = Array.isArray(goal.successCriteria) ? goal.successCriteria.length : 0;
@@ -4700,6 +4715,76 @@ PROMPT
   echo
 }
 
+build_context_pack_file() {
+  local target_dir="$1"
+  local target_kind="$2"
+  local target_number="$3"
+  local phase="$4"
+  local python_bin="python3"
+  local output
+
+  if ! command -v "$python_bin" >/dev/null 2>&1; then
+    python_bin="python"
+  fi
+
+  output="$(
+    PYTHONPATH="${repo_dir}${PYTHONPATH:+:${PYTHONPATH}}" \
+      "$python_bin" -m agentrail.cli.main context build "$target_kind" "$target_number" --phase "$phase" --target "$target_dir" --json
+  )"
+  AGENTRAIL_CONTEXT_BUILD_OUTPUT="$output" node <<'NODE'
+const parsed = JSON.parse(process.env.AGENTRAIL_CONTEXT_BUILD_OUTPUT || "{}");
+console.log(parsed.jsonPath || "");
+NODE
+}
+
+context_pack_summary() {
+  local target_dir="$1"
+  local pack_file="$2"
+
+  if [[ -z "$pack_file" || ! -f "${target_dir}/${pack_file}" ]]; then
+    cat <<SUMMARY
+Context pack:
+- Pack file: none
+- Summary unavailable.
+SUMMARY
+    return 0
+  fi
+
+  node - "$target_dir" "$pack_file" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const targetDir = process.argv[2];
+const packFile = process.argv[3];
+const pack = JSON.parse(fs.readFileSync(path.join(targetDir, packFile), "utf8"));
+function count(key) {
+  return Array.isArray(pack[key]) ? pack[key].length : 0;
+}
+function firstPaths(key, limit = 2) {
+  const values = Array.isArray(pack[key]) ? pack[key] : [];
+  const paths = values.map((item) => item.path || item.citation).filter(Boolean).slice(0, limit);
+  return paths.length > 0 ? ` (${paths.join(", ")})` : "";
+}
+const target = pack.target || {};
+console.log("Context pack:");
+console.log(`- Pack file: ${packFile}`);
+console.log(`- Target: ${target.kind || "target"} #${target.number ?? "unknown"} ${target.phase || ""}`.trim());
+console.log(`- Goal: ${pack.goal?.summary || "No goal recorded."}`);
+console.log(`- Required context: ${count("requiredContext")}${firstPaths("requiredContext")}`);
+console.log(`- Likely files: ${count("likelyFiles")}${firstPaths("likelyFiles")}`);
+console.log(`- Likely docs: ${count("likelyDocs")}${firstPaths("likelyDocs")}`);
+console.log(`- Relevant memory: ${count("relevantMemory")}${firstPaths("relevantMemory")}`);
+console.log(`- Prior mistakes: ${count("priorMistakes")}${firstPaths("priorMistakes")}`);
+console.log(`- Active state: ${count("activeState")}${firstPaths("activeState")}`);
+console.log(`- Goals: ${count("goals")}${firstPaths("goals")}`);
+console.log(`- Open questions: ${count("openQuestions")}${firstPaths("openQuestions")}`);
+console.log("- Use the selected context above before broad repo discovery; keep memory recall as an advisory check.");
+NODE
+}
+
+context_pack_file_from_prompt() {
+  awk -F': ' '/^- Pack file: / { print $2; exit }'
+}
+
 prompt_grill() {
   local agent="$1"
   local target_dir="$2"
@@ -4751,13 +4836,16 @@ prompt_issue() {
   local issue="$3"
   local auto_skills="${4:-1}"
   local explicit_skills="${5:-}"
-  local resolution_text
+  local resolution_text context_pack_file context_summary
   resolution_text="$(issue_resolution_text "$target_dir" "$issue")"
 
   resolve_skills_json "$target_dir" "$resolution_text" "$auto_skills" "$explicit_skills" >/dev/null
+  context_pack_file="$(build_context_pack_file "$target_dir" "issue" "$issue" "plan")"
+  context_summary="$(context_pack_summary "$target_dir" "$context_pack_file")"
 
   prompt_common_header "$agent" "$target_dir"
   print_skill_resolution "$target_dir" "$resolution_text" "$auto_skills" "$explicit_skills" "prompt"
+  printf '%s\n\n' "$context_summary"
   if [[ "$agent" == "codex" ]]; then
     cat <<PROMPT
 Run one bounded AgentRail issue execution for exactly one GitHub issue: #${issue}.
@@ -4806,8 +4894,12 @@ prompt_review() {
   local agent="$1"
   local target_dir="$2"
   local pr="$3"
+  local context_pack_file context_summary
+  context_pack_file="$(build_context_pack_file "$target_dir" "pr" "$pr" "review")"
+  context_summary="$(context_pack_summary "$target_dir" "$context_pack_file")"
 
   prompt_common_header "$agent" "$target_dir"
+  printf '%s\n\n' "$context_summary"
   if [[ "$agent" == "codex" ]]; then
     cat <<PROMPT
 Review exactly one pull request: #${pr}.
@@ -5244,6 +5336,7 @@ write_run_metadata() {
   local resolved_skills_file="$7"
   local resolved_skills_json="$8"
   local max_execution_attempts="${9:-$agentrail_default_max_execution_attempts}"
+  local context_pack_file="${10:-}"
 
   command -v node >/dev/null 2>&1 || {
     cat >"$metadata_file" <<METADATA
@@ -5257,6 +5350,7 @@ write_run_metadata() {
   "maxExecutionAttempts": ${max_execution_attempts},
   "failedVerificationAttempts": 0,
   "promptFile": "${prompt_file}",
+  "contextPackFile": "${context_pack_file}",
   "resolvedSkillsFile": "${resolved_skills_file}",
   "resolvedSkills": []
 }
@@ -5270,6 +5364,7 @@ METADATA
   RUN_COMMAND="$command_line" \
   RUN_MAX_EXECUTION_ATTEMPTS="$max_execution_attempts" \
   RUN_PROMPT_FILE="$prompt_file" \
+  RUN_CONTEXT_PACK_FILE="$context_pack_file" \
   RUN_RESOLVED_SKILLS_FILE="$resolved_skills_file" \
   RUN_RESOLVED_SKILLS_JSON="$resolved_skills_json" \
   node >"$metadata_file" <<'NODE'
@@ -5284,6 +5379,7 @@ const metadata = {
   maxExecutionAttempts: Number(process.env.RUN_MAX_EXECUTION_ATTEMPTS || 5),
   failedVerificationAttempts: 0,
   promptFile: process.env.RUN_PROMPT_FILE,
+  contextPackFile: process.env.RUN_CONTEXT_PACK_FILE || null,
   resolvedSkillsFile: process.env.RUN_RESOLVED_SKILLS_FILE,
   resolvedSkills: Array.isArray(resolution.resolved) ? resolution.resolved : [],
 };
@@ -5383,6 +5479,7 @@ write_phase_metadata() {
   local execution_attempt="${15:-}"
   local max_execution_attempts="${16:-}"
   local verifier_findings_file="${17:-}"
+  local context_pack_file="${18:-}"
 
   PHASE_NAME="$phase" \
   PHASE_STARTED_AT="$started_at" \
@@ -5393,6 +5490,7 @@ write_phase_metadata() {
   PHASE_AGENT="$agent" \
   PHASE_COMMAND="$command_line" \
   PHASE_PROMPT_FILE="$prompt_file" \
+  PHASE_CONTEXT_PACK_FILE="$context_pack_file" \
   PHASE_OUTPUT_FILE="$output_file" \
   PHASE_STATUS_FILE="$status_file" \
   PHASE_RUN_ID="$run_id" \
@@ -5412,6 +5510,7 @@ const metadata = {
   agent: process.env.PHASE_AGENT,
   command: process.env.PHASE_COMMAND,
   promptFile: process.env.PHASE_PROMPT_FILE,
+  contextPackFile: process.env.PHASE_CONTEXT_PACK_FILE || null,
   outputFile: process.env.PHASE_OUTPUT_FILE,
   statusFile: process.env.PHASE_STATUS_FILE,
   runId: process.env.PHASE_RUN_ID,
@@ -5604,6 +5703,7 @@ issue_run_phase_prompt() {
   local verifier_findings_file="${7:-}"
   local execution_attempt="${8:-1}"
   local max_execution_attempts="${9:-$agentrail_default_max_execution_attempts}"
+  local context_summary="${10:-}"
   local evidence pr_refs verifier_findings_text active_goal_text
 
   case "$phase" in
@@ -5613,6 +5713,9 @@ This is phase 1 of 3: plan.
 
 Issue context:
 ${issue_context}
+
+Phase context pack:
+${context_summary}
 
 Base Ralph instructions:
 ${base_prompt}
@@ -5642,6 +5745,9 @@ Execution attempt: ${execution_attempt} of ${max_execution_attempts}.
 Issue context:
 ${issue_context}
 
+Phase context pack:
+${context_summary}
+
 Approved plan from the plan phase:
 ${plan_output}
 
@@ -5669,6 +5775,9 @@ This is phase 3 of 3: verify.
 
 Issue context:
 ${issue_context}
+
+Phase context pack:
+${context_summary}
 
 Approved plan from the plan phase:
 ${plan_output}
@@ -5715,6 +5824,7 @@ update_run_state() {
   local verifier_findings_file="${16:-}"
   local blocked_reason="${17:-}"
   local issue_context="${18:-}"
+  local context_pack_file="${19:-}"
 
   local state_file="${target_dir}/.agentrail/state.json"
   [[ -f "$state_file" ]] || return 0
@@ -5738,6 +5848,7 @@ update_run_state() {
   AGENTRAIL_RUN_VERIFIER_FINDINGS_FILE="$verifier_findings_file" \
   AGENTRAIL_RUN_BLOCKED_REASON="$blocked_reason" \
   AGENTRAIL_RUN_ISSUE_CONTEXT="$issue_context" \
+  AGENTRAIL_RUN_CONTEXT_PACK_FILE="$context_pack_file" \
   node <<'NODE'
 const fs = require("fs");
 const path = require("path");
@@ -5754,6 +5865,7 @@ const failedVerificationAttempts = Number(process.env.AGENTRAIL_RUN_FAILED_VERIF
 const verifierFindingsFile = process.env.AGENTRAIL_RUN_VERIFIER_FINDINGS_FILE || "";
 const blockedReason = process.env.AGENTRAIL_RUN_BLOCKED_REASON || "";
 const issueContext = process.env.AGENTRAIL_RUN_ISSUE_CONTEXT || "";
+const contextPackFile = process.env.AGENTRAIL_RUN_CONTEXT_PACK_FILE || "";
 
 function relative(file) {
   return path.relative(targetDir, file).split(path.sep).join("/");
@@ -5846,6 +5958,7 @@ const run = {
 };
 if (verifierFindingsFile) run.verifierFindingsFile = relative(verifierFindingsFile);
 if (blockedReason) run.blockedReason = blockedReason;
+if (contextPackFile) run.contextPackFile = contextPackFile;
 
 if (event !== "start") {
   run.completedAt = process.env.AGENTRAIL_RUN_FINISHED_AT;
@@ -6099,7 +6212,7 @@ run_issue() {
   agent_command="$(configured_agent_command "$requested_agent" "$explicit_command" "$target_dir")"
   ensure_command_available "$agent_command"
 
-  local resolution_text skill_resolution base_prompt
+  local resolution_text skill_resolution base_prompt run_context_pack_file
   resolution_text="$(issue_resolution_text "$target_dir" "$issue")"
   if ! skill_resolution="$(resolve_skills_json "$target_dir" "$resolution_text" "1" "")"; then
     echo "failed to resolve skills for issue #${issue}" >&2
@@ -6110,6 +6223,7 @@ run_issue() {
     echo "failed to generate issue prompt for #${issue}" >&2
     exit 1
   fi
+  run_context_pack_file="$(printf '%s\n' "$base_prompt" | context_pack_file_from_prompt)"
 
   local max_execution_attempts="${AGENTRAIL_MAX_EXECUTION_ATTEMPTS:-$agentrail_default_max_execution_attempts}"
   [[ "$max_execution_attempts" =~ ^[1-9][0-9]*$ ]] || { echo "AGENTRAIL_MAX_EXECUTION_ATTEMPTS must be a positive integer" >&2; exit 2; }
@@ -6128,7 +6242,7 @@ run_issue() {
   metadata_file="${run_dir}/run.json"
   printf '%s\n' "$base_prompt" >"$prompt_file"
   printf '%s\n' "$skill_resolution" >"$resolved_skills_file"
-  write_run_metadata "$metadata_file" "$started_at" "$issue" "$agent" "$agent_command" "$prompt_file" "$resolved_skills_file" "$skill_resolution" "$max_execution_attempts"
+  write_run_metadata "$metadata_file" "$started_at" "$issue" "$agent" "$agent_command" "$prompt_file" "$resolved_skills_file" "$skill_resolution" "$max_execution_attempts" "$run_context_pack_file"
 
   echo "AgentRail run: issue #${issue}"
   echo "agent: ${agent}"
@@ -6136,7 +6250,7 @@ run_issue() {
   echo "resolved skills: ${resolved_skills_file}"
   echo "metadata: ${metadata_file}"
 
-  local status=0 phase phase_dir phase_prompt phase_prompt_file phase_output_file phase_status_file phase_metadata_file phase_started_at phase_finished_at plan_output ralph_executor phase_command
+  local status=0 phase phase_dir phase_prompt phase_prompt_file phase_output_file phase_status_file phase_metadata_file phase_started_at phase_finished_at plan_output ralph_executor phase_command phase_context_pack_file phase_context_summary
   local execution_attempt=1 failed_verification_attempts=0 verifier_findings_file="" blocked_reason=""
   phase="verify"
   plan_output=""
@@ -6157,7 +6271,13 @@ run_issue() {
     phase_status_file="${phase_dir}/status.json"
     phase_metadata_file="${phase_dir}/metadata.json"
     phase_started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-    phase_prompt="$(issue_run_phase_prompt "$phase" "$issue" "$target_dir" "$resolution_text" "$base_prompt" "$plan_output" "$verifier_findings_file" "$execution_attempt" "$max_execution_attempts")"
+    if [[ "$phase" == "plan" && -n "$run_context_pack_file" ]]; then
+      phase_context_pack_file="$run_context_pack_file"
+    else
+      phase_context_pack_file="$(build_context_pack_file "$target_dir" "issue" "$issue" "$phase")"
+    fi
+    phase_context_summary="$(context_pack_summary "$target_dir" "$phase_context_pack_file")"
+    phase_prompt="$(issue_run_phase_prompt "$phase" "$issue" "$target_dir" "$resolution_text" "$base_prompt" "$plan_output" "$verifier_findings_file" "$execution_attempt" "$max_execution_attempts" "$phase_context_summary")"
     printf '%s\n' "$phase_prompt" >"$phase_prompt_file"
     write_phase_status "$phase_status_file" "$phase" "running" "$phase_started_at" "" "0" "$phase_metadata_file" "$phase_output_file" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file"
     if [[ "$phase" == "execute" ]]; then
@@ -6165,8 +6285,8 @@ run_issue() {
     else
       phase_command="$agent_command"
     fi
-    write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "" "running" "0" "$issue" "$agent" "$phase_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file"
-    update_run_state "$target_dir" "start" "$run_id" "$issue" "$agent" "$phase" "$started_at" "" "0" "$phase_prompt_file" "$metadata_file" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" "" "$resolution_text"
+    write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "" "running" "0" "$issue" "$agent" "$phase_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file" "$phase_context_pack_file"
+    update_run_state "$target_dir" "start" "$run_id" "$issue" "$agent" "$phase" "$started_at" "" "0" "$phase_prompt_file" "$metadata_file" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" "" "$resolution_text" "$phase_context_pack_file"
 
     echo "phase: ${phase}"
     if [[ "$phase" != "plan" ]]; then
@@ -6191,13 +6311,13 @@ run_issue() {
     phase_finished_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
     if [[ "$status" -eq 0 ]]; then
       write_phase_status "$phase_status_file" "$phase" "completed" "$phase_started_at" "$phase_finished_at" "$status" "$phase_metadata_file" "$phase_output_file" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file"
-      write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "$phase_finished_at" "completed" "$status" "$issue" "$agent" "$phase_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file"
+      write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "$phase_finished_at" "completed" "$status" "$issue" "$agent" "$phase_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file" "$phase_context_pack_file"
       if [[ "$phase" == "plan" ]]; then
         plan_output="$(cat "$phase_output_file")"
       fi
     else
       write_phase_status "$phase_status_file" "$phase" "failed" "$phase_started_at" "$phase_finished_at" "$status" "$phase_metadata_file" "$phase_output_file" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file"
-      write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "$phase_finished_at" "failed" "$status" "$issue" "$agent" "$phase_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file"
+      write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "$phase_finished_at" "failed" "$status" "$issue" "$agent" "$phase_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file" "$phase_context_pack_file"
     fi
     return "$status"
   }
@@ -6219,7 +6339,7 @@ run_issue() {
       verifier_findings_file="${phase_dir}/findings.json"
       write_verifier_findings "$phase_output_file" "$verifier_findings_file" "$issue" "$execution_attempt" "$max_execution_attempts" "$status"
       write_phase_status "$phase_status_file" "$phase" "failed" "$phase_started_at" "$phase_finished_at" "$status" "$phase_metadata_file" "$phase_output_file" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file"
-      write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "$phase_finished_at" "failed" "$status" "$issue" "$agent" "$phase_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file"
+      write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "$phase_finished_at" "failed" "$status" "$issue" "$agent" "$phase_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file" "$phase_context_pack_file"
       update_run_metadata_attempts "$metadata_file" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" ""
 
       if [[ "$execution_attempt" -ge "$max_execution_attempts" ]]; then
@@ -6237,7 +6357,7 @@ run_issue() {
   local finished_at
   finished_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   update_run_metadata_attempts "$metadata_file" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" "$blocked_reason"
-  update_run_state "$target_dir" "finish" "$run_id" "$issue" "$agent" "$phase" "$started_at" "$finished_at" "$status" "$prompt_file" "$metadata_file" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" "$blocked_reason" "$resolution_text"
+  update_run_state "$target_dir" "finish" "$run_id" "$issue" "$agent" "$phase" "$started_at" "$finished_at" "$status" "$prompt_file" "$metadata_file" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" "$blocked_reason" "$resolution_text" "$phase_context_pack_file"
   return "$status"
 }
 

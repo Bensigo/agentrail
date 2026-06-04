@@ -111,6 +111,7 @@ Any non-disabled summary mode must name an explicit provider before AgentRail ca
 A context pack is the phase-specific output consumed by agents and reviewers. It includes:
 
 - goal
+- goals relevant to the target and phase
 - required context
 - likely files
 - likely docs
@@ -194,6 +195,17 @@ Required context comes from:
 - verifier findings for the same issue when retrying
 
 Required context should be included even when keyword or embedding scores are weak. If a required source is denied, missing, or redacted, the pack must list it under open questions or excluded context.
+
+## Goals
+
+Context packs include goal records from `.agentrail/state.json` only when they are relevant to the current target:
+
+- Issue packs include active or blocked goals whose `activeIssue` matches the issue number.
+- PR review packs include active or blocked goals whose `activePullRequest` matches the PR number.
+- Completed unrelated goals are omitted.
+- Unrelated active goals are omitted even if they appear in `.agentrail/state.json`.
+
+The singular `goal` field remains as compatibility framing. When a relevant goal exists, it uses that goal's summary and cites `.agentrail/state.json#workflow.goals`; otherwise it falls back to generated context-pack framing for the target.
 
 ## Prior Mistakes
 

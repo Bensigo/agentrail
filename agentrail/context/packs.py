@@ -20,6 +20,7 @@ PACK_SECTION_KEYS = [
     "activeState",
     "availableTools",
     "availableSkills",
+    "goals",
     "excludedContext",
     "openQuestions",
 ]
@@ -33,6 +34,7 @@ SECTION_TITLES = {
     "activeState": "Active State",
     "availableTools": "Available Tools",
     "availableSkills": "Available Skills",
+    "goals": "Goals",
     "excludedContext": "Excluded Context",
     "openQuestions": "Open Questions",
 }
@@ -274,6 +276,56 @@ def _all_included(pack: Dict[str, Any]) -> List[Dict[str, Any]]:
     return included
 
 
+def _load_workflow_goals(root: Path) -> List[Dict[str, Any]]:
+    state_path = root / ".agentrail" / "state.json"
+    if not state_path.exists():
+        return []
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    workflow = state.get("workflow") if isinstance(state, dict) else {}
+    goals = workflow.get("goals") if isinstance(workflow, dict) else []
+    return [goal for goal in goals if isinstance(goal, dict)]
+
+
+def _goal_relevant(goal: Dict[str, Any], target_kind: str, target_number: int, phase: str) -> bool:
+    status = str(goal.get("status") or "").lower()
+    if phase in {"plan", "execute", "verify"} and status not in {"active", "blocked"}:
+        return False
+    if target_kind == "issue":
+        return goal.get("activeIssue") == target_number
+    if target_kind == "pr":
+        return goal.get("activePullRequest") == target_number
+    return False
+
+
+def _relevant_goals(root: Path, target_kind: str, target_number: int, phase: str) -> List[Dict[str, Any]]:
+    values: List[Dict[str, Any]] = []
+    for goal in _load_workflow_goals(root):
+        if not _goal_relevant(goal, target_kind, target_number, phase):
+            continue
+        value = dict(goal)
+        value["kind"] = "goal"
+        value["path"] = ".agentrail/state.json"
+        value["reason"] = f"Relevant {goal.get('kind') or 'workflow'} goal for {_target_label(target_kind, target_number)} {phase}."
+        value["citation"] = ".agentrail/state.json#workflow.goals"
+        value["successCriteria"] = list(value.get("successCriteria") or [])
+        value["nonGoals"] = list(value.get("nonGoals") or [])
+        values.append(value)
+    return values
+
+
+def _primary_goal(target_kind: str, target_number: int, phase: str, goals: List[Dict[str, Any]]) -> Dict[str, str]:
+    if goals:
+        goal = goals[0]
+        return {
+            "summary": str(goal.get("summary") or f"Complete {_target_label(target_kind, target_number)} {phase}."),
+            "citation": str(goal.get("citation") or ".agentrail/state.json#workflow.goals"),
+        }
+    return {"summary": f"Prepare auditable {_target_label(target_kind, target_number)} {phase} context.", "citation": f"github:{target_kind}/{target_number}"}
+
+
 def _render_item(item: Dict[str, Any]) -> str:
     score = item.get("score")
     score_text = f" score={score.get('final')}" if isinstance(score, dict) and score.get("final") is not None else ""
@@ -327,6 +379,7 @@ def build_context_pack(target_dir: Path, target_kind: str, target_number: int, p
         _append_unique(sections[section], _normalized_item(result, section, f"Included in {SECTION_TITLES[section].lower()} because it directly cites {_target_label(target_kind, target_number)}."))
     sections["excludedContext"] = _excluded_context(query.get("excluded", []))
     _ensure_required_sections(root, sections, index)
+    sections["goals"] = _relevant_goals(root, target_kind, target_number, phase)
 
     generated_at = _now()
     pack_id = f"{target_kind}-{target_number}-{phase}-{_pack_slug(generated_at)}"
@@ -350,7 +403,7 @@ def build_context_pack(target_dir: Path, target_kind: str, target_number: int, p
         "retrievalBudget": retrieval_budget,
         "provider": query.get("provider") or index.get("provider") or {"mode": "disabled", "externalCalls": []},
         "audit": audit,
-        "goal": {"summary": f"Prepare auditable {_target_label(target_kind, target_number)} {phase} context.", "citation": f"github:{target_kind}/{target_number}"},
+        "goal": _primary_goal(target_kind, target_number, phase, sections["goals"]),
         **sections,
     }
     pack["included"] = _all_included(pack)

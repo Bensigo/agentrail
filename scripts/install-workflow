@@ -197,6 +197,7 @@ const defaultWorkflow = {
   activeMilestone: null,
   activeRun: null,
   completedRuns: [],
+  goals: [],
   worktrees: [],
   lastCompletedStep: null,
   nextSuggestedAction: "Pick a ready-for-agent issue or create a PRD/milestone before starting implementation.",
@@ -213,6 +214,7 @@ const state = {
     ...defaultWorkflow,
     ...(previousState?.workflow || {}),
     completedRuns: Array.isArray(previousState?.workflow?.completedRuns) ? previousState.workflow.completedRuns : [],
+    goals: Array.isArray(previousState?.workflow?.goals) ? previousState.workflow.goals : [],
     worktrees: Array.isArray(previousState?.workflow?.worktrees) ? previousState.workflow.worktrees : [],
   },
 };

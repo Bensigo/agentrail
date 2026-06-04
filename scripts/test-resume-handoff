@@ -47,7 +47,8 @@ cat >"${target}/.agentrail/state.json" <<'JSON'
       "pickedAt": "2026-05-26T11:00:00Z",
       "promptFile": ".agentrail/runs/20260526-110000-issue-13-codex-100/prompt.md",
       "metadataFile": ".agentrail/runs/20260526-110000-issue-13-codex-100/run.json",
-      "runDir": ".agentrail/runs/20260526-110000-issue-13-codex-100"
+      "runDir": ".agentrail/runs/20260526-110000-issue-13-codex-100",
+      "contextPackFile": ".agentrail/context/packs/issue-13-execute-20260526T110000000Z.json"
     },
     "completedRuns": [
       {
@@ -156,6 +157,7 @@ assert_grep "active phase: execute" "${tmp_dir}/resume.out" "resume did not incl
 assert_grep "active issue: 13" "${tmp_dir}/resume.out" "resume did not include active issue"
 assert_grep "active pull request: 23" "${tmp_dir}/resume.out" "resume did not include active PR"
 assert_grep "active run: issue #13 via codex (running)" "${tmp_dir}/resume.out" "resume did not include active run"
+assert_grep "active context pack: .agentrail/context/packs/issue-13-execute-20260526T110000000Z.json" "${tmp_dir}/resume.out" "resume did not point to the active context pack"
 assert_grep "active goal: issue-13 active issue #13: Implement resume and handoff support" "${tmp_dir}/resume.out" "resume did not include concise active goal"
 assert_grep "success criteria: 2" "${tmp_dir}/resume.out" "resume did not include active goal success criteria count"
 assert_grep "active run stale: run dir missing: .agentrail/runs/20260526-110000-issue-13-codex-100" "${tmp_dir}/resume.out" "resume did not include stale active run"

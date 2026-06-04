@@ -286,6 +286,8 @@ def _load_workflow_goals(root: Path) -> List[Dict[str, Any]]:
         return []
     workflow = state.get("workflow") if isinstance(state, dict) else {}
     goals = workflow.get("goals") if isinstance(workflow, dict) else []
+    if not isinstance(goals, list):
+        return []
     return [goal for goal in goals if isinstance(goal, dict)]
 
 

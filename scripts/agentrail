@@ -9,6 +9,7 @@ Usage:
   agentrail upgrade [--target DIR] [--force]
   agentrail doctor [--target DIR]
   agentrail status [--target DIR]
+  agentrail context sources [--target DIR]
   agentrail memory recall QUERY [--target DIR]
   agentrail memory capture KIND TITLE [--target DIR]
   agentrail skills validate [--target DIR]
@@ -30,6 +31,7 @@ Commands:
   upgrade   Upgrade managed AgentRail files without overwriting local edits.
   doctor    Inspect AgentRail installation health.
   status    Print install status and current workflow state.
+  context   Inspect local context engine sources.
   memory    Recall or template project memory entries.
   skills    Inspect or validate AgentRail-managed skills.
   resume    Print and write an agent handoff summary.
@@ -366,6 +368,48 @@ if (!fs.existsSync(configPath) || force) {
     runner: {
       name: "codex",
       command: "codex exec --sandbox danger-full-access -",
+    },
+    context: {
+      includeGlobs: ["**/*"],
+      excludeGlobs: [
+        ".git/**",
+        "node_modules/**",
+        "dist/**",
+        "build/**",
+        ".next/**",
+        "target/**",
+        "coverage/**",
+        ".cache/**",
+        ".turbo/**",
+        ".agentrail/context/**",
+        ".agentrail/source/**",
+        ".env",
+        ".env.*",
+        "**/.env",
+        "**/.env.*",
+        "**/*.pem",
+        "**/*.key",
+        "**/*credentials*",
+        "**/*secret*"
+      ],
+      maxFileSizeBytes: 262144,
+      skipBinary: true,
+      respectGitIgnore: true,
+      secretRedaction: {
+        enabled: true,
+        action: "exclude",
+        denyGlobs: [
+          ".env",
+          ".env.*",
+          "**/.env",
+          "**/.env.*",
+          "**/*.pem",
+          "**/*.key",
+          "**/*credentials*",
+          "**/*secret*"
+        ]
+      },
+      externalSources: []
     },
   };
   fs.writeFileSync(configPath, `${JSON.stringify(defaultConfig, null, 2)}\n`);
@@ -989,6 +1033,360 @@ sync_github_labels() {
   )
 
   echo "labels sync: ok"
+}
+
+run_context_sources() {
+  local target_dir
+  parse_target target_dir "$@"
+
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const childProcess = require("child_process");
+
+const targetDir = path.resolve(process.env.AGENTRAIL_TARGET_DIR);
+const configPath = path.join(targetDir, ".agentrail/config.json");
+
+const defaultContextConfig = {
+  includeGlobs: ["**/*"],
+  excludeGlobs: [
+    ".git/**",
+    "node_modules/**",
+    "dist/**",
+    "build/**",
+    ".next/**",
+    "target/**",
+    "coverage/**",
+    ".cache/**",
+    ".turbo/**",
+    ".agentrail/context/**",
+    ".agentrail/source/**",
+    ".env",
+    ".env.*",
+    "**/.env",
+    "**/.env.*",
+    "**/*.pem",
+    "**/*.key",
+    "**/*credentials*",
+    "**/*secret*",
+  ],
+  maxFileSizeBytes: 262144,
+  skipBinary: true,
+  respectGitIgnore: true,
+  secretRedaction: {
+    enabled: true,
+    action: "exclude",
+    denyGlobs: [
+      ".env",
+      ".env.*",
+      "**/.env",
+      "**/.env.*",
+      "**/*.pem",
+      "**/*.key",
+      "**/*credentials*",
+      "**/*secret*",
+    ],
+  },
+  externalSources: [],
+};
+
+function readContextConfig() {
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    const context = config.context || {};
+    const redaction = {
+      ...defaultContextConfig.secretRedaction,
+      ...(context.secretRedaction || {}),
+    };
+    return {
+      ...defaultContextConfig,
+      ...context,
+      includeGlobs: Array.isArray(context.includeGlobs) ? context.includeGlobs : defaultContextConfig.includeGlobs,
+      excludeGlobs: Array.isArray(context.excludeGlobs) ? context.excludeGlobs : defaultContextConfig.excludeGlobs,
+      maxFileSizeBytes: Number.isFinite(context.maxFileSizeBytes) ? context.maxFileSizeBytes : defaultContextConfig.maxFileSizeBytes,
+      skipBinary: context.skipBinary !== undefined ? Boolean(context.skipBinary) : defaultContextConfig.skipBinary,
+      respectGitIgnore: context.respectGitIgnore !== undefined ? Boolean(context.respectGitIgnore) : defaultContextConfig.respectGitIgnore,
+      secretRedaction: {
+        ...redaction,
+        denyGlobs: Array.isArray(redaction.denyGlobs) ? redaction.denyGlobs : defaultContextConfig.secretRedaction.denyGlobs,
+      },
+      externalSources: Array.isArray(context.externalSources) ? context.externalSources : [],
+    };
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return defaultContextConfig;
+    }
+    throw new Error(`invalid .agentrail/config.json: ${error.message}`);
+  }
+}
+
+function toPosix(filePath) {
+  return filePath.split(path.sep).join("/");
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+}
+
+function globToRegex(glob) {
+  let regex = "";
+  for (let i = 0; i < glob.length; i += 1) {
+    const char = glob[i];
+    const next = glob[i + 1];
+    if (char === "*" && next === "*" && glob[i + 2] === "/") {
+      regex += "(?:.*/)?";
+      i += 2;
+    } else if (char === "*" && next === "*") {
+      regex += ".*";
+      i += 1;
+    } else if (char === "*") {
+      regex += "[^/]*";
+    } else if (char === "?") {
+      regex += "[^/]";
+    } else {
+      regex += escapeRegex(char);
+    }
+  }
+  return new RegExp(`^${regex}$`, "i");
+}
+
+const globRegexCache = new Map();
+function matchesGlob(glob, relativePath, isDirectory = false) {
+  if (glob === "**/*") return true;
+  if (glob.endsWith("/**")) {
+    const prefix = glob.slice(0, -3);
+    return relativePath === prefix || relativePath.startsWith(`${prefix}/`);
+  }
+  if (glob.startsWith("**/")) {
+    const suffix = glob.slice(3);
+    const suffixRegex = globToRegex(suffix);
+    const optionalPrefixRegex = new RegExp(`^(?:.*/)?${suffixRegex.source.slice(1, -1)}$`, "i");
+    if (optionalPrefixRegex.test(relativePath)) return true;
+  }
+  const target = isDirectory ? `${relativePath}/` : relativePath;
+  if (!globRegexCache.has(glob)) globRegexCache.set(glob, globToRegex(glob));
+  return globRegexCache.get(glob).test(relativePath) || globRegexCache.get(glob).test(target);
+}
+
+function matchesAny(globs, relativePath, isDirectory = false) {
+  return globs.some((glob) => matchesGlob(glob, relativePath, isDirectory));
+}
+
+function walkFiles(root, config) {
+  const files = [];
+  function walk(dir) {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      const relativePath = toPosix(path.relative(root, fullPath));
+      if (entry.isDirectory()) {
+        if (!matchesAny(config.excludeGlobs, relativePath, true)) walk(fullPath);
+      } else if (entry.isFile()) {
+        files.push({ fullPath, relativePath });
+      }
+    }
+  }
+  walk(root);
+  return files;
+}
+
+function gitIgnoredSet(files, config) {
+  if (!config.respectGitIgnore || files.length === 0) return new Set();
+  try {
+    childProcess.execFileSync("git", ["-C", targetDir, "rev-parse", "--is-inside-work-tree"], { stdio: "ignore" });
+  } catch {
+    return new Set();
+  }
+  const input = files.map((file) => file.relativePath).join("\n");
+  const result = childProcess.spawnSync("git", ["-C", targetDir, "check-ignore", "--stdin"], {
+    input,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024 * 10,
+  });
+  if (!result.stdout) return new Set();
+  return new Set(result.stdout.split(/\r?\n/).filter(Boolean));
+}
+
+function isBinaryFile(fullPath) {
+  const fd = fs.openSync(fullPath, "r");
+  try {
+    const buffer = Buffer.alloc(8192);
+    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead).includes(0);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function sha256Buffer(buffer) {
+  return `sha256:${crypto.createHash("sha256").update(buffer).digest("hex")}`;
+}
+
+function sha256File(fullPath) {
+  return sha256Buffer(fs.readFileSync(fullPath));
+}
+
+function sourceTypeFor(relativePath) {
+  if (relativePath === "CONTEXT.md" || relativePath.endsWith("/CONTEXT.md")) return "context_doc";
+  if (relativePath === "TASTE.md" || relativePath.endsWith("/TASTE.md")) return "taste_doc";
+  if (relativePath.startsWith("docs/agents/")) return "agent_doc";
+  if (relativePath.startsWith("docs/memory/")) return "memory";
+  if (relativePath.startsWith("docs/prd/")) return "prd";
+  if (relativePath.startsWith("docs/milestones/")) return "milestone";
+  if (relativePath === ".agentrail/state.json" || relativePath === ".agentrail/config.json") return "agentrail_state";
+  if (relativePath.startsWith(".agentrail/runs/") || relativePath.startsWith(".agentrail/handoffs/")) return "run_artifact";
+  if (relativePath.startsWith("skills/")) return "skill";
+  return "code";
+}
+
+function authorityFor(sourceType, relativePath) {
+  if (relativePath === "CONTEXT.md" || relativePath === ".agentrail/state.json") return "critical";
+  if (["taste_doc", "agent_doc", "prd", "milestone"].includes(sourceType)) return "high";
+  if (sourceType === "agentrail_state") return "high";
+  if (sourceType === "run_artifact" || sourceType === "memory") return "normal";
+  return "normal";
+}
+
+function linkedNumbers(text, regex) {
+  const values = new Set();
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    values.add(Number(match[1]));
+  }
+  return Array.from(values).sort((a, b) => a - b);
+}
+
+function linkedRefs(fullPath) {
+  let text = "";
+  try {
+    text = fs.readFileSync(fullPath, "utf8");
+  } catch {
+    return { linkedIssues: [], linkedPullRequests: [] };
+  }
+  const linkedIssues = new Set([
+    ...linkedNumbers(text, /(?:^|[^A-Za-z])#(\d+)/g),
+    ...linkedNumbers(text, /\/issues\/(\d+)/g),
+  ]);
+  const linkedPullRequests = new Set(linkedNumbers(text, /\/pull\/(\d+)/g));
+  return {
+    linkedIssues: Array.from(linkedIssues).sort((a, b) => a - b),
+    linkedPullRequests: Array.from(linkedPullRequests).sort((a, b) => a - b),
+  };
+}
+
+function auditRefFor(relativePath) {
+  const slug = relativePath.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+  return `audit:source:${slug || "root"}`;
+}
+
+function sourceRecord(file) {
+  const stats = fs.statSync(file.fullPath);
+  const modifiedAt = stats.mtime.toISOString();
+  const sourceType = sourceTypeFor(file.relativePath);
+  const refs = linkedRefs(file.fullPath);
+  return {
+    id: `source:${file.relativePath}`,
+    sourceType,
+    path: file.relativePath,
+    contentHash: sha256File(file.fullPath),
+    modifiedAt,
+    freshness: {
+      status: "current",
+      observedAt: modifiedAt,
+      expiresAt: null,
+    },
+    authority: authorityFor(sourceType, file.relativePath),
+    visibility: "local",
+    linkedIssues: refs.linkedIssues,
+    linkedPullRequests: refs.linkedPullRequests,
+    chunkIds: [],
+    auditRef: auditRefFor(file.relativePath),
+  };
+}
+
+function externalRecord(descriptor) {
+  const uri = String(descriptor.uri || descriptor.path || descriptor.id || "");
+  if (!uri) return null;
+  const id = String(descriptor.id || `external:${uri}`);
+  const body = Buffer.from(JSON.stringify(descriptor));
+  return {
+    id,
+    sourceType: "external_descriptor",
+    path: uri,
+    contentHash: sha256Buffer(body),
+    modifiedAt: null,
+    freshness: {
+      status: "unknown",
+      observedAt: null,
+      expiresAt: null,
+    },
+    authority: descriptor.authority || "low",
+    visibility: descriptor.visibility || "metadata-only",
+    linkedIssues: Array.isArray(descriptor.linkedIssues) ? descriptor.linkedIssues : [],
+    linkedPullRequests: Array.isArray(descriptor.linkedPullRequests) ? descriptor.linkedPullRequests : [],
+    chunkIds: [],
+    auditRef: descriptor.auditRef || auditRefFor(uri),
+  };
+}
+
+const config = readContextConfig();
+const walked = walkFiles(targetDir, config);
+const ignored = gitIgnoredSet(walked, config);
+const records = [];
+
+for (const file of walked) {
+  if (!matchesAny(config.includeGlobs, file.relativePath, false)) continue;
+  if (matchesAny(config.excludeGlobs, file.relativePath, false)) continue;
+  if (config.secretRedaction.enabled && config.secretRedaction.action === "exclude" && matchesAny(config.secretRedaction.denyGlobs, file.relativePath, false)) continue;
+  if (ignored.has(file.relativePath)) continue;
+
+  let stats;
+  try {
+    stats = fs.statSync(file.fullPath);
+  } catch {
+    continue;
+  }
+  if (stats.size > config.maxFileSizeBytes) continue;
+  if (config.skipBinary && isBinaryFile(file.fullPath)) continue;
+
+  records.push(sourceRecord(file));
+}
+
+for (const descriptor of config.externalSources) {
+  const record = externalRecord(descriptor);
+  if (record) records.push(record);
+}
+
+records.sort((a, b) => a.path.localeCompare(b.path) || a.id.localeCompare(b.id));
+console.log(JSON.stringify(records, null, 2));
+NODE
+}
+
+run_context() {
+  local kind="${1:-}"
+  shift || true
+
+  case "$kind" in
+    sources)
+      run_context_sources "$@"
+      ;;
+    ""|-h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown context command: $kind" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
 }
 
 inspect_state() {
@@ -3444,6 +3842,10 @@ case "${1:-}" in
   status)
     shift
     run_status "$@"
+    ;;
+  context)
+    shift
+    run_context "$@"
     ;;
   memory)
     shift

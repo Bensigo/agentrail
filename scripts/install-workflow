@@ -232,6 +232,48 @@ if [[ ! -e "$config_file" || "$force" -eq 1 ]]; then
   "runner": {
     "name": "codex",
     "command": "codex exec --sandbox danger-full-access -"
+  },
+  "context": {
+    "includeGlobs": ["**/*"],
+    "excludeGlobs": [
+      ".git/**",
+      "node_modules/**",
+      "dist/**",
+      "build/**",
+      ".next/**",
+      "target/**",
+      "coverage/**",
+      ".cache/**",
+      ".turbo/**",
+      ".agentrail/context/**",
+      ".agentrail/source/**",
+      ".env",
+      ".env.*",
+      "**/.env",
+      "**/.env.*",
+      "**/*.pem",
+      "**/*.key",
+      "**/*credentials*",
+      "**/*secret*"
+    ],
+    "maxFileSizeBytes": 262144,
+    "skipBinary": true,
+    "respectGitIgnore": true,
+    "secretRedaction": {
+      "enabled": true,
+      "action": "exclude",
+      "denyGlobs": [
+        ".env",
+        ".env.*",
+        "**/.env",
+        "**/.env.*",
+        "**/*.pem",
+        "**/*.key",
+        "**/*credentials*",
+        "**/*secret*"
+      ]
+    },
+    "externalSources": []
   }
 }
 JSON

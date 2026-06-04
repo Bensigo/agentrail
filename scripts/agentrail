@@ -416,6 +416,11 @@ if (!fs.existsSync(configPath) || force) {
         provider: null,
         model: null
       },
+      summary: {
+        mode: "disabled",
+        provider: null,
+        model: null
+      },
       externalSources: []
     },
   };
@@ -1101,6 +1106,11 @@ const defaultContextConfig = {
     provider: null,
     model: null,
   },
+  summary: {
+    mode: "disabled",
+    provider: null,
+    model: null,
+  },
   externalSources: [],
 };
 
@@ -1128,6 +1138,11 @@ function readContextConfig() {
         ...defaultContextConfig.embedding,
         ...(context.embedding || {}),
         mode: context.embedding?.mode || defaultContextConfig.embedding.mode,
+      },
+      summary: {
+        ...defaultContextConfig.summary,
+        ...(context.summary || {}),
+        mode: context.summary?.mode || defaultContextConfig.summary.mode,
       },
       externalSources: Array.isArray(context.externalSources) ? context.externalSources : [],
     };
@@ -1519,6 +1534,11 @@ const defaultContextConfig = {
     provider: null,
     model: null,
   },
+  summary: {
+    mode: "disabled",
+    provider: null,
+    model: null,
+  },
   externalSources: [],
 };
 
@@ -1546,6 +1566,11 @@ function readContextConfig() {
         ...defaultContextConfig.embedding,
         ...(context.embedding || {}),
         mode: context.embedding?.mode || defaultContextConfig.embedding.mode,
+      },
+      summary: {
+        ...defaultContextConfig.summary,
+        ...(context.summary || {}),
+        mode: context.summary?.mode || defaultContextConfig.summary.mode,
       },
       externalSources: Array.isArray(context.externalSources) ? context.externalSources : [],
     };
@@ -1805,6 +1830,262 @@ function skipEvent(pathValue, reason) {
   });
 }
 
+function slugify(value) {
+  const slug = String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-");
+  return slug || "section";
+}
+
+function languageFor(relativePath) {
+  const extension = path.extname(relativePath).toLowerCase();
+  const name = path.basename(relativePath).toLowerCase();
+  const byExtension = {
+    ".js": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".py": "python",
+    ".rb": "ruby",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".php": "php",
+    ".cs": "csharp",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".hpp": "cpp",
+    ".sh": "shell",
+    ".bash": "shell",
+    ".zsh": "shell",
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
+    ".md": "markdown",
+  };
+  if (byExtension[extension]) return byExtension[extension];
+  if (name === "dockerfile") return "dockerfile";
+  if (!extension && relativePath.startsWith("scripts/")) return "shell";
+  if (!extension && relativePath.startsWith("templates/scripts/")) return "shell";
+  return extension ? extension.slice(1) : "text";
+}
+
+function cheapImportHints(text) {
+  const hints = new Set();
+  const patterns = [
+    /^\s*import\s+.+?\s+from\s+["'][^"']+["']/gm,
+    /^\s*import\s+["'][^"']+["']/gm,
+    /require\(\s*["'][^"']+["']\s*\)/g,
+    /^\s*from\s+\S+\s+import\s+.+$/gm,
+    /^\s*#include\s+[<"].+[>"]/gm,
+  ];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      hints.add(match[0].trim());
+      if (hints.size >= 12) return Array.from(hints);
+    }
+  }
+  return Array.from(hints);
+}
+
+function cheapSymbolHints(text) {
+  const hints = new Set();
+  const patterns = [
+    /\b(?:function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/g,
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/g,
+    /^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm,
+    /^\s*def\s+([A-Za-z_][\w]*)\s*\(/gm,
+    /^\s*class\s+([A-Za-z_][\w]*)\b/gm,
+  ];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      hints.add(match[1]);
+      if (hints.size >= 20) return Array.from(hints);
+    }
+  }
+  return Array.from(hints);
+}
+
+function parseMemoryMetadata(text) {
+  const fields = ["kind", "source", "confidence", "created_at", "expires_at"];
+  const metadata = {};
+  const frontmatter = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if (frontmatter) {
+    for (const line of frontmatter[1].split(/\r?\n/)) {
+      const match = line.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$/);
+      if (match && fields.includes(match[1])) {
+        metadata[match[1]] = match[2].replace(/^["']|["']$/g, "");
+      }
+    }
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const field of fields) {
+        if (parsed[field] !== undefined && parsed[field] !== null) metadata[field] = String(parsed[field]);
+      }
+    }
+  } catch {
+    // Plain Markdown memory is allowed; metadata is best-effort.
+  }
+  return metadata;
+}
+
+function chunkRecord({ idSuffix, source, text, language, citation, startLine, endLine, headingPath = [], parentContext = "", symbolHints = [], importHints = [], memory = null }) {
+  const normalizedText = String(text || "").trim();
+  return {
+    id: `chunk:${source.path}#${idSuffix}`,
+    sourceId: source.id,
+    sourceType: source.sourceType,
+    path: source.path,
+    language,
+    headingPath,
+    parentContext,
+    startLine,
+    endLine,
+    symbolHints,
+    importHints,
+    textHash: sha256Text(normalizedText),
+    summary: null,
+    citation,
+    content: normalizedText,
+    memory,
+  };
+}
+
+function markdownChunks(source, text, memoryMetadata) {
+  const lines = text.split(/\r?\n/);
+  const chunks = [];
+  const stack = [];
+  const slugCounts = new Map();
+  let current = null;
+
+  function closeCurrent(endLine) {
+    if (!current) return;
+    const chunkText = lines.slice(current.startLine - 1, endLine).join("\n");
+    chunks.push(chunkRecord({
+      idSuffix: current.slug,
+      source,
+      text: chunkText,
+      language: "markdown",
+      citation: `${source.path}#${current.slug}`,
+      startLine: current.startLine,
+      endLine,
+      headingPath: [...current.headingPath],
+      parentContext: current.headingPath.slice(0, -1).join(" > "),
+      memory: memoryMetadata,
+    }));
+  }
+
+  function addPreambleChunk(endLine) {
+    if (chunks.length > 0 || current || endLine <= 0) return;
+    const chunkText = lines.slice(0, endLine).join("\n");
+    if (!chunkText.trim()) return;
+    chunks.push(chunkRecord({
+      idSuffix: "preamble",
+      source,
+      text: chunkText,
+      language: "markdown",
+      citation: `${source.path}#preamble`,
+      startLine: 1,
+      endLine,
+      headingPath: [],
+      parentContext: source.path,
+      memory: memoryMetadata,
+    }));
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const match = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (!match) continue;
+    const level = match[1].length;
+    const title = match[2].trim();
+    closeCurrent(index);
+    addPreambleChunk(index);
+    while (stack.length >= level) stack.pop();
+    stack[level - 1] = title;
+    const headingPath = stack.filter(Boolean);
+    const baseSlug = slugify(title);
+    const count = (slugCounts.get(baseSlug) || 0) + 1;
+    slugCounts.set(baseSlug, count);
+    const slug = count === 1 ? baseSlug : `${baseSlug}-${count}`;
+    current = {
+      startLine: index + 1,
+      slug,
+      headingPath,
+    };
+  }
+
+  if (current) closeCurrent(lines.length);
+  if (chunks.length === 0 && text.trim()) {
+    chunks.push(chunkRecord({
+      idSuffix: "document",
+      source,
+      text,
+      language: "markdown",
+      citation: `${source.path}#document`,
+      startLine: 1,
+      endLine: lines.length,
+      headingPath: [],
+      parentContext: source.path,
+      memory: memoryMetadata,
+    }));
+  }
+  return chunks;
+}
+
+function codeChunks(source, text, relativePath) {
+  const lines = text.split(/\r?\n/);
+  const language = languageFor(relativePath);
+  const imports = cheapImportHints(text);
+  const symbols = cheapSymbolHints(text);
+  const chunks = [];
+  const sectionSize = 80;
+  for (let start = 1; start <= lines.length; start += sectionSize) {
+    const end = Math.min(lines.length, start + sectionSize - 1);
+    const chunkText = lines.slice(start - 1, end).join("\n");
+    if (!chunkText.trim()) continue;
+    chunks.push(chunkRecord({
+      idSuffix: `L${start}-L${end}`,
+      source,
+      text: chunkText,
+      language,
+      citation: `${source.path}#L${start}-L${end}`,
+      startLine: start,
+      endLine: end,
+      headingPath: [],
+      parentContext: source.path,
+      symbolHints: symbols,
+      importHints: imports,
+      memory: null,
+    }));
+  }
+  return chunks;
+}
+
+function chunksForSource(source, file, text) {
+  const memoryMetadata = source.sourceType === "memory" ? parseMemoryMetadata(text) : null;
+  if (memoryMetadata && Object.keys(memoryMetadata).length > 0) {
+    source.memory = memoryMetadata;
+  }
+  if (languageFor(file.relativePath) === "markdown") {
+    return markdownChunks(source, text, memoryMetadata);
+  }
+  return codeChunks(source, text, file.relativePath);
+}
+
 function sourceRecord(file, redactedText, redactions) {
   const stats = fs.statSync(file.fullPath);
   const modifiedAt = stats.mtime.toISOString();
@@ -1870,9 +2151,17 @@ const providerMode = String(config.embedding?.mode || "disabled");
 if (providerMode !== "disabled") {
   throw new Error(`context embedding mode '${providerMode}' is not implemented; use 'disabled' for local-only indexing`);
 }
+const summaryMode = String(config.summary?.mode || "disabled");
+if (summaryMode !== "disabled" && !config.summary?.provider) {
+  throw new Error(`context summary mode '${summaryMode}' requires context.summary.provider`);
+}
+if (summaryMode !== "disabled") {
+  throw new Error(`context summary mode '${summaryMode}' is not implemented; use 'disabled' for local-only indexing`);
+}
 const walked = walkFiles(targetDir, config);
 const ignored = gitIgnoredSet(walked, config);
 const records = [];
+const chunks = [];
 let skipped = 0;
 let redactionCount = 0;
 const skippedRecords = [];
@@ -1937,11 +2226,15 @@ for (const file of walked) {
   }
   const redacted = config.secretRedaction.enabled ? redactText(rawText) : { text: rawText, findings: [] };
   const record = sourceRecord(file, redacted.text, redacted.findings);
+  const sourceChunks = chunksForSource(record, file, redacted.text);
+  record.chunkIds = sourceChunks.map((chunk) => chunk.id);
   records.push(record);
+  chunks.push(...sourceChunks);
   appendAudit({
     event: "indexed_file",
     path: record.path,
     contentHash: record.contentHash,
+    chunkCount: sourceChunks.length,
     redactionCount: record.redactions.reduce((sum, finding) => sum + finding.count, 0),
   });
   for (const finding of record.redactions) {
@@ -1960,11 +2253,25 @@ for (const file of walked) {
 for (const descriptor of config.externalSources) {
   const record = externalRecord(descriptor);
   if (!record) continue;
+  const externalChunk = chunkRecord({
+    idSuffix: "descriptor",
+    source: record,
+    text: record.content,
+    language: "external_descriptor",
+    citation: record.path,
+    startLine: null,
+    endLine: null,
+    headingPath: [],
+    parentContext: record.path,
+  });
+  record.chunkIds = [externalChunk.id];
   records.push(record);
+  chunks.push(externalChunk);
   appendAudit({
     event: "indexed_external_descriptor",
     path: record.path,
     contentHash: record.contentHash,
+    chunkCount: 1,
   });
   for (const finding of record.redactions) {
     redactionCount += finding.count;
@@ -1980,6 +2287,7 @@ for (const descriptor of config.externalSources) {
 }
 
 records.sort((a, b) => a.path.localeCompare(b.path) || a.id.localeCompare(b.id));
+chunks.sort((a, b) => a.path.localeCompare(b.path) || a.id.localeCompare(b.id));
 const builtAt = new Date().toISOString();
 const index = {
   schemaVersion: 1,
@@ -1987,9 +2295,15 @@ const index = {
   builtAt,
   provider: {
     mode: providerMode,
+    summary: {
+      mode: summaryMode,
+      provider: config.summary?.provider || null,
+      model: config.summary?.model || null,
+    },
     externalCalls: [],
   },
   records,
+  chunks,
   skipped: skippedRecords,
 };
 
@@ -2002,14 +2316,25 @@ appendAudit({
   provider: config.embedding?.provider || null,
   model: config.embedding?.model || null,
   action: providerMode === "disabled" ? "skipped_local_only" : "not_implemented",
-  payloadCount: providerMode === "disabled" ? 0 : records.length,
+  payloadCount: providerMode === "disabled" ? 0 : chunks.length,
 });
 
-for (const record of records) {
+appendAudit({
+  event: "contextual_summary",
+  mode: summaryMode,
+  provider: config.summary?.provider || null,
+  model: config.summary?.model || null,
+  action: summaryMode === "disabled" ? "skipped_local_only" : "not_implemented",
+  payloadCount: summaryMode === "disabled" ? 0 : chunks.length,
+});
+
+for (const chunk of chunks) {
   fs.appendFileSync(embeddingPayloadPath, `${JSON.stringify({
     mode: providerMode,
-    path: record.path,
-    contentHash: record.contentHash,
+    path: chunk.path,
+    chunkId: chunk.id,
+    citation: chunk.citation,
+    textHash: chunk.textHash,
     sent: false,
     reason: providerMode === "disabled" ? "local_only" : "provider_not_implemented",
   })}\n`);
@@ -2020,7 +2345,9 @@ console.log(JSON.stringify({
   auditPath: ".agentrail/context/audit/events.jsonl",
   embeddingPayloadPath: ".agentrail/context/index/embedding-payloads.jsonl",
   providerMode,
+  summaryMode,
   indexed: records.length,
+  chunks: chunks.length,
   skipped,
   redactions: redactionCount,
 }, null, 2));
@@ -2119,12 +2446,23 @@ const generatedAtSlug = generatedAt.replace(/[-:.]/g, "");
 const packId = `${targetKind}-${targetNumber}-${phase}-${generatedAtSlug}`;
 const targetToken = `#${targetNumber}`;
 const targetUrlFragment = targetKind === "issue" ? `/issues/${targetNumber}` : `/pull/${targetNumber}`;
+const sourcesById = new Map((index.records || []).map((record) => [record.id, record]));
+const retrievalItems = Array.isArray(index.chunks) && index.chunks.length > 0
+  ? index.chunks.map((chunk) => ({ chunk, source: sourcesById.get(chunk.sourceId) || {} }))
+  : (index.records || []).map((record) => ({ chunk: null, source: record }));
 
-function recordText(record) {
+function recordText(item) {
+  const record = item.source || {};
+  const chunk = item.chunk || {};
   return [
     record.path,
     record.sourceType,
-    record.content,
+    chunk.content || record.content,
+    chunk.citation,
+    chunk.parentContext,
+    JSON.stringify(chunk.headingPath || []),
+    JSON.stringify(chunk.symbolHints || []),
+    JSON.stringify(chunk.importHints || []),
     JSON.stringify(record.linkedIssues || []),
     JSON.stringify(record.linkedPullRequests || []),
   ].join("\n").toLowerCase();
@@ -2140,13 +2478,20 @@ function authorityBoost(record) {
   return 0;
 }
 
-function relevanceScore(record) {
+function relevanceScore(item) {
+  const record = item.source || {};
+  const chunk = item.chunk || null;
   let deterministic = 0;
   let keyword = 0;
-  const text = recordText(record);
-  const linked = targetKind === "issue"
+  const text = recordText(item);
+  const chunkLinked = chunk
+    ? text.includes(targetToken.toLowerCase()) || text.includes(targetUrlFragment.toLowerCase())
+    : false;
+  const sourceLinked = targetKind === "issue"
     ? Array.isArray(record.linkedIssues) && record.linkedIssues.includes(targetNumber)
     : Array.isArray(record.linkedPullRequests) && record.linkedPullRequests.includes(targetNumber);
+  const singleChunkSource = chunk && Array.isArray(record.chunkIds) && record.chunkIds.length === 1;
+  const linked = chunk ? (chunkLinked || (singleChunkSource && sourceLinked)) : sourceLinked;
 
   if (linked) deterministic += 4;
   if (record.authority === "critical") deterministic += 2;
@@ -2164,26 +2509,42 @@ function relevanceScore(record) {
   };
 }
 
-function boundedContent(record) {
-  if (typeof record.content !== "string") return record.content;
-  return record.content.length > 2000 ? `${record.content.slice(0, 2000)}\n[TRUNCATED]` : record.content;
+function boundedContent(item) {
+  const content = item.chunk ? item.chunk.content : item.source.content;
+  if (typeof content !== "string") return content;
+  return content.length > 2000 ? `${content.slice(0, 2000)}\n[TRUNCATED]` : content;
 }
 
-const prioritizedRecords = [...index.records]
-  .map((record) => ({ record, score: relevanceScore(record) }))
+const prioritizedRecords = retrievalItems
+  .map((item) => ({ item, score: relevanceScore(item) }))
   .filter(({ score }) => score.final > 0)
-  .sort((a, b) => b.score.final - a.score.final || String(a.record.path).localeCompare(String(b.record.path)));
-const included = prioritizedRecords.slice(0, 20).map(({ record, score }) => ({
+  .sort((a, b) => b.score.final - a.score.final || String(a.item.chunk?.citation || a.item.source.path).localeCompare(String(b.item.chunk?.citation || b.item.source.path)));
+const included = prioritizedRecords.slice(0, 20).map(({ item, score }) => {
+  const record = item.source || {};
+  const chunk = item.chunk;
+  return {
   kind: "indexed_context",
   sourceType: record.sourceType,
   path: record.path,
-  reason: "Included from the local redacted context index.",
-  citation: record.path,
+  sourceId: record.id,
+  chunkId: chunk?.id || null,
+  reason: chunk
+    ? `Included from source-citable chunk ${chunk.citation}; matched ${chunk.parentContext || record.path}.`
+    : "Included from the local redacted context index.",
+  citation: chunk?.citation || record.path,
   contentHash: record.contentHash,
+  textHash: chunk?.textHash || null,
+  headingPath: chunk?.headingPath || [],
+  parentContext: chunk?.parentContext || record.path,
+  matchContext: chunk ? [record.path, chunk.parentContext, ...(chunk.headingPath || [])].filter(Boolean).join(" > ") : record.path,
+  symbolHints: chunk?.symbolHints || [],
+  importHints: chunk?.importHints || [],
+  memory: chunk?.memory || record.memory || null,
   redactions: record.redactions || [],
-  content: boundedContent(record),
+  content: boundedContent(item),
   score,
-}));
+  };
+});
 
 const excluded = (Array.isArray(index.skipped) ? index.skipped : []).map((item) => ({
   sourceType: "path",

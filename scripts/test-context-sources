@@ -51,6 +51,9 @@ console.log(Boolean(
   Number.isFinite(context.maxFileSizeBytes) &&
   context.skipBinary === true &&
   context.respectGitIgnore === true &&
+  context.summary &&
+  context.summary.mode === "disabled" &&
+  context.summary.provider === null &&
   context.secretRedaction &&
   context.secretRedaction.enabled === true &&
   Array.isArray(context.secretRedaction.denyGlobs)

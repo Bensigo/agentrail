@@ -62,6 +62,22 @@ A chunk record is the retrievable unit:
 
 Markdown docs are chunked by headings with parent heading metadata. Code files are chunked into stable sections with file path, language, and cheap symbol or import hints when available. Memory entries retain `kind`, `source`, `confidence`, `created_at`, and `expires_at`.
 
+Contextual summaries are optional chunk enrichment. They are disabled by default:
+
+```json
+{
+  "context": {
+    "summary": {
+      "mode": "disabled",
+      "provider": null,
+      "model": null
+    }
+  }
+}
+```
+
+Any non-disabled summary mode must name an explicit provider before AgentRail can attempt generation. Local indexing must still produce source-citable chunks with `summary: null` when summaries are disabled.
+
 ### Context Pack
 
 A context pack is the phase-specific output consumed by agents and reviewers. It includes:

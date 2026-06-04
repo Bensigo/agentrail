@@ -179,6 +179,26 @@ const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 config.context.embedding.mode = "disabled";
 fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 NODE
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.summary = { mode: "contextual" };
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+if "$agentrail" context index --target "$fixture" >"${tmp_dir}/enabled-summary.out" 2>"${tmp_dir}/enabled-summary.err"; then
+  echo "context index accepted summary mode without provider" >&2
+  exit 1
+fi
+assert_grep "context summary mode 'contextual' requires context.summary.provider" "${tmp_dir}/enabled-summary.err" "summary provider requirement error missing"
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.summary = { mode: "disabled", provider: null, model: null };
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/summary-disabled-index.out"
 assert_grep '"providerMode": "disabled"' "${tmp_dir}/index.out" "index did not report local-only provider mode"
 assert_grep '"indexed":' "${tmp_dir}/index.out" "index did not report indexed count"
 assert_grep '"skipped":' "${tmp_dir}/index.out" "index did not report skipped count"
@@ -232,6 +252,7 @@ assert_grep '"event":"skipped_file"' "$audit_file" "skipped file audit event mis
 assert_grep '"event":"redaction"' "$audit_file" "redaction audit event missing"
 assert_grep '"event":"indexed_external_descriptor"' "$audit_file" "external descriptor audit event missing"
 assert_grep '"event":"external_provider_call"' "$audit_file" "provider audit event missing"
+assert_grep '"event":"contextual_summary"' "$audit_file" "summary audit event missing"
 assert_grep '"mode":"disabled"' "$audit_file" "provider audit did not record disabled mode"
 assert_not_grep 'sk-test-1234567890abcdef' "$audit_file" "raw secret leaked into audit"
 assert_not_grep 'should-redact-before-index' "$audit_file" "raw password leaked into audit"

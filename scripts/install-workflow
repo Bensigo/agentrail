@@ -278,6 +278,11 @@ if [[ ! -e "$config_file" || "$force" -eq 1 ]]; then
       "provider": null,
       "model": null
     },
+    "summary": {
+      "mode": "disabled",
+      "provider": null,
+      "model": null
+    },
     "externalSources": []
   }
 }

@@ -7,7 +7,7 @@ from typing import List, Tuple
 
 from agentrail.context.embeddings import embed_context
 from agentrail.context.index import build_index
-from agentrail.context.packs import build_context_pack
+from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
 from agentrail.context.retrieval import query_context
 from agentrail.context.sources import inventory_sources
 
@@ -48,6 +48,9 @@ def _usage() -> str:
   agentrail context embed [--target DIR]
   agentrail context query "<task>" [--target DIR] [--json] [--limit N]
   agentrail context build issue NUMBER --phase PHASE [--target DIR] [--json]
+  agentrail context build pr NUMBER --phase review [--target DIR] [--json]
+  agentrail context show PACK [--target DIR] [--json]
+  agentrail context explain PACK [--target DIR] [--json]
   agentrail memory recall QUERY [--target DIR]
   agentrail memory capture KIND TITLE [--target DIR]
   agentrail skills validate [--target DIR]
@@ -180,6 +183,45 @@ def run_context(args: List[str]) -> int:
             else:
                 print(f"jsonPath={output['jsonPath']}")
                 print(f"markdownPath={output['markdownPath']}")
+            return 0
+        if kind in {"show", "explain"}:
+            if not rest or rest[0].startswith("--"):
+                raise SystemExit(f"context {kind} requires a pack id or file")
+            pack = rest[0]
+            target: str | None = None
+            json_output = False
+            index = 1
+            while index < len(rest):
+                arg = rest[index]
+                if arg == "--target":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--target requires a directory")
+                    target = rest[index + 1]
+                    index += 2
+                elif arg == "--json":
+                    json_output = True
+                    index += 1
+                else:
+                    raise SystemExit(f"Unknown context {kind} option: {arg}")
+            if kind == "show":
+                output = show_context_pack(_resolve_target(target), pack, json_output=json_output)
+                if json_output:
+                    _print_json(output)
+                else:
+                    print(output)
+            else:
+                output = explain_context_pack(_resolve_target(target), pack)
+                if json_output:
+                    _print_json(output)
+                else:
+                    print(f"packId={output['packId']}")
+                    print(f"includedCount={output['includedCount']}")
+                    print(f"excludedCount={output['excludedCount']}")
+                    print(f"providerMode={output['provider'].get('mode') if output.get('provider') else None}")
+                    for section, items in output["sections"].items():
+                        print(f"{section}: {len(items)}")
+                        for item in items:
+                            print(f"- {item['path']}: {item['reason']} citation={item['citation']}")
             return 0
         if kind in {"", "-h", "--help"}:
             print(_usage())

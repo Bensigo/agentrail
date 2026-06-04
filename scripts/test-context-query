@@ -1,0 +1,454 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+agentrail="${repo_dir}/scripts/agentrail"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+fixture="${tmp_dir}/installed"
+mkdir -p "$fixture"
+git -C "$fixture" init --quiet
+"$agentrail" install --target "$fixture" >"${tmp_dir}/install.out"
+
+mkdir -p \
+  "${fixture}/docs/agents" \
+  "${fixture}/docs/memory" \
+  "${fixture}/docs/prd" \
+  "${fixture}/docs/milestones" \
+  "${fixture}/src" \
+  "${fixture}/.agentrail/runs/issue-78-retry"
+
+cat >"${fixture}/docs/agents/issue-78.md" <<'DOC'
+# Issue 78 Hybrid Retrieval
+
+Issue #78 requires hybrid retrieval with BM25 keyword scoring, exact identifier boosts, and citations.
+DOC
+
+cat >"${fixture}/docs/agents/pr-42.md" <<'DOC'
+# Pull Request 42 Context
+
+PR #42 at /pull/42 changes hybrid retrieval review behavior and should be preferred for pull request queries.
+DOC
+
+cat >"${fixture}/docs/agents/issue-42.md" <<'DOC'
+# Issue 42 Context
+
+Issue #42 tracks unrelated planning work and should not outrank pull request context for PR query wording.
+DOC
+
+cat >"${fixture}/docs/prd/context-engine.md" <<'DOC'
+# Context Engine PRD
+
+The context engine PRD links #78 and requires ranked local-first context query output.
+DOC
+
+cat >"${fixture}/docs/milestones/context-m1.md" <<'DOC'
+# Context Milestone
+
+Milestone work for #78 should prioritize inspectable retrieval over broad integrations.
+DOC
+
+cat >"${fixture}/.agentrail/runs/issue-78-retry/findings.json" <<'JSON'
+{
+  "issue": 78,
+  "findings": [
+    {
+      "severity": "high",
+      "message": "Same-issue verifier failure: missing score breakdowns for retrieval results."
+    }
+  ]
+}
+JSON
+
+cat >"${fixture}/src/query.js" <<'JS'
+function semanticVectorSubject() {
+  return "semantic-neural-contract";
+}
+
+module.exports = { semanticVectorSubject };
+JS
+
+cat >"${fixture}/docs/agents/semantic.md" <<'DOC'
+# Semantic Retrieval Fixture
+
+semantic-neural-contract
+DOC
+
+cat >"${fixture}/docs/memory/current.md" <<'DOC'
+---
+kind: lesson
+source: issue-78
+confidence: high
+created_at: 2026-06-04T09:00:00Z
+expires_at: 2026-12-31T00:00:00Z
+---
+# Current Billing Memory
+
+billing outage runbook exact-match retrieval should stay current.
+DOC
+
+cat >"${fixture}/docs/memory/expired.md" <<'DOC'
+---
+kind: lesson
+source: issue-12
+confidence: low
+created_at: 2024-01-01T00:00:00Z
+expires_at: 2024-02-01T00:00:00Z
+---
+# Expired Billing Memory
+
+billing outage runbook exact-match retrieval is expired and should be demoted.
+DOC
+
+cat >"${fixture}/docs/agents/low-authority.json" <<'JSON'
+{"note":"billing outage runbook low authority external descriptor"}
+JSON
+
+cat >"${fixture}/.env" <<'ENV'
+QUERY_SECRET="billing outage runbook must not be included"
+ENV
+
+node - "${fixture}/.agentrail/state.json" <<'NODE'
+const fs = require("fs");
+const statePath = process.argv[2];
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+state.workflow.phase = "execute";
+state.workflow.activePhase = "execute";
+state.workflow.activeIssue = 78;
+state.workflow.activeRun = {
+  runId: "issue-78-retry",
+  targetType: "issue",
+  targetIssue: 78,
+  status: "running",
+  activePhase: "execute"
+};
+fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+NODE
+
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context = config.context || {};
+config.context.externalSources = [
+  {
+    id: "external:low-authority-billing",
+    uri: "external://low-authority-billing",
+    authority: "low",
+    visibility: "metadata-only",
+    linkedIssues: [],
+    note: "billing outage runbook low authority external descriptor"
+  },
+  {
+    id: "external:denied-billing",
+    uri: "external://denied-billing",
+    authority: "denied",
+    visibility: "denied",
+    linkedIssues: [78],
+    note: "billing outage runbook denied source"
+  }
+];
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/index.out"
+"$agentrail" context query "issue #78 hybrid retrieval score breakdown" --target "$fixture" --json >"${tmp_dir}/exact.json"
+"$agentrail" context query "src/query.js" --target "$fixture" --json >"${tmp_dir}/path.json"
+"$agentrail" context query "PR #42 review" --target "$fixture" --json >"${tmp_dir}/pr-short.json"
+"$agentrail" context query "pull request #42 review" --target "$fixture" --json >"${tmp_dir}/pr-long.json"
+
+node - "${tmp_dir}/exact.json" <<'NODE'
+const fs = require("fs");
+const result = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (result.query !== "issue #78 hybrid retrieval score breakdown") {
+  console.error("query output did not echo query");
+  process.exit(1);
+}
+if (!Array.isArray(result.results) || result.results.length === 0) {
+  console.error("query returned no results");
+  process.exit(1);
+}
+const first = result.results[0];
+if (first.path !== "docs/agents/issue-78.md") {
+  console.error(`exact issue doc did not rank first: ${first.path}`);
+  process.exit(1);
+}
+for (const field of ["citation", "reason", "score"]) {
+  if (!(field in first)) {
+    console.error(`result missing ${field}`);
+    process.exit(1);
+  }
+}
+for (const field of ["deterministic", "keyword", "bm25", "embedding", "rrf", "authorityBoost", "freshnessDemotion", "final"]) {
+  if (!(field in first.score)) {
+    console.error(`score missing ${field}`);
+    process.exit(1);
+  }
+}
+if (!first.reason.includes("exact identifier") && !first.reason.includes("linked issue")) {
+  console.error(`exact result reason is not specific enough: ${first.reason}`);
+  process.exit(1);
+}
+if (!result.results.some((item) => item.path === ".agentrail/state.json" && item.score.deterministic > 0)) {
+  console.error("active workflow state was not included as deterministic context");
+  process.exit(1);
+}
+if (!result.results.some((item) => item.path === ".agentrail/runs/issue-78-retry/findings.json" && item.reason.includes("same issue"))) {
+  console.error("same-issue prior failure was not boosted with an inclusion reason");
+  process.exit(1);
+}
+if (!Array.isArray(result.excluded) || !result.excluded.some((item) => item.reason === "secret_path" || item.reason === "denied_path")) {
+  console.error("denied secret source was not reported in excluded context");
+  process.exit(1);
+}
+if (result.results.some((item) => item.path === "[REDACTED:secret_path]" || item.path === ".env")) {
+  console.error("denied secret source appeared as an included result");
+  process.exit(1);
+}
+NODE
+
+node - "${tmp_dir}/path.json" <<'NODE'
+const fs = require("fs");
+const result = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const first = result.results[0];
+if (!first || first.path !== "src/query.js") {
+  console.error(`exact path query did not rank src/query.js first: ${first?.path}`);
+  process.exit(1);
+}
+if (!first.reason.includes("exact path")) {
+  console.error(`exact path result did not include exact path reason: ${first.reason}`);
+  process.exit(1);
+}
+NODE
+
+for pr_query_output in "${tmp_dir}/pr-short.json" "${tmp_dir}/pr-long.json"; do
+  node - "$pr_query_output" <<'NODE'
+const fs = require("fs");
+const result = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const first = result.results[0];
+if (!first || first.path !== "docs/agents/pr-42.md") {
+  console.error(`pull request query did not rank PR context first: ${first?.path}`);
+  process.exit(1);
+}
+if (!first.reason.includes("linked pull request") && !first.reason.includes("exact identifier")) {
+  console.error(`pull request result did not include PR-specific reason: ${first.reason}`);
+  process.exit(1);
+}
+const issue = result.results.find((item) => item.path === "docs/agents/issue-42.md");
+if (issue && issue.score.deterministic >= first.score.deterministic) {
+  console.error(`pull request query was also treated as issue context: ${JSON.stringify({ first: first.score, issue: issue.score })}`);
+  process.exit(1);
+}
+const activeIssueDoc = result.results.find((item) => item.path === "docs/agents/issue-78.md");
+if (activeIssueDoc && activeIssueDoc.score.deterministic > 0) {
+  console.error(`pull request query inherited active issue deterministic boost: ${JSON.stringify(activeIssueDoc.score)}`);
+  process.exit(1);
+}
+const activeState = result.results.find((item) => item.path === ".agentrail/state.json");
+if (activeState && activeState.score.deterministic > 0) {
+  console.error(`pull request query inherited active workflow state boost: ${JSON.stringify(activeState.score)}`);
+  process.exit(1);
+}
+NODE
+done
+
+mock_provider="${tmp_dir}/mock-query-embedding-provider.js"
+cat >"$mock_provider" <<'JS'
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  input += chunk;
+});
+process.stdin.on("end", () => {
+  const payload = JSON.parse(input);
+  const text = String(payload.content || "");
+  const semantic = text.includes("semantic-neural-contract") || text.includes("meaning-only retrieval request");
+  console.log(JSON.stringify({
+    provider: "mock-local",
+    model: "mock-2d",
+    embedding: semantic ? [1, 0] : [0, 1]
+  }));
+});
+JS
+
+node - "${fixture}/.agentrail/config.json" "$mock_provider" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const mockProvider = process.argv[3];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding = {
+  mode: "custom-command",
+  provider: "mock-local",
+  model: "mock-2d",
+  command: `node ${JSON.stringify(mockProvider)}`
+};
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+"$agentrail" context embed --target "$fixture" >"${tmp_dir}/embed.out"
+"$agentrail" context query "meaning-only retrieval request" --target "$fixture" --json >"${tmp_dir}/semantic.json"
+
+node - "${tmp_dir}/semantic.json" <<'NODE'
+const fs = require("fs");
+const result = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const semantic = result.results.find((item) => item.path === "docs/agents/semantic.md");
+if (!semantic) {
+  console.error("semantic fixture was not retrieved");
+  process.exit(1);
+}
+if (!(semantic.score.embedding > 0)) {
+  console.error(`semantic fixture did not receive embedding score: ${JSON.stringify(semantic.score)}`);
+  process.exit(1);
+}
+if (!(semantic.score.rrf > 0)) {
+  console.error(`semantic fixture did not receive blended RRF score: ${JSON.stringify(semantic.score)}`);
+  process.exit(1);
+}
+NODE
+
+cat >"${fixture}/docs/agents/semantic.md" <<'DOC'
+# Semantic Retrieval Fixture
+
+This file changed after embeddings were generated and no longer contains the semantic fixture token.
+DOC
+"$agentrail" context query "meaning-only retrieval request" --target "$fixture" --json >"${tmp_dir}/stale-semantic.json"
+node - "${tmp_dir}/stale-semantic.json" <<'NODE'
+const fs = require("fs");
+const result = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const semantic = result.results.find((item) => item.path === "docs/agents/semantic.md");
+if (semantic && semantic.score.embedding > 0) {
+  console.error(`stale semantic embedding was reused after source text changed: ${JSON.stringify(semantic.score)}`);
+  process.exit(1);
+}
+NODE
+
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding.mode = "future-provider";
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+if "$agentrail" context query "meaning-only retrieval request" --target "$fixture" --json >"${tmp_dir}/unsupported-mode.out" 2>"${tmp_dir}/unsupported-mode.err"; then
+  echo "context query accepted unsupported embedding mode" >&2
+  exit 1
+fi
+assert_grep "context embedding mode 'future-provider' is not supported" "${tmp_dir}/unsupported-mode.err" "unsupported embedding mode did not fail clearly"
+
+failing_provider="${tmp_dir}/failing-query-embedding-provider.js"
+cat >"$failing_provider" <<'JS'
+process.stdin.resume();
+process.stdin.on("end", () => {
+  console.error("query provider unavailable");
+  process.exit(17);
+});
+JS
+node - "${fixture}/.agentrail/config.json" "$failing_provider" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const failingProvider = process.argv[3];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding = {
+  mode: "custom-command",
+  provider: "mock-local",
+  model: "mock-2d",
+  command: `node ${JSON.stringify(failingProvider)}`
+};
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+"$agentrail" context query "issue #78 hybrid retrieval score breakdown" --target "$fixture" --json >"${tmp_dir}/fallback.json"
+node - "${tmp_dir}/fallback.json" <<'NODE'
+const fs = require("fs");
+const result = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (!Array.isArray(result.results) || result.results.length === 0) {
+  console.error("query returned no local fallback results after embedding provider failure");
+  process.exit(1);
+}
+const issue = result.results.find((item) => item.path === "docs/agents/issue-78.md");
+if (!issue || !(issue.score.keyword > 0 || issue.score.bm25 > 0 || issue.score.deterministic > 0)) {
+  console.error(`local issue result missing after embedding provider failure: ${JSON.stringify(issue)}`);
+  process.exit(1);
+}
+if (result.results.some((item) => item.score.embedding > 0)) {
+  console.error("embedding score was applied even though query embedding provider failed");
+  process.exit(1);
+}
+NODE
+assert_grep '"event":"embedding_provider_failure"' "${fixture}/.agentrail/context/audit/events.jsonl" "query embedding provider failure was not audited"
+assert_grep '"action":"embed_query_failed"' "${fixture}/.agentrail/context/audit/events.jsonl" "query embedding provider failure action was not audited"
+
+node - "${fixture}/.agentrail/config.json" "$mock_provider" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const mockProvider = process.argv[3];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding = {
+  mode: "custom-command",
+  provider: "mock-local",
+  model: "mock-2d",
+  command: `node ${JSON.stringify(mockProvider)}`
+};
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+"$agentrail" context query "billing outage runbook" --target "$fixture" --json >"${tmp_dir}/memory.json"
+
+node - "${tmp_dir}/memory.json" <<'NODE'
+const fs = require("fs");
+const result = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const current = result.results.find((item) => item.path === "docs/memory/current.md");
+const expired = result.results.find((item) => item.path === "docs/memory/expired.md");
+const low = result.results.find((item) => item.path === "external://low-authority-billing");
+const denied = result.results.find((item) => item.path === "external://denied-billing");
+if (!current || !expired) {
+  console.error("current and expired memory results were both expected");
+  process.exit(1);
+}
+if (!(current.score.final > expired.score.final)) {
+  console.error(`expired memory was not demoted below current memory: ${current.score.final} <= ${expired.score.final}`);
+  process.exit(1);
+}
+if (!(expired.score.freshnessDemotion > 0)) {
+  console.error(`expired memory did not record freshness demotion: ${JSON.stringify(expired.score)}`);
+  process.exit(1);
+}
+if (!low || !(low.score.authorityDemotion > 0)) {
+  console.error("low-authority external match was not included with an authority demotion");
+  process.exit(1);
+}
+if (denied) {
+  console.error("denied external descriptor appeared as an included result");
+  process.exit(1);
+}
+if (!result.excluded.some((item) => item.path === "external://denied-billing" && item.reason === "denied_source")) {
+  console.error("denied external descriptor was not reported in excluded context");
+  process.exit(1);
+}
+NODE
+
+assert_grep 'docs/agents/issue-78.md' "${tmp_dir}/exact.json" "exact query evidence missing issue doc"
+assert_grep 'src/query.js' "${tmp_dir}/path.json" "path query evidence missing source file"
+assert_grep 'docs/agents/pr-42.md' "${tmp_dir}/pr-short.json" "short PR query evidence missing PR doc"
+assert_grep 'docs/agents/pr-42.md' "${tmp_dir}/pr-long.json" "long PR query evidence missing PR doc"
+assert_grep 'docs/agents/semantic.md' "${tmp_dir}/semantic.json" "semantic query evidence missing semantic doc"
+assert_grep 'docs/memory/expired.md' "${tmp_dir}/memory.json" "stale-memory query evidence missing expired memory"
+
+echo "context query test passed"

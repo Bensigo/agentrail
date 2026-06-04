@@ -12,6 +12,7 @@ Usage:
   agentrail context sources [--target DIR]
   agentrail context index [--target DIR]
   agentrail context embed [--target DIR]
+  agentrail context query "<task>" [--target DIR] [--json] [--limit N]
   agentrail context build issue NUMBER --phase PHASE [--target DIR] [--json]
   agentrail memory recall QUERY [--target DIR]
   agentrail memory capture KIND TITLE [--target DIR]
@@ -2726,6 +2727,688 @@ async function runOpenAICompatible(config, payload) {
 NODE
 }
 
+run_context_query() {
+  local query="${1:-}"
+  shift || true
+  local target_dir=""
+  local json_output=0
+  local limit=20
+
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --target)
+        [[ "${2:-}" != "" && "${2:-}" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
+        target_dir="$2"
+        shift 2
+        ;;
+      --json)
+        json_output=1
+        shift
+        ;;
+      --limit)
+        [[ "${2:-}" =~ ^[0-9]+$ ]] || { echo "--limit requires a numeric value" >&2; exit 2; }
+        limit="$2"
+        shift 2
+        ;;
+      *)
+        echo "Unknown context query option: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  if [[ -z "$query" || "$query" == --* ]]; then
+    echo 'context query requires a task string' >&2
+    exit 2
+  fi
+
+  target_dir="${target_dir:-$(pwd)}"
+  target_dir="$(cd "$target_dir" && pwd -P)"
+  run_context_index --target "$target_dir" >/dev/null
+
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  AGENTRAIL_CONTEXT_QUERY="$query" \
+  AGENTRAIL_CONTEXT_QUERY_JSON_OUTPUT="$json_output" \
+  AGENTRAIL_CONTEXT_QUERY_LIMIT="$limit" \
+  node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const childProcess = require("child_process");
+const http = require("http");
+const https = require("https");
+
+const targetDir = path.resolve(process.env.AGENTRAIL_TARGET_DIR);
+const query = process.env.AGENTRAIL_CONTEXT_QUERY || "";
+const jsonOutput = process.env.AGENTRAIL_CONTEXT_QUERY_JSON_OUTPUT === "1";
+const limit = Math.max(1, Math.min(100, Number(process.env.AGENTRAIL_CONTEXT_QUERY_LIMIT || 20)));
+const configPath = path.join(targetDir, ".agentrail/config.json");
+const contextDir = path.join(targetDir, ".agentrail/context");
+const indexPath = path.join(contextDir, "index/index.json");
+const embeddingsPath = path.join(contextDir, "index/embeddings.json");
+const auditPath = path.join(contextDir, "audit/events.jsonl");
+
+function appendAudit(event) {
+  fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+  fs.appendFileSync(auditPath, `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`);
+}
+
+function sha256Text(text) {
+  return `sha256:${crypto.createHash("sha256").update(String(text)).digest("hex")}`;
+}
+
+function readEmbeddingConfig() {
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    return config.context?.embedding || {};
+  } catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw new Error(`invalid .agentrail/config.json: ${error.message}`);
+  }
+}
+
+function providerName(mode, config) {
+  if (config.provider) return String(config.provider);
+  if (mode === "custom-command") return "custom-command";
+  if (mode === "openai-compatible") return "openai-compatible";
+  return mode;
+}
+
+function configuredModel(mode, config) {
+  if (config.model) return String(config.model);
+  if (mode === "custom-command") return "custom-command";
+  return null;
+}
+
+function embeddingConfigHash(mode, config) {
+  const fingerprint = {
+    mode,
+    provider: config.provider || null,
+    model: config.model || null,
+    command: mode === "custom-command" ? String(config.command || config.customCommand || "") : null,
+    baseUrl: mode === "openai-compatible" ? String(config.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "") : null,
+    apiKeyEnv: mode === "openai-compatible" ? String(config.apiKeyEnv || "OPENAI_API_KEY") : null,
+  };
+  return `sha256:${crypto.createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex")}`;
+}
+
+function normalizeEmbedding(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("provider returned an empty or missing embedding vector");
+  }
+  const vector = value.map((item) => Number(item));
+  if (vector.some((item) => !Number.isFinite(item))) {
+    throw new Error("provider returned a non-numeric embedding vector");
+  }
+  return vector;
+}
+
+function runCustomCommand(config, payload) {
+  const command = config.command || config.customCommand;
+  if (!command) throw new Error("context.embedding.command is required for custom-command mode");
+  const result = childProcess.spawnSync(command, {
+    input: `${JSON.stringify(payload)}\n`,
+    encoding: "utf8",
+    shell: true,
+    maxBuffer: 1024 * 1024 * 20,
+    cwd: targetDir,
+    env: process.env,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const stderr = String(result.stderr || "").trim();
+    throw new Error(`custom embedding command failed with exit ${result.status}${stderr ? `: ${stderr}` : ""}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(String(result.stdout || "").trim());
+  } catch (error) {
+    throw new Error(`custom embedding command returned invalid JSON: ${error.message}`);
+  }
+  return normalizeEmbedding(parsed.embedding || parsed.vector);
+}
+
+function requestJson(url, headers, body) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const transport = parsed.protocol === "http:" ? http : https;
+    const request = transport.request({
+      method: "POST",
+      hostname: parsed.hostname,
+      port: parsed.port || undefined,
+      path: `${parsed.pathname}${parsed.search}`,
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+        ...headers,
+      },
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        let parsedBody = {};
+        try {
+          parsedBody = text ? JSON.parse(text) : {};
+        } catch (error) {
+          reject(new Error(`embedding provider returned invalid JSON: ${error.message}`));
+          return;
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`embedding provider returned HTTP ${response.statusCode}: ${text.slice(0, 500)}`));
+          return;
+        }
+        resolve(parsedBody);
+      });
+    });
+    request.on("error", reject);
+    request.write(body);
+    request.end();
+  });
+}
+
+async function runOpenAICompatible(config, payload) {
+  const model = config.model;
+  if (!model) throw new Error("context.embedding.model is required for openai-compatible mode");
+  const apiKeyEnv = config.apiKeyEnv || "OPENAI_API_KEY";
+  const apiKey = process.env[apiKeyEnv];
+  if (!apiKey) throw new Error(`${apiKeyEnv} is required for openai-compatible embedding mode`);
+  const baseUrl = String(config.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+  const response = await requestJson(`${baseUrl}/embeddings`, {
+    authorization: `Bearer ${apiKey}`,
+  }, JSON.stringify({ model, input: payload.content }));
+  return normalizeEmbedding(response.data?.[0]?.embedding);
+}
+
+function cosineSimilarity(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || a.length !== b.length) return 0;
+  let dot = 0;
+  let left = 0;
+  let right = 0;
+  for (let index = 0; index < a.length; index += 1) {
+    dot += a[index] * b[index];
+    left += a[index] * a[index];
+    right += b[index] * b[index];
+  }
+  if (left === 0 || right === 0) return 0;
+  return dot / (Math.sqrt(left) * Math.sqrt(right));
+}
+
+function reusableEmbedding(record, chunk, source, mode, configHash) {
+  return record &&
+    record.mode === mode &&
+    record.configHash === configHash &&
+    record.chunkId === chunk.id &&
+    record.textHash === chunk.textHash &&
+    record.contentHash === source.contentHash &&
+    Array.isArray(record.embedding) &&
+    Number.isFinite(record.dimension);
+}
+
+function tokenize(text) {
+  return String(text || "")
+    .toLowerCase()
+    .match(/[a-z0-9_.-]+\/[a-z0-9_.\/-]+|[#]?\d+|[a-z][a-z0-9_-]*|[a-z0-9_.-]+/g) || [];
+}
+
+function unique(values) {
+  return Array.from(new Set(values));
+}
+
+function issueRefs(text) {
+  const refs = new Set();
+  const value = String(text || "");
+  for (const match of value.matchAll(/(?:^|[^A-Za-z])#(\d+)\b/g)) {
+    const prefix = value.slice(0, match.index + match[0].length - match[1].length - 1);
+    if (/(?:^|\b)(?:pr|pull\s+request)\s*$/i.test(prefix)) continue;
+    refs.add(Number(match[1]));
+  }
+  for (const match of value.matchAll(/\/issues\/(\d+)\b/g)) refs.add(Number(match[1]));
+  return Array.from(refs).sort((a, b) => a - b);
+}
+
+function prRefs(text) {
+  const refs = new Set();
+  for (const match of String(text || "").matchAll(/\/pull\/(\d+)\b/g)) refs.add(Number(match[1]));
+  for (const match of String(text || "").matchAll(/\bpr\s*#?(\d+)\b/gi)) refs.add(Number(match[1]));
+  for (const match of String(text || "").matchAll(/\bpull\s+request\s*#?(\d+)\b/gi)) refs.add(Number(match[1]));
+  return Array.from(refs).sort((a, b) => a - b);
+}
+
+function scoreAuthority(record) {
+  if (record.authority === "critical") return 0.45;
+  if (record.authority === "high") return 0.3;
+  if (record.authority === "normal") return 0;
+  return 0;
+}
+
+function authorityDemotion(record) {
+  if (record.authority === "low") return 0.45;
+  if (record.authority === "denied") return 999;
+  return 0;
+}
+
+function memoryFreshness(memory) {
+  const now = Date.now();
+  let demotion = 0;
+  const reasons = [];
+  if (!memory || typeof memory !== "object") return { demotion, reasons };
+  if (memory.expires_at) {
+    const expiresAt = Date.parse(memory.expires_at);
+    if (Number.isFinite(expiresAt) && expiresAt < now) {
+      demotion += 1.5;
+      reasons.push("expired memory");
+    }
+  }
+  if (memory.created_at) {
+    const createdAt = Date.parse(memory.created_at);
+    const staleBefore = now - 180 * 24 * 60 * 60 * 1000;
+    if (Number.isFinite(createdAt) && createdAt < staleBefore) {
+      demotion += 0.4;
+      reasons.push("stale memory");
+    }
+  }
+  if (String(memory.confidence || "").toLowerCase() === "low") {
+    demotion += 0.25;
+    reasons.push("low-confidence memory");
+  }
+  return { demotion, reasons };
+}
+
+function freshnessDemotion(record, chunk) {
+  let demotion = 0;
+  const reasons = [];
+  const freshnessStatus = String(record.freshness?.status || "current").toLowerCase();
+  if (freshnessStatus === "expired") {
+    demotion += 1.5;
+    reasons.push("expired source");
+  } else if (freshnessStatus === "stale") {
+    demotion += 0.75;
+    reasons.push("stale source");
+  } else if (freshnessStatus === "unknown") {
+    demotion += 0.15;
+    reasons.push("unknown freshness");
+  }
+  const memory = chunk?.memory || record.memory || null;
+  const memoryStatus = memoryFreshness(memory);
+  demotion += memoryStatus.demotion;
+  reasons.push(...memoryStatus.reasons);
+  return { demotion, reasons };
+}
+
+function recordText(item) {
+  const record = item.source || {};
+  const chunk = item.chunk || {};
+  return [
+    record.path,
+    record.id,
+    record.sourceType,
+    record.authority,
+    chunk.content || record.content,
+    chunk.citation,
+    chunk.parentContext,
+    JSON.stringify(chunk.headingPath || []),
+    JSON.stringify(chunk.symbolHints || []),
+    JSON.stringify(chunk.importHints || []),
+    JSON.stringify(record.linkedIssues || []),
+    JSON.stringify(record.linkedPullRequests || []),
+  ].join("\n");
+}
+
+function boundedContent(item) {
+  const content = item.chunk ? item.chunk.content : item.source.content;
+  if (typeof content !== "string") return content;
+  return content.length > 2000 ? `${content.slice(0, 2000)}\n[TRUNCATED]` : content;
+}
+
+function reciprocalRank(rank) {
+  return rank > 0 ? 1 / (60 + rank) : 0;
+}
+
+function buildReason(parts) {
+  const ordered = [
+    "deterministic required context",
+    "active workflow state",
+    "same issue prior failure",
+    "linked issue",
+    "linked pull request",
+    "exact identifier",
+    "exact path",
+    "BM25 keyword match",
+    "embedding similarity",
+    "high authority source",
+    "current memory",
+    "stale memory",
+    "expired memory",
+    "low authority source",
+  ];
+  return ordered.filter((item) => parts.has(item)).join("; ") || "Included by hybrid retrieval score.";
+}
+
+(async () => {
+  const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+  const sourcesById = new Map((index.records || []).map((record) => [record.id, record]));
+  const retrievalItems = Array.isArray(index.chunks) && index.chunks.length > 0
+    ? index.chunks.map((chunk) => ({ chunk, source: sourcesById.get(chunk.sourceId) || {} }))
+    : (index.records || []).map((record) => ({ chunk: null, source: record }));
+
+  const queryTokens = unique(tokenize(query));
+  const queryLower = query.toLowerCase();
+  const queryIssueRefs = issueRefs(query);
+  const queryPrRefs = prRefs(query);
+  const activeIssue = (() => {
+    try {
+      const state = JSON.parse(fs.readFileSync(path.join(targetDir, ".agentrail/state.json"), "utf8"));
+      return Number(state.workflow?.activeIssue || state.workflow?.activeRun?.targetIssue || 0) || null;
+    } catch {
+      return null;
+    }
+  })();
+  const effectiveIssueRefs = queryIssueRefs.length > 0
+    ? queryIssueRefs
+    : (queryPrRefs.length === 0 && activeIssue ? [activeIssue] : []);
+
+  const corpus = retrievalItems.map((item) => {
+    const text = recordText(item);
+    const tokens = tokenize(text);
+    const termCounts = new Map();
+    for (const token of tokens) termCounts.set(token, (termCounts.get(token) || 0) + 1);
+    return { item, text, textLower: text.toLowerCase(), tokens, termCounts };
+  });
+  const docCount = Math.max(1, corpus.length);
+  const avgDocLength = corpus.reduce((sum, doc) => sum + doc.tokens.length, 0) / docCount || 1;
+  const docFreq = new Map();
+  for (const token of queryTokens) {
+    docFreq.set(token, corpus.reduce((count, doc) => count + (doc.termCounts.has(token) ? 1 : 0), 0));
+  }
+
+  const lexicalRaw = new Map();
+  const scored = corpus.map((doc) => {
+    const record = doc.item.source || {};
+    const chunk = doc.item.chunk || null;
+    const reasons = new Set();
+    let deterministic = 0;
+    let keyword = 0;
+    let bm25 = 0;
+
+    const linkedIssue = effectiveIssueRefs.some((number) => Array.isArray(record.linkedIssues) && record.linkedIssues.includes(number));
+    const linkedPr = queryPrRefs.some((number) => Array.isArray(record.linkedPullRequests) && record.linkedPullRequests.includes(number));
+    const sameIssueFinding = record.sourceType === "run_artifact" &&
+      effectiveIssueRefs.some((number) => doc.textLower.includes(`issue-${number}`) || doc.textLower.includes(`"issue": ${number}`) || doc.textLower.includes(`targetissue": ${number}`));
+
+    if (record.path === ".agentrail/state.json" && activeIssue && effectiveIssueRefs.includes(activeIssue)) {
+      deterministic += 4;
+      reasons.add("active workflow state");
+      reasons.add("deterministic required context");
+    }
+    if (sameIssueFinding) {
+      deterministic += 3.5;
+      reasons.add("same issue prior failure");
+    }
+    if (linkedIssue) {
+      deterministic += 3;
+      reasons.add("linked issue");
+    }
+    if (linkedPr) {
+      deterministic += 2.5;
+      reasons.add("linked pull request");
+    }
+    if (["context_doc", "taste_doc"].includes(record.sourceType) && /context|taste|required/.test(queryLower)) {
+      deterministic += 2;
+      reasons.add("deterministic required context");
+    }
+
+    for (const issue of effectiveIssueRefs) {
+      if (doc.textLower.includes(`#${issue}`) || doc.textLower.includes(`/issues/${issue}`)) {
+        keyword += 2;
+        reasons.add("exact identifier");
+      }
+    }
+    for (const pr of queryPrRefs) {
+      if (doc.textLower.includes(`/pull/${pr}`) || doc.textLower.includes(`pr #${pr}`)) {
+        keyword += 1.5;
+        reasons.add("exact identifier");
+      }
+    }
+    for (const token of queryTokens) {
+      if (token.includes("/") && doc.textLower.includes(token)) {
+        keyword += 1.5;
+        reasons.add("exact path");
+      }
+    }
+    const queryPhrases = queryLower.match(/[a-z0-9_-]+(?:\s+[a-z0-9_-]+){1,4}/g) || [];
+    for (const phrase of queryPhrases) {
+      if (phrase.length > 8 && doc.textLower.includes(phrase)) {
+        keyword += 1;
+        reasons.add("exact identifier");
+      }
+    }
+
+    for (const token of queryTokens) {
+      const tf = doc.termCounts.get(token) || 0;
+      if (tf === 0) continue;
+      const df = docFreq.get(token) || 0;
+      const idf = Math.log(1 + (docCount - df + 0.5) / (df + 0.5));
+      const k1 = 1.2;
+      const b = 0.75;
+      bm25 += idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (doc.tokens.length / avgDocLength))));
+    }
+    if (bm25 > 0) reasons.add("BM25 keyword match");
+
+    const authorityBoost = scoreAuthority(record);
+    if (authorityBoost > 0) reasons.add("high authority source");
+    const authorityPenalty = authorityDemotion(record);
+    if (authorityPenalty > 0 && authorityPenalty < 999) reasons.add("low authority source");
+    const fresh = freshnessDemotion(record, chunk);
+    for (const reason of fresh.reasons) reasons.add(reason);
+    if ((chunk?.memory || record.memory) && fresh.demotion === 0) reasons.add("current memory");
+
+    const lexical = deterministic + keyword + bm25;
+    lexicalRaw.set(chunk?.id || record.id, lexical);
+    return {
+      item: doc.item,
+      textLower: doc.textLower,
+      reasons,
+      score: {
+        deterministic,
+        keyword,
+        bm25,
+        embedding: null,
+        rrf: 0,
+        authorityBoost,
+        authorityDemotion: authorityPenalty >= 999 ? 0 : authorityPenalty,
+        freshnessDemotion: fresh.demotion,
+        final: 0,
+      },
+    };
+  });
+
+  const lexicalRank = new Map(scored
+    .filter((entry) => lexicalRaw.get(entry.item.chunk?.id || entry.item.source.id) > 0)
+    .sort((a, b) => lexicalRaw.get(b.item.chunk?.id || b.item.source.id) - lexicalRaw.get(a.item.chunk?.id || a.item.source.id))
+    .map((entry, index) => [entry.item.chunk?.id || entry.item.source.id, index + 1]));
+
+  let queryVector = null;
+  let embeddingRecords = [];
+  let provider = { mode: "disabled", provider: null, model: null };
+  const embeddingConfig = readEmbeddingConfig();
+  const embeddingMode = String(embeddingConfig.mode || "disabled");
+  const embeddingHash = embeddingConfigHash(embeddingMode, embeddingConfig);
+  if (embeddingMode !== "disabled" && !["custom-command", "openai-compatible"].includes(embeddingMode)) {
+    throw new Error(`context embedding mode '${embeddingMode}' is not supported by this AgentRail version; config is reserved for future provider extension`);
+  }
+  if (embeddingMode !== "disabled" && fs.existsSync(embeddingsPath)) {
+    const parsed = JSON.parse(fs.readFileSync(embeddingsPath, "utf8"));
+    embeddingRecords = Array.isArray(parsed.embeddings) ? parsed.embeddings : [];
+    provider = parsed.provider || { mode: embeddingMode, provider: providerName(embeddingMode, embeddingConfig), model: configuredModel(embeddingMode, embeddingConfig) };
+    if (embeddingRecords.length > 0) {
+      const payload = {
+        mode: embeddingMode,
+        provider: providerName(embeddingMode, embeddingConfig),
+        model: configuredModel(embeddingMode, embeddingConfig),
+        chunkId: "query",
+        path: "query",
+        citation: "query",
+        contentHash: sha256Text(query),
+        textHash: sha256Text(query),
+        auditRef: `audit:query:${sha256Text(query).slice(7, 19)}`,
+        content: query,
+      };
+      appendAudit({
+        event: "embedding_provider_call",
+        mode: embeddingMode,
+        provider: payload.provider,
+        model: payload.model,
+        action: "embed_query",
+        queryHash: payload.textHash,
+      });
+      try {
+        queryVector = embeddingMode === "custom-command"
+          ? runCustomCommand(embeddingConfig, payload)
+          : await runOpenAICompatible(embeddingConfig, payload);
+      } catch (error) {
+        appendAudit({
+          event: "embedding_provider_failure",
+          mode: embeddingMode,
+          provider: payload.provider,
+          model: payload.model,
+          action: "embed_query_failed",
+          queryHash: payload.textHash,
+          auditRef: payload.auditRef,
+          message: "embedding provider failed",
+        });
+        queryVector = null;
+      }
+    }
+  }
+  const embeddingsByChunk = new Map(embeddingRecords.map((record) => [record.chunkId, record]));
+  const semanticRanked = [];
+  if (queryVector) {
+    for (const entry of scored) {
+      const chunkId = entry.item.chunk?.id || null;
+      const embedding = chunkId ? embeddingsByChunk.get(chunkId) : null;
+      if (embedding && !reusableEmbedding(embedding, entry.item.chunk, entry.item.source || {}, embeddingMode, embeddingHash)) {
+        continue;
+      }
+      const similarity = embedding ? Math.max(0, cosineSimilarity(queryVector, embedding.embedding)) : 0;
+      if (similarity > 0) {
+        entry.score.embedding = similarity;
+        entry.reasons.add("embedding similarity");
+        semanticRanked.push(entry);
+      }
+    }
+  }
+  const semanticRank = new Map(semanticRanked
+    .sort((a, b) => (b.score.embedding || 0) - (a.score.embedding || 0))
+    .map((entry, index) => [entry.item.chunk?.id || entry.item.source.id, index + 1]));
+
+  const excluded = [];
+  for (const item of index.skipped || []) {
+    excluded.push({
+      sourceType: "path",
+      path: item.path,
+      reason: item.reason,
+      citation: ".agentrail/context/index/index.json",
+    });
+  }
+
+  const results = scored
+    .filter((entry) => {
+      const record = entry.item.source || {};
+      if (record.authority === "denied" || record.visibility === "denied") {
+        excluded.push({
+          sourceType: record.sourceType,
+          path: record.path,
+          reason: "denied_source",
+          citation: record.path,
+        });
+        return false;
+      }
+      return true;
+    })
+    .map((entry) => {
+      const id = entry.item.chunk?.id || entry.item.source.id;
+      const lexicalRrf = reciprocalRank(lexicalRank.get(id) || 0);
+      const semanticRrf = reciprocalRank(semanticRank.get(id) || 0);
+      entry.score.rrf = lexicalRrf + semanticRrf;
+      const lexical = lexicalRaw.get(id) || 0;
+      const semantic = entry.score.embedding || 0;
+      entry.score.final = lexical + (semantic * 2) + (entry.score.rrf * 10) + entry.score.authorityBoost - entry.score.authorityDemotion - entry.score.freshnessDemotion;
+      return entry;
+    })
+    .filter((entry) => entry.score.final > 0)
+    .sort((a, b) => b.score.final - a.score.final || String(a.item.chunk?.citation || a.item.source.path).localeCompare(String(b.item.chunk?.citation || b.item.source.path)))
+    .slice(0, limit)
+    .map((entry, index) => {
+      const record = entry.item.source || {};
+      const chunk = entry.item.chunk || null;
+      const score = {};
+      for (const [key, value] of Object.entries(entry.score)) {
+        score[key] = value === null ? null : Number(value.toFixed(6));
+      }
+      return {
+        rank: index + 1,
+        kind: "indexed_context",
+        sourceType: record.sourceType,
+        path: record.path,
+        sourceId: record.id,
+        chunkId: chunk?.id || null,
+        citation: chunk?.citation || record.path,
+        reason: buildReason(entry.reasons),
+        contentHash: record.contentHash,
+        textHash: chunk?.textHash || null,
+        headingPath: chunk?.headingPath || [],
+        parentContext: chunk?.parentContext || record.path,
+        matchContext: chunk ? [record.path, chunk.parentContext, ...(chunk.headingPath || [])].filter(Boolean).join(" > ") : record.path,
+        symbolHints: chunk?.symbolHints || [],
+        importHints: chunk?.importHints || [],
+        memory: chunk?.memory || record.memory || null,
+        content: boundedContent(entry.item),
+        score,
+      };
+    });
+
+  const output = {
+    schemaVersion: 1,
+    query,
+    generatedAt: new Date().toISOString(),
+    index: {
+      version: index.version,
+      builtAt: index.builtAt,
+    },
+    provider,
+    results,
+    excluded,
+  };
+
+  appendAudit({
+    event: "context_query",
+    queryHash: sha256Text(query),
+    resultCount: results.length,
+    excludedCount: excluded.length,
+    providerMode: provider.mode || embeddingMode,
+  });
+
+  if (jsonOutput) {
+    console.log(JSON.stringify(output, null, 2));
+  } else {
+    console.log(`query=${query}`);
+    for (const item of results) {
+      console.log(`${item.rank}. ${item.citation}`);
+      console.log(`   score=${item.score.final} reason=${item.reason}`);
+    }
+    if (excluded.length > 0) {
+      console.log("excluded:");
+      for (const item of excluded) console.log(`- ${item.path}: ${item.reason}`);
+    }
+  }
+})().catch((error) => {
+  console.error(error.message);
+  process.exit(1);
+});
+NODE
+}
+
 run_context_build() {
   local target_dir=""
   local target_kind="${1:-}"
@@ -3011,6 +3694,9 @@ run_context() {
       ;;
     embed)
       run_context_embed "$@"
+      ;;
+    query)
+      run_context_query "$@"
       ;;
     build)
       run_context_build "$@"

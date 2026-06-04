@@ -273,6 +273,11 @@ if [[ ! -e "$config_file" || "$force" -eq 1 ]]; then
         "**/*secret*"
       ]
     },
+    "embedding": {
+      "mode": "disabled",
+      "provider": null,
+      "model": null
+    },
     "externalSources": []
   }
 }

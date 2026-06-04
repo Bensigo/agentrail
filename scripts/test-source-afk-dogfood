@@ -89,7 +89,7 @@ git -C "$source_repo" commit --quiet -m "seed source repo"
 write_agentrail_state 0
 
 set +e
-"${source_repo}/scripts/agentrail" run issue 4242 --target "$source_repo" --command true >"${tmp_dir}/source-run-guard.out" 2>&1
+env -u AGENTRAIL_ALLOW_SOURCE_RUN "${source_repo}/scripts/agentrail" run issue 4242 --target "$source_repo" --command true >"${tmp_dir}/source-run-guard.out" 2>&1
 status=$?
 set -e
 if [[ "$status" -eq 0 ]]; then

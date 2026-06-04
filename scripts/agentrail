@@ -10,6 +10,8 @@ Usage:
   agentrail doctor [--target DIR]
   agentrail status [--target DIR]
   agentrail context sources [--target DIR]
+  agentrail context index [--target DIR]
+  agentrail context build issue NUMBER --phase PHASE [--target DIR] [--json]
   agentrail memory recall QUERY [--target DIR]
   agentrail memory capture KIND TITLE [--target DIR]
   agentrail skills validate [--target DIR]
@@ -408,6 +410,11 @@ if (!fs.existsSync(configPath) || force) {
           "**/*credentials*",
           "**/*secret*"
         ]
+      },
+      embedding: {
+        mode: "disabled",
+        provider: null,
+        model: null
       },
       externalSources: []
     },
@@ -1089,6 +1096,11 @@ const defaultContextConfig = {
       "**/*secret*",
     ],
   },
+  embedding: {
+    mode: "disabled",
+    provider: null,
+    model: null,
+  },
   externalSources: [],
 };
 
@@ -1111,6 +1123,11 @@ function readContextConfig() {
       secretRedaction: {
         ...redaction,
         denyGlobs: Array.isArray(redaction.denyGlobs) ? redaction.denyGlobs : defaultContextConfig.secretRedaction.denyGlobs,
+      },
+      embedding: {
+        ...defaultContextConfig.embedding,
+        ...(context.embedding || {}),
+        mode: context.embedding?.mode || defaultContextConfig.embedding.mode,
       },
       externalSources: Array.isArray(context.externalSources) ? context.externalSources : [],
     };
@@ -1286,15 +1303,75 @@ function auditRefFor(relativePath) {
   return `audit:source:${slug || "root"}`;
 }
 
+function redactText(value) {
+  let redacted = String(value);
+  const findings = [];
+  function recordFinding(detectorName) {
+    const existing = findings.find((finding) => finding.detector === detectorName);
+    if (existing) existing.count += 1;
+    else findings.push({ detector: detectorName, count: 1 });
+  }
+  const detectors = [
+    { name: "private_key", regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, token: "[REDACTED:private_key]" },
+    { name: "api_key", regex: /\bsk-[A-Za-z0-9_-]{10,}\b/g, token: "[REDACTED:api_key]" },
+    { name: "token", regex: /\b(?:ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]+)\b/g, token: "[REDACTED:token]" },
+    { name: "aws_access_key", regex: /\bAKIA[0-9A-Z]{16}\b/g, token: "[REDACTED:aws_access_key]" },
+    { name: "database_url", regex: /\b(?:postgres|postgresql|mysql|redis|mongodb):\/\/[^\s"'`<>]+/gi, token: "[REDACTED:database_url]" },
+    { name: "bearer_token", regex: /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi, token: "Bearer [REDACTED:bearer_token]" },
+  ];
+  for (const detector of detectors) {
+    let count = 0;
+    redacted = redacted.replace(detector.regex, () => {
+      count += 1;
+      return detector.token;
+    });
+    if (count > 0) findings.push({ detector: detector.name, count });
+  }
+  redacted = redacted.replace(/((?:"password"|'password')\s*:\s*)(["'])(.*?)\2/gi, (_match, prefix, quote) => {
+    recordFinding("password");
+    return `${prefix}${quote}[REDACTED:password]${quote}`;
+  });
+  redacted = redacted.replace(/(\bpassword\b\s*[:=]\s*)(["'])(.*?)\2/gi, (_match, prefix, quote) => {
+    recordFinding("password");
+    return `${prefix}${quote}[REDACTED:password]${quote}`;
+  });
+  redacted = redacted.replace(/(\bpassword\b\s*[:=]\s*)(["']?)[^\s"'`,;}]+/gi, (_match, prefix) => {
+    recordFinding("password");
+    return `${prefix}[REDACTED:password]`;
+  });
+  redacted = redacted.replace(/((?:"|')(?:authorization|proxy-authorization)(?:"|')\s*:\s*)(["'])(.*?)\2/gi, (_match, prefix, quote) => {
+    recordFinding("authorization");
+    return `${prefix}${quote}[REDACTED:authorization]${quote}`;
+  });
+  redacted = redacted.replace(/(\b(?:authorization|proxy[_-]authorization)\b\s*[:=]\s*)(["']?)[^\s"'`,;}]+(?:\s+[^\s"'`,;}]+)?/gi, (_match, prefix) => {
+    recordFinding("authorization");
+    return `${prefix}[REDACTED:authorization]`;
+  });
+  redacted = redacted.replace(/((?:"|')[A-Za-z0-9_]*(?:secret|token|api[_-]?key|access[_-]?key|database_url|db_url|private[_-]?key)[A-Za-z0-9_]*(?:"|')\s*:\s*)(["'])(.*?)\2/gi, (_match, prefix, quote) => {
+    recordFinding("secret_assignment");
+    return `${prefix}${quote}[REDACTED:secret_assignment]${quote}`;
+  });
+  redacted = redacted.replace(/((?:\b(?:const|let|var)\s+)?\b[A-Za-z0-9_]*(?:secret|token|api[_-]?key|access[_-]?key|database_url|db_url|private[_-]?key)[A-Za-z0-9_]*\b\s*[:=]\s*)(["'])(.*?)\2/gi, (_match, prefix, quote) => {
+    recordFinding("secret_assignment");
+    return `${prefix}${quote}[REDACTED:secret_assignment]${quote}`;
+  });
+  redacted = redacted.replace(/((?:\b(?:const|let|var)\s+)?\b[A-Za-z0-9_]*(?:secret|token|api[_-]?key|access[_-]?key|database_url|db_url|private[_-]?key)[A-Za-z0-9_]*\b\s*[:=]\s*)[^\s"'`,;}]+/gi, (_match, prefix) => {
+    recordFinding("secret_assignment");
+    return `${prefix}[REDACTED:secret_assignment]`;
+  });
+  return { text: redacted, findings };
+}
+
 function sourceRecord(file) {
   const stats = fs.statSync(file.fullPath);
   const modifiedAt = stats.mtime.toISOString();
   const sourceType = sourceTypeFor(file.relativePath);
   const refs = linkedRefs(file.fullPath);
+  const redactedPath = redactText(file.relativePath);
   return {
-    id: `source:${file.relativePath}`,
+    id: `source:${redactedPath.text}`,
     sourceType,
-    path: file.relativePath,
+    path: redactedPath.text,
     contentHash: sha256File(file.fullPath),
     modifiedAt,
     freshness: {
@@ -1303,23 +1380,27 @@ function sourceRecord(file) {
       expiresAt: null,
     },
     authority: authorityFor(sourceType, file.relativePath),
-    visibility: "local",
+    visibility: redactedPath.findings.length > 0 ? "redacted" : "local",
     linkedIssues: refs.linkedIssues,
     linkedPullRequests: refs.linkedPullRequests,
     chunkIds: [],
-    auditRef: auditRefFor(file.relativePath),
+    auditRef: auditRefFor(redactedPath.text),
+    redactions: redactedPath.findings,
   };
 }
 
 function externalRecord(descriptor) {
   const uri = String(descriptor.uri || descriptor.path || descriptor.id || "");
   if (!uri) return null;
-  const id = String(descriptor.id || `external:${uri}`);
-  const body = Buffer.from(JSON.stringify(descriptor));
+  const redactedUri = redactText(uri);
+  const redactedId = redactText(String(descriptor.id || `external:${uri}`));
+  const redactedAuditRef = descriptor.auditRef ? redactText(String(descriptor.auditRef)).text : auditRefFor(redactedUri.text);
+  const redacted = redactText(JSON.stringify(descriptor));
+  const body = Buffer.from(redacted.text);
   return {
-    id,
+    id: redactedId.text,
     sourceType: "external_descriptor",
-    path: uri,
+    path: redactedUri.text,
     contentHash: sha256Buffer(body),
     modifiedAt: null,
     freshness: {
@@ -1328,11 +1409,12 @@ function externalRecord(descriptor) {
       expiresAt: null,
     },
     authority: descriptor.authority || "low",
-    visibility: descriptor.visibility || "metadata-only",
+    visibility: redacted.findings.length > 0 || redactedUri.findings.length > 0 || redactedId.findings.length > 0 ? "redacted" : (descriptor.visibility || "metadata-only"),
     linkedIssues: Array.isArray(descriptor.linkedIssues) ? descriptor.linkedIssues : [],
     linkedPullRequests: Array.isArray(descriptor.linkedPullRequests) ? descriptor.linkedPullRequests : [],
     chunkIds: [],
-    auditRef: descriptor.auditRef || auditRefFor(uri),
+    auditRef: redactedAuditRef,
+    redactions: [...redacted.findings, ...redactedUri.findings, ...redactedId.findings],
   };
 }
 
@@ -1369,6 +1451,812 @@ console.log(JSON.stringify(records, null, 2));
 NODE
 }
 
+run_context_index() {
+  local target_dir
+  parse_target target_dir "$@"
+
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const childProcess = require("child_process");
+
+const targetDir = path.resolve(process.env.AGENTRAIL_TARGET_DIR);
+const configPath = path.join(targetDir, ".agentrail/config.json");
+const contextDir = path.join(targetDir, ".agentrail/context");
+const indexDir = path.join(contextDir, "index");
+const auditDir = path.join(contextDir, "audit");
+const auditPath = path.join(auditDir, "events.jsonl");
+const embeddingPayloadPath = path.join(indexDir, "embedding-payloads.jsonl");
+
+const defaultContextConfig = {
+  includeGlobs: ["**/*"],
+  excludeGlobs: [
+    ".git/**",
+    "node_modules/**",
+    "dist/**",
+    "build/**",
+    ".next/**",
+    "target/**",
+    "coverage/**",
+    ".cache/**",
+    ".turbo/**",
+    ".agentrail/context/**",
+    ".agentrail/source/**",
+    ".env",
+    ".env.*",
+    "**/.env",
+    "**/.env.*",
+    "**/*.pem",
+    "**/*.key",
+    "**/*credentials*",
+    "**/*secret*",
+  ],
+  maxFileSizeBytes: 262144,
+  skipBinary: true,
+  respectGitIgnore: true,
+  secretRedaction: {
+    enabled: true,
+    action: "exclude",
+    denyGlobs: [
+      ".env",
+      ".env.*",
+      "**/.env",
+      "**/.env.*",
+      "**/*.pem",
+      "**/*.key",
+      "**/*credentials*",
+      "**/*secret*",
+    ],
+  },
+  embedding: {
+    mode: "disabled",
+    provider: null,
+    model: null,
+  },
+  externalSources: [],
+};
+
+function readContextConfig() {
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    const context = config.context || {};
+    const redaction = {
+      ...defaultContextConfig.secretRedaction,
+      ...(context.secretRedaction || {}),
+    };
+    return {
+      ...defaultContextConfig,
+      ...context,
+      includeGlobs: Array.isArray(context.includeGlobs) ? context.includeGlobs : defaultContextConfig.includeGlobs,
+      excludeGlobs: Array.isArray(context.excludeGlobs) ? context.excludeGlobs : defaultContextConfig.excludeGlobs,
+      maxFileSizeBytes: Number.isFinite(context.maxFileSizeBytes) ? context.maxFileSizeBytes : defaultContextConfig.maxFileSizeBytes,
+      skipBinary: context.skipBinary !== undefined ? Boolean(context.skipBinary) : defaultContextConfig.skipBinary,
+      respectGitIgnore: context.respectGitIgnore !== undefined ? Boolean(context.respectGitIgnore) : defaultContextConfig.respectGitIgnore,
+      secretRedaction: {
+        ...redaction,
+        denyGlobs: Array.isArray(redaction.denyGlobs) ? redaction.denyGlobs : defaultContextConfig.secretRedaction.denyGlobs,
+      },
+      embedding: {
+        ...defaultContextConfig.embedding,
+        ...(context.embedding || {}),
+        mode: context.embedding?.mode || defaultContextConfig.embedding.mode,
+      },
+      externalSources: Array.isArray(context.externalSources) ? context.externalSources : [],
+    };
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return defaultContextConfig;
+    }
+    throw new Error(`invalid .agentrail/config.json: ${error.message}`);
+  }
+}
+
+function toPosix(filePath) {
+  return filePath.split(path.sep).join("/");
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+}
+
+function globToRegex(glob) {
+  let regex = "";
+  for (let i = 0; i < glob.length; i += 1) {
+    const char = glob[i];
+    const next = glob[i + 1];
+    if (char === "*" && next === "*" && glob[i + 2] === "/") {
+      regex += "(?:.*/)?";
+      i += 2;
+    } else if (char === "*" && next === "*") {
+      regex += ".*";
+      i += 1;
+    } else if (char === "*") {
+      regex += "[^/]*";
+    } else if (char === "?") {
+      regex += "[^/]";
+    } else {
+      regex += escapeRegex(char);
+    }
+  }
+  return new RegExp(`^${regex}$`, "i");
+}
+
+const globRegexCache = new Map();
+function matchesGlob(glob, relativePath, isDirectory = false) {
+  if (glob === "**/*") return true;
+  if (glob.endsWith("/**")) {
+    const prefix = glob.slice(0, -3);
+    return relativePath === prefix || relativePath.startsWith(`${prefix}/`);
+  }
+  if (glob.startsWith("**/")) {
+    const suffix = glob.slice(3);
+    const suffixRegex = globToRegex(suffix);
+    const optionalPrefixRegex = new RegExp(`^(?:.*/)?${suffixRegex.source.slice(1, -1)}$`, "i");
+    if (optionalPrefixRegex.test(relativePath)) return true;
+  }
+  const target = isDirectory ? `${relativePath}/` : relativePath;
+  if (!globRegexCache.has(glob)) globRegexCache.set(glob, globToRegex(glob));
+  return globRegexCache.get(glob).test(relativePath) || globRegexCache.get(glob).test(target);
+}
+
+function matchesAny(globs, relativePath, isDirectory = false) {
+  return globs.some((glob) => matchesGlob(glob, relativePath, isDirectory));
+}
+
+function walkFiles(root, config) {
+  const files = [];
+  function walk(dir) {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      const relativePath = toPosix(path.relative(root, fullPath));
+      if (entry.isDirectory()) {
+        if (matchesAny(config.excludeGlobs, relativePath, true)) {
+          files.push({ fullPath, relativePath, directory: true, skipReason: "exclude_glob" });
+        } else {
+          walk(fullPath);
+        }
+      } else if (entry.isFile()) {
+        files.push({ fullPath, relativePath, directory: false });
+      }
+    }
+  }
+  walk(root);
+  return files;
+}
+
+function gitIgnoredSet(files, config) {
+  const fileList = files.filter((file) => !file.directory);
+  if (!config.respectGitIgnore || fileList.length === 0) return new Set();
+  try {
+    childProcess.execFileSync("git", ["-C", targetDir, "rev-parse", "--is-inside-work-tree"], { stdio: "ignore" });
+  } catch {
+    return new Set();
+  }
+  const input = fileList.map((file) => file.relativePath).join("\n");
+  const result = childProcess.spawnSync("git", ["-C", targetDir, "check-ignore", "--stdin"], {
+    input,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024 * 10,
+  });
+  if (!result.stdout) return new Set();
+  return new Set(result.stdout.split(/\r?\n/).filter(Boolean));
+}
+
+function isBinaryFile(fullPath) {
+  const fd = fs.openSync(fullPath, "r");
+  try {
+    const buffer = Buffer.alloc(8192);
+    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead).includes(0);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function sha256Buffer(buffer) {
+  return `sha256:${crypto.createHash("sha256").update(buffer).digest("hex")}`;
+}
+
+function sha256Text(text) {
+  return sha256Buffer(Buffer.from(text));
+}
+
+function sourceTypeFor(relativePath) {
+  if (relativePath === "CONTEXT.md" || relativePath.endsWith("/CONTEXT.md")) return "context_doc";
+  if (relativePath === "TASTE.md" || relativePath.endsWith("/TASTE.md")) return "taste_doc";
+  if (relativePath.startsWith("docs/agents/")) return "agent_doc";
+  if (relativePath.startsWith("docs/memory/")) return "memory";
+  if (relativePath.startsWith("docs/prd/")) return "prd";
+  if (relativePath.startsWith("docs/milestones/")) return "milestone";
+  if (relativePath === ".agentrail/state.json" || relativePath === ".agentrail/config.json") return "agentrail_state";
+  if (relativePath.startsWith(".agentrail/runs/") || relativePath.startsWith(".agentrail/handoffs/")) return "run_artifact";
+  if (relativePath.startsWith("skills/")) return "skill";
+  return "code";
+}
+
+function authorityFor(sourceType, relativePath) {
+  if (relativePath === "CONTEXT.md" || relativePath === ".agentrail/state.json") return "critical";
+  if (["taste_doc", "agent_doc", "prd", "milestone"].includes(sourceType)) return "high";
+  if (sourceType === "agentrail_state") return "high";
+  if (sourceType === "run_artifact" || sourceType === "memory") return "normal";
+  return "normal";
+}
+
+function linkedNumbers(text, regex) {
+  const values = new Set();
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    values.add(Number(match[1]));
+  }
+  return Array.from(values).sort((a, b) => a - b);
+}
+
+function linkedRefsFromText(text) {
+  const linkedIssues = new Set([
+    ...linkedNumbers(text, /(?:^|[^A-Za-z])#(\d+)/g),
+    ...linkedNumbers(text, /\/issues\/(\d+)/g),
+  ]);
+  const linkedPullRequests = new Set(linkedNumbers(text, /\/pull\/(\d+)/g));
+  return {
+    linkedIssues: Array.from(linkedIssues).sort((a, b) => a - b),
+    linkedPullRequests: Array.from(linkedPullRequests).sort((a, b) => a - b),
+  };
+}
+
+function auditRefFor(relativePath) {
+  const slug = relativePath.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+  return `audit:source:${slug || "root"}`;
+}
+
+function redactText(text) {
+  const findings = [];
+  let redacted = text;
+  function recordFinding(detectorName) {
+    const existing = findings.find((finding) => finding.detector === detectorName);
+    if (existing) existing.count += 1;
+    else findings.push({ detector: detectorName, count: 1 });
+  }
+  const detectors = [
+    { name: "private_key", regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, token: "[REDACTED:private_key]" },
+    { name: "api_key", regex: /\bsk-[A-Za-z0-9_-]{10,}\b/g, token: "[REDACTED:api_key]" },
+    { name: "token", regex: /\b(?:ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]+)\b/g, token: "[REDACTED:token]" },
+    { name: "aws_access_key", regex: /\bAKIA[0-9A-Z]{16}\b/g, token: "[REDACTED:aws_access_key]" },
+    { name: "database_url", regex: /\b(?:postgres|postgresql|mysql|redis|mongodb):\/\/[^\s"'`<>]+/gi, token: "[REDACTED:database_url]" },
+    { name: "bearer_token", regex: /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi, token: "Bearer [REDACTED:bearer_token]" },
+  ];
+  for (const detector of detectors) {
+    let count = 0;
+    redacted = redacted.replace(detector.regex, () => {
+      count += 1;
+      return detector.token;
+    });
+    if (count > 0) findings.push({ detector: detector.name, count });
+  }
+  redacted = redacted.replace(/((?:"password"|'password')\s*:\s*)(["'])(.*?)\2/gi, (_match, prefix, quote) => {
+    recordFinding("password");
+    return `${prefix}${quote}[REDACTED:password]${quote}`;
+  });
+  redacted = redacted.replace(/(\bpassword\b\s*[:=]\s*)(["'])(.*?)\2/gi, (_match, prefix, quote) => {
+    recordFinding("password");
+    return `${prefix}${quote}[REDACTED:password]${quote}`;
+  });
+  redacted = redacted.replace(/(\bpassword\b\s*[:=]\s*)(["']?)[^\s"'`,;}]+/gi, (_match, prefix) => {
+    recordFinding("password");
+    return `${prefix}[REDACTED:password]`;
+  });
+  redacted = redacted.replace(/((?:"|')(?:authorization|proxy-authorization)(?:"|')\s*:\s*)(["'])(.*?)\2/gi, (_match, prefix, quote) => {
+    recordFinding("authorization");
+    return `${prefix}${quote}[REDACTED:authorization]${quote}`;
+  });
+  redacted = redacted.replace(/(\b(?:authorization|proxy[_-]authorization)\b\s*[:=]\s*)(["']?)[^\s"'`,;}]+(?:\s+[^\s"'`,;}]+)?/gi, (_match, prefix) => {
+    recordFinding("authorization");
+    return `${prefix}[REDACTED:authorization]`;
+  });
+  redacted = redacted.replace(/((?:"|')[A-Za-z0-9_]*(?:secret|token|api[_-]?key|access[_-]?key|database_url|db_url|private[_-]?key)[A-Za-z0-9_]*(?:"|')\s*:\s*)(["'])(.*?)\2/gi, (_match, prefix, quote) => {
+    recordFinding("secret_assignment");
+    return `${prefix}${quote}[REDACTED:secret_assignment]${quote}`;
+  });
+  redacted = redacted.replace(/((?:\b(?:const|let|var)\s+)?\b[A-Za-z0-9_]*(?:secret|token|api[_-]?key|access[_-]?key|database_url|db_url|private[_-]?key)[A-Za-z0-9_]*\b\s*[:=]\s*)(["'])(.*?)\2/gi, (_match, prefix, quote) => {
+    recordFinding("secret_assignment");
+    return `${prefix}${quote}[REDACTED:secret_assignment]${quote}`;
+  });
+  redacted = redacted.replace(/((?:\b(?:const|let|var)\s+)?\b[A-Za-z0-9_]*(?:secret|token|api[_-]?key|access[_-]?key|database_url|db_url|private[_-]?key)[A-Za-z0-9_]*\b\s*[:=]\s*)[^\s"'`,;}]+/gi, (_match, prefix) => {
+    recordFinding("secret_assignment");
+    return `${prefix}[REDACTED:secret_assignment]`;
+  });
+  return { text: redacted, findings };
+}
+
+function appendAudit(event) {
+  fs.mkdirSync(auditDir, { recursive: true });
+  fs.appendFileSync(auditPath, `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`);
+}
+
+function skipEvent(pathValue, reason) {
+  const secretPath = config.secretRedaction.enabled && matchesAny(config.secretRedaction.denyGlobs, pathValue, false);
+  const redactedPath = secretPath ? { text: "[REDACTED:secret_path]", findings: [{ detector: "secret_path", count: 1 }] } : redactText(pathValue);
+  const event = {
+    event: "skipped_file",
+    path: redactedPath.text,
+    reason,
+  };
+  if (redactedPath.findings.length > 0) {
+    event.redactions = redactedPath.findings;
+  }
+  skippedRecords.push({ path: redactedPath.text, reason });
+  appendAudit({
+    ...event,
+  });
+}
+
+function sourceRecord(file, redactedText, redactions) {
+  const stats = fs.statSync(file.fullPath);
+  const modifiedAt = stats.mtime.toISOString();
+  const sourceType = sourceTypeFor(file.relativePath);
+  const refs = linkedRefsFromText(redactedText);
+  const contentHash = sha256Text(redactedText);
+  const redactedPath = redactText(file.relativePath);
+  const allRedactions = [...redactions, ...redactedPath.findings];
+  return {
+    id: `source:${redactedPath.text}`,
+    sourceType,
+    path: redactedPath.text,
+    contentHash,
+    modifiedAt,
+    freshness: {
+      status: "current",
+      observedAt: modifiedAt,
+      expiresAt: null,
+    },
+    authority: authorityFor(sourceType, file.relativePath),
+    visibility: allRedactions.length > 0 ? "redacted" : "local",
+    linkedIssues: refs.linkedIssues,
+    linkedPullRequests: refs.linkedPullRequests,
+    chunkIds: [],
+    auditRef: auditRefFor(redactedPath.text),
+    redactions: allRedactions,
+    content: redactedText,
+  };
+}
+
+function externalRecord(descriptor) {
+  const uri = String(descriptor.uri || descriptor.path || descriptor.id || "");
+  if (!uri) return null;
+  const redactedUri = redactText(uri).text;
+  const redactedId = redactText(String(descriptor.id || `external:${uri}`)).text;
+  const redactedAuditRef = descriptor.auditRef ? redactText(String(descriptor.auditRef)).text : auditRefFor(redactedUri);
+  const redacted = redactText(JSON.stringify(descriptor));
+  const body = Buffer.from(redacted.text);
+  return {
+    id: redactedId,
+    sourceType: "external_descriptor",
+    path: redactedUri,
+    contentHash: sha256Buffer(body),
+    modifiedAt: null,
+    freshness: {
+      status: "unknown",
+      observedAt: null,
+      expiresAt: null,
+    },
+    authority: descriptor.authority || "low",
+    visibility: redacted.findings.length > 0 ? "redacted" : (descriptor.visibility || "metadata-only"),
+    linkedIssues: Array.isArray(descriptor.linkedIssues) ? descriptor.linkedIssues : [],
+    linkedPullRequests: Array.isArray(descriptor.linkedPullRequests) ? descriptor.linkedPullRequests : [],
+    chunkIds: [],
+    auditRef: redactedAuditRef,
+    redactions: redacted.findings,
+    content: redacted.text,
+  };
+}
+
+const config = readContextConfig();
+const providerMode = String(config.embedding?.mode || "disabled");
+if (providerMode !== "disabled") {
+  throw new Error(`context embedding mode '${providerMode}' is not implemented; use 'disabled' for local-only indexing`);
+}
+const walked = walkFiles(targetDir, config);
+const ignored = gitIgnoredSet(walked, config);
+const records = [];
+let skipped = 0;
+let redactionCount = 0;
+const skippedRecords = [];
+
+fs.mkdirSync(indexDir, { recursive: true });
+fs.mkdirSync(auditDir, { recursive: true });
+fs.writeFileSync(embeddingPayloadPath, "");
+
+for (const file of walked) {
+  if (file.directory) {
+    skipped += 1;
+    skipEvent(file.relativePath, file.skipReason || "directory_skipped");
+    continue;
+  }
+  if (!matchesAny(config.includeGlobs, file.relativePath, false)) {
+    skipped += 1;
+    skipEvent(file.relativePath, "not_allowed");
+    continue;
+  }
+  if (matchesAny(config.excludeGlobs, file.relativePath, false)) {
+    skipped += 1;
+    skipEvent(file.relativePath, "denied_path");
+    continue;
+  }
+  if (config.secretRedaction.enabled && config.secretRedaction.action === "exclude" && matchesAny(config.secretRedaction.denyGlobs, file.relativePath, false)) {
+    skipped += 1;
+    skipEvent(file.relativePath, "secret_path");
+    continue;
+  }
+  if (ignored.has(file.relativePath)) {
+    skipped += 1;
+    skipEvent(file.relativePath, "gitignored");
+    continue;
+  }
+
+  let stats;
+  try {
+    stats = fs.statSync(file.fullPath);
+  } catch {
+    skipped += 1;
+    skipEvent(file.relativePath, "unreadable");
+    continue;
+  }
+  if (stats.size > config.maxFileSizeBytes) {
+    skipped += 1;
+    skipEvent(file.relativePath, "oversized");
+    continue;
+  }
+  if (config.skipBinary && isBinaryFile(file.fullPath)) {
+    skipped += 1;
+    skipEvent(file.relativePath, "binary");
+    continue;
+  }
+
+  let rawText = "";
+  try {
+    rawText = fs.readFileSync(file.fullPath, "utf8");
+  } catch {
+    skipped += 1;
+    skipEvent(file.relativePath, "unreadable");
+    continue;
+  }
+  const redacted = config.secretRedaction.enabled ? redactText(rawText) : { text: rawText, findings: [] };
+  const record = sourceRecord(file, redacted.text, redacted.findings);
+  records.push(record);
+  appendAudit({
+    event: "indexed_file",
+    path: record.path,
+    contentHash: record.contentHash,
+    redactionCount: record.redactions.reduce((sum, finding) => sum + finding.count, 0),
+  });
+  for (const finding of record.redactions) {
+    redactionCount += finding.count;
+    appendAudit({
+      event: "redaction",
+      path: record.path,
+      detector: finding.detector,
+      action: "replace",
+      count: finding.count,
+      contentHash: record.contentHash,
+    });
+  }
+}
+
+for (const descriptor of config.externalSources) {
+  const record = externalRecord(descriptor);
+  if (!record) continue;
+  records.push(record);
+  appendAudit({
+    event: "indexed_external_descriptor",
+    path: record.path,
+    contentHash: record.contentHash,
+  });
+  for (const finding of record.redactions) {
+    redactionCount += finding.count;
+    appendAudit({
+      event: "redaction",
+      path: record.path,
+      detector: finding.detector,
+      action: "replace",
+      count: finding.count,
+      contentHash: record.contentHash,
+    });
+  }
+}
+
+records.sort((a, b) => a.path.localeCompare(b.path) || a.id.localeCompare(b.id));
+const builtAt = new Date().toISOString();
+const index = {
+  schemaVersion: 1,
+  version: "context-index-v1",
+  builtAt,
+  provider: {
+    mode: providerMode,
+    externalCalls: [],
+  },
+  records,
+  skipped: skippedRecords,
+};
+
+fs.writeFileSync(path.join(indexDir, "index.json"), `${JSON.stringify(index, null, 2)}\n`);
+fs.writeFileSync(path.join(indexDir, "sources.json"), `${JSON.stringify(records.map(({ content, ...record }) => record), null, 2)}\n`);
+
+appendAudit({
+  event: "external_provider_call",
+  mode: providerMode,
+  provider: config.embedding?.provider || null,
+  model: config.embedding?.model || null,
+  action: providerMode === "disabled" ? "skipped_local_only" : "not_implemented",
+  payloadCount: providerMode === "disabled" ? 0 : records.length,
+});
+
+for (const record of records) {
+  fs.appendFileSync(embeddingPayloadPath, `${JSON.stringify({
+    mode: providerMode,
+    path: record.path,
+    contentHash: record.contentHash,
+    sent: false,
+    reason: providerMode === "disabled" ? "local_only" : "provider_not_implemented",
+  })}\n`);
+}
+
+console.log(JSON.stringify({
+  indexPath: ".agentrail/context/index/index.json",
+  auditPath: ".agentrail/context/audit/events.jsonl",
+  embeddingPayloadPath: ".agentrail/context/index/embedding-payloads.jsonl",
+  providerMode,
+  indexed: records.length,
+  skipped,
+  redactions: redactionCount,
+}, null, 2));
+NODE
+}
+
+run_context_build() {
+  local target_dir=""
+  local target_kind="${1:-}"
+  local target_number="${2:-}"
+  shift 2 || true
+  local phase=""
+  local json_output=0
+
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --target)
+        [[ "${2:-}" != "" && "${2:-}" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
+        target_dir="$2"
+        shift 2
+        ;;
+      --phase)
+        [[ "${2:-}" != "" && "${2:-}" != --* ]] || { echo "--phase requires a value" >&2; exit 2; }
+        phase="$2"
+        shift 2
+        ;;
+      --json)
+        json_output=1
+        shift
+        ;;
+      *)
+        echo "Unknown context build option: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  target_dir="${target_dir:-$(pwd)}"
+  target_dir="$(cd "$target_dir" && pwd -P)"
+  if [[ "$target_kind" != "issue" && "$target_kind" != "pr" ]]; then
+    echo "context build requires target kind: issue or pr" >&2
+    exit 2
+  fi
+  if [[ ! "$target_number" =~ ^[0-9]+$ ]]; then
+    echo "context build requires a numeric target" >&2
+    exit 2
+  fi
+  if [[ "$phase" == "" ]]; then
+    echo "context build requires --phase" >&2
+    exit 2
+  fi
+  case "$target_kind:$phase" in
+    issue:plan|issue:execute|issue:verify|pr:review)
+      ;;
+    *)
+      echo "context build phase must be one of: issue plan|execute|verify, pr review" >&2
+      exit 2
+      ;;
+  esac
+
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  AGENTRAIL_CONTEXT_TARGET_KIND="$target_kind" \
+  AGENTRAIL_CONTEXT_TARGET_NUMBER="$target_number" \
+  AGENTRAIL_CONTEXT_PHASE="$phase" \
+  AGENTRAIL_CONTEXT_JSON_OUTPUT="$json_output" \
+  node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const targetDir = path.resolve(process.env.AGENTRAIL_TARGET_DIR);
+const targetKind = process.env.AGENTRAIL_CONTEXT_TARGET_KIND;
+const targetNumber = Number(process.env.AGENTRAIL_CONTEXT_TARGET_NUMBER);
+const phase = process.env.AGENTRAIL_CONTEXT_PHASE;
+const jsonOutput = process.env.AGENTRAIL_CONTEXT_JSON_OUTPUT === "1";
+const contextDir = path.join(targetDir, ".agentrail/context");
+const indexPath = path.join(contextDir, "index/index.json");
+const packsDir = path.join(contextDir, "packs");
+const auditPath = path.join(contextDir, "audit/events.jsonl");
+
+function appendAudit(event) {
+  fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+  fs.appendFileSync(auditPath, `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`);
+}
+
+function relativePath(filePath) {
+  return path.relative(targetDir, filePath).split(path.sep).join("/");
+}
+
+if (!fs.existsSync(indexPath)) {
+  throw new Error("context index is missing; run `agentrail context index --target <dir>` first");
+}
+
+const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+const generatedAt = new Date().toISOString();
+const generatedAtSlug = generatedAt.replace(/[-:.]/g, "");
+const packId = `${targetKind}-${targetNumber}-${phase}-${generatedAtSlug}`;
+const targetToken = `#${targetNumber}`;
+const targetUrlFragment = targetKind === "issue" ? `/issues/${targetNumber}` : `/pull/${targetNumber}`;
+
+function recordText(record) {
+  return [
+    record.path,
+    record.sourceType,
+    record.content,
+    JSON.stringify(record.linkedIssues || []),
+    JSON.stringify(record.linkedPullRequests || []),
+  ].join("\n").toLowerCase();
+}
+
+function redactionCount(record) {
+  return Array.isArray(record.redactions) ? record.redactions.reduce((sum, finding) => sum + Number(finding.count || 0), 0) : 0;
+}
+
+function authorityBoost(record) {
+  if (record.authority === "critical") return 0.3;
+  if (record.authority === "high") return 0.2;
+  return 0;
+}
+
+function relevanceScore(record) {
+  let deterministic = 0;
+  let keyword = 0;
+  const text = recordText(record);
+  const linked = targetKind === "issue"
+    ? Array.isArray(record.linkedIssues) && record.linkedIssues.includes(targetNumber)
+    : Array.isArray(record.linkedPullRequests) && record.linkedPullRequests.includes(targetNumber);
+
+  if (linked) deterministic += 4;
+  if (record.authority === "critical") deterministic += 2;
+  if (text.includes(targetToken.toLowerCase()) || text.includes(targetUrlFragment.toLowerCase())) keyword += 2;
+  if (phase && text.includes(String(phase).toLowerCase())) keyword += 1;
+  const authority = deterministic > 0 || keyword > 0 ? authorityBoost(record) : 0;
+
+  return {
+    deterministic,
+    keyword,
+    embedding: null,
+    authorityBoost: authority,
+    redaction: Math.min(redactionCount(record) * 0.01, 0.05),
+    final: deterministic + keyword + authority,
+  };
+}
+
+function boundedContent(record) {
+  if (typeof record.content !== "string") return record.content;
+  return record.content.length > 2000 ? `${record.content.slice(0, 2000)}\n[TRUNCATED]` : record.content;
+}
+
+const prioritizedRecords = [...index.records]
+  .map((record) => ({ record, score: relevanceScore(record) }))
+  .filter(({ score }) => score.final > 0)
+  .sort((a, b) => b.score.final - a.score.final || String(a.record.path).localeCompare(String(b.record.path)));
+const included = prioritizedRecords.slice(0, 20).map(({ record, score }) => ({
+  kind: "indexed_context",
+  sourceType: record.sourceType,
+  path: record.path,
+  reason: "Included from the local redacted context index.",
+  citation: record.path,
+  contentHash: record.contentHash,
+  redactions: record.redactions || [],
+  content: boundedContent(record),
+  score,
+}));
+
+const excluded = (Array.isArray(index.skipped) ? index.skipped : []).map((item) => ({
+  sourceType: "path",
+  path: item.path,
+  reason: item.reason,
+  citation: ".agentrail/context/index/index.json",
+}));
+
+const pack = {
+  schemaVersion: 1,
+  packId,
+  target: {
+    kind: targetKind,
+    number: targetNumber,
+    phase,
+  },
+  generatedAt,
+  index: {
+    version: index.version,
+    builtAt: index.builtAt,
+  },
+  retrievalBudget: {
+    maxItems: 20,
+    maxTokens: 6000,
+  },
+  provider: index.provider || { mode: "disabled", externalCalls: [] },
+  goal: {
+    summary: `${targetKind} #${targetNumber} ${phase} context pack`,
+    citation: `github:${targetKind}/${targetNumber}`,
+  },
+  included,
+  excluded,
+  openQuestions: [],
+};
+
+fs.mkdirSync(packsDir, { recursive: true });
+const baseName = packId;
+const jsonPath = path.join(packsDir, `${baseName}.json`);
+const mdPath = path.join(packsDir, `${baseName}.md`);
+fs.writeFileSync(jsonPath, `${JSON.stringify(pack, null, 2)}\n`);
+fs.writeFileSync(mdPath, [
+  `# Context Pack: ${targetKind} #${targetNumber} ${phase}`,
+  "",
+  `Goal: ${pack.goal.summary}`,
+  "",
+  "## Included Context",
+  ...included.map((item) => `- \`${item.path}\`: ${item.reason}`),
+  "",
+  "## Excluded Context",
+  ...(excluded.length > 0 ? excluded.map((item) => `- \`${item.path}\`: ${item.reason}`) : ["None."]),
+  "",
+  "## Provider",
+  `Mode: ${pack.provider.mode}`,
+  "",
+].join("\n"));
+
+appendAudit({
+  event: "generated_context_pack",
+  packId,
+  target: pack.target,
+  jsonPath: relativePath(jsonPath),
+  markdownPath: relativePath(mdPath),
+  includedCount: included.length,
+  excludedCount: excluded.length,
+  providerMode: pack.provider.mode,
+});
+
+const output = {
+  jsonPath: relativePath(jsonPath),
+  markdownPath: relativePath(mdPath),
+  packId,
+};
+if (jsonOutput) {
+  console.log(JSON.stringify(output, null, 2));
+} else {
+  console.log(`jsonPath=${output.jsonPath}`);
+  console.log(`markdownPath=${output.markdownPath}`);
+}
+NODE
+}
+
 run_context() {
   local kind="${1:-}"
   shift || true
@@ -1376,6 +2264,12 @@ run_context() {
   case "$kind" in
     sources)
       run_context_sources "$@"
+      ;;
+    index)
+      run_context_index "$@"
+      ;;
+    build)
+      run_context_build "$@"
       ;;
     ""|-h|--help)
       usage

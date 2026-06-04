@@ -1254,9 +1254,13 @@ function sourceTypeFor(relativePath) {
   if (relativePath === "CONTEXT.md" || relativePath.endsWith("/CONTEXT.md")) return "context_doc";
   if (relativePath === "TASTE.md" || relativePath.endsWith("/TASTE.md")) return "taste_doc";
   if (relativePath.startsWith("docs/agents/")) return "agent_doc";
+  if (relativePath.startsWith("templates/docs/agents/")) return "agent_doc";
   if (relativePath.startsWith("docs/memory/")) return "memory";
+  if (relativePath.startsWith("templates/docs/memory/")) return "memory";
   if (relativePath.startsWith("docs/prd/")) return "prd";
+  if (relativePath.startsWith("templates/docs/prd/")) return "prd";
   if (relativePath.startsWith("docs/milestones/")) return "milestone";
+  if (relativePath.startsWith("templates/docs/milestones/")) return "milestone";
   if (relativePath === ".agentrail/state.json" || relativePath === ".agentrail/config.json") return "agentrail_state";
   if (relativePath.startsWith(".agentrail/runs/") || relativePath.startsWith(".agentrail/handoffs/")) return "run_artifact";
   if (relativePath.startsWith("skills/")) return "skill";
@@ -1673,9 +1677,13 @@ function sourceTypeFor(relativePath) {
   if (relativePath === "CONTEXT.md" || relativePath.endsWith("/CONTEXT.md")) return "context_doc";
   if (relativePath === "TASTE.md" || relativePath.endsWith("/TASTE.md")) return "taste_doc";
   if (relativePath.startsWith("docs/agents/")) return "agent_doc";
+  if (relativePath.startsWith("templates/docs/agents/")) return "agent_doc";
   if (relativePath.startsWith("docs/memory/")) return "memory";
+  if (relativePath.startsWith("templates/docs/memory/")) return "memory";
   if (relativePath.startsWith("docs/prd/")) return "prd";
+  if (relativePath.startsWith("templates/docs/prd/")) return "prd";
   if (relativePath.startsWith("docs/milestones/")) return "milestone";
+  if (relativePath.startsWith("templates/docs/milestones/")) return "milestone";
   if (relativePath === ".agentrail/state.json" || relativePath === ".agentrail/config.json") return "agentrail_state";
   if (relativePath.startsWith(".agentrail/runs/") || relativePath.startsWith(".agentrail/handoffs/")) return "run_artifact";
   if (relativePath.startsWith("skills/")) return "skill";

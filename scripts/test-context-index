@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+agentrail="${repo_dir}/scripts/agentrail"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+fixture="${tmp_dir}/installed"
+mkdir -p "$fixture"
+git -C "$fixture" init --quiet
+"$agentrail" install --target "$fixture" >"${tmp_dir}/install.out"
+
+mkdir -p \
+  "${fixture}/src" \
+  "${fixture}/docs/agents" \
+  "${fixture}/docs/memory" \
+  "${fixture}/docs/prd" \
+  "${fixture}/docs/milestones" \
+  "${fixture}/skills/backend-api" \
+  "${fixture}/.agentrail/runs/run-1" \
+  "${fixture}/ignored"
+
+cat >"${fixture}/src/app.js" <<'JS'
+const message = "first";
+module.exports = { message };
+JS
+cat >"${fixture}/src/stable.js" <<'JS'
+module.exports = { stable: true };
+JS
+cat >"${fixture}/src/deleted.js" <<'JS'
+module.exports = { deleted: true };
+JS
+cat >"${fixture}/docs/agents/guide.md" <<'DOC'
+# Agent Guide
+DOC
+cat >"${fixture}/docs/memory/lesson.md" <<'DOC'
+# Lesson
+DOC
+cat >"${fixture}/docs/prd/feature.md" <<'DOC'
+# Feature PRD
+DOC
+cat >"${fixture}/docs/milestones/m1.md" <<'DOC'
+# Milestone
+DOC
+cat >"${fixture}/skills/backend-api/SKILL.md" <<'DOC'
+# Backend API
+DOC
+cat >"${fixture}/.agentrail/runs/run-1/findings.json" <<'JSON'
+{"findings":[]}
+JSON
+printf 'binary\0file' >"${fixture}/src/image.bin"
+cat >"${fixture}/.gitignore" <<'GITIGNORE'
+ignored/
+GITIGNORE
+cat >"${fixture}/ignored/skip.md" <<'DOC'
+# Ignored
+DOC
+
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/index-1.out"
+assert_grep '"providerMode": "disabled"' "${tmp_dir}/index-1.out" "context index did not report local-only provider mode"
+assert_grep '"indexed":' "${tmp_dir}/index-1.out" "context index did not report indexed count"
+assert_grep '"skipped":' "${tmp_dir}/index-1.out" "context index did not report skipped count"
+
+index_file="${fixture}/.agentrail/context/index/index.json"
+sources_file="${fixture}/.agentrail/context/index/sources.json"
+test -f "$index_file" || { echo "index file was not written" >&2; exit 1; }
+test -f "$sources_file" || { echo "sources file was not written" >&2; exit 1; }
+
+node - "$index_file" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const byPath = new Map(index.records.map((record) => [record.path, record]));
+const expectedTypes = new Map([
+  ["src/app.js", "code"],
+  ["CONTEXT.md", "context_doc"],
+  ["TASTE.md", "taste_doc"],
+  ["docs/agents/guide.md", "agent_doc"],
+  ["docs/memory/lesson.md", "memory"],
+  ["docs/prd/feature.md", "prd"],
+  ["docs/milestones/m1.md", "milestone"],
+  [".agentrail/state.json", "agentrail_state"],
+  [".agentrail/runs/run-1/findings.json", "run_artifact"],
+  ["skills/backend-api/SKILL.md", "skill"],
+]);
+for (const [path, sourceType] of expectedTypes) {
+  const record = byPath.get(path);
+  if (!record) {
+    console.error(`missing indexed record: ${path}`);
+    process.exit(1);
+  }
+  if (record.sourceType !== sourceType) {
+    console.error(`wrong sourceType for ${path}: ${record.sourceType}`);
+    process.exit(1);
+  }
+  for (const field of ["path", "sourceType", "contentHash", "modifiedAt", "authority", "freshness"]) {
+    if (!(field in record)) {
+      console.error(`missing ${field} for ${path}`);
+      process.exit(1);
+    }
+  }
+  if (!String(record.contentHash).startsWith("sha256:")) {
+    console.error(`content hash is not sha256 for ${path}`);
+    process.exit(1);
+  }
+  if (record.freshness.status !== "current") {
+    console.error(`freshness is not current for ${path}`);
+    process.exit(1);
+  }
+}
+const skippedPaths = new Set((index.skipped || []).map((record) => record.path));
+if (!skippedPaths.has("src/image.bin")) {
+  console.error("binary file was not recorded as skipped");
+  process.exit(1);
+}
+if (Array.from(byPath.keys()).some((path) => path.includes("ignored/skip.md"))) {
+  console.error("gitignored file was indexed");
+  process.exit(1);
+}
+NODE
+
+node - "$index_file" >"${tmp_dir}/before-refresh.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const byPath = Object.fromEntries(index.records.map((record) => [record.path, record]));
+console.log(JSON.stringify({
+  app: byPath["src/app.js"],
+  stable: byPath["src/stable.js"],
+  deleted: byPath["src/deleted.js"],
+}, null, 2));
+NODE
+
+sleep 1
+cat >"${fixture}/src/app.js" <<'JS'
+const message = "second";
+module.exports = { message };
+JS
+rm "${fixture}/src/deleted.js"
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/index-2.out"
+
+node - "$index_file" "${tmp_dir}/before-refresh.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const before = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const byPath = Object.fromEntries(index.records.map((record) => [record.path, record]));
+if (!byPath["src/app.js"]) {
+  console.error("changed file disappeared from index");
+  process.exit(1);
+}
+if (byPath["src/app.js"].contentHash === before.app.contentHash) {
+  console.error("changed file content hash did not update");
+  process.exit(1);
+}
+if (byPath["src/deleted.js"]) {
+  console.error("deleted file remained in refreshed index");
+  process.exit(1);
+}
+const stable = byPath["src/stable.js"];
+if (!stable) {
+  console.error("unchanged file disappeared from refreshed index");
+  process.exit(1);
+}
+for (const field of ["id", "sourceType", "path", "contentHash", "modifiedAt", "authority"]) {
+  if (stable[field] !== before.stable[field]) {
+    console.error(`unchanged record field changed: ${field}`);
+    process.exit(1);
+  }
+}
+if (JSON.stringify(stable.freshness) !== JSON.stringify(before.stable.freshness)) {
+  console.error("unchanged record freshness changed");
+  process.exit(1);
+}
+NODE
+
+optional_missing="${tmp_dir}/optional-missing"
+mkdir -p "$optional_missing"
+git -C "$optional_missing" init --quiet
+"$agentrail" install --target "$optional_missing" >"${tmp_dir}/optional-install.out"
+rm -rf "${optional_missing}/docs/memory" "${optional_missing}/docs/prd" "${optional_missing}/docs/milestones"
+"$agentrail" context index --target "$optional_missing" >"${tmp_dir}/optional-index.out"
+assert_grep '"providerMode": "disabled"' "${tmp_dir}/optional-index.out" "missing optional context dirs should not fail indexing"
+
+source_fixture="${tmp_dir}/source-dogfood"
+mkdir -p \
+  "${source_fixture}/scripts" \
+  "${source_fixture}/templates/docs/agents" \
+  "${source_fixture}/templates/docs/memory" \
+  "${source_fixture}/templates/docs/prd" \
+  "${source_fixture}/templates/docs/milestones" \
+  "${source_fixture}/templates/scripts" \
+  "${source_fixture}/skills/backend-api" \
+  "${source_fixture}/.agentrail/runs/run-1"
+git -C "$source_fixture" init --quiet
+cp "${repo_dir}/package.json" "${source_fixture}/package.json"
+cp "${repo_dir}/scripts/agentrail" "${source_fixture}/scripts/agentrail"
+chmod +x "${source_fixture}/scripts/agentrail"
+cat >"${source_fixture}/templates/CONTEXT.md" <<'DOC'
+# Source Context
+DOC
+cat >"${source_fixture}/templates/TASTE.md" <<'DOC'
+# Source Taste
+DOC
+cat >"${source_fixture}/templates/docs/agents/ralph-loop.md" <<'DOC'
+# Ralph Loop
+DOC
+cat >"${source_fixture}/templates/docs/memory/README.md" <<'DOC'
+# Memory
+DOC
+cat >"${source_fixture}/templates/docs/prd/README.md" <<'DOC'
+# PRD
+DOC
+cat >"${source_fixture}/templates/docs/milestones/README.md" <<'DOC'
+# Milestones
+DOC
+cat >"${source_fixture}/templates/scripts/afk-workflow" <<'SH'
+#!/usr/bin/env bash
+echo afk
+SH
+cat >"${source_fixture}/skills/backend-api/SKILL.md" <<'DOC'
+# Backend API
+DOC
+cat >"${source_fixture}/.agentrail/config.json" <<'JSON'
+{
+  "schemaVersion": 1
+}
+JSON
+cat >"${source_fixture}/.agentrail/state.json" <<'JSON'
+{
+  "schemaVersion": 1,
+  "workflow": {
+    "phase": "idle"
+  }
+}
+JSON
+cat >"${source_fixture}/.agentrail/runs/run-1/findings.json" <<'JSON'
+{"findings":[]}
+JSON
+
+"${source_fixture}/scripts/agentrail" context index --target "$source_fixture" >"${tmp_dir}/source-index.out"
+node - "${source_fixture}/.agentrail/context/index/index.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const byPath = new Map(index.records.map((record) => [record.path, record]));
+const expectedTypes = new Map([
+  ["templates/CONTEXT.md", "context_doc"],
+  ["templates/TASTE.md", "taste_doc"],
+  ["templates/docs/agents/ralph-loop.md", "agent_doc"],
+  ["templates/docs/memory/README.md", "memory"],
+  ["templates/docs/prd/README.md", "prd"],
+  ["templates/docs/milestones/README.md", "milestone"],
+  ["templates/scripts/afk-workflow", "code"],
+  ["scripts/agentrail", "code"],
+  ["skills/backend-api/SKILL.md", "skill"],
+  [".agentrail/state.json", "agentrail_state"],
+  [".agentrail/runs/run-1/findings.json", "run_artifact"],
+]);
+for (const [path, sourceType] of expectedTypes) {
+  const record = byPath.get(path);
+  if (!record) {
+    console.error(`missing source dogfood record: ${path}`);
+    process.exit(1);
+  }
+  if (record.sourceType !== sourceType) {
+    console.error(`wrong source dogfood sourceType for ${path}: ${record.sourceType}`);
+    process.exit(1);
+  }
+}
+NODE
+
+echo "context index test passed"

@@ -16,6 +16,7 @@ class ContextCliTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0)
                 self.assertIn("Usage:", result.stdout)
                 self.assertIn("agentrail context sources [--target DIR]", result.stdout)
+                self.assertIn("agentrail context evaluate FIXTURE [--target DIR] [--json]", result.stdout)
                 self.assertIn("agentrail context build pr NUMBER --phase review [--target DIR] [--json]", result.stdout)
                 self.assertIn("agentrail context show PACK [--target DIR] [--json]", result.stdout)
                 self.assertIn("agentrail context explain PACK [--target DIR] [--json]", result.stdout)
@@ -135,6 +136,41 @@ class ContextCliTests(unittest.TestCase):
         self.assertIn("sections", explained)
         for section in ("requiredContext", "likelyFiles", "likelyDocs", "excludedContext"):
             self.assertIn(section, explained["sections"])
+
+    def test_context_evaluate_cli_reports_fixture_metrics(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        root = Path(tempfile.mkdtemp())
+        subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+        subprocess.run([str(repo / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
+        (root / "docs" / "agents" / "issue-84.md").write_text("# Issue 84\n\nRetrieval evaluation for issue #84.\n", encoding="utf-8")
+        (root / "src").mkdir()
+        (root / "src" / "retrieval_eval.py").write_text("def issue_84_eval():\n    return 'issue #84 retrieval evaluation'\n", encoding="utf-8")
+        fixture = root / "fixtures.json"
+        fixture.write_text(json.dumps({
+            "fixtures": [
+                {
+                    "name": "issue-84-cli",
+                    "task": "issue #84 retrieval evaluation src/retrieval_eval.py",
+                    "requiredSources": ["docs/agents/issue-84.md", "src/retrieval_eval.py"],
+                    "expectedFiles": ["src/retrieval_eval.py"],
+                    "expectedDocs": ["docs/agents/issue-84.md"],
+                    "expectedMemory": [],
+                    "expectedPriorMistakes": [],
+                    "expectedExcludedSources": [".env"],
+                }
+            ],
+        }), encoding="utf-8")
+        result = subprocess.run(
+            [str(repo / "scripts" / "agentrail"), "context", "evaluate", str(fixture), "--target", str(root), "--json"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        report = json.loads(result.stdout)
+        self.assertEqual(report["command"], "context.evaluate")
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["summary"]["passed"], 1)
+        self.assertIn("recallAt5", report["fixtures"][0]["metrics"])
 
 
 if __name__ == "__main__":

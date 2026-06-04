@@ -82,6 +82,19 @@ Each source record includes:
 - `chunkIds`
 - `auditRef`
 
+### Embedding Index
+
+`agentrail context embed --target .` refreshes the local index first, then embeds eligible redacted chunks only when `context.embedding.mode` is explicitly configured to a non-disabled provider mode.
+
+Embedding modes:
+
+- `disabled`
+- `openai-compatible`
+- `custom-command`
+- future provider extension through the same `context.embedding` config object
+
+Embedding records include provider, model, dimension, content hash, chunk ID, text hash, timestamp, and audit reference. Provider failures are recorded in audit events and must not prevent local keyword/BM25 context retrieval.
+
 ### Retrieval Query
 
 `agentrail context query "<task>" --target .` returns ranked cited sources using this hybrid model:

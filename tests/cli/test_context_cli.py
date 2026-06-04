@@ -65,6 +65,77 @@ class ContextCliTests(unittest.TestCase):
         self.assertEqual(explanation["packId"], pr_output["packId"])
         self.assertIn("likelyDocs", explanation["sections"])
 
+    def test_provider_facing_json_shape_for_context_commands(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        root = Path(tempfile.mkdtemp())
+        subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+        subprocess.run([str(repo / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
+        (root / "CONTEXT.md").write_text("# Context\n\nKeep integrations explicit and observable for issue #83.\n", encoding="utf-8")
+        (root / "TASTE.md").write_text("# Taste\n\nCommon actions should be obvious without instructional text.\n", encoding="utf-8")
+        (root / "docs" / "agents" / "issue-83.md").write_text("# Issue 83\n\nProvider interface for context query, build, show, and explain.\n", encoding="utf-8")
+        (root / "src").mkdir()
+        (root / "src" / "provider.py").write_text("def context_provider_surface():\n    return 'issue #83 provider interface'\n", encoding="utf-8")
+
+        query_result = subprocess.run(
+            [str(repo / "scripts" / "agentrail"), "context", "query", "issue #83 provider interface", "--target", str(root), "--json", "--limit", "3"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        query = json.loads(query_result.stdout)
+        self.assertEqual(query["command"], "context.query")
+        self.assertEqual(query["schemaVersion"], 1)
+        self.assertEqual(query["limit"], 3)
+        self.assertEqual(query["target"], {"kind": "query", "query": "issue #83 provider interface"})
+        self.assertIn("provider", query)
+        self.assertIn("audit", query)
+        self.assertTrue(query["results"])
+        for item in query["results"]:
+            self.assertIn("path", item)
+            self.assertIn("citation", item)
+            self.assertIn("reason", item)
+            self.assertIn("score", item)
+
+        build_result = subprocess.run(
+            [str(repo / "scripts" / "agentrail"), "context", "build", "issue", "83", "--phase", "execute", "--target", str(root), "--json"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        built = json.loads(build_result.stdout)
+        self.assertEqual(built["command"], "context.build")
+        self.assertEqual(built["target"], {"kind": "issue", "number": 83, "phase": "execute"})
+        self.assertIn("provider", built)
+        self.assertIn("audit", built)
+        self.assertTrue((root / built["jsonPath"]).exists())
+
+        show_result = subprocess.run(
+            [str(repo / "scripts" / "agentrail"), "context", "show", built["packId"], "--target", str(root), "--json"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        shown = json.loads(show_result.stdout)
+        self.assertEqual(shown["command"], "context.show")
+        self.assertEqual(shown["packId"], built["packId"])
+        self.assertEqual(shown["target"], {"kind": "issue", "number": 83, "phase": "execute"})
+        self.assertIn("included", shown)
+        self.assertTrue(all(item.get("citation") and item.get("reason") for item in shown["included"]))
+
+        explain_result = subprocess.run(
+            [str(repo / "scripts" / "agentrail"), "context", "explain", built["packId"], "--target", str(root), "--json"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        explained = json.loads(explain_result.stdout)
+        self.assertEqual(explained["command"], "context.explain")
+        self.assertEqual(explained["packId"], built["packId"])
+        self.assertEqual(explained["target"], {"kind": "issue", "number": 83, "phase": "execute"})
+        self.assertIn("sections", explained)
+        for section in ("requiredContext", "likelyFiles", "likelyDocs", "excludedContext"):
+            self.assertIn(section, explained["sections"])
+
 
 if __name__ == "__main__":
     unittest.main()

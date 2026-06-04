@@ -147,14 +147,18 @@ Agent providers should receive narrow JSON-first commands before an MCP server e
 - `agentrail context show <pack-id-or-file> --json`
 - `agentrail context explain <pack-id-or-file> --json`
 
-An MCP-compatible surface may later expose tool names such as:
+Provider-facing JSON includes stable command metadata (`schemaVersion`, `command`, `target`, `provider`, `audit`) and cited result, pack, or explanation fields. This lets agents consume context without parsing human-oriented Markdown or receiving broad filesystem authority.
 
-- `context_research`
-- `context_get_sources`
-- `context_build_pack`
-- `context_explain_pack`
+An MCP-compatible surface may later expose these narrow tools:
 
-Those tools must cite sources, return bounded data, and rely on AgentRail allow/deny and redaction controls for enforcement. MCP roots are advisory, not a security boundary.
+- `context_research`: answers one scoped context question from AgentRail-indexed sources and returns citations, score reasons, provider metadata, and exclusions.
+- `context_get_sources`: returns source inventory metadata, authority, visibility, freshness, citations, and redaction metadata; it does not dump arbitrary file contents.
+- `context_build_pack`: builds or loads one issue, PR review, phase, or resume context pack and returns pack paths, target metadata, provider metadata, and audit citation.
+- `context_explain_pack`: explains why a pack included, excluded, boosted, or demoted sources with citations and score metadata.
+
+Those tools must cite sources, return bounded data, and rely on AgentRail allow/deny and redaction controls for enforcement. MCP roots are advisory scoping hints, not a security boundary. Roots may help choose the local target, but they must not bypass include/exclude globs, denied secret-bearing paths, ignored-file handling, file size limits, binary skipping, redaction, or audit logging.
+
+Provider descriptions must avoid claims that AgentRail can read the whole filesystem or ingest organization-wide Slack, Jira, Confluence, Google Drive, or other SaaS content in v1. The v1 provider contract is local-first, repo-scoped, inspectable, and auditable.
 
 ## Enterprise Requirements
 

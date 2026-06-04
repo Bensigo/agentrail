@@ -237,14 +237,32 @@ agentrail context show .agentrail/context/packs/issue-72-plan.json --json
 agentrail context explain .agentrail/context/packs/issue-72-plan.json --json
 ```
 
-The later MCP-compatible surface should expose narrow tools:
+Every JSON response intended for provider consumption includes:
 
-- `context_research`: answer a scoped context question with citations from indexed sources.
-- `context_get_sources`: return source metadata and citations without dumping unrestricted file content.
-- `context_build_pack`: build or load a context pack for an issue, PR, phase, or resume operation.
-- `context_explain_pack`: explain why a pack included, excluded, boosted, or demoted sources.
+- `schemaVersion`
+- `command`
+- `target`
+- `generatedAt` when the command creates or loads time-bound context
+- `provider`
+- `audit`
+- cited result, section, or path fields
 
-Tool descriptions must cite sources, describe limits, and avoid granting unrestricted filesystem authority. MCP roots are advisory. AgentRail allow/deny rules, redaction, and audit controls enforce source access.
+Agents should treat this JSON as a context contract, not as hidden truth. Current source files, GitHub issues, PRDs, ADRs, `CONTEXT.md`, and explicit user instructions remain more authoritative when they conflict.
+
+## MCP-Compatible Provider Tools
+
+The later MCP surface should expose narrow tools that map directly to the CLI commands. These tools do not grant general filesystem access.
+
+| Tool | Equivalent CLI | Purpose | Bounded Output |
+|---|---|---|---|
+| `context_research` | `agentrail context query "<task>" --json` | Answer one scoped context question from indexed AgentRail sources. | Ranked cited sources, reasons, score breakdown, provider metadata, and excluded-source metadata. |
+| `context_get_sources` | `agentrail context sources --target .` | Return source inventory metadata for an allowed target. | Source IDs, source types, paths or descriptor URIs, freshness, authority, visibility, citations, and redaction metadata. No unrestricted file dumps. |
+| `context_build_pack` | `agentrail context build issue <number> --phase <phase> --json` or `agentrail context build pr <number> --phase review --json` | Build or load an auditable context pack for one issue, PR review, phase, or resume operation. | Pack ID, target, generated paths, retrieval budget, provider metadata, and audit citation. |
+| `context_explain_pack` | `agentrail context explain <pack-id-or-file> --json` | Explain why a context pack included, excluded, boosted, or demoted sources. | Section counts, cited reasons, score metadata, provider metadata, and audit citation. |
+
+Tool descriptions must cite their source set and state their limits. A valid description says the tool can inspect AgentRail-indexed, allowed, redacted sources and return cited context. It must not say the tool can read arbitrary files, crawl the repository, access hidden user data, or ingest organization-wide Slack, Jira, Confluence, or Google Drive content in v1.
+
+MCP roots are advisory scoping hints only. AgentRail access enforcement comes from the local context configuration: include globs, exclude globs, ignored-file handling, binary skipping, maximum file size, denied secret-bearing paths, redaction detectors, and audit logging. A provider may pass roots to help AgentRail choose a target, but roots do not override AgentRail allow/deny or redaction decisions.
 
 ## Example `context-pack.json`
 

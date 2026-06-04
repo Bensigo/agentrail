@@ -425,7 +425,18 @@ def build_context_pack(target_dir: Path, target_kind: str, target_number: int, p
             "providerMode": pack["provider"].get("mode"),
         },
     )
-    return {"jsonPath": _relative(root, json_path), "markdownPath": _relative(root, md_path), "packId": pack_id}
+    return {
+        "schemaVersion": 1,
+        "command": "context.build",
+        "packId": pack_id,
+        "target": pack["target"],
+        "generatedAt": generated_at,
+        "jsonPath": _relative(root, json_path),
+        "markdownPath": _relative(root, md_path),
+        "index": pack["index"],
+        "provider": pack["provider"],
+        "audit": audit,
+    }
 
 
 def _pack_path(root: Path, pack: str) -> Path:
@@ -459,7 +470,9 @@ def load_context_pack(target_dir: Path, pack: str) -> Dict[str, Any]:
 
 def show_context_pack(target_dir: Path, pack: str, *, json_output: bool = False) -> Any:
     parsed = load_context_pack(target_dir, pack)
-    return parsed if json_output else render_context_pack_markdown(parsed)
+    if not json_output:
+        return render_context_pack_markdown(parsed)
+    return {**parsed, "command": "context.show"}
 
 
 def explain_context_pack(target_dir: Path, pack: str) -> Dict[str, Any]:
@@ -478,6 +491,7 @@ def explain_context_pack(target_dir: Path, pack: str) -> Dict[str, Any]:
     }
     explanation = {
         "schemaVersion": 1,
+        "command": "context.explain",
         "packId": parsed.get("packId"),
         "target": parsed.get("target"),
         "generatedAt": parsed.get("generatedAt"),

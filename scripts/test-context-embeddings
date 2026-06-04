@@ -1,0 +1,362 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+agentrail="${repo_dir}/scripts/agentrail"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+assert_not_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+fixture="${tmp_dir}/installed"
+mkdir -p "$fixture"
+git -C "$fixture" init --quiet
+"$agentrail" install --target "$fixture" >"${tmp_dir}/install.out"
+
+mkdir -p "${fixture}/src" "${fixture}/docs/agents"
+cat >"${fixture}/src/app.js" <<'JS'
+const password = "must-redact-before-provider";
+
+function issue77EmbeddingSubject() {
+  return "issue #77 semantic retrieval";
+}
+
+module.exports = { issue77EmbeddingSubject };
+JS
+
+cat >"${fixture}/docs/agents/issue-77.md" <<'DOC'
+# Issue 77
+
+This context source links #77 and should remain available through local keyword retrieval.
+DOC
+
+cat >"${fixture}/.env" <<'ENV'
+OPENAI_API_KEY=sk-should-never-be-indexed-or-embedded
+ENV
+
+mock_provider="${tmp_dir}/mock-embedding-provider.js"
+cat >"$mock_provider" <<'JS'
+const fs = require("fs");
+
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  input += chunk;
+});
+process.stdin.on("end", () => {
+  const payload = JSON.parse(input);
+  fs.appendFileSync(process.env.MOCK_EMBED_LOG, `${JSON.stringify(payload)}\n`);
+  if (process.env.MOCK_EMBED_FAIL === "1") {
+    console.error("mock provider forced failure");
+    process.exit(42);
+  }
+  const base = payload.content.length;
+  console.log(JSON.stringify({
+    provider: "mock-local",
+    model: "mock-3d",
+    embedding: [base, base + 1, base + 2]
+  }));
+});
+JS
+
+node - "${fixture}/.agentrail/config.json" "$mock_provider" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const mockProvider = process.argv[3];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.includeGlobs = ["src/app.js", "docs/agents/issue-77.md"];
+config.context.embedding = {
+  mode: "custom-command",
+  provider: "mock-local",
+  model: "mock-3d",
+  command: `node ${JSON.stringify(mockProvider)}`
+};
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (config.context.embedding.mode !== "custom-command") {
+  console.error("custom command mode was not preserved in config");
+  process.exit(1);
+}
+NODE
+
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding.mode = "disabled";
+config.context.embedding.provider = null;
+config.context.embedding.model = null;
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+"$agentrail" context embed --target "$fixture" >"${tmp_dir}/disabled.out"
+assert_grep '"providerMode": "disabled"' "${tmp_dir}/disabled.out" "disabled embed mode did not report local-only mode"
+assert_grep '"embedded": 0' "${tmp_dir}/disabled.out" "disabled embed mode attempted embeddings"
+
+node - "${fixture}/.agentrail/config.json" "$mock_provider" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const mockProvider = process.argv[3];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding = {
+  mode: "custom-command",
+  provider: "mock-local",
+  model: "mock-3d",
+  command: `node ${JSON.stringify(mockProvider)}`
+};
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+mock_log="${tmp_dir}/mock-provider.jsonl"
+MOCK_EMBED_LOG="$mock_log" "$agentrail" context embed --target "$fixture" >"${tmp_dir}/custom-1.out"
+assert_grep '"providerMode": "custom-command"' "${tmp_dir}/custom-1.out" "custom embed mode was not reported"
+assert_grep '"provider": "mock-local"' "${tmp_dir}/custom-1.out" "custom provider was not reported"
+assert_grep '"embedded": 2' "${tmp_dir}/custom-1.out" "mock provider did not embed eligible chunks"
+assert_grep '\[REDACTED:password\]' "$mock_log" "redacted content was not sent to mock provider"
+assert_not_grep 'must-redact-before-provider' "$mock_log" "raw password reached mock provider"
+assert_not_grep 'sk-should-never-be-indexed-or-embedded' "$mock_log" ".env secret reached mock provider"
+
+embeddings_file="${fixture}/.agentrail/context/index/embeddings.json"
+test -f "$embeddings_file" || { echo "embeddings metadata was not written" >&2; exit 1; }
+node - "$embeddings_file" <<'NODE'
+const fs = require("fs");
+const embeddings = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (embeddings.provider.mode !== "custom-command") {
+  console.error(`wrong embedding provider mode: ${embeddings.provider.mode}`);
+  process.exit(1);
+}
+if (!Array.isArray(embeddings.embeddings) || embeddings.embeddings.length !== 2) {
+  console.error(`expected two embedding records, found ${embeddings.embeddings?.length}`);
+  process.exit(1);
+}
+for (const record of embeddings.embeddings) {
+  for (const field of ["mode", "provider", "model", "configHash", "dimension", "contentHash", "chunkId", "textHash", "timestamp", "auditRef"]) {
+    if (!(field in record)) {
+      console.error(`embedding record missing ${field}`);
+      process.exit(1);
+    }
+  }
+  if (record.mode !== "custom-command") {
+    console.error(`embedding mode metadata wrong: ${JSON.stringify(record)}`);
+    process.exit(1);
+  }
+  if (!String(record.configHash).startsWith("sha256:")) {
+    console.error(`embedding config hash is not sha256: ${JSON.stringify(record)}`);
+    process.exit(1);
+  }
+  if (record.provider !== "mock-local" || record.model !== "mock-3d" || record.dimension !== 3) {
+    console.error(`embedding provider metadata wrong: ${JSON.stringify(record)}`);
+    process.exit(1);
+  }
+  if (!String(record.contentHash).startsWith("sha256:") || !String(record.textHash).startsWith("sha256:")) {
+    console.error(`embedding hashes are not sha256: ${JSON.stringify(record)}`);
+    process.exit(1);
+  }
+}
+NODE
+
+: >"$mock_log"
+node - "${fixture}/.agentrail/config.json" "$mock_provider" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const mockProvider = process.argv[3];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding = {
+  mode: "custom-command",
+  command: `node ${JSON.stringify(mockProvider)}`
+};
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+MOCK_EMBED_LOG="$mock_log" "$agentrail" context embed --target "$fixture" >"${tmp_dir}/custom-omitted-1.out"
+assert_grep '"embedded": 2' "${tmp_dir}/custom-omitted-1.out" "omitted provider/model config did not re-embed with its own cache key"
+
+: >"$mock_log"
+MOCK_EMBED_LOG="$mock_log" "$agentrail" context embed --target "$fixture" >"${tmp_dir}/custom-2.out"
+assert_grep '"embedded": 0' "${tmp_dir}/custom-2.out" "unchanged chunks were not skipped"
+assert_grep '"skipped": 2' "${tmp_dir}/custom-2.out" "unchanged skip count was not reported"
+if [[ -s "$mock_log" ]]; then
+  echo "mock provider was called for unchanged chunks" >&2
+  cat "$mock_log" >&2
+  exit 1
+fi
+
+node - "${fixture}/.agentrail/config.json" "$mock_provider" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const mockProvider = process.argv[3];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding = {
+  mode: "custom-command",
+  provider: "mock-local",
+  model: "mock-alias",
+  command: `node ${JSON.stringify(mockProvider)}`
+};
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+: >"$mock_log"
+MOCK_EMBED_LOG="$mock_log" "$agentrail" context embed --target "$fixture" >"${tmp_dir}/alias-1.out"
+assert_grep '"embedded": 2' "${tmp_dir}/alias-1.out" "configured model alias did not re-embed with its own cache key"
+node - "$embeddings_file" <<'NODE'
+const fs = require("fs");
+const embeddings = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+for (const record of embeddings.embeddings) {
+  if (record.model !== "mock-3d") {
+    console.error(`expected provider response model to be stored, got ${record.model}`);
+    process.exit(1);
+  }
+}
+NODE
+
+: >"$mock_log"
+MOCK_EMBED_LOG="$mock_log" "$agentrail" context embed --target "$fixture" >"${tmp_dir}/alias-2.out"
+assert_grep '"embedded": 0' "${tmp_dir}/alias-2.out" "provider response model metadata bypassed cache"
+assert_grep '"skipped": 2' "${tmp_dir}/alias-2.out" "alias-configured unchanged chunks were not skipped"
+if [[ -s "$mock_log" ]]; then
+  echo "mock provider was called for unchanged chunks with provider response model metadata" >&2
+  cat "$mock_log" >&2
+  exit 1
+fi
+
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding = {
+  mode: "openai-compatible",
+  model: "mock-3d"
+};
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+if "$agentrail" context embed --target "$fixture" >"${tmp_dir}/mode-switch.out" 2>"${tmp_dir}/mode-switch.err"; then
+  echo "provider mode switch reused stale custom-command embeddings" >&2
+  cat "${tmp_dir}/mode-switch.out" >&2
+  exit 1
+fi
+assert_grep 'OPENAI_API_KEY is required for openai-compatible embedding mode' "${tmp_dir}/mode-switch.err" "provider mode switch did not force re-embedding"
+
+node - "${fixture}/.agentrail/config.json" "$mock_provider" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const mockProvider = process.argv[3];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding = {
+  mode: "custom-command",
+  command: `node ${JSON.stringify(mockProvider)}`
+};
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+: >"$mock_log"
+node - "${fixture}/.agentrail/config.json" "$mock_provider" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const mockProvider = process.argv[3];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding = {
+  mode: "custom-command",
+  command: `MOCK_EMBED_VARIANT=2 node ${JSON.stringify(mockProvider)}`
+};
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+MOCK_EMBED_LOG="$mock_log" "$agentrail" context embed --target "$fixture" >"${tmp_dir}/command-switch.out"
+assert_grep '"embedded": 2' "${tmp_dir}/command-switch.out" "changed custom command did not invalidate cached embeddings"
+line_count="$(wc -l <"$mock_log" | tr -d ' ')"
+[[ "$line_count" == "2" ]] || { echo "expected two mock provider calls after command changed, got $line_count" >&2; exit 1; }
+
+node - "${fixture}/.agentrail/config.json" "$mock_provider" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const mockProvider = process.argv[3];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding = {
+  mode: "custom-command",
+  command: `node ${JSON.stringify(mockProvider)}`
+};
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+: >"$mock_log"
+MOCK_EMBED_LOG="$mock_log" "$agentrail" context embed --target "$fixture" >"${tmp_dir}/custom-restored.out"
+assert_grep '"embedded": 2' "${tmp_dir}/custom-restored.out" "restored custom command did not refresh embeddings after command switch"
+
+cat >"${fixture}/src/app.js" <<'JS'
+const password = "must-redact-before-provider";
+
+function issue77EmbeddingSubject() {
+  return "issue #77 semantic retrieval changed";
+}
+
+module.exports = { issue77EmbeddingSubject };
+JS
+
+: >"$mock_log"
+MOCK_EMBED_LOG="$mock_log" "$agentrail" context embed --target "$fixture" >"${tmp_dir}/custom-3.out"
+assert_grep '"embedded": 1' "${tmp_dir}/custom-3.out" "changed chunk was not re-embedded"
+assert_grep '"skipped": 1' "${tmp_dir}/custom-3.out" "unchanged chunk was not preserved during re-embed"
+line_count="$(wc -l <"$mock_log" | tr -d ' ')"
+[[ "$line_count" == "1" ]] || { echo "expected one mock provider call after one chunk changed, got $line_count" >&2; exit 1; }
+
+before_failure_hash="$(shasum -a 256 "$embeddings_file" | awk '{print $1}')"
+cat >"${fixture}/docs/agents/issue-77.md" <<'DOC'
+# Issue 77
+
+This context source links #77 and should remain available through local keyword retrieval after provider failure.
+DOC
+if MOCK_EMBED_LOG="$mock_log" MOCK_EMBED_FAIL=1 "$agentrail" context embed --target "$fixture" >"${tmp_dir}/failure.out" 2>"${tmp_dir}/failure.err"; then
+  echo "provider failure did not fail context embed" >&2
+  exit 1
+fi
+assert_grep 'mock provider forced failure' "${tmp_dir}/failure.err" "provider failure was not reported"
+after_failure_hash="$(shasum -a 256 "$embeddings_file" | awk '{print $1}')"
+[[ "$before_failure_hash" == "$after_failure_hash" ]] || { echo "provider failure overwrote existing embeddings" >&2; exit 1; }
+assert_grep '"event":"embedding_provider_failure"' "${fixture}/.agentrail/context/audit/events.jsonl" "provider failure audit event missing"
+
+"$agentrail" context build issue 77 --phase execute --target "$fixture" --json >"${tmp_dir}/pack.out"
+pack_path="$(node - "${tmp_dir}/pack.out" <<'NODE'
+const fs = require("fs");
+const output = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(output.jsonPath);
+NODE
+)"
+test -f "${fixture}/${pack_path}" || { echo "context pack was not written after provider failure" >&2; exit 1; }
+assert_grep '"path": "docs/agents/issue-77.md"' "${fixture}/${pack_path}" "keyword retrieval did not survive provider failure"
+
+echo "context embeddings test passed"
+echo "mock provider output:"
+cat "${tmp_dir}/custom-1.out"
+cat "${tmp_dir}/custom-2.out"
+cat "${tmp_dir}/custom-3.out"

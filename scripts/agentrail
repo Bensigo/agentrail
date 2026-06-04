@@ -11,6 +11,7 @@ Usage:
   agentrail status [--target DIR]
   agentrail context sources [--target DIR]
   agentrail context index [--target DIR]
+  agentrail context embed [--target DIR]
   agentrail context build issue NUMBER --phase PHASE [--target DIR] [--json]
   agentrail memory recall QUERY [--target DIR]
   agentrail memory capture KIND TITLE [--target DIR]
@@ -2148,9 +2149,6 @@ function externalRecord(descriptor) {
 
 const config = readContextConfig();
 const providerMode = String(config.embedding?.mode || "disabled");
-if (providerMode !== "disabled") {
-  throw new Error(`context embedding mode '${providerMode}' is not implemented; use 'disabled' for local-only indexing`);
-}
 const summaryMode = String(config.summary?.mode || "disabled");
 if (summaryMode !== "disabled" && !config.summary?.provider) {
   throw new Error(`context summary mode '${summaryMode}' requires context.summary.provider`);
@@ -2315,7 +2313,7 @@ appendAudit({
   mode: providerMode,
   provider: config.embedding?.provider || null,
   model: config.embedding?.model || null,
-  action: providerMode === "disabled" ? "skipped_local_only" : "not_implemented",
+  action: providerMode === "disabled" ? "skipped_local_only" : "deferred_to_context_embed",
   payloadCount: providerMode === "disabled" ? 0 : chunks.length,
 });
 
@@ -2336,7 +2334,7 @@ for (const chunk of chunks) {
     citation: chunk.citation,
     textHash: chunk.textHash,
     sent: false,
-    reason: providerMode === "disabled" ? "local_only" : "provider_not_implemented",
+    reason: providerMode === "disabled" ? "local_only" : "deferred_to_context_embed",
   })}\n`);
 }
 
@@ -2351,6 +2349,380 @@ console.log(JSON.stringify({
   skipped,
   redactions: redactionCount,
 }, null, 2));
+NODE
+}
+
+run_context_embed() {
+  local target_dir
+  parse_target target_dir "$@"
+
+  run_context_index --target "$target_dir" >/dev/null
+
+  AGENTRAIL_TARGET_DIR="$target_dir" \
+  node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const childProcess = require("child_process");
+const crypto = require("crypto");
+const http = require("http");
+const https = require("https");
+
+const targetDir = path.resolve(process.env.AGENTRAIL_TARGET_DIR);
+const configPath = path.join(targetDir, ".agentrail/config.json");
+const contextDir = path.join(targetDir, ".agentrail/context");
+const indexDir = path.join(contextDir, "index");
+const indexPath = path.join(indexDir, "index.json");
+const embeddingsPath = path.join(indexDir, "embeddings.json");
+const auditPath = path.join(contextDir, "audit/events.jsonl");
+
+function appendAudit(event) {
+  fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+  fs.appendFileSync(auditPath, `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`);
+}
+
+function readConfig() {
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    return config.context?.embedding || {};
+  } catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw new Error(`invalid .agentrail/config.json: ${error.message}`);
+  }
+}
+
+function readExistingEmbeddings() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(embeddingsPath, "utf8"));
+    return Array.isArray(parsed.embeddings) ? parsed.embeddings : [];
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw new Error(`invalid existing embedding metadata: ${error.message}`);
+  }
+}
+
+function atomicWriteJson(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.tmp-${process.pid}`;
+  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`);
+  fs.renameSync(tempPath, filePath);
+}
+
+function providerName(mode, config) {
+  if (config.provider) return String(config.provider);
+  if (mode === "custom-command") return "custom-command";
+  if (mode === "openai-compatible") return "openai-compatible";
+  return mode;
+}
+
+function configuredModel(mode, config) {
+  if (config.model) return String(config.model);
+  if (mode === "custom-command") return "custom-command";
+  return null;
+}
+
+function embeddingConfigHash(mode, config) {
+  const fingerprint = {
+    mode,
+    provider: config.provider || null,
+    model: config.model || null,
+    command: mode === "custom-command" ? String(config.command || config.customCommand || "") : null,
+    baseUrl: mode === "openai-compatible" ? String(config.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "") : null,
+    apiKeyEnv: mode === "openai-compatible" ? String(config.apiKeyEnv || "OPENAI_API_KEY") : null,
+  };
+  return `sha256:${crypto.createHash("sha256").update(JSON.stringify(fingerprint)).digest("hex")}`;
+}
+
+function sourceForChunk(sourcesById, chunk) {
+  return sourcesById.get(chunk.sourceId) || {};
+}
+
+function isReusable(record, chunk, source, mode, configHash) {
+  const providerMatches = Boolean(record?.provider);
+  const modelMatches = Boolean(record?.model);
+  return record &&
+    record.mode === mode &&
+    record.configHash === configHash &&
+    record.chunkId === chunk.id &&
+    record.textHash === chunk.textHash &&
+    record.contentHash === source.contentHash &&
+    providerMatches &&
+    modelMatches &&
+    Number.isFinite(record.dimension);
+}
+
+function normalizeEmbedding(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("provider returned an empty or missing embedding vector");
+  }
+  const vector = value.map((item) => Number(item));
+  if (vector.some((item) => !Number.isFinite(item))) {
+    throw new Error("provider returned a non-numeric embedding vector");
+  }
+  return vector;
+}
+
+function runCustomCommand(config, payload) {
+  const command = config.command || config.customCommand;
+  if (!command) {
+    throw new Error("context.embedding.command is required for custom-command mode");
+  }
+  const result = childProcess.spawnSync(command, {
+    input: `${JSON.stringify(payload)}\n`,
+    encoding: "utf8",
+    shell: true,
+    maxBuffer: 1024 * 1024 * 20,
+    cwd: targetDir,
+    env: process.env,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const stderr = String(result.stderr || "").trim();
+    throw new Error(`custom embedding command failed with exit ${result.status}${stderr ? `: ${stderr}` : ""}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(String(result.stdout || "").trim());
+  } catch (error) {
+    throw new Error(`custom embedding command returned invalid JSON: ${error.message}`);
+  }
+  return {
+    provider: parsed.provider ? String(parsed.provider) : null,
+    model: parsed.model ? String(parsed.model) : null,
+    vector: normalizeEmbedding(parsed.embedding || parsed.vector),
+  };
+}
+
+function requestJson(url, headers, body) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const transport = parsed.protocol === "http:" ? http : https;
+    const request = transport.request({
+      method: "POST",
+      hostname: parsed.hostname,
+      port: parsed.port || undefined,
+      path: `${parsed.pathname}${parsed.search}`,
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+        ...headers,
+      },
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        let parsedBody = {};
+        try {
+          parsedBody = text ? JSON.parse(text) : {};
+        } catch (error) {
+          reject(new Error(`embedding provider returned invalid JSON: ${error.message}`));
+          return;
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`embedding provider returned HTTP ${response.statusCode}: ${text.slice(0, 500)}`));
+          return;
+        }
+        resolve(parsedBody);
+      });
+    });
+    request.on("error", reject);
+    request.write(body);
+    request.end();
+  });
+}
+
+async function runOpenAICompatible(config, payload) {
+  const model = config.model;
+  if (!model) throw new Error("context.embedding.model is required for openai-compatible mode");
+  const apiKeyEnv = config.apiKeyEnv || "OPENAI_API_KEY";
+  const apiKey = process.env[apiKeyEnv];
+  if (!apiKey) throw new Error(`${apiKeyEnv} is required for openai-compatible embedding mode`);
+  const baseUrl = String(config.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+  const body = JSON.stringify({
+    model,
+    input: payload.content,
+  });
+  const response = await requestJson(`${baseUrl}/embeddings`, {
+    authorization: `Bearer ${apiKey}`,
+  }, body);
+  return {
+    provider: config.provider ? String(config.provider) : "openai-compatible",
+    model: response.model ? String(response.model) : String(model),
+    vector: normalizeEmbedding(response.data?.[0]?.embedding),
+  };
+}
+
+(async () => {
+  const config = readConfig();
+  const mode = String(config.mode || "disabled");
+  const provider = providerName(mode, config);
+  const model = configuredModel(mode, config);
+  const configHash = embeddingConfigHash(mode, config);
+  const index = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+  const sourcesById = new Map((index.records || []).map((record) => [record.id, record]));
+  const chunks = (index.chunks || []).filter((chunk) => String(chunk.content || "").trim());
+  const existing = readExistingEmbeddings();
+  const existingByChunk = new Map(existing.map((record) => [record.chunkId, record]));
+
+  if (mode === "disabled") {
+    const output = {
+      schemaVersion: 1,
+      provider: {
+        mode,
+        provider: null,
+        model: null,
+      },
+      builtAt: new Date().toISOString(),
+      embeddings: [],
+    };
+    atomicWriteJson(embeddingsPath, output);
+    appendAudit({
+      event: "embedding_provider_call",
+      mode,
+      provider: null,
+      model: null,
+      action: "skipped_local_only",
+      payloadCount: 0,
+    });
+    console.log(JSON.stringify({
+      embeddingPath: ".agentrail/context/index/embeddings.json",
+      providerMode: mode,
+      provider: null,
+      model: null,
+      eligible: chunks.length,
+      embedded: 0,
+      skipped: chunks.length,
+      failed: 0,
+    }, null, 2));
+    return;
+  }
+
+  if (!["custom-command", "openai-compatible"].includes(mode)) {
+    appendAudit({
+      event: "embedding_provider_failure",
+      mode,
+      provider,
+      model,
+      action: "unsupported_mode",
+      payloadCount: chunks.length,
+    });
+    throw new Error(`context embedding mode '${mode}' is not supported by this AgentRail version; config is reserved for future provider extension`);
+  }
+
+  const nextRecords = [];
+  let embedded = 0;
+  let skipped = 0;
+  for (const chunk of chunks) {
+    const source = sourceForChunk(sourcesById, chunk);
+    const prior = existingByChunk.get(chunk.id);
+    if (isReusable(prior, chunk, source, mode, configHash)) {
+      nextRecords.push(prior);
+      skipped += 1;
+      continue;
+    }
+
+    const payload = {
+      mode,
+      provider,
+      model,
+      chunkId: chunk.id,
+      path: chunk.path,
+      citation: chunk.citation,
+      contentHash: source.contentHash,
+      textHash: chunk.textHash,
+      auditRef: source.auditRef,
+      content: chunk.content,
+    };
+
+    appendAudit({
+      event: "embedding_provider_call",
+      mode,
+      provider,
+      model,
+      action: "embed_chunk",
+      chunkId: chunk.id,
+      contentHash: source.contentHash,
+      textHash: chunk.textHash,
+      auditRef: source.auditRef,
+    });
+
+    let result;
+    try {
+      result = mode === "custom-command"
+        ? runCustomCommand(config, payload)
+        : await runOpenAICompatible(config, payload);
+    } catch (error) {
+      appendAudit({
+        event: "embedding_provider_failure",
+        mode,
+        provider,
+        model,
+        action: "embed_chunk_failed",
+        chunkId: chunk.id,
+        contentHash: source.contentHash,
+        textHash: chunk.textHash,
+        auditRef: source.auditRef,
+        message: "embedding provider failed",
+      });
+      throw error;
+    }
+
+    const vector = result.vector;
+    const timestamp = new Date().toISOString();
+    nextRecords.push({
+      mode,
+      provider: result.provider || provider,
+      model: result.model || model,
+      configHash,
+      dimension: vector.length,
+      contentHash: source.contentHash,
+      chunkId: chunk.id,
+      textHash: chunk.textHash,
+      timestamp,
+      auditRef: source.auditRef,
+      path: chunk.path,
+      citation: chunk.citation,
+      embedding: vector,
+    });
+    embedded += 1;
+  }
+
+  nextRecords.sort((a, b) => a.chunkId.localeCompare(b.chunkId));
+  const output = {
+    schemaVersion: 1,
+    provider: {
+      mode,
+      provider,
+      model,
+    },
+    builtAt: new Date().toISOString(),
+    embeddings: nextRecords,
+  };
+  atomicWriteJson(embeddingsPath, output);
+  appendAudit({
+    event: "embedding_provider_complete",
+    mode,
+    provider,
+    model,
+    payloadCount: chunks.length,
+    embedded,
+    skipped,
+    embeddingCount: nextRecords.length,
+  });
+  console.log(JSON.stringify({
+    embeddingPath: ".agentrail/context/index/embeddings.json",
+    providerMode: mode,
+    provider,
+    model,
+    eligible: chunks.length,
+    embedded,
+    skipped,
+    failed: 0,
+  }, null, 2));
+})().catch((error) => {
+  console.error(error.message);
+  process.exit(1);
+});
 NODE
 }
 
@@ -2636,6 +3008,9 @@ run_context() {
       ;;
     index)
       run_context_index "$@"
+      ;;
+    embed)
+      run_context_embed "$@"
       ;;
     build)
       run_context_build "$@"

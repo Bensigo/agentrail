@@ -119,6 +119,27 @@ The command lists source records in deterministic order. It excludes:
 
 The inventory includes optional docs only when present. Missing `docs/memory/`, `docs/prd/`, or `docs/milestones/` should not fail the command.
 
+## Embeddings
+
+Embeddings are disabled by default. A non-disabled embedding mode never runs during source inventory or local indexing.
+
+Run:
+
+```bash
+agentrail context embed --target .
+```
+
+The command first refreshes the local context index, so source allow/deny rules, ignored-file handling, file size limits, binary skipping, and redaction run before any provider receives chunk text.
+
+Supported embedding modes:
+
+- `disabled`: local-only mode; no provider call is made.
+- `openai-compatible`: sends redacted chunk text to a configured OpenAI-compatible `/embeddings` endpoint.
+- `custom-command`: sends each redacted chunk payload to a local command over stdin and reads a JSON embedding result from stdout.
+- Future modes may extend `context.embedding` without changing the local index contract.
+
+Embedding metadata is written under `.agentrail/context/index/embeddings.json` and records provider, model, dimension, content hash, chunk ID, text hash, timestamp, and audit reference. Failed provider calls are audit events and must not break local keyword/BM25 retrieval.
+
 ## Ranking Rules
 
 AgentRail uses a hybrid retrieval model:

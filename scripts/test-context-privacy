@@ -167,11 +167,9 @@ const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 config.context.embedding.mode = "openai-compatible";
 fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 NODE
-if "$agentrail" context index --target "$fixture" >"${tmp_dir}/enabled-embedding.out" 2>"${tmp_dir}/enabled-embedding.err"; then
-  echo "context index accepted unimplemented embedding mode" >&2
-  exit 1
-fi
-assert_grep "context embedding mode 'openai-compatible' is not implemented" "${tmp_dir}/enabled-embedding.err" "unimplemented embedding mode error missing"
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/enabled-embedding.out"
+assert_grep '"providerMode": "openai-compatible"' "${tmp_dir}/enabled-embedding.out" "context index did not preserve configured embedding mode"
+assert_grep '"reason":"deferred_to_context_embed"' "${fixture}/.agentrail/context/index/embedding-payloads.jsonl" "embedding payload records did not defer provider calls to context embed"
 node - "${fixture}/.agentrail/config.json" <<'NODE'
 const fs = require("fs");
 const configPath = process.argv[2];

@@ -39,8 +39,14 @@ mkdir -p \
   "${fixture}/ignored"
 
 cat >"${fixture}/src/app.js" <<'JS'
+const fs = require("fs");
+
+function loadAgentRailConfig() {
+  return fs.readFileSync(".agentrail/config.json", "utf8");
+}
+
 const message = "first";
-module.exports = { message };
+module.exports = { loadAgentRailConfig, message };
 JS
 cat >"${fixture}/src/stable.js" <<'JS'
 module.exports = { stable: true };
@@ -49,10 +55,135 @@ cat >"${fixture}/src/deleted.js" <<'JS'
 module.exports = { deleted: true };
 JS
 cat >"${fixture}/docs/agents/guide.md" <<'DOC'
+---
+kind: agent-guide
+---
+Preamble requirement links #76 before the first heading and must remain retrievable.
+
 # Agent Guide
+
+This guide links #76 for retrieval.
+
+## Context Packs
+
+Context packs include source-citable chunks.
+
+### Chunk Evidence
+
+Chunk evidence explains why a retrieval result matched.
+
+## Overview
+
+First overview section.
+
+## Overview
+
+Second overview section with the same heading text.
+DOC
+cat >"${fixture}/docs/agents/source-wide-link.md" <<'DOC'
+# Source Wide Link
+
+This intro links #76, but the repeated noise headings below should not all inherit the issue link score.
+
+## Noise 01
+
+Unrelated operational notes.
+
+## Noise 02
+
+Unrelated operational notes.
+
+## Noise 03
+
+Unrelated operational notes.
+
+## Noise 04
+
+Unrelated operational notes.
+
+## Noise 05
+
+Unrelated operational notes.
+
+## Noise 06
+
+Unrelated operational notes.
+
+## Noise 07
+
+Unrelated operational notes.
+
+## Noise 08
+
+Unrelated operational notes.
+
+## Noise 09
+
+Unrelated operational notes.
+
+## Noise 10
+
+Unrelated operational notes.
+
+## Noise 11
+
+Unrelated operational notes.
+
+## Noise 12
+
+Unrelated operational notes.
+
+## Noise 13
+
+Unrelated operational notes.
+
+## Noise 14
+
+Unrelated operational notes.
+
+## Noise 15
+
+Unrelated operational notes.
+
+## Noise 16
+
+Unrelated operational notes.
+
+## Noise 17
+
+Unrelated operational notes.
+
+## Noise 18
+
+Unrelated operational notes.
+
+## Noise 19
+
+Unrelated operational notes.
+
+## Noise 20
+
+Unrelated operational notes.
+
+## Noise 21
+
+Unrelated operational notes.
+
+## Noise 22
+
+Unrelated operational notes.
 DOC
 cat >"${fixture}/docs/memory/lesson.md" <<'DOC'
+---
+kind: lesson
+source: issue-76
+confidence: high
+created_at: 2026-06-04T09:00:00Z
+expires_at: 2026-12-31T00:00:00Z
+---
 # Lesson
+
+Memory metadata must survive chunking for #76.
 DOC
 cat >"${fixture}/docs/prd/feature.md" <<'DOC'
 # Feature PRD
@@ -132,6 +263,125 @@ if (!skippedPaths.has("src/image.bin")) {
 }
 if (Array.from(byPath.keys()).some((path) => path.includes("ignored/skip.md"))) {
   console.error("gitignored file was indexed");
+  process.exit(1);
+}
+if (!Array.isArray(index.chunks) || index.chunks.length === 0) {
+  console.error("index did not include chunks");
+  process.exit(1);
+}
+const guide = byPath.get("docs/agents/guide.md");
+if (!guide.chunkIds || guide.chunkIds.length < 3) {
+  console.error("markdown source did not list heading chunk IDs");
+  process.exit(1);
+}
+const preambleChunk = index.chunks.find((chunk) => chunk.path === "docs/agents/guide.md" && chunk.citation === "docs/agents/guide.md#preamble");
+if (!preambleChunk) {
+  console.error("markdown preamble chunk before first heading missing");
+  process.exit(1);
+}
+if (!preambleChunk.content.includes("Preamble requirement links #76")) {
+  console.error("markdown preamble content was not preserved");
+  process.exit(1);
+}
+const guideChunk = index.chunks.find((chunk) => chunk.path === "docs/agents/guide.md" && Array.isArray(chunk.headingPath) && chunk.headingPath.join(" > ") === "Agent Guide > Context Packs > Chunk Evidence");
+if (!guideChunk) {
+  console.error("markdown heading chunk with parent heading path missing");
+  process.exit(1);
+}
+if (guideChunk.citation !== "docs/agents/guide.md#chunk-evidence") {
+  console.error(`markdown chunk citation was not heading-based: ${guideChunk.citation}`);
+  process.exit(1);
+}
+if (guideChunk.parentContext !== "Agent Guide > Context Packs") {
+  console.error(`markdown chunk parent context missing: ${guideChunk.parentContext}`);
+  process.exit(1);
+}
+const overviewChunks = index.chunks.filter((chunk) => chunk.path === "docs/agents/guide.md" && chunk.headingPath.join(" > ") === "Agent Guide > Overview");
+if (overviewChunks.length !== 2) {
+  console.error(`expected two repeated overview chunks, found ${overviewChunks.length}`);
+  process.exit(1);
+}
+const overviewIds = new Set(overviewChunks.map((chunk) => chunk.id));
+if (overviewIds.size !== 2) {
+  console.error(`repeated heading chunk IDs were not unique: ${JSON.stringify(Array.from(overviewIds))}`);
+  process.exit(1);
+}
+const overviewCitations = overviewChunks.map((chunk) => chunk.citation).sort();
+if (!overviewCitations.includes("docs/agents/guide.md#overview") || !overviewCitations.includes("docs/agents/guide.md#overview-2")) {
+  console.error(`repeated heading citations were not unique: ${JSON.stringify(overviewCitations)}`);
+  process.exit(1);
+}
+const codeChunk = index.chunks.find((chunk) => chunk.path === "src/app.js");
+if (!codeChunk) {
+  console.error("code chunk missing");
+  process.exit(1);
+}
+if (codeChunk.language !== "javascript") {
+  console.error(`code chunk language missing: ${codeChunk.language}`);
+  process.exit(1);
+}
+if (!codeChunk.importHints.includes('require("fs")')) {
+  console.error(`code chunk import hint missing: ${JSON.stringify(codeChunk.importHints)}`);
+  process.exit(1);
+}
+if (!codeChunk.symbolHints.includes("loadAgentRailConfig")) {
+  console.error(`code chunk symbol hint missing: ${JSON.stringify(codeChunk.symbolHints)}`);
+  process.exit(1);
+}
+if (!codeChunk.citation.match(/^src\/app\.js#L1-L\d+$/)) {
+  console.error(`code chunk citation missing line range: ${codeChunk.citation}`);
+  process.exit(1);
+}
+const memoryChunk = index.chunks.find((chunk) => chunk.path === "docs/memory/lesson.md");
+if (!memoryChunk || !memoryChunk.memory) {
+  console.error("memory chunk metadata missing");
+  process.exit(1);
+}
+for (const [key, value] of Object.entries({
+  kind: "lesson",
+  source: "issue-76",
+  confidence: "high",
+  created_at: "2026-06-04T09:00:00Z",
+  expires_at: "2026-12-31T00:00:00Z",
+})) {
+  if (memoryChunk.memory[key] !== value) {
+    console.error(`memory metadata ${key} was not preserved: ${memoryChunk.memory[key]}`);
+    process.exit(1);
+  }
+}
+if (index.provider.summary.mode !== "disabled") {
+  console.error("summary generation should be disabled by default");
+  process.exit(1);
+}
+NODE
+
+"$agentrail" context build issue 76 --phase execute --target "$fixture" --json >"${tmp_dir}/pack-76.out"
+pack_76_path="$(node - "${tmp_dir}/pack-76.out" <<'NODE'
+const fs = require("fs");
+const output = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(output.jsonPath);
+NODE
+)"
+node - "${fixture}/${pack_76_path}" <<'NODE'
+const fs = require("fs");
+const pack = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const included = pack.included.find((item) => item.path === "docs/agents/guide.md" && item.chunkId && item.citation === "docs/agents/guide.md#agent-guide");
+if (!included) {
+  console.error("context pack did not include a citable chunk for issue #76");
+  process.exit(1);
+}
+const preambleIncluded = pack.included.find((item) => item.path === "docs/agents/guide.md" && item.chunkId && item.citation === "docs/agents/guide.md#preamble");
+if (!preambleIncluded) {
+  console.error("context pack did not include matching markdown preamble chunk for issue #76");
+  process.exit(1);
+}
+if (!included.sourceId || !included.matchContext || !included.matchContext.includes("Agent Guide")) {
+  console.error("included chunk did not retain parent context for explaining the match");
+  process.exit(1);
+}
+const sourceWideNoise = pack.included.filter((item) => item.path === "docs/agents/source-wide-link.md" && item.citation.includes("#noise-"));
+if (sourceWideNoise.length > 0) {
+  console.error(`source-level issue links flooded context pack with unrelated chunks: ${sourceWideNoise.map((item) => item.citation).join(", ")}`);
   process.exit(1);
 }
 NODE

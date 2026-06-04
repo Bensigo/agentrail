@@ -4,6 +4,34 @@ AgentRail context packs are auditable artifacts that tell an agent what matters 
 
 Use context packs to reduce blind repo exploration, prevent repeated verifier mistakes, and make PR review easier. Do not treat context packs as hidden truth. Current code, GitHub issues, PRDs, milestones, `CONTEXT.md`, and explicit user instructions remain more authoritative when they conflict.
 
+## Internal Architecture
+
+Context-engine implementation lives in the typed Python package under `agentrail/context/`. The public `agentrail context ...` CLI is routed through `agentrail/cli/commands/context.py`; `scripts/agentrail` is only the compatibility launcher.
+
+Module boundaries:
+
+- `agentrail/context/sources.py`: source inventory, source typing, authority, freshness, linked issue and PR metadata.
+- `agentrail/context/index.py`: local indexing, Markdown/code chunking, audit events, embedding payload manifests.
+- `agentrail/context/redaction.py`: secret redaction detectors and redaction finding records.
+- `agentrail/context/embeddings.py`: disabled, custom-command, and OpenAI-compatible embedding orchestration.
+- `agentrail/context/retrieval.py`: keyword/BM25, deterministic context, embedding blending, score reasons, excluded sources.
+- `agentrail/context/packs.py`: issue and PR context pack JSON/Markdown generation.
+- `agentrail/context/models.py`: typed dataclasses for source records, chunks, freshness, and redactions.
+
+Future context-engine work should add behavior to these modules and keep JSON serialization explicit at command boundaries. Do not add new embedded `node <<'NODE'` context-engine blocks to shell launchers.
+
+Verification for context-engine changes:
+
+```bash
+bash scripts/test-python
+npm run typecheck
+bash scripts/test-context-sources
+bash scripts/test-context-index
+bash scripts/test-context-privacy
+bash scripts/test-context-embeddings
+bash scripts/test-context-query
+```
+
 ## Core Objects
 
 ### Source Record

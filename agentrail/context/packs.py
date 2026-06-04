@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
@@ -66,16 +67,25 @@ def _reason_for(item: Dict[str, Any], fallback: str) -> str:
     return str(item.get("reason") or fallback)
 
 
+def _prior_mistake_excerpt(item: Dict[str, Any]) -> str:
+    content = item.get("content")
+    if isinstance(content, str) and content.strip():
+        compact = re.sub(r"\s+", " ", content).strip()
+        return compact[:260].rstrip() if len(compact) > 260 else compact
+    return _reason_for(item, "Prior mistake matched this task.")
+
+
 def _normalized_item(item: Dict[str, Any], kind: str, fallback_reason: str) -> Dict[str, Any]:
     value = dict(item)
     value["kind"] = kind
     value["reason"] = _reason_for(value, fallback_reason)
     value["citation"] = _citation_for(value)
-    prior_mistake = value.get("priorMistake")
-    if kind == "priorMistakes" and isinstance(prior_mistake, dict):
-        value["source"] = prior_mistake.get("source") or value.get("path")
-        value["whyItMatters"] = prior_mistake.get("whyItMatters") or value["reason"]
-        value["preventionGuidance"] = prior_mistake.get("preventionGuidance") or "Review this prior mistake before repeating the same workflow."
+    if kind == "priorMistakes":
+        prior_mistake = value.get("priorMistake")
+        prior_fields = prior_mistake if isinstance(prior_mistake, dict) else {}
+        value["source"] = prior_fields.get("source") or value.get("path") or "prior mistake"
+        value["whyItMatters"] = prior_fields.get("whyItMatters") or _prior_mistake_excerpt(value)
+        value["preventionGuidance"] = prior_fields.get("preventionGuidance") or "Review this prior mistake before repeating the same workflow."
     return value
 
 

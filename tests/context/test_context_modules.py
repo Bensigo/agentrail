@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from agentrail.context.index import build_index
-from agentrail.context.packs import build_context_pack
+from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
 from agentrail.context.redaction import redact_text
 from agentrail.context.retrieval import query_context
 from agentrail.context.sources import inventory_sources
@@ -32,10 +32,20 @@ class ContextModuleTests(unittest.TestCase):
                 "summary": {"mode": "disabled", "provider": None, "model": None},
             },
         }, indent=2), encoding="utf-8")
-        (root / ".agentrail" / "state.json").write_text(json.dumps({"workflow": {"activeIssue": 92}}, indent=2), encoding="utf-8")
+        (root / ".agentrail" / "state.json").write_text(json.dumps({"workflow": {"activeIssue": 92, "activePhase": "execute"}}, indent=2), encoding="utf-8")
         (root / "CONTEXT.md").write_text("# Context\n\nIssue #92 context.\n", encoding="utf-8")
+        (root / "TASTE.md").write_text("# Taste\n\nDirect and concrete output for #92.\n", encoding="utf-8")
         (root / "docs" / "agents").mkdir(parents=True)
         (root / "docs" / "agents" / "issue-92.md").write_text("# Issue 92\n\nModularize context engine for #92.\n", encoding="utf-8")
+        (root / "docs" / "prd").mkdir(parents=True)
+        (root / "docs" / "prd" / "context-engine.md").write_text("# Context Engine\n\nContext packs for issue #92 and PR #44.\n", encoding="utf-8")
+        (root / "docs" / "memory").mkdir(parents=True)
+        (root / "docs" / "memory" / "lesson.md").write_text("---\nkind: lesson\nsource: issue-92\nconfidence: high\ncreated_at: 2026-06-04T09:00:00Z\nexpires_at: 2026-12-31T00:00:00Z\n---\n# Context Pack Lesson\n\nKeep pack evidence cited for issue #92.\n", encoding="utf-8")
+        (root / ".agentrail" / "runs" / "issue-92-retry").mkdir(parents=True)
+        (root / ".agentrail" / "runs" / "issue-92-retry" / "findings.json").write_text(json.dumps({"issue": 92, "findings": [{"message": "Prior mistake for issue #92: missing citations."}]}, indent=2), encoding="utf-8")
+        (root / "skills" / "backend-api").mkdir(parents=True)
+        (root / "skills" / "backend-api" / "SKILL.md").write_text("# Backend API\n\nCLI contract skill for issue #92.\n", encoding="utf-8")
+        (root / "docs" / "agents" / "pr-44.md").write_text("# PR 44\n\nPR #44 at /pull/44 reviews context pack generation for issue #92.\n", encoding="utf-8")
         (root / "src").mkdir()
         (root / "src" / "app.py").write_text("def agentrail_context_subject():\n    return 'issue #92'\n", encoding="utf-8")
         (root / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
@@ -64,6 +74,62 @@ class ContextModuleTests(unittest.TestCase):
         pack = build_context_pack(root, "issue", 92, "execute")
         self.assertTrue((root / pack["jsonPath"]).exists())
         self.assertTrue((root / pack["markdownPath"]).exists())
+
+    def test_context_pack_sections_are_auditable(self) -> None:
+        root = self.make_repo()
+        build_index(root)
+        output = build_context_pack(root, "issue", 92, "execute")
+        pack = json.loads((root / output["jsonPath"]).read_text(encoding="utf-8"))
+        expected_sections = [
+            "requiredContext",
+            "likelyFiles",
+            "likelyDocs",
+            "relevantMemory",
+            "priorMistakes",
+            "activeState",
+            "availableTools",
+            "availableSkills",
+            "excludedContext",
+            "openQuestions",
+        ]
+        for section in expected_sections:
+            self.assertIn(section, pack)
+        self.assertTrue(any(item["path"] == "CONTEXT.md" for item in pack["requiredContext"]))
+        self.assertTrue(any(item["path"] == "src/app.py" for item in pack["likelyFiles"]))
+        self.assertTrue(any(item["path"] == "docs/agents/issue-92.md" for item in pack["likelyDocs"]))
+        self.assertTrue(any(item["path"] == "docs/memory/lesson.md" for item in pack["relevantMemory"]))
+        self.assertTrue(any(item["path"].endswith("findings.json") for item in pack["priorMistakes"]))
+        self.assertTrue(any(item["path"] == ".agentrail/state.json" for item in pack["activeState"]))
+        self.assertTrue(any(item["path"] == "skills/backend-api/SKILL.md" for item in pack["availableSkills"]))
+        self.assertTrue(pack["availableTools"])
+        self.assertTrue(pack["excludedContext"])
+        for section in expected_sections:
+            for item in pack[section]:
+                self.assertTrue(item.get("reason"), f"{section} item missing reason: {item}")
+                self.assertTrue(item.get("citation"), f"{section} item missing citation: {item}")
+        self.assertEqual(pack["index"]["version"], "context-index-v1")
+        self.assertEqual(pack["provider"]["mode"], "disabled")
+        self.assertIn("audit", pack)
+        self.assertIn("jsonPath", pack["audit"])
+        markdown = (root / output["markdownPath"]).read_text(encoding="utf-8")
+        self.assertIn("## Required Context", markdown)
+        self.assertIn("## Excluded Context", markdown)
+
+    def test_pr_review_pack_show_and_explain_are_callable(self) -> None:
+        root = self.make_repo()
+        build_index(root)
+        output = build_context_pack(root, "pr", 44, "review")
+        pack = json.loads((root / output["jsonPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(pack["target"], {"kind": "pr", "number": 44, "phase": "review"})
+        self.assertTrue(any(item["path"] == "docs/agents/pr-44.md" for item in pack["likelyDocs"]))
+
+        shown = show_context_pack(root, output["packId"])
+        self.assertIn("Context Pack: pr #44 review", shown)
+        explained = explain_context_pack(root, output["packId"])
+        self.assertEqual(explained["packId"], output["packId"])
+        self.assertGreater(explained["includedCount"], 0)
+        self.assertGreaterEqual(explained["excludedCount"], 1)
+        self.assertTrue(explained["sections"]["likelyDocs"])
 
 
 if __name__ == "__main__":

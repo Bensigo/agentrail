@@ -188,6 +188,19 @@ agentrail prompt issue 123 --skill frontend-web --no-auto-skills --target .
 
 Maintainers should treat upstream skill material as supply-chain input: borrow aggressively, vendor carefully, update intentionally, never auto-trust. Before changing `docs/agents/skill-registry.json`, verify the upstream source still exists, record the current URL or observed commit/SHA when available, check the license and audit status, then update the local skill file and tests in the same PR.
 
+## Context Packs
+
+AgentRail can build local, auditable context packs for issue execution and PR review. Packs are written as JSON and Markdown under `.agentrail/context/packs/`.
+
+```bash
+agentrail context build issue 123 --phase execute --target . --json
+agentrail context build pr 45 --phase review --target . --json
+agentrail context show issue-123-execute-20260604T120000000Z --target .
+agentrail context explain issue-123-execute-20260604T120000000Z --target . --json
+```
+
+Generated packs include cited required context, likely files and docs, memory, prior mistakes, active state, available tools and skills, exclusions, open questions, retrieval budget, index metadata, provider mode, and audit metadata.
+
 ## Recommended Flow
 
 Use the full workflow for product features, risky changes, or work that needs agent handoff:

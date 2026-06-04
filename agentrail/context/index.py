@@ -109,7 +109,133 @@ def parse_memory_metadata(text: str) -> Optional[Dict[str, str]]:
     return metadata or None
 
 
-def chunk_record(source: SourceRecord, id_suffix: str, text: str, language: str, citation: str, start_line: Optional[int], end_line: Optional[int], *, heading_path: Optional[List[str]] = None, parent_context: str = "", symbol_hints: Optional[List[str]] = None, import_hints: Optional[List[str]] = None, memory: Optional[Dict[str, str]] = None) -> ChunkRecord:
+def issue_number_from_text_or_path(relative_path: str, text: str) -> Optional[int]:
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            for key in ("issue", "targetIssue"):
+                if parsed.get(key) is not None:
+                    return int(parsed[key])
+            target = parsed.get("target")
+            if isinstance(target, dict) and target.get("number") is not None:
+                return int(target["number"])
+    except Exception:
+        pass
+    for pattern in (r"source:\s*issue-(\d+)", r"(?:linked\s+)?issue\s*:?\s*#?(\d+)", r"issue[-_/](\d+)", r"issue-(\d+)", r"(?:^|[^A-Za-z])#(\d+)\b"):
+        match = re.search(pattern, f"{relative_path}\n{text}", re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def text_excerpt(text: str, *, limit: int = 260) -> str:
+    compact = re.sub(r"\s+", " ", text).strip()
+    return compact[:limit].rstrip() if len(compact) > limit else compact
+
+
+def field_line(text: str, field: str) -> Optional[str]:
+    match = re.search(rf"^\s*(?:[-*]\s*)?{re.escape(field)}\s*:\s*(.+?)\s*$", text, re.IGNORECASE | re.MULTILINE)
+    if match:
+        return match.group(1).strip()
+    inline = re.search(rf"\b{re.escape(field)}\s*:\s*(.+?)(?:\n|$)", text, re.IGNORECASE)
+    return inline.group(1).strip() if inline else None
+
+
+def parsed_json_prior_mistake(relative_path: str, text: str) -> Optional[Dict[str, Any]]:
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    issue = issue_number_from_text_or_path(relative_path, text)
+    if relative_path.endswith("findings.json"):
+        findings = parsed.get("findings")
+        messages: List[str] = []
+        if isinstance(findings, list):
+            for finding in findings:
+                if isinstance(finding, dict):
+                    message = finding.get("message") or finding.get("summary") or finding.get("title")
+                    if message:
+                        messages.append(str(message))
+                elif finding:
+                    messages.append(str(finding))
+        if not messages:
+            return None
+        return {
+            "kind": "verifier-finding",
+            "source": "verifier findings",
+            "issue": issue,
+            "status": str(parsed.get("status") or "open"),
+            "whyItMatters": text_excerpt(" ".join(messages)),
+            "preventionGuidance": "Review the verifier finding before retrying and include concrete verification evidence for the corrected behavior.",
+        }
+    blocked_reason = parsed.get("blockedReason")
+    if blocked_reason:
+        return {
+            "kind": "blocked-run",
+            "source": "blocked run reason",
+            "issue": issue,
+            "status": str(parsed.get("status") or "blocked"),
+            "whyItMatters": text_excerpt(str(blocked_reason)),
+            "preventionGuidance": "Resolve the recorded blocker or cite why it no longer applies before continuing the same workflow.",
+        }
+    return None
+
+
+def markdown_prior_mistake(relative_path: str, source_type: str, text: str, memory: Optional[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+    lowered = f"{relative_path}\n{text}".lower()
+    title = field_line(text, "title")
+    state = field_line(text, "state") or field_line(text, "status")
+    confidence = (memory or {}).get("confidence") or field_line(text, "confidence")
+    kind = (memory or {}).get("kind") or field_line(text, "kind")
+    source = (memory or {}).get("source") or field_line(text, "source")
+    issue = issue_number_from_text_or_path(relative_path, text)
+    label_line = field_line(text, "Labels") or ""
+    heading_line = next((line.strip() for line in text.splitlines() if line.strip().startswith("#")), "")
+    issue_marker_text = f"{relative_path}\n{heading_line}\n{label_line}".lower()
+    is_review_fix = "review-fix" in issue_marker_text
+    is_memory_suggestion = "memory-suggestion" in issue_marker_text
+    is_failure_pattern = source_type == "memory" and (relative_path.endswith("failure-patterns.md") or str(kind).lower() == "failure-pattern")
+    if not (is_review_fix or is_memory_suggestion or is_failure_pattern):
+        return None
+    if is_review_fix:
+        mistake_kind = "review-fix"
+        mistake_source = "review-fix issue"
+        prevention = field_line(text, "Expected correction") or "Apply the review correction and rerun the verification named in the review-fix issue."
+    elif is_memory_suggestion:
+        mistake_kind = "memory-suggestion"
+        mistake_source = "memory-suggestion issue"
+        prevention = field_line(text, "Proposed memory") or "Check the suggested memory against current code and avoid repeating the recorded pattern."
+    else:
+        mistake_kind = "failure-pattern"
+        mistake_source = "failure-pattern memory"
+        prevention = field_line(text, "Prevention") or "Check this failure pattern before making the same kind of change."
+    if re.search(r"\b(closed|resolved|done|fixed|merged)\b", str(state or ""), re.IGNORECASE):
+        status = "resolved"
+    elif str(confidence or "").lower() == "stale":
+        status = "stale"
+    else:
+        status = "open"
+    why = title or text_excerpt(re.sub(r"^---[\s\S]*?---", "", text).strip())
+    return {
+        "kind": mistake_kind,
+        "source": mistake_source,
+        "issue": issue,
+        "status": status,
+        "whyItMatters": why or "Prior mistake matched this task.",
+        "preventionGuidance": prevention,
+    }
+
+
+def prior_mistake_for(relative_path: str, source_type: str, text: str, memory: Optional[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+    parsed = parsed_json_prior_mistake(relative_path, text)
+    if parsed:
+        return parsed
+    return markdown_prior_mistake(relative_path, source_type, text, memory)
+
+
+def chunk_record(source: SourceRecord, id_suffix: str, text: str, language: str, citation: str, start_line: Optional[int], end_line: Optional[int], *, heading_path: Optional[List[str]] = None, parent_context: str = "", symbol_hints: Optional[List[str]] = None, import_hints: Optional[List[str]] = None, memory: Optional[Dict[str, str]] = None, prior_mistake: Optional[Dict[str, Any]] = None) -> ChunkRecord:
     normalized = text.strip()
     return ChunkRecord(
         id=f"chunk:{source.path}#{id_suffix}",
@@ -128,6 +254,7 @@ def chunk_record(source: SourceRecord, id_suffix: str, text: str, language: str,
         citation=citation,
         content=normalized,
         memory=memory,
+        priorMistake=prior_mistake,
     )
 
 
@@ -195,9 +322,11 @@ def chunks_for_source(source: SourceRecord, relative_path: str, text: str) -> Li
     memory = parse_memory_metadata(text) if source.sourceType == "memory" else None
     if memory:
         source.memory = memory
-    if language_for(relative_path) == "markdown":
-        return markdown_chunks(source, text, memory)
-    return code_chunks(source, text, relative_path)
+    source.priorMistake = None if relative_path.endswith("failure-patterns.md") else prior_mistake_for(relative_path, source.sourceType, text, memory)
+    chunks = markdown_chunks(source, text, memory) if language_for(relative_path) == "markdown" else code_chunks(source, text, relative_path)
+    for chunk in chunks:
+        chunk.priorMistake = prior_mistake_for(relative_path, source.sourceType, chunk.content, chunk.memory or memory) or source.priorMistake
+    return chunks
 
 
 def skip_event(target_dir: Path, cfg: ContextConfig, skipped_records: List[Dict[str, str]], path_value: str, reason: str) -> None:

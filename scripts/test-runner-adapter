@@ -110,6 +110,7 @@ assert_grep "Handle exactly one issue: #12" "${codex_run_dir}/execute/output.md"
 assert_grep "Implementation evidence from the working tree" "${codex_run_dir}/verify/prompt.md" "Verify prompt did not include implementation evidence"
 assert_grep "PR/diff references" "${codex_run_dir}/verify/prompt.md" "Verify prompt did not include PR/diff references"
 assert_grep "every acceptance criterion" "${codex_run_dir}/verify/prompt.md" "Verify prompt did not include acceptance criteria"
+assert_grep "active goal success criteria" "${codex_run_dir}/verify/prompt.md" "Verify prompt did not include active goal success criteria framing"
 
 state_file="${target}/.agentrail/state.json"
 if [[ "$(node - "$state_file" <<'NODE'
@@ -117,6 +118,7 @@ const fs = require("fs");
 const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const workflow = state.workflow || {};
 const completedRun = Array.isArray(workflow.completedRuns) && workflow.completedRuns.find((run) => run.targetIssue === 12 && run.agent === "codex");
+const goal = Array.isArray(workflow.goals) && workflow.goals.find((item) => item.id === "issue-12");
 console.log(Boolean(
   workflow.phase === "completed" &&
   workflow.activePhase === null &&
@@ -127,11 +129,22 @@ console.log(Boolean(
   completedRun.activePhase === "verify" &&
   completedRun.completedAt &&
   completedRun.promptFile &&
-  completedRun.metadataFile
+  completedRun.metadataFile &&
+  goal &&
+  goal.kind === "issue" &&
+  goal.source === "github:issue/12" &&
+  goal.status === "completed" &&
+  goal.activeIssue === 12 &&
+  Array.isArray(goal.successCriteria) &&
+  goal.successCriteria.length > 0 &&
+  Array.isArray(goal.nonGoals) &&
+  goal.createdAt &&
+  goal.updatedAt &&
+  goal.completedAt
 ));
 NODE
 )" != "true" ]]; then
-  echo "AgentRail run did not persist completed run state" >&2
+  echo "AgentRail run did not persist completed run and goal state" >&2
   cat "$state_file" >&2
   exit 1
 fi
@@ -321,6 +334,7 @@ const fs = require("fs");
 const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const workflow = state.workflow || {};
 const failedRun = Array.isArray(workflow.completedRuns) && workflow.completedRuns.find((run) => run.targetIssue === 81 && run.status === "failed");
+const goal = Array.isArray(workflow.goals) && workflow.goals.find((item) => item.id === "issue-81");
 console.log(Boolean(
   workflow.phase === "blocked" &&
   workflow.activePhase === null &&
@@ -328,6 +342,9 @@ console.log(Boolean(
   failedRun &&
   failedRun.activePhase === "execute" &&
   failedRun.exitStatus === 7 &&
+  goal &&
+  goal.status === "blocked" &&
+  goal.blockedAt &&
   /execute phase/.test(workflow.nextSuggestedAction || "")
 ));
 NODE
@@ -424,6 +441,7 @@ const fs = require("fs");
 const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const workflow = state.workflow || {};
 const failedRun = Array.isArray(workflow.completedRuns) && workflow.completedRuns.find((run) => run.targetIssue === 84 && run.status === "failed");
+const goal = Array.isArray(workflow.goals) && workflow.goals.find((item) => item.id === "issue-84");
 console.log(Boolean(
   workflow.phase === "blocked" &&
   failedRun &&
@@ -431,6 +449,9 @@ console.log(Boolean(
   failedRun.executionAttempt === 5 &&
   failedRun.maxExecutionAttempts === 5 &&
   failedRun.failedVerificationAttempts === 5 &&
+  goal &&
+  goal.status === "blocked" &&
+  /maximum verifier retry attempts/.test(goal.blockedReason || "") &&
   /maximum verifier retry attempts/.test(failedRun.blockedReason || "") &&
   /maximum verifier retry attempts/.test(workflow.nextSuggestedAction || "")
 ));

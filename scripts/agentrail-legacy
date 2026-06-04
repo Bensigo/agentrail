@@ -341,6 +341,7 @@ const defaultWorkflow = {
   activeMilestone: null,
   activeRun: null,
   completedRuns: [],
+  goals: [],
   worktrees: [],
   lastCompletedStep: null,
   nextSuggestedAction: "Pick a ready-for-agent issue or create a PRD/milestone before starting implementation.",
@@ -357,6 +358,7 @@ const nextState = {
     ...defaultWorkflow,
     ...(state.workflow || {}),
     completedRuns: Array.isArray(state.workflow?.completedRuns) ? state.workflow.completedRuns : [],
+    goals: Array.isArray(state.workflow?.goals) ? state.workflow.goals : [],
     worktrees: Array.isArray(state.workflow?.worktrees) ? state.workflow.worktrees : [],
   },
 };
@@ -4101,6 +4103,7 @@ try {
   const activeRun = workflow.activeRun;
   const completedRuns = Array.isArray(workflow.completedRuns) ? workflow.completedRuns : [];
   const worktrees = Array.isArray(workflow.worktrees) ? workflow.worktrees : [];
+  const goals = Array.isArray(workflow.goals) ? workflow.goals : [];
   function runLabel(run) {
     if (!run || typeof run !== "object") return "none";
     const target = run.targetType === "issue" ? `issue #${run.targetIssue}` : (run.targetType || "target");
@@ -4115,6 +4118,11 @@ try {
     const runDir = path.isAbsolute(run.runDir) ? run.runDir : path.join(targetDir, run.runDir);
     return fs.existsSync(runDir) ? null : `run dir missing: ${run.runDir}`;
   }
+  function goalLabel(goal) {
+    const issue = goal.activeIssue ? ` issue #${goal.activeIssue}` : "";
+    const summary = goal.summary || goal.source || goal.id || "goal";
+    return `${goal.id || "goal"} ${goal.status || "unknown"}${issue}: ${summary}`;
+  }
   console.log("- AgentRail state: present");
   console.log(`- version: ${state.agentrailVersion || "unknown"}`);
   console.log(`- phase: ${workflow.phase || "unknown"}`);
@@ -4124,6 +4132,11 @@ try {
   console.log(`- active PRD: ${workflow.activePrd ?? "none"}`);
   console.log(`- active milestone: ${workflow.activeMilestone ?? "none"}`);
   console.log(`- active run: ${activeRun ? runLabel(activeRun) : "none"}`);
+  const activeGoals = goals.filter((goal) => goal && goal.status === "active");
+  if (activeGoals.length > 0) {
+    console.log("- active goals:");
+    for (const goal of activeGoals.slice(0, 5)) console.log(`  - ${goalLabel(goal)}`);
+  }
   const activeAttempts = attemptSummary(activeRun);
   if (activeAttempts) console.log(`- active run ${activeAttempts}`);
   const activeStale = staleSummary(activeRun);
@@ -4238,6 +4251,7 @@ try {
   const activeRun = workflow.activeRun;
   const completedRuns = Array.isArray(workflow.completedRuns) ? workflow.completedRuns : [];
   const worktrees = Array.isArray(workflow.worktrees) ? workflow.worktrees : [];
+  const goals = Array.isArray(workflow.goals) ? workflow.goals : [];
   function runLabel(run) {
     if (!run || typeof run !== "object") return "none";
     const target = run.targetType === "issue" ? `issue #${run.targetIssue}` : (run.targetType || "target");
@@ -4252,6 +4266,11 @@ try {
     const runDir = path.isAbsolute(run.runDir) ? run.runDir : path.join(targetDir, run.runDir);
     return fs.existsSync(runDir) ? null : `run dir missing: ${run.runDir}`;
   }
+  function goalLabel(goal) {
+    const issue = goal.activeIssue ? ` issue #${goal.activeIssue}` : "";
+    const summary = goal.summary || goal.source || goal.id || "goal";
+    return `${goal.id || "goal"} ${goal.status || "unknown"}${issue}: ${summary}`;
+  }
   console.log("install status: state-present");
   console.log(`agentrail version: ${state.agentrailVersion || "unknown"}`);
   console.log(`installed at: ${state.installedAt || "unknown"}`);
@@ -4265,6 +4284,11 @@ try {
   console.log(`  active PRD: ${workflow.activePrd ?? "none"}`);
   console.log(`  active milestone: ${workflow.activeMilestone ?? "none"}`);
   console.log(`  active run: ${activeRun ? runLabel(activeRun) : "none"}`);
+  const activeGoals = goals.filter((goal) => goal && goal.status === "active");
+  if (activeGoals.length > 0) {
+    console.log("  active goals:");
+    for (const goal of activeGoals.slice(0, 5)) console.log(`    ${goalLabel(goal)}`);
+  }
   const activeAttempts = attemptSummary(activeRun);
   if (activeAttempts) console.log(`  active run ${activeAttempts}`);
   const activeStale = staleSummary(activeRun);
@@ -4553,6 +4577,7 @@ const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
 const workflow = state.workflow || {};
 const activeRun = workflow.activeRun;
 const completedRuns = Array.isArray(workflow.completedRuns) ? workflow.completedRuns : [];
+const goals = Array.isArray(workflow.goals) ? workflow.goals : [];
 function runLabel(run) {
   if (!run || typeof run !== "object") return "none";
   const target = run.targetType === "issue" ? `issue #${run.targetIssue}` : (run.targetType || "target");
@@ -4567,6 +4592,11 @@ function staleSummary(run) {
   const runDir = path.isAbsolute(run.runDir) ? run.runDir : path.join(targetDir, run.runDir);
   return fs.existsSync(runDir) ? null : `run dir missing: ${run.runDir}`;
 }
+function goalLabel(goal) {
+  const issue = goal.activeIssue ? ` issue #${goal.activeIssue}` : "";
+  const summary = goal.summary || goal.source || goal.id || "goal";
+  return `${goal.id || "goal"} ${goal.status || "unknown"}${issue}: ${summary}`;
+}
 
 console.log("# AgentRail Resume");
 console.log("");
@@ -4580,6 +4610,12 @@ console.log(`- active pull request: ${workflow.activePullRequest ?? "none"}`);
 console.log(`- active PRD: ${workflow.activePrd ?? "none"}`);
 console.log(`- active milestone: ${workflow.activeMilestone ?? "none"}`);
 console.log(`- active run: ${activeRun ? runLabel(activeRun) : "none"}`);
+const activeGoals = goals.filter((goal) => goal && goal.status === "active");
+for (const goal of activeGoals.slice(0, 5)) {
+  const successCount = Array.isArray(goal.successCriteria) ? goal.successCriteria.length : 0;
+  console.log(`- active goal: ${goalLabel(goal)}`);
+  console.log(`- active goal success criteria: ${successCount}`);
+}
 const activeAttempts = attemptSummary(activeRun);
 if (activeAttempts) console.log(`- active run ${activeAttempts}`);
 const activeStale = staleSummary(activeRun);
@@ -5519,6 +5555,45 @@ pr_reference_text() {
   echo "No GitHub PR reference available."
 }
 
+active_goal_success_criteria_text() {
+  local target_dir="$1"
+  local issue="$2"
+  local state_file="${target_dir}/.agentrail/state.json"
+
+  if [[ ! -f "$state_file" ]] || ! command -v node >/dev/null 2>&1; then
+    echo "No active goal found for issue #${issue}."
+    return 0
+  fi
+
+  node - "$state_file" "$issue" <<'NODE'
+const fs = require("fs");
+const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const issue = Number(process.argv[3]);
+const goals = Array.isArray(state.workflow?.goals) ? state.workflow.goals : [];
+const relevant = goals.filter((goal) => goal && goal.status === "active" && Number(goal.activeIssue) === issue);
+if (relevant.length === 0) {
+  console.log(`No active goal found for issue #${issue}.`);
+  process.exit(0);
+}
+for (const goal of relevant) {
+  const summary = goal.summary || goal.source || goal.id || `issue #${issue}`;
+  console.log(`- ${goal.id || "goal"}: ${summary}`);
+  const criteria = Array.isArray(goal.successCriteria) ? goal.successCriteria : [];
+  if (criteria.length > 0) {
+    console.log("  Success criteria:");
+    for (const criterion of criteria) console.log(`  - ${criterion}`);
+  } else {
+    console.log("  Success criteria: none recorded.");
+  }
+  const nonGoals = Array.isArray(goal.nonGoals) ? goal.nonGoals : [];
+  if (nonGoals.length > 0) {
+    console.log("  Non-goals:");
+    for (const nonGoal of nonGoals) console.log(`  - ${nonGoal}`);
+  }
+}
+NODE
+}
+
 issue_run_phase_prompt() {
   local phase="$1"
   local issue="$2"
@@ -5529,7 +5604,7 @@ issue_run_phase_prompt() {
   local verifier_findings_file="${7:-}"
   local execution_attempt="${8:-1}"
   local max_execution_attempts="${9:-$agentrail_default_max_execution_attempts}"
-  local evidence pr_refs verifier_findings_text
+  local evidence pr_refs verifier_findings_text active_goal_text
 
   case "$phase" in
     plan)
@@ -5588,6 +5663,7 @@ PROMPT
     verify)
       evidence="$(implementation_evidence "$target_dir")"
       pr_refs="$(pr_reference_text "$target_dir" "$issue")"
+      active_goal_text="$(active_goal_success_criteria_text "$target_dir" "$issue")"
       cat <<PROMPT
 This is phase 3 of 3: verify.
 
@@ -5603,10 +5679,13 @@ ${evidence}
 PR/diff references:
 ${pr_refs}
 
+Active goal success criteria:
+${active_goal_text}
+
 Base Ralph instructions:
 ${base_prompt}
 
-Compare the issue, plan, implementation evidence, PR or diff references, and every acceptance criterion.
+Compare the issue, plan, implementation evidence, PR or diff references, every acceptance criterion, and active goal success criteria.
 Confirm whether the PR body evidence is sufficient or state exactly what is missing. Do not continue into unrelated issues.
 PROMPT
       ;;
@@ -5635,6 +5714,7 @@ update_run_state() {
   local failed_verification_attempts="${15:-0}"
   local verifier_findings_file="${16:-}"
   local blocked_reason="${17:-}"
+  local issue_context="${18:-}"
 
   local state_file="${target_dir}/.agentrail/state.json"
   [[ -f "$state_file" ]] || return 0
@@ -5657,6 +5737,7 @@ update_run_state() {
   AGENTRAIL_RUN_FAILED_VERIFICATION_ATTEMPTS="$failed_verification_attempts" \
   AGENTRAIL_RUN_VERIFIER_FINDINGS_FILE="$verifier_findings_file" \
   AGENTRAIL_RUN_BLOCKED_REASON="$blocked_reason" \
+  AGENTRAIL_RUN_ISSUE_CONTEXT="$issue_context" \
   node <<'NODE'
 const fs = require("fs");
 const path = require("path");
@@ -5672,14 +5753,82 @@ const maxExecutionAttempts = Number(process.env.AGENTRAIL_RUN_MAX_EXECUTION_ATTE
 const failedVerificationAttempts = Number(process.env.AGENTRAIL_RUN_FAILED_VERIFICATION_ATTEMPTS || 0);
 const verifierFindingsFile = process.env.AGENTRAIL_RUN_VERIFIER_FINDINGS_FILE || "";
 const blockedReason = process.env.AGENTRAIL_RUN_BLOCKED_REASON || "";
+const issueContext = process.env.AGENTRAIL_RUN_ISSUE_CONTEXT || "";
 
 function relative(file) {
   return path.relative(targetDir, file).split(path.sep).join("/");
 }
 
+function firstLine(text) {
+  return String(text || "").split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
+}
+
+function sectionItems(text, headingPattern) {
+  const lines = String(text || "").split(/\r?\n/);
+  const items = [];
+  let inSection = false;
+  for (const line of lines) {
+    if (/^##\s+/.test(line)) {
+      inSection = headingPattern.test(line);
+      continue;
+    }
+    if (!inSection) continue;
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const item = trimmed.replace(/^[-*]\s+\[[ xX]\]\s+/, "").replace(/^[-*]\s+/, "").trim();
+    if (item) items.push(item);
+  }
+  return items;
+}
+
+function issueGoalDefaults(previous, workflow, now) {
+  const successCriteria = sectionItems(issueContext, /^##\s+Acceptance criteria\s*$/i);
+  const nonGoals = sectionItems(issueContext, /^##\s+Non-goals\s*$/i);
+  const summary = firstLine(issueContext) || `Issue #${issue}`;
+  return {
+    ...previous,
+    id: `issue-${issue}`,
+    kind: "issue",
+    source: `github:issue/${issue}`,
+    summary,
+    successCriteria: successCriteria.length > 0 ? successCriteria : (Array.isArray(previous?.successCriteria) && previous.successCriteria.length > 0 ? previous.successCriteria : [`Complete issue #${issue}.`]),
+    nonGoals: nonGoals.length > 0 ? nonGoals : (Array.isArray(previous?.nonGoals) ? previous.nonGoals : []),
+    activeIssue: issue,
+    activePullRequest: workflow.activePullRequest ?? previous?.activePullRequest ?? null,
+    activeMilestone: workflow.activeMilestone ?? previous?.activeMilestone ?? null,
+    createdAt: previous?.createdAt || now,
+    updatedAt: now,
+  };
+}
+
+function upsertIssueGoal(workflow, status, now, reason) {
+  const goals = Array.isArray(workflow.goals) ? workflow.goals : [];
+  const index = goals.findIndex((goal) => goal && goal.id === `issue-${issue}`);
+  const previous = index >= 0 ? goals[index] : {};
+  const goal = issueGoalDefaults(previous, workflow, now);
+  goal.status = status;
+  if (status === "active") {
+    delete goal.completedAt;
+    delete goal.blockedAt;
+    delete goal.blockedReason;
+  } else if (status === "completed") {
+    goal.completedAt = now;
+    delete goal.blockedAt;
+    delete goal.blockedReason;
+  } else if (status === "blocked") {
+    goal.blockedAt = now;
+    goal.blockedReason = reason || `Agent run for issue #${issue} failed during ${activePhase || "execution"} phase.`;
+    delete goal.completedAt;
+  }
+  if (index >= 0) goals[index] = goal;
+  else goals.push(goal);
+  workflow.goals = goals;
+}
+
 const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
 const workflow = state.workflow && typeof state.workflow === "object" ? state.workflow : {};
 const completedRuns = Array.isArray(workflow.completedRuns) ? workflow.completedRuns : [];
+const now = new Date().toISOString();
 const run = {
   runId: process.env.AGENTRAIL_RUN_ID,
   targetType: "issue",
@@ -5707,6 +5856,7 @@ if (event === "start") {
   workflow.phase = activePhase || "implementation";
   workflow.activePhase = activePhase;
   workflow.activeIssue = issue;
+  upsertIssueGoal(workflow, "active", now, "");
   const previousRun = workflow.activeRun && workflow.activeRun.runId === run.runId ? workflow.activeRun : {};
   workflow.activeRun = {
     ...previousRun,
@@ -5719,6 +5869,8 @@ if (event === "start") {
   workflow.activePhase = null;
   if (workflow.activeIssue === issue) workflow.activeIssue = null;
   workflow.phase = exitStatus === 0 ? "completed" : "blocked";
+  const lifecycleReason = blockedReason || (exitStatus === 0 ? "" : `Agent run for issue #${issue}${activePhase ? ` failed during ${activePhase} phase` : " failed"}.`);
+  upsertIssueGoal(workflow, exitStatus === 0 ? "completed" : "blocked", process.env.AGENTRAIL_RUN_FINISHED_AT || now, lifecycleReason);
   workflow.lastCompletedStep = activePhase ? `issue-${issue}-${activePhase}-${run.status}` : `issue-${issue}-${run.status}`;
   workflow.nextSuggestedAction = exitStatus === 0
     ? `Review or merge the PR for issue #${issue}, then pick the next ready issue.`
@@ -6014,7 +6166,7 @@ run_issue() {
       phase_command="$agent_command"
     fi
     write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "" "running" "0" "$issue" "$agent" "$phase_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file"
-    update_run_state "$target_dir" "start" "$run_id" "$issue" "$agent" "$phase" "$started_at" "" "0" "$phase_prompt_file" "$metadata_file" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file"
+    update_run_state "$target_dir" "start" "$run_id" "$issue" "$agent" "$phase" "$started_at" "" "0" "$phase_prompt_file" "$metadata_file" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" "" "$resolution_text"
 
     echo "phase: ${phase}"
     if [[ "$phase" != "plan" ]]; then
@@ -6085,7 +6237,7 @@ run_issue() {
   local finished_at
   finished_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   update_run_metadata_attempts "$metadata_file" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" "$blocked_reason"
-  update_run_state "$target_dir" "finish" "$run_id" "$issue" "$agent" "$phase" "$started_at" "$finished_at" "$status" "$prompt_file" "$metadata_file" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" "$blocked_reason"
+  update_run_state "$target_dir" "finish" "$run_id" "$issue" "$agent" "$phase" "$started_at" "$finished_at" "$status" "$prompt_file" "$metadata_file" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" "$blocked_reason" "$resolution_text"
   return "$status"
 }
 

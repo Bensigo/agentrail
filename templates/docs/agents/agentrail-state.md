@@ -43,6 +43,7 @@ The installer preserves local edits unless run with `--force`. When a project al
 - `activeMilestone`
 - `activeRun`
 - `completedRuns`
+- `goals`
 - `worktrees`
 - `lastCompletedStep`
 - `nextSuggestedAction`
@@ -56,6 +57,24 @@ When `verify` fails, AgentRail retries `execute` with the verifier findings as f
 `activeRun` records the issue an agent has picked and is currently working on. It includes the run id, target issue, agent name, status, active phase, picked timestamp, prompt file, metadata file, and run directory. `agentrail run issue` writes this before each phase invocation so a crash, failed compaction, or interrupted terminal still leaves a durable pointer to the in-flight phase.
 
 `completedRuns` is an append-only recent history, capped to the latest 20 runs. Completed and failed runs include completion timestamp and exit status. Failed runs are kept here too because they are part of the recovery trail.
+
+`goals` records operational stop conditions for active or recently completed work. A goal is not motivational copy; it is the condition an agent should satisfy before stopping or asking for review.
+
+Goal records include:
+
+- `id`: stable local identifier such as `issue-123`.
+- `kind`: target kind, currently `issue` for issue-scoped Ralph runs.
+- `source`: source citation such as `github:issue/123`.
+- `status`: `active`, `completed`, or `blocked`.
+- `summary`: short human-readable stop condition.
+- `successCriteria`: concrete criteria the implementation and PR evidence must satisfy.
+- `nonGoals`: explicit boundaries that should not be implemented for this goal.
+- `activeIssue`, `activePullRequest`, and `activeMilestone`: current task/review/milestone framing when known.
+- `createdAt` and `updatedAt`: ISO timestamps for audit and resume.
+- `completedAt`: set when the goal is completed.
+- `blockedAt` and `blockedReason`: set when the goal cannot be completed by the current run.
+
+`agentrail run issue <number>` creates or updates an `issue-<number>` goal when the run starts. Successful verification marks the goal `completed`; a failed phase or exhausted verifier retry loop marks it `blocked`. `agentrail status` prints active goals concisely, while verify prompts include active goal success criteria so the verifier compares implementation evidence against the operational stop condition.
 
 `worktrees` records every issue worktree AgentRail creates for AFK execution. Each entry records the issue, optional PR, path, run directory, base branch, timestamps, and lifecycle status. Valid lifecycle statuses are `running`, `completed`, `merged`, `abandoned`, and `failed`.
 

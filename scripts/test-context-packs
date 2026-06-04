@@ -28,6 +28,51 @@ mkdir -p "$fixture"
 git -C "$fixture" init --quiet
 "$agentrail" install --target "$fixture" >"${tmp_dir}/install.out"
 
+node - "${fixture}/.agentrail/state.json" <<'NODE'
+const fs = require("fs");
+const statePath = process.argv[2];
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+state.workflow = state.workflow && typeof state.workflow === "object" ? state.workflow : {};
+state.workflow.activeIssue = 79;
+state.workflow.activePhase = "execute";
+state.workflow.goals = [
+  {
+    id: "issue-79",
+    kind: "issue",
+    source: "github:issue/79",
+    status: "active",
+    summary: "Generate auditable context packs",
+    successCriteria: [
+      "Issue context packs write JSON and Markdown.",
+      "Every included and excluded item has a reason and citation."
+    ],
+    nonGoals: [
+      "Do not build a hosted context service."
+    ],
+    activeIssue: 79,
+    activePullRequest: 179,
+    activeMilestone: null,
+    createdAt: "2026-06-04T09:00:00Z",
+    updatedAt: "2026-06-04T09:10:00Z"
+  },
+  {
+    id: "issue-12",
+    kind: "issue",
+    source: "github:issue/12",
+    status: "active",
+    summary: "Unrelated deployment cleanup",
+    successCriteria: ["Deploy issue #12."],
+    nonGoals: [],
+    activeIssue: 12,
+    activePullRequest: null,
+    activeMilestone: null,
+    createdAt: "2026-06-04T08:00:00Z",
+    updatedAt: "2026-06-04T08:05:00Z"
+  }
+];
+fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+NODE
+
 mkdir -p \
   "${fixture}/docs/agents" \
   "${fixture}/docs/memory" \
@@ -192,6 +237,7 @@ const sections = [
   "activeState",
   "availableTools",
   "availableSkills",
+  "goals",
   "excludedContext",
   "openQuestions",
 ];
@@ -257,8 +303,28 @@ if (!issue.availableSkills.some((item) => item.path.endsWith("SKILL.md"))) {
   console.error("issue pack did not include available skills");
   process.exit(1);
 }
+if (!issue.goals.some((item) => item.id === "issue-79" && item.successCriteria.length === 2 && item.nonGoals.length === 1)) {
+  console.error("issue pack did not include relevant active goal");
+  process.exit(1);
+}
+if (issue.goals.some((item) => item.id === "issue-12")) {
+  console.error("issue pack included unrelated active goal");
+  process.exit(1);
+}
+if (!/Generate auditable context packs/.test(issue.goal.summary || "")) {
+  console.error("issue pack singular goal was not framed from the relevant active goal");
+  process.exit(1);
+}
 if (!pr.likelyDocs.some((item) => item.path === "docs/agents/pr-179.md")) {
   console.error("PR review pack did not include review-specific doc");
+  process.exit(1);
+}
+if (!pr.goals.some((item) => item.id === "issue-79" && item.activePullRequest === 179)) {
+  console.error("PR review pack did not include PR-relevant goal");
+  process.exit(1);
+}
+if (pr.goals.some((item) => item.id === "issue-12")) {
+  console.error("PR review pack included unrelated active goal");
   process.exit(1);
 }
 NODE
@@ -282,6 +348,7 @@ console.log(JSON.stringify({
   requiredContext: pack.requiredContext.map((item) => ({ path: item.path, reason: item.reason, citation: item.citation })),
   likelyFiles: pack.likelyFiles.map((item) => ({ path: item.path, reason: item.reason, citation: item.citation })),
   priorMistakes: pack.priorMistakes.map((item) => ({ path: item.path, source: item.source, whyItMatters: item.whyItMatters, preventionGuidance: item.preventionGuidance, score: item.score?.final })),
+  goals: pack.goals.map((item) => ({ id: item.id, status: item.status, summary: item.summary, successCriteria: item.successCriteria, nonGoals: item.nonGoals })),
   excludedContext: pack.excludedContext.slice(0, 3).map((item) => ({ path: item.path, reason: item.reason, citation: item.citation })),
 }, null, 2));
 NODE

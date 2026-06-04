@@ -32,7 +32,42 @@ class ContextModuleTests(unittest.TestCase):
                 "summary": {"mode": "disabled", "provider": None, "model": None},
             },
         }, indent=2), encoding="utf-8")
-        (root / ".agentrail" / "state.json").write_text(json.dumps({"workflow": {"activeIssue": 92, "activePhase": "execute"}}, indent=2), encoding="utf-8")
+        (root / ".agentrail" / "state.json").write_text(json.dumps({
+            "workflow": {
+                "activeIssue": 92,
+                "activePhase": "execute",
+                "goals": [
+                    {
+                        "id": "issue-92",
+                        "kind": "issue",
+                        "source": "github:issue/92",
+                        "status": "active",
+                        "summary": "Modularize context engine",
+                        "successCriteria": ["Context pack evidence is cited for issue #92."],
+                        "nonGoals": ["Do not include unrelated deployment work."],
+                        "activeIssue": 92,
+                        "activePullRequest": 44,
+                        "activeMilestone": None,
+                        "createdAt": "2026-06-04T09:00:00Z",
+                        "updatedAt": "2026-06-04T09:10:00Z",
+                    },
+                    {
+                        "id": "issue-11",
+                        "kind": "issue",
+                        "source": "github:issue/11",
+                        "status": "active",
+                        "summary": "Unrelated deployment goal",
+                        "successCriteria": ["Deploy issue #11."],
+                        "nonGoals": [],
+                        "activeIssue": 11,
+                        "activePullRequest": None,
+                        "activeMilestone": None,
+                        "createdAt": "2026-06-04T08:00:00Z",
+                        "updatedAt": "2026-06-04T08:05:00Z",
+                    },
+                ],
+            }
+        }, indent=2), encoding="utf-8")
         (root / "CONTEXT.md").write_text("# Context\n\nIssue #92 context.\n", encoding="utf-8")
         (root / "TASTE.md").write_text("# Taste\n\nDirect and concrete output for #92.\n", encoding="utf-8")
         (root / "docs" / "agents").mkdir(parents=True)
@@ -114,6 +149,9 @@ class ContextModuleTests(unittest.TestCase):
         self.assertTrue(any(item["path"] == "docs/memory/failure-patterns.md" for item in pack["priorMistakes"]))
         self.assertFalse(any("issue-11-retry" in item["path"] for item in pack["priorMistakes"]))
         self.assertTrue(any(item["path"] == ".agentrail/state.json" for item in pack["activeState"]))
+        self.assertTrue(any(item["id"] == "issue-92" for item in pack["goals"]))
+        self.assertFalse(any(item["id"] == "issue-11" for item in pack["goals"]))
+        self.assertEqual(pack["goal"]["summary"], "Modularize context engine")
         self.assertTrue(any(item["path"] == "skills/backend-api/SKILL.md" for item in pack["availableSkills"]))
         self.assertTrue(pack["availableTools"])
         self.assertTrue(pack["excludedContext"])

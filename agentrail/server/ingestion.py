@@ -774,6 +774,11 @@ def _validate_context_pack_metadata(
     policy: SourceCustodyPolicy,
 ) -> List[ValidationError]:
     errors: List[ValidationError] = []
+    source_hashes = payload.source_hashes or {}
+    anchors = payload.anchors or []
+    citations = payload.citations or []
+    inclusions = payload.inclusions or []
+    exclusions = payload.exclusions or []
     if payload.workspace_id != envelope.workspace_id:
         errors.append(
             ValidationError(
@@ -838,8 +843,10 @@ def _validate_context_pack_metadata(
                 message="Context-pack metadata must include citations for included evidence.",
             )
         )
-    errors.extend(_validate_context_pack_anchors(payload.anchors, payload.source_hashes))
-    errors.extend(_validate_context_pack_citations(payload.citations, payload.source_hashes))
+    if anchors:
+        errors.extend(_validate_context_pack_anchors(anchors, source_hashes))
+    if citations:
+        errors.extend(_validate_context_pack_citations(citations, source_hashes))
     if not payload.inclusions:
         errors.append(
             ValidationError(
@@ -848,8 +855,15 @@ def _validate_context_pack_metadata(
                 message="Context-pack metadata must include inclusion reasons for selected evidence.",
             )
         )
-    errors.extend(_validate_context_pack_decisions(payload.inclusions, "payload.inclusions"))
-    errors.extend(_validate_context_pack_decisions(payload.exclusions, "payload.exclusions"))
+    citation_paths = {
+        citation.path
+        for citation in citations
+        if citation.path and citation.source_hash and source_hashes.get(citation.path) == citation.source_hash
+    }
+    if inclusions:
+        errors.extend(_validate_context_pack_decisions(inclusions, "payload.inclusions", source_hashes, citation_paths))
+    if exclusions:
+        errors.extend(_validate_context_pack_decisions(exclusions, "payload.exclusions", source_hashes, citation_paths))
     if payload.artifact_ref is not None and not payload.artifact_ref.startswith("object://"):
         errors.append(
             ValidationError(
@@ -972,6 +986,8 @@ def _validate_context_pack_citations(
 def _validate_context_pack_decisions(
     decisions: List[ContextPackDecision],
     field_prefix: str,
+    source_hashes: Mapping[str, str],
+    citation_paths: set[str],
 ) -> List[ValidationError]:
     errors: List[ValidationError] = []
     for index, decision in enumerate(decisions):
@@ -983,6 +999,16 @@ def _validate_context_pack_decisions(
                     message="Context-pack inclusion and exclusion decisions must include a citation.",
                 )
             )
+        else:
+            citation_path = _citation_path(decision.citation)
+            if citation_paths and source_hashes and (citation_path not in citation_paths or citation_path not in source_hashes):
+                errors.append(
+                    ValidationError(
+                        code="context_pack_decision_citation_not_in_inventory",
+                        field=f"{field_prefix}[{index}].citation",
+                        message="Context-pack decision citations must resolve to payload.citations and payload.source_hashes.",
+                    )
+                )
         if not decision.reason:
             errors.append(
                 ValidationError(
@@ -992,6 +1018,10 @@ def _validate_context_pack_decisions(
                 )
             )
     return errors
+
+
+def _citation_path(citation: str) -> str:
+    return citation.split("#", 1)[0].split(":", 1)[0]
 
 
 def _validate_bounded_snippets(

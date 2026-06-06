@@ -165,7 +165,10 @@ class ServerIngestionContractTests(unittest.TestCase):
                 target_kind="issue",
                 target_id="133",
                 content_hash="sha256:pack789",
-                source_hashes={"CONTEXT.md": "sha256:context123"},
+                source_hashes={
+                    "CONTEXT.md": "sha256:context123",
+                    "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
+                },
                 anchors=[
                     ContextPackAnchor(
                         anchor_id="anchor_context",
@@ -184,6 +187,13 @@ class ServerIngestionContractTests(unittest.TestCase):
                         source_hash="sha256:context123",
                         start_line=1,
                         end_line=20,
+                    ),
+                    ContextPackCitation(
+                        citation_id="citation_milestone",
+                        path="milestones/004-server-ingestion-spine.md",
+                        source_hash="sha256:milestone004",
+                        start_line=66,
+                        end_line=66,
                     )
                 ],
                 inclusions=[

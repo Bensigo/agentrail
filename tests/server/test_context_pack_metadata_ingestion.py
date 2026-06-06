@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import unittest
 
 from agentrail.server.ingestion import (
@@ -224,7 +225,10 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
     def test_context_pack_anchors_and_citations_must_match_source_inventory(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = _context_pack_metadata_submission(
-            source_hashes={"agentrail/server/ingestion.py": "sha256:source123"},
+            source_hashes={
+                "agentrail/server/ingestion.py": "sha256:source123",
+                "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
+            },
             anchors=[
                 ContextPackAnchor(
                     anchor_id="anchor_context",
@@ -257,6 +261,72 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             [
                 ("context_pack_anchor_source_hash_mismatch", "payload.anchors[0].source_hash"),
                 ("context_pack_citation_source_hash_mismatch", "payload.citations[0].source_hash"),
+            ],
+        )
+
+    def test_context_pack_null_required_collections_return_validation_errors(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = replace(
+            _context_pack_metadata_submission(),
+            source_hashes=None,
+            anchors=None,
+            citations=None,
+            inclusions=None,
+            exclusions=None,
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [
+                ("context_pack_source_hashes_required", "payload.source_hashes"),
+                ("context_pack_anchors_required", "payload.anchors"),
+                ("context_pack_citations_required", "payload.citations"),
+                ("context_pack_inclusions_required", "payload.inclusions"),
+            ],
+        )
+
+    def test_context_pack_decision_citations_must_match_source_inventory(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            inclusions=[
+                ContextPackDecision(
+                    item_id="secret.py",
+                    citation="secret.py:1",
+                    reason="should not be accepted without source provenance",
+                )
+            ],
+            exclusions=[
+                ContextPackDecision(
+                    item_id="other.py",
+                    citation="other.py:1",
+                    reason="should not be accepted without source provenance",
+                )
+            ],
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [
+                ("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation"),
+                ("context_pack_decision_citation_not_in_inventory", "payload.exclusions[0].citation"),
             ],
         )
 
@@ -382,6 +452,7 @@ def _context_pack_metadata_submission(
         or {
             "agentrail/server/ingestion.py": "sha256:source123",
             "CONTEXT.md": "sha256:context123",
+            "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
         },
         anchors=anchors or [
             ContextPackAnchor(
@@ -401,6 +472,20 @@ def _context_pack_metadata_submission(
                 source_hash="sha256:context123",
                 start_line=1,
                 end_line=20,
+            ),
+            ContextPackCitation(
+                citation_id="citation_ingestion",
+                path="agentrail/server/ingestion.py",
+                source_hash="sha256:source123",
+                start_line=167,
+                end_line=190,
+            ),
+            ContextPackCitation(
+                citation_id="citation_milestone",
+                path="milestones/004-server-ingestion-spine.md",
+                source_hash="sha256:milestone004",
+                start_line=57,
+                end_line=57,
             )
         ],
         inclusions=inclusions or [

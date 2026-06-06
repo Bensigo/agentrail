@@ -819,9 +819,10 @@ def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], cod
                     }
                 )
         elif candidate_paths:
+            ambiguous_edge_key = f"{test_node_id}:ambiguous_test_source:{','.join(candidate_paths)}"
             edges.append(
                 {
-                    "id": f"graph:edge:{sha256_text(f'{test_node_id}:ambiguous_test_source:{','.join(candidate_paths)}')[7:23]}",
+                    "id": f"graph:edge:{sha256_text(ambiguous_edge_key)[7:23]}",
                     "kind": "unresolved_test_relationship",
                     "from": test_node_id,
                     "to": None,

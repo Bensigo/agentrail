@@ -374,6 +374,10 @@ def graph_symbol_node_id(path: str, name: str, line: int) -> str:
     return f"graph:symbol:{sha256_text(f'{path}:{name}:{line}')[7:23]}"
 
 
+def graph_test_node_id(path: str) -> str:
+    return f"graph:test:{sha256_text(path)[7:23]}"
+
+
 def normalized_unit_path(value: str) -> str:
     normalized = value.strip().strip("/")
     return normalized if normalized and normalized != "." else "."
@@ -571,6 +575,50 @@ def resolve_import_target(importer_path: str, specifier: str, record_paths: set[
     return None
 
 
+def is_test_path(path: str) -> bool:
+    name = Path(path).name.lower()
+    parts = {part.lower() for part in Path(path).parts}
+    return (
+        "tests" in parts
+        or "test" in parts
+        or "__tests__" in parts
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+        or ".test." in name
+        or ".spec." in name
+    )
+
+
+def source_name_candidates_for_test(path: str) -> List[str]:
+    name = Path(path).name
+    suffixes = "".join(Path(path).suffixes)
+    stems = [name[: -len(suffixes)] if suffixes else Path(path).stem, Path(path).stem]
+    candidates: set[str] = set()
+    for stem in stems:
+        for prefix in ("test_",):
+            if stem.startswith(prefix):
+                candidates.add(stem[len(prefix) :])
+        for marker in ("_test", ".test", ".spec", "-test", "-spec"):
+            if stem.endswith(marker):
+                candidates.add(stem[: -len(marker)])
+    return sorted(value for value in candidates if value)
+
+
+def resolve_test_source_by_name(test_path: str, record_paths: set[str]) -> Tuple[Optional[str], List[str]]:
+    candidate_names = source_name_candidates_for_test(test_path)
+    suffixes = [".py", ".js", ".jsx", ".ts", ".tsx"]
+    candidates: List[str] = []
+    for name in candidate_names:
+        for suffix in suffixes:
+            for path in record_paths:
+                if path == test_path or is_test_path(path):
+                    continue
+                if path.endswith(f"/{name}{suffix}") or path == f"{name}{suffix}":
+                    candidates.append(path)
+    unique = sorted(set(candidates))
+    return (unique[0], unique) if len(unique) == 1 else (None, unique)
+
+
 def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], codebase_units: List[Dict[str, Any]], built_at: str) -> Dict[str, Any]:
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []
@@ -692,6 +740,97 @@ def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], cod
                     "citation": import_record["citation"],
                     "evidence": "deterministic_import_parse",
                     "authority": "deterministic",
+                    "deterministic": True,
+                }
+            )
+
+    for record in records:
+        if not record.content or not is_test_path(record.path):
+            continue
+        file_node_id = file_node_by_path.get(record.path)
+        if not file_node_id:
+            continue
+        test_node_id = graph_test_node_id(record.path)
+        nodes.append(
+            {
+                "id": test_node_id,
+                "kind": "test",
+                "sourceId": record.id,
+                "path": record.path,
+                "testKind": "file",
+                "citation": record.path,
+                "evidence": "deterministic_test_path",
+                "deterministic": True,
+            }
+        )
+        edges.append(
+            {
+                "id": f"graph:edge:{sha256_text(f'{file_node_id}:classified_as_test:{test_node_id}')[7:23]}",
+                "kind": "classified_as_test",
+                "from": file_node_id,
+                "to": test_node_id,
+                "sourceId": record.id,
+                "path": record.path,
+                "citation": record.path,
+                "evidence": "deterministic_test_path",
+                "authority": "deterministic",
+                "deterministic": True,
+            }
+        )
+        linked_sources: set[str] = set()
+        for import_record in extracted_imports(record.content, record.path):
+            target_path = resolve_import_target(record.path, str(import_record["specifier"]), record_paths)
+            target_node_id = file_node_by_path.get(target_path) if target_path and not is_test_path(target_path) else None
+            if not target_path or not target_node_id:
+                continue
+            linked_sources.add(target_path)
+            edges.append(
+                {
+                    "id": f"graph:edge:{sha256_text(f'{test_node_id}:tests_source:{target_node_id}:import')[7:23]}",
+                    "kind": "tests_source",
+                    "from": test_node_id,
+                    "to": target_node_id,
+                    "sourceId": record.id,
+                    "path": record.path,
+                    "targetPath": target_path,
+                    "citation": import_record["citation"],
+                    "evidence": "deterministic_test_import",
+                    "authority": "deterministic",
+                    "deterministic": True,
+                }
+            )
+        target_path, candidate_paths = resolve_test_source_by_name(record.path, record_paths)
+        if target_path and target_path not in linked_sources:
+            target_node_id = file_node_by_path.get(target_path)
+            if target_node_id:
+                edges.append(
+                    {
+                        "id": f"graph:edge:{sha256_text(f'{test_node_id}:tests_source:{target_node_id}:path')[7:23]}",
+                        "kind": "tests_source",
+                        "from": test_node_id,
+                        "to": target_node_id,
+                        "sourceId": record.id,
+                        "path": record.path,
+                        "targetPath": target_path,
+                        "citation": record.path,
+                        "evidence": "deterministic_test_path_convention",
+                        "authority": "deterministic",
+                        "deterministic": True,
+                    }
+                )
+        elif candidate_paths:
+            edges.append(
+                {
+                    "id": f"graph:edge:{sha256_text(f'{test_node_id}:ambiguous_test_source:{','.join(candidate_paths)}')[7:23]}",
+                    "kind": "unresolved_test_relationship",
+                    "from": test_node_id,
+                    "to": None,
+                    "sourceId": record.id,
+                    "path": record.path,
+                    "candidateTargetPaths": candidate_paths,
+                    "citation": record.path,
+                    "evidence": "ambiguous_test_path_convention",
+                    "authority": "unknown",
                     "deterministic": True,
                 }
             )

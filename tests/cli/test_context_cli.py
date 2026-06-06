@@ -199,6 +199,91 @@ class ContextCliTests(unittest.TestCase):
         for section in ("requiredContext", "likelyFiles", "likelyDocs", "excludedContext"):
             self.assertIn(section, explained["sections"])
 
+    def test_compiler_policy_budget_and_denied_sources_from_cli(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        root = Path(tempfile.mkdtemp())
+        subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+        subprocess.run([str(repo / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
+        (root / "docs" / "agents" / "issue-101.md").write_text("# Issue 101\n\nPolicy and token budget metadata for issue #101.\n", encoding="utf-8")
+        (root / "src").mkdir()
+        (root / "src" / "policy.py").write_text("def issue_101_policy_surface():\n    return 'issue #101 policy metadata'\n", encoding="utf-8")
+        (root / "denied").mkdir()
+        (root / "denied" / "notes.md").write_text("forbidden-101-denied-secret\n", encoding="utf-8")
+        (root / ".env").write_text("ENV_SHOULD_NOT_LEAK=hidden\n", encoding="utf-8")
+        config_path = root / ".agentrail" / "config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["context"]["excludeGlobs"] = [*config["context"]["excludeGlobs"], "denied/**"]
+        config["context"]["externalSources"] = [
+            {
+                "id": "external:issue-101-policy",
+                "uri": "external://issue-101-policy",
+                "authority": "low",
+                "visibility": "metadata-only",
+                "linkedIssues": [101],
+                "token": "ghp_1234567890abcdefghijklmnopqrstuv",
+                "note": "policy metadata source for issue #101",
+            },
+            {
+                "id": "external:issue-101-denied",
+                "uri": "external://issue-101-denied",
+                "authority": "denied",
+                "visibility": "denied",
+                "linkedIssues": [101],
+                "note": "denied source descriptor metadata",
+            },
+        ]
+        config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+        query_result = subprocess.run(
+            [str(repo / "scripts" / "agentrail"), "context", "query", "issue #101 policy budget metadata", "--target", str(root), "--json", "--limit", "5"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        self.assertNotIn("forbidden-101-denied-secret", query_result.stdout)
+        self.assertNotIn("ENV_SHOULD_NOT_LEAK", query_result.stdout)
+        query = json.loads(query_result.stdout)
+        self.assertEqual(query["retrievalBudget"], {"maxItems": 5, "maxTokens": None})
+        self.assertEqual(query["compiler"]["tokenPack"]["budget"], query["retrievalBudget"])
+        self.assertTrue(all(item.get("citation") and item.get("reason") for item in query["results"] + query["excluded"]))
+        excluded_candidates = [candidate for candidate in query["compiler"]["candidates"] if candidate["kind"] == "excluded_context"]
+        self.assertTrue(excluded_candidates)
+        excluded_ids = [candidate["id"] for candidate in excluded_candidates]
+        self.assertEqual(len(excluded_ids), len(set(excluded_ids)))
+        denied = next(candidate for candidate in excluded_candidates if candidate.get("path") == "external://issue-101-denied")
+        self.assertEqual(denied["policy"]["visibility"], "denied")
+        self.assertEqual(denied["policy"]["authority"], "denied")
+        self.assertEqual(denied["policy"]["authorityPolicy"]["effect"], "excluded")
+        self.assertEqual(denied["policy"]["sourceCustody"]["mode"], "metadata_only")
+        self.assertFalse(denied["policy"]["sourceCustody"]["fullSourceUploadAllowed"])
+        self.assertFalse(denied["policy"]["sourceCustody"]["snippetUploadAllowed"])
+        for candidate in query["compiler"]["candidates"]:
+            policy = candidate["policy"]
+            self.assertIn("sourceCustody", policy)
+            self.assertIn("redaction", policy)
+            self.assertIn(policy["redaction"]["state"], {"none", "redacted", "excluded"})
+            self.assertIn("authorityPolicy", policy)
+            self.assertIn(policy["authorityPolicy"]["effect"], {"boosted", "neutral", "demoted", "excluded"})
+            self.assertIn("freshnessPolicy", policy)
+            self.assertIn(policy["freshnessPolicy"]["effect"], {"neutral", "demoted", "excluded"})
+
+        build_result = subprocess.run(
+            [str(repo / "scripts" / "agentrail"), "context", "build", "issue", "101", "--phase", "execute", "--target", str(root), "--json"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        self.assertNotIn("forbidden-101-denied-secret", build_result.stdout)
+        built = json.loads(build_result.stdout)
+        self.assertEqual(built["retrievalBudget"], {"maxItems": 20, "maxTokens": 6000})
+        self.assertEqual(built["compiler"]["tokenPack"]["budget"], built["retrievalBudget"])
+        saved_pack_text = (root / built["jsonPath"]).read_text(encoding="utf-8")
+        self.assertNotIn("forbidden-101-denied-secret", saved_pack_text)
+        self.assertNotIn("ENV_SHOULD_NOT_LEAK", saved_pack_text)
+        saved_pack = json.loads(saved_pack_text)
+        self.assertEqual(saved_pack["retrievalBudget"], built["retrievalBudget"])
+        self.assertTrue(all(item.get("citation") and item.get("reason") for item in saved_pack["included"] + saved_pack["excluded"]))
+
     def test_context_evaluate_cli_reports_fixture_metrics(self) -> None:
         repo = Path(__file__).resolve().parents[2]
         root = Path(tempfile.mkdtemp())

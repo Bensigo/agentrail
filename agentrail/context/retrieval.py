@@ -297,7 +297,21 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
                     ranked.append((similarity, entry))
         semantic_rank = {str((entry["chunk"] or {}).get("id") or entry["source"].get("id")): idx + 1 for idx, (_score, entry) in enumerate(sorted(ranked, key=lambda item: item[0], reverse=True))}
 
-    excluded = [{"sourceType": "path", "path": item.get("path"), "reason": item.get("reason"), "citation": ".agentrail/context/index/index.json"} for item in index.get("skipped", [])]
+    excluded = []
+    for item in index.get("skipped", []):
+        excluded.append(
+            {
+                "sourceType": "path",
+                "path": item.get("path"),
+                "sourceId": item.get("sourceId"),
+                "reason": item.get("reason"),
+                "citation": ".agentrail/context/index/index.json",
+                "authority": item.get("authority"),
+                "visibility": item.get("visibility"),
+                "freshness": item.get("freshness"),
+                "redactions": item.get("redactions", []),
+            }
+        )
     results = []
     for entry in scored:
         source = entry["source"]
@@ -336,6 +350,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         "excludedCount": len(excluded),
         "providerMode": provider.get("mode") or embedding_mode,
     }
+    retrieval_budget = {"maxItems": limit, "maxTokens": None}
     output = {
         "schemaVersion": 1,
         "command": "context.query",
@@ -344,6 +359,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         "limit": limit,
         "generatedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "index": {"version": index.get("version"), "builtAt": index.get("builtAt")},
+        "retrievalBudget": retrieval_budget,
         "provider": provider,
         "audit": audit,
         "results": formatted,
@@ -352,7 +368,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
             "query",
             query,
             root=root,
-            token_budget={"maxItems": limit, "maxTokens": None},
+            token_budget=retrieval_budget,
             source_items=formatted,
             excluded_items=excluded,
             compatibility={

@@ -265,6 +265,7 @@ def compiler_policy(root: Optional[Path]) -> Dict[str, Any]:
             "mode": "metadata_only",
             "fullSourceUploadAllowed": False,
             "snippetUploadAllowed": False,
+            "snippetUploadEligible": False,
             "reason": "Default enterprise mode does not upload full source code.",
         },
         "redaction": {
@@ -277,7 +278,13 @@ def compiler_policy(root: Optional[Path]) -> Dict[str, Any]:
     }
 
 
-def _candidate_id(item: Dict[str, Any]) -> str:
+def _candidate_id(item: Dict[str, Any], candidate_kind: str) -> str:
+    if candidate_kind == "excluded_context":
+        for field in ("sourceId", "chunkId", "path", "citation"):
+            value = item.get(field)
+            if value:
+                return f"excluded:{value}"
+        return "excluded:candidate:unknown"
     if item.get("sourceType") in PROCEDURAL_GUIDANCE_TYPES and item.get("path"):
         return str(item["path"])
     for field in ("chunkId", "sourceId", "citation", "path"):
@@ -317,10 +324,74 @@ def _visibility(item: Dict[str, Any], kind: str) -> str:
     return "local"
 
 
-def candidate_from_item(item: Dict[str, Any], *, kind: Optional[str] = None) -> Dict[str, Any]:
+def _redaction_policy(item: Dict[str, Any], candidate_kind: str, base_policy: Dict[str, Any]) -> Dict[str, Any]:
+    findings = list(item.get("redactions") or [])
+    state = "redacted" if findings else "none"
+    if candidate_kind == "excluded_context" and (_visibility(item, candidate_kind) == "denied" or findings):
+        state = "excluded"
+    redaction = base_policy.get("redaction") if isinstance(base_policy.get("redaction"), dict) else {}
+    return {
+        "enabled": bool(redaction.get("enabled", True)),
+        "action": str(redaction.get("action") or "exclude"),
+        "state": state,
+        "findings": findings,
+    }
+
+
+def _score_number(item: Dict[str, Any], field: str) -> float:
+    score = item.get("score")
+    if not isinstance(score, dict):
+        return 0.0
+    value = score.get(field)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _authority_policy(item: Dict[str, Any], candidate_kind: str, authority: str) -> Dict[str, Any]:
+    boost = _score_number(item, "authorityBoost")
+    demotion = _score_number(item, "authorityDemotion")
+    if candidate_kind == "excluded_context" or authority == "denied":
+        effect = "excluded"
+    elif authority in {"critical", "high"} or boost > 0:
+        effect = "boosted"
+    elif authority == "low" or demotion > 0:
+        effect = "demoted"
+    else:
+        effect = "neutral"
+    return {
+        "value": authority,
+        "effect": effect,
+        "scoreEffect": round(boost - demotion, 6),
+    }
+
+
+def _freshness_policy(item: Dict[str, Any], candidate_kind: str, freshness: str) -> Dict[str, Any]:
+    demotion = _score_number(item, "freshnessDemotion")
+    if candidate_kind == "excluded_context":
+        effect = "excluded"
+    elif freshness in {"stale", "expired"} or demotion > 0:
+        effect = "demoted"
+    else:
+        effect = "neutral"
+    return {
+        "value": freshness,
+        "effect": effect,
+        "scoreEffect": round(-demotion, 6),
+    }
+
+
+def candidate_from_item(item: Dict[str, Any], *, kind: Optional[str] = None, base_policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     candidate_kind = _candidate_kind(item, kind)
+    policy = base_policy or compiler_policy(None)
+    source_custody = dict(policy.get("sourceCustody") or {})
+    source_custody.setdefault("mode", "metadata_only")
+    source_custody.setdefault("fullSourceUploadAllowed", False)
+    source_custody.setdefault("snippetUploadAllowed", False)
+    source_custody.setdefault("snippetUploadEligible", bool(source_custody.get("snippetUploadAllowed")))
+    source_custody.setdefault("reason", "Default enterprise mode does not upload full source code.")
+    authority = str(item.get("authority") or "unknown")
+    freshness = _freshness_status(item)
     value: Dict[str, Any] = {
-        "id": _candidate_id(item),
+        "id": _candidate_id(item, candidate_kind),
         "kind": candidate_kind,
         "sourceType": item.get("sourceType"),
         "path": item.get("path"),
@@ -331,9 +402,13 @@ def candidate_from_item(item: Dict[str, Any], *, kind: Optional[str] = None) -> 
         "score": item.get("score"),
         "policy": {
             "visibility": _visibility(item, candidate_kind),
-            "authority": str(item.get("authority") or "unknown"),
-            "freshness": _freshness_status(item),
+            "authority": authority,
+            "freshness": freshness,
             "redactions": list(item.get("redactions") or []),
+            "sourceCustody": source_custody,
+            "redaction": _redaction_policy(item, candidate_kind, policy),
+            "authorityPolicy": _authority_policy(item, candidate_kind, authority),
+            "freshnessPolicy": _freshness_policy(item, candidate_kind, freshness),
         },
     }
     return {key: current for key, current in value.items() if current is not None}
@@ -409,13 +484,14 @@ def compiler_contract(
     token_pack_strategy: str = "compat_max_items_until_token_estimator_exists",
 ) -> Dict[str, Any]:
     budget = token_budget or {"maxItems": None, "maxTokens": None}
+    policy = compiler_policy(root)
     candidates: List[Dict[str, Any]] = []
     for item in source_items or []:
-        candidates.append(candidate_from_item(dict(item)))
+        candidates.append(candidate_from_item(dict(item), base_policy=policy))
     for item in procedural_items or []:
-        candidates.append(candidate_from_item(dict(item), kind="procedural_guidance"))
+        candidates.append(candidate_from_item(dict(item), kind="procedural_guidance", base_policy=policy))
     for item in excluded_items or []:
-        candidates.append(candidate_from_item(dict(item), kind="excluded_context"))
+        candidates.append(candidate_from_item(dict(item), kind="excluded_context", base_policy=policy))
     selected = [candidate for candidate in candidates if candidate.get("kind") != "excluded_context"]
     selected_candidate_ids = [str(candidate["id"]) for candidate in selected]
     excluded_candidate_ids = [str(candidate["id"]) for candidate in candidates if candidate.get("kind") == "excluded_context"]
@@ -442,7 +518,7 @@ def compiler_contract(
             "addedCandidateIds": [],
             "rejected": [],
         },
-        "policy": compiler_policy(root),
+        "policy": policy,
         "rerank": {
             "status": "score_sorted",
             "method": "hybrid_lexical_rrf_authority_freshness",

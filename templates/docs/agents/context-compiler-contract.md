@@ -74,7 +74,30 @@ Candidates represent what the compiler considered:
     "visibility": "local",
     "authority": "high",
     "freshness": "current",
-    "redactions": []
+    "redactions": [],
+    "sourceCustody": {
+      "mode": "metadata_only",
+      "fullSourceUploadAllowed": false,
+      "snippetUploadAllowed": false,
+      "snippetUploadEligible": false,
+      "reason": "Default enterprise mode does not upload full source code."
+    },
+    "redaction": {
+      "enabled": true,
+      "action": "exclude",
+      "state": "none",
+      "findings": []
+    },
+    "authorityPolicy": {
+      "value": "high",
+      "effect": "boosted",
+      "scoreEffect": 0.3
+    },
+    "freshnessPolicy": {
+      "value": "current",
+      "effect": "neutral",
+      "scoreEffect": 0
+    }
   }
 }
 ```
@@ -87,7 +110,7 @@ Candidate kinds:
 
 Source evidence can justify implementation or review decisions. Procedural guidance can tell the agent how to work, but it is not evidence that code behavior is true.
 
-Every candidate exposed to an agent must have a citation and reason. Denied source content must not appear in a candidate body.
+Every candidate exposed to an agent must have a citation and reason. Candidate policy metadata records source custody posture, snippet-upload eligibility, redaction state, authority effects, and freshness effects. Denied source content must not appear in a candidate body.
 
 ## Graph Expansion
 
@@ -116,6 +139,7 @@ Policy records custody and filtering decisions:
     "mode": "metadata_only",
     "fullSourceUploadAllowed": false,
     "snippetUploadAllowed": false,
+    "snippetUploadEligible": false,
     "reason": "Default enterprise mode does not upload full source code."
   },
   "redaction": {
@@ -212,8 +236,8 @@ Evaluation should fail when required sources are missed, stale or denied sources
 
 Existing fields remain stable:
 
-- `context.query`: `schemaVersion`, `command`, `target`, `query`, `limit`, `generatedAt`, `index`, `provider`, `audit`, `results`, and `excluded`.
-- `context.build`: `schemaVersion`, `command`, `packId`, `target`, `generatedAt`, `jsonPath`, `markdownPath`, `index`, `provider`, and `audit`.
+- `context.query`: `schemaVersion`, `command`, `target`, `query`, `limit`, `generatedAt`, `index`, `retrievalBudget`, `provider`, `audit`, `results`, and `excluded`.
+- `context.build`: `schemaVersion`, `command`, `packId`, `target`, `generatedAt`, `jsonPath`, `markdownPath`, `index`, `retrievalBudget`, `provider`, and `audit`.
 - Saved context packs: existing section arrays, `included`, `excluded`, `retrievalBudget`, `provider`, and `audit`.
 
 Compiler mappings:
@@ -245,6 +269,10 @@ Compiler mappings:
   "index": {
     "version": "context-index-v1",
     "builtAt": "2026-06-06T01:59:59.000Z"
+  },
+  "retrievalBudget": {
+    "maxItems": 3,
+    "maxTokens": null
   },
   "provider": {
     "mode": "disabled",
@@ -308,7 +336,30 @@ Compiler mappings:
           "visibility": "local",
           "authority": "high",
           "freshness": "current",
-          "redactions": []
+          "redactions": [],
+          "sourceCustody": {
+            "mode": "metadata_only",
+            "fullSourceUploadAllowed": false,
+            "snippetUploadAllowed": false,
+            "snippetUploadEligible": false,
+            "reason": "Default enterprise mode does not upload full source code."
+          },
+          "redaction": {
+            "enabled": true,
+            "action": "exclude",
+            "state": "none",
+            "findings": []
+          },
+          "authorityPolicy": {
+            "value": "high",
+            "effect": "boosted",
+            "scoreEffect": 0.3
+          },
+          "freshnessPolicy": {
+            "value": "current",
+            "effect": "neutral",
+            "scoreEffect": 0
+          }
         }
       }
     ],
@@ -325,6 +376,7 @@ Compiler mappings:
         "mode": "metadata_only",
         "fullSourceUploadAllowed": false,
         "snippetUploadAllowed": false,
+        "snippetUploadEligible": false,
         "reason": "Default enterprise mode does not upload full source code."
       },
       "redaction": {
@@ -412,6 +464,10 @@ Compiler mappings:
     "version": "context-index-v1",
     "builtAt": "2026-06-06T01:59:59.000Z"
   },
+  "retrievalBudget": {
+    "maxItems": 20,
+    "maxTokens": 6000
+  },
   "provider": {
     "mode": "disabled",
     "provider": null,
@@ -452,7 +508,30 @@ Compiler mappings:
           "visibility": "local",
           "authority": "unknown",
           "freshness": "unknown",
-          "redactions": []
+          "redactions": [],
+          "sourceCustody": {
+            "mode": "metadata_only",
+            "fullSourceUploadAllowed": false,
+            "snippetUploadAllowed": false,
+            "snippetUploadEligible": false,
+            "reason": "Default enterprise mode does not upload full source code."
+          },
+          "redaction": {
+            "enabled": true,
+            "action": "exclude",
+            "state": "none",
+            "findings": []
+          },
+          "authorityPolicy": {
+            "value": "unknown",
+            "effect": "neutral",
+            "scoreEffect": 0
+          },
+          "freshnessPolicy": {
+            "value": "unknown",
+            "effect": "neutral",
+            "scoreEffect": 0
+          }
         }
       },
       {
@@ -466,7 +545,30 @@ Compiler mappings:
           "visibility": "local",
           "authority": "unknown",
           "freshness": "unknown",
-          "redactions": []
+          "redactions": [],
+          "sourceCustody": {
+            "mode": "metadata_only",
+            "fullSourceUploadAllowed": false,
+            "snippetUploadAllowed": false,
+            "snippetUploadEligible": false,
+            "reason": "Default enterprise mode does not upload full source code."
+          },
+          "redaction": {
+            "enabled": true,
+            "action": "exclude",
+            "state": "none",
+            "findings": []
+          },
+          "authorityPolicy": {
+            "value": "unknown",
+            "effect": "neutral",
+            "scoreEffect": 0
+          },
+          "freshnessPolicy": {
+            "value": "unknown",
+            "effect": "neutral",
+            "scoreEffect": 0
+          }
         }
       }
     ],
@@ -483,6 +585,7 @@ Compiler mappings:
         "mode": "metadata_only",
         "fullSourceUploadAllowed": false,
         "snippetUploadAllowed": false,
+        "snippetUploadEligible": false,
         "reason": "Default enterprise mode does not upload full source code."
       },
       "redaction": {

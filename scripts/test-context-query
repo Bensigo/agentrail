@@ -248,6 +248,14 @@ if (compiler.tokenPack.budget.maxItems !== 20 || compiler.tokenPack.budget.maxTo
   console.error(`compiler query token budget is wrong: ${JSON.stringify(compiler.tokenPack.budget)}`);
   process.exit(1);
 }
+if (!result.retrievalBudget || result.retrievalBudget.maxItems !== 20 || result.retrievalBudget.maxTokens !== null) {
+  console.error(`query retrieval budget is wrong: ${JSON.stringify(result.retrievalBudget)}`);
+  process.exit(1);
+}
+if (JSON.stringify(compiler.tokenPack.budget) !== JSON.stringify(result.retrievalBudget)) {
+  console.error(`compiler token budget does not match query retrieval budget: ${JSON.stringify({ compiler: compiler.tokenPack.budget, query: result.retrievalBudget })}`);
+  process.exit(1);
+}
 if (compiler.policy.sourceCustody.fullSourceUploadAllowed || compiler.policy.sourceCustody.snippetUploadAllowed) {
   console.error("compiler source custody policy allowed source upload by default");
   process.exit(1);
@@ -267,6 +275,32 @@ if (!compiler.candidates.some((candidate) => candidate.kind === "source_evidence
 if (!compiler.candidates.some((candidate) => candidate.kind === "excluded_context")) {
   console.error("compiler candidates did not include excluded context");
   process.exit(1);
+}
+const excludedCandidateIds = compiler.candidates
+  .filter((candidate) => candidate.kind === "excluded_context")
+  .map((candidate) => candidate.id);
+if (new Set(excludedCandidateIds).size !== excludedCandidateIds.length) {
+  console.error(`excluded compiler candidate IDs were not unique: ${JSON.stringify(excludedCandidateIds)}`);
+  process.exit(1);
+}
+for (const candidate of compiler.candidates) {
+  const policy = candidate.policy || {};
+  if (!policy.sourceCustody || policy.sourceCustody.mode !== "metadata_only" || policy.sourceCustody.snippetUploadAllowed !== false) {
+    console.error(`candidate missing source custody policy: ${JSON.stringify(candidate)}`);
+    process.exit(1);
+  }
+  if (!policy.redaction || !["none", "redacted", "excluded"].includes(policy.redaction.state)) {
+    console.error(`candidate missing redaction state: ${JSON.stringify(candidate)}`);
+    process.exit(1);
+  }
+  if (!policy.authorityPolicy || !["boosted", "neutral", "demoted", "excluded"].includes(policy.authorityPolicy.effect)) {
+    console.error(`candidate missing authority policy effect: ${JSON.stringify(candidate)}`);
+    process.exit(1);
+  }
+  if (!policy.freshnessPolicy || !["neutral", "demoted", "excluded"].includes(policy.freshnessPolicy.effect)) {
+    console.error(`candidate missing freshness policy effect: ${JSON.stringify(candidate)}`);
+    process.exit(1);
+  }
 }
 if (compiler.compatibility.queryResultsMapTo !== "compiler.candidates[kind=source_evidence]") {
   console.error(`compiler query compatibility mapping is wrong: ${JSON.stringify(compiler.compatibility)}`);

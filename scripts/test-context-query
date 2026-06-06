@@ -285,7 +285,7 @@ if (new Set(excludedCandidateIds).size !== excludedCandidateIds.length) {
 }
 for (const candidate of compiler.candidates) {
   const policy = candidate.policy || {};
-  if (!policy.sourceCustody || policy.sourceCustody.mode !== "metadata_only" || policy.sourceCustody.snippetUploadAllowed !== false) {
+  if (!policy.sourceCustody || policy.sourceCustody.mode !== "metadata_only" || policy.sourceCustody.snippetUploadAllowed !== false || policy.sourceCustody.snippetUploadEligible !== false) {
     console.error(`candidate missing source custody policy: ${JSON.stringify(candidate)}`);
     process.exit(1);
   }

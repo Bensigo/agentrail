@@ -337,7 +337,7 @@ for (const pack of [issue, pr]) {
   }
   for (const candidate of compiler.candidates) {
     const policy = candidate.policy || {};
-    if (!policy.sourceCustody || policy.sourceCustody.mode !== "metadata_only" || policy.sourceCustody.snippetUploadAllowed !== false) {
+    if (!policy.sourceCustody || policy.sourceCustody.mode !== "metadata_only" || policy.sourceCustody.snippetUploadAllowed !== false || policy.sourceCustody.snippetUploadEligible !== false) {
       console.error(`${pack.packId} candidate missing source custody policy: ${JSON.stringify(candidate)}`);
       process.exit(1);
     }

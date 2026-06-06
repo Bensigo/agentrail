@@ -257,9 +257,11 @@ class ContextCliTests(unittest.TestCase):
         self.assertEqual(denied["policy"]["sourceCustody"]["mode"], "metadata_only")
         self.assertFalse(denied["policy"]["sourceCustody"]["fullSourceUploadAllowed"])
         self.assertFalse(denied["policy"]["sourceCustody"]["snippetUploadAllowed"])
+        self.assertFalse(denied["policy"]["sourceCustody"]["snippetUploadEligible"])
         for candidate in query["compiler"]["candidates"]:
             policy = candidate["policy"]
             self.assertIn("sourceCustody", policy)
+            self.assertFalse(policy["sourceCustody"]["snippetUploadEligible"])
             self.assertIn("redaction", policy)
             self.assertIn(policy["redaction"]["state"], {"none", "redacted", "excluded"})
             self.assertIn("authorityPolicy", policy)

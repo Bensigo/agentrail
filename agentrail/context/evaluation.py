@@ -17,6 +17,7 @@ FIXTURE_KEYS = [
     "expectedMemory",
     "expectedPriorMistakes",
     "expectedExcludedSources",
+    "expectedGraphExpandedSources",
 ]
 
 
@@ -263,6 +264,32 @@ def _budget_metadata_presence(query: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _graph_expansion_metrics(query: Dict[str, Any], expected_graph_sources: List[str]) -> Dict[str, Any]:
+    compiler = _compiler(query)
+    expansion = compiler.get("graphExpansion") if compiler else None
+    if not isinstance(expansion, dict):
+        return {
+            "passed": not expected_graph_sources,
+            "status": "missing",
+            "maxHops": None,
+            "startedFromAnchors": [],
+            "addedCandidateIds": [],
+            "missingExpectedSources": expected_graph_sources,
+        }
+    added = [str(value) for value in expansion.get("addedCandidateIds") or []]
+    missing = [path for path in expected_graph_sources if path not in added]
+    return {
+        "passed": not missing and (not expected_graph_sources or expansion.get("status") == "expanded"),
+        "status": expansion.get("status"),
+        "maxHops": expansion.get("maxHops"),
+        "startedFromAnchors": expansion.get("startedFromAnchors") or [],
+        "addedCandidateIds": added,
+        "missingExpectedSources": missing,
+        "excludedExpansionCandidates": expansion.get("excludedExpansionCandidates") or [],
+        "demotedExpansionCandidates": expansion.get("demotedExpansionCandidates") or [],
+    }
+
+
 def _candidate_leaks(candidate: Dict[str, Any]) -> bool:
     policy = candidate.get("policy")
     if not isinstance(policy, dict):
@@ -355,6 +382,7 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
     citation_coverage = _field_coverage(top_results, "citation")
     reason_coverage = _field_coverage(top_results, "reason")
     budget_metadata = _budget_metadata_presence(query)
+    graph_expansion = _graph_expansion_metrics(query, fixture.get("expectedGraphExpandedSources", []))
     stale_or_denied_leakage = _stale_or_denied_leakage(query, selected_candidates, excluded, all_result_paths)
     failures: List[str] = []
     if missing_required:
@@ -372,6 +400,8 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
             failures.append(f"missing compiler budget metadata: {', '.join(budget_metadata['missingFields'])}")
         else:
             failures.append(f"compiler budget metadata does not match retrievalBudget: compiler={budget_metadata['budget']} retrievalBudget={budget_metadata['retrievalBudget']}")
+    if not graph_expansion["passed"]:
+        failures.append(f"graph expansion missing expected sources: {', '.join(graph_expansion['missingExpectedSources'])}")
     metrics = {
         "requiredSourceInclusion": {
             "passed": not missing_required,
@@ -389,6 +419,7 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
         "reasonCoverage": round(reason_coverage["coverage"], 6),
         "staleOrDeniedLeakage": stale_or_denied_leakage,
         "budgetMetadataPresence": budget_metadata,
+        "graphExpansion": graph_expansion,
     }
     return {
         "name": fixture["name"],
@@ -445,7 +476,8 @@ def format_evaluation_report(report: Dict[str, Any]) -> str:
             f"staleOrDeniedLeakage={metrics['staleOrDeniedLeakage']['passed']} "
             f"citationCoverage={metrics['citationCoverage']} "
             f"reasonCoverage={metrics['reasonCoverage']} "
-            f"budgetMetadataPresence={metrics['budgetMetadataPresence']['passed']}"
+            f"budgetMetadataPresence={metrics['budgetMetadataPresence']['passed']} "
+            f"graphExpansion={metrics['graphExpansion']['passed']}"
         )
         for failure in fixture["failures"]:
             lines.append(f"  failure: {failure}")

@@ -11,7 +11,7 @@ from agentrail.context.models import ChunkRecord, RedactionFinding, SourceRecord
 from agentrail.context.redaction import redact_text
 from agentrail.context.sources import external_record, source_record_for_file
 from agentrail.shared.fs import is_binary_file, matches_any, sha256_text, walk_files
-from agentrail.shared.git import git_ignored_set
+from agentrail.shared.git import current_commit_sha, git_ignored_set
 from agentrail.shared.json import json_line, write_json
 
 
@@ -358,6 +358,120 @@ def skip_event(target_dir: Path, cfg: ContextConfig, skipped_records: List[Dict[
     append_audit(target_dir, event)
 
 
+def graph_file_node_id(record: SourceRecord) -> str:
+    return f"graph:file:{sha256_text(record.id)[7:23]}"
+
+
+def graph_chunk_node_id(chunk: ChunkRecord) -> str:
+    return f"graph:chunk:{sha256_text(chunk.id)[7:23]}"
+
+
+def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], built_at: str) -> Dict[str, Any]:
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, Any]] = []
+    file_node_by_source: Dict[str, str] = {}
+
+    for record in records:
+        node_id = graph_file_node_id(record)
+        file_node_by_source[record.id] = node_id
+        nodes.append(
+            {
+                "id": node_id,
+                "kind": "file",
+                "sourceId": record.id,
+                "path": record.path,
+                "sourceType": record.sourceType,
+                "contentHash": record.contentHash,
+                "freshness": record.freshness.to_json(),
+                "authority": record.authority,
+                "visibility": record.visibility,
+                "citation": record.path,
+                "evidence": "local_index_record",
+                "deterministic": True,
+            }
+        )
+
+    for chunk in chunks:
+        node_id = graph_chunk_node_id(chunk)
+        nodes.append(
+            {
+                "id": node_id,
+                "kind": "chunk",
+                "sourceId": chunk.sourceId,
+                "path": chunk.path,
+                "chunkId": chunk.id,
+                "citation": chunk.citation,
+                "textHash": chunk.textHash,
+                "startLine": chunk.startLine,
+                "endLine": chunk.endLine,
+                "evidence": "local_index_chunk",
+                "deterministic": True,
+            }
+        )
+        source_node_id = file_node_by_source.get(chunk.sourceId)
+        if source_node_id:
+            edges.append(
+                {
+                    "id": f"graph:edge:{sha256_text(f'{source_node_id}:contains_chunk:{node_id}')[7:23]}",
+                    "kind": "contains_chunk",
+                    "from": source_node_id,
+                    "to": node_id,
+                    "sourceId": chunk.sourceId,
+                    "path": chunk.path,
+                    "citation": chunk.citation,
+                    "evidence": "local_index_chunking",
+                    "authority": "deterministic",
+                    "deterministic": True,
+                }
+            )
+
+    nodes.sort(key=lambda node: (str(node["kind"]), str(node.get("path") or ""), str(node["id"])))
+    edges.sort(key=lambda edge: (str(edge["kind"]), str(edge.get("path") or ""), str(edge["id"])))
+    return {
+        "schemaVersion": 1,
+        "version": "code-graph-v1",
+        "generatedAt": built_at,
+        "authority": "deterministic",
+        "source": "local_indexer",
+        "llmGeneratedAuthoritative": False,
+        "enrichment": {
+            "status": "not_used",
+            "authority": "none",
+            "llmGeneratedAuthoritative": False,
+        },
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def build_index_snapshot(root: Path, records: List[SourceRecord], graph: Dict[str, Any], built_at: str, skipped: int, redaction_count: int) -> Dict[str, Any]:
+    source_hashes = {record.path: record.contentHash for record in records}
+    freshness = {record.path: record.freshness.to_json() for record in records}
+    ingestion_health = {
+        "status": "healthy",
+        "indexedCount": len(records),
+        "skippedCount": skipped,
+        "redactionCount": redaction_count,
+        "graphNodeCount": len(graph["nodes"]),
+        "graphEdgeCount": len(graph["edges"]),
+    }
+    return {
+        "schemaVersion": 1,
+        "version": "index-snapshot-v1",
+        "builtAt": built_at,
+        "commitSha": current_commit_sha(root),
+        "sourceHashes": source_hashes,
+        "freshness": freshness,
+        "ingestionHealth": ingestion_health,
+        "sourceCustody": {
+            "mode": "metadata_only",
+            "fullSourceUploadAllowed": False,
+            "snippetUploadAllowed": False,
+            "reason": "Default enterprise mode does not upload full source code.",
+        },
+    }
+
+
 def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[str, Any]:
     root = target_dir.resolve()
     cfg = config or read_context_config(root)
@@ -450,11 +564,15 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
     records.sort(key=lambda record: (record.path, record.id))
     chunks.sort(key=lambda chunk: (chunk.path, chunk.id))
     built_at = now_iso()
+    graph = build_code_graph(records, chunks, built_at)
+    snapshot = build_index_snapshot(root, records, graph, built_at, skipped, redaction_count)
     index = {
         "schemaVersion": 1,
         "version": "context-index-v1",
         "builtAt": built_at,
+        "snapshot": snapshot,
         "provider": {"mode": provider_mode, "summary": {"mode": summary_mode, "provider": cfg.summary.provider, "model": cfg.summary.model}, "externalCalls": []},
+        "graph": graph,
         "records": [record.to_json(include_content=True) for record in records],
         "chunks": [chunk.to_json() for chunk in chunks],
         "skipped": skipped_records,
@@ -472,6 +590,10 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
         "embeddingPayloadPath": ".agentrail/context/index/embedding-payloads.jsonl",
         "providerMode": provider_mode,
         "summaryMode": summary_mode,
+        "commitSha": snapshot["commitSha"],
+        "graphNodes": len(graph["nodes"]),
+        "graphEdges": len(graph["edges"]),
+        "ingestionHealth": snapshot["ingestionHealth"],
         "indexed": len(records),
         "chunks": len(chunks),
         "skipped": skipped,

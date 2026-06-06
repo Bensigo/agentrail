@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Iterable, Set
+from typing import Iterable, Optional, Set
 
 
 def git_ignored_set(root: Path, paths: Iterable[str], respect_git_ignore: bool) -> Set[str]:
@@ -22,3 +22,18 @@ def git_ignored_set(root: Path, paths: Iterable[str], respect_git_ignore: bool) 
         check=False,
     )
     return {line for line in result.stdout.splitlines() if line}
+
+
+def current_commit_sha(root: Path) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return None
+    value = result.stdout.strip()
+    return value or None

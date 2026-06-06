@@ -204,6 +204,10 @@ GITIGNORE
 cat >"${fixture}/ignored/skip.md" <<'DOC'
 # Ignored
 DOC
+git -C "$fixture" config user.email "agentrail@example.com"
+git -C "$fixture" config user.name "AgentRail Test"
+git -C "$fixture" add .
+git -C "$fixture" commit --quiet -m "Initial fixture"
 
 "$agentrail" context index --target "$fixture" >"${tmp_dir}/index-1.out"
 assert_grep '"providerMode": "disabled"' "${tmp_dir}/index-1.out" "context index did not report local-only provider mode"
@@ -351,6 +355,61 @@ for (const [key, value] of Object.entries({
 }
 if (index.provider.summary.mode !== "disabled") {
   console.error("summary generation should be disabled by default");
+  process.exit(1);
+}
+if (!index.snapshot || index.snapshot.version !== "index-snapshot-v1") {
+  console.error("index snapshot metadata missing or wrong version");
+  process.exit(1);
+}
+if (!index.snapshot.commitSha || !String(index.snapshot.commitSha).match(/^[0-9a-f]{40}$/)) {
+  console.error(`index snapshot commit SHA missing or invalid: ${index.snapshot.commitSha}`);
+  process.exit(1);
+}
+if (index.snapshot.sourceHashes["src/app.js"] !== byPath.get("src/app.js").contentHash) {
+  console.error("index snapshot source hash did not match indexed record");
+  process.exit(1);
+}
+if (index.snapshot.freshness["src/app.js"].status !== "current") {
+  console.error("index snapshot freshness metadata missing for src/app.js");
+  process.exit(1);
+}
+if (index.snapshot.ingestionHealth.status !== "healthy") {
+  console.error(`index snapshot ingestion health was not healthy: ${index.snapshot.ingestionHealth.status}`);
+  process.exit(1);
+}
+if (index.snapshot.ingestionHealth.indexedCount !== index.records.length) {
+  console.error("index snapshot indexed count did not match records");
+  process.exit(1);
+}
+if (index.snapshot.sourceCustody.fullSourceUploadAllowed !== false || index.snapshot.sourceCustody.snippetUploadAllowed !== false) {
+  console.error("index snapshot did not preserve metadata-only source custody defaults");
+  process.exit(1);
+}
+if (!index.graph || index.graph.version !== "code-graph-v1") {
+  console.error("local Code Graph missing or wrong version");
+  process.exit(1);
+}
+if (index.graph.authority !== "deterministic" || index.graph.llmGeneratedAuthoritative !== false) {
+  console.error("local Code Graph did not preserve deterministic authority");
+  process.exit(1);
+}
+if (index.graph.enrichment.llmGeneratedAuthoritative !== false) {
+  console.error("graph enrichment was marked authoritative");
+  process.exit(1);
+}
+const fileNode = index.graph.nodes.find((node) => node.kind === "file" && node.path === "src/app.js");
+if (!fileNode) {
+  console.error("file graph node missing for src/app.js");
+  process.exit(1);
+}
+const chunkNode = index.graph.nodes.find((node) => node.kind === "chunk" && node.path === "src/app.js");
+if (!chunkNode) {
+  console.error("chunk graph node missing for src/app.js");
+  process.exit(1);
+}
+const containsEdge = index.graph.edges.find((edge) => edge.kind === "contains_chunk" && edge.from === fileNode.id && edge.to === chunkNode.id);
+if (!containsEdge || containsEdge.authority !== "deterministic") {
+  console.error("deterministic file-to-chunk graph edge missing for src/app.js");
   process.exit(1);
 }
 NODE

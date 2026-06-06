@@ -114,23 +114,25 @@ class InMemoryTelemetryStore:
 def _is_duplicate_idempotent_metadata(envelope: "IngestionEnvelope", records: List["IngestionEnvelope"]) -> bool:
     payload = envelope.payload
     kind = payload.submission_kind
-    if kind == "index_snapshot":
-        identity = _index_snapshot_identity(envelope)
-    elif kind == "graph_metadata":
-        identity = _graph_metadata_identity(envelope)
-    else:
+    identity = _idempotent_metadata_identity(envelope)
+    if identity is None:
         return False
     return any(
-        existing.payload == payload
-        and (
-            _index_snapshot_identity(existing)
-            if kind == "index_snapshot"
-            else _graph_metadata_identity(existing)
-        )
-        == identity
+        existing.payload == payload and _idempotent_metadata_identity(existing) == identity
         for existing in records
         if existing.payload.submission_kind == kind
     )
+
+
+def _idempotent_metadata_identity(envelope: "IngestionEnvelope") -> Optional[tuple[str, ...]]:
+    kind = envelope.payload.submission_kind
+    if kind == "index_snapshot":
+        return _index_snapshot_identity(envelope)
+    if kind == "graph_metadata":
+        return _graph_metadata_identity(envelope)
+    if kind == "context_pack_metadata":
+        return _context_pack_metadata_identity(envelope)
+    return None
 
 
 def _index_snapshot_identity(envelope: "IngestionEnvelope") -> tuple[str, str, str, str, str, str, str]:
@@ -154,6 +156,19 @@ def _graph_metadata_identity(envelope: "IngestionEnvelope") -> tuple[str, str, s
         envelope.repository_id or "",
         payload.snapshot_id,
         payload.graph_id,
+    )
+
+
+def _context_pack_metadata_identity(envelope: "IngestionEnvelope") -> tuple[str, str, str, str, str, str, str]:
+    payload = envelope.payload
+    return (
+        "context_pack_metadata",
+        envelope.workspace_id,
+        payload.repository_id,
+        payload.context_pack_id,
+        payload.run_id or "",
+        payload.pull_request_id or "",
+        payload.content_hash,
     )
 
 

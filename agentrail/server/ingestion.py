@@ -138,6 +138,52 @@ class BoundedSnippet:
 
 
 @dataclass(frozen=True)
+class ContextPackAnchor:
+    anchor_id: str
+    path: str
+    citation: str
+    reason: str
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
+    symbol: Optional[str] = None
+    source_hash: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ContextPackCitation:
+    citation_id: str
+    path: str
+    source_hash: str
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
+    artifact_ref: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ContextPackDecision:
+    item_id: str
+    citation: str
+    reason: str
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ContextPackBudget:
+    max_input_tokens: int
+    used_input_tokens: int
+    max_output_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class ContextPackQualityMetrics:
+    required_source_coverage: float
+    citation_coverage: float
+    stale_or_denied_leakage: int
+    precision_at_budget: Optional[float] = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class IndexSnapshotSubmission:
     snapshot_id: str
     repository_id: str
@@ -166,11 +212,22 @@ class GraphMetadataSubmission:
 @dataclass(frozen=True)
 class ContextPackMetadataSubmission:
     context_pack_id: str
+    workspace_id: str
+    repository_id: str
     target_kind: str
     target_id: str
     content_hash: str
-    citations: List[str]
-    artifact_ref: str
+    source_hashes: Mapping[str, str]
+    anchors: List[ContextPackAnchor]
+    citations: List[ContextPackCitation]
+    inclusions: List[ContextPackDecision]
+    exclusions: List[ContextPackDecision]
+    budgets: ContextPackBudget
+    quality_metrics: ContextPackQualityMetrics
+    run_id: Optional[str] = None
+    pull_request_id: Optional[str] = None
+    artifact_ref: Optional[str] = None
+    bounded_snippets: List[BoundedSnippet] = field(default_factory=list)
     metadata: Mapping[str, object] = field(default_factory=dict)
     submission_kind: str = field(default="context_pack_metadata", init=False)
 
@@ -412,6 +469,14 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "graph_metadata.node_count",
         "graph_metadata.edge_count",
         "graph_metadata.metadata",
+        "context_pack_metadata.target_kind",
+        "context_pack_metadata.target_id",
+        "context_pack_metadata.anchors[].reason",
+        "context_pack_metadata.inclusions[].reason",
+        "context_pack_metadata.exclusions[].reason",
+        "context_pack_metadata.budgets",
+        "context_pack_metadata.quality_metrics",
+        "context_pack_metadata.metadata",
         "artifact_reference.artifact_kind",
         "artifact_reference.size_bytes",
         "artifact_reference.content_type",
@@ -468,8 +533,12 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "index_snapshot.index_hash",
         "index_snapshot.source_hashes",
         "context_pack_metadata.content_hash",
+        "context_pack_metadata.source_hashes",
+        "context_pack_metadata.anchors[].source_hash",
+        "context_pack_metadata.citations[].source_hash",
         "artifact_reference.content_hash",
         "repository.bounded_snippets[].content_hash",
+        "context_pack_metadata.bounded_snippets[].content_hash",
     ],
     "references": [
         "repository.remote_url",
@@ -504,6 +573,19 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "graph_metadata.graph_id",
         "graph_metadata.snapshot_id",
         "graph_metadata.graph_ref",
+        "context_pack_metadata.context_pack_id",
+        "context_pack_metadata.workspace_id",
+        "context_pack_metadata.repository_id",
+        "context_pack_metadata.run_id",
+        "context_pack_metadata.pull_request_id",
+        "context_pack_metadata.anchors[].path",
+        "context_pack_metadata.anchors[].citation",
+        "context_pack_metadata.citations[].path",
+        "context_pack_metadata.citations[].artifact_ref",
+        "context_pack_metadata.inclusions[].item_id",
+        "context_pack_metadata.inclusions[].citation",
+        "context_pack_metadata.exclusions[].item_id",
+        "context_pack_metadata.exclusions[].citation",
         "context_pack_metadata.artifact_ref",
         "context_pack_metadata.citations",
         "artifact_reference.artifact_id",
@@ -535,9 +617,17 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "repository.bounded_snippets[].end_line",
         "repository.bounded_snippets[].content",
         "repository.bounded_snippets[].content_hash",
+        "context_pack_metadata.bounded_snippets[].path",
+        "context_pack_metadata.bounded_snippets[].citation",
+        "context_pack_metadata.bounded_snippets[].start_line",
+        "context_pack_metadata.bounded_snippets[].end_line",
+        "context_pack_metadata.bounded_snippets[].content",
+        "context_pack_metadata.bounded_snippets[].content_hash",
     ],
     "forbidden_full_source": [
         "repository.full_source",
+        "context_pack_metadata.full_source",
+        "context_pack_metadata.metadata.source_files",
         "large inline artifact bodies in metadata",
         "raw file contents outside bounded snippets",
         "complete source files",
@@ -583,6 +673,8 @@ def _validate_payload(envelope: IngestionEnvelope, policy: SourceCustodyPolicy) 
         errors.extend(_validate_index_snapshot(envelope, payload, policy))
     if isinstance(payload, GraphMetadataSubmission):
         errors.extend(_validate_graph_metadata(payload, policy))
+    if isinstance(payload, ContextPackMetadataSubmission):
+        errors.extend(_validate_context_pack_metadata(envelope, payload, policy))
     if isinstance(payload, ArtifactReferenceSubmission):
         errors.extend(_validate_artifact_reference(envelope, payload))
     if isinstance(payload, RepositorySubmission) and payload.full_source:
@@ -596,59 +688,8 @@ def _validate_payload(envelope: IngestionEnvelope, policy: SourceCustodyPolicy) 
                 ),
             )
         )
-    if isinstance(payload, RepositorySubmission) and payload.bounded_snippets and not policy.allow_bounded_snippets:
-        errors.append(
-            ValidationError(
-                code="bounded_snippet_not_allowed",
-                field="payload.bounded_snippets",
-                message=(
-                    "Bounded cited snippets require SourceCustodyPolicy.allow_bounded_snippets=True. "
-                    "Default enterprise ingestion accepts metadata, hashes, and references only."
-                ),
-            )
-        )
-    if isinstance(payload, RepositorySubmission) and payload.bounded_snippets and policy.allow_bounded_snippets and policy.max_snippet_chars <= 0:
-        errors.append(
-            ValidationError(
-                code="bounded_snippet_policy_unbounded",
-                field="policy.max_snippet_chars",
-                message=(
-                    "SourceCustodyPolicy.max_snippet_chars must be greater than zero when "
-                    "allow_bounded_snippets=True."
-                ),
-            )
-        )
-    if isinstance(payload, RepositorySubmission) and payload.bounded_snippets and policy.allow_bounded_snippets and policy.max_snippet_chars:
-        for index, snippet in enumerate(payload.bounded_snippets):
-            if len(snippet.content) > policy.max_snippet_chars:
-                errors.append(
-                    ValidationError(
-                        code="bounded_snippet_too_large",
-                        field=f"payload.bounded_snippets[{index}].content",
-                        message=(
-                            "Bounded snippet content exceeds SourceCustodyPolicy.max_snippet_chars. "
-                            "Send a shorter cited snippet or metadata-only reference."
-                        ),
-                    )
-                )
-    if isinstance(payload, RepositorySubmission) and payload.bounded_snippets and policy.allow_bounded_snippets:
-        for index, snippet in enumerate(payload.bounded_snippets):
-            if not snippet.citation:
-                errors.append(
-                    ValidationError(
-                        code="bounded_snippet_missing_citation",
-                        field=f"payload.bounded_snippets[{index}].citation",
-                        message="Bounded snippets must include a citation so reviewers can trace the source reference.",
-                    )
-                )
-            if snippet.start_line < 1 or snippet.end_line < snippet.start_line:
-                errors.append(
-                    ValidationError(
-                        code="bounded_snippet_invalid_line_range",
-                        field=f"payload.bounded_snippets[{index}].start_line",
-                        message="Bounded snippets must include a positive start_line and an end_line greater than or equal to start_line.",
-                    )
-                )
+    if isinstance(payload, RepositorySubmission):
+        errors.extend(_validate_bounded_snippets(payload.bounded_snippets, policy, "payload.bounded_snippets"))
     return errors
 
 
@@ -727,13 +768,165 @@ def _validate_graph_metadata(
     return errors
 
 
+def _validate_context_pack_metadata(
+    envelope: IngestionEnvelope,
+    payload: ContextPackMetadataSubmission,
+    policy: SourceCustodyPolicy,
+) -> List[ValidationError]:
+    errors: List[ValidationError] = []
+    if payload.workspace_id != envelope.workspace_id:
+        errors.append(
+            ValidationError(
+                code="context_pack_workspace_mismatch",
+                field="payload.workspace_id",
+                message="Context-pack metadata workspace_id must match the ingestion envelope workspace_id.",
+            )
+        )
+    if envelope.repository_id is not None and payload.repository_id != envelope.repository_id:
+        errors.append(
+            ValidationError(
+                code="context_pack_repository_mismatch",
+                field="payload.repository_id",
+                message="Context-pack metadata repository_id must match the ingestion envelope repository_id.",
+            )
+        )
+    if not payload.context_pack_id:
+        errors.append(
+            ValidationError(
+                code="context_pack_identity_required",
+                field="payload.context_pack_id",
+                message="Context-pack metadata requires a context_pack_id.",
+            )
+        )
+    if not payload.repository_id:
+        errors.append(
+            ValidationError(
+                code="context_pack_identity_required",
+                field="payload.repository_id",
+                message="Context-pack metadata requires a repository_id.",
+            )
+        )
+    if not payload.run_id and not payload.pull_request_id:
+        errors.append(
+            ValidationError(
+                code="context_pack_association_required",
+                field="payload.run_id",
+                message="Context-pack metadata must be associated with a run_id or pull_request_id.",
+            )
+        )
+    if not payload.source_hashes:
+        errors.append(
+            ValidationError(
+                code="context_pack_source_hashes_required",
+                field="payload.source_hashes",
+                message="Context-pack metadata must include source hashes for cited source inventory.",
+            )
+        )
+    if not payload.anchors:
+        errors.append(
+            ValidationError(
+                code="context_pack_anchors_required",
+                field="payload.anchors",
+                message="Context-pack metadata must include at least one anchor and inclusion reason.",
+            )
+        )
+    if not payload.citations:
+        errors.append(
+            ValidationError(
+                code="context_pack_citations_required",
+                field="payload.citations",
+                message="Context-pack metadata must include citations for included evidence.",
+            )
+        )
+    if not payload.inclusions:
+        errors.append(
+            ValidationError(
+                code="context_pack_inclusions_required",
+                field="payload.inclusions",
+                message="Context-pack metadata must include inclusion reasons for selected evidence.",
+            )
+        )
+    if payload.artifact_ref is not None and not payload.artifact_ref.startswith("object://"):
+        errors.append(
+            ValidationError(
+                code="context_pack_artifact_ref_not_object_ref",
+                field="payload.artifact_ref",
+                message="Context-pack artifact references must point at an object-storage URI.",
+            )
+        )
+    errors.extend(_validate_source_custody_metadata(payload, policy))
+    errors.extend(_validate_bounded_snippets(payload.bounded_snippets, policy, "payload.bounded_snippets"))
+    return errors
+
+
+def _validate_bounded_snippets(
+    snippets: List[BoundedSnippet],
+    policy: SourceCustodyPolicy,
+    field_prefix: str,
+) -> List[ValidationError]:
+    if not snippets:
+        return []
+    if not policy.allow_bounded_snippets:
+        return [
+            ValidationError(
+                code="bounded_snippet_not_allowed",
+                field=field_prefix,
+                message=(
+                    "Bounded cited snippets require SourceCustodyPolicy.allow_bounded_snippets=True. "
+                    "Default enterprise ingestion accepts metadata, hashes, and references only."
+                ),
+            )
+        ]
+    if policy.max_snippet_chars <= 0:
+        return [
+            ValidationError(
+                code="bounded_snippet_policy_unbounded",
+                field="policy.max_snippet_chars",
+                message=(
+                    "SourceCustodyPolicy.max_snippet_chars must be greater than zero when "
+                    "allow_bounded_snippets=True."
+                ),
+            )
+        ]
+    errors: List[ValidationError] = []
+    for index, snippet in enumerate(snippets):
+        if len(snippet.content) > policy.max_snippet_chars:
+            errors.append(
+                ValidationError(
+                    code="bounded_snippet_too_large",
+                    field=f"{field_prefix}[{index}].content",
+                    message=(
+                        "Bounded snippet content exceeds SourceCustodyPolicy.max_snippet_chars. "
+                        "Send a shorter cited snippet or metadata-only reference."
+                    ),
+                )
+            )
+        if not snippet.citation:
+            errors.append(
+                ValidationError(
+                    code="bounded_snippet_missing_citation",
+                    field=f"{field_prefix}[{index}].citation",
+                    message="Bounded snippets must include a citation so reviewers can trace the source reference.",
+                )
+            )
+        if snippet.start_line < 1 or snippet.end_line < snippet.start_line:
+            errors.append(
+                ValidationError(
+                    code="bounded_snippet_invalid_line_range",
+                    field=f"{field_prefix}[{index}].start_line",
+                    message="Bounded snippets must include a positive start_line and an end_line greater than or equal to start_line.",
+                )
+            )
+    return errors
+
+
 def _validate_no_large_inline_artifact_bodies(payload: IngestionPayload) -> List[ValidationError]:
     errors: List[ValidationError] = []
     if not is_dataclass(payload):
         return errors
     for payload_field in fields(payload):
         value = getattr(payload, payload_field.name)
-        if isinstance(value, MappingABC):
+        if isinstance(value, MappingABC) or is_dataclass(value):
             errors.extend(_find_large_inline_artifact_bodies(value, f"payload.{payload_field.name}"))
     return errors
 
@@ -743,8 +936,10 @@ def _validate_source_custody_metadata(payload: IngestionPayload, policy: SourceC
     if not is_dataclass(payload):
         return errors
     for payload_field in fields(payload):
+        if payload_field.name == "bounded_snippets":
+            continue
         value = getattr(payload, payload_field.name)
-        if isinstance(value, (MappingABC, list)):
+        if isinstance(value, (MappingABC, list)) or is_dataclass(value):
             errors.extend(_find_forbidden_source_custody_metadata(value, f"payload.{payload_field.name}", policy))
     return errors
 
@@ -788,17 +983,16 @@ def _find_forbidden_source_custody_metadata(
                     ),
                 )
             ]
-        if _estimated_inline_size(value) > policy.max_snippet_chars:
-            return [
-                ValidationError(
-                    code="bounded_snippet_too_large",
-                    field=field_path,
-                    message=(
-                        "Bounded snippet content exceeds SourceCustodyPolicy.max_snippet_chars. "
-                        "Send a shorter cited snippet or metadata-only reference."
-                    ),
-                )
-            ]
+        return [
+            ValidationError(
+                code="bounded_snippet_metadata_unstructured",
+                field=field_path,
+                message=(
+                    "Snippet-like metadata fields are not accepted as arbitrary metadata. "
+                    "Use the typed bounded_snippets field with citation, line bounds, content, and content_hash."
+                ),
+            )
+        ]
     errors: List[ValidationError] = []
     if isinstance(value, MappingABC):
         for key, nested_value in value.items():
@@ -807,6 +1001,19 @@ def _find_forbidden_source_custody_metadata(
     elif isinstance(value, list):
         for index, nested_value in enumerate(value):
             errors.extend(_find_forbidden_source_custody_metadata(nested_value, f"{field_path}[{index}]", policy))
+    elif is_dataclass(value):
+        for nested_field in fields(value):
+            if nested_field.name == "bounded_snippets":
+                continue
+            nested_value = getattr(value, nested_field.name)
+            if isinstance(nested_value, (MappingABC, list)) or is_dataclass(nested_value):
+                errors.extend(
+                    _find_forbidden_source_custody_metadata(
+                        nested_value,
+                        f"{field_path}.{nested_field.name}",
+                        policy,
+                    )
+                )
     return errors
 
 
@@ -842,6 +1049,11 @@ def _find_large_inline_artifact_bodies(value: object, field_path: str) -> List[V
     elif isinstance(value, list):
         for index, nested_value in enumerate(value):
             errors.extend(_find_large_inline_artifact_bodies(nested_value, f"{field_path}[{index}]"))
+    elif is_dataclass(value):
+        for nested_field in fields(value):
+            nested_value = getattr(value, nested_field.name)
+            if isinstance(nested_value, (MappingABC, list)) or is_dataclass(nested_value):
+                errors.extend(_find_large_inline_artifact_bodies(nested_value, f"{field_path}.{nested_field.name}"))
     return errors
 
 

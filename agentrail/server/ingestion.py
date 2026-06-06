@@ -855,6 +855,22 @@ def _validate_context_pack_metadata(
                 message="Context-pack metadata must include inclusion reasons for selected evidence.",
             )
         )
+    if payload.budgets is None:
+        errors.append(
+            ValidationError(
+                code="context_pack_budgets_required",
+                field="payload.budgets",
+                message="Context-pack metadata must include token budgets.",
+            )
+        )
+    if payload.quality_metrics is None:
+        errors.append(
+            ValidationError(
+                code="context_pack_quality_metrics_required",
+                field="payload.quality_metrics",
+                message="Context-pack metadata must include quality metrics.",
+            )
+        )
     citation_paths = {
         citation.path
         for citation in citations
@@ -1055,6 +1071,22 @@ def _validate_bounded_snippets(
         ]
     errors: List[ValidationError] = []
     for index, snippet in enumerate(snippets):
+        if not snippet.path:
+            errors.append(
+                ValidationError(
+                    code="bounded_snippet_missing_path",
+                    field=f"{field_prefix}[{index}].path",
+                    message="Bounded snippets must include a source path.",
+                )
+            )
+        if not snippet.content_hash:
+            errors.append(
+                ValidationError(
+                    code="bounded_snippet_missing_content_hash",
+                    field=f"{field_prefix}[{index}].content_hash",
+                    message="Bounded snippets must include a content hash.",
+                )
+            )
         if len(snippet.content) > policy.max_snippet_chars:
             errors.append(
                 ValidationError(

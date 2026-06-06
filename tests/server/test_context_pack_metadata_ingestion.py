@@ -294,6 +294,31 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             ],
         )
 
+    def test_context_pack_budgets_and_quality_metrics_are_required(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = replace(
+            _context_pack_metadata_submission(),
+            budgets=None,
+            quality_metrics=None,
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [
+                ("context_pack_budgets_required", "payload.budgets"),
+                ("context_pack_quality_metrics_required", "payload.quality_metrics"),
+            ],
+        )
+
     def test_context_pack_decision_citations_must_match_source_inventory(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = _context_pack_metadata_submission(
@@ -382,6 +407,42 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
 
         self.assertTrue(result.accepted, result.errors)
         self.assertEqual(telemetry_store.context_pack_metadata[0].bounded_snippets, [snippet])
+
+    def test_context_pack_allowed_bounded_snippets_require_path_and_hash(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            bounded_snippets=[
+                BoundedSnippet(
+                    path="",
+                    citation="agentrail/server/ingestion.py:167",
+                    start_line=167,
+                    end_line=170,
+                    content="@dataclass(frozen=True)\nclass ContextPackMetadataSubmission:\n    ...",
+                    content_hash="",
+                )
+            ]
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy(
+                mode="bounded_snippets",
+                allow_bounded_snippets=True,
+                max_snippet_chars=120,
+            ),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [
+                ("bounded_snippet_missing_path", "payload.bounded_snippets[0].path"),
+                ("bounded_snippet_missing_content_hash", "payload.bounded_snippets[0].content_hash"),
+            ],
+        )
 
     def test_context_pack_artifact_reference_must_point_to_object_storage(self) -> None:
         telemetry_store = InMemoryTelemetryStore()

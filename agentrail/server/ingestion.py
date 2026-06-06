@@ -846,6 +846,8 @@ def _validate_context_pack_metadata(
                 message="Context-pack metadata must include inclusion reasons for selected evidence.",
             )
         )
+    errors.extend(_validate_context_pack_decisions(payload.inclusions, "payload.inclusions"))
+    errors.extend(_validate_context_pack_decisions(payload.exclusions, "payload.exclusions"))
     if payload.artifact_ref is not None and not payload.artifact_ref.startswith("object://"):
         errors.append(
             ValidationError(
@@ -856,6 +858,31 @@ def _validate_context_pack_metadata(
         )
     errors.extend(_validate_source_custody_metadata(payload, policy))
     errors.extend(_validate_bounded_snippets(payload.bounded_snippets, policy, "payload.bounded_snippets"))
+    return errors
+
+
+def _validate_context_pack_decisions(
+    decisions: List[ContextPackDecision],
+    field_prefix: str,
+) -> List[ValidationError]:
+    errors: List[ValidationError] = []
+    for index, decision in enumerate(decisions):
+        if not decision.citation:
+            errors.append(
+                ValidationError(
+                    code="context_pack_decision_citation_required",
+                    field=f"{field_prefix}[{index}].citation",
+                    message="Context-pack inclusion and exclusion decisions must include a citation.",
+                )
+            )
+        if not decision.reason:
+            errors.append(
+                ValidationError(
+                    code="context_pack_decision_reason_required",
+                    field=f"{field_prefix}[{index}].reason",
+                    message="Context-pack inclusion and exclusion decisions must include a reason.",
+                )
+            )
     return errors
 
 
@@ -926,7 +953,7 @@ def _validate_no_large_inline_artifact_bodies(payload: IngestionPayload) -> List
         return errors
     for payload_field in fields(payload):
         value = getattr(payload, payload_field.name)
-        if isinstance(value, MappingABC) or is_dataclass(value):
+        if isinstance(value, (MappingABC, list)) or is_dataclass(value):
             errors.extend(_find_large_inline_artifact_bodies(value, f"payload.{payload_field.name}"))
     return errors
 

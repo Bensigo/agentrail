@@ -114,6 +114,69 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
         self.assertEqual(result.errors[0].code, "full_source_forbidden")
         self.assertEqual(result.errors[0].field, "payload.inclusions[0].metadata.source_files")
 
+    def test_context_pack_nested_decision_metadata_cannot_hide_large_inline_artifacts(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            inclusions=[
+                ContextPackDecision(
+                    item_id="agentrail/server/ingestion.py",
+                    citation="agentrail/server/ingestion.py:167",
+                    reason="defines context-pack metadata ingestion",
+                    metadata={"log": "x" * 5000},
+                )
+            ]
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(result.errors[0].code, "inline_artifact_body_forbidden")
+        self.assertEqual(result.errors[0].field, "payload.inclusions[0].metadata.log")
+
+    def test_context_pack_decisions_require_citation_and_reason(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            inclusions=[
+                ContextPackDecision(
+                    item_id="agentrail/server/ingestion.py",
+                    citation="",
+                    reason="",
+                )
+            ],
+            exclusions=[
+                ContextPackDecision(
+                    item_id="agent-operations-console",
+                    citation="",
+                    reason="",
+                )
+            ],
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [
+                ("context_pack_decision_citation_required", "payload.inclusions[0].citation"),
+                ("context_pack_decision_reason_required", "payload.inclusions[0].reason"),
+                ("context_pack_decision_citation_required", "payload.exclusions[0].citation"),
+                ("context_pack_decision_reason_required", "payload.exclusions[0].reason"),
+            ],
+        )
+
     def test_context_pack_bounded_snippets_are_denied_by_default(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = _context_pack_metadata_submission(
@@ -191,6 +254,7 @@ def _context_pack_metadata_submission(
     *,
     metadata: dict[str, object] | None = None,
     inclusions: list[ContextPackDecision] | None = None,
+    exclusions: list[ContextPackDecision] | None = None,
     bounded_snippets: list[BoundedSnippet] | None = None,
     artifact_ref: str = "object://context-packs/pack_138.json",
 ) -> ContextPackMetadataSubmission:
@@ -231,7 +295,7 @@ def _context_pack_metadata_submission(
                 reason="defines context-pack metadata ingestion",
             )
         ],
-        exclusions=[
+        exclusions=exclusions or [
             ContextPackDecision(
                 item_id="agent-operations-console",
                 citation="milestones/004-server-ingestion-spine.md:66",

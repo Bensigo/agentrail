@@ -4,6 +4,8 @@ The Context Compiler turns a task, issue, PR, error, review, or resume request i
 
 This contract extends existing context query and context pack JSON. It does not replace the legacy fields that current consumers read.
 
+The companion context-engine guide defines the project terms `Context Compiler`, `Context Pack`, `Code Graph`, `Codebase Unit`, `Source Custody Policy`, and `Retrieval Quality Gate`. This reference defines the JSON contract those terms map to.
+
 ## Contract Version
 
 Compiler data lives under a top-level `compiler` object:
@@ -110,7 +112,7 @@ Candidate kinds:
 
 Source evidence can justify implementation or review decisions. Procedural guidance can tell the agent how to work, but it is not evidence that code behavior is true.
 
-Every candidate exposed to an agent must have a citation and reason. Candidate policy metadata records source custody posture, snippet-upload eligibility, redaction state, authority effects, and freshness effects. Denied source content must not appear in a candidate body.
+Every included and excluded candidate exposed to an agent must have a citation and reason. Candidate policy metadata records source custody posture, snippet-upload eligibility, redaction state, authority effects, and freshness effects. Denied source content must not appear in a candidate body.
 
 ## Graph Expansion
 
@@ -152,7 +154,7 @@ Policy records custody and filtering decisions:
 }
 ```
 
-Default enterprise mode does not upload full source code. Bounded snippets may be uploaded only when Source Custody Policy allows it. Denied sources may appear only as excluded metadata with a reason and citation.
+Default enterprise mode does not upload full source code. A server-first enterprise deployment can ingest source IDs, hashes, citations, reasons, policy metadata, and audit references without requiring full source upload. Bounded snippets may be uploaded only when Source Custody Policy allows it. Denied sources may appear only as excluded metadata with a reason and citation.
 
 ## Rerank
 
@@ -252,6 +254,18 @@ Compiler mappings:
   "skillsMapTo": "compiler.candidates[kind=procedural_guidance]"
 }
 ```
+
+Compatibility rules by surface:
+
+| Legacy Surface | Compiler Path | Notes |
+|---|---|---|
+| Query `results[]` | `compiler.candidates[]` where `kind` is `source_evidence` | Each result keeps its legacy rank, path, score, citation, and reason while gaining compiler policy metadata. |
+| Query `excluded[]` | `compiler.candidates[]` where `kind` is `excluded_context` | Exclusions remain metadata-only and still require a citation and reason. |
+| Build response `retrievalBudget` | `compiler.tokenPack.budget` | The compiler budget mirrors the public build budget. |
+| Build response `jsonPath` and `markdownPath` | `compiler.compatibility.generatedPackJsonPath` and `compiler.compatibility.generatedPackMarkdownPath` | Older consumers may keep reading the top-level paths. |
+| Saved pack section arrays | `compiler.candidates[]` and `compiler.tokenPack.selectedCandidateIds` | `requiredContext`, `likelyFiles`, `likelyDocs`, `relevantMemory`, `priorMistakes`, `activeState`, and `goals` map to source evidence. |
+| Saved pack `availableTools` and `availableSkills` | `compiler.candidates[]` where `kind` is `procedural_guidance` | Selected skills remain separate from source evidence. |
+| Saved pack `excludedContext` and `excluded` | `compiler.candidates[]` where `kind` is `excluded_context` | Denied or stale sources never move into selected source evidence. |
 
 ## Query Result Example
 
@@ -619,6 +633,10 @@ Compiler mappings:
         {
           "candidateId": "CONTEXT.md",
           "citation": "CONTEXT.md"
+        },
+        {
+          "candidateId": "skills/backend-api/SKILL.md",
+          "citation": "skills/backend-api/SKILL.md"
         }
       ],
       "missingCandidateIds": []
@@ -629,6 +647,10 @@ Compiler mappings:
         {
           "candidateId": "CONTEXT.md",
           "reason": "Included as required local AgentRail context for visible state and quality guidance."
+        },
+        {
+          "candidateId": "skills/backend-api/SKILL.md",
+          "reason": "Included so agents can see available local skill guidance for this task."
         }
       ],
       "missingCandidateIds": []

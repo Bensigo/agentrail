@@ -881,6 +881,10 @@ def _validate_context_pack_metadata(
                 message="Context-pack metadata must include quality metrics.",
             )
         )
+    else:
+        errors.extend(_validate_context_pack_quality_metrics(payload.quality_metrics))
+    if payload.budgets is not None:
+        errors.extend(_validate_context_pack_budgets(payload.budgets))
     if inclusions and not citation_errors:
         errors.extend(_validate_context_pack_decisions(inclusions, "payload.inclusions", source_hashes, citations))
     if exclusions and not citation_errors:
@@ -928,14 +932,24 @@ def _validate_context_pack_anchors(
                     message="Context-pack anchors must include a citation.",
                 )
             )
-        elif not _anchor_citation_resolves(anchor):
-            errors.append(
-                ValidationError(
-                    code="context_pack_anchor_citation_not_in_inventory",
-                    field=f"payload.anchors[{index}].citation",
-                    message="Context-pack anchor citations must resolve to the anchor path and line range.",
-                )
+        else:
+            line_range_error = _validate_context_pack_line_range(
+                anchor.start_line,
+                anchor.end_line,
+                f"payload.anchors[{index}]",
+                "context_pack_anchor_line_range_invalid",
+                "Context-pack anchor line ranges must use positive line numbers and end at or after the start line.",
             )
+            if line_range_error is not None:
+                errors.append(line_range_error)
+            elif not _anchor_citation_resolves(anchor):
+                errors.append(
+                    ValidationError(
+                        code="context_pack_anchor_citation_not_in_inventory",
+                        field=f"payload.anchors[{index}].citation",
+                        message="Context-pack anchor citations must resolve to the anchor path and line range.",
+                    )
+                )
         if not anchor.reason:
             errors.append(
                 ValidationError(
@@ -1001,6 +1015,15 @@ def _validate_context_pack_citations(
                     message="Context-pack citation source hashes must match payload.source_hashes for the cited path.",
                 )
             )
+        line_range_error = _validate_context_pack_line_range(
+            citation.start_line,
+            citation.end_line,
+            f"payload.citations[{index}]",
+            "context_pack_citation_line_range_invalid",
+            "Context-pack citation line ranges must use positive line numbers and end at or after the start line.",
+        )
+        if line_range_error is not None:
+            errors.append(line_range_error)
         if citation.artifact_ref is not None and not citation.artifact_ref.startswith("object://"):
             errors.append(
                 ValidationError(
@@ -1054,6 +1077,108 @@ def _validate_context_pack_decisions(
                 )
             )
     return errors
+
+
+def _validate_context_pack_line_range(
+    start_line: Optional[int],
+    end_line: Optional[int],
+    field_prefix: str,
+    code: str,
+    message: str,
+) -> Optional[ValidationError]:
+    if start_line is None:
+        if end_line is None:
+            return None
+        return ValidationError(code=code, field=f"{field_prefix}.end_line", message=message)
+    if start_line < 1:
+        return ValidationError(code=code, field=f"{field_prefix}.start_line", message=message)
+    if end_line is not None and end_line < start_line:
+        return ValidationError(code=code, field=f"{field_prefix}.end_line", message=message)
+    return None
+
+
+def _validate_context_pack_budgets(budgets: ContextPackBudget) -> List[ValidationError]:
+    errors: List[ValidationError] = []
+    if budgets.max_input_tokens < 1:
+        errors.append(
+            ValidationError(
+                code="context_pack_budget_max_input_tokens_invalid",
+                field="payload.budgets.max_input_tokens",
+                message="Context-pack max input token budgets must be greater than zero.",
+            )
+        )
+    if budgets.used_input_tokens < 0:
+        errors.append(
+            ValidationError(
+                code="context_pack_budget_used_input_tokens_invalid",
+                field="payload.budgets.used_input_tokens",
+                message="Context-pack used input token budgets must not be negative.",
+            )
+        )
+    elif budgets.max_input_tokens >= 1 and budgets.used_input_tokens > budgets.max_input_tokens:
+        errors.append(
+            ValidationError(
+                code="context_pack_budget_used_input_tokens_exceeds_max",
+                field="payload.budgets.used_input_tokens",
+                message="Context-pack used input tokens must not exceed max input tokens.",
+            )
+        )
+    if budgets.max_output_tokens < 0:
+        errors.append(
+            ValidationError(
+                code="context_pack_budget_max_output_tokens_invalid",
+                field="payload.budgets.max_output_tokens",
+                message="Context-pack max output token budgets must not be negative.",
+            )
+        )
+    return errors
+
+
+def _validate_context_pack_quality_metrics(metrics: ContextPackQualityMetrics) -> List[ValidationError]:
+    errors: List[ValidationError] = []
+    errors.extend(
+        _validate_context_pack_ratio(
+            metrics.required_source_coverage,
+            "payload.quality_metrics.required_source_coverage",
+            "context_pack_quality_required_source_coverage_invalid",
+        )
+    )
+    errors.extend(
+        _validate_context_pack_ratio(
+            metrics.citation_coverage,
+            "payload.quality_metrics.citation_coverage",
+            "context_pack_quality_citation_coverage_invalid",
+        )
+    )
+    if metrics.stale_or_denied_leakage < 0:
+        errors.append(
+            ValidationError(
+                code="context_pack_quality_stale_or_denied_leakage_invalid",
+                field="payload.quality_metrics.stale_or_denied_leakage",
+                message="Context-pack stale or denied leakage must not be negative.",
+            )
+        )
+    if metrics.precision_at_budget is not None:
+        errors.extend(
+            _validate_context_pack_ratio(
+                metrics.precision_at_budget,
+                "payload.quality_metrics.precision_at_budget",
+                "context_pack_quality_precision_at_budget_invalid",
+            )
+        )
+    return errors
+
+
+def _validate_context_pack_ratio(value: float, field: str, code: str) -> List[ValidationError]:
+    if 0 <= value <= 1:
+        return []
+    return [
+        ValidationError(
+            code=code,
+            field=field,
+            message="Context-pack quality metric ratios must be between 0 and 1.",
+        )
+    ]
 
 
 def _decision_citation_resolves(
@@ -1120,6 +1245,8 @@ def _parse_line_reference(line_part: str) -> tuple[Optional[int], Optional[int]]
     if not start_text.isdigit():
         return None, None
     start_line = int(start_text)
+    if start_line < 1:
+        return None, None
     if not separator:
         return start_line, None
     if end_text.startswith("L"):
@@ -1127,7 +1254,7 @@ def _parse_line_reference(line_part: str) -> tuple[Optional[int], Optional[int]]
     if not end_text.isdigit():
         return None, None
     end_line = int(end_text)
-    if end_line < start_line:
+    if end_line < 1 or end_line < start_line:
         return None, None
     return start_line, end_line
 

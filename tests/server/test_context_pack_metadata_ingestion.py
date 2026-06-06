@@ -385,6 +385,96 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             ],
         )
 
+    def test_context_pack_budgets_must_have_valid_token_counts(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = replace(
+            _context_pack_metadata_submission(),
+            budgets=ContextPackBudget(
+                max_input_tokens=-1,
+                used_input_tokens=99,
+                max_output_tokens=-2,
+            ),
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [
+                ("context_pack_budget_max_input_tokens_invalid", "payload.budgets.max_input_tokens"),
+                ("context_pack_budget_max_output_tokens_invalid", "payload.budgets.max_output_tokens"),
+            ],
+        )
+
+    def test_context_pack_used_input_tokens_must_not_exceed_max(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = replace(
+            _context_pack_metadata_submission(),
+            budgets=ContextPackBudget(
+                max_input_tokens=10,
+                used_input_tokens=11,
+                max_output_tokens=0,
+            ),
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [("context_pack_budget_used_input_tokens_exceeds_max", "payload.budgets.used_input_tokens")],
+        )
+
+    def test_context_pack_quality_metrics_must_have_valid_ranges(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = replace(
+            _context_pack_metadata_submission(),
+            quality_metrics=ContextPackQualityMetrics(
+                required_source_coverage=-0.5,
+                citation_coverage=1.5,
+                stale_or_denied_leakage=-1,
+                precision_at_budget=2.0,
+            ),
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [
+                (
+                    "context_pack_quality_required_source_coverage_invalid",
+                    "payload.quality_metrics.required_source_coverage",
+                ),
+                ("context_pack_quality_citation_coverage_invalid", "payload.quality_metrics.citation_coverage"),
+                (
+                    "context_pack_quality_stale_or_denied_leakage_invalid",
+                    "payload.quality_metrics.stale_or_denied_leakage",
+                ),
+                ("context_pack_quality_precision_at_budget_invalid", "payload.quality_metrics.precision_at_budget"),
+            ],
+        )
+
     def test_context_pack_content_hash_is_required_for_identity(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = replace(_context_pack_metadata_submission(), content_hash="")
@@ -517,6 +607,39 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             [("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation")],
         )
 
+    def test_context_pack_decision_line_citations_must_be_positive(self) -> None:
+        cases = [
+            "agentrail/server/ingestion.py:0",
+            "agentrail/server/ingestion.py#L0",
+        ]
+        for citation in cases:
+            with self.subTest(citation=citation):
+                telemetry_store = InMemoryTelemetryStore()
+                payload = _context_pack_metadata_submission(
+                    inclusions=[
+                        ContextPackDecision(
+                            item_id="agentrail/server/ingestion.py",
+                            citation=citation,
+                            reason="line references must start at one",
+                        )
+                    ],
+                    exclusions=[],
+                )
+
+                result = ingest(
+                    IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+                    policy=SourceCustodyPolicy.default(),
+                    product_store=FailingProductAuthStore(),
+                    telemetry_store=telemetry_store,
+                )
+
+                self.assertFalse(result.accepted)
+                self.assertEqual(telemetry_store.records, [])
+                self.assertEqual(
+                    [(error.code, error.field) for error in result.errors],
+                    [("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation")],
+                )
+
     def test_context_pack_decision_malformed_hash_line_citations_are_rejected(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = _context_pack_metadata_submission(
@@ -627,6 +750,101 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
 
         self.assertTrue(result.accepted, result.errors)
         self.assertEqual(len(telemetry_store.context_pack_metadata), 1)
+
+    def test_context_pack_citation_inventory_ranges_must_be_valid(self) -> None:
+        cases = [
+            ContextPackCitation(
+                citation_id="citation_ingestion",
+                path="agentrail/server/ingestion.py",
+                source_hash="sha256:source123",
+                start_line=0,
+                end_line=1,
+            ),
+            ContextPackCitation(
+                citation_id="citation_ingestion",
+                path="agentrail/server/ingestion.py",
+                source_hash="sha256:source123",
+                start_line=190,
+                end_line=167,
+            ),
+            ContextPackCitation(
+                citation_id="citation_ingestion",
+                path="agentrail/server/ingestion.py",
+                source_hash="sha256:source123",
+                end_line=167,
+            ),
+        ]
+        for citation in cases:
+            with self.subTest(citation=citation):
+                telemetry_store = InMemoryTelemetryStore()
+                payload = _context_pack_metadata_submission(
+                    citations=[
+                        citation,
+                        ContextPackCitation(
+                            citation_id="citation_milestone",
+                            path="milestones/004-server-ingestion-spine.md",
+                            source_hash="sha256:milestone004",
+                            start_line=57,
+                            end_line=66,
+                        ),
+                    ]
+                )
+
+                result = ingest(
+                    IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+                    policy=SourceCustodyPolicy.default(),
+                    product_store=FailingProductAuthStore(),
+                    telemetry_store=telemetry_store,
+                )
+
+                self.assertFalse(result.accepted)
+                self.assertEqual(telemetry_store.records, [])
+                self.assertEqual(result.errors[0].code, "context_pack_citation_line_range_invalid")
+
+    def test_context_pack_anchor_ranges_must_be_valid(self) -> None:
+        cases = [
+            ContextPackAnchor(
+                anchor_id="anchor_ingestion",
+                path="agentrail/server/ingestion.py",
+                citation="agentrail/server/ingestion.py",
+                reason="line ranges must be valid",
+                start_line=0,
+                end_line=1,
+                source_hash="sha256:source123",
+            ),
+            ContextPackAnchor(
+                anchor_id="anchor_ingestion",
+                path="agentrail/server/ingestion.py",
+                citation="agentrail/server/ingestion.py",
+                reason="line ranges must be valid",
+                start_line=190,
+                end_line=167,
+                source_hash="sha256:source123",
+            ),
+            ContextPackAnchor(
+                anchor_id="anchor_ingestion",
+                path="agentrail/server/ingestion.py",
+                citation="agentrail/server/ingestion.py",
+                reason="line ranges must be valid",
+                end_line=167,
+                source_hash="sha256:source123",
+            ),
+        ]
+        for anchor in cases:
+            with self.subTest(anchor=anchor):
+                telemetry_store = InMemoryTelemetryStore()
+                payload = _context_pack_metadata_submission(anchors=[anchor])
+
+                result = ingest(
+                    IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+                    policy=SourceCustodyPolicy.default(),
+                    product_store=FailingProductAuthStore(),
+                    telemetry_store=telemetry_store,
+                )
+
+                self.assertFalse(result.accepted)
+                self.assertEqual(telemetry_store.records, [])
+                self.assertEqual(result.errors[0].code, "context_pack_anchor_line_range_invalid")
 
     def test_context_pack_bounded_snippets_are_denied_by_default(self) -> None:
         telemetry_store = InMemoryTelemetryStore()

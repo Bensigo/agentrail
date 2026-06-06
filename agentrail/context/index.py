@@ -370,6 +370,10 @@ def graph_codebase_unit_node_id(unit_id: str) -> str:
     return f"graph:codebase_unit:{sha256_text(unit_id)[7:23]}"
 
 
+def graph_symbol_node_id(path: str, name: str, line: int) -> str:
+    return f"graph:symbol:{sha256_text(f'{path}:{name}:{line}')[7:23]}"
+
+
 def normalized_unit_path(value: str) -> str:
     normalized = value.strip().strip("/")
     return normalized if normalized and normalized != "." else "."
@@ -456,11 +460,123 @@ def detect_codebase_units(root: Path, cfg: ContextConfig, records: List[SourceRe
     return [codebase_unit("root", root.name, ".", "fallback")]
 
 
+def extracted_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
+    language = language_for(relative_path)
+    patterns: List[Tuple[str, re.Pattern[str]]] = []
+    if language in {"javascript", "typescript"}:
+        patterns = [
+            ("function", re.compile(r"\bfunction\s+([A-Za-z_$][\w$]*)")),
+            ("class", re.compile(r"\bclass\s+([A-Za-z_$][\w$]*)")),
+            ("interface", re.compile(r"\binterface\s+([A-Za-z_$][\w$]*)")),
+            ("type", re.compile(r"\btype\s+([A-Za-z_$][\w$]*)\s*=")),
+            ("enum", re.compile(r"\benum\s+([A-Za-z_$][\w$]*)")),
+            ("function", re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>")),
+        ]
+    elif language == "python":
+        patterns = [
+            ("function", re.compile(r"^\s*def\s+([A-Za-z_][\w]*)\s*\(")),
+            ("class", re.compile(r"^\s*class\s+([A-Za-z_][\w]*)\b")),
+        ]
+    symbols: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, int]] = set()
+    for line_number, line in enumerate(re.split(r"\r?\n", text), start=1):
+        for kind, pattern in patterns:
+            match = pattern.search(line)
+            if not match:
+                continue
+            name = match.group(1)
+            key = (name, line_number)
+            if key in seen:
+                continue
+            seen.add(key)
+            symbols.append(
+                {
+                    "name": name,
+                    "kind": kind,
+                    "line": line_number,
+                    "citation": f"{relative_path}#L{line_number}",
+                    "deterministic": True,
+                }
+            )
+    return symbols
+
+
+def extracted_imports(text: str, relative_path: str) -> List[Dict[str, Any]]:
+    language = language_for(relative_path)
+    patterns: List[re.Pattern[str]] = []
+    if language in {"javascript", "typescript"}:
+        patterns = [
+            re.compile(r"^\s*import\s+.+?\s+from\s+[\"']([^\"']+)[\"']"),
+            re.compile(r"^\s*import\s+[\"']([^\"']+)[\"']"),
+            re.compile(r"require\(\s*[\"']([^\"']+)[\"']\s*\)"),
+        ]
+    elif language == "python":
+        patterns = [
+            re.compile(r"^\s*from\s+([A-Za-z0-9_\.]+|\.+[A-Za-z0-9_\.]*)\s+import\s+.+$"),
+            re.compile(r"^\s*import\s+([A-Za-z0-9_\.]+)"),
+        ]
+    imports: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, int]] = set()
+    for line_number, line in enumerate(re.split(r"\r?\n", text), start=1):
+        for pattern in patterns:
+            match = pattern.search(line)
+            if not match:
+                continue
+            specifier = match.group(1)
+            key = (specifier, line_number)
+            if key in seen:
+                continue
+            seen.add(key)
+            imports.append(
+                {
+                    "specifier": specifier,
+                    "line": line_number,
+                    "citation": f"{relative_path}#L{line_number}",
+                    "deterministic": True,
+                }
+            )
+    return imports
+
+
+def import_resolution_candidates(importer_path: str, specifier: str) -> List[str]:
+    importer_dir = Path(importer_path).parent
+    candidates: List[str] = []
+    if specifier.startswith("."):
+        base = (importer_dir / specifier).as_posix()
+        candidates.extend(
+            [
+                base,
+                f"{base}.js",
+                f"{base}.jsx",
+                f"{base}.ts",
+                f"{base}.tsx",
+                f"{base}.py",
+                f"{base}/index.js",
+                f"{base}/index.jsx",
+                f"{base}/index.ts",
+                f"{base}/index.tsx",
+                f"{base}/__init__.py",
+            ]
+        )
+    elif re.match(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$", specifier):
+        base = specifier.replace(".", "/")
+        candidates.extend([f"{base}.py", f"{base}/__init__.py"])
+    return [Path(candidate).as_posix().lstrip("./") for candidate in candidates]
+
+
+def resolve_import_target(importer_path: str, specifier: str, record_paths: set[str]) -> Optional[str]:
+    for candidate in import_resolution_candidates(importer_path, specifier):
+        if candidate in record_paths:
+            return candidate
+    return None
+
+
 def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], codebase_units: List[Dict[str, Any]], built_at: str) -> Dict[str, Any]:
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []
     file_node_by_source: Dict[str, str] = {}
     file_node_by_path: Dict[str, str] = {}
+    record_paths = {record.path for record in records}
 
     for unit in codebase_units:
         node_id = graph_codebase_unit_node_id(str(unit["id"]))
@@ -516,6 +632,65 @@ def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], cod
                     "path": record.path,
                     "citation": record.path,
                     "evidence": unit["detection"],
+                    "authority": "deterministic",
+                    "deterministic": True,
+                }
+            )
+
+    for record in records:
+        if not record.content:
+            continue
+        file_node_id = file_node_by_path.get(record.path)
+        if not file_node_id:
+            continue
+        for symbol in extracted_symbols(record.content, record.path):
+            node_id = graph_symbol_node_id(record.path, str(symbol["name"]), int(symbol["line"]))
+            nodes.append(
+                {
+                    "id": node_id,
+                    "kind": "symbol",
+                    "sourceId": record.id,
+                    "path": record.path,
+                    "name": symbol["name"],
+                    "symbolKind": symbol["kind"],
+                    "line": symbol["line"],
+                    "citation": symbol["citation"],
+                    "evidence": "deterministic_symbol_parse",
+                    "deterministic": True,
+                }
+            )
+            edges.append(
+                {
+                    "id": f"graph:edge:{sha256_text(f'{file_node_id}:declares_symbol:{node_id}')[7:23]}",
+                    "kind": "declares_symbol",
+                    "from": file_node_id,
+                    "to": node_id,
+                    "sourceId": record.id,
+                    "path": record.path,
+                    "citation": symbol["citation"],
+                    "evidence": "deterministic_symbol_parse",
+                    "authority": "deterministic",
+                    "deterministic": True,
+                }
+            )
+        for import_record in extracted_imports(record.content, record.path):
+            target_path = resolve_import_target(record.path, str(import_record["specifier"]), record_paths)
+            target_node_id = file_node_by_path.get(target_path) if target_path else None
+            edge_kind = "imports_file" if target_node_id else "unresolved_import"
+            edge_fingerprint = f"{file_node_id}:{edge_kind}:{import_record['specifier']}:{import_record['line']}"
+            edges.append(
+                {
+                    "id": f"graph:edge:{sha256_text(edge_fingerprint)[7:23]}",
+                    "kind": edge_kind,
+                    "from": file_node_id,
+                    "to": target_node_id,
+                    "sourceId": record.id,
+                    "path": record.path,
+                    "targetPath": target_path,
+                    "importSpecifier": import_record["specifier"],
+                    "line": import_record["line"],
+                    "citation": import_record["citation"],
+                    "evidence": "deterministic_import_parse",
                     "authority": "deterministic",
                     "deterministic": True,
                 }

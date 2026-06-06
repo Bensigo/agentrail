@@ -40,13 +40,14 @@ mkdir -p \
 
 cat >"${fixture}/src/app.js" <<'JS'
 const fs = require("fs");
+const stable = require("./stable");
 
 function loadAgentRailConfig() {
   return fs.readFileSync(".agentrail/config.json", "utf8");
 }
 
 const message = "first";
-module.exports = { loadAgentRailConfig, message };
+module.exports = { loadAgentRailConfig, message, stable };
 JS
 cat >"${fixture}/src/stable.js" <<'JS'
 module.exports = { stable: true };
@@ -410,6 +411,48 @@ if (!chunkNode) {
 const containsEdge = index.graph.edges.find((edge) => edge.kind === "contains_chunk" && edge.from === fileNode.id && edge.to === chunkNode.id);
 if (!containsEdge || containsEdge.authority !== "deterministic") {
   console.error("deterministic file-to-chunk graph edge missing for src/app.js");
+  process.exit(1);
+}
+const symbolNode = index.graph.nodes.find((node) => node.kind === "symbol" && node.path === "src/app.js" && node.name === "loadAgentRailConfig");
+if (!symbolNode || symbolNode.citation !== "src/app.js#L4") {
+  console.error(`symbol graph node missing or uncited: ${JSON.stringify(symbolNode)}`);
+  process.exit(1);
+}
+if (!index.graph.edges.some((edge) => edge.kind === "declares_symbol" && edge.from === fileNode.id && edge.to === symbolNode.id && edge.authority === "deterministic")) {
+  console.error("deterministic declares_symbol edge missing for loadAgentRailConfig");
+  process.exit(1);
+}
+const stableFileNode = index.graph.nodes.find((node) => node.kind === "file" && node.path === "src/stable.js");
+if (!index.graph.edges.some((edge) => edge.kind === "imports_file" && edge.from === fileNode.id && edge.to === stableFileNode.id && edge.importSpecifier === "./stable")) {
+  console.error("deterministic resolvable import edge missing for ./stable");
+  process.exit(1);
+}
+const unresolved = index.graph.edges.find((edge) => edge.kind === "unresolved_import" && edge.from === fileNode.id && edge.importSpecifier === "fs");
+if (!unresolved || unresolved.to !== null || unresolved.targetPath !== null || unresolved.authority !== "deterministic") {
+  console.error(`unresolved import was not represented explicitly: ${JSON.stringify(unresolved)}`);
+  process.exit(1);
+}
+NODE
+
+node - "$index_file" >"${tmp_dir}/graph-before-repeat.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(JSON.stringify({
+  nodeIds: index.graph.nodes.map((node) => node.id).sort(),
+  edgeIds: index.graph.edges.map((edge) => edge.id).sort(),
+}, null, 2));
+NODE
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/index-repeat.out"
+node - "$index_file" "${tmp_dir}/graph-before-repeat.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const before = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const after = {
+  nodeIds: index.graph.nodes.map((node) => node.id).sort(),
+  edgeIds: index.graph.edges.map((edge) => edge.id).sort(),
+};
+if (JSON.stringify(after) !== JSON.stringify(before)) {
+  console.error("graph node or edge IDs changed across repeated indexing");
   process.exit(1);
 }
 NODE

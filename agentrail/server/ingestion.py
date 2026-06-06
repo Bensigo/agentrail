@@ -838,8 +838,8 @@ def _validate_context_pack_metadata(
                 message="Context-pack metadata must include citations for included evidence.",
             )
         )
-    errors.extend(_validate_context_pack_anchors(payload.anchors))
-    errors.extend(_validate_context_pack_citations(payload.citations))
+    errors.extend(_validate_context_pack_anchors(payload.anchors, payload.source_hashes))
+    errors.extend(_validate_context_pack_citations(payload.citations, payload.source_hashes))
     if not payload.inclusions:
         errors.append(
             ValidationError(
@@ -863,7 +863,10 @@ def _validate_context_pack_metadata(
     return errors
 
 
-def _validate_context_pack_anchors(anchors: List[ContextPackAnchor]) -> List[ValidationError]:
+def _validate_context_pack_anchors(
+    anchors: List[ContextPackAnchor],
+    source_hashes: Mapping[str, str],
+) -> List[ValidationError]:
     errors: List[ValidationError] = []
     for index, anchor in enumerate(anchors):
         if not anchor.anchor_id:
@@ -906,10 +909,21 @@ def _validate_context_pack_anchors(anchors: List[ContextPackAnchor]) -> List[Val
                     message="Context-pack anchors must include a source hash.",
                 )
             )
+        elif source_hashes.get(anchor.path) != anchor.source_hash:
+            errors.append(
+                ValidationError(
+                    code="context_pack_anchor_source_hash_mismatch",
+                    field=f"payload.anchors[{index}].source_hash",
+                    message="Context-pack anchor source hashes must match payload.source_hashes for the cited path.",
+                )
+            )
     return errors
 
 
-def _validate_context_pack_citations(citations: List[ContextPackCitation]) -> List[ValidationError]:
+def _validate_context_pack_citations(
+    citations: List[ContextPackCitation],
+    source_hashes: Mapping[str, str],
+) -> List[ValidationError]:
     errors: List[ValidationError] = []
     for index, citation in enumerate(citations):
         if not citation.citation_id:
@@ -934,6 +948,22 @@ def _validate_context_pack_citations(citations: List[ContextPackCitation]) -> Li
                     code="context_pack_citation_source_hash_required",
                     field=f"payload.citations[{index}].source_hash",
                     message="Context-pack citations must include a source hash.",
+                )
+            )
+        elif source_hashes.get(citation.path) != citation.source_hash:
+            errors.append(
+                ValidationError(
+                    code="context_pack_citation_source_hash_mismatch",
+                    field=f"payload.citations[{index}].source_hash",
+                    message="Context-pack citation source hashes must match payload.source_hashes for the cited path.",
+                )
+            )
+        if citation.artifact_ref is not None and not citation.artifact_ref.startswith("object://"):
+            errors.append(
+                ValidationError(
+                    code="context_pack_citation_artifact_ref_not_object_ref",
+                    field=f"payload.citations[{index}].artifact_ref",
+                    message="Context-pack citation artifact references must point at an object-storage URI.",
                 )
             )
     return errors

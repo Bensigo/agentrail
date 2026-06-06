@@ -221,6 +221,45 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             ],
         )
 
+    def test_context_pack_anchors_and_citations_must_match_source_inventory(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            source_hashes={"agentrail/server/ingestion.py": "sha256:source123"},
+            anchors=[
+                ContextPackAnchor(
+                    anchor_id="anchor_context",
+                    path="CONTEXT.md",
+                    citation="CONTEXT.md:1",
+                    reason="canonical domain language",
+                    source_hash="sha256:context123",
+                )
+            ],
+            citations=[
+                ContextPackCitation(
+                    citation_id="citation_ingestion",
+                    path="agentrail/server/ingestion.py",
+                    source_hash="sha256:wrong",
+                )
+            ],
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [
+                ("context_pack_anchor_source_hash_mismatch", "payload.anchors[0].source_hash"),
+                ("context_pack_citation_source_hash_mismatch", "payload.citations[0].source_hash"),
+            ],
+        )
+
     def test_context_pack_bounded_snippets_are_denied_by_default(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = _context_pack_metadata_submission(
@@ -293,10 +332,36 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
         self.assertEqual(result.errors[0].code, "context_pack_artifact_ref_not_object_ref")
         self.assertEqual(result.errors[0].field, "payload.artifact_ref")
 
+    def test_context_pack_citation_artifact_reference_must_point_to_object_storage(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            citations=[
+                ContextPackCitation(
+                    citation_id="citation_context",
+                    path="CONTEXT.md",
+                    source_hash="sha256:context123",
+                    artifact_ref="https://cdn.example.com/context-citation.json",
+                )
+            ]
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(result.errors[0].code, "context_pack_citation_artifact_ref_not_object_ref")
+        self.assertEqual(result.errors[0].field, "payload.citations[0].artifact_ref")
+
 
 def _context_pack_metadata_submission(
     *,
     metadata: dict[str, object] | None = None,
+    source_hashes: dict[str, str] | None = None,
     anchors: list[ContextPackAnchor] | None = None,
     citations: list[ContextPackCitation] | None = None,
     inclusions: list[ContextPackDecision] | None = None,
@@ -313,7 +378,11 @@ def _context_pack_metadata_submission(
         target_kind="issue",
         target_id="138",
         content_hash="sha256:pack138",
-        source_hashes={"agentrail/server/ingestion.py": "sha256:source123"},
+        source_hashes=source_hashes
+        or {
+            "agentrail/server/ingestion.py": "sha256:source123",
+            "CONTEXT.md": "sha256:context123",
+        },
         anchors=anchors or [
             ContextPackAnchor(
                 anchor_id="anchor_ingestion",

@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from agentrail.context.index import build_index
+from agentrail.context.compiler import extract_anchors
 from agentrail.context.evaluation import evaluate_retrieval, format_evaluation_report
 from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
 from agentrail.context.redaction import redact_text
@@ -100,6 +101,37 @@ class ContextModuleTests(unittest.TestCase):
         self.assertIn("[REDACTED:secret_assignment]", result.text)
         self.assertIn("[REDACTED:password]", result.text)
         self.assertGreaterEqual(len(result.findings), 2)
+
+    def test_anchor_extraction_covers_practical_identifiers_deterministically(self) -> None:
+        root = self.make_repo()
+        text = "\n".join(
+            [
+                "issue #92 and PR #44 need agentrail/context/packs.py checked.",
+                "Run bash scripts/test-context-query for extract_anchors() and AgentRail::ContextCompiler.",
+                "The failing test is tests/context/test_context_modules.py::ContextModuleTests::test_anchor_extraction.",
+                "ValueError: context build failed",
+                "RuntimeError: context build failed with TOKEN=sk-test-1234567890abcdef",
+                "Do not leak .env as an anchor.",
+            ]
+        )
+        first = extract_anchors(text, root=root)
+        second = extract_anchors(text, root=root)
+
+        self.assertEqual(first, second)
+        anchors = {(anchor["kind"], anchor["normalized"]) for anchor in first}
+        self.assertIn(("issue", "#92"), anchors)
+        self.assertIn(("pull_request", "PR #44"), anchors)
+        self.assertIn(("path", "agentrail/context/packs.py"), anchors)
+        self.assertIn(("command", "bash scripts/test-context-query"), anchors)
+        self.assertIn(("symbol", "extract_anchors()"), anchors)
+        self.assertIn(("symbol", "AgentRail::ContextCompiler"), anchors)
+        self.assertIn(("test", "tests/context/test_context_modules.py::ContextModuleTests::test_anchor_extraction"), anchors)
+        self.assertIn(("error", "ValueError: context build failed"), anchors)
+        for anchor in first:
+            value = anchor["value"]
+            self.assertNotIn("sk-test", value)
+            self.assertNotIn("TOKEN=", value)
+            self.assertNotEqual(value, ".env")
 
     def test_source_inventory_is_callable_without_cli(self) -> None:
         root = self.make_repo()

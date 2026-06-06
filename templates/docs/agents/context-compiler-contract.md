@@ -51,7 +51,7 @@ Anchors are strong retrieval handles extracted from request text or target metad
 }
 ```
 
-Supported anchor kinds include `issue`, `pull_request`, `path`, and `command`. Future compiler slices may add `symbol`, `test`, `error`, `label`, and `codebase_unit`.
+Supported anchor kinds include `issue`, `pull_request`, `path`, `command`, `symbol`, `test`, and `error`. Future compiler slices may add `label` and `codebase_unit`.
 
 Anchors must be deterministic for the same input and must not expose denied or redacted secret-bearing values.
 

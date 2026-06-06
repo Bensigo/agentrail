@@ -135,7 +135,9 @@ class ServerIngestionContractTests(unittest.TestCase):
             IndexSnapshotSubmission(
                 snapshot_id="snapshot_123",
                 repository_id="repo_123",
+                indexer_id="indexer_123",
                 commit_sha="c64039f4cf3e945304fe1662e56c42e0814ee174",
+                index_hash="sha256:index123",
                 source_hashes={"agentrail/context/compiler.py": "sha256:def456"},
                 freshness={"agentrail/context/compiler.py": "current"},
                 ingestion_health={"status": "healthy"},
@@ -636,11 +638,17 @@ class ServerIngestionContractTests(unittest.TestCase):
         self.assertIn("api_key_auth.scopes", catalog["metadata"])
         self.assertIn("repository.source_hashes", catalog["hashes"])
         self.assertIn("api_key_auth.key_hash", catalog["hashes"])
+        self.assertIn("index_snapshot.index_hash", catalog["hashes"])
         self.assertIn("run.api_key_id", catalog["references"])
         self.assertIn("review_gate.evidence_ref", catalog["references"])
         self.assertIn("source_custody_policy.repository_id", catalog["references"])
         self.assertIn("billing_configuration.billing_account_ref", catalog["references"])
+        self.assertIn("index_snapshot.snapshot_id", catalog["references"])
+        self.assertIn("index_snapshot.repository_id", catalog["references"])
+        self.assertIn("index_snapshot.indexer_id", catalog["references"])
         self.assertIn("index_snapshot.graph_metadata_ref", catalog["references"])
+        self.assertIn("graph_metadata.graph_id", catalog["references"])
+        self.assertIn("graph_metadata.snapshot_id", catalog["references"])
         self.assertIn("context_pack_metadata.artifact_ref", catalog["references"])
         self.assertIn("artifact_reference.artifact_kind", catalog["metadata"])
         self.assertIn("artifact_reference.content_hash", catalog["hashes"])

@@ -23,6 +23,41 @@ assert_grep() {
   fi
 }
 
+coverage_file="${tmp_dir}/graph-coverage.txt"
+touch "$coverage_file"
+
+mark_coverage() {
+  printf '%s\n' "$1" >>"$coverage_file"
+}
+
+assert_graph_coverage() {
+  local missing=0
+  for item in \
+    "snapshot-metadata" \
+    "source-custody" \
+    "codebase-unit-monorepo" \
+    "codebase-unit-simple" \
+    "codebase-unit-weak-manifest" \
+    "codebase-unit-config-override" \
+    "file-nodes" \
+    "symbol-nodes" \
+    "import-edges" \
+    "test-nodes" \
+    "test-source-edges" \
+    "unresolved-relationships" \
+    "deterministic-repeat"; do
+    if ! grep -qx "$item" "$coverage_file"; then
+      echo "missing local Code Graph fixture coverage: $item" >&2
+      missing=1
+    fi
+  done
+  if [[ "$missing" -ne 0 ]]; then
+    echo "--- graph coverage ---" >&2
+    sort -u "$coverage_file" >&2
+    exit 1
+  fi
+}
+
 fixture="${tmp_dir}/installed"
 mkdir -p "$fixture"
 git -C "$fixture" init --quiet
@@ -484,6 +519,14 @@ if (!ambiguousEdge || !ambiguousEdge.candidateTargetPaths.includes("src/duplicat
   process.exit(1);
 }
 NODE
+mark_coverage "snapshot-metadata"
+mark_coverage "source-custody"
+mark_coverage "file-nodes"
+mark_coverage "symbol-nodes"
+mark_coverage "import-edges"
+mark_coverage "test-nodes"
+mark_coverage "test-source-edges"
+mark_coverage "unresolved-relationships"
 
 node - "$index_file" >"${tmp_dir}/graph-before-repeat.json" <<'NODE'
 const fs = require("fs");
@@ -507,6 +550,7 @@ if (JSON.stringify(after) !== JSON.stringify(before)) {
   process.exit(1);
 }
 NODE
+mark_coverage "deterministic-repeat"
 
 "$agentrail" context build issue 76 --phase execute --target "$fixture" --json >"${tmp_dir}/pack-76.out"
 pack_76_path="$(node - "${tmp_dir}/pack-76.out" <<'NODE'
@@ -646,6 +690,7 @@ for (const path of ["packages/api/src/index.js", "packages/web/src/index.js"]) {
   }
 }
 NODE
+mark_coverage "codebase-unit-monorepo"
 
 simple_fixture="${tmp_dir}/simple-package"
 mkdir -p "${simple_fixture}/src"
@@ -674,6 +719,7 @@ if (!index.graph.edges.some((edge) => edge.kind === "contains_file" && edge.from
   process.exit(1);
 }
 NODE
+mark_coverage "codebase-unit-simple"
 
 weak_fixture="${tmp_dir}/weak-manifest"
 mkdir -p "${weak_fixture}/legacy"
@@ -698,6 +744,7 @@ if (!index.graph.edges.some((edge) => edge.kind === "contains_file" && edge.from
   process.exit(1);
 }
 NODE
+mark_coverage "codebase-unit-weak-manifest"
 
 override_fixture="${tmp_dir}/config-override"
 mkdir -p "${override_fixture}/apps/server" "${override_fixture}/packages/shared"
@@ -748,6 +795,7 @@ if (index.graph.edges.some((edge) => edge.kind === "contains_file" && edge.from 
   process.exit(1);
 }
 NODE
+mark_coverage "codebase-unit-config-override"
 
 source_fixture="${tmp_dir}/source-dogfood"
 mkdir -p \
@@ -836,4 +884,5 @@ for (const [path, sourceType] of expectedTypes) {
 }
 NODE
 
+assert_graph_coverage
 echo "context index test passed"

@@ -258,6 +258,57 @@ for (const pack of [issue, pr]) {
     console.error(`${pack.packId} missing metadata`);
     process.exit(1);
   }
+  const compiler = pack.compiler;
+  if (!compiler || compiler.contractVersion !== "context-compiler-v1") {
+    console.error(`${pack.packId} omitted context compiler contract`);
+    process.exit(1);
+  }
+  for (const section of ["input", "anchors", "candidates", "graphExpansion", "policy", "rerank", "tokenPack", "citations", "reasons", "metrics", "compatibility"]) {
+    if (!(section in compiler)) {
+      console.error(`${pack.packId} compiler missing ${section}`);
+      process.exit(1);
+    }
+  }
+  if (compiler.tokenPack.budget.maxItems !== 20 || compiler.tokenPack.budget.maxTokens !== 6000) {
+    console.error(`${pack.packId} compiler token budget is wrong: ${JSON.stringify(compiler.tokenPack.budget)}`);
+    process.exit(1);
+  }
+  if (compiler.graphExpansion.status !== "not_available" || compiler.graphExpansion.maxHops !== 2) {
+    console.error(`${pack.packId} graph expansion metadata is wrong: ${JSON.stringify(compiler.graphExpansion)}`);
+    process.exit(1);
+  }
+  if (compiler.policy.sourceCustody.fullSourceUploadAllowed || compiler.policy.sourceCustody.snippetUploadAllowed) {
+    console.error(`${pack.packId} source custody policy allowed source upload by default`);
+    process.exit(1);
+  }
+  if (compiler.policy.deniedSourceHandling !== "excluded_context_only") {
+    console.error(`${pack.packId} denied source handling is wrong: ${compiler.policy.deniedSourceHandling}`);
+    process.exit(1);
+  }
+  if (compiler.metrics.citationCoverage !== 1 || compiler.metrics.reasonCoverage !== 1) {
+    console.error(`${pack.packId} compiler coverage metrics are wrong: ${JSON.stringify(compiler.metrics)}`);
+    process.exit(1);
+  }
+  if (compiler.tokenPack.selectedCandidateIds.length !== pack.included.length) {
+    console.error(`${pack.packId} token pack selected IDs do not map to included context`);
+    process.exit(1);
+  }
+  if (!compiler.candidates.some((candidate) => candidate.kind === "procedural_guidance" && candidate.sourceType === "skill")) {
+    console.error(`${pack.packId} compiler did not distinguish skills as procedural guidance`);
+    process.exit(1);
+  }
+  if (!compiler.candidates.some((candidate) => candidate.kind === "procedural_guidance" && candidate.sourceType === "tool")) {
+    console.error(`${pack.packId} compiler did not distinguish tools as procedural guidance`);
+    process.exit(1);
+  }
+  if (!compiler.candidates.some((candidate) => candidate.kind === "excluded_context")) {
+    console.error(`${pack.packId} compiler did not represent excluded context`);
+    process.exit(1);
+  }
+  if (compiler.compatibility.packIncludedMapTo !== "compiler.tokenPack.selectedCandidateIds" || compiler.compatibility.packExcludedMapTo !== "compiler.candidates[kind=excluded_context]") {
+    console.error(`${pack.packId} compiler compatibility mapping is wrong: ${JSON.stringify(compiler.compatibility)}`);
+    process.exit(1);
+  }
 }
 if (!issue.likelyFiles.some((item) => item.path === "src/context_pack.py")) {
   console.error("issue pack did not include likely source file");

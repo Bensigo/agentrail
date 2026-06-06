@@ -13,6 +13,7 @@ Module boundaries:
 - `agentrail/context/sources.py`: source inventory, source typing, authority, freshness, linked issue and PR metadata.
 - `agentrail/context/index.py`: local indexing, Markdown/code chunking, audit events, embedding payload manifests.
 - `agentrail/context/redaction.py`: secret redaction detectors and redaction finding records.
+- `agentrail/context/compiler.py`: Context Compiler contract helpers, anchor extraction, source custody policy metadata, candidates, citations, reasons, metrics, and compatibility mapping.
 - `agentrail/context/embeddings.py`: disabled, custom-command, and OpenAI-compatible embedding orchestration.
 - `agentrail/context/retrieval.py`: keyword/BM25, deterministic context, embedding blending, score reasons, excluded sources.
 - `agentrail/context/packs.py`: issue and PR context pack JSON/Markdown generation.
@@ -248,6 +249,29 @@ Every JSON response intended for provider consumption includes:
 - cited result, section, or path fields
 
 Agents should treat this JSON as a context contract, not as hidden truth. Current source files, GitHub issues, PRDs, ADRs, `CONTEXT.md`, and explicit user instructions remain more authoritative when they conflict.
+
+## Context Compiler Contract
+
+The stable compiler contract is documented in `docs/agents/context-compiler-contract.md`.
+
+Compiler data appears under a `compiler` object on provider-facing JSON when available. Existing top-level fields remain the backward-compatible surface for older consumers. New consumers should prefer `compiler` and fall back to legacy fields when `compiler` is absent.
+
+Every `context-compiler-v1` object includes:
+
+- `anchors`
+- `candidates`
+- `graphExpansion`
+- `policy`
+- `rerank`
+- `tokenPack`
+- `citations`
+- `reasons`
+- `metrics`
+- `compatibility`
+
+`candidates` distinguish `source_evidence`, `procedural_guidance`, and `excluded_context`. Source evidence can justify implementation and review decisions. Skills, tools, and review gates are procedural guidance only; they do not prove source behavior.
+
+Default policy is metadata-only source custody, redaction enabled, denied sources excluded from included context, and explicit authority/freshness metadata on candidates when available.
 
 ## MCP-Compatible Provider Tools
 

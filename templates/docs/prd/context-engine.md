@@ -149,6 +149,8 @@ Agent providers should receive narrow JSON-first commands before an MCP server e
 
 Provider-facing JSON includes stable command metadata (`schemaVersion`, `command`, `target`, `provider`, `audit`) and cited result, pack, or explanation fields. This lets agents consume context without parsing human-oriented Markdown or receiving broad filesystem authority.
 
+When available, provider-facing query and pack JSON also includes a `compiler` object that follows `context-compiler-v1`. That contract is additive and preserves older top-level fields. It defines anchors, candidates, graph expansion status, policy decisions, rerank metadata, token pack metadata, citations, reasons, metrics, and compatibility mappings for existing query/build consumers.
+
 An MCP-compatible surface may later expose these narrow tools:
 
 - `context_research`: answers one scoped context question from AgentRail-indexed sources and returns citations, score reasons, provider metadata, and exclusions.

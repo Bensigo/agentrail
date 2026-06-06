@@ -7,6 +7,34 @@ import unittest
 from pathlib import Path
 
 
+def assert_compiler_contract(testcase: unittest.TestCase, compiler: dict, *, expected_budget: dict) -> None:
+    testcase.assertEqual(compiler["contractVersion"], "context-compiler-v1")
+    for section in (
+        "input",
+        "anchors",
+        "candidates",
+        "graphExpansion",
+        "policy",
+        "rerank",
+        "tokenPack",
+        "citations",
+        "reasons",
+        "metrics",
+        "compatibility",
+    ):
+        testcase.assertIn(section, compiler)
+    testcase.assertEqual(compiler["tokenPack"]["budget"], expected_budget)
+    testcase.assertEqual(compiler["graphExpansion"]["status"], "not_available")
+    testcase.assertEqual(compiler["graphExpansion"]["maxHops"], 2)
+    testcase.assertEqual(compiler["rerank"]["status"], "score_sorted")
+    testcase.assertTrue(compiler["compatibility"]["legacyFieldsPreserved"])
+    testcase.assertFalse(compiler["policy"]["sourceCustody"]["fullSourceUploadAllowed"])
+    testcase.assertFalse(compiler["policy"]["sourceCustody"]["snippetUploadAllowed"])
+    testcase.assertEqual(compiler["policy"]["deniedSourceHandling"], "excluded_context_only")
+    testcase.assertEqual(compiler["metrics"]["citationCoverage"], 1)
+    testcase.assertEqual(compiler["metrics"]["reasonCoverage"], 1)
+
+
 class ContextCliTests(unittest.TestCase):
     def test_context_help_preserves_legacy_usage_contract(self) -> None:
         repo = Path(__file__).resolve().parents[2]
@@ -78,7 +106,7 @@ class ContextCliTests(unittest.TestCase):
         (root / "src" / "provider.py").write_text("def context_provider_surface():\n    return 'issue #83 provider interface'\n", encoding="utf-8")
 
         query_result = subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "context", "query", "issue #83 provider interface", "--target", str(root), "--json", "--limit", "3"],
+            [str(repo / "scripts" / "agentrail"), "context", "query", "issue #83 provider interface src/provider.py", "--target", str(root), "--json", "--limit", "3"],
             check=True,
             stdout=subprocess.PIPE,
             text=True,
@@ -87,15 +115,26 @@ class ContextCliTests(unittest.TestCase):
         self.assertEqual(query["command"], "context.query")
         self.assertEqual(query["schemaVersion"], 1)
         self.assertEqual(query["limit"], 3)
-        self.assertEqual(query["target"], {"kind": "query", "query": "issue #83 provider interface"})
+        self.assertEqual(query["target"], {"kind": "query", "query": "issue #83 provider interface src/provider.py"})
         self.assertIn("provider", query)
         self.assertIn("audit", query)
+        assert_compiler_contract(self, query["compiler"], expected_budget={"maxItems": 3, "maxTokens": None})
+        self.assertTrue(any(anchor["kind"] == "issue" and anchor["normalized"] == "#83" for anchor in query["compiler"]["anchors"]))
+        self.assertTrue(any(anchor["kind"] == "path" and anchor["normalized"] == "src/provider.py" for anchor in query["compiler"]["anchors"]))
+        self.assertEqual(query["compiler"]["input"]["kind"], "query")
+        self.assertEqual(query["compiler"]["compatibility"]["queryResultsMapTo"], "compiler.candidates[kind=source_evidence]")
         self.assertTrue(query["results"])
+        self.assertEqual(len([candidate for candidate in query["compiler"]["candidates"] if candidate["kind"] == "source_evidence"]), len(query["results"]))
         for item in query["results"]:
             self.assertIn("path", item)
             self.assertIn("citation", item)
             self.assertIn("reason", item)
             self.assertIn("score", item)
+        for candidate in query["compiler"]["candidates"]:
+            self.assertIn(candidate["kind"], {"source_evidence", "excluded_context"})
+            self.assertIn("citation", candidate)
+            self.assertIn("reason", candidate)
+            self.assertIn("policy", candidate)
 
         build_result = subprocess.run(
             [str(repo / "scripts" / "agentrail"), "context", "build", "issue", "83", "--phase", "execute", "--target", str(root), "--json"],
@@ -108,6 +147,10 @@ class ContextCliTests(unittest.TestCase):
         self.assertEqual(built["target"], {"kind": "issue", "number": 83, "phase": "execute"})
         self.assertIn("provider", built)
         self.assertIn("audit", built)
+        assert_compiler_contract(self, built["compiler"], expected_budget={"maxItems": 20, "maxTokens": 6000})
+        self.assertEqual(built["compiler"]["input"]["kind"], "issue")
+        self.assertTrue(any(anchor["kind"] == "issue" and anchor["source"] == "target" and anchor["normalized"] == "#83" for anchor in built["compiler"]["anchors"]))
+        self.assertEqual(built["compiler"]["compatibility"]["packIncludedMapTo"], "compiler.tokenPack.selectedCandidateIds")
         self.assertTrue((root / built["jsonPath"]).exists())
 
         show_result = subprocess.run(
@@ -120,8 +163,12 @@ class ContextCliTests(unittest.TestCase):
         self.assertEqual(shown["command"], "context.show")
         self.assertEqual(shown["packId"], built["packId"])
         self.assertEqual(shown["target"], {"kind": "issue", "number": 83, "phase": "execute"})
+        assert_compiler_contract(self, shown["compiler"], expected_budget={"maxItems": 20, "maxTokens": 6000})
         self.assertIn("included", shown)
         self.assertTrue(all(item.get("citation") and item.get("reason") for item in shown["included"]))
+        self.assertTrue(any(candidate["kind"] == "procedural_guidance" and candidate["sourceType"] == "skill" for candidate in shown["compiler"]["candidates"]))
+        self.assertTrue(any(candidate["kind"] == "procedural_guidance" and candidate["sourceType"] == "tool" for candidate in shown["compiler"]["candidates"]))
+        self.assertEqual(len(shown["compiler"]["tokenPack"]["selectedCandidateIds"]), len(shown["included"]))
 
         explain_result = subprocess.run(
             [str(repo / "scripts" / "agentrail"), "context", "explain", built["packId"], "--target", str(root), "--json"],

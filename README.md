@@ -201,9 +201,11 @@ agentrail context show issue-123-execute-20260604T120000000Z --target . --json
 agentrail context explain issue-123-execute-20260604T120000000Z --target . --json
 ```
 
-Generated packs include cited required context, likely files and docs, memory, prior mistakes, active state, available tools and skills, exclusions, open questions, retrieval budget, index metadata, provider mode, and audit metadata.
+Generated packs include cited required context, likely files and docs, memory, prior mistakes, active state, available tools and skills, exclusions, open questions, retrieval budget, index metadata, provider mode, audit metadata, and Context Compiler metadata when available.
 
-Provider-facing JSON includes command, target, provider, and audit metadata so agents can request context without parsing Markdown. The future MCP-compatible surface should map to narrow tools such as `context_research`, `context_get_sources`, `context_build_pack`, and `context_explain_pack`; those tools use AgentRail allow/deny and redaction controls rather than unrestricted filesystem access.
+Provider-facing JSON includes command, target, provider, and audit metadata so agents can request context without parsing Markdown. The `compiler` object is an additive `context-compiler-v1` contract with anchors, candidates, graph expansion status, policy, rerank metadata, token pack metadata, citations, reasons, metrics, and compatibility mappings. Existing `results`, `excluded`, pack sections, `jsonPath`, and `markdownPath` remain stable for older consumers.
+
+The installed contract reference is `docs/agents/context-compiler-contract.md`. The future MCP-compatible surface should map to narrow tools such as `context_research`, `context_get_sources`, `context_build_pack`, and `context_explain_pack`; those tools use AgentRail allow/deny and redaction controls rather than unrestricted filesystem access.
 
 Retrieval evaluation fixtures define task text, expected files, expected docs, expected memory, expected prior mistakes, and expected excluded sources. Reports include required-source inclusion, recall@5, recall@10, stale-source exclusion, and citation coverage. CI should run these fixtures for business-critical context paths so missed required context and denied-source leaks fail before review.
 

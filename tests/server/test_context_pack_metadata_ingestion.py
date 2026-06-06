@@ -600,6 +600,55 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
         self.assertTrue(result.accepted, result.errors)
         self.assertEqual(len(telemetry_store.context_pack_metadata), 1)
 
+    def test_context_pack_path_like_citation_ids_do_not_bypass_source_inventory(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            citations=[
+                ContextPackCitation(
+                    citation_id="secret.py:1",
+                    path="CONTEXT.md",
+                    source_hash="sha256:context123",
+                    start_line=1,
+                    end_line=20,
+                ),
+                ContextPackCitation(
+                    citation_id="citation_milestone",
+                    path="milestones/004-server-ingestion-spine.md",
+                    source_hash="sha256:milestone004",
+                    start_line=57,
+                    end_line=66,
+                ),
+            ],
+            inclusions=[
+                ContextPackDecision(
+                    item_id="secret.py",
+                    citation="secret.py:1",
+                    reason="path-like citation IDs must resolve through source inventory",
+                )
+            ],
+            exclusions=[
+                ContextPackDecision(
+                    item_id="agent-operations-console",
+                    citation="milestones/004-server-ingestion-spine.md:66",
+                    reason="console UI is out of scope",
+                )
+            ],
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation")],
+        )
+
     def test_context_pack_decision_hash_line_citations_must_match_recorded_citation_ranges(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = _context_pack_metadata_submission(

@@ -1212,12 +1212,36 @@ def _decision_citation_resolves(
     citations: List[ContextPackCitation],
     source_hashes: Mapping[str, str],
 ) -> bool:
+    decision_path, decision_start_line, decision_end_line, valid_reference = _split_citation_reference(decision_citation)
+    if valid_reference and (decision_start_line is not None or decision_path in source_hashes):
+        return _decision_path_citation_resolves(
+            decision_path,
+            decision_start_line,
+            decision_end_line,
+            citations,
+            source_hashes,
+        )
     for citation in citations:
         if decision_citation == citation.citation_id:
             return True
-    decision_path, decision_start_line, decision_end_line, valid_reference = _split_citation_reference(decision_citation)
     if not valid_reference:
         return False
+    return _decision_path_citation_resolves(
+        decision_path,
+        decision_start_line,
+        decision_end_line,
+        citations,
+        source_hashes,
+    )
+
+
+def _decision_path_citation_resolves(
+    decision_path: str,
+    decision_start_line: Optional[int],
+    decision_end_line: Optional[int],
+    citations: List[ContextPackCitation],
+    source_hashes: Mapping[str, str],
+) -> bool:
     for citation in citations:
         if not citation.path or source_hashes.get(citation.path) != citation.source_hash:
             continue
@@ -1379,7 +1403,9 @@ def _validate_source_custody_metadata(payload: IngestionPayload, policy: SourceC
     if not is_dataclass(payload):
         return errors
     for payload_field in fields(payload):
-        if payload_field.name in {"bounded_snippets", "source_hashes"}:
+        if payload_field.name == "bounded_snippets":
+            continue
+        if payload_field.name == "source_hashes" and isinstance(payload, ContextPackMetadataSubmission):
             continue
         value = getattr(payload, payload_field.name)
         if isinstance(value, (MappingABC, list)) or is_dataclass(value):

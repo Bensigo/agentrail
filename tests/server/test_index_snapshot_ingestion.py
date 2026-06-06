@@ -99,6 +99,11 @@ class IndexSnapshotIngestionTests(unittest.TestCase):
                 ("full_source_forbidden", "payload.ingestion_health.full_source"),
             ),
             (
+                "source_hashes_source_files",
+                _snapshot_submission(source_hashes={"source_files": "def upload_everything():\n    pass"}),
+                ("full_source_forbidden", "payload.source_hashes.source_files"),
+            ),
+            (
                 "source_snippets",
                 _graph_metadata_submission(metadata={"source_snippets": [{"path": "src/app.py", "content": "print('secret')"}]}),
                 ("bounded_snippet_not_allowed", "payload.metadata.source_snippets"),
@@ -182,6 +187,7 @@ def _snapshot_submission(
     snapshot_id: str = "snapshot_123",
     commit_sha: str = COMMIT_SHA,
     index_hash: str = "sha256:index123",
+    source_hashes: Optional[Mapping[str, str]] = None,
     ingestion_health: Optional[Mapping[str, object]] = None,
 ) -> IndexSnapshotSubmission:
     return IndexSnapshotSubmission(
@@ -190,7 +196,7 @@ def _snapshot_submission(
         indexer_id="indexer_123",
         commit_sha=commit_sha,
         index_hash=index_hash,
-        source_hashes={"src/app.py": "sha256:file123"},
+        source_hashes=source_hashes or {"src/app.py": "sha256:file123"},
         freshness={"src/app.py": "current"},
         ingestion_health=ingestion_health or {"status": "healthy"},
         graph_metadata_ref="object://graphs/repo_123/snapshot_123.json",

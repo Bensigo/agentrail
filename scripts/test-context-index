@@ -30,6 +30,8 @@ git -C "$fixture" init --quiet
 
 mkdir -p \
   "${fixture}/src" \
+  "${fixture}/lib" \
+  "${fixture}/tests" \
   "${fixture}/docs/agents" \
   "${fixture}/docs/memory" \
   "${fixture}/docs/prd" \
@@ -52,9 +54,34 @@ JS
 cat >"${fixture}/src/stable.js" <<'JS'
 module.exports = { stable: true };
 JS
+cat >"${fixture}/src/app.py" <<'PY'
+def loadAgentRailConfig():
+    return "python-target"
+PY
+cat >"${fixture}/src/stable.test.js" <<'JS'
+test("stable path convention", () => {});
+JS
 cat >"${fixture}/src/deleted.js" <<'JS'
 module.exports = { deleted: true };
 JS
+cat >"${fixture}/src/duplicate.py" <<'PY'
+def duplicate():
+    return "src"
+PY
+cat >"${fixture}/lib/duplicate.py" <<'PY'
+def duplicate():
+    return "lib"
+PY
+cat >"${fixture}/tests/test_app.py" <<'PY'
+from src.app import loadAgentRailConfig
+
+def test_load_agentrail_config_import_relationship():
+    assert loadAgentRailConfig
+PY
+cat >"${fixture}/tests/test_duplicate.py" <<'PY'
+def test_ambiguous_duplicate_name():
+    assert True
+PY
 cat >"${fixture}/docs/agents/guide.md" <<'DOC'
 ---
 kind: agent-guide
@@ -430,6 +457,30 @@ if (!index.graph.edges.some((edge) => edge.kind === "imports_file" && edge.from 
 const unresolved = index.graph.edges.find((edge) => edge.kind === "unresolved_import" && edge.from === fileNode.id && edge.importSpecifier === "fs");
 if (!unresolved || unresolved.to !== null || unresolved.targetPath !== null || unresolved.authority !== "deterministic") {
   console.error(`unresolved import was not represented explicitly: ${JSON.stringify(unresolved)}`);
+  process.exit(1);
+}
+const importTestNode = index.graph.nodes.find((node) => node.kind === "test" && node.path === "tests/test_app.py");
+if (!importTestNode) {
+  console.error("import-based test graph node missing for tests/test_app.py");
+  process.exit(1);
+}
+if (!index.graph.edges.some((edge) => edge.kind === "tests_source" && edge.from === importTestNode.id && edge.targetPath === "src/app.py" && edge.evidence === "deterministic_test_import")) {
+  console.error("import-based test-to-source edge missing from tests/test_app.py to src/app.py");
+  process.exit(1);
+}
+const pathTestNode = index.graph.nodes.find((node) => node.kind === "test" && node.path === "src/stable.test.js");
+if (!pathTestNode) {
+  console.error("path-convention test graph node missing for src/stable.test.js");
+  process.exit(1);
+}
+if (!index.graph.edges.some((edge) => edge.kind === "tests_source" && edge.from === pathTestNode.id && edge.targetPath === "src/stable.js" && edge.evidence === "deterministic_test_path_convention")) {
+  console.error("path-convention test-to-source edge missing from src/stable.test.js to src/stable.js");
+  process.exit(1);
+}
+const ambiguousTestNode = index.graph.nodes.find((node) => node.kind === "test" && node.path === "tests/test_duplicate.py");
+const ambiguousEdge = index.graph.edges.find((edge) => edge.kind === "unresolved_test_relationship" && edge.from === ambiguousTestNode.id);
+if (!ambiguousEdge || !ambiguousEdge.candidateTargetPaths.includes("src/duplicate.py") || !ambiguousEdge.candidateTargetPaths.includes("lib/duplicate.py")) {
+  console.error(`ambiguous test relationship was not represented explicitly: ${JSON.stringify(ambiguousEdge)}`);
   process.exit(1);
 }
 NODE

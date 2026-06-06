@@ -4,6 +4,17 @@ AgentRail context packs are auditable artifacts that tell an agent what matters 
 
 Use context packs to reduce blind repo exploration, prevent repeated verifier mistakes, and make PR review easier. Do not treat context packs as hidden truth. Current code, GitHub issues, PRDs, milestones, `CONTEXT.md`, and explicit user instructions remain more authoritative when they conflict.
 
+## Vocabulary
+
+Use these terms consistently in context-engine docs, code comments, PR evidence, and provider-facing descriptions:
+
+- **Context Compiler**: the local compilation layer that turns a task, issue, PR, review, error, or resume request into bounded context metadata. It emits the additive `compiler` JSON object with anchors, candidates, graph expansion status, policy metadata, rerank metadata, token pack metadata, citations, reasons, metrics, and compatibility mappings.
+- **Context Pack**: the target- and phase-specific JSON and Markdown artifact written under `.agentrail/context/packs/`. A pack groups selected evidence, procedural guidance, exclusions, budget limits, provider metadata, audit metadata, and compiler metadata for agent consumption and review.
+- **Code Graph**: the future deterministic repo relationship authority for paths, symbols, tests, docs, issues, PRs, and other codebase relationships. Until it exists, compiler `graphExpansion.status` remains `not_available`; when it exists, graph expansion must start from strong anchors and cite deterministic evidence for every added candidate.
+- **Codebase Unit**: a stable, repo-scoped object that the Code Graph can cite, such as a file, module, package, route, class, function, symbol, test, config item, generated artifact descriptor, or documentation section. A codebase unit is source-cited and policy-filtered; it is not an unrestricted source dump.
+- **Source Custody Policy**: the policy that decides whether AgentRail may expose metadata, snippets, or full source to a provider or server. The default server-first enterprise posture is metadata-only: full source upload is not required, snippet upload is disabled unless policy explicitly allows it, and allow/deny plus redaction checks run before any external provider can receive source text.
+- **Retrieval Quality Gate**: the verification gate that checks required-source inclusion, recall, citation coverage, reason coverage, stale or denied leakage, excluded-source handling, and budget metadata before context output is trusted.
+
 ## Internal Architecture
 
 Context-engine implementation lives in the typed Python package under `agentrail/context/`. The public `agentrail context ...` CLI is routed through `agentrail/cli/commands/context.py`; `scripts/agentrail` is only the compatibility launcher.
@@ -31,6 +42,8 @@ bash scripts/test-context-index
 bash scripts/test-context-privacy
 bash scripts/test-context-embeddings
 bash scripts/test-context-query
+bash scripts/test-context-packs
+bash scripts/test-context-evaluation
 ```
 
 ## Core Objects
@@ -269,9 +282,28 @@ Every `context-compiler-v1` object includes:
 - `metrics`
 - `compatibility`
 
+Compiler sections map to the current query and build JSON without removing legacy fields:
+
+| Compiler Section | Current Query/Build Source |
+|---|---|
+| `input` | The query string or generated context-pack query for `agentrail context build ...`. |
+| `anchors` | Deterministic handles extracted from the request, issue target, PR target, paths, commands, symbols, tests, and error text. |
+| `candidates[kind=source_evidence]` | Query `results`, pack `included`, and pack sections such as `requiredContext`, `likelyFiles`, `likelyDocs`, `relevantMemory`, `priorMistakes`, `activeState`, and `goals`. |
+| `candidates[kind=procedural_guidance]` | Pack `availableTools` and `availableSkills`. Selected skills are workflow guidance, not source evidence. |
+| `candidates[kind=excluded_context]` | Query `excluded`, pack `excludedContext`, and denied, stale, redacted, unavailable, or budget-omitted context metadata. |
+| `graphExpansion` | Currently `not_available`; future Code Graph expansion metadata must cite deterministic graph evidence. |
+| `policy` | Source custody, redaction, denied-source handling, authority order, and freshness order derived from local context config and source metadata. |
+| `rerank` | Current score-sorted selected and rejected candidate IDs. Provider reranking may add model/audit metadata later. |
+| `tokenPack` | Current `retrievalBudget`, selected candidate IDs, omitted candidate IDs, token estimate when available, and packing strategy. |
+| `citations` and `reasons` | Coverage summaries over every included and excluded candidate exposed to agents. |
+| `metrics` | Candidate counts, selected counts, excluded counts, citation coverage, reason coverage, and stale or denied leakage. |
+| `compatibility` | Explicit mappings from legacy query/build/pack fields to compiler fields. |
+
 `candidates` distinguish `source_evidence`, `procedural_guidance`, and `excluded_context`. Source evidence can justify implementation and review decisions. Skills, tools, and review gates are procedural guidance only; they do not prove source behavior.
 
-Default policy is metadata-only source custody, snippet upload disabled unless policy explicitly allows it, redaction enabled, denied sources excluded from included context, and explicit authority/freshness policy effects on candidates when available.
+Every included and excluded item exposed to an agent must have both a citation and a reason. Missing citation or reason coverage is a retrieval quality failure, not a formatting preference.
+
+Default policy is metadata-only source custody, snippet upload disabled unless policy explicitly allows it, redaction enabled, denied sources excluded from included context, and explicit authority/freshness policy effects on candidates when available. Full source upload is not required for the server-first enterprise model; server ingestion can rely on source IDs, hashes, citations, reasons, policy metadata, and audit references unless a stricter policy explicitly permits more.
 
 ## MCP-Compatible Provider Tools
 

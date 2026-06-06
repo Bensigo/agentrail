@@ -838,6 +838,8 @@ def _validate_context_pack_metadata(
                 message="Context-pack metadata must include citations for included evidence.",
             )
         )
+    errors.extend(_validate_context_pack_anchors(payload.anchors))
+    errors.extend(_validate_context_pack_citations(payload.citations))
     if not payload.inclusions:
         errors.append(
             ValidationError(
@@ -858,6 +860,82 @@ def _validate_context_pack_metadata(
         )
     errors.extend(_validate_source_custody_metadata(payload, policy))
     errors.extend(_validate_bounded_snippets(payload.bounded_snippets, policy, "payload.bounded_snippets"))
+    return errors
+
+
+def _validate_context_pack_anchors(anchors: List[ContextPackAnchor]) -> List[ValidationError]:
+    errors: List[ValidationError] = []
+    for index, anchor in enumerate(anchors):
+        if not anchor.anchor_id:
+            errors.append(
+                ValidationError(
+                    code="context_pack_anchor_id_required",
+                    field=f"payload.anchors[{index}].anchor_id",
+                    message="Context-pack anchors must include an anchor_id.",
+                )
+            )
+        if not anchor.path:
+            errors.append(
+                ValidationError(
+                    code="context_pack_anchor_path_required",
+                    field=f"payload.anchors[{index}].path",
+                    message="Context-pack anchors must include a source path.",
+                )
+            )
+        if not anchor.citation:
+            errors.append(
+                ValidationError(
+                    code="context_pack_anchor_citation_required",
+                    field=f"payload.anchors[{index}].citation",
+                    message="Context-pack anchors must include a citation.",
+                )
+            )
+        if not anchor.reason:
+            errors.append(
+                ValidationError(
+                    code="context_pack_anchor_reason_required",
+                    field=f"payload.anchors[{index}].reason",
+                    message="Context-pack anchors must include a reason.",
+                )
+            )
+        if not anchor.source_hash:
+            errors.append(
+                ValidationError(
+                    code="context_pack_anchor_source_hash_required",
+                    field=f"payload.anchors[{index}].source_hash",
+                    message="Context-pack anchors must include a source hash.",
+                )
+            )
+    return errors
+
+
+def _validate_context_pack_citations(citations: List[ContextPackCitation]) -> List[ValidationError]:
+    errors: List[ValidationError] = []
+    for index, citation in enumerate(citations):
+        if not citation.citation_id:
+            errors.append(
+                ValidationError(
+                    code="context_pack_citation_id_required",
+                    field=f"payload.citations[{index}].citation_id",
+                    message="Context-pack citations must include a citation_id.",
+                )
+            )
+        if not citation.path:
+            errors.append(
+                ValidationError(
+                    code="context_pack_citation_path_required",
+                    field=f"payload.citations[{index}].path",
+                    message="Context-pack citations must include a source path.",
+                )
+            )
+        if not citation.source_hash:
+            errors.append(
+                ValidationError(
+                    code="context_pack_citation_source_hash_required",
+                    field=f"payload.citations[{index}].source_hash",
+                    message="Context-pack citations must include a source hash.",
+                )
+            )
     return errors
 
 

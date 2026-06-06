@@ -177,6 +177,50 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             ],
         )
 
+    def test_context_pack_anchors_and_citations_require_auditable_fields(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            anchors=[
+                ContextPackAnchor(
+                    anchor_id="",
+                    path="",
+                    citation="",
+                    reason="",
+                    source_hash="",
+                )
+            ],
+            citations=[
+                ContextPackCitation(
+                    citation_id="",
+                    path="",
+                    source_hash="",
+                )
+            ],
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [
+                ("context_pack_anchor_id_required", "payload.anchors[0].anchor_id"),
+                ("context_pack_anchor_path_required", "payload.anchors[0].path"),
+                ("context_pack_anchor_citation_required", "payload.anchors[0].citation"),
+                ("context_pack_anchor_reason_required", "payload.anchors[0].reason"),
+                ("context_pack_anchor_source_hash_required", "payload.anchors[0].source_hash"),
+                ("context_pack_citation_id_required", "payload.citations[0].citation_id"),
+                ("context_pack_citation_path_required", "payload.citations[0].path"),
+                ("context_pack_citation_source_hash_required", "payload.citations[0].source_hash"),
+            ],
+        )
+
     def test_context_pack_bounded_snippets_are_denied_by_default(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = _context_pack_metadata_submission(
@@ -253,6 +297,8 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
 def _context_pack_metadata_submission(
     *,
     metadata: dict[str, object] | None = None,
+    anchors: list[ContextPackAnchor] | None = None,
+    citations: list[ContextPackCitation] | None = None,
     inclusions: list[ContextPackDecision] | None = None,
     exclusions: list[ContextPackDecision] | None = None,
     bounded_snippets: list[BoundedSnippet] | None = None,
@@ -268,7 +314,7 @@ def _context_pack_metadata_submission(
         target_id="138",
         content_hash="sha256:pack138",
         source_hashes={"agentrail/server/ingestion.py": "sha256:source123"},
-        anchors=[
+        anchors=anchors or [
             ContextPackAnchor(
                 anchor_id="anchor_ingestion",
                 path="agentrail/server/ingestion.py",
@@ -279,7 +325,7 @@ def _context_pack_metadata_submission(
                 source_hash="sha256:source123",
             )
         ],
-        citations=[
+        citations=citations or [
             ContextPackCitation(
                 citation_id="citation_context",
                 path="CONTEXT.md",

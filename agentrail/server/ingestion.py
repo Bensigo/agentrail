@@ -823,6 +823,22 @@ def _validate_context_pack_metadata(
                 message="Context-pack metadata requires a repository_id.",
             )
         )
+    if not payload.target_kind:
+        errors.append(
+            ValidationError(
+                code="context_pack_target_required",
+                field="payload.target_kind",
+                message="Context-pack metadata requires a target_kind for provenance.",
+            )
+        )
+    if not payload.target_id:
+        errors.append(
+            ValidationError(
+                code="context_pack_target_required",
+                field="payload.target_id",
+                message="Context-pack metadata requires a target_id for provenance.",
+            )
+        )
     if not payload.run_id and not payload.pull_request_id:
         errors.append(
             ValidationError(

@@ -493,6 +493,27 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             [("context_pack_content_hash_required", "payload.content_hash")],
         )
 
+    def test_context_pack_target_fields_are_required_for_provenance(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = replace(_context_pack_metadata_submission(), target_kind="", target_id="")
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [
+                ("context_pack_target_required", "payload.target_kind"),
+                ("context_pack_target_required", "payload.target_id"),
+            ],
+        )
+
     def test_context_pack_decision_citations_must_match_source_inventory(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = _context_pack_metadata_submission(

@@ -1,5 +1,7 @@
 # Milestone 002: Local Code Graph Index
 
+Status: Completed
+
 ## Source PRD
 
 docs/prd/context-compiler-enterprise-control-plane.md
@@ -26,11 +28,11 @@ This milestone may touch:
 
 ## Acceptance Criteria
 
-- [ ] Local indexing emits graph nodes and edges for files, symbols, imports, tests, and Codebase Units.
-- [ ] Index snapshots include commit SHA, source hashes, freshness metadata, and ingestion health.
-- [ ] Codebase Unit detection works with zero config and can be overridden by config.
-- [ ] LLM-generated graph enrichment is not treated as authoritative graph data.
-- [ ] Tests cover at least one monorepo-style fixture, one simple repo fixture, and one weak-manifest fixture.
+- [x] Local indexing emits graph nodes and edges for files, symbols, imports, tests, and Codebase Units.
+- [x] Index snapshots include commit SHA, source hashes, freshness metadata, and ingestion health.
+- [x] Codebase Unit detection works with zero config and can be overridden by config.
+- [x] LLM-generated graph enrichment is not treated as authoritative graph data.
+- [x] Tests cover at least one monorepo-style fixture, one simple repo fixture, and one weak-manifest fixture.
 
 ## Test Plan
 
@@ -54,3 +56,10 @@ Milestone 001: Context Compiler Contract.
 ## Notes
 
 Prefer deterministic, inspectable extraction over broad LLM inference. Language support can start narrow, but the schema must not assume one ecosystem.
+
+Completion evidence:
+
+- `agentrail/context/index.py` emits `code-graph-v1` nodes and edges for Codebase Units, files, chunks, symbols, imports, tests, and test-source relationships.
+- Index snapshots include commit SHA, source hashes, freshness, source custody, and ingestion health metadata.
+- Graph authority is deterministic; LLM-generated enrichment is explicitly non-authoritative.
+- `bash scripts/test-python` and `bash scripts/test-context-index` pass, including monorepo, simple repo, weak-manifest, and config override coverage.

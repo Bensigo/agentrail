@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Mapping, Optional, Type, Union
 
+from agentrail.server.product import InMemoryProductAuthStore, PRODUCT_AUTH_SUBMISSION_KINDS
+from agentrail.server.telemetry import InMemoryTelemetryStore, TELEMETRY_SUBMISSION_KINDS
+
 
 @dataclass(frozen=True)
 class SourceCustodyPolicy:
@@ -25,6 +28,27 @@ class WorkspaceSubmission:
 
 
 @dataclass(frozen=True)
+class TeamSubmission:
+    team_id: str
+    workspace_id: str
+    display_name: str
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    submission_kind: str = field(default="team", init=False)
+
+
+@dataclass(frozen=True)
+class ApiKeyAuthSubmission:
+    api_key_id: str
+    workspace_id: str
+    key_hash: str
+    scopes: List[str]
+    team_id: Optional[str] = None
+    actor_id: Optional[str] = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    submission_kind: str = field(default="api_key_auth", init=False)
+
+
+@dataclass(frozen=True)
 class RepositorySubmission:
     repository_id: str
     name: str
@@ -34,6 +58,7 @@ class RepositorySubmission:
     source_hashes: Mapping[str, str] = field(default_factory=dict)
     bounded_snippets: List["BoundedSnippet"] = field(default_factory=list)
     full_source: Optional[Mapping[str, str]] = None
+    team_id: Optional[str] = None
     submission_kind: str = field(default="repository", init=False)
 
 
@@ -84,6 +109,78 @@ class ContextPackMetadataSubmission:
 
 
 @dataclass(frozen=True)
+class CodebaseUnitSubmission:
+    codebase_unit_id: str
+    repository_id: str
+    name: str
+    root_path: str
+    kind: str
+    team_id: Optional[str] = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    submission_kind: str = field(default="codebase_unit", init=False)
+
+
+@dataclass(frozen=True)
+class IndexerSubmission:
+    indexer_id: str
+    repository_id: str
+    status: str
+    last_seen_at: str
+    team_id: Optional[str] = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    submission_kind: str = field(default="indexer", init=False)
+
+
+@dataclass(frozen=True)
+class RunSubmission:
+    run_id: str
+    repository_id: str
+    agent: str
+    status: str
+    started_at: str
+    team_id: Optional[str] = None
+    codebase_unit_id: Optional[str] = None
+    indexer_id: Optional[str] = None
+    api_key_id: Optional[str] = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    submission_kind: str = field(default="run", init=False)
+
+
+@dataclass(frozen=True)
+class ReviewGateSubmission:
+    review_gate_id: str
+    run_id: str
+    gate_type: str
+    status: str
+    decided_at: str
+    evidence_ref: str
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    submission_kind: str = field(default="review_gate", init=False)
+
+
+@dataclass(frozen=True)
+class SourceCustodyPolicySubmission:
+    policy_id: str
+    workspace_id: str
+    mode: str
+    allow_bounded_snippets: bool
+    max_snippet_chars: int
+    repository_id: Optional[str] = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    submission_kind: str = field(default="source_custody_policy", init=False)
+
+
+@dataclass(frozen=True)
+class BillingConfigurationSubmission:
+    billing_configuration_id: str
+    workspace_id: str
+    plan: str
+    billing_account_ref: str
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    submission_kind: str = field(default="billing_configuration", init=False)
+
+
+@dataclass(frozen=True)
 class RunEventSubmission:
     event_id: str
     run_id: str
@@ -120,7 +217,15 @@ class AuditEventSubmission:
 
 IngestionPayload = Union[
     WorkspaceSubmission,
+    TeamSubmission,
+    ApiKeyAuthSubmission,
     RepositorySubmission,
+    CodebaseUnitSubmission,
+    IndexerSubmission,
+    RunSubmission,
+    ReviewGateSubmission,
+    SourceCustodyPolicySubmission,
+    BillingConfigurationSubmission,
     IndexSnapshotSubmission,
     GraphMetadataSubmission,
     ContextPackMetadataSubmission,
@@ -133,8 +238,27 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
     "metadata": [
         "workspace.display_name",
         "workspace.metadata",
+        "team.display_name",
+        "team.metadata",
+        "api_key_auth.scopes",
+        "api_key_auth.actor_id",
         "repository.name",
         "repository.default_branch",
+        "repository.team_id",
+        "codebase_unit.name",
+        "codebase_unit.root_path",
+        "codebase_unit.kind",
+        "indexer.status",
+        "indexer.last_seen_at",
+        "run.agent",
+        "run.status",
+        "run.started_at",
+        "review_gate.gate_type",
+        "review_gate.status",
+        "source_custody_policy.mode",
+        "source_custody_policy.allow_bounded_snippets",
+        "source_custody_policy.max_snippet_chars",
+        "billing_configuration.plan",
         "graph_metadata.node_count",
         "graph_metadata.edge_count",
         "graph_metadata.metadata",
@@ -149,6 +273,7 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
     "hashes": [
         "repository.commit_sha",
         "repository.source_hashes",
+        "api_key_auth.key_hash",
         "index_snapshot.commit_sha",
         "index_snapshot.source_hashes",
         "context_pack_metadata.content_hash",
@@ -156,6 +281,30 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
     ],
     "references": [
         "repository.remote_url",
+        "workspace.workspace_id",
+        "team.team_id",
+        "api_key_auth.api_key_id",
+        "repository.repository_id",
+        "codebase_unit.codebase_unit_id",
+        "codebase_unit.repository_id",
+        "codebase_unit.team_id",
+        "indexer.indexer_id",
+        "indexer.repository_id",
+        "indexer.team_id",
+        "run.run_id",
+        "run.repository_id",
+        "run.team_id",
+        "run.codebase_unit_id",
+        "run.indexer_id",
+        "run.api_key_id",
+        "review_gate.review_gate_id",
+        "review_gate.run_id",
+        "review_gate.evidence_ref",
+        "source_custody_policy.workspace_id",
+        "source_custody_policy.repository_id",
+        "billing_configuration.billing_configuration_id",
+        "billing_configuration.workspace_id",
+        "billing_configuration.billing_account_ref",
         "index_snapshot.graph_metadata_ref",
         "graph_metadata.graph_ref",
         "context_pack_metadata.artifact_ref",
@@ -199,11 +348,8 @@ class IngestionResult:
 
 
 @dataclass
-class InMemoryIngestionStore:
-    records: List[IngestionEnvelope] = field(default_factory=list)
-
-    def write(self, envelope: IngestionEnvelope) -> None:
-        self.records.append(envelope)
+class InMemoryIngestionStore(InMemoryTelemetryStore):
+    pass
 
 
 def contract_field_catalog() -> Mapping[str, List[str]]:
@@ -284,10 +430,26 @@ def ingest(
     envelope: IngestionEnvelope,
     *,
     policy: SourceCustodyPolicy,
-    store: InMemoryIngestionStore,
+    product_store: InMemoryProductAuthStore,
+    telemetry_store: InMemoryTelemetryStore,
 ) -> IngestionResult:
     errors = _validate_payload(envelope, policy)
     if errors:
         return IngestionResult(accepted=False, errors=errors)
-    store.write(envelope)
+    payload_kind = envelope.payload.submission_kind
+    if payload_kind in PRODUCT_AUTH_SUBMISSION_KINDS:
+        product_store.write(envelope)
+    elif payload_kind in TELEMETRY_SUBMISSION_KINDS:
+        telemetry_store.write(envelope)
+    else:
+        return IngestionResult(
+            accepted=False,
+            errors=[
+                ValidationError(
+                    code="unknown_submission_kind",
+                    field="payload.submission_kind",
+                    message=f"Unknown ingestion submission kind: {payload_kind}",
+                )
+            ],
+        )
     return IngestionResult(accepted=True)

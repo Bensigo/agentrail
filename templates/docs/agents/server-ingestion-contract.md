@@ -1,8 +1,16 @@
 # Server Ingestion Contract
 
-AgentRail server ingestion is metadata-first. The local indexer or runner may submit workspace, repository, index snapshot, graph metadata, context-pack metadata, run event, cost event, and audit event records without uploading full source code.
+AgentRail server ingestion is metadata-first. The local indexer or runner may submit workspace, team, API key auth metadata, repository, codebase unit, indexer, run, review gate, source custody policy, billing configuration, index snapshot, graph metadata, context-pack metadata, run event, cost event, and audit event records without uploading full source code.
 
 The first contract is represented by `agentrail.server.ingestion` and is intentionally a service-domain prototype, not a production HTTP API or storage writer.
+
+## Storage Routing
+
+Product/auth and workflow truth records use `InMemoryProductAuthStore`, the local prototype stand-in for Postgres product state. This includes workspaces, teams, API key auth metadata, repositories, codebase units, indexers, runs, review gates, source custody policies, and billing configuration.
+
+Append-only telemetry and artifact metadata use `InMemoryTelemetryStore`, the local prototype stand-in for ClickHouse-style event or analytics state. This includes index snapshots, graph metadata, context-pack metadata, run events, cost events, and audit events.
+
+Tests must prove product/auth writes do not call the telemetry store path.
 
 ## Source Custody Policy
 
@@ -23,7 +31,15 @@ Invalid custody and payload combinations must return validation errors and must 
 ## Payload Kinds
 
 - `workspace`: workspace identity, display metadata, and source custody mode.
-- `repository`: repository identity, remote reference, commit SHA, source hashes, and optional bounded snippets.
+- `team`: workspace-scoped team identity and display metadata.
+- `api_key_auth`: workspace-scoped API key hash, scopes, optional team, and actor metadata for ingestion attribution.
+- `repository`: repository identity, optional team, remote reference, commit SHA, source hashes, and optional bounded snippets.
+- `codebase_unit`: repository-scoped unit identity, root path, kind, optional team, and detection metadata.
+- `indexer`: repository-scoped indexer identity, optional team, health state, and last-seen metadata.
+- `run`: product/workflow run truth with repository, optional team, codebase unit, indexer, API key attribution, agent, status, and start time.
+- `review_gate`: workflow review gate truth with run, gate type, status, decision time, and evidence reference.
+- `source_custody_policy`: workspace or repository policy state.
+- `billing_configuration`: workspace billing plan and account reference.
 - `index_snapshot`: indexed commit SHA, source hashes, freshness metadata, ingestion health, and graph metadata reference.
 - `graph_metadata`: graph identity, snapshot reference, deterministic flag, node/edge counts, metadata, and object reference.
 - `context_pack_metadata`: context-pack identity, target, citations, content hash, artifact reference, and metadata.
@@ -33,11 +49,11 @@ Invalid custody and payload combinations must return validation errors and must 
 
 ## Field Categories
 
-Metadata fields include workspace display names, repository names, graph counts, run event types, phases, severities, cost provider/model values, and audit actions or decisions.
+Metadata fields include workspace display names, team names, API key scopes and actors, repository names, codebase unit names and kinds, indexer health, run status, review gate status, source custody modes, billing plans, graph counts, run event types, phases, severities, cost provider/model values, and audit actions or decisions.
 
-Hash fields include commit SHAs, repository and index snapshot source hashes, context-pack content hashes, and bounded snippet content hashes.
+Hash fields include API key hashes, commit SHAs, repository and index snapshot source hashes, context-pack content hashes, and bounded snippet content hashes.
 
-Reference fields include repository remote URLs, graph metadata references, graph object references, context-pack artifact references, and context-pack citations.
+Reference fields include workspace IDs, team IDs, API key IDs, repository IDs, codebase unit IDs, indexer IDs, run IDs, review gate IDs, billing account references, repository remote URLs, graph metadata references, graph object references, context-pack artifact references, context-pack citations, and review gate evidence references.
 
 Bounded snippet fields include snippet path, citation, start line, end line, content, and content hash. Snippet content must be cited, line-bounded, and within the policy's maximum size.
 

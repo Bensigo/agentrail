@@ -1,10 +1,52 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping as MappingABC
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import List, Mapping, Optional, Type, Union
 
 from agentrail.server.product import InMemoryProductAuthStore, PRODUCT_AUTH_SUBMISSION_KINDS
 from agentrail.server.telemetry import InMemoryTelemetryStore, TELEMETRY_SUBMISSION_KINDS
+
+MAX_INLINE_ARTIFACT_METADATA_CHARS = 4096
+
+ARTIFACT_REFERENCE_KINDS = {
+    "log",
+    "transcript",
+    "evidence_bundle",
+    "screenshot",
+    "index_snapshot",
+    "context_pack",
+}
+
+RUN_ARTIFACT_REFERENCE_KINDS = {
+    "log",
+    "transcript",
+    "evidence_bundle",
+    "screenshot",
+}
+
+INLINE_ARTIFACT_BODY_KEYS = {
+    "artifact_body",
+    "artifact_payload",
+    "body",
+    "contents",
+    "context_pack",
+    "context_pack_artifact",
+    "data",
+    "evidence",
+    "evidence_bundle",
+    "full_transcript",
+    "log",
+    "logs",
+    "raw",
+    "raw_body",
+    "raw_payload",
+    "screenshot",
+    "screenshot_bytes",
+    "snapshot",
+    "transcript",
+    "transcript_text",
+}
 
 
 @dataclass(frozen=True)
@@ -106,6 +148,23 @@ class ContextPackMetadataSubmission:
     artifact_ref: str
     metadata: Mapping[str, object] = field(default_factory=dict)
     submission_kind: str = field(default="context_pack_metadata", init=False)
+
+
+@dataclass(frozen=True)
+class ArtifactReferenceSubmission:
+    artifact_id: str
+    artifact_kind: str
+    workspace_id: str
+    uri: str
+    content_hash: str
+    size_bytes: int
+    repository_id: Optional[str] = None
+    run_id: Optional[str] = None
+    context_pack_id: Optional[str] = None
+    snapshot_id: Optional[str] = None
+    content_type: Optional[str] = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    submission_kind: str = field(default="artifact_reference", init=False)
 
 
 @dataclass(frozen=True)
@@ -288,6 +347,7 @@ IngestionPayload = Union[
     IndexSnapshotSubmission,
     GraphMetadataSubmission,
     ContextPackMetadataSubmission,
+    ArtifactReferenceSubmission,
     RunEventSubmission,
     CostEventSubmission,
     AuditEventSubmission,
@@ -324,6 +384,10 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "graph_metadata.node_count",
         "graph_metadata.edge_count",
         "graph_metadata.metadata",
+        "artifact_reference.artifact_kind",
+        "artifact_reference.size_bytes",
+        "artifact_reference.content_type",
+        "artifact_reference.metadata",
         "run_event.event_type",
         "run_event.phase",
         "run_event.severity",
@@ -375,6 +439,7 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "index_snapshot.commit_sha",
         "index_snapshot.source_hashes",
         "context_pack_metadata.content_hash",
+        "artifact_reference.content_hash",
         "repository.bounded_snippets[].content_hash",
     ],
     "references": [
@@ -407,6 +472,13 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "graph_metadata.graph_ref",
         "context_pack_metadata.artifact_ref",
         "context_pack_metadata.citations",
+        "artifact_reference.artifact_id",
+        "artifact_reference.workspace_id",
+        "artifact_reference.repository_id",
+        "artifact_reference.run_id",
+        "artifact_reference.context_pack_id",
+        "artifact_reference.snapshot_id",
+        "artifact_reference.uri",
         "run_event.event_id",
         "run_event.run_id",
         "cost_event.event_id",
@@ -432,6 +504,7 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
     ],
     "forbidden_full_source": [
         "repository.full_source",
+        "large inline artifact bodies in metadata",
         "raw file contents outside bounded snippets",
         "complete source files",
         "source archives",
@@ -471,6 +544,9 @@ def contract_field_catalog() -> Mapping[str, List[str]]:
 def _validate_payload(envelope: IngestionEnvelope, policy: SourceCustodyPolicy) -> List[ValidationError]:
     errors: List[ValidationError] = []
     payload = envelope.payload
+    errors.extend(_validate_no_large_inline_artifact_bodies(payload))
+    if isinstance(payload, ArtifactReferenceSubmission):
+        errors.extend(_validate_artifact_reference(envelope, payload))
     if isinstance(payload, RepositorySubmission) and payload.full_source:
         errors.append(
             ValidationError(
@@ -535,6 +611,135 @@ def _validate_payload(envelope: IngestionEnvelope, policy: SourceCustodyPolicy) 
                         message="Bounded snippets must include a positive start_line and an end_line greater than or equal to start_line.",
                     )
                 )
+    return errors
+
+
+def _validate_no_large_inline_artifact_bodies(payload: IngestionPayload) -> List[ValidationError]:
+    errors: List[ValidationError] = []
+    if not is_dataclass(payload):
+        return errors
+    for payload_field in fields(payload):
+        value = getattr(payload, payload_field.name)
+        if isinstance(value, MappingABC):
+            errors.extend(_find_large_inline_artifact_bodies(value, f"payload.{payload_field.name}"))
+    return errors
+
+
+def _find_large_inline_artifact_bodies(value: object, field_path: str) -> List[ValidationError]:
+    if _is_inline_artifact_body_field(field_path) and _estimated_inline_size(value) > MAX_INLINE_ARTIFACT_METADATA_CHARS:
+        return [
+            ValidationError(
+                code="inline_artifact_body_forbidden",
+                field=field_path,
+                message=(
+                    "Large artifact bodies must be stored as object-storage references with "
+                    "ArtifactReferenceSubmission metadata, not inline product/auth or telemetry metadata."
+                ),
+            )
+        ]
+    errors: List[ValidationError] = []
+    if isinstance(value, MappingABC):
+        for key, nested_value in value.items():
+            if isinstance(key, str):
+                errors.extend(_find_large_inline_artifact_bodies(nested_value, f"{field_path}.{key}"))
+    elif isinstance(value, list):
+        for index, nested_value in enumerate(value):
+            errors.extend(_find_large_inline_artifact_bodies(nested_value, f"{field_path}[{index}]"))
+    return errors
+
+
+def _is_inline_artifact_body_field(field_path: str) -> bool:
+    normalized = field_path.replace("[", ".").replace("]", "")
+    field_name = normalized.split(".")[-1].lower()
+    return field_name in INLINE_ARTIFACT_BODY_KEYS
+
+
+def _estimated_inline_size(value: object) -> int:
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, bytes):
+        return len(value)
+    if isinstance(value, MappingABC):
+        return sum(len(str(key)) + _estimated_inline_size(nested_value) for key, nested_value in value.items())
+    if isinstance(value, list):
+        return sum(_estimated_inline_size(item) for item in value)
+    return len(str(value))
+
+
+def _validate_artifact_reference(envelope: IngestionEnvelope, payload: ArtifactReferenceSubmission) -> List[ValidationError]:
+    errors: List[ValidationError] = []
+    if payload.artifact_kind not in ARTIFACT_REFERENCE_KINDS:
+        errors.append(
+            ValidationError(
+                code="artifact_kind_not_allowed",
+                field="payload.artifact_kind",
+                message="Artifact references must use one of the allowed large artifact kinds.",
+            )
+        )
+    if payload.workspace_id != envelope.workspace_id:
+        errors.append(
+            ValidationError(
+                code="artifact_workspace_mismatch",
+                field="payload.workspace_id",
+                message="Artifact reference workspace_id must match the ingestion envelope workspace_id.",
+            )
+        )
+    if envelope.repository_id is not None and payload.repository_id is not None and payload.repository_id != envelope.repository_id:
+        errors.append(
+            ValidationError(
+                code="artifact_repository_mismatch",
+                field="payload.repository_id",
+                message="Artifact reference repository_id must match the ingestion envelope repository_id when both are present.",
+            )
+        )
+    if not payload.repository_id:
+        errors.append(
+            ValidationError(
+                code="artifact_repository_association_required",
+                field="payload.repository_id",
+                message="Artifact references must carry a repository_id so stored metadata can be associated without inline bodies.",
+            )
+        )
+    if payload.artifact_kind in RUN_ARTIFACT_REFERENCE_KINDS and not payload.run_id:
+        errors.append(
+            ValidationError(
+                code="artifact_run_association_required",
+                field="payload.run_id",
+                message="Log, transcript, evidence bundle, and screenshot artifact references must carry a run_id.",
+            )
+        )
+    if payload.artifact_kind == "index_snapshot" and not payload.snapshot_id:
+        errors.append(
+            ValidationError(
+                code="artifact_snapshot_association_required",
+                field="payload.snapshot_id",
+                message="Index snapshot artifact references must carry a snapshot_id.",
+            )
+        )
+    if payload.artifact_kind == "context_pack" and not payload.context_pack_id:
+        errors.append(
+            ValidationError(
+                code="artifact_context_pack_association_required",
+                field="payload.context_pack_id",
+                message="Context-pack artifact references must carry a context_pack_id.",
+            )
+        )
+    if not payload.uri.startswith("object://"):
+        errors.append(
+            ValidationError(
+                code="artifact_uri_not_object_ref",
+                field="payload.uri",
+                message="Artifact references must point at an object-storage URI.",
+            )
+        )
+    if payload.size_bytes <= 0:
+        errors.append(
+            ValidationError(
+                code="artifact_size_invalid",
+                field="payload.size_bytes",
+                message="Artifact references must include a positive size_bytes value.",
+            )
+        )
     return errors
 
 

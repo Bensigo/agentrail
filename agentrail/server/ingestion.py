@@ -9,6 +9,7 @@ from agentrail.server.product import InMemoryProductAuthStore, PRODUCT_AUTH_SUBM
 from agentrail.server.telemetry import InMemoryTelemetryStore, TELEMETRY_SUBMISSION_KINDS
 
 MAX_INLINE_ARTIFACT_METADATA_CHARS = 4096
+MAX_CONTEXT_PACK_SOURCE_PATH_CHARS = 512
 MAX_CONTEXT_PACK_SOURCE_HASH_CHARS = 256
 CONTEXT_PACK_SOURCE_HASH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+._-]{1,31}:[A-Za-z0-9+/_=.-]{1,192}$")
 
@@ -909,7 +910,15 @@ def _validate_context_pack_metadata(
 
 def _validate_context_pack_source_hashes(source_hashes: Mapping[str, str]) -> List[ValidationError]:
     errors: List[ValidationError] = []
-    for path, source_hash in source_hashes.items():
+    for index, (path, source_hash) in enumerate(source_hashes.items()):
+        if not isinstance(path, str) or not _is_context_pack_source_path(path):
+            errors.append(
+                ValidationError(
+                    code="context_pack_source_hash_path_invalid",
+                    field=f"payload.source_hashes[{index}].path",
+                    message="Context-pack source hash keys must be bounded source paths, not inline source content.",
+                )
+            )
         if not isinstance(source_hash, str) or not _is_context_pack_source_hash(source_hash):
             errors.append(
                 ValidationError(
@@ -919,6 +928,15 @@ def _validate_context_pack_source_hashes(source_hashes: Mapping[str, str]) -> Li
                 )
             )
     return errors
+
+
+def _is_context_pack_source_path(path: str) -> bool:
+    return (
+        0 < len(path) <= MAX_CONTEXT_PACK_SOURCE_PATH_CHARS
+        and "\n" not in path
+        and "\r" not in path
+        and "\0" not in path
+    )
 
 
 def _is_context_pack_source_hash(source_hash: str) -> bool:

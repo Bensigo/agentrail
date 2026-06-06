@@ -904,6 +904,32 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             [("context_pack_source_hash_invalid", "payload.source_hashes[agentrail/server/ingestion.py]")],
         )
 
+    def test_context_pack_source_hash_paths_cannot_hide_full_source_content(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        smuggled_source_path = "def upload_everything():\n    return open('agentrail/server/ingestion.py').read()"
+        payload = _context_pack_metadata_submission(
+            source_hashes={
+                smuggled_source_path: "sha256:smuggled",
+                "agentrail/server/ingestion.py": "sha256:source123",
+                "CONTEXT.md": "sha256:context123",
+                "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
+            },
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [("context_pack_source_hash_path_invalid", "payload.source_hashes[0].path")],
+        )
+
     def test_context_pack_citation_inventory_ranges_must_be_valid(self) -> None:
         cases = [
             ContextPackCitation(

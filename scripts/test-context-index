@@ -506,6 +506,155 @@ rm -rf "${optional_missing}/docs/memory" "${optional_missing}/docs/prd" "${optio
 "$agentrail" context index --target "$optional_missing" >"${tmp_dir}/optional-index.out"
 assert_grep '"providerMode": "disabled"' "${tmp_dir}/optional-index.out" "missing optional context dirs should not fail indexing"
 
+monorepo_fixture="${tmp_dir}/monorepo"
+mkdir -p "${monorepo_fixture}/packages/api/src" "${monorepo_fixture}/packages/web/src"
+git -C "$monorepo_fixture" init --quiet
+"$agentrail" install --target "$monorepo_fixture" >"${tmp_dir}/monorepo-install.out"
+cat >"${monorepo_fixture}/package.json" <<'JSON'
+{
+  "private": true,
+  "workspaces": ["packages/*"]
+}
+JSON
+cat >"${monorepo_fixture}/packages/api/package.json" <<'JSON'
+{"name": "@agentrail/api"}
+JSON
+cat >"${monorepo_fixture}/packages/api/src/index.js" <<'JS'
+module.exports = { api: true };
+JS
+cat >"${monorepo_fixture}/packages/web/package.json" <<'JSON'
+{"name": "@agentrail/web"}
+JSON
+cat >"${monorepo_fixture}/packages/web/src/index.js" <<'JS'
+module.exports = { web: true };
+JS
+"$agentrail" context index --target "$monorepo_fixture" >"${tmp_dir}/monorepo-index.out"
+node - "${monorepo_fixture}/.agentrail/context/index/index.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const units = index.graph.nodes.filter((node) => node.kind === "codebase_unit");
+const paths = new Set(units.map((unit) => unit.path));
+if (!paths.has("packages/api") || !paths.has("packages/web")) {
+  console.error(`monorepo Codebase Units missing: ${JSON.stringify(Array.from(paths))}`);
+  process.exit(1);
+}
+for (const path of ["packages/api/src/index.js", "packages/web/src/index.js"]) {
+  const file = index.graph.nodes.find((node) => node.kind === "file" && node.path === path);
+  if (!file) {
+    console.error(`monorepo file node missing: ${path}`);
+    process.exit(1);
+  }
+  const unit = units.find((candidate) => path.startsWith(`${candidate.path}/`));
+  const edge = index.graph.edges.find((candidate) => candidate.kind === "contains_file" && candidate.from === unit.id && candidate.to === file.id);
+  if (!edge || edge.authority !== "deterministic") {
+    console.error(`monorepo contains_file edge missing for ${path}`);
+    process.exit(1);
+  }
+}
+NODE
+
+simple_fixture="${tmp_dir}/simple-package"
+mkdir -p "${simple_fixture}/src"
+git -C "$simple_fixture" init --quiet
+"$agentrail" install --target "$simple_fixture" >"${tmp_dir}/simple-install.out"
+cat >"${simple_fixture}/pyproject.toml" <<'TOML'
+[project]
+name = "simple-agentrail-package"
+TOML
+cat >"${simple_fixture}/src/app.py" <<'PY'
+def main():
+    return "simple"
+PY
+"$agentrail" context index --target "$simple_fixture" >"${tmp_dir}/simple-index.out"
+node - "${simple_fixture}/.agentrail/context/index/index.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const units = index.graph.nodes.filter((node) => node.kind === "codebase_unit");
+if (units.length !== 1 || units[0].path !== "." || units[0].detection !== "root_manifest") {
+  console.error(`simple repo root Codebase Unit missing: ${JSON.stringify(units)}`);
+  process.exit(1);
+}
+const file = index.graph.nodes.find((node) => node.kind === "file" && node.path === "src/app.py");
+if (!index.graph.edges.some((edge) => edge.kind === "contains_file" && edge.from === units[0].id && edge.to === file.id)) {
+  console.error("simple repo root unit was not linked to src/app.py");
+  process.exit(1);
+}
+NODE
+
+weak_fixture="${tmp_dir}/weak-manifest"
+mkdir -p "${weak_fixture}/legacy"
+git -C "$weak_fixture" init --quiet
+"$agentrail" install --target "$weak_fixture" >"${tmp_dir}/weak-install.out"
+cat >"${weak_fixture}/legacy/tool.py" <<'PY'
+def legacy_tool():
+    return "weak"
+PY
+"$agentrail" context index --target "$weak_fixture" >"${tmp_dir}/weak-index.out"
+node - "${weak_fixture}/.agentrail/context/index/index.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const unit = index.graph.nodes.find((node) => node.kind === "codebase_unit" && node.path === "." && node.detection === "fallback");
+if (!unit) {
+  console.error("weak-manifest fallback Codebase Unit missing");
+  process.exit(1);
+}
+const file = index.graph.nodes.find((node) => node.kind === "file" && node.path === "legacy/tool.py");
+if (!index.graph.edges.some((edge) => edge.kind === "contains_file" && edge.from === unit.id && edge.to === file.id)) {
+  console.error("weak-manifest fallback unit was not linked to legacy/tool.py");
+  process.exit(1);
+}
+NODE
+
+override_fixture="${tmp_dir}/config-override"
+mkdir -p "${override_fixture}/apps/server" "${override_fixture}/packages/shared"
+git -C "$override_fixture" init --quiet
+"$agentrail" install --target "$override_fixture" >"${tmp_dir}/override-install.out"
+cat >"${override_fixture}/package.json" <<'JSON'
+{
+  "private": true,
+  "workspaces": ["packages/*"]
+}
+JSON
+cat >"${override_fixture}/packages/shared/package.json" <<'JSON'
+{"name": "@agentrail/shared"}
+JSON
+cat >"${override_fixture}/packages/shared/index.js" <<'JS'
+module.exports = { shared: true };
+JS
+cat >"${override_fixture}/apps/server/main.py" <<'PY'
+def server():
+    return "configured"
+PY
+node - "${override_fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const path = process.argv[2];
+const config = JSON.parse(fs.readFileSync(path, "utf8"));
+config.context.codebaseUnits = [
+  { id: "server", name: "Configured Server", path: "apps/server" }
+];
+fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+"$agentrail" context index --target "$override_fixture" >"${tmp_dir}/override-index.out"
+node - "${override_fixture}/.agentrail/context/index/index.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const units = index.graph.nodes.filter((node) => node.kind === "codebase_unit");
+if (units.length !== 1 || units[0].path !== "apps/server" || units[0].detection !== "config_override") {
+  console.error(`config override Codebase Unit not respected: ${JSON.stringify(units)}`);
+  process.exit(1);
+}
+const serverFile = index.graph.nodes.find((node) => node.kind === "file" && node.path === "apps/server/main.py");
+const sharedFile = index.graph.nodes.find((node) => node.kind === "file" && node.path === "packages/shared/index.js");
+if (!index.graph.edges.some((edge) => edge.kind === "contains_file" && edge.from === units[0].id && edge.to === serverFile.id)) {
+  console.error("config override unit was not linked to apps/server/main.py");
+  process.exit(1);
+}
+if (index.graph.edges.some((edge) => edge.kind === "contains_file" && edge.from === units[0].id && edge.to === sharedFile.id)) {
+  console.error("config override unit incorrectly included workspace-detected package file");
+  process.exit(1);
+}
+NODE
+
 source_fixture="${tmp_dir}/source-dogfood"
 mkdir -p \
   "${source_fixture}/scripts" \

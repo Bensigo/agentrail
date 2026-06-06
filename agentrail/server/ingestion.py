@@ -928,6 +928,14 @@ def _validate_context_pack_anchors(
                     message="Context-pack anchors must include a citation.",
                 )
             )
+        elif not _anchor_citation_resolves(anchor):
+            errors.append(
+                ValidationError(
+                    code="context_pack_anchor_citation_not_in_inventory",
+                    field=f"payload.anchors[{index}].citation",
+                    message="Context-pack anchor citations must resolve to the anchor path and line range.",
+                )
+            )
         if not anchor.reason:
             errors.append(
                 ValidationError(
@@ -1053,7 +1061,9 @@ def _decision_citation_resolves(
     citations: List[ContextPackCitation],
     source_hashes: Mapping[str, str],
 ) -> bool:
-    decision_path, decision_start_line, decision_end_line = _split_citation_reference(decision_citation)
+    decision_path, decision_start_line, decision_end_line, valid_reference = _split_citation_reference(decision_citation)
+    if not valid_reference:
+        return False
     for citation in citations:
         if decision_citation == citation.citation_id:
             return True
@@ -1072,19 +1082,35 @@ def _decision_citation_resolves(
     return False
 
 
-def _split_citation_reference(citation: str) -> tuple[str, Optional[int], Optional[int]]:
+def _anchor_citation_resolves(anchor: ContextPackAnchor) -> bool:
+    citation_path, citation_start_line, citation_end_line, valid_reference = _split_citation_reference(anchor.citation)
+    if not valid_reference or citation_path != anchor.path:
+        return False
+    if citation_start_line is None:
+        return True
+    if anchor.start_line is None:
+        return True
+    anchor_end = anchor.end_line if anchor.end_line is not None else anchor.start_line
+    citation_end = citation_end_line if citation_end_line is not None else citation_start_line
+    return anchor.start_line <= citation_start_line and citation_end <= anchor_end
+
+
+def _split_citation_reference(citation: str) -> tuple[str, Optional[int], Optional[int], bool]:
     path_part, separator, fragment = citation.partition("#")
-    if separator and fragment.startswith("L"):
-        start_line, end_line = _parse_line_reference(fragment[1:])
-        if start_line is not None:
-            return path_part, start_line, end_line
+    if separator:
+        if fragment.startswith("L"):
+            start_line, end_line = _parse_line_reference(fragment[1:])
+            if start_line is None:
+                return path_part, None, None, False
+            return path_part, start_line, end_line, True
+        return path_part, None, None, True
     path, separator, line_part = path_part.rpartition(":")
     if not separator:
-        return path_part, None, None
+        return path_part, None, None, True
     start_line, end_line = _parse_line_reference(line_part)
     if start_line is None:
-        return path_part, None, None
-    return path, start_line, end_line
+        return path_part, None, None, False
+    return path, start_line, end_line, True
 
 
 def _parse_line_reference(line_part: str) -> tuple[Optional[int], Optional[int]]:
@@ -1100,7 +1126,10 @@ def _parse_line_reference(line_part: str) -> tuple[Optional[int], Optional[int]]
         end_text = end_text[1:]
     if not end_text.isdigit():
         return None, None
-    return start_line, int(end_text)
+    end_line = int(end_text)
+    if end_line < start_line:
+        return None, None
+    return start_line, end_line
 
 
 def _validate_bounded_snippets(

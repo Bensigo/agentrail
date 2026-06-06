@@ -300,6 +300,36 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             ],
         )
 
+    def test_context_pack_anchor_citations_must_resolve_to_anchor_path(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            anchors=[
+                ContextPackAnchor(
+                    anchor_id="anchor_context",
+                    path="CONTEXT.md",
+                    citation="secret.py:1",
+                    reason="citation must not name a different source path",
+                    start_line=1,
+                    end_line=20,
+                    source_hash="sha256:context123",
+                )
+            ]
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [("context_pack_anchor_citation_not_in_inventory", "payload.anchors[0].citation")],
+        )
+
     def test_context_pack_null_required_collections_return_validation_errors(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = replace(
@@ -486,6 +516,64 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             [(error.code, error.field) for error in result.errors],
             [("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation")],
         )
+
+    def test_context_pack_decision_malformed_hash_line_citations_are_rejected(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            inclusions=[
+                ContextPackDecision(
+                    item_id="agentrail/server/ingestion.py",
+                    citation="agentrail/server/ingestion.py#L167-Lbad",
+                    reason="malformed line references must not degrade to path-only citations",
+                )
+            ]
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation")],
+        )
+
+    def test_context_pack_decision_reversed_line_ranges_are_rejected(self) -> None:
+        cases = [
+            "agentrail/server/ingestion.py#L190-L167",
+            "agentrail/server/ingestion.py:190-167",
+        ]
+        for citation in cases:
+            with self.subTest(citation=citation):
+                telemetry_store = InMemoryTelemetryStore()
+                payload = _context_pack_metadata_submission(
+                    inclusions=[
+                        ContextPackDecision(
+                            item_id="agentrail/server/ingestion.py",
+                            citation=citation,
+                            reason="reversed line ranges must not resolve to recorded citations",
+                        )
+                    ]
+                )
+
+                result = ingest(
+                    IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+                    policy=SourceCustodyPolicy.default(),
+                    product_store=FailingProductAuthStore(),
+                    telemetry_store=telemetry_store,
+                )
+
+                self.assertFalse(result.accepted)
+                self.assertEqual(telemetry_store.records, [])
+                self.assertEqual(
+                    [(error.code, error.field) for error in result.errors],
+                    [("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation")],
+                )
 
     def test_context_pack_source_hash_paths_are_not_scanned_as_metadata_keys(self) -> None:
         telemetry_store = InMemoryTelemetryStore()

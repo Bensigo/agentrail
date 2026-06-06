@@ -803,6 +803,14 @@ def _validate_context_pack_metadata(
                 message="Context-pack metadata requires a context_pack_id.",
             )
         )
+    if not payload.content_hash:
+        errors.append(
+            ValidationError(
+                code="context_pack_content_hash_required",
+                field="payload.content_hash",
+                message="Context-pack metadata requires a content_hash for pack identity and provenance.",
+            )
+        )
     if not payload.repository_id:
         errors.append(
             ValidationError(

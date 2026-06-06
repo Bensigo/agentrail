@@ -319,6 +319,24 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             ],
         )
 
+    def test_context_pack_content_hash_is_required_for_identity(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = replace(_context_pack_metadata_submission(), content_hash="")
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [("context_pack_content_hash_required", "payload.content_hash")],
+        )
+
     def test_context_pack_decision_citations_must_match_source_inventory(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = _context_pack_metadata_submission(

@@ -269,7 +269,82 @@ def graph_expansion_for_query(index: Dict[str, Any], query: str, root: Path, *, 
         "sourceIds": sorted(source_ids),
         "paths": sorted(paths),
         "chunkIds": sorted(chunk_ids),
+        "candidatePolicy": [],
+        "excludedExpansionCandidates": [],
+        "demotedExpansionCandidates": [],
     }
+
+
+def apply_graph_expansion_policy(index: Dict[str, Any], graph_expansion: Dict[str, Any]) -> Dict[str, Any]:
+    sources = {record["id"]: record for record in index.get("records", []) if isinstance(record, dict) and record.get("id")}
+    chunks = {chunk["id"]: chunk for chunk in index.get("chunks", []) if isinstance(chunk, dict) and chunk.get("id")}
+    graph_source_ids = set(graph_expansion.get("sourceIds") or [])
+    graph_paths = set(graph_expansion.get("paths") or [])
+    graph_chunk_ids = set(graph_expansion.get("chunkIds") or [])
+    policy_items: List[Dict[str, Any]] = []
+
+    def add_policy(source: Dict[str, Any], chunk: Optional[Dict[str, Any]], candidate_id: str) -> None:
+        freshness_penalty, freshness_reasons = freshness_demotion(source, chunk)
+        freshness = str(source.get("freshness", {}).get("status", "current")).lower()
+        authority = str(source.get("authority") or "unknown")
+        visibility = str(source.get("visibility") or "unknown")
+        if authority == "denied" or visibility == "denied":
+            effect = "excluded"
+            reason = "denied graph-expanded source"
+        elif freshness in {"stale", "expired"} or freshness_penalty > 0:
+            effect = "demoted"
+            reason = "; ".join(freshness_reasons) or f"{freshness} graph-expanded source"
+        else:
+            effect = "allowed"
+            reason = "graph-expanded candidate passed retrieval policy"
+        policy_items.append(
+            {
+                "candidateId": candidate_id,
+                "sourceId": source.get("id"),
+                "chunkId": (chunk or {}).get("id"),
+                "path": source.get("path"),
+                "citation": (chunk or {}).get("citation") or source.get("path"),
+                "effect": effect,
+                "reason": reason,
+                "policy": {
+                    "visibility": visibility,
+                    "authority": authority,
+                    "freshness": freshness,
+                    "freshnessDemotion": round(freshness_penalty, 6),
+                    "sourceCustody": {
+                        "mode": "metadata_only",
+                        "fullSourceUploadAllowed": False,
+                        "snippetUploadAllowed": False,
+                        "reason": "Default enterprise mode does not upload full source code.",
+                    },
+                },
+            }
+        )
+
+    for source_id in sorted(graph_source_ids):
+        source = sources.get(source_id)
+        if source:
+            add_policy(source, None, source_id)
+    for path in sorted(graph_paths):
+        source = next((record for record in sources.values() if record.get("path") == path), None)
+        if source:
+            add_policy(source, None, path)
+    for chunk_id in sorted(graph_chunk_ids):
+        chunk = chunks.get(chunk_id)
+        source = sources.get(str((chunk or {}).get("sourceId")))
+        if source:
+            add_policy(source, chunk, chunk_id)
+
+    deduped: Dict[str, Dict[str, Any]] = {}
+    for item in policy_items:
+        key = str(item.get("candidateId") or item.get("path"))
+        prior = deduped.get(key)
+        if not prior or {"allowed": 0, "demoted": 1, "excluded": 2}[str(item["effect"])] > {"allowed": 0, "demoted": 1, "excluded": 2}[str(prior["effect"])]:
+            deduped[key] = item
+    graph_expansion["candidatePolicy"] = sorted(deduped.values(), key=lambda item: str(item.get("candidateId") or ""))
+    graph_expansion["excludedExpansionCandidates"] = [item for item in graph_expansion["candidatePolicy"] if item.get("effect") == "excluded"]
+    graph_expansion["demotedExpansionCandidates"] = [item for item in graph_expansion["candidatePolicy"] if item.get("effect") == "demoted"]
+    return graph_expansion
 
 
 def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str, Any]:
@@ -277,6 +352,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
     build_index(root)
     index = load_index(root)
     graph_expansion = graph_expansion_for_query(index, query, root)
+    graph_expansion = apply_graph_expansion_policy(index, graph_expansion)
     graph_source_ids = set(graph_expansion.get("sourceIds") or [])
     graph_paths = set(graph_expansion.get("paths") or [])
     graph_chunk_ids = set(graph_expansion.get("chunkIds") or [])

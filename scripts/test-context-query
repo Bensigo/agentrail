@@ -390,6 +390,24 @@ if (!first.reason.includes("exact path")) {
   console.error(`exact path result did not include exact path reason: ${first.reason}`);
   process.exit(1);
 }
+const expansion = result.compiler.graphExpansion;
+if (!Array.isArray(expansion.candidatePolicy) || expansion.candidatePolicy.length === 0) {
+  console.error(`graph expansion candidate policy was not reported: ${JSON.stringify(expansion)}`);
+  process.exit(1);
+}
+const excludedGraph = expansion.excludedExpansionCandidates.find((item) => item.path === "external://denied-billing");
+if (!excludedGraph || excludedGraph.effect !== "excluded" || excludedGraph.policy.authority !== "denied") {
+  console.error(`denied graph-expanded candidate was not reported as excluded: ${JSON.stringify(expansion.excludedExpansionCandidates)}`);
+  process.exit(1);
+}
+if (result.results.some((item) => item.path === "external://denied-billing")) {
+  console.error("denied graph-expanded candidate appeared in included path query results");
+  process.exit(1);
+}
+if (!result.excluded.some((item) => item.path === "external://denied-billing" && item.reason === "denied_source")) {
+  console.error("denied graph-expanded candidate was not present in excluded context");
+  process.exit(1);
+}
 NODE
 
 for pr_query_output in "${tmp_dir}/pr-short.json" "${tmp_dir}/pr-long.json"; do

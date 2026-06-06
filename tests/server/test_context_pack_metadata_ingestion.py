@@ -435,6 +435,58 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             [("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation")],
         )
 
+    def test_context_pack_decision_hash_line_citations_must_match_recorded_citation_ranges(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            inclusions=[
+                ContextPackDecision(
+                    item_id="agentrail/server/ingestion.py",
+                    citation="agentrail/server/ingestion.py#L999999",
+                    reason="must not cite a line outside the recorded citation range",
+                )
+            ]
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation")],
+        )
+
+    def test_context_pack_decision_hash_line_ranges_must_stay_within_recorded_citation_ranges(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            inclusions=[
+                ContextPackDecision(
+                    item_id="agentrail/server/ingestion.py",
+                    citation="agentrail/server/ingestion.py#L167-L999999",
+                    reason="must not cite a range wider than the recorded citation range",
+                )
+            ]
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation")],
+        )
+
     def test_context_pack_source_hash_paths_are_not_scanned_as_metadata_keys(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = _context_pack_metadata_submission(

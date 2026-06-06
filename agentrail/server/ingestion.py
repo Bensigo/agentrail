@@ -1053,7 +1053,7 @@ def _decision_citation_resolves(
     citations: List[ContextPackCitation],
     source_hashes: Mapping[str, str],
 ) -> bool:
-    decision_path, decision_line = _split_citation_reference(decision_citation)
+    decision_path, decision_start_line, decision_end_line = _split_citation_reference(decision_citation)
     for citation in citations:
         if decision_citation == citation.citation_id:
             return True
@@ -1061,22 +1061,46 @@ def _decision_citation_resolves(
             continue
         if decision_path != citation.path:
             continue
-        if decision_line is None:
+        if decision_start_line is None:
             return True
         if citation.start_line is None:
             return True
         citation_end = citation.end_line if citation.end_line is not None else citation.start_line
-        if citation.start_line <= decision_line <= citation_end:
+        decision_end = decision_end_line if decision_end_line is not None else decision_start_line
+        if citation.start_line <= decision_start_line and decision_end <= citation_end:
             return True
     return False
 
 
-def _split_citation_reference(citation: str) -> tuple[str, Optional[int]]:
-    path_part = citation.split("#", 1)[0]
+def _split_citation_reference(citation: str) -> tuple[str, Optional[int], Optional[int]]:
+    path_part, separator, fragment = citation.partition("#")
+    if separator and fragment.startswith("L"):
+        start_line, end_line = _parse_line_reference(fragment[1:])
+        if start_line is not None:
+            return path_part, start_line, end_line
     path, separator, line_part = path_part.rpartition(":")
-    if not separator or not line_part.isdigit():
-        return path_part, None
-    return path, int(line_part)
+    if not separator:
+        return path_part, None, None
+    start_line, end_line = _parse_line_reference(line_part)
+    if start_line is None:
+        return path_part, None, None
+    return path, start_line, end_line
+
+
+def _parse_line_reference(line_part: str) -> tuple[Optional[int], Optional[int]]:
+    if not line_part:
+        return None, None
+    start_text, separator, end_text = line_part.partition("-")
+    if not start_text.isdigit():
+        return None, None
+    start_line = int(start_text)
+    if not separator:
+        return start_line, None
+    if end_text.startswith("L"):
+        end_text = end_text[1:]
+    if not end_text.isdigit():
+        return None, None
+    return start_line, int(end_text)
 
 
 def _validate_bounded_snippets(

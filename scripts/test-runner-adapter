@@ -116,6 +116,31 @@ assert_grep "PR/diff references" "${codex_run_dir}/verify/prompt.md" "Verify pro
 assert_grep "every acceptance criterion" "${codex_run_dir}/verify/prompt.md" "Verify prompt did not include acceptance criteria"
 assert_grep "active goal success criteria" "${codex_run_dir}/verify/prompt.md" "Verify prompt did not include active goal success criteria framing"
 
+cat >"${tmp_dir}/large-plan-runner" <<'RUNNER'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$(cat)"
+first_line="$(printf '%s\n' "$prompt" | sed -n '1p')"
+if [[ "$first_line" == "This is phase 1 of 3: plan." ]]; then
+  printf 'Goal\n\n'
+  printf '%*s\n' 500 '' | tr ' ' X
+  exit 0
+fi
+printf '%s\n' "$prompt"
+RUNNER
+chmod +x "${tmp_dir}/large-plan-runner"
+
+AGENTRAIL_PHASE_INLINE_MAX_CHARS=120 \
+  "$agentrail" run issue 86 --agent codex --target "$target" --command "${tmp_dir}/large-plan-runner" --log-dir "$log_dir" >"${tmp_dir}/large-plan-run.out"
+large_plan_run_dir="$(find "$log_dir" -path '*/run.json' -print | xargs grep -l '"targetIssue": 86' | head -1 | xargs dirname)"
+[[ -n "$large_plan_run_dir" ]] || { echo "Large-plan run directory was not found" >&2; exit 1; }
+assert_grep "AgentRail truncated approved plan output" "${large_plan_run_dir}/execute/prompt.md" "Execute prompt did not truncate oversized plan output"
+assert_grep "AgentRail truncated approved plan output" "${large_plan_run_dir}/verify/prompt.md" "Verify prompt did not truncate oversized plan output"
+if grep -q "$(printf '%*s' 200 '' | tr ' ' X)" "${large_plan_run_dir}/execute/prompt.md"; then
+  echo "Execute prompt included an oversized plan output blob" >&2
+  exit 1
+fi
+
 state_file="${target}/.agentrail/state.json"
 if [[ "$(node - "$state_file" <<'NODE'
 const fs = require("fs");

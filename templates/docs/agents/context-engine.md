@@ -381,6 +381,11 @@ Reports should include:
 - recall@10
 - stale-source exclusion
 - citation coverage
+- reason coverage
+- stale or denied leakage from compiler policy metadata
+- compiler budget metadata presence
+
+Existing fixture fields remain compatible. Compiler-aware evaluation adds metrics to the report; it does not require migrating existing fixture JSON.
 
 Run fixture evaluation with:
 
@@ -419,4 +424,4 @@ To add a fixture:
 5. Run `agentrail context evaluate <fixture-file> --target . --json`.
 6. Add the fixture command or script to CI when it protects a business-critical path or failure-prone retrieval edge.
 
-CI must fail when required context is missed, denied sources appear in results, or top-10 results lack citations. Embedding-backed evaluation fixtures should set `optionalProviderEnv`, for example `["OPENAI_API_KEY"]` or a local mock provider env. AgentRail skips those fixtures unless every listed provider environment variable is configured.
+CI must fail when required context is missed, denied or stale sources appear in included results, top results lack citations or reasons, or compiler outputs omit explicit budget metadata. Embedding-backed evaluation fixtures should set `optionalProviderEnv`, for example `["OPENAI_API_KEY"]` or a local mock provider env. AgentRail skips those fixtures unless every listed provider environment variable is configured.

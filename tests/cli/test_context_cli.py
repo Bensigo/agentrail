@@ -320,6 +320,11 @@ class ContextCliTests(unittest.TestCase):
         self.assertTrue(report["passed"])
         self.assertEqual(report["summary"]["passed"], 1)
         self.assertIn("recallAt5", report["fixtures"][0]["metrics"])
+        self.assertIn("reasonCoverage", report["fixtures"][0]["metrics"])
+        self.assertIn("budgetMetadataPresence", report["fixtures"][0]["metrics"])
+        self.assertIn("staleOrDeniedLeakage", report["fixtures"][0]["metrics"])
+        self.assertTrue(report["fixtures"][0]["metrics"]["budgetMetadataPresence"]["passed"])
+        self.assertTrue(report["fixtures"][0]["topResults"][0]["candidateId"])
 
 
 if __name__ == "__main__":

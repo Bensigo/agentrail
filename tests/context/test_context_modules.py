@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agentrail.context.index import build_index
 from agentrail.context.compiler import extract_anchors
@@ -259,7 +260,11 @@ class ContextModuleTests(unittest.TestCase):
         self.assertTrue(fixture_report["metrics"]["requiredSourceInclusion"]["passed"])
         self.assertGreater(fixture_report["metrics"]["recallAt5"], 0)
         self.assertEqual(fixture_report["metrics"]["citationCoverage"], 1)
+        self.assertEqual(fixture_report["metrics"]["reasonCoverage"], 1)
+        self.assertTrue(fixture_report["metrics"]["budgetMetadataPresence"]["passed"])
+        self.assertTrue(fixture_report["metrics"]["staleOrDeniedLeakage"]["passed"])
         self.assertTrue(fixture_report["metrics"]["staleSourceExclusion"]["passed"])
+        self.assertTrue(all(item.get("candidateId") for item in fixture_report["topResults"]))
 
     def test_retrieval_evaluation_fails_when_required_context_is_missed(self) -> None:
         root = self.make_repo()
@@ -282,6 +287,80 @@ class ContextModuleTests(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertEqual(report["summary"]["failed"], 1)
         self.assertIn("docs/agents/missing.md", report["fixtures"][0]["metrics"]["requiredSourceInclusion"]["missing"])
+
+    def test_retrieval_evaluation_failures_name_compiler_metric_gaps(self) -> None:
+        root = self.make_repo()
+        fixture = root / "bad-compiler-eval-fixtures.json"
+        fixture.write_text(json.dumps({
+            "fixtures": [
+                {
+                    "name": "bad-compiler-metrics",
+                    "task": "issue #102 compiler metric diagnostics",
+                    "requiredSources": ["docs/agents/missing-required.md"],
+                    "expectedFiles": [],
+                    "expectedDocs": ["docs/agents/missing-required.md"],
+                    "expectedMemory": [],
+                    "expectedPriorMistakes": [],
+                    "expectedExcludedSources": ["docs/agents/leaked-denied.md"],
+                }
+            ],
+        }), encoding="utf-8")
+        query = {
+            "provider": {"mode": "disabled"},
+            "retrievalBudget": {"maxItems": 10, "maxTokens": None},
+            "results": [
+                {
+                    "rank": 1,
+                    "path": "docs/agents/leaked-denied.md",
+                    "chunkId": "chunk:leaked-denied",
+                    "score": {"final": 1},
+                }
+            ],
+            "excluded": [],
+            "compiler": {
+                "tokenPack": {
+                    "budget": {"maxItems": 10},
+                    "selectedCandidateIds": ["chunk:leaked-denied"],
+                },
+                "candidates": [
+                    {
+                        "id": "chunk:leaked-denied",
+                        "kind": "source_evidence",
+                        "path": "docs/agents/leaked-denied.md",
+                        "reason": "No reason recorded.",
+                        "policy": {
+                            "visibility": "denied",
+                            "authority": "denied",
+                            "freshness": "current",
+                        },
+                    }
+                ],
+                "metrics": {
+                    "staleOrDeniedLeakage": {
+                        "count": 1,
+                        "paths": ["docs/agents/leaked-denied.md"],
+                        "items": [{"candidateId": "chunk:leaked-denied", "path": "docs/agents/leaked-denied.md"}],
+                    }
+                },
+            },
+        }
+
+        with patch("agentrail.context.evaluation.query_context", return_value=query):
+            report = evaluate_retrieval(root, fixture)
+
+        fixture_report = report["fixtures"][0]
+        self.assertFalse(report["passed"])
+        self.assertIn("docs/agents/missing-required.md", fixture_report["metrics"]["requiredSourceInclusion"]["missing"])
+        self.assertEqual(fixture_report["metrics"]["citationCoverage"], 0)
+        self.assertEqual(fixture_report["metrics"]["reasonCoverage"], 0)
+        self.assertFalse(fixture_report["metrics"]["budgetMetadataPresence"]["passed"])
+        self.assertFalse(fixture_report["metrics"]["staleOrDeniedLeakage"]["passed"])
+        failures = "\n".join(fixture_report["failures"])
+        self.assertIn("missing required sources: docs/agents/missing-required.md", failures)
+        self.assertIn("top results missing citations: docs/agents/leaked-denied.md", failures)
+        self.assertIn("top results missing reasons: docs/agents/leaked-denied.md", failures)
+        self.assertIn("leaked denied/stale sources: docs/agents/leaked-denied.md", failures)
+        self.assertIn("missing compiler budget metadata: compiler.tokenPack.budget.maxTokens", failures)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ TELEMETRY_SUBMISSION_KINDS = {
     "index_snapshot",
     "graph_metadata",
     "context_pack_metadata",
+    "artifact_reference",
     *TELEMETRY_EVENT_SUBMISSION_KINDS,
 }
 
@@ -44,6 +45,7 @@ class InMemoryTelemetryStore:
     index_snapshots: List[object] = field(default_factory=list)
     graph_metadata: List[object] = field(default_factory=list)
     context_pack_metadata: List[object] = field(default_factory=list)
+    artifact_references: List[object] = field(default_factory=list)
     event_records: List[TelemetryEventRecord] = field(default_factory=list)
     run_events: List[object] = field(default_factory=list)
     cost_events: List[object] = field(default_factory=list)
@@ -64,6 +66,8 @@ class InMemoryTelemetryStore:
             self.graph_metadata.append(payload)
         elif kind == "context_pack_metadata":
             self.context_pack_metadata.append(payload)
+        elif kind == "artifact_reference":
+            self.artifact_references.append(payload)
         elif kind == "run_event":
             self.run_events.append(payload)
         elif kind == "cost_event":

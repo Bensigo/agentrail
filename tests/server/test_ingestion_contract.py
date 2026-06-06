@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from agentrail.server.ingestion import (
+    ArtifactReferenceSubmission,
     AuditEventSubmission,
     BoundedSnippet,
     CommandEventSubmission,
@@ -14,6 +15,7 @@ from agentrail.server.ingestion import (
     IndexSnapshotSubmission,
     IngestionEnvelope,
     RepositorySubmission,
+    ReviewGateSubmission,
     RunEventSubmission,
     SourceCustodyPolicy,
     WorkspaceSubmission,
@@ -256,6 +258,245 @@ class ServerIngestionContractTests(unittest.TestCase):
             "context_event",
         ])
 
+    def test_object_storage_artifact_references_are_accepted_for_large_artifact_kinds(self) -> None:
+        payloads = [
+            ArtifactReferenceSubmission(
+                artifact_id="artifact_log_123",
+                artifact_kind="log",
+                workspace_id="workspace_123",
+                repository_id="repo_123",
+                run_id="run_123",
+                uri="object://artifacts/run_123/session.log",
+                content_hash="sha256:log123",
+                size_bytes=12_000_000,
+                content_type="text/plain",
+                metadata={"label": "session log"},
+            ),
+            ArtifactReferenceSubmission(
+                artifact_id="artifact_transcript_123",
+                artifact_kind="transcript",
+                workspace_id="workspace_123",
+                repository_id="repo_123",
+                run_id="run_123",
+                uri="object://artifacts/run_123/transcript.json",
+                content_hash="sha256:transcript123",
+                size_bytes=8_000_000,
+                content_type="application/json",
+            ),
+            ArtifactReferenceSubmission(
+                artifact_id="artifact_evidence_123",
+                artifact_kind="evidence_bundle",
+                workspace_id="workspace_123",
+                repository_id="repo_123",
+                run_id="run_123",
+                uri="object://artifacts/run_123/evidence.zip",
+                content_hash="sha256:evidence123",
+                size_bytes=20_000_000,
+                content_type="application/zip",
+            ),
+            ArtifactReferenceSubmission(
+                artifact_id="artifact_screenshot_123",
+                artifact_kind="screenshot",
+                workspace_id="workspace_123",
+                repository_id="repo_123",
+                run_id="run_123",
+                uri="object://artifacts/run_123/screenshot.png",
+                content_hash="sha256:screenshot123",
+                size_bytes=4_000_000,
+                content_type="image/png",
+            ),
+            ArtifactReferenceSubmission(
+                artifact_id="artifact_snapshot_123",
+                artifact_kind="index_snapshot",
+                workspace_id="workspace_123",
+                repository_id="repo_123",
+                snapshot_id="snapshot_123",
+                uri="object://artifacts/repo_123/snapshot_123.json",
+                content_hash="sha256:snapshot123",
+                size_bytes=15_000_000,
+                content_type="application/json",
+            ),
+            ArtifactReferenceSubmission(
+                artifact_id="artifact_context_pack_123",
+                artifact_kind="context_pack",
+                workspace_id="workspace_123",
+                repository_id="repo_123",
+                context_pack_id="pack_123",
+                uri="object://artifacts/context-packs/pack_123.json",
+                content_hash="sha256:pack123",
+                size_bytes=6_000_000,
+                content_type="application/json",
+            ),
+        ]
+        product_store = InMemoryProductAuthStore()
+        telemetry_store = InMemoryTelemetryStore()
+
+        for payload in payloads:
+            result = ingest(
+                IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+                policy=SourceCustodyPolicy.default(),
+                product_store=product_store,
+                telemetry_store=telemetry_store,
+            )
+            self.assertTrue(result.accepted, f"{payload} should be accepted: {result.errors}")
+
+        self.assertEqual(product_store.records, [])
+        self.assertEqual(
+            [record.payload.submission_kind for record in telemetry_store.records],
+            ["artifact_reference"] * len(payloads),
+        )
+        self.assertEqual([artifact.artifact_kind for artifact in telemetry_store.artifact_references], [
+            "log",
+            "transcript",
+            "evidence_bundle",
+            "screenshot",
+            "index_snapshot",
+            "context_pack",
+        ])
+        self.assertEqual(telemetry_store.artifact_references[0].workspace_id, "workspace_123")
+        self.assertEqual(telemetry_store.artifact_references[0].repository_id, "repo_123")
+        self.assertEqual(telemetry_store.artifact_references[0].run_id, "run_123")
+
+    def test_large_inline_artifact_payloads_are_rejected_from_product_and_telemetry_metadata(self) -> None:
+        large_payload = "x" * 4097
+        cases = [
+            (
+                "product_auth",
+                ReviewGateSubmission(
+                    review_gate_id="gate_123",
+                    run_id="run_123",
+                    gate_type="verification",
+                    status="failed",
+                    decided_at="2026-06-06T14:50:00Z",
+                    evidence_ref="object://evidence/run_123/summary.json",
+                    metadata={"evidence_bundle": large_payload},
+                ),
+                "payload.metadata.evidence_bundle",
+            ),
+            (
+                "telemetry",
+                RunEventSubmission(
+                    event_id="run_event_123",
+                    run_id="run_123",
+                    event_type="log_captured",
+                    phase="execute",
+                    severity="info",
+                    occurred_at="2026-06-06T14:51:00Z",
+                    agent="codex",
+                    metadata={"log": large_payload},
+                ),
+                "payload.metadata.log",
+            ),
+        ]
+
+        for label, payload, field in cases:
+            with self.subTest(label):
+                product_store = InMemoryProductAuthStore()
+                telemetry_store = InMemoryTelemetryStore()
+
+                result = ingest(
+                    IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+                    policy=SourceCustodyPolicy.default(),
+                    product_store=product_store,
+                    telemetry_store=telemetry_store,
+                )
+
+                self.assertFalse(result.accepted)
+                self.assertEqual(product_store.records, [])
+                self.assertEqual(telemetry_store.records, [])
+                self.assertEqual(result.errors[0].code, "inline_artifact_body_forbidden")
+                self.assertEqual(result.errors[0].field, field)
+                self.assertIn("ArtifactReferenceSubmission", result.errors[0].message)
+
+    def test_artifact_references_require_applicable_associations_on_the_reference(self) -> None:
+        cases = [
+            (
+                "missing_repository",
+                ArtifactReferenceSubmission(
+                    artifact_id="artifact_log_123",
+                    artifact_kind="log",
+                    workspace_id="workspace_123",
+                    run_id="run_123",
+                    uri="object://artifacts/run_123/session.log",
+                    content_hash="sha256:log123",
+                    size_bytes=12_000_000,
+                ),
+                [("artifact_repository_association_required", "payload.repository_id")],
+            ),
+            (
+                "missing_run",
+                ArtifactReferenceSubmission(
+                    artifact_id="artifact_transcript_123",
+                    artifact_kind="transcript",
+                    workspace_id="workspace_123",
+                    repository_id="repo_123",
+                    uri="object://artifacts/run_123/transcript.json",
+                    content_hash="sha256:transcript123",
+                    size_bytes=8_000_000,
+                ),
+                [("artifact_run_association_required", "payload.run_id")],
+            ),
+            (
+                "missing_snapshot",
+                ArtifactReferenceSubmission(
+                    artifact_id="artifact_snapshot_123",
+                    artifact_kind="index_snapshot",
+                    workspace_id="workspace_123",
+                    repository_id="repo_123",
+                    uri="object://artifacts/repo_123/snapshot_123.json",
+                    content_hash="sha256:snapshot123",
+                    size_bytes=15_000_000,
+                ),
+                [("artifact_snapshot_association_required", "payload.snapshot_id")],
+            ),
+            (
+                "missing_context_pack",
+                ArtifactReferenceSubmission(
+                    artifact_id="artifact_context_pack_123",
+                    artifact_kind="context_pack",
+                    workspace_id="workspace_123",
+                    repository_id="repo_123",
+                    uri="object://artifacts/context-packs/pack_123.json",
+                    content_hash="sha256:pack123",
+                    size_bytes=6_000_000,
+                ),
+                [("artifact_context_pack_association_required", "payload.context_pack_id")],
+            ),
+            (
+                "workspace_mismatch",
+                ArtifactReferenceSubmission(
+                    artifact_id="artifact_log_456",
+                    artifact_kind="log",
+                    workspace_id="workspace_other",
+                    repository_id="repo_123",
+                    run_id="run_123",
+                    uri="object://artifacts/run_123/session.log",
+                    content_hash="sha256:log456",
+                    size_bytes=12_000_000,
+                ),
+                [("artifact_workspace_mismatch", "payload.workspace_id")],
+            ),
+        ]
+
+        for label, payload, expected_errors in cases:
+            with self.subTest(label):
+                product_store = InMemoryProductAuthStore()
+                telemetry_store = InMemoryTelemetryStore()
+                result = ingest(
+                    IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+                    policy=SourceCustodyPolicy.default(),
+                    product_store=product_store,
+                    telemetry_store=telemetry_store,
+                )
+
+                self.assertFalse(result.accepted)
+                self.assertEqual(product_store.records, [])
+                self.assertEqual(telemetry_store.records, [])
+                self.assertEqual(
+                    [(error.code, error.field) for error in result.errors],
+                    expected_errors,
+                )
+
     def test_invalid_snippet_policy_combination_returns_actionable_errors_without_writes(self) -> None:
         product_store = InMemoryProductAuthStore()
         telemetry_store = InMemoryTelemetryStore()
@@ -401,6 +642,13 @@ class ServerIngestionContractTests(unittest.TestCase):
         self.assertIn("billing_configuration.billing_account_ref", catalog["references"])
         self.assertIn("index_snapshot.graph_metadata_ref", catalog["references"])
         self.assertIn("context_pack_metadata.artifact_ref", catalog["references"])
+        self.assertIn("artifact_reference.artifact_kind", catalog["metadata"])
+        self.assertIn("artifact_reference.content_hash", catalog["hashes"])
+        self.assertIn("artifact_reference.uri", catalog["references"])
+        self.assertIn("artifact_reference.repository_id", catalog["references"])
+        self.assertIn("artifact_reference.run_id", catalog["references"])
+        self.assertIn("artifact_reference.context_pack_id", catalog["references"])
+        self.assertIn("artifact_reference.snapshot_id", catalog["references"])
         self.assertIn("run_event.agent", catalog["metadata"])
         self.assertIn("cost_event.phase", catalog["metadata"])
         self.assertIn("audit_event.provider_call", catalog["metadata"])
@@ -412,6 +660,7 @@ class ServerIngestionContractTests(unittest.TestCase):
         self.assertIn("context_event.context_pack_id", catalog["references"])
         self.assertIn("repository.bounded_snippets[].content", catalog["bounded_snippets"])
         self.assertIn("repository.full_source", catalog["forbidden_full_source"])
+        self.assertIn("large inline artifact bodies in metadata", catalog["forbidden_full_source"])
         self.assertIn("raw file contents outside bounded snippets", catalog["forbidden_full_source"])
 
 

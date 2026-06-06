@@ -1,6 +1,6 @@
 # Server Ingestion Contract
 
-AgentRail server ingestion is metadata-first. The local indexer or runner may submit workspace, team, API key auth metadata, repository, codebase unit, indexer, run, review gate, source custody policy, billing configuration, index snapshot, graph metadata, context-pack metadata, run event, cost event, and audit event records without uploading full source code.
+AgentRail server ingestion is metadata-first. The local indexer or runner may submit workspace, team, API key auth metadata, repository, codebase unit, indexer, run, review gate, source custody policy, billing configuration, index snapshot, graph metadata, context-pack metadata, artifact references, run event, cost event, and audit event records without uploading full source code or large artifact bodies.
 
 The first contract is represented by `agentrail.server.ingestion` and is intentionally a service-domain prototype, not a production HTTP API or storage writer.
 
@@ -8,7 +8,7 @@ The first contract is represented by `agentrail.server.ingestion` and is intenti
 
 Product/auth and workflow truth records use `InMemoryProductAuthStore`, the local prototype stand-in for Postgres product state. This includes workspaces, teams, API key auth metadata, repositories, codebase units, indexers, runs, review gates, source custody policies, and billing configuration.
 
-Append-only telemetry and artifact metadata use `InMemoryTelemetryStore`, the local prototype stand-in for ClickHouse-style event or analytics state. This includes index snapshots, graph metadata, context-pack metadata, run events, cost events, audit events, failure events, command events, and context events.
+Append-only telemetry and artifact metadata use `InMemoryTelemetryStore`, the local prototype stand-in for ClickHouse-style event or analytics state. This includes index snapshots, graph metadata, context-pack metadata, artifact references, run events, cost events, audit events, failure events, command events, and context events.
 
 Tests must prove product/auth writes do not call the telemetry store path.
 
@@ -24,7 +24,7 @@ Default policy:
 }
 ```
 
-Full source content is forbidden by this contract. Bounded cited snippets may be accepted only when Source Custody Policy explicitly sets `allow_bounded_snippets` and a nonzero `max_snippet_chars`.
+Full source content is forbidden by this contract. Large logs, transcripts, evidence bundles, screenshots, index snapshots, and context-pack artifacts are also forbidden inline; submit them as object-storage artifact references with bounded metadata instead. Bounded cited snippets may be accepted only when Source Custody Policy explicitly sets `allow_bounded_snippets` and a nonzero `max_snippet_chars`.
 
 Invalid custody and payload combinations must return validation errors and must not write records.
 
@@ -43,6 +43,7 @@ Invalid custody and payload combinations must return validation errors and must 
 - `index_snapshot`: indexed commit SHA, source hashes, freshness metadata, ingestion health, and graph metadata reference.
 - `graph_metadata`: graph identity, snapshot reference, deterministic flag, node/edge counts, metadata, and object reference.
 - `context_pack_metadata`: context-pack identity, target, citations, content hash, artifact reference, and metadata.
+- `artifact_reference`: object-storage reference for large `log`, `transcript`, `evidence_bundle`, `screenshot`, `index_snapshot`, or `context_pack` artifacts. The reference carries workspace, repository, URI, content hash, size, content type, and bounded metadata. Run artifacts also carry `run_id`, index snapshot artifacts carry `snapshot_id`, and context-pack artifacts carry `context_pack_id`.
 - `run_event`: run timeline event metadata.
 - `cost_event`: provider/model cost metadata.
 - `audit_event`: actor, action, provider call, redaction, context inclusion/exclusion, and policy decision metadata.
@@ -52,14 +53,14 @@ Invalid custody and payload combinations must return validation errors and must 
 
 ## Field Categories
 
-Metadata fields include workspace display names, team names, API key scopes and actors, repository names, codebase unit names and kinds, indexer health, run status, review gate status, source custody modes, billing plans, graph counts, run event types, phases, severities, agents, timestamps, cost provider/model values, audit actions or decisions, audit provider-call/redaction/context/policy metadata, failure metadata, command metadata, and context event decisions.
+Metadata fields include workspace display names, team names, API key scopes and actors, repository names, codebase unit names and kinds, indexer health, run status, review gate status, source custody modes, billing plans, graph counts, artifact kinds, artifact sizes, artifact content types, run event types, phases, severities, agents, timestamps, cost provider/model values, audit actions or decisions, audit provider-call/redaction/context/policy metadata, failure metadata, command metadata, and context event decisions.
 
-Hash fields include API key hashes, commit SHAs, repository and index snapshot source hashes, context-pack content hashes, and bounded snippet content hashes.
+Hash fields include API key hashes, commit SHAs, repository and index snapshot source hashes, context-pack content hashes, artifact content hashes, and bounded snippet content hashes.
 
-Reference fields include workspace IDs, team IDs, API key IDs, repository IDs, codebase unit IDs, indexer IDs, run IDs, event IDs, review gate IDs, billing account references, repository remote URLs, graph metadata references, graph object references, context-pack artifact references, context-pack citations, and review gate evidence references.
+Reference fields include workspace IDs, team IDs, API key IDs, repository IDs, codebase unit IDs, indexer IDs, run IDs, event IDs, review gate IDs, billing account references, repository remote URLs, graph metadata references, graph object references, context-pack artifact references, artifact IDs, artifact object URIs, artifact run/context-pack/snapshot associations, context-pack citations, and review gate evidence references.
 
 Dashboard timeline filters are backed by normalized append-only telemetry records with workspace ID, repository ID, run ID, agent, phase, event type, severity, and occurred-at timestamp fields where applicable. Time range filtering uses inclusive ISO 8601 timestamp bounds in this prototype.
 
 Bounded snippet fields include snippet path, citation, start line, end line, content, and content hash. Snippet content must be cited, line-bounded, and within the policy's maximum size.
 
-Forbidden full-source fields include `repository.full_source`, complete source files, source archives, and raw file contents outside bounded snippets.
+Forbidden full-source and artifact-body fields include `repository.full_source`, complete source files, source archives, raw file contents outside bounded snippets, and large inline artifact bodies in metadata fields such as logs, transcripts, screenshots, evidence bundles, snapshots, or context-pack payloads. Inline artifact body values over 4096 characters must be represented by an `artifact_reference` payload.

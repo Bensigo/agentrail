@@ -329,7 +329,7 @@ def chunks_for_source(source: SourceRecord, relative_path: str, text: str) -> Li
     return chunks
 
 
-def skip_event(target_dir: Path, cfg: ContextConfig, skipped_records: List[Dict[str, str]], path_value: str, reason: str) -> None:
+def skip_event(target_dir: Path, cfg: ContextConfig, skipped_records: List[Dict[str, Any]], path_value: str, reason: str) -> None:
     secret_path = cfg.secretRedaction.enabled and matches_any(cfg.secretRedaction.denyGlobs, path_value)
     if secret_path:
         redacted_path = "[REDACTED:secret_path]"
@@ -338,10 +338,23 @@ def skip_event(target_dir: Path, cfg: ContextConfig, skipped_records: List[Dict[
         result = redact_text(path_value)
         redacted_path = result.text
         redactions = result.findings
+    source_id = f"skipped:{sha256_text(path_value)[7:23]}"
+    visibility = "denied" if reason in {"denied_path", "secret_path", "exclude_glob"} else "metadata-only"
+    authority = "denied" if reason in {"denied_path", "secret_path"} else "low"
     event: Dict[str, Any] = {"event": "skipped_file", "path": redacted_path, "reason": reason}
     if redactions:
         event["redactions"] = [finding.to_json() for finding in redactions]
-    skipped_records.append({"path": redacted_path, "reason": reason})
+    skipped_records.append(
+        {
+            "sourceId": source_id,
+            "path": redacted_path,
+            "reason": reason,
+            "authority": authority,
+            "visibility": visibility,
+            "freshness": {"status": "unknown", "observedAt": None, "expiresAt": None},
+            "redactions": [finding.to_json() for finding in redactions],
+        }
+    )
     append_audit(target_dir, event)
 
 
@@ -366,7 +379,7 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
     chunks: List[ChunkRecord] = []
     skipped = 0
     redaction_count = 0
-    skipped_records: List[Dict[str, str]] = []
+    skipped_records: List[Dict[str, Any]] = []
 
     for file in walked:
         if file.directory:

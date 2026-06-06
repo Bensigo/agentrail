@@ -271,7 +271,7 @@ Every `context-compiler-v1` object includes:
 
 `candidates` distinguish `source_evidence`, `procedural_guidance`, and `excluded_context`. Source evidence can justify implementation and review decisions. Skills, tools, and review gates are procedural guidance only; they do not prove source behavior.
 
-Default policy is metadata-only source custody, redaction enabled, denied sources excluded from included context, and explicit authority/freshness metadata on candidates when available.
+Default policy is metadata-only source custody, snippet upload disabled unless policy explicitly allows it, redaction enabled, denied sources excluded from included context, and explicit authority/freshness policy effects on candidates when available.
 
 ## MCP-Compatible Provider Tools
 

@@ -195,6 +195,21 @@ PY
 "$agentrail" context build issue 79 --phase execute --target "$fixture" --json >"${tmp_dir}/issue-pack.out"
 "$agentrail" context build pr 179 --phase review --target "$fixture" --json >"${tmp_dir}/pr-pack.out"
 
+node - "${tmp_dir}/issue-pack.out" "${tmp_dir}/pr-pack.out" <<'NODE'
+const fs = require("fs");
+for (const outputPath of process.argv.slice(2)) {
+  const output = JSON.parse(fs.readFileSync(outputPath, "utf8"));
+  if (!output.retrievalBudget || output.retrievalBudget.maxItems !== 20 || output.retrievalBudget.maxTokens !== 6000) {
+    console.error(`context build output retrieval budget is wrong: ${JSON.stringify(output.retrievalBudget)}`);
+    process.exit(1);
+  }
+  if (JSON.stringify(output.compiler?.tokenPack?.budget) !== JSON.stringify(output.retrievalBudget)) {
+    console.error(`context build compiler token budget does not match retrieval budget: ${JSON.stringify(output)}`);
+    process.exit(1);
+  }
+}
+NODE
+
 issue_json_path="$(node - "${tmp_dir}/issue-pack.out" <<'NODE'
 const fs = require("fs");
 const output = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
@@ -273,6 +288,10 @@ for (const pack of [issue, pr]) {
     console.error(`${pack.packId} compiler token budget is wrong: ${JSON.stringify(compiler.tokenPack.budget)}`);
     process.exit(1);
   }
+  if (JSON.stringify(compiler.tokenPack.budget) !== JSON.stringify(pack.retrievalBudget)) {
+    console.error(`${pack.packId} compiler token budget does not match pack retrieval budget: ${JSON.stringify({ compiler: compiler.tokenPack.budget, pack: pack.retrievalBudget })}`);
+    process.exit(1);
+  }
   if (!Array.isArray(compiler.anchors) || compiler.anchors.length === 0) {
     console.error(`${pack.packId} compiler anchors were not exposed in pack metadata`);
     process.exit(1);
@@ -308,6 +327,32 @@ for (const pack of [issue, pr]) {
   if (!compiler.candidates.some((candidate) => candidate.kind === "excluded_context")) {
     console.error(`${pack.packId} compiler did not represent excluded context`);
     process.exit(1);
+  }
+  const excludedCandidateIds = compiler.candidates
+    .filter((candidate) => candidate.kind === "excluded_context")
+    .map((candidate) => candidate.id);
+  if (new Set(excludedCandidateIds).size !== excludedCandidateIds.length) {
+    console.error(`${pack.packId} excluded compiler candidate IDs were not unique: ${JSON.stringify(excludedCandidateIds)}`);
+    process.exit(1);
+  }
+  for (const candidate of compiler.candidates) {
+    const policy = candidate.policy || {};
+    if (!policy.sourceCustody || policy.sourceCustody.mode !== "metadata_only" || policy.sourceCustody.snippetUploadAllowed !== false || policy.sourceCustody.snippetUploadEligible !== false) {
+      console.error(`${pack.packId} candidate missing source custody policy: ${JSON.stringify(candidate)}`);
+      process.exit(1);
+    }
+    if (!policy.redaction || !["none", "redacted", "excluded"].includes(policy.redaction.state)) {
+      console.error(`${pack.packId} candidate missing redaction state: ${JSON.stringify(candidate)}`);
+      process.exit(1);
+    }
+    if (!policy.authorityPolicy || !["boosted", "neutral", "demoted", "excluded"].includes(policy.authorityPolicy.effect)) {
+      console.error(`${pack.packId} candidate missing authority policy effect: ${JSON.stringify(candidate)}`);
+      process.exit(1);
+    }
+    if (!policy.freshnessPolicy || !["neutral", "demoted", "excluded"].includes(policy.freshnessPolicy.effect)) {
+      console.error(`${pack.packId} candidate missing freshness policy effect: ${JSON.stringify(candidate)}`);
+      process.exit(1);
+    }
   }
   if (compiler.compatibility.packIncludedMapTo !== "compiler.tokenPack.selectedCandidateIds" || compiler.compatibility.packExcludedMapTo !== "compiler.candidates[kind=excluded_context]") {
     console.error(`${pack.packId} compiler compatibility mapping is wrong: ${JSON.stringify(compiler.compatibility)}`);

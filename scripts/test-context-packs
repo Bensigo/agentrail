@@ -273,6 +273,10 @@ for (const pack of [issue, pr]) {
     console.error(`${pack.packId} compiler token budget is wrong: ${JSON.stringify(compiler.tokenPack.budget)}`);
     process.exit(1);
   }
+  if (!Array.isArray(compiler.anchors) || compiler.anchors.length === 0) {
+    console.error(`${pack.packId} compiler anchors were not exposed in pack metadata`);
+    process.exit(1);
+  }
   if (compiler.graphExpansion.status !== "not_available" || compiler.graphExpansion.maxHops !== 2) {
     console.error(`${pack.packId} graph expansion metadata is wrong: ${JSON.stringify(compiler.graphExpansion)}`);
     process.exit(1);
@@ -309,6 +313,14 @@ for (const pack of [issue, pr]) {
     console.error(`${pack.packId} compiler compatibility mapping is wrong: ${JSON.stringify(compiler.compatibility)}`);
     process.exit(1);
   }
+}
+if (!issue.compiler.anchors.some((anchor) => anchor.kind === "issue" && anchor.source === "target" && anchor.normalized === "#79")) {
+  console.error(`issue pack compiler anchors did not include target issue #79: ${JSON.stringify(issue.compiler.anchors)}`);
+  process.exit(1);
+}
+if (!pr.compiler.anchors.some((anchor) => anchor.kind === "pull_request" && anchor.source === "target" && anchor.normalized === "PR #179")) {
+  console.error(`PR pack compiler anchors did not include target PR #179: ${JSON.stringify(pr.compiler.anchors)}`);
+  process.exit(1);
 }
 if (!issue.likelyFiles.some((item) => item.path === "src/context_pack.py")) {
   console.error("issue pack did not include likely source file");

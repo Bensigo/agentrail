@@ -86,6 +86,107 @@ def _safe_anchor_value(root: Optional[Path], value: str) -> Optional[str]:
     return value
 
 
+def _append_text_anchor(
+    anchors: List[Dict[str, str]],
+    seen: Set[Tuple[str, str]],
+    *,
+    root: Optional[Path],
+    kind: str,
+    value: str,
+    source: str,
+    reason: str,
+) -> None:
+    cleaned = value.strip(".,;[]{}\"'")
+    if not cleaned:
+        return
+    safe_value = _safe_anchor_value(root, cleaned)
+    if safe_value is None:
+        return
+    _append_anchor(
+        anchors,
+        seen,
+        kind=kind,
+        value=safe_value,
+        normalized=safe_value,
+        source=source,
+        confidence="exact",
+        reason=reason,
+    )
+
+
+def _path_like_matches(text: str) -> Iterable[str]:
+    for match in re.finditer(r"(?<![A-Za-z0-9_])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+", text):
+        value = match.group(0).strip(".,:;()[]{}\"'")
+        if "://" in value or not value:
+            continue
+        yield value
+
+
+def _test_matches(text: str) -> Iterable[str]:
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_./-])"
+        r"(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.(?:py|js|jsx|ts|tsx|rb|go|rs|java|kt|php)"
+        r"(?:::[A-Za-z_][A-Za-z0-9_]*)+"
+    )
+    for match in pattern.finditer(text):
+        yield match.group(0).strip(".,;()[]{}\"'")
+
+
+def _command_matches(text: str) -> Iterable[str]:
+    command_pattern = re.compile(
+        r"\b("
+        r"agentrail\s+(?:context\s+(?:query|build|show|explain|evaluate|sources|index|embed)|memory\s+recall|status|resume|doctor|run\s+issue\s+\d+)"
+        r"|bash\s+scripts/[A-Za-z0-9_.-]+"
+        r"|python3?\s+-m\s+unittest(?:\s+[A-Za-z0-9_./:-]+)?"
+        r"|pytest(?:\s+[A-Za-z0-9_./:-]+)?"
+        r"|npm\s+(?:test|run\s+[A-Za-z0-9_.-]+)"
+        r"|pnpm\s+(?:test|run\s+[A-Za-z0-9_.-]+)"
+        r"|yarn\s+(?:test|run\s+[A-Za-z0-9_.-]+)"
+        r")\b"
+    )
+    for match in command_pattern.finditer(text):
+        yield re.sub(r"\s+", " ", match.group(1).strip())
+
+
+def _symbol_matches(text: str) -> Iterable[str]:
+    patterns = [
+        r"(?<![A-Za-z0-9_.])(?:[A-Za-z_][A-Za-z0-9_]*::)+[A-Za-z_][A-Za-z0-9_]*",
+        r"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]{2,})\(\)",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            value = match.group(0).strip(".,;[]{}\"'")
+            if "/" in value:
+                continue
+            if re.search(r"\.(?:py|js|jsx|ts|tsx|rb|go|rs|java|kt|php)(?:::|$)", value):
+                continue
+            if "_" not in value and "::" not in value and "." not in value and not value.endswith("()") and not re.search(r"[a-z][A-Z]|[A-Z][a-z]", value):
+                continue
+            yield value
+
+
+def _error_matches(text: str) -> Iterable[str]:
+    error_prefix = re.compile(
+        r"\b((?:[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Failure)|AssertionError|RuntimeError|ValueError|TypeError|SyntaxError|ImportError|ModuleNotFoundError|FAILED|ERROR):\s+.+)"
+    )
+    for line in text.splitlines():
+        compact = re.sub(r"\s+", " ", line).strip()
+        if not compact or redact_text(compact).findings:
+            continue
+        match = error_prefix.search(compact)
+        if not match:
+            continue
+        value = re.split(
+            r"\s+(?=(?:agentrail|bash|python3?|pytest|npm|pnpm|yarn)\b|(?:[A-Za-z0-9_.-]+/)+)",
+            match.group(1),
+            maxsplit=1,
+        )[0]
+        words = value.split()
+        if len(words) > 8:
+            value = " ".join(words[:8])
+        yield value[:160].rstrip()
+
+
 def extract_anchors(
     text: str,
     *,
@@ -140,40 +241,16 @@ def extract_anchors(
             confidence="exact",
             reason="Pull request reference found in task text.",
         )
-    for match in re.finditer(r"(?<![A-Za-z0-9_])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+", text):
-        value = match.group(0).strip(".,:;()[]{}\"'")
-        if "://" in value or not value:
-            continue
-        safe_value = _safe_anchor_value(root, value)
-        if safe_value is None:
-            continue
-        _append_anchor(
-            anchors,
-            seen,
-            kind="path",
-            value=safe_value,
-            normalized=safe_value,
-            source=source,
-            confidence="exact",
-            reason="Repo-relative path found in task text.",
-        )
-    for command in re.findall(
-        r"\b(?:agentrail\s+context\s+(?:query|build|show|explain|evaluate|sources|index|embed)|bash\s+scripts/[A-Za-z0-9_.-]+|npm\s+(?:test|run\s+[A-Za-z0-9_.-]+))\b",
-        text,
-    ):
-        safe_value = _safe_anchor_value(root, command)
-        if safe_value is None:
-            continue
-        _append_anchor(
-            anchors,
-            seen,
-            kind="command",
-            value=safe_value,
-            normalized=safe_value,
-            source=source,
-            confidence="exact",
-            reason="Command reference found in task text.",
-        )
+    for value in _test_matches(text):
+        _append_text_anchor(anchors, seen, root=root, kind="test", value=value, source=source, reason="Test identifier found in task text.")
+    for value in _path_like_matches(text):
+        _append_text_anchor(anchors, seen, root=root, kind="path", value=value, source=source, reason="Repo-relative path found in task text.")
+    for command in _command_matches(text):
+        _append_text_anchor(anchors, seen, root=root, kind="command", value=command, source=source, reason="Command reference found in task text.")
+    for symbol in _symbol_matches(text):
+        _append_text_anchor(anchors, seen, root=root, kind="symbol", value=symbol, source=source, reason="Symbol identifier found in task text.")
+    for error in _error_matches(text):
+        _append_text_anchor(anchors, seen, root=root, kind="error", value=error, source=source, reason="Error text found in task text.")
     return anchors
 
 

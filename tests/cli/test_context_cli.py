@@ -105,8 +105,14 @@ class ContextCliTests(unittest.TestCase):
         (root / "src").mkdir()
         (root / "src" / "provider.py").write_text("def context_provider_surface():\n    return 'issue #83 provider interface'\n", encoding="utf-8")
 
+        query_text = (
+            "issue #83 PR #44 provider interface src/provider.py "
+            "context_provider_surface() RuntimeError: context build failed "
+            "bash scripts/test-context-query "
+            "tests/context/test_context_modules.py::ContextModuleTests::test_anchor_extraction"
+        )
         query_result = subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "context", "query", "issue #83 provider interface src/provider.py", "--target", str(root), "--json", "--limit", "3"],
+            [str(repo / "scripts" / "agentrail"), "context", "query", query_text, "--target", str(root), "--json", "--limit", "3"],
             check=True,
             stdout=subprocess.PIPE,
             text=True,
@@ -115,12 +121,18 @@ class ContextCliTests(unittest.TestCase):
         self.assertEqual(query["command"], "context.query")
         self.assertEqual(query["schemaVersion"], 1)
         self.assertEqual(query["limit"], 3)
-        self.assertEqual(query["target"], {"kind": "query", "query": "issue #83 provider interface src/provider.py"})
+        self.assertEqual(query["target"], {"kind": "query", "query": query_text})
         self.assertIn("provider", query)
         self.assertIn("audit", query)
         assert_compiler_contract(self, query["compiler"], expected_budget={"maxItems": 3, "maxTokens": None})
-        self.assertTrue(any(anchor["kind"] == "issue" and anchor["normalized"] == "#83" for anchor in query["compiler"]["anchors"]))
-        self.assertTrue(any(anchor["kind"] == "path" and anchor["normalized"] == "src/provider.py" for anchor in query["compiler"]["anchors"]))
+        query_anchors = {(anchor["kind"], anchor["normalized"]) for anchor in query["compiler"]["anchors"]}
+        self.assertIn(("issue", "#83"), query_anchors)
+        self.assertIn(("pull_request", "PR #44"), query_anchors)
+        self.assertIn(("path", "src/provider.py"), query_anchors)
+        self.assertIn(("symbol", "context_provider_surface()"), query_anchors)
+        self.assertIn(("command", "bash scripts/test-context-query"), query_anchors)
+        self.assertIn(("test", "tests/context/test_context_modules.py::ContextModuleTests::test_anchor_extraction"), query_anchors)
+        self.assertIn(("error", "RuntimeError: context build failed"), query_anchors)
         self.assertEqual(query["compiler"]["input"]["kind"], "query")
         self.assertEqual(query["compiler"]["compatibility"]["queryResultsMapTo"], "compiler.candidates[kind=source_evidence]")
         self.assertTrue(query["results"])
@@ -152,6 +164,8 @@ class ContextCliTests(unittest.TestCase):
         self.assertTrue(any(anchor["kind"] == "issue" and anchor["source"] == "target" and anchor["normalized"] == "#83" for anchor in built["compiler"]["anchors"]))
         self.assertEqual(built["compiler"]["compatibility"]["packIncludedMapTo"], "compiler.tokenPack.selectedCandidateIds")
         self.assertTrue((root / built["jsonPath"]).exists())
+        saved_pack = json.loads((root / built["jsonPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(saved_pack["compiler"]["anchors"], built["compiler"]["anchors"])
 
         show_result = subprocess.run(
             [str(repo / "scripts" / "agentrail"), "context", "show", built["packId"], "--target", str(root), "--json"],
@@ -164,6 +178,7 @@ class ContextCliTests(unittest.TestCase):
         self.assertEqual(shown["packId"], built["packId"])
         self.assertEqual(shown["target"], {"kind": "issue", "number": 83, "phase": "execute"})
         assert_compiler_contract(self, shown["compiler"], expected_budget={"maxItems": 20, "maxTokens": 6000})
+        self.assertEqual(shown["compiler"]["anchors"], built["compiler"]["anchors"])
         self.assertIn("included", shown)
         self.assertTrue(all(item.get("citation") and item.get("reason") for item in shown["included"]))
         self.assertTrue(any(candidate["kind"] == "procedural_guidance" and candidate["sourceType"] == "skill" for candidate in shown["compiler"]["candidates"]))

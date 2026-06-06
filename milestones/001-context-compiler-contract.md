@@ -1,5 +1,7 @@
 # Milestone 001: Context Compiler Contract
 
+Status: Completed
+
 ## Source PRD
 
 docs/prd/context-compiler-enterprise-control-plane.md
@@ -26,11 +28,11 @@ This milestone may touch:
 
 ## Acceptance Criteria
 
-- [ ] A Context Compiler contract is documented with stable fields for anchors, candidates, graph expansion, policy decisions, rerank result, token pack, citations, reasons, and metrics.
-- [ ] Existing context query/build JSON remains backward compatible or includes an explicit compatibility path.
-- [ ] Every included and excluded compiler result has a citation and reason.
-- [ ] Compiler output includes explicit token budget metadata even before advanced packing is implemented.
-- [ ] Tests verify the contract shape from the public CLI boundary.
+- [x] A Context Compiler contract is documented with stable fields for anchors, candidates, graph expansion, policy decisions, rerank result, token pack, citations, reasons, and metrics.
+- [x] Existing context query/build JSON remains backward compatible or includes an explicit compatibility path.
+- [x] Every included and excluded compiler result has a citation and reason.
+- [x] Compiler output includes explicit token budget metadata even before advanced packing is implemented.
+- [x] Tests verify the contract shape from the public CLI boundary.
 
 ## Test Plan
 
@@ -55,3 +57,9 @@ None.
 ## Notes
 
 This milestone should not build the full deterministic Code Graph. It should create the contract that later graph, reranking, token packing, and server ingestion work can rely on.
+
+Completion evidence:
+
+- `agentrail/context/compiler.py` exposes `context-compiler-v1` helpers for anchors, candidates, graph expansion metadata, policy metadata, rerank metadata, token pack metadata, citations, reasons, metrics, and compatibility mappings.
+- `agentrail context query` and `agentrail context build` keep legacy JSON while adding the `compiler` object.
+- `bash scripts/test-python`, `bash scripts/test-context-query`, and `bash scripts/test-context-packs` pass.

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from agentrail.context.compiler import compiler_contract
 from agentrail.context.config import read_context_config
 from agentrail.context.embeddings import embedding_config_hash, provider_name, configured_model, run_custom_command, run_openai_compatible
 from agentrail.context.index import append_audit, build_index, load_index
@@ -301,7 +302,18 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
     for entry in scored:
         source = entry["source"]
         if source.get("authority") == "denied" or source.get("visibility") == "denied":
-            excluded.append({"sourceType": source.get("sourceType"), "path": source.get("path"), "reason": "denied_source", "citation": source.get("path")})
+            excluded.append(
+                {
+                    "sourceType": source.get("sourceType"),
+                    "path": source.get("path"),
+                    "reason": "denied_source",
+                    "citation": source.get("path"),
+                    "authority": source.get("authority"),
+                    "visibility": source.get("visibility"),
+                    "freshness": source.get("freshness"),
+                    "redactions": source.get("redactions", []),
+                }
+            )
             continue
         item_id = str((entry["chunk"] or {}).get("id") or source.get("id"))
         entry["score"]["rrf"] = reciprocal_rank(lexical_rank.get(item_id, 0)) + reciprocal_rank(semantic_rank.get(item_id, 0))
@@ -315,7 +327,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         source = entry["source"]
         chunk = entry["chunk"]
         score = {key: (None if value is None else round(float(value), 6)) for key, value in entry["score"].items()}
-        formatted.append({"rank": rank, "kind": "indexed_context", "sourceType": source.get("sourceType"), "path": source.get("path"), "sourceId": source.get("id"), "chunkId": (chunk or {}).get("id"), "citation": (chunk or {}).get("citation") or source.get("path"), "reason": build_reason(entry["reasons"]), "contentHash": source.get("contentHash"), "textHash": (chunk or {}).get("textHash"), "headingPath": (chunk or {}).get("headingPath", []), "parentContext": (chunk or {}).get("parentContext") or source.get("path"), "matchContext": " > ".join([value for value in [source.get("path"), (chunk or {}).get("parentContext"), *((chunk or {}).get("headingPath", []))] if value]), "symbolHints": (chunk or {}).get("symbolHints", []), "importHints": (chunk or {}).get("importHints", []), "memory": (chunk or {}).get("memory") or source.get("memory"), "priorMistake": (chunk or {}).get("priorMistake") or source.get("priorMistake"), "content": bounded_content(source, chunk), "score": score})
+        formatted.append({"rank": rank, "kind": "indexed_context", "sourceType": source.get("sourceType"), "path": source.get("path"), "sourceId": source.get("id"), "chunkId": (chunk or {}).get("id"), "citation": (chunk or {}).get("citation") or source.get("path"), "reason": build_reason(entry["reasons"]), "contentHash": source.get("contentHash"), "textHash": (chunk or {}).get("textHash"), "headingPath": (chunk or {}).get("headingPath", []), "parentContext": (chunk or {}).get("parentContext") or source.get("path"), "matchContext": " > ".join([value for value in [source.get("path"), (chunk or {}).get("parentContext"), *((chunk or {}).get("headingPath", []))] if value]), "symbolHints": (chunk or {}).get("symbolHints", []), "importHints": (chunk or {}).get("importHints", []), "memory": (chunk or {}).get("memory") or source.get("memory"), "priorMistake": (chunk or {}).get("priorMistake") or source.get("priorMistake"), "authority": source.get("authority"), "visibility": source.get("visibility"), "freshness": source.get("freshness"), "redactions": source.get("redactions", []), "content": bounded_content(source, chunk), "score": score})
     audit = {
         "event": "context_query",
         "citation": ".agentrail/context/audit/events.jsonl",
@@ -336,6 +348,18 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         "audit": audit,
         "results": formatted,
         "excluded": excluded,
+        "compiler": compiler_contract(
+            "query",
+            query,
+            root=root,
+            token_budget={"maxItems": limit, "maxTokens": None},
+            source_items=formatted,
+            excluded_items=excluded,
+            compatibility={
+                "queryResultsMapTo": "compiler.candidates[kind=source_evidence]",
+                "queryExcludedMapTo": "compiler.candidates[kind=excluded_context]",
+            },
+        ),
     }
     append_audit(root, audit)
     return output

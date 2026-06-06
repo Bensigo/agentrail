@@ -223,6 +223,53 @@ if (result.results.some((item) => item.path === "[REDACTED:secret_path]" || item
   console.error("denied secret source appeared as an included result");
   process.exit(1);
 }
+const compiler = result.compiler;
+if (!compiler || compiler.contractVersion !== "context-compiler-v1") {
+  console.error("query output omitted context compiler contract");
+  process.exit(1);
+}
+for (const section of ["input", "anchors", "candidates", "graphExpansion", "policy", "rerank", "tokenPack", "citations", "reasons", "metrics", "compatibility"]) {
+  if (!(section in compiler)) {
+    console.error(`compiler missing ${section}`);
+    process.exit(1);
+  }
+}
+if (!compiler.anchors.some((anchor) => anchor.kind === "issue" && anchor.normalized === "#78")) {
+  console.error("compiler anchors did not include issue #78");
+  process.exit(1);
+}
+if (compiler.graphExpansion.status !== "not_available" || compiler.graphExpansion.maxHops !== 2) {
+  console.error(`compiler graph expansion metadata is not stable: ${JSON.stringify(compiler.graphExpansion)}`);
+  process.exit(1);
+}
+if (compiler.tokenPack.budget.maxItems !== 20 || compiler.tokenPack.budget.maxTokens !== null) {
+  console.error(`compiler query token budget is wrong: ${JSON.stringify(compiler.tokenPack.budget)}`);
+  process.exit(1);
+}
+if (compiler.policy.sourceCustody.fullSourceUploadAllowed || compiler.policy.sourceCustody.snippetUploadAllowed) {
+  console.error("compiler source custody policy allowed source upload by default");
+  process.exit(1);
+}
+if (compiler.policy.deniedSourceHandling !== "excluded_context_only") {
+  console.error(`compiler denied source handling is wrong: ${compiler.policy.deniedSourceHandling}`);
+  process.exit(1);
+}
+if (compiler.metrics.citationCoverage !== 1 || compiler.metrics.reasonCoverage !== 1) {
+  console.error(`compiler coverage metrics are wrong: ${JSON.stringify(compiler.metrics)}`);
+  process.exit(1);
+}
+if (!compiler.candidates.some((candidate) => candidate.kind === "source_evidence" && candidate.citation && candidate.reason && candidate.policy)) {
+  console.error("compiler candidates did not include cited source evidence");
+  process.exit(1);
+}
+if (!compiler.candidates.some((candidate) => candidate.kind === "excluded_context")) {
+  console.error("compiler candidates did not include excluded context");
+  process.exit(1);
+}
+if (compiler.compatibility.queryResultsMapTo !== "compiler.candidates[kind=source_evidence]") {
+  console.error(`compiler query compatibility mapping is wrong: ${JSON.stringify(compiler.compatibility)}`);
+  process.exit(1);
+}
 NODE
 
 node - "${tmp_dir}/path.json" <<'NODE'

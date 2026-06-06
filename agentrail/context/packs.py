@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from agentrail.context.compiler import compiler_contract
 from agentrail.context.index import append_audit, load_index
 from agentrail.context.retrieval import query_context
 from agentrail.shared.json import write_json
@@ -373,7 +374,8 @@ def build_context_pack(target_dir: Path, target_kind: str, target_number: int, p
         raise RuntimeError("context build phase must be one of: issue plan|execute|verify, pr review")
 
     retrieval_budget = {"maxItems": 20, "maxTokens": 6000}
-    query = query_context(root, _query_for(target_kind, target_number, phase), limit=retrieval_budget["maxItems"])
+    query_text = _query_for(target_kind, target_number, phase)
+    query = query_context(root, query_text, limit=retrieval_budget["maxItems"])
     index = load_index(root)
     sections = _sectioned_results(query.get("results", []))
     for result in _target_linked_items(index, target_kind, target_number):
@@ -410,6 +412,25 @@ def build_context_pack(target_dir: Path, target_kind: str, target_number: int, p
     }
     pack["included"] = _all_included(pack)
     pack["excluded"] = pack["excludedContext"]
+    pack["compiler"] = compiler_contract(
+        target_kind,
+        query_text,
+        root=root,
+        phase=phase,
+        target_kind=target_kind,
+        target_number=target_number,
+        token_budget=retrieval_budget,
+        source_items=pack["included"],
+        excluded_items=pack["excludedContext"],
+        compatibility={
+            "generatedPackJsonPath": _relative(root, json_path),
+            "generatedPackMarkdownPath": _relative(root, md_path),
+            "packIncludedMapTo": "compiler.tokenPack.selectedCandidateIds",
+            "packExcludedMapTo": "compiler.candidates[kind=excluded_context]",
+            "skillsMapTo": "compiler.candidates[kind=procedural_guidance]",
+        },
+        token_pack_strategy="compat_pack_sections_until_token_estimator_exists",
+    )
     write_json(json_path, pack)
     md_path.write_text(render_context_pack_markdown(pack), encoding="utf-8")
     append_audit(
@@ -436,6 +457,7 @@ def build_context_pack(target_dir: Path, target_kind: str, target_number: int, p
         "index": pack["index"],
         "provider": pack["provider"],
         "audit": audit,
+        "compiler": pack["compiler"],
     }
 
 

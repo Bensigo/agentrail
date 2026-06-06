@@ -62,6 +62,7 @@ def load_fixtures(path: Path) -> List[Dict[str, Any]]:
             "limit": int(fixture.get("limit") or 10),
             "requiredSources": _string_list(fixture.get("requiredSources"), "requiredSources"),
             "optionalProviderEnv": _string_list(fixture.get("optionalProviderEnv"), "optionalProviderEnv"),
+            "minPrecisionAtBudget": float(fixture.get("minPrecisionAtBudget", 0.0) or 0.0),
         }
         for key in FIXTURE_KEYS:
             item[key] = _string_list(fixture.get(key), key)
@@ -264,6 +265,32 @@ def _budget_metadata_presence(query: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _precision_at_budget(top_results: List[Dict[str, Any]], relevant_paths: List[str], required_sources: List[str], limit: int) -> Dict[str, Any]:
+    considered = top_results[:limit]
+    relevant = set(relevant_paths or required_sources)
+    if not considered:
+        precision = 1.0 if not relevant else 0.0
+    else:
+        precision = len([item for item in considered if item.get("path") in relevant]) / len(considered)
+    noisy = [item for item in considered if item.get("path") not in relevant]
+    dropped_required = [path for path in required_sources if path not in {str(item.get("path")) for item in considered}]
+    return {
+        "precision": round(precision, 6),
+        "budget": {"maxItems": limit, "maxTokens": None},
+        "relevantSources": sorted(relevant),
+        "droppedRequiredSources": dropped_required,
+        "noisyCandidates": [
+            {
+                "path": item.get("path"),
+                "candidateId": item.get("candidateId"),
+                "rank": item.get("rank"),
+                "reason": item.get("reason"),
+            }
+            for item in noisy
+        ],
+    }
+
+
 def _graph_expansion_metrics(query: Dict[str, Any], expected_graph_sources: List[str]) -> Dict[str, Any]:
     compiler = _compiler(query)
     expansion = compiler.get("graphExpansion") if compiler else None
@@ -365,7 +392,8 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
             }
         embed_context(target_dir)
 
-    query = query_context(target_dir, fixture["task"], limit=max(10, int(fixture.get("limit") or 10)))
+    fixture_limit = int(fixture.get("limit") or 10)
+    query = query_context(target_dir, fixture["task"], limit=fixture_limit)
     results = query.get("results", [])
     selected_candidates = _selected_compiler_candidates(query)
     included_paths = _included_paths(query, results)
@@ -383,6 +411,7 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
     reason_coverage = _field_coverage(top_results, "reason")
     budget_metadata = _budget_metadata_presence(query)
     graph_expansion = _graph_expansion_metrics(query, fixture.get("expectedGraphExpandedSources", []))
+    precision_at_budget = _precision_at_budget(top_results, _unique(expected + required), required, fixture_limit)
     stale_or_denied_leakage = _stale_or_denied_leakage(query, selected_candidates, excluded, all_result_paths)
     failures: List[str] = []
     if missing_required:
@@ -402,6 +431,14 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
             failures.append(f"compiler budget metadata does not match retrievalBudget: compiler={budget_metadata['budget']} retrievalBudget={budget_metadata['retrievalBudget']}")
     if not graph_expansion["passed"]:
         failures.append(f"graph expansion missing expected sources: {', '.join(graph_expansion['missingExpectedSources'])}")
+    min_precision = float(fixture.get("minPrecisionAtBudget") or 0.0)
+    if precision_at_budget["precision"] < min_precision:
+        failures.append(
+            "precision at budget below threshold: "
+            f"precision={precision_at_budget['precision']} min={min_precision} "
+            f"droppedRequiredSources={', '.join(precision_at_budget['droppedRequiredSources']) or 'none'} "
+            f"noisyCandidates={', '.join(str(item.get('path')) for item in precision_at_budget['noisyCandidates']) or 'none'}"
+        )
     metrics = {
         "requiredSourceInclusion": {
             "passed": not missing_required,
@@ -420,6 +457,7 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
         "staleOrDeniedLeakage": stale_or_denied_leakage,
         "budgetMetadataPresence": budget_metadata,
         "graphExpansion": graph_expansion,
+        "precisionAtBudget": precision_at_budget,
     }
     return {
         "name": fixture["name"],
@@ -477,7 +515,8 @@ def format_evaluation_report(report: Dict[str, Any]) -> str:
             f"citationCoverage={metrics['citationCoverage']} "
             f"reasonCoverage={metrics['reasonCoverage']} "
             f"budgetMetadataPresence={metrics['budgetMetadataPresence']['passed']} "
-            f"graphExpansion={metrics['graphExpansion']['passed']}"
+            f"graphExpansion={metrics['graphExpansion']['passed']} "
+            f"precisionAtBudget={metrics['precisionAtBudget']['precision']}"
         )
         for failure in fixture["failures"]:
             lines.append(f"  failure: {failure}")

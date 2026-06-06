@@ -115,6 +115,7 @@ node - "${fixture}/.agentrail/config.json" <<'NODE'
 const fs = require("fs");
 const configPath = process.argv[2];
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.excludeGlobs = [...(config.context.excludeGlobs || []), "retrieval-fixtures.json", "broken-fixtures.json"];
 config.context.externalSources = [
   {
     id: "external:denied-eval",
@@ -174,12 +175,35 @@ cat >"${fixture}/retrieval-fixtures.json" <<'JSON'
       "expectedPriorMistakes": [],
       "expectedExcludedSources": [".env", "external://denied-eval"],
       "expectedGraphExpandedSources": ["tests/graph_relation.test.js"]
+    },
+    {
+      "name": "small-budget-required-sources",
+      "task": "graphRelationSubject() tests/graph_relation.test.js",
+      "limit": 2,
+      "requiredSources": [
+        "src/graph_relation.js",
+        "tests/graph_relation.test.js"
+      ],
+      "expectedFiles": [
+        "src/graph_relation.js",
+        "tests/graph_relation.test.js"
+      ],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": ["tests/graph_relation.test.js"],
+      "minPrecisionAtBudget": 1
     }
   ]
 }
 JSON
 
-"$agentrail" context evaluate "${fixture}/retrieval-fixtures.json" --target "$fixture" --json >"${tmp_dir}/eval.json"
+if ! "$agentrail" context evaluate "${fixture}/retrieval-fixtures.json" --target "$fixture" --json >"${tmp_dir}/eval.json"; then
+  echo "context evaluation fixture suite failed" >&2
+  cat "${tmp_dir}/eval.json" >&2
+  exit 1
+fi
 "$agentrail" context evaluate "${fixture}/retrieval-fixtures.json" --target "$fixture" >"${tmp_dir}/eval.txt"
 
 node - "${tmp_dir}/eval.json" <<'NODE'
@@ -189,7 +213,7 @@ if (!report.passed) {
   console.error(JSON.stringify(report, null, 2));
   process.exit(1);
 }
-if (report.summary.fixtures !== 3 || report.summary.passed !== 2 || report.summary.skipped !== 1) {
+if (report.summary.fixtures !== 4 || report.summary.passed !== 3 || report.summary.skipped !== 1) {
   console.error(`unexpected summary: ${JSON.stringify(report.summary)}`);
   process.exit(1);
 }
@@ -222,6 +246,10 @@ if (!local.metrics.budgetMetadataPresence.passed) {
 }
 if (!("graphExpansion" in local.metrics)) {
   console.error("evaluation report did not include graph expansion metrics");
+  process.exit(1);
+}
+if (!("precisionAtBudget" in local.metrics)) {
+  console.error("evaluation report did not include precision-at-budget metrics");
   process.exit(1);
 }
 if (local.metrics.reasonCoverage !== 1) {
@@ -266,6 +294,23 @@ if (!relationship.metrics.graphExpansion.addedCandidateIds.includes("tests/graph
   console.error(`relationship-heavy fixture did not record graph-expanded test source: ${JSON.stringify(relationship.metrics.graphExpansion.addedCandidateIds)}`);
   process.exit(1);
 }
+const budget = report.fixtures.find((fixture) => fixture.name === "small-budget-required-sources");
+if (!budget || budget.status !== "passed") {
+  console.error(`small-budget fixture did not pass: ${JSON.stringify(budget)}`);
+  process.exit(1);
+}
+if (budget.metrics.budgetMetadataPresence.budget.maxItems !== 2 || budget.metrics.budgetMetadataPresence.retrievalBudget.maxItems !== 2) {
+  console.error(`small-budget fixture did not preserve maxItems metadata: ${JSON.stringify(budget.metrics.budgetMetadataPresence)}`);
+  process.exit(1);
+}
+if (budget.metrics.precisionAtBudget.precision !== 1) {
+  console.error(`small-budget fixture precision was not exact: ${JSON.stringify(budget.metrics.precisionAtBudget)}`);
+  process.exit(1);
+}
+if (budget.metrics.precisionAtBudget.droppedRequiredSources.length !== 0) {
+  console.error(`small-budget fixture dropped required sources: ${JSON.stringify(budget.metrics.precisionAtBudget)}`);
+  process.exit(1);
+}
 NODE
 
 cat >"${fixture}/broken-fixtures.json" <<'JSON'
@@ -294,6 +339,7 @@ assert_grep "docs/agents/missing-required.md" "${tmp_dir}/broken.json" "missing 
 assert_grep "reasonCoverage" "${tmp_dir}/eval.txt" "text report did not include reason coverage"
 assert_grep "budgetMetadataPresence" "${tmp_dir}/eval.txt" "text report did not include budget metadata presence"
 assert_grep "graphExpansion=True" "${tmp_dir}/eval.txt" "text report did not include graph expansion pass evidence"
+assert_grep "precisionAtBudget=" "${tmp_dir}/eval.txt" "text report did not include precision-at-budget evidence"
 
 echo "context evaluation test passed"
 echo "evaluation report output:"

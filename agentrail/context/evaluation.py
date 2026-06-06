@@ -227,6 +227,20 @@ def _describe_top_result(item: Dict[str, Any]) -> str:
     return " (".join([details[0], ", ".join(details[1:]) + ")"]) if len(details) > 1 else details[0]
 
 
+def _nearest_candidates(top_results: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
+    return [
+        {
+            "rank": item.get("rank"),
+            "path": item.get("path"),
+            "candidateId": item.get("candidateId"),
+            "citation": item.get("citation"),
+            "reason": item.get("reason"),
+            "score": item.get("score"),
+        }
+        for item in top_results[:limit]
+    ]
+
+
 def _budget_metadata_presence(query: Dict[str, Any]) -> Dict[str, Any]:
     compiler = _compiler(query)
     missing_fields: List[str] = []
@@ -414,23 +428,51 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
     precision_at_budget = _precision_at_budget(top_results, _unique(expected + required), required, fixture_limit)
     stale_or_denied_leakage = _stale_or_denied_leakage(query, selected_candidates, excluded, all_result_paths)
     failures: List[str] = []
+    failure_details: List[Dict[str, Any]] = []
     if missing_required:
         failures.append(f"missing required sources: {', '.join(missing_required)}")
+        for path in missing_required:
+            failure_details.append(
+                {
+                    "kind": "missing_required_source",
+                    "fixture": fixture["name"],
+                    "expectedPath": path,
+                    "nearestIncludedCandidates": _nearest_candidates(top_results),
+                }
+            )
     if leaked_excluded:
         failures.append(f"excluded sources appeared in results: {', '.join(leaked_excluded)}")
+        for path in leaked_excluded:
+            failure_details.append({"kind": "excluded_source_included", "fixture": fixture["name"], "path": path})
     if citation_coverage["missing"]:
         failures.append(f"top results missing citations: {', '.join(_describe_top_result(item) for item in citation_coverage['missing'])}")
+        failure_details.append({"kind": "citation_coverage", "fixture": fixture["name"], "missingCandidates": citation_coverage["missing"]})
     if reason_coverage["missing"]:
         failures.append(f"top results missing reasons: {', '.join(_describe_top_result(item) for item in reason_coverage['missing'])}")
+        failure_details.append({"kind": "reason_coverage", "fixture": fixture["name"], "missingCandidates": reason_coverage["missing"]})
     if not stale_or_denied_leakage["passed"]:
         failures.append(f"leaked denied/stale sources: {', '.join(stale_or_denied_leakage['leaked'])}")
+        failure_details.append({"kind": "stale_or_denied_leakage", "fixture": fixture["name"], "leaked": stale_or_denied_leakage["items"]})
     if not budget_metadata["passed"]:
         if budget_metadata["missingFields"]:
             failures.append(f"missing compiler budget metadata: {', '.join(budget_metadata['missingFields'])}")
         else:
             failures.append(f"compiler budget metadata does not match retrievalBudget: compiler={budget_metadata['budget']} retrievalBudget={budget_metadata['retrievalBudget']}")
+        failure_details.append({"kind": "budget_metadata", "fixture": fixture["name"], **budget_metadata})
     if not graph_expansion["passed"]:
         failures.append(f"graph expansion missing expected sources: {', '.join(graph_expansion['missingExpectedSources'])}")
+        failure_details.append(
+            {
+                "kind": "graph_expansion",
+                "fixture": fixture["name"],
+                "missingExpectedSources": graph_expansion["missingExpectedSources"],
+                "status": graph_expansion["status"],
+                "maxHops": graph_expansion["maxHops"],
+                "startedFromAnchors": graph_expansion["startedFromAnchors"],
+                "addedCandidateIds": graph_expansion["addedCandidateIds"],
+                "budgetImpact": precision_at_budget,
+            }
+        )
     min_precision = float(fixture.get("minPrecisionAtBudget") or 0.0)
     if precision_at_budget["precision"] < min_precision:
         failures.append(
@@ -439,6 +481,7 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
             f"droppedRequiredSources={', '.join(precision_at_budget['droppedRequiredSources']) or 'none'} "
             f"noisyCandidates={', '.join(str(item.get('path')) for item in precision_at_budget['noisyCandidates']) or 'none'}"
         )
+        failure_details.append({"kind": "precision_at_budget", "fixture": fixture["name"], "minimum": min_precision, **precision_at_budget})
     metrics = {
         "requiredSourceInclusion": {
             "passed": not missing_required,
@@ -466,6 +509,7 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
         "provider": query.get("provider"),
         "metrics": metrics,
         "failures": failures,
+        "failureDetails": failure_details,
         "topResults": top_results,
         "excluded": query.get("excluded", []),
     }
@@ -520,4 +564,6 @@ def format_evaluation_report(report: Dict[str, Any]) -> str:
         )
         for failure in fixture["failures"]:
             lines.append(f"  failure: {failure}")
+        for detail in fixture.get("failureDetails", []):
+            lines.append(f"  detail: {json.dumps(detail, sort_keys=True)}")
     return "\n".join(lines)

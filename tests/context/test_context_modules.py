@@ -95,6 +95,10 @@ class ContextModuleTests(unittest.TestCase):
         (root / "src").mkdir()
         (root / "src" / "app.py").write_text("def agentrail_context_subject():\n    return 'issue #92'\n", encoding="utf-8")
         (root / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "config", "user.email", "agentrail@example.com"], check=True)
+        subprocess.run(["git", "-C", str(root), "config", "user.name", "AgentRail Test"], check=True)
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "Initial fixture"], check=True)
         return root
 
     def test_redaction_replaces_secret_values(self) -> None:
@@ -146,6 +150,10 @@ class ContextModuleTests(unittest.TestCase):
         root = self.make_repo()
         summary = build_index(root)
         self.assertGreater(summary["indexed"], 0)
+        self.assertIn("commitSha", summary)
+        self.assertGreater(summary["graphNodes"], 0)
+        self.assertGreater(summary["graphEdges"], 0)
+        self.assertEqual(summary["ingestionHealth"]["status"], "healthy")
         query = query_context(root, "issue #92 context engine", limit=5)
         self.assertTrue(any(item["path"] == "docs/agents/issue-92.md" for item in query["results"]))
         self.assertEqual(query["compiler"]["contractVersion"], "context-compiler-v1")
@@ -218,6 +226,29 @@ class ContextModuleTests(unittest.TestCase):
         markdown = (root / output["markdownPath"]).read_text(encoding="utf-8")
         self.assertIn("## Required Context", markdown)
         self.assertIn("## Excluded Context", markdown)
+
+    def test_local_index_emits_deterministic_graph_snapshot_metadata(self) -> None:
+        root = self.make_repo()
+        build_index(root)
+        index = json.loads((root / ".agentrail" / "context" / "index" / "index.json").read_text(encoding="utf-8"))
+
+        snapshot = index["snapshot"]
+        self.assertEqual(snapshot["version"], "index-snapshot-v1")
+        self.assertIsNotNone(snapshot["commitSha"])
+        self.assertTrue(snapshot["sourceHashes"]["src/app.py"].startswith("sha256:"))
+        self.assertEqual(snapshot["freshness"]["src/app.py"]["status"], "current")
+        self.assertEqual(snapshot["ingestionHealth"]["status"], "healthy")
+        self.assertFalse(snapshot["sourceCustody"]["fullSourceUploadAllowed"])
+        self.assertFalse(snapshot["sourceCustody"]["snippetUploadAllowed"])
+
+        graph = index["graph"]
+        self.assertEqual(graph["version"], "code-graph-v1")
+        self.assertEqual(graph["authority"], "deterministic")
+        self.assertFalse(graph["llmGeneratedAuthoritative"])
+        self.assertFalse(graph["enrichment"]["llmGeneratedAuthoritative"])
+        file_node = next(node for node in graph["nodes"] if node["kind"] == "file" and node["path"] == "src/app.py")
+        chunk_node = next(node for node in graph["nodes"] if node["kind"] == "chunk" and node["path"] == "src/app.py")
+        self.assertTrue(any(edge["kind"] == "contains_chunk" and edge["from"] == file_node["id"] and edge["to"] == chunk_node["id"] for edge in graph["edges"]))
 
     def test_pr_review_pack_show_and_explain_are_callable(self) -> None:
         root = self.make_repo()

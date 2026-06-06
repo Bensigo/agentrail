@@ -7,7 +7,10 @@ from agentrail.server.ingestion import (
     AuditEventSubmission,
     BillingConfigurationSubmission,
     CodebaseUnitSubmission,
+    CommandEventSubmission,
+    ContextEventSubmission,
     CostEventSubmission,
+    FailureEventSubmission,
     IndexerSubmission,
     IngestionEnvelope,
     RepositorySubmission,
@@ -183,6 +186,7 @@ class ProductAuthIngestionTests(unittest.TestCase):
                 phase="execute",
                 severity="info",
                 occurred_at="2026-06-06T14:43:00Z",
+                agent="codex",
                 metadata={"agent": "codex"},
             ),
             CostEventSubmission(
@@ -192,6 +196,8 @@ class ProductAuthIngestionTests(unittest.TestCase):
                 model="gpt-5.5",
                 cost_usd=1.25,
                 occurred_at="2026-06-06T14:44:00Z",
+                agent="codex",
+                phase="execute",
                 metadata={"unit": "tokens"},
             ),
             AuditEventSubmission(
@@ -200,7 +206,42 @@ class ProductAuthIngestionTests(unittest.TestCase):
                 action="source_custody_decision",
                 decision="metadata_only",
                 occurred_at="2026-06-06T14:45:00Z",
+                run_id="run_123",
+                agent="codex",
+                phase="context",
                 metadata={"policy": "default"},
+            ),
+            FailureEventSubmission(
+                event_id="failure_event_123",
+                run_id="run_123",
+                event_type="test_failure",
+                phase="verify",
+                severity="error",
+                occurred_at="2026-06-06T14:46:00Z",
+                agent="codex",
+                failure_type="unit_test",
+            ),
+            CommandEventSubmission(
+                event_id="command_event_123",
+                run_id="run_123",
+                command="python3 -m unittest",
+                event_type="command_finished",
+                phase="verify",
+                severity="info",
+                occurred_at="2026-06-06T14:47:00Z",
+                agent="codex",
+                exit_code=0,
+            ),
+            ContextEventSubmission(
+                event_id="context_event_123",
+                run_id="run_123",
+                event_type="context_included",
+                phase="context",
+                severity="info",
+                occurred_at="2026-06-06T14:48:00Z",
+                agent="codex",
+                context_pack_id="pack_123",
+                decision="included",
             ),
         ]
 
@@ -215,7 +256,7 @@ class ProductAuthIngestionTests(unittest.TestCase):
 
         self.assertEqual(
             [record.payload.submission_kind for record in telemetry_store.records],
-            ["run_event", "cost_event", "audit_event"],
+            ["run_event", "cost_event", "audit_event", "failure_event", "command_event", "context_event"],
         )
 
 

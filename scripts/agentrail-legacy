@@ -5693,6 +5693,29 @@ for (const goal of relevant) {
 NODE
 }
 
+bounded_phase_text() {
+  local text="${1:-}"
+  local label="${2:-phase text}"
+  local max_chars="${AGENTRAIL_PHASE_INLINE_MAX_CHARS:-24000}"
+
+  if [[ -z "$text" ]]; then
+    return 0
+  fi
+
+  if ! [[ "$max_chars" =~ ^[1-9][0-9]*$ ]]; then
+    max_chars="24000"
+  fi
+
+  local text_chars="${#text}"
+  if (( text_chars <= max_chars )); then
+    printf '%s\n' "$text"
+    return 0
+  fi
+
+  printf '%s\n' "${text:0:max_chars}"
+  printf '\n[AgentRail truncated %s: shown first %s of %s characters. See the phase output artifact for the full text.]\n' "$label" "$max_chars" "$text_chars"
+}
+
 issue_run_phase_prompt() {
   local phase="$1"
   local issue="$2"
@@ -5704,7 +5727,7 @@ issue_run_phase_prompt() {
   local execution_attempt="${8:-1}"
   local max_execution_attempts="${9:-$agentrail_default_max_execution_attempts}"
   local context_summary="${10:-}"
-  local evidence pr_refs verifier_findings_text active_goal_text
+  local evidence pr_refs verifier_findings_text active_goal_text bounded_plan_output
 
   case "$phase" in
     plan)
@@ -5733,8 +5756,9 @@ Do not edit files in this phase.
 PROMPT
       ;;
     execute)
+      bounded_plan_output="$(bounded_phase_text "$plan_output" "approved plan output")"
       if [[ -n "$verifier_findings_file" && -f "$verifier_findings_file" ]]; then
-        verifier_findings_text="$(cat "$verifier_findings_file")"
+        verifier_findings_text="$(bounded_phase_text "$(cat "$verifier_findings_file")" "verifier findings")"
       else
         verifier_findings_text=""
       fi
@@ -5749,7 +5773,7 @@ Phase context pack:
 ${context_summary}
 
 Approved plan from the plan phase:
-${plan_output}
+${bounded_plan_output}
 
 Base Ralph instructions:
 ${base_prompt}
@@ -5767,6 +5791,7 @@ Ralph must implement the approved plan only, keep the work scoped to issue #${is
 PROMPT
       ;;
     verify)
+      bounded_plan_output="$(bounded_phase_text "$plan_output" "approved plan output")"
       evidence="$(implementation_evidence "$target_dir")"
       pr_refs="$(pr_reference_text "$target_dir" "$issue")"
       active_goal_text="$(active_goal_success_criteria_text "$target_dir" "$issue")"
@@ -5780,7 +5805,7 @@ Phase context pack:
 ${context_summary}
 
 Approved plan from the plan phase:
-${plan_output}
+${bounded_plan_output}
 
 Implementation evidence from the working tree:
 ${evidence}

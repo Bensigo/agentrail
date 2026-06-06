@@ -4,7 +4,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from agentrail.context.config import read_context_config
 from agentrail.context.embeddings import embed_context
@@ -89,17 +89,218 @@ def _paths(results: Iterable[Dict[str, Any]]) -> List[str]:
     return [str(item.get("path") or "") for item in results if item.get("path")]
 
 
+def _compiler(query: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    compiler = query.get("compiler")
+    return compiler if isinstance(compiler, dict) else None
+
+
+def _compiler_candidates(query: Dict[str, Any]) -> List[Dict[str, Any]]:
+    compiler = _compiler(query)
+    if not compiler or not isinstance(compiler.get("candidates"), list):
+        return []
+    return [item for item in compiler["candidates"] if isinstance(item, dict)]
+
+
+def _candidate_lookup(query: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    lookup: Dict[str, Dict[str, Any]] = {}
+    for candidate in _compiler_candidates(query):
+        candidate_id = candidate.get("id")
+        if candidate_id:
+            lookup[str(candidate_id)] = candidate
+    return lookup
+
+
+def _selected_compiler_candidates(query: Dict[str, Any]) -> List[Dict[str, Any]]:
+    compiler = _compiler(query)
+    if not compiler:
+        return []
+    token_pack = compiler.get("tokenPack")
+    selected_ids = token_pack.get("selectedCandidateIds") if isinstance(token_pack, dict) else None
+    if not isinstance(selected_ids, list):
+        return []
+    lookup = _candidate_lookup(query)
+    selected: List[Dict[str, Any]] = []
+    for candidate_id in selected_ids:
+        candidate = lookup.get(str(candidate_id))
+        if candidate and candidate.get("kind") != "excluded_context":
+            selected.append(candidate)
+    return selected
+
+
+def _result_candidate_id(item: Dict[str, Any]) -> str:
+    for field in ("chunkId", "sourceId", "citation", "path"):
+        value = item.get(field)
+        if value:
+            return str(value)
+    return "candidate:unknown"
+
+
+def _score_final(item: Dict[str, Any]) -> Any:
+    score = item.get("score")
+    if isinstance(score, dict):
+        return score.get("final")
+    return None
+
+
+def _top_result_details(query: Dict[str, Any], results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    by_candidate_id = {_result_candidate_id(item): item for item in results}
+    by_path = {str(item.get("path")): item for item in results if item.get("path")}
+    selected = _selected_compiler_candidates(query)
+    if selected:
+        details: List[Dict[str, Any]] = []
+        for index, candidate in enumerate(selected[:10], 1):
+            candidate_id = str(candidate.get("id") or "")
+            legacy = by_candidate_id.get(candidate_id) or by_path.get(str(candidate.get("path")))
+            details.append(
+                {
+                    "rank": (legacy or {}).get("rank") or index,
+                    "candidateId": candidate_id,
+                    "path": candidate.get("path"),
+                    "citation": candidate.get("citation"),
+                    "reason": candidate.get("reason"),
+                    "sourceType": candidate.get("sourceType"),
+                    "policy": candidate.get("policy"),
+                    "score": _score_final(candidate) if _score_final(candidate) is not None else _score_final(legacy or {}),
+                }
+            )
+        return details
+    return [
+        {
+            "rank": item.get("rank"),
+            "candidateId": _result_candidate_id(item),
+            "path": item.get("path"),
+            "citation": item.get("citation"),
+            "reason": item.get("reason"),
+            "sourceType": item.get("sourceType"),
+            "policy": {
+                "visibility": item.get("visibility"),
+                "authority": item.get("authority"),
+                "freshness": (item.get("freshness") or {}).get("status") if isinstance(item.get("freshness"), dict) else item.get("freshness"),
+            },
+            "score": _score_final(item),
+        }
+        for item in results[:10]
+    ]
+
+
+def _included_paths(query: Dict[str, Any], results: List[Dict[str, Any]]) -> List[str]:
+    if _compiler(query):
+        return _paths(_selected_compiler_candidates(query))
+    return _paths(results)
+
+
 def _recall(expected: List[str], paths: Set[str]) -> float:
     if not expected:
         return 1.0
     return len([path for path in expected if path in paths]) / len(expected)
 
 
-def _citation_coverage(results: List[Dict[str, Any]]) -> float:
-    if not results:
-        return 1.0
-    cited = [item for item in results if item.get("citation")]
-    return len(cited) / len(results)
+def _has_field_value(item: Dict[str, Any], field: str) -> bool:
+    value = item.get(field)
+    if not isinstance(value, str):
+        return bool(value)
+    if not value.strip():
+        return False
+    if field == "reason" and value.strip() == "No reason recorded.":
+        return False
+    return True
+
+
+def _field_coverage(items: List[Dict[str, Any]], field: str) -> Dict[str, Any]:
+    if not items:
+        return {"coverage": 1.0, "missing": []}
+    missing = [item for item in items if not _has_field_value(item, field)]
+    return {"coverage": (len(items) - len(missing)) / len(items), "missing": missing}
+
+
+def _describe_top_result(item: Dict[str, Any]) -> str:
+    path = item.get("path") or "<unknown path>"
+    rank = item.get("rank")
+    candidate_id = item.get("candidateId")
+    details = [str(path)]
+    if rank:
+        details.append(f"rank {rank}")
+    if candidate_id:
+        details.append(f"candidate {candidate_id}")
+    return " (".join([details[0], ", ".join(details[1:]) + ")"]) if len(details) > 1 else details[0]
+
+
+def _budget_metadata_presence(query: Dict[str, Any]) -> Dict[str, Any]:
+    compiler = _compiler(query)
+    missing_fields: List[str] = []
+    if not compiler:
+        missing_fields.append("compiler")
+        return {
+            "passed": False,
+            "budget": None,
+            "retrievalBudget": query.get("retrievalBudget"),
+            "missingFields": missing_fields,
+            "matchesRetrievalBudget": None,
+        }
+    token_pack = compiler.get("tokenPack")
+    if not isinstance(token_pack, dict):
+        missing_fields.append("compiler.tokenPack")
+        budget = None
+    else:
+        budget = token_pack.get("budget")
+        if not isinstance(budget, dict):
+            missing_fields.append("compiler.tokenPack.budget")
+            budget = None
+    if isinstance(budget, dict):
+        for field in ("maxItems", "maxTokens"):
+            if field not in budget:
+                missing_fields.append(f"compiler.tokenPack.budget.{field}")
+    retrieval_budget = query.get("retrievalBudget")
+    matches = None
+    if isinstance(budget, dict) and isinstance(retrieval_budget, dict) and not missing_fields:
+        matches = budget.get("maxItems") == retrieval_budget.get("maxItems") and budget.get("maxTokens") == retrieval_budget.get("maxTokens")
+    return {
+        "passed": not missing_fields and matches is not False,
+        "budget": budget,
+        "retrievalBudget": retrieval_budget,
+        "missingFields": missing_fields,
+        "matchesRetrievalBudget": matches,
+    }
+
+
+def _candidate_leaks(candidate: Dict[str, Any]) -> bool:
+    policy = candidate.get("policy")
+    if not isinstance(policy, dict):
+        return False
+    return policy.get("visibility") == "denied" or policy.get("authority") == "denied" or policy.get("freshness") in {"stale", "expired"}
+
+
+def _add_leak(leaks: List[Dict[str, Any]], seen: Set[str], *, path: Any, candidate_id: Any = None, reason: str) -> None:
+    key = str(path or candidate_id)
+    if key in seen:
+        return
+    seen.add(key)
+    leaks.append({"path": path, "candidateId": candidate_id, "reason": reason})
+
+
+def _stale_or_denied_leakage(query: Dict[str, Any], selected_candidates: List[Dict[str, Any]], expected_excluded: List[str], included_paths: Set[str]) -> Dict[str, Any]:
+    leaks: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    for path in expected_excluded:
+        if path in included_paths:
+            _add_leak(leaks, seen, path=path, reason="expected excluded source appeared in included results")
+    for candidate in selected_candidates:
+        if _candidate_leaks(candidate):
+            _add_leak(leaks, seen, path=candidate.get("path"), candidate_id=candidate.get("id"), reason="compiler policy marks selected candidate stale or denied")
+    compiler = _compiler(query)
+    compiler_leakage = ((compiler or {}).get("metrics") or {}).get("staleOrDeniedLeakage")
+    if isinstance(compiler_leakage, dict):
+        for item in compiler_leakage.get("items") or []:
+            if isinstance(item, dict):
+                _add_leak(leaks, seen, path=item.get("path"), candidate_id=item.get("candidateId"), reason="compiler metrics reported stale or denied leakage")
+        for path in compiler_leakage.get("paths") or []:
+            _add_leak(leaks, seen, path=path, reason="compiler metrics reported stale or denied leakage")
+    return {
+        "passed": not leaks,
+        "expectedExcludedSources": expected_excluded,
+        "leaked": [str(item.get("path") or item.get("candidateId")) for item in leaks if item.get("path") or item.get("candidateId")],
+        "items": leaks,
+    }
 
 
 def _provider_env_ready(fixture: Dict[str, Any], target_dir: Path) -> bool:
@@ -139,23 +340,38 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
 
     query = query_context(target_dir, fixture["task"], limit=max(10, int(fixture.get("limit") or 10)))
     results = query.get("results", [])
+    selected_candidates = _selected_compiler_candidates(query)
+    included_paths = _included_paths(query, results)
     result_paths = _paths(results)
+    top_results = _top_result_details(query, results)
     top5 = set(result_paths[:5])
     top10 = set(result_paths[:10])
-    all_result_paths = set(result_paths)
+    all_result_paths = set(included_paths)
     required = _unique(list(fixture.get("requiredSources", [])) or _expected_included(fixture))
     expected = _expected_included(fixture)
     excluded = _unique(fixture.get("expectedExcludedSources", []))
     missing_required = [path for path in required if path not in all_result_paths]
     leaked_excluded = [path for path in excluded if path in all_result_paths]
-    citation_coverage = _citation_coverage(results[:10])
+    citation_coverage = _field_coverage(top_results, "citation")
+    reason_coverage = _field_coverage(top_results, "reason")
+    budget_metadata = _budget_metadata_presence(query)
+    stale_or_denied_leakage = _stale_or_denied_leakage(query, selected_candidates, excluded, all_result_paths)
     failures: List[str] = []
     if missing_required:
         failures.append(f"missing required sources: {', '.join(missing_required)}")
     if leaked_excluded:
         failures.append(f"excluded sources appeared in results: {', '.join(leaked_excluded)}")
-    if citation_coverage < 1:
-        failures.append("one or more top-10 results are missing citations")
+    if citation_coverage["missing"]:
+        failures.append(f"top results missing citations: {', '.join(_describe_top_result(item) for item in citation_coverage['missing'])}")
+    if reason_coverage["missing"]:
+        failures.append(f"top results missing reasons: {', '.join(_describe_top_result(item) for item in reason_coverage['missing'])}")
+    if not stale_or_denied_leakage["passed"]:
+        failures.append(f"leaked denied/stale sources: {', '.join(stale_or_denied_leakage['leaked'])}")
+    if not budget_metadata["passed"]:
+        if budget_metadata["missingFields"]:
+            failures.append(f"missing compiler budget metadata: {', '.join(budget_metadata['missingFields'])}")
+        else:
+            failures.append(f"compiler budget metadata does not match retrievalBudget: compiler={budget_metadata['budget']} retrievalBudget={budget_metadata['retrievalBudget']}")
     metrics = {
         "requiredSourceInclusion": {
             "passed": not missing_required,
@@ -169,7 +385,10 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
             "expectedExcludedSources": excluded,
             "leaked": leaked_excluded,
         },
-        "citationCoverage": round(citation_coverage, 6),
+        "citationCoverage": round(citation_coverage["coverage"], 6),
+        "reasonCoverage": round(reason_coverage["coverage"], 6),
+        "staleOrDeniedLeakage": stale_or_denied_leakage,
+        "budgetMetadataPresence": budget_metadata,
     }
     return {
         "name": fixture["name"],
@@ -178,10 +397,7 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
         "provider": query.get("provider"),
         "metrics": metrics,
         "failures": failures,
-        "topResults": [
-            {"rank": item.get("rank"), "path": item.get("path"), "citation": item.get("citation"), "reason": item.get("reason"), "score": item.get("score", {}).get("final")}
-            for item in results[:10]
-        ],
+        "topResults": top_results,
         "excluded": query.get("excluded", []),
     }
 
@@ -226,7 +442,10 @@ def format_evaluation_report(report: Dict[str, Any]) -> str:
             f"recall@5={metrics['recallAt5']} "
             f"recall@10={metrics['recallAt10']} "
             f"staleSourceExclusion={metrics['staleSourceExclusion']['passed']} "
-            f"citationCoverage={metrics['citationCoverage']}"
+            f"staleOrDeniedLeakage={metrics['staleOrDeniedLeakage']['passed']} "
+            f"citationCoverage={metrics['citationCoverage']} "
+            f"reasonCoverage={metrics['reasonCoverage']} "
+            f"budgetMetadataPresence={metrics['budgetMetadataPresence']['passed']}"
         )
         for failure in fixture["failures"]:
             lines.append(f"  failure: {failure}")

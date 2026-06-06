@@ -164,7 +164,7 @@ if (!local || local.status !== "passed") {
   console.error("local evaluation fixture did not pass");
   process.exit(1);
 }
-for (const field of ["requiredSourceInclusion", "recallAt5", "recallAt10", "staleSourceExclusion", "citationCoverage"]) {
+for (const field of ["requiredSourceInclusion", "recallAt5", "recallAt10", "staleSourceExclusion", "citationCoverage", "reasonCoverage", "budgetMetadataPresence", "staleOrDeniedLeakage"]) {
   if (!(field in local.metrics)) {
     console.error(`evaluation report missing ${field}`);
     process.exit(1);
@@ -176,6 +176,22 @@ if (!local.metrics.requiredSourceInclusion.passed) {
 }
 if (!local.metrics.staleSourceExclusion.passed) {
   console.error("stale/denied source exclusion did not pass");
+  process.exit(1);
+}
+if (!local.metrics.staleOrDeniedLeakage.passed) {
+  console.error("compiler stale/denied leakage check did not pass");
+  process.exit(1);
+}
+if (!local.metrics.budgetMetadataPresence.passed) {
+  console.error(`compiler budget metadata check did not pass: ${JSON.stringify(local.metrics.budgetMetadataPresence)}`);
+  process.exit(1);
+}
+if (local.metrics.reasonCoverage !== 1) {
+  console.error(`reason coverage was not complete: ${local.metrics.reasonCoverage}`);
+  process.exit(1);
+}
+if (!local.topResults.every((item) => item.candidateId)) {
+  console.error(`top results are missing candidate IDs: ${JSON.stringify(local.topResults)}`);
   process.exit(1);
 }
 if (local.topResults.some((item) => item.path === ".env" || item.path === "external://denied-eval")) {
@@ -212,6 +228,8 @@ if "$agentrail" context evaluate "${fixture}/broken-fixtures.json" --target "$fi
   exit 1
 fi
 assert_grep "docs/agents/missing-required.md" "${tmp_dir}/broken.json" "missing required source was not reported"
+assert_grep "reasonCoverage" "${tmp_dir}/eval.txt" "text report did not include reason coverage"
+assert_grep "budgetMetadataPresence" "${tmp_dir}/eval.txt" "text report did not include budget metadata presence"
 
 echo "context evaluation test passed"
 echo "evaluation report output:"

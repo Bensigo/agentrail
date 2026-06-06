@@ -409,6 +409,85 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             ],
         )
 
+    def test_context_pack_decision_citations_must_match_recorded_citation_ranges(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            inclusions=[
+                ContextPackDecision(
+                    item_id="agentrail/server/ingestion.py",
+                    citation="agentrail/server/ingestion.py:999999",
+                    reason="must not cite a line outside the recorded citation range",
+                )
+            ]
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation")],
+        )
+
+    def test_context_pack_source_hash_paths_are_not_scanned_as_metadata_keys(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            source_hashes={
+                "source_files": "sha256:source-files",
+                "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
+            },
+            anchors=[
+                ContextPackAnchor(
+                    anchor_id="anchor_source_files",
+                    path="source_files",
+                    citation="source_files:1",
+                    reason="repo path whose final segment matches a forbidden metadata key",
+                    start_line=1,
+                    end_line=1,
+                    source_hash="sha256:source-files",
+                )
+            ],
+            citations=[
+                ContextPackCitation(
+                    citation_id="citation_source_files",
+                    path="source_files",
+                    source_hash="sha256:source-files",
+                    start_line=1,
+                    end_line=1,
+                ),
+                ContextPackCitation(
+                    citation_id="citation_milestone",
+                    path="milestones/004-server-ingestion-spine.md",
+                    source_hash="sha256:milestone004",
+                    start_line=57,
+                    end_line=66,
+                )
+            ],
+            inclusions=[
+                ContextPackDecision(
+                    item_id="source_files",
+                    citation="source_files:1",
+                    reason="path-only source hash inventory must not be treated as inline source upload",
+                )
+            ],
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertTrue(result.accepted, result.errors)
+        self.assertEqual(len(telemetry_store.context_pack_metadata), 1)
+
     def test_context_pack_bounded_snippets_are_denied_by_default(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = _context_pack_metadata_submission(
@@ -600,7 +679,7 @@ def _context_pack_metadata_submission(
                 path="milestones/004-server-ingestion-spine.md",
                 source_hash="sha256:milestone004",
                 start_line=57,
-                end_line=57,
+                end_line=66,
             )
         ],
         inclusions=inclusions or [

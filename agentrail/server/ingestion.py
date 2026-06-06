@@ -853,8 +853,10 @@ def _validate_context_pack_metadata(
         )
     if anchors:
         errors.extend(_validate_context_pack_anchors(anchors, source_hashes))
+    citation_errors: List[ValidationError] = []
     if citations:
-        errors.extend(_validate_context_pack_citations(citations, source_hashes))
+        citation_errors = _validate_context_pack_citations(citations, source_hashes)
+        errors.extend(citation_errors)
     if not payload.inclusions:
         errors.append(
             ValidationError(
@@ -879,15 +881,10 @@ def _validate_context_pack_metadata(
                 message="Context-pack metadata must include quality metrics.",
             )
         )
-    citation_paths = {
-        citation.path
-        for citation in citations
-        if citation.path and citation.source_hash and source_hashes.get(citation.path) == citation.source_hash
-    }
-    if inclusions:
-        errors.extend(_validate_context_pack_decisions(inclusions, "payload.inclusions", source_hashes, citation_paths))
-    if exclusions:
-        errors.extend(_validate_context_pack_decisions(exclusions, "payload.exclusions", source_hashes, citation_paths))
+    if inclusions and not citation_errors:
+        errors.extend(_validate_context_pack_decisions(inclusions, "payload.inclusions", source_hashes, citations))
+    if exclusions and not citation_errors:
+        errors.extend(_validate_context_pack_decisions(exclusions, "payload.exclusions", source_hashes, citations))
     if payload.artifact_ref is not None and not payload.artifact_ref.startswith("object://"):
         errors.append(
             ValidationError(
@@ -1011,7 +1008,7 @@ def _validate_context_pack_decisions(
     decisions: List[ContextPackDecision],
     field_prefix: str,
     source_hashes: Mapping[str, str],
-    citation_paths: set[str],
+    citations: List[ContextPackCitation],
 ) -> List[ValidationError]:
     errors: List[ValidationError] = []
     for index, decision in enumerate(decisions):
@@ -1032,13 +1029,12 @@ def _validate_context_pack_decisions(
                 )
             )
         else:
-            citation_path = _citation_path(decision.citation)
-            if citation_paths and source_hashes and (citation_path not in citation_paths or citation_path not in source_hashes):
+            if citations and source_hashes and not _decision_citation_resolves(decision.citation, citations, source_hashes):
                 errors.append(
                     ValidationError(
                         code="context_pack_decision_citation_not_in_inventory",
                         field=f"{field_prefix}[{index}].citation",
-                        message="Context-pack decision citations must resolve to payload.citations and payload.source_hashes.",
+                        message="Context-pack decision citations must resolve to a recorded citation and payload.source_hashes.",
                     )
                 )
         if not decision.reason:
@@ -1052,8 +1048,35 @@ def _validate_context_pack_decisions(
     return errors
 
 
-def _citation_path(citation: str) -> str:
-    return citation.split("#", 1)[0].split(":", 1)[0]
+def _decision_citation_resolves(
+    decision_citation: str,
+    citations: List[ContextPackCitation],
+    source_hashes: Mapping[str, str],
+) -> bool:
+    decision_path, decision_line = _split_citation_reference(decision_citation)
+    for citation in citations:
+        if decision_citation == citation.citation_id:
+            return True
+        if not citation.path or source_hashes.get(citation.path) != citation.source_hash:
+            continue
+        if decision_path != citation.path:
+            continue
+        if decision_line is None:
+            return True
+        if citation.start_line is None:
+            return True
+        citation_end = citation.end_line if citation.end_line is not None else citation.start_line
+        if citation.start_line <= decision_line <= citation_end:
+            return True
+    return False
+
+
+def _split_citation_reference(citation: str) -> tuple[str, Optional[int]]:
+    path_part = citation.split("#", 1)[0]
+    path, separator, line_part = path_part.rpartition(":")
+    if not separator or not line_part.isdigit():
+        return path_part, None
+    return path, int(line_part)
 
 
 def _validate_bounded_snippets(
@@ -1149,7 +1172,7 @@ def _validate_source_custody_metadata(payload: IngestionPayload, policy: SourceC
     if not is_dataclass(payload):
         return errors
     for payload_field in fields(payload):
-        if payload_field.name == "bounded_snippets":
+        if payload_field.name in {"bounded_snippets", "source_hashes"}:
             continue
         value = getattr(payload, payload_field.name)
         if isinstance(value, (MappingABC, list)) or is_dataclass(value):

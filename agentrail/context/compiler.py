@@ -480,6 +480,7 @@ def compiler_contract(
     source_items: Optional[Iterable[Dict[str, Any]]] = None,
     procedural_items: Optional[Iterable[Dict[str, Any]]] = None,
     excluded_items: Optional[Iterable[Dict[str, Any]]] = None,
+    graph_expansion: Optional[Dict[str, Any]] = None,
     compatibility: Optional[Dict[str, Any]] = None,
     token_pack_strategy: str = "compat_max_items_until_token_estimator_exists",
 ) -> Dict[str, Any]:
@@ -510,7 +511,7 @@ def compiler_contract(
         },
         "anchors": extract_anchors(text, root=root, target_kind=target_kind, target_number=target_number),
         "candidates": candidates,
-        "graphExpansion": {
+        "graphExpansion": graph_expansion or {
             "status": "not_available",
             "maxHops": 2,
             "startedFromAnchors": [],

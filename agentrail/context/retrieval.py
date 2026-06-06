@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from agentrail.context.compiler import compiler_contract
+from agentrail.context.compiler import compiler_contract, extract_anchors
 from agentrail.context.config import read_context_config
 from agentrail.context.embeddings import embedding_config_hash, provider_name, configured_model, run_custom_command, run_openai_compatible
 from agentrail.context.index import append_audit, build_index, load_index
@@ -149,7 +149,7 @@ def reciprocal_rank(rank: int) -> float:
 
 
 def build_reason(parts: Set[str]) -> str:
-    ordered = ["deterministic required context", "active workflow state", "same issue prior failure", "prior mistake", "linked issue", "linked pull request", "exact identifier", "exact path", "BM25 keyword match", "embedding similarity", "high authority source", "current memory", "stale memory", "expired memory", "stale prior mistake", "resolved prior mistake", "unrelated prior mistake", "low authority source"]
+    ordered = ["deterministic required context", "active workflow state", "same issue prior failure", "prior mistake", "linked issue", "linked pull request", "exact identifier", "exact path", "graph expansion", "BM25 keyword match", "embedding similarity", "high authority source", "current memory", "stale memory", "expired memory", "stale prior mistake", "resolved prior mistake", "unrelated prior mistake", "low authority source"]
     return "; ".join(item for item in ordered if item in parts) or "Included by hybrid retrieval score."
 
 
@@ -169,10 +169,117 @@ def cosine_similarity(a: List[float], b: List[float]) -> float:
     return dot / (left_norm * right_norm) if left_norm and right_norm else 0.0
 
 
+def _normalized_anchor_symbol(value: str) -> str:
+    return value.strip().removesuffix("()")
+
+
+def _anchor_path(value: str) -> str:
+    return value.split("::", 1)[0].strip()
+
+
+def _graph_neighbors(graph: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    neighbors: Dict[str, List[Dict[str, Any]]] = {}
+    for edge in graph.get("edges", []):
+        if not isinstance(edge, dict):
+            continue
+        left = edge.get("from")
+        right = edge.get("to")
+        if not left or not right:
+            continue
+        neighbors.setdefault(str(left), []).append(edge)
+        reverse = dict(edge)
+        reverse["from"], reverse["to"] = right, left
+        reverse["reversed"] = True
+        neighbors.setdefault(str(right), []).append(reverse)
+    return neighbors
+
+
+def _anchor_start_nodes(index: Dict[str, Any], anchors: List[Dict[str, str]]) -> Tuple[List[str], List[Dict[str, Any]]]:
+    nodes = [node for node in index.get("graph", {}).get("nodes", []) if isinstance(node, dict)]
+    starts: List[str] = []
+    started_from: List[Dict[str, Any]] = []
+    for anchor in anchors:
+        kind = anchor.get("kind")
+        value = anchor.get("normalized") or anchor.get("value") or ""
+        matches: List[Dict[str, Any]] = []
+        if kind in {"path", "test"}:
+            path = _anchor_path(value)
+            matches = [node for node in nodes if node.get("path") == path and node.get("kind") in {"file", "test", "chunk", "symbol"}]
+        elif kind == "symbol":
+            symbol = _normalized_anchor_symbol(value)
+            matches = [node for node in nodes if node.get("kind") == "symbol" and node.get("name") == symbol]
+        if not matches:
+            continue
+        node_ids = [str(node["id"]) for node in matches if node.get("id")]
+        starts.extend(node_ids)
+        started_from.append({"anchor": anchor, "nodeIds": node_ids})
+    return unique(starts), started_from
+
+
+def graph_expansion_for_query(index: Dict[str, Any], query: str, root: Path, *, max_hops: int = 2) -> Dict[str, Any]:
+    anchors = extract_anchors(query, root=root)
+    start_nodes, started_from = _anchor_start_nodes(index, anchors)
+    graph = index.get("graph") if isinstance(index.get("graph"), dict) else {}
+    neighbors = _graph_neighbors(graph)
+    queue: List[Tuple[str, int, List[str]]] = [(node_id, 0, []) for node_id in start_nodes]
+    best_depth: Dict[str, int] = {node_id: 0 for node_id in start_nodes}
+    visited: List[Dict[str, Any]] = []
+    expanded_node_ids: Set[str] = set(start_nodes)
+    rejected: List[Dict[str, Any]] = []
+    while queue:
+        node_id, depth, path = queue.pop(0)
+        visited.append({"nodeId": node_id, "depth": depth, "path": path})
+        if depth >= max_hops:
+            continue
+        for edge in neighbors.get(node_id, []):
+            next_node = str(edge.get("to") or "")
+            if not next_node:
+                continue
+            next_depth = depth + 1
+            if next_depth > max_hops:
+                rejected.append({"nodeId": next_node, "reason": "hop_limit", "edgeId": edge.get("id")})
+                continue
+            if next_node in best_depth and best_depth[next_node] <= next_depth:
+                continue
+            best_depth[next_node] = next_depth
+            expanded_node_ids.add(next_node)
+            queue.append((next_node, next_depth, [*path, str(edge.get("id") or edge.get("kind") or "edge")]))
+    nodes_by_id = {str(node.get("id")): node for node in graph.get("nodes", []) if isinstance(node, dict) and node.get("id")}
+    source_ids: Set[str] = set()
+    paths: Set[str] = set()
+    chunk_ids: Set[str] = set()
+    for node_id in expanded_node_ids:
+        node = nodes_by_id.get(node_id)
+        if not node:
+            continue
+        if node.get("sourceId"):
+            source_ids.add(str(node["sourceId"]))
+        if node.get("path"):
+            paths.add(str(node["path"]))
+        if node.get("chunkId"):
+            chunk_ids.add(str(node["chunkId"]))
+    added_candidate_ids = sorted(source_ids | paths | chunk_ids)
+    return {
+        "status": "expanded" if start_nodes else "no_strong_anchors",
+        "maxHops": max_hops,
+        "startedFromAnchors": started_from,
+        "visited": visited,
+        "addedCandidateIds": added_candidate_ids,
+        "rejected": rejected,
+        "sourceIds": sorted(source_ids),
+        "paths": sorted(paths),
+        "chunkIds": sorted(chunk_ids),
+    }
+
+
 def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str, Any]:
     root = target_dir.resolve()
     build_index(root)
     index = load_index(root)
+    graph_expansion = graph_expansion_for_query(index, query, root)
+    graph_source_ids = set(graph_expansion.get("sourceIds") or [])
+    graph_paths = set(graph_expansion.get("paths") or [])
+    graph_chunk_ids = set(graph_expansion.get("chunkIds") or [])
     sources = {record["id"]: record for record in index.get("records", [])}
     items = [(sources.get(chunk.get("sourceId"), {}), chunk) for chunk in index.get("chunks", [])] if index.get("chunks") else [(record, None) for record in index.get("records", [])]
     query_tokens = unique(tokenize(query))
@@ -219,6 +326,12 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
             deterministic += 2.5; reasons.add("linked pull request")
         if source.get("sourceType") in {"context_doc", "taste_doc"} and re.search(r"context|taste|required", query_lower):
             deterministic += 2; reasons.add("deterministic required context")
+        chunk_id = str((chunk or {}).get("id") or "")
+        source_id = str(source.get("id") or "")
+        source_path = str(source.get("path") or "")
+        if source_id in graph_source_ids or source_path in graph_paths or chunk_id in graph_chunk_ids:
+            deterministic += 1.75
+            reasons.add("graph expansion")
         for number in effective_issue_refs:
             if f"#{number}" in doc["textLower"] or f"/issues/{number}" in doc["textLower"]:
                 keyword += 2; reasons.add("exact identifier")
@@ -375,6 +488,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
                 "queryResultsMapTo": "compiler.candidates[kind=source_evidence]",
                 "queryExcludedMapTo": "compiler.candidates[kind=excluded_context]",
             },
+            graph_expansion=graph_expansion,
         ),
     }
     append_audit(root, audit)

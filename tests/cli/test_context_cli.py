@@ -24,7 +24,7 @@ def assert_compiler_contract(testcase: unittest.TestCase, compiler: dict, *, exp
     ):
         testcase.assertIn(section, compiler)
     testcase.assertEqual(compiler["tokenPack"]["budget"], expected_budget)
-    testcase.assertEqual(compiler["graphExpansion"]["status"], "not_available")
+    testcase.assertIn(compiler["graphExpansion"]["status"], {"not_available", "no_strong_anchors", "expanded"})
     testcase.assertEqual(compiler["graphExpansion"]["maxHops"], 2)
     testcase.assertEqual(compiler["rerank"]["status"], "score_sorted")
     testcase.assertTrue(compiler["compatibility"]["legacyFieldsPreserved"])

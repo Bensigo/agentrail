@@ -33,6 +33,7 @@ mkdir -p \
   "${fixture}/docs/memory" \
   "${fixture}/docs/prd" \
   "${fixture}/docs/milestones" \
+  "${fixture}/tests" \
   "${fixture}/src" \
   "${fixture}/.agentrail/runs/issue-78-retry"
 
@@ -84,6 +85,14 @@ function semanticVectorSubject() {
 }
 
 module.exports = { semanticVectorSubject };
+JS
+
+cat >"${fixture}/tests/query.test.js" <<'JS'
+const subject = require("../src/query");
+
+test("relationship coverage", () => {
+  expect(subject).toBeTruthy();
+});
 JS
 
 cat >"${fixture}/docs/agents/semantic.md" <<'DOC'
@@ -174,6 +183,7 @@ NODE
 "$agentrail" context query "src/query.js" --target "$fixture" --json >"${tmp_dir}/path.json"
 "$agentrail" context query "PR #42 review" --target "$fixture" --json >"${tmp_dir}/pr-short.json"
 "$agentrail" context query "pull request #42 review" --target "$fixture" --json >"${tmp_dir}/pr-long.json"
+"$agentrail" context query "semanticVectorSubject()" --target "$fixture" --json >"${tmp_dir}/graph.json"
 anchor_query=$'issue #78 PR #42 src/query.js semanticVectorSubject() bash scripts/test-context-query tests/context/test_context_modules.py::ContextModuleTests::test_anchor_extraction ValueError: context build failed\nTOKEN=sk-test-1234567890abcdef .env'
 "$agentrail" context query "$anchor_query" --target "$fixture" --json >"${tmp_dir}/anchors.json"
 
@@ -240,7 +250,7 @@ if (!compiler.anchors.some((anchor) => anchor.kind === "issue" && anchor.normali
   console.error("compiler anchors did not include issue #78");
   process.exit(1);
 }
-if (compiler.graphExpansion.status !== "not_available" || compiler.graphExpansion.maxHops !== 2) {
+if (!["no_strong_anchors", "expanded"].includes(compiler.graphExpansion.status) || compiler.graphExpansion.maxHops !== 2) {
   console.error(`compiler graph expansion metadata is not stable: ${JSON.stringify(compiler.graphExpansion)}`);
   process.exit(1);
 }
@@ -329,6 +339,41 @@ for (const [kind, normalized] of [
 }
 if (anchors.some((anchor) => /sk-test|TOKEN=|^\.env$/.test(anchor.value))) {
   console.error(`compiler anchors leaked secret-bearing content: ${JSON.stringify(anchors)}`);
+  process.exit(1);
+}
+NODE
+
+node - "${tmp_dir}/graph.json" <<'NODE'
+const fs = require("fs");
+const result = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const compiler = result.compiler;
+if (!compiler || compiler.graphExpansion.status !== "expanded") {
+  console.error(`symbol query did not run graph expansion: ${JSON.stringify(compiler?.graphExpansion)}`);
+  process.exit(1);
+}
+if (compiler.graphExpansion.maxHops !== 2) {
+  console.error(`graph expansion max hop limit changed: ${compiler.graphExpansion.maxHops}`);
+  process.exit(1);
+}
+if (!compiler.graphExpansion.startedFromAnchors.some((item) => item.anchor?.kind === "symbol" && item.anchor.normalized === "semanticVectorSubject()")) {
+  console.error(`graph expansion did not start from the strong symbol anchor: ${JSON.stringify(compiler.graphExpansion.startedFromAnchors)}`);
+  process.exit(1);
+}
+if (!compiler.graphExpansion.addedCandidateIds.some((id) => String(id).includes("tests/query.test.js") || String(id).includes("query.test.js"))) {
+  console.error(`graph expansion did not add the related test candidate: ${JSON.stringify(compiler.graphExpansion.addedCandidateIds)}`);
+  process.exit(1);
+}
+const relatedTest = result.results.find((item) => item.path === "tests/query.test.js");
+if (!relatedTest) {
+  console.error(`graph-expanded related test was not included in results: ${JSON.stringify(result.results.map((item) => item.path))}`);
+  process.exit(1);
+}
+if (!relatedTest.reason.includes("graph expansion")) {
+  console.error(`graph-expanded related test did not record graph expansion reason: ${relatedTest.reason}`);
+  process.exit(1);
+}
+if (!compiler.graphExpansion.visited.every((item) => item.depth <= 2)) {
+  console.error(`graph expansion visited beyond hop limit: ${JSON.stringify(compiler.graphExpansion.visited)}`);
   process.exit(1);
 }
 NODE

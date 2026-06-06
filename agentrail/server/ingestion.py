@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass, field, fields, is_dataclass
+import re
 from typing import List, Mapping, Optional, Type, Union
 
 from agentrail.server.product import InMemoryProductAuthStore, PRODUCT_AUTH_SUBMISSION_KINDS
 from agentrail.server.telemetry import InMemoryTelemetryStore, TELEMETRY_SUBMISSION_KINDS
 
 MAX_INLINE_ARTIFACT_METADATA_CHARS = 4096
+MAX_CONTEXT_PACK_SOURCE_HASH_CHARS = 256
+CONTEXT_PACK_SOURCE_HASH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+._-]{1,31}:[A-Za-z0-9+/_=.-]{1,192}$")
 
 ARTIFACT_REFERENCE_KINDS = {
     "log",
@@ -835,6 +838,8 @@ def _validate_context_pack_metadata(
                 message="Context-pack metadata must include source hashes for cited source inventory.",
             )
         )
+    else:
+        errors.extend(_validate_context_pack_source_hashes(source_hashes))
     if not payload.anchors:
         errors.append(
             ValidationError(
@@ -900,6 +905,27 @@ def _validate_context_pack_metadata(
     errors.extend(_validate_source_custody_metadata(payload, policy))
     errors.extend(_validate_bounded_snippets(payload.bounded_snippets, policy, "payload.bounded_snippets"))
     return errors
+
+
+def _validate_context_pack_source_hashes(source_hashes: Mapping[str, str]) -> List[ValidationError]:
+    errors: List[ValidationError] = []
+    for path, source_hash in source_hashes.items():
+        if not isinstance(source_hash, str) or not _is_context_pack_source_hash(source_hash):
+            errors.append(
+                ValidationError(
+                    code="context_pack_source_hash_invalid",
+                    field=f"payload.source_hashes[{path}]",
+                    message="Context-pack source hashes must be bounded hash references, not inline source content.",
+                )
+            )
+    return errors
+
+
+def _is_context_pack_source_hash(source_hash: str) -> bool:
+    return (
+        0 < len(source_hash) <= MAX_CONTEXT_PACK_SOURCE_HASH_CHARS
+        and CONTEXT_PACK_SOURCE_HASH_RE.fullmatch(source_hash) is not None
+    )
 
 
 def _validate_context_pack_anchors(

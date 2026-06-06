@@ -674,6 +674,22 @@ def _validate_index_snapshot(
                 message="Index snapshot repository_id must match the ingestion envelope repository_id.",
             )
         )
+    if not payload.snapshot_id:
+        errors.append(
+            ValidationError(
+                code="index_snapshot_identity_required",
+                field="payload.snapshot_id",
+                message="Index snapshot identity requires a snapshot_id.",
+            )
+        )
+    if not payload.commit_sha:
+        errors.append(
+            ValidationError(
+                code="index_snapshot_identity_required",
+                field="payload.commit_sha",
+                message="Index snapshot identity requires a commit_sha.",
+            )
+        )
     if not payload.indexer_id:
         errors.append(
             ValidationError(

@@ -138,17 +138,57 @@ class IndexSnapshotIngestionTests(unittest.TestCase):
         self.assertEqual(result.errors[0].code, "graph_metadata_not_deterministic")
         self.assertEqual(result.errors[0].field, "payload.deterministic")
 
+    def test_snapshot_ingestion_rejects_empty_snapshot_id_without_writes(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+
+        result = ingest(
+            IngestionEnvelope(
+                workspace_id="workspace_123",
+                repository_id="repo_123",
+                payload=_snapshot_submission(snapshot_id=""),
+            ),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(result.errors[0].code, "index_snapshot_identity_required")
+        self.assertEqual(result.errors[0].field, "payload.snapshot_id")
+
+    def test_snapshot_ingestion_rejects_empty_commit_sha_without_writes(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+
+        result = ingest(
+            IngestionEnvelope(
+                workspace_id="workspace_123",
+                repository_id="repo_123",
+                payload=_snapshot_submission(commit_sha=""),
+            ),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(result.errors[0].code, "index_snapshot_identity_required")
+        self.assertEqual(result.errors[0].field, "payload.commit_sha")
+
 
 def _snapshot_submission(
     *,
+    snapshot_id: str = "snapshot_123",
+    commit_sha: str = COMMIT_SHA,
     index_hash: str = "sha256:index123",
     ingestion_health: Optional[Mapping[str, object]] = None,
 ) -> IndexSnapshotSubmission:
     return IndexSnapshotSubmission(
-        snapshot_id="snapshot_123",
+        snapshot_id=snapshot_id,
         repository_id="repo_123",
         indexer_id="indexer_123",
-        commit_sha=COMMIT_SHA,
+        commit_sha=commit_sha,
         index_hash=index_hash,
         source_hashes={"src/app.py": "sha256:file123"},
         freshness={"src/app.py": "current"},

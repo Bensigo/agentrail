@@ -324,7 +324,9 @@ cat >"${fixture}/broken-fixtures.json" <<'JSON'
       "expectedDocs": ["docs/agents/missing-required.md"],
       "expectedMemory": [],
       "expectedPriorMistakes": [],
-      "expectedExcludedSources": []
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": ["tests/missing-graph.test.js"],
+      "minPrecisionAtBudget": 1
     }
   ]
 }
@@ -336,6 +338,14 @@ if "$agentrail" context evaluate "${fixture}/broken-fixtures.json" --target "$fi
   exit 1
 fi
 assert_grep "docs/agents/missing-required.md" "${tmp_dir}/broken.json" "missing required source was not reported"
+assert_grep "failureDetails" "${tmp_dir}/broken.json" "broken report did not include structured failure details"
+assert_grep "missing_required_source" "${tmp_dir}/broken.json" "broken report did not identify missing required source failure kind"
+assert_grep "nearestIncludedCandidates" "${tmp_dir}/broken.json" "broken report did not include nearest included candidates"
+assert_grep "graph_expansion" "${tmp_dir}/broken.json" "broken report did not identify graph expansion failure kind"
+assert_grep "startedFromAnchors" "${tmp_dir}/broken.json" "broken report did not include graph expansion start anchors"
+assert_grep "budgetImpact" "${tmp_dir}/broken.json" "broken report did not include graph expansion budget impact"
+assert_grep "precision_at_budget" "${tmp_dir}/broken.json" "broken report did not identify precision-at-budget failure kind"
+assert_grep "noisyCandidates" "${tmp_dir}/broken.json" "broken report did not include noisy budget candidates"
 assert_grep "reasonCoverage" "${tmp_dir}/eval.txt" "text report did not include reason coverage"
 assert_grep "budgetMetadataPresence" "${tmp_dir}/eval.txt" "text report did not include budget metadata presence"
 assert_grep "graphExpansion=True" "${tmp_dir}/eval.txt" "text report did not include graph expansion pass evidence"

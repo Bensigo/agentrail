@@ -5,8 +5,11 @@ import unittest
 from agentrail.server.ingestion import (
     AuditEventSubmission,
     BoundedSnippet,
+    CommandEventSubmission,
     ContextPackMetadataSubmission,
+    ContextEventSubmission,
     CostEventSubmission,
+    FailureEventSubmission,
     GraphMetadataSubmission,
     IndexSnapshotSubmission,
     IngestionEnvelope,
@@ -161,6 +164,7 @@ class ServerIngestionContractTests(unittest.TestCase):
                 phase="execute",
                 severity="info",
                 occurred_at="2026-06-06T14:30:00Z",
+                agent="codex",
                 metadata={"agent": "codex"},
             ),
             CostEventSubmission(
@@ -170,6 +174,8 @@ class ServerIngestionContractTests(unittest.TestCase):
                 model="gpt-5.5",
                 cost_usd=1.25,
                 occurred_at="2026-06-06T14:31:00Z",
+                agent="codex",
+                phase="execute",
                 metadata={"unit": "tokens"},
             ),
             AuditEventSubmission(
@@ -178,7 +184,48 @@ class ServerIngestionContractTests(unittest.TestCase):
                 action="source_custody_decision",
                 decision="metadata_only",
                 occurred_at="2026-06-06T14:32:00Z",
+                run_id="run_123",
+                agent="codex",
+                phase="context",
+                provider_call={"provider": "openai", "model": "gpt-5.5"},
+                redaction={"rule_id": "secret_literal"},
+                context_decision={"decision": "included", "context_pack_id": "pack_123"},
+                policy_decision={"policy": "source_custody", "decision": "metadata_only"},
                 metadata={"policy": "default"},
+            ),
+            FailureEventSubmission(
+                event_id="failure_event_123",
+                run_id="run_123",
+                event_type="test_failure",
+                phase="verify",
+                severity="error",
+                occurred_at="2026-06-06T14:33:00Z",
+                agent="codex",
+                failure_type="unit_test",
+                message="focused server test failed",
+            ),
+            CommandEventSubmission(
+                event_id="command_event_123",
+                run_id="run_123",
+                command="python3 -m unittest",
+                event_type="command_finished",
+                phase="verify",
+                severity="info",
+                occurred_at="2026-06-06T14:34:00Z",
+                agent="codex",
+                exit_code=0,
+            ),
+            ContextEventSubmission(
+                event_id="context_event_123",
+                run_id="run_123",
+                event_type="context_excluded",
+                phase="plan",
+                severity="warning",
+                occurred_at="2026-06-06T14:35:00Z",
+                agent="codex",
+                context_pack_id="pack_123",
+                decision="excluded",
+                metadata={"reason": "policy_denied"},
             ),
         ]
         product_store = InMemoryProductAuthStore()
@@ -204,6 +251,9 @@ class ServerIngestionContractTests(unittest.TestCase):
             "run_event",
             "cost_event",
             "audit_event",
+            "failure_event",
+            "command_event",
+            "context_event",
         ])
 
     def test_invalid_snippet_policy_combination_returns_actionable_errors_without_writes(self) -> None:
@@ -351,6 +401,15 @@ class ServerIngestionContractTests(unittest.TestCase):
         self.assertIn("billing_configuration.billing_account_ref", catalog["references"])
         self.assertIn("index_snapshot.graph_metadata_ref", catalog["references"])
         self.assertIn("context_pack_metadata.artifact_ref", catalog["references"])
+        self.assertIn("run_event.agent", catalog["metadata"])
+        self.assertIn("cost_event.phase", catalog["metadata"])
+        self.assertIn("audit_event.provider_call", catalog["metadata"])
+        self.assertIn("failure_event.failure_type", catalog["metadata"])
+        self.assertIn("command_event.command", catalog["metadata"])
+        self.assertIn("context_event.decision", catalog["metadata"])
+        self.assertIn("failure_event.run_id", catalog["references"])
+        self.assertIn("command_event.run_id", catalog["references"])
+        self.assertIn("context_event.context_pack_id", catalog["references"])
         self.assertIn("repository.bounded_snippets[].content", catalog["bounded_snippets"])
         self.assertIn("repository.full_source", catalog["forbidden_full_source"])
         self.assertIn("raw file contents outside bounded snippets", catalog["forbidden_full_source"])

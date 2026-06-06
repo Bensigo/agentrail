@@ -188,6 +188,7 @@ class RunEventSubmission:
     phase: str
     severity: str
     occurred_at: str
+    agent: Optional[str] = None
     metadata: Mapping[str, object] = field(default_factory=dict)
     submission_kind: str = field(default="run_event", init=False)
 
@@ -200,6 +201,10 @@ class CostEventSubmission:
     model: str
     cost_usd: float
     occurred_at: str
+    agent: Optional[str] = None
+    phase: Optional[str] = None
+    event_type: str = "cost_incurred"
+    severity: str = "info"
     metadata: Mapping[str, object] = field(default_factory=dict)
     submission_kind: str = field(default="cost_event", init=False)
 
@@ -211,8 +216,62 @@ class AuditEventSubmission:
     action: str
     decision: str
     occurred_at: str
+    run_id: Optional[str] = None
+    agent: Optional[str] = None
+    phase: Optional[str] = None
+    event_type: str = "audit"
+    severity: str = "info"
+    provider_call: Mapping[str, object] = field(default_factory=dict)
+    redaction: Mapping[str, object] = field(default_factory=dict)
+    context_decision: Mapping[str, object] = field(default_factory=dict)
+    policy_decision: Mapping[str, object] = field(default_factory=dict)
     metadata: Mapping[str, object] = field(default_factory=dict)
     submission_kind: str = field(default="audit_event", init=False)
+
+
+@dataclass(frozen=True)
+class FailureEventSubmission:
+    event_id: str
+    run_id: str
+    event_type: str
+    phase: str
+    severity: str
+    occurred_at: str
+    agent: Optional[str] = None
+    failure_type: Optional[str] = None
+    message: Optional[str] = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    submission_kind: str = field(default="failure_event", init=False)
+
+
+@dataclass(frozen=True)
+class CommandEventSubmission:
+    event_id: str
+    run_id: str
+    command: str
+    event_type: str
+    phase: str
+    severity: str
+    occurred_at: str
+    agent: Optional[str] = None
+    exit_code: Optional[int] = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    submission_kind: str = field(default="command_event", init=False)
+
+
+@dataclass(frozen=True)
+class ContextEventSubmission:
+    event_id: str
+    run_id: str
+    event_type: str
+    phase: str
+    severity: str
+    occurred_at: str
+    agent: Optional[str] = None
+    context_pack_id: Optional[str] = None
+    decision: Optional[str] = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    submission_kind: str = field(default="context_event", init=False)
 
 
 IngestionPayload = Union[
@@ -232,6 +291,9 @@ IngestionPayload = Union[
     RunEventSubmission,
     CostEventSubmission,
     AuditEventSubmission,
+    FailureEventSubmission,
+    CommandEventSubmission,
+    ContextEventSubmission,
 ]
 
 _FIELD_CATALOG: Mapping[str, List[str]] = {
@@ -265,10 +327,46 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "run_event.event_type",
         "run_event.phase",
         "run_event.severity",
+        "run_event.agent",
+        "run_event.occurred_at",
+        "cost_event.event_type",
+        "cost_event.phase",
+        "cost_event.severity",
+        "cost_event.agent",
+        "cost_event.occurred_at",
         "cost_event.provider",
         "cost_event.model",
+        "audit_event.event_type",
+        "audit_event.phase",
+        "audit_event.severity",
+        "audit_event.agent",
+        "audit_event.occurred_at",
         "audit_event.action",
         "audit_event.decision",
+        "audit_event.provider_call",
+        "audit_event.redaction",
+        "audit_event.context_decision",
+        "audit_event.policy_decision",
+        "failure_event.event_type",
+        "failure_event.phase",
+        "failure_event.severity",
+        "failure_event.agent",
+        "failure_event.occurred_at",
+        "failure_event.failure_type",
+        "failure_event.message",
+        "command_event.event_type",
+        "command_event.phase",
+        "command_event.severity",
+        "command_event.agent",
+        "command_event.occurred_at",
+        "command_event.command",
+        "command_event.exit_code",
+        "context_event.event_type",
+        "context_event.phase",
+        "context_event.severity",
+        "context_event.agent",
+        "context_event.occurred_at",
+        "context_event.decision",
     ],
     "hashes": [
         "repository.commit_sha",
@@ -309,6 +407,20 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "graph_metadata.graph_ref",
         "context_pack_metadata.artifact_ref",
         "context_pack_metadata.citations",
+        "run_event.event_id",
+        "run_event.run_id",
+        "cost_event.event_id",
+        "cost_event.run_id",
+        "audit_event.event_id",
+        "audit_event.run_id",
+        "audit_event.actor_id",
+        "failure_event.event_id",
+        "failure_event.run_id",
+        "command_event.event_id",
+        "command_event.run_id",
+        "context_event.event_id",
+        "context_event.run_id",
+        "context_event.context_pack_id",
     ],
     "bounded_snippets": [
         "repository.bounded_snippets[].path",

@@ -55,9 +55,11 @@ class InMemoryTelemetryStore:
     context_events: List[object] = field(default_factory=list)
 
     def write(self, envelope: "IngestionEnvelope") -> None:
-        self.records.append(envelope)
         payload = envelope.payload
         kind = payload.submission_kind
+        if _is_duplicate_idempotent_metadata(envelope, self.records):
+            return
+        self.records.append(envelope)
         if kind in TELEMETRY_EVENT_SUBMISSION_KINDS:
             self.event_records.append(_event_record_from_envelope(envelope))
         if kind == "index_snapshot":
@@ -107,6 +109,52 @@ class InMemoryTelemetryStore:
             and (occurred_from is None or record.occurred_at >= occurred_from)
             and (occurred_to is None or record.occurred_at <= occurred_to)
         ]
+
+
+def _is_duplicate_idempotent_metadata(envelope: "IngestionEnvelope", records: List["IngestionEnvelope"]) -> bool:
+    payload = envelope.payload
+    kind = payload.submission_kind
+    if kind == "index_snapshot":
+        identity = _index_snapshot_identity(envelope)
+    elif kind == "graph_metadata":
+        identity = _graph_metadata_identity(envelope)
+    else:
+        return False
+    return any(
+        existing.payload == payload
+        and (
+            _index_snapshot_identity(existing)
+            if kind == "index_snapshot"
+            else _graph_metadata_identity(existing)
+        )
+        == identity
+        for existing in records
+        if existing.payload.submission_kind == kind
+    )
+
+
+def _index_snapshot_identity(envelope: "IngestionEnvelope") -> tuple[str, str, str, str, str, str, str]:
+    payload = envelope.payload
+    return (
+        "index_snapshot",
+        envelope.workspace_id,
+        payload.repository_id,
+        payload.indexer_id,
+        payload.snapshot_id,
+        payload.commit_sha,
+        payload.index_hash,
+    )
+
+
+def _graph_metadata_identity(envelope: "IngestionEnvelope") -> tuple[str, str, str, str, str]:
+    payload = envelope.payload
+    return (
+        "graph_metadata",
+        envelope.workspace_id,
+        envelope.repository_id or "",
+        payload.snapshot_id,
+        payload.graph_id,
+    )
 
 
 def _matches(record: TelemetryEventRecord, field_name: str, expected: Optional[str]) -> bool:

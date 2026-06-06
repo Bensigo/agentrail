@@ -48,6 +48,29 @@ INLINE_ARTIFACT_BODY_KEYS = {
     "transcript_text",
 }
 
+FULL_SOURCE_METADATA_KEYS = {
+    "complete_source",
+    "file_contents",
+    "full_source",
+    "full_source_files",
+    "raw_file_contents",
+    "raw_source",
+    "source_archive",
+    "source_files",
+}
+
+SNIPPET_METADATA_KEYS = {
+    "bounded_snippet",
+    "bounded_snippets",
+    "code_snippet",
+    "code_snippets",
+    "snippet",
+    "snippet_content",
+    "snippets",
+    "source_snippet",
+    "source_snippets",
+}
+
 
 @dataclass(frozen=True)
 class SourceCustodyPolicy:
@@ -118,7 +141,9 @@ class BoundedSnippet:
 class IndexSnapshotSubmission:
     snapshot_id: str
     repository_id: str
+    indexer_id: str
     commit_sha: str
+    index_hash: str
     source_hashes: Mapping[str, str]
     freshness: Mapping[str, str]
     ingestion_health: Mapping[str, object]
@@ -381,6 +406,9 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "source_custody_policy.allow_bounded_snippets",
         "source_custody_policy.max_snippet_chars",
         "billing_configuration.plan",
+        "index_snapshot.freshness",
+        "index_snapshot.ingestion_health",
+        "graph_metadata.deterministic",
         "graph_metadata.node_count",
         "graph_metadata.edge_count",
         "graph_metadata.metadata",
@@ -437,6 +465,7 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "repository.source_hashes",
         "api_key_auth.key_hash",
         "index_snapshot.commit_sha",
+        "index_snapshot.index_hash",
         "index_snapshot.source_hashes",
         "context_pack_metadata.content_hash",
         "artifact_reference.content_hash",
@@ -468,7 +497,12 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "billing_configuration.billing_configuration_id",
         "billing_configuration.workspace_id",
         "billing_configuration.billing_account_ref",
+        "index_snapshot.snapshot_id",
+        "index_snapshot.repository_id",
+        "index_snapshot.indexer_id",
         "index_snapshot.graph_metadata_ref",
+        "graph_metadata.graph_id",
+        "graph_metadata.snapshot_id",
         "graph_metadata.graph_ref",
         "context_pack_metadata.artifact_ref",
         "context_pack_metadata.citations",
@@ -545,6 +579,10 @@ def _validate_payload(envelope: IngestionEnvelope, policy: SourceCustodyPolicy) 
     errors: List[ValidationError] = []
     payload = envelope.payload
     errors.extend(_validate_no_large_inline_artifact_bodies(payload))
+    if isinstance(payload, IndexSnapshotSubmission):
+        errors.extend(_validate_index_snapshot(envelope, payload, policy))
+    if isinstance(payload, GraphMetadataSubmission):
+        errors.extend(_validate_graph_metadata(payload, policy))
     if isinstance(payload, ArtifactReferenceSubmission):
         errors.extend(_validate_artifact_reference(envelope, payload))
     if isinstance(payload, RepositorySubmission) and payload.full_source:
@@ -614,6 +652,81 @@ def _validate_payload(envelope: IngestionEnvelope, policy: SourceCustodyPolicy) 
     return errors
 
 
+def _validate_index_snapshot(
+    envelope: IngestionEnvelope,
+    payload: IndexSnapshotSubmission,
+    policy: SourceCustodyPolicy,
+) -> List[ValidationError]:
+    errors: List[ValidationError] = []
+    if not envelope.repository_id:
+        errors.append(
+            ValidationError(
+                code="index_snapshot_repository_required",
+                field="envelope.repository_id",
+                message="Index snapshot ingestion requires a repository_id in the envelope for stable snapshot identity.",
+            )
+        )
+    elif payload.repository_id != envelope.repository_id:
+        errors.append(
+            ValidationError(
+                code="index_snapshot_repository_mismatch",
+                field="payload.repository_id",
+                message="Index snapshot repository_id must match the ingestion envelope repository_id.",
+            )
+        )
+    if not payload.snapshot_id:
+        errors.append(
+            ValidationError(
+                code="index_snapshot_identity_required",
+                field="payload.snapshot_id",
+                message="Index snapshot identity requires a snapshot_id.",
+            )
+        )
+    if not payload.commit_sha:
+        errors.append(
+            ValidationError(
+                code="index_snapshot_identity_required",
+                field="payload.commit_sha",
+                message="Index snapshot identity requires a commit_sha.",
+            )
+        )
+    if not payload.indexer_id:
+        errors.append(
+            ValidationError(
+                code="index_snapshot_identity_required",
+                field="payload.indexer_id",
+                message="Index snapshot identity requires an indexer_id.",
+            )
+        )
+    if not payload.index_hash:
+        errors.append(
+            ValidationError(
+                code="index_snapshot_identity_required",
+                field="payload.index_hash",
+                message="Index snapshot identity requires an index_hash.",
+            )
+        )
+    errors.extend(_validate_source_custody_metadata(payload, policy))
+    return errors
+
+
+def _validate_graph_metadata(
+    payload: GraphMetadataSubmission,
+    policy: SourceCustodyPolicy,
+) -> List[ValidationError]:
+    errors: List[ValidationError] = []
+    if not payload.deterministic:
+        errors.append(
+            ValidationError(
+                code="graph_metadata_not_deterministic",
+                field="payload.deterministic",
+                message="Graph metadata ingestion accepts deterministic graph metadata only; LLM enrichment is not authoritative graph evidence.",
+            )
+        )
+    errors.extend(_validate_source_custody_metadata(payload, policy))
+    return errors
+
+
 def _validate_no_large_inline_artifact_bodies(payload: IngestionPayload) -> List[ValidationError]:
     errors: List[ValidationError] = []
     if not is_dataclass(payload):
@@ -623,6 +736,90 @@ def _validate_no_large_inline_artifact_bodies(payload: IngestionPayload) -> List
         if isinstance(value, MappingABC):
             errors.extend(_find_large_inline_artifact_bodies(value, f"payload.{payload_field.name}"))
     return errors
+
+
+def _validate_source_custody_metadata(payload: IngestionPayload, policy: SourceCustodyPolicy) -> List[ValidationError]:
+    errors: List[ValidationError] = []
+    if not is_dataclass(payload):
+        return errors
+    for payload_field in fields(payload):
+        value = getattr(payload, payload_field.name)
+        if isinstance(value, (MappingABC, list)):
+            errors.extend(_find_forbidden_source_custody_metadata(value, f"payload.{payload_field.name}", policy))
+    return errors
+
+
+def _find_forbidden_source_custody_metadata(
+    value: object,
+    field_path: str,
+    policy: SourceCustodyPolicy,
+) -> List[ValidationError]:
+    if _is_full_source_metadata_field(field_path):
+        return [
+            ValidationError(
+                code="full_source_forbidden",
+                field=field_path,
+                message=(
+                    "Full source payloads are forbidden by the Source Custody Policy. "
+                    "Submit metadata, hashes, references, or allowed bounded snippets instead."
+                ),
+            )
+        ]
+    if _is_snippet_metadata_field(field_path):
+        if not policy.allow_bounded_snippets:
+            return [
+                ValidationError(
+                    code="bounded_snippet_not_allowed",
+                    field=field_path,
+                    message=(
+                        "Bounded cited snippets require SourceCustodyPolicy.allow_bounded_snippets=True. "
+                        "Default enterprise ingestion accepts metadata, hashes, and references only."
+                    ),
+                )
+            ]
+        if policy.max_snippet_chars <= 0:
+            return [
+                ValidationError(
+                    code="bounded_snippet_policy_unbounded",
+                    field="policy.max_snippet_chars",
+                    message=(
+                        "SourceCustodyPolicy.max_snippet_chars must be greater than zero when "
+                        "allow_bounded_snippets=True."
+                    ),
+                )
+            ]
+        if _estimated_inline_size(value) > policy.max_snippet_chars:
+            return [
+                ValidationError(
+                    code="bounded_snippet_too_large",
+                    field=field_path,
+                    message=(
+                        "Bounded snippet content exceeds SourceCustodyPolicy.max_snippet_chars. "
+                        "Send a shorter cited snippet or metadata-only reference."
+                    ),
+                )
+            ]
+    errors: List[ValidationError] = []
+    if isinstance(value, MappingABC):
+        for key, nested_value in value.items():
+            if isinstance(key, str):
+                errors.extend(_find_forbidden_source_custody_metadata(nested_value, f"{field_path}.{key}", policy))
+    elif isinstance(value, list):
+        for index, nested_value in enumerate(value):
+            errors.extend(_find_forbidden_source_custody_metadata(nested_value, f"{field_path}[{index}]", policy))
+    return errors
+
+
+def _is_full_source_metadata_field(field_path: str) -> bool:
+    normalized = field_path.replace("[", ".").replace("]", "")
+    field_name = normalized.split(".")[-1].lower()
+    return field_name in FULL_SOURCE_METADATA_KEYS
+
+
+def _is_snippet_metadata_field(field_path: str) -> bool:
+    normalized = field_path.replace("[", ".").replace("]", "")
+    field_name = normalized.split(".")[-1].lower()
+    return field_name in SNIPPET_METADATA_KEYS
 
 
 def _find_large_inline_artifact_bodies(value: object, field_path: str) -> List[ValidationError]:

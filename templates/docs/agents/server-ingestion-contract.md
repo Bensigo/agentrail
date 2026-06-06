@@ -12,6 +12,14 @@ Append-only telemetry and artifact metadata use `InMemoryTelemetryStore`, the lo
 
 Tests must prove product/auth writes do not call the telemetry store path.
 
+## Snapshot And Graph Idempotency
+
+Index snapshot ingestion is keyed by stable local-indexer identity: envelope workspace ID, repository ID, indexer ID, snapshot ID, commit SHA, and index hash. Exact repeated submissions of the same snapshot identity and payload are accepted as idempotent no-ops and do not duplicate telemetry records.
+
+Changed snapshot metadata under the same identity is stored as a new telemetry record so prior snapshot evidence remains intact. This prototype preserves both records rather than overwriting the older payload.
+
+Graph metadata ingestion is deterministic-only. Exact repeated graph metadata submissions for the same workspace, repository, snapshot, and graph identity are accepted as idempotent no-ops. Non-deterministic graph enrichment is rejected as authoritative graph metadata.
+
 ## Source Custody Policy
 
 Default policy:
@@ -40,8 +48,8 @@ Invalid custody and payload combinations must return validation errors and must 
 - `review_gate`: workflow review gate truth with run, gate type, status, decision time, and evidence reference.
 - `source_custody_policy`: workspace or repository policy state.
 - `billing_configuration`: workspace billing plan and account reference.
-- `index_snapshot`: indexed commit SHA, source hashes, freshness metadata, ingestion health, and graph metadata reference.
-- `graph_metadata`: graph identity, snapshot reference, deterministic flag, node/edge counts, metadata, and object reference.
+- `index_snapshot`: snapshot identity, repository, indexer, commit SHA, index hash, source hashes, freshness metadata, ingestion health, and graph metadata reference.
+- `graph_metadata`: graph identity, snapshot reference, deterministic flag, node/edge counts, metadata, and object reference. Deterministic graph metadata is authoritative; LLM enrichment belongs elsewhere as lower-authority discovery metadata.
 - `context_pack_metadata`: context-pack identity, target, citations, content hash, artifact reference, and metadata.
 - `artifact_reference`: object-storage reference for large `log`, `transcript`, `evidence_bundle`, `screenshot`, `index_snapshot`, or `context_pack` artifacts. The reference carries workspace, repository, URI, content hash, size, content type, and bounded metadata. Run artifacts also carry `run_id`, index snapshot artifacts carry `snapshot_id`, and context-pack artifacts carry `context_pack_id`.
 - `run_event`: run timeline event metadata.
@@ -53,14 +61,14 @@ Invalid custody and payload combinations must return validation errors and must 
 
 ## Field Categories
 
-Metadata fields include workspace display names, team names, API key scopes and actors, repository names, codebase unit names and kinds, indexer health, run status, review gate status, source custody modes, billing plans, graph counts, artifact kinds, artifact sizes, artifact content types, run event types, phases, severities, agents, timestamps, cost provider/model values, audit actions or decisions, audit provider-call/redaction/context/policy metadata, failure metadata, command metadata, and context event decisions.
+Metadata fields include workspace display names, team names, API key scopes and actors, repository names, codebase unit names and kinds, indexer health, run status, review gate status, source custody modes, billing plans, index snapshot freshness and ingestion health, graph determinism and counts, artifact kinds, artifact sizes, artifact content types, run event types, phases, severities, agents, timestamps, cost provider/model values, audit actions or decisions, audit provider-call/redaction/context/policy metadata, failure metadata, command metadata, and context event decisions.
 
-Hash fields include API key hashes, commit SHAs, repository and index snapshot source hashes, context-pack content hashes, artifact content hashes, and bounded snippet content hashes.
+Hash fields include API key hashes, commit SHAs, repository and index snapshot source hashes, index snapshot index hashes, context-pack content hashes, artifact content hashes, and bounded snippet content hashes.
 
-Reference fields include workspace IDs, team IDs, API key IDs, repository IDs, codebase unit IDs, indexer IDs, run IDs, event IDs, review gate IDs, billing account references, repository remote URLs, graph metadata references, graph object references, context-pack artifact references, artifact IDs, artifact object URIs, artifact run/context-pack/snapshot associations, context-pack citations, and review gate evidence references.
+Reference fields include workspace IDs, team IDs, API key IDs, repository IDs, codebase unit IDs, indexer IDs, run IDs, event IDs, review gate IDs, billing account references, repository remote URLs, index snapshot IDs, index snapshot repository/indexer references, graph IDs, graph snapshot references, graph metadata references, graph object references, context-pack artifact references, artifact IDs, artifact object URIs, artifact run/context-pack/snapshot associations, context-pack citations, and review gate evidence references.
 
 Dashboard timeline filters are backed by normalized append-only telemetry records with workspace ID, repository ID, run ID, agent, phase, event type, severity, and occurred-at timestamp fields where applicable. Time range filtering uses inclusive ISO 8601 timestamp bounds in this prototype.
 
 Bounded snippet fields include snippet path, citation, start line, end line, content, and content hash. Snippet content must be cited, line-bounded, and within the policy's maximum size.
 
-Forbidden full-source and artifact-body fields include `repository.full_source`, complete source files, source archives, raw file contents outside bounded snippets, and large inline artifact bodies in metadata fields such as logs, transcripts, screenshots, evidence bundles, snapshots, or context-pack payloads. Inline artifact body values over 4096 characters must be represented by an `artifact_reference` payload.
+Forbidden full-source and artifact-body fields include `repository.full_source`, complete source files, source archives, raw file contents outside bounded snippets, full-source or snippet-like fields inside snapshot and graph metadata, and large inline artifact bodies in metadata fields such as logs, transcripts, screenshots, evidence bundles, snapshots, or context-pack payloads. Inline artifact body values over 4096 characters must be represented by an `artifact_reference` payload.

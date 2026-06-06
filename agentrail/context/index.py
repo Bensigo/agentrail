@@ -366,14 +366,122 @@ def graph_chunk_node_id(chunk: ChunkRecord) -> str:
     return f"graph:chunk:{sha256_text(chunk.id)[7:23]}"
 
 
-def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], built_at: str) -> Dict[str, Any]:
+def graph_codebase_unit_node_id(unit_id: str) -> str:
+    return f"graph:codebase_unit:{sha256_text(unit_id)[7:23]}"
+
+
+def normalized_unit_path(value: str) -> str:
+    normalized = value.strip().strip("/")
+    return normalized if normalized and normalized != "." else "."
+
+
+def unit_contains_path(unit_path: str, record_path: str) -> bool:
+    normalized = normalized_unit_path(unit_path)
+    return normalized == "." or record_path == normalized or record_path.startswith(f"{normalized}/")
+
+
+def codebase_unit(unit_id: str, name: str, path: str, detection: str, *, manifest_path: Optional[str] = None) -> Dict[str, Any]:
+    unit_path = normalized_unit_path(path)
+    return {
+        "id": f"codebase-unit:{slugify(unit_id or unit_path or name)}",
+        "name": name or unit_path,
+        "path": unit_path,
+        "detection": detection,
+        "manifestPath": manifest_path,
+        "deterministic": True,
+    }
+
+
+def package_workspace_patterns(root: Path) -> List[str]:
+    package_json = root / "package.json"
+    try:
+        parsed = json.loads(package_json.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    workspaces = parsed.get("workspaces")
+    if isinstance(workspaces, dict):
+        workspaces = workspaces.get("packages")
+    if not isinstance(workspaces, list):
+        return []
+    return [str(pattern) for pattern in workspaces if isinstance(pattern, str)]
+
+
+def detect_workspace_units(root: Path) -> List[Dict[str, Any]]:
+    units: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for pattern in package_workspace_patterns(root):
+        for path in sorted(root.glob(pattern)):
+            if not path.is_dir() or not (path / "package.json").exists():
+                continue
+            relative = path.relative_to(root).as_posix()
+            if relative in seen:
+                continue
+            seen.add(relative)
+            units.append(codebase_unit(relative, path.name, relative, "workspace_manifest", manifest_path="package.json"))
+    return units
+
+
+def detect_manifest_units(root: Path, records: List[SourceRecord]) -> List[Dict[str, Any]]:
+    workspace_units = detect_workspace_units(root)
+    if workspace_units:
+        return workspace_units
+    root_manifests = {"package.json", "pyproject.toml", "go.mod", "Cargo.toml", "pom.xml", "build.gradle", "settings.gradle"}
+    record_paths = {record.path for record in records}
+    manifest = next((path for path in sorted(root_manifests) if path in record_paths), None)
+    if manifest:
+        return [codebase_unit("root", root.name, ".", "root_manifest", manifest_path=manifest)]
+    return []
+
+
+def configured_codebase_units(cfg: ContextConfig) -> List[Dict[str, Any]]:
+    units: List[Dict[str, Any]] = []
+    for index, raw in enumerate(cfg.codebaseUnits):
+        if not isinstance(raw, dict):
+            continue
+        path = str(raw.get("path") or raw.get("root") or ".")
+        name = str(raw.get("name") or Path(path).name or "root")
+        unit_id = str(raw.get("id") or name or path or f"unit-{index + 1}")
+        units.append(codebase_unit(unit_id, name, path, "config_override", manifest_path=".agentrail/config.json"))
+    units.sort(key=lambda unit: (unit["path"], unit["id"]))
+    return units
+
+
+def detect_codebase_units(root: Path, cfg: ContextConfig, records: List[SourceRecord]) -> List[Dict[str, Any]]:
+    configured = configured_codebase_units(cfg)
+    if configured:
+        return configured
+    detected = detect_manifest_units(root, records)
+    if detected:
+        return sorted(detected, key=lambda unit: (unit["path"], unit["id"]))
+    return [codebase_unit("root", root.name, ".", "fallback")]
+
+
+def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], codebase_units: List[Dict[str, Any]], built_at: str) -> Dict[str, Any]:
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []
     file_node_by_source: Dict[str, str] = {}
+    file_node_by_path: Dict[str, str] = {}
+
+    for unit in codebase_units:
+        node_id = graph_codebase_unit_node_id(str(unit["id"]))
+        nodes.append(
+            {
+                "id": node_id,
+                "kind": "codebase_unit",
+                "unitId": unit["id"],
+                "name": unit["name"],
+                "path": unit["path"],
+                "detection": unit["detection"],
+                "manifestPath": unit.get("manifestPath"),
+                "evidence": unit["detection"],
+                "deterministic": True,
+            }
+        )
 
     for record in records:
         node_id = graph_file_node_id(record)
         file_node_by_source[record.id] = node_id
+        file_node_by_path[record.path] = node_id
         nodes.append(
             {
                 "id": node_id,
@@ -390,6 +498,28 @@ def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], bui
                 "deterministic": True,
             }
         )
+
+    for unit in codebase_units:
+        unit_node_id = graph_codebase_unit_node_id(str(unit["id"]))
+        for record in records:
+            file_node_id = file_node_by_path.get(record.path)
+            if not file_node_id or not unit_contains_path(str(unit["path"]), record.path):
+                continue
+            edges.append(
+                {
+                    "id": f"graph:edge:{sha256_text(f'{unit_node_id}:contains_file:{file_node_id}')[7:23]}",
+                    "kind": "contains_file",
+                    "from": unit_node_id,
+                    "to": file_node_id,
+                    "unitId": unit["id"],
+                    "sourceId": record.id,
+                    "path": record.path,
+                    "citation": record.path,
+                    "evidence": unit["detection"],
+                    "authority": "deterministic",
+                    "deterministic": True,
+                }
+            )
 
     for chunk in chunks:
         node_id = graph_chunk_node_id(chunk)
@@ -434,6 +564,7 @@ def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], bui
         "authority": "deterministic",
         "source": "local_indexer",
         "llmGeneratedAuthoritative": False,
+        "codebaseUnits": codebase_units,
         "enrichment": {
             "status": "not_used",
             "authority": "none",
@@ -564,7 +695,8 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
     records.sort(key=lambda record: (record.path, record.id))
     chunks.sort(key=lambda chunk: (chunk.path, chunk.id))
     built_at = now_iso()
-    graph = build_code_graph(records, chunks, built_at)
+    codebase_units = detect_codebase_units(root, cfg, records)
+    graph = build_code_graph(records, chunks, codebase_units, built_at)
     snapshot = build_index_snapshot(root, records, graph, built_at, skipped, redaction_count)
     index = {
         "schemaVersion": 1,

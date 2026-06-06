@@ -246,8 +246,10 @@ class ContextModuleTests(unittest.TestCase):
         self.assertEqual(graph["authority"], "deterministic")
         self.assertFalse(graph["llmGeneratedAuthoritative"])
         self.assertFalse(graph["enrichment"]["llmGeneratedAuthoritative"])
+        unit_node = next(node for node in graph["nodes"] if node["kind"] == "codebase_unit" and node["path"] == ".")
         file_node = next(node for node in graph["nodes"] if node["kind"] == "file" and node["path"] == "src/app.py")
         chunk_node = next(node for node in graph["nodes"] if node["kind"] == "chunk" and node["path"] == "src/app.py")
+        self.assertTrue(any(edge["kind"] == "contains_file" and edge["from"] == unit_node["id"] and edge["to"] == file_node["id"] for edge in graph["edges"]))
         self.assertTrue(any(edge["kind"] == "contains_chunk" and edge["from"] == file_node["id"] and edge["to"] == chunk_node["id"] for edge in graph["edges"]))
 
     def test_pr_review_pack_show_and_explain_are_callable(self) -> None:

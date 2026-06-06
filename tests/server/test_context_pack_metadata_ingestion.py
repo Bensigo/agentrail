@@ -555,6 +555,51 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             [("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation")],
         )
 
+    def test_context_pack_decisions_can_reference_namespaced_citation_ids(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            citations=[
+                ContextPackCitation(
+                    citation_id="citation:ingestion",
+                    path="agentrail/server/ingestion.py",
+                    source_hash="sha256:source123",
+                    start_line=167,
+                    end_line=190,
+                ),
+                ContextPackCitation(
+                    citation_id="citation:milestone",
+                    path="milestones/004-server-ingestion-spine.md",
+                    source_hash="sha256:milestone004",
+                    start_line=57,
+                    end_line=66,
+                ),
+            ],
+            inclusions=[
+                ContextPackDecision(
+                    item_id="agentrail/server/ingestion.py",
+                    citation="citation:ingestion",
+                    reason="direct citation IDs may use namespace separators",
+                )
+            ],
+            exclusions=[
+                ContextPackDecision(
+                    item_id="agent-operations-console",
+                    citation="citation:milestone",
+                    reason="console UI is out of scope",
+                )
+            ],
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertTrue(result.accepted, result.errors)
+        self.assertEqual(len(telemetry_store.context_pack_metadata), 1)
+
     def test_context_pack_decision_hash_line_citations_must_match_recorded_citation_ranges(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = _context_pack_metadata_submission(

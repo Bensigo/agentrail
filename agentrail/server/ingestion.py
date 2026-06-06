@@ -1186,12 +1186,13 @@ def _decision_citation_resolves(
     citations: List[ContextPackCitation],
     source_hashes: Mapping[str, str],
 ) -> bool:
+    for citation in citations:
+        if decision_citation == citation.citation_id:
+            return True
     decision_path, decision_start_line, decision_end_line, valid_reference = _split_citation_reference(decision_citation)
     if not valid_reference:
         return False
     for citation in citations:
-        if decision_citation == citation.citation_id:
-            return True
         if not citation.path or source_hashes.get(citation.path) != citation.source_hash:
             continue
         if decision_path != citation.path:

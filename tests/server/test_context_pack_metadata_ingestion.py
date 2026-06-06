@@ -178,6 +178,42 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             ],
         )
 
+    def test_context_pack_decisions_require_item_id(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            inclusions=[
+                ContextPackDecision(
+                    item_id="",
+                    citation="agentrail/server/ingestion.py:167",
+                    reason="defines context-pack metadata ingestion",
+                )
+            ],
+            exclusions=[
+                ContextPackDecision(
+                    item_id="",
+                    citation="milestones/004-server-ingestion-spine.md:57",
+                    reason="console UI is out of scope",
+                )
+            ],
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [
+                ("context_pack_decision_item_id_required", "payload.inclusions[0].item_id"),
+                ("context_pack_decision_item_id_required", "payload.exclusions[0].item_id"),
+            ],
+        )
+
     def test_context_pack_anchors_and_citations_require_auditable_fields(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = _context_pack_metadata_submission(

@@ -1015,6 +1015,14 @@ def _validate_context_pack_decisions(
 ) -> List[ValidationError]:
     errors: List[ValidationError] = []
     for index, decision in enumerate(decisions):
+        if not decision.item_id:
+            errors.append(
+                ValidationError(
+                    code="context_pack_decision_item_id_required",
+                    field=f"{field_prefix}[{index}].item_id",
+                    message="Context-pack inclusion and exclusion decisions must include an item_id.",
+                )
+            )
         if not decision.citation:
             errors.append(
                 ValidationError(

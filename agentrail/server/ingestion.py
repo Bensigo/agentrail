@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Mapping, Optional, Union
+from typing import List, Mapping, Optional, Type, Union
 
 
 @dataclass(frozen=True)
@@ -11,7 +11,7 @@ class SourceCustodyPolicy:
     max_snippet_chars: int = 0
 
     @classmethod
-    def default(cls) -> "SourceCustodyPolicy":
+    def default(cls: Type["SourceCustodyPolicy"]) -> "SourceCustodyPolicy":
         return cls()
 
 

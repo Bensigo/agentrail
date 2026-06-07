@@ -5178,7 +5178,7 @@ default_agent_command() {
       echo "codex exec --sandbox danger-full-access -"
       ;;
     claude)
-      echo "claude -p"
+      echo "claude -p --dangerously-skip-permissions"
       ;;
     cursor)
       echo "cursor-agent -p"

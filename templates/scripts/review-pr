@@ -186,9 +186,9 @@ run_claude_review() {
 
   if [[ -n "$output_file" ]]; then
     mkdir -p "$(dirname "$output_file")"
-    printf '%s\n' "$prompt" | sanitized_agent_exec bash -lc "claude -p" 2>&1 | tee "$output_file"
+    printf '%s\n' "$prompt" | sanitized_agent_exec bash -lc "claude -p --allowedTools Bash,Read" 2>&1 | tee "$output_file"
   else
-    printf '%s\n' "$prompt" | sanitized_agent_exec bash -lc "claude -p" 2>&1
+    printf '%s\n' "$prompt" | sanitized_agent_exec bash -lc "claude -p --allowedTools Bash,Read" 2>&1
   fi
 }
 

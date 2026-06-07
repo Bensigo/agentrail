@@ -164,7 +164,7 @@ agent_command_for_engine() {
       printf '%s\n' "${RALPH_AGENT_COMMAND:-codex exec --sandbox danger-full-access -}"
       ;;
     claude)
-      printf '%s\n' "${RALPH_AGENT_COMMAND:-claude -p}"
+      printf '%s\n' "${RALPH_AGENT_COMMAND:-claude -p --dangerously-skip-permissions}"
       ;;
     *)
       die "unsupported engine: ${engine}"

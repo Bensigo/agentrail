@@ -101,6 +101,8 @@ class ChunkRecord:
     summary: Optional[str]
     citation: str
     content: str
+    kind: Optional[str] = None
+    symbol: Optional[str] = None
     memory: Optional[Dict[str, str]] = None
     priorMistake: Optional[Dict[str, Any]] = None
 
@@ -121,6 +123,8 @@ class ChunkRecord:
             "summary": self.summary,
             "citation": self.citation,
             "content": self.content,
+            "kind": self.kind,
+            "symbol": self.symbol,
             "memory": self.memory,
         }
         if self.priorMistake is not None:

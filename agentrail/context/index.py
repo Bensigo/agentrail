@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -235,7 +236,7 @@ def prior_mistake_for(relative_path: str, source_type: str, text: str, memory: O
     return markdown_prior_mistake(relative_path, source_type, text, memory)
 
 
-def chunk_record(source: SourceRecord, id_suffix: str, text: str, language: str, citation: str, start_line: Optional[int], end_line: Optional[int], *, heading_path: Optional[List[str]] = None, parent_context: str = "", symbol_hints: Optional[List[str]] = None, import_hints: Optional[List[str]] = None, memory: Optional[Dict[str, str]] = None, prior_mistake: Optional[Dict[str, Any]] = None) -> ChunkRecord:
+def chunk_record(source: SourceRecord, id_suffix: str, text: str, language: str, citation: str, start_line: Optional[int], end_line: Optional[int], *, heading_path: Optional[List[str]] = None, parent_context: str = "", symbol_hints: Optional[List[str]] = None, import_hints: Optional[List[str]] = None, memory: Optional[Dict[str, str]] = None, prior_mistake: Optional[Dict[str, Any]] = None, kind: Optional[str] = None, symbol: Optional[str] = None) -> ChunkRecord:
     normalized = text.strip()
     return ChunkRecord(
         id=f"chunk:{source.path}#{id_suffix}",
@@ -253,6 +254,8 @@ def chunk_record(source: SourceRecord, id_suffix: str, text: str, language: str,
         summary=None,
         citation=citation,
         content=normalized,
+        kind=kind,
+        symbol=symbol,
         memory=memory,
         priorMistake=prior_mistake,
     )
@@ -304,7 +307,132 @@ def markdown_chunks(source: SourceRecord, text: str, memory: Optional[Dict[str, 
     return chunks
 
 
+SYMBOL_LANGUAGES = {"python", "javascript", "typescript"}
+
+_PYTHON_SYMBOL_RE = re.compile(r"^([ \t]*)(def|class)\s+([A-Za-z_]\w*)", re.MULTILINE)
+_JS_TS_SYMBOL_RE = re.compile(
+    r"^([ \t]*)(?:export\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)|class\s+([A-Za-z_$][\w$]*))",
+    re.MULTILINE,
+)
+
+
+@dataclass
+class _SymbolSpan:
+    name: str
+    kind: str
+    start_line: int
+    end_line: int
+    indent: int
+
+
+def _extract_python_symbols(lines: List[str]) -> List[_SymbolSpan]:
+    text = "\n".join(lines)
+    spans: List[_SymbolSpan] = []
+    for match in _PYTHON_SYMBOL_RE.finditer(text):
+        indent = len(match.group(1).expandtabs(4))
+        kind_raw = match.group(2)
+        name = match.group(3)
+        line_number = text[:match.start()].count("\n") + 1
+        kind = "class" if kind_raw == "class" else "function"
+        spans.append(_SymbolSpan(name=name, kind=kind, start_line=line_number, end_line=line_number, indent=indent))
+    for i, span in enumerate(spans):
+        if i + 1 < len(spans):
+            next_span = spans[i + 1]
+            if next_span.indent <= span.indent:
+                span.end_line = next_span.start_line - 1
+            else:
+                j = i + 1
+                while j < len(spans) and spans[j].indent > span.indent:
+                    j += 1
+                span.end_line = (spans[j].start_line - 1) if j < len(spans) else len(lines)
+        else:
+            span.end_line = len(lines)
+    return spans
+
+
+def _extract_js_ts_symbols(lines: List[str]) -> List[_SymbolSpan]:
+    text = "\n".join(lines)
+    spans: List[_SymbolSpan] = []
+    for match in _JS_TS_SYMBOL_RE.finditer(text):
+        indent = len(match.group(1).expandtabs(4))
+        name = match.group(2) or match.group(3) or ""
+        kind = "class" if match.group(3) else "function"
+        line_number = text[:match.start()].count("\n") + 1
+        spans.append(_SymbolSpan(name=name, kind=kind, start_line=line_number, end_line=line_number, indent=indent))
+    for i, span in enumerate(spans):
+        span.end_line = (spans[i + 1].start_line - 1) if i + 1 < len(spans) else len(lines)
+    return spans
+
+
+def symbol_chunks(source: SourceRecord, text: str, relative_path: str) -> Optional[List[ChunkRecord]]:
+    lines = re.split(r"\r?\n", text)
+    language = language_for(relative_path)
+    if language not in SYMBOL_LANGUAGES:
+        return None
+    try:
+        if language == "python":
+            spans = _extract_python_symbols(lines)
+        else:
+            spans = _extract_js_ts_symbols(lines)
+    except Exception:
+        return None
+    if not spans:
+        return None
+    imports = cheap_import_hints(text)
+    chunks: List[ChunkRecord] = []
+    covered: set[int] = set()
+    for span in spans:
+        chunk_text = "\n".join(lines[span.start_line - 1:span.end_line])
+        if not chunk_text.strip():
+            continue
+        for line_num in range(span.start_line, span.end_line + 1):
+            covered.add(line_num)
+        chunks.append(chunk_record(
+            source, f"{span.kind}-{span.name}",
+            chunk_text, language,
+            f"{source.path}#L{span.start_line}-L{span.end_line}",
+            span.start_line, span.end_line,
+            parent_context=source.path,
+            symbol_hints=[span.name],
+            import_hints=imports,
+            kind=span.kind,
+            symbol=span.name,
+        ))
+    preamble_lines = [i for i in range(1, len(lines) + 1) if i not in covered]
+    if preamble_lines:
+        groups: List[List[int]] = []
+        current_group: List[int] = []
+        for line_num in preamble_lines:
+            if current_group and line_num > current_group[-1] + 1:
+                groups.append(current_group)
+                current_group = [line_num]
+            else:
+                current_group.append(line_num)
+        if current_group:
+            groups.append(current_group)
+        for group in groups:
+            start = group[0]
+            end = group[-1]
+            chunk_text = "\n".join(lines[start - 1:end])
+            if chunk_text.strip():
+                chunks.append(chunk_record(
+                    source, f"L{start}-L{end}",
+                    chunk_text, language,
+                    f"{source.path}#L{start}-L{end}",
+                    start, end,
+                    parent_context=source.path,
+                    symbol_hints=cheap_symbol_hints(chunk_text),
+                    import_hints=imports,
+                    kind="module",
+                ))
+    chunks.sort(key=lambda c: c.startLine or 0)
+    return chunks
+
+
 def code_chunks(source: SourceRecord, text: str, relative_path: str) -> List[ChunkRecord]:
+    sym_chunks = symbol_chunks(source, text, relative_path)
+    if sym_chunks is not None:
+        return sym_chunks
     lines = re.split(r"\r?\n", text)
     language = language_for(relative_path)
     imports = cheap_import_hints(text)

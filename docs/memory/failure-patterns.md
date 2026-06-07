@@ -43,3 +43,19 @@ When implementing a pre-scoring pass that mirrors an existing scorer, extract th
 - expires_at:
 
 When testing a pipeline stage that feeds data into a downstream stage (e.g., BM25 retrieval seeds seeding graph expansion), assert that the output list contains the expected value — not just that the field exists and is the right type. A test that passes on an empty list does not prove the feature works.
+
+## Protocol write() methods that reference types from a circular-import module need TYPE_CHECKING guard imports
+
+- kind: failure-pattern
+- source: PR #163 review: ProductAuthStore and TelemetryStore Protocol methods reference IngestionEnvelope without importing it, breaking static type analysis
+- confidence: verified
+- created_at: 2026-06-07
+- expires_at:
+
+When defining Protocol classes in modules that would create a circular import if the referenced type were imported at the top level, use a TYPE_CHECKING guard so the annotation is resolvable by static type checkers without affecting the runtime import graph:
+
+    from typing import TYPE_CHECKING
+    if TYPE_CHECKING:
+        from agentrail.server.ingestion import IngestionEnvelope
+
+Omitting this means the Protocol's method signatures cannot be verified by mypy/pyright, negating the type-safety benefit of introducing Protocol abstractions.

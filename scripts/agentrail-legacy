@@ -5161,6 +5161,16 @@ agent_command_env_name() {
   esac
 }
 
+sanitized_agent_exec() {
+  env \
+    -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_ENTRYPOINT \
+    -u CLAUDE_AGENT_SDK_VERSION -u CLAUDE_CODE_EXECPATH -u CLAUDE_EFFORT \
+    -u AI_AGENT \
+    -u CODEX_SESSION -u CODEX_SANDBOX \
+    -u CURSOR_SESSION -u CURSOR_AGENT \
+    "$@"
+}
+
 default_agent_command() {
   local agent="$1"
   case "$agent" in
@@ -6343,10 +6353,10 @@ run_issue() {
     if [[ "$phase" == "execute" ]]; then
       (
         cd "$target_dir" &&
-          "$ralph_executor" --issue "$issue" --agent-command "$agent_command" --prefix-prompt-file "$phase_prompt_file"
+          sanitized_agent_exec "$ralph_executor" --issue "$issue" --agent-command "$agent_command" --prefix-prompt-file "$phase_prompt_file"
       ) 2>&1 | tee "$phase_output_file"
     else
-      printf '%s\n' "$phase_prompt" | bash -lc "$agent_command" 2>&1 | tee "$phase_output_file"
+      printf '%s\n' "$phase_prompt" | sanitized_agent_exec bash -lc "$agent_command" 2>&1 | tee "$phase_output_file"
     fi
     status=$?
     set -e

@@ -135,6 +135,16 @@ Repo-specific instructions:
 PROMPT
 }
 
+sanitized_agent_exec() {
+  env \
+    -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_ENTRYPOINT \
+    -u CLAUDE_AGENT_SDK_VERSION -u CLAUDE_CODE_EXECPATH -u CLAUDE_EFFORT \
+    -u AI_AGENT \
+    -u CODEX_SESSION -u CODEX_SANDBOX \
+    -u CURSOR_SESSION -u CURSOR_AGENT \
+    "$@"
+}
+
 run_codex_review() {
   local base="$1"
   local pr="$2"
@@ -158,9 +168,9 @@ run_codex_review() {
   fi
 
   if [[ ${#extra_args[@]} -gt 0 ]]; then
-    printf '%s\n' "$prompt" | codex exec review --base "$base" "${output_args[@]}" "${extra_args[@]}"
+    printf '%s\n' "$prompt" | sanitized_agent_exec codex exec review --base "$base" "${output_args[@]}" "${extra_args[@]}"
   else
-    printf '%s\n' "$prompt" | codex exec review --base "$base" "${output_args[@]}"
+    printf '%s\n' "$prompt" | sanitized_agent_exec codex exec review --base "$base" "${output_args[@]}"
   fi
 }
 
@@ -174,13 +184,11 @@ run_claude_review() {
   local prompt
   prompt="$(review_prompt "$pr" "$title" "$url" "$machine_readable")"
 
-  local claude_command="env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u AI_AGENT claude -p --allowedTools Bash,Read --dangerously-skip-permissions"
-
   if [[ -n "$output_file" ]]; then
     mkdir -p "$(dirname "$output_file")"
-    printf '%s\n' "$prompt" | bash -lc "$claude_command" 2>&1 | tee "$output_file"
+    printf '%s\n' "$prompt" | sanitized_agent_exec bash -lc "claude -p" 2>&1 | tee "$output_file"
   else
-    printf '%s\n' "$prompt" | bash -lc "$claude_command" 2>&1
+    printf '%s\n' "$prompt" | sanitized_agent_exec bash -lc "claude -p" 2>&1
   fi
 }
 

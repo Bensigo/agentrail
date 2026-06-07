@@ -177,8 +177,18 @@ if [[ "$afk" -eq 1 ]] && command -v gh >/dev/null 2>&1; then
   gh issue edit "$issue_number" --add-label afk-in-progress >/dev/null
 fi
 
+sanitized_agent_exec() {
+  env \
+    -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_ENTRYPOINT \
+    -u CLAUDE_AGENT_SDK_VERSION -u CLAUDE_CODE_EXECPATH -u CLAUDE_EFFORT \
+    -u AI_AGENT \
+    -u CODEX_SESSION -u CODEX_SANDBOX \
+    -u CURSOR_SESSION -u CURSOR_AGENT \
+    "$@"
+}
+
 set +e
-printf '%s\n' "$prompt" | bash -lc "$agent_command"
+printf '%s\n' "$prompt" | sanitized_agent_exec bash -lc "$agent_command"
 status=$?
 set -e
 

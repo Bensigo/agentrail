@@ -146,6 +146,16 @@ prepare_worktree_agentrail_state() {
   fi
 }
 
+sanitized_agent_exec() {
+  env \
+    -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_ENTRYPOINT \
+    -u CLAUDE_AGENT_SDK_VERSION -u CLAUDE_CODE_EXECPATH -u CLAUDE_EFFORT \
+    -u AI_AGENT \
+    -u CODEX_SESSION -u CODEX_SANDBOX \
+    -u CURSOR_SESSION -u CURSOR_AGENT \
+    "$@"
+}
+
 agent_command_for_engine() {
   local engine="$1"
 
@@ -530,7 +540,7 @@ worker_run() {
     agent_command="$(agent_command_for_engine "$engine")"
 
     set +e
-    AGENTRAIL_ALLOW_SOURCE_RUN=1 \
+    sanitized_agent_exec env AGENTRAIL_ALLOW_SOURCE_RUN=1 \
       "$agentrail_runner" run issue "$issue" --agent "$engine" --target "$worktree" --command "$agent_command" \
         >"${logs_dir}/issue-${issue}-agentrail.log" 2>&1
     local agentrail_status=$?

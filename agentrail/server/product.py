@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import TYPE_CHECKING, List
+
+if TYPE_CHECKING:
+    from agentrail.server.ingestion import IngestionEnvelope
 
 
 PRODUCT_AUTH_SUBMISSION_KINDS = {

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
+
+if TYPE_CHECKING:
+    from agentrail.server.ingestion import IngestionEnvelope
 
 
 TELEMETRY_EVENT_SUBMISSION_KINDS = {

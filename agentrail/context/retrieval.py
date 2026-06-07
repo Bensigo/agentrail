@@ -447,6 +447,16 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         lexical_raw[str(item_id)] = lexical
         scored.append({"source": source, "chunk": chunk, "reasons": reasons, "score": {"deterministic": deterministic, "keyword": keyword, "bm25": bm25, "embedding": None, "rrf": 0.0, "authorityBoost": authority_boost, "authorityDemotion": 0 if authority_penalty >= 999 else authority_penalty, "freshnessDemotion": freshness_penalty, "priorMistakeDemotion": prior_penalty, "final": 0.0}})
 
+    _bm25_by_path: List[Tuple[float, str]] = [(entry["score"]["bm25"], str(entry["source"].get("path") or "")) for entry in scored if entry["score"]["bm25"] > 0 and entry["source"].get("path")]
+    _bm25_by_path.sort(key=lambda _x: _x[0], reverse=True)
+    _seen_seed_paths: Set[str] = set()
+    _seed_paths: List[str] = []
+    for _, _p in _bm25_by_path:
+        if _p not in _seen_seed_paths:
+            _seen_seed_paths.add(_p)
+            _seed_paths.append(_p)
+    graph_expansion["startedFromRetrievalSeeds"] = _seed_paths
+
     lexical_rank = {str((entry["chunk"] or {}).get("id") or entry["source"].get("id")): idx + 1 for idx, entry in enumerate(sorted([entry for entry in scored if lexical_raw[str((entry["chunk"] or {}).get("id") or entry["source"].get("id"))] > 0], key=lambda entry: lexical_raw[str((entry["chunk"] or {}).get("id") or entry["source"].get("id"))], reverse=True))}
     provider: Dict[str, Any] = {"mode": "disabled", "provider": None, "model": None}
     embedding_cfg = read_context_config(root).embedding

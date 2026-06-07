@@ -396,5 +396,15 @@ class ContextModuleTests(unittest.TestCase):
         self.assertIn("missing compiler budget metadata: compiler.tokenPack.budget.maxTokens", failures)
 
 
+    def test_graph_expansion_seeds_from_retrieval_candidates(self) -> None:
+        root = self.make_repo()
+        build_index(root)
+        # src/app.py contains "agentrail_context_subject" — this query strongly BM25-matches that file
+        result = query_context(root, "agentrail_context_subject", limit=10)
+        seeds = result["compiler"]["graphExpansion"]["startedFromRetrievalSeeds"]
+        self.assertIsInstance(seeds, list)
+        self.assertIn("src/app.py", seeds)
+
+
 if __name__ == "__main__":
     unittest.main()

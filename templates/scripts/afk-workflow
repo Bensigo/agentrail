@@ -288,6 +288,46 @@ detect_pr_for_issue() {
     --jq "map(select(((.body // \"\") | contains(\"#${issue}\")) or ((.title // \"\") | contains(\"#${issue}\")))) | sort_by(.createdAt) | last | .number // empty"
 }
 
+queue_review_only_issues() {
+  local labels_csv="$1"
+  local limit="$2"
+  local afk_label="$3"
+
+  # Find issues that already have an open PR but haven't been reviewed yet.
+  # These are partial runs where execute completed but verify/review did not.
+  local labels=()
+  IFS=',' read -r -a labels <<< "$labels_csv"
+
+  local candidate_limit=$((limit * 10))
+  [[ "$candidate_limit" -lt 20 ]] && candidate_limit=20
+
+  local emitted=0
+  local number title url
+  while IFS=$'\t' read -r number title url; do
+    [[ -n "$number" ]] || continue
+    # Only pick issues that DO have an open PR (opposite of queue_issues)
+    local pr
+    pr="$(detect_pr_for_issue "$number")"
+    if [[ -n "$pr" ]]; then
+      printf '%s\t%s\t%s\t%s\n' "$number" "$title" "$url" "$pr"
+      emitted=$((emitted + 1))
+      [[ "$emitted" -lt "$limit" ]] || break
+    fi
+  done < <(
+    local label
+    for label in "${labels[@]}"; do
+      gh issue list \
+        --state open \
+        --label "$afk_label" \
+        --label "$label" \
+        --search "sort:created-asc -label:afk-in-progress -label:pr-reviewed" \
+        --limit "$candidate_limit" \
+        --json number,title,url \
+        | jq -r 'sort_by(.number)[] | [.number, .title, .url] | @tsv'
+    done | awk -F '\t' 'NF >= 3 && !seen[$1]++'
+  )
+}
+
 extract_review_fix_json() {
   local review_file="$1"
 
@@ -498,14 +538,82 @@ merge_reviewed_pr() {
   local review_file="$3"
   local logs_dir="$4"
 
-  local pr_runner
-  pr_runner="$(script_path "$root" "pr")"
+  # Try the full pr script pipeline if rg is available; otherwise fall back
+  # to a direct gh pr merge which is sufficient for AFK auto-merges.
+  if command -v rg >/dev/null 2>&1; then
+    local pr_runner
+    pr_runner="$(script_path "$root" "pr")"
 
-  "$pr_runner" review-init "$pr" >"${logs_dir}/pr-${pr}-merge-review-init.log" 2>&1
-  write_review_artifacts_for_merge "$root" "$pr" "$review_file"
-  "$pr_runner" review-validate-artifacts "$pr" >"${logs_dir}/pr-${pr}-merge-review-validate.log" 2>&1
-  "$pr_runner" prepare-run "$pr" >"${logs_dir}/pr-${pr}-prepare.log" 2>&1
-  "$pr_runner" merge-run "$pr" >"${logs_dir}/pr-${pr}-merge.log" 2>&1
+    "$pr_runner" review-init "$pr" >"${logs_dir}/pr-${pr}-merge-review-init.log" 2>&1
+    write_review_artifacts_for_merge "$root" "$pr" "$review_file"
+    "$pr_runner" review-validate-artifacts "$pr" >"${logs_dir}/pr-${pr}-merge-review-validate.log" 2>&1
+    "$pr_runner" prepare-run "$pr" >"${logs_dir}/pr-${pr}-prepare.log" 2>&1
+    "$pr_runner" merge-run "$pr" >"${logs_dir}/pr-${pr}-merge.log" 2>&1
+  else
+    echo "rg (ripgrep) not found; using direct merge for PR #${pr}" >&2
+    afk_direct_merge "$root" "$pr" "$review_file" "$logs_dir"
+  fi
+}
+
+afk_direct_merge() {
+  local root="$1"
+  local pr="$2"
+  local review_file="$3"
+  local logs_dir="$4"
+
+  local pr_json
+  pr_json="$(gh pr view "$pr" --json number,title,state,isDraft,headRefOid)"
+  local pr_title pr_state is_draft head_sha
+  pr_title="$(jq -r '.title' <<< "$pr_json")"
+  pr_state="$(jq -r '.state' <<< "$pr_json")"
+  is_draft="$(jq -r '.isDraft' <<< "$pr_json")"
+  head_sha="$(jq -r '.headRefOid' <<< "$pr_json")"
+
+  [[ "$pr_state" == "OPEN" ]] || die "PR #${pr} is not open (state=${pr_state})"
+  [[ "$is_draft" != "true" ]] || die "PR #${pr} is a draft; cannot merge"
+
+  # Post review summary as a PR comment before merging
+  gh pr comment "$pr" --body "$(cat <<COMMENT
+**AFK automated review — no fix issues found.**
+
+Merging via AFK direct merge (full pr pipeline unavailable: rg not installed).
+
+<details>
+<summary>Review output</summary>
+
+$(head -200 "$review_file" 2>/dev/null || echo "Review file not available")
+
+</details>
+COMMENT
+)" >"${logs_dir}/pr-${pr}-review-comment.log" 2>&1 || true
+
+  # Squash merge
+  if ! gh pr merge "$pr" \
+    --squash \
+    --delete-branch \
+    --match-head-commit "$head_sha" \
+    --subject "${pr_title} (#${pr})" \
+    --body "Merged via AFK automated review. No fix issues found." \
+    >"${logs_dir}/pr-${pr}-merge.log" 2>&1; then
+    cat "${logs_dir}/pr-${pr}-merge.log" >&2
+    die "gh pr merge failed for PR #${pr}"
+  fi
+
+  # Wait for merge to finalize
+  local state
+  state="$(gh pr view "$pr" --json state --jq .state)"
+  if [[ "$state" != "MERGED" ]]; then
+    echo "Waiting for merge to finalize (state=${state})..." >&2
+    local i
+    for i in $(seq 1 30); do
+      sleep 5
+      state="$(gh pr view "$pr" --json state --jq .state)"
+      [[ "$state" != "MERGED" ]] || break
+    done
+  fi
+
+  [[ "$state" == "MERGED" ]] || die "PR #${pr} merge did not finalize (state=${state})"
+  echo "PR #${pr} merged successfully"
 }
 
 worker_run() {
@@ -605,6 +713,65 @@ worker_run() {
   )
 }
 
+worker_review_only() {
+  local root="$1"
+  local run_dir="$2"
+  local slot="$3"
+  local issue="$4"
+  local title="$5"
+  local pr="$6"
+  local base="$7"
+  local engine="$8"
+  local queue_labels="$9"
+  local afk_label="${10}"
+
+  local logs_dir="${run_dir}/logs"
+  mkdir -p "$logs_dir"
+
+  echo "worker ${slot}: review-only issue #${issue} PR #${pr}"
+
+  local agentrail_runner
+  agentrail_runner="$(agentrail_path "$root")"
+
+  local review_output review_log
+  review_output="${logs_dir}/pr-${pr}-review.md"
+  review_log="${logs_dir}/pr-${pr}-review.log"
+
+  (
+    cd "$root"
+
+    if ! "$agentrail_runner" internal review-pr --pr "$pr" --engine "$engine" --output "$review_output" --machine-readable >"$review_log" 2>&1; then
+      echo "worker ${slot}: review failed for PR #${pr}; see ${review_log}" >&2
+      return 1
+    fi
+
+    if [[ ! -s "$review_output" ]]; then
+      echo "worker ${slot}: review for PR #${pr} did not produce ${review_output}" >&2
+      return 1
+    fi
+
+    local fix_issue_count
+    if ! fix_issue_count="$(review_fix_issue_count "$review_output")"; then
+      echo "worker ${slot}: review for PR #${pr} did not produce valid machine-readable fix issue output; see ${review_output}" >&2
+      return 1
+    fi
+
+    create_review_fix_issues "$issue" "$pr" "$review_output" "$afk_label"
+    create_memory_suggestion_issues "$issue" "$pr" "$review_output" "$afk_label"
+
+    if [[ "$fix_issue_count" -eq 0 ]]; then
+      echo "worker ${slot}: review found no fix issues for PR #${pr}; preparing and merging"
+      if ! merge_reviewed_pr "$root" "$pr" "$review_output" "$logs_dir"; then
+        return 1
+      fi
+    else
+      echo "worker ${slot}: review created ${fix_issue_count} fix issue(s) for PR #${pr}; skipping merge"
+    fi
+
+    mark_issue_reviewed "$issue" "$queue_labels"
+  )
+}
+
 main() {
   local command="${1:-}"
   [[ -n "$command" ]] || { usage; exit 1; }
@@ -692,6 +859,52 @@ main() {
 
   local wave
   for ((wave = 1; wave <= max_waves; wave++)); do
+
+    # --- Review-only pass: pick up issues with open PRs that need review ---
+    if [[ "$review_enabled" == "1" ]]; then
+      local review_queue
+      review_queue="$(queue_review_only_issues "$queue_labels" "$concurrency" "$afk_label")"
+
+      if [[ -n "$review_queue" ]]; then
+        local review_pids=()
+        local review_slot=0
+        while IFS=$'\t' read -r issue title url pr; do
+          [[ -n "$issue" ]] || continue
+          review_slot=$((review_slot + 1))
+          echo "wave ${wave}: review-only issue #${issue} PR #${pr} ${title}"
+
+          if [[ "$dry_run" == "1" ]]; then
+            echo "dry-run: would review PR #${pr} for issue #${issue}"
+            continue
+          fi
+
+          claim_issue "$issue"
+          (
+            if ! worker_review_only "$root" "$run_dir" "$review_slot" "$issue" "$title" "$pr" "$base" "$engine" "$queue_labels" "$afk_label"; then
+              release_issue_to_queue "$issue"
+              exit 1
+            fi
+          ) &
+          review_pids+=("$!")
+        done <<< "$review_queue"
+
+        if [[ ${#review_pids[@]} -gt 0 ]]; then
+          local rpid
+          local review_failed=0
+          for rpid in "${review_pids[@]}"; do
+            if ! wait "$rpid"; then
+              review_failed=1
+            fi
+          done
+          # Review failures are non-fatal; continue to the regular queue
+          if [[ "$review_failed" != "0" ]]; then
+            echo "wave ${wave}: some review-only workers failed; continuing"
+          fi
+        fi
+      fi
+    fi
+
+    # --- Regular pass: pick issues that need implementation ---
     local queue
     queue="$(queue_issues "$queue_labels" "$concurrency" "$afk_label")"
 

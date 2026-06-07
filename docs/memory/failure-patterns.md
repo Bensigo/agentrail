@@ -99,3 +99,13 @@ When a fix is specifically for a static type-checker error (e.g. undefined name 
 - expires_at:
 
 When adding verification evidence to a PR body, always include the actual command output, not just the command. Showing a command without output forces reviewers to trust implicit claims (e.g. 'remaining errors are only union-attr') rather than verifying them from the PR body. If the raw output is noisy, grep for the relevant error codes and show the summary line.
+
+## AFK memory-suggestion workflow can create duplicate issues from the same source finding
+
+- kind: failure-pattern
+- source: PR #177 review: issues #162 and #165 both derived from PR #158 P2 finding on test_graph_expansion_seeds_from_retrieval_candidates; both were implemented independently, producing near-duplicate entries in failure-patterns.md
+- confidence: verified
+- created_at: 2026-06-08
+- expires_at:
+
+When the AFK workflow creates a memory-suggestion issue, check whether an existing open or recently-closed issue already targets the same source finding before creating a new one. Before implementing a memory-suggestion issue, search failure-patterns.md for entries citing the same source PR/test. If a broader or equivalent entry already exists, close the issue as superseded rather than adding a duplicate. See PR #177 vs commit 157636a (issue #165) for a concrete example.

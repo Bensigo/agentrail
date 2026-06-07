@@ -11,8 +11,10 @@ from agentrail.server.telemetry import InMemoryTelemetryStore, TELEMETRY_SUBMISS
 MAX_INLINE_ARTIFACT_METADATA_CHARS = 4096
 MAX_CONTEXT_PACK_SOURCE_PATH_CHARS = 512
 MAX_CONTEXT_PACK_SOURCE_HASH_CHARS = 256
-CONTEXT_PACK_SOURCE_PATH_RE = re.compile(r"^[A-Za-z0-9._/@+-]+$")
 CONTEXT_PACK_SOURCE_HASH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+._-]{1,31}:[A-Za-z0-9+/_=.-]{1,192}$")
+CONTEXT_PACK_INLINE_SOURCE_RE = re.compile(
+    r"^\s*(?:def|class|function|import|from|const|let|var|export|public|private|package|func|type|interface)\b"
+)
 
 ARTIFACT_REFERENCE_KINDS = {
     "log",
@@ -964,7 +966,7 @@ def _is_context_pack_source_path(path: str) -> bool:
         and not path.startswith("/")
         and "//" not in path
         and all(part not in {"", ".", ".."} for part in path.split("/"))
-        and CONTEXT_PACK_SOURCE_PATH_RE.fullmatch(path) is not None
+        and CONTEXT_PACK_INLINE_SOURCE_RE.match(path) is None
     )
 
 

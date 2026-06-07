@@ -969,6 +969,106 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             [("context_pack_source_hash_path_invalid", "payload.source_hashes[0].path")],
         )
 
+    def test_context_pack_source_hash_paths_accept_local_indexer_paths(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        spaced_path = "docs/Architecture Decision.md"
+        unicode_path = "docs/cafe-notes-é.md"
+        redacted_path = "docs/[REDACTED:secret_assignment]-notes.md"
+        payload = _context_pack_metadata_submission(
+            source_hashes={
+                spaced_path: "sha256:architecture",
+                unicode_path: "sha256:unicode",
+                redacted_path: "sha256:redacted",
+                "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
+            },
+            anchors=[
+                ContextPackAnchor(
+                    anchor_id="anchor_architecture",
+                    path=spaced_path,
+                    citation=f"{spaced_path}:1",
+                    reason="local indexer emits raw relative paths",
+                    start_line=1,
+                    end_line=1,
+                    source_hash="sha256:architecture",
+                ),
+                ContextPackAnchor(
+                    anchor_id="anchor_unicode",
+                    path=unicode_path,
+                    citation=f"{unicode_path}:2",
+                    reason="local indexer paths may include non-ascii characters",
+                    start_line=2,
+                    end_line=2,
+                    source_hash="sha256:unicode",
+                ),
+                ContextPackAnchor(
+                    anchor_id="anchor_redacted",
+                    path=redacted_path,
+                    citation=f"{redacted_path}:3",
+                    reason="redacted descriptor paths may include bracketed tokens",
+                    start_line=3,
+                    end_line=3,
+                    source_hash="sha256:redacted",
+                ),
+            ],
+            citations=[
+                ContextPackCitation(
+                    citation_id="citation_architecture",
+                    path=spaced_path,
+                    source_hash="sha256:architecture",
+                    start_line=1,
+                    end_line=1,
+                ),
+                ContextPackCitation(
+                    citation_id="citation_unicode",
+                    path=unicode_path,
+                    source_hash="sha256:unicode",
+                    start_line=2,
+                    end_line=2,
+                ),
+                ContextPackCitation(
+                    citation_id="citation_redacted",
+                    path=redacted_path,
+                    source_hash="sha256:redacted",
+                    start_line=3,
+                    end_line=3,
+                ),
+                ContextPackCitation(
+                    citation_id="citation_milestone",
+                    path="milestones/004-server-ingestion-spine.md",
+                    source_hash="sha256:milestone004",
+                    start_line=57,
+                    end_line=66,
+                ),
+            ],
+            inclusions=[
+                ContextPackDecision(
+                    item_id="architecture",
+                    citation=f"{spaced_path}:1",
+                    reason="valid path with space must ingest",
+                ),
+                ContextPackDecision(
+                    item_id="unicode",
+                    citation=f"{unicode_path}:2",
+                    reason="valid path with non-ascii must ingest",
+                ),
+                ContextPackDecision(
+                    item_id="redacted",
+                    citation=f"{redacted_path}:3",
+                    reason="valid path with bracketed token must ingest",
+                ),
+            ],
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertTrue(result.accepted, result.errors)
+        self.assertEqual(len(telemetry_store.context_pack_metadata), 1)
+
     def test_context_pack_citation_inventory_ranges_must_be_valid(self) -> None:
         cases = [
             ContextPackCitation(

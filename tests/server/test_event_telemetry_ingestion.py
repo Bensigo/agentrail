@@ -238,5 +238,153 @@ class EventTelemetryIngestionTests(unittest.TestCase):
         self.assertEqual([event.event_id for event in matched], ["match"])
 
 
+    def test_cost_event_attribution_by_team_api_key_agent_and_run(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        cost_event = CostEventSubmission(
+            event_id="cost_attrib_1",
+            run_id="run_abc",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            cost_usd=1.25,
+            occurred_at="2026-06-07T09:00:00Z",
+            agent="ralph",
+            phase="execute",
+            team_id="team_eng",
+            api_key_id="key_prod_001",
+            metadata={"tokens_in": 5000, "tokens_out": 1200},
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_abc", repository_id="repo_abc", payload=cost_event),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertTrue(result.accepted)
+        stored = telemetry_store.cost_events[0]
+        self.assertEqual(stored.team_id, "team_eng")
+        self.assertEqual(stored.api_key_id, "key_prod_001")
+        self.assertEqual(stored.agent, "ralph")
+        self.assertEqual(stored.run_id, "run_abc")
+        self.assertEqual(stored.cost_usd, 1.25)
+        event_record = telemetry_store.event_records[0]
+        self.assertEqual(event_record.workspace_id, "workspace_abc")
+        self.assertEqual(event_record.repository_id, "repo_abc")
+        self.assertEqual(event_record.run_id, "run_abc")
+        self.assertEqual(event_record.agent, "ralph")
+        self.assertEqual(event_record.phase, "execute")
+
+    def test_high_volume_ingestion_and_timeline_filtering_across_multiple_scopes(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        product_store = FailingProductAuthStore()
+
+        workspaces = ["ws_alpha", "ws_beta", "ws_gamma"]
+        repos = ["repo_x", "repo_y"]
+        runs = ["run_1", "run_2", "run_3"]
+        agents = ["codex", "ralph", "claude"]
+        event_kinds = [
+            ("run_event", "phase_started"),
+            ("cost_event", "cost_incurred"),
+            ("failure_event", "test_failure"),
+            ("command_event", "command_finished"),
+        ]
+
+        event_counter = 0
+        for workspace_id in workspaces:
+            for repository_id in repos:
+                for run_id in runs:
+                    for agent in agents:
+                        for kind, event_type in event_kinds:
+                            event_id = f"evt_{event_counter}"
+                            event_counter += 1
+                            minute = event_counter % 60
+                            occurred_at = f"2026-06-07T10:{minute:02d}:00Z"
+                            if kind == "run_event":
+                                payload = RunEventSubmission(
+                                    event_id=event_id,
+                                    run_id=run_id,
+                                    event_type=event_type,
+                                    phase="execute",
+                                    severity="info",
+                                    occurred_at=occurred_at,
+                                    agent=agent,
+                                )
+                            elif kind == "cost_event":
+                                payload = CostEventSubmission(
+                                    event_id=event_id,
+                                    run_id=run_id,
+                                    provider="anthropic",
+                                    model="claude-sonnet-4-6",
+                                    cost_usd=0.01 * event_counter,
+                                    occurred_at=occurred_at,
+                                    agent=agent,
+                                    phase="execute",
+                                    team_id=f"team_{workspace_id}",
+                                    api_key_id=f"key_{agent}",
+                                )
+                            elif kind == "failure_event":
+                                payload = FailureEventSubmission(
+                                    event_id=event_id,
+                                    run_id=run_id,
+                                    event_type=event_type,
+                                    phase="verify",
+                                    severity="error",
+                                    occurred_at=occurred_at,
+                                    agent=agent,
+                                    failure_type="unit_test",
+                                )
+                            else:
+                                payload = CommandEventSubmission(
+                                    event_id=event_id,
+                                    run_id=run_id,
+                                    command="python3 -m unittest",
+                                    event_type=event_type,
+                                    phase="verify",
+                                    severity="info",
+                                    occurred_at=occurred_at,
+                                    agent=agent,
+                                )
+                            result = ingest(
+                                IngestionEnvelope(
+                                    workspace_id=workspace_id,
+                                    repository_id=repository_id,
+                                    payload=payload,
+                                ),
+                                policy=SourceCustodyPolicy.default(),
+                                product_store=product_store,
+                                telemetry_store=telemetry_store,
+                            )
+                            self.assertTrue(result.accepted, f"{event_id} rejected: {result.errors}")
+
+        total_expected = len(workspaces) * len(repos) * len(runs) * len(agents) * len(event_kinds)
+        self.assertEqual(len(telemetry_store.event_records), total_expected)
+
+        # Filter by a single workspace/repo/run/agent produces the right subset
+        matched = telemetry_store.query_events(
+            workspace_id="ws_alpha",
+            repository_id="repo_x",
+            run_id="run_1",
+            agent="codex",
+        )
+        self.assertEqual(len(matched), len(event_kinds))
+
+        # Filter across workspace shows only that workspace
+        ws_beta_events = telemetry_store.query_events(workspace_id="ws_beta")
+        ws_beta_expected = len(repos) * len(runs) * len(agents) * len(event_kinds)
+        self.assertEqual(len(ws_beta_events), ws_beta_expected)
+
+        # Filter by run_id spans all workspaces and repos
+        run_1_events = telemetry_store.query_events(run_id="run_1")
+        run_1_expected = len(workspaces) * len(repos) * len(agents) * len(event_kinds)
+        self.assertEqual(len(run_1_events), run_1_expected)
+
+        # Cost events carry attribution fields
+        cost_records = [e for e in telemetry_store.cost_events if e.agent == "ralph" and e.run_id == "run_2"]
+        for cr in cost_records:
+            self.assertIsNotNone(cr.team_id)
+            self.assertEqual(cr.api_key_id, "key_ralph")
+
+
 if __name__ == "__main__":
     unittest.main()

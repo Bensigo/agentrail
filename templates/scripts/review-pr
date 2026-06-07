@@ -164,6 +164,26 @@ run_codex_review() {
   fi
 }
 
+run_claude_review() {
+  local base="$1"
+  local pr="$2"
+  local title="$3"
+  local url="$4"
+  local output_file="$5"
+  local machine_readable="$6"
+  local prompt
+  prompt="$(review_prompt "$pr" "$title" "$url" "$machine_readable")"
+
+  local claude_command="env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u AI_AGENT claude -p --allowedTools Bash,Read --dangerously-skip-permissions"
+
+  if [[ -n "$output_file" ]]; then
+    mkdir -p "$(dirname "$output_file")"
+    printf '%s\n' "$prompt" | bash -lc "$claude_command" 2>&1 | tee "$output_file"
+  else
+    printf '%s\n' "$prompt" | bash -lc "$claude_command" 2>&1
+  fi
+}
+
 main() {
   local pr=""
   local base=""
@@ -208,7 +228,7 @@ main() {
   done
 
   [[ -n "$pr" ]] || { usage; exit 1; }
-  [[ "$engine" == "codex" ]] || die "unsupported review engine: $engine"
+  [[ "$engine" == "codex" || "$engine" == "claude" ]] || die "unsupported review engine: $engine"
   if [[ "$machine_readable" == "1" && -z "$output_file" ]]; then
     die "--machine-readable requires --output so AgentRail can validate the review contract"
   fi
@@ -216,7 +236,11 @@ main() {
   need git
   need gh
   need jq
-  need codex
+  if [[ "$engine" == "codex" ]]; then
+    need codex
+  else
+    need claude
+  fi
 
   local root
   root="$(repo_root)"
@@ -243,7 +267,11 @@ main() {
   echo "    base: ${base}"
   echo "    head: ${head_ref}"
 
-  run_codex_review "$base" "$pr" "$title" "$url" "$output_file" "$machine_readable"
+  if [[ "$engine" == "claude" ]]; then
+    run_claude_review "$base" "$pr" "$title" "$url" "$output_file" "$machine_readable"
+  else
+    run_codex_review "$base" "$pr" "$title" "$url" "$output_file" "$machine_readable"
+  fi
   if [[ "$machine_readable" == "1" ]]; then
     validate_machine_readable_review_output "$output_file"
   fi

@@ -556,7 +556,7 @@ worker_run() {
       review_output="${logs_dir}/pr-${pr}-review.md"
       review_log="${logs_dir}/pr-${pr}-review.log"
 
-      if ! "$agentrail_runner" internal review-pr --pr "$pr" --output "$review_output" --machine-readable >"$review_log" 2>&1; then
+      if ! "$agentrail_runner" internal review-pr --pr "$pr" --engine "$engine" --output "$review_output" --machine-readable >"$review_log" 2>&1; then
         echo "worker ${slot}: review failed for PR #${pr}; see ${review_log}" >&2
         "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status failed --issue "$issue" --pr "$pr" --run-dir "$run_dir" --base "$base" --slot "$slot"
         return 1

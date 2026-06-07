@@ -4727,14 +4727,16 @@ build_context_pack_file() {
     python_bin="python"
   fi
 
-  output="$(
-    PYTHONPATH="${repo_dir}${PYTHONPATH:+:${PYTHONPATH}}" \
-      "$python_bin" -m agentrail.cli.main context build "$target_kind" "$target_number" --phase "$phase" --target "$target_dir" --json
-  )"
-  AGENTRAIL_CONTEXT_BUILD_OUTPUT="$output" node <<'NODE'
-const parsed = JSON.parse(process.env.AGENTRAIL_CONTEXT_BUILD_OUTPUT || "{}");
+  local tmpfile
+  tmpfile="$(mktemp)"
+  PYTHONPATH="${repo_dir}${PYTHONPATH:+:${PYTHONPATH}}" \
+    "$python_bin" -m agentrail.cli.main context build "$target_kind" "$target_number" --phase "$phase" --target "$target_dir" --json >"$tmpfile"
+  node - "$tmpfile" <<'NODE'
+const fs = require("fs");
+const parsed = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 console.log(parsed.jsonPath || "");
 NODE
+  rm -f "$tmpfile"
 }
 
 context_pack_summary() {
@@ -5200,6 +5202,22 @@ NODE
 )"
     echo "$configured_command"
     return
+  fi
+
+  if [[ -f "${target_dir}/.agentrail/config.json" ]]; then
+    local runners_command
+    runners_command="$(AGENTRAIL_AGENT="$agent" node - "${target_dir}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const agent = process.env.AGENTRAIL_AGENT;
+const cmd = config.runners && config.runners[agent] && config.runners[agent].command;
+console.log(cmd || "");
+NODE
+)"
+    if [[ -n "$runners_command" ]]; then
+      echo "$runners_command"
+      return
+    fi
   fi
 
   local env_name

@@ -20,6 +20,8 @@ Changed snapshot metadata under the same identity is stored as a new telemetry r
 
 Graph metadata ingestion is deterministic-only. Exact repeated graph metadata submissions for the same workspace, repository, snapshot, and graph identity are accepted as idempotent no-ops. Non-deterministic graph enrichment is rejected as authoritative graph metadata.
 
+Context-pack metadata ingestion is keyed by workspace, repository, context pack ID, run or pull request association, and content hash. Exact repeated submissions of the same context-pack metadata identity and payload are accepted as idempotent no-ops. Changed metadata under the same pack identity is stored as a new telemetry record so audit history is preserved.
+
 ## Source Custody Policy
 
 Default policy:
@@ -33,6 +35,8 @@ Default policy:
 ```
 
 Full source content is forbidden by this contract. Large logs, transcripts, evidence bundles, screenshots, index snapshots, and context-pack artifacts are also forbidden inline; submit them as object-storage artifact references with bounded metadata instead. Bounded cited snippets may be accepted only when Source Custody Policy explicitly sets `allow_bounded_snippets` and a nonzero `max_snippet_chars`.
+
+Context-pack metadata may include bounded snippets only in the typed `bounded_snippets` field. Snippet-like arbitrary metadata keys such as `source_snippets` or `snippet_content` are rejected so callers cannot bypass citation, line-bound, and hash requirements.
 
 Invalid custody and payload combinations must return validation errors and must not write records.
 
@@ -50,7 +54,7 @@ Invalid custody and payload combinations must return validation errors and must 
 - `billing_configuration`: workspace billing plan and account reference.
 - `index_snapshot`: snapshot identity, repository, indexer, commit SHA, index hash, source hashes, freshness metadata, ingestion health, and graph metadata reference.
 - `graph_metadata`: graph identity, snapshot reference, deterministic flag, node/edge counts, metadata, and object reference. Deterministic graph metadata is authoritative; LLM enrichment belongs elsewhere as lower-authority discovery metadata.
-- `context_pack_metadata`: context-pack identity, target, citations, content hash, artifact reference, and metadata.
+- `context_pack_metadata`: context-pack identity, workspace, repository, run or pull request association, target, anchors, citations, inclusion reasons, exclusion reasons, token budgets, quality metrics, source hashes, content hash, optional bounded snippets, optional object-storage artifact reference, and bounded metadata.
 - `artifact_reference`: object-storage reference for large `log`, `transcript`, `evidence_bundle`, `screenshot`, `index_snapshot`, or `context_pack` artifacts. The reference carries workspace, repository, URI, content hash, size, content type, and bounded metadata. Run artifacts also carry `run_id`, index snapshot artifacts carry `snapshot_id`, and context-pack artifacts carry `context_pack_id`.
 - `run_event`: run timeline event metadata.
 - `cost_event`: provider/model cost metadata.
@@ -61,11 +65,11 @@ Invalid custody and payload combinations must return validation errors and must 
 
 ## Field Categories
 
-Metadata fields include workspace display names, team names, API key scopes and actors, repository names, codebase unit names and kinds, indexer health, run status, review gate status, source custody modes, billing plans, index snapshot freshness and ingestion health, graph determinism and counts, artifact kinds, artifact sizes, artifact content types, run event types, phases, severities, agents, timestamps, cost provider/model values, audit actions or decisions, audit provider-call/redaction/context/policy metadata, failure metadata, command metadata, and context event decisions.
+Metadata fields include workspace display names, team names, API key scopes and actors, repository names, codebase unit names and kinds, indexer health, run status, review gate status, source custody modes, billing plans, index snapshot freshness and ingestion health, graph determinism and counts, context-pack targets, anchor reasons, inclusion and exclusion reasons, token budgets, quality metrics, artifact kinds, artifact sizes, artifact content types, run event types, phases, severities, agents, timestamps, cost provider/model values, audit actions or decisions, audit provider-call/redaction/context/policy metadata, failure metadata, command metadata, and context event decisions.
 
-Hash fields include API key hashes, commit SHAs, repository and index snapshot source hashes, index snapshot index hashes, context-pack content hashes, artifact content hashes, and bounded snippet content hashes.
+Hash fields include API key hashes, commit SHAs, repository, index snapshot, and context-pack source hashes, index snapshot index hashes, context-pack content hashes, anchor and citation source hashes, artifact content hashes, and bounded snippet content hashes.
 
-Reference fields include workspace IDs, team IDs, API key IDs, repository IDs, codebase unit IDs, indexer IDs, run IDs, event IDs, review gate IDs, billing account references, repository remote URLs, index snapshot IDs, index snapshot repository/indexer references, graph IDs, graph snapshot references, graph metadata references, graph object references, context-pack artifact references, artifact IDs, artifact object URIs, artifact run/context-pack/snapshot associations, context-pack citations, and review gate evidence references.
+Reference fields include workspace IDs, team IDs, API key IDs, repository IDs, codebase unit IDs, indexer IDs, run IDs, pull request IDs, event IDs, review gate IDs, billing account references, repository remote URLs, index snapshot IDs, index snapshot repository/indexer references, graph IDs, graph snapshot references, graph metadata references, graph object references, context-pack IDs, context-pack anchor/citation/item references, context-pack artifact references, artifact IDs, artifact object URIs, artifact run/context-pack/snapshot associations, context-pack citations, and review gate evidence references.
 
 Dashboard timeline filters are backed by normalized append-only telemetry records with workspace ID, repository ID, run ID, agent, phase, event type, severity, and occurred-at timestamp fields where applicable. Time range filtering uses inclusive ISO 8601 timestamp bounds in this prototype.
 

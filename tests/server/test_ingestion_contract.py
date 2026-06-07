@@ -7,7 +7,12 @@ from agentrail.server.ingestion import (
     AuditEventSubmission,
     BoundedSnippet,
     CommandEventSubmission,
+    ContextPackAnchor,
+    ContextPackBudget,
+    ContextPackCitation,
+    ContextPackDecision,
     ContextPackMetadataSubmission,
+    ContextPackQualityMetrics,
     ContextEventSubmission,
     CostEventSubmission,
     FailureEventSubmission,
@@ -154,10 +159,68 @@ class ServerIngestionContractTests(unittest.TestCase):
             ),
             ContextPackMetadataSubmission(
                 context_pack_id="pack_123",
+                workspace_id="workspace_123",
+                repository_id="repo_123",
+                run_id="run_123",
                 target_kind="issue",
                 target_id="133",
                 content_hash="sha256:pack789",
-                citations=["CONTEXT.md", "milestones/004-server-ingestion-spine.md"],
+                source_hashes={
+                    "CONTEXT.md": "sha256:context123",
+                    "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
+                },
+                anchors=[
+                    ContextPackAnchor(
+                        anchor_id="anchor_context",
+                        path="CONTEXT.md",
+                        citation="CONTEXT.md:1",
+                        reason="canonical domain language",
+                        start_line=1,
+                        end_line=20,
+                        source_hash="sha256:context123",
+                    )
+                ],
+                citations=[
+                    ContextPackCitation(
+                        citation_id="citation_context",
+                        path="CONTEXT.md",
+                        source_hash="sha256:context123",
+                        start_line=1,
+                        end_line=20,
+                    ),
+                    ContextPackCitation(
+                        citation_id="citation_milestone",
+                        path="milestones/004-server-ingestion-spine.md",
+                        source_hash="sha256:milestone004",
+                        start_line=66,
+                        end_line=66,
+                    )
+                ],
+                inclusions=[
+                    ContextPackDecision(
+                        item_id="CONTEXT.md",
+                        citation="CONTEXT.md:1",
+                        reason="defines source custody and context-pack terms",
+                    )
+                ],
+                exclusions=[
+                    ContextPackDecision(
+                        item_id="console-ui",
+                        citation="milestones/004-server-ingestion-spine.md:66",
+                        reason="console UI is out of scope",
+                    )
+                ],
+                budgets=ContextPackBudget(
+                    max_input_tokens=12000,
+                    used_input_tokens=3400,
+                    max_output_tokens=2000,
+                ),
+                quality_metrics=ContextPackQualityMetrics(
+                    required_source_coverage=1.0,
+                    citation_coverage=1.0,
+                    stale_or_denied_leakage=0,
+                    precision_at_budget=0.9,
+                ),
                 artifact_ref="object://context-packs/pack_123.json",
                 metadata={"phase": "execute"},
             ),
@@ -649,6 +712,14 @@ class ServerIngestionContractTests(unittest.TestCase):
         self.assertIn("index_snapshot.graph_metadata_ref", catalog["references"])
         self.assertIn("graph_metadata.graph_id", catalog["references"])
         self.assertIn("graph_metadata.snapshot_id", catalog["references"])
+        self.assertIn("context_pack_metadata.context_pack_id", catalog["references"])
+        self.assertIn("context_pack_metadata.workspace_id", catalog["references"])
+        self.assertIn("context_pack_metadata.repository_id", catalog["references"])
+        self.assertIn("context_pack_metadata.run_id", catalog["references"])
+        self.assertIn("context_pack_metadata.anchors[].citation", catalog["references"])
+        self.assertIn("context_pack_metadata.inclusions[].reason", catalog["metadata"])
+        self.assertIn("context_pack_metadata.exclusions[].reason", catalog["metadata"])
+        self.assertIn("context_pack_metadata.source_hashes", catalog["hashes"])
         self.assertIn("context_pack_metadata.artifact_ref", catalog["references"])
         self.assertIn("artifact_reference.artifact_kind", catalog["metadata"])
         self.assertIn("artifact_reference.content_hash", catalog["hashes"])
@@ -667,7 +738,9 @@ class ServerIngestionContractTests(unittest.TestCase):
         self.assertIn("command_event.run_id", catalog["references"])
         self.assertIn("context_event.context_pack_id", catalog["references"])
         self.assertIn("repository.bounded_snippets[].content", catalog["bounded_snippets"])
+        self.assertIn("context_pack_metadata.bounded_snippets[].content", catalog["bounded_snippets"])
         self.assertIn("repository.full_source", catalog["forbidden_full_source"])
+        self.assertIn("context_pack_metadata.metadata.source_files", catalog["forbidden_full_source"])
         self.assertIn("large inline artifact bodies in metadata", catalog["forbidden_full_source"])
         self.assertIn("raw file contents outside bounded snippets", catalog["forbidden_full_source"])
 

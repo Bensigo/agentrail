@@ -23,8 +23,8 @@ from agentrail.server.ingestion import (
     ValidationError,
     _validate_payload,
 )
-from agentrail.server.product import PRODUCT_AUTH_SUBMISSION_KINDS, InMemoryProductAuthStore
-from agentrail.server.telemetry import TELEMETRY_SUBMISSION_KINDS, InMemoryTelemetryStore
+from agentrail.server.product import PRODUCT_AUTH_SUBMISSION_KINDS, ProductAuthStore
+from agentrail.server.telemetry import TELEMETRY_SUBMISSION_KINDS, TelemetryStore
 
 
 @dataclass
@@ -42,6 +42,11 @@ class WriterFailureSink:
     """
     Accumulates FailedFlushRecord entries so backpressure or writer failures
     produce inspectable evidence without claiming successful ingestion.
+
+    Cross-flush accumulation: failures are never cleared between flush() calls.
+    Each call to BatchWriter.flush() appends new failures to this sink's
+    ``failures`` list. Callers that need per-flush isolation must inspect or
+    drain ``failures`` between flushes themselves.
     """
 
     failures: List[FailedFlushRecord] = field(default_factory=list)
@@ -92,14 +97,14 @@ class BatchWriter:
     """
     Routes queued envelopes to product/auth, telemetry, or artifact-reference stores.
 
-    - product/auth records → InMemoryProductAuthStore
-    - telemetry events and artifact references → InMemoryTelemetryStore
+    - product/auth records → ProductAuthStore
+    - telemetry events and artifact references → TelemetryStore
     - Writer exceptions are caught and recorded in failure_sink; they do not propagate.
     - Returns the number of successfully written envelopes.
     """
 
-    product_store: InMemoryProductAuthStore
-    telemetry_store: InMemoryTelemetryStore
+    product_store: ProductAuthStore
+    telemetry_store: TelemetryStore
     failure_sink: WriterFailureSink
 
     def flush(self, queue: IngestionQueue, *, batch_size: Optional[int] = None) -> int:

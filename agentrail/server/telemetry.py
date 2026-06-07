@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Protocol
+
+
+class TelemetryStore(Protocol):
+    """Protocol for telemetry storage backends."""
+
+    def write(self, envelope: "IngestionEnvelope") -> None: ...
 
 
 TELEMETRY_EVENT_SUBMISSION_KINDS = {

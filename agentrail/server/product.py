@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Protocol
+
+
+class ProductAuthStore(Protocol):
+    """Protocol for product/auth storage backends."""
+
+    def write(self, envelope: "IngestionEnvelope") -> None: ...
 
 
 PRODUCT_AUTH_SUBMISSION_KINDS = {

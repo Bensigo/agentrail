@@ -14,6 +14,8 @@ MAX_CONTEXT_PACK_SOURCE_HASH_CHARS = 256
 CONTEXT_PACK_SOURCE_HASH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+._-]{1,31}:[A-Za-z0-9+/_=.-]{1,192}$")
 CONTEXT_PACK_INLINE_SOURCE_RE = re.compile(
     r"^\s*(?:def|class|function|import|from|const|let|var|export|public|private|package|func|type|interface)\b"
+    r"|\b[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)"
+    r"|['\"`;{}]"
 )
 
 ARTIFACT_REFERENCE_KINDS = {
@@ -1321,21 +1323,28 @@ def _anchor_citation_resolves(anchor: ContextPackAnchor) -> bool:
 
 
 def _split_citation_reference(citation: str) -> tuple[str, Optional[int], Optional[int], bool]:
-    path_part, separator, fragment = citation.partition("#")
-    if separator:
-        if fragment.startswith("L"):
-            start_line, end_line = _parse_line_reference(fragment[1:])
-            if start_line is None:
-                return path_part, None, None, False
-            return path_part, start_line, end_line, True
-        return path_part, None, None, True
-    path, separator, line_part = path_part.rpartition(":")
+    hash_path, hash_separator, hash_line_part = citation.rpartition("#L")
+    if hash_separator:
+        start_line, end_line = _parse_line_reference(hash_line_part)
+        if start_line is None:
+            return hash_path, None, None, False
+        return hash_path, start_line, end_line, True
+    path, separator, line_part = citation.rpartition(":")
     if not separator:
-        return path_part, None, None, True
+        return citation, None, None, True
+    if not _looks_like_line_reference(line_part):
+        return citation, None, None, True
     start_line, end_line = _parse_line_reference(line_part)
     if start_line is None:
-        return path_part, None, None, False
+        return path, None, None, False
     return path, start_line, end_line, True
+
+
+def _looks_like_line_reference(line_part: str) -> bool:
+    start_text, separator, end_text = line_part.partition("-")
+    if separator:
+        return start_text.isdigit() or end_text.isdigit()
+    return line_part.isdigit()
 
 
 def _parse_line_reference(line_part: str) -> tuple[Optional[int], Optional[int]]:

@@ -969,6 +969,32 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             [("context_pack_source_hash_path_invalid", "payload.source_hashes[0].path")],
         )
 
+    def test_context_pack_source_hash_paths_reject_one_line_source_calls(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        smuggled_source_path = "print(open('agentrail/server/ingestion.py').read())"
+        payload = _context_pack_metadata_submission(
+            source_hashes={
+                smuggled_source_path: "sha256:smuggled",
+                "agentrail/server/ingestion.py": "sha256:source123",
+                "CONTEXT.md": "sha256:context123",
+                "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
+            },
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [("context_pack_source_hash_path_invalid", "payload.source_hashes[0].path")],
+        )
+
     def test_context_pack_source_hash_paths_accept_local_indexer_paths(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         spaced_path = "docs/Architecture Decision.md"
@@ -1055,6 +1081,79 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                     item_id="redacted",
                     citation=f"{redacted_path}:3",
                     reason="valid path with bracketed token must ingest",
+                ),
+            ],
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertTrue(result.accepted, result.errors)
+        self.assertEqual(len(telemetry_store.context_pack_metadata), 1)
+
+    def test_context_pack_citations_preserve_literal_hashes_and_colons_in_paths(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        hash_path = "docs/foo#bar.md"
+        colon_path = "docs/[REDACTED:secret]-notes.md"
+        payload = _context_pack_metadata_submission(
+            source_hashes={
+                hash_path: "sha256:hash-path",
+                colon_path: "sha256:colon-path",
+                "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
+            },
+            anchors=[
+                ContextPackAnchor(
+                    anchor_id="anchor_hash",
+                    path=hash_path,
+                    citation=f"{hash_path}:1",
+                    reason="hash characters may be literal path characters before line suffixes",
+                    start_line=1,
+                    end_line=1,
+                    source_hash="sha256:hash-path",
+                ),
+                ContextPackAnchor(
+                    anchor_id="anchor_colon",
+                    path=colon_path,
+                    citation=colon_path,
+                    reason="colon characters may be literal path characters without numeric line suffixes",
+                    source_hash="sha256:colon-path",
+                ),
+            ],
+            citations=[
+                ContextPackCitation(
+                    citation_id="citation_hash",
+                    path=hash_path,
+                    source_hash="sha256:hash-path",
+                    start_line=1,
+                    end_line=1,
+                ),
+                ContextPackCitation(
+                    citation_id="citation_colon",
+                    path=colon_path,
+                    source_hash="sha256:colon-path",
+                ),
+                ContextPackCitation(
+                    citation_id="citation_milestone",
+                    path="milestones/004-server-ingestion-spine.md",
+                    source_hash="sha256:milestone004",
+                    start_line=57,
+                    end_line=66,
+                ),
+            ],
+            inclusions=[
+                ContextPackDecision(
+                    item_id="hash-path",
+                    citation=f"{hash_path}:1",
+                    reason="literal hash path with numeric line suffix must resolve",
+                ),
+                ContextPackDecision(
+                    item_id="colon-path",
+                    citation=colon_path,
+                    reason="literal colon path without numeric line suffix must resolve",
                 ),
             ],
         )

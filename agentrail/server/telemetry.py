@@ -2,10 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Protocol
 
 if TYPE_CHECKING:
     from agentrail.server.ingestion import IngestionEnvelope
+
+
+class TelemetryStore(Protocol):
+    """Protocol for telemetry storage backends."""
+
+    def write(self, envelope: "IngestionEnvelope") -> None: ...
 
 
 TELEMETRY_EVENT_SUBMISSION_KINDS = {

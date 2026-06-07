@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Protocol
 
 if TYPE_CHECKING:
     from agentrail.server.ingestion import IngestionEnvelope
+
+
+class ProductAuthStore(Protocol):
+    """Protocol for product/auth storage backends."""
+
+    def write(self, envelope: "IngestionEnvelope") -> None: ...
 
 
 PRODUCT_AUTH_SUBMISSION_KINDS = {

@@ -13,3 +13,13 @@ Keep entries concrete: what failed, how to detect it, and what future agents sho
 - expires_at:
 
 When writing high-volume ingestion tests that are mapped to an acceptance criterion about 'all event kinds', either include all kinds in the loop or add a comment explaining the intentional subset. This prevents future reviewers from flagging incomplete coverage.
+
+## Test the QueuedIngestionPipeline unknown-kind rejection path directly, not only the BatchWriter equivalent
+
+- kind: failure-pattern
+- source: PR #151 review — P3 finding: accept() unknown-kind guard at queue.py:154-163 is untested while the analogous BatchWriter path is tested
+- confidence: verified
+- created_at: 2026-06-07
+- expires_at:
+
+When a pipeline has a pre-enqueue validation guard that mirrors a writer-level guard, both paths need independent tests. Testing only the writer-level path leaves the pipeline guard uncovered and creates a false sense of full coverage.

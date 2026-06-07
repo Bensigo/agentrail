@@ -14,7 +14,7 @@ MAX_CONTEXT_PACK_SOURCE_HASH_CHARS = 256
 CONTEXT_PACK_SOURCE_HASH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+._-]{1,31}:[A-Za-z0-9+/_=.-]{1,192}$")
 CONTEXT_PACK_INLINE_SOURCE_RE = re.compile(
     r"^\s*(?:def|class|function|import|from|const|let|var|export|func|type|interface)\s+"
-    r"|\b[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)"
+    r"|^\s*[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)"
     r"|\b[A-Za-z_][A-Za-z0-9_]*\s*="
     r"|[`;{}]"
 )
@@ -1295,6 +1295,8 @@ def _citation_must_resolve_as_source_path(citation: str, source_hashes: Mapping[
     path, separator, line_part = citation.rpartition(":")
     if separator and _looks_like_line_reference(line_part):
         return path in source_hashes or "/" in path or "." in path
+    if not separator and ("/" in citation or "." in citation):
+        return True
     hash_path, hash_separator, hash_line_part = citation.rpartition("#L")
     return bool(
         hash_separator

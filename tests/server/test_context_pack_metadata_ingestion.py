@@ -644,6 +644,13 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
         payload = _context_pack_metadata_submission(
             citations=[
                 ContextPackCitation(
+                    citation_id="secret.py",
+                    path="CONTEXT.md",
+                    source_hash="sha256:context123",
+                    start_line=1,
+                    end_line=20,
+                ),
+                ContextPackCitation(
                     citation_id="secret.py:1",
                     path="CONTEXT.md",
                     source_hash="sha256:context123",
@@ -661,6 +668,11 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             inclusions=[
                 ContextPackDecision(
                     item_id="secret.py",
+                    citation="secret.py",
+                    reason="bare path-like citation IDs must resolve through source inventory",
+                ),
+                ContextPackDecision(
+                    item_id="secret.py:1",
                     citation="secret.py:1",
                     reason="path-like citation IDs must resolve through source inventory",
                 )
@@ -685,7 +697,10 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
         self.assertEqual(telemetry_store.records, [])
         self.assertEqual(
             [(error.code, error.field) for error in result.errors],
-            [("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation")],
+            [
+                ("context_pack_decision_citation_not_in_inventory", "payload.inclusions[0].citation"),
+                ("context_pack_decision_citation_not_in_inventory", "payload.inclusions[1].citation"),
+            ],
         )
 
     def test_context_pack_decision_hash_line_citations_must_match_recorded_citation_ranges(self) -> None:
@@ -1039,6 +1054,8 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
         package_path = "package.json"
         public_path = "public/index.html"
         private_path = "private/config.py"
+        parenthesized_doc_path = "docs/Architecture (final).md"
+        parenthesized_fixture_path = "fixtures/foo(bar).json"
         payload = _context_pack_metadata_submission(
             source_hashes={
                 spaced_path: "sha256:architecture",
@@ -1047,6 +1064,8 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                 package_path: "sha256:package",
                 public_path: "sha256:public",
                 private_path: "sha256:private",
+                parenthesized_doc_path: "sha256:parenthesized-doc",
+                parenthesized_fixture_path: "sha256:parenthesized-fixture",
                 "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
             },
             anchors=[
@@ -1104,6 +1123,24 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                     end_line=6,
                     source_hash="sha256:private",
                 ),
+                ContextPackAnchor(
+                    anchor_id="anchor_parenthesized_doc",
+                    path=parenthesized_doc_path,
+                    citation=f"{parenthesized_doc_path}:7",
+                    reason="parentheses in filenames are valid local indexer paths",
+                    start_line=7,
+                    end_line=7,
+                    source_hash="sha256:parenthesized-doc",
+                ),
+                ContextPackAnchor(
+                    anchor_id="anchor_parenthesized_fixture",
+                    path=parenthesized_fixture_path,
+                    citation=f"{parenthesized_fixture_path}:8",
+                    reason="parentheses in fixture filenames are valid local indexer paths",
+                    start_line=8,
+                    end_line=8,
+                    source_hash="sha256:parenthesized-fixture",
+                ),
             ],
             citations=[
                 ContextPackCitation(
@@ -1149,6 +1186,20 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                     end_line=6,
                 ),
                 ContextPackCitation(
+                    citation_id="citation_parenthesized_doc",
+                    path=parenthesized_doc_path,
+                    source_hash="sha256:parenthesized-doc",
+                    start_line=7,
+                    end_line=7,
+                ),
+                ContextPackCitation(
+                    citation_id="citation_parenthesized_fixture",
+                    path=parenthesized_fixture_path,
+                    source_hash="sha256:parenthesized-fixture",
+                    start_line=8,
+                    end_line=8,
+                ),
+                ContextPackCitation(
                     citation_id="citation_milestone",
                     path="milestones/004-server-ingestion-spine.md",
                     source_hash="sha256:milestone004",
@@ -1186,6 +1237,16 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                     item_id="private",
                     citation=f"{private_path}:6",
                     reason="valid private path must ingest",
+                ),
+                ContextPackDecision(
+                    item_id="parenthesized-doc",
+                    citation=f"{parenthesized_doc_path}:7",
+                    reason="valid parenthesized doc path must ingest",
+                ),
+                ContextPackDecision(
+                    item_id="parenthesized-fixture",
+                    citation=f"{parenthesized_fixture_path}:8",
+                    reason="valid parenthesized fixture path must ingest",
                 ),
             ],
         )

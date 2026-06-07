@@ -493,6 +493,24 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
             [("context_pack_content_hash_required", "payload.content_hash")],
         )
 
+    def test_context_pack_content_hash_must_be_a_hash_reference(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = replace(_context_pack_metadata_submission(), content_hash="def upload_everything(): pass")
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [("context_pack_content_hash_invalid", "payload.content_hash")],
+        )
+
     def test_context_pack_target_fields_are_required_for_provenance(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         payload = replace(_context_pack_metadata_submission(), target_kind="", target_id="")
@@ -927,7 +945,7 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
 
     def test_context_pack_source_hash_paths_cannot_hide_full_source_content(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
-        smuggled_source_path = "def upload_everything():\n    return open('agentrail/server/ingestion.py').read()"
+        smuggled_source_path = "def upload_everything(): pass"
         payload = _context_pack_metadata_submission(
             source_hashes={
                 smuggled_source_path: "sha256:smuggled",

@@ -11,6 +11,7 @@ from agentrail.server.telemetry import InMemoryTelemetryStore, TELEMETRY_SUBMISS
 MAX_INLINE_ARTIFACT_METADATA_CHARS = 4096
 MAX_CONTEXT_PACK_SOURCE_PATH_CHARS = 512
 MAX_CONTEXT_PACK_SOURCE_HASH_CHARS = 256
+CONTEXT_PACK_SOURCE_PATH_RE = re.compile(r"^[A-Za-z0-9._/@+-]+$")
 CONTEXT_PACK_SOURCE_HASH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+._-]{1,31}:[A-Za-z0-9+/_=.-]{1,192}$")
 
 ARTIFACT_REFERENCE_KINDS = {
@@ -815,6 +816,14 @@ def _validate_context_pack_metadata(
                 message="Context-pack metadata requires a content_hash for pack identity and provenance.",
             )
         )
+    elif not _is_context_pack_source_hash(payload.content_hash):
+        errors.append(
+            ValidationError(
+                code="context_pack_content_hash_invalid",
+                field="payload.content_hash",
+                message="Context-pack content_hash must be a bounded hash reference, not inline content.",
+            )
+        )
     if not payload.repository_id:
         errors.append(
             ValidationError(
@@ -952,6 +961,10 @@ def _is_context_pack_source_path(path: str) -> bool:
         and "\n" not in path
         and "\r" not in path
         and "\0" not in path
+        and not path.startswith("/")
+        and "//" not in path
+        and all(part not in {"", ".", ".."} for part in path.split("/"))
+        and CONTEXT_PACK_SOURCE_PATH_RE.fullmatch(path) is not None
     )
 
 

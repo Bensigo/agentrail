@@ -89,3 +89,13 @@ When a fix PR targets a feature branch (not the default branch), GitHub 'Closes 
 - expires_at:
 
 When a fix is specifically for a static type-checker error (e.g. undefined name under TYPE_CHECKING guard), the PR verification must include actual type-checker output (mypy or pyright command + result). Runtime import tests and pytest only confirm no circular import at runtime — they do not confirm the type-checker error is resolved. Always run `python3 -m mypy <file> --ignore-missing-imports` or `pyright <file>` and include the output as verification evidence.
+
+## Show full command output in verification sections, not just the command
+
+- kind: failure-pattern
+- source: PR #179 review finding P3: unfiltered mypy command shown without its output
+- confidence: verified
+- created_at: 2026-06-08
+- expires_at:
+
+When adding verification evidence to a PR body, always include the actual command output, not just the command. Showing a command without output forces reviewers to trust implicit claims (e.g. 'remaining errors are only union-attr') rather than verifying them from the PR body. If the raw output is noisy, grep for the relevant error codes and show the summary line.

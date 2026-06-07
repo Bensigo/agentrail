@@ -356,6 +356,9 @@ class CostEventSubmission:
     phase: Optional[str] = None
     event_type: str = "cost_incurred"
     severity: str = "info"
+    team_id: Optional[str] = None
+    api_key_id: Optional[str] = None
+    repository_id: Optional[str] = None
     metadata: Mapping[str, object] = field(default_factory=dict)
     submission_kind: str = field(default="cost_event", init=False)
 
@@ -503,6 +506,7 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "cost_event.occurred_at",
         "cost_event.provider",
         "cost_event.model",
+        "cost_event.cost_usd",
         "audit_event.event_type",
         "audit_event.phase",
         "audit_event.severity",
@@ -609,6 +613,9 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "run_event.run_id",
         "cost_event.event_id",
         "cost_event.run_id",
+        "cost_event.team_id",
+        "cost_event.api_key_id",
+        "cost_event.repository_id",
         "audit_event.event_id",
         "audit_event.run_id",
         "audit_event.actor_id",

@@ -57,7 +57,7 @@ Invalid custody and payload combinations must return validation errors and must 
 - `context_pack_metadata`: context-pack identity, workspace, repository, run or pull request association, target, anchors, citations, inclusion reasons, exclusion reasons, token budgets, quality metrics, source hashes, content hash, optional bounded snippets, optional object-storage artifact reference, and bounded metadata.
 - `artifact_reference`: object-storage reference for large `log`, `transcript`, `evidence_bundle`, `screenshot`, `index_snapshot`, or `context_pack` artifacts. The reference carries workspace, repository, URI, content hash, size, content type, and bounded metadata. Run artifacts also carry `run_id`, index snapshot artifacts carry `snapshot_id`, and context-pack artifacts carry `context_pack_id`.
 - `run_event`: run timeline event metadata.
-- `cost_event`: provider/model cost metadata.
+- `cost_event`: provider/model cost metadata with optional team, API key, and repository attribution for cost allocation.
 - `audit_event`: actor, action, provider call, redaction, context inclusion/exclusion, and policy decision metadata.
 - `failure_event`: run failure type, severity, phase, message, and related metadata.
 - `command_event`: command execution metadata, including command text, exit code, phase, severity, and timestamp.
@@ -65,7 +65,7 @@ Invalid custody and payload combinations must return validation errors and must 
 
 ## Field Categories
 
-Metadata fields include workspace display names, team names, API key scopes and actors, repository names, codebase unit names and kinds, indexer health, run status, review gate status, source custody modes, billing plans, index snapshot freshness and ingestion health, graph determinism and counts, context-pack targets, anchor reasons, inclusion and exclusion reasons, token budgets, quality metrics, artifact kinds, artifact sizes, artifact content types, run event types, phases, severities, agents, timestamps, cost provider/model values, audit actions or decisions, audit provider-call/redaction/context/policy metadata, failure metadata, command metadata, and context event decisions.
+Metadata fields include workspace display names, team names, API key scopes and actors, repository names, codebase unit names and kinds, indexer health, run status, review gate status, source custody modes, billing plans, index snapshot freshness and ingestion health, graph determinism and counts, context-pack targets, anchor reasons, inclusion and exclusion reasons, token budgets, quality metrics, artifact kinds, artifact sizes, artifact content types, run event types, phases, severities, agents, timestamps, cost provider/model/amount values, audit actions or decisions, audit provider-call/redaction/context/policy metadata, failure metadata, command metadata, and context event decisions.
 
 Hash fields include API key hashes, commit SHAs, repository, index snapshot, and context-pack source hashes, index snapshot index hashes, context-pack content hashes, anchor and citation source hashes, artifact content hashes, and bounded snippet content hashes.
 

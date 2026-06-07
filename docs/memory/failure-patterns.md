@@ -79,3 +79,13 @@ When writing tests that verify retrieval or seeding behavior, always assert the 
 - expires_at:
 
 When a fix PR targets a feature branch (not the default branch), GitHub 'Closes #N' keywords have no effect. The closingIssuesReferences API field will be empty. AFK workflows must manually close the linked issue after such PRs merge, or confirm closure by polling the issue state rather than relying on the merge event.
+
+## TYPE_CHECKING fix ACs must be verified with a type-checker invocation, not just runtime tests
+
+- kind: failure-pattern
+- source: PR #173 review: issue #167 AC verification gap
+- confidence: verified
+- created_at: 2026-06-07
+- expires_at:
+
+When a fix is specifically for a static type-checker error (e.g. undefined name under TYPE_CHECKING guard), the PR verification must include actual type-checker output (mypy or pyright command + result). Runtime import tests and pytest only confirm no circular import at runtime — they do not confirm the type-checker error is resolved. Always run `python3 -m mypy <file> --ignore-missing-imports` or `pyright <file>` and include the output as verification evidence.

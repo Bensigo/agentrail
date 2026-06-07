@@ -587,16 +587,22 @@ $(head -200 "$review_file" 2>/dev/null || echo "Review file not available")
 COMMENT
 )" >"${logs_dir}/pr-${pr}-review-comment.log" 2>&1 || true
 
-  # Squash merge
+  # Squash merge (no --delete-branch; worktrees conflict with local branch cleanup)
   if ! gh pr merge "$pr" \
     --squash \
-    --delete-branch \
     --match-head-commit "$head_sha" \
     --subject "${pr_title} (#${pr})" \
     --body "Merged via AFK automated review. No fix issues found." \
     >"${logs_dir}/pr-${pr}-merge.log" 2>&1; then
     cat "${logs_dir}/pr-${pr}-merge.log" >&2
     die "gh pr merge failed for PR #${pr}"
+  fi
+
+  # Clean up remote branch after merge (ignore failures)
+  local head_ref
+  head_ref="$(gh pr view "$pr" --json headRefName --jq .headRefName 2>/dev/null || true)"
+  if [[ -n "$head_ref" && "$head_ref" != "main" ]]; then
+    git push origin --delete "$head_ref" 2>/dev/null || true
   fi
 
   # Wait for merge to finalize
@@ -739,6 +745,23 @@ worker_review_only() {
 
   (
     cd "$root"
+
+    # Remove stale worktrees that have the PR branch checked out, which would
+    # block review-pr from running git switch on the PR head branch.
+    local head_ref
+    head_ref="$(gh pr view "$pr" --json headRefName --jq .headRefName 2>/dev/null || true)"
+    if [[ -n "$head_ref" ]]; then
+      local wt_path wt_branch
+      while IFS= read -r wt_path; do
+        [[ -n "$wt_path" ]] || continue
+        wt_branch="$(git -C "$wt_path" branch --show-current 2>/dev/null || true)"
+        if [[ "$wt_branch" == "$head_ref" ]]; then
+          echo "worker ${slot}: removing stale worktree at ${wt_path} (branch ${head_ref})"
+          git worktree remove --force "$wt_path" 2>/dev/null || true
+        fi
+      done < <(git worktree list --porcelain | awk '/^worktree / { print substr($0, 10) }')
+      git worktree prune 2>/dev/null || true
+    fi
 
     if ! "$agentrail_runner" internal review-pr --pr "$pr" --engine "$engine" --output "$review_output" --machine-readable >"$review_log" 2>&1; then
       echo "worker ${slot}: review failed for PR #${pr}; see ${review_log}" >&2

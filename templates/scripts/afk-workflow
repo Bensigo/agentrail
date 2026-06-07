@@ -587,13 +587,28 @@ $(head -200 "$review_file" 2>/dev/null || echo "Review file not available")
 COMMENT
 )" >"${logs_dir}/pr-${pr}-review-comment.log" 2>&1 || true
 
-  # Squash merge (no --delete-branch; worktrees conflict with local branch cleanup)
+  # Squash merge — try immediate first, fall back to --auto if branch protection blocks it
   if ! gh pr merge "$pr" \
     --squash \
     --match-head-commit "$head_sha" \
     --subject "${pr_title} (#${pr})" \
     --body "Merged via AFK automated review. No fix issues found." \
     >"${logs_dir}/pr-${pr}-merge.log" 2>&1; then
+    # Branch protection may require checks to pass first; use --auto to queue
+    if grep -q "requirements" "${logs_dir}/pr-${pr}-merge.log" 2>/dev/null; then
+      echo "Branch protection active; enabling auto-merge for PR #${pr}" >&2
+      if ! gh pr merge "$pr" \
+        --auto \
+        --squash \
+        --subject "${pr_title} (#${pr})" \
+        --body "Merged via AFK automated review. No fix issues found." \
+        >>"${logs_dir}/pr-${pr}-merge.log" 2>&1; then
+        cat "${logs_dir}/pr-${pr}-merge.log" >&2
+        die "gh pr merge --auto failed for PR #${pr}"
+      fi
+      echo "Auto-merge enabled for PR #${pr}; will merge when checks pass"
+      return 0
+    fi
     cat "${logs_dir}/pr-${pr}-merge.log" >&2
     die "gh pr merge failed for PR #${pr}"
   fi

@@ -1018,6 +1018,7 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
     def test_context_pack_source_hash_paths_reject_windows_paths_and_traversal(self) -> None:
         cases = [
             r"C:\repo\secret.py",
+            "C:/repo/secret.py",
             r"..\secret.py",
         ]
         for invalid_path in cases:

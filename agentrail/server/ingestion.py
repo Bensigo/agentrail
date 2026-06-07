@@ -968,6 +968,7 @@ def _is_context_pack_source_path(path: str) -> bool:
         and "\0" not in path
         and "\\" not in path
         and not path.startswith("/")
+        and re.match(r"^[A-Za-z]:/", path) is None
         and "//" not in path
         and all(part not in {"", ".", ".."} for part in path.split("/"))
         and CONTEXT_PACK_INLINE_SOURCE_RE.search(path) is None

@@ -8,13 +8,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agentrail.context.index import build_index
+from agentrail.context.index import build_index, symbol_aware_code_chunks, code_chunks
 from agentrail.context.compiler import extract_anchors
 from agentrail.context.evaluation import evaluate_retrieval, format_evaluation_report
+from agentrail.context.models import ChunkRecord
 from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
 from agentrail.context.redaction import redact_text
 from agentrail.context.retrieval import query_context
-from agentrail.context.sources import inventory_sources
+from agentrail.context.sources import inventory_sources, source_record_for_file
 
 
 class ContextModuleTests(unittest.TestCase):
@@ -394,6 +395,137 @@ class ContextModuleTests(unittest.TestCase):
         self.assertIn("top results missing reasons: docs/agents/leaked-denied.md", failures)
         self.assertIn("leaked denied/stale sources: docs/agents/leaked-denied.md", failures)
         self.assertIn("missing compiler budget metadata: compiler.tokenPack.budget.maxTokens", failures)
+
+
+    # ---------------------------------------------------------------------------
+    # Symbol-aware hybrid retrieval tests (issue #147)
+    # ---------------------------------------------------------------------------
+
+    def _make_source_for_text(self, root: Path, relative_path: str, text: str):
+        """Helper: write file and return a SourceRecord for it."""
+        full_path = root / relative_path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(text, encoding="utf-8")
+        from agentrail.shared.fs import sha256_text
+        return source_record_for_file(full_path, relative_path, content_hash=sha256_text(text), content=text)
+
+    def test_symbol_aware_chunks_have_symbol_and_kind_fields(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        py_text = "def retry_with_backoff(fn):\n    pass\n\nclass RetryPolicy:\n    pass\n"
+        source = self._make_source_for_text(root, "src/retry.py", py_text)
+        chunks = symbol_aware_code_chunks(source, py_text, "src/retry.py")
+        symbol_names = {c.symbol for c in chunks if c.symbol}
+        self.assertIn("retry_with_backoff", symbol_names)
+        self.assertIn("RetryPolicy", symbol_names)
+        for chunk in chunks:
+            if chunk.symbol:
+                self.assertIsNotNone(chunk.kind, f"symbol chunk missing kind: {chunk.symbol}")
+                self.assertIn(chunk.kind, {"function", "class", "method"})
+                self.assertIn("symbol", chunk.id)
+                self.assertIn(chunk.symbol, chunk.citation)
+
+    def test_symbol_chunk_json_includes_symbol_and_kind(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        js_text = "function loadConfig() {\n  return {};\n}\n"
+        source = self._make_source_for_text(root, "src/config.js", js_text)
+        chunks = symbol_aware_code_chunks(source, js_text, "src/config.js")
+        sym_chunks = [c for c in chunks if c.symbol]
+        self.assertTrue(sym_chunks, "expected at least one symbol chunk")
+        for chunk in sym_chunks:
+            j = chunk.to_json()
+            self.assertIn("symbol", j)
+            self.assertIn("kind", j)
+            self.assertEqual(j["symbol"], chunk.symbol)
+            self.assertEqual(j["kind"], chunk.kind)
+
+    def test_parser_failure_falls_back_to_line_window_chunks(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        # Ruby is not in the supported language list — extracted_symbols returns []
+        rb_text = "def unsupported_language\n  puts 'hi'\nend\n"
+        source = self._make_source_for_text(root, "src/app.rb", rb_text)
+        chunks = symbol_aware_code_chunks(source, rb_text, "src/app.rb")
+        # Should fall back to line-window chunks (L1-L...)
+        self.assertTrue(chunks, "fallback produced no chunks")
+        for chunk in chunks:
+            self.assertIsNone(chunk.symbol)
+            self.assertIsNone(chunk.kind)
+            self.assertIn("#L", chunk.citation)
+
+    def test_preamble_chunk_emitted_before_first_symbol(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        py_text = "import os\nimport sys\n\ndef main():\n    pass\n"
+        source = self._make_source_for_text(root, "src/main.py", py_text)
+        chunks = symbol_aware_code_chunks(source, py_text, "src/main.py")
+        preamble = next((c for c in chunks if c.citation.endswith("#preamble")), None)
+        self.assertIsNotNone(preamble, "preamble chunk expected for lines before first symbol")
+        self.assertIn("import os", preamble.content)
+
+    def test_no_stale_chunks_after_file_reindex(self) -> None:
+        root = self.make_repo()
+        # First index
+        build_index(root)
+        index_path = root / ".agentrail" / "context" / "index" / "index.json"
+        index1 = json.loads(index_path.read_text(encoding="utf-8"))
+        app_chunks_1 = [c for c in index1["chunks"] if c["path"] == "src/app.py"]
+        app_ids_1 = {c["id"] for c in app_chunks_1}
+        self.assertGreater(len(app_ids_1), 0)
+
+        # Modify the file
+        new_content = "def new_function():\n    return 'changed'\n"
+        (root / "src" / "app.py").write_text(new_content, encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "Modify app.py"], check=True)
+
+        # Second index
+        build_index(root)
+        index2 = json.loads(index_path.read_text(encoding="utf-8"))
+        app_chunks_2 = [c for c in index2["chunks"] if c["path"] == "src/app.py"]
+        app_ids_2 = {c["id"] for c in app_chunks_2}
+        self.assertGreater(len(app_ids_2), 0)
+
+        # Old chunk IDs should be gone (content hash changed, no duplicate stale chunks)
+        self.assertNotEqual(app_ids_1, app_ids_2, "chunk IDs should change after file modification")
+        stale = app_ids_1 & app_ids_2
+        self.assertEqual(len(stale), 0, f"stale duplicate chunk IDs after reindex: {stale}")
+
+    def test_exact_symbol_retrieval_returns_expected_candidates(self) -> None:
+        root = self.make_repo()
+        build_index(root)
+        result = query_context(root, "agentrail_context_subject", limit=10)
+        paths = [item["path"] for item in result["results"]]
+        self.assertIn("src/app.py", paths, "exact symbol query should return the file containing the symbol")
+
+    def test_retrieval_provenance_fields_in_score(self) -> None:
+        root = self.make_repo()
+        build_index(root)
+        result = query_context(root, "issue #92 context engine", limit=5)
+        self.assertTrue(result["results"], "no results returned")
+        for item in result["results"]:
+            score = item["score"]
+            self.assertIn("lexicalScore", score, f"lexicalScore missing from score: {score}")
+            self.assertIn("denseScore", score, f"denseScore missing from score: {score}")
+            self.assertIn("fusedScore", score, f"fusedScore missing from score: {score}")
+
+    def test_graph_expansion_seeds_from_retrieval_candidates(self) -> None:
+        root = self.make_repo()
+        build_index(root)
+        # Query that should BM25-match src/app.py (contains 'agentrail_context_subject')
+        result = query_context(root, "agentrail_context_subject context", limit=10)
+        compiler = result["compiler"]
+        expansion = compiler["graphExpansion"]
+        # Graph expansion should have been seeded (either from anchors or retrieval seeds)
+        self.assertIn("startedFromRetrievalSeeds", expansion)
+        # The retrieval seeds field should be a list
+        self.assertIsInstance(expansion["startedFromRetrievalSeeds"], list)
+
+    def test_graph_expansion_output_is_backward_compatible(self) -> None:
+        root = self.make_repo()
+        build_index(root)
+        result = query_context(root, "issue #92 context engine", limit=5)
+        expansion = result["compiler"]["graphExpansion"]
+        for field in ("status", "maxHops", "startedFromAnchors", "visited", "addedCandidateIds", "rejected"):
+            self.assertIn(field, expansion, f"backward-compat field missing from graphExpansion: {field}")
+        self.assertIn("startedFromRetrievalSeeds", expansion)
 
 
 if __name__ == "__main__":

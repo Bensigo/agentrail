@@ -109,3 +109,13 @@ When adding verification evidence to a PR body, always include the actual comman
 - expires_at:
 
 When the AFK workflow creates a memory-suggestion issue, check whether an existing open or recently-closed issue already targets the same source finding before creating a new one. Before implementing a memory-suggestion issue, search failure-patterns.md for entries citing the same source PR/test. If a broader or equivalent entry already exists, close the issue as superseded rather than adding a duplicate. See PR #177 vs commit 157636a (issue #165) for a concrete example.
+
+## Memory entry heading scope must match body guidance scope
+
+- kind: failure-pattern
+- source: PR #186 review P2 finding: new assertion-only entry heading claims general scope but body restricts guidance to 'retrieval or seeding behavior'
+- confidence: verified
+- created_at: 2026-06-08
+- expires_at:
+
+When adding a memory entry to capture a general principle, the body guidance must use the same scope as the heading. A broad heading paired with a narrow body creates redundancy with more specific entries and confuses future agents. Either broaden the body or narrow the heading.

@@ -354,6 +354,8 @@ class CostEventSubmission:
     occurred_at: str
     agent: Optional[str] = None
     phase: Optional[str] = None
+    team_id: Optional[str] = None
+    api_key_id: Optional[str] = None
     event_type: str = "cost_incurred"
     severity: str = "info"
     metadata: Mapping[str, object] = field(default_factory=dict)
@@ -609,6 +611,8 @@ _FIELD_CATALOG: Mapping[str, List[str]] = {
         "run_event.run_id",
         "cost_event.event_id",
         "cost_event.run_id",
+        "cost_event.team_id",
+        "cost_event.api_key_id",
         "audit_event.event_id",
         "audit_event.run_id",
         "audit_event.actor_id",

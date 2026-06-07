@@ -33,3 +33,13 @@ When a pipeline has a pre-enqueue validation guard that mirrors a writer-level g
 - expires_at:
 
 When implementing a pre-scoring pass that mirrors an existing scorer, extract the shared formula into a helper rather than inlining the constants twice. If k1 or b are later tuned in one copy, seeds and final scores diverge without any test catching it.
+
+## Assertion-only tests that check field presence or type without checking content pass even when the feature produces no meaningful results
+
+- kind: failure-pattern
+- source: PR #158 P2 finding and follow-up PR #164 / issue #161: test_graph_expansion_seeds_from_retrieval_candidates checked assertIsInstance(seeds, list) but not that expected paths appeared in the list, allowing the BM25 seeding path to silently produce empty results
+- confidence: verified
+- created_at: 2026-06-07
+- expires_at:
+
+When writing tests that verify retrieval or seeding behavior, always assert the content of the result (e.g., that an expected path or item appears in the list), not just the presence of the field or its type. An empty list is a valid list — a type-only assertion cannot distinguish a working retrieval path from a broken one. See PR #164 / issue #161 for a concrete example.

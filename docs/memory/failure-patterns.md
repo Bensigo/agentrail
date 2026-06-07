@@ -59,3 +59,13 @@ When defining Protocol classes in modules that would create a circular import if
         from agentrail.server.ingestion import IngestionEnvelope
 
 Omitting this means the Protocol's method signatures cannot be verified by mypy/pyright, negating the type-safety benefit of introducing Protocol abstractions.
+
+## Closing keywords do not auto-close issues when PR base is not the default branch
+
+- kind: failure-pattern
+- source: PR #169 review finding P2: closingIssuesReferences empty despite 'Closes #166' in body because base branch is not main
+- confidence: verified
+- created_at: 2026-06-07
+- expires_at:
+
+When a fix PR targets a feature branch (not the default branch), GitHub 'Closes #N' keywords have no effect. The closingIssuesReferences API field will be empty. AFK workflows must manually close the linked issue after such PRs merge, or confirm closure by polling the issue state rather than relying on the merge event.

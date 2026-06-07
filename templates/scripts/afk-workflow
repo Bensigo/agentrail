@@ -709,12 +709,14 @@ worker_run() {
           return 1
         fi
         "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status merged --issue "$issue" --pr "$pr" --run-dir "$run_dir" --base "$base" --slot "$slot"
+        cd "$root"
         "$agentrail_runner" cleanup --target "$root" --merged
       else
         echo "worker ${slot}: review created ${fix_issue_count} fix issue(s) for PR #${pr}; skipping merge"
       fi
     fi
 
+    cd "$root"
     mark_issue_reviewed "$issue" "$queue_labels"
   )
 }

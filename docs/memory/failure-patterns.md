@@ -23,3 +23,13 @@ When writing high-volume ingestion tests that are mapped to an acceptance criter
 - expires_at:
 
 When a pipeline has a pre-enqueue validation guard that mirrors a writer-level guard, both paths need independent tests. Testing only the writer-level path leaves the pipeline guard uncovered and creates a false sense of full coverage.
+
+## Assertion-only tests that check field presence or type without checking content pass even when the feature produces no meaningful results
+
+- kind: failure-pattern
+- source: PR #158 P2 finding and follow-up PR #164 / issue #161: test_graph_expansion_seeds_from_retrieval_candidates checked assertIsInstance(seeds, list) but not that expected paths appeared in the list, allowing the BM25 seeding path to silently produce empty results
+- confidence: verified
+- created_at: 2026-06-07
+- expires_at:
+
+When writing tests that verify retrieval or seeding behavior, always assert the content of the result (e.g., that an expected path or item appears in the list), not just the presence of the field or its type. An empty list is a valid list — a type-only assertion cannot distinguish a working retrieval path from a broken one. See PR #164 / issue #161 for a concrete example.

@@ -33,3 +33,13 @@ When a pipeline has a pre-enqueue validation guard that mirrors a writer-level g
 - expires_at:
 
 When implementing a pre-scoring pass that mirrors an existing scorer, extract the shared formula into a helper rather than inlining the constants twice. If k1 or b are later tuned in one copy, seeds and final scores diverge without any test catching it.
+
+## Seeding/propagation tests must assert populated output, not only field presence
+
+- kind: failure-pattern
+- source: PR #158 review P2 finding: test_graph_expansion_seeds_from_retrieval_candidates only checked field existence, not that BM25 actually populated the seeds list
+- confidence: verified
+- created_at: 2026-06-07
+- expires_at:
+
+When testing a pipeline stage that feeds data into a downstream stage (e.g., BM25 retrieval seeds seeding graph expansion), assert that the output list contains the expected value — not just that the field exists and is the right type. A test that passes on an empty list does not prove the feature works.

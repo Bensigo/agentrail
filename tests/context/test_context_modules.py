@@ -517,6 +517,9 @@ class ContextModuleTests(unittest.TestCase):
         self.assertIn("startedFromRetrievalSeeds", expansion)
         # The retrieval seeds field should be a list
         self.assertIsInstance(expansion["startedFromRetrievalSeeds"], list)
+        # src/app.py contains 'agentrail_context_subject' and must appear as a seed
+        # when the query strongly BM25-matches it — evidence-based AC7 verification
+        self.assertIn("src/app.py", expansion["startedFromRetrievalSeeds"])
 
     def test_graph_expansion_output_is_backward_compatible(self) -> None:
         root = self.make_repo()

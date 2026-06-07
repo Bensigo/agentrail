@@ -111,6 +111,27 @@ Installed projects should use the `agentrail` CLI. Raw Ralph, AFK, review, PR, a
 
 The public `scripts/agentrail` file is a compatibility launcher. Context-engine behavior is implemented in the typed Python package under `agentrail/context/`; non-context workflow commands currently delegate to the legacy compatibility command under `.agentrail/source/scripts/agentrail-legacy` in installed projects.
 
+## Server & Ingestion Pipeline
+
+The `agentrail/server/` package implements the ingestion and telemetry backend:
+
+- **`ingestion.py`** — `IngestionEnvelope` model and `BatchWriter` for routing submissions to domain stores.
+- **`queue.py`** — `QueuedIngestionPipeline` with pre-enqueue validation, unknown-kind rejection, and async batch flushing.
+- **`product.py`** — `ProductAuthStore` Protocol and `InMemoryProductAuthStore` for workspace, team, API key, repository, indexer, run, review gate, source custody policy, and billing configuration records.
+- **`telemetry.py`** — `TelemetryStore` Protocol and `InMemoryTelemetryStore` for index snapshots, graph metadata, context pack metadata, artifact references, and all event kinds (run, cost, audit, failure, command, context). Includes idempotent deduplication for metadata submissions and a `query_events()` filter API.
+
+Protocol classes use `TYPE_CHECKING` guard imports to avoid circular dependencies while keeping type annotations resolvable by static checkers:
+
+```python
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from agentrail.server.ingestion import IngestionEnvelope
+
+class TelemetryStore(Protocol):
+    def write(self, envelope: "IngestionEnvelope") -> None: ...
+```
+
 Durable project state:
 
 ```text
@@ -201,6 +222,17 @@ agentrail context show issue-123-execute-20260604T120000000Z --target . --json
 agentrail context explain issue-123-execute-20260604T120000000Z --target . --json
 ```
 
+The context engine internals live under `agentrail/context/`:
+
+- **`compiler.py`** — Context Compiler orchestrator: anchors, candidates, graph expansion, reranking, token budgets, and pack assembly.
+- **`embeddings.py`** — Embedding-based retrieval and BM25 seed scoring for candidate ranking.
+- **`redaction.py`** — Source custody and snippet redaction policy enforcement.
+- **`evaluation.py`** — Retrieval evaluation against fixture-defined expected sources, recall metrics, and exclusion checks.
+- **`index.py`** — Index snapshot management and file-level metadata.
+- **`models.py`** — Shared data models for context packs, queries, and compiler metadata.
+- **`config.py`** — Context engine configuration (budgets, provider modes, policy).
+- **`packs.py`** — Pack I/O: reading, writing, and listing generated context packs.
+
 Generated packs include cited required context, likely files and docs, memory, prior mistakes, active state, available tools and skills, exclusions, open questions, retrieval budget, index metadata, provider mode, audit metadata, and Context Compiler metadata when available.
 
 Provider-facing JSON includes command, target, retrieval budget, provider, and audit metadata so agents can request context without parsing Markdown. The `compiler` object is an additive `context-compiler-v1` contract with anchors, candidates, graph expansion status, source custody and snippet policy, redaction state, authority/freshness policy effects, rerank metadata, token pack metadata, citations, reasons, metrics, and compatibility mappings. Existing `results`, `excluded`, pack sections, `jsonPath`, and `markdownPath` remain stable for older consumers.
@@ -257,9 +289,28 @@ Run the AFK queue/worktree loop when you want unattended batches:
 agentrail afk
 ```
 
-AFK runs each issue, reviews the resulting PR, creates review-fix issues when the review finds blockers, and prepares/merges reviewed PRs that have no fix issues. Merge automation then promotes any newly unblocked dependent issues back into the ready queue.
+Specify the worker engine and concurrency:
+
+```bash
+agentrail afk --engine claude --concurrency 2 --max-waves 5
+```
+
+Built-in engine names: `codex`, `claude`, `cursor`, `hermes`. Concurrency controls how many issue worktrees run in parallel per wave. Max-waves caps the number of select→execute→review cycles before the run exits.
+
+AFK runs each issue, reviews the resulting PR, creates review-fix issues when the review finds blockers, and prepares/merges reviewed PRs that have no fix issues. When the review produces memory-suggestion issues (docs/process improvements discovered during review), those are queued back into the ready pool and picked up in subsequent waves. Merge automation then promotes any newly unblocked dependent issues back into the ready queue.
 
 Issue runs execute one plan phase, then repeat execute and verify until verification passes. When verify fails, AgentRail writes structured findings under the verify attempt directory and passes them into the next execute attempt. The default limit is 5 execution attempts; after that the run is marked blocked with the latest findings and next action in `.agentrail/state.json`.
+
+### Review Loop & Memory Suggestions
+
+After a PR passes verification, AFK runs a machine-readable review. The review output is a JSON block with two arrays:
+
+- **`fix_issues`** — Concrete code problems that must be fixed before merge. AFK creates GitHub issues labeled `memory-suggestion` (or the appropriate fix label) and blocks the merge.
+- **`memory_suggestions`** — Process/docs improvements discovered during review. AFK creates `[memory-suggestion]` issues and queues them for future waves.
+
+When a review finds no fix issues, AFK merges the PR (squash merge with commit SHA validation). If `rg` is unavailable, the `afk_direct_merge()` fallback uses `gh pr merge --squash` directly. If branch protection blocks immediate merge, AFK attempts `--auto` merge enablement.
+
+Memory-suggestion issues feed back into the AFK queue. Subsequent waves pick them up, implement the docs/memory change, open a PR, review it, and merge — creating a self-improving loop where each batch of work refines the project's failure-pattern documentation.
 
 ## How To Use It With An Agent
 
@@ -434,6 +485,7 @@ Run the AFK queue/worktree loop:
 
 ```bash
 agentrail afk
+agentrail afk --engine claude --concurrency 2 --max-waves 5
 ```
 
 Recall project memory:
@@ -487,12 +539,12 @@ templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --dry-run
 
 The scripts expect the target project to be a git repo. Depending on the command, they may also require:
 
-- `gh`
-- `jq`
-- `rg`
-- `codex`
-- `pnpm`
-- `node`
+- `gh` — GitHub CLI for issue/PR operations (required for AFK)
+- `jq` — JSON processing (required for AFK)
+- `rg` — ripgrep for PR review file analysis (optional; AFK falls back to direct `gh pr merge` when unavailable)
+- `codex` — Codex worker (required when engine is `codex`)
+- `pnpm` — package management
+- `node` — Node.js runtime
 
 Run:
 

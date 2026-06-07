@@ -119,3 +119,13 @@ When the AFK workflow creates a memory-suggestion issue, check whether an existi
 - expires_at:
 
 When adding a memory entry to capture a general principle, the body guidance must use the same scope as the heading. A broad heading paired with a narrow body creates redundancy with more specific entries and confuses future agents. Either broaden the body or narrow the heading.
+
+## Memory entries must deliver on their heading's stated scope in the body text
+
+- kind: failure-pattern
+- source: PR #186 review P2 finding: new assertion-only entry heading claims broad scope but body text restricts to 'retrieval or seeding behavior', making it a near-duplicate of the existing seeding entry rather than a generalization
+- confidence: verified
+- created_at: 2026-06-08
+- expires_at:
+
+When adding a memory entry intended to capture a general principle, ensure the guidance body text matches the heading's scope. If the heading says 'any test', the body must say 'any pipeline stage' — not a domain-specific subset. A broad heading with a narrow body confuses future agents about which entry applies and creates silent duplication.

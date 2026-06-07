@@ -1036,11 +1036,17 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
         spaced_path = "docs/Architecture Decision.md"
         unicode_path = "docs/cafe-notes-é.md"
         redacted_path = "docs/[REDACTED:secret_assignment]-notes.md"
+        package_path = "package.json"
+        public_path = "public/index.html"
+        private_path = "private/config.py"
         payload = _context_pack_metadata_submission(
             source_hashes={
                 spaced_path: "sha256:architecture",
                 unicode_path: "sha256:unicode",
                 redacted_path: "sha256:redacted",
+                package_path: "sha256:package",
+                public_path: "sha256:public",
+                private_path: "sha256:private",
                 "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
             },
             anchors=[
@@ -1071,6 +1077,33 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                     end_line=3,
                     source_hash="sha256:redacted",
                 ),
+                ContextPackAnchor(
+                    anchor_id="anchor_package",
+                    path=package_path,
+                    citation=f"{package_path}:4",
+                    reason="root package files are valid local indexer paths",
+                    start_line=4,
+                    end_line=4,
+                    source_hash="sha256:package",
+                ),
+                ContextPackAnchor(
+                    anchor_id="anchor_public",
+                    path=public_path,
+                    citation=f"{public_path}:5",
+                    reason="public folders are valid local indexer paths",
+                    start_line=5,
+                    end_line=5,
+                    source_hash="sha256:public",
+                ),
+                ContextPackAnchor(
+                    anchor_id="anchor_private",
+                    path=private_path,
+                    citation=f"{private_path}:6",
+                    reason="private folders are valid local indexer paths",
+                    start_line=6,
+                    end_line=6,
+                    source_hash="sha256:private",
+                ),
             ],
             citations=[
                 ContextPackCitation(
@@ -1095,6 +1128,27 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                     end_line=3,
                 ),
                 ContextPackCitation(
+                    citation_id="citation_package",
+                    path=package_path,
+                    source_hash="sha256:package",
+                    start_line=4,
+                    end_line=4,
+                ),
+                ContextPackCitation(
+                    citation_id="citation_public",
+                    path=public_path,
+                    source_hash="sha256:public",
+                    start_line=5,
+                    end_line=5,
+                ),
+                ContextPackCitation(
+                    citation_id="citation_private",
+                    path=private_path,
+                    source_hash="sha256:private",
+                    start_line=6,
+                    end_line=6,
+                ),
+                ContextPackCitation(
                     citation_id="citation_milestone",
                     path="milestones/004-server-ingestion-spine.md",
                     source_hash="sha256:milestone004",
@@ -1117,6 +1171,21 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                     item_id="redacted",
                     citation=f"{redacted_path}:3",
                     reason="valid path with bracketed token must ingest",
+                ),
+                ContextPackDecision(
+                    item_id="package",
+                    citation=f"{package_path}:4",
+                    reason="valid root package path must ingest",
+                ),
+                ContextPackDecision(
+                    item_id="public",
+                    citation=f"{public_path}:5",
+                    reason="valid public path must ingest",
+                ),
+                ContextPackDecision(
+                    item_id="private",
+                    citation=f"{private_path}:6",
+                    reason="valid private path must ingest",
                 ),
             ],
         )
@@ -1189,6 +1258,8 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                     citation_id="citation_hash_line_marker",
                     path=hash_line_marker_path,
                     source_hash="sha256:hash-line-marker-path",
+                    start_line=1,
+                    end_line=1,
                 ),
                 ContextPackCitation(
                     citation_id="citation_colon",
@@ -1216,8 +1287,8 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                 ),
                 ContextPackDecision(
                     item_id="hash-line-marker-path",
-                    citation=hash_line_marker_path,
-                    reason="literal hash line marker path must resolve exactly",
+                    citation=f"{hash_line_marker_path}:1",
+                    reason="literal hash line marker path must resolve before colon line suffixes",
                 ),
                 ContextPackDecision(
                     item_id="colon-path",
@@ -1228,6 +1299,56 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                     item_id="colon-digits-path",
                     citation=colon_digits_path,
                     reason="literal colon digit path must resolve exactly",
+                ),
+            ],
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertTrue(result.accepted, result.errors)
+        self.assertEqual(len(telemetry_store.context_pack_metadata), 1)
+
+    def test_context_pack_decisions_resolve_numeric_citation_ids_before_path_parsing(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        payload = _context_pack_metadata_submission(
+            citations=[
+                ContextPackCitation(
+                    citation_id="citation:1",
+                    path="agentrail/server/ingestion.py",
+                    source_hash="sha256:source123",
+                    start_line=167,
+                    end_line=190,
+                ),
+                ContextPackCitation(
+                    citation_id="chunk:42",
+                    path="CONTEXT.md",
+                    source_hash="sha256:context123",
+                    start_line=1,
+                    end_line=20,
+                ),
+                ContextPackCitation(
+                    citation_id="citation_milestone",
+                    path="milestones/004-server-ingestion-spine.md",
+                    source_hash="sha256:milestone004",
+                    start_line=57,
+                    end_line=66,
+                ),
+            ],
+            inclusions=[
+                ContextPackDecision(
+                    item_id="citation-id",
+                    citation="citation:1",
+                    reason="citation ids may contain numeric namespaces",
+                ),
+                ContextPackDecision(
+                    item_id="chunk-id",
+                    citation="chunk:42",
+                    reason="chunk ids may contain numeric namespaces",
                 ),
             ],
         )

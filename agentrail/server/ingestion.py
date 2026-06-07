@@ -13,7 +13,7 @@ MAX_CONTEXT_PACK_SOURCE_PATH_CHARS = 512
 MAX_CONTEXT_PACK_SOURCE_HASH_CHARS = 256
 CONTEXT_PACK_SOURCE_HASH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+._-]{1,31}:[A-Za-z0-9+/_=.-]{1,192}$")
 CONTEXT_PACK_INLINE_SOURCE_RE = re.compile(
-    r"^\s*(?:def|class|function|import|from|const|let|var|export|public|private|package|func|type|interface)\b"
+    r"^\s*(?:def|class|function|import|from|const|let|var|export|func|type|interface)\s+"
     r"|\b[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)"
     r"|\b[A-Za-z_][A-Za-z0-9_]*\s*="
     r"|[`;{}]"
@@ -1267,6 +1267,10 @@ def _decision_citation_resolves(
 ) -> bool:
     if decision_citation in source_hashes:
         return _decision_path_citation_resolves(decision_citation, None, None, citations, source_hashes)
+    if not _citation_must_resolve_as_source_path(decision_citation, source_hashes):
+        for citation in citations:
+            if decision_citation == citation.citation_id:
+                return True
     decision_path, decision_start_line, decision_end_line, valid_reference = _split_citation_reference(decision_citation)
     if valid_reference and (decision_start_line is not None or decision_path in source_hashes):
         return _decision_path_citation_resolves(
@@ -1276,9 +1280,6 @@ def _decision_citation_resolves(
             citations,
             source_hashes,
         )
-    for citation in citations:
-        if decision_citation == citation.citation_id:
-            return True
     if not valid_reference:
         return False
     return _decision_path_citation_resolves(
@@ -1287,6 +1288,18 @@ def _decision_citation_resolves(
         decision_end_line,
         citations,
         source_hashes,
+    )
+
+
+def _citation_must_resolve_as_source_path(citation: str, source_hashes: Mapping[str, str]) -> bool:
+    path, separator, line_part = citation.rpartition(":")
+    if separator and _looks_like_line_reference(line_part):
+        return path in source_hashes or "/" in path or "." in path
+    hash_path, hash_separator, hash_line_part = citation.rpartition("#L")
+    return bool(
+        hash_separator
+        and _parse_line_reference(hash_line_part)[0] is not None
+        and (hash_path in source_hashes or "/" in hash_path or "." in hash_path)
     )
 
 
@@ -1332,9 +1345,8 @@ def _split_citation_reference(citation: str) -> tuple[str, Optional[int], Option
     hash_path, hash_separator, hash_line_part = citation.rpartition("#L")
     if hash_separator:
         start_line, end_line = _parse_line_reference(hash_line_part)
-        if start_line is None:
-            return hash_path, None, None, False
-        return hash_path, start_line, end_line, True
+        if start_line is not None:
+            return hash_path, start_line, end_line, True
     path, separator, line_part = citation.rpartition(":")
     if not separator:
         return citation, None, None, True

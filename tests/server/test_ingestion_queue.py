@@ -635,19 +635,6 @@ class TestQueuedIngestionPipeline(unittest.TestCase):
         self.assertEqual(queue.size(), 0)
         self.assertTrue(any(e.code == "unknown_submission_kind" for e in result.errors))
 
-    def test_pipeline_rejects_unknown_submission_kind(self) -> None:
-        """accept() returns accepted=False for unknown submission kinds and does not enqueue."""
-        from unittest.mock import MagicMock
-
-        pipeline, queue = _make_pipeline()
-        fake_payload = MagicMock()
-        fake_payload.submission_kind = "not_a_real_kind"
-        envelope = IngestionEnvelope(workspace_id="ws_1", payload=fake_payload)
-        result = pipeline.accept(envelope)
-        self.assertFalse(result.accepted)
-        self.assertEqual(queue.size(), 0)
-        self.assertTrue(any(e.code == "unknown_submission_kind" for e in result.errors))
-
 
 if __name__ == "__main__":
     unittest.main()

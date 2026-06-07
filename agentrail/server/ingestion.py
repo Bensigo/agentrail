@@ -15,7 +15,8 @@ CONTEXT_PACK_SOURCE_HASH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+._-]{1,31}:[A-Za-
 CONTEXT_PACK_INLINE_SOURCE_RE = re.compile(
     r"^\s*(?:def|class|function|import|from|const|let|var|export|public|private|package|func|type|interface)\b"
     r"|\b[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)"
-    r"|['\"`;{}]"
+    r"|\b[A-Za-z_][A-Za-z0-9_]*\s*="
+    r"|[`;{}]"
 )
 
 ARTIFACT_REFERENCE_KINDS = {
@@ -965,10 +966,11 @@ def _is_context_pack_source_path(path: str) -> bool:
         and "\n" not in path
         and "\r" not in path
         and "\0" not in path
+        and "\\" not in path
         and not path.startswith("/")
         and "//" not in path
         and all(part not in {"", ".", ".."} for part in path.split("/"))
-        and CONTEXT_PACK_INLINE_SOURCE_RE.match(path) is None
+        and CONTEXT_PACK_INLINE_SOURCE_RE.search(path) is None
     )
 
 
@@ -1263,6 +1265,8 @@ def _decision_citation_resolves(
     citations: List[ContextPackCitation],
     source_hashes: Mapping[str, str],
 ) -> bool:
+    if decision_citation in source_hashes:
+        return _decision_path_citation_resolves(decision_citation, None, None, citations, source_hashes)
     decision_path, decision_start_line, decision_end_line, valid_reference = _split_citation_reference(decision_citation)
     if valid_reference and (decision_start_line is not None or decision_path in source_hashes):
         return _decision_path_citation_resolves(
@@ -1310,6 +1314,8 @@ def _decision_path_citation_resolves(
 
 
 def _anchor_citation_resolves(anchor: ContextPackAnchor) -> bool:
+    if anchor.citation == anchor.path:
+        return True
     citation_path, citation_start_line, citation_end_line, valid_reference = _split_citation_reference(anchor.citation)
     if not valid_reference or citation_path != anchor.path:
         return False

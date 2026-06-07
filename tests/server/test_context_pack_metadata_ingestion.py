@@ -970,30 +970,66 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
         )
 
     def test_context_pack_source_hash_paths_reject_one_line_source_calls(self) -> None:
-        telemetry_store = InMemoryTelemetryStore()
-        smuggled_source_path = "print(open('agentrail/server/ingestion.py').read())"
-        payload = _context_pack_metadata_submission(
-            source_hashes={
-                smuggled_source_path: "sha256:smuggled",
-                "agentrail/server/ingestion.py": "sha256:source123",
-                "CONTEXT.md": "sha256:context123",
-                "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
-            },
-        )
+        cases = [
+            "print(open('agentrail/server/ingestion.py').read())",
+            "api_key = 'secret'",
+        ]
+        for smuggled_source_path in cases:
+            with self.subTest(path=smuggled_source_path):
+                telemetry_store = InMemoryTelemetryStore()
+                payload = _context_pack_metadata_submission(
+                    source_hashes={
+                        smuggled_source_path: "sha256:smuggled",
+                        "agentrail/server/ingestion.py": "sha256:source123",
+                        "CONTEXT.md": "sha256:context123",
+                        "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
+                    },
+                )
 
-        result = ingest(
-            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
-            policy=SourceCustodyPolicy.default(),
-            product_store=FailingProductAuthStore(),
-            telemetry_store=telemetry_store,
-        )
+                result = ingest(
+                    IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+                    policy=SourceCustodyPolicy.default(),
+                    product_store=FailingProductAuthStore(),
+                    telemetry_store=telemetry_store,
+                )
 
-        self.assertFalse(result.accepted)
-        self.assertEqual(telemetry_store.records, [])
-        self.assertEqual(
-            [(error.code, error.field) for error in result.errors],
-            [("context_pack_source_hash_path_invalid", "payload.source_hashes[0].path")],
-        )
+                self.assertFalse(result.accepted)
+                self.assertEqual(telemetry_store.records, [])
+                self.assertEqual(
+                    [(error.code, error.field) for error in result.errors],
+                    [("context_pack_source_hash_path_invalid", "payload.source_hashes[0].path")],
+                )
+
+    def test_context_pack_source_hash_paths_reject_windows_paths_and_traversal(self) -> None:
+        cases = [
+            r"C:\repo\secret.py",
+            r"..\secret.py",
+        ]
+        for invalid_path in cases:
+            with self.subTest(path=invalid_path):
+                telemetry_store = InMemoryTelemetryStore()
+                payload = _context_pack_metadata_submission(
+                    source_hashes={
+                        invalid_path: "sha256:invalid",
+                        "agentrail/server/ingestion.py": "sha256:source123",
+                        "CONTEXT.md": "sha256:context123",
+                        "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
+                    },
+                )
+
+                result = ingest(
+                    IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+                    policy=SourceCustodyPolicy.default(),
+                    product_store=FailingProductAuthStore(),
+                    telemetry_store=telemetry_store,
+                )
+
+                self.assertFalse(result.accepted)
+                self.assertEqual(telemetry_store.records, [])
+                self.assertEqual(
+                    [(error.code, error.field) for error in result.errors],
+                    [("context_pack_source_hash_path_invalid", "payload.source_hashes[0].path")],
+                )
 
     def test_context_pack_source_hash_paths_accept_local_indexer_paths(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
@@ -1098,11 +1134,15 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
     def test_context_pack_citations_preserve_literal_hashes_and_colons_in_paths(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
         hash_path = "docs/foo#bar.md"
+        hash_line_marker_path = "docs/foo#L1.md"
         colon_path = "docs/[REDACTED:secret]-notes.md"
+        colon_digits_path = "docs/foo:123"
         payload = _context_pack_metadata_submission(
             source_hashes={
                 hash_path: "sha256:hash-path",
+                hash_line_marker_path: "sha256:hash-line-marker-path",
                 colon_path: "sha256:colon-path",
+                colon_digits_path: "sha256:colon-digits-path",
                 "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
             },
             anchors=[
@@ -1116,11 +1156,25 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                     source_hash="sha256:hash-path",
                 ),
                 ContextPackAnchor(
+                    anchor_id="anchor_hash_line_marker",
+                    path=hash_line_marker_path,
+                    citation=hash_line_marker_path,
+                    reason="hash line marker text may be part of a literal path",
+                    source_hash="sha256:hash-line-marker-path",
+                ),
+                ContextPackAnchor(
                     anchor_id="anchor_colon",
                     path=colon_path,
                     citation=colon_path,
                     reason="colon characters may be literal path characters without numeric line suffixes",
                     source_hash="sha256:colon-path",
+                ),
+                ContextPackAnchor(
+                    anchor_id="anchor_colon_digits",
+                    path=colon_digits_path,
+                    citation=colon_digits_path,
+                    reason="colon digit suffixes may be part of a literal path",
+                    source_hash="sha256:colon-digits-path",
                 ),
             ],
             citations=[
@@ -1132,9 +1186,19 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                     end_line=1,
                 ),
                 ContextPackCitation(
+                    citation_id="citation_hash_line_marker",
+                    path=hash_line_marker_path,
+                    source_hash="sha256:hash-line-marker-path",
+                ),
+                ContextPackCitation(
                     citation_id="citation_colon",
                     path=colon_path,
                     source_hash="sha256:colon-path",
+                ),
+                ContextPackCitation(
+                    citation_id="citation_colon_digits",
+                    path=colon_digits_path,
+                    source_hash="sha256:colon-digits-path",
                 ),
                 ContextPackCitation(
                     citation_id="citation_milestone",
@@ -1151,9 +1215,19 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
                     reason="literal hash path with numeric line suffix must resolve",
                 ),
                 ContextPackDecision(
+                    item_id="hash-line-marker-path",
+                    citation=hash_line_marker_path,
+                    reason="literal hash line marker path must resolve exactly",
+                ),
+                ContextPackDecision(
                     item_id="colon-path",
                     citation=colon_path,
                     reason="literal colon path without numeric line suffix must resolve",
+                ),
+                ContextPackDecision(
+                    item_id="colon-digits-path",
+                    citation=colon_digits_path,
+                    reason="literal colon digit path must resolve exactly",
                 ),
             ],
         )

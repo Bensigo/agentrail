@@ -23,3 +23,13 @@ When writing high-volume ingestion tests that are mapped to an acceptance criter
 - expires_at:
 
 When a pipeline has a pre-enqueue validation guard that mirrors a writer-level guard, both paths need independent tests. Testing only the writer-level path leaves the pipeline guard uncovered and creates a false sense of full coverage.
+
+## Duplicate scoring formulas create silent drift when constants are tuned
+
+- kind: failure-pattern
+- source: PR #158 review P3 finding: _pre_bm25_scores at retrieval.py:398 duplicates BM25 formula from main scorer at :498 with hardcoded k1/b constants
+- confidence: verified
+- created_at: 2026-06-07
+- expires_at:
+
+When implementing a pre-scoring pass that mirrors an existing scorer, extract the shared formula into a helper rather than inlining the constants twice. If k1 or b are later tuned in one copy, seeds and final scores diverge without any test catching it.

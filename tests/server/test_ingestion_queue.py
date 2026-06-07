@@ -598,6 +598,19 @@ class TestQueuedIngestionPipeline(unittest.TestCase):
         pipeline.accept(_artifact_reference_envelope("artifact_1"))
         self.assertEqual(queue.size(), 4)
 
+    def test_unknown_submission_kind_rejected_by_pipeline(self) -> None:
+        """accept() must reject envelopes with unrecognized submission kinds without enqueuing."""
+        from unittest.mock import MagicMock
+
+        pipeline, queue = _make_pipeline()
+        fake_payload = MagicMock()
+        fake_payload.submission_kind = "completely_unknown"
+        bad_envelope = IngestionEnvelope(workspace_id="ws_1", payload=fake_payload)
+        result = pipeline.accept(bad_envelope)
+        self.assertFalse(result.accepted)
+        self.assertEqual(queue.size(), 0)
+        self.assertTrue(any(e.code == "unknown_submission_kind" for e in result.errors))
+
 
 if __name__ == "__main__":
     unittest.main()

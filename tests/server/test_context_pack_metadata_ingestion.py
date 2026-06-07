@@ -955,8 +955,38 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
         self.assertEqual(telemetry_store.records, [])
         self.assertEqual(
             [(error.code, error.field) for error in result.errors],
-            [("context_pack_source_hash_invalid", "payload.source_hashes[agentrail/server/ingestion.py]")],
+            [("context_pack_source_hash_invalid", "payload.source_hashes[0].hash")],
         )
+
+    def test_context_pack_source_hash_errors_do_not_echo_rejected_source_paths(self) -> None:
+        telemetry_store = InMemoryTelemetryStore()
+        smuggled_source_path = "def upload_everything(): pass"
+        payload = _context_pack_metadata_submission(
+            source_hashes={
+                smuggled_source_path: "not a hash",
+                "agentrail/server/ingestion.py": "sha256:source123",
+                "CONTEXT.md": "sha256:context123",
+                "milestones/004-server-ingestion-spine.md": "sha256:milestone004",
+            },
+        )
+
+        result = ingest(
+            IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+            policy=SourceCustodyPolicy.default(),
+            product_store=FailingProductAuthStore(),
+            telemetry_store=telemetry_store,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(telemetry_store.records, [])
+        self.assertEqual(
+            [(error.code, error.field) for error in result.errors],
+            [
+                ("context_pack_source_hash_path_invalid", "payload.source_hashes[0].path"),
+                ("context_pack_source_hash_invalid", "payload.source_hashes[0].hash"),
+            ],
+        )
+        self.assertTrue(all(smuggled_source_path not in error.field for error in result.errors))
 
     def test_context_pack_source_hash_paths_cannot_hide_full_source_content(self) -> None:
         telemetry_store = InMemoryTelemetryStore()
@@ -1019,6 +1049,8 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
         cases = [
             r"C:\repo\secret.py",
             "C:/repo/secret.py",
+            "C:repo/secret.py",
+            "C:",
             r"..\secret.py",
         ]
         for invalid_path in cases:
@@ -1261,6 +1293,51 @@ class ContextPackMetadataIngestionTests(unittest.TestCase):
 
         self.assertTrue(result.accepted, result.errors)
         self.assertEqual(len(telemetry_store.context_pack_metadata), 1)
+
+    def test_context_pack_allowed_bounded_snippets_must_use_source_inventory_paths(self) -> None:
+        cases = [
+            (
+                "def secret(): pass",
+                "context_pack_bounded_snippet_path_invalid",
+            ),
+            (
+                "secret.py",
+                "context_pack_bounded_snippet_path_not_in_inventory",
+            ),
+        ]
+        for snippet_path, expected_code in cases:
+            with self.subTest(snippet_path=snippet_path):
+                telemetry_store = InMemoryTelemetryStore()
+                payload = _context_pack_metadata_submission(
+                    bounded_snippets=[
+                        BoundedSnippet(
+                            path=snippet_path,
+                            citation=f"{snippet_path}:1",
+                            start_line=1,
+                            end_line=1,
+                            content="print('bounded')",
+                            content_hash="sha256:snippet123",
+                        )
+                    ]
+                )
+
+                result = ingest(
+                    IngestionEnvelope(workspace_id="workspace_123", repository_id="repo_123", payload=payload),
+                    policy=SourceCustodyPolicy(
+                        mode="bounded_snippets",
+                        allow_bounded_snippets=True,
+                        max_snippet_chars=120,
+                    ),
+                    product_store=FailingProductAuthStore(),
+                    telemetry_store=telemetry_store,
+                )
+
+                self.assertFalse(result.accepted)
+                self.assertEqual(telemetry_store.records, [])
+                self.assertEqual(
+                    [(error.code, error.field) for error in result.errors],
+                    [(expected_code, "payload.bounded_snippets[0].path")],
+                )
 
     def test_context_pack_citations_preserve_literal_hashes_and_colons_in_paths(self) -> None:
         telemetry_store = InMemoryTelemetryStore()

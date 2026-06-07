@@ -934,7 +934,7 @@ def _validate_context_pack_metadata(
             )
         )
     errors.extend(_validate_source_custody_metadata(payload, policy))
-    errors.extend(_validate_bounded_snippets(payload.bounded_snippets, policy, "payload.bounded_snippets"))
+    errors.extend(_validate_context_pack_bounded_snippets(payload.bounded_snippets, source_hashes, policy))
     return errors
 
 
@@ -953,7 +953,7 @@ def _validate_context_pack_source_hashes(source_hashes: Mapping[str, str]) -> Li
             errors.append(
                 ValidationError(
                     code="context_pack_source_hash_invalid",
-                    field=f"payload.source_hashes[{path}]",
+                    field=f"payload.source_hashes[{index}].hash",
                     message="Context-pack source hashes must be bounded hash references, not inline source content.",
                 )
             )
@@ -968,11 +968,41 @@ def _is_context_pack_source_path(path: str) -> bool:
         and "\0" not in path
         and "\\" not in path
         and not path.startswith("/")
-        and re.match(r"^[A-Za-z]:/", path) is None
+        and re.match(r"^[A-Za-z]:", path) is None
         and "//" not in path
         and all(part not in {"", ".", ".."} for part in path.split("/"))
         and CONTEXT_PACK_INLINE_SOURCE_RE.search(path) is None
     )
+
+
+def _validate_context_pack_bounded_snippets(
+    snippets: List[BoundedSnippet],
+    source_hashes: Mapping[str, str],
+    policy: SourceCustodyPolicy,
+) -> List[ValidationError]:
+    errors = _validate_bounded_snippets(snippets, policy, "payload.bounded_snippets")
+    if not snippets or not policy.allow_bounded_snippets or policy.max_snippet_chars <= 0:
+        return errors
+    for index, snippet in enumerate(snippets):
+        if not snippet.path:
+            continue
+        if not isinstance(snippet.path, str) or not _is_context_pack_source_path(snippet.path):
+            errors.append(
+                ValidationError(
+                    code="context_pack_bounded_snippet_path_invalid",
+                    field=f"payload.bounded_snippets[{index}].path",
+                    message="Context-pack bounded snippet paths must be bounded source paths, not inline source content.",
+                )
+            )
+        elif snippet.path not in source_hashes:
+            errors.append(
+                ValidationError(
+                    code="context_pack_bounded_snippet_path_not_in_inventory",
+                    field=f"payload.bounded_snippets[{index}].path",
+                    message="Context-pack bounded snippet paths must be present in payload.source_hashes.",
+                )
+            )
+    return errors
 
 
 def _is_context_pack_source_hash(source_hash: str) -> bool:

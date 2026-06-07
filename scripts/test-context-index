@@ -378,25 +378,49 @@ if (!overviewCitations.includes("docs/agents/guide.md#overview") || !overviewCit
   console.error(`repeated heading citations were not unique: ${JSON.stringify(overviewCitations)}`);
   process.exit(1);
 }
-const codeChunk = index.chunks.find((chunk) => chunk.path === "src/app.js");
-if (!codeChunk) {
-  console.error("code chunk missing");
+// Symbol-aware chunking: src/app.js has a preamble (requires) + symbol chunk (loadAgentRailConfig)
+const codeChunks = index.chunks.filter((chunk) => chunk.path === "src/app.js");
+if (!codeChunks.length) {
+  console.error("code chunk missing for src/app.js");
   process.exit(1);
 }
-if (codeChunk.language !== "javascript") {
-  console.error(`code chunk language missing: ${codeChunk.language}`);
+// Check that every chunk has the symbol and kind fields (null for non-symbol chunks)
+for (const c of codeChunks) {
+  if (!("symbol" in c) || !("kind" in c)) {
+    console.error(`code chunk missing symbol/kind fields: ${JSON.stringify(c.citation)}`);
+    process.exit(1);
+  }
+}
+// Find the preamble chunk (lines before the first symbol) and verify import hints
+const codePreambleChunk = codeChunks.find((c) => c.citation === "src/app.js#preamble");
+if (!codePreambleChunk) {
+  console.error("preamble chunk missing for src/app.js (expected lines before first symbol)");
   process.exit(1);
 }
-if (!codeChunk.importHints.includes('require("fs")')) {
-  console.error(`code chunk import hint missing: ${JSON.stringify(codeChunk.importHints)}`);
+if (codePreambleChunk.language !== "javascript") {
+  console.error(`preamble chunk language missing: ${codePreambleChunk.language}`);
   process.exit(1);
 }
-if (!codeChunk.symbolHints.includes("loadAgentRailConfig")) {
-  console.error(`code chunk symbol hint missing: ${JSON.stringify(codeChunk.symbolHints)}`);
+if (!codePreambleChunk.importHints.includes('require("fs")')) {
+  console.error(`preamble chunk import hint missing: ${JSON.stringify(codePreambleChunk.importHints)}`);
   process.exit(1);
 }
-if (!codeChunk.citation.match(/^src\/app\.js#L1-L\d+$/)) {
-  console.error(`code chunk citation missing line range: ${codeChunk.citation}`);
+// Find the symbol-aware chunk for loadAgentRailConfig
+const symbolChunk = codeChunks.find((c) => c.symbol === "loadAgentRailConfig");
+if (!symbolChunk) {
+  console.error("symbol-aware chunk missing for loadAgentRailConfig in src/app.js");
+  process.exit(1);
+}
+if (!symbolChunk.symbolHints.includes("loadAgentRailConfig")) {
+  console.error(`symbol chunk symbolHints missing: ${JSON.stringify(symbolChunk.symbolHints)}`);
+  process.exit(1);
+}
+if (symbolChunk.kind !== "function") {
+  console.error(`symbol chunk kind wrong: expected "function", got "${symbolChunk.kind}"`);
+  process.exit(1);
+}
+if (!symbolChunk.citation.includes("loadAgentRailConfig")) {
+  console.error(`symbol chunk citation does not include symbol name: ${symbolChunk.citation}`);
   process.exit(1);
 }
 const memoryChunk = index.chunks.find((chunk) => chunk.path === "docs/memory/lesson.md");
@@ -632,6 +656,40 @@ for (const field of ["id", "sourceType", "path", "contentHash", "modifiedAt", "a
 }
 if (JSON.stringify(stable.freshness) !== JSON.stringify(before.stable.freshness)) {
   console.error("unchanged record freshness changed");
+  process.exit(1);
+}
+NODE
+
+# No-stale-chunk assertion: capture chunk IDs before and after a file change,
+# then verify old IDs are fully replaced (no duplicate stale chunks).
+node - "$index_file" >"${tmp_dir}/app-chunks-before.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const ids = index.chunks.filter((c) => c.path === "src/app.js").map((c) => c.id).sort();
+console.log(JSON.stringify(ids));
+NODE
+
+sleep 1
+cat >"${fixture}/src/app.js" <<'JS'
+function refreshedConfig() {
+  return "refreshed";
+}
+module.exports = { refreshedConfig };
+JS
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/index-3.out"
+
+node - "$index_file" "${tmp_dir}/app-chunks-before.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const beforeIds = new Set(JSON.parse(fs.readFileSync(process.argv[3], "utf8")));
+const afterIds = index.chunks.filter((c) => c.path === "src/app.js").map((c) => c.id);
+if (afterIds.length === 0) {
+  console.error("no chunks for src/app.js after reindex");
+  process.exit(1);
+}
+const stale = afterIds.filter((id) => beforeIds.has(id));
+if (stale.length > 0) {
+  console.error(`stale duplicate chunks remained after file change reindex: ${JSON.stringify(stale)}`);
   process.exit(1);
 }
 NODE

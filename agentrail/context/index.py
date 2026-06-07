@@ -318,12 +318,78 @@ def code_chunks(source: SourceRecord, text: str, relative_path: str) -> List[Chu
     return chunks
 
 
+def symbol_aware_code_chunks(source: SourceRecord, text: str, relative_path: str) -> List[ChunkRecord]:
+    """Produce one chunk per parsed symbol (function/class/method).
+
+    End line is inferred as next_symbol_start - 1, or EOF for the last symbol.
+    Lines before the first symbol are emitted as a preamble chunk when non-empty.
+    Falls back to line-window chunks (code_chunks) for unsupported languages,
+    empty symbol tables, or parser failures.
+    """
+    try:
+        symbols = extracted_symbols(text, relative_path)
+    except Exception:
+        symbols = []
+
+    if not symbols:
+        return code_chunks(source, text, relative_path)
+
+    lines = re.split(r"\r?\n", text)
+    language = language_for(relative_path)
+    imports = cheap_import_hints(text)
+    chunks: List[ChunkRecord] = []
+
+    # Preamble: lines before the first symbol (e.g. imports, module docstring)
+    first_sym_line = symbols[0]["line"]
+    if first_sym_line > 1:
+        preamble_text = "\n".join(lines[:first_sym_line - 1])
+        if preamble_text.strip():
+            chunks.append(chunk_record(
+                source,
+                "preamble",
+                preamble_text,
+                language,
+                f"{source.path}#preamble",
+                1,
+                first_sym_line - 1,
+                parent_context=source.path,
+                import_hints=imports,
+            ))
+
+    for i, sym in enumerate(symbols):
+        start_line = sym["line"]
+        end_line = symbols[i + 1]["line"] - 1 if i + 1 < len(symbols) else len(lines)
+        chunk_text = "\n".join(lines[start_line - 1:end_line])
+        if not chunk_text.strip():
+            continue
+        sym_name = str(sym["name"])
+        sym_kind = str(sym["kind"])
+        # Use name:line as ID suffix to handle duplicate names at different positions
+        cr = chunk_record(
+            source,
+            f"symbol:{sym_name}:{start_line}",
+            chunk_text,
+            language,
+            f"{source.path}#{sym_name}",
+            start_line,
+            end_line,
+            parent_context=source.path,
+            symbol_hints=[sym_name],
+            import_hints=imports,
+        )
+        cr.symbol = sym_name
+        cr.kind = sym_kind
+        chunks.append(cr)
+
+    return chunks if chunks else code_chunks(source, text, relative_path)
+
+
 def chunks_for_source(source: SourceRecord, relative_path: str, text: str) -> List[ChunkRecord]:
     memory = parse_memory_metadata(text) if source.sourceType == "memory" else None
     if memory:
         source.memory = memory
     source.priorMistake = None if relative_path.endswith("failure-patterns.md") else prior_mistake_for(relative_path, source.sourceType, text, memory)
-    chunks = markdown_chunks(source, text, memory) if language_for(relative_path) == "markdown" else code_chunks(source, text, relative_path)
+    chunks = markdown_chunks(source, text, memory) if language_for(relative_path) == "markdown" else symbol_aware_code_chunks(source, text, relative_path)
     for chunk in chunks:
         chunk.priorMistake = prior_mistake_for(relative_path, source.sourceType, chunk.content, chunk.memory or memory) or source.priorMistake
     return chunks

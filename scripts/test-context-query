@@ -209,11 +209,22 @@ for (const field of ["citation", "reason", "score"]) {
     process.exit(1);
   }
 }
-for (const field of ["deterministic", "keyword", "bm25", "embedding", "rrf", "authorityBoost", "freshnessDemotion", "final"]) {
+for (const field of ["deterministic", "keyword", "bm25", "embedding", "rrf", "authorityBoost", "freshnessDemotion", "final", "lexicalScore", "denseScore", "fusedScore"]) {
   if (!(field in first.score)) {
     console.error(`score missing ${field}`);
     process.exit(1);
   }
+}
+// lexicalScore should equal keyword + bm25 (retrieval provenance, excludes deterministic boost)
+const expectedLexical = (first.score.keyword || 0) + (first.score.bm25 || 0);
+if (Math.abs((first.score.lexicalScore || 0) - expectedLexical) > 1e-9) {
+  console.error(`lexicalScore mismatch: ${first.score.lexicalScore} vs keyword+bm25=${expectedLexical}`);
+  process.exit(1);
+}
+// fusedScore should equal rrf
+if (Math.abs((first.score.fusedScore || 0) - (first.score.rrf || 0)) > 1e-9) {
+  console.error(`fusedScore should equal rrf: fusedScore=${first.score.fusedScore}, rrf=${first.score.rrf}`);
+  process.exit(1);
 }
 if (!first.reason.includes("exact identifier") && !first.reason.includes("linked issue")) {
   console.error(`exact result reason is not specific enough: ${first.reason}`);
@@ -252,6 +263,11 @@ if (!compiler.anchors.some((anchor) => anchor.kind === "issue" && anchor.normali
 }
 if (!["no_strong_anchors", "expanded"].includes(compiler.graphExpansion.status) || compiler.graphExpansion.maxHops !== 2) {
   console.error(`compiler graph expansion metadata is not stable: ${JSON.stringify(compiler.graphExpansion)}`);
+  process.exit(1);
+}
+// startedFromRetrievalSeeds is a new backward-compatible field; must be an array
+if (!Array.isArray(compiler.graphExpansion.startedFromRetrievalSeeds)) {
+  console.error(`compiler graphExpansion missing startedFromRetrievalSeeds: ${JSON.stringify(compiler.graphExpansion)}`);
   process.exit(1);
 }
 if (compiler.tokenPack.budget.maxItems !== 20 || compiler.tokenPack.budget.maxTokens !== null) {
@@ -374,6 +390,11 @@ if (!relatedTest.reason.includes("graph expansion")) {
 }
 if (!compiler.graphExpansion.visited.every((item) => item.depth <= 2)) {
   console.error(`graph expansion visited beyond hop limit: ${JSON.stringify(compiler.graphExpansion.visited)}`);
+  process.exit(1);
+}
+// Retrieval seed field must be present (may be empty if BM25 found no matches)
+if (!Array.isArray(compiler.graphExpansion.startedFromRetrievalSeeds)) {
+  console.error(`graph expansion missing startedFromRetrievalSeeds: ${JSON.stringify(compiler.graphExpansion)}`);
   process.exit(1);
 }
 NODE

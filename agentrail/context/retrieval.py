@@ -216,9 +216,39 @@ def _anchor_start_nodes(index: Dict[str, Any], anchors: List[Dict[str, str]]) ->
     return unique(starts), started_from
 
 
-def graph_expansion_for_query(index: Dict[str, Any], query: str, root: Path, *, max_hops: int = 2) -> Dict[str, Any]:
+def _retrieval_seed_start_nodes(index: Dict[str, Any], seed_paths: List[str]) -> List[str]:
+    """Map retrieval seed paths to graph chunk-node IDs for BFS seeding.
+
+    Chunk nodes are used (not file nodes) to preserve the max_hops=2 budget.
+    A file node at depth-0 reaches the codebase-unit node at depth-1 and then
+    all project files at depth-2, flooding graph_paths.  A chunk node at depth-0
+    reaches the file node at depth-1 and the codebase-unit at depth-2, so
+    codebase-unit children are only reachable at depth-3 and are rejected.
+    """
+    if not seed_paths:
+        return []
+    nodes = [node for node in index.get("graph", {}).get("nodes", []) if isinstance(node, dict)]
+    seed_node_ids: List[str] = []
+    for path in seed_paths:
+        for node in nodes:
+            if node.get("path") == path and node.get("kind") == "chunk":
+                node_id = str(node.get("id", ""))
+                if node_id and node_id not in seed_node_ids:
+                    seed_node_ids.append(node_id)
+    return seed_node_ids
+
+
+def graph_expansion_for_query(index: Dict[str, Any], query: str, root: Path, *, max_hops: int = 2, retrieval_seeds: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Expand the code graph starting from anchor-matched nodes and, optionally,
+    hybrid-retrieval seed paths (top-K BM25 candidates).
+
+    ``retrieval_seeds`` is a list of file paths from the BM25 pre-score pass.
+    A maximum of 5 seeds is recommended to prevent hop fanout.
+    """
     anchors = extract_anchors(query, root=root)
-    start_nodes, started_from = _anchor_start_nodes(index, anchors)
+    anchor_start_nodes, started_from = _anchor_start_nodes(index, anchors)
+    seed_start_nodes = _retrieval_seed_start_nodes(index, retrieval_seeds or [])
+    start_nodes = unique(anchor_start_nodes + seed_start_nodes)
     graph = index.get("graph") if isinstance(index.get("graph"), dict) else {}
     neighbors = _graph_neighbors(graph)
     queue: List[Tuple[str, int, List[str]]] = [(node_id, 0, []) for node_id in start_nodes]
@@ -263,6 +293,7 @@ def graph_expansion_for_query(index: Dict[str, Any], query: str, root: Path, *, 
         "status": "expanded" if start_nodes else "no_strong_anchors",
         "maxHops": max_hops,
         "startedFromAnchors": started_from,
+        "startedFromRetrievalSeeds": list(retrieval_seeds or []),
         "visited": visited,
         "addedCandidateIds": added_candidate_ids,
         "rejected": rejected,
@@ -347,15 +378,48 @@ def apply_graph_expansion_policy(index: Dict[str, Any], graph_expansion: Dict[st
     return graph_expansion
 
 
+def _pre_bm25_scores(corpus: List[Dict[str, Any]], query_tokens: List[str], doc_count: int, avg_len: float, doc_freq: Dict[str, int]) -> Dict[str, float]:
+    """Compute a lightweight BM25 score for each corpus item for retrieval seed extraction.
+
+    Only pure BM25 term frequency scoring is used here (no deterministic boosts),
+    so the result is used solely to seed graph expansion with the top-K candidates.
+    """
+    scores: Dict[str, float] = {}
+    for doc in corpus:
+        chunk = doc["chunk"]
+        source = doc["source"]
+        item_id = str((chunk or {}).get("id") or source.get("id"))
+        score = 0.0
+        for token in query_tokens:
+            tf = doc["termCounts"].get(token, 0)
+            if tf:
+                df = doc_freq.get(token, 0)
+                idf = math.log(1 + (doc_count - df + 0.5) / (df + 0.5))
+                score += idf * ((tf * 2.2) / (tf + 1.2 * (1 - 0.75 + 0.75 * (len(doc["tokens"]) / avg_len))))
+        scores[item_id] = score
+    return scores
+
+
+def _extract_retrieval_seeds(corpus: List[Dict[str, Any]], pre_bm25: Dict[str, float], max_seeds: int = 5) -> List[str]:
+    """Return up to max_seeds unique file paths with the highest pre-BM25 scores."""
+    doc_by_id = {str((doc["chunk"] or {}).get("id") or doc["source"].get("id")): doc for doc in corpus}
+    seeds: List[str] = []
+    for item_id, _score in sorted(pre_bm25.items(), key=lambda kv: kv[1], reverse=True):
+        if _score <= 0 or len(seeds) >= max_seeds:
+            break
+        doc = doc_by_id.get(item_id)
+        if not doc:
+            continue
+        path = doc["source"].get("path")
+        if path and path not in seeds:
+            seeds.append(path)
+    return seeds
+
+
 def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str, Any]:
     root = target_dir.resolve()
     build_index(root)
     index = load_index(root)
-    graph_expansion = graph_expansion_for_query(index, query, root)
-    graph_expansion = apply_graph_expansion_policy(index, graph_expansion)
-    graph_source_ids = set(graph_expansion.get("sourceIds") or [])
-    graph_paths = set(graph_expansion.get("paths") or [])
-    graph_chunk_ids = set(graph_expansion.get("chunkIds") or [])
     sources = {record["id"]: record for record in index.get("records", [])}
     items = [(sources.get(chunk.get("sourceId"), {}), chunk) for chunk in index.get("chunks", [])] if index.get("chunks") else [(record, None) for record in index.get("records", [])]
     query_tokens = unique(tokenize(query))
@@ -369,6 +433,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         active_issue = None
     effective_issue_refs = query_issue_refs or ([] if query_pr_refs or not active_issue else [active_issue])
 
+    # Build corpus once; used for both pre-BM25 seed extraction and full scoring
     corpus: List[Dict[str, Any]] = []
     for source, chunk in items:
         text = record_text(source, chunk)
@@ -380,6 +445,15 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
     doc_count = max(1, len(corpus))
     avg_len = sum(len(doc["tokens"]) for doc in corpus) / doc_count if corpus else 1
     doc_freq = {token: sum(1 for doc in corpus if token in doc["termCounts"]) for token in query_tokens}
+
+    # Symbol-aware hybrid retrieval: BM25 pre-score → seed extraction → graph expansion
+    pre_bm25 = _pre_bm25_scores(corpus, query_tokens, doc_count, avg_len, doc_freq)
+    retrieval_seeds = _extract_retrieval_seeds(corpus, pre_bm25)
+    graph_expansion = graph_expansion_for_query(index, query, root, retrieval_seeds=retrieval_seeds)
+    graph_expansion = apply_graph_expansion_policy(index, graph_expansion)
+    graph_source_ids = set(graph_expansion.get("sourceIds") or [])
+    graph_paths = set(graph_expansion.get("paths") or [])
+    graph_chunk_ids = set(graph_expansion.get("chunkIds") or [])
 
     scored: List[Dict[str, Any]] = []
     lexical_raw: Dict[str, float] = {}
@@ -445,7 +519,9 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         item_id = (chunk or {}).get("id") or source.get("id")
         lexical = deterministic + keyword + bm25
         lexical_raw[str(item_id)] = lexical
-        scored.append({"source": source, "chunk": chunk, "reasons": reasons, "score": {"deterministic": deterministic, "keyword": keyword, "bm25": bm25, "embedding": None, "rrf": 0.0, "authorityBoost": authority_boost, "authorityDemotion": 0 if authority_penalty >= 999 else authority_penalty, "freshnessDemotion": freshness_penalty, "priorMistakeDemotion": prior_penalty, "final": 0.0}})
+        # lexicalScore = pure lexical (BM25 + keyword boosts, without deterministic)
+        # denseScore and fusedScore are filled in after embedding scoring
+        scored.append({"source": source, "chunk": chunk, "reasons": reasons, "score": {"deterministic": deterministic, "keyword": keyword, "bm25": bm25, "lexicalScore": keyword + bm25, "denseScore": None, "fusedScore": 0.0, "embedding": None, "rrf": 0.0, "authorityBoost": authority_boost, "authorityDemotion": 0 if authority_penalty >= 999 else authority_penalty, "freshnessDemotion": freshness_penalty, "priorMistakeDemotion": prior_penalty, "final": 0.0}})
 
     _bm25_by_path: List[Tuple[float, str]] = [(entry["score"]["bm25"], str(entry["source"].get("path") or "")) for entry in scored if entry["score"]["bm25"] > 0 and entry["source"].get("path")]
     _bm25_by_path.sort(key=lambda _x: _x[0], reverse=True)
@@ -529,7 +605,11 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
             )
             continue
         item_id = str((entry["chunk"] or {}).get("id") or source.get("id"))
-        entry["score"]["rrf"] = reciprocal_rank(lexical_rank.get(item_id, 0)) + reciprocal_rank(semantic_rank.get(item_id, 0))
+        rrf = reciprocal_rank(lexical_rank.get(item_id, 0)) + reciprocal_rank(semantic_rank.get(item_id, 0))
+        entry["score"]["rrf"] = rrf
+        # Retrieval provenance aliases: expose fused/dense scores explicitly
+        entry["score"]["fusedScore"] = rrf
+        entry["score"]["denseScore"] = entry["score"]["embedding"]
         semantic = entry["score"]["embedding"] or 0.0
         entry["score"]["final"] = lexical_raw[item_id] + semantic * 2 + entry["score"]["rrf"] * 10 + entry["score"]["authorityBoost"] - entry["score"]["authorityDemotion"] - entry["score"]["freshnessDemotion"] - entry["score"]["priorMistakeDemotion"]
         if entry["score"]["final"] > 0:

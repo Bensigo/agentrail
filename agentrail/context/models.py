@@ -103,6 +103,9 @@ class ChunkRecord:
     content: str
     memory: Optional[Dict[str, str]] = None
     priorMistake: Optional[Dict[str, Any]] = None
+    # Symbol-aware chunk fields (None for non-symbol chunks such as line-window or markdown chunks)
+    symbol: Optional[str] = None
+    kind: Optional[str] = None
 
     def to_json(self) -> Dict[str, JsonValue]:
         value: Dict[str, JsonValue] = {
@@ -122,6 +125,9 @@ class ChunkRecord:
             "citation": self.citation,
             "content": self.content,
             "memory": self.memory,
+            # Always emitted so downstream consumers can rely on field presence
+            "symbol": self.symbol,
+            "kind": self.kind,
         }
         if self.priorMistake is not None:
             value["priorMistake"] = self.priorMistake

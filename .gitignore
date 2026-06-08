@@ -1,3 +1,8 @@
 .agentrail/
 .afk-workflow/
 __pycache__/
+
+# JS/Node
+node_modules/
+.next/
+*.tsbuildinfo

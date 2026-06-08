@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@agentrail/contracts": "workspace:*",
+    "@agentrail/db-postgres": "workspace:*",
     "@agentrail/ui": "workspace:*",
     "next": "^15.3.0",
     "react": "^19.0.0",

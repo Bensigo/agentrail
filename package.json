@@ -1,11 +1,10 @@
 {
-  "name": "@bensigo/agentrail",
+  "name": "@useagentrail/cli",
   "version": "0.1.0",
   "description": "Repo-native harness for AI coding agents with durable context, bounded issue execution, review loops, and verification gates.",
   "bin": {
     "agentrail": "./scripts/agentrail",
-    "coding-ai-workflow": "./scripts/install-workflow",
-    "bensigo-ai-workflow": "./scripts/install-workflow"
+    "useagentrail": "./scripts/install-workflow"
   },
   "publishConfig": {
     "access": "public"

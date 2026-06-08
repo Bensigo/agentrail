@@ -86,7 +86,7 @@ docs/milestones/
 Project-local skills:
 
 ```text
-skills/bensigo-ai-workflow/
+skills/useagentrail/
 skills/backend-api/
 skills/desktop-tauri/
 skills/devops-deploy/

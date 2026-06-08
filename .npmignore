@@ -1,0 +1,22 @@
+# The "files" field in package.json is the primary allowlist.
+# This file is a safety net to ensure private code never leaks.
+
+apps/
+packages/
+docs/
+milestones/
+.github/
+.agentrail/
+.afk-workflow/
+node_modules/
+.env
+.env.*
+*.pem
+*.key
+pnpm-workspace.yaml
+pnpm-lock.yaml
+turbo.json
+CLAUDE.md
+AGENTS.md
+CONTEXT.md
+TASTE.md

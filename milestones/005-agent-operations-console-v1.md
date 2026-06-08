@@ -6,7 +6,7 @@ docs/prd/context-compiler-enterprise-control-plane.md
 
 ## Outcome
 
-Teams can use an Axiom-inspired Agent Operations Console to switch workspaces and inspect runs, context packs, failures, review gates, costs, repositories/indexing health, memory, API keys, and teams.
+Teams can use the Agent Operations Console to switch workspaces and inspect runs, context packs, failures, review gates, costs, repositories/indexing health, memory, API keys, and teams.
 
 ## Users
 
@@ -34,7 +34,7 @@ This milestone may touch:
 - [ ] Users can view repository/indexing health and stale index indicators.
 - [ ] Users can view cost breakdowns by workspace, team, repo, API key, and run where data exists.
 - [ ] Users can manage or inspect Memory, API Keys, and Teams at a v1 level.
-- [ ] UI follows Axiom-inspired observability patterns without copying proprietary components or assets.
+- [ ] UI follows the console design guide in TASTE.md (dense, operational, evidence-first).
 
 ## Test Plan
 

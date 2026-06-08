@@ -1,3 +1,5 @@
 .agentrail/
 .afk-workflow/
 __pycache__/
+.env
+.env.local

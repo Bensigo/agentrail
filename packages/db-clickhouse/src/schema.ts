@@ -73,3 +73,36 @@ export interface ContextEvent {
   sources_considered: number;
   occurred_at: string;
 }
+
+export const FAILURE_EVENTS_TABLE = "failure_events";
+
+export const CREATE_FAILURE_EVENTS = `
+CREATE TABLE IF NOT EXISTS ${FAILURE_EVENTS_TABLE} (
+  workspace_id String,
+  run_id String,
+  repository_id String,
+  failure_type String,
+  message String,
+  evidence String,
+  phase String,
+  severity String,
+  occurred_at DateTime64(3, 'UTC'),
+  event_id String
+)
+ENGINE = MergeTree
+PARTITION BY (workspace_id, toYYYYMM(occurred_at))
+ORDER BY (workspace_id, occurred_at, event_id)
+`;
+
+export interface FailureEvent {
+  workspace_id: string;
+  run_id: string;
+  repository_id: string;
+  failure_type: string;
+  message: string;
+  evidence: string;
+  phase: string;
+  severity: string;
+  occurred_at: string;
+  event_id: string;
+}

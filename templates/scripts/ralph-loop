@@ -184,7 +184,18 @@ portable_timeout() {
     timeout "$seconds" "$@"
     return $?
   fi
-  "$@" &
+  # macOS fallback: capture stdin to a temp file so the backgrounded process
+  # can still read it (backgrounded processes get /dev/null as stdin).
+  local _pt_stdin_file=""
+  if [[ ! -t 0 ]]; then
+    _pt_stdin_file="$(mktemp)"
+    cat > "$_pt_stdin_file"
+  fi
+  if [[ -n "$_pt_stdin_file" ]]; then
+    "$@" < "$_pt_stdin_file" &
+  else
+    "$@" &
+  fi
   local pid=$!
   ( sleep "$seconds" && kill -TERM "$pid" 2>/dev/null ) &
   local watcher=$!
@@ -192,6 +203,7 @@ portable_timeout() {
   local exit_code=$?
   kill "$watcher" 2>/dev/null
   wait "$watcher" 2>/dev/null
+  [[ -n "$_pt_stdin_file" ]] && rm -f "$_pt_stdin_file"
   if [[ "$exit_code" -eq 143 ]]; then
     return 124
   fi

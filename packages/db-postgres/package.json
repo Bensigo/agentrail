@@ -21,6 +21,7 @@
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.0",
+    "next-auth": "^5.0.0-beta.25",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "@types/node": "^22.0.0"

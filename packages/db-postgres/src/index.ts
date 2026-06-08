@@ -1,5 +1,13 @@
 export { db } from "./client";
-export { workspaces, workspaceMemberships, membershipRoleEnum } from "./schema";
+export {
+  users,
+  accounts,
+  sessions,
+  verificationTokens,
+  workspaces,
+  workspaceMemberships,
+  membershipRoleEnum,
+} from "./schema";
 export {
   listWorkspacesForUser,
   getWorkspace,

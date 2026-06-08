@@ -33,6 +33,36 @@ async function seed() {
     })
     .onConflictDoNothing();
 
+  await db
+    .insert(schema.runs)
+    .values([
+      {
+        workspaceId: DEV_WORKSPACE_ID,
+        repositoryId: "bensigo/agentrail",
+        agent: "claude",
+        branch: "main",
+        status: "success",
+        startedAt: new Date("2026-06-08T08:00:00Z"),
+        finishedAt: new Date("2026-06-08T08:05:00Z"),
+      },
+      {
+        workspaceId: DEV_WORKSPACE_ID,
+        repositoryId: "bensigo/agentrail",
+        agent: "claude",
+        branch: "feat/issue-212",
+        status: "running",
+        startedAt: new Date("2026-06-08T09:00:00Z"),
+      },
+      {
+        workspaceId: DEV_WORKSPACE_ID,
+        repositoryId: "bensigo/agentrail",
+        agent: "codex",
+        branch: "main",
+        status: "queued",
+      },
+    ])
+    .onConflictDoNothing();
+
   console.log("Seed complete.");
   console.log(`  workspace id : ${DEV_WORKSPACE_ID}`);
   console.log(`  user id      : ${DEV_USER_ID}`);

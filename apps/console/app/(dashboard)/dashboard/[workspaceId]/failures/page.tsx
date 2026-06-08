@@ -1,25 +1,38 @@
-import { Suspense } from "react";
-import { AlertTriangle } from "lucide-react";
-import { LoadingSkeleton } from "../../../../components/loading-skeleton";
-import { EmptyState } from "../../../../components/empty-state";
+import { listRuns } from "@agentrail/db-postgres";
+import { FailuresTable } from "./components/failures-table";
 
-export default function FailuresPage() {
+export default async function FailuresPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ workspaceId: string }>;
+  searchParams: Promise<{ run_id?: string }>;
+}) {
+  const { workspaceId } = await params;
+  const { run_id: runId } = await searchParams;
+
+  let repositories: string[] = [];
+  try {
+    const runs = await listRuns(workspaceId, { limit: 200 });
+    repositories = [
+      ...new Set(
+        runs.map((r) => r.repositoryId).filter((r): r is string => r !== null)
+      ),
+    ].sort();
+  } catch {
+    // DB unavailable; empty repo list is acceptable
+  }
+
   return (
-    <div>
-      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">Failures</h1>
-      <Suspense fallback={<LoadingSkeleton />}>
-        <FailuresContent />
-      </Suspense>
+    <div className="mx-auto max-w-[1440px]">
+      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
+        Failures
+      </h1>
+      <FailuresTable
+        workspaceId={workspaceId}
+        repositories={repositories}
+        initialRunId={runId}
+      />
     </div>
-  );
-}
-
-function FailuresContent() {
-  return (
-    <EmptyState
-      icon={AlertTriangle}
-      title="No failures recorded"
-      description="Agent failures and error events will be surfaced here for investigation."
-    />
   );
 }

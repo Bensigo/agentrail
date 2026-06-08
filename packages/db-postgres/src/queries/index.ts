@@ -4,12 +4,19 @@ import { workspaces, workspaceMemberships } from "../schema/index.js";
 
 export async function listWorkspacesForUser(userId: string) {
   const rows = await db
-    .select({ workspace: workspaces })
+    .select({
+      id: workspaces.id,
+      name: workspaces.name,
+      slug: workspaces.slug,
+      createdAt: workspaces.createdAt,
+      updatedAt: workspaces.updatedAt,
+      role: workspaceMemberships.role,
+    })
     .from(workspaceMemberships)
     .innerJoin(workspaces, eq(workspaceMemberships.workspaceId, workspaces.id))
     .where(eq(workspaceMemberships.userId, userId));
 
-  return rows.map((r) => r.workspace);
+  return rows;
 }
 
 export async function getWorkspace(id: string) {

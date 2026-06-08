@@ -1,5 +1,5 @@
 ---
-name: bensigo-ai-workflow
+name: useagentrail
 description: Use when shaping a substantial product or engineering idea into durable context, PRD, milestones, GitHub issues, implementation PRs, review, and follow-up fix issues. Trigger when the user asks to run AgentRail, convert an idea into implementation work, create PRD/milestones/issues, orchestrate Ralph, or manage review-fix loops. Do not use for tiny edits, one-off bug fixes, simple copy changes, or tasks that can be completed directly in one context.
 ---
 

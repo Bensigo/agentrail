@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  transpilePackages: ["@agentrail/auth"],
+  transpilePackages: ["@agentrail/ui", "@agentrail/contracts", "@agentrail/auth"],
 };
 
 export default nextConfig;

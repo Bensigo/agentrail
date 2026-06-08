@@ -28,7 +28,7 @@ services:
     volumes:
       - chdata:/var/lib/clickhouse
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8123/ping || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping | grep -c Ok"]
       interval: 5s
       timeout: 5s
       retries: 5

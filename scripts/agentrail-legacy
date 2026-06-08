@@ -28,6 +28,7 @@ Usage:
   agentrail cleanup [--target DIR] [--dry-run] [--merged] [--force]
   agentrail run [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
   agentrail run issue NUMBER [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
+  agentrail run batch ISSUE... [--concurrency 2] [--agent claude] [--target DIR] [--base main]
 
 Commands:
   init      Initialize AgentRail workflow files.
@@ -5161,6 +5162,27 @@ agent_command_env_name() {
   esac
 }
 
+portable_timeout() {
+  local seconds="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+    return $?
+  fi
+  "$@" &
+  local pid=$!
+  ( sleep "$seconds" && kill -TERM "$pid" 2>/dev/null ) &
+  local watcher=$!
+  wait "$pid" 2>/dev/null
+  local exit_code=$?
+  kill "$watcher" 2>/dev/null
+  wait "$watcher" 2>/dev/null
+  if [[ "$exit_code" -eq 143 ]]; then
+    return 124
+  fi
+  return "$exit_code"
+}
+
 sanitized_agent_exec() {
   env \
     -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_ENTRYPOINT \
@@ -5724,7 +5746,7 @@ NODE
 bounded_phase_text() {
   local text="${1:-}"
   local label="${2:-phase text}"
-  local max_chars="${AGENTRAIL_PHASE_INLINE_MAX_CHARS:-24000}"
+  local max_chars="${AGENTRAIL_PHASE_INLINE_MAX_CHARS:-12000}"
 
   if [[ -z "$text" ]]; then
     return 0
@@ -6326,6 +6348,8 @@ run_issue() {
     phase_started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
     if [[ "$phase" == "plan" && -n "$run_context_pack_file" ]]; then
       phase_context_pack_file="$run_context_pack_file"
+    elif [[ "$phase" != "plan" && -n "$run_context_pack_file" && -f "${target_dir}/${run_context_pack_file}" ]]; then
+      phase_context_pack_file="$run_context_pack_file"
     else
       phase_context_pack_file="$(build_context_pack_file "$target_dir" "issue" "$issue" "$phase")"
     fi
@@ -6349,16 +6373,20 @@ run_issue() {
     echo "phase output: ${phase_output_file}"
     echo "phase metadata: ${phase_metadata_file}"
 
+    local agent_timeout="${AGENTRAIL_AGENT_TIMEOUT:-1800}"
     set +e
     if [[ "$phase" == "execute" ]]; then
       (
         cd "$target_dir" &&
-          sanitized_agent_exec "$ralph_executor" --issue "$issue" --agent-command "$agent_command" --prefix-prompt-file "$phase_prompt_file"
+          portable_timeout "$agent_timeout" sanitized_agent_exec "$ralph_executor" --issue "$issue" --agent-command "$agent_command" --prefix-prompt-file "$phase_prompt_file"
       ) 2>&1 | tee "$phase_output_file"
     else
-      printf '%s\n' "$phase_prompt" | sanitized_agent_exec bash -lc "$agent_command" 2>&1 | tee "$phase_output_file"
+      printf '%s\n' "$phase_prompt" | portable_timeout "$agent_timeout" sanitized_agent_exec bash -lc "$agent_command" 2>&1 | tee "$phase_output_file"
     fi
     status=$?
+    if [[ "$status" -eq 124 ]]; then
+      echo "agent timed out after ${agent_timeout}s in ${phase} phase" >&2
+    fi
     set -e
 
     phase_finished_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -6375,7 +6403,33 @@ run_issue() {
     return "$status"
   }
 
-  run_issue_phase "plan" "1" "" || true
+  # Phase resume: check if a prior run for this issue has a completed plan
+  local prior_plan_dir="" prior_plan_status_file=""
+  if [[ "${AGENTRAIL_RESUME:-0}" == "1" ]]; then
+    local prior_run
+    for prior_run in "${log_dir}/"*"-issue-${issue}-"*; do
+      [[ -d "$prior_run" ]] || continue
+      [[ "$prior_run" == "$run_dir" ]] && continue
+      prior_plan_status_file="${prior_run}/plan/status.json"
+      if [[ -f "$prior_plan_status_file" ]]; then
+        local prior_status_val
+        prior_status_val="$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).status)" "$prior_plan_status_file" 2>/dev/null || echo "")"
+        if [[ "$prior_status_val" == "completed" && -f "${prior_run}/plan/output.md" ]]; then
+          prior_plan_dir="${prior_run}/plan"
+          echo "resuming from prior completed plan: ${prior_plan_dir}" >&2
+          break
+        fi
+      fi
+    done
+  fi
+
+  if [[ -n "$prior_plan_dir" ]]; then
+    plan_output="$(cat "${prior_plan_dir}/output.md")"
+    status=0
+    echo "skipped plan phase (resumed from prior run)" >&2
+  else
+    run_issue_phase "plan" "1" "" || true
+  fi
   if [[ "$status" -eq 0 ]]; then
     while [[ "$execution_attempt" -le "$max_execution_attempts" ]]; do
       run_issue_phase "execute" "$execution_attempt" "$verifier_findings_file" || true
@@ -6412,6 +6466,149 @@ run_issue() {
   update_run_metadata_attempts "$metadata_file" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" "$blocked_reason"
   update_run_state "$target_dir" "finish" "$run_id" "$issue" "$agent" "$phase" "$started_at" "$finished_at" "$status" "$prompt_file" "$metadata_file" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" "$blocked_reason" "$resolution_text" "$phase_context_pack_file"
   return "$status"
+}
+
+run_batch() {
+  local concurrency="${AGENTRAIL_BATCH_CONCURRENCY:-2}"
+  local agent="claude"
+  local target_dir=""
+  local explicit_command=""
+  local base="main"
+  local issues=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --concurrency)
+        concurrency="${2:-2}"
+        shift 2
+        ;;
+      --agent)
+        agent="${2:-claude}"
+        shift 2
+        ;;
+      --target)
+        target_dir="${2:-}"
+        shift 2
+        ;;
+      --command)
+        explicit_command="${2:-}"
+        shift 2
+        ;;
+      --base)
+        base="${2:-main}"
+        shift 2
+        ;;
+      --)
+        shift
+        issues+=("$@")
+        break
+        ;;
+      -*)
+        echo "run batch: unknown option $1" >&2
+        exit 2
+        ;;
+      *)
+        issues+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  [[ ${#issues[@]} -ge 1 ]] || { echo "run batch requires at least one issue number" >&2; exit 2; }
+  [[ "$concurrency" =~ ^[1-9][0-9]*$ ]] || { echo "--concurrency must be a positive integer" >&2; exit 2; }
+
+  if [[ -z "$target_dir" ]]; then
+    target_dir="$(pwd -P)"
+  fi
+  target_dir="$(cd "$target_dir" && pwd -P)" || exit 1
+  ensure_source_run_allowed "$target_dir" "run batch"
+
+  local agent_command
+  agent_command="$(configured_agent_command "$agent" "$explicit_command" "$target_dir")"
+  ensure_command_available "$agent_command"
+
+  local batch_dir="${target_dir}/.agentrail/batch/$(date -u +"%Y%m%d-%H%M%S")"
+  mkdir -p "${batch_dir}/logs" "${batch_dir}/worktrees"
+
+  echo "batch: ${#issues[@]} issues, concurrency ${concurrency}, agent ${agent}"
+  echo "batch dir: ${batch_dir}"
+
+  local active=0
+  local pids=()
+  local pid_issues=()
+  local worktrees=()
+  local failed=0
+
+  git -C "$target_dir" fetch origin "$base" 2>/dev/null || true
+
+  for issue in "${issues[@]}"; do
+    [[ "$issue" =~ ^[0-9]+$ ]] || { echo "skipping non-numeric issue: $issue" >&2; continue; }
+
+    while [[ "$active" -ge "$concurrency" ]]; do
+      local done_pid=""
+      for i in "${!pids[@]}"; do
+        if ! kill -0 "${pids[$i]}" 2>/dev/null; then
+          wait "${pids[$i]}" 2>/dev/null || { echo "batch: issue #${pid_issues[$i]} failed" >&2; failed=1; }
+          done_pid="$i"
+          break
+        fi
+      done
+      if [[ -n "$done_pid" ]]; then
+        unset 'pids[done_pid]'
+        unset 'pid_issues[done_pid]'
+        pids=("${pids[@]}")
+        pid_issues=("${pid_issues[@]}")
+        active=$((active - 1))
+      else
+        sleep 5
+      fi
+    done
+
+    local slot=$((${#pids[@]} + 1))
+    local worktree="${batch_dir}/worktrees/slot-${slot}-issue-${issue}"
+    local log_file="${batch_dir}/logs/issue-${issue}.log"
+    echo "batch: starting issue #${issue} in slot ${slot}"
+
+    git -C "$target_dir" worktree add --detach "$worktree" "origin/${base}" >/dev/null 2>&1
+    worktrees+=("$worktree")
+
+    if [[ -d "${target_dir}/.agentrail" ]]; then
+      cp -r "${target_dir}/.agentrail" "${worktree}/.agentrail" 2>/dev/null || true
+    fi
+
+    (
+      cd "$worktree"
+      run_args=("--target" "$worktree")
+      run_args+=("--agent" "$agent")
+      if [[ -n "$explicit_command" ]]; then
+        run_args+=("--command" "$explicit_command")
+      fi
+      AGENTRAIL_ALLOW_SOURCE_RUN=1 run_issue "$issue" "${run_args[@]}"
+    ) >"$log_file" 2>&1 &
+    pids+=("$!")
+    pid_issues+=("$issue")
+    active=$((active + 1))
+  done
+
+  for i in "${!pids[@]}"; do
+    if ! wait "${pids[$i]}"; then
+      echo "batch: issue #${pid_issues[$i]} failed" >&2
+      failed=1
+    else
+      echo "batch: issue #${pid_issues[$i]} completed"
+    fi
+  done
+
+  for wt in "${worktrees[@]}"; do
+    git -C "$target_dir" worktree remove --force "$wt" 2>/dev/null || true
+  done
+
+  if [[ "$failed" -ne 0 ]]; then
+    echo "batch: some issues failed; check logs in ${batch_dir}/logs/" >&2
+    return 1
+  fi
+  echo "batch: all ${#issues[@]} issues completed successfully"
+  return 0
 }
 
 run_agentrail_run() {
@@ -6465,6 +6662,10 @@ run_agentrail_run() {
       [[ -n "$issue" && "$issue" != --* ]] || { echo "run issue requires a number" >&2; exit 2; }
       shift
       run_issue "$issue" "$@"
+      ;;
+    batch)
+      shift
+      run_batch "$@"
       ;;
     -h|--help)
       usage

@@ -984,8 +984,18 @@ def build_index_snapshot(root: Path, records: List[SourceRecord], graph: Dict[st
     }
 
 
+_BUILD_INDEX_STALENESS_SECONDS = 120
+
+
 def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[str, Any]:
     root = target_dir.resolve()
+    index_path = root / ".agentrail" / "context" / "index" / "index.json"
+    try:
+        age = datetime.now(timezone.utc).timestamp() - index_path.stat().st_mtime
+        if age < _BUILD_INDEX_STALENESS_SECONDS:
+            return load_index(root)
+    except OSError:
+        pass
     cfg = config or read_context_config(root)
     provider_mode = cfg.embedding.mode
     summary_mode = cfg.summary.mode
@@ -1114,5 +1124,19 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
     }
 
 
+_index_cache: Dict[str, tuple] = {}
+
+
 def load_index(target_dir: Path) -> Dict[str, Any]:
-    return json.loads((target_dir / ".agentrail" / "context" / "index" / "index.json").read_text(encoding="utf-8"))
+    index_path = target_dir.resolve() / ".agentrail" / "context" / "index" / "index.json"
+    cache_key = str(index_path)
+    try:
+        mtime = index_path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    cached = _index_cache.get(cache_key)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    data = json.loads(index_path.read_text(encoding="utf-8"))
+    _index_cache[cache_key] = (mtime, data)
+    return data

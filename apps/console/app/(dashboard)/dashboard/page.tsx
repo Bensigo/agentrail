@@ -4,26 +4,25 @@ import { redirect } from "next/navigation";
 
 export default async function DashboardPage() {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     redirect("/login");
   }
 
-  const userId = (session.user as typeof session.user & { id?: string }).id;
-  if (!userId) {
-    redirect("/login");
-  }
-
-  const workspaces = await listWorkspacesForUser(userId);
-  const first = workspaces[0];
-
-  if (first) {
-    redirect(`/dashboard/${first.id}/`);
+  const workspaces = await listWorkspacesForUser(session.user.id);
+  if (workspaces.length > 0) {
+    redirect(`/dashboard/${workspaces[0].id}`);
   }
 
   return (
-    <div style={{ padding: "2rem" }}>
-      <h1>No workspaces found</h1>
-      <p>You are not a member of any workspace yet.</p>
+    <div className="flex min-h-screen items-center justify-center">
+      <div className="text-center">
+        <h1 className="text-lg font-bold text-[var(--gray-12)]">
+          No workspaces
+        </h1>
+        <p className="mt-2 text-sm text-[var(--gray-09)]">
+          You are not a member of any workspace yet.
+        </p>
+      </div>
     </div>
   );
 }

@@ -25,6 +25,7 @@ Usage:
   agentrail prompt issue NUMBER [--agent codex|claude] [--target DIR] [--skill NAME] [--no-auto-skills]
   agentrail prompt review PR_NUMBER [--agent codex|claude] [--target DIR]
   agentrail afk [--concurrency 2] [--max-waves 20] [--base main] [--engine codex] [--afk-label afk] [--dry-run]
+  agentrail console [--target DIR]
   agentrail cleanup [--target DIR] [--dry-run] [--merged] [--force]
   agentrail run [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
   agentrail run issue NUMBER [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
@@ -43,6 +44,7 @@ Commands:
   labels    Sync expected GitHub labels.
   prompt    Print an agent-ready prompt without executing an agent.
   afk       Run the AFK queue/worktree loop through the AgentRail CLI.
+  console   Show dashboard status and setup instructions.
   cleanup   Inspect or remove AgentRail-owned worktrees.
   run       Generate a bounded prompt and execute a configured agent command.
 USAGE
@@ -69,6 +71,34 @@ installer="${script_dir}/install-workflow"
 if [[ -x "${repo_dir}/scripts/install-workflow" ]]; then
   installer="${repo_dir}/scripts/install-workflow"
 fi
+
+resolve_api_key() {
+  local target_dir="${1:-.}"
+  if [[ -n "${AGENTRAIL_API_KEY:-}" ]]; then
+    printf '%s' "$AGENTRAIL_API_KEY"
+    return 0
+  fi
+  local config_file="${target_dir}/.agentrail/config.json"
+  if [[ -f "$config_file" ]] && command -v node >/dev/null 2>&1; then
+    local key
+    key="$(node -e "try{const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));if(c.apiKey)process.stdout.write(c.apiKey)}catch(e){}" "$config_file" 2>/dev/null || true)"
+    if [[ -n "$key" ]]; then
+      printf '%s' "$key"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+has_api_key() {
+  resolve_api_key "${1:-.}" >/dev/null 2>&1
+}
+
+print_dashboard_hint() {
+  if ! has_api_key "${1:-.}"; then
+    echo "Tip: set AGENTRAIL_API_KEY to track runs in the dashboard — https://agentrail.dev" >&2
+  fi
+}
 
 parse_target() {
   local target_var="$1"
@@ -4017,6 +4047,13 @@ run_doctor() {
     echo "  ok skill registry"
   fi
 
+  echo "dashboard:"
+  if has_api_key "$target_dir"; then
+    echo "  ok AGENTRAIL_API_KEY configured"
+  else
+    echo "  info AGENTRAIL_API_KEY not configured (local-only mode — dashboard features disabled)"
+  fi
+
   check_github_labels "$target_dir"
 
   echo "recommendations:"
@@ -4328,6 +4365,56 @@ try {
   process.exitCode = 1;
 }
 NODE
+
+  echo "dashboard:"
+  if has_api_key "$target_dir"; then
+    echo "  connected (AGENTRAIL_API_KEY)"
+  else
+    echo "  not configured (local-only mode)"
+  fi
+}
+
+run_console() {
+  local target_dir
+  parse_target target_dir "$@"
+
+  if has_api_key "$target_dir"; then
+    echo "AgentRail Console"
+    echo "API key: configured"
+    echo ""
+    echo "Dashboard: https://agentrail.dev/console"
+    echo ""
+    echo "Features available:"
+    echo "  - Agent Operations Console — visibility across repos, workspaces, teams"
+    echo "  - Run event streaming — runs send events to the server during execution"
+    echo "  - Cross-repo analytics — failure pattern detection, cost attribution"
+    echo "  - Context pack audit trails — what was included/excluded and why"
+    echo "  - Review gate management — server-side review gate status"
+    echo "  - Team collaboration — teams, API key management, workspace sharing"
+  else
+    echo "AgentRail Console"
+    echo ""
+    echo "The console gives you visibility into your agent runs across repos and teams."
+    echo ""
+    echo "Features:"
+    echo "  - Agent Operations Console — visibility across repos, workspaces, teams"
+    echo "  - Run event streaming — runs send events to the server during execution"
+    echo "  - Cross-repo analytics — failure pattern detection, cost attribution"
+    echo "  - Context pack audit trails — what was included/excluded and why"
+    echo "  - Review gate management — server-side review gate status"
+    echo "  - Team collaboration — teams, API key management, workspace sharing"
+    echo ""
+    echo "To get started:"
+    echo "  1. Sign up at https://agentrail.dev"
+    echo "  2. Create a workspace and generate an API key"
+    echo "  3. Set it in your environment:"
+    echo "     export AGENTRAIL_API_KEY=your-key-here"
+    echo "  4. Or add it to .agentrail/config.json:"
+    echo '     { "apiKey": "your-key-here" }'
+    echo ""
+    echo "Your local CLI works fully without an API key."
+    echo "The console adds visibility and collaboration on top."
+  fi
 }
 
 parse_cleanup_args() {
@@ -6331,6 +6418,7 @@ run_issue() {
   echo "prompt: ${prompt_file}"
   echo "resolved skills: ${resolved_skills_file}"
   echo "metadata: ${metadata_file}"
+  print_dashboard_hint "$target_dir"
 
   local status=0 phase phase_dir phase_prompt phase_prompt_file phase_output_file phase_status_file phase_metadata_file phase_started_at phase_finished_at plan_output ralph_executor phase_command phase_context_pack_file phase_context_summary
   local execution_attempt=1 failed_verification_attempts=0 verifier_findings_file="" blocked_reason=""
@@ -6756,6 +6844,10 @@ case "${1:-}" in
   internal)
     shift
     run_internal "$@"
+    ;;
+  console)
+    shift
+    run_console "$@"
     ;;
   run)
     shift

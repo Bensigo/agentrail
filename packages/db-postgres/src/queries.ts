@@ -1,7 +1,7 @@
 import { eq, and, desc } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "./client";
-import { workspaces, workspaceMemberships, runs, reviewGates, repositories, teams, teamMemberships } from "./schema";
+import { workspaces, workspaceMemberships, runs, reviewGates, repositories, teams, teamMemberships, apiKeys } from "./schema";
 
 export async function listWorkspacesForUser(userId: string) {
   return db
@@ -115,4 +115,47 @@ export async function listReviewGates(workspaceId: string, runId: string) {
       and(eq(reviewGates.workspaceId, workspaceId), eq(reviewGates.runId, runId))
     )
     .orderBy(desc(reviewGates.createdAt));
+}
+
+export async function listApiKeys(workspaceId: string) {
+  return db
+    .select({
+      id: apiKeys.id,
+      name: apiKeys.name,
+      keyPrefix: apiKeys.keyPrefix,
+      teamId: apiKeys.teamId,
+      createdAt: apiKeys.createdAt,
+      lastUsedAt: apiKeys.lastUsedAt,
+      revokedAt: apiKeys.revokedAt,
+    })
+    .from(apiKeys)
+    .where(eq(apiKeys.workspaceId, workspaceId))
+    .orderBy(desc(apiKeys.createdAt));
+}
+
+export async function createApiKey(data: {
+  workspaceId: string;
+  name: string;
+  keyPrefix: string;
+  keyHash: string;
+  teamId?: string;
+}) {
+  const results = await db
+    .insert(apiKeys)
+    .values({
+      workspaceId: data.workspaceId,
+      name: data.name,
+      keyPrefix: data.keyPrefix,
+      keyHash: data.keyHash,
+      teamId: data.teamId ?? null,
+    })
+    .returning();
+  return results[0];
+}
+
+export async function revokeApiKey(workspaceId: string, keyId: string) {
+  return db
+    .update(apiKeys)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(apiKeys.workspaceId, workspaceId), eq(apiKeys.id, keyId)));
 }

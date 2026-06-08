@@ -15,6 +15,7 @@ export {
   teams,
   teamMemberships,
   teamRoleEnum,
+  apiKeys,
 } from "./schema";
 export {
   listWorkspacesForUser,
@@ -26,4 +27,7 @@ export {
   listRepositories,
   listTeams,
   getTeamMemberCounts,
+  listApiKeys,
+  createApiKey,
+  revokeApiKey,
 } from "./queries";

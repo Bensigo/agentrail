@@ -28,6 +28,7 @@ Usage:
   agentrail cleanup [--target DIR] [--dry-run] [--merged] [--force]
   agentrail run [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
   agentrail run issue NUMBER [--agent codex|claude] [--target DIR] [--command CMD] [--log-dir DIR]
+  agentrail run batch ISSUE... [--concurrency 2] [--agent claude] [--target DIR] [--base main]
 
 Commands:
   init      Initialize AgentRail workflow files.
@@ -6467,6 +6468,142 @@ run_issue() {
   return "$status"
 }
 
+run_batch() {
+  local concurrency="${AGENTRAIL_BATCH_CONCURRENCY:-2}"
+  local agent="claude"
+  local target_dir=""
+  local explicit_command=""
+  local base="main"
+  local issues=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --concurrency)
+        concurrency="${2:-2}"
+        shift 2
+        ;;
+      --agent)
+        agent="${2:-claude}"
+        shift 2
+        ;;
+      --target)
+        target_dir="${2:-}"
+        shift 2
+        ;;
+      --command)
+        explicit_command="${2:-}"
+        shift 2
+        ;;
+      --base)
+        base="${2:-main}"
+        shift 2
+        ;;
+      --)
+        shift
+        issues+=("$@")
+        break
+        ;;
+      -*)
+        echo "run batch: unknown option $1" >&2
+        exit 2
+        ;;
+      *)
+        issues+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  [[ ${#issues[@]} -ge 1 ]] || { echo "run batch requires at least one issue number" >&2; exit 2; }
+  [[ "$concurrency" =~ ^[1-9][0-9]*$ ]] || { echo "--concurrency must be a positive integer" >&2; exit 2; }
+
+  if [[ -z "$target_dir" ]]; then
+    target_dir="$(pwd -P)"
+  fi
+  target_dir="$(cd "$target_dir" && pwd -P)" || exit 1
+  ensure_source_run_allowed "$target_dir" "run batch"
+
+  local agent_command
+  agent_command="$(configured_agent_command "$agent" "$explicit_command" "$target_dir")"
+  ensure_command_available "$agent_command"
+
+  local batch_dir="${target_dir}/.agentrail/batch/$(date -u +"%Y%m%d-%H%M%S")"
+  mkdir -p "${batch_dir}/logs" "${batch_dir}/worktrees"
+
+  echo "batch: ${#issues[@]} issues, concurrency ${concurrency}, agent ${agent}"
+  echo "batch dir: ${batch_dir}"
+
+  local active=0
+  local pids=()
+  local pid_issues=()
+  local failed=0
+
+  for issue in "${issues[@]}"; do
+    [[ "$issue" =~ ^[0-9]+$ ]] || { echo "skipping non-numeric issue: $issue" >&2; continue; }
+
+    while [[ "$active" -ge "$concurrency" ]]; do
+      local done_pid=""
+      for i in "${!pids[@]}"; do
+        if ! kill -0 "${pids[$i]}" 2>/dev/null; then
+          wait "${pids[$i]}" 2>/dev/null || { echo "batch: issue #${pid_issues[$i]} failed" >&2; failed=1; }
+          done_pid="$i"
+          break
+        fi
+      done
+      if [[ -n "$done_pid" ]]; then
+        unset 'pids[done_pid]'
+        unset 'pid_issues[done_pid]'
+        pids=("${pids[@]}")
+        pid_issues=("${pid_issues[@]}")
+        active=$((active - 1))
+      else
+        sleep 5
+      fi
+    done
+
+    local slot=$((${#pids[@]} + 1))
+    local worktree="${batch_dir}/worktrees/slot-${slot}-issue-${issue}"
+    local log_file="${batch_dir}/logs/issue-${issue}.log"
+    echo "batch: starting issue #${issue} in slot ${slot}"
+
+    git -C "$target_dir" fetch origin "$base" 2>/dev/null || true
+    git -C "$target_dir" worktree add --detach "$worktree" "origin/${base}" >/dev/null 2>&1
+
+    if [[ -d "${target_dir}/.agentrail" ]]; then
+      cp -r "${target_dir}/.agentrail" "${worktree}/.agentrail" 2>/dev/null || true
+    fi
+
+    (
+      cd "$worktree"
+      local run_args=("--target" "$worktree")
+      run_args+=("--agent" "$agent")
+      if [[ -n "$explicit_command" ]]; then
+        run_args+=("--command" "$explicit_command")
+      fi
+      AGENTRAIL_ALLOW_SOURCE_RUN=1 run_issue "$issue" "${run_args[@]}"
+    ) >"$log_file" 2>&1 &
+    pids+=("$!")
+    pid_issues+=("$issue")
+    active=$((active + 1))
+  done
+
+  for i in "${!pids[@]}"; do
+    if ! wait "${pids[$i]}"; then
+      echo "batch: issue #${pid_issues[$i]} failed" >&2
+      failed=1
+    else
+      echo "batch: issue #${pid_issues[$i]} completed"
+    fi
+  done
+
+  if [[ "$failed" -ne 0 ]]; then
+    echo "batch: some issues failed; check logs in ${batch_dir}/logs/" >&2
+    return 1
+  fi
+  echo "batch: all ${#issues[@]} issues completed successfully"
+  return 0
+}
+
 run_agentrail_run() {
   local kind="${1:-}"
   if [[ -z "$kind" || "$kind" == --* ]]; then
@@ -6518,6 +6655,10 @@ run_agentrail_run() {
       [[ -n "$issue" && "$issue" != --* ]] || { echo "run issue requires a number" >&2; exit 2; }
       shift
       run_issue "$issue" "$@"
+      ;;
+    batch)
+      shift
+      run_batch "$@"
       ;;
     -h|--help)
       usage

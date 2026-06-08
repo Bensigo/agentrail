@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import List
 
+from agentrail.cli.commands.console import run_console
 from agentrail.cli.commands.context import run_context
 
 
@@ -28,6 +29,8 @@ def _legacy_script() -> Path:
 
 def main(argv: List[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "console":
+        return run_console(args[1:])
     if args and args[0] == "context":
         return run_context(args[1:])
     legacy = _legacy_script()

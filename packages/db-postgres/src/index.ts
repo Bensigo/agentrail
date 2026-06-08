@@ -11,6 +11,7 @@ export {
   runStatusEnum,
   reviewGates,
   gateStatusEnum,
+  repositories,
 } from "./schema";
 export {
   listWorkspacesForUser,
@@ -19,4 +20,5 @@ export {
   listRuns,
   getRun,
   listReviewGates,
+  listRepositories,
 } from "./queries";

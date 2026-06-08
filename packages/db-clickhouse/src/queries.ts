@@ -137,3 +137,34 @@ export async function getCostAggregation(
 
   return result.json<CostAggRow>();
 }
+
+export interface LatestIndexRow {
+  repository_id: string;
+  commit_sha: string;
+  indexed_at: string;
+  source_count: number;
+  graph_edge_count: number;
+}
+
+export async function getLatestIndexSnapshots(
+  workspaceId: string
+): Promise<LatestIndexRow[]> {
+  const result = await clickhouse.query({
+    query: `
+      SELECT
+        repository_id,
+        argMax(commit_sha, indexed_at) AS commit_sha,
+        max(indexed_at) AS indexed_at,
+        argMax(source_count, indexed_at) AS source_count,
+        argMax(graph_edge_count, indexed_at) AS graph_edge_count
+      FROM index_snapshots
+      WHERE workspace_id = {workspaceId:String}
+      GROUP BY repository_id
+      ORDER BY indexed_at DESC
+    `,
+    query_params: { workspaceId },
+    format: "JSONEachRow",
+  });
+
+  return result.json<LatestIndexRow>();
+}

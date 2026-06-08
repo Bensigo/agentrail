@@ -141,3 +141,30 @@ export interface CostEvent {
   occurred_at: string;
   event_id: string;
 }
+
+export const INDEX_SNAPSHOTS_TABLE = "index_snapshots";
+
+export const CREATE_INDEX_SNAPSHOTS = `
+CREATE TABLE IF NOT EXISTS ${INDEX_SNAPSHOTS_TABLE} (
+  workspace_id String,
+  repository_id String,
+  commit_sha String,
+  indexed_at DateTime64(3, 'UTC'),
+  source_count UInt32,
+  graph_edge_count UInt32,
+  event_id String
+)
+ENGINE = MergeTree
+PARTITION BY (workspace_id, toYYYYMM(indexed_at))
+ORDER BY (workspace_id, repository_id, indexed_at)
+`;
+
+export interface IndexSnapshot {
+  workspace_id: string;
+  repository_id: string;
+  commit_sha: string;
+  indexed_at: string;
+  source_count: number;
+  graph_edge_count: number;
+  event_id: string;
+}

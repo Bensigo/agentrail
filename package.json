@@ -17,8 +17,16 @@
     "templates/",
     "skills/"
   ],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "test": "bash scripts/test-install && bash scripts/test-skill-registry-validation && bash scripts/test-skill-resolution && bash scripts/test-promote-unblocked-issues && bash scripts/test-doctor && bash scripts/test-upgrade && bash scripts/test-public-positioning && bash scripts/test-cli-first-docs && bash scripts/test-prompt-generation && bash scripts/test-runner-adapter && bash scripts/test-resume-handoff && bash scripts/test-label-sync && bash scripts/test-codex-desktop-docs && bash scripts/test-source-afk-dogfood && bash scripts/test-review-memory-suggestions && bash scripts/test-afk-merge-reviewed-pr && bash scripts/test-worktree-cleanup && bash scripts/test-python && bash scripts/test-context-sources && bash scripts/test-context-index && bash scripts/test-context-privacy && bash scripts/test-context-embeddings && bash scripts/test-context-query && bash scripts/test-context-packs && bash scripts/test-context-evaluation",
-    "typecheck": "bash scripts/typecheck-python"
+    "typecheck": "pnpm --filter @agentrail/console typecheck",
+    "build": "pnpm --filter @agentrail/console build",
+    "dev": "pnpm --filter @agentrail/console dev",
+    "lint": "pnpm --filter @agentrail/console lint",
+    "typecheck:python": "bash scripts/typecheck-python"
   }
 }

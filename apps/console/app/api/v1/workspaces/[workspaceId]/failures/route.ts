@@ -20,6 +20,7 @@ export async function GET(
 
   const searchParams = request.nextUrl.searchParams;
   const repositoryId = searchParams.get("repository_id") ?? undefined;
+  const runId = searchParams.get("run_id") ?? undefined;
   const severity = searchParams.get("severity") ?? undefined;
   const failureType = searchParams.get("failure_type") ?? undefined;
   const timeFrom = searchParams.get("time_from");
@@ -29,6 +30,7 @@ export async function GET(
   try {
     const { failures, nextCursor } = await listWorkspaceFailures(workspaceId, {
       repositoryId,
+      runId,
       severity,
       failureType,
       timeFrom: timeFrom ? new Date(timeFrom) : undefined,

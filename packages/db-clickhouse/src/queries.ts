@@ -100,6 +100,7 @@ export async function getFailuresForRun(
 
 export interface ListWorkspaceFailuresOptions {
   repositoryId?: string;
+  runId?: string;
   severity?: string;
   failureType?: string;
   timeFrom?: Date;
@@ -112,7 +113,7 @@ export async function listWorkspaceFailures(
   workspaceId: string,
   opts: ListWorkspaceFailuresOptions = {}
 ): Promise<{ failures: FailureEventRecord[]; nextCursor: string | null }> {
-  const { repositoryId, severity, failureType, timeFrom, timeTo, limit = 50, cursor } = opts;
+  const { repositoryId, runId, severity, failureType, timeFrom, timeTo, limit = 50, cursor } = opts;
 
   const conditions: string[] = ["workspace_id = {workspaceId: String}"];
   const queryParams: Record<string, unknown> = { workspaceId };
@@ -120,6 +121,10 @@ export async function listWorkspaceFailures(
   if (repositoryId) {
     conditions.push("repository_id = {repositoryId: String}");
     queryParams.repositoryId = repositoryId;
+  }
+  if (runId) {
+    conditions.push("run_id = {runId: String}");
+    queryParams.runId = runId;
   }
   if (severity) {
     conditions.push("severity = {severity: String}");

@@ -143,8 +143,21 @@ export async function listWorkspaceFailures(
     queryParams.timeTo = timeTo.toISOString().replace("T", " ").replace("Z", "");
   }
   if (cursor) {
-    conditions.push("occurred_at < {cursor: DateTime64(3)}");
-    queryParams.cursor = cursor;
+    const separatorIndex = cursor.indexOf("|");
+    if (separatorIndex !== -1) {
+      // Composite cursor: "<occurred_at_iso>|<event_id>"
+      const cursorTs = cursor.slice(0, separatorIndex).replace("T", " ").replace("Z", "");
+      const cursorId = cursor.slice(separatorIndex + 1);
+      conditions.push(
+        "(occurred_at, event_id) < ({cursorTs: DateTime64(3)}, {cursorId: String})"
+      );
+      queryParams.cursorTs = cursorTs;
+      queryParams.cursorId = cursorId;
+    } else {
+      // Legacy timestamp-only cursor: backward compat for in-flight requests
+      conditions.push("occurred_at < {cursor: DateTime64(3)}");
+      queryParams.cursor = cursor;
+    }
   }
 
   const fetchLimit = limit + 1;
@@ -173,7 +186,10 @@ export async function listWorkspaceFailures(
   const rows = await result.json<FailureEventRecord>();
   const hasMore = rows.length > limit;
   const failures = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore ? String(failures[failures.length - 1].occurred_at) : null;
+  const lastRow = failures[failures.length - 1];
+  const nextCursor = hasMore
+    ? `${String(lastRow.occurred_at)}|${lastRow.event_id}`
+    : null;
 
   return { failures, nextCursor };
 }

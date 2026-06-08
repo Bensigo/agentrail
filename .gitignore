@@ -1,6 +1,8 @@
 .agentrail/
 .afk-workflow/
 __pycache__/
+.env
+.env.local
 
 # JS/Node
 node_modules/

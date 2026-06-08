@@ -1,0 +1,8 @@
+{
+  "name": "@agentrail/console",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@agentrail/db-postgres": "workspace:*"
+  }
+}

@@ -3,6 +3,18 @@ import type { SQL } from "drizzle-orm";
 import { db } from "../db.js";
 import { workspaces, workspaceMemberships, runs } from "../schema/index.js";
 
+export async function getRun(
+  workspaceId: string,
+  runId: string
+): Promise<RunRow | null> {
+  const rows = await db
+    .select()
+    .from(runs)
+    .where(and(eq(runs.id, runId), eq(runs.workspaceId, workspaceId)))
+    .limit(1);
+  return (rows[0] as RunRow) ?? null;
+}
+
 export type RunStatus = "queued" | "running" | "success" | "failed";
 
 export interface ListRunsFilters {

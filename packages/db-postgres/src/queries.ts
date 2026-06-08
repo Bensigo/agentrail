@@ -1,7 +1,7 @@
 import { eq, and, desc } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "./client";
-import { workspaces, workspaceMemberships, runs, reviewGates, repositories } from "./schema";
+import { workspaces, workspaceMemberships, runs, reviewGates, repositories, teams, teamMemberships } from "./schema";
 
 export async function listWorkspacesForUser(userId: string) {
   return db
@@ -83,6 +83,28 @@ export async function listRepositories(workspaceId: string) {
     .from(repositories)
     .where(eq(repositories.workspaceId, workspaceId))
     .orderBy(desc(repositories.updatedAt));
+}
+
+export async function listTeams(workspaceId: string) {
+  return db
+    .select()
+    .from(teams)
+    .where(eq(teams.workspaceId, workspaceId))
+    .orderBy(desc(teams.createdAt));
+}
+
+export async function getTeamMemberCounts(teamIds: string[]) {
+  if (teamIds.length === 0) return new Map<string, number>();
+  const rows = await db
+    .select({ teamId: teamMemberships.teamId })
+    .from(teamMemberships);
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    if (teamIds.includes(row.teamId)) {
+      counts.set(row.teamId, (counts.get(row.teamId) ?? 0) + 1);
+    }
+  }
+  return counts;
 }
 
 export async function listReviewGates(workspaceId: string, runId: string) {

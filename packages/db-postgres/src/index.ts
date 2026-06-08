@@ -12,6 +12,9 @@ export {
   reviewGates,
   gateStatusEnum,
   repositories,
+  teams,
+  teamMemberships,
+  teamRoleEnum,
 } from "./schema";
 export {
   listWorkspacesForUser,
@@ -21,4 +24,6 @@ export {
   getRun,
   listReviewGates,
   listRepositories,
+  listTeams,
+  getTeamMemberCounts,
 } from "./queries";

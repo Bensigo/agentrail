@@ -131,6 +131,26 @@ export const repositories = pgTable("repositories", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const teams = pgTable("teams", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: uuid("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const teamRoleEnum = pgEnum("team_role", ["lead", "member"]);
+
+export const teamMemberships = pgTable("team_memberships", {
+  teamId: uuid("team_id")
+    .notNull()
+    .references(() => teams.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull(),
+  role: teamRoleEnum("role").notNull().default("member"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const workspaceMemberships = pgTable("workspace_memberships", {
   userId: text("user_id").notNull(),
   workspaceId: uuid("workspace_id")

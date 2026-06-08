@@ -1124,19 +1124,19 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
     }
 
 
-_index_cache: Dict[str, Any] = {}
-_index_cache_mtime: float = 0.0
+_index_cache: Dict[str, tuple] = {}
 
 
 def load_index(target_dir: Path) -> Dict[str, Any]:
-    global _index_cache, _index_cache_mtime
     index_path = target_dir.resolve() / ".agentrail" / "context" / "index" / "index.json"
+    cache_key = str(index_path)
     try:
         mtime = index_path.stat().st_mtime
     except OSError:
         mtime = 0.0
-    if _index_cache and mtime == _index_cache_mtime:
-        return _index_cache
-    _index_cache = json.loads(index_path.read_text(encoding="utf-8"))
-    _index_cache_mtime = mtime
-    return _index_cache
+    cached = _index_cache.get(cache_key)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    data = json.loads(index_path.read_text(encoding="utf-8"))
+    _index_cache[cache_key] = (mtime, data)
+    return data

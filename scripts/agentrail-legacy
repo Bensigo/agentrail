@@ -6536,7 +6536,10 @@ run_batch() {
   local active=0
   local pids=()
   local pid_issues=()
+  local worktrees=()
   local failed=0
+
+  git -C "$target_dir" fetch origin "$base" 2>/dev/null || true
 
   for issue in "${issues[@]}"; do
     [[ "$issue" =~ ^[0-9]+$ ]] || { echo "skipping non-numeric issue: $issue" >&2; continue; }
@@ -6566,8 +6569,8 @@ run_batch() {
     local log_file="${batch_dir}/logs/issue-${issue}.log"
     echo "batch: starting issue #${issue} in slot ${slot}"
 
-    git -C "$target_dir" fetch origin "$base" 2>/dev/null || true
     git -C "$target_dir" worktree add --detach "$worktree" "origin/${base}" >/dev/null 2>&1
+    worktrees+=("$worktree")
 
     if [[ -d "${target_dir}/.agentrail" ]]; then
       cp -r "${target_dir}/.agentrail" "${worktree}/.agentrail" 2>/dev/null || true
@@ -6575,7 +6578,7 @@ run_batch() {
 
     (
       cd "$worktree"
-      local run_args=("--target" "$worktree")
+      run_args=("--target" "$worktree")
       run_args+=("--agent" "$agent")
       if [[ -n "$explicit_command" ]]; then
         run_args+=("--command" "$explicit_command")
@@ -6594,6 +6597,10 @@ run_batch() {
     else
       echo "batch: issue #${pid_issues[$i]} completed"
     fi
+  done
+
+  for wt in "${worktrees[@]}"; do
+    git -C "$target_dir" worktree remove --force "$wt" 2>/dev/null || true
   done
 
   if [[ "$failed" -ne 0 ]]; then

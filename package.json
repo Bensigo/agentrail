@@ -28,7 +28,12 @@
     "build": "pnpm --filter @agentrail/console build",
     "dev": "pnpm --filter @agentrail/console dev",
     "lint": "pnpm --filter @agentrail/console lint",
-    "db:migrate": "pnpm --filter @agentrail/db-postgres run migrate",
-    "db:seed": "pnpm --filter @agentrail/db-postgres run seed"
+    "db:generate": "pnpm --filter @agentrail/db-postgres db:generate",
+    "db:migrate": "pnpm --filter @agentrail/db-postgres db:migrate && pnpm --filter @agentrail/db-clickhouse db:migrate",
+    "db:migrate:pg": "pnpm --filter @agentrail/db-postgres db:migrate",
+    "db:migrate:ch": "pnpm --filter @agentrail/db-clickhouse db:migrate",
+    "db:seed": "pnpm --filter @agentrail/db-postgres db:seed && pnpm --filter @agentrail/db-clickhouse db:seed",
+    "db:seed:pg": "pnpm --filter @agentrail/db-postgres db:seed",
+    "db:seed:ch": "pnpm --filter @agentrail/db-clickhouse db:seed"
   }
 }

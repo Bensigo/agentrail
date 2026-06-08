@@ -15,6 +15,13 @@
       "when": 1780896647673,
       "tag": "0001_daffy_slayback",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1780907365680,
+      "tag": "0002_cuddly_namora",
+      "breakpoints": true
     }
   ]
 }

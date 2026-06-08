@@ -1,6 +1,35 @@
 import { eq, and } from "drizzle-orm";
 import { db } from "../db.js";
-import { workspaces, workspaceMemberships } from "../schema/index.js";
+import { workspaces, workspaceMemberships, runs } from "../schema/index.js";
+
+export type RunStatus = "queued" | "running" | "success" | "failed";
+
+export interface ListRunsFilters {
+  status?: RunStatus;
+  repositoryId?: string;
+  agent?: string;
+}
+
+export async function listRuns(
+  workspaceId: string,
+  filters?: ListRunsFilters
+) {
+  const conditions = [eq(runs.workspaceId, workspaceId)];
+  if (filters?.status) {
+    conditions.push(eq(runs.status, filters.status));
+  }
+  if (filters?.repositoryId) {
+    conditions.push(eq(runs.repositoryId, filters.repositoryId));
+  }
+  if (filters?.agent) {
+    conditions.push(eq(runs.agent, filters.agent));
+  }
+  return db
+    .select()
+    .from(runs)
+    .where(and(...conditions))
+    .orderBy(runs.createdAt);
+}
 
 export async function listWorkspacesForUser(userId: string) {
   const rows = await db

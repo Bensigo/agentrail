@@ -9,6 +9,8 @@ export {
   membershipRoleEnum,
   runs,
   runStatusEnum,
+  reviewGates,
+  gateStatusEnum,
 } from "./schema";
 export {
   listWorkspacesForUser,
@@ -16,4 +18,5 @@ export {
   getWorkspaceMembership,
   listRuns,
   getRun,
+  listReviewGates,
 } from "./queries";

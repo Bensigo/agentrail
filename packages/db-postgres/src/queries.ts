@@ -1,7 +1,7 @@
 import { eq, and, desc } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "./client";
-import { workspaces, workspaceMemberships, runs } from "./schema";
+import { workspaces, workspaceMemberships, runs, reviewGates } from "./schema";
 
 export async function listWorkspacesForUser(userId: string) {
   return db
@@ -75,4 +75,14 @@ export async function getRun(workspaceId: string, runId: string) {
     .where(and(eq(runs.workspaceId, workspaceId), eq(runs.id, runId)))
     .limit(1);
   return results[0] ?? null;
+}
+
+export async function listReviewGates(workspaceId: string, runId: string) {
+  return db
+    .select()
+    .from(reviewGates)
+    .where(
+      and(eq(reviewGates.workspaceId, workspaceId), eq(reviewGates.runId, runId))
+    )
+    .orderBy(desc(reviewGates.createdAt));
 }

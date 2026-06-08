@@ -6,6 +6,7 @@ import {
   pgEnum,
   integer,
   primaryKey,
+  json,
 } from "drizzle-orm/pg-core";
 import type { AdapterAccountType } from "next-auth/adapters";
 
@@ -92,6 +93,29 @@ export const runs = pgTable("runs", {
   status: runStatusEnum("status").notNull().default("queued"),
   startedAt: timestamp("started_at", { withTimezone: true }),
   finishedAt: timestamp("finished_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const gateStatusEnum = pgEnum("gate_status", [
+  "passed",
+  "failed",
+  "pending",
+]);
+
+export const reviewGates = pgTable("review_gates", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: uuid("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  runId: uuid("run_id")
+    .notNull()
+    .references(() => runs.id, { onDelete: "cascade" }),
+  gateName: text("gate_name").notNull(),
+  status: gateStatusEnum("status").notNull().default("pending"),
+  conditions: json("conditions").$type<string[]>().default([]),
+  blockingReasons: json("blocking_reasons").$type<string[]>().default([]),
+  evidenceRefs: json("evidence_refs").$type<string[]>().default([]),
+  evaluatedAt: timestamp("evaluated_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

@@ -3906,7 +3906,6 @@ run_doctor() {
     "AGENTS.md|AGENTS.md|file"
     "CONTEXT.md|CONTEXT.md|file"
     "docs/agents/|docs/agents|dir"
-    "docs/memory/|docs/memory|dir"
     "docs/prd/|docs/prd|dir"
     "docs/milestones/|docs/milestones|dir"
     "skills/|skills|dir"

@@ -165,6 +165,18 @@ export const apiKeys = pgTable("api_keys", {
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
 });
 
+export const memoryItems = pgTable("memory_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: uuid("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  source: text("source").notNull(),
+  content: text("content").notNull(),
+  tags: json("tags").$type<string[]>().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+});
+
 export const workspaceMemberships = pgTable("workspace_memberships", {
   userId: text("user_id").notNull(),
   workspaceId: uuid("workspace_id")

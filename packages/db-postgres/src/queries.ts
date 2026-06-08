@@ -1,7 +1,7 @@
 import { eq, and, desc } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "./client";
-import { workspaces, workspaceMemberships, runs, reviewGates, repositories, teams, teamMemberships, apiKeys } from "./schema";
+import { workspaces, workspaceMemberships, runs, reviewGates, repositories, teams, teamMemberships, apiKeys, memoryItems } from "./schema";
 
 export async function listWorkspacesForUser(userId: string) {
   return db
@@ -158,4 +158,12 @@ export async function revokeApiKey(workspaceId: string, keyId: string) {
     .update(apiKeys)
     .set({ revokedAt: new Date() })
     .where(and(eq(apiKeys.workspaceId, workspaceId), eq(apiKeys.id, keyId)));
+}
+
+export async function listMemoryItems(workspaceId: string) {
+  return db
+    .select()
+    .from(memoryItems)
+    .where(eq(memoryItems.workspaceId, workspaceId))
+    .orderBy(desc(memoryItems.createdAt));
 }

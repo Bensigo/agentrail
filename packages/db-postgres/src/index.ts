@@ -16,6 +16,7 @@ export {
   teamMemberships,
   teamRoleEnum,
   apiKeys,
+  memoryItems,
 } from "./schema";
 export {
   listWorkspacesForUser,
@@ -30,4 +31,5 @@ export {
   listApiKeys,
   createApiKey,
   revokeApiKey,
+  listMemoryItems,
 } from "./queries";

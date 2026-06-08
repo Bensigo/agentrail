@@ -50,6 +50,13 @@
       "when": 1780890474338,
       "tag": "0006_jazzy_gauntlet",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1780890639893,
+      "tag": "0007_mysterious_zombie",
+      "breakpoints": true
     }
   ]
 }

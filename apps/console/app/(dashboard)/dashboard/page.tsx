@@ -1,33 +1,27 @@
 import { auth } from "@agentrail/auth";
+import { listWorkspacesForUser } from "@agentrail/db-postgres";
+import { redirect } from "next/navigation";
 
 export default async function DashboardPage() {
   const session = await auth();
+  if (!session?.user?.id) {
+    redirect("/login");
+  }
+
+  const workspaces = await listWorkspacesForUser(session.user.id);
+  if (workspaces.length > 0) {
+    redirect(`/dashboard/${workspaces[0].id}`);
+  }
 
   return (
-    <div className="mx-auto max-w-[1440px] p-6">
-      <h1 className="text-2xl font-bold tracking-tight text-[var(--gray-12)]">
-        Dashboard
-      </h1>
-      <p className="mt-2 text-sm text-[var(--gray-11)]">
-        Welcome back, {session?.user?.name ?? "agent operator"}.
-      </p>
-
-      <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {["Runs", "Context Packs", "Failures", "Review Gates"].map(
-          (label) => (
-            <div
-              key={label}
-              className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4"
-            >
-              <p className="text-xs uppercase tracking-wide text-[var(--gray-09)]">
-                {label}
-              </p>
-              <p className="mt-2 font-mono text-2xl font-bold text-[var(--gray-12)]">
-                —
-              </p>
-            </div>
-          )
-        )}
+    <div className="flex min-h-screen items-center justify-center">
+      <div className="text-center">
+        <h1 className="text-lg font-bold text-[var(--gray-12)]">
+          No workspaces
+        </h1>
+        <p className="mt-2 text-sm text-[var(--gray-09)]">
+          You are not a member of any workspace yet.
+        </p>
       </div>
     </div>
   );

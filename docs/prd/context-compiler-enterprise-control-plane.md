@@ -14,7 +14,7 @@ The Context Compiler turns a task, issue, PR, error, or review into the smallest
 
 The AgentRail Server owns enterprise visibility: workspaces, teams, API keys, repositories, codebase units, index snapshots, context packs, runs, failures, review gates, memory metadata, costs, and audit events. Indexing remains local or self-hosted by default. The Local Indexer sends bounded metadata, graph edges, hashes, commit SHAs, run events, cost events, audit events, and context-pack metadata. Bounded cited snippets are uploaded only when workspace policy allows it.
 
-The Agent Operations Console uses Axiom-inspired observability patterns: dense tables, filters, overview-to-drilldown navigation, timelines, health states, cost views, and evidence surfaces. It is not a vanity dashboard; it exists to answer what happened, why it happened, what context was used, what was excluded, what failed, what it cost, and which gates passed.
+The Agent Operations Console uses dense observability patterns: tables, filters, overview-to-drilldown navigation, timelines, health states, cost views, and evidence surfaces. It is not a vanity dashboard; it exists to answer what happened, why it happened, what context was used, what was excluded, what failed, what it cost, and which gates passed.
 
 ## User Stories
 
@@ -65,7 +65,7 @@ The Agent Operations Console uses Axiom-inspired observability patterns: dense t
 - Default enterprise mode does not upload full source code.
 - Bounded cited snippets may be uploaded only when workspace Source Custody Policy allows it.
 - The Agent Operations Console is the dashboard product surface. It includes workspace switching, runs, context packs, failures, review gates, costs, repos/indexing health, memory, API keys, and teams.
-- The console should use Axiom-inspired observability product patterns: dense tables, filters, drilldowns, health states, timelines, event detail pages, cost breakdowns, and evidence-first views. AgentRail must not copy proprietary Axiom components or assets.
+- The console should use dense observability product patterns: tables, filters, drilldowns, health states, timelines, event detail pages, cost breakdowns, and evidence-first views. See TASTE.md for the full design guide.
 - Review gates are policy checkpoints over run evidence, context provenance, verification evidence, failures, and acceptance criteria mapping.
 - Cost tracking should use Cost Events emitted during runs, retrieval, embedding, reranking, generation, storage, or provider calls rather than only estimating cost after completion.
 - Auditability requires every included and excluded context item to have a citation and reason.
@@ -92,7 +92,7 @@ The Agent Operations Console uses Axiom-inspired observability patterns: dense t
 - LLM-generated graph edges as authoritative source truth.
 - Organization-wide ingestion from Slack, Jira, Confluence, Google Drive, or similar systems in the first enterprise slice.
 - A generic analytics dashboard unrelated to agent operations.
-- Copying Axiom's private design system, proprietary components, brand assets, or implementation.
+- Generic analytics dashboards unrelated to agent operations evidence.
 - Building the full Agent Operations Console before the Context Compiler and local deterministic graph index produce trustworthy events.
 - Treating memory as permanent truth.
 - Supporting every possible language and build system perfectly in the first release.

@@ -52,9 +52,9 @@ _Avoid_: Generic checklist.
 The team-facing dashboard for workspace switching, runs, context packs, failures, review gates, costs, repositories, indexing health, memory, API keys, and teams.
 _Avoid_: Generic analytics dashboard, vanity metrics page.
 
-**Axiom-Inspired Console Design**:
-A dense, operational UI style using overview-to-drilldown dashboards, event tables, filters, health states, timelines, and clear evidence surfaces inspired by Axiom-like observability products.
-_Avoid_: Copying proprietary Axiom components, assets, or private design-system implementation.
+**Console Design**:
+A dense, operational UI style using overview-to-drilldown dashboards, event tables, filters, health states, timelines, and clear evidence surfaces following observability product patterns.
+_Avoid_: Decorative dashboards, vanity metrics, or layouts that cannot be traced back to server events.
 
 **Index Snapshot**:
 A versioned record of a repository's indexed state, including commit SHA, source hashes, graph metadata, freshness, and ingestion health.
@@ -95,7 +95,7 @@ _Avoid_: Treating old generated summaries as authoritative.
 - **Graph Enrichment** may help discovery, but it must not outrank deterministic code, tests, explicit docs, ownership config, git history, issues, PRs, or run evidence.
 - **Context Memory** is advisory and must not outrank current code, explicit docs, or current task instructions.
 - The **Agent Operations Console** shows what AgentRail did, what context it used, what it excluded, what failed, what it cost, and which policies or review gates applied.
-- **Axiom-Inspired Console Design** guides the dashboard information architecture and interaction style, but AgentRail owns its implementation and visual system.
+- **Console Design** guides the dashboard information architecture and interaction style. AgentRail owns its implementation and visual system.
 - **Run Events**, **Cost Events**, and **Audit Events** are server-readable evidence for dashboard, billing, review gates, and incident review.
 - A **Retrieval Quality Gate** must pass before the **Context Compiler** is treated as production-ready.
 
@@ -113,5 +113,5 @@ _Avoid_: Treating old generated summaries as authoritative.
 - "Package", "app", "service", and "module" may mean different things across enterprise repositories. Resolved: use **Codebase Unit** as the canonical flexible term.
 - "High-quality context" means the smallest cited context pack that covers the task without stale, irrelevant, or policy-denied sources.
 - "Dashboard" means **Agent Operations Console** with workspace switching, runs, context packs, failures, review gates, costs, repos/indexing health, memory, API keys, and teams.
-- "Use Axiom.co design system" means use **Axiom-Inspired Console Design** as product inspiration, not copying private components or assets.
+- "Console design" means the dense observability UI style defined in TASTE.md. AgentRail owns its visual system.
 - "Not noise" means required-source inclusion is 100% for fixtures, citation coverage is 100%, stale or denied leakage is 0, graph expansion is bounded, token budgets are explicit, and every included or excluded item has a reason.

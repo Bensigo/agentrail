@@ -21,7 +21,7 @@ AgentRail server ingestion will use a split storage model:
 
 ## Consequences
 
-This gives the dashboard Axiom-like transparency without forcing Postgres to serve as both product database and analytics/log database.
+This gives the dashboard full observability transparency without forcing Postgres to serve as both product database and analytics/log database.
 
 The system has more moving parts than a Postgres-only MVP, but the boundary is clean: transactional product data in Postgres, firehose telemetry in ClickHouse, bulk payloads in object storage.
 

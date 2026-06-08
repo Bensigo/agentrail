@@ -37,3 +37,244 @@ Keep this file specific to the product. Remove anything that does not help an ag
 - Adding decorative elements that make the workflow harder to scan.
 - Creating broad settings before the product has proven repeated use.
 - Treating test output as visual evidence for UI changes.
+
+---
+
+## Console Design Guide
+
+The Agent Operations Console follows dense observability product patterns. This guide defines the exact visual system. Do not deviate without explicit approval.
+
+### Typography
+
+**Sans-serif (UI chrome, headings, labels, body):**
+
+```
+font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+```
+
+**Monospace (data values, event IDs, file paths, code, timestamps, JSON):**
+
+```
+font-family: "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+```
+
+**Type Scale (responsive — mobile / tablet / desktop):**
+
+| Token | Mobile | Tablet | Desktop | Line-height | Letter-spacing |
+|-------|--------|--------|---------|-------------|----------------|
+| heading-1 | 2.25rem/2.5rem | 3rem/1 | 3.75rem–4.5rem/1 | tight | -0.05em |
+| heading-2 | 1.5rem/2rem | 1.875rem/2.25rem | 2.25rem/2.5rem | tight | -0.025em |
+| body | 0.875rem (14px) | 0.875rem | 0.875rem | 1.5 (22px) | normal |
+| body-sm | 0.75rem (12px) | 0.75rem | 0.75rem | 1.5 (18px) | normal |
+| label | 0.75rem (12px) | 0.75rem | 0.75rem | 14px | normal |
+| mono-data | 0.8125rem (13px) | 0.8125rem | 0.8125rem | 1.4 | normal |
+
+**Font weights:** Regular (400) for body/data, Bold (700) for headings and emphasis. No thin or black weights.
+
+### Color System
+
+All colors use CSS custom properties with dark-first values (dark mode is the default for observability tools).
+
+**Gray Scale (neutral backgrounds, borders, text):**
+
+| Token | Dark Mode | Light Mode | Usage |
+|-------|-----------|------------|-------|
+| --gray-00 | #000000 | #ffffff | Page background |
+| --gray-01 | #111111 | #fcfcfc | Sidebar/panel background |
+| --gray-02 | #191919 | #f9f9f9 | Card/surface background |
+| --gray-03 | #222222 | #f0f0f0 | Elevated surface |
+| --gray-04 | #2a2a2a | #e8e8e8 | Subtle border, divider |
+| --gray-05 | #313131 | #e0e0e0 | Border default |
+| --gray-06 | #3a3a3a | #d9d9d9 | Border strong |
+| --gray-07 | #484848 | #cecece | Disabled text |
+| --gray-08 | #606060 | #bbbbbb | Placeholder text |
+| --gray-09 | #6e6e6e | #8d8d8d | Muted text |
+| --gray-10 | #7b7b7b | #838383 | Secondary text |
+| --gray-11 | #b4b4b4 | #646464 | Body text |
+| --gray-12 | #eeeeee | #202020 | Primary text, headings |
+| --gray-13 | #ffffff | #0c0c0c | High-contrast text |
+
+**Semantic Colors (status, actions, feedback):**
+
+| Scale | --09 (base) | --11 (text) | Usage |
+|-------|------------|-------------|-------|
+| Blue | #0090ff | #70b8ff (dark) / #0d74ce (light) | Links, active states, info |
+| Green | #29a383 | #1fd8a4 (dark) / #208368 (light) | Success, healthy, passed |
+| Red | #e5484d | #ff9592 (dark) / #ce2c31 (light) | Error, failed, critical |
+| Orange | #f76b15 | #ffa057 (dark) / #cc4e00 (light) | Warning, degraded, running |
+| Yellow | #ffe629 | #f5e147 (dark) / #9e6c00 (light) | Caution, stale |
+| Purple | #6e56cf | #baa7ff (dark) / #6550b9 (light) | Context, enrichment |
+| Teal | #12a594 | #0bd8b6 (dark) / #008573 (light) | Telemetry, events |
+
+**Brand accent:** `#ffe629` / lemon (used for primary CTA buttons, focus rings, active indicators). On dark backgrounds use full `#ffe629`; on light backgrounds use darkened `#9e6c00` for contrast.
+
+### Spacing
+
+Use a 4px base unit. Standard spacing tokens:
+
+| Token | Value | Usage |
+|-------|-------|-------|
+| space-1 | 4px (0.25rem) | Tight inline gaps, icon padding |
+| space-2 | 8px (0.5rem) | Between related items, badge padding |
+| space-3 | 12px (0.75rem) | Input padding, small card padding |
+| space-4 | 16px (1rem) | Default gap, card padding |
+| space-6 | 24px (1.5rem) | Section gaps, larger card padding |
+| space-8 | 32px (2rem) | Between sections |
+| space-10 | 40px (2.5rem) | Large section spacing |
+| space-12 | 48px (3rem) | Page-level spacing |
+| space-16 | 64px (4rem) | Major section breaks |
+
+**Density principle:** Observability tools are dense. Prefer `space-2` to `space-4` gaps inside tables, sidebars, and filter bars. Use `space-4` to `space-6` for card padding. Reserve `space-8`+ for page-level separation.
+
+### Border Radius
+
+| Token | Value | Usage |
+|-------|-------|-------|
+| rounded-sm | 2px | Subtle rounding on inline elements, badges |
+| rounded | 4px | Buttons, inputs, cards, dropdowns |
+| rounded-[2.5px] | 2.5px | Table cells, small UI elements |
+| rounded-full | 9999px | Avatars, status dots, pills |
+
+**No large radius.** Observability UIs use tight corners. Never use `rounded-lg` (8px) or `rounded-xl` (12px) for data-dense components.
+
+### Borders
+
+- Default border: `1px solid var(--gray-05)` (dark) / `var(--gray-06)` (light).
+- Subtle border: `0.5px solid var(--gray-04)`.
+- Strong/hover border: `var(--gray-08)`.
+- Dashed borders for drop targets and optional boundaries.
+- Border style `border-[0.5px]` is used for ultra-thin separators.
+
+### Shadows
+
+| Token | Value | Usage |
+|-------|-------|-------|
+| shadow-sm | 0 1px 2px 0 rgb(0 0 0 / 0.05) | Subtle lift on cards |
+| shadow | 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1) | Default card shadow |
+| shadow-lg | 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1) | Dropdowns, modals |
+| shadow-2xl | 0 25px 50px -12px rgb(0 0 0 / 0.25) | Overlays |
+| shadow-inner | inset 0 2px 4px 0 rgb(0 0 0 / 0.05) | Inset inputs |
+
+**Dark mode shadows:** Use `rgb(0 0 0 / 0.3–0.5)` for visibility against dark backgrounds.
+
+### Layout
+
+**Sidebar:** Fixed width 220px. Collapsed: 48px (icons only) on mobile. Background: `--gray-01`.
+
+**Content area:** Fluid, max-width 1440px. Background: `--gray-00`.
+
+**Container breakpoints:**
+
+| Breakpoint | Max-width |
+|-----------|-----------|
+| sm | 640px |
+| md | 768px |
+| lg | 1024px |
+| xl | 1280px |
+| 2xl | 1440px |
+
+**Grid:** Use CSS Grid or Flexbox. Common patterns: 1-column mobile, 2-column tablet, 3–4 column desktop for card grids.
+
+### Component Patterns
+
+**Data Tables:**
+- Dense: row height 32–36px, `text-sm` (14px) for cell text, `font-mono` for IDs/paths/timestamps.
+- Header: `text-xs` (12px), uppercase, `text-gray-09`, `font-medium`.
+- Row hover: `bg-gray-02`.
+- Row border: `border-b border-gray-04`.
+- Sortable columns: arrow indicators in header.
+
+**Filter Bar:**
+- Horizontal bar above data tables.
+- Compact inputs: height 32px, `rounded` (4px), `border-gray-05`.
+- Quick-range buttons for time: 1h, 6h, 24h, 7d, 30d, custom.
+- Active filters shown as removable pills/badges.
+
+**Status Badges:**
+- Compact: `px-1.5 py-0.5 rounded-sm text-xs font-medium`.
+- Colors: green=success/healthy, red=failed/error, orange=running/warning, yellow=stale/caution, gray=queued/inactive.
+
+**Timeline:**
+- Vertical line on left (2px, `bg-gray-05`).
+- Event dots: 8px circles, color-coded by event type.
+- Timestamp in `font-mono text-xs text-gray-09`.
+- Expandable detail below each event entry.
+
+**Cards/Panels:**
+- Background: `--gray-02`.
+- Border: `1px solid var(--gray-05)`.
+- Padding: `space-4` (16px).
+- Border radius: `rounded` (4px).
+
+**Buttons:**
+- Primary: `bg-[#ffe629] text-black`, `rounded` (4px), `px-4 py-2`. Hover: `bg-[#ffdc00]`.
+- Secondary: `bg-gray-03 border-gray-06 text-gray-12`, `rounded` (4px).
+- Ghost: transparent background, `text-gray-11`, hover `bg-gray-02`.
+- Height: 32px (sm), 36px (default), 40px (lg).
+
+**Inputs:**
+- Height: 32px.
+- Background: `--gray-02`.
+- Border: `1px solid var(--gray-05)`.
+- Focus: `ring-2 ring-[#ffe629]` with `ring-offset-2`.
+- Placeholder: `text-gray-08`.
+- Font: `text-sm` for labels, `font-mono text-sm` for code/path inputs.
+
+### Animation & Transitions
+
+- Default transition: `150ms ease` for colors, backgrounds, borders, opacity.
+- Dropdowns/modals: `zoom-in-95` + `fade-in-0` on open, `zoom-out-95` + `fade-out-0` on close.
+- Loading states: `animate-pulse` for skeleton placeholders.
+- No decorative animations. Motion serves state changes only.
+
+### Severity & Health Mapping
+
+| State | Color Scale | Icon | Text |
+|-------|------------|------|------|
+| Healthy / Passed / Success | Green | Checkmark | "Healthy" / "Passed" |
+| Running / In Progress | Orange | Spinner / Clock | "Running" |
+| Warning / Stale (< 24h) | Yellow | Triangle | "Stale" / "Warning" |
+| Failed / Error / Critical | Red | X / Alert | "Failed" / "Error" |
+| Queued / Inactive / Unknown | Gray | Circle / Dash | "Queued" / "—" |
+
+### Route Architecture
+
+The console app has two top-level route groups:
+
+```
+apps/console/app/
+  (marketing)/         — public marketing pages (no auth required)
+    page.tsx           — landing/hero page
+    pricing/
+    docs/
+    blog/
+    changelog/
+    layout.tsx         — marketing layout (full-width, lighter, promotional)
+  (dashboard)/         — authenticated console (workspace-scoped)
+    dashboard/[workspaceId]/
+      runs/
+      context-packs/
+      failures/
+      review-gates/
+      costs/
+      repos/
+      memory/
+      api-keys/
+      teams/
+    layout.tsx         — console layout (sidebar, dense, operational)
+  (auth)/              — login, signup, callback routes
+```
+
+**Marketing pages** are reserved for launch. They use a different visual tone: lighter backgrounds, more whitespace, promotional copy, hero sections, social proof. Marketing layout does NOT use the dense observability style — it uses standard SaaS landing page patterns with the same font stack (Inter + Berkeley Mono) and lemon accent color for brand consistency.
+
+**Console pages** use the dense operational observability style defined below.
+
+### Information Architecture Principles
+
+1. **Overview first, detail on demand.** Every view starts with a filterable list/table. Detail is one click away.
+2. **Evidence over claims.** Every status, failure, or decision must link to underlying events or artifacts.
+3. **Dense but scannable.** Pack information tight, but maintain clear visual hierarchy with typography weight and color contrast.
+4. **Workspace-scoped everything.** Every view operates within one workspace context. The workspace switcher is always accessible.
+5. **Time is primary axis.** Most views sort by time. Time range controls appear on every event-driven view.
+6. **No vanity metrics.** Every number must be actionable. If you can't drill into it, don't show it.
+7. **Monospace for machine data.** IDs, paths, hashes, timestamps, JSON, and code always use Berkeley Mono.

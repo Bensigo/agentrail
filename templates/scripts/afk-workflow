@@ -132,10 +132,11 @@ NODE
 prepare_worktree_agentrail_state() {
   local root="$1"
   local worktree="$2"
+  local issue="${3:-}"
 
   local source_state="${root}/.agentrail/state.json"
   local target_state="${worktree}/.agentrail/state.json"
-  mkdir -p "${worktree}/.agentrail"
+  mkdir -p "${worktree}/.agentrail/runs"
 
   if [[ ! -f "$target_state" ]]; then
     cp "$source_state" "$target_state"
@@ -143,6 +144,28 @@ prepare_worktree_agentrail_state() {
 
   if [[ -f "${root}/.agentrail/config.json" && ! -f "${worktree}/.agentrail/config.json" ]]; then
     cp "${root}/.agentrail/config.json" "${worktree}/.agentrail/config.json"
+  fi
+
+  # Copy prior completed plan runs for this issue so AGENTRAIL_RESUME can find them
+  if [[ -n "$issue" ]]; then
+    local prior_run
+    for prior_run in "${root}"/.afk-workflow/*/worktrees/slot-*-issue-"${issue}"/.agentrail/runs/*"-issue-${issue}-"*; do
+      [[ -d "$prior_run" ]] || continue
+      local plan_status_file="${prior_run}/plan/status.json"
+      if [[ -f "$plan_status_file" ]]; then
+        local plan_status
+        plan_status="$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).status)" "$plan_status_file" 2>/dev/null || echo "")"
+        if [[ "$plan_status" == "completed" && -f "${prior_run}/plan/output.md" ]]; then
+          local run_name
+          run_name="$(basename "$prior_run")"
+          if [[ ! -d "${worktree}/.agentrail/runs/${run_name}" ]]; then
+            cp -r "$prior_run" "${worktree}/.agentrail/runs/${run_name}"
+            echo "copied prior completed plan run: ${run_name}" >&2
+          fi
+          break
+        fi
+      fi
+    done
   fi
 }
 
@@ -661,7 +684,7 @@ worker_run() {
   git -C "$root" fetch origin "$base"
   git -C "$root" worktree add --detach "$worktree" "origin/${base}" >/dev/null
   "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status running --issue "$issue" --run-dir "$run_dir" --base "$base" --slot "$slot"
-  prepare_worktree_agentrail_state "$root" "$worktree"
+  prepare_worktree_agentrail_state "$root" "$worktree" "$issue"
 
   (
     cd "$worktree"
@@ -669,7 +692,7 @@ worker_run() {
     agent_command="$(agent_command_for_engine "$engine")"
 
     set +e
-    sanitized_agent_exec env AGENTRAIL_ALLOW_SOURCE_RUN=1 \
+    sanitized_agent_exec env AGENTRAIL_ALLOW_SOURCE_RUN=1 AGENTRAIL_RESUME=1 \
       "$agentrail_runner" run issue "$issue" --agent "$engine" --target "$worktree" --command "$agent_command" \
         >"${logs_dir}/issue-${issue}-agentrail.log" 2>&1
     local agentrail_status=$?

@@ -1,6 +1,8 @@
 import { auth, signOut } from "@agentrail/auth";
 import { redirect } from "next/navigation";
+import { listWorkspacesForUser } from "@agentrail/db-postgres";
 import { Button } from "@agentrail/ui";
+import { WorkspaceSwitcher } from "../components/workspace-switcher";
 
 export default async function DashboardLayout({
   children,
@@ -8,16 +10,22 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     redirect("/login");
   }
+
+  const workspaces = await listWorkspacesForUser(session.user.id);
 
   return (
     <div className="min-h-screen bg-[var(--gray-00)]">
       <header className="flex h-12 items-center justify-between border-b border-[var(--gray-05)] bg-[var(--gray-01)] px-4">
-        <span className="text-sm font-bold text-[var(--gray-12)]">
-          AgentRail Console
-        </span>
+        <div className="flex items-center gap-4">
+          <span className="text-sm font-bold text-[var(--gray-12)]">
+            AgentRail
+          </span>
+          <div className="h-4 w-px bg-[var(--gray-05)]" />
+          <WorkspaceSwitcher workspaces={workspaces} />
+        </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-[var(--gray-11)]">
             {session.user.name ?? session.user.email}

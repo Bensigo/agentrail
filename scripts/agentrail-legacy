@@ -187,6 +187,13 @@ const roots = [
   { root: path.join(repoDir, "skills"), prefix: "skills" },
 ];
 const hiddenTemplatePrefix = `scripts${path.sep}`;
+const skipPatterns = [
+  /^TASTE\.md$/,
+  /^docs[/\\]memory[/\\]/,
+  /^docs[/\\]prd[/\\]context-engine\.md$/,
+  /^\.claude[/\\]agents[/\\]/,
+  /^\.codex[/\\]agents[/\\]/,
+];
 const extraFiles = [
   { sourcePath: path.join(repoDir, "scripts/agentrail"), path: "scripts/agentrail" },
 ];
@@ -242,6 +249,7 @@ for (const { root, prefix } of roots) {
   for (const sourcePath of walkFiles(root).sort()) {
     const relativeToRoot = path.relative(root, sourcePath);
     if (!prefix && relativeToRoot.startsWith(hiddenTemplatePrefix)) continue;
+    if (!prefix && skipPatterns.some((re) => re.test(relativeToRoot))) continue;
     const managedPath = prefix ? path.join(prefix, relativeToRoot) : relativeToRoot;
     inventory.push({
       path: managedPath.split(path.sep).join("/"),

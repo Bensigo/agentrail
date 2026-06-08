@@ -58,7 +58,6 @@ fi
 required=(
   "AGENTS.md"
   "CONTEXT.md"
-  "TASTE.md"
   "docs/agents/issue-tracker.md"
   "docs/agents/agentrail-state.md"
   "docs/agents/github-pr-reviewer.md"
@@ -70,16 +69,8 @@ required=(
   "docs/agents/skill-registry.json"
   "docs/agents/visual-evidence.md"
   "docs/agents/triage-labels.md"
-  "docs/memory/README.md"
-  "docs/memory/decisions.md"
-  "docs/memory/lessons.md"
-  "docs/memory/failure-patterns.md"
-  "docs/memory/project-preferences.md"
   "docs/prd/.gitkeep"
-  "docs/prd/context-engine.md"
   "docs/milestones/.gitkeep"
-  ".claude/agents/github-pr-reviewer.md"
-  ".codex/agents/github-pr-reviewer.md"
   "skills/backend-api/SKILL.md"
   "skills/desktop-tauri/SKILL.md"
   "skills/devops-deploy/SKILL.md"
@@ -318,10 +309,17 @@ if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((
   exit 1
 fi
 
-if ! grep -q -- "product quality" "${tmp_dir}/TASTE.md"; then
-  echo "TASTE.md does not describe product quality guidance" >&2
+if [[ -f "${tmp_dir}/TASTE.md" ]]; then
+  echo "TASTE.md should not be installed (created lazily during grill)" >&2
   exit 1
 fi
+
+for excluded_file in ".claude/agents/github-pr-reviewer.md" ".codex/agents/github-pr-reviewer.md" "docs/memory/README.md" "docs/prd/context-engine.md"; do
+  if [[ -f "${tmp_dir}/${excluded_file}" ]]; then
+    echo "${excluded_file} should not be installed by init" >&2
+    exit 1
+  fi
+done
 
 if ! grep -q -- "TASTE.md" "${tmp_dir}/AGENTS.md"; then
   echo "AGENTS.md does not tell agents to read TASTE.md when present" >&2
@@ -338,13 +336,12 @@ if ! grep -q -- "verify the upstream source still exists before editing docs/age
   exit 1
 fi
 
-if ! grep -q -- "source:" "${tmp_dir}/docs/memory/README.md"; then
-  echo "memory README does not require source-linked entries" >&2
-  exit 1
-fi
-
 (
   cd "$tmp_dir"
+  mkdir -p docs/memory
+  cat > docs/memory/decisions.md <<'MEMORY'
+# Decisions
+MEMORY
   cat >> docs/memory/decisions.md <<'MEMORY'
 
 ## Prefer server-side validation
@@ -366,6 +363,9 @@ MEMORY
     exit 1
   fi
 
+  cat > docs/memory/lessons.md <<'MEMORY'
+# Lessons
+MEMORY
   cat >> docs/memory/lessons.md <<'MEMORY'
 
 ## [codex] Bracketed PR titles stay literal

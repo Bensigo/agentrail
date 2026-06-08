@@ -1,4 +1,5 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, lt, gte, lte, desc } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import { db } from "../db.js";
 import { workspaces, workspaceMemberships, runs } from "../schema/index.js";
 
@@ -74,4 +75,73 @@ export async function getWorkspaceMembership(
     .limit(1);
 
   return rows[0] ?? null;
+}
+
+export interface ListRunsCursorFilters {
+  status?: RunStatus;
+  repositoryId?: string;
+  timeFrom?: Date;
+  timeTo?: Date;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface RunRow {
+  id: string;
+  workspaceId: string;
+  repositoryId: string;
+  agent: string;
+  branch: string;
+  status: RunStatus;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+  createdAt: Date;
+}
+
+export interface ListRunsResult {
+  runs: RunRow[];
+  nextCursor: string | null;
+}
+
+export async function listRunsWithCursor(
+  workspaceId: string,
+  filters?: ListRunsCursorFilters
+): Promise<ListRunsResult> {
+  const limit = filters?.limit ?? 50;
+  const conditions: SQL[] = [eq(runs.workspaceId, workspaceId)];
+
+  if (filters?.status) {
+    conditions.push(eq(runs.status, filters.status));
+  }
+  if (filters?.repositoryId) {
+    conditions.push(eq(runs.repositoryId, filters.repositoryId));
+  }
+  if (filters?.timeFrom) {
+    conditions.push(gte(runs.createdAt, filters.timeFrom));
+  }
+  if (filters?.timeTo) {
+    conditions.push(lte(runs.createdAt, filters.timeTo));
+  }
+  if (filters?.cursor) {
+    const cursorDate = new Date(
+      Buffer.from(filters.cursor, "base64").toString("utf-8")
+    );
+    conditions.push(lt(runs.createdAt, cursorDate));
+  }
+
+  const rows = await db
+    .select()
+    .from(runs)
+    .where(and(...conditions))
+    .orderBy(desc(runs.createdAt))
+    .limit(limit + 1);
+
+  let nextCursor: string | null = null;
+  if (rows.length > limit) {
+    rows.pop();
+    const last = rows[rows.length - 1];
+    nextCursor = Buffer.from(last.createdAt.toISOString()).toString("base64");
+  }
+
+  return { runs: rows as RunRow[], nextCursor };
 }

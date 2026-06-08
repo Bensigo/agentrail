@@ -1,25 +1,32 @@
-import { Suspense } from "react";
-import { Activity } from "lucide-react";
-import { LoadingSkeleton } from "../../../../components/loading-skeleton";
-import { EmptyState } from "../../../../components/empty-state";
+import { listRuns } from "@agentrail/db-postgres";
+import { RunsTable } from "./components/runs-table";
 
-export default function RunsPage() {
+export default async function RunsPage({
+  params,
+}: {
+  params: Promise<{ workspaceId: string }>;
+}) {
+  const { workspaceId } = await params;
+
+  // Fetch distinct repos for the filter dropdown (graceful fallback)
+  let repositories: string[] = [];
+  try {
+    const runs = await listRuns(workspaceId, { limit: 200 });
+    repositories = [
+      ...new Set(
+        runs.map((r) => r.repositoryId).filter((r): r is string => r !== null)
+      ),
+    ].sort();
+  } catch {
+    // DB unavailable; empty repo list is acceptable
+  }
+
   return (
-    <div>
-      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">Runs</h1>
-      <Suspense fallback={<LoadingSkeleton />}>
-        <RunsContent />
-      </Suspense>
+    <div className="mx-auto max-w-[1440px]">
+      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
+        Runs
+      </h1>
+      <RunsTable workspaceId={workspaceId} repositories={repositories} />
     </div>
-  );
-}
-
-function RunsContent() {
-  return (
-    <EmptyState
-      icon={Activity}
-      title="No runs yet"
-      description="Agent runs will appear here once your workspace starts executing tasks."
-    />
   );
 }

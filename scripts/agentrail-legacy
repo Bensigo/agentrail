@@ -5276,18 +5276,13 @@ portable_timeout() {
     "$@" &
   fi
   local pid=$!
-  local _pt_sleep_pid_file
-  _pt_sleep_pid_file="$(mktemp)"
-  ( echo $BASHPID > "$_pt_sleep_pid_file"; exec sleep "$seconds"; kill -TERM "$pid" 2>/dev/null ) &
+  ( sleep "$seconds" && kill -TERM "$pid" 2>/dev/null ) &
   local watcher=$!
   wait "$pid" 2>/dev/null
   local exit_code=$?
-  # Kill the watcher and its sleep — don't wait, just clean up
+  # Kill the watcher subshell and its orphaned sleep child
   kill "$watcher" 2>/dev/null
-  local sleep_pid
-  sleep_pid="$(cat "$_pt_sleep_pid_file" 2>/dev/null)"
-  [[ -n "$sleep_pid" ]] && kill "$sleep_pid" 2>/dev/null
-  rm -f "$_pt_sleep_pid_file"
+  pkill -P "$watcher" 2>/dev/null || true
   [[ -n "$_pt_stdin_file" ]] && rm -f "$_pt_stdin_file"
   if [[ "$exit_code" -eq 143 ]]; then
     return 124

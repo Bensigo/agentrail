@@ -5280,9 +5280,13 @@ portable_timeout() {
   local watcher=$!
   wait "$pid" 2>/dev/null
   local exit_code=$?
-  # Kill the watcher subshell and its orphaned sleep child
+  # Capture sleep child PIDs before killing watcher (children reparent to PID 1 after kill)
+  local _pt_sleep_pids
+  _pt_sleep_pids="$(pgrep -P "$watcher" 2>/dev/null || true)"
   kill "$watcher" 2>/dev/null
-  pkill -P "$watcher" 2>/dev/null || true
+  if [[ -n "$_pt_sleep_pids" ]]; then
+    kill $_pt_sleep_pids 2>/dev/null || true
+  fi
   [[ -n "$_pt_stdin_file" ]] && rm -f "$_pt_stdin_file"
   if [[ "$exit_code" -eq 143 ]]; then
     return 124

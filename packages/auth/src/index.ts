@@ -29,6 +29,12 @@ const result: NextAuthResult = NextAuth({
     async redirect({ baseUrl }) {
       return `${baseUrl}/dashboard`;
     },
+    async session({ session, user }) {
+      if (session.user && user) {
+        (session.user as typeof session.user & { id: string }).id = user.id;
+      }
+      return session;
+    },
   },
 });
 

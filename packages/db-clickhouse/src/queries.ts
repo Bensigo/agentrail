@@ -73,3 +73,67 @@ export async function getFailureEvents(
 
   return result.json<FailureEvent>();
 }
+
+export interface CostAggRow {
+  entity: string;
+  total_tokens: number;
+  total_cost_usd: number;
+  model_call_tokens: number;
+  model_call_cost: number;
+  embedding_tokens: number;
+  embedding_cost: number;
+  reranking_tokens: number;
+  reranking_cost: number;
+  storage_tokens: number;
+  storage_cost: number;
+}
+
+const groupByColumns: Record<string, string> = {
+  team: "team_id",
+  repo: "repository_id",
+  api_key: "api_key_id",
+  run: "run_id",
+};
+
+export async function getCostAggregation(
+  workspaceId: string,
+  filters?: { groupBy?: string; timeFrom?: string; timeTo?: string }
+): Promise<CostAggRow[]> {
+  const col = groupByColumns[filters?.groupBy ?? "run"] ?? "run_id";
+  let query = `
+    SELECT
+      ${col} AS entity,
+      sum(tokens) AS total_tokens,
+      sum(cost_usd) AS total_cost_usd,
+      sumIf(tokens, cost_type = 'model_call') AS model_call_tokens,
+      sumIf(cost_usd, cost_type = 'model_call') AS model_call_cost,
+      sumIf(tokens, cost_type = 'embedding') AS embedding_tokens,
+      sumIf(cost_usd, cost_type = 'embedding') AS embedding_cost,
+      sumIf(tokens, cost_type = 'reranking') AS reranking_tokens,
+      sumIf(cost_usd, cost_type = 'reranking') AS reranking_cost,
+      sumIf(tokens, cost_type = 'storage') AS storage_tokens,
+      sumIf(cost_usd, cost_type = 'storage') AS storage_cost
+    FROM cost_events
+    WHERE workspace_id = {workspaceId:String}
+  `;
+  const params: Record<string, string> = { workspaceId };
+
+  if (filters?.timeFrom) {
+    query += ` AND occurred_at >= {timeFrom:String}`;
+    params.timeFrom = filters.timeFrom;
+  }
+  if (filters?.timeTo) {
+    query += ` AND occurred_at <= {timeTo:String}`;
+    params.timeTo = filters.timeTo;
+  }
+
+  query += ` GROUP BY entity ORDER BY total_cost_usd DESC LIMIT 200`;
+
+  const result = await clickhouse.query({
+    query,
+    query_params: params,
+    format: "JSONEachRow",
+  });
+
+  return result.json<CostAggRow>();
+}

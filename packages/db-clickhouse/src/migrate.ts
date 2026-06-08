@@ -1,5 +1,5 @@
 import { clickhouse } from "./client";
-import { CREATE_RUN_EVENTS, CREATE_CONTEXT_EVENTS, CREATE_FAILURE_EVENTS } from "./schema";
+import { CREATE_RUN_EVENTS, CREATE_CONTEXT_EVENTS, CREATE_FAILURE_EVENTS, CREATE_COST_EVENTS } from "./schema";
 
 async function main() {
   console.log("Running ClickHouse migrations...");
@@ -9,6 +9,8 @@ async function main() {
   console.log("Created context_events table.");
   await clickhouse.command({ query: CREATE_FAILURE_EVENTS });
   console.log("Created failure_events table.");
+  await clickhouse.command({ query: CREATE_COST_EVENTS });
+  console.log("Created cost_events table.");
   await clickhouse.close();
   console.log("ClickHouse migrations complete.");
 }

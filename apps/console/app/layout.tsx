@@ -13,9 +13,15 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body>
-        {children}
-      </body>
+      <head>
+        {/* Prevent dark/light flash: apply saved preference before first paint */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem('agentrail-theme');if(t==='light'){document.documentElement.classList.remove('dark');}else{document.documentElement.classList.add('dark');}}catch(e){}})();`,
+          }}
+        />
+      </head>
+      <body>{children}</body>
     </html>
   );
 }

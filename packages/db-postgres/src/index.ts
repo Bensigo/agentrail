@@ -7,9 +7,12 @@ export {
   workspaces,
   workspaceMemberships,
   membershipRoleEnum,
+  runs,
+  runStatusEnum,
 } from "./schema";
 export {
   listWorkspacesForUser,
   getWorkspace,
   getWorkspaceMembership,
+  listRuns,
 } from "./queries";

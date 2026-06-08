@@ -29,7 +29,7 @@
     "lint": "pnpm --filter @agentrail/console lint",
     "typecheck:python": "bash scripts/typecheck-python",
     "db:generate": "pnpm --filter @agentrail/db-postgres db:generate",
-    "db:migrate": "pnpm --filter @agentrail/db-postgres db:migrate",
-    "db:seed": "pnpm --filter @agentrail/db-postgres db:seed"
+    "db:migrate": "pnpm --filter @agentrail/db-postgres db:migrate && pnpm --filter @agentrail/db-clickhouse db:migrate",
+    "db:seed": "pnpm --filter @agentrail/db-postgres db:seed && pnpm --filter @agentrail/db-clickhouse db:seed"
   }
 }

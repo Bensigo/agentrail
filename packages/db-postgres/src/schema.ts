@@ -74,6 +74,27 @@ export const workspaces = pgTable("workspaces", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const runStatusEnum = pgEnum("run_status", [
+  "queued",
+  "running",
+  "success",
+  "failed",
+]);
+
+export const runs = pgTable("runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: uuid("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  repositoryId: text("repository_id"),
+  agent: text("agent").notNull(),
+  branch: text("branch"),
+  status: runStatusEnum("status").notNull().default("queued"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const workspaceMemberships = pgTable("workspace_memberships", {
   userId: text("user_id").notNull(),
   workspaceId: uuid("workspace_id")

@@ -15,6 +15,13 @@
       "when": 1780884108150,
       "tag": "0001_productive_rockslide",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1780884620950,
+      "tag": "0002_bitter_mongoose",
+      "breakpoints": true
     }
   ]
 }

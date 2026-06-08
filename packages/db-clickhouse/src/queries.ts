@@ -1,0 +1,21 @@
+import { clickhouse } from "./client";
+import type { RunEvent } from "./schema";
+
+export async function getRunEvents(
+  workspaceId: string,
+  runId: string
+): Promise<RunEvent[]> {
+  const result = await clickhouse.query({
+    query: `
+      SELECT *
+      FROM run_events
+      WHERE workspace_id = {workspaceId:String}
+        AND run_id = {runId:String}
+      ORDER BY occurred_at ASC
+    `,
+    query_params: { workspaceId, runId },
+    format: "JSONEachRow",
+  });
+
+  return result.json<RunEvent>();
+}

@@ -1,6 +1,7 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import { db } from "./client";
-import { workspaces, workspaceMemberships } from "./schema";
+import { workspaces, workspaceMemberships, runs } from "./schema";
 
 export async function listWorkspacesForUser(userId: string) {
   return db
@@ -41,4 +42,28 @@ export async function getWorkspaceMembership(
     )
     .limit(1);
   return results[0] ?? null;
+}
+
+export async function listRuns(
+  workspaceId: string,
+  filters?: {
+    status?: "queued" | "running" | "success" | "failed";
+    agent?: string;
+    limit?: number;
+  }
+) {
+  const conditions: SQL[] = [eq(runs.workspaceId, workspaceId)];
+  if (filters?.status) {
+    conditions.push(eq(runs.status, filters.status));
+  }
+  if (filters?.agent) {
+    conditions.push(eq(runs.agent, filters.agent));
+  }
+
+  return db
+    .select()
+    .from(runs)
+    .where(and(...conditions))
+    .orderBy(desc(runs.createdAt))
+    .limit(filters?.limit ?? 50);
 }

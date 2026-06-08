@@ -67,3 +67,12 @@ export async function listRuns(
     .orderBy(desc(runs.createdAt))
     .limit(filters?.limit ?? 50);
 }
+
+export async function getRun(workspaceId: string, runId: string) {
+  const results = await db
+    .select()
+    .from(runs)
+    .where(and(eq(runs.workspaceId, workspaceId), eq(runs.id, runId)))
+    .limit(1);
+  return results[0] ?? null;
+}

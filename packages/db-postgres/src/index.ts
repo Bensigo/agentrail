@@ -15,4 +15,5 @@ export {
   getWorkspace,
   getWorkspaceMembership,
   listRuns,
+  getRun,
 } from "./queries";

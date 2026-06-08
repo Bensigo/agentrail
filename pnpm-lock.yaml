@@ -16,6 +16,9 @@ importers:
       '@agentrail/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@agentrail/db-clickhouse':
+        specifier: workspace:*
+        version: link:../../packages/db-clickhouse
       '@agentrail/db-postgres':
         specifier: workspace:*
         version: link:../../packages/db-postgres

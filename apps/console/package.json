@@ -13,6 +13,7 @@
   "dependencies": {
     "@agentrail/auth": "workspace:*",
     "@agentrail/contracts": "workspace:*",
+    "@agentrail/db-clickhouse": "workspace:*",
     "@agentrail/db-postgres": "workspace:*",
     "@agentrail/ui": "workspace:*",
     "lucide-react": "^0.468.0",

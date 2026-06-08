@@ -96,6 +96,19 @@ copy_file() {
   echo "installed: ${inventory_path}"
 }
 
+should_skip_template() {
+  local rel="$1"
+  case "$rel" in
+    scripts/*)                    return 0 ;;
+    TASTE.md)                     return 0 ;;
+    docs/memory/*)                return 0 ;;
+    docs/prd/context-engine.md)   return 0 ;;
+    .claude/agents/*)             return 0 ;;
+    .codex/agents/*)              return 0 ;;
+  esac
+  return 1
+}
+
 copy_tree() {
   local src_root="$1"
   local dest_root="$2"
@@ -103,7 +116,7 @@ copy_tree() {
 
   while IFS= read -r -d '' file; do
     local rel="${file#"$src_root"/}"
-    if [[ -z "$inventory_prefix" && "$rel" == scripts/* ]]; then
+    if [[ -z "$inventory_prefix" ]] && should_skip_template "$rel"; then
       continue
     fi
     copy_file "$src_root" "$dest_root" "$file" "$inventory_prefix"
@@ -313,4 +326,10 @@ fi
 
 echo
 echo "AgentRail installed in: ${target_dir}"
-echo "Next: edit CONTEXT.md for your project, then create a PRD under docs/prd/."
+echo
+echo "Next steps:"
+echo "  1. Start with a grilling session to define your project context:"
+echo "     cd ${target_dir} && agentrail grill"
+echo "     (or use /grill inside Claude Code or Codex)"
+echo "  2. The grill will create CONTEXT.md and sharpen your domain language."
+echo "  3. Then create issues and run: agentrail run issue NUMBER --agent claude"

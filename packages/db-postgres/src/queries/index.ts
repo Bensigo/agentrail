@@ -1,7 +1,15 @@
-import { eq, and, lt, gte, lte, desc } from "drizzle-orm";
+import { eq, and, lt, gte, lte, desc, count, inArray } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "../db.js";
-import { workspaces, workspaceMemberships, runs, repositories } from "../schema/index.js";
+import {
+  workspaces,
+  workspaceMemberships,
+  runs,
+  repositories,
+  teams,
+  teamMemberships,
+  teamRepositories,
+} from "../schema/index.js";
 
 export type RunStatus = "queued" | "running" | "success" | "failed";
 
@@ -164,4 +172,55 @@ export async function listWorkspaceRepositories(workspaceId: string) {
     .from(repositories)
     .where(eq(repositories.workspaceId, workspaceId))
     .orderBy(repositories.name);
+}
+
+export interface TeamRow {
+  id: string;
+  name: string;
+  createdAt: Date;
+  memberCount: number;
+  repositories: string[];
+}
+
+export async function listWorkspaceTeams(workspaceId: string): Promise<TeamRow[]> {
+  const rows = await db
+    .select({
+      id: teams.id,
+      name: teams.name,
+      createdAt: teams.createdAt,
+      memberCount: count(teamMemberships.userId),
+    })
+    .from(teams)
+    .leftJoin(teamMemberships, eq(teamMemberships.teamId, teams.id))
+    .where(eq(teams.workspaceId, workspaceId))
+    .groupBy(teams.id, teams.name, teams.createdAt)
+    .orderBy(teams.name);
+
+  if (rows.length === 0) return [];
+
+  const teamIds = rows.map((r) => r.id);
+
+  const repoLinks = await db
+    .select({
+      teamId: teamRepositories.teamId,
+      repoName: repositories.name,
+    })
+    .from(teamRepositories)
+    .innerJoin(repositories, eq(repositories.id, teamRepositories.repositoryId))
+    .where(inArray(teamRepositories.teamId, teamIds));
+
+  const reposByTeam = new Map<string, string[]>();
+  for (const link of repoLinks) {
+    const existing = reposByTeam.get(link.teamId) ?? [];
+    existing.push(link.repoName);
+    reposByTeam.set(link.teamId, existing);
+  }
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    createdAt: r.createdAt,
+    memberCount: Number(r.memberCount),
+    repositories: reposByTeam.get(r.id) ?? [],
+  }));
 }

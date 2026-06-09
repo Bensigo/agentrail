@@ -250,6 +250,7 @@ queue_issues() {
   local candidate_limit=$((limit * 10))
   [[ "$candidate_limit" -lt 20 ]] && candidate_limit=20
 
+  # Prioritize original issues over review-fix issues to prevent cascade starvation
   local emitted=0
   local number title url
   while IFS=$'\t' read -r number title url; do
@@ -261,11 +262,24 @@ queue_issues() {
     fi
   done < <(
     local label
+    # First pass: original issues (not review-fix)
     for label in "${labels[@]}"; do
       gh issue list \
         --state open \
         --label "$afk_label" \
         --label "$label" \
+        --search "sort:created-asc -label:afk-in-progress -label:review-fix" \
+        --limit "$candidate_limit" \
+        --json number,title,url \
+        | jq -r 'sort_by(.number)[] | [.number, .title, .url] | @tsv'
+    done | awk -F '\t' 'NF >= 3 && !seen[$1]++'
+    # Second pass: review-fix issues (lower priority)
+    for label in "${labels[@]}"; do
+      gh issue list \
+        --state open \
+        --label "$afk_label" \
+        --label "$label" \
+        --label "review-fix" \
         --search "sort:created-asc -label:afk-in-progress" \
         --limit "$candidate_limit" \
         --json number,title,url \
@@ -920,100 +934,150 @@ main() {
     mkdir -p "$run_dir"
   fi
 
-  local wave
-  for ((wave = 1; wave <= max_waves; wave++)); do
+  # --- Continuous queue: fill slots as workers finish, no wave serialization ---
+  local -a slot_pids=()
+  local -a slot_issues=()
+  local total_completed=0
+  local total_failed=0
+  local max_tasks="${AFK_WORKFLOW_MAX_TASKS:-100}"
+  local total_launched=0
 
-    # --- Review-only pass: pick up issues with open PRs that need review ---
-    if [[ "$review_enabled" == "1" ]]; then
-      local review_queue
-      review_queue="$(queue_review_only_issues "$queue_labels" "$concurrency" "$afk_label")"
+  # Initialize slot arrays
+  local i
+  for ((i = 0; i < concurrency; i++)); do
+    slot_pids[$i]=""
+    slot_issues[$i]=""
+  done
 
-      if [[ -n "$review_queue" ]]; then
-        local review_pids=()
-        local review_slot=0
-        while IFS=$'\t' read -r issue title url pr; do
-          [[ -n "$issue" ]] || continue
-          review_slot=$((review_slot + 1))
-          echo "wave ${wave}: review-only issue #${issue} PR #${pr} ${title}"
-
-          if [[ "$dry_run" == "1" ]]; then
-            echo "dry-run: would review PR #${pr} for issue #${issue}"
-            continue
-          fi
-
-          claim_issue "$issue"
-          (
-            if ! worker_review_only "$root" "$run_dir" "$review_slot" "$issue" "$title" "$pr" "$base" "$engine" "$queue_labels" "$afk_label"; then
-              release_issue_to_queue "$issue"
-              exit 1
-            fi
-          ) &
-          review_pids+=("$!")
-        done <<< "$review_queue"
-
-        if [[ ${#review_pids[@]} -gt 0 ]]; then
-          local rpid
-          local review_failed=0
-          for rpid in "${review_pids[@]}"; do
-            if ! wait "$rpid"; then
-              review_failed=1
-            fi
-          done
-          # Review failures are non-fatal; continue to the regular queue
-          if [[ "$review_failed" != "0" ]]; then
-            echo "wave ${wave}: some review-only workers failed; continuing"
-          fi
-        fi
+  # Find a free slot (empty pid)
+  find_free_slot() {
+    local s
+    for ((s = 0; s < concurrency; s++)); do
+      if [[ -z "${slot_pids[$s]}" ]]; then
+        echo "$s"
+        return 0
       fi
-    fi
+    done
+    return 1
+  }
 
-    # --- Regular pass: pick issues that need implementation ---
-    local queue
-    queue="$(queue_issues "$queue_labels" "$concurrency" "$afk_label")"
-
-    if [[ -z "$queue" ]]; then
-      echo "NO MORE TASKS"
-      exit 0
-    fi
-
-    local pids=()
-    local slot=0
-    while IFS=$'\t' read -r issue title url; do
-      [[ -n "$issue" ]] || continue
-      slot=$((slot + 1))
-      echo "wave ${wave}: selected issue #${issue} ${title}"
-      echo "wave ${wave}: ${url}"
-
-      if [[ "$dry_run" == "1" ]]; then
-        echo "dry-run: would claim issue #${issue}"
-        echo "dry-run: would run AgentRail issue execution for issue #${issue}"
-        echo "dry-run: would review PR for issue #${issue}"
-        continue
-      fi
-
-      claim_issue "$issue"
-      (
-        if ! worker_run "$root" "$run_dir" "$slot" "$issue" "$title" "$base" "$engine" "$review_enabled" "$queue_labels" "$afk_label"; then
-          release_issue_to_queue "$issue"
-          exit 1
-        fi
-      ) &
-      pids+=("$!")
-    done <<< "$queue"
-
-    if [[ ${#pids[@]} -gt 0 ]]; then
-      local pid
-      local failed=0
-      for pid in "${pids[@]}"; do
-        if ! wait "$pid"; then
-          failed=1
+  # Wait for any one slot to finish; returns the slot index
+  wait_any_slot() {
+    while true; do
+      local s
+      for ((s = 0; s < concurrency; s++)); do
+        local pid="${slot_pids[$s]}"
+        [[ -n "$pid" ]] || continue
+        if ! kill -0 "$pid" 2>/dev/null; then
+          # Process finished — reap it
+          if wait "$pid" 2>/dev/null; then
+            total_completed=$((total_completed + 1))
+            echo "slot ${s}: issue #${slot_issues[$s]} completed (${total_completed} done, ${total_failed} failed)"
+          else
+            total_failed=$((total_failed + 1))
+            echo "slot ${s}: issue #${slot_issues[$s]} failed (${total_completed} done, ${total_failed} failed)"
+          fi
+          slot_pids[$s]=""
+          slot_issues[$s]=""
+          echo "$s"
+          return 0
         fi
       done
-      [[ "$failed" == "0" ]] || exit 1
+      sleep 2
+    done
+  }
+
+  # Launch a worker in a given slot
+  launch_in_slot() {
+    local slot="$1" issue="$2" title="$3"
+    total_launched=$((total_launched + 1))
+    echo "slot ${slot}: launching issue #${issue} ${title} (task ${total_launched})"
+    claim_issue "$issue"
+    (
+      if ! worker_run "$root" "$run_dir" "$slot" "$issue" "$title" "$base" "$engine" "$review_enabled" "$queue_labels" "$afk_label"; then
+        release_issue_to_queue "$issue"
+        exit 1
+      fi
+    ) &
+    slot_pids[$slot]="$!"
+    slot_issues[$slot]="$issue"
+  }
+
+  while [[ "$total_launched" -lt "$max_tasks" ]]; do
+    # Find or wait for a free slot
+    local free_slot
+    if ! free_slot="$(find_free_slot)"; then
+      free_slot="$(wait_any_slot)"
+    fi
+
+    # Review-only: if review is enabled, check for PRs needing review first
+    local launched_review=0
+    if [[ "$review_enabled" == "1" ]]; then
+      local review_queue
+      review_queue="$(queue_review_only_issues "$queue_labels" "1" "$afk_label")"
+      if [[ -n "$review_queue" ]]; then
+        local r_issue r_title r_url r_pr
+        IFS=$'\t' read -r r_issue r_title r_url r_pr <<< "$review_queue"
+        if [[ -n "$r_issue" ]]; then
+          total_launched=$((total_launched + 1))
+          echo "slot ${free_slot}: launching review-only issue #${r_issue} PR #${r_pr} ${r_title} (task ${total_launched})"
+          if [[ "$dry_run" == "1" ]]; then
+            echo "dry-run: would review PR #${r_pr} for issue #${r_issue}"
+          else
+            claim_issue "$r_issue"
+            (
+              if ! worker_review_only "$root" "$run_dir" "$free_slot" "$r_issue" "$r_title" "$r_pr" "$base" "$engine" "$queue_labels" "$afk_label"; then
+                release_issue_to_queue "$r_issue"
+                exit 1
+              fi
+            ) &
+            slot_pids[$free_slot]="$!"
+            slot_issues[$free_slot]="$r_issue"
+          fi
+          launched_review=1
+        fi
+      fi
+    fi
+
+    if [[ "$launched_review" -eq 0 ]]; then
+      # Pick next implementation issue
+      local queue
+      queue="$(queue_issues "$queue_labels" "1" "$afk_label")"
+
+      if [[ -z "$queue" ]]; then
+        # No more issues — wait for remaining workers then exit
+        local s
+        for ((s = 0; s < concurrency; s++)); do
+          if [[ -n "${slot_pids[$s]}" ]]; then
+            wait_any_slot >/dev/null
+          fi
+        done
+        echo "NO MORE TASKS (${total_completed} completed, ${total_failed} failed)"
+        exit 0
+      fi
+
+      local q_issue q_title q_url
+      IFS=$'\t' read -r q_issue q_title q_url <<< "$queue"
+      if [[ -n "$q_issue" ]]; then
+        if [[ "$dry_run" == "1" ]]; then
+          echo "dry-run: would run issue #${q_issue} ${q_title}"
+          total_launched=$((total_launched + 1))
+        else
+          launch_in_slot "$free_slot" "$q_issue" "$q_title"
+        fi
+      fi
     fi
   done
 
-  echo "Reached max waves (${max_waves}) before queue was empty."
+  # Drain remaining workers
+  local s
+  for ((s = 0; s < concurrency; s++)); do
+    if [[ -n "${slot_pids[$s]}" ]]; then
+      wait_any_slot >/dev/null
+    fi
+  done
+
+  echo "Reached max tasks (${max_tasks}). ${total_completed} completed, ${total_failed} failed."
 }
 
 main "$@"

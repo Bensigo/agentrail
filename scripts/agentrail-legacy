@@ -3498,10 +3498,10 @@ run_context_build() {
     exit 2
   fi
   case "$target_kind:$phase" in
-    issue:plan|issue:execute|issue:verify|pr:review)
+    issue:plan|issue:execute|pr:review)
       ;;
     *)
-      echo "context build phase must be one of: issue plan|execute|verify, pr review" >&2
+      echo "context build phase must be one of: issue plan|execute, pr review" >&2
       exit 2
       ;;
   esac
@@ -5256,53 +5256,15 @@ agent_command_env_name() {
   esac
 }
 
-portable_timeout() {
-  local seconds="$1"
-  shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$seconds" "$@"
-    return $?
-  fi
-  # macOS fallback: capture stdin to a temp file so the backgrounded process
-  # can still read it (backgrounded processes get /dev/null as stdin).
-  local _pt_stdin_file=""
-  if [[ ! -t 0 ]]; then
-    _pt_stdin_file="$(mktemp)"
-    cat > "$_pt_stdin_file"
-  fi
-  if [[ -n "$_pt_stdin_file" ]]; then
-    "$@" < "$_pt_stdin_file" &
-  else
-    "$@" &
-  fi
-  local pid=$!
-  ( sleep "$seconds" && kill -TERM "$pid" 2>/dev/null ) &
-  local watcher=$!
-  wait "$pid" 2>/dev/null
-  local exit_code=$?
-  # Capture sleep child PIDs before killing watcher (children reparent to PID 1 after kill)
-  local _pt_sleep_pids
-  _pt_sleep_pids="$(pgrep -P "$watcher" 2>/dev/null || true)"
-  kill "$watcher" 2>/dev/null
-  if [[ -n "$_pt_sleep_pids" ]]; then
-    kill $_pt_sleep_pids 2>/dev/null || true
-  fi
-  [[ -n "$_pt_stdin_file" ]] && rm -f "$_pt_stdin_file"
-  if [[ "$exit_code" -eq 143 ]]; then
-    return 124
-  fi
-  return "$exit_code"
-}
-
-sanitized_agent_exec() {
-  env \
-    -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_ENTRYPOINT \
-    -u CLAUDE_AGENT_SDK_VERSION -u CLAUDE_CODE_EXECPATH -u CLAUDE_EFFORT \
-    -u AI_AGENT \
-    -u CODEX_SESSION -u CODEX_SANDBOX \
-    -u CURSOR_SESSION -u CURSOR_AGENT \
-    "$@"
-}
+# Source shared timeout and agent exec helpers
+_agentrail_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+if [[ -f "${_agentrail_lib_dir}/timeout.sh" ]]; then
+  # shellcheck source=lib/timeout.sh
+  source "${_agentrail_lib_dir}/timeout.sh"
+else
+  echo "Missing scripts/lib/timeout.sh — cannot continue." >&2
+  exit 1
+fi
 
 default_agent_command() {
   local agent="$1"
@@ -5893,7 +5855,7 @@ issue_run_phase_prompt() {
   case "$phase" in
     plan)
       cat <<PROMPT
-This is phase 1 of 3: plan.
+This is phase 1 of 2: plan.
 
 Issue context:
 ${issue_context}
@@ -5924,7 +5886,7 @@ PROMPT
         verifier_findings_text=""
       fi
       cat <<PROMPT
-This is phase 2 of 3: execute.
+This is phase 2 of 2: execute.
 Execution attempt: ${execution_attempt} of ${max_execution_attempts}.
 
 Issue context:
@@ -5949,39 +5911,6 @@ fi)
 
 AgentRail will invoke the Ralph one-issue executor for this phase and capture its output under this run directory.
 Ralph must implement the approved plan only, keep the work scoped to issue #${issue}, and run relevant verification when implementation is ready.
-PROMPT
-      ;;
-    verify)
-      bounded_plan_output="$(bounded_phase_text "$plan_output" "approved plan output")"
-      evidence="$(implementation_evidence "$target_dir")"
-      pr_refs="$(pr_reference_text "$target_dir" "$issue")"
-      active_goal_text="$(active_goal_success_criteria_text "$target_dir" "$issue")"
-      cat <<PROMPT
-This is phase 3 of 3: verify.
-
-Issue context:
-${issue_context}
-
-Phase context pack:
-${context_summary}
-
-Approved plan from the plan phase:
-${bounded_plan_output}
-
-Implementation evidence from the working tree:
-${evidence}
-
-PR/diff references:
-${pr_refs}
-
-Active goal success criteria:
-${active_goal_text}
-
-Base Ralph instructions:
-${base_prompt}
-
-Compare the issue, plan, implementation evidence, PR or diff references, every acceptance criterion, and active goal success criteria.
-Confirm whether the PR body evidence is sufficient or state exactly what is missing. Do not continue into unrelated issues.
 PROMPT
       ;;
     *)
@@ -6535,7 +6464,20 @@ run_issue() {
     done
   fi
 
-  if [[ -n "$prior_plan_dir" ]]; then
+  # Skip plan for review-fix issues — the issue body already describes the exact fix
+  local is_review_fix=0
+  if command -v gh >/dev/null 2>&1; then
+    local issue_labels
+    issue_labels="$(gh issue view "$issue" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || true)"
+    if [[ ",${issue_labels}," == *",review-fix,"* ]]; then
+      is_review_fix=1
+    fi
+  fi
+
+  if [[ "$is_review_fix" -eq 1 ]]; then
+    status=0
+    echo "skipped plan phase (review-fix issue — fix is described in issue body)" >&2
+  elif [[ -n "$prior_plan_dir" ]]; then
     plan_output="$(cat "${prior_plan_dir}/output.md")"
     status=0
     echo "skipped plan phase (resumed from prior run)" >&2
@@ -6543,34 +6485,7 @@ run_issue() {
     run_issue_phase "plan" "1" "" || true
   fi
   if [[ "$status" -eq 0 ]]; then
-    while [[ "$execution_attempt" -le "$max_execution_attempts" ]]; do
-      run_issue_phase "execute" "$execution_attempt" "$verifier_findings_file" || true
-      if [[ "$status" -ne 0 ]]; then
-        break
-      fi
-
-      run_issue_phase "verify" "$execution_attempt" "" || true
-      if [[ "$status" -eq 0 ]]; then
-        break
-      fi
-
-      failed_verification_attempts="$execution_attempt"
-      verifier_findings_file="${phase_dir}/findings.json"
-      write_verifier_findings "$phase_output_file" "$verifier_findings_file" "$issue" "$execution_attempt" "$max_execution_attempts" "$status"
-      write_phase_status "$phase_status_file" "$phase" "failed" "$phase_started_at" "$phase_finished_at" "$status" "$phase_metadata_file" "$phase_output_file" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file"
-      write_phase_metadata "$phase_metadata_file" "$phase" "$phase_started_at" "$phase_finished_at" "failed" "$status" "$issue" "$agent" "$phase_command" "$phase_prompt_file" "$phase_output_file" "$phase_status_file" "$run_id" "$run_dir" "$execution_attempt" "$max_execution_attempts" "$verifier_findings_file" "$phase_context_pack_file"
-      update_run_metadata_attempts "$metadata_file" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" ""
-
-      if [[ "$execution_attempt" -ge "$max_execution_attempts" ]]; then
-        blocked_reason="maximum verifier retry attempts reached after ${max_execution_attempts} execution attempts; latest findings are ${verifier_findings_file}"
-        update_run_metadata_attempts "$metadata_file" "$execution_attempt" "$max_execution_attempts" "$failed_verification_attempts" "$verifier_findings_file" "$blocked_reason"
-        echo "$blocked_reason" >&2
-        break
-      fi
-
-      echo "verify failed for issue #${issue}; retrying execute attempt $((execution_attempt + 1))/${max_execution_attempts} with findings ${verifier_findings_file}" >&2
-      execution_attempt=$((execution_attempt + 1))
-    done
+    run_issue_phase "execute" "$execution_attempt" "$verifier_findings_file" || true
   fi
 
   local finished_at

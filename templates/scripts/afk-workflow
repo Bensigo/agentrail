@@ -38,9 +38,10 @@ Defaults:
   --queue-labels review-fix,ready-for-agent
 
 Environment:
-  AFK_WORKFLOW_MOCK_QUEUE    Test-only TSV queue: number, title, url, labels_csv.
-  AFK_WORKFLOW_REVIEW        Set to 0 to skip review. Default: 1.
-  AFK_WORKFLOW_MAX_RETRIES   Max retries per issue before labeling human-review-needed. Default: 2.
+  AFK_WORKFLOW_MOCK_QUEUE         Test-only TSV queue: number, title, url, labels_csv.
+  AFK_WORKFLOW_REVIEW             Set to 0 to skip review. Default: 1.
+  AFK_WORKFLOW_MAX_RETRIES        Max retries per issue before labeling human-review-needed. Default: 2.
+  AFK_WORKFLOW_MAX_REVIEW_ROUNDS  Max review-fix rounds before skipping further reviews. Default: 3.
 
 Examples:
   scripts/afk-workflow run
@@ -317,6 +318,15 @@ release_issue_to_queue() {
   gh issue edit "$issue" --remove-label "afk-in-progress" >/dev/null 2>&1 || true
 }
 
+get_review_round() {
+  local issue="$1"
+  local body
+  body="$(gh issue view "$issue" --json body --jq '.body' 2>/dev/null || true)"
+  local round
+  round="$(echo "$body" | grep -o '<!-- review-round: [0-9]* -->' | grep -o '[0-9]*' || true)"
+  echo "${round:-0}"
+}
+
 detect_pr_for_issue() {
   local issue="$1"
 
@@ -414,6 +424,11 @@ create_review_fix_issues() {
   count="$(jq '.fix_issues | length' <<< "$json")"
   [[ "$count" -gt 0 ]] || return 0
 
+  # Track review-round depth so the cascade stops after N rounds
+  local current_round
+  current_round="$(get_review_round "$source_issue")"
+  local next_round=$((current_round + 1))
+
   local i title body severity file
   for ((i = 0; i < count; i++)); do
     title="$(jq -r ".fix_issues[$i].title" <<< "$json")"
@@ -434,6 +449,8 @@ File: ${file}
 ${body}
 
 Run this through AgentRail as a small follow-up issue.
+
+<!-- review-round: ${next_round} -->
 BODY
 )" \
       --label "review-fix" \
@@ -729,6 +746,14 @@ worker_run() {
     "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status completed --issue "$issue" --pr "$pr" --run-dir "$run_dir" --base "$base" --slot "$slot"
 
     if [[ "$review_enabled" == "1" ]]; then
+      # Check review-round depth — skip review after max rounds
+      local max_review_rounds="${AFK_WORKFLOW_MAX_REVIEW_ROUNDS:-3}"
+      local review_round
+      review_round="$(get_review_round "$issue")"
+      if [[ "$review_round" -ge "$max_review_rounds" ]]; then
+        echo "worker ${slot}: issue #${issue} PR #${pr} at review round ${review_round} (max ${max_review_rounds}) — skipping review, labeling human-review-needed" >&2
+        gh pr edit "$pr" --add-label "human-review-needed" 2>/dev/null || true
+      else
       local review_output
       local review_log
       review_output="${logs_dir}/pr-${pr}-review.md"
@@ -768,6 +793,7 @@ worker_run() {
       else
         echo "worker ${slot}: review created ${fix_issue_count} fix issue(s) for PR #${pr}; skipping merge"
       fi
+      fi  # close review-round else
     fi
 
     cd "$root"
@@ -801,6 +827,17 @@ worker_review_only() {
 
   (
     cd "$root"
+
+    # Check review-round depth — skip review after max rounds
+    local max_review_rounds="${AFK_WORKFLOW_MAX_REVIEW_ROUNDS:-3}"
+    local review_round
+    review_round="$(get_review_round "$issue")"
+    if [[ "$review_round" -ge "$max_review_rounds" ]]; then
+      echo "worker ${slot}: issue #${issue} PR #${pr} at review round ${review_round} (max ${max_review_rounds}) — skipping review, labeling human-review-needed" >&2
+      gh pr edit "$pr" --add-label "human-review-needed" 2>/dev/null || true
+      mark_issue_reviewed "$issue" "$queue_labels"
+      return 0
+    fi
 
     # Remove stale worktrees that have the PR branch checked out, which would
     # block review-pr from running git switch on the PR head branch.

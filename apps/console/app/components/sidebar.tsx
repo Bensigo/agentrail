@@ -13,7 +13,7 @@ import {
   Key,
   Users,
 } from "lucide-react";
-import { WorkspaceSwitcher } from "./workspace-switcher";
+import { WorkspaceSwitcher } from "../(dashboard)/components/WorkspaceSwitcher";
 
 interface SidebarProps {
   workspaces: { id: string; name: string; slug: string; role: string }[];
@@ -34,7 +34,7 @@ const navItems = [
   { label: "Teams", href: "teams", icon: Users },
 ];
 
-export function Sidebar({ workspaces, workspaceId, user, signOutAction }: SidebarProps) {
+export function Sidebar({ workspaces: _workspaces, workspaceId, user, signOutAction }: SidebarProps) {
   const pathname = usePathname();
   const basePath = `/dashboard/${workspaceId}`;
 
@@ -50,7 +50,7 @@ export function Sidebar({ workspaces, workspaceId, user, signOutAction }: Sideba
       </div>
 
       <div className="border-b border-[var(--gray-04)] px-2 py-2 max-md:hidden">
-        <WorkspaceSwitcher workspaces={workspaces} />
+        <WorkspaceSwitcher />
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2 py-2">

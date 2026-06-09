@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
 import { RunDetailHeader } from "./components/run-detail-header";
 import { RunTimeline } from "./components/run-timeline";
+import { ReviewGatesSection } from "./components/review-gates-section";
 import type { RunDetail } from "./components/run-detail-header";
 import type { TimelineEvent } from "./components/run-timeline";
 
@@ -91,6 +92,21 @@ export default function RunDetailPage() {
           workspaceId={workspaceId}
           runId={runId}
         />
+      </div>
+
+      <div className="mt-8">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+            Review Gates
+          </h2>
+          <a
+            href={`/dashboard/${workspaceId}/review-gates?runId=${runId}`}
+            className="text-xs text-[#70b8ff] hover:underline"
+          >
+            View all →
+          </a>
+        </div>
+        <ReviewGatesSection workspaceId={workspaceId} runId={runId} />
       </div>
     </div>
   );

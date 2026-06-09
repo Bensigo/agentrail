@@ -1,25 +1,21 @@
-import { Suspense } from "react";
-import { Brain } from "lucide-react";
-import { LoadingSkeleton } from "../../../../components/loading-skeleton";
-import { EmptyState } from "../../../../components/empty-state";
+import { MemoryTable } from "./components/memory-table";
 
-export default function MemoryPage() {
-  return (
-    <div>
-      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">Memory</h1>
-      <Suspense fallback={<LoadingSkeleton />}>
-        <MemoryContent />
-      </Suspense>
-    </div>
-  );
+interface MemoryPageProps {
+  params: Promise<{ workspaceId: string }>;
 }
 
-function MemoryContent() {
+export default async function MemoryPage({ params }: MemoryPageProps) {
+  const { workspaceId } = await params;
+
   return (
-    <EmptyState
-      icon={Brain}
-      title="No memory items yet"
-      description="Context memory from prior decisions, lessons, and failure patterns will appear here."
-    />
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-sm font-semibold text-[var(--gray-12)]">Memory</h1>
+        <p className="text-xs text-[var(--gray-09)]">
+          Memory is managed via the AgentRail CLI.
+        </p>
+      </div>
+      <MemoryTable workspaceId={workspaceId} />
+    </div>
   );
 }

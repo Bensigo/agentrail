@@ -1,19 +1,7 @@
 import { eq, and, lt, gte, lte, desc } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "../db.js";
-import { workspaces, workspaceMemberships, runs } from "../schema/index.js";
-
-export async function getRun(
-  workspaceId: string,
-  runId: string
-): Promise<RunRow | null> {
-  const rows = await db
-    .select()
-    .from(runs)
-    .where(and(eq(runs.id, runId), eq(runs.workspaceId, workspaceId)))
-    .limit(1);
-  return (rows[0] as RunRow) ?? null;
-}
+import { workspaces, workspaceMemberships, runs, memoryItems } from "../schema/index.js";
 
 export type RunStatus = "queued" | "running" | "success" | "failed";
 
@@ -168,4 +156,23 @@ export async function listRunsWithCursor(
   }
 
   return { runs: rows as RunRow[], nextCursor };
+}
+
+export interface MemoryItemRow {
+  id: string;
+  workspaceId: string;
+  source: string;
+  content: string;
+  tags: string[];
+  createdAt: Date;
+  lastUsedAt: Date | null;
+}
+
+export async function listMemoryItems(workspaceId: string): Promise<MemoryItemRow[]> {
+  const rows = await db
+    .select()
+    .from(memoryItems)
+    .where(eq(memoryItems.workspaceId, workspaceId))
+    .orderBy(desc(memoryItems.createdAt));
+  return rows as MemoryItemRow[];
 }

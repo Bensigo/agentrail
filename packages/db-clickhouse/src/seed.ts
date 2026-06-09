@@ -4,6 +4,7 @@ import type {
   FailureEventRecord,
   ContextPackRecord,
   ContextEventRecord,
+  IndexSnapshotRecord,
 } from "./schema";
 
 async function main() {
@@ -239,6 +240,52 @@ async function main() {
     format: "JSONEachRow",
   });
   console.log(`Inserted ${contextEvents.length} sample context_events.`);
+
+  // Seed index_snapshots with varied ages: green (<1h), stale (12h), critical (>24h)
+  const DEV_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001";
+  const now = new Date("2026-06-09T08:00:00.000Z");
+  const indexSnapshots: IndexSnapshotRecord[] = [
+    {
+      workspace_id: DEV_WORKSPACE_ID,
+      repository_id: "00000000-0000-0000-0000-000000000010",
+      commit_sha: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+      indexed_at: new Date(now.getTime() - 30 * 60 * 1000), // 30 min ago — healthy
+      source_count: 284,
+      graph_edge_count: 1423,
+      event_id: "snap-001",
+    },
+    {
+      workspace_id: DEV_WORKSPACE_ID,
+      repository_id: "00000000-0000-0000-0000-000000000011",
+      commit_sha: "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
+      indexed_at: new Date(now.getTime() - 12 * 60 * 60 * 1000), // 12h ago — stale
+      source_count: 91,
+      graph_edge_count: 342,
+      event_id: "snap-002",
+    },
+    {
+      workspace_id: DEV_WORKSPACE_ID,
+      repository_id: "00000000-0000-0000-0000-000000000012",
+      commit_sha: "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+      indexed_at: new Date(now.getTime() - 48 * 60 * 60 * 1000), // 48h ago — critical
+      source_count: 17,
+      graph_edge_count: 58,
+      event_id: "snap-003",
+    },
+  ];
+
+  await client.insert({
+    table: "index_snapshots",
+    values: indexSnapshots.map((s) => ({
+      ...s,
+      indexed_at:
+        s.indexed_at instanceof Date
+          ? s.indexed_at.toISOString().replace("T", " ").replace("Z", "")
+          : String(s.indexed_at),
+    })),
+    format: "JSONEachRow",
+  });
+  console.log(`Inserted ${indexSnapshots.length} sample index_snapshots.`);
 
   await client.close();
   console.log("ClickHouse seed complete.");

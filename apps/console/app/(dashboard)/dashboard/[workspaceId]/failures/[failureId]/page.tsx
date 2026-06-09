@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getFailureById } from "@agentrail/db-clickhouse";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, AlertTriangle } from "lucide-react";
 
 type Severity = "critical" | "high" | "medium" | "low";
 
@@ -37,6 +37,47 @@ function SeverityBadge({ severity }: { severity: string }) {
     >
       {config.label}
     </span>
+  );
+}
+
+function FailureDbError({ workspaceId }: { workspaceId: string }) {
+  return (
+    <div className="mx-auto max-w-[900px]">
+      <div className="mb-4 flex items-center gap-2">
+        <Link
+          href={`/dashboard/${workspaceId}/failures`}
+          className="flex items-center gap-1 text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)] transition-colors"
+        >
+          <ChevronLeft className="h-3 w-3" />
+          Failures
+        </Link>
+      </div>
+      <div className="rounded border border-[#e5484d]/30 bg-[#e5484d]/10 px-4 py-4 flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-[#ff9592] shrink-0" />
+          <span className="text-sm font-medium text-[#ff9592]">
+            Unable to load failure details — ClickHouse unavailable
+          </span>
+        </div>
+        <p className="text-xs text-[var(--gray-10)] leading-relaxed">
+          The failure record could not be retrieved. ClickHouse may be temporarily unavailable. Try again or go back to the failures list.
+        </p>
+        <div className="flex items-center gap-2">
+          <a
+            href=""
+            className="inline-flex items-center px-3 py-1.5 rounded text-xs font-medium bg-[var(--gray-03)] border border-[var(--gray-06)] text-[var(--gray-12)] hover:bg-[var(--gray-04)] transition-colors"
+          >
+            Retry
+          </a>
+          <Link
+            href={`/dashboard/${workspaceId}/failures`}
+            className="inline-flex items-center px-3 py-1.5 rounded text-xs font-medium text-[var(--gray-11)] hover:text-[var(--gray-12)] transition-colors"
+          >
+            Back to Failures
+          </Link>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -76,16 +117,32 @@ function safeParseEvidence(raw: string): string {
 
 export default async function FailureDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ workspaceId: string; failureId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { workspaceId, failureId } = await params;
+  const query = await searchParams;
 
   let failure = null;
-  try {
-    failure = await getFailureById(workspaceId, failureId);
-  } catch {
-    // ClickHouse unavailable
+  let dbError = false;
+
+  if (
+    process.env.NODE_ENV === "development" &&
+    query.simulateDbError === "1"
+  ) {
+    dbError = true;
+  } else {
+    try {
+      failure = await getFailureById(workspaceId, failureId);
+    } catch {
+      dbError = true;
+    }
+  }
+
+  if (dbError) {
+    return <FailureDbError workspaceId={workspaceId} />;
   }
 
   if (!failure) {

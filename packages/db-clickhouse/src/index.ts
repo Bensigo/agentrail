@@ -4,12 +4,14 @@ export {
   CREATE_FAILURE_EVENTS_TABLE,
   CREATE_CONTEXT_PACKS_TABLE,
   CREATE_CONTEXT_EVENTS_TABLE,
+  CREATE_COST_EVENTS_TABLE,
 } from "./schema";
 export type {
   TelemetryEventRecord,
   FailureEventRecord,
   ContextPackRecord,
   ContextEventRecord,
+  CostEventRecord,
 } from "./schema";
 export {
   getRunEvents,
@@ -17,6 +19,13 @@ export {
   getFailuresForRun,
   listWorkspaceFailures,
   getFailureById,
+  aggregateWorkspaceCosts,
 } from "./queries";
-export type { RunEventSummary, ListWorkspaceFailuresOptions } from "./queries";
+export type {
+  RunEventSummary,
+  ListWorkspaceFailuresOptions,
+  CostGroupBy,
+  CostAggregateRow,
+  AggregateCostsOptions,
+} from "./queries";
 export { getContextPacksForRun, getContextPackItems } from "./context-queries";

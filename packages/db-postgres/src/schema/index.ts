@@ -3,3 +3,4 @@ export * from "./workspace_memberships.js";
 export * from "./auth.js";
 export * from "./runs.js";
 export * from "./repositories.js";
+export * from "./api_keys.js";

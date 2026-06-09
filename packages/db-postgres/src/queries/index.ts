@@ -1,7 +1,7 @@
-import { eq, and, lt, gte, lte, desc } from "drizzle-orm";
+import { eq, and, lt, gte, lte, desc, isNull } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "../db.js";
-import { workspaces, workspaceMemberships, runs, repositories } from "../schema/index.js";
+import { workspaces, workspaceMemberships, runs, repositories, apiKeys } from "../schema/index.js";
 
 export type RunStatus = "queued" | "running" | "success" | "failed";
 
@@ -164,4 +164,56 @@ export async function listWorkspaceRepositories(workspaceId: string) {
     .from(repositories)
     .where(eq(repositories.workspaceId, workspaceId))
     .orderBy(repositories.name);
+}
+
+export async function listApiKeys(workspaceId: string) {
+  return db
+    .select()
+    .from(apiKeys)
+    .where(eq(apiKeys.workspaceId, workspaceId))
+    .orderBy(desc(apiKeys.createdAt));
+}
+
+export async function createApiKey(data: {
+  workspaceId: string;
+  teamId?: string | null;
+  name: string;
+  keyPrefix: string;
+  keyHash: string;
+}) {
+  const rows = await db
+    .insert(apiKeys)
+    .values({
+      workspaceId: data.workspaceId,
+      teamId: data.teamId ?? null,
+      name: data.name,
+      keyPrefix: data.keyPrefix,
+      keyHash: data.keyHash,
+    })
+    .returning();
+  return rows[0]!;
+}
+
+export async function revokeApiKey(workspaceId: string, keyId: string) {
+  const rows = await db
+    .update(apiKeys)
+    .set({ revokedAt: new Date() })
+    .where(
+      and(
+        eq(apiKeys.id, keyId),
+        eq(apiKeys.workspaceId, workspaceId),
+        isNull(apiKeys.revokedAt)
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function getApiKey(workspaceId: string, keyId: string) {
+  const rows = await db
+    .select()
+    .from(apiKeys)
+    .where(and(eq(apiKeys.id, keyId), eq(apiKeys.workspaceId, workspaceId)))
+    .limit(1);
+  return rows[0] ?? null;
 }

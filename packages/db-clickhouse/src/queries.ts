@@ -1,5 +1,5 @@
 import { client } from "./client";
-import type { TelemetryEventRecord, FailureEventRecord } from "./schema";
+import type { TelemetryEventRecord, FailureEventRecord, IndexSnapshotRecord } from "./schema";
 
 export async function getRunEvents(
   workspaceId: string,
@@ -192,6 +192,58 @@ export async function listWorkspaceFailures(
     : null;
 
   return { failures, nextCursor };
+}
+
+export async function getLatestIndexSnapshotsForWorkspace(
+  workspaceId: string,
+  repositoryIds: string[]
+): Promise<IndexSnapshotRecord[]> {
+  if (repositoryIds.length === 0) return [];
+
+  const result = await client.query({
+    query: `
+      SELECT
+        workspace_id,
+        repository_id,
+        commit_sha,
+        indexed_at,
+        source_count,
+        graph_edge_count,
+        event_id
+      FROM index_snapshots
+      WHERE workspace_id = {workspaceId: String}
+        AND repository_id IN ({repositoryIds: Array(String)})
+        AND (repository_id, indexed_at) IN (
+          SELECT repository_id, max(indexed_at)
+          FROM index_snapshots
+          WHERE workspace_id = {workspaceId: String}
+            AND repository_id IN ({repositoryIds: Array(String)})
+          GROUP BY repository_id
+        )
+    `,
+    query_params: { workspaceId, repositoryIds },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<{
+    workspace_id: string;
+    repository_id: string;
+    commit_sha: string;
+    indexed_at: string;
+    source_count: string | number;
+    graph_edge_count: string | number;
+    event_id: string;
+  }>();
+
+  return rows.map((r) => ({
+    workspace_id: r.workspace_id,
+    repository_id: r.repository_id,
+    commit_sha: r.commit_sha,
+    indexed_at: r.indexed_at,
+    source_count: Number(r.source_count),
+    graph_edge_count: Number(r.graph_edge_count),
+    event_id: r.event_id,
+  }));
 }
 
 export async function getFailureById(

@@ -34,7 +34,6 @@ from agentrail.afk.state import (
     SetPr,
     SetStatus,
     Store,
-    TERMINAL_STATUSES,
 )
 from agentrail.afk.store import attach_persistence, load_snapshot
 
@@ -129,31 +128,51 @@ class Runner:
         )
         return rc == 0
 
-    def _prune_head_worktree(self, pr: int) -> None:
-        """Remove any worktree holding the PR's head branch, so the legacy
-        review-pr can ``git switch`` to it without an 'already used by worktree'
-        collision."""
+    def _git(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(self.target), *args],
+                              check=False, capture_output=True, text=True)
+
+    def _prepare_for_review(self, pr: int) -> None:
+        """Put the main checkout in a clean state for the legacy review-pr,
+        which switches to the PR head branch and runs ``git pull --ff-only``
+        there. Two failure modes are neutralized:
+
+          1. A leftover worktree holding the head branch ('already used by
+             worktree') — remove it.
+          2. A stale *local* head branch that diverged from origin ('Not
+             possible to fast-forward') — force it to match origin so the
+             ff-only pull is a no-op.
+
+        We detach the main HEAD onto origin's head commit first so the local
+        branch can be force-updated even if it was checked out here.
+        """
         head = gh.pr_head_ref(pr)
         if not head:
             return
-        listing = subprocess.run(
-            ["git", "-C", str(self.target), "worktree", "list", "--porcelain"],
-            check=False, capture_output=True, text=True,
-        ).stdout
+        # 1. drop any worktree on the head branch
+        listing = self._git("worktree", "list", "--porcelain").stdout
         path: Optional[str] = None
         for line in listing.splitlines():
             if line.startswith("worktree "):
                 path = line[len("worktree "):]
             elif line.startswith("branch ") and path:
                 if line.endswith(f"/{head}") and path != str(self.target):
-                    subprocess.run(["git", "-C", str(self.target), "worktree",
-                                    "remove", "--force", path],
-                                   check=False, capture_output=True)
-        subprocess.run(["git", "-C", str(self.target), "worktree", "prune"],
-                       check=False, capture_output=True)
+                    self._git("worktree", "remove", "--force", path)
+        self._git("worktree", "prune")
+        # 2. force the local branch to match origin, with no branch checked out
+        self._git("fetch", "origin", head)
+        self._git("switch", "--detach", f"origin/{head}")
+        self._git("branch", "-f", head, f"origin/{head}")
+
+    def _restore_main(self) -> None:
+        """Leave the main checkout back on a clean main after reviews, so the
+        working tree isn't stranded on a feature branch."""
+        self._git("fetch", "origin", self.base)
+        self._git("switch", self.base)
+        self._git("reset", "--hard", f"origin/{self.base}")
 
     async def _review(self, pr: int) -> Optional[review_policy.ReviewOutcome]:
-        self._prune_head_worktree(pr)
+        self._prepare_for_review(pr)
         out = self.logs / f"pr-{pr}-review.md"
         rc = await _sh(
             [self.agentrail, "internal", "review-pr", "--pr", str(pr),
@@ -317,7 +336,11 @@ class Runner:
     async def run(self) -> AfkState:
         workers = [asyncio.create_task(self._worker(s))
                    for s in range(self.concurrency)]
-        await asyncio.gather(*workers)
+        try:
+            await asyncio.gather(*workers)
+        finally:
+            # never leave the main checkout stranded on a feature branch
+            self._restore_main()
         return self.store.state
 
 
@@ -344,8 +367,12 @@ def build_store(target: Path, *, concurrency: int, max_retries: int,
         existing_issue = store.state.issues.get(num)
         if existing_issue is None:
             store.dispatch(EnqueueIssue(num, item.get("title", ""), item.get("url", "")))
-        elif existing_issue.status in TERMINAL_STATUSES:
-            # still open in the GitHub queue but terminal in saved state →
-            # reset for a fresh attempt (idempotent: keeps PR ref if any)
+        elif existing_issue.status != IssueStatus.QUEUED:
+            # The issue is still open in the GitHub queue but the saved snapshot
+            # has it in some non-queued state — either terminal (human_review /
+            # merged) or an in-flight state (reviewing / running) orphaned by a
+            # killed run. On a fresh process nothing is actually in flight, so
+            # reset it for a clean attempt (RequeueIssue keeps the PR ref, so
+            # the pipeline reviews the existing PR rather than re-implementing).
             store.dispatch(RequeueIssue(num))
     return store

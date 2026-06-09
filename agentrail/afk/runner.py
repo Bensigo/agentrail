@@ -127,7 +127,31 @@ class Runner:
         )
         return rc == 0
 
+    def _prune_head_worktree(self, pr: int) -> None:
+        """Remove any worktree holding the PR's head branch, so the legacy
+        review-pr can ``git switch`` to it without an 'already used by worktree'
+        collision."""
+        head = gh.pr_head_ref(pr)
+        if not head:
+            return
+        listing = subprocess.run(
+            ["git", "-C", str(self.target), "worktree", "list", "--porcelain"],
+            check=False, capture_output=True, text=True,
+        ).stdout
+        path: Optional[str] = None
+        for line in listing.splitlines():
+            if line.startswith("worktree "):
+                path = line[len("worktree "):]
+            elif line.startswith("branch ") and path:
+                if line.endswith(f"/{head}") and path != str(self.target):
+                    subprocess.run(["git", "-C", str(self.target), "worktree",
+                                    "remove", "--force", path],
+                                   check=False, capture_output=True)
+        subprocess.run(["git", "-C", str(self.target), "worktree", "prune"],
+                       check=False, capture_output=True)
+
     async def _review(self, pr: int) -> Optional[review_policy.ReviewOutcome]:
+        self._prune_head_worktree(pr)
         out = self.logs / f"pr-{pr}-review.md"
         rc = await _sh(
             [self.agentrail, "internal", "review-pr", "--pr", str(pr),
@@ -182,8 +206,18 @@ class Runner:
     async def _process(self, slot: int, issue_state: IssueState) -> None:
         issue = issue_state.number
         gh.add_issue_label(issue, IN_PROGRESS_LABEL)
-        self.store.dispatch(SetStatus(issue, IssueStatus.RUNNING))
 
+        # Idempotency: if a PR already exists for this issue (a retry after a
+        # failed review, or a resumed run), do NOT re-implement — that would
+        # collide with the existing branch/worktree. Go straight to review.
+        pr = issue_state.pr or gh.detect_pr_for_issue(issue)
+        if pr:
+            self.store.dispatch(SetPr(issue, pr))
+            self.store.dispatch(SetStatus(issue, IssueStatus.PR_OPEN))
+            await self._review_loop(slot, issue, pr)
+            return
+
+        self.store.dispatch(SetStatus(issue, IssueStatus.RUNNING))
         ok = await self._implement(slot, issue)
         if not ok:
             self._fail(issue, "implementation failed")

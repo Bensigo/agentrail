@@ -944,11 +944,24 @@ main() {
   local max_tasks="${AFK_WORKFLOW_MAX_TASKS:-100}"
   local max_retries="${AFK_WORKFLOW_MAX_RETRIES:-2}"
   local total_launched=0
-  declare -A issue_failures  # tracks failure count per issue number
+  # File-based failure tracking (bash 3.2 lacks associative arrays)
+  local failure_dir="${run_dir}/failures"
+  mkdir -p "$failure_dir"
+
+  get_issue_failures() {
+    local issue="$1"
+    local f="${failure_dir}/${issue}"
+    if [[ -f "$f" ]]; then
+      cat "$f"
+    else
+      echo "0"
+    fi
+  }
 
   check_issue_retries() {
     local issue="$1"
-    local count="${issue_failures[$issue]:-0}"
+    local count
+    count="$(get_issue_failures "$issue")"
     if [[ "$count" -ge "$max_retries" ]]; then
       return 1
     fi
@@ -957,9 +970,11 @@ main() {
 
   record_issue_failure() {
     local issue="$1"
-    local count="${issue_failures[$issue]:-0}"
-    issue_failures[$issue]=$((count + 1))
-    if [[ "${issue_failures[$issue]}" -ge "$max_retries" ]]; then
+    local count
+    count="$(get_issue_failures "$issue")"
+    count=$((count + 1))
+    echo "$count" > "${failure_dir}/${issue}"
+    if [[ "$count" -ge "$max_retries" ]]; then
       echo "issue #${issue}: max retries (${max_retries}) reached — labeling for human review" >&2
       ensure_label "human-review-needed" "D4C5F9" "PR needs human review — automated review failed repeatedly."
       # Find the PR for this issue and label it

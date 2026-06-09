@@ -141,6 +141,15 @@ class FreeSlot:
     slot: int
 
 
+@dataclass(frozen=True)
+class RequeueIssue:
+    """Reset an issue (typically terminal from a prior run) back to QUEUED with
+    fresh counters, so a new run can re-attempt it. Used on resume when an issue
+    is still open in the GitHub queue. The PR reference is kept so the pipeline
+    stays idempotent (it will review the existing PR rather than re-implement)."""
+    number: int
+
+
 Action = object  # union of the dataclasses above
 
 
@@ -240,6 +249,24 @@ def reduce(state: AfkState, action: Action) -> AfkState:
 
     elif isinstance(action, FreeSlot):
         slots[action.slot] = None
+
+    elif isinstance(action, RequeueIssue):
+        issue = _require(state, action.number)
+        if issue.slot is not None:
+            slots[issue.slot] = None
+        # adjust aggregate counters if leaving a terminal counted state
+        if issue.status == IssueStatus.MERGED:
+            completed = max(0, completed - 1)
+        elif issue.status == IssueStatus.HUMAN_REVIEW:
+            failed = max(0, failed - 1)
+        issues[action.number] = replace(
+            issue,
+            status=IssueStatus.QUEUED,
+            slot=None,
+            retries=0,
+            review_rounds=0,
+            error=None,
+        )
 
     else:  # pragma: no cover - guards against unhandled action types
         raise TypeError(f"unknown action: {action!r}")

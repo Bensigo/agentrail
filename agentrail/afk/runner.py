@@ -30,9 +30,11 @@ from agentrail.afk.state import (
     IssueState,
     IssueStatus,
     RecordFailure,
+    RequeueIssue,
     SetPr,
     SetStatus,
     Store,
+    TERMINAL_STATUSES,
 )
 from agentrail.afk.store import attach_persistence, load_snapshot
 
@@ -332,12 +334,18 @@ def build_store(target: Path, *, concurrency: int, max_retries: int,
         base = AfkState(concurrency=concurrency, max_retries=max_retries,
                         max_review_rounds=max_review_rounds,
                         slots={i: None for i in range(concurrency)})
+    # a fresh run starts with all slots empty regardless of how a prior run left them
+    from dataclasses import replace as _replace
+    base = _replace(base, slots={i: None for i in range(concurrency)})
     store = Store(base)
     attach_persistence(store, target)
-    # ensure slots dict covers the requested concurrency
-    for i in range(concurrency):
-        store.state.slots.setdefault(i, None)
     for item in issues:
-        store.dispatch(EnqueueIssue(item["number"], item.get("title", ""),
-                                    item.get("url", "")))
+        num = item["number"]
+        existing_issue = store.state.issues.get(num)
+        if existing_issue is None:
+            store.dispatch(EnqueueIssue(num, item.get("title", ""), item.get("url", "")))
+        elif existing_issue.status in TERMINAL_STATUSES:
+            # still open in the GitHub queue but terminal in saved state →
+            # reset for a fresh attempt (idempotent: keeps PR ref if any)
+            store.dispatch(RequeueIssue(num))
     return store

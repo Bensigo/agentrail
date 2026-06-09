@@ -972,10 +972,10 @@ main() {
           # Process finished — reap it
           if wait "$pid" 2>/dev/null; then
             total_completed=$((total_completed + 1))
-            echo "slot ${s}: issue #${slot_issues[$s]} completed (${total_completed} done, ${total_failed} failed)"
+            echo "slot ${s}: issue #${slot_issues[$s]} completed (${total_completed} done, ${total_failed} failed)" >&2
           else
             total_failed=$((total_failed + 1))
-            echo "slot ${s}: issue #${slot_issues[$s]} failed (${total_completed} done, ${total_failed} failed)"
+            echo "slot ${s}: issue #${slot_issues[$s]} failed (${total_completed} done, ${total_failed} failed)" >&2
           fi
           slot_pids[$s]=""
           slot_issues[$s]=""
@@ -991,7 +991,7 @@ main() {
   launch_in_slot() {
     local slot="$1" issue="$2" title="$3"
     total_launched=$((total_launched + 1))
-    echo "slot ${slot}: launching issue #${issue} ${title} (task ${total_launched})"
+    echo "slot ${slot}: launching issue #${issue} ${title} (task ${total_launched})" >&2
     claim_issue "$issue"
     (
       if ! worker_run "$root" "$run_dir" "$slot" "$issue" "$title" "$base" "$engine" "$review_enabled" "$queue_labels" "$afk_label"; then

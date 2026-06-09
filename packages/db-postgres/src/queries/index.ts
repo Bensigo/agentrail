@@ -44,6 +44,18 @@ export async function listRuns(
     .orderBy(runs.createdAt);
 }
 
+export async function getRun(
+  workspaceId: string,
+  runId: string
+): Promise<RunRow | null> {
+  const rows = await db
+    .select()
+    .from(runs)
+    .where(and(eq(runs.workspaceId, workspaceId), eq(runs.id, runId)))
+    .limit(1);
+  return (rows[0] as RunRow) ?? null;
+}
+
 export async function listWorkspacesForUser(userId: string) {
   const rows = await db
     .select({

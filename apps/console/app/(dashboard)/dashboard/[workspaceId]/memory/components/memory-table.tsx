@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
 
 export interface MemoryItemRecord {
   id: string;
@@ -94,14 +95,7 @@ export function MemoryTable({ workspaceId }: MemoryTableProps) {
         </thead>
         <tbody>
           {loading ? (
-            <tr>
-              <td
-                colSpan={COLS + 1}
-                className="px-3 py-8 text-center text-sm text-[var(--gray-09)]"
-              >
-                <span className="animate-pulse">Loading memory…</span>
-              </td>
-            </tr>
+            <SkeletonTableRows columns={COLS + 1} rows={8} />
           ) : error ? (
             <tr>
               <td

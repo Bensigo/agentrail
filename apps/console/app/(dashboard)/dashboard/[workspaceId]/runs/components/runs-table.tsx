@@ -9,6 +9,7 @@ import {
   createColumnHelper,
 } from "@tanstack/react-table";
 import { StatusBadge } from "./status-badge";
+import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
 
 export interface RunRecord {
   id: string;
@@ -269,14 +270,7 @@ export function RunsTable({ workspaceId, repositories }: RunsTableProps) {
           </thead>
           <tbody>
             {loading ? (
-              <tr>
-                <td
-                  colSpan={columns.length}
-                  className="px-3 py-8 text-center text-sm text-[var(--gray-09)]"
-                >
-                  <span className="animate-pulse">Loading runs…</span>
-                </td>
-              </tr>
+              <SkeletonTableRows columns={columns.length} rows={8} />
             ) : error ? (
               <tr>
                 <td

@@ -164,6 +164,9 @@ spend tokens on relevant code instead of noise.
   search and full-file reads.
 - Record the context pack path and selected sources in run metadata.
 
+When AgentRail is wired in as MCP tools (`@agentrail/mcp`), prefer the
+`context_search` and `context_get` tools for the same workflow.
+
 AgentRail is the harness. The configured runner is the worker. Ralph is the internal one-issue executor invoked by `agentrail run issue`. AFK is the queue/worktree loop invoked by `agentrail afk`.
 
 Raw workflow helpers are AgentRail internals. Do not call Ralph, AFK, PR, review, or memory scripts directly from an installed project unless a maintainer is debugging AgentRail itself.

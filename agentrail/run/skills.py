@@ -10,7 +10,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 IGNORED_DIRS = {".git", "node_modules", ".agentrail", "dist", "build", ".next", "target"}
 MAX_FILES = 1000

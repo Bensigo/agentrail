@@ -31,8 +31,14 @@ def configured_model(mode: str, config: ProviderConfig) -> Optional[str]:
     return None
 
 
+# Bump when the text we feed the embedder changes (e.g. the contextual header
+# format) so cached vectors built from the old input are recomputed.
+EMBED_INPUT_SCHEMA = "contextual-v1"
+
+
 def embedding_config_hash(mode: str, config: ProviderConfig) -> str:
     fingerprint = {
+        "inputSchema": EMBED_INPUT_SCHEMA,
         "mode": mode,
         "provider": config.provider,
         "model": config.model,
@@ -102,6 +108,56 @@ def is_reusable(record: Optional[Dict[str, Any]], chunk: Dict[str, Any], source:
     return bool(record and record.get("mode") == mode and record.get("configHash") == config_hash and record.get("chunkId") == chunk.get("id") and record.get("textHash") == chunk.get("textHash") and record.get("contentHash") == source.get("contentHash") and record.get("provider") and record.get("model") and isinstance(record.get("dimension"), (int, float)))
 
 
+# Embedding providers reject inputs longer than the loaded context window
+# (Ollama's runtime num_ctx is well below a model's advertised max, and the
+# runner can EOF-crash on oversized input). Cap the text we send so a few large
+# chunks don't fail the call; a chunk's head carries the discriminative signal
+# and lexical+graph retrieval still cover the truncated tail. ~4 chars/token, so
+# 8000 chars ≈ 2000 tokens — safely under a default context window.
+MAX_EMBED_CHARS = 8000
+
+
+def embedding_input(content: str) -> str:
+    return content if len(content) <= MAX_EMBED_CHARS else content[:MAX_EMBED_CHARS]
+
+
+def contextual_embedding_text(chunk: Dict[str, Any], source: Dict[str, Any]) -> str:
+    """Prepend a compact, deterministic header that situates the chunk before it
+    is embedded — AgentRail's take on contextual retrieval.
+
+    The lexical/BM25 leg already sees this metadata (see retrieval.record_text);
+    the dense leg historically embedded raw content only. Adding the same
+    structural context — where the chunk lives, what symbol it is, what it
+    imports — without an LLM keeps indexing deterministic and reproducible while
+    recovering most of the contextual-retrieval recall gain.
+    """
+    parts: List[str] = []
+    path = str(chunk.get("path") or source.get("path") or "")
+    if path:
+        parts.append(f"file: {path}")
+    heading = chunk.get("headingPath") or []
+    if heading:
+        parts.append("section: " + " > ".join(str(h) for h in heading))
+    parent = chunk.get("parentContext")
+    if parent and str(parent) != path:
+        parts.append(f"context: {parent}")
+    symbol = chunk.get("symbol")
+    if symbol:
+        kind = chunk.get("kind")
+        parts.append(f"symbol: {symbol}" + (f" ({kind})" if kind else ""))
+    defines = chunk.get("symbolHints") or []
+    if defines:
+        parts.append("defines: " + ", ".join(str(s) for s in defines[:8]))
+    imports = chunk.get("importHints") or []
+    if imports:
+        parts.append("imports: " + ", ".join(str(s) for s in imports[:8]))
+
+    content = str(chunk.get("content") or "")
+    if not parts:
+        return content
+    return "[" + "; ".join(parts) + "]\n" + content
+
+
 def embed_context(target_dir: Path) -> Dict[str, Any]:
     root = target_dir.resolve()
     build_index(root)
@@ -127,6 +183,7 @@ def embed_context(target_dir: Path) -> Dict[str, Any]:
     next_records: List[Dict[str, Any]] = []
     embedded = 0
     skipped = 0
+    failed = 0
     for chunk in chunks:
         source = sources.get(chunk.get("sourceId"), {})
         prior = existing.get(chunk["id"])
@@ -134,20 +191,23 @@ def embed_context(target_dir: Path) -> Dict[str, Any]:
             next_records.append(prior)  # type: ignore[arg-type]
             skipped += 1
             continue
-        payload = {"mode": mode, "provider": provider, "model": model, "chunkId": chunk["id"], "path": chunk["path"], "citation": chunk["citation"], "contentHash": source.get("contentHash"), "textHash": chunk["textHash"], "auditRef": source.get("auditRef"), "content": chunk["content"]}
+        payload = {"mode": mode, "provider": provider, "model": model, "chunkId": chunk["id"], "path": chunk["path"], "citation": chunk["citation"], "contentHash": source.get("contentHash"), "textHash": chunk["textHash"], "auditRef": source.get("auditRef"), "content": embedding_input(contextual_embedding_text(chunk, source))}
         append_audit(root, {"event": "embedding_provider_call", "mode": mode, "provider": provider, "model": model, "action": "embed_chunk", "chunkId": chunk["id"], "contentHash": source.get("contentHash"), "textHash": chunk["textHash"], "auditRef": source.get("auditRef")})
         try:
             result = run_custom_command(root, cfg, payload) if mode == "custom-command" else run_openai_compatible(cfg, payload)
-        except Exception as error:
+        except Exception:
+            # One chunk the provider rejects (e.g. still over the context window)
+            # must not abort the whole build — record the failure and move on.
             append_audit(root, {"event": "embedding_provider_failure", "mode": mode, "provider": provider, "model": model, "action": "embed_chunk_failed", "chunkId": chunk["id"], "contentHash": source.get("contentHash"), "textHash": chunk["textHash"], "auditRef": source.get("auditRef"), "message": "embedding provider failed"})
-            raise error
+            failed += 1
+            continue
         vector = result["vector"]
         next_records.append({"mode": mode, "provider": result["provider"] or provider, "model": result["model"] or model, "configHash": config_hash, "dimension": len(vector), "contentHash": source.get("contentHash"), "chunkId": chunk["id"], "textHash": chunk["textHash"], "timestamp": now_iso(), "auditRef": source.get("auditRef"), "path": chunk["path"], "citation": chunk["citation"], "embedding": vector})
         embedded += 1
     next_records.sort(key=lambda record: str(record.get("chunkId")))
     write_json(embeddings_path, {"schemaVersion": 1, "provider": {"mode": mode, "provider": provider, "model": model}, "builtAt": now_iso(), "embeddings": next_records})
-    append_audit(root, {"event": "embedding_provider_complete", "mode": mode, "provider": provider, "model": model, "payloadCount": len(chunks), "embedded": embedded, "skipped": skipped, "embeddingCount": len(next_records)})
-    return {"embeddingPath": ".agentrail/context/index/embeddings.json", "providerMode": mode, "provider": provider, "model": model, "eligible": len(chunks), "embedded": embedded, "skipped": skipped, "failed": 0}
+    append_audit(root, {"event": "embedding_provider_complete", "mode": mode, "provider": provider, "model": model, "payloadCount": len(chunks), "embedded": embedded, "skipped": skipped, "failed": failed, "embeddingCount": len(next_records)})
+    return {"embeddingPath": ".agentrail/context/index/embeddings.json", "providerMode": mode, "provider": provider, "model": model, "eligible": len(chunks), "embedded": embedded, "skipped": skipped, "failed": failed}
 
 
 _PRESET_DEFAULTS = {

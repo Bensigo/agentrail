@@ -26,8 +26,12 @@ const result: NextAuthResult = NextAuth({
     signIn: "/login",
   },
   callbacks: {
-    async redirect({ baseUrl }) {
-      return `${baseUrl}/dashboard`;
+    async redirect({ url, baseUrl }) {
+      // Route to the supplied URL if it's within this app; otherwise root.
+      // The root page handles workspace-aware routing to /dashboard/{id} or /setup.
+      if (url.startsWith(baseUrl)) return url;
+      if (url.startsWith("/")) return `${baseUrl}${url}`;
+      return `${baseUrl}/`;
     },
     async session({ session, user }) {
       if (session.user && user) {

@@ -13,16 +13,6 @@ export default async function DashboardPage() {
     redirect(`/dashboard/${workspaces[0].id}`);
   }
 
-  return (
-    <div className="flex min-h-screen items-center justify-center">
-      <div className="text-center">
-        <h1 className="text-lg font-bold text-[var(--gray-12)]">
-          No workspaces
-        </h1>
-        <p className="mt-2 text-sm text-[var(--gray-09)]">
-          You are not a member of any workspace yet.
-        </p>
-      </div>
-    </div>
-  );
+  // Defensive fallback: no workspaces → send to setup
+  redirect("/setup");
 }

@@ -10,6 +10,7 @@ import {
   teamMemberships,
   teamRepositories,
   apiKeys,
+  reviewGates,
 } from "../schema/index.js";
 
 export type RunStatus = "queued" | "running" | "success" | "failed";
@@ -51,6 +52,34 @@ export async function getRun(
     .where(and(eq(runs.workspaceId, workspaceId), eq(runs.id, runId)))
     .limit(1);
   return (rows[0] as RunRow) ?? null;
+}
+
+export async function getReviewGatesForRun(workspaceId: string, runId: string) {
+  return db
+    .select()
+    .from(reviewGates)
+    .where(
+      and(
+        eq(reviewGates.workspaceId, workspaceId),
+        eq(reviewGates.runId, runId)
+      )
+    )
+    .orderBy(reviewGates.createdAt);
+}
+
+export async function listReviewGatesForWorkspace(
+  workspaceId: string,
+  runId?: string
+) {
+  const conditions: SQL[] = [eq(reviewGates.workspaceId, workspaceId)];
+  if (runId) {
+    conditions.push(eq(reviewGates.runId, runId));
+  }
+  return db
+    .select()
+    .from(reviewGates)
+    .where(and(...conditions))
+    .orderBy(desc(reviewGates.createdAt));
 }
 
 export async function listWorkspacesForUser(userId: string) {

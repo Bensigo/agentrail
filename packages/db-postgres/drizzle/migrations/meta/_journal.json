@@ -43,6 +43,13 @@
       "when": 1749628800000,
       "tag": "0005_add_api_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1749715200000,
+      "tag": "0006_add_review_gates",
+      "breakpoints": true
     }
   ]
 }

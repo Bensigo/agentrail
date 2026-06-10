@@ -360,6 +360,22 @@ export async function lookupApiKeyByHash(keyHash: string) {
   return rows[0] ?? null;
 }
 
+export async function touchApiKeyLastUsed(keyId: string) {
+  await db
+    .update(apiKeys)
+    .set({ lastUsedAt: new Date() })
+    .where(eq(apiKeys.id, keyId));
+}
+
+export async function getRepository(workspaceId: string, repositoryId: string) {
+  const rows = await db
+    .select()
+    .from(repositories)
+    .where(and(eq(repositories.id, repositoryId), eq(repositories.workspaceId, workspaceId)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 export interface TeamRow {
   id: string;
   name: string;

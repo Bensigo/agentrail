@@ -5,7 +5,7 @@ import { Copy, Check, X } from "lucide-react";
 
 interface CreateKeyDialogProps {
   workspaceId: string;
-  onCreated: (key: ApiKeyRow) => void;
+  onCreated: (key: ApiKeyRow, secret: string) => void;
   onClose: () => void;
 }
 
@@ -50,8 +50,9 @@ export function CreateKeyDialog({
       if (!res.ok) {
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
-      setSecret(body.secret ?? null);
-      onCreated(body.api_key!);
+      const secretValue = body.secret ?? "";
+      setSecret(secretValue);
+      onCreated(body.api_key!, secretValue);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create key");
     } finally {

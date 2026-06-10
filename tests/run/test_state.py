@@ -13,6 +13,7 @@ from agentrail.run.state import (
     issue_goal_defaults,
     upsert_issue_goal,
     write_state,
+    update_run_state,
 )
 
 NOW = "2026-06-11T00:00:00Z"
@@ -308,3 +309,169 @@ class TestWriteState:
         content = state_path.read_text(encoding="utf-8")
         # json.dumps with indent=2 produces "  " before keys
         assert '  "key"' in content
+
+
+# ---------------------------------------------------------------------------
+# update_run_state
+# ---------------------------------------------------------------------------
+
+FIXED_NOW = "2026-01-01T00:00:00.000Z"
+FIXED_FINISHED = "2026-01-01T01:00:00.000Z"
+FIXED_PICKED = "2026-01-01T00:00:00.000Z"
+
+
+def _make_target(tmp_path: Path, initial_workflow=None) -> Path:
+    """Create a target dir with a .agentrail/state.json containing the given workflow."""
+    agentrail_dir = tmp_path / ".agentrail"
+    agentrail_dir.mkdir(parents=True)
+    state = {"workflow": initial_workflow if initial_workflow is not None else {}}
+    (agentrail_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    return tmp_path
+
+
+def _base_start_kwargs(target_dir: Path, issue: int = 7, phase: str = "plan") -> dict:
+    return dict(
+        run_id="run-abc",
+        issue=issue,
+        agent="claude",
+        phase=phase,
+        picked_at=FIXED_PICKED,
+        finished_at="",
+        exit_status=0,
+        prompt_file=str(target_dir / "prompt.md"),
+        metadata_file=str(target_dir / "meta.json"),
+        run_dir=str(target_dir / "runs" / "run-abc"),
+        now=FIXED_NOW,
+    )
+
+
+def _base_finish_kwargs(target_dir: Path, issue: int = 7, phase: str = "execute",
+                        exit_status: int = 0) -> dict:
+    return dict(
+        run_id="run-abc",
+        issue=issue,
+        agent="claude",
+        phase=phase,
+        picked_at=FIXED_PICKED,
+        finished_at=FIXED_FINISHED,
+        exit_status=exit_status,
+        prompt_file=str(target_dir / "prompt.md"),
+        metadata_file=str(target_dir / "meta.json"),
+        run_dir=str(target_dir / "runs" / "run-abc"),
+        now=FIXED_NOW,
+    )
+
+
+def _load_state(target_dir: Path) -> dict:
+    return json.loads((target_dir / ".agentrail" / "state.json").read_text(encoding="utf-8"))
+
+
+class TestUpdateRunState:
+
+    def test_missing_state_file_returns_without_error(self, tmp_path):
+        """No state file → returns without raising, creates nothing."""
+        # No .agentrail dir or state.json
+        update_run_state(tmp_path, "start", **_base_start_kwargs(tmp_path))
+        assert not (tmp_path / ".agentrail" / "state.json").exists()
+
+    def test_start_event_sets_active_run(self, tmp_path):
+        target = _make_target(tmp_path)
+        update_run_state(target, "start", **_base_start_kwargs(target, issue=7, phase="plan"))
+        state = _load_state(target)
+        wf = state["workflow"]
+        assert wf["activeRun"]["runId"] == "run-abc"
+        assert wf["activeIssue"] == 7
+        assert wf["phase"] == "plan"
+        assert wf["activeRun"]["status"] == "running"
+
+    def test_start_event_creates_active_goal(self, tmp_path):
+        target = _make_target(tmp_path)
+        update_run_state(target, "start", **_base_start_kwargs(target, issue=7, phase="plan"))
+        state = _load_state(target)
+        wf = state["workflow"]
+        goals = wf.get("goals", [])
+        assert any(g["id"] == "issue-7" and g["status"] == "active" for g in goals)
+
+    def test_start_event_next_suggested_action_with_phase(self, tmp_path):
+        target = _make_target(tmp_path)
+        update_run_state(target, "start", **_base_start_kwargs(target, issue=7, phase="plan"))
+        state = _load_state(target)
+        nsa = state["workflow"]["nextSuggestedAction"]
+        assert "Continue issue #7 plan phase; active run metadata is" in nsa
+
+    def test_start_event_no_phase_uses_implementation(self, tmp_path):
+        target = _make_target(tmp_path)
+        kwargs = _base_start_kwargs(target, issue=7, phase=None)
+        kwargs["phase"] = None
+        update_run_state(target, "start", **kwargs)
+        state = _load_state(target)
+        wf = state["workflow"]
+        assert wf["phase"] == "implementation"
+        nsa = wf["nextSuggestedAction"]
+        assert "Continue issue #7; active run metadata is" in nsa
+        assert "phase" not in nsa.split("Continue issue #7;")[0]  # no phase before semicolon
+
+    def test_finish_success_clears_active_run(self, tmp_path):
+        target = _make_target(tmp_path, {"activeIssue": 7, "completedRuns": []})
+        update_run_state(target, "finish", **_base_finish_kwargs(target, issue=7, exit_status=0))
+        state = _load_state(target)
+        wf = state["workflow"]
+        assert wf["activeRun"] is None
+        assert wf["activeIssue"] is None
+        assert wf["phase"] == "completed"
+        goals = wf.get("goals", [])
+        assert any(g["id"] == "issue-7" and g["status"] == "completed" and "completedAt" in g for g in goals)
+        assert len(wf.get("completedRuns", [])) == 1
+        run = wf["completedRuns"][0]
+        assert run["status"] == "completed"
+        assert run["exitStatus"] == 0
+        assert "completedAt" in run
+        assert "Review or merge the PR for issue #7" in wf["nextSuggestedAction"]
+
+    def test_finish_failure_sets_blocked(self, tmp_path):
+        target = _make_target(tmp_path, {"activeIssue": 7})
+        update_run_state(target, "finish",
+                         **_base_finish_kwargs(target, issue=7, phase="execute", exit_status=1))
+        state = _load_state(target)
+        wf = state["workflow"]
+        assert wf["phase"] == "blocked"
+        goals = wf.get("goals", [])
+        assert any(g["id"] == "issue-7" and g["status"] == "blocked" for g in goals)
+        run = wf["completedRuns"][0]
+        assert run["status"] == "failed"
+        nsa = wf["nextSuggestedAction"]
+        assert "failed during execute phase" in nsa
+        assert "inspect" in nsa
+
+    def test_finish_with_blocked_reason(self, tmp_path):
+        target = _make_target(tmp_path, {"activeIssue": 7})
+        kwargs = _base_finish_kwargs(target, issue=7, phase="execute", exit_status=1)
+        kwargs["blocked_reason"] = "needs human"
+        update_run_state(target, "finish", **kwargs)
+        state = _load_state(target)
+        nsa = state["workflow"]["nextSuggestedAction"]
+        assert "blocked: needs human" in nsa
+
+    def test_completed_runs_capped_at_20(self, tmp_path):
+        # Pre-seed 25 dummy runs
+        dummy_runs = [{"runId": f"old-{i}", "status": "completed"} for i in range(25)]
+        target = _make_target(tmp_path, {"activeIssue": 7, "completedRuns": dummy_runs})
+        update_run_state(target, "finish",
+                         **_base_finish_kwargs(target, issue=7, exit_status=0))
+        state = _load_state(target)
+        assert len(state["workflow"]["completedRuns"]) == 20
+
+    def test_context_pack_file_not_made_relative(self, tmp_path):
+        target = _make_target(tmp_path)
+        kwargs = _base_start_kwargs(target, issue=7, phase="plan")
+        kwargs["context_pack_file"] = "/absolute/path/context.tar.gz"
+        update_run_state(target, "start", **kwargs)
+        state = _load_state(target)
+        assert state["workflow"]["activeRun"]["contextPackFile"] == "/absolute/path/context.tar.gz"
+
+    def test_deterministic_updated_at(self, tmp_path):
+        target = _make_target(tmp_path)
+        # _base_start_kwargs already sets now=FIXED_NOW
+        update_run_state(target, "start", **_base_start_kwargs(target, issue=7, phase="plan"))
+        state = _load_state(target)
+        assert state["updatedAt"] == FIXED_NOW

@@ -3,6 +3,7 @@ import json
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -146,6 +147,13 @@ def upsert_issue_goal(workflow: Dict[str, Any], issue: int, issue_context: str,
     workflow["goals"] = goals
 
 
+def _utc_now_iso() -> str:
+    """Return current UTC time as ISO-8601 with millisecond precision and trailing Z,
+    matching JavaScript's new Date().toISOString() format, e.g. '2024-01-01T00:00:00.000Z'."""
+    dt = datetime.now(tz=timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+
+
 def write_state(state_path: Path, state: Dict[str, Any]) -> None:
     """Atomically write `state` as pretty JSON (2-space indent) + trailing newline to
     state_path, under an advisory flock on a sidecar lock file `<state_path>.lock`, using
@@ -175,3 +183,131 @@ def write_state(state_path: Path, state: Dict[str, Any]) -> None:
         if fcntl is not None:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         lock_file.close()
+
+
+def update_run_state(target_dir: Path, event: str, *, run_id: str, issue: int,
+                     agent: str, phase: Optional[str], picked_at: str,
+                     finished_at: str, exit_status: int, prompt_file: str,
+                     metadata_file: str, run_dir: str,
+                     execution_attempt: int = 1, max_execution_attempts: int = 5,
+                     failed_verification_attempts: int = 0,
+                     verifier_findings_file: str = "", blocked_reason: str = "",
+                     issue_context: str = "", context_pack_file: str = "",
+                     now: Optional[str] = None) -> None:
+    """Port of legacy update_run_state (scripts/agentrail-legacy:5991-6186).
+    Reads <target_dir>/.agentrail/state.json, mutates workflow for a run 'start' or
+    'finish' (any non-'start') event, writes it back atomically. If the state file
+    does not exist, returns without doing anything (legacy:6013)."""
+    state_path = target_dir / ".agentrail" / "state.json"
+    if not state_path.exists():
+        return
+
+    # legacy: const now = new Date().toISOString(); — accept param for determinism
+    if now is None:
+        now = _utc_now_iso()
+
+    state: Dict[str, Any] = json.loads(state_path.read_text(encoding="utf-8"))
+    workflow: Dict[str, Any] = state["workflow"] if isinstance(state.get("workflow"), dict) else {}
+    completed_runs: List[Dict[str, Any]] = workflow["completedRuns"] if isinstance(workflow.get("completedRuns"), list) else []
+
+    active_phase: Optional[str] = phase or None
+
+    # Build run dict (legacy 6127-6149)
+    run: Dict[str, Any] = {
+        "runId": run_id,
+        "targetType": "issue",
+        "targetIssue": issue,
+        "agent": agent,
+        "status": "running" if event == "start" else ("completed" if exit_status == 0 else "failed"),
+        "activePhase": active_phase,
+        "executionAttempt": execution_attempt,
+        "maxExecutionAttempts": max_execution_attempts,
+        "failedVerificationAttempts": failed_verification_attempts,
+        "pickedAt": picked_at,
+        "promptFile": relative_path(target_dir, prompt_file),
+        "metadataFile": relative_path(target_dir, metadata_file),
+        "runDir": relative_path(target_dir, run_dir),
+    }
+    if verifier_findings_file:
+        run["verifierFindingsFile"] = relative_path(target_dir, verifier_findings_file)
+    if blocked_reason:
+        run["blockedReason"] = blocked_reason
+    if context_pack_file:
+        run["contextPackFile"] = context_pack_file  # NOT made relative (legacy 6144)
+    if event != "start":
+        run["completedAt"] = finished_at
+        run["exitStatus"] = exit_status
+
+    if event == "start":
+        # legacy 6151-6162
+        workflow["phase"] = active_phase or "implementation"
+        workflow["activePhase"] = active_phase
+        workflow["activeIssue"] = issue
+        upsert_issue_goal(workflow, issue, issue_context, "active", now, "")
+        previous_run = (
+            workflow["activeRun"]
+            if (isinstance(workflow.get("activeRun"), dict) and workflow["activeRun"].get("runId") == run["runId"])
+            else {}
+        )
+        workflow["activeRun"] = {
+            **previous_run,
+            **run,
+            "phases": previous_run["phases"] if isinstance(previous_run.get("phases"), list) else [],
+        }
+        workflow["nextSuggestedAction"] = (
+            f"Continue issue #{issue}"
+            + (f" {active_phase} phase;" if active_phase else ";")
+            + f" active run metadata is {run['metadataFile']}."
+        )
+    else:
+        # legacy 6163-6178
+        workflow["activeRun"] = None
+        workflow["activePhase"] = None
+        if workflow.get("activeIssue") == issue:
+            workflow["activeIssue"] = None
+        workflow["phase"] = "completed" if exit_status == 0 else "blocked"
+        lifecycle_reason = blocked_reason or (
+            "" if exit_status == 0
+            else (
+                f"Agent run for issue #{issue}"
+                + (f" failed during {active_phase} phase" if active_phase else " failed")
+                + "."
+            )
+        )
+        upsert_issue_goal(
+            workflow, issue, issue_context,
+            "completed" if exit_status == 0 else "blocked",
+            finished_at or now,
+            lifecycle_reason,
+        )
+        workflow["lastCompletedStep"] = (
+            f"issue-{issue}-{active_phase}-{run['status']}"
+            if active_phase
+            else f"issue-{issue}-{run['status']}"
+        )
+        if exit_status == 0:
+            workflow["nextSuggestedAction"] = (
+                f"Review or merge the PR for issue #{issue}, then pick the next ready issue."
+            )
+        elif blocked_reason:
+            workflow["nextSuggestedAction"] = (
+                f"Agent run for issue #{issue} blocked: {blocked_reason}; inspect {run['metadataFile']}"
+                + (f" and {run['verifierFindingsFile']}" if run.get("verifierFindingsFile") else "")
+                + "."
+            )
+        else:
+            workflow["nextSuggestedAction"] = (
+                f"Agent run for issue #{issue}"
+                + (f" failed during {active_phase} phase" if active_phase else " failed")
+                + f"; inspect {run['metadataFile']} and rerun or mark blocked."
+            )
+        completed_runs.append(run)
+        workflow["completedRuns"] = completed_runs[-20:]
+
+    # legacy 6180-6185
+    state["workflow"] = {
+        **workflow,
+        "completedRuns": completed_runs[-20:] if event == "start" else workflow["completedRuns"],
+    }
+    state["updatedAt"] = now
+    write_state(state_path, state)

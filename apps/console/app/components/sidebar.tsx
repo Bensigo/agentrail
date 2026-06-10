@@ -12,6 +12,7 @@ import {
   Brain,
   Key,
   Users,
+  UserPlus,
 } from "lucide-react";
 import { WorkspaceSwitcher } from "../(dashboard)/components/WorkspaceSwitcher";
 
@@ -32,6 +33,7 @@ const navItems = [
   { label: "Memory", href: "memory", icon: Brain },
   { label: "API Keys", href: "api-keys", icon: Key },
   { label: "Teams", href: "teams", icon: Users },
+  { label: "Members", href: "members", icon: UserPlus },
 ];
 
 export function Sidebar({ workspaces: _workspaces, workspaceId, user, signOutAction }: SidebarProps) {

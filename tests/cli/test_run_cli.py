@@ -15,6 +15,7 @@ from unittest.mock import patch
 from agentrail.cli.commands.run import (
     run_run, AGENTS, DEFAULT_COMMANDS, parse_run_options, UsageError,
     resolve_agent_name, resolve_agent_command,
+    is_source_checkout, ensure_source_run_allowed,
 )
 
 
@@ -109,3 +110,33 @@ class ResolveAgentTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(resolve_agent_command("claude", "", "/nope"),
                              DEFAULT_COMMANDS["claude"])
+
+
+class SourceGuardTests(unittest.TestCase):
+    def _make_source(self) -> str:
+        d = tempfile.mkdtemp()
+        p = Path(d)
+        (p / "package.json").write_text(json.dumps({"name": "@bensigo/agentrail"}))
+        (p / "templates" / "scripts").mkdir(parents=True)
+        (p / "scripts").mkdir()
+        exe = p / "scripts" / "agentrail"
+        exe.write_text("#!/bin/sh\n"); exe.chmod(0o755)
+        return d
+
+    def test_detects_source_checkout(self) -> None:
+        self.assertTrue(is_source_checkout(self._make_source()))
+
+    def test_non_source_dir_is_false(self) -> None:
+        self.assertFalse(is_source_checkout(tempfile.mkdtemp()))
+
+    def test_guard_blocks_without_override(self) -> None:
+        d = self._make_source()
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(UsageError) as ctx:
+                ensure_source_run_allowed(d, "run issue #1")
+            self.assertEqual(ctx.exception.code, 1)
+
+    def test_guard_allows_with_override(self) -> None:
+        d = self._make_source()
+        with patch.dict(os.environ, {"AGENTRAIL_ALLOW_SOURCE_RUN": "1"}, clear=True):
+            ensure_source_run_allowed(d, "run issue #1")  # no raise

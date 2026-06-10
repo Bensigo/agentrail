@@ -146,5 +146,32 @@ def ensure_command_available(command_line: str) -> None:
         raise UsageError(f"missing required command: {binary}", code=1)
 
 
+def is_source_checkout(target: str) -> bool:
+    p = Path(target)
+    pkg = p / "package.json"
+    if not pkg.exists():
+        return False
+    if not (p / "templates" / "scripts").is_dir():
+        return False
+    exe = p / "scripts" / "agentrail"
+    if not (exe.exists() and os.access(exe, os.X_OK)):
+        return False
+    try:
+        return json.loads(pkg.read_text()).get("name") == "@bensigo/agentrail"
+    except (ValueError, OSError):
+        return False
+
+
+def ensure_source_run_allowed(target: str, action: str) -> None:
+    if is_source_checkout(target) and os.environ.get("AGENTRAIL_ALLOW_SOURCE_RUN") != "1":
+        raise UsageError(
+            f"Refusing to {action} in the AgentRail source checkout.\n\n"
+            "This repo is the AgentRail package source, not an installed target "
+            "project. Use a real target project, or set AGENTRAIL_ALLOW_SOURCE_RUN=1 "
+            "only for deliberate source dogfooding.",
+            code=1,
+        )
+
+
 def _dispatch(args: List[str]) -> int:
     raise UsageError("not implemented")

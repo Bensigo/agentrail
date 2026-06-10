@@ -1,6 +1,7 @@
 import { auth } from "@agentrail/auth";
 import { getWorkspace, getWorkspaceMembership } from "@agentrail/db-postgres";
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import {
   Play,
   Package,
@@ -11,6 +12,7 @@ import {
   Brain,
   Key,
   Users,
+  UserCheck,
 } from "lucide-react";
 
 const sections = [
@@ -23,6 +25,7 @@ const sections = [
   { label: "Memory", icon: Brain, href: "memory" },
   { label: "API Keys", icon: Key, href: "api-keys" },
   { label: "Teams", icon: Users, href: "teams" },
+  { label: "Members", icon: UserCheck, href: "members" },
 ];
 
 export default async function WorkspaceDashboardPage({
@@ -56,10 +59,11 @@ export default async function WorkspaceDashboardPage({
       </p>
 
       <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {sections.map(({ label, icon: Icon }) => (
-          <div
+        {sections.map(({ label, icon: Icon, href }) => (
+          <Link
             key={label}
-            className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4"
+            href={`/dashboard/${workspaceId}/${href}`}
+            className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4 transition-colors hover:border-[var(--gray-08)] hover:bg-[var(--gray-03)]"
           >
             <div className="flex items-center gap-2">
               <Icon className="h-4 w-4 text-[var(--gray-09)]" />
@@ -70,7 +74,7 @@ export default async function WorkspaceDashboardPage({
             <p className="mt-2 font-mono text-2xl font-bold text-[var(--gray-12)]">
               —
             </p>
-          </div>
+          </Link>
         ))}
       </div>
     </div>

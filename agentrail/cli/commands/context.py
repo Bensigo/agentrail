@@ -330,13 +330,13 @@ def run_context(args: List[str]) -> int:
             summary = format_benchmark_summary(output)
             results_dir = root / "docs" / "benchmarks" / "results"
             results_dir.mkdir(parents=True, exist_ok=True)
-            (results_dir / "context-retrieval-cli-latest.md").write_text(summary, encoding="utf-8")
+            (results_dir / "context-retrieval-variants-latest.md").write_text(summary, encoding="utf-8")
             if json_output:
                 _print_json(output)
             else:
                 print(summary)
                 print(f"json: {json_path.relative_to(root)}")
-                print("summary: docs/benchmarks/results/context-retrieval-cli-latest.md")
+                print("summary: docs/benchmarks/results/context-retrieval-variants-latest.md")
             return 0 if output.get("passed") else 1
         if kind == "build":
             if len(rest) < 2:

@@ -741,11 +741,12 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         # already-relevant result's rank; it must not inject an otherwise
         # irrelevant high-authority doc into the budget (precision-at-budget noise).
         if not exact_mode and semantic_active:
-            # Conceptual query with real embeddings: trust meaning over surface
-            # words. Dampen raw BM25 (a file that literally repeats the question
-            # words is often not the answer) and up-weight semantic similarity.
-            lexical = entry["score"]["deterministic"] + entry["score"]["keyword"] + entry["score"]["bm25"] * 0.4
-            semantic_weight = 8.0
+            # Conceptual query with real embeddings: semantic similarity is the
+            # primary signal. Heavily dampen the whole lexical signal — including
+            # the BM25-seeded graph-expansion boost, which otherwise lifts a file
+            # that merely repeats the question words — and up-weight semantics.
+            lexical = lexical_raw[item_id] * 0.25
+            semantic_weight = 10.0
         else:
             lexical = lexical_raw[item_id]
             semantic_weight = 2.0

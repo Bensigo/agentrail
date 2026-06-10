@@ -13,7 +13,7 @@ export default async function FailuresPage({
 
   let repositories: string[] = [];
   try {
-    const runs = await listRuns(workspaceId, { limit: 200 });
+    const runs = await listRuns(workspaceId);
     repositories = [
       ...new Set(
         runs.map((r) => r.repositoryId).filter((r): r is string => r !== null)

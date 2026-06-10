@@ -1,25 +1,18 @@
-import { Suspense } from "react";
-import { DollarSign } from "lucide-react";
-import { LoadingSkeleton } from "../../../../components/loading-skeleton";
-import { EmptyState } from "../../../../components/empty-state";
+import { CostsTable } from "./components/costs-table";
 
-export default function CostsPage() {
+export default async function CostsPage({
+  params,
+}: {
+  params: Promise<{ workspaceId: string }>;
+}) {
+  const { workspaceId } = await params;
+
   return (
-    <div>
-      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">Costs</h1>
-      <Suspense fallback={<LoadingSkeleton />}>
-        <CostsContent />
-      </Suspense>
+    <div className="mx-auto max-w-[1440px]">
+      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
+        Costs
+      </h1>
+      <CostsTable workspaceId={workspaceId} />
     </div>
-  );
-}
-
-function CostsContent() {
-  return (
-    <EmptyState
-      icon={DollarSign}
-      title="No cost events yet"
-      description="Token usage, model calls, and metered cost events will appear here."
-    />
   );
 }

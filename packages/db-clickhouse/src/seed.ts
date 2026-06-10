@@ -4,6 +4,8 @@ import type {
   FailureEventRecord,
   ContextPackRecord,
   ContextEventRecord,
+  IndexSnapshotRecord,
+  CostEventRecord,
 } from "./schema";
 
 async function main() {
@@ -239,6 +241,213 @@ async function main() {
     format: "JSONEachRow",
   });
   console.log(`Inserted ${contextEvents.length} sample context_events.`);
+
+  // Seed cost_events with varied dimensions (team/repo/api_key/run)
+  const costEvents: CostEventRecord[] = [
+    // repo: bensigo/agentrail — run-001
+    {
+      workspace_id: "dev-workspace",
+      run_id: "run-001",
+      repository_id: "bensigo/agentrail",
+      team_id: "team-eng",
+      api_key_id: "key-alpha",
+      cost_type: "model_call",
+      tokens: 8200,
+      cost_usd: 0.0246,
+      model: "claude-sonnet-4-6",
+      occurred_at: new Date("2026-06-08T08:02:00.000Z"),
+      event_id: "cost-001",
+    },
+    {
+      workspace_id: "dev-workspace",
+      run_id: "run-001",
+      repository_id: "bensigo/agentrail",
+      team_id: "team-eng",
+      api_key_id: "key-alpha",
+      cost_type: "embedding",
+      tokens: 3100,
+      cost_usd: 0.0031,
+      model: "text-embedding-3-small",
+      occurred_at: new Date("2026-06-08T08:02:10.000Z"),
+      event_id: "cost-002",
+    },
+    {
+      workspace_id: "dev-workspace",
+      run_id: "run-001",
+      repository_id: "bensigo/agentrail",
+      team_id: "team-eng",
+      api_key_id: "key-alpha",
+      cost_type: "reranking",
+      tokens: 1500,
+      cost_usd: 0.0015,
+      model: "cohere-rerank-v3",
+      occurred_at: new Date("2026-06-08T08:02:20.000Z"),
+      event_id: "cost-003",
+    },
+    // repo: bensigo/agentrail — run-002 (different team + api_key)
+    {
+      workspace_id: "dev-workspace",
+      run_id: "run-002",
+      repository_id: "bensigo/agentrail",
+      team_id: "team-platform",
+      api_key_id: "key-beta",
+      cost_type: "model_call",
+      tokens: 14800,
+      cost_usd: 0.0444,
+      model: "claude-opus-4-6",
+      occurred_at: new Date("2026-06-08T09:01:00.000Z"),
+      event_id: "cost-004",
+    },
+    {
+      workspace_id: "dev-workspace",
+      run_id: "run-002",
+      repository_id: "bensigo/agentrail",
+      team_id: "team-platform",
+      api_key_id: "key-beta",
+      cost_type: "embedding",
+      tokens: 5200,
+      cost_usd: 0.0052,
+      model: "text-embedding-3-small",
+      occurred_at: new Date("2026-06-08T09:01:15.000Z"),
+      event_id: "cost-005",
+    },
+    {
+      workspace_id: "dev-workspace",
+      run_id: "run-002",
+      repository_id: "bensigo/agentrail",
+      team_id: "team-platform",
+      api_key_id: "key-beta",
+      cost_type: "storage",
+      tokens: 0,
+      cost_usd: 0.0008,
+      model: "",
+      occurred_at: new Date("2026-06-08T09:01:30.000Z"),
+      event_id: "cost-006",
+    },
+    // repo: bensigo/console-ui — different repo dimension
+    {
+      workspace_id: "dev-workspace",
+      run_id: "run-003",
+      repository_id: "bensigo/console-ui",
+      team_id: "team-eng",
+      api_key_id: "key-alpha",
+      cost_type: "model_call",
+      tokens: 6600,
+      cost_usd: 0.0198,
+      model: "claude-sonnet-4-6",
+      occurred_at: new Date("2026-06-08T10:00:00.000Z"),
+      event_id: "cost-007",
+    },
+    {
+      workspace_id: "dev-workspace",
+      run_id: "run-003",
+      repository_id: "bensigo/console-ui",
+      team_id: "team-eng",
+      api_key_id: "key-alpha",
+      cost_type: "reranking",
+      tokens: 900,
+      cost_usd: 0.0009,
+      model: "cohere-rerank-v3",
+      occurred_at: new Date("2026-06-08T10:00:20.000Z"),
+      event_id: "cost-008",
+    },
+    // team-platform only — run-004
+    {
+      workspace_id: "dev-workspace",
+      run_id: "run-004",
+      repository_id: "bensigo/context-engine",
+      team_id: "team-platform",
+      api_key_id: "key-gamma",
+      cost_type: "model_call",
+      tokens: 22000,
+      cost_usd: 0.066,
+      model: "claude-opus-4-6",
+      occurred_at: new Date("2026-06-08T11:00:00.000Z"),
+      event_id: "cost-009",
+    },
+    {
+      workspace_id: "dev-workspace",
+      run_id: "run-004",
+      repository_id: "bensigo/context-engine",
+      team_id: "team-platform",
+      api_key_id: "key-gamma",
+      cost_type: "embedding",
+      tokens: 9800,
+      cost_usd: 0.0098,
+      model: "text-embedding-3-large",
+      occurred_at: new Date("2026-06-08T11:00:30.000Z"),
+      event_id: "cost-010",
+    },
+    {
+      workspace_id: "dev-workspace",
+      run_id: "run-004",
+      repository_id: "bensigo/context-engine",
+      team_id: "team-platform",
+      api_key_id: "key-gamma",
+      cost_type: "storage",
+      tokens: 0,
+      cost_usd: 0.0024,
+      model: "",
+      occurred_at: new Date("2026-06-08T11:01:00.000Z"),
+      event_id: "cost-011",
+    },
+  ];
+
+  // Seed index_snapshots with varied ages: green (<1h), stale (12h), critical (>24h)
+  const DEV_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001";
+  const now = new Date("2026-06-09T08:00:00.000Z");
+  const indexSnapshots: IndexSnapshotRecord[] = [
+    {
+      workspace_id: DEV_WORKSPACE_ID,
+      repository_id: "00000000-0000-0000-0000-000000000010",
+      commit_sha: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+      indexed_at: new Date(now.getTime() - 30 * 60 * 1000), // 30 min ago — healthy
+      source_count: 284,
+      graph_edge_count: 1423,
+      event_id: "snap-001",
+    },
+    {
+      workspace_id: DEV_WORKSPACE_ID,
+      repository_id: "00000000-0000-0000-0000-000000000011",
+      commit_sha: "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
+      indexed_at: new Date(now.getTime() - 12 * 60 * 60 * 1000), // 12h ago — stale
+      source_count: 91,
+      graph_edge_count: 342,
+      event_id: "snap-002",
+    },
+    {
+      workspace_id: DEV_WORKSPACE_ID,
+      repository_id: "00000000-0000-0000-0000-000000000012",
+      commit_sha: "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+      indexed_at: new Date(now.getTime() - 48 * 60 * 60 * 1000), // 48h ago — critical
+      source_count: 17,
+      graph_edge_count: 58,
+      event_id: "snap-003",
+    },
+  ];
+
+  await client.insert({
+    table: "index_snapshots",
+    values: indexSnapshots.map((s) => ({
+      ...s,
+      indexed_at:
+        s.indexed_at instanceof Date
+          ? s.indexed_at.toISOString().replace("T", " ").replace("Z", "")
+          : String(s.indexed_at),
+    })),
+    format: "JSONEachRow",
+  });
+  console.log(`Inserted ${indexSnapshots.length} sample index_snapshots.`);
+
+  await client.insert({
+    table: "cost_events",
+    values: costEvents.map((e) => ({
+      ...e,
+      occurred_at: e.occurred_at.toISOString().replace("T", " ").replace("Z", ""),
+    })),
+    format: "JSONEachRow",
+  });
+  console.log(`Inserted ${costEvents.length} sample cost_events.`);
 
   await client.close();
   console.log("ClickHouse seed complete.");

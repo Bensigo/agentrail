@@ -79,8 +79,10 @@ export async function POST(request: NextRequest) {
       { status: 201 }
     );
   } catch (err: unknown) {
-    const pgErr = err as { code?: string };
-    if (pgErr?.code === "23505") {
+    // Drizzle can wrap the underlying pg error, so the unique-violation code
+    // (23505) may live on err.code or err.cause.code.
+    const e = err as { code?: string; cause?: { code?: string } };
+    if (e?.code === "23505" || e?.cause?.code === "23505") {
       return NextResponse.json(
         { error: { code: "SLUG_CONFLICT", field: "slug", message: "A workspace with this slug already exists" } },
         { status: 409 }

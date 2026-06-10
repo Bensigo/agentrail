@@ -84,6 +84,21 @@ describe("POST /api/v1/workspaces", () => {
     expect(body.error.field).toBe("slug");
   });
 
+  it("returns 409 when 23505 is wrapped by Drizzle on err.cause", async () => {
+    mockAuth.mockResolvedValue(VALID_SESSION as Awaited<ReturnType<typeof auth>>);
+    const wrapped = Object.assign(new Error("query failed"), {
+      cause: { code: "23505" },
+    });
+    mockCreateWorkspace.mockRejectedValue(wrapped);
+
+    const res = await POST(makeRequest({ name: "My Workspace", slug: "my-workspace" }));
+
+    expect(res.status).toBe(409);
+    const body = await res.json() as { error: { code: string; field: string } };
+    expect(body.error.code).toBe("SLUG_CONFLICT");
+    expect(body.error.field).toBe("slug");
+  });
+
   it("returns 400 when slug is missing", async () => {
     mockAuth.mockResolvedValue(VALID_SESSION as Awaited<ReturnType<typeof auth>>);
 

@@ -39,9 +39,22 @@ repo_root() {
 }
 
 ensure_clean_tree() {
+  # Auto-commit common agent leftovers (lockfiles, build artifacts)
+  local modified
+  modified="$(git diff --name-only 2>/dev/null || true)"
+  if [[ -n "$modified" ]]; then
+    # Check if only lockfiles / generated files are dirty
+    local non_lock
+    non_lock="$(echo "$modified" | grep -v -E '(pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$' || true)"
+    if [[ -z "$non_lock" ]]; then
+      git add $modified 2>/dev/null
+      git commit -m "chore: update lockfile" --no-verify 2>/dev/null || true
+    fi
+  fi
+  # Only fail on tracked modifications; ignore untracked files
   local status
-  status="$(git status --porcelain)"
-  [[ -z "$status" ]] || die "working tree is dirty; commit, stash, or clean changes before reviewing"
+  status="$(git diff --name-only 2>/dev/null || true)"
+  [[ -z "$status" ]] || die "agentrail review: working tree has uncommitted tracked changes; commit or stash before reviewing"
 }
 
 extract_machine_readable_review_json() {

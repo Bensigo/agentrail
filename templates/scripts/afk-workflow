@@ -38,8 +38,10 @@ Defaults:
   --queue-labels review-fix,ready-for-agent
 
 Environment:
-  AFK_WORKFLOW_MOCK_QUEUE  Test-only TSV queue: number, title, url, labels_csv.
-  AFK_WORKFLOW_REVIEW     Set to 0 to skip review. Default: 1.
+  AFK_WORKFLOW_MOCK_QUEUE         Test-only TSV queue: number, title, url, labels_csv.
+  AFK_WORKFLOW_REVIEW             Set to 0 to skip review. Default: 1.
+  AFK_WORKFLOW_MAX_RETRIES        Max retries per issue before labeling human-review-needed. Default: 2.
+  AFK_WORKFLOW_MAX_REVIEW_ROUNDS  Max review-fix rounds before skipping further reviews. Default: 3.
 
 Examples:
   scripts/afk-workflow run
@@ -223,6 +225,7 @@ ensure_workflow_labels() {
   ensure_label "review-fix" "D93F0B" "Follow-up issue created from PR review feedback."
   ensure_label "memory-suggestion" "FBCA04" "Suggested project memory update for human review."
   ensure_label "ready-for-agent" "0E8A16" "Issue is ready for an agent to implement."
+  ensure_label "human-review-needed" "D4C5F9" "PR needs human review — automated review failed repeatedly."
 }
 
 queue_issues() {
@@ -313,6 +316,15 @@ release_issue_to_queue() {
   local issue="$1"
 
   gh issue edit "$issue" --remove-label "afk-in-progress" >/dev/null 2>&1 || true
+}
+
+get_review_round() {
+  local issue="$1"
+  local body
+  body="$(gh issue view "$issue" --json body --jq '.body' 2>/dev/null || true)"
+  local round
+  round="$(echo "$body" | grep -o '<!-- review-round: [0-9]* -->' | grep -o '[0-9]*' || true)"
+  echo "${round:-0}"
 }
 
 detect_pr_for_issue() {
@@ -412,6 +424,11 @@ create_review_fix_issues() {
   count="$(jq '.fix_issues | length' <<< "$json")"
   [[ "$count" -gt 0 ]] || return 0
 
+  # Track review-round depth so the cascade stops after N rounds
+  local current_round
+  current_round="$(get_review_round "$source_issue")"
+  local next_round=$((current_round + 1))
+
   local i title body severity file
   for ((i = 0; i < count; i++)); do
     title="$(jq -r ".fix_issues[$i].title" <<< "$json")"
@@ -432,6 +449,8 @@ File: ${file}
 ${body}
 
 Run this through AgentRail as a small follow-up issue.
+
+<!-- review-round: ${next_round} -->
 BODY
 )" \
       --label "review-fix" \
@@ -727,6 +746,14 @@ worker_run() {
     "$agentrail_runner" internal worktree mark --target "$root" --path "$worktree" --status completed --issue "$issue" --pr "$pr" --run-dir "$run_dir" --base "$base" --slot "$slot"
 
     if [[ "$review_enabled" == "1" ]]; then
+      # Check review-round depth — skip review after max rounds
+      local max_review_rounds="${AFK_WORKFLOW_MAX_REVIEW_ROUNDS:-3}"
+      local review_round
+      review_round="$(get_review_round "$issue")"
+      if [[ "$review_round" -ge "$max_review_rounds" ]]; then
+        echo "worker ${slot}: issue #${issue} PR #${pr} at review round ${review_round} (max ${max_review_rounds}) — skipping review, labeling human-review-needed" >&2
+        gh pr edit "$pr" --add-label "human-review-needed" 2>/dev/null || true
+      else
       local review_output
       local review_log
       review_output="${logs_dir}/pr-${pr}-review.md"
@@ -766,6 +793,7 @@ worker_run() {
       else
         echo "worker ${slot}: review created ${fix_issue_count} fix issue(s) for PR #${pr}; skipping merge"
       fi
+      fi  # close review-round else
     fi
 
     cd "$root"
@@ -799,6 +827,17 @@ worker_review_only() {
 
   (
     cd "$root"
+
+    # Check review-round depth — skip review after max rounds
+    local max_review_rounds="${AFK_WORKFLOW_MAX_REVIEW_ROUNDS:-3}"
+    local review_round
+    review_round="$(get_review_round "$issue")"
+    if [[ "$review_round" -ge "$max_review_rounds" ]]; then
+      echo "worker ${slot}: issue #${issue} PR #${pr} at review round ${review_round} (max ${max_review_rounds}) — skipping review, labeling human-review-needed" >&2
+      gh pr edit "$pr" --add-label "human-review-needed" 2>/dev/null || true
+      mark_issue_reviewed "$issue" "$queue_labels"
+      return 0
+    fi
 
     # Remove stale worktrees that have the PR branch checked out, which would
     # block review-pr from running git switch on the PR head branch.
@@ -940,7 +979,50 @@ main() {
   local total_completed=0
   local total_failed=0
   local max_tasks="${AFK_WORKFLOW_MAX_TASKS:-100}"
+  local max_retries="${AFK_WORKFLOW_MAX_RETRIES:-2}"
   local total_launched=0
+  # File-based failure tracking (bash 3.2 lacks associative arrays)
+  local failure_dir="${run_dir}/failures"
+  mkdir -p "$failure_dir"
+
+  get_issue_failures() {
+    local issue="$1"
+    local f="${failure_dir}/${issue}"
+    if [[ -f "$f" ]]; then
+      cat "$f"
+    else
+      echo "0"
+    fi
+  }
+
+  check_issue_retries() {
+    local issue="$1"
+    local count
+    count="$(get_issue_failures "$issue")"
+    if [[ "$count" -ge "$max_retries" ]]; then
+      return 1
+    fi
+    return 0
+  }
+
+  record_issue_failure() {
+    local issue="$1"
+    local count
+    count="$(get_issue_failures "$issue")"
+    count=$((count + 1))
+    echo "$count" > "${failure_dir}/${issue}"
+    if [[ "$count" -ge "$max_retries" ]]; then
+      echo "issue #${issue}: max retries (${max_retries}) reached — labeling for human review" >&2
+      ensure_label "human-review-needed" "D4C5F9" "PR needs human review — automated review failed repeatedly."
+      # Find the PR for this issue and label it
+      local pr_number
+      pr_number="$(detect_pr_for_issue "$issue" 2>/dev/null || true)"
+      if [[ -n "$pr_number" ]]; then
+        gh pr edit "$pr_number" --add-label "human-review-needed" 2>/dev/null || true
+        echo "issue #${issue}: labeled PR #${pr_number} with human-review-needed" >&2
+      fi
+    fi
+  }
 
   # Initialize slot arrays
   local i
@@ -972,10 +1054,11 @@ main() {
           # Process finished — reap it
           if wait "$pid" 2>/dev/null; then
             total_completed=$((total_completed + 1))
-            echo "slot ${s}: issue #${slot_issues[$s]} completed (${total_completed} done, ${total_failed} failed)"
+            echo "slot ${s}: issue #${slot_issues[$s]} completed (${total_completed} done, ${total_failed} failed)" >&2
           else
             total_failed=$((total_failed + 1))
-            echo "slot ${s}: issue #${slot_issues[$s]} failed (${total_completed} done, ${total_failed} failed)"
+            record_issue_failure "${slot_issues[$s]}"
+            echo "slot ${s}: issue #${slot_issues[$s]} failed (${total_completed} done, ${total_failed} failed)" >&2
           fi
           slot_pids[$s]=""
           slot_issues[$s]=""
@@ -990,8 +1073,12 @@ main() {
   # Launch a worker in a given slot
   launch_in_slot() {
     local slot="$1" issue="$2" title="$3"
+    if ! check_issue_retries "$issue"; then
+      echo "slot ${slot}: skipping issue #${issue} — max retries reached" >&2
+      return 1
+    fi
     total_launched=$((total_launched + 1))
-    echo "slot ${slot}: launching issue #${issue} ${title} (task ${total_launched})"
+    echo "slot ${slot}: launching issue #${issue} ${title} (task ${total_launched})" >&2
     claim_issue "$issue"
     (
       if ! worker_run "$root" "$run_dir" "$slot" "$issue" "$title" "$base" "$engine" "$review_enabled" "$queue_labels" "$afk_label"; then
@@ -1019,8 +1106,12 @@ main() {
         local r_issue r_title r_url r_pr
         IFS=$'\t' read -r r_issue r_title r_url r_pr <<< "$review_queue"
         if [[ -n "$r_issue" ]]; then
+          if ! check_issue_retries "$r_issue"; then
+            echo "slot ${free_slot}: skipping review-only issue #${r_issue} — max retries reached" >&2
+            continue
+          fi
           total_launched=$((total_launched + 1))
-          echo "slot ${free_slot}: launching review-only issue #${r_issue} PR #${r_pr} ${r_title} (task ${total_launched})"
+          echo "slot ${free_slot}: launching review-only issue #${r_issue} PR #${r_pr} ${r_title} (task ${total_launched})" >&2
           if [[ "$dry_run" == "1" ]]; then
             echo "dry-run: would review PR #${r_pr} for issue #${r_issue}"
           else

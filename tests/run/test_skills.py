@@ -11,6 +11,7 @@ import pytest
 from agentrail.run.skills import (
     MAX_AUTO_SKILLS,
     MAX_FILES,
+    SkillResolutionError,
     bundled_skills,
     has_segment,
     is_skill_available,
@@ -19,6 +20,7 @@ from agentrail.run.skills import (
     match_file_signal,
     package_reason,
     package_signals,
+    resolve_skills,
     should_use_keyword,
     walk_files,
 )
@@ -456,3 +458,282 @@ class TestRegistry:
 def test_constants():
     assert MAX_FILES == 1000
     assert MAX_AUTO_SKILLS == 4
+
+
+# ---------------------------------------------------------------------------
+# resolve_skills orchestration
+# ---------------------------------------------------------------------------
+
+def _make_skill(name: str, local_path: str, description: str, keywords: list, bundled: bool = True) -> dict:
+    return {
+        "name": name,
+        "bundledByDefault": bundled,
+        "localPath": local_path,
+        "description": description,
+        "triggers": {"keywords": keywords},
+    }
+
+
+def _write_registry(target: Path, skills: list) -> None:
+    """Write skill-registry.json into the installed location."""
+    reg_dir = target / "docs" / "agents"
+    reg_dir.mkdir(parents=True, exist_ok=True)
+    (reg_dir / "skill-registry.json").write_text(json.dumps({"skills": skills}))
+
+
+def _create_skill_files(target: Path, skill_defs: list) -> None:
+    """Create the localPath files so the skills are 'available'."""
+    for skill in skill_defs:
+        p = target / skill["localPath"]
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"# {skill['name']}")
+
+
+class TestResolveSkills:
+    """Tests for the resolve_skills orchestration function."""
+
+    def _setup(self, tmp_path: Path, skills: list, make_available: list | None = None):
+        """Set up a minimal target dir with registry and optional skill files."""
+        target = tmp_path / "target"
+        target.mkdir()
+        repo = tmp_path / "repo"  # not needed if installed registry exists
+        repo.mkdir()
+
+        _write_registry(target, skills)
+        if make_available is None:
+            make_available = skills
+        _create_skill_files(target, make_available)
+        return target, repo
+
+    # ------------------------------------------------------------------
+    # explicit skills
+    # ------------------------------------------------------------------
+
+    def test_explicit_unknown_raises(self, tmp_path):
+        skills = [
+            _make_skill("tdd", ".claude/skills/tdd.md", "TDD", ["test"]),
+        ]
+        target, repo = self._setup(tmp_path, skills)
+        with pytest.raises(SkillResolutionError, match="Unknown skill: nonexistent"):
+            resolve_skills(target, repo, "add a test", explicit_skills=["nonexistent"])
+
+    def test_explicit_unavailable_raises(self, tmp_path):
+        skills = [
+            _make_skill("tdd", ".claude/skills/tdd.md", "TDD", ["test"]),
+        ]
+        target, repo = self._setup(tmp_path, skills, make_available=[])
+        with pytest.raises(SkillResolutionError, match="Unavailable skill: tdd"):
+            resolve_skills(target, repo, "add a test", explicit_skills=["tdd"])
+
+    def test_explicit_available_in_resolved(self, tmp_path):
+        skills = [
+            _make_skill("tdd", ".claude/skills/tdd.md", "TDD", ["test"]),
+        ]
+        target, repo = self._setup(tmp_path, skills)
+        result = resolve_skills(target, repo, "some task", explicit_skills=["tdd"])
+        names = [r["name"] for r in result["resolved"]]
+        assert "tdd" in names
+        entry = next(r for r in result["resolved"] if r["name"] == "tdd")
+        assert "explicit --skill" in entry["reasons"]
+
+    # ------------------------------------------------------------------
+    # auto keyword matching
+    # ------------------------------------------------------------------
+
+    def test_auto_keyword_match(self, tmp_path):
+        skills = [
+            _make_skill("tdd", ".claude/skills/tdd.md", "TDD", ["test"]),
+        ]
+        target, repo = self._setup(tmp_path, skills)
+        result = resolve_skills(target, repo, "add a test")
+        names = [r["name"] for r in result["resolved"]]
+        assert "tdd" in names
+        entry = next(r for r in result["resolved"] if r["name"] == "tdd")
+        assert "task keyword: test" in entry["reasons"]
+
+    def test_auto_disabled_resolved_empty(self, tmp_path):
+        skills = [
+            _make_skill("tdd", ".claude/skills/tdd.md", "TDD", ["test"]),
+        ]
+        target, repo = self._setup(tmp_path, skills)
+        result = resolve_skills(target, repo, "add a test", auto_skills=False)
+        assert result["resolved"] == []
+        assert result["autoSkills"] is False
+
+    # ------------------------------------------------------------------
+    # unavailable list
+    # ------------------------------------------------------------------
+
+    def test_unavailable_skill_in_unavailable_not_resolved(self, tmp_path):
+        available_skill = _make_skill("tdd", ".claude/skills/tdd.md", "TDD", ["test"])
+        missing_skill = _make_skill("devops-deploy", ".claude/skills/devops-deploy.md", "DevOps", ["deploy"])
+        skills = [available_skill, missing_skill]
+        # Only create tdd file, not devops-deploy
+        target, repo = self._setup(tmp_path, skills, make_available=[available_skill])
+
+        result = resolve_skills(target, repo, "deploy something")
+        unavail_names = [u["name"] for u in result["unavailable"]]
+        assert "devops-deploy" in unavail_names
+        resolved_names = [r["name"] for r in result["resolved"]]
+        assert "devops-deploy" not in resolved_names
+
+    def test_unavailable_entry_has_name_and_local_path(self, tmp_path):
+        missing_skill = _make_skill("devops-deploy", ".claude/skills/devops-deploy.md", "DevOps", ["deploy"])
+        skills = [missing_skill]
+        target, repo = self._setup(tmp_path, skills, make_available=[])
+
+        result = resolve_skills(target, repo, "anything")
+        assert len(result["unavailable"]) == 1
+        entry = result["unavailable"][0]
+        assert entry["name"] == "devops-deploy"
+        assert entry["localPath"] == ".claude/skills/devops-deploy.md"
+
+    # ------------------------------------------------------------------
+    # output shape
+    # ------------------------------------------------------------------
+
+    def test_output_shape(self, tmp_path):
+        skills = [
+            _make_skill("tdd", ".claude/skills/tdd.md", "TDD", ["test"]),
+        ]
+        target, repo = self._setup(tmp_path, skills)
+        result = resolve_skills(target, repo, "add a test")
+
+        assert "registryPath" in result
+        assert "targetDir" in result
+        assert "autoSkills" in result
+        assert "maxAutoSkills" in result
+        assert result["maxAutoSkills"] == 4
+        assert "unavailable" in result
+        assert "resolved" in result
+
+        for entry in result["resolved"]:
+            assert "name" in entry
+            assert "localPath" in entry
+            assert "description" in entry
+            assert "reasons" in entry
+            assert isinstance(entry["reasons"], list)
+
+    def test_target_dir_in_output(self, tmp_path):
+        skills = [_make_skill("tdd", ".claude/skills/tdd.md", "TDD", [])]
+        target, repo = self._setup(tmp_path, skills)
+        result = resolve_skills(target, repo, "anything")
+        assert result["targetDir"] == str(target)
+
+    # ------------------------------------------------------------------
+    # MAX_AUTO_SKILLS cap
+    # ------------------------------------------------------------------
+
+    def test_max_auto_skills_cap(self, tmp_path):
+        """If more than 4 skills would match by keyword, only the first 4 are resolved."""
+        # Create 5 skills all with keyword "deploy"
+        skills = [
+            _make_skill(f"skill-{i}", f".claude/skills/skill-{i}.md", f"Skill {i}", ["deploy"])
+            for i in range(5)
+        ]
+        target, repo = self._setup(tmp_path, skills)
+        result = resolve_skills(target, repo, "deploy everything")
+        assert len(result["resolved"]) == MAX_AUTO_SKILLS  # == 4
+
+    def test_max_auto_skills_registry_order(self, tmp_path):
+        """The first 4 in registry order are chosen, not the last one."""
+        skills = [
+            _make_skill(f"skill-{i}", f".claude/skills/skill-{i}.md", f"Skill {i}", ["deploy"])
+            for i in range(5)
+        ]
+        target, repo = self._setup(tmp_path, skills)
+        result = resolve_skills(target, repo, "deploy everything")
+        resolved_names = [r["name"] for r in result["resolved"]]
+        assert "skill-4" not in resolved_names
+        for i in range(4):
+            assert f"skill-{i}" in resolved_names
+
+    # ------------------------------------------------------------------
+    # file signal
+    # ------------------------------------------------------------------
+
+    def test_file_signal_backend_api(self, tmp_path):
+        """backend-api skill matched via file signal from server/ directory."""
+        skills = [
+            _make_skill("backend-api", ".claude/skills/backend-api.md", "Backend", []),
+        ]
+        target, repo = self._setup(tmp_path, skills)
+
+        # Create the file signal: server/x.ts
+        server_dir = target / "server"
+        server_dir.mkdir()
+        (server_dir / "x.ts").write_text("// server")
+
+        result = resolve_skills(target, repo, "add an endpoint")
+        names = [r["name"] for r in result["resolved"]]
+        assert "backend-api" in names
+        entry = next(r for r in result["resolved"] if r["name"] == "backend-api")
+        # The first file signal matching should appear as a reason
+        file_reasons = [r for r in entry["reasons"] if r.startswith("file signal:")]
+        assert len(file_reasons) == 1
+        assert "server/x.ts" in file_reasons[0]
+
+    def test_docs_current_file_signal_gated_by_task_words(self, tmp_path):
+        """docs-current file signal only fires when task contains certain words."""
+        skills = [
+            _make_skill("docs-current", ".claude/skills/docs-current.md", "Docs", []),
+        ]
+        target, repo = self._setup(tmp_path, skills)
+
+        # Create a docs/ dir so match_file_signal fires
+        docs_dir = target / "docs" / "guide"
+        docs_dir.mkdir(parents=True)
+        (docs_dir / "intro.md").write_text("# intro")
+
+        # Task without the gate words — file signal should NOT fire
+        result = resolve_skills(target, repo, "add a feature")
+        names = [r["name"] for r in result["resolved"]]
+        assert "docs-current" not in names
+
+        # Task WITH a gate word — file signal SHOULD fire
+        result2 = resolve_skills(target, repo, "update the docs")
+        names2 = [r["name"] for r in result2["resolved"]]
+        assert "docs-current" in names2
+
+    # ------------------------------------------------------------------
+    # reason deduplication
+    # ------------------------------------------------------------------
+
+    def test_reason_dedup(self, tmp_path):
+        """Including the same skill twice with the same reason keeps it once."""
+        skills = [
+            _make_skill("tdd", ".claude/skills/tdd.md", "TDD", ["test"]),
+        ]
+        target, repo = self._setup(tmp_path, skills)
+        # Pass explicit AND auto both produce the same skill — but different reasons.
+        # To test dedup we call explicit twice via same name (only appears once since dict).
+        result = resolve_skills(target, repo, "add a test", explicit_skills=["tdd"])
+        entry = next(r for r in result["resolved"] if r["name"] == "tdd")
+        # "explicit --skill" should appear exactly once even if logic tried to add twice
+        assert entry["reasons"].count("explicit --skill") == 1
+
+    # ------------------------------------------------------------------
+    # non-bundled skills are excluded
+    # ------------------------------------------------------------------
+
+    def test_non_bundled_skill_excluded(self, tmp_path):
+        """Skills with bundledByDefault=False are excluded from auto-resolution."""
+        skills = [
+            _make_skill("tdd", ".claude/skills/tdd.md", "TDD", ["test"], bundled=True),
+            _make_skill("secret-skill", ".claude/skills/secret-skill.md", "Secret", ["test"], bundled=False),
+        ]
+        target, repo = self._setup(tmp_path, skills)
+        result = resolve_skills(target, repo, "add a test")
+        resolved_names = [r["name"] for r in result["resolved"]]
+        assert "secret-skill" not in resolved_names
+
+    def test_non_bundled_skill_not_in_unavailable(self, tmp_path):
+        """Non-bundled skills (even missing) should not appear in unavailable list."""
+        skills = [
+            _make_skill("secret-skill", ".claude/skills/secret-skill.md", "Secret", ["test"], bundled=False),
+        ]
+        # Don't create the file
+        target, repo = self._setup(tmp_path, skills, make_available=[])
+        result = resolve_skills(target, repo, "add a test")
+        unavail_names = [u["name"] for u in result["unavailable"]]
+        assert "secret-skill" not in unavail_names

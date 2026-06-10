@@ -224,3 +224,125 @@ def should_use_keyword(skill_name: str, keyword: str) -> bool:
         return True
     _DOCS_ALLOWED = {"current", "latest", "docs", "documentation", "sdk", "license", "provenance", "tauri"}
     return keyword.lower() in _DOCS_ALLOWED
+
+
+# ---------------------------------------------------------------------------
+# Orchestration
+# ---------------------------------------------------------------------------
+
+class SkillResolutionError(Exception):
+    """Raised when an explicit --skill is unknown or unavailable (legacy exit 1)."""
+
+
+def resolve_skills(
+    target_dir: Path,
+    repo_dir: Path,
+    task_text: str,
+    auto_skills: bool = True,
+    explicit_skills: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Port of legacy resolve_skills_json (lines 782-954). Returns:
+
+    {
+      "registryPath": str, "targetDir": str, "autoSkills": bool,
+      "maxAutoSkills": 4, "unavailable": [{"name","localPath"}, ...],
+      "resolved": [{"name","localPath","description","reasons":[...]}, ...],
+    }
+
+    Raises SkillResolutionError for unknown/unavailable explicit skills.
+    """
+    # 1. Load registry
+    registry_path, registry = load_registry(target_dir, repo_dir)
+
+    # 2. Build skill collections (legacy 782-783)
+    all_bundled = bundled_skills(registry)
+    skills_by_name: Dict[str, dict] = {s["name"]: s for s in all_bundled}
+
+    lower_task = task_text.lower()
+
+    # 4. Split available vs unavailable (legacy 795-800)
+    unavailable: List[dict] = []
+    skills: List[dict] = []
+    for skill in all_bundled:
+        if is_skill_available(target_dir, skill):
+            skills.append(skill)
+        else:
+            unavailable.append({"name": skill["name"], "localPath": skill["localPath"]})
+
+    # 5. resolved: insertion-ordered dict keyed by skill name (legacy 806-812)
+    resolved: Dict[str, dict] = {}
+
+    def _add_reason(bucket: List[str], reason: str) -> None:
+        """Dedup-preserving append (legacy addReason 802-804)."""
+        if reason not in bucket:
+            bucket.append(reason)
+
+    def _include_skill(skill: dict, reason: str) -> None:
+        """Create resolved entry if absent, then add reason (legacy includeSkill 807-812)."""
+        name = skill["name"]
+        if name not in resolved:
+            resolved[name] = {
+                "name": name,
+                "localPath": skill["localPath"],
+                "description": skill["description"],
+                "reasons": [],
+            }
+        _add_reason(resolved[name]["reasons"], reason)
+
+    # 6. Explicit skills (legacy 814-825)
+    for name in (explicit_skills or []):
+        skill = skills_by_name.get(name)
+        if skill is None:
+            raise SkillResolutionError(f"Unknown skill: {name}")
+        if not is_skill_available(target_dir, skill):
+            raise SkillResolutionError(
+                f"Unavailable skill: {name} ({skill['localPath']} not found under target)"
+            )
+        _include_skill(skill, "explicit --skill")
+
+    # 7. Auto-skills (legacy 916-944)
+    if auto_skills:
+        files = walk_files(target_dir)
+        deps = package_signals(target_dir)
+        candidates: List[tuple] = []
+
+        for skill in skills:
+            reasons: List[str] = []
+
+            # keyword matching (legacy 923-924)
+            for keyword in skill.get("triggers", {}).get("keywords", []):
+                if should_use_keyword(skill["name"], keyword) and keyword_matches(keyword, lower_task):
+                    _add_reason(reasons, f"task keyword: {keyword.lower()}")
+
+            # package dependency signal (legacy 927-928)
+            dep_reason = package_reason(skill["name"], deps)
+            if dep_reason:
+                _add_reason(reasons, dep_reason)
+
+            # file signal (legacy 930-935)
+            file_match = next((f for f in files if match_file_signal(skill["name"], f)), None)
+            if file_match:
+                # docs-current extra gate: 7-word regex (NOT including 'tauri') (legacy 932)
+                if skill["name"] != "docs-current" or re.search(
+                    r"\b(current|latest|docs|documentation|sdk|license|provenance)\b",
+                    lower_task,
+                ):
+                    _add_reason(reasons, f"file signal: {file_match}")
+
+            if reasons:
+                candidates.append((skill, reasons))
+
+        # Take first MAX_AUTO_SKILLS candidates, each with at most 4 reasons (legacy 942-944)
+        for skill, candidate_reasons in candidates[:MAX_AUTO_SKILLS]:
+            for reason in candidate_reasons[:4]:
+                _include_skill(skill, reason)
+
+    # 8. Return output dict (legacy 947-954)
+    return {
+        "registryPath": registry_path,
+        "targetDir": str(target_dir),
+        "autoSkills": auto_skills,
+        "maxAutoSkills": MAX_AUTO_SKILLS,
+        "unavailable": unavailable,
+        "resolved": list(resolved.values()),
+    }

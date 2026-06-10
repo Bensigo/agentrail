@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import subprocess
+import sys
 from pathlib import Path
 from typing import List
 
@@ -19,7 +21,7 @@ def _usage() -> str:
     return """Usage:
   agentrail afk [--concurrency N] [--engine claude|codex] [--base BRANCH]
                 [--afk-label LABEL] [--queue-labels a,b] [--max-retries N]
-                [--max-review-rounds N] [--dry-run]
+                [--max-review-rounds N] [--dry-run] [--allow-dirty]
 
 Runs the AFK workflow: pick approved GitHub issues, implement each in an
 isolated worktree, open a PR, review it, and either merge, auto-fix P0/P1
@@ -42,6 +44,7 @@ def _parse(args: List[str]) -> dict:
         "max_retries": 2,
         "max_review_rounds": 3,
         "dry_run": False,
+        "allow_dirty": False,
     }
     i = 0
     while i < len(args):
@@ -64,6 +67,8 @@ def _parse(args: List[str]) -> dict:
             opts["max_review_rounds"] = int(args[i + 1]); i += 2
         elif a == "--dry-run":
             opts["dry_run"] = True; i += 1
+        elif a == "--allow-dirty":
+            opts["allow_dirty"] = True; i += 1
         elif a in ("-h", "--help"):
             print(_usage()); raise SystemExit(0)
         else:
@@ -89,6 +94,25 @@ def run_afk(args: List[str]) -> int:
         for it in issues:
             print(f"  #{it['number']} {it['title']}")
         return 0
+
+    # Guard: AFK mutates the main checkout during PR review — it runs
+    # `git switch --detach` and `git reset --hard origin/<base>` there
+    # (see runner._prepare_for_review / _restore_main). On a dirty tree that
+    # silently discards uncommitted work. Refuse unless explicitly overridden.
+    if not opts["allow_dirty"]:
+        dirty = subprocess.run(
+            ["git", "-C", str(target), "status", "--porcelain"],
+            check=False, capture_output=True, text=True,
+        ).stdout.strip()
+        if dirty:
+            print(
+                "AFK refuses to start: the main checkout has uncommitted changes.\n"
+                "During PR review AFK switches and hard-resets this checkout, which "
+                "would discard them. Commit or stash your changes first, or run AFK "
+                "from a separate clone. Use --allow-dirty to override (work may be lost).",
+                file=sys.stderr,
+            )
+            return 1
 
     # ensure the labels the workflow projects onto GitHub exist
     gh.ensure_label("afk-in-progress", "BFDADC", "Claimed by the AFK workflow.")

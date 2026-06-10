@@ -1,9 +1,10 @@
-import { eq, and, lt, gte, lte, desc, isNull, count, inArray } from "drizzle-orm";
+import { eq, and, lt, gte, lte, desc, isNull, count, inArray, ilike } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   workspaces,
   workspaceMemberships,
+  users,
   runs,
   repositories,
   teams,
@@ -325,4 +326,56 @@ export async function listWorkspaceTeams(workspaceId: string): Promise<TeamRow[]
     memberCount: Number(r.memberCount),
     repositories: reposByTeam.get(r.id) ?? [],
   }));
+}
+
+export interface WorkspaceMemberRow {
+  userId: string;
+  workspaceId: string;
+  role: string;
+  joinedAt: Date;
+  email: string | null;
+  name: string | null;
+}
+
+export async function listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMemberRow[]> {
+  const rows = await db
+    .select({
+      userId: workspaceMemberships.userId,
+      workspaceId: workspaceMemberships.workspaceId,
+      role: workspaceMemberships.role,
+      joinedAt: workspaceMemberships.createdAt,
+      email: users.email,
+      name: users.name,
+    })
+    .from(workspaceMemberships)
+    .innerJoin(users, eq(users.id, workspaceMemberships.userId))
+    .where(eq(workspaceMemberships.workspaceId, workspaceId))
+    .orderBy(desc(workspaceMemberships.createdAt));
+
+  return rows as WorkspaceMemberRow[];
+}
+
+export async function findUserByEmail(email: string) {
+  const rows = await db
+    .select()
+    .from(users)
+    .where(ilike(users.email, email))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function addWorkspaceMember(data: {
+  userId: string;
+  workspaceId: string;
+  role: "member" | "admin";
+}) {
+  const rows = await db
+    .insert(workspaceMemberships)
+    .values({
+      userId: data.userId,
+      workspaceId: data.workspaceId,
+      role: data.role,
+    })
+    .returning();
+  return rows[0]!;
 }

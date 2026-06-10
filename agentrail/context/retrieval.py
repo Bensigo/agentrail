@@ -458,12 +458,27 @@ def _pre_bm25_scores(corpus: List[Dict[str, Any]], query_tokens: List[str], doc_
     return scores
 
 
+# Graph expansion only fires from high-confidence seeds: a candidate must score
+# at least this fraction of the strongest BM25 score, otherwise weak lexical
+# matches flood the code graph and tank precision-at-budget.
+_SEED_CONFIDENCE_RATIO = 0.5
+
+
 def _extract_retrieval_seeds(corpus: List[Dict[str, Any]], pre_bm25: Dict[str, float], max_seeds: int = 5) -> List[str]:
-    """Return up to max_seeds unique file paths with the highest pre-BM25 scores."""
+    """Return up to max_seeds unique file paths from high-confidence BM25 candidates.
+
+    Only candidates scoring at least ``_SEED_CONFIDENCE_RATIO`` of the top score
+    seed graph expansion, so low-confidence matches never pull noisy neighbours
+    into the context pack.
+    """
     doc_by_id = {str((doc["chunk"] or {}).get("id") or doc["source"].get("id")): doc for doc in corpus}
+    top_score = max(pre_bm25.values(), default=0.0)
+    if top_score <= 0:
+        return []
+    threshold = top_score * _SEED_CONFIDENCE_RATIO
     seeds: List[str] = []
     for item_id, _score in sorted(pre_bm25.items(), key=lambda kv: kv[1], reverse=True):
-        if _score <= 0 or len(seeds) >= max_seeds:
+        if _score < threshold or len(seeds) >= max_seeds:
             break
         doc = doc_by_id.get(item_id)
         if not doc:
@@ -681,8 +696,13 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         entry["score"]["fusedScore"] = rrf
         entry["score"]["denseScore"] = entry["score"]["embedding"]
         semantic = entry["score"]["embedding"] or 0.0
-        entry["score"]["final"] = lexical_raw[item_id] + semantic * 2 + entry["score"]["rrf"] * 10 + entry["score"]["authorityBoost"] - entry["score"]["authorityDemotion"] - entry["score"]["freshnessDemotion"] - entry["score"]["priorMistakeDemotion"]
-        if entry["score"]["final"] > 0:
+        # Relevance = lexical + semantic + fused rank. Authority only *boosts* an
+        # already-relevant result's rank; it must not inject an otherwise
+        # irrelevant high-authority doc into the budget (precision-at-budget noise).
+        relevance = lexical_raw[item_id] + semantic * 2 + entry["score"]["rrf"] * 10
+        entry["score"]["relevance"] = round(relevance, 6)
+        entry["score"]["final"] = relevance + entry["score"]["authorityBoost"] - entry["score"]["authorityDemotion"] - entry["score"]["freshnessDemotion"] - entry["score"]["priorMistakeDemotion"]
+        if relevance > 0 and entry["score"]["final"] > 0:
             results.append(entry)
     results.sort(key=lambda entry: (-entry["score"]["final"], str((entry["chunk"] or {}).get("citation") or entry["source"].get("path"))))
     formatted = []

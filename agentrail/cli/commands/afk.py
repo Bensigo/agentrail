@@ -121,4 +121,5 @@ def run_afk(args: List[str]) -> int:
           f"engine {opts['engine']}. State → {target}/.agentrail/afk/state.json")
     final = asyncio.run(runner.run())
     print(f"AFK done. {final.completed} merged, {final.failed} need human review.")
+    print("Replay this run:  agentrail timeline")
     return 0

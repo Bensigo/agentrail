@@ -4,28 +4,40 @@ _All numbers are measured and reproducible (`scripts/benchmark-all.py`). They ar
 
 ## Headline
 
-- **Same files as grep, a fraction of the tokens.** On express@5.2.1 symbol lookups, AgentRail returned the required file every time (100% recall) using **3,034 tokens** of compact context vs **5,641,768** to read grep's matches in full (-100%) and **189,495** for ripgrep's (-98%).
-- **Ranks the right file first.** Definition ranked #1 in **83%** of lookups (grep/ripgrep return an unordered pile).
+- **Same files as grep, a fraction of the tokens.** Across 2 real repos (express (6), flask (5)), AgentRail returned the required file every time (100% recall) using **5,797 tokens** of compact context vs **15,583,826** to read grep's matches in full (-100%) and **642,492** for ripgrep's (-99%).
+- **Ranks the right file first.** Definition ranked #1 in **82%** of lookups across both languages (grep/ripgrep return an unordered pile).
 - **Finds code by meaning, not just keywords.** With embeddings on (qwen3-embedding:latest), the correct file ranked #1 on 2/3 conceptual queries that share no words with it (2 flipped from a wrong #1 under keyword-only search).
 
 ## 1. Exact / symbol lookup — AgentRail vs grep vs ripgrep
 
-Target: **express@5.2.1** · 6 symbol queries with ground-truth definition files · embeddings off.
+2 real repos (express (6), flask (5)) · symbol queries with ground-truth definition files · embeddings off.
 
 | metric | grep | ripgrep | AgentRail |
 | --- | --- | --- | --- |
 | recall (finds the file) | 1.00 | 1.00 | 1.00 |
-| precision@1 (definition ranked first) | — | — | **0.83** |
-| tokens to obtain context | 5,641,768 | 189,495 | **3,034** |
+| precision@1 (definition ranked first) | — | — | **0.82** |
+| tokens to obtain context | 15,583,826 | 642,492 | **5,797** |
+
+### express
 
 | query | required | grep R/P (n) | rg R/P (n) | AgentRail R/P (n) | AR rank |
 | --- | --- | --- | --- | --- | --- |
-| `res.json` | lib/response.js | 1.00/0.05 (20) | 1.00/0.06 (16) | 1.00/0.10 (10) | #1 |
+| `res.json` | lib/response.js | 1.00/0.06 (16) | 1.00/0.06 (16) | 1.00/0.10 (10) | #1 |
 | `res.sendFile` | lib/response.js | 1.00/0.11 (9) | 1.00/0.20 (5) | 1.00/0.14 (7) | #1 |
 | `req.accepts` | lib/request.js | 1.00/0.09 (11) | 1.00/0.14 (7) | 1.00/0.10 (10) | #1 |
 | `app.listen` | lib/application.js | 1.00/0.03 (34) | 1.00/0.03 (30) | 1.00/0.10 (10) | #1 |
 | `createApplication` | lib/express.js | 1.00/0.25 (4) | 1.00/1.00 (1) | 1.00/0.25 (4) | #1 |
 | `function View` | lib/view.js | 1.00/0.33 (3) | 1.00/0.50 (2) | 1.00/0.10 (10) | #2 |
+
+### flask
+
+| query | required | grep R/P (n) | rg R/P (n) | AgentRail R/P (n) | AR rank |
+| --- | --- | --- | --- | --- | --- |
+| `jsonify` | src/flask/json/__init__.py | 1.00/0.05 (21) | 1.00/0.05 (21) | 1.00/0.14 (7) | #1 |
+| `url_for` | src/flask/app.py | 1.00/0.02 (50) | 1.00/0.02 (47) | 1.00/0.10 (10) | #2 |
+| `render_template` | src/flask/templating.py | 1.00/0.03 (35) | 1.00/0.03 (32) | 1.00/0.11 (9) | #1 |
+| `send_file` | src/flask/helpers.py | 1.00/0.08 (12) | 1.00/0.11 (9) | 1.00/0.12 (8) | #1 |
+| `stream_with_context` | src/flask/helpers.py | 1.00/0.08 (13) | 1.00/0.10 (10) | 1.00/0.20 (5) | #1 |
 
 ## 2. Semantic / conceptual retrieval
 
@@ -47,6 +59,7 @@ Embeddings: **qwen3-embedding:latest** (local Ollama).
 ## Reproduce
 ```bash
 PYTHONPATH=. python3 scripts/benchmark-all.py \
-  --exact-target /path/to/express --embed-model qwen3-embedding:latest \
+  --repo express=/path/to/express --repo flask=/path/to/flask \
+  --embed-model qwen3-embedding:latest \
   --out docs/benchmarks/results/context-retrieval-cli-latest.md
 ```

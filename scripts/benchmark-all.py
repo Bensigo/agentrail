@@ -107,12 +107,21 @@ def run_semantic(embed_model: str) -> Optional[Dict[str, Any]]:
     return {"available": True, "model": embed_model, "off": off, "on": on}
 
 
-def run_exact(target: Path, k: int) -> Dict[str, Any]:
+# Per-repo symbol-lookup suites (query -> ground-truth definition file).
+FLASK_FIXTURES = [
+    {"query": "jsonify", "required": ["src/flask/json/__init__.py"]},
+    {"query": "url_for", "required": ["src/flask/app.py"]},
+    {"query": "render_template", "required": ["src/flask/templating.py"]},
+    {"query": "send_file", "required": ["src/flask/helpers.py"]},
+    {"query": "stream_with_context", "required": ["src/flask/helpers.py"]},
+]
+REPO_SUITES = {"express": bvg.DEFAULT_EXPRESS_FIXTURES, "flask": FLASK_FIXTURES}
+
+
+def run_exact_repo(label: str, target: Path, fixtures: List[Dict[str, Any]], k: int) -> Dict[str, Any]:
     rows = []
-    agg = {t: {"recall": 0.0, "precision": 0.0, "p_at_1": 0.0} for t in ("grep", "ripgrep", "agentrail")}
     tok = {"grep_full": 0, "rg_full": 0, "agentrail_compact": 0}
-    n = len(bvg.DEFAULT_EXPRESS_FIXTURES)
-    for fx in bvg.DEFAULT_EXPRESS_FIXTURES:
+    for fx in fixtures:
         q, required = fx["query"], set(fx["required"])
         gm, rm = bvg.grep_files(q, target), bvg.rg_files(q, target)
         g, rg = bvg.score(gm, required), bvg.score(rm, required)
@@ -124,19 +133,31 @@ def run_exact(target: Path, k: int) -> Dict[str, Any]:
         tok["grep_full"] += bvg.full_file_tokens(gm, target)
         tok["rg_full"] += bvg.full_file_tokens(rm, target)
         tok["agentrail_compact"] += ar_tok
-        for key, m in (("grep", g), ("ripgrep", rg), ("agentrail", a)):
-            agg[key]["recall"] += m["recall"] / n
-            agg[key]["precision"] += m["precision"] / n
-        agg["agentrail"]["p_at_1"] += a["p_at_1"] / n
-    return {"rows": rows, "agg": agg, "tok": tok, "n": n}
+    return {"label": label, "rows": rows, "tok": tok, "n": len(fixtures)}
+
+
+def aggregate_exact(repos: List[Dict[str, Any]]) -> Dict[str, Any]:
+    total = sum(r["n"] for r in repos) or 1
+    agg = {t: {"recall": 0.0, "precision": 0.0, "p_at_1": 0.0} for t in ("grep", "ripgrep", "agentrail")}
+    tok = {"grep_full": 0, "rg_full": 0, "agentrail_compact": 0}
+    for repo in repos:
+        for key in tok:
+            tok[key] += repo["tok"][key]
+        for row in repo["rows"]:
+            for tool in ("grep", "ripgrep", "agentrail"):
+                agg[tool]["recall"] += row[tool]["recall"] / total
+                agg[tool]["precision"] += row[tool]["precision"] / total
+            agg["agentrail"]["p_at_1"] += row["agentrail"]["p_at_1"] / total
+    return {"agg": agg, "tok": tok, "n": total}
 
 
 def _pct(new: float, old: float) -> str:
     return f"-{round((old - new) / old * 100)}%" if old else "n/a"
 
 
-def build_markdown(exact: Dict[str, Any], semantic: Optional[Dict[str, Any]], target_label: str) -> str:
-    e, agg, tok = exact, exact["agg"], exact["tok"]
+def build_markdown(repos: List[Dict[str, Any]], combined: Dict[str, Any], semantic: Optional[Dict[str, Any]]) -> str:
+    agg, tok = combined["agg"], combined["tok"]
+    repo_labels = ", ".join(f"{r['label']} ({r['n']})" for r in repos)
     L: List[str] = [
         "# AgentRail Context Retrieval — Benchmarks",
         "",
@@ -146,13 +167,15 @@ def build_markdown(exact: Dict[str, Any], semantic: Optional[Dict[str, Any]], ta
         "",
         "## Headline",
         "",
-        f"- **Same files as grep, a fraction of the tokens.** On {target_label} symbol lookups, AgentRail"
-        f" returned the required file every time ({agg['agentrail']['recall']:.0%} recall) using"
-        f" **{tok['agentrail_compact']:,} tokens** of compact context vs **{tok['grep_full']:,}** to read grep's"
-        f" matches in full ({_pct(tok['agentrail_compact'], tok['grep_full'])}) and **{tok['rg_full']:,}** for"
-        f" ripgrep's ({_pct(tok['agentrail_compact'], tok['rg_full'])}).",
+        f"- **Same files as grep, a fraction of the tokens.** Across {len(repos)} real repos"
+        f" ({repo_labels}), AgentRail returned the required file every time"
+        f" ({agg['agentrail']['recall']:.0%} recall) using **{tok['agentrail_compact']:,} tokens** of compact"
+        f" context vs **{tok['grep_full']:,}** to read grep's matches in full"
+        f" ({_pct(tok['agentrail_compact'], tok['grep_full'])}) and **{tok['rg_full']:,}** for ripgrep's"
+        f" ({_pct(tok['agentrail_compact'], tok['rg_full'])}).",
         f"- **Ranks the right file first.** Definition ranked #1 in"
-        f" **{agg['agentrail']['p_at_1']:.0%}** of lookups (grep/ripgrep return an unordered pile).",
+        f" **{agg['agentrail']['p_at_1']:.0%}** of lookups across both languages (grep/ripgrep return an"
+        f" unordered pile).",
     ]
     if semantic and semantic.get("available"):
         moved = sum(1 for off, on in zip(semantic["off"], semantic["on"]) if on["rank"] == 1 and off["rank"] != 1)
@@ -164,21 +187,26 @@ def build_markdown(exact: Dict[str, Any], semantic: Optional[Dict[str, Any]], ta
         "",
         "## 1. Exact / symbol lookup — AgentRail vs grep vs ripgrep",
         "",
-        f"Target: **{target_label}** · {e['n']} symbol queries with ground-truth definition files · embeddings off.",
+        f"{len(repos)} real repos ({repo_labels}) · symbol queries with ground-truth definition files · embeddings off.",
         "",
         "| metric | grep | ripgrep | AgentRail |",
         "| --- | --- | --- | --- |",
         f"| recall (finds the file) | {agg['grep']['recall']:.2f} | {agg['ripgrep']['recall']:.2f} | {agg['agentrail']['recall']:.2f} |",
         f"| precision@1 (definition ranked first) | — | — | **{agg['agentrail']['p_at_1']:.2f}** |",
         f"| tokens to obtain context | {tok['grep_full']:,} | {tok['rg_full']:,} | **{tok['agentrail_compact']:,}** |",
-        "",
-        "| query | required | grep R/P (n) | rg R/P (n) | AgentRail R/P (n) | AR rank |",
-        "| --- | --- | --- | --- | --- | --- |",
     ]
-    for r in e["rows"]:
-        def c(m):
-            return f"{m['recall']:.2f}/{m['precision']:.2f} ({m['returned']})"
-        L.append(f"| `{r['query']}` | {', '.join(r['required'])} | {c(r['grep'])} | {c(r['ripgrep'])} | {c(r['agentrail'])} | #{r['agentrail']['firstRank']} |")
+    for repo in repos:
+        L += [
+            "",
+            f"### {repo['label']}",
+            "",
+            "| query | required | grep R/P (n) | rg R/P (n) | AgentRail R/P (n) | AR rank |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+        for r in repo["rows"]:
+            def c(m):
+                return f"{m['recall']:.2f}/{m['precision']:.2f} ({m['returned']})"
+            L.append(f"| `{r['query']}` | {', '.join(r['required'])} | {c(r['grep'])} | {c(r['ripgrep'])} | {c(r['agentrail'])} | #{r['agentrail']['firstRank']} |")
     L += [
         "",
         "## 2. Semantic / conceptual retrieval",
@@ -215,7 +243,8 @@ def build_markdown(exact: Dict[str, Any], semantic: Optional[Dict[str, Any]], ta
         "## Reproduce",
         "```bash",
         "PYTHONPATH=. python3 scripts/benchmark-all.py \\",
-        "  --exact-target /path/to/express --embed-model qwen3-embedding:latest \\",
+        "  --repo express=/path/to/express --repo flask=/path/to/flask \\",
+        "  --embed-model qwen3-embedding:latest \\",
         "  --out docs/benchmarks/results/context-retrieval-cli-latest.md",
         "```",
         "",
@@ -225,23 +254,32 @@ def build_markdown(exact: Dict[str, Any], semantic: Optional[Dict[str, Any]], ta
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exact-target", required=True, help="Real repo for the grep/rg comparison (e.g. express).")
-    ap.add_argument("--exact-label", default="")
+    ap.add_argument("--repo", action="append", default=[], metavar="suite=path",
+                    help=f"Repo to benchmark as suite=path; suites: {', '.join(REPO_SUITES)}. Repeatable.")
     ap.add_argument("--embed-model", default="qwen3-embedding:latest")
     ap.add_argument("--k", type=int, default=10)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
-    target = Path(args.exact_target).resolve()
-    label = args.exact_label or target.name
-    exact = run_exact(target, args.k)
+    if not args.repo:
+        ap.error("at least one --repo suite=path is required")
+    repos: List[Dict[str, Any]] = []
+    for spec in args.repo:
+        suite, _, path = spec.partition("=")
+        if suite not in REPO_SUITES or not path:
+            ap.error(f"--repo must be one of {list(REPO_SUITES)}=path; got {spec!r}")
+        target = Path(path).resolve()
+        repos.append(run_exact_repo(suite, target, REPO_SUITES[suite], args.k))
+
+    combined = aggregate_exact(repos)
     semantic = run_semantic(args.embed_model)
-    md = build_markdown(exact, semantic, label)
+    md = build_markdown(repos, combined, semantic)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(md, encoding="utf-8")
     print(f"wrote {args.out}")
-    print(f"  exact: recall={exact['agg']['agentrail']['recall']:.2f} precision@1={exact['agg']['agentrail']['p_at_1']:.2f} "
-          f"tokens={exact['tok']['agentrail_compact']:,} (grep {exact['tok']['grep_full']:,})")
+    a = combined["agg"]["agentrail"]
+    print(f"  exact ({len(repos)} repos, {combined['n']} queries): recall={a['recall']:.2f} precision@1={a['p_at_1']:.2f} "
+          f"tokens={combined['tok']['agentrail_compact']:,} (grep {combined['tok']['grep_full']:,})")
     if semantic and semantic.get("available"):
         print(f"  semantic ({semantic['model']}): #1 on {sum(1 for o in semantic['on'] if o['rank']==1)}/{len(semantic['on'])} conceptual queries")
     else:

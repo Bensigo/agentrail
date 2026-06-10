@@ -6761,7 +6761,10 @@ run_agentrail_run() {
       run_issue "$issue" "$@"
       ;;
     batch)
-      shift
+      # NOTE: do not shift here — the outer `shift` above already dropped the
+      # "batch" subcommand, so $@ is the issue list. The issue) branch shifts
+      # only because it first captures $1 as the issue number; batch has no
+      # such capture, so an extra shift would silently drop the first issue.
       run_batch "$@"
       ;;
     -h|--help)

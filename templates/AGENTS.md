@@ -148,6 +148,22 @@ AgentRail CLI:
 - Use `agentrail prompt review <number>` to generate review prompts.
 - Use `agentrail doctor` and `agentrail upgrade` for install health and migration.
 
+## Context Retrieval
+
+Before broad repo exploration, use AgentRail context retrieval. It returns the
+right files as bounded line ranges and symbols, not whole-file dumps, so you
+spend tokens on relevant code instead of noise.
+
+- Use `agentrail context search "<query>"` first to get ranked candidates with
+  paths, line ranges, symbols, bounded snippets, reasons, and scores.
+- Use `agentrail context get <path> --lines A-B` (or `--symbol NAME`) to read
+  only the lines or symbol you need.
+- Do not read full files until AgentRail returns candidate line ranges. Only
+  request a whole file when the snippets are genuinely insufficient.
+- Prefer `agentrail context search` / `agentrail context get` over raw file
+  search and full-file reads.
+- Record the context pack path and selected sources in run metadata.
+
 AgentRail is the harness. The configured runner is the worker. Ralph is the internal one-issue executor invoked by `agentrail run issue`. AFK is the queue/worktree loop invoked by `agentrail afk`.
 
 Raw workflow helpers are AgentRail internals. Do not call Ralph, AFK, PR, review, or memory scripts directly from an installed project unless a maintainer is debugging AgentRail itself.

@@ -24,6 +24,7 @@ export async function GET(
 
   return NextResponse.json({
     caller_role: membership.role,
+    caller_user_id: session.user.id,
     members: members.map((m) => ({
       user_id: m.userId,
       name: m.name,

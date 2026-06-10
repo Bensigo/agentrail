@@ -17,23 +17,38 @@ interface Member {
 interface PendingInvite {
   id: string;
   email: string;
-  role: "admin" | "member";
+  role: "admin" | "member" | "viewer";
   token: string;
   createdAt: string;
 }
 
-interface MembersResponse {
-  members: Member[];
-  currentMember: {
-    id: string;
-    email: string;
-    name: string;
-    role: "owner" | "admin" | "member";
-  };
+interface CurrentMember {
+  id: string;
+  email: string;
+  name: string;
+  role: "owner" | "admin" | "member";
 }
 
-interface InvitesResponse {
-  invites: PendingInvite[];
+// ─── API response shapes (snake_case, as returned by the route handlers) ────────
+
+interface MembersApiResponse {
+  caller_role: "owner" | "admin" | "member";
+  caller_user_id: string;
+  members: Array<{
+    user_id: string;
+    name: string | null;
+    email: string | null;
+    role: "owner" | "admin" | "member";
+    joined_at: string;
+  }>;
+}
+
+interface ApiInvite {
+  id: string;
+  email: string;
+  role: "admin" | "member" | "viewer";
+  token: string;
+  created_at: string;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -62,7 +77,7 @@ export default function MembersPage() {
 
   // Members state
   const [members, setMembers] = useState<Member[]>([]);
-  const [currentMember, setCurrentMember] = useState<MembersResponse["currentMember"] | null>(null);
+  const [currentMember, setCurrentMember] = useState<CurrentMember | null>(null);
   const [membersLoading, setMembersLoading] = useState(true);
   const [membersError, setMembersError] = useState("");
 
@@ -93,9 +108,24 @@ export default function MembersPage() {
         setMembersError(`Failed to load members (${res.status}).`);
         return;
       }
-      const data = await res.json() as MembersResponse;
-      setMembers(data.members ?? []);
-      setCurrentMember(data.currentMember ?? null);
+      const data = await res.json() as MembersApiResponse;
+      const rows = data.members ?? [];
+      setMembers(
+        rows.map((m) => ({
+          id: m.user_id,
+          email: m.email ?? "",
+          name: m.name ?? "",
+          role: m.role,
+          joinedAt: m.joined_at,
+        }))
+      );
+      const me = rows.find((m) => m.user_id === data.caller_user_id);
+      setCurrentMember({
+        id: data.caller_user_id,
+        email: me?.email ?? "",
+        name: me?.name ?? "",
+        role: data.caller_role,
+      });
     } catch {
       setMembersError("Network error loading members.");
     } finally {
@@ -112,8 +142,16 @@ export default function MembersPage() {
         setInvitesError(`Failed to load pending invites (${res.status}).`);
         return;
       }
-      const data = await res.json() as InvitesResponse;
-      setInvites(data.invites ?? []);
+      const data = await res.json() as { invites: ApiInvite[] };
+      setInvites(
+        (data.invites ?? []).map((i) => ({
+          id: i.id,
+          email: i.email,
+          role: i.role,
+          token: i.token,
+          createdAt: i.created_at,
+        }))
+      );
     } catch {
       setInvitesError("Network error loading invites.");
     } finally {
@@ -159,7 +197,14 @@ export default function MembersPage() {
         setInviteFormError(msg ?? `Failed to send invite (${res.status}).`);
         return;
       }
-      const newInvite = await res.json() as PendingInvite;
+      const data = await res.json() as { invite: ApiInvite };
+      const newInvite: PendingInvite = {
+        id: data.invite.id,
+        email: data.invite.email,
+        role: data.invite.role,
+        token: data.invite.token,
+        createdAt: data.invite.created_at,
+      };
       setInvites((prev) => [newInvite, ...prev]);
       setInviteEmail("");
     } catch {

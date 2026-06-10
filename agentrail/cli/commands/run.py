@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
@@ -57,6 +58,43 @@ def run_run(args: List[str]) -> int:
     except UsageError as exc:
         print(str(exc), file=sys.stderr)
         return exc.code
+
+
+@dataclass
+class RunOptions:
+    agent: str = "__config__"
+    target: str = ""
+    command: str = ""
+    log_dir: str = ""
+
+
+def _need_value(args: List[str], i: int, flag: str) -> str:
+    if i + 1 >= len(args) or args[i + 1].startswith("--"):
+        raise UsageError(f"{flag} requires a value")
+    return args[i + 1]
+
+
+def parse_run_options(args: List[str]) -> RunOptions:
+    opts = RunOptions(target=os.getcwd())
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--agent":
+            value = _need_value(args, i, "--agent")
+            if value not in AGENTS:
+                raise UsageError("--agent must be codex, claude, cursor, hermes, or custom")
+            opts.agent = value; i += 2
+        elif a == "--target":
+            opts.target = _need_value(args, i, "--target"); i += 2
+        elif a == "--command":
+            opts.command = _need_value(args, i, "--command"); i += 2
+        elif a == "--log-dir":
+            opts.log_dir = _need_value(args, i, "--log-dir"); i += 2
+        elif a in ("-h", "--help"):
+            print(_usage()); raise UsageError("", code=0)
+        else:
+            raise UsageError(f"Unknown option: {a}")
+    return opts
 
 
 def _dispatch(args: List[str]) -> int:

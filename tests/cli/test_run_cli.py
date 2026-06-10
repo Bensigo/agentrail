@@ -8,7 +8,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from agentrail.cli.commands.run import run_run, AGENTS, DEFAULT_COMMANDS
+from agentrail.cli.commands.run import run_run, AGENTS, DEFAULT_COMMANDS, parse_run_options, UsageError
 
 
 class RunHelpTests(unittest.TestCase):
@@ -30,3 +30,37 @@ class RunHelpTests(unittest.TestCase):
         for agent in AGENTS:
             self.assertIn(agent, DEFAULT_COMMANDS,
                           f"Agent '{agent}' missing from DEFAULT_COMMANDS")
+
+
+class ParseRunOptionsTests(unittest.TestCase):
+    def test_defaults(self) -> None:
+        opts = parse_run_options([])
+        self.assertEqual(opts.agent, "__config__")
+        self.assertEqual(opts.command, "")
+        self.assertEqual(opts.log_dir, "")
+        # target defaults to cwd
+        self.assertTrue(opts.target)
+
+    def test_all_flags(self) -> None:
+        opts = parse_run_options(
+            ["--agent", "claude", "--target", "/tmp/x",
+             "--command", "claude -p", "--log-dir", "/tmp/logs"])
+        self.assertEqual(opts.agent, "claude")
+        self.assertEqual(opts.target, "/tmp/x")
+        self.assertEqual(opts.command, "claude -p")
+        self.assertEqual(opts.log_dir, "/tmp/logs")
+
+    def test_bad_agent_rejected(self) -> None:
+        with self.assertRaises(UsageError) as ctx:
+            parse_run_options(["--agent", "bogus"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_flag_missing_value_rejected(self) -> None:
+        for flag in ("--agent", "--target", "--command", "--log-dir"):
+            with self.subTest(flag=flag):
+                with self.assertRaises(UsageError):
+                    parse_run_options([flag])
+
+    def test_unknown_option_rejected(self) -> None:
+        with self.assertRaises(UsageError):
+            parse_run_options(["--nope"])

@@ -45,6 +45,60 @@ function parseAgentAB(): AgentAB | null {
 
 const ACCENT = "#ffe629";
 
+const STEPS = [
+  {
+    n: "01",
+    title: "Point it at your repo",
+    cmd: "agentrail init",
+    desc: "One command builds a local hybrid index of your codebase — BM25, code graph, and embeddings. Repo-native; nothing leaves your machine to retrieve context.",
+  },
+  {
+    n: "02",
+    title: "Agents run on compiled context",
+    cmd: "agentrail run",
+    desc: "Instead of whole files, agents pull bounded line-range context packs with a cited reason per pick — the source of the measured token win.",
+  },
+  {
+    n: "03",
+    title: "Gate and review",
+    cmd: "review gates",
+    desc: "Policy checkpoints stop agents between phases to show evidence. AFK mode runs unattended work that stays inside the gates.",
+  },
+  {
+    n: "04",
+    title: "See it in the console",
+    cmd: "→ dashboard",
+    desc: "Every run, context pack, cost, failure, and audit event lands in one team workspace — searchable, replayable, and governed.",
+  },
+];
+
+const FAQS = [
+  {
+    q: "Is the AgentRail CLI really free?",
+    a: "Yes — the CLI is free forever for every developer. It runs agents on your machine with hybrid context retrieval, review gates, and durable memory. The console is the team layer, where those runs become a shared, governed system.",
+  },
+  {
+    q: "Do you store my source code?",
+    a: "No. The context engine indexes your repo locally, and nothing leaves your machine to retrieve context. The server stores run metadata, context-pack citations (line ranges, not file contents), costs, and audit events — not your source by default.",
+  },
+  {
+    q: "How does the context retrieval actually work?",
+    a: "A hybrid index combines BM25 keyword search, a code graph, and embeddings, with a query classifier that picks the right mode. It returns bounded line ranges with a cited reason for every pick — not whole files — which is what drives the token reduction.",
+  },
+  {
+    q: "Which agents and models does it work with?",
+    a: "Any coding agent you drive through the CLI, including Claude and Codex. The console records whatever runs feed it, so your team sees every agent's work in one place regardless of model.",
+  },
+  {
+    q: "What exactly does the −24% mean?",
+    a: "Total end-to-end tokens for the same multi-file coding task on a real repo (psf/requests), through the same agent, with vs without AgentRail, averaged over three repetitions. A measured run — not a synthetic context-gathering estimate.",
+  },
+  {
+    q: "Can agents run unattended?",
+    a: "Yes. AFK mode runs multi-phase agent work without babysitting, bounded by review gates that stop and show evidence between phases — so unattended never means ungoverned.",
+  },
+];
+
 export default async function LandingPage() {
   const session = await auth();
   if (session?.user?.id) {
@@ -86,6 +140,12 @@ export default async function LandingPage() {
             </span>
           </div>
           <div className="flex items-center gap-1">
+            <a
+              href="#how"
+              className="hidden rounded px-3 py-1.5 text-[13px] text-[var(--gray-10)] transition-colors hover:text-[var(--gray-12)] sm:block"
+            >
+              How it works
+            </a>
             <a
               href="#proof"
               className="rounded px-3 py-1.5 text-[13px] text-[var(--gray-10)] transition-colors hover:text-[var(--gray-12)]"
@@ -223,6 +283,37 @@ export default async function LandingPage() {
       <section className="relative z-10 px-6 pb-16 pt-4">
         <div className="mx-auto max-w-[1180px]">
           <RailFlow />
+        </div>
+      </section>
+
+      {/* How it works — STEP 01–04 */}
+      <section
+        id="how"
+        className="relative z-10 border-t border-[var(--gray-04)]/60 px-6 py-20"
+      >
+        <div className="mx-auto max-w-[1180px]">
+          <Reveal>
+            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--gray-09)]">
+              How it works
+            </p>
+            <h2
+              className={`${display.className} mt-3 max-w-[24ch] text-[clamp(1.8rem,3.4vw,2.8rem)] font-extrabold tracking-[-0.03em]`}
+            >
+              From{" "}
+              <span className="font-mono text-[0.78em]" style={{ color: ACCENT }}>
+                agentrail&nbsp;init
+              </span>{" "}
+              to a governed team — in four steps.
+            </h2>
+          </Reveal>
+
+          <div className="mt-12 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {STEPS.map((s, i) => (
+              <Reveal key={s.n} delay={i * 80}>
+                <Step n={s.n} title={s.title} desc={s.desc} cmd={s.cmd} />
+              </Reveal>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -497,6 +588,33 @@ export default async function LandingPage() {
         </div>
       </section>
 
+      {/* FAQ */}
+      <section
+        id="faq"
+        className="relative z-10 border-t border-[var(--gray-04)]/60 px-6 py-20"
+      >
+        <div className="mx-auto max-w-[820px]">
+          <Reveal>
+            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--gray-09)]">
+              FAQ
+            </p>
+            <h2
+              className={`${display.className} mt-3 text-[clamp(1.8rem,3.4vw,2.8rem)] font-extrabold tracking-[-0.03em]`}
+            >
+              Questions, answered.
+            </h2>
+          </Reveal>
+          <Reveal
+            delay={100}
+            className="mt-10 divide-y divide-[var(--gray-04)] border-y border-[var(--gray-04)]"
+          >
+            {FAQS.map((f) => (
+              <Faq key={f.q} q={f.q} a={f.a} />
+            ))}
+          </Reveal>
+        </div>
+      </section>
+
       {/* Final CTA */}
       <section className="relative z-10 border-t border-[var(--gray-04)]/60 px-6 py-24">
         <div className="mx-auto max-w-[1180px]">
@@ -559,6 +677,63 @@ export default async function LandingPage() {
 }
 
 /* ---------------------------------------------------------------- pieces */
+
+function Step({
+  n,
+  title,
+  desc,
+  cmd,
+}: {
+  n: string;
+  title: string;
+  desc: string;
+  cmd: string;
+}) {
+  return (
+    <div className="ar-cell flex h-full flex-col rounded-xl border border-[var(--gray-05)] bg-[var(--gray-01)]/60 p-5">
+      <div className="flex items-baseline justify-between">
+        <span
+          className={`${display.className} text-[2.4rem] font-extrabold leading-none tracking-tight text-[var(--gray-06)]`}
+        >
+          {n}
+        </span>
+        <span className="rounded-full border border-[var(--gray-05)] px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-[var(--gray-09)]">
+          Step
+        </span>
+      </div>
+      <h3 className="mt-4 text-[15px] font-bold text-[var(--gray-12)]">{title}</h3>
+      <p className="mt-2 flex-1 text-[13px] leading-relaxed text-[var(--gray-10)]">
+        {desc}
+      </p>
+      <code
+        className="mt-4 inline-block self-start rounded-md border border-[var(--gray-05)] bg-[var(--gray-00)]/60 px-2.5 py-1.5 font-mono text-[12px]"
+        style={{ color: ACCENT }}
+      >
+        {cmd}
+      </code>
+    </div>
+  );
+}
+
+function Faq({ q, a }: { q: string; a: string }) {
+  return (
+    <details className="group py-4">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 text-[15px] font-medium text-[var(--gray-12)] [&::-webkit-details-marker]:hidden">
+        {q}
+        <span
+          aria-hidden
+          className="shrink-0 text-lg leading-none transition-transform duration-200 group-open:rotate-45"
+          style={{ color: ACCENT }}
+        >
+          +
+        </span>
+      </summary>
+      <p className="mt-3 max-w-[68ch] text-[14px] leading-relaxed text-[var(--gray-10)]">
+        {a}
+      </p>
+    </details>
+  );
+}
 
 function SignalStat({
   kpi,

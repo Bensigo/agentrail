@@ -4,7 +4,7 @@ _All numbers are measured and reproducible (`scripts/benchmark-all.py`). They ar
 
 ## Headline
 
-- **Same files as grep, a fraction of the tokens.** Across 2 real repos (express (6), flask (5)), AgentRail returned the required file every time (100% recall) using **5,797 tokens** of compact context vs **15,583,826** to read grep's matches in full (-100%) and **642,492** for ripgrep's (-99%).
+- **Same files, far fewer tokens — even vs a *smart* agent.** Across 2 real repos (express (6), flask (5)), AgentRail found the required file every time (100% recall) using **5,797 tokens** of compact context. Reading those same right files in full (best case for a grep/ripgrep agent) costs **52,249** (-89%); reading *every* grep match in full costs **15,583,826** (-100%).
 - **Ranks the right file first.** Definition ranked #1 in **82%** of lookups across both languages (grep/ripgrep return an unordered pile).
 - **Finds code by meaning, not just keywords.** With embeddings on (qwen3-embedding:latest), the correct file ranked #1 on 2/3 conceptual queries that share no words with it (2 flipped from a wrong #1 under keyword-only search).
 
@@ -17,6 +17,18 @@ _All numbers are measured and reproducible (`scripts/benchmark-all.py`). They ar
 | recall (finds the file) | 1.00 | 1.00 | 1.00 |
 | precision@1 (definition ranked first) | — | — | **0.82** |
 | tokens to obtain context | 15,583,826 | 642,492 | **5,797** |
+
+### Context-gathering token cost (the token-savings claim)
+
+How many tokens an agent spends just to *get the context* for these tasks, by strategy:
+
+| strategy | tokens | vs AgentRail |
+| --- | --- | --- |
+| naive: grep, read every matched file in full | 15,583,826 | AgentRail -100% |
+| smart agent: read only the right files, in full | 52,249 | AgentRail -89% |
+| **AgentRail: read the returned line ranges** | **5,797** | — |
+
+Both baselines are shown so the range is honest: AgentRail beats even the *generous* baseline (an agent that magically opens exactly the right files) because it reads line ranges, not whole files.
 
 ### express
 

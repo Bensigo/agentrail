@@ -120,7 +120,11 @@ REPO_SUITES = {"express": bvg.DEFAULT_EXPRESS_FIXTURES, "flask": FLASK_FIXTURES}
 
 def run_exact_repo(label: str, target: Path, fixtures: List[Dict[str, Any]], k: int) -> Dict[str, Any]:
     rows = []
-    tok = {"grep_full": 0, "rg_full": 0, "agentrail_compact": 0}
+    # Three context-gathering strategies, by tokens consumed to obtain the context:
+    #   grep_full     naive: grep, read every matched file in full (worst case)
+    #   required_full smart agent: read only the right files in full (best case for grep)
+    #   agentrail_compact  AgentRail: read the line ranges / snippets it returns
+    tok = {"grep_full": 0, "rg_full": 0, "required_full": 0, "agentrail_compact": 0}
     for fx in fixtures:
         q, required = fx["query"], set(fx["required"])
         gm, rm = bvg.grep_files(q, target), bvg.rg_files(q, target)
@@ -132,6 +136,7 @@ def run_exact_repo(label: str, target: Path, fixtures: List[Dict[str, Any]], k: 
         rows.append({"query": q, "required": sorted(required), "grep": g, "ripgrep": rg, "agentrail": a})
         tok["grep_full"] += bvg.full_file_tokens(gm, target)
         tok["rg_full"] += bvg.full_file_tokens(rm, target)
+        tok["required_full"] += bvg.full_file_tokens(required, target)
         tok["agentrail_compact"] += ar_tok
     return {"label": label, "rows": rows, "tok": tok, "n": len(fixtures)}
 
@@ -139,7 +144,7 @@ def run_exact_repo(label: str, target: Path, fixtures: List[Dict[str, Any]], k: 
 def aggregate_exact(repos: List[Dict[str, Any]]) -> Dict[str, Any]:
     total = sum(r["n"] for r in repos) or 1
     agg = {t: {"recall": 0.0, "precision": 0.0, "p_at_1": 0.0} for t in ("grep", "ripgrep", "agentrail")}
-    tok = {"grep_full": 0, "rg_full": 0, "agentrail_compact": 0}
+    tok = {"grep_full": 0, "rg_full": 0, "required_full": 0, "agentrail_compact": 0}
     for repo in repos:
         for key in tok:
             tok[key] += repo["tok"][key]
@@ -167,12 +172,12 @@ def build_markdown(repos: List[Dict[str, Any]], combined: Dict[str, Any], semant
         "",
         "## Headline",
         "",
-        f"- **Same files as grep, a fraction of the tokens.** Across {len(repos)} real repos"
-        f" ({repo_labels}), AgentRail returned the required file every time"
-        f" ({agg['agentrail']['recall']:.0%} recall) using **{tok['agentrail_compact']:,} tokens** of compact"
-        f" context vs **{tok['grep_full']:,}** to read grep's matches in full"
-        f" ({_pct(tok['agentrail_compact'], tok['grep_full'])}) and **{tok['rg_full']:,}** for ripgrep's"
-        f" ({_pct(tok['agentrail_compact'], tok['rg_full'])}).",
+        f"- **Same files, far fewer tokens — even vs a *smart* agent.** Across {len(repos)} real repos"
+        f" ({repo_labels}), AgentRail found the required file every time ({agg['agentrail']['recall']:.0%} recall)"
+        f" using **{tok['agentrail_compact']:,} tokens** of compact context. Reading those same right files in"
+        f" full (best case for a grep/ripgrep agent) costs **{tok['required_full']:,}**"
+        f" ({_pct(tok['agentrail_compact'], tok['required_full'])}); reading *every* grep match in full costs"
+        f" **{tok['grep_full']:,}** ({_pct(tok['agentrail_compact'], tok['grep_full'])}).",
         f"- **Ranks the right file first.** Definition ranked #1 in"
         f" **{agg['agentrail']['p_at_1']:.0%}** of lookups across both languages (grep/ripgrep return an"
         f" unordered pile).",
@@ -194,6 +199,19 @@ def build_markdown(repos: List[Dict[str, Any]], combined: Dict[str, Any], semant
         f"| recall (finds the file) | {agg['grep']['recall']:.2f} | {agg['ripgrep']['recall']:.2f} | {agg['agentrail']['recall']:.2f} |",
         f"| precision@1 (definition ranked first) | — | — | **{agg['agentrail']['p_at_1']:.2f}** |",
         f"| tokens to obtain context | {tok['grep_full']:,} | {tok['rg_full']:,} | **{tok['agentrail_compact']:,}** |",
+        "",
+        "### Context-gathering token cost (the token-savings claim)",
+        "",
+        "How many tokens an agent spends just to *get the context* for these tasks, by strategy:",
+        "",
+        "| strategy | tokens | vs AgentRail |",
+        "| --- | --- | --- |",
+        f"| naive: grep, read every matched file in full | {tok['grep_full']:,} | AgentRail {_pct(tok['agentrail_compact'], tok['grep_full'])} |",
+        f"| smart agent: read only the right files, in full | {tok['required_full']:,} | AgentRail {_pct(tok['agentrail_compact'], tok['required_full'])} |",
+        f"| **AgentRail: read the returned line ranges** | **{tok['agentrail_compact']:,}** | — |",
+        "",
+        "Both baselines are shown so the range is honest: AgentRail beats even the *generous* baseline"
+        " (an agent that magically opens exactly the right files) because it reads line ranges, not whole files.",
     ]
     for repo in repos:
         L += [

@@ -475,6 +475,9 @@ def _extract_retrieval_seeds(corpus: List[Dict[str, Any]], pre_bm25: Dict[str, f
 
 
 def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str, Any]:
+    from agentrail.context.planner import classify_query
+
+    planner = classify_query(query)
     root = target_dir.resolve()
     build_index(root)
     index = load_index(root)
@@ -683,6 +686,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         "event": "context_query",
         "citation": ".agentrail/context/audit/events.jsonl",
         "queryHash": sha256_text(query),
+        "retrievalMode": planner["retrievalMode"],
         "resultCount": len(formatted),
         "excludedCount": len(excluded),
         "providerMode": provider.get("mode") or embedding_mode,
@@ -694,6 +698,8 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         "target": {"kind": "query", "query": query},
         "query": query,
         "limit": limit,
+        "retrievalMode": planner["retrievalMode"],
+        "planner": planner,
         "generatedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "index": {"version": index.get("version"), "builtAt": index.get("builtAt")},
         "retrievalBudget": retrieval_budget,
@@ -763,6 +769,8 @@ def search_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str
         "command": "context.search",
         "query": query,
         "limit": limit,
+        "retrievalMode": raw.get("retrievalMode"),
+        "planner": raw.get("planner"),
         "generatedAt": raw.get("generatedAt"),
         "provider": raw.get("provider"),
         "retrievalBudget": raw.get("retrievalBudget"),

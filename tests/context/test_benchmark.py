@@ -86,6 +86,34 @@ class BenchmarkHarnessTests(unittest.TestCase):
         self.assertEqual(planner["deniedSourceLeakage"], 0)
         self.assertEqual(planner["staleEmbeddingLeakage"], 0)
 
+    def test_flags_required_sources_missing_from_repo(self) -> None:
+        root = make_repo()
+        # Reference a missing file and a wrong-case file; both differ from what exists.
+        fixtures = {
+            "schemaVersion": 1,
+            "fixtures": [{
+                "name": "validity",
+                "task": "alpha_token_handler()",
+                "requiredSources": ["src/WIDGET.py", "src/ghost.py"],
+                "expectedExcludedSources": [".env"],
+            }],
+        }
+        path = root / "benchmark-fixtures.json"
+        path.write_text(json.dumps(fixtures), encoding="utf-8")
+        report = run_benchmark(root, path)
+        fixture = report["fixtures"][0]
+        # src/WIDGET.py resolves case-insensitively to src/widget.py -> NOT missing.
+        # src/ghost.py truly does not exist -> flagged.
+        self.assertIn("src/ghost.py", fixture["requiredSourcesMissingFromRepo"])
+        self.assertNotIn("src/widget.py", fixture["requiredSourcesMissingFromRepo"])
+        self.assertNotIn("src/WIDGET.py", fixture["requiredSourcesMissingFromRepo"])
+
+    def test_fixtures_file_is_not_indexed_into_results(self) -> None:
+        root = make_repo()
+        report = run_benchmark(root, write_fixtures(root))
+        for name, variant in report["variants"].items():
+            self.assertNotIn("benchmark-fixtures.json", variant["metrics"]["selectedSources"], f"{name} leaked the fixtures file")
+
     def test_pass_gates_and_summary_present(self) -> None:
         root = make_repo()
         report = run_benchmark(root, write_fixtures(root))

@@ -1,7 +1,8 @@
 # Context Retrieval Benchmark
 
-Generated: 2026-06-10T08:20:22.929Z
+Generated: 2026-06-10T08:50:31.127Z
 Fixtures: 1
+Invalid fixtures (required source not in repo): none
 Token estimator: chars/4
 Embedding provider: disabled
 

@@ -5,10 +5,17 @@ without an agent, gh, or a real repo.
 """
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from agentrail.cli.commands.run import run_run, AGENTS, DEFAULT_COMMANDS, parse_run_options, UsageError
+from agentrail.cli.commands.run import (
+    run_run, AGENTS, DEFAULT_COMMANDS, parse_run_options, UsageError,
+    resolve_agent_name, resolve_agent_command,
+)
 
 
 class RunHelpTests(unittest.TestCase):
@@ -64,3 +71,41 @@ class ParseRunOptionsTests(unittest.TestCase):
     def test_unknown_option_rejected(self) -> None:
         with self.assertRaises(UsageError):
             parse_run_options(["--nope"])
+
+
+class ResolveAgentTests(unittest.TestCase):
+    def _cfg(self, data: dict) -> str:
+        d = tempfile.mkdtemp()
+        (Path(d) / ".agentrail").mkdir()
+        (Path(d) / ".agentrail" / "config.json").write_text(json.dumps(data))
+        return d
+
+    def test_name_explicit_fallback_wins(self) -> None:
+        self.assertEqual(resolve_agent_name("/nope", "claude"), "claude")
+
+    def test_name_from_config_runner(self) -> None:
+        d = self._cfg({"runner": {"name": "cursor"}})
+        self.assertEqual(resolve_agent_name(d, "__config__"), "cursor")
+
+    def test_name_default_codex_when_no_config(self) -> None:
+        self.assertEqual(resolve_agent_name("/nope", "__config__"), "codex")
+
+    def test_command_explicit_wins(self) -> None:
+        self.assertEqual(resolve_agent_command("claude", "my-cmd", "/nope"), "my-cmd")
+
+    def test_command_config_runner_when_config_sentinel(self) -> None:
+        d = self._cfg({"runner": {"command": "cfg-cmd"}})
+        self.assertEqual(resolve_agent_command("__config__", "", d), "cfg-cmd")
+
+    def test_command_runners_map(self) -> None:
+        d = self._cfg({"runners": {"claude": {"command": "map-cmd"}}})
+        self.assertEqual(resolve_agent_command("claude", "", d), "map-cmd")
+
+    def test_command_env_agent_specific(self) -> None:
+        with patch.dict(os.environ, {"AGENTRAIL_CLAUDE_COMMAND": "env-cmd"}, clear=False):
+            self.assertEqual(resolve_agent_command("claude", "", "/nope"), "env-cmd")
+
+    def test_command_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(resolve_agent_command("claude", "", "/nope"),
+                             DEFAULT_COMMANDS["claude"])

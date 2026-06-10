@@ -9,6 +9,7 @@ slice ports it.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -95,6 +96,54 @@ def parse_run_options(args: List[str]) -> RunOptions:
         else:
             raise UsageError(f"Unknown option: {a}")
     return opts
+
+
+def _read_config(target: str) -> dict:
+    path = Path(target) / ".agentrail" / "config.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (ValueError, OSError):
+        return {}
+
+
+def resolve_agent_name(target: str, fallback: str) -> str:
+    if fallback != "__config__":
+        return fallback
+    cfg = _read_config(target)
+    if cfg:
+        return (cfg.get("runner") or {}).get("name") or "codex"
+    return "codex"
+
+
+def resolve_agent_command(agent: str, explicit: str, target: str) -> str:
+    if explicit:
+        return explicit
+    cfg = _read_config(target)
+    if cfg and agent == "__config__":
+        return (cfg.get("runner") or {}).get("command") or ""
+    if cfg:
+        runners = cfg.get("runners") or {}
+        cmd = (runners.get(agent) or {}).get("command")
+        if cmd:
+            return cmd
+    env_specific = os.environ.get(ENV_NAMES.get(agent, ""))
+    if env_specific:
+        return env_specific
+    generic = os.environ.get("AGENTRAIL_AGENT_COMMAND")
+    if generic:
+        return generic
+    return DEFAULT_COMMANDS.get(agent, "")
+
+
+def ensure_command_available(command_line: str) -> None:
+    import shutil
+    binary = command_line.split()[0] if command_line.strip() else ""
+    if not binary:
+        raise UsageError("runner command is empty")
+    if shutil.which(binary) is None:
+        raise UsageError(f"missing required command: {binary}", code=1)
 
 
 def _dispatch(args: List[str]) -> int:

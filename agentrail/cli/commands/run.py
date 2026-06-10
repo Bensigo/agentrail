@@ -173,5 +173,36 @@ def ensure_source_run_allowed(target: str, action: str) -> None:
         )
 
 
+def active_run_issue(target: str):
+    path = Path(target) / ".agentrail" / "state.json"
+    if not path.exists():
+        return None
+    try:
+        state = json.loads(path.read_text())
+    except (ValueError, OSError):
+        return None
+    workflow = state.get("workflow") or {}
+    run = workflow.get("activeRun")
+    if not isinstance(run, dict):
+        return None
+    issue = run.get("targetIssue")
+    if issue is None:
+        issue = workflow.get("activeIssue")
+    return None if issue is None else str(issue)
+
+
+def ensure_no_conflicting_active_run(target: str, issue: str) -> None:
+    active = active_run_issue(target)
+    if active is None:
+        return
+    if active == issue:
+        print(f"active run already exists for issue #{issue}; resume or inspect it "
+              f"with: agentrail run --target {target}", file=sys.stderr)
+    else:
+        print(f"active run already exists for issue #{active}; refusing to start "
+              f"issue #{issue}", file=sys.stderr)
+    raise UsageError("", code=1)
+
+
 def _dispatch(args: List[str]) -> int:
     raise UsageError("not implemented")

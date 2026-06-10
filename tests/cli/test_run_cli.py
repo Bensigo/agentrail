@@ -16,6 +16,7 @@ from agentrail.cli.commands.run import (
     run_run, AGENTS, DEFAULT_COMMANDS, parse_run_options, UsageError,
     resolve_agent_name, resolve_agent_command,
     is_source_checkout, ensure_source_run_allowed,
+    active_run_issue, ensure_no_conflicting_active_run,
 )
 
 
@@ -140,3 +141,32 @@ class SourceGuardTests(unittest.TestCase):
         d = self._make_source()
         with patch.dict(os.environ, {"AGENTRAIL_ALLOW_SOURCE_RUN": "1"}, clear=True):
             ensure_source_run_allowed(d, "run issue #1")  # no raise
+
+
+class ActiveRunTests(unittest.TestCase):
+    def _state(self, data: dict) -> str:
+        d = tempfile.mkdtemp()
+        (Path(d) / ".agentrail").mkdir()
+        (Path(d) / ".agentrail" / "state.json").write_text(json.dumps(data))
+        return d
+
+    def test_no_state_file_returns_none(self) -> None:
+        self.assertIsNone(active_run_issue(tempfile.mkdtemp()))
+
+    def test_no_active_run_returns_none(self) -> None:
+        d = self._state({"workflow": {}})
+        self.assertIsNone(active_run_issue(d))
+
+    def test_active_run_issue_from_target_issue(self) -> None:
+        d = self._state({"workflow": {"activeRun": {"targetIssue": 42}}})
+        self.assertEqual(active_run_issue(d), "42")
+
+    def test_conflict_same_issue_raises(self) -> None:
+        d = self._state({"workflow": {"activeRun": {"targetIssue": 7}}})
+        with patch("builtins.print"):
+            with self.assertRaises(UsageError):
+                ensure_no_conflicting_active_run(d, "7")
+
+    def test_no_conflict_when_no_active(self) -> None:
+        d = self._state({"workflow": {}})
+        ensure_no_conflicting_active_run(d, "7")  # no raise

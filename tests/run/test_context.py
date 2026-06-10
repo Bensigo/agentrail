@@ -100,15 +100,20 @@ class ContextPackSummaryTests(unittest.TestCase):
             "openQuestions": [],
         }
 
-    def test_returns_empty_string_for_falsy_pack_file(self) -> None:
+    def test_returns_banner_for_falsy_pack_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(context_pack_summary(Path(tmp), ""), "")
-            self.assertEqual(context_pack_summary(Path(tmp), None), "")
+            result_empty = context_pack_summary(Path(tmp), "")
+            result_none = context_pack_summary(Path(tmp), None)
+        self.assertIn("Summary unavailable.", result_empty)
+        self.assertIn("- Pack file: none", result_empty)
+        self.assertIn("Summary unavailable.", result_none)
+        self.assertIn("- Pack file: none", result_none)
 
-    def test_returns_empty_string_for_nonexistent_file(self) -> None:
+    def test_returns_banner_for_nonexistent_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result = context_pack_summary(Path(tmp), ".agentrail/context/packs/nope.json")
-        self.assertEqual(result, "")
+        self.assertIn("Summary unavailable.", result)
+        self.assertIn("- Pack file: none", result)
 
     def test_summary_contains_expected_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -55,19 +55,22 @@ def context_pack_summary(target_dir: Path, pack_file: Optional[str]) -> str:
     """Human-readable summary block read from the pack JSON file at
     <target_dir>/<pack_file>.
 
-    Reproduces the exact output of the legacy Node.js block at
-    scripts/agentrail-legacy lines 4850-4878.
+    Reproduces the exact output of the legacy bash block at
+    scripts/agentrail-legacy lines 4841-4878.
 
-    Returns empty string if pack_file is falsy or the file is unreadable.
+    Returns a banner "Context pack:\\n- Pack file: none\\n- Summary unavailable."
+    if pack_file is falsy, the file does not exist, or the file is unreadable.
     """
+    no_pack_banner = "Context pack:\n- Pack file: none\n- Summary unavailable."
+
     if not pack_file:
-        return ""
+        return no_pack_banner
 
     pack_path = Path(target_dir) / pack_file
     try:
         pack: Dict[str, Any] = json.loads(pack_path.read_text(encoding="utf-8"))
     except Exception:
-        return ""
+        return no_pack_banner
 
     def count(key: str) -> int:
         val = pack.get(key)

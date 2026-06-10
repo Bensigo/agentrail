@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Smoke test for the @agentrail/mcp server: build it, connect a real MCP client,
+# assert it exposes the four context tools, and that context_search returns
+# structured results against a freshly indexed repo.
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_dir"
+
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "pnpm not available — skipping MCP smoke test" >&2
+  exit 0
+fi
+
+pnpm --filter @agentrail/mcp build >/dev/null 2>&1
+
+tmp_repo="$(mktemp -d)"
+cleanup() { rm -rf "$tmp_repo"; }
+trap cleanup EXIT
+git -C "$tmp_repo" init --quiet
+mkdir -p "$tmp_repo/.agentrail" "$tmp_repo/src"
+cat >"$tmp_repo/.agentrail/config.json" <<'JSON'
+{"schemaVersion":1,"context":{"includeGlobs":["**/*"],"excludeGlobs":[".git/**",".agentrail/context/**"],"maxFileSizeBytes":262144,"skipBinary":true,"respectGitIgnore":true,"secretRedaction":{"enabled":false,"action":"exclude","denyGlobs":[]},"embedding":{"mode":"disabled","provider":null,"model":null},"summary":{"mode":"disabled","provider":null,"model":null}}}
+JSON
+printf 'def reconcile_ledger():\n    return 1\n' >"$tmp_repo/src/ledger.py"
+
+cd "$repo_dir/packages/mcp"
+AGENTRAIL_BIN="${repo_dir}/scripts/agentrail" TMP_REPO="$tmp_repo" \
+node --input-type=module - <<'JS'
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+const transport = new StdioClientTransport({
+  command: "node",
+  args: ["dist/index.js"],
+  cwd: process.cwd(),
+  env: { ...process.env, AGENTRAIL_BIN: process.env.AGENTRAIL_BIN },
+});
+const client = new Client({ name: "mcp-smoke", version: "0" });
+await client.connect(transport);
+
+const { tools } = await client.listTools();
+const names = tools.map((t) => t.name).sort();
+const expected = ["context_build_pack", "context_explain_pack", "context_get", "context_search"];
+if (JSON.stringify(names) !== JSON.stringify(expected)) {
+  console.error("MCP tools mismatch:", names);
+  process.exit(1);
+}
+
+const res = await client.callTool({
+  name: "context_search",
+  arguments: { query: "reconcile_ledger", target: process.env.TMP_REPO, limit: 3 },
+});
+const top = (res.structuredContent?.results || [])[0];
+if (res.isError || !top || top.path !== "src/ledger.py") {
+  console.error("context_search did not return the expected result:", JSON.stringify(res.structuredContent));
+  process.exit(1);
+}
+await client.close();
+console.log("ok");
+JS
+
+echo "mcp smoke test passed"

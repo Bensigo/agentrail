@@ -67,7 +67,11 @@ _GLOB_CACHE: dict[str, re.Pattern[str]] = {}
 def matches_glob(glob: str, relative_path: str, is_directory: bool = False) -> bool:
     if glob == "**/*":
         return True
-    if glob.endswith("/**"):
+    if glob.endswith("/**") and "*" not in glob[:-3] and "?" not in glob[:-3]:
+        # Fast path for a literal anchored prefix like "node_modules/**". Only
+        # valid when the prefix has no glob metachars; patterns such as
+        # "**/node_modules/**" fall through to the regex below so they match at
+        # any depth.
         prefix = glob[:-3]
         return relative_path == prefix or relative_path.startswith(f"{prefix}/")
     if glob.startswith("**/"):
@@ -97,7 +101,14 @@ def walk_files(root: Path, exclude_globs: Iterable[str], *, include_skipped_dirs
         for entry in entries:
             rel = to_posix(entry.relative_to(root))
             if entry.is_dir():
-                if matches_any(exclude_list, rel, True):
+                if entry.is_symlink():
+                    # Never descend into symlinked directories. pnpm/yarn
+                    # workspaces expose dependency trees as symlinked
+                    # node_modules; following them pulls tens of thousands of
+                    # files into the index and risks symlink cycles.
+                    if include_skipped_dirs:
+                        results.append(WalkedFile(entry, rel, True, "symlink"))
+                elif matches_any(exclude_list, rel, True):
                     if include_skipped_dirs:
                         results.append(WalkedFile(entry, rel, True, "exclude_glob"))
                 else:

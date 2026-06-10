@@ -35,6 +35,7 @@ from agentrail.afk.state import (
     SetStatus,
     Store,
 )
+from agentrail.afk.journal import attach_journal
 from agentrail.afk.store import attach_persistence, load_snapshot
 
 HUMAN_REVIEW_LABEL = "human-review-needed"
@@ -362,6 +363,9 @@ def build_store(target: Path, *, concurrency: int, max_retries: int,
     base = _replace(base, slots={i: None for i in range(concurrency)})
     store = Store(base)
     attach_persistence(store, target)
+    # Flight recorder: append every dispatch to an event journal so the run can
+    # be replayed deterministically and inspected with `agentrail timeline`.
+    attach_journal(store, target)
     for item in issues:
         num = item["number"]
         existing_issue = store.state.issues.get(num)

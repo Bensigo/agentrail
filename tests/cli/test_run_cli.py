@@ -246,6 +246,14 @@ class ParseBatchTests(unittest.TestCase):
         cfg = parse_batch_args(["360", "361"])
         self.assertIn(360, cfg.issues)
 
+    def test_rejects_non_integer_concurrency(self) -> None:
+        with self.assertRaises(UsageError):
+            parse_batch_args(["--concurrency", "abc", "5"])
+
+    def test_rejects_bad_agent(self) -> None:
+        with self.assertRaises(UsageError):
+            parse_batch_args(["--agent", "bogus", "5"])
+
 
 class RunBatchExecTests(unittest.TestCase):
     def test_runs_each_issue_once(self) -> None:
@@ -256,7 +264,9 @@ class RunBatchExecTests(unittest.TestCase):
              patch("agentrail.cli.commands.run._git_worktree_add"), \
              patch("agentrail.cli.commands.run._git_worktree_remove"), \
              patch("agentrail.cli.commands.run._git_fetch"), \
-             patch("agentrail.cli.commands.run._seed_agentrail"):
+             patch("agentrail.cli.commands.run._seed_agentrail"), \
+             patch("agentrail.cli.commands.run.ensure_source_run_allowed"), \
+             patch("agentrail.cli.commands.run.ensure_command_available"):
             rc = run_batch(["--target", "/tmp/x", "360", "361"])
         self.assertEqual(rc, 0)
         self.assertEqual(sorted(calls), [360, 361])

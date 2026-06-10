@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -266,9 +267,17 @@ def parse_batch_args(args: List[str]) -> BatchConfig:
     while i < len(args):
         a = args[i]
         if a == "--concurrency":
-            cfg.concurrency = int(_need_value(args, i, "--concurrency") or "2"); i += 2
+            raw = _need_value(args, i, "--concurrency")
+            try:
+                cfg.concurrency = int(raw)
+            except ValueError:
+                raise UsageError("--concurrency must be a positive integer")
+            i += 2
         elif a == "--agent":
-            cfg.agent = _need_value(args, i, "--agent"); i += 2
+            value = _need_value(args, i, "--agent")
+            if value not in AGENTS:
+                raise UsageError("--agent must be codex, claude, cursor, hermes, or custom")
+            cfg.agent = value; i += 2
         elif a == "--target":
             cfg.target = _need_value(args, i, "--target"); i += 2
         elif a == "--command":
@@ -325,11 +334,13 @@ def run_batch(args: List[str]) -> int:
     _git_fetch(cfg.target, cfg.base)
 
     worktrees: List[str] = []
+    _wt_lock = threading.Lock()
 
     def _one(slot_issue):
         slot, issue = slot_issue
         wt = str(batch_dir / "worktrees" / f"slot-{slot}-issue-{issue}")
-        worktrees.append(wt)
+        with _wt_lock:
+            worktrees.append(wt)
         _git_worktree_add(cfg.target, wt, f"origin/{cfg.base}")
         _seed_agentrail(cfg.target, wt)
         opts = RunOptions(agent=cfg.agent, target=wt, command=cfg.command)
@@ -387,8 +398,8 @@ def _dispatch(args: List[str]) -> int:
     if url:
         print(url)
     opts.agent = resolve_agent_name(opts.target, opts.agent)
+    ensure_no_conflicting_active_run(opts.target, str(number))
     command = resolve_agent_command(opts.agent, opts.command, opts.target)
     ensure_command_available(command)
     opts.command = command
-    ensure_no_conflicting_active_run(opts.target, str(number))
     return exec_issue(number, opts)

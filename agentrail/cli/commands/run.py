@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
 
@@ -242,6 +244,111 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
         env["AGENTRAIL_ALLOW_SOURCE_RUN"] = "1"
     proc = subprocess.run(argv, env=env, check=False)
     return int(proc.returncode)
+
+
+@dataclass
+class BatchConfig:
+    issues: List[int] = field(default_factory=list)
+    concurrency: int = 2
+    agent: str = "claude"
+    target: str = ""
+    command: str = ""
+    base: str = "main"
+
+
+def parse_batch_args(args: List[str]) -> BatchConfig:
+    cfg = BatchConfig(
+        concurrency=int(os.environ.get("AGENTRAIL_BATCH_CONCURRENCY", "2") or "2"),
+        target=os.getcwd(),
+    )
+    raw_issues: List[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--concurrency":
+            cfg.concurrency = int(_need_value(args, i, "--concurrency") or "2"); i += 2
+        elif a == "--agent":
+            cfg.agent = _need_value(args, i, "--agent"); i += 2
+        elif a == "--target":
+            cfg.target = _need_value(args, i, "--target"); i += 2
+        elif a == "--command":
+            cfg.command = _need_value(args, i, "--command"); i += 2
+        elif a == "--base":
+            cfg.base = _need_value(args, i, "--base"); i += 2
+        elif a == "--":
+            raw_issues.extend(args[i + 1:]); break
+        elif a.startswith("-"):
+            raise UsageError(f"run batch: unknown option {a}")
+        else:
+            raw_issues.append(a); i += 1
+    cfg.issues = [int(x) for x in raw_issues if x.isdigit()]
+    if not cfg.issues:
+        raise UsageError("run batch requires at least one issue number")
+    if cfg.concurrency < 1:
+        raise UsageError("--concurrency must be a positive integer")
+    return cfg
+
+
+def _git_fetch(target: str, base: str) -> None:
+    subprocess.run(["git", "-C", target, "fetch", "origin", base],
+                   check=False, capture_output=True)
+
+
+def _git_worktree_add(target: str, path: str, ref: str) -> None:
+    subprocess.run(["git", "-C", target, "worktree", "add", "--detach", path, ref],
+                   check=False, capture_output=True)
+
+
+def _git_worktree_remove(target: str, path: str) -> None:
+    subprocess.run(["git", "-C", target, "worktree", "remove", "--force", path],
+                   check=False, capture_output=True)
+
+
+def _seed_agentrail(target: str, worktree: str) -> None:
+    src = Path(target) / ".agentrail"
+    if src.is_dir():
+        shutil.copytree(src, Path(worktree) / ".agentrail", dirs_exist_ok=True)
+
+
+def run_batch(args: List[str]) -> int:
+    cfg = parse_batch_args(args)
+    cfg.target = str(Path(cfg.target).resolve())
+    ensure_source_run_allowed(cfg.target, "run batch")
+    command = resolve_agent_command(cfg.agent, cfg.command, cfg.target)
+    ensure_command_available(command)
+
+    import datetime as _dt
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    batch_dir = Path(cfg.target) / ".agentrail" / "batch" / stamp
+    (batch_dir / "worktrees").mkdir(parents=True, exist_ok=True)
+    print(f"batch: {len(cfg.issues)} issues, concurrency {cfg.concurrency}, agent {cfg.agent}")
+    _git_fetch(cfg.target, cfg.base)
+
+    worktrees: List[str] = []
+
+    def _one(slot_issue):
+        slot, issue = slot_issue
+        wt = str(batch_dir / "worktrees" / f"slot-{slot}-issue-{issue}")
+        _git_worktree_add(cfg.target, wt, f"origin/{cfg.base}")
+        worktrees.append(wt)
+        _seed_agentrail(cfg.target, wt)
+        opts = RunOptions(agent=cfg.agent, target=wt, command=cfg.command)
+        rc = exec_issue(issue, opts, allow_source=True)
+        print(f"batch: issue #{issue} {'completed' if rc == 0 else 'failed'}")
+        return rc
+
+    try:
+        with ThreadPoolExecutor(max_workers=cfg.concurrency) as pool:
+            results = list(pool.map(_one, list(enumerate(cfg.issues, start=1))))
+    finally:
+        for wt in worktrees:
+            _git_worktree_remove(cfg.target, wt)
+
+    if any(rc != 0 for rc in results):
+        print(f"batch: some issues failed; check {batch_dir}", file=sys.stderr)
+        return 1
+    print(f"batch: all {len(cfg.issues)} issues completed successfully")
+    return 0
 
 
 def _dispatch(args: List[str]) -> int:

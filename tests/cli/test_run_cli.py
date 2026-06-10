@@ -19,6 +19,7 @@ from agentrail.cli.commands.run import (
     active_run_issue, ensure_no_conflicting_active_run,
     next_pickable_issue,
     exec_issue, RunOptions,
+    parse_batch_args, run_batch,
 )
 
 
@@ -218,3 +219,44 @@ class ExecIssueTests(unittest.TestCase):
             rc = exec_issue(11, opts)
         self.assertEqual(rc, 3)
         self.assertNotIn("--command", m.call_args.args[0])
+
+
+class ParseBatchTests(unittest.TestCase):
+    def test_positional_issues_and_defaults(self) -> None:
+        cfg = parse_batch_args(["360", "361"])
+        self.assertEqual(cfg.issues, [360, 361])
+        self.assertEqual(cfg.concurrency, 2)
+        self.assertEqual(cfg.base, "main")
+
+    def test_double_dash_issue_list(self) -> None:
+        cfg = parse_batch_args(["--concurrency", "3", "--", "5", "6", "7"])
+        self.assertEqual(cfg.concurrency, 3)
+        self.assertEqual(cfg.issues, [5, 6, 7])
+
+    def test_requires_at_least_one_issue(self) -> None:
+        with self.assertRaises(UsageError):
+            parse_batch_args(["--concurrency", "2"])
+
+    def test_rejects_non_positive_concurrency(self) -> None:
+        with self.assertRaises(UsageError):
+            parse_batch_args(["--concurrency", "0", "5"])
+
+    def test_first_issue_not_dropped(self) -> None:
+        # regression: the legacy bash double-shift dropped the first issue
+        cfg = parse_batch_args(["360", "361"])
+        self.assertIn(360, cfg.issues)
+
+
+class RunBatchExecTests(unittest.TestCase):
+    def test_runs_each_issue_once(self) -> None:
+        calls = []
+        def fake_exec(issue, opts, allow_source=False):
+            calls.append(issue); return 0
+        with patch("agentrail.cli.commands.run.exec_issue", side_effect=fake_exec), \
+             patch("agentrail.cli.commands.run._git_worktree_add"), \
+             patch("agentrail.cli.commands.run._git_worktree_remove"), \
+             patch("agentrail.cli.commands.run._git_fetch"), \
+             patch("agentrail.cli.commands.run._seed_agentrail"):
+            rc = run_batch(["--target", "/tmp/x", "360", "361"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(calls), [360, 361])

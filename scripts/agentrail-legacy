@@ -4882,6 +4882,61 @@ context_pack_file_from_prompt() {
   awk -F': ' '/^- Pack file: / { print $2; exit }'
 }
 
+# Emit compact selected context (paths + line ranges + bounded snippets) so the
+# prompt carries the actual context, not just a pack pointer. Always prints a
+# header; degrades to a fallback line when retrieval is empty or unavailable.
+context_selected_snippets() {
+  local target_dir="$1"
+  local query="$2"
+  local python_bin="python3"
+  command -v "$python_bin" >/dev/null 2>&1 || python_bin="python"
+  local tmpfile
+  tmpfile="$(mktemp)"
+  PYTHONPATH="${repo_dir}${PYTHONPATH:+:${PYTHONPATH}}" \
+    "$python_bin" -m agentrail.cli.main context search "$query" --target "$target_dir" --json --limit 6 >"$tmpfile" 2>/dev/null || true
+  node - "$tmpfile" <<'NODE'
+const fs = require("fs");
+let out = null;
+try { out = JSON.parse(fs.readFileSync(process.argv[2], "utf8")); } catch (e) { out = null; }
+const results = out && Array.isArray(out.results) ? out.results : [];
+if (results.length === 0) {
+  console.log("Selected context (compact): none — fall back to scoped repo inspection.");
+  process.exit(0);
+}
+console.log("Selected context (compact — read these line ranges before broad discovery):");
+for (const r of results) {
+  const sym = r.symbol ? ` ${r.symbol}` : "";
+  console.log(`- ${r.path}:${r.lineStart}-${r.lineEnd}${sym} (~${r.tokenEstimate} tok) — ${r.reason}`);
+  const snippet = String(r.snippet || "").split("\n").slice(0, 4).filter((l) => l.trim()).map((l) => `    ${l}`).join("\n");
+  if (snippet) console.log(snippet);
+}
+console.log("Use `agentrail context get <path> --lines A-B` to expand any of these. Do not read full files until these are insufficient.");
+NODE
+  rm -f "$tmpfile"
+}
+
+# Emit the retrieval run-metadata JSON (retrievalMode, selectedSources,
+# selectedContextTokens, wastedContextTokens, retrievalBudget, citations,
+# reasons, stale/denied leakage) for the run record. Best-effort: prints {} on
+# any failure so it never breaks a run.
+context_retrieval_metadata_json() {
+  local target_dir="$1"
+  local query="$2"
+  local python_bin="python3"
+  command -v "$python_bin" >/dev/null 2>&1 || python_bin="python"
+  local tmpfile
+  tmpfile="$(mktemp)"
+  PYTHONPATH="${repo_dir}${PYTHONPATH:+:${PYTHONPATH}}" \
+    "$python_bin" -m agentrail.cli.main context search "$query" --target "$target_dir" --json --limit 10 >"$tmpfile" 2>/dev/null || true
+  node - "$tmpfile" <<'NODE'
+const fs = require("fs");
+let out = null;
+try { out = JSON.parse(fs.readFileSync(process.argv[2], "utf8")); } catch (e) { out = null; }
+process.stdout.write(JSON.stringify(out && out.runMetadata ? out.runMetadata : {}));
+NODE
+  rm -f "$tmpfile"
+}
+
 prompt_grill() {
   local agent="$1"
   local target_dir="$2"
@@ -4939,10 +4994,13 @@ prompt_issue() {
   resolve_skills_json "$target_dir" "$resolution_text" "$auto_skills" "$explicit_skills" >/dev/null
   context_pack_file="$(build_context_pack_file "$target_dir" "issue" "$issue" "plan")"
   context_summary="$(context_pack_summary "$target_dir" "$context_pack_file")"
+  local context_snippets
+  context_snippets="$(context_selected_snippets "$target_dir" "$resolution_text")"
 
   prompt_common_header "$agent" "$target_dir"
   print_skill_resolution "$target_dir" "$resolution_text" "$auto_skills" "$explicit_skills" "prompt"
   printf '%s\n\n' "$context_summary"
+  printf '%s\n\n' "$context_snippets"
   if [[ "$agent" == "codex" ]]; then
     cat <<PROMPT
 Run one bounded AgentRail issue execution for exactly one GitHub issue: #${issue}.
@@ -4994,9 +5052,12 @@ prompt_review() {
   local context_pack_file context_summary
   context_pack_file="$(build_context_pack_file "$target_dir" "pr" "$pr" "review")"
   context_summary="$(context_pack_summary "$target_dir" "$context_pack_file")"
+  local context_snippets
+  context_snippets="$(context_selected_snippets "$target_dir" "review pr ${pr}")"
 
   prompt_common_header "$agent" "$target_dir"
   printf '%s\n\n' "$context_summary"
+  printf '%s\n\n' "$context_snippets"
   if [[ "$agent" == "codex" ]]; then
     cat <<PROMPT
 Review exactly one pull request: #${pr}.
@@ -5460,6 +5521,8 @@ write_run_metadata() {
   local resolved_skills_json="$8"
   local max_execution_attempts="${9:-$agentrail_default_max_execution_attempts}"
   local context_pack_file="${10:-}"
+  local context_retrieval_json="${11:-}"
+  [[ -n "$context_retrieval_json" ]] || context_retrieval_json="{}"
 
   command -v node >/dev/null 2>&1 || {
     cat >"$metadata_file" <<METADATA
@@ -5474,6 +5537,7 @@ write_run_metadata() {
   "failedVerificationAttempts": 0,
   "promptFile": "${prompt_file}",
   "contextPackFile": "${context_pack_file}",
+  "contextRetrieval": ${context_retrieval_json},
   "resolvedSkillsFile": "${resolved_skills_file}",
   "resolvedSkills": []
 }
@@ -5488,10 +5552,13 @@ METADATA
   RUN_MAX_EXECUTION_ATTEMPTS="$max_execution_attempts" \
   RUN_PROMPT_FILE="$prompt_file" \
   RUN_CONTEXT_PACK_FILE="$context_pack_file" \
+  RUN_CONTEXT_RETRIEVAL_JSON="$context_retrieval_json" \
   RUN_RESOLVED_SKILLS_FILE="$resolved_skills_file" \
   RUN_RESOLVED_SKILLS_JSON="$resolved_skills_json" \
   node >"$metadata_file" <<'NODE'
 const resolution = JSON.parse(process.env.RUN_RESOLVED_SKILLS_JSON || "{}");
+let contextRetrieval = {};
+try { contextRetrieval = JSON.parse(process.env.RUN_CONTEXT_RETRIEVAL_JSON || "{}"); } catch (e) { contextRetrieval = {}; }
 const metadata = {
   startedAt: process.env.RUN_STARTED_AT,
   targetType: "issue",
@@ -5503,6 +5570,7 @@ const metadata = {
   failedVerificationAttempts: 0,
   promptFile: process.env.RUN_PROMPT_FILE,
   contextPackFile: process.env.RUN_CONTEXT_PACK_FILE || null,
+  contextRetrieval,
   resolvedSkillsFile: process.env.RUN_RESOLVED_SKILLS_FILE,
   resolvedSkills: Array.isArray(resolution.resolved) ? resolution.resolved : [],
 };
@@ -6339,6 +6407,8 @@ run_issue() {
     exit 1
   fi
   run_context_pack_file="$(printf '%s\n' "$base_prompt" | context_pack_file_from_prompt)"
+  local run_context_retrieval_json
+  run_context_retrieval_json="$(context_retrieval_metadata_json "$target_dir" "issue #${issue}")"
 
   local max_execution_attempts="${AGENTRAIL_MAX_EXECUTION_ATTEMPTS:-$agentrail_default_max_execution_attempts}"
   [[ "$max_execution_attempts" =~ ^[1-9][0-9]*$ ]] || { echo "AGENTRAIL_MAX_EXECUTION_ATTEMPTS must be a positive integer" >&2; exit 2; }
@@ -6357,7 +6427,7 @@ run_issue() {
   metadata_file="${run_dir}/run.json"
   printf '%s\n' "$base_prompt" >"$prompt_file"
   printf '%s\n' "$skill_resolution" >"$resolved_skills_file"
-  write_run_metadata "$metadata_file" "$started_at" "$issue" "$agent" "$agent_command" "$prompt_file" "$resolved_skills_file" "$skill_resolution" "$max_execution_attempts" "$run_context_pack_file"
+  write_run_metadata "$metadata_file" "$started_at" "$issue" "$agent" "$agent_command" "$prompt_file" "$resolved_skills_file" "$skill_resolution" "$max_execution_attempts" "$run_context_pack_file" "$run_context_retrieval_json"
 
   echo "AgentRail run: issue #${issue}"
   echo "agent: ${agent}"

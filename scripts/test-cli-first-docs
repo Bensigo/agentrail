@@ -91,4 +91,7 @@ done
 assert_grep "agentrail run issue 57" "${tmp_dir}/issue.prompt" "Issue prompt does not point agents to agentrail run issue"
 assert_grep "agentrail prompt review 12" "${tmp_dir}/review.prompt" "Review prompt does not point agents to agentrail prompt review"
 
+assert_grep "Selected context (compact" "${tmp_dir}/issue.prompt" "Issue prompt does not embed compact selected context"
+assert_grep "Selected context (compact" "${tmp_dir}/review.prompt" "Review prompt does not embed compact selected context"
+
 echo "cli-first docs test passed"

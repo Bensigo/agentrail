@@ -147,3 +147,37 @@ export interface IndexSnapshotRecord {
   graph_edge_count: number;
   event_id: string;
 }
+
+export const CREATE_COST_EVENTS_TABLE = `
+CREATE TABLE IF NOT EXISTS cost_events (
+  workspace_id  String,
+  run_id        String,
+  repository_id String,
+  team_id       String,
+  api_key_id    String,
+  cost_type     String,
+  tokens        UInt64,
+  cost_usd      Float64,
+  model         String,
+  occurred_at   DateTime64(3, 'UTC'),
+  event_id      String
+)
+ENGINE = MergeTree()
+PARTITION BY (workspace_id, toYYYYMM(occurred_at))
+ORDER BY (workspace_id, occurred_at, event_id)
+`;
+
+export interface CostEventRecord {
+  workspace_id: string;
+  run_id: string;
+  repository_id: string;
+  team_id: string;
+  api_key_id: string;
+  /** model_call | embedding | reranking | storage */
+  cost_type: string;
+  tokens: number;
+  cost_usd: number;
+  model: string;
+  occurred_at: Date;
+  event_id: string;
+}

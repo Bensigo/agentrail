@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 from agentrail.context.embeddings import embed_context
+from agentrail.context.benchmark import format_benchmark_summary, run_benchmark
 from agentrail.context.evaluation import evaluate_retrieval, format_evaluation_report
 from agentrail.context.index import build_index
 from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
@@ -52,6 +53,7 @@ def _usage() -> str:
   agentrail context search "<query>" [--target DIR] [--json] [--limit N]
   agentrail context get PATH (--lines A-B | --symbol NAME) [--target DIR] [--json]
   agentrail context evaluate FIXTURE [--target DIR] [--json]
+  agentrail context benchmark FIXTURE [--target DIR] [--json]
   agentrail context build issue NUMBER --phase PHASE [--target DIR] [--json]
   agentrail context build pr NUMBER --phase review [--target DIR] [--json]
   agentrail context show PACK [--target DIR] [--json]
@@ -259,6 +261,43 @@ def run_context(args: List[str]) -> int:
                 _print_json(output)
             else:
                 print(format_evaluation_report(output))
+            return 0 if output.get("passed") else 1
+        if kind == "benchmark":
+            if not rest or rest[0].startswith("--"):
+                raise SystemExit("context benchmark requires a fixture file")
+            fixture = rest[0]
+            target: str | None = None
+            json_output = False
+            index = 1
+            while index < len(rest):
+                arg = rest[index]
+                if arg == "--target":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--target requires a directory")
+                    target = rest[index + 1]
+                    index += 2
+                elif arg == "--json":
+                    json_output = True
+                    index += 1
+                else:
+                    raise SystemExit(f"Unknown context benchmark option: {arg}")
+            root = _resolve_target(target)
+            output = run_benchmark(root, Path(fixture))
+            timestamp = output["generatedAt"].replace(":", "").replace("-", "").replace(".", "")
+            bench_dir = root / ".agentrail" / "context" / "benchmarks"
+            bench_dir.mkdir(parents=True, exist_ok=True)
+            json_path = bench_dir / f"{timestamp}-retrieval-benchmark.json"
+            json_path.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
+            summary = format_benchmark_summary(output)
+            results_dir = root / "docs" / "benchmarks" / "results"
+            results_dir.mkdir(parents=True, exist_ok=True)
+            (results_dir / "context-retrieval-cli-latest.md").write_text(summary, encoding="utf-8")
+            if json_output:
+                _print_json(output)
+            else:
+                print(summary)
+                print(f"json: {json_path.relative_to(root)}")
+                print("summary: docs/benchmarks/results/context-retrieval-cli-latest.md")
             return 0 if output.get("passed") else 1
         if kind == "build":
             if len(rest) < 2:

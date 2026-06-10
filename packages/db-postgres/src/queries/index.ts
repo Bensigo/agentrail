@@ -71,6 +71,46 @@ export async function getReviewGatesForRun(workspaceId: string, runId: string) {
     .orderBy(reviewGates.createdAt);
 }
 
+export async function getRunEvidenceFields(workspaceId: string, runId: string) {
+  const rows = await db
+    .select({
+      contextPackFile: runs.contextPackFile,
+      selectedSources: runs.selectedSources,
+      retrievalBudget: runs.retrievalBudget,
+      citations: runs.citations,
+    })
+    .from(runs)
+    .where(and(eq(runs.workspaceId, workspaceId), eq(runs.id, runId)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function createReviewGate(data: {
+  workspaceId: string;
+  runId: string;
+  gateName: string;
+  status: "passed" | "failed" | "pending";
+  conditions?: Record<string, unknown>[];
+  blockingReasons?: string[];
+  evidenceRefs?: Array<{ label: string; url: string }>;
+  evaluatedAt?: Date;
+}) {
+  const rows = await db
+    .insert(reviewGates)
+    .values({
+      workspaceId: data.workspaceId,
+      runId: data.runId,
+      gateName: data.gateName,
+      status: data.status,
+      conditions: data.conditions ?? [],
+      blockingReasons: data.blockingReasons ?? [],
+      evidenceRefs: data.evidenceRefs ?? [],
+      evaluatedAt: data.evaluatedAt ?? new Date(),
+    })
+    .returning();
+  return rows[0]!;
+}
+
 export async function listReviewGatesForWorkspace(
   workspaceId: string,
   runId?: string

@@ -5,6 +5,7 @@ import { Bricolage_Grotesque } from "next/font/google";
 import fs from "fs";
 import path from "path";
 import { Reveal, CountUp } from "./_motion";
+import { DashboardDemo } from "./_dashboard-demo";
 
 const display = Bricolage_Grotesque({ subsets: ["latin"], display: "swap" });
 
@@ -271,10 +272,10 @@ export default async function LandingPage() {
       <section className="relative z-10 px-6 pb-12 pt-4">
         <div className="mx-auto max-w-[1180px]">
           <Reveal delay={80}>
-            <DashboardMock />
+            <DashboardDemo />
           </Reveal>
           <p className="mt-5 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--gray-09)]">
-            One workspace · every developer&apos;s runs, context, cost, gates &amp; audit
+            Interactive · click the sidebar — every developer&apos;s runs, context, cost, gates &amp; audit
           </p>
         </div>
       </section>
@@ -838,119 +839,6 @@ function AgentABBars({
           total tokens through a real coding agent, at equal accuracy. One task,
           one repo, one model — directional, and honest about it.
         </span>
-      </div>
-    </div>
-  );
-}
-
-function DashboardMock() {
-  const nav = [
-    { label: "Runs", active: true },
-    { label: "Context packs" },
-    { label: "Review gates" },
-    { label: "Failures" },
-    { label: "Costs" },
-    { label: "Memory" },
-    { label: "Audit" },
-    { label: "Repos" },
-  ];
-  const runs = [
-    { id: "#312", task: "workspace setup flow", who: "amara", agent: "claude", status: "merged", tk: "31,092", cost: "$0.42", dur: "2m14s" },
-    { id: "#316", task: "AFK telemetry timeline", who: "deniz", agent: "codex", status: "reviewing", tk: "48,210", cost: "$0.71", dur: "4m02s" },
-    { id: "#331", task: "review-gate enforcement", who: "amara", agent: "claude", status: "merged", tk: "27,540", cost: "$0.38", dur: "3m20s" },
-    { id: "#314", task: "workspace members by email", who: "sam", agent: "claude", status: "failed", tk: "12,800", cost: "$0.18", dur: "1m05s" },
-    { id: "#315", task: "agentrail link e2e", who: "deniz", agent: "codex", status: "running", tk: "19,430", cost: "$0.29", dur: "1m48s" },
-  ];
-  const statusStyle: Record<string, { dot: string; text: string; label: string }> = {
-    merged: { dot: "var(--green-11)", text: "var(--green-11)", label: "merged" },
-    reviewing: { dot: ACCENT, text: ACCENT, label: "review gate" },
-    failed: { dot: "var(--red-11)", text: "var(--red-11)", label: "failed" },
-    running: { dot: "var(--blue-11)", text: "var(--blue-11)", label: "running" },
-  };
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-[var(--gray-05)] bg-[var(--gray-01)] shadow-[0_40px_120px_-40px_rgba(0,0,0,0.8)]">
-      {/* window chrome */}
-      <div className="flex items-center gap-2 border-b border-[var(--gray-04)] bg-[var(--gray-02)] px-4 py-2.5">
-        <span className="h-2.5 w-2.5 rounded-full bg-[var(--gray-06)]" />
-        <span className="h-2.5 w-2.5 rounded-full bg-[var(--gray-06)]" />
-        <span className="h-2.5 w-2.5 rounded-full bg-[var(--gray-06)]" />
-        <span className="ml-3 rounded bg-[var(--gray-00)] px-3 py-1 font-mono text-[11px] text-[var(--gray-09)]">
-          app.agentrail.dev/dashboard/dev-workspace/runs
-        </span>
-      </div>
-
-      <div className="grid grid-cols-[180px_1fr]">
-        {/* sidebar */}
-        <aside className="hidden border-r border-[var(--gray-04)] bg-[var(--gray-01)] p-3 sm:block">
-          <div className="mb-3 flex items-center gap-2 rounded-md border border-[var(--gray-05)] px-2.5 py-2">
-            <span className="flex h-5 w-5 items-center justify-center rounded text-[11px] font-bold text-black" style={{ background: ACCENT }}>D</span>
-            <span className="text-[12px] font-semibold text-[var(--gray-12)]">Dev Workspace</span>
-          </div>
-          <nav className="space-y-0.5">
-            {nav.map((n) => (
-              <div
-                key={n.label}
-                className="rounded-md px-2.5 py-1.5 text-[12px]"
-                style={{
-                  background: n.active ? "color-mix(in srgb, #ffe629 12%, transparent)" : "transparent",
-                  color: n.active ? ACCENT : "var(--gray-10)",
-                  fontWeight: n.active ? 600 : 400,
-                }}
-              >
-                {n.label}
-              </div>
-            ))}
-          </nav>
-        </aside>
-
-        {/* main */}
-        <div className="p-4 sm:p-5">
-          {/* stat tiles */}
-          <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-            {[
-              { v: "128", l: "runs this week" },
-              { v: "2.1M", l: "tokens" },
-              { v: "$31.40", l: "spend" },
-              { v: "3", l: "open gates", accent: true },
-            ].map((s) => (
-              <div key={s.l} className="rounded-lg border border-[var(--gray-05)] bg-[var(--gray-00)]/60 px-3 py-2.5">
-                <p className="text-[18px] font-bold tracking-tight" style={{ color: s.accent ? ACCENT : "var(--gray-12)" }}>
-                  {s.v}
-                </p>
-                <p className="font-mono text-[10px] uppercase tracking-wider text-[var(--gray-09)]">{s.l}</p>
-              </div>
-            ))}
-          </div>
-
-          {/* runs table */}
-          <div className="overflow-hidden rounded-lg border border-[var(--gray-05)]">
-            <div className="hidden grid-cols-[64px_1fr_92px_96px_72px] gap-2 border-b border-[var(--gray-04)] bg-[var(--gray-02)] px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-[var(--gray-09)] sm:grid">
-              <span>run</span><span>task</span><span>status</span><span>tokens</span><span>cost</span>
-            </div>
-            {runs.map((r) => {
-              const st = statusStyle[r.status];
-              return (
-                <div
-                  key={r.id}
-                  className="grid grid-cols-[64px_1fr_92px] items-center gap-2 border-b border-[var(--gray-04)] px-3 py-2.5 last:border-0 sm:grid-cols-[64px_1fr_92px_96px_72px]"
-                >
-                  <span className="font-mono text-[12px]" style={{ color: ACCENT }}>{r.id}</span>
-                  <span className="min-w-0">
-                    <span className="block truncate text-[12.5px] text-[var(--gray-12)]">{r.task}</span>
-                    <span className="font-mono text-[10px] text-[var(--gray-09)]">{r.who} · {r.agent}</span>
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-1.5 w-1.5 rounded-full" style={{ background: st.dot }} />
-                    <span className="text-[11px]" style={{ color: st.text }}>{st.label}</span>
-                  </span>
-                  <span className="hidden font-mono text-[12px] text-[var(--gray-11)] sm:block">{r.tk}</span>
-                  <span className="hidden font-mono text-[12px] text-[var(--gray-11)] sm:block">{r.cost}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
       </div>
     </div>
   );

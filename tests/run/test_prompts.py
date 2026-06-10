@@ -217,5 +217,276 @@ class FormatSkillResolutionTests(unittest.TestCase):
             format_skill_resolution(resolution, mode="cli")
 
 
+class IssueBasePromptTests(unittest.TestCase):
+    """Tests for issue_base_prompt()."""
+
+    def _fn(self, *args, **kwargs):
+        from agentrail.run.prompts import issue_base_prompt
+        return issue_base_prompt(*args, **kwargs)
+
+    def _make(self, agent="claude", issue=7):
+        return self._fn(
+            agent,
+            issue,
+            header="HEADER\n",
+            skill_block="SKILLS\n",
+            context_summary="SUMMARY",
+            context_snippets="SNIPPETS",
+        )
+
+    def test_codex_first_line(self):
+        result = self._fn(
+            "codex", 7,
+            header="H\n", skill_block="S\n",
+            context_summary="CS", context_snippets="CP",
+        )
+        self.assertIn(
+            "Run one bounded AgentRail issue execution for exactly one GitHub issue: #7.",
+            result,
+        )
+
+    def test_claude_first_line(self):
+        result = self._fn(
+            "claude", 7,
+            header="H\n", skill_block="S\n",
+            context_summary="CS", context_snippets="CP",
+        )
+        self.assertIn(
+            "Use Claude Code through AgentRail to run one bounded implementation loop for exactly one GitHub issue: #7.",
+            result,
+        )
+
+    def test_codex_handle_only(self):
+        result = self._make("codex")
+        self.assertIn("Handle only issue #7.", result)
+
+    def test_claude_handle_only(self):
+        result = self._make("claude")
+        self.assertIn("Handle only issue #7.", result)
+
+    def test_issue_number_substitution_codex(self):
+        result = self._fn(
+            "codex", 42,
+            header="H\n", skill_block="S\n",
+            context_summary="CS", context_snippets="CP",
+        )
+        self.assertIn("#42", result)
+        self.assertNotIn("#7", result)
+
+    def test_issue_number_substitution_claude(self):
+        result = self._fn(
+            "claude", 42,
+            header="H\n", skill_block="S\n",
+            context_summary="CS", context_snippets="CP",
+        )
+        self.assertIn("#42", result)
+
+    def test_header_appears_first(self):
+        result = self._make()
+        self.assertTrue(result.startswith("HEADER\n"))
+
+    def test_skill_block_appears_after_header(self):
+        result = self._make()
+        idx_header = result.index("HEADER\n")
+        idx_skills = result.index("SKILLS\n")
+        self.assertLess(idx_header, idx_skills)
+
+    def test_context_summary_appears(self):
+        result = self._make()
+        self.assertIn("SUMMARY", result)
+
+    def test_context_snippets_appears(self):
+        result = self._make()
+        self.assertIn("SNIPPETS", result)
+
+    def test_context_summary_before_snippets(self):
+        result = self._make()
+        self.assertLess(result.index("SUMMARY"), result.index("SNIPPETS"))
+
+    def test_unknown_agent_uses_claude_block(self):
+        result = self._fn(
+            "gpt-4o", 7,
+            header="H\n", skill_block="S\n",
+            context_summary="CS", context_snippets="CP",
+        )
+        self.assertIn("Use Claude Code through AgentRail", result)
+
+    def test_agentrail_run_issue_substitution_codex(self):
+        """The 'agentrail run issue {issue}' line should have the bare number."""
+        result = self._fn(
+            "codex", 99,
+            header="H\n", skill_block="S\n",
+            context_summary="CS", context_snippets="CP",
+        )
+        self.assertIn("agentrail run issue 99", result)
+
+    def test_agentrail_run_issue_substitution_claude(self):
+        result = self._fn(
+            "claude", 99,
+            header="H\n", skill_block="S\n",
+            context_summary="CS", context_snippets="CP",
+        )
+        self.assertIn("agentrail run issue 99", result)
+
+
+class IssueRunPhasePromptTests(unittest.TestCase):
+    """Tests for issue_run_phase_prompt()."""
+
+    def _fn(self, *args, **kwargs):
+        from agentrail.run.prompts import issue_run_phase_prompt
+        return issue_run_phase_prompt(*args, **kwargs)
+
+    # --- plan phase ---
+
+    def test_plan_phase_header(self):
+        result = self._fn(
+            "plan", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+        )
+        self.assertIn("This is phase 1 of 2: plan.", result)
+
+    def test_plan_issue_context(self):
+        result = self._fn(
+            "plan", 7,
+            issue_context="my issue context", base_prompt="BP", context_summary="CS",
+        )
+        self.assertIn("Issue context:", result)
+        self.assertIn("my issue context", result)
+
+    def test_plan_context_pack(self):
+        result = self._fn(
+            "plan", 7,
+            issue_context="IC", base_prompt="BP", context_summary="my summary",
+        )
+        self.assertIn("Phase context pack:", result)
+        self.assertIn("my summary", result)
+
+    def test_plan_base_ralph_instructions(self):
+        result = self._fn(
+            "plan", 7,
+            issue_context="IC", base_prompt="my base", context_summary="CS",
+        )
+        self.assertIn("Base Ralph instructions:", result)
+        self.assertIn("my base", result)
+
+    def test_plan_seven_headings(self):
+        result = self._fn(
+            "plan", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+        )
+        for heading in [
+            "- Goal",
+            "- Non-goals",
+            "- Acceptance criteria mapping",
+            "- Expected files/areas",
+            "- Required skills",
+            "- Verification commands",
+            "- Risks",
+        ]:
+            self.assertIn(heading, result)
+
+    def test_plan_do_not_edit(self):
+        result = self._fn(
+            "plan", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+        )
+        self.assertIn("Do not edit files in this phase.", result)
+
+    # --- execute phase (no findings) ---
+
+    def test_execute_phase_header(self):
+        result = self._fn(
+            "execute", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+            plan_output="my plan",
+        )
+        self.assertIn("This is phase 2 of 2: execute.", result)
+
+    def test_execute_attempt_line(self):
+        result = self._fn(
+            "execute", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+            execution_attempt=2, max_execution_attempts=5,
+        )
+        self.assertIn("Execution attempt: 2 of 5.", result)
+
+    def test_execute_plan_output_present(self):
+        result = self._fn(
+            "execute", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+            plan_output="approved plan text",
+        )
+        self.assertIn("approved plan text", result)
+
+    def test_execute_agentrail_invoke_line(self):
+        result = self._fn(
+            "execute", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+        )
+        self.assertIn(
+            "AgentRail will invoke the Ralph one-issue executor for this phase",
+            result,
+        )
+
+    def test_execute_no_findings_no_verifier_section(self):
+        result = self._fn(
+            "execute", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+        )
+        self.assertNotIn("Verifier findings", result)
+
+    # --- execute phase (with findings) ---
+
+    def test_execute_with_findings_section_header(self):
+        result = self._fn(
+            "execute", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+            verifier_findings_text="missing test for X",
+        )
+        self.assertIn("Verifier findings from previous failed verify attempt:", result)
+
+    def test_execute_with_findings_content(self):
+        result = self._fn(
+            "execute", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+            verifier_findings_text="missing test for X",
+        )
+        self.assertIn("missing test for X", result)
+
+    def test_execute_with_findings_use_line(self):
+        result = self._fn(
+            "execute", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+            verifier_findings_text="missing test for X",
+        )
+        self.assertIn(
+            "Use these findings as focused input for this execute attempt. "
+            "Address only the issue-scoped gaps needed to make verification pass.",
+            result,
+        )
+
+    # --- plan output truncation ---
+
+    def test_execute_plan_output_truncation(self):
+        long_plan = "x" * 100
+        with patch.dict(os.environ, {"AGENTRAIL_PHASE_INLINE_MAX_CHARS": "20"}):
+            result = self._fn(
+                "execute", 7,
+                issue_context="IC", base_prompt="BP", context_summary="CS",
+                plan_output=long_plan,
+            )
+        self.assertIn("AgentRail truncated approved plan output", result)
+
+    # --- unknown phase ---
+
+    def test_unknown_phase_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._fn(
+                "review", 7,
+                issue_context="IC", base_prompt="BP", context_summary="CS",
+            )
+        self.assertIn("unknown issue run phase: review", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

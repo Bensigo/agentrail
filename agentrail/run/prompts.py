@@ -113,3 +113,175 @@ def format_skill_resolution(
     lines.append("")
 
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Task 2b — issue prompt builders
+# ---------------------------------------------------------------------------
+
+_CODEX_TASK_BLOCK = """\
+Run one bounded AgentRail issue execution for exactly one GitHub issue: #{issue}.
+
+Use these local instructions:
+- templates/docs/agents/ralph-loop.md when running from the AgentRail source repo
+- docs/agents/ralph-loop.md when running from an installed target repo
+- repo-local implementation skills such as tdd when they match the work
+
+Hard limits:
+- Handle only issue #{issue}.
+- Read the issue body, comments, labels, and linked PRD or milestone before editing.
+- Read CONTEXT.md, TASTE.md if present, and relevant project memory.
+- Run agentrail memory recall for the issue title and key terms when available.
+- If starting or resuming execution yourself, use agentrail run issue {issue}; AgentRail invokes Ralph internally during the execute phase.
+- Implement the smallest coherent change that satisfies the issue acceptance criteria.
+- Run relevant verification.
+- Open or update one PR linked to #{issue}.
+- Include summary, acceptance criteria coverage, verification, visual evidence, memory updates, and risks in the PR body.
+- Stop when the PR is ready or when blocked.
+"""
+
+_CLAUDE_TASK_BLOCK = """\
+Use Claude Code through AgentRail to run one bounded implementation loop for exactly one GitHub issue: #{issue}.
+
+Use these local instructions when present:
+- templates/docs/agents/ralph-loop.md or docs/agents/ralph-loop.md
+- repo-local TDD and workflow docs under skills/ and docs/agents/
+
+Hard limits:
+- Handle only issue #{issue}.
+- Read the issue body, comments, labels, and linked PRD or milestone before editing.
+- Read CONTEXT.md, TASTE.md if present, and relevant project memory.
+- Run agentrail memory recall for the issue title and key terms when available.
+- If starting or resuming execution yourself, use agentrail run issue {issue}; AgentRail invokes Ralph internally during the execute phase.
+- Implement the smallest coherent change that satisfies the issue acceptance criteria.
+- Run relevant verification.
+- Open or update one PR linked to #{issue}.
+- Include summary, acceptance criteria coverage, verification, visual evidence, memory updates, and risks in the PR body.
+- Stop when the PR is ready or when blocked.
+"""
+
+
+def issue_base_prompt(
+    agent: str,
+    issue: int,
+    *,
+    header: str,
+    skill_block: str,
+    context_summary: str,
+    context_snippets: str,
+) -> str:
+    """Assemble the issue base prompt (legacy prompt_issue:4985-5046).
+
+    header = common_header(...), skill_block = format_skill_resolution(...).
+    """
+    if agent == "codex":
+        task_block = _CODEX_TASK_BLOCK.format(issue=issue)
+    else:
+        task_block = _CLAUDE_TASK_BLOCK.format(issue=issue)
+
+    return (
+        header
+        + skill_block
+        + context_summary
+        + "\n\n"
+        + context_snippets
+        + "\n\n"
+        + task_block
+    )
+
+
+def issue_run_phase_prompt(
+    phase: str,
+    issue: int,
+    *,
+    issue_context: str,
+    base_prompt: str,
+    context_summary: str,
+    plan_output: str = "",
+    verifier_findings_text: str = "",
+    execution_attempt: int = 1,
+    max_execution_attempts: int = 5,
+) -> str:
+    """Plan/execute phase prompt (legacy issue_run_phase_prompt:5910-5989).
+
+    Raises ValueError for unknown phase.
+    """
+    if phase == "plan":
+        return (
+            "This is phase 1 of 2: plan.\n"
+            "\n"
+            "Issue context:\n"
+            f"{issue_context}\n"
+            "\n"
+            "Phase context pack:\n"
+            f"{context_summary}\n"
+            "\n"
+            "Base Ralph instructions:\n"
+            f"{base_prompt}\n"
+            "\n"
+            "Produce a durable implementation plan before code changes. Include these headings exactly:\n"
+            "- Goal\n"
+            "- Non-goals\n"
+            "- Acceptance criteria mapping\n"
+            "- Expected files/areas\n"
+            "- Required skills\n"
+            "- Verification commands\n"
+            "- Risks\n"
+            "\n"
+            "Do not edit files in this phase."
+        )
+
+    if phase == "execute":
+        bounded_plan = bounded_phase_text(plan_output, "approved plan output")
+
+        # Build the optional findings block — mirrors legacy $(if ... fi) in the heredoc.
+        # When non-empty, inserts the findings text between the surrounding blank lines.
+        if verifier_findings_text:
+            findings_segment = (
+                "Verifier findings from previous failed verify attempt:\n"
+                f"{verifier_findings_text}\n"
+                "\n"
+                "Use these findings as focused input for this execute attempt. "
+                "Address only the issue-scoped gaps needed to make verification pass."
+            )
+        else:
+            findings_segment = ""
+
+        # Core body up through base_prompt
+        body = (
+            "This is phase 2 of 2: execute.\n"
+            f"Execution attempt: {execution_attempt} of {max_execution_attempts}.\n"
+            "\n"
+            "Issue context:\n"
+            f"{issue_context}\n"
+            "\n"
+            "Phase context pack:\n"
+            f"{context_summary}\n"
+            "\n"
+            "Approved plan from the plan phase:\n"
+            f"{bounded_plan}\n"
+            "\n"
+            "Base Ralph instructions:\n"
+            f"{base_prompt}\n"
+            "\n"
+        )
+
+        # The legacy heredoc has: blank line, then $(if ... fi), then blank line.
+        # When findings is non-empty the $() expands to findings text (no surrounding
+        # extra newlines beyond what's in the FINDINGS heredoc itself).
+        # When findings is empty the $() expands to "" leaving a bare newline for
+        # that line plus the following blank line — two consecutive newlines = one
+        # blank separator before "AgentRail will invoke...".
+        if findings_segment:
+            body += findings_segment + "\n\n"
+        # else: body already ends with "\n" (after base_prompt), the blank line above
+        # is already present from the trailing "\n\n" in the "Base Ralph" section.
+
+        body += (
+            "AgentRail will invoke the Ralph one-issue executor for this phase and capture its output under this run directory.\n"
+            f"Ralph must implement the approved plan only, keep the work scoped to issue #{issue}, and run relevant verification when implementation is ready."
+        )
+
+        return body
+
+    raise ValueError(f"unknown issue run phase: {phase}")

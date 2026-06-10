@@ -9,6 +9,7 @@ from typing import List
 from agentrail.cli.commands.afk import run_afk
 from agentrail.cli.commands.console import run_console
 from agentrail.cli.commands.context import run_context
+from agentrail.cli.commands.link import run_link
 from agentrail.cli.commands.status import run_status
 from agentrail.cli.commands.timeline import run_timeline
 
@@ -38,6 +39,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_afk(args[1:])
     if args and args[0] == "console":
         return run_console(args[1:])
+    if args and args[0] == "link":
+        return run_link(args[1:])
     if args and args[0] == "timeline":
         return run_timeline(args[1:])
     if args and args[0] == "status":

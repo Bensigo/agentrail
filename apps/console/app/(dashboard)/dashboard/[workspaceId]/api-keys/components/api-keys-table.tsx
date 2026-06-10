@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Plus } from "lucide-react";
 import { CreateKeyDialog, type ApiKeyRow } from "./create-key-dialog";
 import { RevokeKeyDialog } from "./revoke-key-dialog";
+import { ConnectCliPanel } from "./connect-cli-panel";
 
 interface ApiKeysTableProps {
   workspaceId: string;
@@ -34,9 +35,11 @@ export function ApiKeysTable({
   const [keys, setKeys] = useState<ApiKeyRow[]>(initialKeys);
   const [showCreate, setShowCreate] = useState(false);
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyRow | null>(null);
+  const [newKeySecret, setNewKeySecret] = useState<string | null>(null);
 
-  function handleCreated(newKey: ApiKeyRow) {
+  function handleCreated(newKey: ApiKeyRow, secret: string) {
     setKeys((prev) => [newKey, ...prev]);
+    setNewKeySecret(secret);
   }
 
   function handleRevoked(keyId: string) {
@@ -157,6 +160,10 @@ export function ApiKeysTable({
             </tbody>
           </table>
         </div>
+      )}
+
+      {newKeySecret && (
+        <ConnectCliPanel workspaceId={workspaceId} secret={newKeySecret} />
       )}
 
       {showCreate && (

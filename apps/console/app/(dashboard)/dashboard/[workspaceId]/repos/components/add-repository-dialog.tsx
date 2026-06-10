@@ -94,15 +94,26 @@ export function AddRepositoryDialog({
           default_branch: defaultBranch.trim(),
         }),
       });
-      const data = await res.json() as {
+      // Read the body as text first: error responses (e.g. an unhandled 500)
+      // may have an empty or non-JSON body, which would otherwise make
+      // res.json() throw a cryptic "Unexpected end of JSON input".
+      const raw = await res.text();
+      let data: {
         repository?: RepoRow;
         error?: string;
         errors?: Record<string, string>;
-      };
+      } = {};
+      if (raw) {
+        try {
+          data = JSON.parse(raw);
+        } catch {
+          // Non-JSON body — fall through to a status-based error message below.
+        }
+      }
       if (!res.ok) {
         throw new Error(
           data.error ??
-            (data.errors ? Object.values(data.errors).join("; ") : `HTTP ${res.status}`)
+            (data.errors ? Object.values(data.errors).join("; ") : `Request failed (HTTP ${res.status})`)
         );
       }
       onAdded(data.repository!);

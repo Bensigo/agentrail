@@ -1,105 +1,161 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter, usePathname } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { Check, ChevronsUpDown, Plus } from "lucide-react";
 
 type Workspace = { id: string; name: string; slug: string; role: string };
 
-export function WorkspaceSwitcher() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [loading, setLoading] = useState(true);
+interface WorkspaceSwitcherProps {
+  workspaces: Workspace[];
+  activeId: string;
+}
 
-  // Extract workspaceId from /dashboard/[workspaceId]/...
-  const pathParts = pathname.split("/");
-  const dashboardIdx = pathParts.indexOf("dashboard");
-  const activeId =
-    dashboardIdx !== -1 && pathParts.length > dashboardIdx + 1
-      ? pathParts[dashboardIdx + 1]
-      : undefined;
+// Deterministic avatar background derived from the workspace id, so each
+// workspace keeps a stable colour across renders and sessions.
+const AVATAR_COLORS = [
+  "#ffe629", // brand yellow
+  "#46a758", // green
+  "#3e9bff", // blue
+  "#e93d82", // pink
+  "#f76b15", // orange
+  "#8e4ec6", // purple
+  "#12a594", // teal
+  "#e5484d", // red
+];
 
-  useEffect(() => {
-    fetch("/api/v1/workspaces")
-      .then((r) => r.json())
-      .then((data: Workspace[]) => {
-        setWorkspaces(data);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, []);
-
-  if (loading) {
-    return (
-      <div
-        style={{
-          padding: "0.5rem 0.75rem",
-          color: "var(--gray-08)",
-          fontSize: "0.8125rem",
-        }}
-      >
-        Loading...
-      </div>
-    );
+function avatarColor(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
   }
+  return AVATAR_COLORS[hash % AVATAR_COLORS.length];
+}
 
-  if (workspaces.length === 0) return null;
-
-  // AC6: single workspace — static label, no selection affordance
-  if (workspaces.length === 1) {
-    return (
-      <div
-        style={{
-          padding: "0.5rem 0.75rem",
-          fontSize: "0.8125rem",
-          fontWeight: 500,
-          color: "var(--gray-12)",
-          background: "var(--gray-02)",
-          borderRadius: "6px",
-          borderLeft: "2px solid #ffe629",
-          userSelect: "none",
-        }}
-      >
-        {workspaces[0].name}
-      </div>
-    );
-  }
-
-  // Multiple workspaces — dropdown
+function WorkspaceAvatar({ workspace, size = 20 }: { workspace: Workspace; size?: number }) {
+  const bg = avatarColor(workspace.id);
   return (
-    <select
-      value={activeId ?? ""}
-      onChange={(e) => router.push(`/dashboard/${e.target.value}/`)}
+    <span
+      aria-hidden
+      className="flex shrink-0 items-center justify-center rounded-[5px] font-bold text-black"
       style={{
-        width: "100%",
-        padding: "0.5rem 0.75rem",
-        fontSize: "0.8125rem",
-        fontWeight: 500,
-        background: "var(--gray-02)",
-        color: "var(--gray-12)",
-        border: "1px solid var(--gray-04)",
-        borderRadius: "6px",
-        cursor: "pointer",
-        outline: "none",
-        appearance: "none",
-        backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E")`,
-        backgroundRepeat: "no-repeat",
-        backgroundPosition: "right 0.6rem center",
-        paddingRight: "2rem",
+        width: size,
+        height: size,
+        background: bg,
+        fontSize: size * 0.5,
+        lineHeight: 1,
       }}
     >
-      {workspaces.map((w) => (
-        <option
-          key={w.id}
-          value={w.id}
-          style={{
-            background: w.id === activeId ? "#ffe629" : undefined,
-            fontWeight: w.id === activeId ? 600 : undefined,
-          }}
+      {(workspace.name[0] ?? "?").toUpperCase()}
+    </span>
+  );
+}
+
+export function WorkspaceSwitcher({ workspaces, activeId }: WorkspaceSwitcherProps) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const active =
+    workspaces.find((w) => w.id === activeId) ?? workspaces[0] ?? null;
+
+  // Close on outside click or Escape.
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  if (!active) return null;
+
+  function selectWorkspace(id: string) {
+    setOpen(false);
+    if (id !== activeId) router.push(`/dashboard/${id}/`);
+  }
+
+  function createWorkspace() {
+    setOpen(false);
+    router.push("/setup");
+  }
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors duration-150 hover:bg-[var(--gray-03)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-accent)]"
+      >
+        <WorkspaceAvatar workspace={active} size={22} />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-[var(--gray-12)]">
+            {active.name}
+          </span>
+          <span className="block truncate text-[11px] capitalize text-[var(--gray-09)]">
+            {active.role}
+          </span>
+        </span>
+        <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-[var(--gray-09)]" />
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-[var(--gray-05)] bg-[var(--gray-02)] py-1 shadow-2xl"
+          style={{ boxShadow: "0 16px 40px -12px rgb(0 0 0 / 0.55)" }}
         >
-          {w.name}
-        </option>
-      ))}
-    </select>
+          <div className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--gray-08)]">
+            Workspaces
+          </div>
+          <div className="max-h-64 overflow-y-auto">
+            {workspaces.map((w) => {
+              const isActive = w.id === active.id;
+              return (
+                <button
+                  key={w.id}
+                  type="button"
+                  role="option"
+                  aria-selected={isActive}
+                  onClick={() => selectWorkspace(w.id)}
+                  className="flex w-full items-center gap-2 px-2 py-1.5 text-left transition-colors duration-150 hover:bg-[var(--gray-03)] focus:outline-none focus-visible:bg-[var(--gray-03)]"
+                >
+                  <WorkspaceAvatar workspace={w} size={20} />
+                  <span className="min-w-0 flex-1 truncate text-sm text-[var(--gray-12)]">
+                    {w.name}
+                  </span>
+                  {isActive && (
+                    <Check className="h-3.5 w-3.5 shrink-0 text-[var(--brand-accent)]" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <div className="my-1 h-px bg-[var(--gray-05)]" />
+          <button
+            type="button"
+            onClick={createWorkspace}
+            className="flex w-full items-center gap-2 px-2 py-1.5 text-left transition-colors duration-150 hover:bg-[var(--gray-03)] focus:outline-none focus-visible:bg-[var(--gray-03)]"
+          >
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] border border-dashed border-[var(--gray-07)] text-[var(--gray-10)]">
+              <Plus className="h-3 w-3" />
+            </span>
+            <span className="text-sm text-[var(--gray-11)]">Create workspace</span>
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

@@ -149,7 +149,7 @@ def reciprocal_rank(rank: int) -> float:
 
 
 def build_reason(parts: Set[str]) -> str:
-    ordered = ["deterministic required context", "active workflow state", "same issue prior failure", "prior mistake", "linked issue", "linked pull request", "exact identifier", "exact path", "graph expansion", "BM25 keyword match", "embedding similarity", "high authority source", "current memory", "stale memory", "expired memory", "stale prior mistake", "resolved prior mistake", "unrelated prior mistake", "low authority source"]
+    ordered = ["deterministic required context", "active workflow state", "same issue prior failure", "prior mistake", "linked issue", "linked pull request", "symbol definition", "exact identifier", "exact path", "graph expansion", "BM25 keyword match", "embedding similarity", "high authority source", "current memory", "stale memory", "expired memory", "stale prior mistake", "resolved prior mistake", "unrelated prior mistake", "low authority source"]
     return "; ".join(item for item in ordered if item in parts) or "Included by hybrid retrieval score."
 
 
@@ -499,6 +499,18 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
     sources = {record["id"]: record for record in index.get("records", [])}
     items = [(sources.get(chunk.get("sourceId"), {}), chunk) for chunk in index.get("chunks", [])] if index.get("chunks") else [(record, None) for record in index.get("records", [])]
     query_tokens = unique(tokenize(query))
+    # Normalized symbol candidates: strip edge punctuation ("req.param" tokenizes
+    # to "req"/".param") and take the member after a dot, so a symbol query matches
+    # the chunk that *defines* the symbol, not just files that mention it.
+    query_symbols: Set[str] = set()
+    for token in query_tokens:
+        stripped = re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", token)
+        if stripped:
+            query_symbols.add(stripped)
+        if "." in token:
+            tail = token.rsplit(".", 1)[-1]
+            if tail:
+                query_symbols.add(tail)
     query_lower = query.lower()
     query_issue_refs = issue_refs(query)
     query_pr_refs = pr_refs(query)
@@ -575,6 +587,10 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         for phrase in phrases:
             if len(phrase) > 8 and phrase in doc["textLower"]:
                 keyword += 1; reasons.add("exact identifier")
+        if query_symbols and any(str(hint).lower() in query_symbols for hint in ((chunk or {}).get("symbolHints") or [])):
+            # The queried symbol is defined in this chunk — prefer the definition
+            # site over files that merely call it.
+            deterministic += 2.5; reasons.add("symbol definition")
         if bm25 > 0:
             reasons.add("BM25 keyword match")
         authority_boost = score_authority(source)

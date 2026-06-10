@@ -435,6 +435,24 @@ class IssueRunPhasePromptTests(unittest.TestCase):
         )
         self.assertNotIn("Verifier findings", result)
 
+    def test_execute_no_findings_blank_line_spacing(self):
+        """Verify legacy 3-blank-line spacing in execute prompt (no findings).
+
+        Legacy $(if...fi) empty slot expands to "", leaving 3 blank lines
+        between base_prompt and the AgentRail invocation line.
+        """
+        result = self._fn(
+            "execute", 7,
+            issue_context="ctx",
+            base_prompt="BASE",
+            context_summary="SUM",
+            plan_output="PLAN",
+            execution_attempt=1,
+            max_execution_attempts=2,
+        )
+        # 4 newlines = 3 blank lines between "BASE" and "AgentRail will invoke"
+        self.assertIn("BASE\n\n\n\nAgentRail will invoke the Ralph one-issue executor", result)
+
     # --- execute phase (with findings) ---
 
     def test_execute_with_findings_section_header(self):

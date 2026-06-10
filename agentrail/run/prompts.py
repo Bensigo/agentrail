@@ -269,13 +269,14 @@ def issue_run_phase_prompt(
         # The legacy heredoc has: blank line, then $(if ... fi), then blank line.
         # When findings is non-empty the $() expands to findings text (no surrounding
         # extra newlines beyond what's in the FINDINGS heredoc itself).
-        # When findings is empty the $() expands to "" leaving a bare newline for
-        # that line plus the following blank line — two consecutive newlines = one
-        # blank separator before "AgentRail will invoke...".
+        # When findings is empty the $() expands to "" leaving the blank line before
+        # plus the blank line after — but we need to add extra blank lines to match
+        # the legacy empty $() slot expansion which leaves 3 blank lines total.
         if findings_segment:
             body += findings_segment + "\n\n"
-        # else: body already ends with "\n" (after base_prompt), the blank line above
-        # is already present from the trailing "\n\n" in the "Base Ralph" section.
+        else:
+            # Legacy empty $(if...fi) slot → 3 blank lines between base_prompt and AgentRail
+            body += "\n\n"
 
         body += (
             "AgentRail will invoke the Ralph one-issue executor for this phase and capture its output under this run directory.\n"

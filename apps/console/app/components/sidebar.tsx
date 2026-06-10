@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  LayoutDashboard,
   Play,
   Package,
   AlertTriangle,
@@ -24,6 +25,7 @@ interface SidebarProps {
 }
 
 const navItems = [
+  { label: "Overview", href: "", icon: LayoutDashboard },
   { label: "Runs", href: "runs", icon: Play },
   { label: "Context Packs", href: "context-packs", icon: Package },
   { label: "Failures", href: "failures", icon: AlertTriangle },
@@ -36,7 +38,7 @@ const navItems = [
   { label: "Members", href: "members", icon: UserCheck },
 ];
 
-export function Sidebar({ workspaces: _workspaces, workspaceId, user, signOutAction }: SidebarProps) {
+export function Sidebar({ workspaces, workspaceId, user, signOutAction }: SidebarProps) {
   const pathname = usePathname();
   const basePath = `/dashboard/${workspaceId}`;
 
@@ -52,13 +54,17 @@ export function Sidebar({ workspaces: _workspaces, workspaceId, user, signOutAct
       </div>
 
       <div className="border-b border-[var(--gray-04)] px-2 py-2 max-md:hidden">
-        <WorkspaceSwitcher />
+        <WorkspaceSwitcher workspaces={workspaces} activeId={workspaceId} />
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2 py-2">
         {navItems.map(({ label, href, icon: Icon }) => {
-          const fullHref = `${basePath}/${href}`;
-          const isActive = pathname.startsWith(fullHref);
+          const fullHref = href ? `${basePath}/${href}` : basePath;
+          // The Overview item lives at the workspace root, so match it exactly —
+          // a startsWith check would keep it highlighted on every sub-route.
+          const isActive = href
+            ? pathname.startsWith(fullHref)
+            : pathname === basePath || pathname === `${basePath}/`;
           return (
             <Link
               key={href}

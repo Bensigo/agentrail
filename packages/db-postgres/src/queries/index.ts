@@ -11,6 +11,7 @@ import {
   teamRepositories,
   apiKeys,
   reviewGates,
+  memoryItems,
 } from "../schema/index.js";
 
 export type RunStatus = "queued" | "running" | "success" | "failed";
@@ -194,6 +195,25 @@ export async function listRunsWithCursor(
   }
 
   return { runs: rows as RunRow[], nextCursor };
+}
+
+export interface MemoryItemRow {
+  id: string;
+  workspaceId: string;
+  source: string;
+  content: string;
+  tags: string[];
+  createdAt: Date;
+  lastUsedAt: Date | null;
+}
+
+export async function listMemoryItems(workspaceId: string): Promise<MemoryItemRow[]> {
+  const rows = await db
+    .select()
+    .from(memoryItems)
+    .where(eq(memoryItems.workspaceId, workspaceId))
+    .orderBy(desc(memoryItems.createdAt));
+  return rows as MemoryItemRow[];
 }
 
 export async function listWorkspaceRepositories(workspaceId: string) {

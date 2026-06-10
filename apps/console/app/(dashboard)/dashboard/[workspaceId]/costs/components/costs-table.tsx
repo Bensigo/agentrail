@@ -10,6 +10,7 @@ import {
   type SortingState,
   type ColumnDef,
 } from "@tanstack/react-table";
+import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
 
 export interface CostRow {
   entity_id: string;
@@ -324,14 +325,7 @@ export function CostsTable({ workspaceId }: CostsTableProps) {
           </thead>
           <tbody>
             {loading ? (
-              <tr>
-                <td
-                  colSpan={columns.length}
-                  className="px-3 py-8 text-center text-sm text-[var(--gray-09)]"
-                >
-                  <span className="animate-pulse">Loading cost data…</span>
-                </td>
-              </tr>
+              <SkeletonTableRows columns={columns.length} rows={8} />
             ) : error ? (
               <tr>
                 <td

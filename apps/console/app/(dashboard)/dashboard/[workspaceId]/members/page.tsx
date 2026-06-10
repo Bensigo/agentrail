@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { Copy, Trash2, Plus } from "lucide-react";
+import { SkeletonTable } from "../../../../components/loading-skeleton";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -246,12 +247,7 @@ export default function MembersPage() {
       <section>
         <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">Members</h1>
 
-        {membersLoading && (
-          <div className="flex items-center gap-2 py-8 text-sm text-[var(--gray-09)]">
-            <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-[var(--gray-06)] border-t-[var(--gray-10)]" />
-            Loading members…
-          </div>
-        )}
+        {membersLoading && <SkeletonTable columns={4} rows={5} />}
 
         {!membersLoading && membersError && (
           <div className="rounded border border-[#e5484d]/30 bg-[#e5484d]/10 px-4 py-3 text-sm text-[#ff9592]">
@@ -327,12 +323,7 @@ export default function MembersPage() {
           <h2 className="text-sm font-semibold text-[var(--gray-12)]">Pending invites</h2>
         </div>
 
-        {invitesLoading && (
-          <div className="flex items-center gap-2 py-6 text-sm text-[var(--gray-09)]">
-            <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-[var(--gray-06)] border-t-[var(--gray-10)]" />
-            Loading invites…
-          </div>
-        )}
+        {invitesLoading && <SkeletonTable columns={4} rows={3} />}
 
         {!invitesLoading && invitesError && (
           <div className="rounded border border-[#e5484d]/30 bg-[#e5484d]/10 px-4 py-3 text-sm text-[#ff9592]">

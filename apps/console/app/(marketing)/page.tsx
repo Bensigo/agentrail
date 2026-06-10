@@ -8,42 +8,35 @@ import { Reveal, CountUp } from "./_motion";
 
 const display = Bricolage_Grotesque({ subsets: ["latin"], display: "swap" });
 
-interface BenchmarkData {
+interface AgentAB {
+  plainTokens: number;
   agentrailTokens: number;
-  smartAgentTokens: number;
-  naiveTokens: number;
-  precisionAt1: number;
-  fixtureCount: number;
-  e2eReduction: number;
+  reduction: number;
+  repetitions: number;
+  tasks: number;
 }
 
-function parseBenchmarkData(): BenchmarkData | null {
+/** The honest, end-to-end benchmark: the same coding task through a real agent,
+ *  with vs without AgentRail. See docs/benchmarks/agent-ab-protocol.md. */
+function parseAgentAB(): AgentAB | null {
   try {
-    const filePath = path.join(
-      process.cwd(),
-      "../../docs/benchmarks/results/context-retrieval-cli-latest.md"
+    const content = fs.readFileSync(
+      path.join(process.cwd(), "../../docs/benchmarks/results/agent-ab-latest.md"),
+      "utf-8"
     );
-    const content = fs.readFileSync(filePath, "utf-8");
-
-    const naiveMatch = content.match(/naive.*?grep.*?\|\s*([\d,]+)\s*\|/i);
-    const smartMatch = content.match(/smart agent.*?\|\s*([\d,]+)\s*\|/i);
-    const arMatch = content.match(/AgentRail: read.*?\|\s*\*\*([\d,]+)\*\*/);
-    const precisionMatch = content.match(/precision@1.*?\*\*([\d.]+)\*\*/);
-    const e2eMatch = content.match(/−(\d+)%/);
-    const fixtureMatch = content.match(/express \((\d+)\).*?flask \((\d+)\)/s);
-
-    if (!naiveMatch || !smartMatch || !arMatch) return null;
-    const parseNum = (s: string) => parseInt(s.replace(/,/g, ""), 10);
-
+    const plain = content.match(/plain agent:\s*\*\*([\d,]+)\*\*/i);
+    const ar = content.match(/AgentRail CLI:\s*\*\*([\d,]+)\*\*/i);
+    const red = content.match(/\(−(\d+)%\)/);
+    const reps = content.match(/repetitions:\s*(\d+)/i);
+    const tasks = content.match(/Tasks:\s*(\d+)/i);
+    if (!plain || !ar) return null;
+    const n = (s: string) => parseInt(s.replace(/,/g, ""), 10);
     return {
-      naiveTokens: parseNum(naiveMatch[1]),
-      smartAgentTokens: parseNum(smartMatch[1]),
-      agentrailTokens: parseNum(arMatch[1]),
-      precisionAt1: precisionMatch ? parseFloat(precisionMatch[1]) : 0.82,
-      e2eReduction: e2eMatch ? parseInt(e2eMatch[1]) : 24,
-      fixtureCount: fixtureMatch
-        ? parseInt(fixtureMatch[1]) + parseInt(fixtureMatch[2])
-        : 11,
+      plainTokens: n(plain[1]),
+      agentrailTokens: n(ar[1]),
+      reduction: red ? parseInt(red[1]) : 24,
+      repetitions: reps ? parseInt(reps[1]) : 3,
+      tasks: tasks ? parseInt(tasks[1]) : 1,
     };
   } catch {
     return null;
@@ -59,14 +52,8 @@ export default async function LandingPage() {
     redirect(workspaces.length > 0 ? `/dashboard/${workspaces[0].id}` : "/setup");
   }
 
-  const benchmark = parseBenchmarkData();
-  const reduction = benchmark
-    ? Math.round(
-        ((benchmark.smartAgentTokens - benchmark.agentrailTokens) /
-          benchmark.smartAgentTokens) *
-          100
-      )
-    : 89;
+  const agentab = parseAgentAB();
+  const reduction = agentab ? agentab.reduction : 24;
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-[var(--gray-00)] text-[var(--gray-12)]">
@@ -156,9 +143,9 @@ export default async function LandingPage() {
             <span className="text-[var(--gray-12)]">durable context</span>,{" "}
             <span className="text-[var(--gray-12)]">bounded execution</span>, and{" "}
             <span className="text-[var(--gray-12)]">review gates</span> — so you
-            see what every run did, what context it used, and what it cost.
-            Measured <span style={{ color: ACCENT }}>{reduction}% fewer tokens</span>{" "}
-            to find the right code.
+            see what every run did, what context it used, and what it cost. In a
+            real with-vs-without test, AgentRail cut a coding agent&apos;s tokens{" "}
+            <span style={{ color: ACCENT }}>{reduction}%</span> at equal accuracy.
           </p>
 
           <div
@@ -188,25 +175,25 @@ export default async function LandingPage() {
             </a>
           </div>
 
-          {/* Signal stat */}
-          {benchmark && (
+          {/* Signal stat — the real end-to-end agent A/B */}
+          {agentab && (
             <div
               className="ar-rise mt-12 flex flex-wrap items-stretch gap-px overflow-hidden rounded-xl border border-[var(--gray-05)] bg-[var(--gray-05)]"
               style={{ animationDelay: "320ms" }}
             >
               <SignalStat
                 kpi={`−${reduction}%`}
-                label="tokens to gather context"
+                label="total agent tokens, real run"
                 accent
               />
+              <SignalStat kpi="100%" label="context found — both arms" />
               <SignalStat
-                kpi={`${Math.round(benchmark.precisionAt1 * 100)}%`}
-                label="right file ranked first"
+                kpi={agentab.agentrailTokens.toLocaleString("en-US")}
+                label={`vs ${agentab.plainTokens.toLocaleString("en-US")} without AgentRail`}
               />
-              <SignalStat kpi="100%" label="recall on benchmarked tasks" />
               <SignalStat
-                kpi={`−${benchmark.e2eReduction}%`}
-                label="end-to-end agent tokens"
+                kpi={`${agentab.repetitions}×`}
+                label="repetitions, averaged"
               />
             </div>
           )}
@@ -228,25 +215,26 @@ export default async function LandingPage() {
         <div className="mx-auto max-w-[1180px]">
           <Reveal>
             <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--gray-09)]">
-              Measured · reproducible
+              Real agent · with vs without · {agentab ? agentab.repetitions : 3} reps
             </p>
             <h2
               className={`${display.className} mt-3 max-w-[20ch] text-[clamp(1.8rem,3.4vw,2.8rem)] font-extrabold tracking-[-0.03em]`}
             >
               We didn&apos;t claim it. We benchmarked it.
             </h2>
-            <p className="mt-3 max-w-[62ch] text-[15px] leading-relaxed text-[var(--gray-10)]">
-              Across {benchmark ? benchmark.fixtureCount : 11} real symbol and
-              function lookups on production repos (Express, Flask), here&apos;s
-              how many tokens an agent burns just to{" "}
-              <span className="text-[var(--gray-12)]">gather the context</span>{" "}
-              before it writes a line.
+            <p className="mt-3 max-w-[64ch] text-[15px] leading-relaxed text-[var(--gray-10)]">
+              We ran the <span className="text-[var(--gray-12)]">same</span> multi-file
+              coding task on a real repo (<span className="font-mono text-[13px]">psf/requests</span>),
+              through the <span className="text-[var(--gray-12)]">same</span> agent,
+              {" "}{agentab ? agentab.repetitions : 3}× each way. The only difference
+              was whether it had AgentRail. Total tokens, end to end —
+              not a synthetic context-gathering estimate.
             </p>
           </Reveal>
 
-          {benchmark ? (
+          {agentab ? (
             <Reveal delay={120} className="mt-10">
-              <BenchmarkBars data={benchmark} reduction={reduction} />
+              <AgentABBars data={agentab} reduction={reduction} />
             </Reveal>
           ) : (
             <div className="mt-10 rounded-lg border border-[var(--gray-05)] bg-[var(--gray-02)] p-6 text-sm text-[var(--gray-09)]">
@@ -427,7 +415,7 @@ export default async function LandingPage() {
                 </p>
                 <ul className="mt-5 space-y-2.5">
                   {[
-                    "Hybrid context retrieval — −89% tokens",
+                    "Hybrid context retrieval — line ranges, not files",
                     "Bounded, review-gated agent runs",
                     "Durable project memory",
                     "Repo-native, deterministic, offline",
@@ -575,37 +563,30 @@ function SignalStat({
   );
 }
 
-function BenchmarkBars({
+function AgentABBars({
   data,
   reduction,
 }: {
-  data: BenchmarkData;
+  data: AgentAB;
   reduction: number;
 }) {
-  const max = data.smartAgentTokens;
+  const max = data.plainTokens;
   const rows = [
     {
-      label: "AgentRail",
-      sub: "reads the returned line ranges",
-      tokens: data.agentrailTokens,
-      pct: Math.max(3, (data.agentrailTokens / max) * 100),
-      accent: true,
-    },
-    {
-      label: "Smart agent",
-      sub: "opens only the right files, in full",
-      tokens: data.smartAgentTokens,
+      label: "Plain agent",
+      sub: "its own grep + whole-file reads",
+      tokens: data.plainTokens,
       pct: 100,
       accent: false,
     },
+    {
+      label: "Agent + AgentRail",
+      sub: "compact context via the CLI",
+      tokens: data.agentrailTokens,
+      pct: Math.max(6, (data.agentrailTokens / max) * 100),
+      accent: true,
+    },
   ];
-
-  const fmt = (n: number) =>
-    n >= 1_000_000
-      ? `${(n / 1_000_000).toFixed(1)}M`
-      : n >= 1_000
-      ? `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`
-      : String(n);
 
   return (
     <div className="rounded-xl border border-[var(--gray-05)] bg-[var(--gray-01)] p-6 sm:p-8">
@@ -624,7 +605,7 @@ function BenchmarkBars({
                 className="ml-auto font-mono text-[14px]"
                 style={{ color: row.accent ? ACCENT : "var(--gray-11)" }}
               >
-                <CountUp to={row.tokens} compact /> tk
+                <CountUp to={row.tokens} /> tk
               </span>
             </div>
             <div className="h-7 w-full overflow-hidden rounded bg-[var(--gray-03)]">
@@ -640,14 +621,17 @@ function BenchmarkBars({
           </div>
         ))}
 
-        {/* off-scale naive */}
-        <div className="flex items-center justify-between rounded border border-dashed border-[var(--gray-05)] px-4 py-3">
-          <span className="text-[13px] text-[var(--gray-10)]">
-            <span className="font-bold text-[var(--gray-12)]">Naive grep</span>{" "}
-            — reads every matched file in full
+        <div className="flex items-center gap-2 rounded border border-[var(--gray-05)] bg-[var(--gray-00)]/50 px-4 py-3">
+          <span
+            className="flex h-5 w-5 items-center justify-center rounded-full"
+            style={{ background: ACCENT }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="black" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
           </span>
-          <span className="font-mono text-[13px] text-[var(--gray-09)]">
-            {fmt(data.naiveTokens)} tk · off-scale
+          <span className="text-[13px] text-[var(--gray-10)]">
+            Both arms found the required files{" "}
+            <span className="text-[var(--gray-12)]">every time</span> — fewer
+            tokens, not less context.
           </span>
         </div>
       </div>
@@ -657,8 +641,8 @@ function BenchmarkBars({
           −{reduction}%
         </span>
         <span className="text-[14px] text-[var(--gray-10)]">
-          fewer tokens than an agent that opens exactly the right files — because
-          AgentRail reads ranges, not whole files. 100% recall.
+          total tokens through a real coding agent, at equal accuracy. One task,
+          one repo, one model — directional, and honest about it.
         </span>
       </div>
     </div>

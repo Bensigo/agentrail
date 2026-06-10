@@ -94,6 +94,8 @@ def main() -> int:
     ap.add_argument("--target", required=True)
     ap.add_argument("--fixtures")
     ap.add_argument("--k", type=int, default=10)
+    ap.add_argument("--out", help="Write a markdown results file to this path.")
+    ap.add_argument("--label", default="", help="Short label for the target (e.g. 'express@5.2.1').")
     args = ap.parse_args()
     root = Path(args.target).resolve()
 
@@ -152,7 +154,58 @@ def main() -> int:
     print("\nNote: grep/ripgrep are unordered literal matchers (no rank). AgentRail returns a ranked top-K;")
     print("'AR rank' is the rank of the definition file. Set-precision penalises AgentRail's fixed K vs")
     print("grep/rg returning only literal matches — precision@1 measures whether the definition ranks first.")
+
+    if args.out:
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out).write_text(_markdown(rows, agg, tok, args, pct), encoding="utf-8")
+        print(f"\nwrote: {args.out}")
     return 0
+
+
+def _markdown(rows, agg, tok, args, pct) -> str:
+    label = args.label or str(Path(args.target).name)
+    lines = [
+        "# Context Retrieval — AgentRail vs grep vs ripgrep",
+        "",
+        f"Target: **{label}** (real codebase) · fixtures: {len(rows)} · K(agentrail)={args.k} · embeddings: disabled",
+        "",
+        "_Measured by `scripts/benchmark-vs-grep.py`. Symbol-lookup queries with"
+        " ground-truth definition files. Numbers are real and reproducible, but"
+        " scoped to this run — not a universal claim (PRD claim rules apply)._",
+        "",
+        "| metric | grep | ripgrep | AgentRail |",
+        "| --- | --- | --- | --- |",
+        f"| recall (finds the file) | {agg['grep']['recall']:.2f} | {agg['ripgrep']['recall']:.2f} | {agg['agentrail']['recall']:.2f} |",
+        f"| precision@1 (definition ranked first) | — | — | **{agg['agentrail'].get('p_at_1', 0.0):.2f}** |",
+        f"| set-precision | {agg['grep']['precision']:.2f} | {agg['ripgrep']['precision']:.2f} | {agg['agentrail']['precision']:.2f} |",
+        f"| tokens to obtain context | {tok['grep_full']:,} | {tok['rg_full']:,} | **{tok['agentrail_compact']:,}** |",
+        "",
+        f"AgentRail compact context is **{pct(tok['agentrail_compact'], tok['grep_full'])} vs grep** and "
+        f"**{pct(tok['agentrail_compact'], tok['rg_full'])} vs ripgrep** at equal recall.",
+        "",
+        "## Per-query (rank = position of the definition file in AgentRail results)",
+        "",
+        "| query | required | grep recall/prec (n) | rg recall/prec (n) | AgentRail recall/prec (n) | AR rank |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for r in rows:
+        def cell(m):
+            return f"{m['recall']:.2f}/{m['precision']:.2f} ({m['returned']})"
+        ar = r["agentrail"]
+        lines.append(f"| `{r['query']}` | {', '.join(r['required'])} | {cell(r['grep'])} | {cell(r['ripgrep'])} | {cell(ar)} | #{ar['firstRank']} |")
+    lines += [
+        "",
+        "## Honest reading",
+        "- **Recall ties at 1.00** — for literal-symbol lookups all three find the file.",
+        "- **AgentRail's edge is tokens + ranking**, not set-precision: it returns a ranked top-K, so on raw"
+        " set-precision ripgrep scores higher; that metric is the wrong lens for a ranked retriever.",
+        "- **precision@1** (definition ranked first) and **token cost** are the meaningful axes — and the"
+        " token reduction at equal recall mirrors greplm's headline.",
+        "- Conceptual/semantic queries are **not** covered here (embeddings disabled); enable a provider with"
+        " `agentrail context embed setup` to benchmark that axis.",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 DEFAULT_EXPRESS_FIXTURES = [

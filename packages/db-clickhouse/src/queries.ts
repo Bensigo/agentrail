@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { client } from "./client";
 import type { TelemetryEventRecord, FailureEventRecord, IndexSnapshotRecord } from "./schema";
 
@@ -363,4 +364,151 @@ export async function getFailureById(
   });
   const rows = await result.json<FailureEventRecord>();
   return rows[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// AFK run-event ingestion
+// ---------------------------------------------------------------------------
+
+export interface AfkRunEventInput {
+  /** Derived from bearer-key context — never from request body. */
+  workspace_id: string;
+  repository_id: string;
+  session_id: string;
+  seq: number;
+  ts: string;
+  /** "action" | "init" */
+  kind: string;
+  /** Serialised action dict including action.type */
+  action: Record<string, unknown>;
+  digest: string;
+}
+
+function deriveEventId(workspaceId: string, sessionId: string, seq: number): string {
+  return createHash("sha1")
+    .update(`${workspaceId}:${sessionId}:${seq}`)
+    .digest("hex");
+}
+
+/**
+ * Insert AFK run events into ClickHouse, deduplicating on
+ * (workspace_id, session_id, seq) via a pre-existence check.
+ * Returns the number of rows actually inserted.
+ */
+export async function insertAfkRunEvents(events: AfkRunEventInput[]): Promise<number> {
+  if (events.length === 0) return 0;
+
+  // Compute deterministic event_ids.
+  const candidates = events.map((ev) => ({
+    ev,
+    event_id: deriveEventId(ev.workspace_id, ev.session_id, ev.seq),
+  }));
+
+  // Filter out already-inserted event_ids.
+  const eventIds = candidates.map((c) => c.event_id);
+  const checkResult = await client.query({
+    query: `
+      SELECT event_id
+      FROM run_events
+      WHERE workspace_id = {workspaceId: String}
+        AND event_id IN ({eventIds: Array(String)})
+    `,
+    query_params: {
+      workspaceId: events[0].workspace_id,
+      eventIds,
+    },
+    format: "JSONEachRow",
+  });
+  const existing = new Set(
+    (await checkResult.json<{ event_id: string }>()).map((r) => r.event_id)
+  );
+
+  const toInsert = candidates.filter((c) => !existing.has(c.event_id));
+  if (toInsert.length === 0) return 0;
+
+  const rows = toInsert.map(({ ev, event_id }) => ({
+    workspace_id: ev.workspace_id,
+    repository_id: ev.repository_id,
+    run_id: ev.session_id,
+    agent: "",
+    phase: ev.kind,
+    event_type: String(ev.action?.type ?? ev.kind),
+    severity: "info",
+    occurred_at: new Date(ev.ts).toISOString().replace("T", " ").replace("Z", ""),
+    event_id,
+    submission_kind: "afk",
+    payload: JSON.stringify(ev.action),
+    session_id: ev.session_id,
+    seq: ev.seq,
+  }));
+
+  await client.insert({
+    table: "run_events",
+    values: rows,
+    format: "JSONEachRow",
+  });
+
+  return toInsert.length;
+}
+
+/**
+ * Fetch run events for a session (AFK or regular run).
+ * ``runId`` is either a Postgres UUID or an AFK session_id.
+ */
+export async function getRunEventsByRunId(
+  workspaceId: string,
+  runId: string,
+  afterSeq?: number
+): Promise<TelemetryEventRecord[]> {
+  const conditions: string[] = [
+    "workspace_id = {workspaceId: String}",
+    "run_id = {runId: String}",
+  ];
+  const queryParams: Record<string, unknown> = { workspaceId, runId };
+
+  if (afterSeq !== undefined) {
+    conditions.push("seq > {afterSeq: Int64}");
+    queryParams.afterSeq = afterSeq;
+  }
+
+  const result = await client.query({
+    query: `
+      SELECT
+        workspace_id,
+        repository_id,
+        run_id,
+        agent,
+        phase,
+        event_type,
+        severity,
+        occurred_at,
+        event_id,
+        submission_kind,
+        payload,
+        session_id,
+        seq
+      FROM run_events
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY occurred_at ASC, seq ASC
+    `,
+    query_params: queryParams,
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<Record<string, unknown>>();
+  return rows.map((r) => ({
+    workspace_id: String(r.workspace_id ?? ""),
+    repository_id: String(r.repository_id ?? ""),
+    run_id: String(r.run_id ?? ""),
+    agent: String(r.agent ?? ""),
+    phase: String(r.phase ?? ""),
+    event_type: String(r.event_type ?? ""),
+    severity: String(r.severity ?? ""),
+    occurred_at: new Date(String(r.occurred_at)),
+    event_id: String(r.event_id ?? ""),
+    submission_kind: String(r.submission_kind ?? ""),
+    payload: String(r.payload ?? ""),
+    session_id: String(r.session_id ?? ""),
+    seq: Number(r.seq ?? 0),
+  }));
 }

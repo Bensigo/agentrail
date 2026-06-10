@@ -24,6 +24,8 @@ async function main() {
       event_id: "evt-001",
       submission_kind: "issue",
       payload: JSON.stringify({ issue: 212 }),
+      session_id: "",
+      seq: 0,
     },
     {
       workspace_id: "dev-workspace",
@@ -37,6 +39,8 @@ async function main() {
       event_id: "evt-002",
       submission_kind: "issue",
       payload: JSON.stringify({ issue: 212, status: "success" }),
+      session_id: "",
+      seq: 0,
     },
     {
       workspace_id: "dev-workspace",
@@ -50,6 +54,8 @@ async function main() {
       event_id: "evt-003",
       submission_kind: "issue",
       payload: JSON.stringify({ issue: 213 }),
+      session_id: "",
+      seq: 0,
     },
   ];
 

@@ -6,12 +6,18 @@ import {
   CREATE_CONTEXT_EVENTS_TABLE,
   CREATE_INDEX_SNAPSHOTS_TABLE,
   CREATE_COST_EVENTS_TABLE,
+  ALTER_RUN_EVENTS_ADD_SESSION_ID,
+  ALTER_RUN_EVENTS_ADD_SEQ,
 } from "./schema";
 
 async function main() {
   console.log("Running ClickHouse migrations...");
   await client.command({ query: CREATE_RUN_EVENTS_TABLE });
   console.log("Created run_events table.");
+  // Additive columns for AFK telemetry (safe on existing tables).
+  await client.command({ query: ALTER_RUN_EVENTS_ADD_SESSION_ID });
+  await client.command({ query: ALTER_RUN_EVENTS_ADD_SEQ });
+  console.log("Applied run_events ALTER TABLE migrations.");
   await client.command({ query: CREATE_FAILURE_EVENTS_TABLE });
   console.log("Created failure_events table.");
   await client.command({ query: CREATE_CONTEXT_PACKS_TABLE });

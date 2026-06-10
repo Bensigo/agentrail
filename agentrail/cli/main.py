@@ -9,6 +9,7 @@ from typing import List
 from agentrail.cli.commands.afk import run_afk
 from agentrail.cli.commands.console import run_console
 from agentrail.cli.commands.context import run_context
+from agentrail.cli.commands.status import run_status
 from agentrail.cli.commands.timeline import run_timeline
 
 
@@ -39,6 +40,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_console(args[1:])
     if args and args[0] == "timeline":
         return run_timeline(args[1:])
+    if args and args[0] == "status":
+        return run_status(args[1:])
     legacy = _legacy_script()
     if not legacy.exists():
         print(f"missing AgentRail legacy command: {legacy}", file=sys.stderr)

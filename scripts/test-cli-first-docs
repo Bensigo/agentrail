@@ -56,6 +56,10 @@ assert_grep "agentrail run issue <number>" "${repo_dir}/templates/AGENTS.md" "In
 assert_not_grep "scripts/agentrail run issue" "${repo_dir}/templates/AGENTS.md" "Installed AGENTS.md still promotes scripts/agentrail run issue"
 assert_not_grep "scripts/agentrail prompt review" "${repo_dir}/templates/AGENTS.md" "Installed AGENTS.md still promotes scripts/agentrail prompt review"
 
+assert_grep "agentrail context search" "${repo_dir}/templates/AGENTS.md" "Installed AGENTS.md does not tell agents to use agentrail context search"
+assert_grep "agentrail context get" "${repo_dir}/templates/AGENTS.md" "Installed AGENTS.md does not tell agents to use agentrail context get"
+assert_grep "Do not read full files" "${repo_dir}/templates/AGENTS.md" "Installed AGENTS.md does not tell agents to avoid full-file reads before retrieval"
+
 "$agentrail" --help >"${tmp_dir}/help.out"
 assert_grep "agentrail afk" "${tmp_dir}/help.out" "AgentRail CLI help does not expose agentrail afk"
 assert_not_grep "internal review-pr" "${tmp_dir}/help.out" "AgentRail CLI help exposes internal review helper"

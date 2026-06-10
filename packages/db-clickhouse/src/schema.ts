@@ -69,11 +69,22 @@ CREATE TABLE IF NOT EXISTS run_events (
   occurred_at   DateTime64(3, 'UTC'),
   event_id      String,
   submission_kind String,
-  payload       String
+  payload       String,
+  session_id    String DEFAULT '',
+  seq           Int64  DEFAULT 0
 )
 ENGINE = MergeTree()
 PARTITION BY (workspace_id, toYYYYMM(occurred_at))
 ORDER BY (workspace_id, occurred_at, event_id)
+`;
+
+/** ALTER TABLE statements for columns added after initial table creation. */
+export const ALTER_RUN_EVENTS_ADD_SESSION_ID = `
+ALTER TABLE run_events ADD COLUMN IF NOT EXISTS session_id String DEFAULT ''
+`;
+
+export const ALTER_RUN_EVENTS_ADD_SEQ = `
+ALTER TABLE run_events ADD COLUMN IF NOT EXISTS seq Int64 DEFAULT 0
 `;
 
 export interface TelemetryEventRecord {
@@ -89,6 +100,8 @@ export interface TelemetryEventRecord {
   submission_kind: string;
   /** JSON-encoded payload string */
   payload: string;
+  session_id: string;
+  seq: number;
 }
 
 export const CREATE_FAILURE_EVENTS_TABLE = `

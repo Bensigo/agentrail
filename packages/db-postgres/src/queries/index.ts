@@ -351,6 +351,15 @@ export async function getApiKey(workspaceId: string, keyId: string) {
   return rows[0] ?? null;
 }
 
+export async function lookupApiKeyByHash(keyHash: string) {
+  const rows = await db
+    .select()
+    .from(apiKeys)
+    .where(and(eq(apiKeys.keyHash, keyHash), isNull(apiKeys.revokedAt)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 export interface TeamRow {
   id: string;
   name: string;

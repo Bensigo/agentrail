@@ -10,6 +10,12 @@ export interface TimelineEvent {
   severity: string;
   occurred_at: string | Date;
   payload: string;
+  /** AFK telemetry: action type (e.g. "EnqueueIssue") */
+  kind?: string;
+  /** AFK telemetry: human-readable label */
+  label?: string;
+  /** AFK telemetry: short digest for display */
+  digest?: string;
 }
 
 const EVENT_TYPE_COLORS: Record<string, string> = {
@@ -18,10 +24,21 @@ const EVENT_TYPE_COLORS: Record<string, string> = {
   review_gate: "#f76b15",
   cost_event: "#0090ff",
   audit_event: "#ffa057",
+  // AFK action types map to teal / semantic colors
+  EnqueueIssue: "#12a594",
+  ClaimIssue: "#12a594",
+  SetStatus: "#12a594",
+  SetPr: "#12a594",
+  RecordFailure: "#e5484d",
+  ReleaseIssue: "#6e56cf",
+  RequeueIssue: "#f76b15",
+  IncrementReviewRound: "#f76b15",
+  FreeSlot: "#6e56cf",
 };
 
-function dotColor(event_type: string): string {
-  return EVENT_TYPE_COLORS[event_type] ?? "#6f6f6f";
+function dotColor(event_type: string, kind?: string): string {
+  const key = kind ?? event_type;
+  return EVENT_TYPE_COLORS[key] ?? EVENT_TYPE_COLORS[event_type] ?? "#6f6f6f";
 }
 
 function formatTimestamp(ts: string | Date): string {
@@ -72,9 +89,13 @@ function TimelineEntry({
   isLast,
 }: TimelineEntryProps) {
   const [expanded, setExpanded] = useState(false);
-  const color = dotColor(event.event_type);
+  const color = dotColor(event.event_type, event.kind);
   const link = detailLink(event.event_type, workspaceId, runId);
   const payload = parsePayload(event.payload);
+
+  // Prefer AFK telemetry label, fall back to prettified event_type.
+  const displayLabel = event.label ?? event.event_type.replace(/_/g, " ");
+  const displayDigest = event.digest ?? event.event_id.slice(0, 8);
 
   return (
     <div className="flex gap-3">
@@ -104,12 +125,24 @@ function TimelineEntry({
           className="w-full text-left flex items-start justify-between gap-2 group"
         >
           <div className="flex flex-col gap-0.5">
-            <span className="text-sm text-[var(--gray-12)] group-hover:text-white transition-colors">
-              {event.event_type.replace(/_/g, " ")}
-            </span>
-            <span className="text-xs font-mono text-[var(--gray-09)]">
-              {formatTimestamp(event.occurred_at)}
-            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm text-[var(--gray-12)] group-hover:text-white transition-colors">
+                {displayLabel}
+              </span>
+              {event.kind && (
+                <span className="text-xs px-1 py-0.5 rounded-sm bg-[var(--gray-03)] text-[var(--gray-09)] font-mono">
+                  {event.kind}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-xs font-mono text-[var(--gray-09)]">
+                {formatTimestamp(event.occurred_at)}
+              </span>
+              <span className="text-xs font-mono text-[var(--gray-07)]">
+                {displayDigest}
+              </span>
+            </div>
           </div>
           <span className="text-xs text-[var(--gray-08)] mt-0.5 shrink-0">
             {expanded ? "▲" : "▼"}
@@ -145,12 +178,27 @@ interface RunTimelineProps {
   events: TimelineEvent[];
   workspaceId: string;
   runId: string;
+  /** Show pulsing "loading" text when no events have arrived yet */
+  loading?: boolean;
 }
 
-export function RunTimeline({ events, workspaceId, runId }: RunTimelineProps) {
+export function RunTimeline({
+  events,
+  workspaceId,
+  runId,
+  loading,
+}: RunTimelineProps) {
+  if (loading && events.length === 0) {
+    return (
+      <p className="text-sm text-[var(--gray-09)] animate-pulse py-6">
+        Loading events…
+      </p>
+    );
+  }
+
   if (events.length === 0) {
     return (
-      <p className="text-sm text-[var(--gray-09)] py-6">No events recorded.</p>
+      <p className="text-sm text-[var(--gray-09)] py-6">No events yet.</p>
     );
   }
 

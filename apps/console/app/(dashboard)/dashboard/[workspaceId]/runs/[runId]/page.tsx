@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { RunDetailHeader } from "./components/run-detail-header";
 import { RunTimeline } from "./components/run-timeline";
@@ -8,45 +8,89 @@ import { ReviewGatesSection } from "./components/review-gates-section";
 import type { RunDetail } from "./components/run-detail-header";
 import type { TimelineEvent } from "./components/run-timeline";
 
+const POLL_INTERVAL_MS = 5000;
+
 interface RunDetailResponse {
   run: RunDetail;
   events: TimelineEvent[];
+}
+
+interface EventsResponse {
+  events: (TimelineEvent & { seq?: number })[];
 }
 
 export default function RunDetailPage() {
   const params = useParams<{ workspaceId: string; runId: string }>();
   const { workspaceId, runId } = params;
 
-  const [data, setData] = useState<RunDetailResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [run, setRun] = useState<RunDetail | null>(null);
+  const [events, setEvents] = useState<TimelineEvent[]>([]);
+  const [loadingRun, setLoadingRun] = useState(true);
+  const [loadingEvents, setLoadingEvents] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const afterSeqRef = useRef<number>(-1);
 
+  // Load run metadata once (may 404 for AFK-only sessions — non-fatal).
   useEffect(() => {
-    async function load() {
-      setLoading(true);
-      setError(null);
+    async function loadRun() {
+      setLoadingRun(true);
       try {
         const res = await fetch(
           `/api/v1/workspaces/${workspaceId}/runs/${runId}`
         );
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(
-            (body as { error?: string }).error ?? `HTTP ${res.status}`
-          );
+        if (res.ok) {
+          const json = (await res.json()) as RunDetailResponse;
+          setRun(json.run);
         }
-        const json = (await res.json()) as RunDetailResponse;
-        setData(json);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load run");
+      } catch {
+        // non-fatal
       } finally {
-        setLoading(false);
+        setLoadingRun(false);
       }
     }
-    load();
+    loadRun();
   }, [workspaceId, runId]);
 
-  if (loading) {
+  // Poll events from the dedicated endpoint at POLL_INTERVAL_MS cadence.
+  const pollEvents = useCallback(async () => {
+    const afterSeq = afterSeqRef.current;
+    const qs = afterSeq >= 0 ? `?after_seq=${afterSeq}` : "";
+    const url = `/api/v1/workspaces/${workspaceId}/runs/${runId}/events${qs}`;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          setError(`HTTP ${res.status}`);
+        }
+        return;
+      }
+      const json = (await res.json()) as EventsResponse;
+      if (json.events.length > 0) {
+        setEvents((prev) => {
+          const existingIds = new Set(prev.map((e) => e.event_id));
+          const incoming = json.events.filter(
+            (e) => !existingIds.has(e.event_id)
+          );
+          if (incoming.length === 0) return prev;
+          const maxSeq = Math.max(...json.events.map((e) => e.seq ?? 0));
+          afterSeqRef.current = maxSeq;
+          return [...prev, ...incoming];
+        });
+      }
+    } catch {
+      // network failure; will retry on next interval
+    } finally {
+      setLoadingEvents(false);
+    }
+  }, [workspaceId, runId]);
+
+  useEffect(() => {
+    pollEvents();
+    const id = setInterval(pollEvents, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [pollEvents]);
+
+  if (loadingRun && loadingEvents) {
     return (
       <div className="mx-auto max-w-[1440px]">
         <p className="text-sm text-[var(--gray-09)] animate-pulse py-8">
@@ -56,10 +100,10 @@ export default function RunDetailPage() {
     );
   }
 
-  if (error || !data) {
+  if (error) {
     return (
       <div className="mx-auto max-w-[1440px]">
-        <p className="text-sm text-[#ff9592] py-8">{error ?? "Not found"}</p>
+        <p className="text-sm text-[#ff9592] py-8">{error}</p>
       </div>
     );
   }
@@ -81,33 +125,36 @@ export default function RunDetailPage() {
         Run detail
       </h1>
 
-      <RunDetailHeader run={data.run} />
+      {run && <RunDetailHeader run={run} />}
 
       <div className="mt-6">
         <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
           Timeline
         </h2>
         <RunTimeline
-          events={data.events}
+          events={events}
           workspaceId={workspaceId}
           runId={runId}
+          loading={loadingEvents}
         />
       </div>
 
-      <div className="mt-8">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-            Review Gates
-          </h2>
-          <a
-            href={`/dashboard/${workspaceId}/review-gates?runId=${runId}`}
-            className="text-xs text-[#70b8ff] hover:underline"
-          >
-            View all →
-          </a>
+      {run && (
+        <div className="mt-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+              Review Gates
+            </h2>
+            <a
+              href={`/dashboard/${workspaceId}/review-gates?runId=${runId}`}
+              className="text-xs text-[#70b8ff] hover:underline"
+            >
+              View all →
+            </a>
+          </div>
+          <ReviewGatesSection workspaceId={workspaceId} runId={runId} />
         </div>
-        <ReviewGatesSection workspaceId={workspaceId} runId={runId} />
-      </div>
+      )}
     </div>
   );
 }

@@ -6,6 +6,8 @@ export {
   CREATE_CONTEXT_EVENTS_TABLE,
   CREATE_INDEX_SNAPSHOTS_TABLE,
   CREATE_COST_EVENTS_TABLE,
+  ALTER_RUN_EVENTS_ADD_SESSION_ID,
+  ALTER_RUN_EVENTS_ADD_SEQ,
 } from "./schema";
 export type {
   TelemetryEventRecord,
@@ -23,6 +25,8 @@ export {
   getFailureById,
   aggregateWorkspaceCosts,
   getLatestIndexSnapshotsForWorkspace,
+  insertAfkRunEvents,
+  getRunEventsByRunId,
 } from "./queries";
 export type {
   RunEventSummary,
@@ -30,5 +34,6 @@ export type {
   CostGroupBy,
   CostAggregateRow,
   AggregateCostsOptions,
+  AfkRunEventInput,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems } from "./context-queries";

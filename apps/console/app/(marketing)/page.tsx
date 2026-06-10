@@ -75,28 +75,28 @@ const STEPS = [
 
 const FAQS = [
   {
-    q: "Is the AgentRail CLI really free?",
-    a: "Yes — the CLI is free forever for every developer. It runs agents on your machine with hybrid context retrieval, review gates, and durable memory. The console is the team layer, where those runs become a shared, governed system.",
+    q: "What does the console give me that the free CLI doesn't?",
+    a: "The CLI is one developer's terminal. The console is the team system: every developer's runs in one workspace, server-enforced review gates and policy, cost across repos and teams, a full audit trail, shared memory, and member management — the things you can only do when agent work is centralized.",
   },
   {
-    q: "Do you store my source code?",
-    a: "No. The context engine indexes your repo locally, and nothing leaves your machine to retrieve context. The server stores run metadata, context-pack citations (line ranges, not file contents), costs, and audit events — not your source by default.",
+    q: "How do my team's agent runs get into the console?",
+    a: "Connect the CLI to your workspace with a key, and runs stream in automatically — each one's context packs, token and dollar cost, review-gate evidence, and outcome land in the dashboard with no extra steps.",
   },
   {
-    q: "How does the context retrieval actually work?",
-    a: "A hybrid index combines BM25 keyword search, a code graph, and embeddings, with a query classifier that picks the right mode. It returns bounded line ranges with a cited reason for every pick — not whole files — which is what drives the token reduction.",
+    q: "Can I invite my team and control who sees what?",
+    a: "Yes. Invite teammates by email during setup or from the Members page; an invite is accepted automatically the next time they sign in. Roles — owner, admin, member — govern who can invite people, configure review gates, and manage repositories.",
   },
   {
-    q: "Which agents and models does it work with?",
-    a: "Any coding agent you drive through the CLI, including Claude and Codex. The console records whatever runs feed it, so your team sees every agent's work in one place regardless of model.",
+    q: "Does the console store my source code?",
+    a: "No. Indexing stays local on each developer's machine. The console stores run metadata, context-pack citations (line ranges, not file contents), costs, and audit events — not your source by default.",
   },
   {
-    q: "What exactly does the −24% mean?",
-    a: "Total end-to-end tokens for the same multi-file coding task on a real repo (psf/requests), through the same agent, with vs without AgentRail, averaged over three repetitions. A measured run — not a synthetic context-gathering estimate.",
+    q: "What can I actually govern from the console?",
+    a: "Server-enforced review gates and policy across every repo — require context-pack evidence before a run can merge, see and cap spend per repo and team, and get a source-linked audit trail for every sensitive action an agent takes.",
   },
   {
-    q: "Can agents run unattended?",
-    a: "Yes. AFK mode runs multi-phase agent work without babysitting, bounded by review gates that stop and show evidence between phases — so unattended never means ungoverned.",
+    q: "Is the CLI still free, and how does the console price?",
+    a: "The CLI is free forever for every developer. The console is the team layer and is free while in preview — so you can connect a repo, invite your team, and see every agent's work in one place today.",
   },
 ];
 

@@ -16,12 +16,31 @@ Claude/Codex" claim — so it must be run carefully and reported with its caveat
 
 - One model, fixed (e.g. `claude-sonnet`, or a Codex model). Same model in both arms.
 - A repo, indexed once: `agentrail context index --target <repo>`.
-- Arm **B** has the AgentRail MCP server wired in (`packages/mcp`, see its README)
-  and is told to use `context_search` / `context_get` first.
-- Arm **A** is the same agent with only its normal file/grep/read tools and no
+- Arm **A** is the agent with only its normal file/grep/read tools and no
   AgentRail. No retrieval-first instruction.
+- Arm **B** is the same agent told to use the **AgentRail CLI**
+  (`agentrail context search` / `context get`) — the token-efficient path
+  (`scripts/benchmark-agent-ab.py` adds this instruction by default).
+- Optional arm **B-mcp**: the agent uses the AgentRail MCP tools instead. The MCP
+  is more convenient/enforceable but costs more tokens per call — measure it as a
+  variant, don't assume it matches the CLI.
 
 Everything else is identical: same prompt, same repo, same model, same limits.
+
+## Pilot result (1 task, cursor-agent "auto", single run — directional only)
+
+Express, "explain how `res.json` works":
+
+| arm | tokens | vs plain |
+| --- | --- | --- |
+| A — plain agent (grep + read) | 34,705 | — |
+| **B — AgentRail CLI** | **23,934** | **−31%** |
+| B-mcp — AgentRail MCP | 45,998 | +33% |
+
+Takeaways: the **CLI** lowered tokens; the **MCP** raised them (protocol overhead).
+Both AgentRail arms over-called (~80–97 lookups for a one-file answer) on this
+cheap model — hence the "one focused search, then get the lines" instruction.
+This is a single run on a tiny repo; run ≥3× on a large repo before publishing.
 
 ## Tasks
 
@@ -48,17 +67,21 @@ Aggregate: mean `totalTokens` A vs B and the % difference; `contextFound` and
 ## Running
 
 ```bash
+# Example with cursor-agent (claude/codex: swap the command + tokens-path).
 PYTHONPATH=. python3 scripts/benchmark-agent-ab.py \
   --tasks docs/benchmarks/agent-ab-tasks.json \
-  --agent-cmd 'claude -p {prompt} --output-format json' \
-  --tokens-path 'usage.input_tokens+usage.output_tokens' \
+  --agent-cmd 'cursor-agent -p {prompt} --output-format json --trust -f --model auto' \
+  --agentrail-bin /abs/path/to/scripts/agentrail \
+  --tokens-path 'usage.inputTokens+usage.outputTokens' \
   --repetitions 3 \
   --out docs/benchmarks/results/agent-ab-latest.md
 ```
 
-- `--agent-cmd`: command template for one headless run; `{prompt}` is substituted.
-  Arm B's command is the same plus the MCP config (the harness adds it).
-- `--tokens-path`: where to read token usage in the agent's JSON output.
+- `--agent-cmd`: headless run template; `{prompt}` / `{repo}` are substituted. Same
+  command for both arms — only the prompt differs (arm B gets the CLI instruction).
+- `--agentrail-bin`: the `agentrail` CLI path the arm-B instruction tells the agent to call.
+- `--tokens-path`: where to read token usage in the agent's JSON (claude:
+  `usage.input_tokens+usage.output_tokens`; cursor-agent: `usage.inputTokens+usage.outputTokens`).
 - `--repetitions`: agents are non-deterministic — run each task N times and average.
 
 ## Fairness rules (so the result holds up)

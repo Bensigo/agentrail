@@ -162,10 +162,15 @@ spend tokens on relevant code instead of noise.
   request a whole file when the snippets are genuinely insufficient.
 - Prefer `agentrail context search` / `agentrail context get` over raw file
   search and full-file reads.
+- Run **one focused** `context search`, then `context get` only the specific
+  line ranges you need. Do not issue many redundant searches — over-calling any
+  retrieval tool burns more tokens than it saves.
 - Record the context pack path and selected sources in run metadata.
 
-When AgentRail is wired in as MCP tools (`@agentrail/mcp`), prefer the
-`context_search` and `context_get` tools for the same workflow.
+The CLI is the token-efficient path. The `@agentrail/mcp` tools expose the same
+`context_search` / `context_get` workflow for agents that prefer native tools,
+but each MCP call carries protocol overhead and costs more tokens than the CLI —
+prefer the CLI when token budget matters.
 
 AgentRail is the harness. The configured runner is the worker. Ralph is the internal one-issue executor invoked by `agentrail run issue`. AFK is the queue/worktree loop invoked by `agentrail afk`.
 

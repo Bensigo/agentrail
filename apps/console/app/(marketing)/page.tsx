@@ -5,6 +5,7 @@ import { Bricolage_Grotesque } from "next/font/google";
 import fs from "fs";
 import path from "path";
 import { Reveal, CountUp } from "./_motion";
+import { DashboardDemo } from "./_dashboard-demo";
 
 const display = Bricolage_Grotesque({ subsets: ["latin"], display: "swap" });
 
@@ -44,6 +45,60 @@ function parseAgentAB(): AgentAB | null {
 }
 
 const ACCENT = "#ffe629";
+
+const STEPS = [
+  {
+    n: "01",
+    title: "Point it at your repo",
+    cmd: "agentrail init",
+    desc: "One command builds a local hybrid index of your codebase — BM25, code graph, and embeddings. Repo-native; nothing leaves your machine to retrieve context.",
+  },
+  {
+    n: "02",
+    title: "Agents run on compiled context",
+    cmd: "agentrail run",
+    desc: "Instead of whole files, agents pull bounded line-range context packs with a cited reason per pick — the source of the measured token win.",
+  },
+  {
+    n: "03",
+    title: "Gate and review",
+    cmd: "review gates",
+    desc: "Policy checkpoints stop agents between phases to show evidence. AFK mode runs unattended work that stays inside the gates.",
+  },
+  {
+    n: "04",
+    title: "See it in the console",
+    cmd: "→ dashboard",
+    desc: "Every run, context pack, cost, failure, and audit event lands in one team workspace — searchable, replayable, and governed.",
+  },
+];
+
+const FAQS = [
+  {
+    q: "What does the console give me that the free CLI doesn't?",
+    a: "The CLI is one developer's terminal. The console is the team system: every developer's runs in one workspace, server-enforced review gates and policy, cost across repos and teams, a full audit trail, shared memory, and member management — the things you can only do when agent work is centralized.",
+  },
+  {
+    q: "How do my team's agent runs get into the console?",
+    a: "Connect the CLI to your workspace with a key, and runs stream in automatically — each one's context packs, token and dollar cost, review-gate evidence, and outcome land in the dashboard with no extra steps.",
+  },
+  {
+    q: "Can I invite my team and control who sees what?",
+    a: "Yes. Invite teammates by email during setup or from the Members page; an invite is accepted automatically the next time they sign in. Roles — owner, admin, member — govern who can invite people, configure review gates, and manage repositories.",
+  },
+  {
+    q: "Does the console store my source code?",
+    a: "No. Indexing stays local on each developer's machine. The console stores run metadata, context-pack citations (line ranges, not file contents), costs, and audit events — not your source by default.",
+  },
+  {
+    q: "What can I actually govern from the console?",
+    a: "Server-enforced review gates and policy across every repo — require context-pack evidence before a run can merge, see and cap spend per repo and team, and get a source-linked audit trail for every sensitive action an agent takes.",
+  },
+  {
+    q: "Is the CLI still free, and how does the console price?",
+    a: "The CLI is free forever for every developer. The console is the team layer and is free while in preview — so you can connect a repo, invite your team, and see every agent's work in one place today.",
+  },
+];
 
 export default async function LandingPage() {
   const session = await auth();
@@ -86,6 +141,12 @@ export default async function LandingPage() {
             </span>
           </div>
           <div className="flex items-center gap-1">
+            <a
+              href="#how"
+              className="hidden rounded px-3 py-1.5 text-[13px] text-[var(--gray-10)] transition-colors hover:text-[var(--gray-12)] sm:block"
+            >
+              How it works
+            </a>
             <a
               href="#proof"
               className="rounded px-3 py-1.5 text-[13px] text-[var(--gray-10)] transition-colors hover:text-[var(--gray-12)]"
@@ -211,10 +272,10 @@ export default async function LandingPage() {
       <section className="relative z-10 px-6 pb-12 pt-4">
         <div className="mx-auto max-w-[1180px]">
           <Reveal delay={80}>
-            <DashboardMock />
+            <DashboardDemo />
           </Reveal>
           <p className="mt-5 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--gray-09)]">
-            One workspace · every developer&apos;s runs, context, cost, gates &amp; audit
+            Interactive · click the sidebar — every developer&apos;s runs, context, cost, gates &amp; audit
           </p>
         </div>
       </section>
@@ -223,6 +284,37 @@ export default async function LandingPage() {
       <section className="relative z-10 px-6 pb-16 pt-4">
         <div className="mx-auto max-w-[1180px]">
           <RailFlow />
+        </div>
+      </section>
+
+      {/* How it works — STEP 01–04 */}
+      <section
+        id="how"
+        className="relative z-10 border-t border-[var(--gray-04)]/60 px-6 py-20"
+      >
+        <div className="mx-auto max-w-[1180px]">
+          <Reveal>
+            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--gray-09)]">
+              How it works
+            </p>
+            <h2
+              className={`${display.className} mt-3 max-w-[24ch] text-[clamp(1.8rem,3.4vw,2.8rem)] font-extrabold tracking-[-0.03em]`}
+            >
+              From{" "}
+              <span className="font-mono text-[0.78em]" style={{ color: ACCENT }}>
+                agentrail&nbsp;init
+              </span>{" "}
+              to a governed team — in four steps.
+            </h2>
+          </Reveal>
+
+          <div className="mt-12 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {STEPS.map((s, i) => (
+              <Reveal key={s.n} delay={i * 80}>
+                <Step n={s.n} title={s.title} desc={s.desc} cmd={s.cmd} />
+              </Reveal>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -497,6 +589,33 @@ export default async function LandingPage() {
         </div>
       </section>
 
+      {/* FAQ */}
+      <section
+        id="faq"
+        className="relative z-10 border-t border-[var(--gray-04)]/60 px-6 py-20"
+      >
+        <div className="mx-auto max-w-[820px]">
+          <Reveal>
+            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--gray-09)]">
+              FAQ
+            </p>
+            <h2
+              className={`${display.className} mt-3 text-[clamp(1.8rem,3.4vw,2.8rem)] font-extrabold tracking-[-0.03em]`}
+            >
+              Questions, answered.
+            </h2>
+          </Reveal>
+          <Reveal
+            delay={100}
+            className="mt-10 divide-y divide-[var(--gray-04)] border-y border-[var(--gray-04)]"
+          >
+            {FAQS.map((f) => (
+              <Faq key={f.q} q={f.q} a={f.a} />
+            ))}
+          </Reveal>
+        </div>
+      </section>
+
       {/* Final CTA */}
       <section className="relative z-10 border-t border-[var(--gray-04)]/60 px-6 py-24">
         <div className="mx-auto max-w-[1180px]">
@@ -559,6 +678,63 @@ export default async function LandingPage() {
 }
 
 /* ---------------------------------------------------------------- pieces */
+
+function Step({
+  n,
+  title,
+  desc,
+  cmd,
+}: {
+  n: string;
+  title: string;
+  desc: string;
+  cmd: string;
+}) {
+  return (
+    <div className="ar-cell flex h-full flex-col rounded-xl border border-[var(--gray-05)] bg-[var(--gray-01)]/60 p-5">
+      <div className="flex items-baseline justify-between">
+        <span
+          className={`${display.className} text-[2.4rem] font-extrabold leading-none tracking-tight text-[var(--gray-06)]`}
+        >
+          {n}
+        </span>
+        <span className="rounded-full border border-[var(--gray-05)] px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-[var(--gray-09)]">
+          Step
+        </span>
+      </div>
+      <h3 className="mt-4 text-[15px] font-bold text-[var(--gray-12)]">{title}</h3>
+      <p className="mt-2 flex-1 text-[13px] leading-relaxed text-[var(--gray-10)]">
+        {desc}
+      </p>
+      <code
+        className="mt-4 inline-block self-start rounded-md border border-[var(--gray-05)] bg-[var(--gray-00)]/60 px-2.5 py-1.5 font-mono text-[12px]"
+        style={{ color: ACCENT }}
+      >
+        {cmd}
+      </code>
+    </div>
+  );
+}
+
+function Faq({ q, a }: { q: string; a: string }) {
+  return (
+    <details className="group py-4">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 text-[15px] font-medium text-[var(--gray-12)] [&::-webkit-details-marker]:hidden">
+        {q}
+        <span
+          aria-hidden
+          className="shrink-0 text-lg leading-none transition-transform duration-200 group-open:rotate-45"
+          style={{ color: ACCENT }}
+        >
+          +
+        </span>
+      </summary>
+      <p className="mt-3 max-w-[68ch] text-[14px] leading-relaxed text-[var(--gray-10)]">
+        {a}
+      </p>
+    </details>
+  );
+}
 
 function SignalStat({
   kpi,
@@ -663,119 +839,6 @@ function AgentABBars({
           total tokens through a real coding agent, at equal accuracy. One task,
           one repo, one model — directional, and honest about it.
         </span>
-      </div>
-    </div>
-  );
-}
-
-function DashboardMock() {
-  const nav = [
-    { label: "Runs", active: true },
-    { label: "Context packs" },
-    { label: "Review gates" },
-    { label: "Failures" },
-    { label: "Costs" },
-    { label: "Memory" },
-    { label: "Audit" },
-    { label: "Repos" },
-  ];
-  const runs = [
-    { id: "#312", task: "workspace setup flow", who: "amara", agent: "claude", status: "merged", tk: "31,092", cost: "$0.42", dur: "2m14s" },
-    { id: "#316", task: "AFK telemetry timeline", who: "deniz", agent: "codex", status: "reviewing", tk: "48,210", cost: "$0.71", dur: "4m02s" },
-    { id: "#331", task: "review-gate enforcement", who: "amara", agent: "claude", status: "merged", tk: "27,540", cost: "$0.38", dur: "3m20s" },
-    { id: "#314", task: "workspace members by email", who: "sam", agent: "claude", status: "failed", tk: "12,800", cost: "$0.18", dur: "1m05s" },
-    { id: "#315", task: "agentrail link e2e", who: "deniz", agent: "codex", status: "running", tk: "19,430", cost: "$0.29", dur: "1m48s" },
-  ];
-  const statusStyle: Record<string, { dot: string; text: string; label: string }> = {
-    merged: { dot: "var(--green-11)", text: "var(--green-11)", label: "merged" },
-    reviewing: { dot: ACCENT, text: ACCENT, label: "review gate" },
-    failed: { dot: "var(--red-11)", text: "var(--red-11)", label: "failed" },
-    running: { dot: "var(--blue-11)", text: "var(--blue-11)", label: "running" },
-  };
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-[var(--gray-05)] bg-[var(--gray-01)] shadow-[0_40px_120px_-40px_rgba(0,0,0,0.8)]">
-      {/* window chrome */}
-      <div className="flex items-center gap-2 border-b border-[var(--gray-04)] bg-[var(--gray-02)] px-4 py-2.5">
-        <span className="h-2.5 w-2.5 rounded-full bg-[var(--gray-06)]" />
-        <span className="h-2.5 w-2.5 rounded-full bg-[var(--gray-06)]" />
-        <span className="h-2.5 w-2.5 rounded-full bg-[var(--gray-06)]" />
-        <span className="ml-3 rounded bg-[var(--gray-00)] px-3 py-1 font-mono text-[11px] text-[var(--gray-09)]">
-          app.agentrail.dev/dashboard/dev-workspace/runs
-        </span>
-      </div>
-
-      <div className="grid grid-cols-[180px_1fr]">
-        {/* sidebar */}
-        <aside className="hidden border-r border-[var(--gray-04)] bg-[var(--gray-01)] p-3 sm:block">
-          <div className="mb-3 flex items-center gap-2 rounded-md border border-[var(--gray-05)] px-2.5 py-2">
-            <span className="flex h-5 w-5 items-center justify-center rounded text-[11px] font-bold text-black" style={{ background: ACCENT }}>D</span>
-            <span className="text-[12px] font-semibold text-[var(--gray-12)]">Dev Workspace</span>
-          </div>
-          <nav className="space-y-0.5">
-            {nav.map((n) => (
-              <div
-                key={n.label}
-                className="rounded-md px-2.5 py-1.5 text-[12px]"
-                style={{
-                  background: n.active ? "color-mix(in srgb, #ffe629 12%, transparent)" : "transparent",
-                  color: n.active ? ACCENT : "var(--gray-10)",
-                  fontWeight: n.active ? 600 : 400,
-                }}
-              >
-                {n.label}
-              </div>
-            ))}
-          </nav>
-        </aside>
-
-        {/* main */}
-        <div className="p-4 sm:p-5">
-          {/* stat tiles */}
-          <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-            {[
-              { v: "128", l: "runs this week" },
-              { v: "2.1M", l: "tokens" },
-              { v: "$31.40", l: "spend" },
-              { v: "3", l: "open gates", accent: true },
-            ].map((s) => (
-              <div key={s.l} className="rounded-lg border border-[var(--gray-05)] bg-[var(--gray-00)]/60 px-3 py-2.5">
-                <p className="text-[18px] font-bold tracking-tight" style={{ color: s.accent ? ACCENT : "var(--gray-12)" }}>
-                  {s.v}
-                </p>
-                <p className="font-mono text-[10px] uppercase tracking-wider text-[var(--gray-09)]">{s.l}</p>
-              </div>
-            ))}
-          </div>
-
-          {/* runs table */}
-          <div className="overflow-hidden rounded-lg border border-[var(--gray-05)]">
-            <div className="hidden grid-cols-[64px_1fr_92px_96px_72px] gap-2 border-b border-[var(--gray-04)] bg-[var(--gray-02)] px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-[var(--gray-09)] sm:grid">
-              <span>run</span><span>task</span><span>status</span><span>tokens</span><span>cost</span>
-            </div>
-            {runs.map((r) => {
-              const st = statusStyle[r.status];
-              return (
-                <div
-                  key={r.id}
-                  className="grid grid-cols-[64px_1fr_92px] items-center gap-2 border-b border-[var(--gray-04)] px-3 py-2.5 last:border-0 sm:grid-cols-[64px_1fr_92px_96px_72px]"
-                >
-                  <span className="font-mono text-[12px]" style={{ color: ACCENT }}>{r.id}</span>
-                  <span className="min-w-0">
-                    <span className="block truncate text-[12.5px] text-[var(--gray-12)]">{r.task}</span>
-                    <span className="font-mono text-[10px] text-[var(--gray-09)]">{r.who} · {r.agent}</span>
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-1.5 w-1.5 rounded-full" style={{ background: st.dot }} />
-                    <span className="text-[11px]" style={{ color: st.text }}>{st.label}</span>
-                  </span>
-                  <span className="hidden font-mono text-[12px] text-[var(--gray-11)] sm:block">{r.tk}</span>
-                  <span className="hidden font-mono text-[12px] text-[var(--gray-11)] sm:block">{r.cost}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
       </div>
     </div>
   );

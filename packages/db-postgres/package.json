@@ -17,7 +17,8 @@
     "generate": "drizzle-kit generate --config=drizzle.config.ts",
     "migrate": "tsx src/migrate.ts",
     "seed": "tsx src/seed.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "drizzle-orm": "^0.44.7",
@@ -27,6 +28,7 @@
     "@types/node": "^22.0.0",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.8"
   }
 }

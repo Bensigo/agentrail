@@ -1,5 +1,6 @@
-import { eq, and, lt, gte, lte, desc, isNull, count, inArray } from "drizzle-orm";
+import { eq, and, lt, gte, lte, desc, isNull, count, inArray, gt } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
+import { randomBytes } from "crypto";
 import { db } from "../db.js";
 import {
   workspaces,
@@ -12,6 +13,8 @@ import {
   apiKeys,
   reviewGates,
   memoryItems,
+  workspaceInvites,
+  users,
 } from "../schema/index.js";
 
 export type RunStatus = "queued" | "running" | "success" | "failed";
@@ -345,4 +348,147 @@ export async function listWorkspaceTeams(workspaceId: string): Promise<TeamRow[]
     memberCount: Number(r.memberCount),
     repositories: reposByTeam.get(r.id) ?? [],
   }));
+}
+
+// ---- Workspace Invites ----
+
+function generateToken(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+function expiresAt14Days(): Date {
+  const d = new Date();
+  d.setDate(d.getDate() + 14);
+  return d;
+}
+
+export async function createInvite(data: {
+  workspaceId: string;
+  email: string;
+  role?: "member" | "admin" | "viewer";
+  invitedByUserId: string;
+}) {
+  const email = data.email.toLowerCase();
+  const token = generateToken();
+  const expiresAt = expiresAt14Days();
+  const role = data.role ?? "member";
+
+  const rows = await db
+    .insert(workspaceInvites)
+    .values({
+      workspaceId: data.workspaceId,
+      email,
+      role,
+      token,
+      invitedByUserId: data.invitedByUserId,
+      status: "pending",
+      expiresAt,
+    })
+    .onConflictDoUpdate({
+      target: [workspaceInvites.workspaceId, workspaceInvites.email],
+      set: {
+        token,
+        role,
+        status: "pending",
+        expiresAt,
+      },
+    })
+    .returning();
+  return rows[0]!;
+}
+
+export async function listInvites(workspaceId: string) {
+  return db
+    .select()
+    .from(workspaceInvites)
+    .where(
+      and(
+        eq(workspaceInvites.workspaceId, workspaceId),
+        eq(workspaceInvites.status, "pending"),
+        gt(workspaceInvites.expiresAt, new Date())
+      )
+    )
+    .orderBy(desc(workspaceInvites.createdAt));
+}
+
+export async function revokeInvite(workspaceId: string, inviteId: string) {
+  const rows = await db
+    .update(workspaceInvites)
+    .set({ status: "revoked" })
+    .where(
+      and(
+        eq(workspaceInvites.id, inviteId),
+        eq(workspaceInvites.workspaceId, workspaceId)
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function getInviteByToken(token: string) {
+  const rows = await db
+    .select()
+    .from(workspaceInvites)
+    .where(eq(workspaceInvites.token, token))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function claimInvitesForUser(data: {
+  userId: string;
+  email: string;
+}): Promise<string[]> {
+  const email = data.email.toLowerCase();
+  const now = new Date();
+
+  const pending = await db
+    .select()
+    .from(workspaceInvites)
+    .where(
+      and(
+        eq(workspaceInvites.email, email),
+        eq(workspaceInvites.status, "pending"),
+        gt(workspaceInvites.expiresAt, now)
+      )
+    );
+
+  if (pending.length === 0) return [];
+
+  const claimedWorkspaceIds: string[] = [];
+
+  for (const invite of pending) {
+    await db
+      .insert(workspaceMemberships)
+      .values({
+        userId: data.userId,
+        workspaceId: invite.workspaceId,
+        role: invite.role,
+      })
+      .onConflictDoNothing();
+
+    await db
+      .update(workspaceInvites)
+      .set({ status: "accepted" })
+      .where(eq(workspaceInvites.id, invite.id));
+
+    claimedWorkspaceIds.push(invite.workspaceId);
+  }
+
+  return claimedWorkspaceIds;
+}
+
+export async function listWorkspaceMembers(workspaceId: string) {
+  const rows = await db
+    .select({
+      userId: workspaceMemberships.userId,
+      role: workspaceMemberships.role,
+      joinedAt: workspaceMemberships.createdAt,
+      name: users.name,
+      email: users.email,
+    })
+    .from(workspaceMemberships)
+    .innerJoin(users, eq(users.id, workspaceMemberships.userId))
+    .where(eq(workspaceMemberships.workspaceId, workspaceId))
+    .orderBy(workspaceMemberships.createdAt);
+  return rows;
 }

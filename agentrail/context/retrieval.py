@@ -160,6 +160,64 @@ def bounded_content(source: Dict[str, Any], chunk: Optional[Dict[str, Any]]) -> 
     return content
 
 
+def estimate_tokens(text: str) -> int:
+    """Rough shared token estimator (chars / 4) used across compact retrieval."""
+    return (len(text) + 3) // 4
+
+
+def get_file_lines(target_dir: Path, path: str, line_start: int, line_end: int) -> Dict[str, Any]:
+    """Return only the requested inclusive line range of a file, never the whole file.
+
+    Line numbers are 1-based and clamped to the file bounds.
+    """
+    root = target_dir.resolve()
+    file_path = (root / path).resolve()
+    if root not in file_path.parents and file_path != root:
+        raise SystemExit(f"context get path escapes target directory: {path}")
+    if not file_path.is_file():
+        raise SystemExit(f"context get file not found: {path}")
+    lines = file_path.read_text(encoding="utf-8").splitlines()
+    total = len(lines)
+    start = max(1, int(line_start))
+    end = min(total, int(line_end))
+    if end < start:
+        end = start
+    selected = lines[start - 1:end]
+    content = "\n".join(selected)
+    return {
+        "command": "context.get",
+        "path": path,
+        "lineStart": start,
+        "lineEnd": end,
+        "totalLines": total,
+        "content": content,
+        "tokenEstimate": estimate_tokens(content),
+    }
+
+
+def get_file_symbol(target_dir: Path, path: str, symbol: str) -> Dict[str, Any]:
+    """Return only the line range of a named symbol in a file, never the whole file."""
+    from agentrail.context.index import extracted_symbols
+
+    root = target_dir.resolve()
+    file_path = (root / path).resolve()
+    if not file_path.is_file():
+        raise SystemExit(f"context get file not found: {path}")
+    text = file_path.read_text(encoding="utf-8")
+    symbols = extracted_symbols(text, path)
+    total = len(text.splitlines())
+    name = _normalized_anchor_symbol(symbol)
+    for i, sym in enumerate(symbols):
+        if sym.get("name") != name:
+            continue
+        start_line = int(sym["line"])
+        end_line = symbols[i + 1]["line"] - 1 if i + 1 < len(symbols) else total
+        result = get_file_lines(root, path, start_line, end_line)
+        result["symbol"] = name
+        return result
+    raise SystemExit(f"context get symbol not found in {path}: {symbol}")
+
+
 def cosine_similarity(a: List[float], b: List[float]) -> float:
     if not a or len(a) != len(b):
         return 0.0
@@ -620,7 +678,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         source = entry["source"]
         chunk = entry["chunk"]
         score = {key: (None if value is None else round(float(value), 6)) for key, value in entry["score"].items()}
-        formatted.append({"rank": rank, "kind": "indexed_context", "sourceType": source.get("sourceType"), "path": source.get("path"), "sourceId": source.get("id"), "chunkId": (chunk or {}).get("id"), "citation": (chunk or {}).get("citation") or source.get("path"), "reason": build_reason(entry["reasons"]), "contentHash": source.get("contentHash"), "textHash": (chunk or {}).get("textHash"), "headingPath": (chunk or {}).get("headingPath", []), "parentContext": (chunk or {}).get("parentContext") or source.get("path"), "matchContext": " > ".join([value for value in [source.get("path"), (chunk or {}).get("parentContext"), *((chunk or {}).get("headingPath", []))] if value]), "symbolHints": (chunk or {}).get("symbolHints", []), "importHints": (chunk or {}).get("importHints", []), "memory": (chunk or {}).get("memory") or source.get("memory"), "priorMistake": (chunk or {}).get("priorMistake") or source.get("priorMistake"), "authority": source.get("authority"), "visibility": source.get("visibility"), "freshness": source.get("freshness"), "redactions": source.get("redactions", []), "content": bounded_content(source, chunk), "score": score})
+        formatted.append({"rank": rank, "kind": "indexed_context", "sourceType": source.get("sourceType"), "path": source.get("path"), "sourceId": source.get("id"), "chunkId": (chunk or {}).get("id"), "startLine": (chunk or {}).get("startLine"), "endLine": (chunk or {}).get("endLine"), "citation": (chunk or {}).get("citation") or source.get("path"), "reason": build_reason(entry["reasons"]), "contentHash": source.get("contentHash"), "textHash": (chunk or {}).get("textHash"), "headingPath": (chunk or {}).get("headingPath", []), "parentContext": (chunk or {}).get("parentContext") or source.get("path"), "matchContext": " > ".join([value for value in [source.get("path"), (chunk or {}).get("parentContext"), *((chunk or {}).get("headingPath", []))] if value]), "symbolHints": (chunk or {}).get("symbolHints", []), "importHints": (chunk or {}).get("importHints", []), "memory": (chunk or {}).get("memory") or source.get("memory"), "priorMistake": (chunk or {}).get("priorMistake") or source.get("priorMistake"), "authority": source.get("authority"), "visibility": source.get("visibility"), "freshness": source.get("freshness"), "redactions": source.get("redactions", []), "content": bounded_content(source, chunk), "score": score})
     audit = {
         "event": "context_query",
         "citation": ".agentrail/context/audit/events.jsonl",
@@ -659,3 +717,55 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
     }
     append_audit(root, audit)
     return output
+
+
+def _bounded_snippet(content: Any, *, max_lines: int = 10, max_chars: int = 600) -> str:
+    """Trim chunk content to a small snippet so search never echoes whole files."""
+    if not isinstance(content, str):
+        return ""
+    lines = content.splitlines()
+    snippet = "\n".join(lines[:max_lines])
+    if len(snippet) > max_chars:
+        snippet = snippet[:max_chars].rstrip() + " …"
+    elif len(lines) > max_lines:
+        snippet = snippet + " …"
+    return snippet
+
+
+def search_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str, Any]:
+    """Compact exact-leaning retrieval.
+
+    Returns ranked candidates as path + line range + symbol + bounded snippet +
+    reason + score, never whole-file bodies.  Whole-file or wider context must be
+    fetched explicitly with ``get_file_lines`` / ``get_file_symbol``.
+    """
+    raw = query_context(target_dir, query, limit=limit)
+    results: List[Dict[str, Any]] = []
+    for entry in raw.get("results", []):
+        line_start = entry.get("startLine") or 1
+        line_end = entry.get("endLine") or line_start
+        symbol_hints = entry.get("symbolHints") or []
+        snippet = _bounded_snippet(entry.get("content"))
+        results.append({
+            "rank": entry.get("rank"),
+            "path": entry.get("path"),
+            "lineStart": int(line_start),
+            "lineEnd": int(line_end),
+            "symbol": symbol_hints[0] if symbol_hints else None,
+            "citation": entry.get("citation"),
+            "snippet": snippet,
+            "reason": entry.get("reason"),
+            "score": (entry.get("score") or {}).get("final"),
+            "tokenEstimate": estimate_tokens(snippet),
+        })
+    return {
+        "schemaVersion": 1,
+        "command": "context.search",
+        "query": query,
+        "limit": limit,
+        "generatedAt": raw.get("generatedAt"),
+        "provider": raw.get("provider"),
+        "retrievalBudget": raw.get("retrievalBudget"),
+        "results": results,
+        "excluded": raw.get("excluded", []),
+    }

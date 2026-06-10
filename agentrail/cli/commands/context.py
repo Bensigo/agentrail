@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import List, Tuple
@@ -9,7 +10,7 @@ from agentrail.context.embeddings import embed_context
 from agentrail.context.evaluation import evaluate_retrieval, format_evaluation_report
 from agentrail.context.index import build_index
 from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
-from agentrail.context.retrieval import query_context
+from agentrail.context.retrieval import get_file_lines, get_file_symbol, query_context, search_context
 from agentrail.context.sources import inventory_sources
 
 
@@ -48,6 +49,8 @@ def _usage() -> str:
   agentrail context index [--target DIR]
   agentrail context embed [--target DIR]
   agentrail context query "<task>" [--target DIR] [--json] [--limit N]
+  agentrail context search "<query>" [--target DIR] [--json] [--limit N]
+  agentrail context get PATH (--lines A-B | --symbol NAME) [--target DIR] [--json]
   agentrail context evaluate FIXTURE [--target DIR] [--json]
   agentrail context build issue NUMBER --phase PHASE [--target DIR] [--json]
   agentrail context build pr NUMBER --phase review [--target DIR] [--json]
@@ -144,6 +147,93 @@ def run_context(args: List[str]) -> int:
                     print("excluded:")
                     for item in output["excluded"]:
                         print(f"- {item['path']}: {item['reason']}")
+            return 0
+        if kind == "search":
+            if not rest or rest[0].startswith("--"):
+                raise SystemExit("context search requires a query string")
+            query = rest[0]
+            target: str | None = None
+            json_output = False
+            limit = 10
+            index = 1
+            while index < len(rest):
+                arg = rest[index]
+                if arg == "--target":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--target requires a directory")
+                    target = rest[index + 1]
+                    index += 2
+                elif arg == "--json":
+                    json_output = True
+                    index += 1
+                elif arg == "--limit":
+                    if index + 1 >= len(rest) or not rest[index + 1].isdigit():
+                        raise SystemExit("--limit requires a numeric value")
+                    limit = int(rest[index + 1])
+                    index += 2
+                else:
+                    raise SystemExit(f"Unknown context search option: {arg}")
+            output = search_context(_resolve_target(target), query, limit=max(1, min(100, limit)))
+            if json_output:
+                _print_json(output)
+            else:
+                print(f"search={query}")
+                for item in output["results"]:
+                    print(f"{item['rank']}. {item['path']}:{item['lineStart']}-{item['lineEnd']} (~{item['tokenEstimate']} tok)")
+                    if item.get("symbol"):
+                        print(f"   symbol={item['symbol']}")
+                    print(f"   reason={item['reason']}")
+            return 0
+        if kind == "get":
+            if not rest or rest[0].startswith("--"):
+                raise SystemExit("context get requires a path")
+            path = rest[0]
+            target: str | None = None
+            json_output = False
+            lines_spec: str | None = None
+            symbol: str | None = None
+            index = 1
+            while index < len(rest):
+                arg = rest[index]
+                if arg == "--target":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--target requires a directory")
+                    target = rest[index + 1]
+                    index += 2
+                elif arg == "--lines":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--lines requires a RANGE like A-B")
+                    lines_spec = rest[index + 1]
+                    index += 2
+                elif arg == "--symbol":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--symbol requires a name")
+                    symbol = rest[index + 1]
+                    index += 2
+                elif arg == "--json":
+                    json_output = True
+                    index += 1
+                else:
+                    raise SystemExit(f"Unknown context get option: {arg}")
+            if symbol and lines_spec:
+                raise SystemExit("context get accepts only one of --lines or --symbol")
+            if not symbol and not lines_spec:
+                raise SystemExit("context get requires --lines A-B or --symbol NAME")
+            if symbol:
+                output = get_file_symbol(_resolve_target(target), path, symbol)
+            else:
+                match = re.fullmatch(r"(\d+)-(\d+)", lines_spec or "")
+                if not match:
+                    raise SystemExit("--lines must be a numeric range like 12-48")
+                output = get_file_lines(_resolve_target(target), path, int(match.group(1)), int(match.group(2)))
+            if json_output:
+                _print_json(output)
+            else:
+                header = f"{output['path']}:{output['lineStart']}-{output['lineEnd']}"
+                if output.get("symbol"):
+                    header += f" ({output['symbol']})"
+                print(header)
+                print(output["content"])
             return 0
         if kind == "evaluate":
             if not rest or rest[0].startswith("--"):

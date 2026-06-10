@@ -39,10 +39,11 @@ repo_root() {
 }
 
 ensure_clean_tree() {
-  # Auto-commit common agent leftovers (lockfiles)
+  # Auto-commit common agent leftovers (lockfiles, build artifacts)
   local modified
   modified="$(git diff --name-only 2>/dev/null || true)"
   if [[ -n "$modified" ]]; then
+    # Check if only lockfiles / generated files are dirty
     local non_lock
     non_lock="$(echo "$modified" | grep -v -E '(pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$' || true)"
     if [[ -z "$non_lock" ]]; then

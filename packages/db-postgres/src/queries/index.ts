@@ -1,19 +1,17 @@
-import { eq, and, lt, gte, lte, desc } from "drizzle-orm";
+import { eq, and, lt, gte, lte, desc, isNull, count, inArray } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "../db.js";
-import { workspaces, workspaceMemberships, runs } from "../schema/index.js";
-
-export async function getRun(
-  workspaceId: string,
-  runId: string
-): Promise<RunRow | null> {
-  const rows = await db
-    .select()
-    .from(runs)
-    .where(and(eq(runs.id, runId), eq(runs.workspaceId, workspaceId)))
-    .limit(1);
-  return (rows[0] as RunRow) ?? null;
-}
+import {
+  workspaces,
+  workspaceMemberships,
+  runs,
+  repositories,
+  teams,
+  teamMemberships,
+  teamRepositories,
+  apiKeys,
+  reviewGates,
+} from "../schema/index.js";
 
 export type RunStatus = "queued" | "running" | "success" | "failed";
 
@@ -54,6 +52,34 @@ export async function getRun(
     .where(and(eq(runs.workspaceId, workspaceId), eq(runs.id, runId)))
     .limit(1);
   return (rows[0] as RunRow) ?? null;
+}
+
+export async function getReviewGatesForRun(workspaceId: string, runId: string) {
+  return db
+    .select()
+    .from(reviewGates)
+    .where(
+      and(
+        eq(reviewGates.workspaceId, workspaceId),
+        eq(reviewGates.runId, runId)
+      )
+    )
+    .orderBy(reviewGates.createdAt);
+}
+
+export async function listReviewGatesForWorkspace(
+  workspaceId: string,
+  runId?: string
+) {
+  const conditions: SQL[] = [eq(reviewGates.workspaceId, workspaceId)];
+  if (runId) {
+    conditions.push(eq(reviewGates.runId, runId));
+  }
+  return db
+    .select()
+    .from(reviewGates)
+    .where(and(...conditions))
+    .orderBy(desc(reviewGates.createdAt));
 }
 
 export async function listWorkspacesForUser(userId: string) {
@@ -168,4 +194,115 @@ export async function listRunsWithCursor(
   }
 
   return { runs: rows as RunRow[], nextCursor };
+}
+
+export async function listWorkspaceRepositories(workspaceId: string) {
+  return db
+    .select()
+    .from(repositories)
+    .where(eq(repositories.workspaceId, workspaceId))
+    .orderBy(repositories.name);
+}
+
+export async function listApiKeys(workspaceId: string) {
+  return db
+    .select()
+    .from(apiKeys)
+    .where(eq(apiKeys.workspaceId, workspaceId))
+    .orderBy(desc(apiKeys.createdAt));
+}
+
+export async function createApiKey(data: {
+  workspaceId: string;
+  teamId?: string | null;
+  name: string;
+  keyPrefix: string;
+  keyHash: string;
+}) {
+  const rows = await db
+    .insert(apiKeys)
+    .values({
+      workspaceId: data.workspaceId,
+      teamId: data.teamId ?? null,
+      name: data.name,
+      keyPrefix: data.keyPrefix,
+      keyHash: data.keyHash,
+    })
+    .returning();
+  return rows[0]!;
+}
+
+export async function revokeApiKey(workspaceId: string, keyId: string) {
+  const rows = await db
+    .update(apiKeys)
+    .set({ revokedAt: new Date() })
+    .where(
+      and(
+        eq(apiKeys.id, keyId),
+        eq(apiKeys.workspaceId, workspaceId),
+        isNull(apiKeys.revokedAt)
+      )
+    )
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function getApiKey(workspaceId: string, keyId: string) {
+  const rows = await db
+    .select()
+    .from(apiKeys)
+    .where(and(eq(apiKeys.id, keyId), eq(apiKeys.workspaceId, workspaceId)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export interface TeamRow {
+  id: string;
+  name: string;
+  createdAt: Date;
+  memberCount: number;
+  repositories: string[];
+}
+
+export async function listWorkspaceTeams(workspaceId: string): Promise<TeamRow[]> {
+  const rows = await db
+    .select({
+      id: teams.id,
+      name: teams.name,
+      createdAt: teams.createdAt,
+      memberCount: count(teamMemberships.userId),
+    })
+    .from(teams)
+    .leftJoin(teamMemberships, eq(teamMemberships.teamId, teams.id))
+    .where(eq(teams.workspaceId, workspaceId))
+    .groupBy(teams.id, teams.name, teams.createdAt)
+    .orderBy(teams.name);
+
+  if (rows.length === 0) return [];
+
+  const teamIds = rows.map((r) => r.id);
+
+  const repoLinks = await db
+    .select({
+      teamId: teamRepositories.teamId,
+      repoName: repositories.name,
+    })
+    .from(teamRepositories)
+    .innerJoin(repositories, eq(repositories.id, teamRepositories.repositoryId))
+    .where(inArray(teamRepositories.teamId, teamIds));
+
+  const reposByTeam = new Map<string, string[]>();
+  for (const link of repoLinks) {
+    const existing = reposByTeam.get(link.teamId) ?? [];
+    existing.push(link.repoName);
+    reposByTeam.set(link.teamId, existing);
+  }
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    createdAt: r.createdAt,
+    memberCount: Number(r.memberCount),
+    repositories: reposByTeam.get(r.id) ?? [],
+  }));
 }

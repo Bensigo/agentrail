@@ -4,6 +4,7 @@ export {
   CREATE_FAILURE_EVENTS_TABLE,
   CREATE_CONTEXT_PACKS_TABLE,
   CREATE_CONTEXT_EVENTS_TABLE,
+  CREATE_INDEX_SNAPSHOTS_TABLE,
   CREATE_COST_EVENTS_TABLE,
 } from "./schema";
 export type {
@@ -11,6 +12,7 @@ export type {
   FailureEventRecord,
   ContextPackRecord,
   ContextEventRecord,
+  IndexSnapshotRecord,
   CostEventRecord,
 } from "./schema";
 export {
@@ -20,6 +22,7 @@ export {
   listWorkspaceFailures,
   getFailureById,
   aggregateWorkspaceCosts,
+  getLatestIndexSnapshotsForWorkspace,
 } from "./queries";
 export type {
   RunEventSummary,

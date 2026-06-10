@@ -85,4 +85,4 @@ BEGIN_REVIEW_FIX_ISSUES_JSON
 END_REVIEW_FIX_ISSUES_JSON
 ```
 
-The surrounding review can still include human-readable findings. The marked JSON is used by AFK automation to create `review-fix` and `memory-suggestion` issues.
+The surrounding review can still include human-readable findings. The marked JSON is consumed by AFK automation, which routes findings by severity rather than creating issues: `P0`/`P1` findings are auto-fixed in place on the PR branch and re-reviewed; `P2`/`P3` findings and memory suggestions are posted as a single PR comment for the engineer to decide. The reviewer itself still must not create issues, edit files, or merge.

@@ -1,0 +1,301 @@
+"""Unit tests for `agentrail run` CLI command (agentrail/cli/commands/run.py).
+
+All external I/O (subprocess.run, gh, filesystem) is patched so these tests run
+without an agent, gh, or a real repo.
+"""
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from agentrail.cli.commands.run import (
+    run_run, AGENTS, DEFAULT_COMMANDS, parse_run_options, UsageError,
+    resolve_agent_name, resolve_agent_command,
+    is_source_checkout, ensure_source_run_allowed,
+    active_run_issue, ensure_no_conflicting_active_run,
+    next_pickable_issue,
+    exec_issue, RunOptions,
+    parse_batch_args, run_batch,
+)
+
+
+class RunHelpTests(unittest.TestCase):
+    def test_help_flag_prints_usage_and_exits_zero(self) -> None:
+        for flag in ("-h", "--help"):
+            with self.subTest(flag=flag):
+                with patch("builtins.print") as mock_print:
+                    rc = run_run([flag])
+                self.assertEqual(rc, 0)
+                printed = " ".join(str(c) for c in mock_print.call_args_list)
+                self.assertIn("Usage:", printed)
+
+    def test_agent_allowlist_and_defaults_present(self) -> None:
+        self.assertEqual(AGENTS, {"codex", "claude", "cursor", "hermes", "custom"})
+        self.assertEqual(DEFAULT_COMMANDS["claude"], "claude -p --dangerously-skip-permissions")
+        self.assertEqual(DEFAULT_COMMANDS["custom"], "")
+
+    def test_all_agents_have_default_commands(self) -> None:
+        for agent in AGENTS:
+            self.assertIn(agent, DEFAULT_COMMANDS,
+                          f"Agent '{agent}' missing from DEFAULT_COMMANDS")
+
+
+class ParseRunOptionsTests(unittest.TestCase):
+    def test_defaults(self) -> None:
+        opts = parse_run_options([])
+        self.assertEqual(opts.agent, "__config__")
+        self.assertEqual(opts.command, "")
+        self.assertEqual(opts.log_dir, "")
+        # target defaults to cwd
+        self.assertTrue(opts.target)
+
+    def test_all_flags(self) -> None:
+        opts = parse_run_options(
+            ["--agent", "claude", "--target", "/tmp/x",
+             "--command", "claude -p", "--log-dir", "/tmp/logs"])
+        self.assertEqual(opts.agent, "claude")
+        self.assertEqual(opts.target, "/tmp/x")
+        self.assertEqual(opts.command, "claude -p")
+        self.assertEqual(opts.log_dir, "/tmp/logs")
+
+    def test_bad_agent_rejected(self) -> None:
+        with self.assertRaises(UsageError) as ctx:
+            parse_run_options(["--agent", "bogus"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_flag_missing_value_rejected(self) -> None:
+        for flag in ("--agent", "--target", "--command", "--log-dir"):
+            with self.subTest(flag=flag):
+                with self.assertRaises(UsageError):
+                    parse_run_options([flag])
+
+    def test_unknown_option_rejected(self) -> None:
+        with self.assertRaises(UsageError):
+            parse_run_options(["--nope"])
+
+
+class ResolveAgentTests(unittest.TestCase):
+    def _cfg(self, data: dict) -> str:
+        d = tempfile.mkdtemp()
+        (Path(d) / ".agentrail").mkdir()
+        (Path(d) / ".agentrail" / "config.json").write_text(json.dumps(data))
+        return d
+
+    def test_name_explicit_fallback_wins(self) -> None:
+        self.assertEqual(resolve_agent_name("/nope", "claude"), "claude")
+
+    def test_name_from_config_runner(self) -> None:
+        d = self._cfg({"runner": {"name": "cursor"}})
+        self.assertEqual(resolve_agent_name(d, "__config__"), "cursor")
+
+    def test_name_default_codex_when_no_config(self) -> None:
+        self.assertEqual(resolve_agent_name("/nope", "__config__"), "codex")
+
+    def test_command_explicit_wins(self) -> None:
+        self.assertEqual(resolve_agent_command("claude", "my-cmd", "/nope"), "my-cmd")
+
+    def test_command_config_runner_when_config_sentinel(self) -> None:
+        d = self._cfg({"runner": {"command": "cfg-cmd"}})
+        self.assertEqual(resolve_agent_command("__config__", "", d), "cfg-cmd")
+
+    def test_command_runners_map(self) -> None:
+        d = self._cfg({"runners": {"claude": {"command": "map-cmd"}}})
+        self.assertEqual(resolve_agent_command("claude", "", d), "map-cmd")
+
+    def test_command_env_agent_specific(self) -> None:
+        with patch.dict(os.environ, {"AGENTRAIL_CLAUDE_COMMAND": "env-cmd"}, clear=False):
+            self.assertEqual(resolve_agent_command("claude", "", "/nope"), "env-cmd")
+
+    def test_command_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(resolve_agent_command("claude", "", "/nope"),
+                             DEFAULT_COMMANDS["claude"])
+
+
+class SourceGuardTests(unittest.TestCase):
+    def _make_source(self) -> str:
+        d = tempfile.mkdtemp()
+        p = Path(d)
+        (p / "package.json").write_text(json.dumps({"name": "@bensigo/agentrail"}))
+        (p / "templates" / "scripts").mkdir(parents=True)
+        (p / "scripts").mkdir()
+        exe = p / "scripts" / "agentrail"
+        exe.write_text("#!/bin/sh\n"); exe.chmod(0o755)
+        return d
+
+    def test_detects_source_checkout(self) -> None:
+        self.assertTrue(is_source_checkout(self._make_source()))
+
+    def test_non_source_dir_is_false(self) -> None:
+        self.assertFalse(is_source_checkout(tempfile.mkdtemp()))
+
+    def test_guard_blocks_without_override(self) -> None:
+        d = self._make_source()
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(UsageError) as ctx:
+                ensure_source_run_allowed(d, "run issue #1")
+            self.assertEqual(ctx.exception.code, 1)
+
+    def test_guard_allows_with_override(self) -> None:
+        d = self._make_source()
+        with patch.dict(os.environ, {"AGENTRAIL_ALLOW_SOURCE_RUN": "1"}, clear=True):
+            ensure_source_run_allowed(d, "run issue #1")  # no raise
+
+
+class ActiveRunTests(unittest.TestCase):
+    def _state(self, data: dict) -> str:
+        d = tempfile.mkdtemp()
+        (Path(d) / ".agentrail").mkdir()
+        (Path(d) / ".agentrail" / "state.json").write_text(json.dumps(data))
+        return d
+
+    def test_no_state_file_returns_none(self) -> None:
+        self.assertIsNone(active_run_issue(tempfile.mkdtemp()))
+
+    def test_no_active_run_returns_none(self) -> None:
+        d = self._state({"workflow": {}})
+        self.assertIsNone(active_run_issue(d))
+
+    def test_active_run_issue_from_target_issue(self) -> None:
+        d = self._state({"workflow": {"activeRun": {"targetIssue": 42}}})
+        self.assertEqual(active_run_issue(d), "42")
+
+    def test_conflict_same_issue_raises(self) -> None:
+        d = self._state({"workflow": {"activeRun": {"targetIssue": 7}}})
+        with patch("builtins.print"):
+            with self.assertRaises(UsageError):
+                ensure_no_conflicting_active_run(d, "7")
+
+    def test_no_conflict_when_no_active(self) -> None:
+        d = self._state({"workflow": {}})
+        ensure_no_conflicting_active_run(d, "7")  # no raise
+
+
+class NextPickableTests(unittest.TestCase):
+    def test_picks_lowest_number(self) -> None:
+        payload = json.dumps([
+            {"number": 9, "title": "b", "url": "u9"},
+            {"number": 4, "title": "a", "url": "u4"},
+        ])
+        cp = MagicMock(returncode=0, stdout=payload)
+        with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp):
+            picked = next_pickable_issue("/tmp/x")
+        self.assertEqual(picked, (4, "a", "u4"))
+
+    def test_empty_returns_none(self) -> None:
+        cp = MagicMock(returncode=0, stdout="[]")
+        with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp):
+            self.assertIsNone(next_pickable_issue("/tmp/x"))
+
+    def test_gh_failure_returns_none(self) -> None:
+        cp = MagicMock(returncode=1, stdout="")
+        with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp):
+            self.assertIsNone(next_pickable_issue("/tmp/x"))
+
+
+class ExecIssueTests(unittest.TestCase):
+    def test_builds_legacy_run_issue_argv(self) -> None:
+        cp = MagicMock(returncode=0)
+        opts = RunOptions(agent="claude", target="/tmp/x", command="claude -p", log_dir="")
+        with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp) as m, \
+             patch("agentrail.cli.commands.run._legacy_script", return_value=Path("/legacy")):
+            rc = exec_issue(11, opts)
+        self.assertEqual(rc, 0)
+        argv = m.call_args.args[0]
+        self.assertEqual(argv[:4], ["/legacy", "run", "issue", "11"])
+        self.assertIn("--target", argv); self.assertIn("/tmp/x", argv)
+        self.assertIn("--agent", argv); self.assertIn("claude", argv)
+        self.assertIn("--command", argv); self.assertIn("claude -p", argv)
+
+    def test_omits_command_when_empty(self) -> None:
+        cp = MagicMock(returncode=3)
+        opts = RunOptions(agent="claude", target="/tmp/x", command="", log_dir="")
+        with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp) as m, \
+             patch("agentrail.cli.commands.run._legacy_script", return_value=Path("/legacy")):
+            rc = exec_issue(11, opts)
+        self.assertEqual(rc, 3)
+        self.assertNotIn("--command", m.call_args.args[0])
+
+
+class ParseBatchTests(unittest.TestCase):
+    def test_positional_issues_and_defaults(self) -> None:
+        cfg = parse_batch_args(["360", "361"])
+        self.assertEqual(cfg.issues, [360, 361])
+        self.assertEqual(cfg.concurrency, 2)
+        self.assertEqual(cfg.base, "main")
+
+    def test_double_dash_issue_list(self) -> None:
+        cfg = parse_batch_args(["--concurrency", "3", "--", "5", "6", "7"])
+        self.assertEqual(cfg.concurrency, 3)
+        self.assertEqual(cfg.issues, [5, 6, 7])
+
+    def test_requires_at_least_one_issue(self) -> None:
+        with self.assertRaises(UsageError):
+            parse_batch_args(["--concurrency", "2"])
+
+    def test_rejects_non_positive_concurrency(self) -> None:
+        with self.assertRaises(UsageError):
+            parse_batch_args(["--concurrency", "0", "5"])
+
+    def test_first_issue_not_dropped(self) -> None:
+        # regression: the legacy bash double-shift dropped the first issue
+        cfg = parse_batch_args(["360", "361"])
+        self.assertIn(360, cfg.issues)
+
+    def test_rejects_non_integer_concurrency(self) -> None:
+        with self.assertRaises(UsageError):
+            parse_batch_args(["--concurrency", "abc", "5"])
+
+    def test_rejects_bad_agent(self) -> None:
+        with self.assertRaises(UsageError):
+            parse_batch_args(["--agent", "bogus", "5"])
+
+
+class RunBatchExecTests(unittest.TestCase):
+    def test_runs_each_issue_once(self) -> None:
+        calls = []
+        def fake_exec(issue, opts, allow_source=False):
+            calls.append(issue); return 0
+        with patch("agentrail.cli.commands.run.exec_issue", side_effect=fake_exec), \
+             patch("agentrail.cli.commands.run._git_worktree_add"), \
+             patch("agentrail.cli.commands.run._git_worktree_remove"), \
+             patch("agentrail.cli.commands.run._git_fetch"), \
+             patch("agentrail.cli.commands.run._seed_agentrail"), \
+             patch("agentrail.cli.commands.run.ensure_source_run_allowed"), \
+             patch("agentrail.cli.commands.run.ensure_command_available"):
+            rc = run_batch(["--target", "/tmp/x", "360", "361"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(calls), [360, 361])
+
+
+class DispatchTests(unittest.TestCase):
+    def test_issue_subcommand_routes_to_exec(self) -> None:
+        with patch("agentrail.cli.commands.run.exec_issue", return_value=0) as m, \
+             patch("agentrail.cli.commands.run.ensure_source_run_allowed"), \
+             patch("agentrail.cli.commands.run.ensure_no_conflicting_active_run"), \
+             patch("agentrail.cli.commands.run.resolve_agent_command", return_value="claude -p"), \
+             patch("agentrail.cli.commands.run.ensure_command_available"):
+            rc = run_run(["issue", "42", "--agent", "claude", "--target", "/tmp/x"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(m.call_args.args[0], 42)
+
+    def test_issue_requires_number(self) -> None:
+        rc = run_run(["issue", "--agent", "claude"])
+        self.assertEqual(rc, 2)
+
+    def test_batch_subcommand_routes(self) -> None:
+        with patch("agentrail.cli.commands.run.run_batch", return_value=0) as m:
+            rc = run_run(["batch", "1", "2"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(m.call_args.args[0], ["1", "2"])
+
+    def test_main_routes_run(self) -> None:
+        from agentrail.cli import main as main_mod
+        with patch.object(main_mod, "run_run", return_value=0) as m:
+            rc = main_mod.main(["run", "issue", "5"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(m.call_args.args[0], ["issue", "5"])

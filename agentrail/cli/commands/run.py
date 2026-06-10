@@ -225,5 +225,24 @@ def next_pickable_issue(target: str):
     return (int(best["number"]), best.get("title", ""), best.get("url", ""))
 
 
+def _legacy_script() -> Path:
+    from agentrail.cli.main import _legacy_script as resolve
+    return resolve()
+
+
+def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> int:
+    argv = [str(_legacy_script()), "run", "issue", str(issue),
+            "--target", opts.target, "--agent", opts.agent]
+    if opts.command:
+        argv += ["--command", opts.command]
+    if opts.log_dir:
+        argv += ["--log-dir", opts.log_dir]
+    env = os.environ.copy()
+    if allow_source:
+        env["AGENTRAIL_ALLOW_SOURCE_RUN"] = "1"
+    proc = subprocess.run(argv, env=env, check=False)
+    return int(proc.returncode)
+
+
 def _dispatch(args: List[str]) -> int:
     raise UsageError("not implemented")

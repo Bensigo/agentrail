@@ -18,6 +18,7 @@ from agentrail.cli.commands.run import (
     is_source_checkout, ensure_source_run_allowed,
     active_run_issue, ensure_no_conflicting_active_run,
     next_pickable_issue,
+    exec_issue, RunOptions,
 )
 
 
@@ -193,3 +194,27 @@ class NextPickableTests(unittest.TestCase):
         cp = MagicMock(returncode=1, stdout="")
         with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp):
             self.assertIsNone(next_pickable_issue("/tmp/x"))
+
+
+class ExecIssueTests(unittest.TestCase):
+    def test_builds_legacy_run_issue_argv(self) -> None:
+        cp = MagicMock(returncode=0)
+        opts = RunOptions(agent="claude", target="/tmp/x", command="claude -p", log_dir="")
+        with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp) as m, \
+             patch("agentrail.cli.commands.run._legacy_script", return_value=Path("/legacy")):
+            rc = exec_issue(11, opts)
+        self.assertEqual(rc, 0)
+        argv = m.call_args.args[0]
+        self.assertEqual(argv[:4], ["/legacy", "run", "issue", "11"])
+        self.assertIn("--target", argv); self.assertIn("/tmp/x", argv)
+        self.assertIn("--agent", argv); self.assertIn("claude", argv)
+        self.assertIn("--command", argv); self.assertIn("claude -p", argv)
+
+    def test_omits_command_when_empty(self) -> None:
+        cp = MagicMock(returncode=3)
+        opts = RunOptions(agent="claude", target="/tmp/x", command="", log_dir="")
+        with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp) as m, \
+             patch("agentrail.cli.commands.run._legacy_script", return_value=Path("/legacy")):
+            rc = exec_issue(11, opts)
+        self.assertEqual(rc, 3)
+        self.assertNotIn("--command", m.call_args.args[0])

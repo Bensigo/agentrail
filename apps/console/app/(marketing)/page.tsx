@@ -389,6 +389,107 @@ export default async function LandingPage() {
         </div>
       </section>
 
+      {/* CLI vs Console — why the dashboard */}
+      <section className="relative z-10 border-t border-[var(--gray-04)]/60 px-6 py-20">
+        <div className="mx-auto max-w-[1180px]">
+          <Reveal>
+            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--gray-09)]">
+              Free CLI · team console
+            </p>
+            <h2
+              className={`${display.className} mt-3 max-w-[22ch] text-[clamp(1.8rem,3.4vw,2.8rem)] font-extrabold tracking-[-0.03em]`}
+            >
+              The CLI runs your agents. The console runs your team.
+            </h2>
+            <p className="mt-3 max-w-[64ch] text-[15px] leading-relaxed text-[var(--gray-10)]">
+              Every developer gets the AgentRail CLI{" "}
+              <span className="text-[var(--gray-12)]">free, forever</span>. The
+              console is where it becomes a team system — one place to{" "}
+              <span className="text-[var(--gray-12)]">see, cost, govern, and trust</span>{" "}
+              what every agent did, across every repo.
+            </p>
+          </Reveal>
+
+          <div className="mt-10 grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {/* CLI */}
+            <Reveal>
+              <div className="ar-cell flex h-full flex-col rounded-xl border border-[var(--gray-05)] bg-[var(--gray-01)]/60 p-6">
+                <div className="flex items-center justify-between">
+                  <span className="text-[15px] font-bold text-[var(--gray-12)]">
+                    AgentRail CLI
+                  </span>
+                  <span className="rounded-full border border-[var(--gray-05)] px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-[var(--gray-09)]">
+                    free · every developer
+                  </span>
+                </div>
+                <p className="mt-1 text-[13px] text-[var(--gray-09)]">
+                  Runs on your machine, in your terminal.
+                </p>
+                <ul className="mt-5 space-y-2.5">
+                  {[
+                    "Hybrid context retrieval — −89% tokens",
+                    "Bounded, review-gated agent runs",
+                    "Durable project memory",
+                    "Repo-native, deterministic, offline",
+                  ].map((t) => (
+                    <ValueRow key={t} text={t} muted />
+                  ))}
+                </ul>
+              </div>
+            </Reveal>
+
+            {/* Console */}
+            <Reveal delay={100}>
+              <div
+                className="ar-cell relative flex h-full flex-col rounded-xl border bg-[var(--gray-01)] p-6"
+                style={{ borderColor: "color-mix(in srgb, #ffe629 40%, var(--gray-05))" }}
+              >
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full opacity-20"
+                  style={{ background: `radial-gradient(50% 50% at 50% 50%, ${ACCENT} 0%, transparent 70%)`, filter: "blur(20px)" }}
+                />
+                <div className="relative flex items-center justify-between">
+                  <span className="text-[15px] font-bold" style={{ color: ACCENT }}>
+                    AgentRail Console
+                  </span>
+                  <span
+                    className="rounded-full px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-black"
+                    style={{ background: ACCENT }}
+                  >
+                    teams · see &amp; govern
+                  </span>
+                </div>
+                <p className="relative mt-1 text-[13px] text-[var(--gray-10)]">
+                  Your terminal shows your runs. The console shows your team&apos;s.
+                </p>
+                <ul className="relative mt-5 grid gap-2.5 sm:grid-cols-2">
+                  {[
+                    "Every developer's runs in one workspace",
+                    "Server-enforced review gates & policy",
+                    "Cost across repos, teams, workspaces",
+                    "Audit trail for every sensitive action",
+                    "Shared memory the whole team recalls",
+                    "Indexing health, API keys, members",
+                  ].map((t) => (
+                    <ValueRow key={t} text={t} />
+                  ))}
+                </ul>
+              </div>
+            </Reveal>
+          </div>
+
+          <Reveal delay={160}>
+            <p className="mt-6 text-center text-[13px] text-[var(--gray-09)]">
+              One agent on your laptop is a tool.{" "}
+              <span className="text-[var(--gray-11)]">
+                A team of agents you can see, cost, and govern is a control plane.
+              </span>
+            </p>
+          </Reveal>
+        </div>
+      </section>
+
       {/* Final CTA */}
       <section className="relative z-10 border-t border-[var(--gray-04)]/60 px-6 py-24">
         <div className="mx-auto max-w-[1180px]">
@@ -661,6 +762,28 @@ function MiniTimeline() {
         />
       ))}
     </div>
+  );
+}
+
+function ValueRow({ text, muted }: { text: string; muted?: boolean }) {
+  return (
+    <li className="flex items-start gap-2.5">
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke={muted ? "var(--gray-08)" : ACCENT}
+        strokeWidth={2.4}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="mt-0.5 shrink-0"
+        aria-hidden
+      >
+        <path d="M20 6 9 17l-5-5" />
+      </svg>
+      <span className="text-[13px] leading-snug text-[var(--gray-11)]">{text}</span>
+    </li>
   );
 }
 

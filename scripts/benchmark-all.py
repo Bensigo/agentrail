@@ -160,7 +160,7 @@ def _pct(new: float, old: float) -> str:
     return f"-{round((old - new) / old * 100)}%" if old else "n/a"
 
 
-def build_markdown(repos: List[Dict[str, Any]], combined: Dict[str, Any], semantic: Optional[Dict[str, Any]]) -> str:
+def build_markdown(repos: List[Dict[str, Any]], combined: Dict[str, Any], semantic: Optional[Dict[str, Any]], agent_ab: Optional[str] = None) -> str:
     agg, tok = combined["agg"], combined["tok"]
     repo_labels = ", ".join(f"{r['label']} ({r['n']})" for r in repos)
     L: List[str] = [
@@ -188,6 +188,11 @@ def build_markdown(repos: List[Dict[str, Any]], combined: Dict[str, Any], semant
             f"- **Finds code by meaning, not just keywords.** With embeddings on ({semantic['model']}),"
             f" the correct file ranked #1 on {sum(1 for o in semantic['on'] if o['rank'] == 1)}/{len(semantic['on'])}"
             f" conceptual queries that share no words with it ({moved} flipped from a wrong #1 under keyword-only search).")
+    if agent_ab:
+        L.append(
+            "- **Makes your agent cheaper end-to-end.** Running the same task through a real agent with vs"
+            " without the AgentRail CLI cut total tokens at equal accuracy (see section 3) — AgentRail is a"
+            " layer on top of any agent, not a competing one.")
     L += [
         "",
         "## 1. Exact / symbol lookup — AgentRail vs grep vs ripgrep",
@@ -249,11 +254,34 @@ def build_markdown(repos: List[Dict[str, Any]], combined: Dict[str, Any], semant
         L.append("| --- | --- | --- | --- |")
         for off, on in zip(semantic["off"], semantic["on"]):
             L.append(f"| `{off['query']}` | {off['correct']} | {'#'+str(off['rank']) if off['rank'] else 'not found'} | **{'#'+str(on['rank']) if on['rank'] else 'not found'}** |")
+    if agent_ab:
+        tot = next((ln for ln in agent_ab.splitlines() if ln.startswith("Total tokens")), "")
+        table = [ln for ln in agent_ab.splitlines() if ln.strip().startswith("|")]
+        L += [
+            "",
+            "## 3. End-to-end agent run (real tokens, with vs without AgentRail)",
+            "",
+            "AgentRail is a layer **on top of** your agent — it feeds compact context instead of whole"
+            " files, so it makes whichever agent you use cheaper. Measured by running the *same* task"
+            " through an agent with vs without the AgentRail CLI:",
+            "",
+        ]
+        if tot:
+            L.append(tot)
+        if table:
+            L += [""] + table
+        L += [
+            "",
+            "The savings mechanism is agent-agnostic, so a similar cut is expected on Claude/Codex"
+            " (not yet measured). Source: `docs/benchmarks/results/agent-ab-latest.md`.",
+        ]
     L += [
         "",
         "## Honest caveats",
         "- Recall ties with grep/ripgrep on literal lookups; AgentRail's edge is **fewer tokens** and"
         " **ranking the right file first**, plus conceptual queries grep cannot do.",
+        "- The end-to-end agent number is one task / repo / model (cursor 'auto'); directional, not a"
+        " universal guarantee — run more before a hard headline.",
         "- Set-precision is not AgentRail's lens (it returns a ranked top-K); precision@1 and token cost are.",
         "- The semantic section uses controlled fixtures to isolate meaning-vs-keyword; broaden it on real"
         " repos before headline use.",
@@ -291,7 +319,9 @@ def main() -> int:
 
     combined = aggregate_exact(repos)
     semantic = run_semantic(args.embed_model)
-    md = build_markdown(repos, combined, semantic)
+    ab_path = Path(args.out).parent / "agent-ab-latest.md"
+    agent_ab = ab_path.read_text(encoding="utf-8") if ab_path.exists() else None
+    md = build_markdown(repos, combined, semantic, agent_ab)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(md, encoding="utf-8")
     print(f"wrote {args.out}")

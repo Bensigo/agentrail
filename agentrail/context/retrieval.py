@@ -615,6 +615,8 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
                 append_audit(root, {"event": "embedding_provider_failure", "mode": embedding_mode, "provider": payload["provider"], "model": payload["model"], "action": "embed_query_failed", "queryHash": payload["textHash"], "auditRef": payload["auditRef"], "message": "embedding provider failed"})
                 query_vector = None
     semantic_rank: Dict[str, int] = {}
+    stale_embeddings_excluded = 0
+    stale_embedding_leakage = 0
     if query_vector:
         by_chunk = {record.get("chunkId"): record for record in embedding_records}
         ranked: List[Tuple[float, Dict[str, Any]]] = []
@@ -625,12 +627,19 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
                 continue
             emb = by_chunk.get(chunk.get("id"))
             source = entry["source"]
-            if emb and emb.get("mode") == embedding_mode and emb.get("configHash") == config_hash and emb.get("textHash") == chunk.get("textHash") and emb.get("contentHash") == source.get("contentHash"):
-                similarity = max(0.0, cosine_similarity(query_vector, emb.get("embedding", [])))
-                if similarity > 0:
-                    entry["score"]["embedding"] = similarity
-                    entry["reasons"].add("embedding similarity")
-                    ranked.append((similarity, entry))
+            if not emb or emb.get("mode") != embedding_mode or emb.get("configHash") != config_hash:
+                continue
+            fresh = emb.get("textHash") == chunk.get("textHash") and emb.get("contentHash") == source.get("contentHash")
+            if not fresh:
+                # Stale embedding: indexed text changed since it was generated.
+                # Exclude it from semantic scoring — never demote-and-keep.
+                stale_embeddings_excluded += 1
+                continue
+            similarity = max(0.0, cosine_similarity(query_vector, emb.get("embedding", [])))
+            if similarity > 0:
+                entry["score"]["embedding"] = similarity
+                entry["reasons"].add("embedding similarity")
+                ranked.append((similarity, entry))
         semantic_rank = {str((entry["chunk"] or {}).get("id") or entry["source"].get("id")): idx + 1 for idx, (_score, entry) in enumerate(sorted(ranked, key=lambda item: item[0], reverse=True))}
 
     excluded = []
@@ -687,6 +696,8 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         "citation": ".agentrail/context/audit/events.jsonl",
         "queryHash": sha256_text(query),
         "retrievalMode": planner["retrievalMode"],
+        "staleEmbeddingLeakage": stale_embedding_leakage,
+        "staleEmbeddingsExcluded": stale_embeddings_excluded,
         "resultCount": len(formatted),
         "excludedCount": len(excluded),
         "providerMode": provider.get("mode") or embedding_mode,
@@ -700,6 +711,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         "limit": limit,
         "retrievalMode": planner["retrievalMode"],
         "planner": planner,
+        "retrievalIntegrity": {"staleEmbeddingLeakage": stale_embedding_leakage, "staleEmbeddingsExcluded": stale_embeddings_excluded},
         "generatedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "index": {"version": index.get("version"), "builtAt": index.get("builtAt")},
         "retrievalBudget": retrieval_budget,

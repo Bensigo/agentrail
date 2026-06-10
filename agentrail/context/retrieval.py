@@ -697,6 +697,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
                 ranked.append((similarity, entry))
         semantic_rank = {str((entry["chunk"] or {}).get("id") or entry["source"].get("id")): idx + 1 for idx, (_score, entry) in enumerate(sorted(ranked, key=lambda item: item[0], reverse=True))}
 
+    semantic_active = query_vector is not None
     excluded = []
     for item in index.get("skipped", []):
         excluded.append(
@@ -739,7 +740,16 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         # Relevance = lexical + semantic + fused rank. Authority only *boosts* an
         # already-relevant result's rank; it must not inject an otherwise
         # irrelevant high-authority doc into the budget (precision-at-budget noise).
-        relevance = lexical_raw[item_id] + semantic * 2 + entry["score"]["rrf"] * 10
+        if not exact_mode and semantic_active:
+            # Conceptual query with real embeddings: trust meaning over surface
+            # words. Dampen raw BM25 (a file that literally repeats the question
+            # words is often not the answer) and up-weight semantic similarity.
+            lexical = entry["score"]["deterministic"] + entry["score"]["keyword"] + entry["score"]["bm25"] * 0.4
+            semantic_weight = 8.0
+        else:
+            lexical = lexical_raw[item_id]
+            semantic_weight = 2.0
+        relevance = lexical + semantic * semantic_weight + entry["score"]["rrf"] * 10
         entry["score"]["relevance"] = round(relevance, 6)
         entry["score"]["final"] = relevance + entry["score"]["authorityBoost"] - entry["score"]["authorityDemotion"] - entry["score"]["freshnessDemotion"] - entry["score"]["priorMistakeDemotion"]
         if relevance > 0 and entry["score"]["final"] > 0:

@@ -227,6 +227,38 @@ export async function listWorkspaceRepositories(workspaceId: string) {
     .orderBy(repositories.name);
 }
 
+export async function getRepositoryByName(workspaceId: string, name: string) {
+  const rows = await db
+    .select()
+    .from(repositories)
+    .where(
+      and(
+        eq(repositories.workspaceId, workspaceId),
+        eq(repositories.name, name)
+      )
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function createRepository(data: {
+  workspaceId: string;
+  name: string;
+  url: string;
+  defaultBranch: string;
+}) {
+  const rows = await db
+    .insert(repositories)
+    .values({
+      workspaceId: data.workspaceId,
+      name: data.name,
+      url: data.url,
+      defaultBranch: data.defaultBranch,
+    })
+    .returning();
+  return rows[0]!;
+}
+
 export async function listApiKeys(workspaceId: string) {
   return db
     .select()

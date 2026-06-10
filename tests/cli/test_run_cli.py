@@ -25,3 +25,8 @@ class RunHelpTests(unittest.TestCase):
         self.assertEqual(AGENTS, {"codex", "claude", "cursor", "hermes", "custom"})
         self.assertEqual(DEFAULT_COMMANDS["claude"], "claude -p --dangerously-skip-permissions")
         self.assertEqual(DEFAULT_COMMANDS["custom"], "")
+
+    def test_all_agents_have_default_commands(self) -> None:
+        for agent in AGENTS:
+            self.assertIn(agent, DEFAULT_COMMANDS,
+                          f"Agent '{agent}' missing from DEFAULT_COMMANDS")

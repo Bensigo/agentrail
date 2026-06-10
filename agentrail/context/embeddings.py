@@ -70,11 +70,13 @@ def run_custom_command(target_dir: Path, config: ProviderConfig, payload: Dict[s
 def run_openai_compatible(config: ProviderConfig, payload: Dict[str, Any]) -> Dict[str, Any]:
     if not config.model:
         raise RuntimeError("context.embedding.model is required for openai-compatible mode")
+    base_url = (config.baseUrl or "https://api.openai.com/v1").rstrip("/")
+    is_local = any(host in base_url for host in ("localhost", "127.0.0.1", "0.0.0.0"))
     api_key_env = config.apiKeyEnv or "OPENAI_API_KEY"
     api_key = os.environ.get(api_key_env)
-    if not api_key:
+    if not api_key and not is_local:
         raise RuntimeError(f"{api_key_env} is required for openai-compatible embedding mode")
-    base_url = (config.baseUrl or "https://api.openai.com/v1").rstrip("/")
+    api_key = api_key or "local"  # local servers (e.g. Ollama) ignore the bearer token
     request = urllib.request.Request(
         f"{base_url}/embeddings",
         data=json.dumps({"model": config.model, "input": payload["content"]}).encode("utf-8"),
@@ -146,3 +148,68 @@ def embed_context(target_dir: Path) -> Dict[str, Any]:
     write_json(embeddings_path, {"schemaVersion": 1, "provider": {"mode": mode, "provider": provider, "model": model}, "builtAt": now_iso(), "embeddings": next_records})
     append_audit(root, {"event": "embedding_provider_complete", "mode": mode, "provider": provider, "model": model, "payloadCount": len(chunks), "embedded": embedded, "skipped": skipped, "embeddingCount": len(next_records)})
     return {"embeddingPath": ".agentrail/context/index/embeddings.json", "providerMode": mode, "provider": provider, "model": model, "eligible": len(chunks), "embedded": embedded, "skipped": skipped, "failed": 0}
+
+
+_PRESET_DEFAULTS = {
+    "ollama": {"mode": "openai-compatible", "provider": "ollama", "model": "nomic-embed-text", "baseUrl": "http://localhost:11434/v1", "apiKeyEnv": "OLLAMA_API_KEY"},
+    "openai": {"mode": "openai-compatible", "provider": "openai", "model": "text-embedding-3-small", "baseUrl": "https://api.openai.com/v1", "apiKeyEnv": "OPENAI_API_KEY"},
+}
+
+
+def embedding_preset(preset: str, *, model: Optional[str] = None, base_url: Optional[str] = None, api_key_env: Optional[str] = None, command: Optional[str] = None, name: Optional[str] = None) -> Dict[str, Any]:
+    """Build a `context.embedding` config block for a named provider preset."""
+    if preset == "disable":
+        return {"mode": "disabled", "provider": None, "model": None, "customCommand": None, "baseUrl": None, "apiKeyEnv": None}
+    if preset == "custom":
+        if not command:
+            raise SystemExit("context embed setup custom requires --command")
+        return {"mode": "custom-command", "provider": name or "custom", "model": model or "custom", "customCommand": command}
+    if preset in _PRESET_DEFAULTS:
+        base = dict(_PRESET_DEFAULTS[preset])
+        if model:
+            base["model"] = model
+        if base_url:
+            base["baseUrl"] = base_url
+        if api_key_env:
+            base["apiKeyEnv"] = api_key_env
+        if name:
+            base["provider"] = name
+        return base
+    raise SystemExit(f"unknown embedding preset: {preset} (expected ollama, openai, custom, or disable)")
+
+
+def validate_embedding_provider(target_dir: Path, embedding: Dict[str, Any]) -> Dict[str, Any]:
+    """Make one real embedding call so a broken provider is caught before saving."""
+    mode = str(embedding.get("mode"))
+    config = ProviderConfig.from_dict(embedding)
+    payload = {"mode": mode, "chunkId": "setup-probe", "path": "setup", "citation": "setup", "content": "AgentRail embedding setup probe."}
+    if mode == "custom-command":
+        result = run_custom_command(target_dir, config, payload)
+    elif mode == "openai-compatible":
+        result = run_openai_compatible(config, payload)
+    else:
+        raise RuntimeError(f"cannot validate embedding mode '{mode}'")
+    dimension = len(result.get("vector") or [])
+    if dimension <= 0:
+        raise RuntimeError("provider returned an empty embedding vector")
+    return {"provider": result.get("provider") or config.provider, "model": result.get("model") or config.model, "dimension": dimension}
+
+
+def _write_embedding_config(target_dir: Path, embedding: Dict[str, Any]) -> None:
+    config_path = target_dir.resolve() / ".agentrail" / "config.json"
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    context = data.setdefault("context", {})
+    context["embedding"] = {key: value for key, value in embedding.items() if value is not None} or {"mode": "disabled"}
+    write_json(config_path, data)
+
+
+def setup_embeddings(target_dir: Path, preset: str, *, model: Optional[str] = None, base_url: Optional[str] = None, api_key_env: Optional[str] = None, command: Optional[str] = None, name: Optional[str] = None, validate: bool = True) -> Dict[str, Any]:
+    """Configure (and optionally live-validate) the embedding provider, then persist it."""
+    root = target_dir.resolve()
+    embedding = embedding_preset(preset, model=model, base_url=base_url, api_key_env=api_key_env, command=command, name=name)
+    validation: Optional[Dict[str, Any]] = None
+    if validate and embedding.get("mode") not in {"disabled", None}:
+        validation = validate_embedding_provider(root, embedding)
+    _write_embedding_config(root, embedding)
+    append_audit(root, {"event": "embedding_setup", "mode": embedding.get("mode"), "provider": embedding.get("provider"), "model": embedding.get("model"), "validated": validation is not None})
+    return {"mode": embedding.get("mode"), "embedding": embedding, "validated": validation is not None, "validation": validation}

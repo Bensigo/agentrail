@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import List, Tuple
 
-from agentrail.context.embeddings import embed_context
+from agentrail.context.embeddings import embed_context, setup_embeddings
 from agentrail.context.benchmark import format_benchmark_summary, run_benchmark
 from agentrail.context.evaluation import evaluate_retrieval, format_evaluation_report
 from agentrail.context.index import build_index
@@ -49,6 +49,7 @@ def _usage() -> str:
   agentrail context sources [--target DIR]
   agentrail context index [--target DIR]
   agentrail context embed [--target DIR]
+  agentrail context embed setup (ollama|openai|custom|disable) [--model M] [--base-url URL] [--api-key-env VAR] [--command CMD] [--name N] [--no-validate] [--target DIR] [--json]
   agentrail context query "<task>" [--target DIR] [--json] [--limit N]
   agentrail context search "<query>" [--target DIR] [--json] [--limit N]
   agentrail context get PATH (--lines A-B | --symbol NAME) [--target DIR] [--json]
@@ -105,6 +106,44 @@ def run_context(args: List[str]) -> int:
             if remaining:
                 raise SystemExit(f"Unknown option: {remaining[0]}")
             _print_json(build_index(target))
+            return 0
+        if kind == "embed" and rest and rest[0] == "setup":
+            preset = rest[1] if len(rest) > 1 and not rest[1].startswith("--") else ""
+            if preset not in {"ollama", "openai", "custom", "disable"}:
+                raise SystemExit("context embed setup requires a preset: ollama | openai | custom | disable")
+            target: str | None = None
+            json_output = False
+            validate = True
+            opts: dict[str, str] = {}
+            flag_map = {"--model": "model", "--base-url": "base_url", "--api-key-env": "api_key_env", "--command": "command", "--name": "name"}
+            index = 2
+            while index < len(rest):
+                arg = rest[index]
+                if arg == "--target":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--target requires a directory")
+                    target = rest[index + 1]; index += 2
+                elif arg == "--json":
+                    json_output = True; index += 1
+                elif arg == "--no-validate":
+                    validate = False; index += 1
+                elif arg in flag_map:
+                    if index + 1 >= len(rest):
+                        raise SystemExit(f"{arg} requires a value")
+                    opts[flag_map[arg]] = rest[index + 1]; index += 2
+                else:
+                    raise SystemExit(f"Unknown context embed setup option: {arg}")
+            result = setup_embeddings(_resolve_target(target), preset, validate=validate, **opts)
+            if json_output:
+                _print_json(result)
+            else:
+                if result["mode"] == "disabled":
+                    print("embeddings disabled")
+                else:
+                    v = result.get("validation")
+                    status = f"validated ({v['provider']}/{v['model']}, dim={v['dimension']})" if v else "saved (not validated)"
+                    print(f"embeddings: {result['mode']} {status}")
+                    print("next: agentrail context embed   # build the vectors")
             return 0
         if kind == "embed":
             target, remaining = _parse_target(rest)

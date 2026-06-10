@@ -987,16 +987,49 @@ def build_index_snapshot(root: Path, records: List[SourceRecord], graph: Dict[st
 _BUILD_INDEX_STALENESS_SECONDS = 120
 
 
+def _source_tree_fingerprint(walked: List[Any]) -> str:
+    """Stable hash of the indexed file set (paths only) to detect add/remove/rename."""
+    paths = sorted(entry.relative_path for entry in walked if not entry.directory)
+    return sha256_text("\n".join(paths))
+
+
+def _cached_index_is_fresh(root: Path, cfg: ContextConfig, index_path: Path) -> bool:
+    """Return True only if no indexed file changed since the index was written.
+
+    The time-based cache window is a fast path, not a correctness guarantee: a
+    file edited inside the window must still invalidate the cache so retrieval
+    (and any embeddings keyed on chunk content) never compete with stale text.
+    """
+    freshness_path = index_path.parent / "freshness.json"
+    try:
+        stored = json.loads(freshness_path.read_text(encoding="utf-8"))
+        index_mtime = index_path.stat().st_mtime
+    except (OSError, ValueError):
+        return False
+    walked = walk_files(root, cfg.excludeGlobs)
+    if _source_tree_fingerprint(walked) != stored.get("sourceTreeFingerprint"):
+        return False
+    for entry in walked:
+        if entry.directory:
+            continue
+        try:
+            if entry.full_path.stat().st_mtime > index_mtime:
+                return False
+        except OSError:
+            return False
+    return True
+
+
 def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[str, Any]:
     root = target_dir.resolve()
     index_path = root / ".agentrail" / "context" / "index" / "index.json"
+    cfg = config or read_context_config(root)
     try:
         age = datetime.now(timezone.utc).timestamp() - index_path.stat().st_mtime
-        if age < _BUILD_INDEX_STALENESS_SECONDS:
+        if age < _BUILD_INDEX_STALENESS_SECONDS and _cached_index_is_fresh(root, cfg, index_path):
             return load_index(root)
     except OSError:
         pass
-    cfg = config or read_context_config(root)
     provider_mode = cfg.embedding.mode
     summary_mode = cfg.summary.mode
     if summary_mode != "disabled" and not cfg.summary.provider:
@@ -1101,6 +1134,7 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
         "skipped": skipped_records,
     }
     write_json(index_dir / "index.json", index)
+    write_json(index_dir / "freshness.json", {"sourceTreeFingerprint": _source_tree_fingerprint(walked), "builtAt": built_at})
     write_json(index_dir / "sources.json", [record.to_json(include_content=False) for record in records])
     append_audit(root, {"event": "external_provider_call", "mode": provider_mode, "provider": cfg.embedding.provider, "model": cfg.embedding.model, "action": "skipped_local_only" if provider_mode == "disabled" else "deferred_to_context_embed", "payloadCount": 0 if provider_mode == "disabled" else len(chunks)})
     append_audit(root, {"event": "contextual_summary", "mode": summary_mode, "provider": cfg.summary.provider, "model": cfg.summary.model, "action": "skipped_local_only" if summary_mode == "disabled" else "not_implemented", "payloadCount": 0 if summary_mode == "disabled" else len(chunks)})

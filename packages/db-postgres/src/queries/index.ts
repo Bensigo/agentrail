@@ -284,6 +284,26 @@ export interface TeamRow {
   repositories: string[];
 }
 
+export async function createWorkspace(data: {
+  name: string;
+  slug: string;
+  userId: string;
+}) {
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .insert(workspaces)
+      .values({ name: data.name, slug: data.slug })
+      .returning();
+    const workspace = rows[0]!;
+    await tx.insert(workspaceMemberships).values({
+      workspaceId: workspace.id,
+      userId: data.userId,
+      role: "owner",
+    });
+    return workspace;
+  });
+}
+
 export async function listWorkspaceTeams(workspaceId: string): Promise<TeamRow[]> {
   const rows = await db
     .select({

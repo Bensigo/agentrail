@@ -260,3 +260,32 @@ class RunBatchExecTests(unittest.TestCase):
             rc = run_batch(["--target", "/tmp/x", "360", "361"])
         self.assertEqual(rc, 0)
         self.assertEqual(sorted(calls), [360, 361])
+
+
+class DispatchTests(unittest.TestCase):
+    def test_issue_subcommand_routes_to_exec(self) -> None:
+        with patch("agentrail.cli.commands.run.exec_issue", return_value=0) as m, \
+             patch("agentrail.cli.commands.run.ensure_source_run_allowed"), \
+             patch("agentrail.cli.commands.run.ensure_no_conflicting_active_run"), \
+             patch("agentrail.cli.commands.run.resolve_agent_command", return_value="claude -p"), \
+             patch("agentrail.cli.commands.run.ensure_command_available"):
+            rc = run_run(["issue", "42", "--agent", "claude", "--target", "/tmp/x"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(m.call_args.args[0], 42)
+
+    def test_issue_requires_number(self) -> None:
+        rc = run_run(["issue", "--agent", "claude"])
+        self.assertEqual(rc, 2)
+
+    def test_batch_subcommand_routes(self) -> None:
+        with patch("agentrail.cli.commands.run.run_batch", return_value=0) as m:
+            rc = run_run(["batch", "1", "2"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(m.call_args.args[0], ["1", "2"])
+
+    def test_main_routes_run(self) -> None:
+        from agentrail.cli import main as main_mod
+        with patch.object(main_mod, "run_run", return_value=0) as m:
+            rc = main_mod.main(["run", "issue", "5"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(m.call_args.args[0], ["issue", "5"])

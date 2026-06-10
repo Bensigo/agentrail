@@ -352,4 +352,43 @@ def run_batch(args: List[str]) -> int:
 
 
 def _dispatch(args: List[str]) -> int:
-    raise UsageError("not implemented")
+    if args and args[0] == "issue":
+        rest = args[1:]
+        if not rest or rest[0].startswith("--"):
+            raise UsageError("run issue requires a number")
+        issue_arg = rest[0]
+        if not issue_arg.isdigit():
+            raise UsageError("run issue argument must be numeric")
+        opts = parse_run_options(rest[1:])
+        opts.target = str(Path(opts.target).resolve())
+        opts.agent = resolve_agent_name(opts.target, opts.agent)
+        ensure_source_run_allowed(opts.target, f"run issue #{issue_arg}")
+        ensure_no_conflicting_active_run(opts.target, issue_arg)
+        command = resolve_agent_command(opts.agent, opts.command, opts.target)
+        ensure_command_available(command)
+        opts.command = command
+        return exec_issue(int(issue_arg), opts)
+
+    if args and args[0] == "batch":
+        return run_batch(args[1:])
+
+    # bare `run`: select next queued issue
+    opts = parse_run_options(args)
+    opts.target = str(Path(opts.target).resolve())
+    ensure_source_run_allowed(opts.target, "select queued issues")
+    picked = next_pickable_issue(opts.target)
+    if picked is None:
+        print("No pickable GitHub issues found.")
+        print("Required labels: afk, ready-for-agent")
+        print("Excluded label: afk-in-progress")
+        return 0
+    number, title, url = picked
+    print(f"selected issue #{number}: {title}")
+    if url:
+        print(url)
+    opts.agent = resolve_agent_name(opts.target, opts.agent)
+    command = resolve_agent_command(opts.agent, opts.command, opts.target)
+    ensure_command_available(command)
+    opts.command = command
+    ensure_no_conflicting_active_run(opts.target, str(number))
+    return exec_issue(number, opts)

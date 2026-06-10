@@ -64,10 +64,21 @@ def _context_found(result: Dict[str, Any], required: List[str]) -> bool:
     return all(any(r in text for r in [req, Path(req).name]) for req in required) if required else False
 
 
-def run_arm(arm: str, task: Dict[str, Any], cmd: str, tokens_path: str, env_extra: Dict[str, str], reps: int) -> Dict[str, Any]:
+# Arm B = the AgentRail arm. Default to the CLI: a pilot agent run showed the CLI
+# uses fewer tokens than the MCP for the same task (MCP call overhead). The
+# "one focused search, then get the lines" wording avoids over-calling.
+AGENTRAIL_CLI_SUFFIX = (
+    "\n\nTo locate code, use the AgentRail CLI via the shell: run"
+    " `{bin} context search \"<query>\" --target .` ONCE, then"
+    " `{bin} context get <path> --lines A-B --target .` for only the lines you"
+    " need. Do not read whole files and do not issue many redundant searches."
+)
+
+
+def run_arm(arm: str, task: Dict[str, Any], prompt: str, cmd: str, tokens_path: str, env_extra: Dict[str, str], reps: int) -> Dict[str, Any]:
     runs = []
     for _ in range(reps):
-        r = _run_agent(cmd, task["prompt"], task["repo"], env_extra)
+        r = _run_agent(cmd, prompt, task["repo"], env_extra)
         tokens = _extract_tokens(r["json"], tokens_path) if r["json"] is not None else None
         runs.append({
             "tokens": tokens,
@@ -87,20 +98,20 @@ def run_arm(arm: str, task: Dict[str, Any], cmd: str, tokens_path: str, env_extr
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tasks", required=True)
-    ap.add_argument("--agent-cmd", required=True, help="Arm A command template; {prompt}/{repo} substituted.")
-    ap.add_argument("--agent-cmd-b", default="", help="Arm B template (with MCP). Defaults to --agent-cmd plus AGENTRAIL_MCP=1.")
+    ap.add_argument("--agent-cmd", required=True, help="Agent command template; {prompt}/{repo} substituted. Used for both arms.")
+    ap.add_argument("--agentrail-bin", default="agentrail", help="Path to the agentrail CLI for arm B's instruction.")
     ap.add_argument("--tokens-path", required=True, help="JSON path(s) to token usage, e.g. usage.input+usage.output.")
     ap.add_argument("--repetitions", type=int, default=3)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
     tasks = json.loads(Path(args.tasks).read_text(encoding="utf-8"))["tasks"]
-    cmd_b = args.agent_cmd_b or args.agent_cmd
+    cli_suffix = AGENTRAIL_CLI_SUFFIX.format(bin=args.agentrail_bin)
 
     rows = []
     for task in tasks:
-        a = run_arm("A (plain)", task, args.agent_cmd, args.tokens_path, {}, args.repetitions)
-        b = run_arm("B (AgentRail)", task, cmd_b, args.tokens_path, {"AGENTRAIL_MCP": "1"}, args.repetitions)
+        a = run_arm("A (plain)", task, task["prompt"], args.agent_cmd, args.tokens_path, {}, args.repetitions)
+        b = run_arm("B (AgentRail CLI)", task, task["prompt"] + cli_suffix, args.agent_cmd, args.tokens_path, {}, args.repetitions)
         rows.append({"task": task["name"], "A": a, "B": b})
 
     a_tok = [r["A"]["meanTokens"] for r in rows if r["A"]["meanTokens"]]

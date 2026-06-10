@@ -55,3 +55,14 @@ Pair it with the AGENTS.md guidance (soft enforcement) so agents are both *told*
 to use retrieval first and *given* the native tools to do it: search for
 candidates, then `context_get` only the line ranges you need, instead of reading
 whole files and burning context.
+
+## CLI vs MCP — token cost
+
+The MCP is for **convenience and enforcement** (agents that prefer native
+tools), not for the lowest token cost. Each MCP call carries protocol overhead
+(tool schemas in context, structured `tool_use`/`tool_result` round-trips), so
+in a pilot agent run the same task cost noticeably more tokens via MCP than via
+the `agentrail context` **CLI** (which returns compact plain text through the
+shell the agent already has). When token budget is the priority, point agents at
+the CLI (see `templates/AGENTS.md`); use the MCP when you want a native,
+enforceable tool surface. See `docs/benchmarks/agent-ab-protocol.md`.

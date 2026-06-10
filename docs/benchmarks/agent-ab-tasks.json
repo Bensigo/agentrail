@@ -1,0 +1,23 @@
+{
+  "_comment": "Edit 'repo' to your indexed checkout paths before running. Tasks should need real, scattered context.",
+  "tasks": [
+    {
+      "name": "express-res-json",
+      "repo": "/tmp/express-bench",
+      "prompt": "Explain how res.json serialises and sends a JSON response in this codebase, citing the exact file and lines.",
+      "requiredContext": ["lib/response.js"]
+    },
+    {
+      "name": "express-sendfile",
+      "repo": "/tmp/express-bench",
+      "prompt": "Where and how does res.sendFile set the response and stream the file? Cite the file and lines.",
+      "requiredContext": ["lib/response.js"]
+    },
+    {
+      "name": "flask-url-for",
+      "repo": "/tmp/flask-bench",
+      "prompt": "Explain how url_for builds a URL for an endpoint, citing the exact file and lines.",
+      "requiredContext": ["src/flask/app.py"]
+    }
+  ]
+}

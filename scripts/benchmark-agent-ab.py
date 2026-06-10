@@ -125,7 +125,7 @@ def main() -> int:
     L = [
         "# Agent A/B Benchmark — AgentRail vs plain agent",
         "",
-        f"Tasks: {len(tasks)} · repetitions: {args.repetitions} · arm A = plain agent, arm B = agent + AgentRail MCP.",
+        f"Tasks: {len(tasks)} · repetitions: {args.repetitions} · arm A = plain agent, arm B = agent + AgentRail CLI.",
         "See `docs/benchmarks/agent-ab-protocol.md` for methodology and caveats.",
         "",
         headline,

@@ -329,8 +329,8 @@ def run_batch(args: List[str]) -> int:
     def _one(slot_issue):
         slot, issue = slot_issue
         wt = str(batch_dir / "worktrees" / f"slot-{slot}-issue-{issue}")
-        _git_worktree_add(cfg.target, wt, f"origin/{cfg.base}")
         worktrees.append(wt)
+        _git_worktree_add(cfg.target, wt, f"origin/{cfg.base}")
         _seed_agentrail(cfg.target, wt)
         opts = RunOptions(agent=cfg.agent, target=wt, command=cfg.command)
         rc = exec_issue(issue, opts, allow_source=True)

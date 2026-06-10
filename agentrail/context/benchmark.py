@@ -21,6 +21,7 @@ from typing import Any, Dict, List
 
 from agentrail.context.config import read_context_config
 from agentrail.context.evaluation import _precision_at_budget, _recall, _unique, load_fixtures
+from agentrail.context.index import build_index, load_index
 from agentrail.context.retrieval import estimate_tokens, query_context, search_context
 
 BENCHMARK_VARIANTS = [
@@ -120,6 +121,31 @@ def _accumulate(totals: Dict[str, Any], metrics: Dict[str, Any], fixtures: int) 
         totals[key] = totals.get(key, 0.0) + metrics[key] / fixtures
 
 
+def _indexed_paths(root: Path) -> Dict[str, str]:
+    """Map of lowercased indexed path -> actual indexed path."""
+    build_index(root)
+    index = load_index(root)
+    return {str(r.get("path")).lower(): str(r.get("path")) for r in index.get("records", []) if r.get("path")}
+
+
+def _resolve_required(required: List[str], path_map: Dict[str, str]) -> Any:
+    """Resolve required paths against the index case-insensitively.
+
+    Returns (resolved_existing_paths, missing_from_repo). A fixture that names a
+    file absent from the repository (wrong version, wrong path, extracted
+    package) is a fixture-validity problem, not a retrieval miss.
+    """
+    resolved: List[str] = []
+    missing: List[str] = []
+    for path in required:
+        actual = path_map.get(path.lower())
+        if actual:
+            resolved.append(actual)
+        else:
+            missing.append(path)
+    return resolved, missing
+
+
 def run_benchmark(target_dir: Path, fixture_file: Path) -> Dict[str, Any]:
     root = target_dir.resolve()
     fixtures_path = fixture_file if fixture_file.is_absolute() else root / fixture_file
@@ -127,35 +153,58 @@ def run_benchmark(target_dir: Path, fixture_file: Path) -> Dict[str, Any]:
     provider_mode = read_context_config(root).embedding.mode
     fixture_count = max(1, len(fixtures))
 
+    path_map = _indexed_paths(root)
+    # The fixtures file is the benchmark's answer key; it must never compete in
+    # retrieval results or it lexically outranks the real sources it quotes.
+    try:
+        fixtures_rel = str(fixtures_path.resolve().relative_to(root))
+    except ValueError:
+        fixtures_rel = fixtures_path.name
+    corpus_excludes = {fixtures_rel}
+
     variant_totals: Dict[str, Dict[str, Any]] = {name: {} for name in BENCHMARK_VARIANTS}
+    variant_sources: Dict[str, set] = {name: set() for name in BENCHMARK_VARIANTS}
     fixture_reports: List[Dict[str, Any]] = []
     full_cache: Dict[str, int] = {}
 
     for fixture in fixtures:
         limit = int(fixture.get("limit") or 10)
         task = fixture["task"]
-        required = _unique(list(fixture.get("requiredSources", [])))
+        required_raw = _unique(list(fixture.get("requiredSources", [])))
+        required, missing_from_repo = _resolve_required(required_raw, path_map)
         excluded = _unique(list(fixture.get("expectedExcludedSources", [])))
         started = time.perf_counter()
         qoutput = query_context(root, task, limit=limit)
         soutput = search_context(root, task, limit=limit)
         shared_ms = (time.perf_counter() - started) * 1000
-        qresults = qoutput.get("results", [])
-        sresults = soutput.get("results", [])
+        qresults = [r for r in qoutput.get("results", []) if r.get("path") not in corpus_excludes]
+        sresults = [r for r in soutput.get("results", []) if r.get("path") not in corpus_excludes]
         stale_leak = (qoutput.get("retrievalIntegrity") or {}).get("staleEmbeddingLeakage", 0)
         provider_calls = 0 if provider_mode == "disabled" else 1
 
-        fixture_entry: Dict[str, Any] = {"name": fixture["name"], "task": task, "variants": {}}
+        fixture_entry: Dict[str, Any] = {
+            "name": fixture["name"],
+            "task": task,
+            "requiredSourcesMissingFromRepo": missing_from_repo,
+            "variants": {},
+        }
         for name in BENCHMARK_VARIANTS:
             v_start = time.perf_counter()
             selected = _select_variant(name, qresults, sresults, root, full_cache)
             latency = shared_ms + (time.perf_counter() - v_start) * 1000
             metrics = _variant_metrics(selected, required, excluded, limit, stale_leak, provider_calls, latency)
             fixture_entry["variants"][name] = metrics
+            variant_sources[name].update(metrics["selectedSources"])
             _accumulate(variant_totals[name], metrics, fixture_count)
         fixture_reports.append(fixture_entry)
 
-    variants = {name: {"metrics": _round_totals(totals)} for name, totals in variant_totals.items()}
+    invalid_fixtures = [f["name"] for f in fixture_reports if f["requiredSourcesMissingFromRepo"]]
+
+    variants = {}
+    for name, totals in variant_totals.items():
+        metrics = _round_totals(totals)
+        metrics["selectedSources"] = sorted(variant_sources[name])
+        variants[name] = {"metrics": metrics}
     pass_gates = _pass_gates(variants)
     return {
         "schemaVersion": 1,
@@ -163,6 +212,7 @@ def run_benchmark(target_dir: Path, fixture_file: Path) -> Dict[str, Any]:
         "generatedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "provider": {"mode": provider_mode},
         "tokenEstimator": "chars/4",
+        "invalidFixtures": invalid_fixtures,
         "fixtureCount": len(fixtures),
         "variants": variants,
         "fixtures": fixture_reports,
@@ -209,6 +259,8 @@ def format_benchmark_summary(report: Dict[str, Any]) -> str:
         "",
         f"Generated: {report['generatedAt']}",
         f"Fixtures: {report['fixtureCount']}",
+        (f"Invalid fixtures (required source not in repo): {', '.join(report['invalidFixtures'])}"
+         if report.get("invalidFixtures") else "Invalid fixtures (required source not in repo): none"),
         f"Token estimator: {report['tokenEstimator']}",
         f"Embedding provider: {report['provider']['mode']}",
         "",

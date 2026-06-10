@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -202,6 +203,26 @@ def ensure_no_conflicting_active_run(target: str, issue: str) -> None:
         print(f"active run already exists for issue #{active}; refusing to start "
               f"issue #{issue}", file=sys.stderr)
     raise UsageError("", code=1)
+
+
+def next_pickable_issue(target: str):
+    proc = subprocess.run(
+        ["gh", "issue", "list", "--state", "open", "--label", "afk",
+         "--label", "ready-for-agent", "--search",
+         "sort:created-asc -label:afk-in-progress", "--limit", "20",
+         "--json", "number,title,url"],
+        cwd=target, check=False, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        issues = json.loads(proc.stdout or "[]")
+    except ValueError:
+        return None
+    if not issues:
+        return None
+    best = min(issues, key=lambda it: int(it["number"]))
+    return (int(best["number"]), best.get("title", ""), best.get("url", ""))
 
 
 def _dispatch(args: List[str]) -> int:

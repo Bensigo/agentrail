@@ -10,13 +10,14 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from agentrail.cli.commands.run import (
     run_run, AGENTS, DEFAULT_COMMANDS, parse_run_options, UsageError,
     resolve_agent_name, resolve_agent_command,
     is_source_checkout, ensure_source_run_allowed,
     active_run_issue, ensure_no_conflicting_active_run,
+    next_pickable_issue,
 )
 
 
@@ -170,3 +171,25 @@ class ActiveRunTests(unittest.TestCase):
     def test_no_conflict_when_no_active(self) -> None:
         d = self._state({"workflow": {}})
         ensure_no_conflicting_active_run(d, "7")  # no raise
+
+
+class NextPickableTests(unittest.TestCase):
+    def test_picks_lowest_number(self) -> None:
+        payload = json.dumps([
+            {"number": 9, "title": "b", "url": "u9"},
+            {"number": 4, "title": "a", "url": "u4"},
+        ])
+        cp = MagicMock(returncode=0, stdout=payload)
+        with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp):
+            picked = next_pickable_issue("/tmp/x")
+        self.assertEqual(picked, (4, "a", "u4"))
+
+    def test_empty_returns_none(self) -> None:
+        cp = MagicMock(returncode=0, stdout="[]")
+        with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp):
+            self.assertIsNone(next_pickable_issue("/tmp/x"))
+
+    def test_gh_failure_returns_none(self) -> None:
+        cp = MagicMock(returncode=1, stdout="")
+        with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp):
+            self.assertIsNone(next_pickable_issue("/tmp/x"))

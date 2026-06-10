@@ -130,16 +130,7 @@ export default async function LandingPage() {
           >
             <button
               type="submit"
-              className="inline-flex items-center gap-2 rounded px-6 py-3 text-base font-bold text-black transition-colors duration-150"
-              style={{ background: "#ffe629" }}
-              onMouseOver={(e) =>
-                ((e.currentTarget as HTMLButtonElement).style.background =
-                  "#ffdc00")
-              }
-              onMouseOut={(e) =>
-                ((e.currentTarget as HTMLButtonElement).style.background =
-                  "#ffe629")
-              }
+              className="inline-flex items-center gap-2 rounded bg-[#ffe629] px-6 py-3 text-base font-bold text-black transition-colors duration-150 hover:bg-[#ffdc00]"
             >
               <GitHubIcon />
               Sign in with GitHub

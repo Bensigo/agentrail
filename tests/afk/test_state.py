@@ -9,6 +9,7 @@ from agentrail.afk.state import (
     IncrementReviewRound,
     IssueStatus,
     RecordFailure,
+    RequeueIssue,
     SetPr,
     SetStatus,
     Store,
@@ -123,6 +124,41 @@ def test_is_drained():
     assert not s.state.is_drained()  # active
     s.dispatch(SetStatus(1, IssueStatus.MERGED))
     assert s.state.is_drained()
+
+
+def test_requeue_resets_terminal_issue_keeping_pr():
+    s = _store()
+    s.dispatch(EnqueueIssue(1, "a", "u"))
+    s.claim_next()
+    s.dispatch(SetPr(1, 50))
+    # drive to human_review
+    s.dispatch(RecordFailure(1, "boom"))
+    s.claim_next()
+    s.dispatch(RecordFailure(1, "boom2"))
+    assert s.state.issues[1].status == IssueStatus.HUMAN_REVIEW
+    assert s.state.failed == 1
+    # requeue for a fresh attempt
+    s.dispatch(RequeueIssue(1))
+    issue = s.state.issues[1]
+    assert issue.status == IssueStatus.QUEUED
+    assert issue.retries == 0
+    assert issue.review_rounds == 0
+    assert issue.error is None
+    assert issue.pr == 50           # PR kept → stays idempotent
+    assert s.state.failed == 0      # counter decremented
+    # and it is claimable again
+    assert s.claim_next().number == 1
+
+
+def test_requeue_decrements_completed_for_merged():
+    s = _store()
+    s.dispatch(EnqueueIssue(1, "a", "u"))
+    s.claim_next()
+    s.dispatch(SetStatus(1, IssueStatus.MERGED))
+    assert s.state.completed == 1
+    s.dispatch(RequeueIssue(1))
+    assert s.state.completed == 0
+    assert s.state.issues[1].status == IssueStatus.QUEUED
 
 
 def test_persistence_roundtrip(tmp_path: Path):

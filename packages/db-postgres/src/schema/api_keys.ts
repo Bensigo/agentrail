@@ -9,7 +9,7 @@ export const apiKeys = pgTable("api_keys", {
   teamId: uuid("team_id"),
   name: text("name").notNull(),
   keyPrefix: text("key_prefix").notNull(),
-  keyHash: text("key_hash").notNull(),
+  keyHash: text("key_hash").notNull().unique(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

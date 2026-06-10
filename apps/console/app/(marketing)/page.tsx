@@ -1,5 +1,5 @@
 import { auth, signIn } from "@agentrail/auth";
-import { listWorkspacesForUser } from "@agentrail/db-postgres";
+import { listWorkspacesForUser, claimInvitesForUser } from "@agentrail/db-postgres";
 import { redirect } from "next/navigation";
 import { Bricolage_Grotesque } from "next/font/google";
 import fs from "fs";
@@ -48,6 +48,14 @@ const ACCENT = "#ffe629";
 export default async function LandingPage() {
   const session = await auth();
   if (session?.user?.id) {
+    const email = (session.user as typeof session.user & { email?: string }).email;
+    if (email) {
+      try {
+        await claimInvitesForUser({ userId: session.user.id, email });
+      } catch {
+        // never block login
+      }
+    }
     const workspaces = await listWorkspacesForUser(session.user.id);
     redirect(workspaces.length > 0 ? `/dashboard/${workspaces[0].id}` : "/setup");
   }

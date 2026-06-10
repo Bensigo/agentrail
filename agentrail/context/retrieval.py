@@ -493,6 +493,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
     from agentrail.context.planner import classify_query
 
     planner = classify_query(query)
+    exact_mode = planner["retrievalMode"] in {"exact", "exact_bm25", "exact_graph"}
     root = target_dir.resolve()
     build_index(root)
     index = load_index(root)
@@ -511,6 +512,26 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
             tail = token.rsplit(".", 1)[-1]
             if tail:
                 query_symbols.add(tail)
+    # Definition-site patterns: a file that *assigns/defines* the queried symbol
+    # (e.g. "req.accepts =", "function View") is the answer for a symbol lookup —
+    # far more precise than symbolHints, which miss chunk-spanning defs and fire
+    # on test mocks. Used to tier definitions above dense reference/call sites.
+    definition_patterns: List[Any] = []
+    raw_lower = query.strip().lower()
+    definition_use_hint = True
+    if re.fullmatch(r"[a-z_$][\w$]*\.[a-z_$][\w$]*", raw_lower):
+        # Dotted member ("res.json"): the only definition is the assignment
+        # "res.json =". The bare tail ("json") and symbolHints fire on every
+        # file defining an unrelated json — so use the precise pattern alone.
+        definition_patterns.append(re.compile(re.escape(raw_lower) + r"\s*[:=]"))
+        definition_use_hint = False
+    else:
+        for sym in query_symbols:
+            if len(sym) >= 4:
+                esc = re.escape(sym)
+                definition_patterns.append(re.compile(rf"\bfunction\s+{esc}\b"))
+                definition_patterns.append(re.compile(rf"\b{esc}\s*[:=]\s*(?:async\s*)?(?:function|\()"))
+                definition_patterns.append(re.compile(rf"\b(?:def|class)\s+{esc}\b"))
     query_lower = query.lower()
     query_issue_refs = issue_refs(query)
     query_pr_refs = pr_refs(query)
@@ -587,7 +608,10 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         for phrase in phrases:
             if len(phrase) > 8 and phrase in doc["textLower"]:
                 keyword += 1; reasons.add("exact identifier")
-        if query_symbols and any(str(hint).lower() in query_symbols for hint in ((chunk or {}).get("symbolHints") or [])):
+        defines_by_pattern = bool(definition_patterns and any(p.search(doc["textLower"]) for p in definition_patterns))
+        defines_by_hint = definition_use_hint and bool(query_symbols and any(str(hint).lower() in query_symbols for hint in ((chunk or {}).get("symbolHints") or [])))
+        is_definition = defines_by_pattern or defines_by_hint
+        if is_definition:
             # The queried symbol is defined in this chunk — prefer the definition
             # site over files that merely call it.
             deterministic += 2.5; reasons.add("symbol definition")
@@ -613,7 +637,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         lexical_raw[str(item_id)] = lexical
         # lexicalScore = pure lexical (BM25 + keyword boosts, without deterministic)
         # denseScore and fusedScore are filled in after embedding scoring
-        scored.append({"source": source, "chunk": chunk, "reasons": reasons, "score": {"deterministic": deterministic, "keyword": keyword, "bm25": bm25, "lexicalScore": keyword + bm25, "denseScore": None, "fusedScore": 0.0, "embedding": None, "rrf": 0.0, "authorityBoost": authority_boost, "authorityDemotion": 0 if authority_penalty >= 999 else authority_penalty, "freshnessDemotion": freshness_penalty, "priorMistakeDemotion": prior_penalty, "final": 0.0}})
+        scored.append({"source": source, "chunk": chunk, "reasons": reasons, "definitionTier": 1 if (is_definition and exact_mode) else 0, "score": {"deterministic": deterministic, "keyword": keyword, "bm25": bm25, "lexicalScore": keyword + bm25, "denseScore": None, "fusedScore": 0.0, "embedding": None, "rrf": 0.0, "authorityBoost": authority_boost, "authorityDemotion": 0 if authority_penalty >= 999 else authority_penalty, "freshnessDemotion": freshness_penalty, "priorMistakeDemotion": prior_penalty, "final": 0.0}})
 
     _bm25_by_path: List[Tuple[float, str]] = [(entry["score"]["bm25"], str(entry["source"].get("path") or "")) for entry in scored if entry["score"]["bm25"] > 0 and entry["source"].get("path")]
     _bm25_by_path.sort(key=lambda _x: _x[0], reverse=True)
@@ -720,7 +744,9 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         entry["score"]["final"] = relevance + entry["score"]["authorityBoost"] - entry["score"]["authorityDemotion"] - entry["score"]["freshnessDemotion"] - entry["score"]["priorMistakeDemotion"]
         if relevance > 0 and entry["score"]["final"] > 0:
             results.append(entry)
-    results.sort(key=lambda entry: (-entry["score"]["final"], str((entry["chunk"] or {}).get("citation") or entry["source"].get("path"))))
+    # Definitions of the queried symbol rank in a strictly higher tier than
+    # reference-only files, so dense callers/tests cannot bury the definition.
+    results.sort(key=lambda entry: (-entry.get("definitionTier", 0), -entry["score"]["final"], str((entry["chunk"] or {}).get("citation") or entry["source"].get("path"))))
     formatted = []
     for rank, entry in enumerate(results[:limit], 1):
         source = entry["source"]

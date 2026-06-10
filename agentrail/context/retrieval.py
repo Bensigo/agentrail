@@ -796,6 +796,21 @@ def search_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str
             "score": (entry.get("score") or {}).get("final"),
             "tokenEstimate": estimate_tokens(snippet),
         })
+    selected_sources = [entry["path"] for entry in results]
+    integrity = raw.get("retrievalIntegrity") or {}
+    run_metadata = {
+        "retrievalMode": raw.get("retrievalMode"),
+        "selectedSources": selected_sources,
+        "selectedContextTokens": sum(entry["tokenEstimate"] for entry in results),
+        # Ground-truth-free at run time; the benchmark measures waste against
+        # known required sources. Recorded for schema completeness.
+        "wastedContextTokens": 0,
+        "retrievalBudget": raw.get("retrievalBudget"),
+        "citations": [entry["citation"] for entry in results],
+        "reasons": [entry["reason"] for entry in results],
+        "staleOrDeniedLeakage": len(raw.get("excluded") or []),
+        "staleEmbeddingLeakage": integrity.get("staleEmbeddingLeakage", 0),
+    }
     return {
         "schemaVersion": 1,
         "command": "context.search",
@@ -803,6 +818,7 @@ def search_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str
         "limit": limit,
         "retrievalMode": raw.get("retrievalMode"),
         "planner": raw.get("planner"),
+        "runMetadata": run_metadata,
         "generatedAt": raw.get("generatedAt"),
         "provider": raw.get("provider"),
         "retrievalBudget": raw.get("retrievalBudget"),

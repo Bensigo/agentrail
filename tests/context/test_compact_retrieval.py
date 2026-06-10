@@ -114,6 +114,17 @@ class SearchContextTests(unittest.TestCase):
         self.assertIsInstance(top["lineEnd"], int)
         self.assertGreater(top["tokenEstimate"], 0)
 
+    def test_search_includes_run_metadata_for_enforcement(self) -> None:
+        root = self.make_repo()
+        output = search_context(root, "build_context_pack", limit=5)
+        rm = output["runMetadata"]
+        for key in ("retrievalMode", "selectedSources", "selectedContextTokens",
+                    "wastedContextTokens", "retrievalBudget", "citations", "reasons",
+                    "staleOrDeniedLeakage", "staleEmbeddingLeakage"):
+            self.assertIn(key, rm)
+        self.assertEqual(rm["selectedContextTokens"], sum(r["tokenEstimate"] for r in output["results"]))
+        self.assertEqual(rm["selectedSources"], [r["path"] for r in output["results"]])
+
     def test_snippet_is_bounded_not_whole_file(self) -> None:
         root = self.make_repo()
         output = search_context(root, "build_context_pack", limit=5)

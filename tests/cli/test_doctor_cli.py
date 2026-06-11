@@ -386,7 +386,7 @@ class DoctorFullyHealthyInstallTests(RunDoctorSetup, unittest.TestCase):
             p.chmod(0o755)
         tmpl_scripts = source_dir / "templates" / "scripts"
         tmpl_scripts.mkdir(parents=True)
-        for name in ["memory", "ralph-loop", "afk-workflow", "review-pr", "pr"]:
+        for name in ["memory", "ralph-loop", "review-pr", "pr"]:
             p = tmpl_scripts / name
             p.write_text("#!/bin/sh\n")
             p.chmod(0o755)

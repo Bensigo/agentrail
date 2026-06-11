@@ -458,7 +458,6 @@ REQUIRED_PATHS = [
     (".agentrail/source/scripts/install-workflow", ".agentrail/source/scripts/install-workflow", "executable"),
     (".agentrail/source/templates/scripts/memory", ".agentrail/source/templates/scripts/memory", "executable"),
     (".agentrail/source/templates/scripts/ralph-loop", ".agentrail/source/templates/scripts/ralph-loop", "executable"),
-    (".agentrail/source/templates/scripts/afk-workflow", ".agentrail/source/templates/scripts/afk-workflow", "executable"),
     (".agentrail/source/templates/scripts/review-pr", ".agentrail/source/templates/scripts/review-pr", "executable"),
     (".agentrail/source/templates/scripts/pr", ".agentrail/source/templates/scripts/pr", "executable"),
     ("docs/agents/skill-registry.json", "docs/agents/skill-registry.json", "file"),

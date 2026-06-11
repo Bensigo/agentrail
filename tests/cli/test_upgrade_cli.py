@@ -186,10 +186,16 @@ class TestFreshUpgrade(TestCase):
         _run_upgrade(self.repo, self.target)
         source_dir = self.target / ".agentrail" / "source"
         self.assertTrue(source_dir.is_dir())
+        # #404 Option B: vendor only the native package + runtime data dirs +
+        # package.json (launcher redirect). The native agentrail/ package is
+        # vendored so the launcher can resolve it.
         self.assertTrue((source_dir / "package.json").exists())
-        self.assertTrue((source_dir / "scripts" / "agentrail").exists())
+        self.assertTrue((source_dir / "agentrail").is_dir())
         self.assertTrue((source_dir / "templates").is_dir())
         self.assertTrue((source_dir / "skills").is_dir())
+        # No editable flow scripts are vendored — projects can't fork orchestration.
+        self.assertFalse((source_dir / "scripts").exists(),
+                         ".agentrail/source/scripts must not be vendored (#404 Option B)")
 
 
 class TestIdempotency(TestCase):

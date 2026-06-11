@@ -73,8 +73,8 @@ LEGACY
 
 "$agentrail" init --target "$legacy_repo" >"${tmp_dir}/legacy-init.out"
 
-assert_grep "skip existing: AGENTS.md" "${tmp_dir}/legacy-init.out" "legacy init did not preserve existing AGENTS.md"
-assert_grep "skip existing: docs/agents/ralph-loop.md" "${tmp_dir}/legacy-init.out" "legacy init did not preserve existing workflow file"
+assert_grep "preserved existing untracked: AGENTS.md" "${tmp_dir}/legacy-init.out" "legacy init did not preserve existing AGENTS.md"
+assert_grep "preserved existing untracked: docs/agents/ralph-loop.md" "${tmp_dir}/legacy-init.out" "legacy init did not preserve existing workflow file"
 assert_grep "Keep this local edit." "${legacy_repo}/AGENTS.md" "legacy init overwrote local AGENTS.md"
 
 if [[ "$(json_value "${legacy_repo}/.agentrail/state.json" "data.legacyAdopted")" != "true" ]]; then
@@ -107,6 +107,9 @@ cat >"${upgrade_repo}/scripts/ralph-loop" <<'LEGACY_SCRIPT'
 echo legacy ralph
 LEGACY_SCRIPT
 chmod +x "${upgrade_repo}/scripts/ralph-loop"
+# Seed a stale vendored hidden script (the parent dir no longer ships, so create
+# it) to assert upgrade prunes legacy raw scripts from the managed inventory.
+mkdir -p "${upgrade_repo}/.agentrail/source/templates/scripts"
 printf 'stale hidden ralph\n' >"${upgrade_repo}/.agentrail/source/templates/scripts/ralph-loop"
 cat >"${upgrade_repo}/docs/agents/issue-tracker.md" <<'LOCAL'
 # Local issue tracker instructions
@@ -179,13 +182,11 @@ if [[ ! -x "${upgrade_repo}/scripts/ralph-loop" ]]; then
   exit 1
 fi
 
-if grep -q -- "stale hidden ralph" "${upgrade_repo}/.agentrail/source/templates/scripts/ralph-loop"; then
-  echo "upgrade did not refresh hidden AgentRail source internals" >&2
-  exit 1
-fi
-
-if [[ ! -x "${upgrade_repo}/.agentrail/source/templates/scripts/ralph-loop" ]]; then
-  echo "upgrade did not preserve executable mode on hidden Ralph helper" >&2
+# #404 Option B / M5: editable flow scripts (incl. templates/scripts/ hidden
+# helpers) are no longer vendored under .agentrail/source — the flow is native
+# in the vendored agentrail/ package. The stale seed must be pruned, not refreshed.
+if [[ -e "${upgrade_repo}/.agentrail/source/templates/scripts" ]]; then
+  echo "upgrade re-vendored editable flow scripts under .agentrail/source" >&2
   exit 1
 fi
 
@@ -203,8 +204,8 @@ if grep -q -- "local edit" "${upgrade_repo}/AGENTS.md"; then
   exit 1
 fi
 
-if ! grep -q -- "npx --package github:Bensigo/agentrail agentrail init" "${repo_dir}/README.md"; then
-  echo "README does not document the immediate install path" >&2
+if ! grep -q -- "agentrail init" "${repo_dir}/README.md"; then
+  echo "README does not document the install path" >&2
   exit 1
 fi
 

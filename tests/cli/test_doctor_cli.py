@@ -378,18 +378,8 @@ class DoctorFullyHealthyInstallTests(RunDoctorSetup, unittest.TestCase):
         agentrail_pkg = source_dir / "agentrail"
         agentrail_pkg.mkdir(exist_ok=True)
         (agentrail_pkg / "__init__.py").write_text("")
-        scripts = source_dir / "scripts"
-        scripts.mkdir(exist_ok=True)
-        for name in ["agentrail", "install-workflow"]:
-            p = scripts / name
-            p.write_text("#!/bin/sh\n")
-            p.chmod(0o755)
-        tmpl_scripts = source_dir / "templates" / "scripts"
-        tmpl_scripts.mkdir(parents=True)
-        for name in ["memory", "ralph-loop", "review-pr", "pr"]:
-            p = tmpl_scripts / name
-            p.write_text("#!/bin/sh\n")
-            p.chmod(0o755)
+        # #404 Option B: no editable flow scripts are vendored under
+        # .agentrail/source — only the native package + package.json.
 
     def setUp(self):
         super().setUp()

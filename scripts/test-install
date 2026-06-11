@@ -7,8 +7,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-installer="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install-workflow"
-package_json="$(dirname "$installer")/../package.json"
+scripts_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+launcher="${scripts_dir}/agentrail"
+package_json="${scripts_dir}/../package.json"
+
+# Native install is driven through the launcher: `agentrail install ...`.
+installer_args=(install)
+installer() {
+  "$launcher" "${installer_args[@]}" "$@"
+}
 
 json_value() {
   local file="$1"
@@ -32,20 +39,22 @@ NODE
 }
 
 git -C "$tmp_dir" init --quiet
-"$installer" --target "$tmp_dir"
+installer --target "$tmp_dir"
 
+# The launcher must resolve the vendored package through a package-bin symlink
+# (node_modules/.bin/agentrail -> scripts/agentrail), just like an npm install.
 symlink_bin="${tmp_dir}/node_modules/.bin"
 mkdir -p "$symlink_bin"
-ln -s "$installer" "${symlink_bin}/agentrail"
+ln -s "$launcher" "${symlink_bin}/agentrail"
 symlink_target="${tmp_dir}/symlink-install"
-"${symlink_bin}/agentrail" --target "$symlink_target"
+"${symlink_bin}/agentrail" install --target "$symlink_target"
 
 if [[ ! -e "${symlink_target}/AGENTS.md" ]]; then
   echo "installer did not work through a package bin symlink" >&2
   exit 1
 fi
 
-if "$installer" --target --force >"${tmp_dir}/missing-target.out" 2>&1; then
+if installer --target --force >"${tmp_dir}/missing-target.out" 2>&1; then
   echo "--target accepted another option as its directory argument" >&2
   exit 1
 fi
@@ -92,8 +101,9 @@ required=(
   ".agentrail/state.json"
   ".agentrail/config.json"
   "scripts/agentrail"
-  ".agentrail/source/scripts/agentrail"
-  ".agentrail/source/scripts/install-workflow"
+  # #404 Option B vendor contract: only the native package + package.json +
+  # the runtime data dirs (templates/, skills/). NO editable flow scripts.
+  ".agentrail/source/package.json"
   ".agentrail/source/agentrail/__init__.py"
   ".agentrail/source/agentrail/context/sources.py"
   ".agentrail/source/agentrail/context/index.py"
@@ -101,6 +111,8 @@ required=(
   ".agentrail/source/agentrail/context/embeddings.py"
   ".agentrail/source/agentrail/context/packs.py"
   ".agentrail/source/agentrail/context/retrieval.py"
+  ".agentrail/source/templates/AGENTS.md"
+  ".agentrail/source/skills/to-issues/SKILL.md"
 )
 
 for file in "${required[@]}"; do
@@ -109,6 +121,40 @@ for file in "${required[@]}"; do
     exit 1
   fi
 done
+
+# #404 Option B: NO editable flow scripts may land anywhere under the project,
+# neither on the project surface nor in the vendored .agentrail/source dir. The
+# flow is native inside the vendored agentrail/ package so projects cannot fork
+# orchestration.
+# These are editable flow scripts. None may appear as a regular file anywhere
+# under the project tree (ignoring .git and docs/memory, which are unrelated).
+forbidden_flow_scripts=(
+  "ralph-loop"
+  "review-pr"
+  "afk-workflow"
+  "install-workflow"
+  "timeout.sh"
+)
+for fname in "${forbidden_flow_scripts[@]}"; do
+  hits="$(find "$tmp_dir" \( -path "*/.git" -o -path "*/docs/memory" \) -prune -o -type f -name "$fname" -print 2>/dev/null)"
+  if [[ -n "$hits" ]]; then
+    echo "editable flow script leaked into project: ${fname}" >&2
+    echo "$hits" >&2
+    exit 1
+  fi
+done
+# No scripts/ tree may be vendored (this is where the flow launchers/helpers
+# would otherwise live, including pr/memory).
+if [[ -e "${tmp_dir}/.agentrail/source/scripts" ]]; then
+  echo ".agentrail/source/scripts must not be vendored (#404 Option B)" >&2
+  exit 1
+fi
+# The only scripts/ on the project surface is the launcher itself.
+surface_scripts="$(find "${tmp_dir}/scripts" -type f 2>/dev/null | sed "s#${tmp_dir}/scripts/##" | sort)"
+if [[ "$surface_scripts" != "agentrail" ]]; then
+  echo "unexpected files under project scripts/: ${surface_scripts}" >&2
+  exit 1
+fi
 
 if [[ ! -x "${tmp_dir}/scripts/agentrail" ]]; then
   echo "agentrail CLI shim was not installed into normal project surface" >&2
@@ -345,7 +391,7 @@ cat > "${legacy_dir}/docs/agents/ralph-loop.md" <<'LEGACY'
 Keep this local workflow edit.
 LEGACY
 
-"$installer" --target "$legacy_dir" >"${tmp_dir}/legacy-install.out"
+installer --target "$legacy_dir" >"${tmp_dir}/legacy-install.out"
 
 if [[ ! -e "${legacy_dir}/.agentrail/state.json" ]]; then
   echo "legacy adoption did not create .agentrail/state.json" >&2

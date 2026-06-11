@@ -966,5 +966,216 @@ class RunIssuePlanFailureShortCircuitsTests(unittest.TestCase):
         self.assertEqual(kwargs["exit_status"], 1)
 
 
+# ---------------------------------------------------------------------------
+# New tests from code-review fixes
+# ---------------------------------------------------------------------------
+
+class RunIssueRalphNoneTests(unittest.TestCase):
+    """Fix 1: ralph_path=None must return 1 without raising and without calling run_issue_phase."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_ralph_none_returns_1_without_raising(self):
+        gh_mock = MagicMock()
+        gh_mock.returncode = 1
+        gh_mock.stdout = ""
+
+        mock_phase = MagicMock()
+
+        with patch("agentrail.run.pipeline.ctx.issue_resolution_text", return_value="T"), \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline._ralph_executor_path", return_value=None), \
+             patch("agentrail.run.pipeline.run_issue_phase", mock_phase), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state"), \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
+             patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
+            result = run_issue(self.target, 7, agent="claude", command="c", repo_dir=self.repo)
+
+        self.assertEqual(result, 1)
+        mock_phase.assert_not_called()
+
+
+class RunIssueFinishPhaseOnPlanFailureTests(unittest.TestCase):
+    """Fix 2: finish event must report phase='plan' when plan fails and execute is skipped."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_finish_phase_is_plan_when_plan_fails(self):
+        phase_calls = []
+
+        def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            phase_calls.append(phase)
+            if phase == "plan":
+                return (1, "")
+            return (0, "")
+
+        gh_mock = MagicMock()
+        gh_mock.returncode = 1
+        gh_mock.stdout = ""
+
+        with patch("agentrail.run.pipeline.ctx.issue_resolution_text", return_value="T"), \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline._ralph_executor_path", return_value=Path("/r")), \
+             patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state") as mock_update_state, \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
+             patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
+            result = run_issue(self.target, 7, agent="claude", command="c", repo_dir=self.repo)
+
+        self.assertEqual(result, 1)
+        self.assertNotIn("execute", phase_calls)
+        # finish event must carry phase="plan" and exit_status=1
+        args, kwargs = mock_update_state.call_args
+        self.assertEqual(args[1], "finish")
+        self.assertEqual(kwargs["phase"], "plan")
+        self.assertEqual(kwargs["exit_status"], 1)
+
+
+class RunIssuePlanOutputThreadingTests(unittest.TestCase):
+    """Fix 2 (happy path): execute call receives the plan_output returned by plan phase."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_execute_receives_plan_output(self):
+        captured = {}
+
+        def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            if phase == "plan":
+                return (0, "PLAN OUT")
+            captured["execute_plan_output"] = plan_output
+            return (0, "")
+
+        gh_mock = MagicMock()
+        gh_mock.returncode = 1
+        gh_mock.stdout = ""
+
+        with patch("agentrail.run.pipeline.ctx.issue_resolution_text", return_value="T"), \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline._ralph_executor_path", return_value=Path("/r")), \
+             patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state"), \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
+             patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
+            run_issue(self.target, 7, agent="claude", command="c", repo_dir=self.repo)
+
+        self.assertEqual(captured.get("execute_plan_output"), "PLAN OUT")
+
+
+class RunIssueResumeNewestTests(unittest.TestCase):
+    """Fix 3: with AGENTRAIL_RESUME=1 and two prior runs, the NEWEST plan is used."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_resume_picks_newest_prior_plan(self):
+        runs_dir = self.target / ".agentrail" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+
+        # Older run
+        older_dir = runs_dir / "20200101-000000-issue-7-claude-1"
+        (older_dir / "plan").mkdir(parents=True)
+        (older_dir / "plan" / "status.json").write_text(json.dumps({"status": "completed"}))
+        (older_dir / "plan" / "output.md").write_text("OLD")
+
+        # Newer run
+        newer_dir = runs_dir / "20200202-000000-issue-7-claude-2"
+        (newer_dir / "plan").mkdir(parents=True)
+        (newer_dir / "plan" / "status.json").write_text(json.dumps({"status": "completed"}))
+        (newer_dir / "plan" / "output.md").write_text("NEW")
+
+        captured = {}
+
+        def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            if phase == "execute":
+                captured["execute_plan_output"] = plan_output
+            return (0, plan_output)
+
+        gh_mock = MagicMock()
+        gh_mock.returncode = 1
+        gh_mock.stdout = ""
+
+        with patch.dict(os.environ, {"AGENTRAIL_RESUME": "1"}, clear=False), \
+             patch("agentrail.run.pipeline.ctx.issue_resolution_text", return_value="T"), \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline._ralph_executor_path", return_value=Path("/r")), \
+             patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state"), \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
+             patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
+            result = run_issue(
+                self.target, 7,
+                agent="claude",
+                command="c",
+                repo_dir=self.repo,
+                log_dir=runs_dir,
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(captured.get("execute_plan_output"), "NEW")
+
+
 if __name__ == "__main__":
     unittest.main()

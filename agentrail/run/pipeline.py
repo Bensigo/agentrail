@@ -384,10 +384,9 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
     # 10. Ralph executor path
     ralph_path = _ralph_executor_path(target_dir, repo_dir)
     if ralph_path is None:
-        print(
-            "warning: ralph-loop executor not found; the execute phase will fail",
-            file=sys.stderr,
-        )
+        print("error: ralph-loop executor not found; cannot run execute phase.",
+              file=sys.stderr)
+        return 1
 
     # 11. Build RunContext
     rc = RunContext(
@@ -428,7 +427,7 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
     # Resume check
     prior_plan_output: Optional[str] = None
     if os.environ.get("AGENTRAIL_RESUME") == "1":
-        for prior_dir in sorted(Path(log_dir).glob(f"*-issue-{issue}-*")):
+        for prior_dir in sorted(Path(log_dir).glob(f"*-issue-{issue}-*"), reverse=True):
             if prior_dir == run_dir:
                 continue
             plan_status_file = prior_dir / "plan" / "status.json"
@@ -445,25 +444,25 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
     # 13. Phase execution
     plan_output = ""
     status = 0
+    last_phase = "execute"
 
     if is_review_fix:
         print(
-            f"skipped plan phase (review-fix issue #{issue})",
+            "skipped plan phase (review-fix issue — fix is described in issue body)",
             file=sys.stderr,
         )
         status = 0
     elif prior_plan_output is not None:
         plan_output = prior_plan_output
         status = 0
-        print(
-            f"skipped plan phase (resumed from prior run for issue #{issue})",
-            file=sys.stderr,
-        )
+        print("skipped plan phase (resumed from prior run)", file=sys.stderr)
     else:
         status, plan_output = run_issue_phase(rc, "plan", 1)
+        last_phase = "plan"
 
     if status == 0:
         status, _ = run_issue_phase(rc, "execute", 1, verifier_findings_file="", plan_output=plan_output)
+        last_phase = "execute"
 
     # 14. Finalize
     finished_at = _utc_now_iso()
@@ -480,7 +479,7 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
         run_id=run_id,
         issue=issue,
         agent=agent,
-        phase="execute",
+        phase=last_phase,
         picked_at=started_at,
         finished_at=finished_at,
         exit_status=status,

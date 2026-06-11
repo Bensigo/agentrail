@@ -16,6 +16,8 @@ from agentrail.run.state import (
     update_run_state,
     render_state_summary,
     update_worktree_state,
+    render_resume,
+    state_recommendation,
 )
 
 NOW = "2026-06-11T00:00:00Z"
@@ -741,3 +743,211 @@ class TestUpdateWorktreeState:
         state = _load_worktree_state(target)
         assert state["updatedAt"] == "2026-01-01T00:00:00.000Z"
         assert state["workflow"]["worktrees"][0]["updatedAt"] == "2026-01-01T00:00:00.000Z"
+
+
+# ---------------------------------------------------------------------------
+# state_recommendation
+# ---------------------------------------------------------------------------
+
+class TestStateRecommendation:
+    def test_contains_no_state_message(self, tmp_path):
+        result = state_recommendation(tmp_path)
+        assert "AgentRail state was not found" in result
+
+    def test_contains_init_command(self, tmp_path):
+        result = state_recommendation(tmp_path)
+        assert f"agentrail init --target {tmp_path}" in result
+
+    def test_contains_install_command(self, tmp_path):
+        result = state_recommendation(tmp_path)
+        assert f"agentrail install --target {tmp_path}" in result
+
+    def test_contains_status_rerun(self, tmp_path):
+        result = state_recommendation(tmp_path)
+        assert f"agentrail status --target {tmp_path}" in result
+
+
+# ---------------------------------------------------------------------------
+# render_resume — no-state path
+# ---------------------------------------------------------------------------
+
+class TestRenderResumeNoState:
+    def test_contains_header(self, tmp_path):
+        result = render_resume(tmp_path)
+        assert "# AgentRail Resume" in result
+
+    def test_contains_codex_instruction(self, tmp_path):
+        result = render_resume(tmp_path)
+        assert "do not rely on previous chat context" in result
+
+    def test_contains_state_recommendation(self, tmp_path):
+        result = render_resume(tmp_path)
+        assert "agentrail init --target" in result
+
+    def test_contains_verification_commands(self, tmp_path):
+        result = render_resume(tmp_path)
+        assert "Verification commands:" in result
+        assert "agentrail doctor" in result
+        assert "npm test" in result
+
+    def test_contains_relevant_docs(self, tmp_path):
+        result = render_resume(tmp_path)
+        assert "CONTEXT.md" in result
+        assert "TASTE.md when present" in result
+        assert "docs/agents/" in result
+
+    def test_no_current_task_section(self, tmp_path):
+        # no-state path should NOT have "Current task:"
+        result = render_resume(tmp_path)
+        assert "Current task:" not in result
+
+
+# ---------------------------------------------------------------------------
+# render_resume — with state path
+# ---------------------------------------------------------------------------
+
+def _make_resume_state(tmp_path: Path, *, run_dir_exists: bool = True) -> Path:
+    """Write a minimal state.json for resume tests."""
+    if run_dir_exists:
+        run_dir = tmp_path / ".agentrail" / "runs" / "run-001"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir_rel = ".agentrail/runs/run-001"
+    else:
+        run_dir_rel = ".agentrail/runs/run-missing"
+
+    state = {
+        "agentrailVersion": "1.2.3",
+        "updatedAt": "2026-06-10T00:00:00.000Z",
+        "workflow": {
+            "phase": "implementation",
+            "activePhase": "execution",
+            "activeIssue": 7,
+            "activePullRequest": None,
+            "activePrd": None,
+            "activeMilestone": None,
+            "lastCompletedStep": None,
+            "nextSuggestedAction": "Continue issue #7",
+            "activeRun": {
+                "runId": "run-001",
+                "targetType": "issue",
+                "targetIssue": 7,
+                "agent": "claude",
+                "status": "running",
+                "maxExecutionAttempts": 5,
+                "executionAttempt": 1,
+                "failedVerificationAttempts": 0,
+                "runDir": run_dir_rel,
+            },
+            "completedRuns": [
+                {
+                    "runId": "run-000",
+                    "targetType": "issue",
+                    "targetIssue": 5,
+                    "agent": "claude",
+                    "status": "completed",
+                    "maxExecutionAttempts": 5,
+                    "executionAttempt": 2,
+                    "failedVerificationAttempts": 1,
+                    "runDir": run_dir_rel,
+                },
+            ],
+            "goals": [
+                {
+                    "id": "issue-7",
+                    "kind": "issue",
+                    "status": "active",
+                    "activeIssue": 7,
+                    "summary": "Implement feature X",
+                    "successCriteria": ["criterion one", "criterion two"],
+                    "source": "github:issue/7",
+                },
+            ],
+        },
+    }
+    state_path = tmp_path / ".agentrail" / "state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    return state_path
+
+
+class TestRenderResumeWithState:
+    def test_contains_header(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert "# AgentRail Resume" in result
+
+    def test_contains_current_task(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert "Current task:" in result
+
+    def test_active_issue(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert "- active issue: 7" in result
+
+    def test_active_run_label(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert "- active run: issue #7 via claude (running)" in result
+
+    def test_active_goal(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert "- active goal:" in result
+        assert "issue-7" in result
+
+    def test_active_goal_success_criteria_count(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert "- active goal success criteria: 2" in result
+
+    def test_completed_runs_listed(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert "- completed run:" in result
+        assert "issue #5" in result
+
+    def test_resume_rules(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert "Resume rules:" in result
+        assert "Read source files" in result
+
+    def test_verification_commands_with_target(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert f"agentrail status --target {tmp_path}" in result
+        assert f"agentrail doctor --target {tmp_path}" in result
+
+    def test_relevant_docs_block(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert "Relevant docs:" in result
+        assert "docs/agents/agentrail-state.md" in result
+        assert "docs/agents/issue-tracker.md" in result
+
+    def test_last_completed_step_none(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert "- last completed step: none" in result
+
+    def test_next_action(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert "- next action: Continue issue #7" in result
+
+    def test_stale_run_dir(self, tmp_path):
+        _make_resume_state(tmp_path, run_dir_exists=False)
+        result = render_resume(tmp_path)
+        assert "- active run stale:" in result
+
+    def test_attempt_summary(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert "attempts: 1/5" in result
+
+    def test_no_state_recommendation_when_state_present(self, tmp_path):
+        _make_resume_state(tmp_path)
+        result = render_resume(tmp_path)
+        assert "agentrail init --target" not in result

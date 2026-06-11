@@ -191,10 +191,6 @@ parse_upgrade_args() {
   done
 }
 
-run_install() {
-  "$installer" "$@"
-}
-
 run_upgrade() {
   local target_dir force
   parse_upgrade_args target_dir force "$@"
@@ -4865,14 +4861,6 @@ NODE
 }
 
 case "${1:-}" in
-  init)
-    shift
-    run_install "$@"
-    ;;
-  install)
-    shift
-    run_install "$@"
-    ;;
   upgrade)
     shift
     run_upgrade "$@"

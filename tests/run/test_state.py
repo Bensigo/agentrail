@@ -14,6 +14,7 @@ from agentrail.run.state import (
     upsert_issue_goal,
     write_state,
     update_run_state,
+    render_state_summary,
 )
 
 NOW = "2026-06-11T00:00:00Z"
@@ -475,3 +476,118 @@ class TestUpdateRunState:
         update_run_state(target, "start", **_base_start_kwargs(target, issue=7, phase="plan"))
         state = _load_state(target)
         assert state["updatedAt"] == FIXED_NOW
+
+
+# ---------------------------------------------------------------------------
+# render_state_summary
+# ---------------------------------------------------------------------------
+
+def _write_state_json(target_dir: Path, data: dict) -> None:
+    """Write .agentrail/state.json in target_dir."""
+    agentrail_dir = target_dir / ".agentrail"
+    agentrail_dir.mkdir(parents=True, exist_ok=True)
+    (agentrail_dir / "state.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def _write_raw_state_json(target_dir: Path, raw: str) -> None:
+    """Write raw bytes as .agentrail/state.json (for invalid JSON tests)."""
+    agentrail_dir = target_dir / ".agentrail"
+    agentrail_dir.mkdir(parents=True, exist_ok=True)
+    (agentrail_dir / "state.json").write_text(raw, encoding="utf-8")
+
+
+class TestRenderStateSummary:
+
+    def test_missing_state_json_returns_empty_string(self, tmp_path):
+        result = render_state_summary(tmp_path)
+        assert result == ""
+
+    def test_invalid_json_returns_unreadable_header(self, tmp_path):
+        _write_raw_state_json(tmp_path, "not json {{{")
+        result = render_state_summary(tmp_path)
+        assert result.startswith("- AgentRail state: present but unreadable")
+        assert "- state error:" in result
+
+    def test_minimal_workflow_contains_expected_lines(self, tmp_path):
+        _write_state_json(tmp_path, {"workflow": {}})
+        result = render_state_summary(tmp_path)
+        assert "- AgentRail state: present" in result
+        assert "- phase: unknown" in result
+        assert "- active phase: none" in result
+        assert "- active run: none" in result
+        assert "- next suggested action: none" in result
+
+    def test_active_run_label_and_attempt_summary(self, tmp_path):
+        run_dir = tmp_path / "runs" / "run-abc"
+        run_dir.mkdir(parents=True)
+        active_run = {
+            "targetType": "issue",
+            "targetIssue": 7,
+            "agent": "claude",
+            "status": "running",
+            "maxExecutionAttempts": 5,
+            "executionAttempt": 1,
+            "failedVerificationAttempts": 0,
+            "runDir": str(run_dir),
+        }
+        _write_state_json(tmp_path, {"workflow": {"activeRun": active_run}})
+        result = render_state_summary(tmp_path)
+        assert "- active run: issue #7 via claude (running)" in result
+        assert "- active run attempts: 1/5; failed verify attempts: 0" in result
+        # run dir exists → no stale line
+        assert "stale" not in result
+
+    def test_active_run_stale_when_run_dir_missing(self, tmp_path):
+        active_run = {
+            "targetType": "issue",
+            "targetIssue": 7,
+            "agent": "claude",
+            "status": "running",
+            "maxExecutionAttempts": 5,
+            "executionAttempt": 1,
+            "runDir": "runs/nonexistent",
+        }
+        _write_state_json(tmp_path, {"workflow": {"activeRun": active_run}})
+        result = render_state_summary(tmp_path)
+        assert "- active run stale: run dir missing:" in result
+
+    def test_active_goals_listed(self, tmp_path):
+        goals = [
+            {
+                "id": "issue-7",
+                "status": "active",
+                "activeIssue": 7,
+                "summary": "Fix the bug",
+            }
+        ]
+        _write_state_json(tmp_path, {"workflow": {"goals": goals}})
+        result = render_state_summary(tmp_path)
+        assert "- active goals:" in result
+        assert "  - issue-7 active issue #7: Fix the bug" in result
+
+    def test_completed_run_blocked_reason(self, tmp_path):
+        completed_runs = [
+            {
+                "targetType": "issue",
+                "targetIssue": 5,
+                "agent": "claude",
+                "status": "failed",
+                "blockedReason": "disk full",
+            }
+        ]
+        _write_state_json(tmp_path, {"workflow": {"completedRuns": completed_runs}})
+        result = render_state_summary(tmp_path)
+        assert "- last completed run:" in result
+        assert "- last completed run blocked reason: disk full" in result
+
+    def test_worktrees_summary(self, tmp_path):
+        worktrees = [{}, {"removedAt": "2026-01-01T00:00:00Z"}]
+        _write_state_json(tmp_path, {"workflow": {"worktrees": worktrees}})
+        result = render_state_summary(tmp_path)
+        assert "- AgentRail worktrees: 1 active / 2 tracked" in result
+
+    def test_null_coalesce_active_issue_zero(self, tmp_path):
+        """activeIssue 0 must render as '0', not 'none' (?? semantics)."""
+        _write_state_json(tmp_path, {"workflow": {"activeIssue": 0}})
+        result = render_state_summary(tmp_path)
+        assert "- active issue: 0" in result

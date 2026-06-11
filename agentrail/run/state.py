@@ -185,6 +185,123 @@ def write_state(state_path: Path, state: Dict[str, Any]) -> None:
         lock_file.close()
 
 
+def _null_coalesce(value: Any, default: str) -> str:
+    """Return str(value) if value is not None, else default.
+    Mirrors JavaScript ?? operator (only None triggers the default, not 0 or "")."""
+    return str(value) if value is not None else default
+
+
+def _run_label(run: Any) -> str:
+    """Port of legacy runLabel (scripts/agentrail-legacy:4152-4156)."""
+    if not isinstance(run, dict):
+        return "none"
+    if run.get("targetType") == "issue":
+        target = f"issue #{run['targetIssue']}"
+    else:
+        target = run.get("targetType") or "target"
+    return f"{target} via {run.get('agent') or 'unknown'} ({run.get('status') or 'unknown'})"
+
+
+def _attempt_summary(run: Any) -> Optional[str]:
+    """Port of legacy attemptSummary (scripts/agentrail-legacy:4157-4160)."""
+    if not isinstance(run, dict) or not run.get("maxExecutionAttempts"):
+        return None
+    exec_attempt = int(run.get("executionAttempt") or 0)
+    max_attempts = run["maxExecutionAttempts"]
+    failed_verify = int(run.get("failedVerificationAttempts") or 0)
+    return f"attempts: {exec_attempt}/{max_attempts}; failed verify attempts: {failed_verify}"
+
+
+def _stale_summary(target_dir: Path, run: Any) -> Optional[str]:
+    """Port of legacy staleSummary (scripts/agentrail-legacy:4161-4165)."""
+    if not isinstance(run, dict) or not run.get("runDir"):
+        return None
+    run_dir_str = run["runDir"]
+    run_dir = Path(run_dir_str)
+    if not run_dir.is_absolute():
+        run_dir = target_dir / run_dir_str
+    if run_dir.exists():
+        return None
+    return f"run dir missing: {run_dir_str}"
+
+
+def _goal_label(goal: Any) -> str:
+    """Port of legacy goalLabel (scripts/agentrail-legacy:4166-4170)."""
+    if not isinstance(goal, dict):
+        return "goal unknown: goal"
+    issue_part = f" issue #{goal['activeIssue']}" if goal.get("activeIssue") else ""
+    summary = goal.get("summary") or goal.get("source") or goal.get("id") or "goal"
+    return f"{goal.get('id') or 'goal'} {goal.get('status') or 'unknown'}{issue_part}: {summary}"
+
+
+def render_state_summary(target_dir: Path) -> str:
+    """Render the AgentRail state summary block from <target_dir>/.agentrail/state.json
+    (port of legacy print_state_summary, scripts/agentrail-legacy:4132-4209).
+    - If state.json does not exist → return "" (legacy returns 0 / prints nothing; the
+      caller prompt_common_header prints a '- AgentRail state: not found…' line itself,
+      so here return "").
+    - If state.json is present but unreadable/invalid JSON → return
+      "- AgentRail state: present but unreadable\n- state error: <message>".
+    - Else emit the multi-line block below. Lines joined by '\\n', NO trailing newline."""
+    state_path = target_dir / ".agentrail" / "state.json"
+    if not state_path.exists():
+        return ""
+
+    lines: List[str] = []
+    try:
+        state: Dict[str, Any] = json.loads(state_path.read_text(encoding="utf-8"))
+        workflow: Dict[str, Any] = state.get("workflow") or {}
+        active_run = workflow.get("activeRun")
+        completed_runs: List[Any] = workflow.get("completedRuns") if isinstance(workflow.get("completedRuns"), list) else []
+        worktrees: List[Any] = workflow.get("worktrees") if isinstance(workflow.get("worktrees"), list) else []
+        goals: List[Any] = workflow.get("goals") if isinstance(workflow.get("goals"), list) else []
+
+        lines.append("- AgentRail state: present")
+        lines.append(f"- version: {state.get('agentrailVersion') or 'unknown'}")
+        lines.append(f"- phase: {workflow.get('phase') or 'unknown'}")
+        lines.append(f"- active phase: {_null_coalesce(workflow.get('activePhase'), 'none')}")
+        lines.append(f"- active issue: {_null_coalesce(workflow.get('activeIssue'), 'none')}")
+        lines.append(f"- active pull request: {_null_coalesce(workflow.get('activePullRequest'), 'none')}")
+        lines.append(f"- active PRD: {_null_coalesce(workflow.get('activePrd'), 'none')}")
+        lines.append(f"- active milestone: {_null_coalesce(workflow.get('activeMilestone'), 'none')}")
+        lines.append(f"- active run: {_run_label(active_run) if isinstance(active_run, dict) else 'none'}")
+
+        active_goals = [g for g in goals if isinstance(g, dict) and g.get("status") == "active"]
+        if active_goals:
+            lines.append("- active goals:")
+            for goal in active_goals[:5]:
+                lines.append(f"  - {_goal_label(goal)}")
+
+        active_attempts = _attempt_summary(active_run)
+        if active_attempts:
+            lines.append(f"- active run {active_attempts}")
+
+        active_stale = _stale_summary(target_dir, active_run)
+        if active_stale:
+            lines.append(f"- active run stale: {active_stale}")
+
+        if completed_runs:
+            last_run = completed_runs[-1]
+            lines.append(f"- last completed run: {_run_label(last_run)}")
+            last_attempts = _attempt_summary(last_run)
+            if last_attempts:
+                lines.append(f"- last completed run {last_attempts}")
+            if isinstance(last_run, dict) and last_run.get("blockedReason"):
+                lines.append(f"- last completed run blocked reason: {last_run['blockedReason']}")
+
+        if worktrees:
+            active_worktrees = [w for w in worktrees if isinstance(w, dict) and not w.get("removedAt")]
+            lines.append(f"- AgentRail worktrees: {len(active_worktrees)} active / {len(worktrees)} tracked")
+
+        lines.append(f"- last completed step: {_null_coalesce(workflow.get('lastCompletedStep'), 'none')}")
+        lines.append(f"- next suggested action: {workflow.get('nextSuggestedAction') or 'none'}")
+
+    except Exception as e:
+        return f"- AgentRail state: present but unreadable\n- state error: {e}"
+
+    return "\n".join(lines)
+
+
 def update_run_state(target_dir: Path, event: str, *, run_id: str, issue: int,
                      agent: str, phase: Optional[str], picked_at: str,
                      finished_at: str, exit_status: int, prompt_file: str,

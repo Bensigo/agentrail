@@ -70,6 +70,7 @@ def _run_create(args, *, session=None, agent="claude", command="claude -p --dang
          patch.object(issue_mod, "resolve_agent_name", MagicMock(return_value=agent)), \
          patch.object(issue_mod, "resolve_agent_command", MagicMock(return_value=command)), \
          patch.object(issue_mod, "ensure_command_available", MagicMock()), \
+         patch.object(issue_mod, "_run_headless", MagicMock(return_value=0)), \
          patch("sys.stdout", out), patch("sys.stderr", err):
         rc = run_issue(["create"] + args)
     return rc, out.getvalue(), err.getvalue(), sess_mock

@@ -74,14 +74,6 @@ def build_review_prompt(
                 "or templates/docs/agents/github-pr-reviewer.md"
             )
 
-    # memory command path resolution (matches the script's scripts/memory ->
-    # templates/scripts/memory fallback)
-    memory_command = "scripts/memory"
-    if not os.access(repo_root / "scripts" / "memory", os.X_OK) and os.access(
-        repo_root / "templates" / "scripts" / "memory", os.X_OK
-    ):
-        memory_command = "templates/scripts/memory"
-
     # The path the script reports as the contract source is repo-root-relative.
     machine_prompt_rel = ""
     if machine_prompt_file is not None:
@@ -129,7 +121,7 @@ def build_review_prompt(
         f"- Compare against the pull request base branch.\n"
         f"- Read the PR body, linked issue, milestone, PRD, architecture "
         f"baseline, and agent docs.\n"
-        f"- Run {memory_command} recall for the PR title, linked issue, and key "
+        f"- Run agentrail memory recall for the PR title, linked issue, and key "
         f"terms when that command is available.\n"
         f"- Treat project memory as advisory; verify it against current code, "
         f"docs, issue, PRD, and ADRs.\n"

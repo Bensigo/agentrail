@@ -101,23 +101,11 @@ required=(
   ".agentrail/source/agentrail/context/embeddings.py"
   ".agentrail/source/agentrail/context/packs.py"
   ".agentrail/source/agentrail/context/retrieval.py"
-  ".agentrail/source/templates/scripts/memory"
 )
 
 for file in "${required[@]}"; do
   if [[ ! -e "${tmp_dir}/${file}" ]]; then
     echo "missing installed file: ${file}" >&2
-    exit 1
-  fi
-done
-
-for script in memory; do
-  if [[ -e "${tmp_dir}/scripts/${script}" ]]; then
-    echo "raw workflow script was installed into normal project surface: scripts/${script}" >&2
-    exit 1
-  fi
-  if [[ ! -x "${tmp_dir}/.agentrail/source/templates/scripts/${script}" ]]; then
-    echo "hidden internal script is not executable: .agentrail/source/templates/scripts/${script}" >&2
     exit 1
   fi
 done

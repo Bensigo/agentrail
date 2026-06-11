@@ -1,13 +1,16 @@
 from __future__ import annotations
 import datetime as _dt
+import json
 import os
+import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import timezone
 from pathlib import Path
 from typing import Optional
 
-from agentrail.run import artifacts, context as ctx, prompts, state as state_mod
-from agentrail.run.proc import run_with_timeout
+from agentrail.run import artifacts, context as ctx, prompts, skills, state as state_mod
+from agentrail.run.proc import ralph_executor_path as _ralph_executor_path, run_with_timeout
 
 
 def _utc_now_iso() -> str:
@@ -275,3 +278,221 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
 
     # 19. Return
     return (status, plan_output)
+
+
+def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
+              repo_dir: Path, log_dir: Optional[Path] = None) -> int:
+    """Native port of legacy run_issue (scripts/agentrail-legacy:6376-6566).
+    Assumes guards (source-run, active-run conflict, command availability) were
+    already done by the caller (agentrail/cli/commands/run.py:_dispatch).
+    Returns the final exit status."""
+
+    # 1. Resolve target_dir
+    target_dir = Path(target_dir).resolve()
+
+    # 2. Issue resolution text
+    resolution_text = ctx.issue_resolution_text(target_dir, issue)
+
+    # 3. Resolve skills (degrade gracefully on failure)
+    _default_resolution = {
+        "resolved": [],
+        "autoSkills": True,
+        "maxAutoSkills": 4,
+        "unavailable": [],
+        "registryPath": "",
+        "targetDir": str(target_dir),
+    }
+    try:
+        resolution = skills.resolve_skills(
+            target_dir, repo_dir, resolution_text, auto_skills=True, explicit_skills=[]
+        )
+    except Exception as e:
+        print(
+            f"warning: skill resolution failed ({type(e).__name__}: {e}); "
+            "proceeding without skills",
+            file=sys.stderr,
+        )
+        resolution = _default_resolution
+
+    # 4. Build base prompt
+    run_context_pack_file = ctx.build_issue_context_pack(target_dir, issue, "plan")
+    context_summary = ctx.context_pack_summary(target_dir, run_context_pack_file)
+    context_snippets = ctx.context_selected_snippets(target_dir, resolution_text)
+    header = prompts.common_header(agent, state_mod.render_state_summary(target_dir))
+    skill_block = prompts.format_skill_resolution(resolution, mode="prompt")
+    base_prompt = prompts.issue_base_prompt(
+        agent, issue,
+        header=header,
+        skill_block=skill_block,
+        context_summary=context_summary,
+        context_snippets=context_snippets,
+    )
+
+    # 5. Context retrieval metadata
+    run_context_retrieval = ctx.context_retrieval_metadata(target_dir, f"issue #{issue}")
+
+    # 6. Max execution attempts
+    max_execution_attempts = int(
+        os.environ.get("AGENTRAIL_MAX_EXECUTION_ATTEMPTS", "5") or "5"
+    )
+    if max_execution_attempts < 1:
+        print(
+            f"error: AGENTRAIL_MAX_EXECUTION_ATTEMPTS must be a positive integer, "
+            f"got {max_execution_attempts}",
+            file=sys.stderr,
+        )
+        return 2
+
+    # 7. Run dir setup
+    started_at = _utc_now_iso()
+    log_dir = log_dir or (target_dir / ".agentrail" / "runs")
+    run_id = (
+        f"{_dt.datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+        f"-issue-{issue}-{agent}-{os.getpid()}"
+    )
+    run_dir = Path(log_dir) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # 8. Write artifacts
+    prompt_file = run_dir / "prompt.md"
+    prompt_file.write_text(base_prompt)
+
+    resolved_skills_file = run_dir / "resolved-skills.json"
+    resolved_skills_file.write_text(json.dumps(resolution, indent=2))
+
+    metadata_file = run_dir / "run.json"
+    artifacts.write_run_metadata(
+        metadata_file,
+        started_at=started_at,
+        issue=issue,
+        agent=agent,
+        command=command,
+        prompt_file=str(prompt_file),
+        resolved_skills_file=str(resolved_skills_file),
+        resolved_skills=resolution.get("resolved", []),
+        max_execution_attempts=max_execution_attempts,
+        context_pack_file=run_context_pack_file,
+        context_retrieval=run_context_retrieval,
+    )
+
+    # 9. Print run info
+    print(f"issue: {issue}")
+    print(f"agent: {agent}")
+    print(f"prompt: {prompt_file}")
+    print(f"metadata: {metadata_file}")
+
+    # 10. Ralph executor path
+    ralph_path = _ralph_executor_path(target_dir, repo_dir)
+    if ralph_path is None:
+        print(
+            "warning: ralph-loop executor not found; the execute phase will fail",
+            file=sys.stderr,
+        )
+
+    # 11. Build RunContext
+    rc = RunContext(
+        target_dir=target_dir,
+        repo_dir=repo_dir,
+        issue=issue,
+        agent=agent,
+        agent_command=command,
+        run_id=run_id,
+        run_dir=run_dir,
+        started_at=started_at,
+        metadata_file=metadata_file,
+        base_prompt=base_prompt,
+        resolution_text=resolution_text,
+        run_context_pack_file=run_context_pack_file,
+        max_execution_attempts=max_execution_attempts,
+        ralph_path=ralph_path,
+    )
+
+    # 12. Determine plan skip
+
+    # Review-fix check
+    is_review_fix = False
+    try:
+        gh_result = subprocess.run(
+            ["gh", "issue", "view", str(issue),
+             "--json", "labels",
+             "--jq", "[.labels[].name] | join(\",\")"],
+            cwd=target_dir,
+            capture_output=True,
+            text=True,
+        )
+        if gh_result.returncode == 0 and "review-fix" in gh_result.stdout:
+            is_review_fix = True
+    except Exception:
+        pass
+
+    # Resume check
+    prior_plan_output: Optional[str] = None
+    if os.environ.get("AGENTRAIL_RESUME") == "1":
+        for prior_dir in sorted(Path(log_dir).glob(f"*-issue-{issue}-*")):
+            if prior_dir == run_dir:
+                continue
+            plan_status_file = prior_dir / "plan" / "status.json"
+            plan_output_file = prior_dir / "plan" / "output.md"
+            if plan_status_file.exists() and plan_output_file.exists():
+                try:
+                    plan_status = json.loads(plan_status_file.read_text())
+                    if plan_status.get("status") == "completed":
+                        prior_plan_output = plan_output_file.read_text()
+                        break
+                except Exception:
+                    continue
+
+    # 13. Phase execution
+    plan_output = ""
+    status = 0
+
+    if is_review_fix:
+        print(
+            f"skipped plan phase (review-fix issue #{issue})",
+            file=sys.stderr,
+        )
+        status = 0
+    elif prior_plan_output is not None:
+        plan_output = prior_plan_output
+        status = 0
+        print(
+            f"skipped plan phase (resumed from prior run for issue #{issue})",
+            file=sys.stderr,
+        )
+    else:
+        status, plan_output = run_issue_phase(rc, "plan", 1)
+
+    if status == 0:
+        status, _ = run_issue_phase(rc, "execute", 1, verifier_findings_file="", plan_output=plan_output)
+
+    # 14. Finalize
+    finished_at = _utc_now_iso()
+    artifacts.update_run_metadata_attempts(
+        metadata_file,
+        execution_attempt=1,
+        max_execution_attempts=max_execution_attempts,
+        failed_verification_attempts=0,
+        verifier_findings_file="",
+        blocked_reason="",
+    )
+    state_mod.update_run_state(
+        target_dir, "finish",
+        run_id=run_id,
+        issue=issue,
+        agent=agent,
+        phase="execute",
+        picked_at=started_at,
+        finished_at=finished_at,
+        exit_status=status,
+        prompt_file=str(prompt_file),
+        metadata_file=str(metadata_file),
+        run_dir=str(run_dir),
+        execution_attempt=1,
+        max_execution_attempts=max_execution_attempts,
+        failed_verification_attempts=0,
+        verifier_findings_file="",
+        blocked_reason="",
+        issue_context=resolution_text,
+        context_pack_file=run_context_pack_file or "",
+    )
+    return status

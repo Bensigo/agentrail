@@ -31,8 +31,13 @@ jobs:
 
       - name: Resolve version
         id: version
+        env:
+          # Pass untrusted ref input through env (never interpolate ${{ }} into
+          # the shell body) so a crafted tag/ref can't break out of the string.
+          REF_INPUT: ${{ github.event.inputs.ref }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          ref="${{ github.event.inputs.ref || github.ref_name }}"
+          ref="${REF_INPUT:-$REF_NAME}"
           # Strip a leading refs/tags/ if present, then a leading v.
           ref="${ref#refs/tags/}"
           version="${ref#v}"
@@ -45,9 +50,12 @@ jobs:
 
       - name: Build release tarball
         id: build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TARBALL: ${{ steps.version.outputs.tarball }}
         run: |
-          version="${{ steps.version.outputs.version }}"
-          tarball="${{ steps.version.outputs.tarball }}"
+          version="$VERSION"
+          tarball="$TARBALL"
           stage="agentrail-${version}"
 
           # Stage exactly the files the installed CLI needs. Layout mirrors the
@@ -75,9 +83,12 @@ jobs:
           cat "${tarball}.sha256"
 
       - name: Verify tarball layout
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TARBALL: ${{ steps.version.outputs.tarball }}
         run: |
-          tarball="${{ steps.version.outputs.tarball }}"
-          version="${{ steps.version.outputs.version }}"
+          tarball="$TARBALL"
+          version="$VERSION"
           listing="$(tar -tzf "$tarball")"
           for required in \
             "agentrail-${version}/scripts/agentrail" \
@@ -96,9 +107,12 @@ jobs:
           echo "Tarball layout verified."
 
       - name: Smoke-test the staged launcher
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TARBALL: ${{ steps.version.outputs.tarball }}
         run: |
-          tarball="${{ steps.version.outputs.tarball }}"
-          version="${{ steps.version.outputs.version }}"
+          tarball="$TARBALL"
+          version="$VERSION"
           workdir="$(mktemp -d)"
           tar -xzf "$tarball" -C "$workdir"
           # Run the launcher exactly as brew/curl will: invoke the bundled script.
@@ -122,9 +136,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARBALL: ${{ steps.version.outputs.tarball }}
+          TAG: ${{ github.ref_name }}
         run: |
-          tarball="${{ steps.version.outputs.tarball }}"
-          tag="${{ github.ref_name }}"
+          tarball="$TARBALL"
+          tag="$TAG"
           # Create the release if the tag push didn't already (idempotent).
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" --title "$tag" --generate-notes

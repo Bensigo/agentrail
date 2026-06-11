@@ -34,11 +34,19 @@ class Agentrail < Formula
     # directory, so the package tree is at the current dir root here.
     libexec.install "agentrail", "scripts", "skills", "templates"
     libexec.install "README.md" if File.exist?("README.md")
-
-    # Launcher is libexec/scripts/agentrail; it sets PYTHONPATH to its parent's
-    # parent (libexec), which contains the agentrail/ package.
     chmod 0755, libexec/"scripts/agentrail"
-    bin.install_symlink libexec/"scripts/agentrail" => "agentrail"
+
+    # The launcher (libexec/scripts/agentrail) sets PYTHONPATH to libexec and
+    # resolves `python3` from PATH. A bare symlink would leave that `python3`
+    # up to the user's environment — on modern macOS there may be no usable
+    # system python3 at all, despite our python@3.11 dependency. So wrap the
+    # launcher in an env-script that prepends the brewed python's unversioned
+    # bin (python@3.x exposes libexec/bin/python3), making the CLI independent
+    # of whatever python3 happens to be on PATH.
+    # NOTE: validate the exact keg path on the first real `brew install`.
+    py = Formula["python@3.11"]
+    (bin/"agentrail").write_env_script libexec/"scripts/agentrail",
+      PATH: "#{py.opt_libexec}/bin:$PATH"
   end
 
   test do

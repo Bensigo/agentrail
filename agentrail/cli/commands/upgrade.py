@@ -18,6 +18,8 @@ import os
 import re
 import shutil
 import stat
+
+from agentrail.run.state import write_state
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -501,8 +503,7 @@ def run_upgrade(args: List[str], *, _now: Optional[str] = None) -> int:
         "workflow": next_workflow,
     }
 
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(next_state, indent=2) + "\n")
+    write_state(state_path, next_state)
     print("updated: .agentrail/state.json")
 
     # Write config.json if missing or forced

@@ -206,6 +206,29 @@ class RunSkillSessionTests(unittest.TestCase):
             # Fell back to headless: seed on stdin.
             self.assertIn("SKILLBODY", fake_sub.run.call_args[1]["input"])
 
+    def test_child_env_strips_session_markers(self):
+        # The child agent must not inherit the parent's agent-session markers
+        # (CLAUDECODE/CODEX_SESSION/…), or it may refuse to start a fresh
+        # session — same sanitization `run` applies.
+        import os
+        import tempfile
+        from unittest.mock import patch
+        for headless in (False, True):
+            with tempfile.TemporaryDirectory() as d:
+                repo, target = self._repo_and_target(d)
+                fake_sub = MagicMock()
+                fake_sub.run.return_value = MagicMock(returncode=0)
+                with patch.dict(os.environ, {"CLAUDECODE": "1", "CODEX_SESSION": "x"}):
+                    sess.run_skill_session(
+                        "grill-with-docs", str(target), [],
+                        agent="claude",
+                        command="claude -p --dangerously-skip-permissions",
+                        headless=headless, repo_dir=repo, _subprocess=fake_sub,
+                    )
+                env = fake_sub.run.call_args[1]["env"]
+                self.assertNotIn("CLAUDECODE", env)
+                self.assertNotIn("CODEX_SESSION", env)
+
 
 if __name__ == "__main__":
     unittest.main()

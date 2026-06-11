@@ -31,6 +31,7 @@ from agentrail.cli.commands.run import (
     resolve_agent_command,
     resolve_agent_name,
 )
+from agentrail.run.proc import sanitized_env
 from agentrail.skillcmd.prompts import build_seed_prompt
 
 # Interactive forms of each agent CLI, mirroring DEFAULT_COMMANDS. The headless
@@ -43,11 +44,14 @@ from agentrail.skillcmd.prompts import build_seed_prompt
 #     passed as a trailing positional arg (`claude [message]`); the
 #     permissions flag is retained. We pass the seed as that positional.
 #   - codex: `codex` (interactive TUI) instead of `codex exec`; the initial
-#     prompt is the trailing positional (`codex [prompt]`).
+#     prompt is the trailing positional (`codex [prompt]`). The headless
+#     `--sandbox danger-full-access` is an `exec`-subcommand flag and is NOT
+#     carried into the bare TUI form — an interactive user approves actions
+#     live, so the unattended sandbox override does not apply.
 # `custom`/`cursor`/`hermes` have no first-class interactive form here, so they
 # fall back to headless with a printed warning (see _derive_interactive).
 INTERACTIVE_COMMANDS = {
-    "codex": "codex --sandbox danger-full-access",
+    "codex": "codex",
     "claude": "claude --dangerously-skip-permissions",
     "cursor": "",
     "hermes": "",
@@ -231,15 +235,19 @@ def run_skill_session(
             file=sys.stderr,
         )
 
+    # Strip agent-session env markers (CLAUDECODE/CODEX_SESSION/…) so the child
+    # agent starts a fresh session — same sanitization `run` applies via proc.py.
+    env = sanitized_env()
+
     if interactive:
         # Interactive: append the seed as the initial positional message and
         # exec with inherited stdio so the agent owns the TTY.
         full = argv + [seed]
-        proc = _subprocess.run(full, cwd=str(target))
+        proc = _subprocess.run(full, cwd=str(target), env=env)
         return proc.returncode
 
     # Headless: feed the seed prompt on stdin (as `run` does), inherit stdout/err.
-    proc = _subprocess.run(argv, cwd=str(target), input=seed, text=True)
+    proc = _subprocess.run(argv, cwd=str(target), input=seed, text=True, env=env)
     return proc.returncode
 
 

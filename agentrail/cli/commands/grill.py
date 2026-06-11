@@ -17,6 +17,7 @@ from typing import List, Optional
 from agentrail.cli.commands.run import (
     AGENTS,
     UsageError,
+    ensure_command_available,
     resolve_agent_command,
     resolve_agent_name,
 )
@@ -89,6 +90,7 @@ def _dispatch(args: List[str]) -> int:
     target = str(Path(target).resolve())
     agent = resolve_agent_name(target, agent_flag)
     command = resolve_agent_command(agent, "", target)
+    ensure_command_available(command)
 
     input_refs: List[str] = [plan] if plan else []
     return run_skill_session(

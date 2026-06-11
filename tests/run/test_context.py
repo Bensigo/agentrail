@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 from agentrail.run.context import (
     issue_resolution_text,
+    build_pack,
     build_issue_context_pack,
     context_retrieval_metadata,
     context_pack_summary,
@@ -211,6 +212,52 @@ class ContextSelectedSnippetsTests(unittest.TestCase):
             result = context_selected_snippets(Path("/tmp/repo"), "auth login")
         # snippet lines should be indented with 4 spaces
         self.assertIn("    def login(user):", result)
+
+
+class BuildPackTests(unittest.TestCase):
+    """Tests for build_pack() (the general context-pack builder)."""
+
+    def test_returns_json_path_on_success(self) -> None:
+        fake_pack = {"jsonPath": "p.json"}
+        with patch("agentrail.run.context.build_context_pack", return_value=fake_pack):
+            result = build_pack(Path("/tmp/repo"), "issue", 1, "plan")
+        self.assertEqual(result, "p.json")
+
+    def test_returns_none_on_exception(self) -> None:
+        with patch(
+            "agentrail.run.context.build_context_pack",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = build_pack(Path("/tmp/repo"), "issue", 1, "plan")
+        self.assertIsNone(result)
+
+    def test_returns_none_when_json_path_missing(self) -> None:
+        with patch("agentrail.run.context.build_context_pack", return_value={}):
+            result = build_pack(Path("/tmp/repo"), "pr", 3, "review")
+        self.assertIsNone(result)
+
+    def test_passes_kind_to_build_context_pack(self) -> None:
+        fake_pack = {"jsonPath": "x.json"}
+        with patch(
+            "agentrail.run.context.build_context_pack", return_value=fake_pack
+        ) as mock_bcp:
+            build_pack(Path("/tmp/repo"), "pr", 7, "review")
+        mock_bcp.assert_called_once_with(Path("/tmp/repo"), "pr", 7, "review")
+
+    def test_build_issue_context_pack_delegates(self) -> None:
+        """build_issue_context_pack should delegate to build_pack."""
+        fake_pack = {"jsonPath": ".agentrail/context/packs/x.json"}
+        with patch("agentrail.run.context.build_context_pack", return_value=fake_pack):
+            result = build_issue_context_pack(Path("/tmp/repo"), 42, "plan")
+        self.assertEqual(result, ".agentrail/context/packs/x.json")
+
+    def test_build_issue_context_pack_none_on_exception(self) -> None:
+        with patch(
+            "agentrail.run.context.build_context_pack",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = build_issue_context_pack(Path("/tmp/repo"), 42, "plan")
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

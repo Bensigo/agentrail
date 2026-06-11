@@ -103,7 +103,6 @@ required=(
   ".agentrail/source/agentrail/context/packs.py"
   ".agentrail/source/agentrail/context/retrieval.py"
   ".agentrail/source/templates/scripts/memory"
-  ".agentrail/source/templates/scripts/afk-workflow"
   ".agentrail/source/templates/scripts/pr"
   ".agentrail/source/templates/scripts/ralph-loop"
   ".agentrail/source/templates/scripts/review-pr"
@@ -116,7 +115,7 @@ for file in "${required[@]}"; do
   fi
 done
 
-for script in memory ralph-loop afk-workflow review-pr pr; do
+for script in memory ralph-loop review-pr pr; do
   if [[ -e "${tmp_dir}/scripts/${script}" ]]; then
     echo "raw workflow script was installed into normal project surface: scripts/${script}" >&2
     exit 1
@@ -126,23 +125,6 @@ for script in memory ralph-loop afk-workflow review-pr pr; do
     exit 1
   fi
 done
-
-sed '$d' "${tmp_dir}/.agentrail/source/templates/scripts/afk-workflow" >"${tmp_dir}/.agentrail/source/templates/scripts/afk-workflow-lib"
-# shellcheck disable=SC1090
-source "${tmp_dir}/.agentrail/source/templates/scripts/afk-workflow-lib"
-hidden_scripts_dir="$(cd -P "${tmp_dir}/.agentrail/source/templates/scripts" && pwd)"
-if [[ "$(script_path "$tmp_dir" pr)" != "${hidden_scripts_dir}/pr" ]]; then
-  echo "afk-workflow did not resolve adjacent internal pr helper" >&2
-  exit 1
-fi
-if grep -q -- 'script_path "$root" "review-pr"' "${tmp_dir}/.agentrail/source/templates/scripts/afk-workflow"; then
-  echo "afk-workflow still resolves the internal review-pr helper directly" >&2
-  exit 1
-fi
-if ! grep -q -- "internal review-pr" "${tmp_dir}/.agentrail/source/templates/scripts/afk-workflow"; then
-  echo "afk-workflow does not route reviews through the AgentRail CLI" >&2
-  exit 1
-fi
 
 if [[ ! -x "${tmp_dir}/scripts/agentrail" ]]; then
   echo "agentrail CLI shim was not installed into normal project surface" >&2
@@ -215,16 +197,6 @@ fi
 
 if ! grep -q -- "--machine-readable" "${tmp_dir}/.agentrail/source/templates/scripts/review-pr"; then
   echo "internal review helper does not support machine-readable review mode" >&2
-  exit 1
-fi
-
-if ! grep -q -- "internal review-pr --pr" "${tmp_dir}/.agentrail/source/templates/scripts/afk-workflow"; then
-  echo "afk-workflow does not request PR reviews through the AgentRail CLI" >&2
-  exit 1
-fi
-
-if ! grep -q -- "--machine-readable" "${tmp_dir}/.agentrail/source/templates/scripts/afk-workflow"; then
-  echo "afk-workflow does not request machine-readable PR reviews through the AgentRail CLI" >&2
   exit 1
 fi
 

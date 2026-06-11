@@ -8,11 +8,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sed '$d' "${repo_dir}/templates/scripts/afk-workflow" >"${tmp_dir}/afk-workflow-lib"
 sed '$d' "${repo_dir}/templates/scripts/review-pr" >"${tmp_dir}/review-pr-lib"
 
-# shellcheck disable=SC1090
-source "${tmp_dir}/afk-workflow-lib"
 # shellcheck disable=SC1090
 source "${tmp_dir}/review-pr-lib"
 

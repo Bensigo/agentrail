@@ -887,10 +887,6 @@ DOC
 cat >"${source_fixture}/templates/docs/milestones/README.md" <<'DOC'
 # Milestones
 DOC
-cat >"${source_fixture}/templates/scripts/afk-workflow" <<'SH'
-#!/usr/bin/env bash
-echo afk
-SH
 cat >"${source_fixture}/skills/backend-api/SKILL.md" <<'DOC'
 # Backend API
 DOC
@@ -923,7 +919,6 @@ const expectedTypes = new Map([
   ["templates/docs/memory/README.md", "memory"],
   ["templates/docs/prd/README.md", "prd"],
   ["templates/docs/milestones/README.md", "milestone"],
-  ["templates/scripts/afk-workflow", "code"],
   ["scripts/agentrail", "code"],
   ["skills/backend-api/SKILL.md", "skill"],
   [".agentrail/state.json", "agentrail_state"],

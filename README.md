@@ -393,12 +393,6 @@ Maintainers can run the AFK workflow from this AgentRail source repo without ins
 agentrail afk --dry-run
 ```
 
-Internal/debug only: when debugging AgentRail source scripts themselves, maintainers may use the template runner directly:
-
-```bash
-templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --dry-run
-```
-
 For a bounded real wave through the CLI, keep the run small:
 
 ```bash
@@ -518,19 +512,12 @@ Use these replacements:
 ```text
 scripts/memory recall ...        -> agentrail memory recall ...
 scripts/ralph-loop --issue 123   -> agentrail run issue 123
-scripts/afk-workflow run ...     -> agentrail afk
 legacy PR review helper          -> agentrail prompt review 123
 scripts/agentrail doctor ...     -> agentrail doctor ...
 scripts/agentrail upgrade ...    -> agentrail upgrade ...
 ```
 
 `agentrail doctor` reports legacy raw workflow scripts when it finds them. After checking for local edits, remove the old `scripts/memory`, `scripts/ralph-loop`, `scripts/afk-workflow`, `scripts/review-pr`, and `scripts/pr` files from installed projects. Keep `scripts/agentrail`; it is the supported package shim behind the `agentrail` command.
-
-Internal/debug only: maintainers debugging AgentRail itself can still use the internal helpers from a source checkout:
-
-```bash
-templates/scripts/afk-workflow run --concurrency 1 --max-waves 1 --dry-run
-```
 
 ## Requirements
 

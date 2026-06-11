@@ -824,5 +824,210 @@ class MainRoutesDoctorTests(unittest.TestCase):
         self.assertIn("status:", out)
 
 
+# ---------------------------------------------------------------------------
+# validate_skill_registry — detailed cases ported from the legacy bash
+# scripts/test-skill-registry-validation (M6 slice 2).
+#
+# The bash test installed a real project then mutated the registry / skill
+# files and asserted specific error strings. Here we build a synthetic valid
+# registry on disk and apply the same mutations, exercising the same error
+# paths with mocked filesystem (no `agentrail install`, no node).
+# ---------------------------------------------------------------------------
+
+_VALID_SKILL_BODY = "\n".join([
+    "# Frontend Web",
+    "## Activation Guidance",
+    "## Context To Inspect",
+    "## Constraints",
+    "## Verification Requirements",
+    "## Expected PR Evidence",
+    "## Provenance / Audit",
+])
+
+
+def _make_valid_registry_target(tmp: Path):
+    """Build a target dir with a valid two-skill registry and SKILL.md files.
+
+    Returns (target, registry_dict). Mutate the dict and re-write with
+    ``_write_registry`` to exercise validation failure paths.
+    """
+    target = tmp / "target"
+    target.mkdir()
+    docs_agents = target / "docs" / "agents"
+    docs_agents.mkdir(parents=True)
+
+    def _skill(name: str) -> dict:
+        skill_dir = target / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(_VALID_SKILL_BODY, encoding="utf-8")
+        return {
+            "name": name,
+            "localPath": f"skills/{name}/SKILL.md",
+            "description": f"{name} skill",
+            "licenseStatus": "agentrail-authored",
+            "auditStatus": "approved",
+            "bundledByDefault": True,
+            "triggers": {
+                "keywords": [name],
+                "fileGlobs": [],
+                "projectSignals": [],
+            },
+            "provenance": {
+                "candidates": [
+                    {
+                        "sourceName": f"AgentRail {name} skill",
+                        "url": "https://example.com",
+                        "relationship": "candidate-reference-only",
+                        "verifiedStatus": "verified",
+                        "auditNotes": "First-party.",
+                        "autoInstall": False,
+                    }
+                ]
+            },
+        }
+
+    registry = {"schemaVersion": 1, "skills": [_skill("frontend-web"), _skill("backend-api")]}
+    _write_registry(target, registry)
+    return target, registry
+
+
+def _write_registry(target: Path, registry) -> None:
+    (target / "docs" / "agents" / "skill-registry.json").write_text(
+        json.dumps(registry, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+class ValidateSkillRegistryDetailTests(unittest.TestCase):
+    """Failure-path coverage ported from scripts/test-skill-registry-validation."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp_path = Path(self._tmp.name)
+        self._repo = self._tmp_path / "repo"
+        self._repo.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _validate(self, target: Path) -> SkillRegistryResult:
+        return validate_skill_registry(str(target), self._repo)
+
+    def _assert_invalid(self, target: Path, needle: str):
+        result = self._validate(target)
+        self.assertFalse(result.ok, f"expected invalid registry, got ok; errors={result.errors}")
+        self.assertTrue(
+            any(needle in e for e in result.errors),
+            f"expected an error containing {needle!r}; got {result.errors}",
+        )
+
+    def test_valid_registry_ok(self):
+        target, _ = _make_valid_registry_target(self._tmp_path)
+        result = self._validate(target)
+        self.assertTrue(result.ok, f"valid registry rejected: {result.errors}")
+
+    def test_root_non_object_rejected(self):
+        # Bash looped over null/false/0/""/[]; all must be rejected as non-object.
+        for root in ("null", "false", "0", '""', "[]"):
+            with self.subTest(root=root):
+                target, _ = _make_valid_registry_target(self._tmp_path)
+                # overwrite with a raw non-object root
+                (target / "docs" / "agents" / "skill-registry.json").write_text(
+                    root + "\n", encoding="utf-8"
+                )
+                self._assert_invalid(target, "registry root must be an object")
+                # rebuild for next iteration
+                import shutil
+                shutil.rmtree(target)
+
+    def test_duplicate_skill_name_rejected(self):
+        target, registry = _make_valid_registry_target(self._tmp_path)
+        registry["skills"][1]["name"] = registry["skills"][0]["name"]
+        _write_registry(target, registry)
+        self._assert_invalid(target, "duplicate skill name")
+
+    def test_missing_required_field_rejected(self):
+        target, registry = _make_valid_registry_target(self._tmp_path)
+        del registry["skills"][0]["description"]
+        _write_registry(target, registry)
+        self._assert_invalid(target, "missing required field description")
+
+    def test_invalid_local_path_rejected(self):
+        target, registry = _make_valid_registry_target(self._tmp_path)
+        registry["skills"][0]["localPath"] = "skills/nope/SKILL.md"
+        _write_registry(target, registry)
+        self._assert_invalid(target, "localPath does not exist")
+
+    def test_missing_registry_file_rejected(self):
+        target, _ = _make_valid_registry_target(self._tmp_path)
+        (target / "docs" / "agents" / "skill-registry.json").unlink()
+        self._assert_invalid(target, "cannot read registry")
+
+    def test_missing_skill_section_rejected(self):
+        target, registry = _make_valid_registry_target(self._tmp_path)
+        # Replace a skill body with one lacking the required audit sections.
+        skill_md = target / registry["skills"][0]["localPath"]
+        skill_md.write_text("# Frontend Web\n\nUse this skill when changing frontend code.\n", encoding="utf-8")
+        self._assert_invalid(target, "missing SKILL.md section ## Provenance / Audit")
+
+    def test_malformed_triggers_rejected(self):
+        target, registry = _make_valid_registry_target(self._tmp_path)
+        registry["skills"][0]["triggers"]["keywords"] = "frontend"
+        _write_registry(target, registry)
+        # Native message is "triggers.keywords must be an array of non-empty strings";
+        # the bash test matched the substring "triggers.keywords must be an array".
+        self._assert_invalid(target, "triggers.keywords must be an array")
+
+
+class ShippedSkillRegistryRegressionTest(unittest.TestCase):
+    """Regression guard for the real bug found while porting the bash test.
+
+    The legacy scripts/test-skill-registry-validation FAILED on base because the
+    shipped frontend-web SKILL.md (a frontend-design doc with '## Overview',
+    '## When to Use', ...) lacks ALL six machine-readable audit sections that
+    validate_skill_registry enforces. The other four registry skills
+    (desktop-tauri, backend-api, devops-deploy, docs-current) are fine. This
+    means `agentrail skills validate` and `agentrail doctor` fail on a fresh
+    install solely because of frontend-web.
+
+    This test pins that finding so it is visible and so a fix flips it green.
+    The repo skills live at <repo>/skills/<name>/SKILL.md.
+    """
+
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+    REGISTRY = REPO_ROOT / "templates" / "docs" / "agents" / "skill-registry.json"
+    REQUIRED = [
+        "## Activation Guidance",
+        "## Context To Inspect",
+        "## Constraints",
+        "## Verification Requirements",
+        "## Expected PR Evidence",
+        "## Provenance / Audit",
+    ]
+
+    @unittest.skipUnless(REGISTRY.exists(), "shipped skill-registry.json not present")
+    def test_only_frontend_web_is_missing_audit_sections(self):
+        registry = json.loads(self.REGISTRY.read_text(encoding="utf-8"))
+        missing_by_skill = {}
+        for skill in registry["skills"]:
+            body_path = self.REPO_ROOT / skill["localPath"]
+            if not body_path.exists():
+                missing_by_skill[skill["name"]] = ["<localPath missing>"]
+                continue
+            body = body_path.read_text(encoding="utf-8")
+            missing = [s for s in self.REQUIRED if s not in body]
+            if missing:
+                missing_by_skill[skill["name"]] = missing
+
+        # KNOWN BUG: frontend-web is the only offender. If this assertion ever
+        # fails, the shipped surface changed — re-evaluate the finding.
+        self.assertEqual(
+            set(missing_by_skill),
+            {"frontend-web"},
+            "Expected exactly frontend-web to be missing audit sections; "
+            f"got {missing_by_skill!r}. If frontend-web was fixed, update/remove "
+            "this regression guard.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

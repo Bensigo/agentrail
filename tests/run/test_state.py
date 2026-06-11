@@ -951,3 +951,44 @@ class TestRenderResumeWithState:
         _make_resume_state(tmp_path)
         result = render_resume(tmp_path)
         assert "agentrail init --target" not in result
+
+    # ------------------------------------------------------------------
+    # Gaps ported from legacy scripts/test-resume-handoff (M6 slice 2).
+    # The base fixture above never sets activePullRequest, a contextPackFile,
+    # or a failed completed run with a blockedReason — assert those rendered
+    # lines so the native resume covers the same surface the bash test did.
+    # ------------------------------------------------------------------
+
+    def test_active_pull_request_rendered(self, tmp_path):
+        state_path = _make_resume_state(tmp_path)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["workflow"]["activePullRequest"] = 23
+        state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        result = render_resume(tmp_path)
+        assert "- active pull request: 23" in result
+
+    def test_active_context_pack_rendered(self, tmp_path):
+        state_path = _make_resume_state(tmp_path)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        pack = ".agentrail/context/packs/issue-7-execute.json"
+        state["workflow"]["activeRun"]["contextPackFile"] = pack
+        state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        result = render_resume(tmp_path)
+        assert f"- active context pack: {pack}" in result
+
+    def test_failed_completed_run_blocked_reason_rendered(self, tmp_path):
+        state_path = _make_resume_state(tmp_path)
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        reason = "maximum verifier retry attempts reached after 5 execution attempts"
+        state["workflow"]["completedRuns"].append({
+            "runId": "run-fail",
+            "targetType": "issue",
+            "targetIssue": 9,
+            "agent": "codex",
+            "status": "failed",
+            "blockedReason": reason,
+        })
+        state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        result = render_resume(tmp_path)
+        assert "- completed run: issue #9 via codex (failed)" in result
+        assert f"- completed run blocked reason: {reason}" in result

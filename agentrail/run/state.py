@@ -159,7 +159,36 @@ def write_state(state_path: Path, state: Dict[str, Any]) -> None:
     state_path, under an advisory flock on a sidecar lock file `<state_path>.lock`, using
     tempfile + os.replace for atomicity. Mirrors legacy fs.writeFileSync(`${JSON.stringify(state,null,2)}\\n`)
     but adds locking + atomic replace (the legacy file is a shared singleton). On platforms
-    without fcntl, fall back to a plain atomic write (no lock)."""
+    without fcntl, fall back to a plain atomic write (no lock).
+
+    Concurrency guarantee
+    ---------------------
+    All `.agentrail/state.json` writers in this codebase route through this function:
+
+    * ``run/state.py:update_run_state`` — calls write_state directly.
+    * ``run/state.py:update_worktree_state`` — calls write_state directly.
+    * ``cli/commands/cleanup.py:_update_state`` — calls write_state directly.
+    * ``cli/commands/upgrade.py`` (install/upgrade path) — calls write_state directly.
+    * ``afk/runner.py:_setup_worktree`` — seeds a *per-worktree copy* of state.json via
+      ``shutil.copy`` only when the destination does not yet exist; there is no concurrent
+      updater at seed time, so no lock is required.
+    * ``afk/store.py:write_snapshot`` — writes ``.agentrail/afk/state.json``, a separate
+      file managed exclusively by the AFK process; it uses its own atomic tempfile+os.replace
+      with fsync and is not the workflow run record.
+    * ``afk/telemetry.py`` — writes ``afk/telemetry_state.json``, another separate file;
+      not the workflow state record.
+
+    Limits and caveats:
+
+    * **Advisory lock only**: ``fcntl.LOCK_EX`` is advisory. Two processes that do not both
+      call ``write_state`` can still overlap writes. In practice, ``run batch`` uses a
+      ThreadPoolExecutor but each thread writes its own per-worktree state copy, so the same
+      file is never written concurrently by two threads. AFK likewise operates per-worktree.
+    * **NFS**: ``fcntl.flock`` is unreliable (and often a no-op) on NFS mounts. The
+      ``os.replace`` atomic swap still protects against torn writes on a single host, but two
+      NFS clients can race. This is not a supported deployment configuration.
+    * **Fallback**: On platforms that lack ``fcntl`` (e.g. Windows), the lock is skipped and
+      only the atomic tempfile+os.replace guarantee applies."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(state, indent=2) + "\n"
     lock_path = state_path.with_name(state_path.name + ".lock")

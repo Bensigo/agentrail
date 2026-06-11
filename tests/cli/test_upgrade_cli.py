@@ -157,6 +157,19 @@ class TestFreshUpgrade(TestCase):
         self.assertIn("some-template.md", paths)
         self.assertEqual(paths["some-template.md"]["installStatus"], "added")
 
+    def test_fresh_upgrade_calls_write_state(self):
+        # Guard against a regression to a bare write_text path: state.json must
+        # be persisted through the atomic+flock write_state helper. Content-only
+        # assertions can't catch that (write_text and write_state produce the
+        # same bytes), so assert the helper itself is invoked.
+        with patch("agentrail.cli.commands.upgrade.write_state") as ws:
+            _run_upgrade(self.repo, self.target)
+        ws.assert_called_once()
+        state_path = Path(ws.call_args[0][0])
+        self.assertEqual(state_path.name, "state.json")
+        self.assertEqual(state_path.parent.name, ".agentrail")
+        self.assertIsInstance(ws.call_args[0][1], dict)
+
     def test_fresh_upgrade_writes_config_json(self):
         import io
         buf = io.StringIO()

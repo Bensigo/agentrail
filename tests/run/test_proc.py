@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agentrail.run.proc import sanitized_env, ralph_executor_path, run_with_timeout
+from agentrail.run.proc import sanitized_env, run_with_timeout
 
 
 class SanitizedEnvTests(unittest.TestCase):
@@ -40,58 +40,6 @@ class SanitizedEnvTests(unittest.TestCase):
             result = sanitized_env()
         for var in agent_vars:
             self.assertNotIn(var, result, f"{var} should be stripped")
-
-
-class RalphExecutorPathTests(unittest.TestCase):
-    def test_finds_script_in_target_scripts(self) -> None:
-        with tempfile.TemporaryDirectory() as target_dir, \
-             tempfile.TemporaryDirectory() as repo_dir:
-            scripts = Path(target_dir) / "scripts"
-            scripts.mkdir(parents=True)
-            ralph = scripts / "ralph-loop"
-            ralph.write_text("#!/bin/sh\n")
-            ralph.chmod(0o755)
-            result = ralph_executor_path(Path(target_dir), Path(repo_dir))
-            self.assertEqual(result, ralph)
-
-    def test_returns_none_when_not_found(self) -> None:
-        with tempfile.TemporaryDirectory() as target_dir, \
-             tempfile.TemporaryDirectory() as repo_dir:
-            result = ralph_executor_path(Path(target_dir), Path(repo_dir))
-            self.assertIsNone(result)
-
-    def test_finds_installed_copy_in_agentrail_source(self) -> None:
-        with tempfile.TemporaryDirectory() as target_dir, \
-             tempfile.TemporaryDirectory() as repo_dir:
-            installed = (
-                Path(target_dir) / ".agentrail" / "source" / "templates" / "scripts"
-            )
-            installed.mkdir(parents=True)
-            ralph = installed / "ralph-loop"
-            ralph.write_text("#!/bin/sh\n")
-            ralph.chmod(0o755)
-            result = ralph_executor_path(Path(target_dir), Path(repo_dir))
-            self.assertEqual(result, ralph)
-
-    def test_prefers_installed_copy_over_repo_templates(self) -> None:
-        with tempfile.TemporaryDirectory() as target_dir, \
-             tempfile.TemporaryDirectory() as repo_dir:
-            # installed copy
-            installed = (
-                Path(target_dir) / ".agentrail" / "source" / "templates" / "scripts"
-            )
-            installed.mkdir(parents=True)
-            ralph_installed = installed / "ralph-loop"
-            ralph_installed.write_text("#!/bin/sh\n")
-            ralph_installed.chmod(0o755)
-            # repo templates copy
-            repo_templates = Path(repo_dir) / "templates" / "scripts"
-            repo_templates.mkdir(parents=True)
-            ralph_repo = repo_templates / "ralph-loop"
-            ralph_repo.write_text("#!/bin/sh\n")
-            ralph_repo.chmod(0o755)
-            result = ralph_executor_path(Path(target_dir), Path(repo_dir))
-            self.assertEqual(result, ralph_installed)
 
 
 class RunWithTimeoutTests(unittest.TestCase):

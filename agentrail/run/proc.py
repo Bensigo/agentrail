@@ -1,7 +1,6 @@
 """Process helpers for agentrail run.
 
-Ports sanitized_agent_exec and portable_timeout from scripts/lib/timeout.sh,
-and ralph_executor_path from scripts/agentrail-legacy.
+Ports sanitized_agent_exec and portable_timeout from scripts/lib/timeout.sh.
 """
 from __future__ import annotations
 import os
@@ -21,20 +20,6 @@ STRIP_ENV_VARS = (
 def sanitized_env() -> dict:
     """os.environ minus the agent-session vars (mirror sanitized_agent_exec)."""
     return {k: v for k, v in os.environ.items() if k not in STRIP_ENV_VARS}
-
-
-def ralph_executor_path(target_dir: Path, repo_dir: Path) -> Optional[Path]:
-    """Lookup order from legacy ralph_executor_path: installed copy in target's
-    .agentrail/source, then repo templates, then target scripts. None if missing."""
-    candidates = [
-        target_dir / ".agentrail" / "source" / "templates" / "scripts" / "ralph-loop",
-        repo_dir / "templates" / "scripts" / "ralph-loop",
-        target_dir / "scripts" / "ralph-loop",
-    ]
-    for c in candidates:
-        if c.exists() and os.access(c, os.X_OK):
-            return c
-    return None
 
 
 def run_with_timeout(argv: List[str], *, cwd: Path, timeout: int, output_file: Path,

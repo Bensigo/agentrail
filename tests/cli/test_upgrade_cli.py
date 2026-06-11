@@ -583,6 +583,60 @@ class TestFileModeBits(TestCase):
         self.assertTrue(mode & stat.S_IXUSR, "scripts/agentrail should be executable")
 
 
+class TestChangedUpdated(TestCase):
+    """Source file updated since last install; user did NOT modify target → auto-update."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_fake_repo(self.tmp)
+        self.target = Path(self.tmp) / "target"
+        self.target.mkdir()
+        _make_minimal_state(self.target)
+
+    def test_source_changed_updates_target(self):
+        # Step 1: fresh install — target hash == source hash == recorded contentHash
+        _run_upgrade(self.repo, self.target)
+
+        state_after_first = json.loads((self.target / ".agentrail" / "state.json").read_text())
+        mf_first = next(f for f in state_after_first["managedFiles"] if f["path"] == "some-template.md")
+        self.assertEqual(mf_first["installStatus"], "added")
+        first_hash = mf_first["contentHash"]
+
+        # Confirm target matches source
+        self.assertEqual(_sha256(self.target / "some-template.md"), first_hash)
+
+        # Step 2: mutate the SOURCE file in the fake repo (sourceHash changes)
+        new_source_content = "# Template\nHello Updated World\n"
+        (self.repo / "templates" / "some-template.md").write_text(new_source_content)
+        new_source_hash = _sha256(self.repo / "templates" / "some-template.md")
+        self.assertNotEqual(new_source_hash, first_hash, "source hash must differ after mutation")
+
+        # Target file is still the freshly-installed version (currentHash == previous.contentHash)
+        self.assertEqual(_sha256(self.target / "some-template.md"), first_hash)
+
+        # Step 3: run upgrade again (no --force)
+        import io
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            rc = _run_upgrade(self.repo, self.target)
+        self.assertEqual(rc, 0)
+        output = buf.getvalue()
+
+        # Step 4: assertions
+        # Target file now equals new source content
+        self.assertEqual((self.target / "some-template.md").read_text(), new_source_content)
+
+        # Output contains "changed: some-template.md" and "updated: some-template.md"
+        self.assertIn("changed: some-template.md", output)
+        self.assertIn("updated: some-template.md", output)
+
+        # State reflects installStatus == "updated" and contentHash == new source hash
+        state_after_second = json.loads((self.target / ".agentrail" / "state.json").read_text())
+        mf_second = next(f for f in state_after_second["managedFiles"] if f["path"] == "some-template.md")
+        self.assertEqual(mf_second["installStatus"], "updated")
+        self.assertEqual(mf_second["contentHash"], new_source_hash)
+
+
 class TestAddedCategory(TestCase):
     """When a file exists in target but is NOT in managed and differs from source,
     it should get installStatus legacy-adopted (not overwritten)."""

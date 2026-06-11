@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List
 
 from agentrail.cli.commands.afk import run_afk
+from agentrail.cli.commands.doctor import run_doctor
 from agentrail.cli.commands.console import run_console
 from agentrail.cli.commands.context import run_context
 from agentrail.cli.commands.install import run_install
@@ -39,6 +40,8 @@ def main(argv: List[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] in ("init", "install"):
         return run_install(args[1:])
+    if args and args[0] == "doctor":
+        return run_doctor(args[1:])
     if args and args[0] == "context":
         return run_context(args[1:])
     if args and args[0] == "afk":

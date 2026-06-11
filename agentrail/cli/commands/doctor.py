@@ -452,10 +452,10 @@ REQUIRED_PATHS = [
     ("docs/milestones/", "docs/milestones", "dir"),
     ("skills/", "skills", "dir"),
     (".agentrail/config.json", ".agentrail/config.json", "file"),
+    # #404 Option B: the vendor dir carries only the native package + package.json
+    # (the launcher's redirect target). No editable flow scripts are vendored.
     (".agentrail/source/package.json", ".agentrail/source/package.json", "file"),
     (".agentrail/source/agentrail/__init__.py", ".agentrail/source/agentrail/__init__.py", "file"),
-    (".agentrail/source/scripts/agentrail", ".agentrail/source/scripts/agentrail", "executable"),
-    (".agentrail/source/scripts/install-workflow", ".agentrail/source/scripts/install-workflow", "executable"),
     ("docs/agents/skill-registry.json", "docs/agents/skill-registry.json", "file"),
 ]
 

@@ -4,7 +4,7 @@
   "description": "Repo-native harness for AI coding agents with durable context, bounded issue execution, review loops, and verification gates.",
   "bin": {
     "agentrail": "./scripts/agentrail",
-    "useagentrail": "./scripts/install-workflow"
+    "useagentrail": "./scripts/agentrail"
   },
   "publishConfig": {
     "access": "public"

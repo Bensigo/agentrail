@@ -699,6 +699,123 @@ class CheckGithubLabelsTests(unittest.TestCase):
 # main.py routes doctor
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# End-to-end run_doctor output tests — outdated / corrupt scenarios
+# ---------------------------------------------------------------------------
+
+class DoctorOutdatedVersionTests(RunDoctorSetup, unittest.TestCase):
+    """status: outdated because state.json agentrailVersion differs from package.json."""
+
+    def setUp(self):
+        super().setUp()
+        agentrail_dir = self.target / ".agentrail"
+        agentrail_dir.mkdir()
+        source_dir = agentrail_dir / "source"
+        source_dir.mkdir()
+        (source_dir / "package.json").write_text(json.dumps({"version": "1.0.0"}))
+
+        # State records an older version; repo package.json is "1.0.0"
+        state = {"agentrailVersion": "0.9.0", "managedFiles": []}
+        (agentrail_dir / "state.json").write_text(json.dumps(state))
+
+        # Minimal valid skill registry so registry_invalid stays False
+        docs_agents = self.target / "docs" / "agents"
+        docs_agents.mkdir(parents=True)
+        (docs_agents / "skill-registry.json").write_text(
+            json.dumps({"schemaVersion": 1, "skills": []})
+        )
+
+    def test_status_outdated(self):
+        rc, out = self._run()
+        self.assertEqual(rc, 0)
+        self.assertIn("status: outdated", out)
+
+    def test_warn_version_differs(self):
+        _, out = self._run()
+        self.assertIn("  warn AgentRail version differs from current package", out)
+
+
+class DoctorOutdatedSourceMismatchTests(RunDoctorSetup, unittest.TestCase):
+    """status: outdated because a managedFile's source in the repo has a different hash
+    (no HASH_MISMATCH; target content matches contentHash; installStatus is 'installed')."""
+
+    def setUp(self):
+        super().setUp()
+        agentrail_dir = self.target / ".agentrail"
+        agentrail_dir.mkdir()
+        source_dir = agentrail_dir / "source"
+        source_dir.mkdir()
+        (source_dir / "package.json").write_text(json.dumps({"version": "1.0.0"}))
+
+        # File installed in the target — hash matches what's in state
+        installed_content = b"installed version"
+        (self.target / "AGENTS.md").write_bytes(installed_content)
+
+        # Repo has a NEWER version of the source file
+        source_rel = "templates/AGENTS.md"
+        (self.repo / "templates").mkdir(exist_ok=True)
+        (self.repo / source_rel).write_bytes(b"newer repo version")
+
+        state = {
+            "agentrailVersion": "1.0.0",
+            "managedFiles": [{
+                "path": "AGENTS.md",
+                "contentHash": _sha256_bytes(installed_content),
+                "source": source_rel,
+                "installStatus": "installed",  # not preserved/legacy-adopted
+            }],
+        }
+        (agentrail_dir / "state.json").write_text(json.dumps(state))
+
+        # Minimal valid skill registry
+        docs_agents = self.target / "docs" / "agents"
+        docs_agents.mkdir(parents=True)
+        (docs_agents / "skill-registry.json").write_text(
+            json.dumps({"schemaVersion": 1, "skills": []})
+        )
+
+    def test_status_outdated(self):
+        rc, out = self._run()
+        self.assertEqual(rc, 0)
+        self.assertIn("status: outdated", out)
+
+    def test_warn_source_mismatch(self):
+        _, out = self._run()
+        self.assertIn("  warn current package mismatch: AGENTS.md", out)
+
+
+class DoctorCorruptRegistryTests(RunDoctorSetup, unittest.TestCase):
+    """status: corrupt because docs/agents/skill-registry.json fails validation."""
+
+    def setUp(self):
+        super().setUp()
+        agentrail_dir = self.target / ".agentrail"
+        agentrail_dir.mkdir()
+        source_dir = agentrail_dir / "source"
+        source_dir.mkdir()
+        (source_dir / "package.json").write_text(json.dumps({"version": "1.0.0"}))
+
+        state = {"agentrailVersion": "1.0.0", "managedFiles": []}
+        (agentrail_dir / "state.json").write_text(json.dumps(state))
+
+        # Write an invalid registry (schemaVersion wrong, skills not a list)
+        docs_agents = self.target / "docs" / "agents"
+        docs_agents.mkdir(parents=True)
+        (docs_agents / "skill-registry.json").write_text(
+            json.dumps({"schemaVersion": 99, "skills": "not-an-array"})
+        )
+
+    def test_status_corrupt(self):
+        rc, out = self._run()
+        self.assertEqual(rc, 0)
+        self.assertIn("status: corrupt", out)
+
+    def test_skills_error_line(self):
+        _, out = self._run()
+        # validate_skill_registry errors are printed as "  error <msg>" in skills section
+        self.assertRegex(out, r"skills:\n(?:.*\n)*  error ")
+
+
 class MainRoutesDoctorTests(unittest.TestCase):
     def test_main_routes_doctor(self):
         with tempfile.TemporaryDirectory() as tmp:

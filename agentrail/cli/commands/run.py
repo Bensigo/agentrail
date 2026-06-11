@@ -228,38 +228,22 @@ def next_pickable_issue(target: str):
     return (int(best["number"]), best.get("title", ""), best.get("url", ""))
 
 
-def _legacy_script() -> Path:
-    from agentrail.cli.main import _legacy_script as resolve
-    return resolve()
-
-
 def _repo_dir() -> Path:
     from agentrail.cli.main import _repo_dir as resolve
     return resolve()
 
 
 def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> int:
-    if os.environ.get("AGENTRAIL_NATIVE_RUN", "1") != "0":
-        # Native pipeline (default). Guards already ran in _dispatch / run_batch.
-        from agentrail.run.pipeline import run_issue
-        agent = resolve_agent_name(opts.target, opts.agent)
-        command = resolve_agent_command(agent, opts.command, opts.target)
-        target = Path(opts.target).resolve()
-        log_dir = Path(opts.log_dir) if opts.log_dir else None
-        return run_issue(target, issue, agent=agent, command=command,
-                         repo_dir=_repo_dir(), log_dir=log_dir)
-    # Legacy fallback (AGENTRAIL_NATIVE_RUN=0): shell to the bash script.
-    argv = [str(_legacy_script()), "run", "issue", str(issue),
-            "--target", opts.target, "--agent", opts.agent]
-    if opts.command:
-        argv += ["--command", opts.command]
-    if opts.log_dir:
-        argv += ["--log-dir", opts.log_dir]
-    env = os.environ.copy()
-    if allow_source:
-        env["AGENTRAIL_ALLOW_SOURCE_RUN"] = "1"
-    proc = subprocess.run(argv, env=env, check=False)
-    return int(proc.returncode)
+    # allow_source is retained for call-site compatibility (run_batch passes it)
+    # but is no longer needed — the native pipeline has no source guard here;
+    # guards run in _dispatch / run_batch before exec_issue is called.
+    from agentrail.run.pipeline import run_issue
+    agent = resolve_agent_name(opts.target, opts.agent)
+    command = resolve_agent_command(agent, opts.command, opts.target)
+    target = Path(opts.target).resolve()
+    log_dir = Path(opts.log_dir) if opts.log_dir else None
+    return run_issue(target, issue, agent=agent, command=command,
+                     repo_dir=_repo_dir(), log_dir=log_dir)
 
 
 @dataclass

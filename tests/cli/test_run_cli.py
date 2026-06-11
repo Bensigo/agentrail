@@ -198,39 +198,21 @@ class NextPickableTests(unittest.TestCase):
 
 
 class ExecIssueTests(unittest.TestCase):
-    def test_builds_legacy_run_issue_argv(self) -> None:
-        cp = MagicMock(returncode=0)
-        opts = RunOptions(agent="claude", target="/tmp/x", command="claude -p", log_dir="")
-        with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp) as m, \
-             patch("agentrail.cli.commands.run._legacy_script", return_value=Path("/legacy")), \
-             patch.dict(os.environ, {"AGENTRAIL_NATIVE_RUN": "0"}, clear=False):
-            rc = exec_issue(11, opts)
-        self.assertEqual(rc, 0)
-        argv = m.call_args.args[0]
-        self.assertEqual(argv[:4], ["/legacy", "run", "issue", "11"])
-        self.assertIn("--target", argv); self.assertIn("/tmp/x", argv)
-        self.assertIn("--agent", argv); self.assertIn("claude", argv)
-        self.assertIn("--command", argv); self.assertIn("claude -p", argv)
+    """Tests for exec_issue — always-native pipeline."""
 
-    def test_omits_command_when_empty(self) -> None:
-        cp = MagicMock(returncode=3)
-        opts = RunOptions(agent="claude", target="/tmp/x", command="", log_dir="")
-        with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp) as m, \
-             patch("agentrail.cli.commands.run._legacy_script", return_value=Path("/legacy")), \
-             patch.dict(os.environ, {"AGENTRAIL_NATIVE_RUN": "0"}, clear=False):
-            rc = exec_issue(11, opts)
-        self.assertEqual(rc, 3)
-        self.assertNotIn("--command", m.call_args.args[0])
+    def _patch_native(self, return_value=0):
+        """Return a stack of patches for the native pipeline."""
+        return [
+            patch("agentrail.run.pipeline.run_issue", return_value=return_value),
+            patch("agentrail.cli.commands.run._repo_dir", return_value=Path("/repo")),
+            patch("agentrail.cli.commands.run.resolve_agent_command", return_value="claude -p"),
+            patch("agentrail.cli.commands.run.resolve_agent_name", return_value="claude"),
+        ]
 
-
-class ExecIssueNativeTests(unittest.TestCase):
     def test_native_default_calls_run_issue(self) -> None:
         opts = RunOptions(agent="claude", target="/tmp/x", command="claude -p", log_dir="")
-        with patch("agentrail.run.pipeline.run_issue", return_value=0) as mock_run_issue, \
-             patch("agentrail.cli.commands.run._repo_dir", return_value=Path("/repo")), \
-             patch("agentrail.cli.commands.run.resolve_agent_command", return_value="claude -p"), \
-             patch("agentrail.cli.commands.run.resolve_agent_name", return_value="claude"), \
-             patch.dict(os.environ, {"AGENTRAIL_NATIVE_RUN": "1"}, clear=False):
+        patches = self._patch_native()
+        with patches[0] as mock_run_issue, patches[1], patches[2], patches[3]:
             rc = exec_issue(7, opts)
         self.assertEqual(rc, 0)
         mock_run_issue.assert_called_once()
@@ -240,37 +222,28 @@ class ExecIssueNativeTests(unittest.TestCase):
         self.assertEqual(call_kwargs.kwargs["command"], "claude -p")
         self.assertEqual(call_kwargs.kwargs["repo_dir"], Path("/repo"))
 
-    def test_native_passes_log_dir(self) -> None:
-        # With log_dir set: passes Path
-        opts_with_log = RunOptions(agent="claude", target="/tmp/x", command="claude -p", log_dir="/tmp/logs")
-        with patch("agentrail.run.pipeline.run_issue", return_value=0) as mock_run_issue, \
-             patch("agentrail.cli.commands.run._repo_dir", return_value=Path("/repo")), \
-             patch("agentrail.cli.commands.run.resolve_agent_command", return_value="claude -p"), \
-             patch("agentrail.cli.commands.run.resolve_agent_name", return_value="claude"), \
-             patch.dict(os.environ, {"AGENTRAIL_NATIVE_RUN": "1"}, clear=False):
-            exec_issue(7, opts_with_log)
-        self.assertEqual(mock_run_issue.call_args.kwargs["log_dir"], Path("/tmp/logs"))
-
-        # With log_dir empty: passes None
-        opts_no_log = RunOptions(agent="claude", target="/tmp/x", command="claude -p", log_dir="")
-        with patch("agentrail.run.pipeline.run_issue", return_value=0) as mock_run_issue, \
-             patch("agentrail.cli.commands.run._repo_dir", return_value=Path("/repo")), \
-             patch("agentrail.cli.commands.run.resolve_agent_command", return_value="claude -p"), \
-             patch("agentrail.cli.commands.run.resolve_agent_name", return_value="claude"), \
-             patch.dict(os.environ, {"AGENTRAIL_NATIVE_RUN": "1"}, clear=False):
-            exec_issue(7, opts_no_log)
+    def test_log_dir_empty_passes_none(self) -> None:
+        opts = RunOptions(agent="claude", target="/tmp/x", command="claude -p", log_dir="")
+        patches = self._patch_native()
+        with patches[0] as mock_run_issue, patches[1], patches[2], patches[3]:
+            exec_issue(7, opts)
         self.assertIsNone(mock_run_issue.call_args.kwargs["log_dir"])
 
-    def test_native_run_env_0_uses_legacy(self) -> None:
-        cp = MagicMock(returncode=0)
+    def test_log_dir_set_passes_path(self) -> None:
+        opts = RunOptions(agent="claude", target="/tmp/x", command="claude -p", log_dir="/tmp/logs")
+        patches = self._patch_native()
+        with patches[0] as mock_run_issue, patches[1], patches[2], patches[3]:
+            exec_issue(7, opts)
+        self.assertEqual(mock_run_issue.call_args.kwargs["log_dir"], Path("/tmp/logs"))
+
+    def test_env_zero_still_calls_run_issue(self) -> None:
+        """Regression: AGENTRAIL_NATIVE_RUN=0 escape hatch is gone; native always runs."""
         opts = RunOptions(agent="claude", target="/tmp/x", command="claude -p", log_dir="")
-        with patch("agentrail.cli.commands.run.subprocess.run", return_value=cp) as mock_subprocess, \
-             patch("agentrail.cli.commands.run._legacy_script", return_value=Path("/legacy")), \
-             patch("agentrail.run.pipeline.run_issue") as mock_run_issue, \
+        patches = self._patch_native()
+        with patches[0] as mock_run_issue, patches[1], patches[2], patches[3], \
              patch.dict(os.environ, {"AGENTRAIL_NATIVE_RUN": "0"}, clear=False):
             rc = exec_issue(11, opts)
-        mock_subprocess.assert_called_once()
-        mock_run_issue.assert_not_called()
+        mock_run_issue.assert_called_once()
         self.assertEqual(rc, 0)
 
 

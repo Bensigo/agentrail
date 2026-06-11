@@ -16,6 +16,7 @@ from agentrail.cli.commands.labels import run_labels
 from agentrail.cli.commands.link import run_link
 from agentrail.cli.commands.memory import run_memory
 from agentrail.cli.commands.prompt import run_prompt
+from agentrail.cli.commands.skills import run_skills
 from agentrail.cli.commands.run import run_run
 from agentrail.cli.commands.status import run_status
 from agentrail.cli.commands.upgrade import run_upgrade
@@ -69,6 +70,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_labels(args[1:])
     if args and args[0] == "memory":
         return run_memory(args[1:])
+    if args and args[0] == "skills":
+        return run_skills(args[1:])
     legacy = _legacy_script()
     if not legacy.exists():
         print(f"missing AgentRail legacy command: {legacy}", file=sys.stderr)

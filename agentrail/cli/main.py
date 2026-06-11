@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List
 
 from agentrail.cli.commands.afk import run_afk
+from agentrail.cli.commands.cleanup import run_cleanup
 from agentrail.cli.commands.doctor import run_doctor
 from agentrail.cli.commands.console import run_console
 from agentrail.cli.commands.context import run_context
@@ -51,6 +52,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_context(args[1:])
     if args and args[0] == "afk":
         return run_afk(args[1:])
+    if args and args[0] == "cleanup":
+        return run_cleanup(args[1:])
     if args and args[0] == "console":
         return run_console(args[1:])
     if args and args[0] == "link":

@@ -834,5 +834,84 @@ class MainRoutesDoctorTests(unittest.TestCase):
         self.assertIn("status:", out)
 
 
+# ---------------------------------------------------------------------------
+# Legacy script detection (port of bash test-doctor)
+# ---------------------------------------------------------------------------
+
+class DoctorLegacyScriptTests(RunDoctorSetup, unittest.TestCase):
+    """Doctor warns when legacy workflow scripts exist in the project surface."""
+
+    def setUp(self):
+        super().setUp()
+        # Create a valid installed state
+        agentrail_dir = self.target / ".agentrail"
+        agentrail_dir.mkdir(exist_ok=True)
+        source_dir = agentrail_dir / "source"
+        source_dir.mkdir(exist_ok=True)
+        (source_dir / "package.json").write_text(json.dumps({"version": "1.0.0"}))
+        state = {"agentrailVersion": "1.0.0", "managedFiles": []}
+        (agentrail_dir / "state.json").write_text(json.dumps(state))
+        # Minimal valid skill registry
+        docs_agents = self.target / "docs" / "agents"
+        docs_agents.mkdir(parents=True, exist_ok=True)
+        (docs_agents / "skill-registry.json").write_text(json.dumps({
+            "schemaVersion": 1, "skills": []
+        }))
+
+    def _create_legacy_script(self, name: str) -> None:
+        scripts_dir = self.target / "scripts"
+        scripts_dir.mkdir(exist_ok=True)
+        script = scripts_dir / name
+        script.write_text("#!/usr/bin/env bash\necho legacy\n")
+        script.chmod(0o755)
+
+    def test_legacy_ralph_loop_warned(self):
+        self._create_legacy_script("ralph-loop")
+        rc, out = self._run()
+        self.assertIn("warn legacy raw workflow scripts present: scripts/ralph-loop", out)
+
+    def test_legacy_script_recommendation(self):
+        self._create_legacy_script("ralph-loop")
+        rc, out = self._run()
+        self.assertIn("remove legacy raw workflow scripts", out)
+
+    def test_no_legacy_scripts_ok_line(self):
+        rc, out = self._run()
+        self.assertIn("ok no raw workflow scripts in normal project surface", out)
+
+
+# ---------------------------------------------------------------------------
+# Missing hidden source package (port of bash test-doctor)
+# ---------------------------------------------------------------------------
+
+class DoctorMissingSourcePackageTests(RunDoctorSetup, unittest.TestCase):
+    """Doctor reports status:modified and missing path when .agentrail/source/package.json absent."""
+
+    def setUp(self):
+        super().setUp()
+        agentrail_dir = self.target / ".agentrail"
+        agentrail_dir.mkdir(exist_ok=True)
+        # DO NOT create source/package.json — that's the scenario being tested
+        state = {"agentrailVersion": "1.0.0", "managedFiles": []}
+        (agentrail_dir / "state.json").write_text(json.dumps(state))
+        docs_agents = self.target / "docs" / "agents"
+        docs_agents.mkdir(parents=True, exist_ok=True)
+        (docs_agents / "skill-registry.json").write_text(json.dumps({
+            "schemaVersion": 1, "skills": []
+        }))
+
+    def test_status_modified_when_source_package_missing(self):
+        rc, out = self._run()
+        self.assertIn("status: modified", out)
+
+    def test_missing_source_package_reported(self):
+        rc, out = self._run()
+        self.assertIn("missing .agentrail/source/package.json", out)
+
+    def test_install_recommendation_when_source_package_missing(self):
+        rc, out = self._run()
+        self.assertIn("run agentrail install", out)
+
+
 if __name__ == "__main__":
     unittest.main()

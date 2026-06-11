@@ -548,5 +548,94 @@ class TestNullCoalesceFields(unittest.TestCase):
         self.assertIn("  active issue: 0", out)
 
 
+# ---------------------------------------------------------------------------
+# Tests: stale active run + completed run attempts (port of bash test-resume-handoff)
+# ---------------------------------------------------------------------------
+
+class TestStaleActiveRunAndCompletedAttempts(unittest.TestCase):
+    """Verify status output for stale active run and completed run attempts."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self.target = Path(self._tmp) / "target"
+        self.target.mkdir()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _run(self):
+        env = os.environ.copy()
+        env.pop("AGENTRAIL_API_KEY", None)
+        with patch.dict(os.environ, env, clear=True):
+            return _capture(run_status, ["--target", str(self.target)])
+
+    def test_stale_active_run_reported(self):
+        """When active run's runDir doesn't exist, status reports stale."""
+        _write_state(self.target, {
+            "agentrailVersion": "1.0.0",
+            "installedAt": "x",
+            "updatedAt": "x",
+            "legacyAdopted": False,
+            "workflow": {
+                "phase": "implementation",
+                "activePhase": "execute",
+                "activeRun": {
+                    "runId": "run-1",
+                    "targetType": "issue",
+                    "targetIssue": 13,
+                    "agent": "codex",
+                    "status": "running",
+                    "runDir": ".agentrail/runs/run-1",  # does not exist on disk
+                },
+                "completedRuns": [],
+            },
+        })
+        out, rc = self._run()
+        self.assertIn("active run stale: run dir missing: .agentrail/runs/run-1", out)
+
+    def test_completed_run_attempts_reported(self):
+        """completed run with executionAttempt/maxExecutionAttempts prints attempts line."""
+        _write_state(self.target, {
+            "agentrailVersion": "1.0.0",
+            "installedAt": "x",
+            "updatedAt": "x",
+            "legacyAdopted": False,
+            "workflow": {
+                "phase": "implementation",
+                "completedRuns": [
+                    {
+                        "targetType": "issue",
+                        "targetIssue": 8,
+                        "agent": "codex",
+                        "status": "completed",
+                        "executionAttempt": 2,
+                        "maxExecutionAttempts": 5,
+                        "failedVerificationAttempts": 1,
+                    }
+                ],
+            },
+        })
+        out, rc = self._run()
+        self.assertIn("completed run attempts: 2/5; failed verify attempts: 1", out)
+
+    def test_active_pull_request_shown(self):
+        _write_state(self.target, {
+            "agentrailVersion": "1.0.0",
+            "installedAt": "x",
+            "updatedAt": "x",
+            "legacyAdopted": False,
+            "workflow": {
+                "phase": "implementation",
+                "activePhase": "execute",
+                "activeIssue": 13,
+                "activePullRequest": 23,
+                "completedRuns": [],
+            },
+        })
+        out, rc = self._run()
+        self.assertIn("active pull request: 23", out)
+
+
 if __name__ == "__main__":
     unittest.main()

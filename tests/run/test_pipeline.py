@@ -33,7 +33,7 @@ def _make_target(tmp_dir: str) -> Path:
     return target
 
 
-def _make_rc(target: Path, run_dir: Path, ralph_path: Path,
+def _make_rc(target: Path, run_dir: Path,
              run_context_pack_file=None,
              max_execution_attempts: int = 5) -> RunContext:
     return RunContext(
@@ -50,7 +50,6 @@ def _make_rc(target: Path, run_dir: Path, ralph_path: Path,
         resolution_text="Fix the bug.\n\n## Acceptance criteria\n- [ ] It works.",
         run_context_pack_file=run_context_pack_file,
         max_execution_attempts=max_execution_attempts,
-        ralph_path=ralph_path,
         agent_timeout=1800,
         failed_verification_attempts=0,
     )
@@ -86,11 +85,9 @@ class PlanPhaseSuccessTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         target = _make_target(self._tmp.name)
         run_dir = Path(self._tmp.name) / "run"
-        ralph = target / "ralph-loop"
         self.target = target
         self.run_dir = run_dir
-        self.ralph = ralph
-        self.rc = _make_rc(target, run_dir, ralph)
+        self.rc = _make_rc(target, run_dir)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -161,11 +158,9 @@ class ExecutePhaseSuccessTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         target = _make_target(self._tmp.name)
         run_dir = Path(self._tmp.name) / "run"
-        ralph = target / "ralph-loop"
         self.target = target
         self.run_dir = run_dir
-        self.ralph = ralph
-        self.rc = _make_rc(target, run_dir, ralph)
+        self.rc = _make_rc(target, run_dir)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -197,13 +192,11 @@ class ExecutePhaseSuccessTests(unittest.TestCase):
 
     @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
     @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
-    def test_execute_native_bash_stdin_by_default(self, mock_summary, mock_build):
-        """By default (AGENTRAIL_NATIVE_EXECUTE unset), execute runs natively:
-        bash -lc <agent_command> with the phase prompt on stdin, mirroring plan."""
+    def test_execute_native_bash_stdin(self, mock_summary, mock_build):
+        """Execute runs natively: bash -lc <agent_command> with the phase prompt
+        on stdin, mirroring plan."""
         stub = _stub_run_with_timeout(0)
-        env = {k: v for k, v in os.environ.items() if k != "AGENTRAIL_NATIVE_EXECUTE"}
-        with patch.dict(os.environ, env, clear=True), \
-                patch("agentrail.run.pipeline.run_with_timeout", stub):
+        with patch("agentrail.run.pipeline.run_with_timeout", stub):
             run_issue_phase(self.rc, "execute", 1)
 
         call_info = stub.calls[0]
@@ -214,25 +207,6 @@ class ExecutePhaseSuccessTests(unittest.TestCase):
         self.assertIsNotNone(call_info["stdin_text"],
                              "native execute must pass the phase prompt on stdin")
         self.assertNotIn("--issue", argv)
-        self.assertEqual(call_info["cwd"], self.target)
-
-    @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
-    @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
-    def test_execute_uses_ralph_argv_when_native_disabled(self, mock_summary, mock_build):
-        """AGENTRAIL_NATIVE_EXECUTE=0 falls back to the legacy ralph-loop argv."""
-        stub = _stub_run_with_timeout(0)
-        with patch.dict(os.environ, {"AGENTRAIL_NATIVE_EXECUTE": "0"}), \
-                patch("agentrail.run.pipeline.run_with_timeout", stub):
-            run_issue_phase(self.rc, "execute", 1)
-
-        call_info = stub.calls[0]
-        argv = call_info["argv"]
-        self.assertEqual(argv[0], str(self.ralph))
-        self.assertIn("--issue", argv)
-        self.assertIn("--agent-command", argv)
-        self.assertIn("--prefix-prompt-file", argv)
-        self.assertIsNone(call_info["stdin_text"],
-                          "legacy ralph branch does not pass stdin_text")
         self.assertEqual(call_info["cwd"], self.target)
 
     @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
@@ -278,10 +252,9 @@ class FailureTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         target = _make_target(self._tmp.name)
         run_dir = Path(self._tmp.name) / "run"
-        ralph = target / "ralph-loop"
         self.target = target
         self.run_dir = run_dir
-        self.rc = _make_rc(target, run_dir, ralph)
+        self.rc = _make_rc(target, run_dir)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -312,10 +285,9 @@ class TimeoutTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         target = _make_target(self._tmp.name)
         run_dir = Path(self._tmp.name) / "run"
-        ralph = target / "ralph-loop"
         self.target = target
         self.run_dir = run_dir
-        self.rc = _make_rc(target, run_dir, ralph)
+        self.rc = _make_rc(target, run_dir)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -349,11 +321,9 @@ class VerifierFindingsTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         target = _make_target(self._tmp.name)
         run_dir = Path(self._tmp.name) / "run"
-        ralph = target / "ralph-loop"
         self.target = target
         self.run_dir = run_dir
-        self.ralph = ralph
-        self.rc = _make_rc(target, run_dir, ralph)
+        self.rc = _make_rc(target, run_dir)
         # Write a verifier findings file
         self.findings_file = Path(self._tmp.name) / "findings.md"
         self.findings_file.write_text("Test coverage missing for foo().")
@@ -382,10 +352,9 @@ class UpdateRunStateTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         target = _make_target(self._tmp.name)
         run_dir = Path(self._tmp.name) / "run"
-        ralph = target / "ralph-loop"
         self.target = target
         self.run_dir = run_dir
-        self.rc = _make_rc(target, run_dir, ralph)
+        self.rc = _make_rc(target, run_dir)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -431,10 +400,8 @@ class ContextPackSelectionTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         target = _make_target(self._tmp.name)
         run_dir = Path(self._tmp.name) / "run"
-        ralph = target / "ralph-loop"
         self.target = target
         self.run_dir = run_dir
-        self.ralph = ralph
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -443,7 +410,7 @@ class ContextPackSelectionTests(unittest.TestCase):
     @patch("agentrail.run.pipeline.ctx.build_issue_context_pack")
     def test_plan_phase_reuses_run_context_pack_file(self, mock_build, mock_summary):
         """When run_context_pack_file is set, plan phase reuses it without calling build."""
-        rc = _make_rc(self.target, self.run_dir, self.ralph,
+        rc = _make_rc(self.target, self.run_dir,
                       run_context_pack_file="ctx/pack.json")
         stub = _stub_run_with_timeout(0)
         with patch("agentrail.run.pipeline.run_with_timeout", stub):
@@ -455,7 +422,7 @@ class ContextPackSelectionTests(unittest.TestCase):
     @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value="new_pack.json")
     def test_no_run_context_pack_file_calls_build(self, mock_build, mock_summary):
         """When run_context_pack_file is None, build_issue_context_pack is called."""
-        rc = _make_rc(self.target, self.run_dir, self.ralph, run_context_pack_file=None)
+        rc = _make_rc(self.target, self.run_dir, run_context_pack_file=None)
         stub = _stub_run_with_timeout(0)
         with patch("agentrail.run.pipeline.run_with_timeout", stub):
             run_issue_phase(rc, "plan", 1)
@@ -468,41 +435,39 @@ class ContextPackSelectionTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class ExecuteStdinHardeningTests(unittest.TestCase):
-    """Hardening #1: EXECUTE phase must NOT pass stdin_text; PLAN phase must pass it."""
+    """Both PLAN and EXECUTE now run natively and pass the phase prompt on stdin."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         target = _make_target(self._tmp.name)
         run_dir = Path(self._tmp.name) / "run"
-        ralph = target / "ralph-loop"
         self.target = target
         self.run_dir = run_dir
-        self.ralph = ralph
-        self.rc = _make_rc(target, run_dir, ralph)
+        self.rc = _make_rc(target, run_dir)
 
     def tearDown(self):
         self._tmp.cleanup()
 
     @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
     @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
-    def test_execute_does_not_pass_stdin_text(self, mock_summary, mock_build):
-        """Legacy ralph branch (AGENTRAIL_NATIVE_EXECUTE=0) must not pass stdin_text."""
+    def test_execute_passes_stdin_text(self, mock_summary, mock_build):
+        """Native execute phase passes the phase prompt on stdin (mirrors plan)."""
         stub = _stub_run_with_timeout(0)
-        with patch.dict(os.environ, {"AGENTRAIL_NATIVE_EXECUTE": "0"}), \
-                patch("agentrail.run.pipeline.run_with_timeout", stub):
+        with patch("agentrail.run.pipeline.run_with_timeout", stub):
             run_issue_phase(self.rc, "execute", 1, plan_output="approved plan")
 
         self.assertEqual(len(stub.calls), 1)
         call_info = stub.calls[0]
-        self.assertIsNone(
+        self.assertIsNotNone(
             call_info.get("stdin_text"),
-            "legacy execute phase must NOT pass stdin_text to run_with_timeout",
+            "native execute phase must pass the phase prompt on stdin",
         )
+        self.assertEqual(call_info["argv"][:2], ["bash", "-lc"])
 
     @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
     @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
-    def test_plan_passes_stdin_text_legacy_execute_does_not(self, mock_summary, mock_build):
-        """Contrast: plan passes stdin_text; legacy execute (NATIVE=0) passes None."""
+    def test_plan_and_execute_both_pass_stdin_text(self, mock_summary, mock_build):
+        """Both plan and execute pass a non-None stdin_text under the native path."""
         # Plan phase
         plan_stub = _stub_run_with_timeout(0, "plan output")
         with patch("agentrail.run.pipeline.run_with_timeout", plan_stub):
@@ -512,14 +477,13 @@ class ExecuteStdinHardeningTests(unittest.TestCase):
             "plan phase must pass a non-None stdin_text",
         )
 
-        # Legacy execute phase (fresh RunContext reusing same dirs is fine — just check stdin)
+        # Execute phase
         exec_stub = _stub_run_with_timeout(0)
-        with patch.dict(os.environ, {"AGENTRAIL_NATIVE_EXECUTE": "0"}), \
-                patch("agentrail.run.pipeline.run_with_timeout", exec_stub):
+        with patch("agentrail.run.pipeline.run_with_timeout", exec_stub):
             run_issue_phase(self.rc, "execute", 1, plan_output="plan output")
-        self.assertIsNone(
+        self.assertIsNotNone(
             exec_stub.calls[0].get("stdin_text"),
-            "legacy execute phase must NOT pass stdin_text",
+            "native execute phase must pass a non-None stdin_text",
         )
 
 
@@ -530,10 +494,8 @@ class ExecuteReusesOnDiskContextPackTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         target = _make_target(self._tmp.name)
         run_dir = Path(self._tmp.name) / "run"
-        ralph = target / "ralph-loop"
         self.target = target
         self.run_dir = run_dir
-        self.ralph = ralph
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -549,7 +511,7 @@ class ExecuteReusesOnDiskContextPackTests(unittest.TestCase):
         pack_abs.parent.mkdir(parents=True, exist_ok=True)
         pack_abs.write_text(json.dumps({"pack": "data"}))
 
-        rc = _make_rc(self.target, self.run_dir, self.ralph,
+        rc = _make_rc(self.target, self.run_dir,
                       run_context_pack_file=pack_rel)
         stub = _stub_run_with_timeout(0)
         with patch("agentrail.run.pipeline.run_with_timeout", stub):
@@ -563,7 +525,7 @@ class ExecuteReusesOnDiskContextPackTests(unittest.TestCase):
     def test_execute_calls_build_when_pack_file_does_not_exist(self, mock_build, mock_summary):
         """Contrast: when run_context_pack_file is set but the file does NOT exist on disk,
         build_issue_context_pack IS called."""
-        rc = _make_rc(self.target, self.run_dir, self.ralph,
+        rc = _make_rc(self.target, self.run_dir,
                       run_context_pack_file=".agentrail/context/packs/missing.json")
         stub = _stub_run_with_timeout(0)
         with patch("agentrail.run.pipeline.run_with_timeout", stub):
@@ -579,10 +541,9 @@ class UpdateRunStateMetadataFileTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         target = _make_target(self._tmp.name)
         run_dir = Path(self._tmp.name) / "run"
-        ralph = target / "ralph-loop"
         self.target = target
         self.run_dir = run_dir
-        self.rc = _make_rc(target, run_dir, ralph)
+        self.rc = _make_rc(target, run_dir)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -640,7 +601,6 @@ def _make_run_issue_patches(
     context_snippets="SNIP",
     context_retrieval=None,
     render_state_summary="STATE",
-    ralph_path_return=None,
     run_issue_phase_side_effect=None,
     gh_returncode=1,
     gh_stdout="",
@@ -653,8 +613,6 @@ def _make_run_issue_patches(
         }
     if context_retrieval is None:
         context_retrieval = {}
-    if ralph_path_return is None:
-        ralph_path_return = Path("/ralph")
     return {
         "resolution_text": resolution_text,
         "resolve_skills_return": resolve_skills_return,
@@ -663,7 +621,6 @@ def _make_run_issue_patches(
         "context_snippets": context_snippets,
         "context_retrieval": context_retrieval,
         "render_state_summary": render_state_summary,
-        "ralph_path_return": ralph_path_return,
         "run_issue_phase_side_effect": run_issue_phase_side_effect,
         "gh_returncode": gh_returncode,
         "gh_stdout": gh_stdout,
@@ -721,8 +678,6 @@ class RunIssueHappyPathTests(unittest.TestCase):
                    return_value="SKILLS"), \
              patch("agentrail.run.pipeline.prompts.issue_base_prompt",
                    return_value="BASE PROMPT"), \
-             patch("agentrail.run.pipeline._ralph_executor_path",
-                   return_value=cfg["ralph_path_return"]), \
              patch("agentrail.run.pipeline.run_issue_phase",
                    side_effect=side_effect) as mock_phase, \
              patch("agentrail.run.pipeline.state_mod.update_run_state") as mock_update_state, \
@@ -811,7 +766,6 @@ class RunIssueReviewFixTests(unittest.TestCase):
              patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
              patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
              patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
-             patch("agentrail.run.pipeline._ralph_executor_path", return_value=Path("/r")), \
              patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
              patch("agentrail.run.pipeline.state_mod.update_run_state"), \
              patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
@@ -869,7 +823,6 @@ class RunIssueResumeTests(unittest.TestCase):
              patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
              patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
              patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
-             patch("agentrail.run.pipeline._ralph_executor_path", return_value=Path("/r")), \
              patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
              patch("agentrail.run.pipeline.state_mod.update_run_state"), \
              patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
@@ -923,7 +876,6 @@ class RunIssueSkillsFailureDegradeTests(unittest.TestCase):
              patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
              patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
              patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
-             patch("agentrail.run.pipeline._ralph_executor_path", return_value=Path("/r")), \
              patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
              patch("agentrail.run.pipeline.state_mod.update_run_state"), \
              patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
@@ -1004,7 +956,6 @@ class RunIssuePlanFailureShortCircuitsTests(unittest.TestCase):
              patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
              patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
              patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
-             patch("agentrail.run.pipeline._ralph_executor_path", return_value=Path("/r")), \
              patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
              patch("agentrail.run.pipeline.state_mod.update_run_state") as mock_update_state, \
              patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
@@ -1023,9 +974,9 @@ class RunIssuePlanFailureShortCircuitsTests(unittest.TestCase):
 # New tests from code-review fixes
 # ---------------------------------------------------------------------------
 
-class RunIssueRalphNoneTests(unittest.TestCase):
-    """ralph_path=None blocks only the legacy execute branch (AGENTRAIL_NATIVE_EXECUTE=0);
-    the native default proceeds without ralph-loop."""
+class RunIssueNoRalphDependencyTests(unittest.TestCase):
+    """run_issue no longer depends on ralph-loop: it proceeds natively and runs
+    its phases without any executor-path lookup."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -1052,27 +1003,16 @@ class RunIssueRalphNoneTests(unittest.TestCase):
              patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
              patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
              patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
-             patch("agentrail.run.pipeline._ralph_executor_path", return_value=None), \
              patch("agentrail.run.pipeline.run_issue_phase", mock_phase), \
              patch("agentrail.run.pipeline.state_mod.update_run_state"), \
              patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
              patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
             return run_issue(self.target, 7, agent="claude", command="c", repo_dir=self.repo)
 
-    def test_legacy_ralph_none_returns_1_without_raising(self):
-        mock_phase = MagicMock()
-        with patch.dict(os.environ, {"AGENTRAIL_NATIVE_EXECUTE": "0"}):
-            result = self._run(mock_phase)
-
-        self.assertEqual(result, 1)
-        mock_phase.assert_not_called()
-
-    def test_native_ralph_none_proceeds(self):
-        """Native default: missing ralph-loop must NOT block; phases still run."""
+    def test_proceeds_and_runs_phases(self):
+        """Native default: no ralph-loop required; phases still run to completion."""
         mock_phase = MagicMock(return_value=(0, ""))
-        env = {k: v for k, v in os.environ.items() if k != "AGENTRAIL_NATIVE_EXECUTE"}
-        with patch.dict(os.environ, env, clear=True):
-            result = self._run(mock_phase)
+        result = self._run(mock_phase)
 
         self.assertEqual(result, 0)
         self.assertTrue(mock_phase.called)
@@ -1114,7 +1054,6 @@ class RunIssueFinishPhaseOnPlanFailureTests(unittest.TestCase):
              patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
              patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
              patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
-             patch("agentrail.run.pipeline._ralph_executor_path", return_value=Path("/r")), \
              patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
              patch("agentrail.run.pipeline.state_mod.update_run_state") as mock_update_state, \
              patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
@@ -1166,7 +1105,6 @@ class RunIssuePlanOutputThreadingTests(unittest.TestCase):
              patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
              patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
              patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
-             patch("agentrail.run.pipeline._ralph_executor_path", return_value=Path("/r")), \
              patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
              patch("agentrail.run.pipeline.state_mod.update_run_state"), \
              patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
@@ -1227,7 +1165,6 @@ class RunIssueResumeNewestTests(unittest.TestCase):
              patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
              patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
              patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
-             patch("agentrail.run.pipeline._ralph_executor_path", return_value=Path("/r")), \
              patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
              patch("agentrail.run.pipeline.state_mod.update_run_state"), \
              patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \

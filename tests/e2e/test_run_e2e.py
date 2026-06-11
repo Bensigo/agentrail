@@ -46,15 +46,8 @@ def _make_target(tmp_path: Path) -> tuple[Path, Path]:
     agentrail_dir.mkdir(parents=True)
     (agentrail_dir / "state.json").write_text(json.dumps({"workflow": {}}))
 
-    # Stub ralph-loop: 3rd candidate in ralph_executor_path lookup order
-    #   target_dir / "scripts" / "ralph-loop"
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    ralph_stub = scripts_dir / "ralph-loop"
-    ralph_stub.write_text("#!/bin/sh\nexit 0\n")
-    ralph_stub.chmod(ralph_stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-
-    # Stub agent: used as the agent_command for the plan phase
+    # Stub agent: used as the agent_command for both the plan and execute phases
+    # (both phases now run natively via `bash -lc <agent_command>`).
     stub_agent = tmp_path / "stub-agent"
     stub_agent.write_text("#!/bin/sh\nexit 0\n")
     stub_agent.chmod(stub_agent.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
@@ -67,7 +60,7 @@ def _make_target(tmp_path: Path) -> tuple[Path, Path]:
 # ---------------------------------------------------------------------------
 
 def test_run_issue_full_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Full plan→execute pipeline with stub agent and stub ralph-loop.
+    """Full plan→execute pipeline with a stub agent.
 
     Verifies that the real pipeline writes all expected artifacts and finalizes
     state.json to 'completed' when both phases exit 0.

@@ -1,32 +1,38 @@
-"""Tests for ``agentrail memory`` command."""
+"""Tests for ``agentrail memory`` command (native recall/capture, M5)."""
 from __future__ import annotations
 
+import datetime
 import io
-import os
-import stat
-import sys
+import re
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest import TestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
-def _make_repo_with_memory_script() -> str:
-    """Create a temp repo dir with an executable templates/scripts/memory."""
+def _make_git_repo_with_memory() -> str:
+    """Create a temp git repo with a docs/memory fixture."""
     tmp = tempfile.mkdtemp()
-    scripts_dir = Path(tmp) / "templates" / "scripts"
-    scripts_dir.mkdir(parents=True)
-    memory_script = scripts_dir / "memory"
-    memory_script.write_text("#!/bin/sh\nexit 0\n")
-    memory_script.chmod(0o755)
+    subprocess.run(["git", "init", "-q", tmp], check=True)
+    mem = Path(tmp) / "docs" / "memory"
+    mem.mkdir(parents=True)
+    (mem / "decisions.md").write_text(
+        "# Decisions\n"
+        "\n"
+        "## Prefer server-side validation\n"
+        "\n"
+        "- kind: decision\n"
+        "\n"
+        "Keep validation rules server-side when they affect persisted business state.\n"
+    )
     return tmp
 
 
-class TestRunMemory(TestCase):
-
-    # ------------------------------------------------------------------
-    # empty args → rc 1 + usage on stderr
-    # ------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# CLI dispatch — run_memory
+# ----------------------------------------------------------------------
+class TestRunMemoryDispatch(TestCase):
     def test_empty_args_returns_1(self):
         from agentrail.cli.commands.memory import run_memory
 
@@ -36,9 +42,6 @@ class TestRunMemory(TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("Usage", buf.getvalue())
 
-    # ------------------------------------------------------------------
-    # -h / --help → rc 0 + usage on stdout
-    # ------------------------------------------------------------------
     def test_help_short_returns_0(self):
         from agentrail.cli.commands.memory import run_memory
 
@@ -57,58 +60,73 @@ class TestRunMemory(TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("Usage", buf.getvalue())
 
-    # ------------------------------------------------------------------
-    # memory present: runs script with correct argv and cwd
-    # ------------------------------------------------------------------
-    def test_memory_present_runs_script(self):
-        from agentrail.cli.commands.memory import run_memory
+    def test_recall_routes_to_memory_recall_with_target_cwd(self):
+        from agentrail.cli.commands import memory as memcli
 
-        tmp = _make_repo_with_memory_script()
-        mock_proc = MagicMock(returncode=0)
-        with patch("agentrail.cli.commands.memory._repo_dir", return_value=Path(tmp)), \
-             patch("agentrail.cli.commands.memory.subprocess.run", return_value=mock_proc) as mock_run:
-            rc = run_memory(["recall", "query", "--target", "/x"])
+        with patch.object(memcli, "memory_recall", return_value=("hit", 0)) as mr:
+            rc = memcli.run_memory(["recall", "billing", "validation", "--target", "/x"])
         self.assertEqual(rc, 0)
-        call_args = mock_run.call_args
-        call_argv = call_args[0][0]
-        call_cwd = call_args[1]["cwd"]
-        # script is first, then kind, then passthrough (--target consumed)
-        self.assertTrue(str(call_argv[0]).endswith("memory"),
-                        f"expected memory script, got {call_argv[0]}")
-        self.assertEqual(call_argv[1], "recall")
-        self.assertIn("query", call_argv)
-        self.assertNotIn("--target", call_argv)
-        self.assertNotIn("/x", call_argv)
-        self.assertEqual(call_cwd, "/x")
+        mr.assert_called_once_with("billing validation", "/x")
 
-    # ------------------------------------------------------------------
-    # --target consumed; other --flags passed through as-is
-    # ------------------------------------------------------------------
-    def test_unknown_flags_passed_through(self):
-        from agentrail.cli.commands.memory import run_memory
+    def test_recall_prints_text(self):
+        from agentrail.cli.commands import memory as memcli
 
-        tmp = _make_repo_with_memory_script()
-        mock_proc = MagicMock(returncode=0)
-        with patch("agentrail.cli.commands.memory._repo_dir", return_value=Path(tmp)), \
-             patch("agentrail.cli.commands.memory.subprocess.run", return_value=mock_proc) as mock_run:
-            rc = run_memory(["save", "--foo", "bar"])
+        buf = io.StringIO()
+        with patch.object(memcli, "memory_recall", return_value=("the-output", 0)), \
+             patch("sys.stdout", buf):
+            rc = memcli.run_memory(["recall", "q"])
         self.assertEqual(rc, 0)
-        call_argv = mock_run.call_args[0][0]
-        # argv should be [script, "save", "--foo", "bar"]
-        self.assertEqual(call_argv[1], "save")
-        self.assertIn("--foo", call_argv)
-        self.assertIn("bar", call_argv)
+        self.assertIn("the-output", buf.getvalue())
 
-    # ------------------------------------------------------------------
-    # --target without value → rc 2 + stderr
-    # ------------------------------------------------------------------
+    def test_recall_no_query_returns_1(self):
+        from agentrail.cli.commands import memory as memcli
+
+        buf = io.StringIO()
+        with patch("sys.stderr", buf):
+            rc = memcli.run_memory(["recall"])
+        self.assertEqual(rc, 1)
+
+    def test_capture_routes_to_memory_capture(self):
+        from agentrail.cli.commands import memory as memcli
+
+        buf = io.StringIO()
+        with patch.object(memcli, "memory_capture", return_value="TEMPLATE") as mc, \
+             patch("sys.stdout", buf):
+            rc = memcli.run_memory(["capture", "lesson", "Normalize", "emails"])
+        self.assertEqual(rc, 0)
+        mc.assert_called_once_with("lesson", "Normalize emails")
+        self.assertIn("TEMPLATE", buf.getvalue())
+
+    def test_new_alias_routes_to_capture(self):
+        from agentrail.cli.commands import memory as memcli
+
+        with patch.object(memcli, "memory_capture", return_value="T") as mc:
+            rc = memcli.run_memory(["new", "decision", "Title here"])
+        self.assertEqual(rc, 0)
+        mc.assert_called_once_with("decision", "Title here")
+
+    def test_capture_missing_title_returns_1(self):
+        from agentrail.cli.commands import memory as memcli
+
+        buf = io.StringIO()
+        with patch("sys.stderr", buf):
+            rc = memcli.run_memory(["capture", "lesson"])
+        self.assertEqual(rc, 1)
+
+    def test_unknown_subcommand_returns_2(self):
+        from agentrail.cli.commands import memory as memcli
+
+        buf = io.StringIO()
+        with patch("sys.stderr", buf):
+            rc = memcli.run_memory(["bogus", "arg"])
+        self.assertEqual(rc, 2)
+        self.assertIn("Usage", buf.getvalue())
+
     def test_target_missing_value_returns_2(self):
         from agentrail.cli.commands.memory import run_memory
 
-        tmp = _make_repo_with_memory_script()
         buf = io.StringIO()
-        with patch("agentrail.cli.commands.memory._repo_dir", return_value=Path(tmp)), \
-             patch("sys.stderr", buf):
+        with patch("sys.stderr", buf):
             rc = run_memory(["recall", "--target"])
         self.assertEqual(rc, 2)
         self.assertIn("--target requires a directory", buf.getvalue())
@@ -116,44 +134,12 @@ class TestRunMemory(TestCase):
     def test_target_followed_by_flag_returns_2(self):
         from agentrail.cli.commands.memory import run_memory
 
-        tmp = _make_repo_with_memory_script()
         buf = io.StringIO()
-        with patch("agentrail.cli.commands.memory._repo_dir", return_value=Path(tmp)), \
-             patch("sys.stderr", buf):
+        with patch("sys.stderr", buf):
             rc = run_memory(["recall", "--target", "--other"])
         self.assertEqual(rc, 2)
         self.assertIn("--target requires a directory", buf.getvalue())
 
-    # ------------------------------------------------------------------
-    # missing script → rc 1 + stderr
-    # ------------------------------------------------------------------
-    def test_missing_script_returns_1(self):
-        from agentrail.cli.commands.memory import run_memory
-
-        tmp = tempfile.mkdtemp()  # empty — no templates/scripts/memory
-        buf = io.StringIO()
-        with patch("agentrail.cli.commands.memory._repo_dir", return_value=Path(tmp)), \
-             patch("sys.stderr", buf):
-            rc = run_memory(["recall"])
-        self.assertEqual(rc, 1)
-        self.assertIn("missing internal memory helper", buf.getvalue())
-
-    # ------------------------------------------------------------------
-    # passthrough returncode: subprocess rc propagated
-    # ------------------------------------------------------------------
-    def test_passthrough_returncode(self):
-        from agentrail.cli.commands.memory import run_memory
-
-        tmp = _make_repo_with_memory_script()
-        mock_proc = MagicMock(returncode=5)
-        with patch("agentrail.cli.commands.memory._repo_dir", return_value=Path(tmp)), \
-             patch("agentrail.cli.commands.memory.subprocess.run", return_value=mock_proc):
-            rc = run_memory(["recall"])
-        self.assertEqual(rc, 5)
-
-    # ------------------------------------------------------------------
-    # -h in middle of args (after kind) → usage + rc 0
-    # ------------------------------------------------------------------
     def test_help_in_rest_returns_0(self):
         from agentrail.cli.commands.memory import run_memory
 
@@ -163,12 +149,97 @@ class TestRunMemory(TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("Usage", buf.getvalue())
 
-    # ------------------------------------------------------------------
-    # main routes memory → run_memory
-    # ------------------------------------------------------------------
     def test_main_routes_memory(self):
         import agentrail.cli.main as m
+
         with patch("agentrail.cli.main.run_memory", return_value=0) as mock_rm:
             rc = m.main(["memory", "recall", "query"])
         mock_rm.assert_called_once_with(["recall", "query"])
         self.assertEqual(rc, 0)
+
+
+# ----------------------------------------------------------------------
+# Native recall
+# ----------------------------------------------------------------------
+class TestMemoryRecall(TestCase):
+    def test_exact_phrase_hit(self):
+        from agentrail.cli.commands.memory_core import memory_recall
+
+        tmp = _make_git_repo_with_memory()
+        text, rc = memory_recall("Prefer server-side validation", tmp)
+        self.assertEqual(rc, 0)
+        self.assertIn("Prefer server-side validation", text)
+        # raw grep style: relpath:lineno:line for the match
+        self.assertRegex(text, r"docs/memory/decisions\.md:\d+:")
+
+    def test_multi_term_non_adjacent_hit(self):
+        from agentrail.cli.commands.memory_core import memory_recall
+
+        tmp = _make_git_repo_with_memory()
+        # "persisted validation" is not a contiguous phrase; pass-2 per-term OR
+        text, rc = memory_recall("persisted validation", tmp)
+        self.assertEqual(rc, 0)
+        self.assertIn("Prefer server-side validation", text)
+
+    def test_bracketed_literal_not_regex(self):
+        from agentrail.cli.commands.memory_core import memory_recall
+
+        tmp = tempfile.mkdtemp()
+        subprocess.run(["git", "init", "-q", tmp], check=True)
+        mem = Path(tmp) / "docs" / "memory"
+        mem.mkdir(parents=True)
+        (mem / "lessons.md").write_text(
+            "# Lessons\n\n## [codex] Bracketed PR titles stay literal\n\nRecall queries.\n"
+        )
+        text, rc = memory_recall("[codex]", tmp)
+        self.assertEqual(rc, 0)
+        self.assertIn("Bracketed PR titles stay literal", text)
+
+    def test_no_memory_dir_message(self):
+        from agentrail.cli.commands.memory_core import memory_recall
+
+        tmp = tempfile.mkdtemp()
+        subprocess.run(["git", "init", "-q", tmp], check=True)
+        text, rc = memory_recall("anything", tmp)
+        self.assertEqual(rc, 0)
+        self.assertEqual(text, "No docs/memory directory found.")
+
+    def test_empty_result(self):
+        from agentrail.cli.commands.memory_core import memory_recall
+
+        tmp = _make_git_repo_with_memory()
+        text, rc = memory_recall("zzzznotpresent", tmp)
+        self.assertEqual(rc, 0)
+        self.assertEqual(text, "")
+
+    def test_context_window(self):
+        from agentrail.cli.commands.memory_core import memory_recall
+
+        tmp = _make_git_repo_with_memory()
+        text, rc = memory_recall("persisted business state", tmp)
+        self.assertEqual(rc, 0)
+        # context lines rendered with '-' separator
+        self.assertRegex(text, r"docs/memory/decisions\.md-\d+-")
+
+
+# ----------------------------------------------------------------------
+# Native capture
+# ----------------------------------------------------------------------
+class TestMemoryCapture(TestCase):
+    def test_template_shape(self):
+        from agentrail.cli.commands.memory_core import memory_capture
+
+        out = memory_capture("lesson", "My Title")
+        self.assertIn("## My Title", out)
+        self.assertIn("- kind: lesson", out)
+        self.assertIn("- source:", out)
+        self.assertIn("- confidence: verified", out)
+        self.assertIn("- expires_at:", out)
+
+    def test_created_at_is_today_format(self):
+        from agentrail.cli.commands.memory_core import memory_capture
+
+        out = memory_capture("decision", "X")
+        m = re.search(r"- created_at: (\d{4}-\d{2}-\d{2})", out)
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1), datetime.date.today().isoformat())

@@ -1,6 +1,7 @@
 """Process helpers for agentrail run.
 
-Ports sanitized_agent_exec and portable_timeout from scripts/lib/timeout.sh.
+Native sanitized_agent_exec and portable_timeout (originally bash helpers; now
+the canonical implementation).
 """
 from __future__ import annotations
 import os

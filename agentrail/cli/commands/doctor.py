@@ -456,7 +456,6 @@ REQUIRED_PATHS = [
     (".agentrail/source/agentrail/__init__.py", ".agentrail/source/agentrail/__init__.py", "file"),
     (".agentrail/source/scripts/agentrail", ".agentrail/source/scripts/agentrail", "executable"),
     (".agentrail/source/scripts/install-workflow", ".agentrail/source/scripts/install-workflow", "executable"),
-    (".agentrail/source/templates/scripts/memory", ".agentrail/source/templates/scripts/memory", "executable"),
     ("docs/agents/skill-registry.json", "docs/agents/skill-registry.json", "file"),
 ]
 

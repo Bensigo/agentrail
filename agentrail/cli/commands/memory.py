@@ -1,19 +1,14 @@
 """
-``agentrail memory`` — native wrapper that execs the
-``templates/scripts/memory`` helper (kept as a standalone script, like ralph-loop).
+``agentrail memory`` — native recall/capture (port of the legacy
+``templates/scripts/memory`` helper; M5 / #432).
 """
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
-from pathlib import Path
 from typing import List
 
-
-def _repo_dir() -> Path:
-    from agentrail.cli.main import _repo_dir as resolve
-    return resolve()
+from agentrail.cli.commands.memory_core import memory_capture, memory_recall
 
 
 def _usage() -> str:
@@ -51,14 +46,27 @@ def run_memory(args: List[str]) -> int:
             passthrough.append(a)
             i += 1
 
-    memory_script = _repo_dir() / "templates" / "scripts" / "memory"
-    if not (memory_script.exists() and os.access(memory_script, os.X_OK)):
-        print(f"missing internal memory helper: {memory_script}", file=sys.stderr)
-        return 1
+    if kind == "recall":
+        query = " ".join(passthrough)
+        if not query:
+            print("memory: recall requires a query", file=sys.stderr)
+            return 1
+        text, rc = memory_recall(query, target)
+        if text:
+            print(text)
+        return rc
 
-    proc = subprocess.run(
-        [str(memory_script), kind, *passthrough],
-        cwd=target,
-        check=False,
-    )
-    return int(proc.returncode)
+    if kind in ("capture", "new"):
+        if not passthrough:
+            print("memory: capture requires a kind", file=sys.stderr)
+            return 1
+        capture_kind = passthrough[0]
+        title = " ".join(passthrough[1:])
+        if not title:
+            print("memory: capture requires a title", file=sys.stderr)
+            return 1
+        print(memory_capture(capture_kind, title))
+        return 0
+
+    print(_usage(), file=sys.stderr)
+    return 2

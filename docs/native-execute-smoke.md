@@ -1,0 +1,1 @@
+Native execute smoke test.

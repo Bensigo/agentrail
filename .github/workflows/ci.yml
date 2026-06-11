@@ -1,0 +1,39 @@
+name: CI
+
+# Runs on every push to main and every PR. The release/publish workflows are
+# tag-triggered and do not gate PRs, so this is the PR-time safety net:
+# the Python suite + shellcheck + the install.sh hermetic test.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # The package itself is stdlib-only (package.json dependencies: null);
+      # pytest is the only test-time dependency.
+      - run: python -m pip install --upgrade pip pytest
+      - run: python -m pytest -q
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # shellcheck is preinstalled on GitHub's ubuntu runners.
+      - name: shellcheck
+        run: shellcheck install.sh scripts/test-install.sh
+      - name: install.sh hermetic test
+        run: bash scripts/test-install.sh

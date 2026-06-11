@@ -41,11 +41,19 @@ def common_header(agent: str, state_summary: str) -> str:
     """Reproduce legacy prompt_common_header text.
 
     *state_summary* is the already-rendered AgentRail-state block supplied by the
-    caller (empty / "not found" handling is done upstream).
+    caller. ``render_state_summary`` returns ``""`` when ``.agentrail/state.json``
+    is absent; mirroring the legacy ``prompt_common_header``, this function then
+    emits the ``- AgentRail state: not found at .agentrail/state.json`` line so the
+    prompt always announces whether state was found.
 
-    The returned string ends with ``state_summary + "\\n"`` mirroring the legacy
+    The returned string ends with the state block + ``"\\n"`` mirroring the legacy
     ``echo`` that follows the state summary block.
     """
+    # Legacy parity (prompt_common_header): print the state summary when present,
+    # otherwise the explicit not-found line. A blank summary means no state.json.
+    state_block = state_summary if state_summary else (
+        "- AgentRail state: not found at .agentrail/state.json"
+    )
     return (
         "You are working in an AgentRail-managed repository.\n"
         "\n"
@@ -62,7 +70,7 @@ def common_header(agent: str, state_summary: str) -> str:
         "- agentrail resume\n"
         "\n"
         "AgentRail state summary:\n"
-        f"{state_summary}\n"
+        f"{state_block}\n"
     )
 
 

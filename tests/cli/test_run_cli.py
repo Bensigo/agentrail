@@ -20,7 +20,38 @@ from agentrail.cli.commands.run import (
     next_pickable_issue,
     exec_issue, RunOptions,
     parse_batch_args, run_batch,
+    ensure_command_available,
 )
+
+
+class EnsureCommandAvailableTests(unittest.TestCase):
+    """Ported from the deleted bash scripts/test-runner-adapter:
+    the runner must reject an empty custom command and a command whose
+    binary is not on PATH."""
+
+    def test_empty_command_rejected(self) -> None:
+        with self.assertRaises(UsageError) as ctx:
+            ensure_command_available("")
+        self.assertIn("runner command is empty", str(ctx.exception))
+
+    def test_whitespace_only_command_rejected(self) -> None:
+        with self.assertRaises(UsageError) as ctx:
+            ensure_command_available("   ")
+        self.assertIn("runner command is empty", str(ctx.exception))
+
+    def test_missing_binary_rejected(self) -> None:
+        with patch("shutil.which", return_value=None):
+            with self.assertRaises(UsageError) as ctx:
+                ensure_command_available("definitely-not-agentrail-runner")
+        self.assertIn(
+            "missing required command: definitely-not-agentrail-runner",
+            str(ctx.exception),
+        )
+
+    def test_present_binary_accepted(self) -> None:
+        with patch("shutil.which", return_value="/usr/bin/cat"):
+            # uses only the first token as the binary to resolve
+            ensure_command_available("cat --some-flag value")
 
 
 class RunHelpTests(unittest.TestCase):

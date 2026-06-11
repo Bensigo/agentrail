@@ -506,5 +506,171 @@ class IssueRunPhasePromptTests(unittest.TestCase):
         self.assertIn("unknown issue run phase: review", str(ctx.exception))
 
 
+class GrillPromptTests(unittest.TestCase):
+    """Tests for grill_prompt()."""
+
+    def _fn(self, *args, **kwargs):
+        from agentrail.run.prompts import grill_prompt
+        return grill_prompt(*args, **kwargs)
+
+    def test_codex_contains_header(self):
+        result = self._fn("codex", "my idea", header="HDR\n")
+        self.assertIn("HDR", result)
+
+    def test_codex_skill_line(self):
+        result = self._fn("codex", "my idea", header="HDR\n")
+        self.assertIn("Use the repo-local skill 'grill-with-docs'.", result)
+
+    def test_codex_idea_substituted(self):
+        result = self._fn("codex", "my idea", header="HDR\n")
+        self.assertIn("my idea", result)
+
+    def test_codex_stress_test_line(self):
+        result = self._fn("codex", "my idea", header="HDR\n")
+        self.assertIn("Stress-test this idea before any PRD or implementation work:", result)
+
+    def test_codex_do_not_write_code(self):
+        result = self._fn("codex", "my idea", header="HDR\n")
+        self.assertIn("Do not write implementation code.", result)
+
+    def test_claude_contains_header(self):
+        result = self._fn("claude", "my idea", header="HDR\n")
+        self.assertIn("HDR", result)
+
+    def test_claude_first_line(self):
+        result = self._fn("claude", "my idea", header="HDR\n")
+        self.assertIn(
+            "Use Claude Code to run a grill-with-docs style planning pass.",
+            result,
+        )
+
+    def test_claude_idea_substituted(self):
+        result = self._fn("claude", "my idea", header="HDR\n")
+        self.assertIn("my idea", result)
+
+    def test_claude_stress_test_line(self):
+        result = self._fn("claude", "my idea", header="HDR\n")
+        self.assertIn("Stress-test this idea before any PRD or implementation work:", result)
+
+    def test_claude_do_not_write_code(self):
+        result = self._fn("claude", "my idea", header="HDR\n")
+        self.assertIn("Do not write implementation code.", result)
+
+    def test_header_appears_first(self):
+        result = self._fn("codex", "idea", header="HDR\n")
+        self.assertTrue(result.startswith("HDR\n"))
+
+    def test_unknown_agent_uses_claude_block(self):
+        result = self._fn("gpt-4o", "idea", header="HDR\n")
+        self.assertIn("Use Claude Code to run a grill-with-docs style planning pass.", result)
+
+    def test_codex_no_skill_md_reference(self):
+        # codex block does not mention SKILL.md read instruction (claude block does)
+        result = self._fn("codex", "idea", header="HDR\n")
+        self.assertNotIn("SKILL.md exists", result)
+
+    def test_claude_skill_md_reference(self):
+        result = self._fn("claude", "idea", header="HDR\n")
+        self.assertIn("skills/grill-with-docs/SKILL.md", result)
+
+
+class ReviewPromptTests(unittest.TestCase):
+    """Tests for review_prompt()."""
+
+    def _fn(self, *args, **kwargs):
+        from agentrail.run.prompts import review_prompt
+        return review_prompt(*args, **kwargs)
+
+    def _make(self, agent="codex", pr=7):
+        return self._fn(
+            agent, pr,
+            header="HDR\n",
+            context_summary="SUM",
+            context_snippets="SNIP",
+        )
+
+    def test_codex_contains_header(self):
+        result = self._make()
+        self.assertIn("HDR", result)
+
+    def test_codex_contains_summary(self):
+        result = self._make()
+        self.assertIn("SUM", result)
+
+    def test_codex_contains_snippets(self):
+        result = self._make()
+        self.assertIn("SNIP", result)
+
+    def test_codex_first_task_line(self):
+        result = self._make("codex", 7)
+        self.assertIn("Review exactly one pull request: #7.", result)
+
+    def test_codex_review_only_limit(self):
+        result = self._make("codex", 7)
+        self.assertIn("Review only PR #7.", result)
+
+    def test_codex_do_not_edit(self):
+        result = self._make("codex", 7)
+        self.assertIn(
+            "Do not edit files, commit, push, close, or merge anything.", result
+        )
+
+    def test_claude_first_task_line(self):
+        result = self._make("claude", 7)
+        self.assertIn("Use Claude Code to review exactly one pull request: #7.", result)
+
+    def test_claude_review_only_limit(self):
+        result = self._make("claude", 7)
+        self.assertIn("Review only PR #7.", result)
+
+    def test_claude_do_not_edit(self):
+        result = self._make("claude", 7)
+        self.assertIn(
+            "Do not edit files, commit, push, close, or merge anything.", result
+        )
+
+    def test_no_skill_resolution_text(self):
+        result = self._make("codex", 7)
+        self.assertNotIn("Resolved AgentRail skills:", result)
+
+    def test_pr_number_substitution(self):
+        result = self._make("codex", 42)
+        self.assertIn("#42", result)
+        self.assertNotIn("#7", result)
+
+    def test_header_appears_first(self):
+        result = self._make()
+        self.assertTrue(result.startswith("HDR\n"))
+
+    def test_summary_before_snippets(self):
+        result = self._make()
+        self.assertLess(result.index("SUM"), result.index("SNIP"))
+
+    def test_unknown_agent_uses_claude_block(self):
+        result = self._fn(
+            "gpt-4o", 7,
+            header="HDR\n",
+            context_summary="SUM",
+            context_snippets="SNIP",
+        )
+        self.assertIn("Use Claude Code to review exactly one pull request: #7.", result)
+
+    def test_assembly_order(self):
+        """header + summary + \\n\\n + snippets + \\n\\n + task block"""
+        result = self._fn(
+            "codex", 5,
+            header="HDR\n",
+            context_summary="SUM",
+            context_snippets="SNIP",
+        )
+        idx_hdr = result.index("HDR")
+        idx_sum = result.index("SUM")
+        idx_snip = result.index("SNIP")
+        idx_task = result.index("Review exactly one pull request: #5.")
+        self.assertLess(idx_hdr, idx_sum)
+        self.assertLess(idx_sum, idx_snip)
+        self.assertLess(idx_snip, idx_task)
+
+
 if __name__ == "__main__":
     unittest.main()

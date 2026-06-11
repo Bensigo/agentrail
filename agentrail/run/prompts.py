@@ -190,6 +190,116 @@ def issue_base_prompt(
     )
 
 
+_CODEX_GRILL_TASK_BLOCK = """\
+Use the repo-local skill 'grill-with-docs'.
+
+Goal:
+Stress-test this idea before any PRD or implementation work:
+
+{idea}
+
+Instructions:
+- Read CONTEXT.md first.
+- Read TASTE.md if present.
+- Run agentrail memory recall for the idea and key terms when available.
+- Challenge vague users, outcomes, non-goals, constraints, domain terms, and risky assumptions.
+- If a question can be answered from the repo, inspect the repo instead of asking.
+- Ask one direct question at a time and include your recommended answer.
+- Do not write implementation code.
+"""
+
+_CLAUDE_GRILL_TASK_BLOCK = """\
+Use Claude Code to run a grill-with-docs style planning pass. If skills/grill-with-docs/SKILL.md exists, read it and follow its workflow as local project instructions.
+
+Goal:
+Stress-test this idea before any PRD or implementation work:
+
+{idea}
+
+Instructions:
+- Read CONTEXT.md first.
+- Read TASTE.md if present.
+- Run agentrail memory recall for the idea and key terms when available.
+- Challenge vague users, outcomes, non-goals, constraints, domain terms, and risky assumptions.
+- If a question can be answered from the repo, inspect the repo instead of asking.
+- Ask one direct question at a time and include your recommended answer.
+- Do not write implementation code.
+"""
+
+
+def grill_prompt(agent: str, idea: str, *, header: str) -> str:
+    """Port of legacy prompt_grill. header = common_header(...). Agent-specific
+    grill task block (codex vs claude)."""
+    if agent == "codex":
+        task_block = _CODEX_GRILL_TASK_BLOCK.format(idea=idea)
+    else:
+        task_block = _CLAUDE_GRILL_TASK_BLOCK.format(idea=idea)
+    return header + task_block
+
+
+_CODEX_REVIEW_TASK_BLOCK = """\
+Review exactly one pull request: #{pr}.
+
+Use these local instructions:
+- templates/docs/agents/pr-review.md when running from the AgentRail source repo
+- docs/agents/pr-review.md when running from an installed target repo
+
+Hard limits:
+- Review only PR #{pr}.
+- Compare the PR head branch against its base branch.
+- Read the PR body, linked issue, milestone, PRD, CONTEXT.md, TASTE.md if present, and relevant project memory.
+- Run agentrail memory recall for the PR title, linked issue, and key terms when available.
+- If generating this review prompt outside the current session, use agentrail prompt review {pr}.
+- Inspect resolved skill evidence when available in the PR body or AgentRail run logs, including resolved-skills metadata; absence of this evidence does not mean the implementation is invalid.
+- Do not edit files, commit, push, close, or merge anything.
+- Return findings first, ordered by severity with concrete file and line references.
+- Call out missing acceptance criteria coverage, missing verification, and missing visual evidence when relevant.
+"""
+
+_CLAUDE_REVIEW_TASK_BLOCK = """\
+Use Claude Code to review exactly one pull request: #{pr}.
+
+Use these local instructions when present:
+- templates/docs/agents/pr-review.md or docs/agents/pr-review.md
+- repo-local review and visual evidence docs under docs/agents/
+
+Hard limits:
+- Review only PR #{pr}.
+- Compare the PR head branch against its base branch.
+- Read the PR body, linked issue, milestone, PRD, CONTEXT.md, TASTE.md if present, and relevant project memory.
+- Run agentrail memory recall for the PR title, linked issue, and key terms when available.
+- If generating this review prompt outside the current session, use agentrail prompt review {pr}.
+- Inspect resolved skill evidence when available in the PR body or AgentRail run logs, including resolved-skills metadata; absence of this evidence does not mean the implementation is invalid.
+- Do not edit files, commit, push, close, or merge anything.
+- Return findings first, ordered by severity with concrete file and line references.
+- Call out missing acceptance criteria coverage, missing verification, and missing visual evidence when relevant.
+"""
+
+
+def review_prompt(
+    agent: str,
+    pr: int,
+    *,
+    header: str,
+    context_summary: str,
+    context_snippets: str,
+) -> str:
+    """Port of legacy prompt_review. Assembles header + context_summary + '\\n\\n' +
+    context_snippets + '\\n\\n' + agent-specific review task block (codex vs claude)."""
+    if agent == "codex":
+        task_block = _CODEX_REVIEW_TASK_BLOCK.format(pr=pr)
+    else:
+        task_block = _CLAUDE_REVIEW_TASK_BLOCK.format(pr=pr)
+    return (
+        header
+        + context_summary
+        + "\n\n"
+        + context_snippets
+        + "\n\n"
+        + task_block
+    )
+
+
 def issue_run_phase_prompt(
     phase: str,
     issue: int,

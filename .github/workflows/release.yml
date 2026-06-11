@@ -1,0 +1,132 @@
+name: Release tarball
+
+# Builds the versioned release tarball that Homebrew (Formula/agentrail.rb) and
+# the curl|sh installer consume. Triggered on a version tag (vX.Y.Z). The CLI is
+# stdlib-only Python, so the tarball bundles no Python dependencies — it ships the
+# agentrail/ package + scripts/agentrail launcher + the skills/ and templates/ the
+# CLI ships, and requires only python3 at runtime.
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Allow building a tarball on demand (e.g. to refresh the formula sha256
+  # against a tag) without re-attaching to a release.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or ref to build the tarball from (e.g. v0.1.2)"
+        required: true
+        type: string
+
+jobs:
+  release-tarball:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Resolve version
+        id: version
+        run: |
+          ref="${{ github.event.inputs.ref || github.ref_name }}"
+          # Strip a leading refs/tags/ if present, then a leading v.
+          ref="${ref#refs/tags/}"
+          version="${ref#v}"
+          if [ -z "$version" ]; then
+            echo "ERROR: could not resolve a version from ref '$ref'" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tarball=agentrail-${version}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Build release tarball
+        id: build
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          tarball="${{ steps.version.outputs.tarball }}"
+          stage="agentrail-${version}"
+
+          # Stage exactly the files the installed CLI needs. Layout mirrors the
+          # repo root so scripts/agentrail resolves PYTHONPATH to the package via
+          # its own "$script_dir/.." logic. Stdlib-only: no Python deps bundled.
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          cp -R agentrail "$stage/agentrail"
+          cp -R scripts "$stage/scripts"
+          cp -R skills "$stage/skills"
+          cp -R templates "$stage/templates"
+          cp README.md "$stage/README.md"
+
+          # Drop compiled artifacts that should never ship.
+          find "$stage" -name '__pycache__' -type d -prune -exec rm -rf {} +
+          find "$stage" -name '*.pyc' -delete
+
+          chmod +x "$stage/scripts/agentrail"
+
+          tar --numeric-owner --owner=0 --group=0 -czf "$tarball" "$stage"
+          rm -rf "$stage"
+
+          sha256sum "$tarball" > "${tarball}.sha256"
+          echo "sha256:"
+          cat "${tarball}.sha256"
+
+      - name: Verify tarball layout
+        run: |
+          tarball="${{ steps.version.outputs.tarball }}"
+          version="${{ steps.version.outputs.version }}"
+          listing="$(tar -tzf "$tarball")"
+          for required in \
+            "agentrail-${version}/scripts/agentrail" \
+            "agentrail-${version}/agentrail/cli/main.py" \
+            "agentrail-${version}/skills/" \
+            "agentrail-${version}/templates/"; do
+            if ! printf '%s\n' "$listing" | grep -q "^${required}"; then
+              echo "ERROR: expected '${required}' missing from tarball" >&2
+              exit 1
+            fi
+          done
+          if printf '%s\n' "$listing" | grep -q '__pycache__'; then
+            echo "ERROR: __pycache__ leaked into tarball" >&2
+            exit 1
+          fi
+          echo "Tarball layout verified."
+
+      - name: Smoke-test the staged launcher
+        run: |
+          tarball="${{ steps.version.outputs.tarball }}"
+          version="${{ steps.version.outputs.version }}"
+          workdir="$(mktemp -d)"
+          tar -xzf "$tarball" -C "$workdir"
+          # Run the launcher exactly as brew/curl will: invoke the bundled script.
+          out="$("${workdir}/agentrail-${version}/scripts/agentrail" --help)"
+          printf '%s\n' "$out" | head -1
+          printf '%s\n' "$out" | grep -qi "usage" || {
+            echo "ERROR: 'agentrail --help' did not print usage" >&2
+            exit 1
+          }
+          rm -rf "$workdir"
+
+      - name: Upload tarball as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.tarball }}
+          path: |
+            ${{ steps.version.outputs.tarball }}
+            ${{ steps.version.outputs.tarball }}.sha256
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tarball="${{ steps.version.outputs.tarball }}"
+          tag="${{ github.ref_name }}"
+          # Create the release if the tag push didn't already (idempotent).
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" --generate-notes
+          fi
+          gh release upload "$tag" "$tarball" "${tarball}.sha256" --clobber

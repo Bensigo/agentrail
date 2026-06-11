@@ -16,6 +16,7 @@ def _run(args, *, session=None, agent="claude", command="claude -p --dangerously
     with patch.object(grill_mod, "run_skill_session", sess_mock), \
          patch.object(grill_mod, "resolve_agent_name", MagicMock(return_value=agent)), \
          patch.object(grill_mod, "resolve_agent_command", MagicMock(return_value=command)), \
+         patch.object(grill_mod, "ensure_command_available", MagicMock()), \
          patch("sys.stdout", out), patch("sys.stderr", err):
         rc = run_grill(args)
     return rc, out.getvalue(), err.getvalue(), sess_mock

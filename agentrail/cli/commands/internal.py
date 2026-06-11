@@ -3,11 +3,10 @@
 
 Replaces the legacy bash ``internal`` (review-pr + worktree mark).
 
-``review-pr`` runs NATIVELY (port of ``templates/scripts/review-pr``) behind the
-``AGENTRAIL_NATIVE_REVIEW`` escape hatch: default native, ``AGENTRAIL_NATIVE_REVIEW=0``
-falls back to exec'ing the legacy bash script (kept until live validation
-confirms parity — see milestone M3 / issue #430). ``worktree mark`` updates the
-worktree lifecycle in state.json.
+``review-pr`` runs NATIVELY via ``agentrail/afk/review_engine.py`` (the legacy
+bash ``templates/scripts/review-pr`` and the ``AGENTRAIL_NATIVE_REVIEW`` escape
+hatch were removed after live validation — see milestone M3 / issue #430).
+``worktree mark`` updates the worktree lifecycle in state.json.
 """
 from __future__ import annotations
 import json
@@ -19,11 +18,6 @@ from pathlib import Path
 from typing import List, Optional
 
 from agentrail.run.state import update_worktree_state
-
-
-def _repo_dir() -> Path:
-    from agentrail.cli.main import _repo_dir as resolve
-    return resolve()
 
 
 def _usage() -> str:
@@ -41,29 +35,11 @@ def run_internal(args: List[str]) -> int:
         return 0
     cmd, rest = args[0], args[1:]
     if cmd == "review-pr":
-        return _review_pr(rest)
+        return _review_pr_native(rest)
     if cmd == "worktree":
         return _worktree(rest)
     print(f"Unknown internal command: {cmd}", file=sys.stderr)
     return 2
-
-
-def _review_pr(rest: List[str]) -> int:
-    # Escape hatch: AGENTRAIL_NATIVE_REVIEW=0 keeps the legacy bash exec path.
-    # Default (unset or any other value) runs the native port. The script is
-    # NOT deleted yet — removal is gated on live validation (issue #430).
-    if os.environ.get("AGENTRAIL_NATIVE_REVIEW", "1") == "0":
-        return _review_pr_legacy(rest)
-    return _review_pr_native(rest)
-
-
-def _review_pr_legacy(rest: List[str]) -> int:
-    review_script = _repo_dir() / "templates" / "scripts" / "review-pr"
-    if not (review_script.exists() and os.access(review_script, os.X_OK)):
-        print(f"missing internal review helper: {review_script}", file=sys.stderr)
-        return 2
-    proc = subprocess.run([str(review_script), *rest], check=False)
-    return int(proc.returncode)
 
 
 def _die(msg: str) -> int:
@@ -90,9 +66,9 @@ def _git(*args: str) -> subprocess.CompletedProcess:
 
 
 def _review_pr_native(rest: List[str]) -> int:
-    """Native port of ``templates/scripts/review-pr``.
+    """Native PR review (formerly ``templates/scripts/review-pr``).
 
-    Preserves the script's arg parse, dep checks, gh metadata fetch, and the
+    Preserves the arg parse, dep checks, gh metadata fetch, and the
     exact fetch/switch/pull ordering (the AFK data-loss fix), then builds the
     prompt (with the machine-readable contract) and invokes the review agent.
     Exit-code semantics: 0 = success, nonzero = failure (AFK treats nonzero as a

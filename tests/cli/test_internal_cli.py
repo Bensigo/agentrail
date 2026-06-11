@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -18,50 +17,8 @@ def _git_ok(*args, **kwargs):
     return result
 
 
-class TestReviewPrLegacyHatch(TestCase):
-    """AGENTRAIL_NATIVE_REVIEW=0 keeps the legacy bash-exec path."""
-
-    def _make_repo_with_script(self):
-        tmp = tempfile.mkdtemp()
-        script_dir = Path(tmp) / "templates" / "scripts"
-        script_dir.mkdir(parents=True)
-        script = script_dir / "review-pr"
-        script.write_text("#!/bin/sh\nexit 0\n")
-        script.chmod(0o755)
-        return tmp
-
-    def test_native_review_0_execs_script(self):
-        from agentrail.cli.commands.internal import run_internal
-
-        tmp = self._make_repo_with_script()
-        mock_proc = MagicMock(returncode=0)
-        with patch.dict(os.environ, {"AGENTRAIL_NATIVE_REVIEW": "0"}), \
-             patch("agentrail.cli.commands.internal._repo_dir", return_value=Path(tmp)), \
-             patch("agentrail.cli.commands.internal.subprocess.run", return_value=mock_proc) as mock_run:
-            rc = run_internal(["review-pr", "--pr", "12", "--machine-readable"])
-        self.assertEqual(rc, 0)
-        call_args = mock_run.call_args[0][0]
-        self.assertTrue(str(call_args[0]).endswith("review-pr"))
-        self.assertIn("--pr", call_args)
-        self.assertIn("12", call_args)
-        self.assertIn("--machine-readable", call_args)
-
-    def test_native_review_0_missing_script_returns_2(self):
-        from agentrail.cli.commands.internal import run_internal
-        import io
-
-        tmp = tempfile.mkdtemp()
-        buf = io.StringIO()
-        with patch.dict(os.environ, {"AGENTRAIL_NATIVE_REVIEW": "0"}), \
-             patch("agentrail.cli.commands.internal._repo_dir", return_value=Path(tmp)), \
-             patch("sys.stderr", buf):
-            rc = run_internal(["review-pr", "--pr", "99"])
-        self.assertEqual(rc, 2)
-        self.assertIn("missing internal review helper", buf.getvalue())
-
-
 class TestReviewPrNative(TestCase):
-    """Default path runs natively (no bash script exec)."""
+    """review-pr runs natively (no bash script exec)."""
 
     def _env(self):
         return patch.dict(os.environ, {}, clear=False)
@@ -109,6 +66,40 @@ class TestReviewPrNative(TestCase):
         self.assertEqual(captured["run"][0], "codex")
         self.assertEqual(captured["run"][1], "main")
         mock_val.assert_called_once()
+
+    def test_native_review_0_env_no_longer_execs_script(self):
+        """The AGENTRAIL_NATIVE_REVIEW=0 hatch is gone — setting it must NOT
+        shell out to a bash script; the native path runs unconditionally."""
+        from agentrail.cli.commands.internal import run_internal
+
+        captured = {}
+
+        def fake_build(pr, title, url, machine_readable, repo_root):
+            return "PROMPT"
+
+        def fake_run_review(engine, base, pr, prompt, output, **kw):
+            captured["ran_native"] = True
+            return 0
+
+        with tempfile.TemporaryDirectory() as td:
+            out = str(Path(td) / "out.md")
+            patches = self._common_patches()
+            with patch.dict(os.environ, {"AGENTRAIL_NATIVE_REVIEW": "0"}), \
+                 patches[0], patches[1], patches[2], \
+                 patch("agentrail.cli.commands.internal.subprocess.run") as mock_sub, \
+                 patch("agentrail.afk.review_engine.build_review_prompt", fake_build), \
+                 patch("agentrail.afk.review_engine.run_review", fake_run_review), \
+                 patch("agentrail.afk.review_engine.validate_machine_readable_output"):
+                rc = run_internal([
+                    "review-pr", "--pr", "12", "--output", out, "--machine-readable",
+                ])
+        self.assertEqual(rc, 0)
+        self.assertTrue(captured.get("ran_native"))
+        # No bash review-pr script was ever exec'd.
+        for call in mock_sub.call_args_list:
+            argv = call[0][0] if call[0] else []
+            joined = " ".join(str(a) for a in argv)
+            self.assertNotIn("templates/scripts/review-pr", joined)
 
     def test_machine_readable_requires_output(self):
         from agentrail.cli.commands.internal import run_internal

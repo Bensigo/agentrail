@@ -3,9 +3,9 @@ Native PR-review engine — port of ``templates/scripts/review-pr``.
 
 This module builds the review prompt (with the machine-readable JSON contract
 preserved byte-faithfully), invokes the review agent (codex / claude), and
-validates the machine-readable output. It is wired into
-``agentrail internal review-pr`` behind the ``AGENTRAIL_NATIVE_REVIEW`` escape
-hatch (default native; ``=0`` falls back to the legacy bash script).
+validates the machine-readable output. It is the implementation behind
+``agentrail internal review-pr`` (the legacy bash script and the
+``AGENTRAIL_NATIVE_REVIEW`` escape hatch were removed in milestone M3 / #430).
 
 CRITICAL invariant: the machine-readable contract instructs the agent to emit a
 ``BEGIN_REVIEW_FIX_ISSUES_JSON … END_REVIEW_FIX_ISSUES_JSON`` block containing a

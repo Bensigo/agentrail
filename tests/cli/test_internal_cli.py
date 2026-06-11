@@ -10,8 +10,18 @@ from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 
-class TestReviewPr(TestCase):
-    def _make_repo_with_script(self, returncode: int = 0):
+def _git_ok(*args, **kwargs):
+    """Fake _git that succeeds; returns toplevel for rev-parse."""
+    result = MagicMock(returncode=0, stdout="", stderr="")
+    if "rev-parse" in args:
+        result.stdout = "/repo/root\n"
+    return result
+
+
+class TestReviewPrLegacyHatch(TestCase):
+    """AGENTRAIL_NATIVE_REVIEW=0 keeps the legacy bash-exec path."""
+
+    def _make_repo_with_script(self):
         tmp = tempfile.mkdtemp()
         script_dir = Path(tmp) / "templates" / "scripts"
         script_dir.mkdir(parents=True)
@@ -20,12 +30,13 @@ class TestReviewPr(TestCase):
         script.chmod(0o755)
         return tmp
 
-    def test_review_pr_present_runs_script(self):
+    def test_native_review_0_execs_script(self):
         from agentrail.cli.commands.internal import run_internal
 
         tmp = self._make_repo_with_script()
         mock_proc = MagicMock(returncode=0)
-        with patch("agentrail.cli.commands.internal._repo_dir", return_value=Path(tmp)), \
+        with patch.dict(os.environ, {"AGENTRAIL_NATIVE_REVIEW": "0"}), \
+             patch("agentrail.cli.commands.internal._repo_dir", return_value=Path(tmp)), \
              patch("agentrail.cli.commands.internal.subprocess.run", return_value=mock_proc) as mock_run:
             rc = run_internal(["review-pr", "--pr", "12", "--machine-readable"])
         self.assertEqual(rc, 0)
@@ -35,42 +46,142 @@ class TestReviewPr(TestCase):
         self.assertIn("12", call_args)
         self.assertIn("--machine-readable", call_args)
 
-    def test_review_pr_missing_returns_2(self):
-        from agentrail.cli.commands.internal import run_internal
-
-        tmp = tempfile.mkdtemp()
-        with patch("agentrail.cli.commands.internal._repo_dir", return_value=Path(tmp)):
-            with patch("sys.stderr") as mock_err:
-                rc = run_internal(["review-pr", "--pr", "99"])
-        self.assertEqual(rc, 2)
-
-    def test_review_pr_missing_writes_stderr(self):
+    def test_native_review_0_missing_script_returns_2(self):
         from agentrail.cli.commands.internal import run_internal
         import io
 
         tmp = tempfile.mkdtemp()
         buf = io.StringIO()
-        with patch("agentrail.cli.commands.internal._repo_dir", return_value=Path(tmp)), \
+        with patch.dict(os.environ, {"AGENTRAIL_NATIVE_REVIEW": "0"}), \
+             patch("agentrail.cli.commands.internal._repo_dir", return_value=Path(tmp)), \
              patch("sys.stderr", buf):
-            run_internal(["review-pr", "--pr", "99"])
+            rc = run_internal(["review-pr", "--pr", "99"])
+        self.assertEqual(rc, 2)
         self.assertIn("missing internal review helper", buf.getvalue())
 
-    def test_review_pr_nonexec_returns_2(self):
+
+class TestReviewPrNative(TestCase):
+    """Default path runs natively (no bash script exec)."""
+
+    def _env(self):
+        return patch.dict(os.environ, {}, clear=False)
+
+    def _common_patches(self, gh_meta=None):
+        """Patch deps so the native path is NOT env-dependent (CI has no
+        gh/codex/claude on PATH)."""
+        if gh_meta is None:
+            gh_meta = {
+                "number": 12, "title": "Fix it", "url": "http://pr/12",
+                "headRefName": "feat-x", "baseRefName": "main", "state": "OPEN",
+            }
+        return [
+            patch("agentrail.cli.commands.internal.shutil.which", return_value="/usr/bin/x"),
+            patch("agentrail.cli.commands.internal._git", side_effect=_git_ok),
+            patch("agentrail.cli.commands.internal._gh_view", return_value=gh_meta),
+        ]
+
+    def test_native_path_builds_prompt_and_runs_review(self):
+        from agentrail.cli.commands.internal import run_internal
+
+        captured = {}
+
+        def fake_build(pr, title, url, machine_readable, repo_root):
+            captured["build"] = (pr, title, url, machine_readable)
+            return "PROMPT WITH BEGIN_REVIEW_FIX_ISSUES_JSON"
+
+        def fake_run_review(engine, base, pr, prompt, output, **kw):
+            captured["run"] = (engine, base, pr, output)
+            return 0
+
+        with tempfile.TemporaryDirectory() as td:
+            out = str(Path(td) / "out.md")
+            patches = self._common_patches()
+            with patches[0], patches[1], patches[2], \
+                 patch("agentrail.afk.review_engine.build_review_prompt", fake_build), \
+                 patch("agentrail.afk.review_engine.run_review", fake_run_review), \
+                 patch("agentrail.afk.review_engine.validate_machine_readable_output") as mock_val:
+                rc = run_internal([
+                    "review-pr", "--pr", "12", "--engine", "codex",
+                    "--output", out, "--machine-readable",
+                ])
+        self.assertEqual(rc, 0)
+        self.assertEqual(captured["build"], ("12", "Fix it", "http://pr/12", True))
+        self.assertEqual(captured["run"][0], "codex")
+        self.assertEqual(captured["run"][1], "main")
+        mock_val.assert_called_once()
+
+    def test_machine_readable_requires_output(self):
         from agentrail.cli.commands.internal import run_internal
         import io
 
-        tmp = tempfile.mkdtemp()
-        script_dir = Path(tmp) / "templates" / "scripts"
-        script_dir.mkdir(parents=True)
-        script = script_dir / "review-pr"
-        script.write_text("#!/bin/sh\n")
-        script.chmod(0o644)  # not executable
         buf = io.StringIO()
-        with patch("agentrail.cli.commands.internal._repo_dir", return_value=Path(tmp)), \
+        with patch("sys.stderr", buf):
+            rc = run_internal(["review-pr", "--pr", "12", "--machine-readable"])
+        self.assertEqual(rc, 1)
+        self.assertIn("--machine-readable requires --output", buf.getvalue())
+
+    def test_unsupported_engine_returns_nonzero(self):
+        from agentrail.cli.commands.internal import run_internal
+        import io
+
+        buf = io.StringIO()
+        with patch("sys.stderr", buf):
+            rc = run_internal(["review-pr", "--pr", "12", "--engine", "frob"])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("unsupported review engine", buf.getvalue())
+
+    def test_missing_dep_returns_nonzero(self):
+        from agentrail.cli.commands.internal import run_internal
+        import io
+
+        buf = io.StringIO()
+        with patch("agentrail.cli.commands.internal.shutil.which", return_value=None), \
              patch("sys.stderr", buf):
+            rc = run_internal(["review-pr", "--pr", "12"])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("missing required command", buf.getvalue())
+
+    def test_run_review_nonzero_propagates(self):
+        from agentrail.cli.commands.internal import run_internal
+
+        with tempfile.TemporaryDirectory() as td:
+            out = str(Path(td) / "out.md")
+            patches = self._common_patches()
+            with patches[0], patches[1], patches[2], \
+                 patch("agentrail.afk.review_engine.build_review_prompt", return_value="P"), \
+                 patch("agentrail.afk.review_engine.run_review", return_value=3), \
+                 patch("agentrail.afk.review_engine.validate_machine_readable_output") as mock_val:
+                rc = run_internal([
+                    "review-pr", "--pr", "12", "--output", out, "--machine-readable",
+                ])
+        self.assertEqual(rc, 3)
+        mock_val.assert_not_called()
+
+    def test_validation_failure_returns_nonzero(self):
+        from agentrail.cli.commands.internal import run_internal
+        from agentrail.afk.review_engine import ReviewError
+
+        with tempfile.TemporaryDirectory() as td:
+            out = str(Path(td) / "out.md")
+            patches = self._common_patches()
+            with patches[0], patches[1], patches[2], \
+                 patch("agentrail.afk.review_engine.build_review_prompt", return_value="P"), \
+                 patch("agentrail.afk.review_engine.run_review", return_value=0), \
+                 patch("agentrail.afk.review_engine.validate_machine_readable_output",
+                       side_effect=ReviewError("missing block")):
+                rc = run_internal([
+                    "review-pr", "--pr", "12", "--output", out, "--machine-readable",
+                ])
+        self.assertNotEqual(rc, 0)
+
+    def test_missing_pr_returns_1(self):
+        from agentrail.cli.commands.internal import run_internal
+        import io
+
+        buf = io.StringIO()
+        with patch("sys.stderr", buf):
             rc = run_internal(["review-pr"])
-        self.assertEqual(rc, 2)
-        self.assertIn("missing internal review helper", buf.getvalue())
+        self.assertEqual(rc, 1)
 
 
 class TestWorktreeMark(TestCase):

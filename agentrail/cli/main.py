@@ -16,6 +16,7 @@ from agentrail.cli.commands.link import run_link
 from agentrail.cli.commands.prompt import run_prompt
 from agentrail.cli.commands.run import run_run
 from agentrail.cli.commands.status import run_status
+from agentrail.cli.commands.upgrade import run_upgrade
 from agentrail.cli.commands.timeline import run_timeline
 
 
@@ -58,6 +59,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_prompt(args[1:])
     if args and args[0] == "run":
         return run_run(args[1:])
+    if args and args[0] == "upgrade":
+        return run_upgrade(args[1:])
     if args and args[0] == "internal":
         return run_internal(args[1:])
     legacy = _legacy_script()

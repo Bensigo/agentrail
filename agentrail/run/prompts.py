@@ -357,9 +357,28 @@ def issue_run_phase_prompt(
         else:
             findings_segment = ""
 
+        # Ralph one-issue execution limits — folded in from the legacy
+        # templates/scripts/ralph-loop heredoc preamble. Only the framing that
+        # is NOT already carried by the base task block (_CLAUDE_TASK_BLOCK /
+        # _CODEX_TASK_BLOCK) or the execute tail is included here, to avoid
+        # duplicating hard limits the base prompt already states.
+        ralph_preamble = (
+            "Ralph one-issue execution limits:\n"
+            f"- Handle exactly one issue: #{issue}. Do not continue into unrelated issues.\n"
+            "- Read CONTEXT.md and docs/agents/ralph-loop.md before editing.\n"
+            "- Run memory recall for the issue title and key terms before editing when available.\n"
+            "- Treat project memory as advisory; verify it against current code, docs, issue, PRD, and ADRs.\n"
+            "- Preserve existing user changes.\n"
+            "- Implement the smallest coherent change that satisfies the issue, then run relevant verification.\n"
+            "- In the PR body, map every acceptance criterion to implementation and verification evidence.\n"
+            "- Stop when the PR is ready or when blocked.\n"
+            "\n"
+        )
+
         # Core body up through base_prompt
         body = (
-            "This is phase 2 of 2: execute.\n"
+            ralph_preamble
+            + "This is phase 2 of 2: execute.\n"
             f"Execution attempt: {execution_attempt} of {max_execution_attempts}.\n"
             "\n"
             "Issue context:\n"

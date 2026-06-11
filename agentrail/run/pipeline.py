@@ -98,7 +98,10 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     phase_prompt_file.write_text(phase_prompt)
 
     # 10. Phase command string (metadata only)
-    if phase == "execute":
+    # Execute is native by default (does what the plan branch already does) and
+    # only shells into the legacy ralph-loop script when AGENTRAIL_NATIVE_EXECUTE=0.
+    native_execute = os.environ.get("AGENTRAIL_NATIVE_EXECUTE", "") != "0"
+    if phase == "execute" and not native_execute:
         phase_command = (
             f"{rc.ralph_path} --issue {rc.issue}"
             f" --agent-command {rc.agent_command}"
@@ -175,12 +178,24 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     print(f"phase metadata: {phase_metadata_file}")
 
     # 15. Agent timeout
-    agent_timeout = int(
-        os.environ.get("AGENTRAIL_AGENT_TIMEOUT", str(rc.agent_timeout)) or rc.agent_timeout
-    )
+    # The execute phase preserves the legacy ralph-loop precedence:
+    # RALPH_AGENT_TIMEOUT wins over AGENTRAIL_AGENT_TIMEOUT so anyone who set
+    # the ralph-specific alias is not silently changed by the native port.
+    if phase == "execute":
+        timeout_value = (
+            os.environ.get("RALPH_AGENT_TIMEOUT")
+            or os.environ.get("AGENTRAIL_AGENT_TIMEOUT")
+            or str(rc.agent_timeout)
+        )
+    else:
+        timeout_value = (
+            os.environ.get("AGENTRAIL_AGENT_TIMEOUT") or str(rc.agent_timeout)
+        )
+    agent_timeout = int(timeout_value or rc.agent_timeout)
 
     # 16. Execute
-    if phase == "execute":
+    if phase == "execute" and not native_execute:
+        # Legacy escape hatch (AGENTRAIL_NATIVE_EXECUTE=0): shell into ralph-loop.
         status = run_with_timeout(
             [str(rc.ralph_path), "--issue", str(rc.issue),
              "--agent-command", rc.agent_command,
@@ -190,6 +205,8 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
             output_file=phase_output_file,
         )
     else:
+        # Native path: identical to the plan branch — a single bounded agent
+        # invocation with the phase prompt on stdin (no retry/verify loop).
         status = run_with_timeout(
             ["bash", "-lc", rc.agent_command],
             cwd=rc.target_dir,
@@ -381,10 +398,13 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
     print(f"prompt: {prompt_file}")
     print(f"metadata: {metadata_file}")
 
-    # 10. Ralph executor path
+    # 10. Ralph executor path — only required for the legacy execute branch
+    # (AGENTRAIL_NATIVE_EXECUTE=0). The native default does not shell into the
+    # script, so a missing ralph-loop is not fatal there.
     ralph_path = _ralph_executor_path(target_dir, repo_dir)
-    if ralph_path is None:
-        print("error: ralph-loop executor not found; cannot run execute phase.",
+    if ralph_path is None and os.environ.get("AGENTRAIL_NATIVE_EXECUTE", "") == "0":
+        print("error: ralph-loop executor not found; cannot run legacy execute phase "
+              "(AGENTRAIL_NATIVE_EXECUTE=0).",
               file=sys.stderr)
         return 1
 

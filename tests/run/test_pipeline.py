@@ -197,9 +197,32 @@ class ExecutePhaseSuccessTests(unittest.TestCase):
 
     @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
     @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
-    def test_execute_uses_ralph_argv(self, mock_summary, mock_build):
+    def test_execute_native_bash_stdin_by_default(self, mock_summary, mock_build):
+        """By default (AGENTRAIL_NATIVE_EXECUTE unset), execute runs natively:
+        bash -lc <agent_command> with the phase prompt on stdin, mirroring plan."""
         stub = _stub_run_with_timeout(0)
-        with patch("agentrail.run.pipeline.run_with_timeout", stub):
+        env = {k: v for k, v in os.environ.items() if k != "AGENTRAIL_NATIVE_EXECUTE"}
+        with patch.dict(os.environ, env, clear=True), \
+                patch("agentrail.run.pipeline.run_with_timeout", stub):
+            run_issue_phase(self.rc, "execute", 1)
+
+        call_info = stub.calls[0]
+        argv = call_info["argv"]
+        self.assertEqual(argv[0], "bash")
+        self.assertEqual(argv[1], "-lc")
+        self.assertEqual(argv[2], self.rc.agent_command)
+        self.assertIsNotNone(call_info["stdin_text"],
+                             "native execute must pass the phase prompt on stdin")
+        self.assertNotIn("--issue", argv)
+        self.assertEqual(call_info["cwd"], self.target)
+
+    @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
+    @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
+    def test_execute_uses_ralph_argv_when_native_disabled(self, mock_summary, mock_build):
+        """AGENTRAIL_NATIVE_EXECUTE=0 falls back to the legacy ralph-loop argv."""
+        stub = _stub_run_with_timeout(0)
+        with patch.dict(os.environ, {"AGENTRAIL_NATIVE_EXECUTE": "0"}), \
+                patch("agentrail.run.pipeline.run_with_timeout", stub):
             run_issue_phase(self.rc, "execute", 1)
 
         call_info = stub.calls[0]
@@ -208,7 +231,35 @@ class ExecutePhaseSuccessTests(unittest.TestCase):
         self.assertIn("--issue", argv)
         self.assertIn("--agent-command", argv)
         self.assertIn("--prefix-prompt-file", argv)
+        self.assertIsNone(call_info["stdin_text"],
+                          "legacy ralph branch does not pass stdin_text")
         self.assertEqual(call_info["cwd"], self.target)
+
+    @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
+    @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
+    def test_execute_timeout_prefers_ralph_agent_timeout(self, mock_summary, mock_build):
+        """For the execute phase, RALPH_AGENT_TIMEOUT wins over AGENTRAIL_AGENT_TIMEOUT
+        (preserves legacy ralph-loop precedence)."""
+        stub = _stub_run_with_timeout(0)
+        with patch.dict(os.environ, {
+            "RALPH_AGENT_TIMEOUT": "111",
+            "AGENTRAIL_AGENT_TIMEOUT": "222",
+        }), patch("agentrail.run.pipeline.run_with_timeout", stub):
+            run_issue_phase(self.rc, "execute", 1)
+
+        self.assertEqual(stub.calls[0]["timeout"], 111)
+
+    @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
+    @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
+    def test_execute_timeout_falls_back_to_agentrail_agent_timeout(self, mock_summary, mock_build):
+        stub = _stub_run_with_timeout(0)
+        env = {k: v for k, v in os.environ.items() if k != "RALPH_AGENT_TIMEOUT"}
+        env["AGENTRAIL_AGENT_TIMEOUT"] = "222"
+        with patch.dict(os.environ, env, clear=True), \
+                patch("agentrail.run.pipeline.run_with_timeout", stub):
+            run_issue_phase(self.rc, "execute", 1)
+
+        self.assertEqual(stub.calls[0]["timeout"], 222)
 
     @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
     @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
@@ -435,22 +486,23 @@ class ExecuteStdinHardeningTests(unittest.TestCase):
     @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
     @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
     def test_execute_does_not_pass_stdin_text(self, mock_summary, mock_build):
-        """run_with_timeout must be called without stdin_text for the EXECUTE phase."""
+        """Legacy ralph branch (AGENTRAIL_NATIVE_EXECUTE=0) must not pass stdin_text."""
         stub = _stub_run_with_timeout(0)
-        with patch("agentrail.run.pipeline.run_with_timeout", stub):
+        with patch.dict(os.environ, {"AGENTRAIL_NATIVE_EXECUTE": "0"}), \
+                patch("agentrail.run.pipeline.run_with_timeout", stub):
             run_issue_phase(self.rc, "execute", 1, plan_output="approved plan")
 
         self.assertEqual(len(stub.calls), 1)
         call_info = stub.calls[0]
         self.assertIsNone(
             call_info.get("stdin_text"),
-            "execute phase must NOT pass stdin_text to run_with_timeout",
+            "legacy execute phase must NOT pass stdin_text to run_with_timeout",
         )
 
     @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
     @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
-    def test_plan_passes_stdin_text_execute_does_not(self, mock_summary, mock_build):
-        """Contrast: plan phase passes a non-None stdin_text; execute phase passes None."""
+    def test_plan_passes_stdin_text_legacy_execute_does_not(self, mock_summary, mock_build):
+        """Contrast: plan passes stdin_text; legacy execute (NATIVE=0) passes None."""
         # Plan phase
         plan_stub = _stub_run_with_timeout(0, "plan output")
         with patch("agentrail.run.pipeline.run_with_timeout", plan_stub):
@@ -460,13 +512,14 @@ class ExecuteStdinHardeningTests(unittest.TestCase):
             "plan phase must pass a non-None stdin_text",
         )
 
-        # Execute phase (fresh RunContext reusing same dirs is fine — just check stdin)
+        # Legacy execute phase (fresh RunContext reusing same dirs is fine — just check stdin)
         exec_stub = _stub_run_with_timeout(0)
-        with patch("agentrail.run.pipeline.run_with_timeout", exec_stub):
+        with patch.dict(os.environ, {"AGENTRAIL_NATIVE_EXECUTE": "0"}), \
+                patch("agentrail.run.pipeline.run_with_timeout", exec_stub):
             run_issue_phase(self.rc, "execute", 1, plan_output="plan output")
         self.assertIsNone(
             exec_stub.calls[0].get("stdin_text"),
-            "execute phase must NOT pass stdin_text",
+            "legacy execute phase must NOT pass stdin_text",
         )
 
 
@@ -971,7 +1024,8 @@ class RunIssuePlanFailureShortCircuitsTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class RunIssueRalphNoneTests(unittest.TestCase):
-    """Fix 1: ralph_path=None must return 1 without raising and without calling run_issue_phase."""
+    """ralph_path=None blocks only the legacy execute branch (AGENTRAIL_NATIVE_EXECUTE=0);
+    the native default proceeds without ralph-loop."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -982,12 +1036,10 @@ class RunIssueRalphNoneTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_ralph_none_returns_1_without_raising(self):
+    def _run(self, mock_phase):
         gh_mock = MagicMock()
         gh_mock.returncode = 1
         gh_mock.stdout = ""
-
-        mock_phase = MagicMock()
 
         with patch("agentrail.run.pipeline.ctx.issue_resolution_text", return_value="T"), \
              patch("agentrail.run.pipeline.skills.resolve_skills",
@@ -1005,10 +1057,25 @@ class RunIssueRalphNoneTests(unittest.TestCase):
              patch("agentrail.run.pipeline.state_mod.update_run_state"), \
              patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
              patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
-            result = run_issue(self.target, 7, agent="claude", command="c", repo_dir=self.repo)
+            return run_issue(self.target, 7, agent="claude", command="c", repo_dir=self.repo)
+
+    def test_legacy_ralph_none_returns_1_without_raising(self):
+        mock_phase = MagicMock()
+        with patch.dict(os.environ, {"AGENTRAIL_NATIVE_EXECUTE": "0"}):
+            result = self._run(mock_phase)
 
         self.assertEqual(result, 1)
         mock_phase.assert_not_called()
+
+    def test_native_ralph_none_proceeds(self):
+        """Native default: missing ralph-loop must NOT block; phases still run."""
+        mock_phase = MagicMock(return_value=(0, ""))
+        env = {k: v for k, v in os.environ.items() if k != "AGENTRAIL_NATIVE_EXECUTE"}
+        with patch.dict(os.environ, env, clear=True):
+            result = self._run(mock_phase)
+
+        self.assertEqual(result, 0)
+        self.assertTrue(mock_phase.called)
 
 
 class RunIssueFinishPhaseOnPlanFailureTests(unittest.TestCase):

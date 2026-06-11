@@ -453,6 +453,59 @@ class IssueRunPhasePromptTests(unittest.TestCase):
         # 4 newlines = 3 blank lines between "BASE" and "AgentRail will invoke"
         self.assertIn("BASE\n\n\n\nAgentRail will invoke the Ralph one-issue executor", result)
 
+    # --- execute phase: folded-in ralph preamble (slice A) ---
+
+    def test_execute_one_issue_hard_limit(self):
+        result = self._fn(
+            "execute", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+        )
+        self.assertIn("Handle exactly one issue: #7.", result)
+
+    def test_execute_reads_context_and_ralph_docs(self):
+        result = self._fn(
+            "execute", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+        )
+        self.assertIn(
+            "Read CONTEXT.md and docs/agents/ralph-loop.md before editing",
+            result,
+        )
+
+    def test_execute_runs_memory_recall(self):
+        result = self._fn(
+            "execute", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+        )
+        self.assertIn("Run memory recall", result)
+
+    def test_execute_acceptance_criterion_mapping(self):
+        result = self._fn(
+            "execute", 7,
+            issue_context="IC", base_prompt="BP", context_summary="CS",
+        )
+        self.assertIn(
+            "map every acceptance criterion to implementation and verification evidence",
+            result,
+        )
+
+    def test_execute_preamble_keeps_existing_content(self):
+        """Folding in the ralph preamble must not drop existing execute content."""
+        result = self._fn(
+            "execute", 7,
+            issue_context="ICTX", base_prompt="BPROMPT", context_summary="CSUM",
+            plan_output="PLAN",
+        )
+        self.assertIn("This is phase 2 of 2: execute.", result)
+        self.assertIn("ICTX", result)
+        self.assertIn("CSUM", result)
+        self.assertIn("PLAN", result)
+        self.assertIn("BPROMPT", result)
+        self.assertIn(
+            "AgentRail will invoke the Ralph one-issue executor for this phase",
+            result,
+        )
+
     # --- execute phase (with findings) ---
 
     def test_execute_with_findings_section_header(self):

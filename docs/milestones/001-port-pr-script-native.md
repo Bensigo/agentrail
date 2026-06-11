@@ -1,14 +1,18 @@
-# Milestone 001 — Port `pr` script to native Python
+# Milestone 001 — Delete the `pr` script (DONE — #427 / PR #433)
 
 Source: `docs/superpowers/specs/2026-06-12-eliminate-bash-design.md` (M1).
 
-## Outcome
+> **Resolved as DELETE, not port.** The #427 audit found `templates/scripts/pr` is
+> **not** agentrail's flow and **not** duplicated in the AFK runner — it's a
+> 1,323-line PR-lifecycle helper hardcoded to a dead prototype project's
+> conventions (`openclaw#N` subjects, `pnpm vitest`, CHANGELOG enforcement) with
+> **no runtime caller**. So M1 deleted it rather than porting. The one useful
+> behavior it held (`promote_unblocked_issues_after_merge`) is tracked as a
+> follow-up to add natively to the AFK runner.
 
-`templates/scripts/pr` (1,323 lines) is deleted. Every subcommand (`review-init`, `review-checkout-main`/`-pr`, `review-guard`, `review-artifacts-init`, `review-validate-artifacts`, `review-tests`, `prepare-init`/`-validate-commit`/`-gates`/`-push`, `merge-verify`, `merge-run`) either has confirmed native coverage in `afk/runner.py`/`internal.py` or is ported into a native `agentrail/pr/` module. Agents that invoke `pr` via printed instructions are updated to the native paths.
+## Outcome (as delivered)
 
-## Why first
-
-Largest bash file → biggest bug surface. Pure logic, no live-agent validation needed. Map-then-delete against existing native coverage keeps new code minimal. Can run in parallel with M006.
+`templates/scripts/pr` and `scripts/test-promote-unblocked-issues` deleted; deregistered from the doctor source manifest + `test-install` checks; dropped from the npm test chain. `scripts/pr` kept in `LEGACY_SCRIPT_PATHS` so doctor still cleans up stale copies in old installs. pytest green; `test-install` passes.
 
 ## Testable proof
 

@@ -234,6 +234,141 @@ def _goal_label(goal: Any) -> str:
     return f"{goal.get('id') or 'goal'} {goal.get('status') or 'unknown'}{issue_part}: {summary}"
 
 
+def state_recommendation(target_dir: Path) -> str:
+    """Port of legacy state_recommendation (~2867). The no-state guidance text."""
+    return (
+        "AgentRail state was not found at .agentrail/state.json.\n\n"
+        "Recommendation:\n"
+        f"- If this repo has not been initialized, run: agentrail init --target {target_dir}\n"
+        f"- If this repo already has AgentRail files but no state, run: agentrail install --target {target_dir}\n"
+        f"- Then rerun: agentrail status --target {target_dir}"
+    )
+
+
+def _active_context_pack(target_dir: Path, run: Any) -> Optional[str]:
+    """Port of legacy activeContextPack (scripts/agentrail-legacy:3264-3276).
+    Return run.contextPackFile if set; else if run.metadataFile, read
+    <target>/<metadataFile> (or absolute) JSON and return its contextPackFile; else None."""
+    if not isinstance(run, dict):
+        return None
+    if run.get("contextPackFile"):
+        return run["contextPackFile"]
+    if not run.get("metadataFile"):
+        return None
+    meta_file = run["metadataFile"]
+    meta_path = Path(meta_file) if Path(meta_file).is_absolute() else target_dir / meta_file
+    if not meta_path.exists():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        return meta.get("contextPackFile") or None
+    except Exception:
+        return None
+
+
+def render_resume(target_dir: Path) -> str:
+    """Render the resume/handoff markdown from <target>/.agentrail/state.json
+    (port of legacy resume_body ~3211-3338). Returns the markdown string."""
+    state_path = target_dir / ".agentrail" / "state.json"
+
+    if not state_path.exists():
+        lines: List[str] = [
+            "# AgentRail Resume",
+            "",
+            "Codex Desktop instruction: do not rely on previous chat context. Recover from durable state and source files only.",
+            "",
+            state_recommendation(target_dir),
+            "",
+            "Relevant docs to inspect after initialization:",
+            "- CONTEXT.md",
+            "- TASTE.md when present",
+            "- docs/agents/",
+            "- docs/memory/",
+            "- docs/prd/",
+            "- docs/milestones/",
+            "",
+            "Verification commands:",
+            f"- agentrail doctor --target {target_dir}",
+            "- npm test",
+        ]
+        return "\n".join(lines)
+
+    state: Dict[str, Any] = json.loads(state_path.read_text(encoding="utf-8"))
+    workflow: Dict[str, Any] = state.get("workflow") or {}
+    active_run = workflow.get("activeRun")
+    completed_runs: List[Any] = workflow.get("completedRuns") if isinstance(workflow.get("completedRuns"), list) else []
+    goals: List[Any] = workflow.get("goals") if isinstance(workflow.get("goals"), list) else []
+
+    t = target_dir
+    lines = [
+        "# AgentRail Resume",
+        "",
+        "Codex Desktop instruction: do not rely on previous chat context. Recover from durable state and source files only.",
+        "",
+        "Current task:",
+        f"- workflow phase: {workflow.get('phase') or 'unknown'}",
+        f"- active phase: {_null_coalesce(workflow.get('activePhase'), 'none')}",
+        f"- active issue: {_null_coalesce(workflow.get('activeIssue'), 'none')}",
+        f"- active pull request: {_null_coalesce(workflow.get('activePullRequest'), 'none')}",
+        f"- active PRD: {_null_coalesce(workflow.get('activePrd'), 'none')}",
+        f"- active milestone: {_null_coalesce(workflow.get('activeMilestone'), 'none')}",
+        f"- active run: {_run_label(active_run) if isinstance(active_run, dict) else 'none'}",
+    ]
+
+    context_pack = _active_context_pack(target_dir, active_run)
+    if context_pack:
+        lines.append(f"- active context pack: {context_pack}")
+
+    active_goals = [g for g in goals if isinstance(g, dict) and g.get("status") == "active"]
+    for goal in active_goals[:5]:
+        success_count = len(goal.get("successCriteria") or []) if isinstance(goal.get("successCriteria"), list) else 0
+        lines.append(f"- active goal: {_goal_label(goal)}")
+        lines.append(f"- active goal success criteria: {success_count}")
+
+    active_attempts = _attempt_summary(active_run)
+    if active_attempts:
+        lines.append(f"- active run {active_attempts}")
+
+    active_stale = _stale_summary(target_dir, active_run)
+    if active_stale:
+        lines.append(f"- active run stale: {active_stale}")
+
+    if completed_runs:
+        for run in completed_runs[-5:]:
+            lines.append(f"- completed run: {_run_label(run)}")
+            attempts = _attempt_summary(run)
+            if attempts:
+                lines.append(f"- completed run {attempts}")
+            if isinstance(run, dict) and run.get("blockedReason"):
+                lines.append(f"- completed run blocked reason: {run['blockedReason']}")
+
+    lines.append(f"- last completed step: {_null_coalesce(workflow.get('lastCompletedStep'), 'none')}")
+    lines.append(f"- next action: {workflow.get('nextSuggestedAction') or 'none'}")
+    lines.append("")
+    lines.append("Relevant docs:")
+    lines.append("- CONTEXT.md")
+    lines.append("- TASTE.md when present")
+    lines.append("- docs/agents/agentrail-state.md")
+    lines.append("- docs/agents/issue-tracker.md")
+    lines.append("- docs/agents/ralph-loop.md")
+    lines.append("- docs/agents/pr-review.md")
+    lines.append("- docs/memory/")
+    lines.append("- docs/prd/")
+    lines.append("- docs/milestones/")
+    lines.append("")
+    lines.append("Verification commands:")
+    lines.append(f"- agentrail status --target {t}")
+    lines.append(f"- agentrail doctor --target {t}")
+    lines.append("- npm test")
+    lines.append("")
+    lines.append("Resume rules:")
+    lines.append("- Read source files and GitHub issue or PR state before acting.")
+    lines.append("- Treat this handoff as a pointer to durable state, not as hidden truth.")
+    lines.append("- Continue only the active issue or PR unless the durable state says otherwise.")
+
+    return "\n".join(lines)
+
+
 def render_state_summary(target_dir: Path) -> str:
     """Render the AgentRail state summary block from <target_dir>/.agentrail/state.json
     (port of legacy print_state_summary, scripts/agentrail-legacy:4132-4209).

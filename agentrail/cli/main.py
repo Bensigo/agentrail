@@ -17,6 +17,7 @@ from agentrail.cli.commands.link import run_link
 from agentrail.cli.commands.memory import run_memory
 from agentrail.cli.commands.prompt import run_prompt
 from agentrail.cli.commands.skills import run_skills
+from agentrail.cli.commands.resume import run_resume
 from agentrail.cli.commands.run import run_run
 from agentrail.cli.commands.status import run_status
 from agentrail.cli.commands.upgrade import run_upgrade
@@ -56,6 +57,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_link(args[1:])
     if args and args[0] == "timeline":
         return run_timeline(args[1:])
+    if args and args[0] == "resume":
+        return run_resume(args[1:])
     if args and args[0] == "status":
         return run_status(args[1:])
     if args and args[0] == "prompt":

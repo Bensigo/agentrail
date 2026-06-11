@@ -76,7 +76,6 @@ required=(
   "skills/devops-deploy/SKILL.md"
   "skills/docs-current/SKILL.md"
   "skills/frontend-web/SKILL.md"
-  "skills/bensigo-ai-workflow/SKILL.md"
   "skills/grill-with-docs/SKILL.md"
   "skills/grill-with-docs/ADR-FORMAT.md"
   "skills/grill-with-docs/CONTEXT-FORMAT.md"

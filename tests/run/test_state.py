@@ -15,6 +15,7 @@ from agentrail.run.state import (
     write_state,
     update_run_state,
     render_state_summary,
+    update_worktree_state,
 )
 
 NOW = "2026-06-11T00:00:00Z"
@@ -591,3 +592,152 @@ class TestRenderStateSummary:
         _write_state_json(tmp_path, {"workflow": {"activeIssue": 0}})
         result = render_state_summary(tmp_path)
         assert "- active issue: 0" in result
+
+
+# ---------------------------------------------------------------------------
+# update_worktree_state
+# ---------------------------------------------------------------------------
+
+WORKTREE_NOW = "2026-01-01T00:00:00.000Z"
+
+
+def _make_worktree_target(tmp_path: Path, initial_state: dict | None = None) -> Path:
+    """Create target dir with .agentrail/state.json."""
+    agentrail_dir = tmp_path / ".agentrail"
+    agentrail_dir.mkdir(parents=True)
+    state = initial_state if initial_state is not None else {"workflow": {}}
+    (agentrail_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    return tmp_path
+
+
+def _load_worktree_state(target_dir: Path) -> dict:
+    return json.loads((target_dir / ".agentrail" / "state.json").read_text(encoding="utf-8"))
+
+
+class TestUpdateWorktreeState:
+
+    def test_missing_state_json_is_noop(self, tmp_path):
+        """No state.json → no error, no file created."""
+        worktree = str(tmp_path / "worktrees" / "issue-12-my-feature")
+        update_worktree_state(tmp_path, worktree, "running", now=WORKTREE_NOW)
+        assert not (tmp_path / ".agentrail" / "state.json").exists()
+
+    def test_invalid_status_raises_value_error(self, tmp_path):
+        target = _make_worktree_target(tmp_path)
+        worktree = str(tmp_path / "worktrees" / "issue-12-my-feature")
+        with pytest.raises(ValueError, match="invalid worktree lifecycle status: bogus"):
+            update_worktree_state(target, worktree, "bogus", now=WORKTREE_NOW)
+
+    def test_new_running_worktree_creates_entry(self, tmp_path):
+        target = _make_worktree_target(tmp_path)
+        worktree_path = str(tmp_path / "worktrees" / "issue-12-my-feature")
+        update_worktree_state(
+            target, worktree_path, "running",
+            issue=12, base="main", slot=0,
+            run_dir=str(tmp_path / "runs" / "run-abc"),
+            now=WORKTREE_NOW,
+        )
+        state = _load_worktree_state(target)
+        worktrees = state["workflow"]["worktrees"]
+        assert len(worktrees) == 1
+        wt = worktrees[0]
+        assert wt["status"] == "running"
+        assert wt["absolutePath"] == str(Path(worktree_path).resolve())
+        # path is posix relative
+        assert "/" in wt["path"] or wt["path"] == "worktrees/issue-12-my-feature"
+        assert "\\" not in wt["path"]
+        # id uses issue number and basename: "issue-{issue}-{basename}"
+        assert wt["id"] == "issue-12-issue-12-my-feature"
+        assert wt["type"] == "issue"
+        assert wt["createdAt"] == WORKTREE_NOW
+        assert wt["updatedAt"] == WORKTREE_NOW
+        assert wt["issue"] == 12
+        assert wt["base"] == "main"
+        assert wt["slot"] == 0
+        assert "runDir" in wt
+
+    def test_upsert_running_then_completed_stays_one_entry(self, tmp_path):
+        target = _make_worktree_target(tmp_path)
+        worktree_path = str(tmp_path / "worktrees" / "issue-5-feat")
+        FIRST_NOW = "2026-01-01T00:00:00.000Z"
+        SECOND_NOW = "2026-01-02T00:00:00.000Z"
+        update_worktree_state(target, worktree_path, "running", issue=5, now=FIRST_NOW)
+        update_worktree_state(target, worktree_path, "completed", issue=5, now=SECOND_NOW)
+        state = _load_worktree_state(target)
+        worktrees = state["workflow"]["worktrees"]
+        assert len(worktrees) == 1
+        wt = worktrees[0]
+        assert wt["status"] == "completed"
+        assert wt["completedAt"] == SECOND_NOW
+        # createdAt preserved from first call
+        assert wt["createdAt"] == FIRST_NOW
+
+    def test_merged_sets_merged_at(self, tmp_path):
+        target = _make_worktree_target(tmp_path)
+        worktree_path = str(tmp_path / "worktrees" / "issue-3-feat")
+        update_worktree_state(target, worktree_path, "merged", issue=3, now=WORKTREE_NOW)
+        state = _load_worktree_state(target)
+        wt = state["workflow"]["worktrees"][0]
+        assert wt["mergedAt"] == WORKTREE_NOW
+
+    def test_failed_sets_failed_at(self, tmp_path):
+        target = _make_worktree_target(tmp_path)
+        worktree_path = str(tmp_path / "worktrees" / "issue-4-feat")
+        update_worktree_state(target, worktree_path, "failed", issue=4, now=WORKTREE_NOW)
+        state = _load_worktree_state(target)
+        wt = state["workflow"]["worktrees"][0]
+        assert wt["failedAt"] == WORKTREE_NOW
+
+    def test_abandoned_sets_abandoned_at(self, tmp_path):
+        target = _make_worktree_target(tmp_path)
+        worktree_path = str(tmp_path / "worktrees" / "issue-6-feat")
+        update_worktree_state(target, worktree_path, "abandoned", issue=6, now=WORKTREE_NOW)
+        state = _load_worktree_state(target)
+        wt = state["workflow"]["worktrees"][0]
+        assert wt["abandonedAt"] == WORKTREE_NOW
+
+    def test_running_clears_terminal_timestamps(self, tmp_path):
+        """Pre-seed a worktree with terminal timestamps; marking running removes them."""
+        worktree_path = str(tmp_path / "worktrees" / "issue-9-feat")
+        resolved = str(Path(worktree_path).resolve())
+        pre_seeded = {
+            "id": "issue-9-issue-9-feat",
+            "type": "issue",
+            "status": "completed",
+            "path": "worktrees/issue-9-feat",
+            "absolutePath": resolved,
+            "completedAt": "2025-12-01T00:00:00.000Z",
+            "removedAt": "2025-12-02T00:00:00.000Z",
+            "createdAt": "2025-11-01T00:00:00.000Z",
+            "updatedAt": "2025-12-01T00:00:00.000Z",
+        }
+        target = _make_worktree_target(tmp_path, {"workflow": {"worktrees": [pre_seeded]}})
+        update_worktree_state(target, worktree_path, "running", issue=9, now=WORKTREE_NOW)
+        state = _load_worktree_state(target)
+        wt = state["workflow"]["worktrees"][0]
+        assert wt["status"] == "running"
+        assert "completedAt" not in wt
+        assert "removedAt" not in wt
+        assert "failedAt" not in wt
+        assert "abandonedAt" not in wt
+        assert "mergedAt" not in wt
+        assert "cleanupStatus" not in wt
+
+    def test_issue_pr_slot_absent_when_none(self, tmp_path):
+        """Omitting issue/pr/slot → those keys absent from the record."""
+        target = _make_worktree_target(tmp_path)
+        worktree_path = str(tmp_path / "worktrees" / "issue-unknown-feat")
+        update_worktree_state(target, worktree_path, "running", now=WORKTREE_NOW)
+        state = _load_worktree_state(target)
+        wt = state["workflow"]["worktrees"][0]
+        assert "issue" not in wt
+        assert "pr" not in wt
+        assert "slot" not in wt
+
+    def test_deterministic_updated_at(self, tmp_path):
+        target = _make_worktree_target(tmp_path)
+        worktree_path = str(tmp_path / "worktrees" / "issue-1-feat")
+        update_worktree_state(target, worktree_path, "running", now="2026-01-01T00:00:00.000Z")
+        state = _load_worktree_state(target)
+        assert state["updatedAt"] == "2026-01-01T00:00:00.000Z"
+        assert state["workflow"]["worktrees"][0]["updatedAt"] == "2026-01-01T00:00:00.000Z"

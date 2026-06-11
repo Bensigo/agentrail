@@ -302,6 +302,109 @@ def render_state_summary(target_dir: Path) -> str:
     return "\n".join(lines)
 
 
+_WORKTREE_VALID_STATUSES = {"running", "completed", "merged", "abandoned", "failed"}
+_WORKTREE_TERMINAL_KEYS = ("completedAt", "mergedAt", "failedAt", "abandonedAt", "removedAt", "cleanupStatus")
+
+
+def update_worktree_state(target_dir: Path, worktree_path: str, status: str, *,
+                          issue: Optional[int] = None, pr: Optional[int] = None,
+                          run_dir: str = "", base: str = "", slot: Optional[int] = None,
+                          now: Optional[str] = None) -> None:
+    """Port of legacy update_worktree_state. Upserts a worktree lifecycle record into
+    <target_dir>/.agentrail/state.json workflow.worktrees[]. No-op if state.json absent.
+    Raises ValueError on an invalid status."""
+    state_path = target_dir / ".agentrail" / "state.json"
+    if not state_path.exists():
+        return
+
+    if status not in _WORKTREE_VALID_STATUSES:
+        raise ValueError(f"invalid worktree lifecycle status: {status}")
+
+    if now is None:
+        now = _utc_now_iso()
+
+    absolute_path = str(Path(worktree_path).resolve())
+
+    state: Dict[str, Any] = json.loads(state_path.read_text(encoding="utf-8"))
+    workflow: Dict[str, Any] = state["workflow"] if isinstance(state.get("workflow"), dict) else {}
+    worktrees: List[Dict[str, Any]] = workflow["worktrees"] if isinstance(workflow.get("worktrees"), list) else []
+
+    # Find existing worktree by resolving stored path and comparing to absolutePath
+    index = -1
+    for i, wt in enumerate(worktrees):
+        stored = wt.get("path") or wt.get("worktreePath") or ""
+        if not stored:
+            continue
+        stored_p = Path(stored)
+        if stored_p.is_absolute():
+            resolved = str(stored_p)
+        else:
+            resolved = str((target_dir / stored).resolve())
+        if resolved == absolute_path:
+            index = i
+            break
+
+    previous: Dict[str, Any] = worktrees[index] if index >= 0 else {}
+
+    basename = Path(absolute_path).name
+    issue_part = str(issue) if issue is not None else "unknown"
+    record: Dict[str, Any] = {
+        **previous,
+        "id": previous.get("id") or f"issue-{issue_part}-{basename}",
+        "type": previous.get("type") or "issue",
+        "status": status,
+        "path": relative_path(target_dir, absolute_path),
+        "absolutePath": absolute_path,
+        "updatedAt": now,
+    }
+
+    if not previous.get("createdAt"):
+        record["createdAt"] = now
+
+    if issue is not None:
+        record["issue"] = issue
+    elif "issue" in record and "issue" not in previous:
+        del record["issue"]
+
+    if pr is not None:
+        record["pr"] = pr
+
+    if run_dir:
+        if os.path.isabs(run_dir):
+            record["runDir"] = relative_path(target_dir, run_dir)
+        else:
+            record["runDir"] = run_dir
+
+    if base:
+        record["base"] = base
+
+    if slot is not None:
+        record["slot"] = slot
+
+    if status == "running":
+        for key in _WORKTREE_TERMINAL_KEYS:
+            record.pop(key, None)
+    elif status == "completed":
+        if not record.get("completedAt"):
+            record["completedAt"] = now
+    elif status == "merged":
+        record["mergedAt"] = now
+    elif status == "failed":
+        record["failedAt"] = now
+    elif status == "abandoned":
+        record["abandonedAt"] = now
+
+    if index >= 0:
+        worktrees[index] = record
+    else:
+        worktrees.append(record)
+
+    workflow["worktrees"] = worktrees
+    state["workflow"] = workflow
+    state["updatedAt"] = now
+    write_state(state_path, state)
+
+
 def update_run_state(target_dir: Path, event: str, *, run_id: str, issue: int,
                      agent: str, phase: Optional[str], picked_at: str,
                      finished_at: str, exit_status: int, prompt_file: str,

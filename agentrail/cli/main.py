@@ -9,6 +9,7 @@ from agentrail.cli.commands.cleanup import run_cleanup
 from agentrail.cli.commands.doctor import run_doctor
 from agentrail.cli.commands.grill import run_grill
 from agentrail.cli.commands.milestone import run_milestone
+from agentrail.cli.commands.prd import run_prd
 from agentrail.cli.commands.console import run_console
 from agentrail.cli.commands.context import run_context
 from agentrail.cli.commands.install import run_install
@@ -45,6 +46,7 @@ def _usage() -> str:
         "  agentrail install [--target DIR] [--force]\n"
         "  agentrail grill-me [plan-or-path] [--agent codex|claude] [--target DIR] [--headless]\n"
         "  agentrail milestone create <prd> [--agent codex|claude] [--target DIR] [--headless] [--dry-run]\n"
+        "  agentrail prd create <brief> [--agent codex|claude] [--target DIR] [--headless] [--dry-run]\n"
         "  agentrail prompt issue NUMBER [--target DIR]\n"
         "  agentrail prompt review PR_NUMBER [--target DIR]\n"
         "  agentrail internal <subcommand>\n"
@@ -70,6 +72,7 @@ def _usage() -> str:
         "  install     Install agentrail into a project (alias: init)\n"
         "  grill-me    Stress-test a plan with the grill-with-docs skill\n"
         "  milestone   Convert a PRD into docs/milestones/ files\n"
+        "  prd         Convert an idea into a PRD published to the issue tracker\n"
         "  prompt      Print an agent-ready prompt\n"
         "  internal    Internal plumbing commands\n"
         "  memory      Manage memory\n"
@@ -115,6 +118,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_grill(args[1:])
     if args[0] == "milestone":
         return run_milestone(args[1:])
+    if args[0] == "prd":
+        return run_prd(args[1:])
     if args[0] == "prompt":
         return run_prompt(args[1:])
     if args[0] == "run":

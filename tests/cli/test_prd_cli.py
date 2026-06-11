@@ -101,7 +101,11 @@ class PrdDryRunTests(unittest.TestCase):
         out = StringIO()
         with patch("sys.stdout", out):
             run_prd(["create", "some idea", "--dry-run"])
-        self.assertIn("docs/prd/", out.getvalue())
+        output = out.getvalue()
+        # Assert the negative policy explicitly, not just incidental presence of
+        # the path fragment in some sentence.
+        self.assertIn("No local", output)
+        self.assertIn("docs/prd/", output)
 
     def test_dry_run_does_not_invoke_session(self):
         sess = MagicMock()

@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 import agentrail.cli.commands.milestone as milestone_mod
 from agentrail.cli.commands.milestone import (
     _next_milestone_number,
-    _slug_from_ref,
     run_milestone,
 )
 from agentrail.cli.main import main as cli_main
@@ -98,7 +97,9 @@ class MilestoneDryRunTests(unittest.TestCase):
                 rc = run_milestone(["create", "docs/my-prd.md", "--dry-run"])
             self.assertEqual(rc, 0)
             self.assertIn("Would write", out.getvalue())
-            self.assertIn("001-my-prd.md", out.getvalue())
+            # Starting number is shown; exact slug/count is decided by the agent
+            # at runtime, so we no longer predict a single filename.
+            self.assertIn("001-", out.getvalue())
 
     def test_dry_run_does_not_invoke_session(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -166,22 +167,6 @@ class MilestoneNextNumberTests(unittest.TestCase):
             self.assertEqual(_next_milestone_number(Path(tmpdir)), 2)
 
 
-class MilestoneSlugTests(unittest.TestCase):
-    def test_slug_from_path(self):
-        self.assertEqual(_slug_from_ref("docs/my-prd.md"), "my-prd")
-
-    def test_slug_from_spec_path(self):
-        result = _slug_from_ref("docs/superpowers/specs/2026-06-11-skill-backed.md")
-        self.assertEqual(result, "2026-06-11-skill-backed")
-
-    def test_slug_lowercases(self):
-        self.assertEqual(_slug_from_ref("MyPRD.md"), "myprd")
-
-    def test_slug_replaces_special_chars(self):
-        self.assertEqual(_slug_from_ref("foo bar_baz.md"), "foo-bar-baz")
-
-    def test_slug_fallback_on_empty(self):
-        self.assertEqual(_slug_from_ref("---.md"), "milestone")
 
 
 class MilestoneDispatchTests(unittest.TestCase):

@@ -229,9 +229,13 @@ def run_skill_session(
         raise UsageError("runner command is empty")
 
     if not headless and not interactive:
+        # Generic across commands: some (e.g. prd/issue create) PUBLISH, so a
+        # silent headless fallback means publishing with no interactive review.
         print(
-            f"warning: agent '{agent}' has no interactive command; "
-            "falling back to headless (no live grilling).",
+            f"warning: agent '{agent}' has no interactive command; falling back "
+            "to headless — the skill runs with no live quiz, and if this command "
+            "publishes (e.g. prd/issue create) it will publish without review. "
+            "Pass --headless to acknowledge and suppress this warning.",
             file=sys.stderr,
         )
 

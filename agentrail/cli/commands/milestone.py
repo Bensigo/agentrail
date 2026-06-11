@@ -75,13 +75,6 @@ def _next_milestone_number(target: Path) -> int:
     return highest + 1
 
 
-def _slug_from_ref(prd: str) -> str:
-    """Derive a best-effort slug from a PRD path or inline text."""
-    stem = Path(prd).stem
-    slug = re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
-    return slug or "milestone"
-
-
 def run_milestone(args: List[str]) -> int:
     """Entry point for ``agentrail milestone ...``."""
     if not args or args[0] in ("-h", "--help"):
@@ -151,12 +144,18 @@ def _run_create(args: List[str]) -> int:
         raise UsageError("milestone create requires a <prd> argument")
 
     target_path = Path(target).resolve()
+    target = str(target_path)
     next_n = _next_milestone_number(target_path)
-    slug = _slug_from_ref(prd)
 
     if dry_run:
-        planned = target_path / "docs" / "milestones" / f"{next_n:03d}-{slug}.md"
-        print(f"Would write: {planned}")
+        # The to-milestones skill decides how many milestone files to write and
+        # their slugs — unknowable without running the agent. Describe the
+        # destination and starting number rather than predicting one filename.
+        print(
+            f"Would write one or more milestone file(s) under {target_path}/docs/milestones/, "
+            f"starting at {next_n:03d}-<slug>.md (exact count and slugs are decided by the "
+            "to-milestones skill at runtime)."
+        )
         return 0
 
     agent = resolve_agent_name(target, agent_flag)

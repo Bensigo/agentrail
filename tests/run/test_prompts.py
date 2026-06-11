@@ -115,6 +115,22 @@ class CommonHeaderTests(unittest.TestCase):
         result = self._fn("gpt-4o", "- state: none")
         self.assertIn("Agent target: gpt-4o", result)
 
+    def test_empty_state_summary_emits_not_found_line(self):
+        # Legacy parity: when render_state_summary returns "" (no
+        # .agentrail/state.json), the header must announce the absent state,
+        # not silently emit a blank line. Ported from the bash
+        # scripts/test-prompt-generation assertion
+        # "Codex grill prompt did not report missing state".
+        result = self._fn("codex", "")
+        self.assertIn(
+            "- AgentRail state: not found at .agentrail/state.json", result
+        )
+
+    def test_present_state_summary_not_overridden_by_not_found(self):
+        result = self._fn("codex", "- AgentRail state: present")
+        self.assertIn("- AgentRail state: present", result)
+        self.assertNotIn("not found at .agentrail/state.json", result)
+
 
 class FormatSkillResolutionTests(unittest.TestCase):
     """Tests for format_skill_resolution()."""

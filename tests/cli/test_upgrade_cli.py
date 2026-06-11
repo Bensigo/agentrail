@@ -45,7 +45,6 @@ def _make_fake_repo(tmp_dir: str) -> Path:
       - skills/
           skills/my-skill/SKILL.md <- managed under "skills/" prefix
       - scripts/agentrail          <- extraFiles
-      - scripts/agentrail-legacy   <- for source materialization
       - scripts/install-workflow   <- for source materialization
       - agentrail/                 <- for source materialization
     """
@@ -70,7 +69,7 @@ def _make_fake_repo(tmp_dir: str) -> Path:
 
     # scripts/ (extraFiles + source materialization scripts)
     (repo / "scripts").mkdir(parents=True)
-    for script in ("agentrail", "agentrail-legacy", "install-workflow"):
+    for script in ("agentrail", "install-workflow"):
         s = repo / "scripts" / script
         s.write_text(f"#!/bin/sh\necho {script}\n")
         s.chmod(0o755)

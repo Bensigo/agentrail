@@ -106,7 +106,7 @@ Internal compatibility copy:
 
 Installed projects should use the `agentrail` CLI. Raw Ralph, AFK, review, PR, and memory scripts are package internals and are kept under `.agentrail/source/` only for compatibility and upgrades.
 
-The public `scripts/agentrail` file is a compatibility launcher. Context-engine behavior is implemented in the typed Python package under `agentrail/context/`; non-context workflow commands currently delegate to the legacy compatibility command under `.agentrail/source/scripts/agentrail-legacy` in installed projects.
+The public `scripts/agentrail` file is a compatibility launcher. All commands are implemented as native Python under `agentrail/cli/`.
 
 ## Server & Ingestion Pipeline
 

@@ -455,7 +455,6 @@ REQUIRED_PATHS = [
     (".agentrail/source/package.json", ".agentrail/source/package.json", "file"),
     (".agentrail/source/agentrail/__init__.py", ".agentrail/source/agentrail/__init__.py", "file"),
     (".agentrail/source/scripts/agentrail", ".agentrail/source/scripts/agentrail", "executable"),
-    (".agentrail/source/scripts/agentrail-legacy", ".agentrail/source/scripts/agentrail-legacy", "executable"),
     (".agentrail/source/scripts/install-workflow", ".agentrail/source/scripts/install-workflow", "executable"),
     (".agentrail/source/templates/scripts/memory", ".agentrail/source/templates/scripts/memory", "executable"),
     (".agentrail/source/templates/scripts/ralph-loop", ".agentrail/source/templates/scripts/ralph-loop", "executable"),

@@ -134,24 +134,17 @@ class Runner:
         return subprocess.run(["git", "-C", str(self.target), *args],
                               check=False, capture_output=True, text=True)
 
-    def _prepare_for_review(self, pr: int) -> None:
-        """Put the main checkout in a clean state for the legacy review-pr,
-        which switches to the PR head branch and runs ``git pull --ff-only``
-        there. Two failure modes are neutralized:
-
-          1. A leftover worktree holding the head branch ('already used by
-             worktree') — remove it.
-          2. A stale *local* head branch that diverged from origin ('Not
-             possible to fast-forward') — force it to match origin so the
-             ff-only pull is a no-op.
-
-        We detach the main HEAD onto origin's head commit first so the local
-        branch can be force-updated even if it was checked out here.
-        """
+    async def _review(self, pr: int) -> Optional[review_policy.ReviewOutcome]:
         head = gh.pr_head_ref(pr)
         if not head:
-            return
-        # 1. drop any worktree on the head branch
+            return None
+        # Review in a disposable worktree. review-pr does `git switch <head>` in
+        # its cwd (resolved via `git rev-parse --show-toplevel`), so running it in
+        # a worktree checks out the PR head THERE and never touches the main
+        # checkout — this is what prevents the AFK data-loss.
+        self._git("fetch", "origin", head)
+        # drop any stale worktree already holding the head branch (but never the
+        # main checkout itself)
         listing = self._git("worktree", "list", "--porcelain").stdout
         path: Optional[str] = None
         for line in listing.splitlines():
@@ -161,30 +154,25 @@ class Runner:
                 if line.endswith(f"/{head}") and path != str(self.target):
                     self._git("worktree", "remove", "--force", path)
         self._git("worktree", "prune")
-        # 2. force the local branch to match origin, with no branch checked out
-        self._git("fetch", "origin", head)
-        self._git("switch", "--detach", f"origin/{head}")
+        # force the local head branch to origin so review-pr's `git pull --ff-only`
+        # is a no-op (a branch-ref update only; the main working tree is untouched)
         self._git("branch", "-f", head, f"origin/{head}")
-
-    def _restore_main(self) -> None:
-        """Leave the main checkout back on a clean main after reviews, so the
-        working tree isn't stranded on a feature branch."""
-        self._git("fetch", "origin", self.base)
-        self._git("switch", self.base)
-        self._git("reset", "--hard", f"origin/{self.base}")
-
-    async def _review(self, pr: int) -> Optional[review_policy.ReviewOutcome]:
-        self._prepare_for_review(pr)
-        out = self.logs / f"pr-{pr}-review.md"
-        rc = await _sh(
-            [self.agentrail, "internal", "review-pr", "--pr", str(pr),
-             "--engine", self.engine, "--output", str(out), "--machine-readable"],
-            cwd=self.target,
-            log=self.logs / f"pr-{pr}-review.log",
-        )
-        if rc != 0:
+        wt = self.run_dir / "worktrees" / f"review-pr-{pr}"
+        if self._git("worktree", "add", str(wt), head).returncode != 0:
             return None
-        return review_policy.classify(out)
+        try:
+            out = self.logs / f"pr-{pr}-review.md"
+            rc = await _sh(
+                [self.agentrail, "internal", "review-pr", "--pr", str(pr),
+                 "--engine", self.engine, "--output", str(out), "--machine-readable"],
+                cwd=wt,
+                log=self.logs / f"pr-{pr}-review.log",
+            )
+            if rc != 0:
+                return None
+            return review_policy.classify(out)
+        finally:
+            self._remove_worktree(wt)
 
     async def _autofix(self, slot: int, issue: int, pr: int,
                        outcome: review_policy.ReviewOutcome) -> bool:
@@ -338,11 +326,7 @@ class Runner:
     async def run(self) -> AfkState:
         workers = [asyncio.create_task(self._worker(s))
                    for s in range(self.concurrency)]
-        try:
-            await asyncio.gather(*workers)
-        finally:
-            # never leave the main checkout stranded on a feature branch
-            self._restore_main()
+        await asyncio.gather(*workers)
         return self.store.state
 
 

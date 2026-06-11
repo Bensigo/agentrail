@@ -29,9 +29,8 @@ cp -R "${repo_dir}/templates/docs" "${source_repo}/templates/docs"
 cp -R "${repo_dir}/templates/scripts" "${source_repo}/templates/scripts"
 cp -R "${repo_dir}/agentrail" "${source_repo}/agentrail"
 cp "${repo_dir}/scripts/agentrail" "${source_repo}/scripts/agentrail"
-cp "${repo_dir}/scripts/agentrail-legacy" "${source_repo}/scripts/agentrail-legacy"
 cp "${repo_dir}/package.json" "${source_repo}/package.json"
-chmod +x "${source_repo}/scripts/agentrail" "${source_repo}/scripts/agentrail-legacy"
+chmod +x "${source_repo}/scripts/agentrail"
 
 git -C "$source_repo" init --initial-branch=main --quiet
 git -C "$source_repo" config user.email agentrail@example.com

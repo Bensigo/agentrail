@@ -380,7 +380,7 @@ class DoctorFullyHealthyInstallTests(RunDoctorSetup, unittest.TestCase):
         (agentrail_pkg / "__init__.py").write_text("")
         scripts = source_dir / "scripts"
         scripts.mkdir(exist_ok=True)
-        for name in ["agentrail", "agentrail-legacy", "install-workflow"]:
+        for name in ["agentrail", "install-workflow"]:
             p = scripts / name
             p.write_text("#!/bin/sh\n")
             p.chmod(0o755)

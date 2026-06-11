@@ -380,7 +380,7 @@ def _materialize_source(repo_dir: Path, target_dir: Path) -> None:
 
     # Copy package.json + 3 scripts; chmod +x the scripts
     shutil.copy2(repo_dir / "package.json", source_support_dir / "package.json")
-    for script_name in ("agentrail", "agentrail-legacy", "install-workflow"):
+    for script_name in ("agentrail", "install-workflow"):
         src = repo_dir / "scripts" / script_name
         dst = scripts_dir / script_name
         if src.exists():

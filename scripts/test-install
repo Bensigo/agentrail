@@ -94,7 +94,6 @@ required=(
   ".agentrail/config.json"
   "scripts/agentrail"
   ".agentrail/source/scripts/agentrail"
-  ".agentrail/source/scripts/agentrail-legacy"
   ".agentrail/source/scripts/install-workflow"
   ".agentrail/source/agentrail/__init__.py"
   ".agentrail/source/agentrail/context/sources.py"

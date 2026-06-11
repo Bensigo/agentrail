@@ -3756,41 +3756,6 @@ fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
 NODE
 }
 
-run_memory() {
-  local kind="${1:-}"
-  [[ -n "$kind" ]] || { usage; exit 1; }
-  shift || true
-
-  local target_dir="$(pwd)"
-  local args=()
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --target)
-        local value="${2:-}"
-        [[ -n "$value" && "$value" != --* ]] || { echo "--target requires a directory" >&2; exit 2; }
-        target_dir="$value"
-        shift 2
-        ;;
-      -h|--help)
-        usage
-        exit 0
-        ;;
-      *)
-        args+=("$1")
-        shift
-        ;;
-    esac
-  done
-
-  local memory_script="${repo_dir}/templates/scripts/memory"
-  [[ -x "$memory_script" ]] || { echo "missing internal memory helper: ${memory_script}" >&2; exit 1; }
-
-  (
-    cd "$target_dir"
-    "$memory_script" "$kind" "${args[@]}"
-  )
-}
-
 resume_body() {
   local target_dir="$1"
   local state_file="${target_dir}/.agentrail/state.json"
@@ -4174,10 +4139,6 @@ case "${1:-}" in
   context)
     shift
     run_context "$@"
-    ;;
-  memory)
-    shift
-    run_memory "$@"
     ;;
   skills)
     shift

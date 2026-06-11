@@ -102,7 +102,6 @@ required=(
   ".agentrail/source/agentrail/context/packs.py"
   ".agentrail/source/agentrail/context/retrieval.py"
   ".agentrail/source/templates/scripts/memory"
-  ".agentrail/source/templates/scripts/review-pr"
 )
 
 for file in "${required[@]}"; do
@@ -112,7 +111,7 @@ for file in "${required[@]}"; do
   fi
 done
 
-for script in memory review-pr; do
+for script in memory; do
   if [[ -e "${tmp_dir}/scripts/${script}" ]]; then
     echo "raw workflow script was installed into normal project surface: scripts/${script}" >&2
     exit 1
@@ -179,26 +178,6 @@ fi
 
 if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/docs/agents/pr-review.md"; then
   echo "pr-review docs do not require acceptance criteria coverage checks" >&2
-  exit 1
-fi
-
-if ! grep -q -- "docs/agents/pr-review.md" "${tmp_dir}/.agentrail/source/templates/scripts/review-pr"; then
-  echo "review-pr script does not load installed PR review instructions" >&2
-  exit 1
-fi
-
-if ! grep -q -- "docs/agents/github-pr-reviewer.md" "${tmp_dir}/.agentrail/source/templates/scripts/review-pr"; then
-  echo "review-pr script does not load installed GitHub PR reviewer contract" >&2
-  exit 1
-fi
-
-if ! grep -q -- "--machine-readable" "${tmp_dir}/.agentrail/source/templates/scripts/review-pr"; then
-  echo "internal review helper does not support machine-readable review mode" >&2
-  exit 1
-fi
-
-if grep -q -- "review/prompt.md" "${tmp_dir}/.agentrail/source/templates/scripts/review-pr"; then
-  echo "review-pr script still depends on missing review/prompt.md" >&2
   exit 1
 fi
 

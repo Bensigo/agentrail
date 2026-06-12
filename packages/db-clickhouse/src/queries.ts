@@ -1090,3 +1090,54 @@ export async function getWorkspaceTelemetryCounts(
     totalTokens: Number(row?.total_tokens ?? 0),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Context Rot Scorer — hash churn signal
+// ---------------------------------------------------------------------------
+
+export interface HashChurnResult {
+  /** Number of distinct source_hash_list arrays observed in the window. */
+  distinct_lists: number;
+  /** Total context_packs rows in the window (i.e. total runs). */
+  run_count: number;
+}
+
+/**
+ * Count distinct `source_hash_list` values and total runs in `context_packs`
+ * over the given time window. High churn (many distinct lists) indicates
+ * rotating source sets — a secondary rot signal (20% weight in scorer).
+ */
+export async function countDistinctSourceHashLists(
+  workspaceId: string,
+  since: Date,
+  until: Date,
+  repositoryId?: string
+): Promise<HashChurnResult> {
+  const repoClause = repositoryId ? `AND repository_id = {repositoryId: String}` : "";
+  const result = await client.query({
+    query: `
+      SELECT
+        countDistinct(source_hash_list) AS distinct_lists,
+        count()                          AS run_count
+      FROM context_packs
+      WHERE workspace_id = {workspaceId: String}
+        AND occurred_at >= {since: DateTime64(3, 'UTC')}
+        AND occurred_at <= {until: DateTime64(3, 'UTC')}
+        ${repoClause}
+    `,
+    query_params: {
+      workspaceId,
+      since: since.toISOString().replace("T", " ").replace("Z", ""),
+      until: until.toISOString().replace("T", " ").replace("Z", ""),
+      ...(repositoryId ? { repositoryId } : {}),
+    },
+    format: "JSONEachRow",
+  });
+  const rows = await result.json<{ distinct_lists: string | number; run_count: string | number }>();
+  const r = rows[0];
+  if (!r) return { distinct_lists: 0, run_count: 0 };
+  return {
+    distinct_lists: Number(r.distinct_lists),
+    run_count: Number(r.run_count),
+  };
+}

@@ -415,10 +415,9 @@ export async function insertIndexSnapshots(
     query: `
       SELECT event_id
       FROM index_snapshots
-      WHERE workspace_id = {workspaceId: String}
-        AND event_id IN ({eventIds: Array(String)})
+      WHERE event_id IN ({eventIds: Array(String)})
     `,
-    query_params: { workspaceId: snapshots[0].workspace_id, eventIds },
+    query_params: { eventIds },
     format: "JSONEachRow",
   });
   const existing = new Set(

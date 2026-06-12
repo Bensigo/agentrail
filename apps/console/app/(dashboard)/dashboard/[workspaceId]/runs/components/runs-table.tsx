@@ -15,6 +15,7 @@ export interface RunRecord {
   id: string;
   workspaceId: string;
   repositoryId: string;
+  repository_name: string | null;
   agent: string;
   branch: string;
   title: string | null;
@@ -28,9 +29,14 @@ export interface RunRecord {
   tokens_saved: number;
 }
 
+interface RepoOption {
+  id: string;
+  name: string;
+}
+
 interface RunsTableProps {
   workspaceId: string;
-  repositories: string[];
+  repositories: RepoOption[];
 }
 
 type TimeRange = "1h" | "6h" | "24h" | "7d" | "30d" | "";
@@ -99,10 +105,12 @@ const columns = [
       </span>
     ),
   }),
-  columnHelper.accessor("repositoryId", {
+  columnHelper.accessor("repository_name", {
     header: "Repo",
     cell: (info) => (
-      <span className="text-[var(--gray-11)]">{info.getValue()}</span>
+      <span className="text-[var(--gray-11)]">
+        {info.getValue() ?? info.row.original.repositoryId}
+      </span>
     ),
   }),
   columnHelper.accessor("branch", {
@@ -260,8 +268,8 @@ export function RunsTable({ workspaceId, repositories }: RunsTableProps) {
         >
           <option value="">All repos</option>
           {repositories.map((r) => (
-            <option key={r} value={r}>
-              {r}
+            <option key={r.id} value={r.id}>
+              {r.name}
             </option>
           ))}
         </select>

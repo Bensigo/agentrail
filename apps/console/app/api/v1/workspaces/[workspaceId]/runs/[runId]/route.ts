@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
-import { getWorkspaceMembership, getRun } from "@agentrail/db-postgres";
+import { getWorkspaceMembership, getRun, getRepository } from "@agentrail/db-postgres";
 import { getRunEvents, getRunCosts } from "@agentrail/db-clickhouse";
 
 export async function GET(
@@ -30,6 +30,15 @@ export async function GET(
         )
       : null;
 
+  // Repository name for the header (falls back to the id if lookup fails).
+  let repositoryName: string | null = null;
+  try {
+    const repo = await getRepository(workspaceId, run.repositoryId);
+    repositoryName = repo?.name ?? null;
+  } catch {
+    // Postgres unavailable; header falls back to the id
+  }
+
   let events: Awaited<ReturnType<typeof getRunEvents>> = [];
   try {
     events = await getRunEvents(workspaceId, runId);
@@ -50,6 +59,7 @@ export async function GET(
       id: run.id,
       workspaceId: run.workspaceId,
       repositoryId: run.repositoryId,
+      repository_name: repositoryName,
       agent: run.agent,
       branch: run.branch,
       status: run.status,

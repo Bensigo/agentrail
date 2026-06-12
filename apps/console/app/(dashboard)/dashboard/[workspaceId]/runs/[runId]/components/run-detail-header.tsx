@@ -6,6 +6,7 @@ import { StatusBadge } from "../../components/status-badge";
 export interface RunDetail {
   id: string;
   repositoryId: string;
+  repository_name: string | null;
   branch: string;
   agent: string;
   status: string;
@@ -45,8 +46,8 @@ export function RunDetailHeader({ run }: { run: RunDetail }) {
         <span className="text-xs text-[var(--gray-09)] uppercase tracking-wide">
           Repo
         </span>
-        <span className="text-sm text-[var(--gray-12)] font-mono truncate max-w-[260px]">
-          {run.repositoryId}
+        <span className="text-sm text-[var(--gray-12)] truncate max-w-[260px]">
+          {run.repository_name ?? run.repositoryId}
         </span>
       </div>
 

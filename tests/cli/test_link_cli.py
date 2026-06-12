@@ -295,6 +295,20 @@ def test_link_auto_indexes_on_success(tmp_path, monkeypatch):
     push.assert_called_once()
 
 
+def test_link_reports_push_failure_but_still_succeeds(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    with _patch.object(link_mod, "_post_link", return_value={"workspace": {"name": "W"}, "repository": {"name": "R"}}), \
+         _patch.object(link_mod, "build_index", return_value={"commitSha": "x", "indexed": 1, "graphEdges": 2}), \
+         _patch.object(link_mod, "push_index_snapshot", return_value=False):
+        rc = link_mod.run_link([
+            "--workspace", "ws", "--repo", "repo", "--key", "ar_k",
+            "--base-url", "http://localhost:3000",
+        ])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "snapshot push failed" in err
+
+
 def test_link_no_index_flag_skips_indexing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with _patch.object(link_mod, "_post_link", return_value={"workspace": {"name": "W"}, "repository": {"name": "R"}}), \

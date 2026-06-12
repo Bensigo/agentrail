@@ -49,9 +49,12 @@ def _find_server_json(cwd: Path) -> Path:
 
 
 def _post_link(base_url: str, workspace_id: str, repo_id: str, api_key: str) -> dict:
-    """POST to /api/v1/cli/link and return the parsed JSON response dict.
+    """POST to /api/v1/cli/link and return the parsed JSON dict on HTTP 200.
 
-    Raises on network failure or non-200 response (caller handles errors).
+    Raises ``urllib.error.HTTPError`` on 4xx/5xx (the caller handles these).
+    Raises ``ValueError`` if the server returns an unexpected non-200 success
+    status (e.g. 201 or 204) so that such responses are never silently treated
+    as a successful link.  Raises on network failure as well.
     """
     url = f"{base_url}/api/v1/cli/link"
     payload = json.dumps(
@@ -71,6 +74,8 @@ def _post_link(base_url: str, workspace_id: str, repo_id: str, api_key: str) -> 
         status = resp.status
         body = json.loads(resp.read().decode())
 
+    # urlopen raises HTTPError for 4xx/5xx (handled by the caller); this guards
+    # against an unexpected non-200 success (e.g. 201/204) being treated as linked.
     if status != 200:
         server_msg = body.get("error", "unknown error") if isinstance(body, dict) else "unknown error"
         raise ValueError(f"HTTP {status} — {server_msg}")
@@ -199,8 +204,8 @@ def run_link(args: List[str]) -> int:
             if push_index_snapshot(cwd, result):
                 print("indexed and pushed snapshot — repo health will update shortly")
             else:
-                print("indexed locally, but snapshot push failed; run `agentrail context index` to retry")
+                print("indexed locally, but snapshot push failed; run `agentrail context index` to retry", file=sys.stderr)
         except Exception as exc:  # noqa: BLE001
-            print(f"linked, but initial index failed ({exc}); run `agentrail context index` manually")
+            print(f"linked, but initial index failed ({exc}); run `agentrail context index` manually", file=sys.stderr)
 
     return 0

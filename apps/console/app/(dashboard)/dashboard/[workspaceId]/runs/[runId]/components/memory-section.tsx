@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { Fragment, useState, useEffect } from "react";
 
 interface MemoryItem {
   id: string;
@@ -99,9 +99,8 @@ export function MemorySection({ workspaceId, runId }: MemorySectionProps) {
             {items.map((item) => {
               const expanded = expandedIds.has(item.id);
               return (
-                <>
+                <Fragment key={item.id}>
                   <tr
-                    key={item.id}
                     onClick={() => toggleExpand(item.id)}
                     className="border-b border-[var(--gray-04)] hover:bg-[var(--gray-02)] cursor-pointer transition-colors"
                     style={{ height: "34px" }}
@@ -148,7 +147,7 @@ export function MemorySection({ workspaceId, runId }: MemorySectionProps) {
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               );
             })}
           </tbody>

@@ -76,3 +76,14 @@ def test_push_returns_true_on_202(tmp_path, monkeypatch):
     assert snapshot_push.push_index_snapshot(tmp_path, {"commitSha": "x", "indexed": 1, "graphEdges": 2}) is True
     assert captured["url"] == "http://localhost:3000/api/v1/ingest/index-snapshots"
     assert captured["auth"] == "Bearer ar_test"
+
+
+def test_load_link_falls_back_to_env(tmp_path, monkeypatch):
+    # No server.json in the (worktree) target → resolve the link from the
+    # AGENTRAIL_SERVER_* env vars afk passes to the pipeline.
+    assert snapshot_push.load_link(tmp_path) is None
+    monkeypatch.setenv("AGENTRAIL_SERVER_BASE_URL", "http://localhost:3000/")
+    monkeypatch.setenv("AGENTRAIL_SERVER_API_KEY", "ar_env")
+    monkeypatch.setenv("AGENTRAIL_SERVER_REPOSITORY_ID", "repo-env")
+    link = snapshot_push.load_link(tmp_path)
+    assert link == {"base_url": "http://localhost:3000", "api_key": "ar_env", "repository_id": "repo-env"}

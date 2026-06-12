@@ -16,6 +16,7 @@ Per-worker pipeline:
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -58,11 +59,13 @@ def _agentrail_runner(target: Path) -> str:
 
 
 async def _sh(args: List[str], cwd: Optional[Path] = None,
-              log: Optional[Path] = None) -> int:
+              log: Optional[Path] = None,
+              env: Optional[dict] = None) -> int:
     """Run a subprocess off the event loop; tee combined output to ``log``."""
     proc = await asyncio.create_subprocess_exec(
         *args,
         cwd=str(cwd) if cwd else None,
+        env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
@@ -137,10 +140,21 @@ class Runner:
         if sid:
             from agentrail.afk.run_register import run_uuid
             cmd += ["--run-id", run_uuid(sid, issue)]
+        # Pass the dashboard link to the pipeline via env. The pipeline runs with
+        # --target=<worktree>, which doesn't carry server.json, so its cost/
+        # context-pack pushes resolve the link from these env vars instead.
+        env = dict(os.environ)
+        from agentrail.context.snapshot_push import load_link
+        link = load_link(self.target)
+        if link:
+            env["AGENTRAIL_SERVER_BASE_URL"] = link["base_url"]
+            env["AGENTRAIL_SERVER_API_KEY"] = link["api_key"]
+            env["AGENTRAIL_SERVER_REPOSITORY_ID"] = link["repository_id"]
         rc = await _sh(
             cmd,
             cwd=wt,
             log=self.logs / f"issue-{issue}-implement.log",
+            env=env,
         )
         return rc == 0
 

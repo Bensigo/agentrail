@@ -65,6 +65,7 @@ describe("POST /api/v1/ingest/memory-items", () => {
     expect(await res.json()).toEqual({ ok: true });
     expect(insertMemoryItems).toHaveBeenCalledWith({
       workspaceId: WS,
+      repositoryId: REPO,
       source: "review",
       items: [
         { content: "Always mock subprocess in tests", tags: ["testing", `run:${RUN_ID}`] },

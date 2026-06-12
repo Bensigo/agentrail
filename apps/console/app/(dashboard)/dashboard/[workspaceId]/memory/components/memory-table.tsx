@@ -7,6 +7,7 @@ import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
 export interface MemoryItemRecord {
   id: string;
   source: string;
+  repository_name: string | null;
   content_preview: string;
   content: string;
   tags: string[];
@@ -71,7 +72,7 @@ export function MemoryTable({ workspaceId }: MemoryTableProps) {
     });
   }
 
-  const COLS = 4; // source, content preview, created_at, last_used_at
+  const COLS = 5; // source, repository, content preview, created_at, last_used_at
 
   return (
     <div className="rounded border border-[var(--gray-05)] overflow-hidden">
@@ -81,6 +82,9 @@ export function MemoryTable({ workspaceId }: MemoryTableProps) {
             <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] w-6" />
             <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
               Source
+            </th>
+            <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+              Repository
             </th>
             <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
               Content preview
@@ -135,6 +139,11 @@ export function MemoryTable({ workspaceId }: MemoryTableProps) {
                     <td className="px-3 py-1.5 max-w-[240px]">
                       <span className="font-mono text-xs text-[var(--gray-11)] truncate block">
                         {item.source}
+                      </span>
+                    </td>
+                    <td className="px-3 py-1.5 max-w-[200px]">
+                      <span className="font-mono text-xs text-[var(--gray-10)] truncate block">
+                        {item.repository_name ?? "—"}
                       </span>
                     </td>
                     <td className="px-3 py-1.5 max-w-[400px]">

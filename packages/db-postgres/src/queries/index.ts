@@ -244,6 +244,8 @@ export async function listRunsWithCursor(
 export interface MemoryItemRow {
   id: string;
   workspaceId: string;
+  repositoryId: string | null;
+  repositoryName: string | null;
   source: string;
   content: string;
   tags: string[];
@@ -253,8 +255,19 @@ export interface MemoryItemRow {
 
 export async function listMemoryItems(workspaceId: string): Promise<MemoryItemRow[]> {
   const rows = await db
-    .select()
+    .select({
+      id: memoryItems.id,
+      workspaceId: memoryItems.workspaceId,
+      repositoryId: memoryItems.repositoryId,
+      repositoryName: repositories.name,
+      source: memoryItems.source,
+      content: memoryItems.content,
+      tags: memoryItems.tags,
+      createdAt: memoryItems.createdAt,
+      lastUsedAt: memoryItems.lastUsedAt,
+    })
     .from(memoryItems)
+    .leftJoin(repositories, eq(memoryItems.repositoryId, repositories.id))
     .where(eq(memoryItems.workspaceId, workspaceId))
     .orderBy(desc(memoryItems.createdAt));
   return rows as MemoryItemRow[];
@@ -262,6 +275,7 @@ export async function listMemoryItems(workspaceId: string): Promise<MemoryItemRo
 
 export async function insertMemoryItems(data: {
   workspaceId: string;
+  repositoryId?: string | null;
   source: string;
   items: Array<{ content: string; tags: string[] }>;
 }): Promise<void> {
@@ -269,6 +283,7 @@ export async function insertMemoryItems(data: {
   await db.insert(memoryItems).values(
     data.items.map((item) => ({
       workspaceId: data.workspaceId,
+      repositoryId: data.repositoryId ?? null,
       source: data.source,
       content: item.content,
       tags: item.tags,

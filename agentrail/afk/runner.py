@@ -375,6 +375,21 @@ class Runner:
 
     def _fail(self, issue: int, reason: str) -> None:
         self.store.dispatch(RecordFailure(issue, reason))
+        # Push failure telemetry — non-fatal.
+        try:
+            from agentrail.run.failure_push import push_failure_event
+            from agentrail.afk.run_register import run_uuid
+            sid = getattr(self, "session_id", None)
+            if sid:
+                push_failure_event(
+                    self.target,
+                    run_id=run_uuid(sid, issue),
+                    failure_type="afk_failure",
+                    phase="afk",
+                    message=reason,
+                )
+        except Exception:  # noqa: BLE001 — non-fatal
+            pass
         status = self.store.state.issues[issue].status
         if status == IssueStatus.HUMAN_REVIEW:
             pr = self.store.state.issues[issue].pr

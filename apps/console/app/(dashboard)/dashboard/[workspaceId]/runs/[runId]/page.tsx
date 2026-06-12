@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { RunDetailHeader } from "./components/run-detail-header";
 import { RunTimeline } from "./components/run-timeline";
 import { ReviewGatesSection } from "./components/review-gates-section";
+import { FailuresSection } from "./components/failures-section";
 import type { RunDetail } from "./components/run-detail-header";
 import type { TimelineEvent } from "./components/run-timeline";
 
@@ -153,6 +154,23 @@ export default function RunDetailPage() {
             </a>
           </div>
           <ReviewGatesSection workspaceId={workspaceId} runId={runId} />
+        </div>
+      )}
+
+      {run && (
+        <div className="mt-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+              Failures
+            </h2>
+            <a
+              href={`/dashboard/${workspaceId}/failures?runId=${runId}`}
+              className="text-xs text-[#70b8ff] hover:underline"
+            >
+              View all →
+            </a>
+          </div>
+          <FailuresSection workspaceId={workspaceId} runId={runId} />
         </div>
       )}
     </div>

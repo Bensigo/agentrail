@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { Copy, Trash2, Plus } from "lucide-react";
 import { SkeletonTable } from "../../../../components/loading-skeleton";
+import { InviteMemberDialog } from "./invite-member-dialog";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -87,12 +88,8 @@ export default function MembersClient() {
   const [invitesLoading, setInvitesLoading] = useState(true);
   const [invitesError, setInvitesError] = useState("");
 
-  // Invite form state
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteEmailError, setInviteEmailError] = useState("");
-  const [inviteRole, setInviteRole] = useState<"member" | "admin">("member");
-  const [inviteSubmitting, setInviteSubmitting] = useState(false);
-  const [inviteFormError, setInviteFormError] = useState("");
+  // Invite dialog state
+  const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
 
   // Revoke state
   const [revoking, setRevoking] = useState<string | null>(null);
@@ -165,56 +162,6 @@ export default function MembersClient() {
     fetchInvites();
   }, [fetchMembers, fetchInvites]);
 
-  async function handleInviteSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setInviteEmailError("");
-    setInviteFormError("");
-
-    const email = inviteEmail.trim();
-    if (!email) {
-      setInviteEmailError("Email is required.");
-      return;
-    }
-    if (!isValidEmail(email)) {
-      setInviteEmailError("Invalid email address.");
-      return;
-    }
-
-    setInviteSubmitting(true);
-    try {
-      const res = await fetch(`/api/v1/workspaces/${workspaceId}/invites`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, role: inviteRole }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as { error?: { message?: string } | string };
-        const msg =
-          typeof body?.error === "object"
-            ? body.error?.message
-            : typeof body?.error === "string"
-            ? body.error
-            : undefined;
-        setInviteFormError(msg ?? `Failed to send invite (${res.status}).`);
-        return;
-      }
-      const data = await res.json() as { invite: ApiInvite };
-      const newInvite: PendingInvite = {
-        id: data.invite.id,
-        email: data.invite.email,
-        role: data.invite.role,
-        token: data.invite.token,
-        createdAt: data.invite.created_at,
-      };
-      setInvites((prev) => [newInvite, ...prev]);
-      setInviteEmail("");
-    } catch {
-      setInviteFormError("Network error. Please try again.");
-    } finally {
-      setInviteSubmitting(false);
-    }
-  }
-
   async function handleRevoke(inviteId: string) {
     setRevoking(inviteId);
     try {
@@ -245,7 +192,18 @@ export default function MembersClient() {
     <div className="space-y-8">
       {/* ── Members ── */}
       <section>
-        <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">Members</h1>
+        <div className="mb-4 flex items-center justify-between">
+          <h1 className="text-sm font-semibold text-[var(--gray-12)]">Members</h1>
+          {isAdmin && (
+            <button
+              onClick={() => setInviteDialogOpen(true)}
+              className="flex h-8 items-center gap-1.5 rounded bg-[#ffe629] px-3 text-sm font-medium text-black transition-colors hover:bg-[#ffdc00]"
+            >
+              <Plus size={14} />
+              Invite member
+            </button>
+          )}
+        </div>
 
         {membersLoading && <SkeletonTable columns={4} rows={5} />}
 
@@ -410,59 +368,13 @@ export default function MembersClient() {
         )}
       </section>
 
-      {/* ── Invite form (owner/admin only) ── */}
-      {isAdmin && (
-        <section>
-          <h2 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">Invite a workspace member</h2>
-          <form
-            onSubmit={handleInviteSubmit}
-            className="flex flex-wrap items-start gap-3"
-          >
-            <div className="flex flex-col gap-1">
-              <input
-                type="text"
-                value={inviteEmail}
-                onChange={(e) => {
-                  setInviteEmail(e.target.value);
-                  setInviteEmailError("");
-                }}
-                placeholder="name@example.com"
-                className={[
-                  "h-8 w-64 rounded border bg-[var(--gray-02)] px-3 font-mono text-sm text-[var(--gray-12)] placeholder:text-[var(--gray-08)]",
-                  "focus:outline-none focus:ring-2 focus:ring-[#ffe629] focus:ring-offset-2 focus:ring-offset-[var(--gray-00)] transition-colors duration-150",
-                  inviteEmailError
-                    ? "border-[#e5484d]"
-                    : "border-[var(--gray-05)] hover:border-[var(--gray-08)]",
-                ].join(" ")}
-              />
-              {inviteEmailError && (
-                <span className="text-xs text-[#ff9592]">{inviteEmailError}</span>
-              )}
-            </div>
-
-            <select
-              value={inviteRole}
-              onChange={(e) => setInviteRole(e.target.value as "member" | "admin")}
-              className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629] focus:ring-offset-2 focus:ring-offset-[var(--gray-00)] transition-colors duration-150"
-            >
-              <option value="member">Member</option>
-              <option value="admin">Admin</option>
-            </select>
-
-            <button
-              type="submit"
-              disabled={inviteSubmitting}
-              className="flex h-8 items-center gap-1.5 rounded bg-[#ffe629] px-3 text-sm font-medium text-black transition-colors hover:bg-[#ffdc00] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Plus size={14} />
-              {inviteSubmitting ? "Sending…" : "Send invite"}
-            </button>
-
-            {inviteFormError && (
-              <span className="w-full text-xs text-[#ff9592]">{inviteFormError}</span>
-            )}
-          </form>
-        </section>
+      {/* ── Invite dialog (owner/admin only) ── */}
+      {isAdmin && inviteDialogOpen && (
+        <InviteMemberDialog
+          workspaceId={workspaceId}
+          onInvited={(invite) => setInvites((prev) => [invite, ...prev])}
+          onClose={() => setInviteDialogOpen(false)}
+        />
       )}
     </div>
   );

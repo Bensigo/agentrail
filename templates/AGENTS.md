@@ -172,6 +172,14 @@ The CLI is the token-efficient path. The `@agentrail/mcp` tools expose the same
 but each MCP call carries protocol overhead and costs more tokens than the CLI —
 prefer the CLI when token budget matters.
 
+Under Claude Code this is **enforced**, not just advised: a `PreToolUse` hook
+(`.agentrail/hooks/context-first.sh`, wired in `.claude/settings.json`) blocks
+the first broad search — `Grep`/`Glob` and `Bash` commands starting with
+`grep `/`rg `/`find ` — until `agentrail context query` or `context search` has
+run this session. After one retrieval the hook is permissive (retrieval can
+miss, so grep is never hard-locked). Enforcement is **claude-only**: Codex has
+no hook mechanism and relies on this prompt steering alone.
+
 AgentRail is the harness. The configured runner is the worker. Ralph is the internal one-issue executor invoked by `agentrail run issue`. AFK is the queue/worktree loop invoked by `agentrail afk`.
 
 Raw workflow helpers are AgentRail internals. Do not call Ralph, AFK, PR, review, or memory scripts directly from an installed project unless a maintainer is debugging AgentRail itself.

@@ -133,6 +133,20 @@ class Runner:
         src_link = self.target / ".agentrail" / "server.json"
         if src_link.exists() and not (dst_dir / "server.json").exists():
             shutil.copy(src_link, dst_dir / "server.json")
+        # Seed the context-first enforcement hook (#519, claude-only) into the
+        # worktree: copy .agentrail/hooks/ and .claude/settings.json if missing.
+        # Do NOT seed .agentrail/tmp/ — fresh worktrees must start unmarked so the
+        # session's first broad grep is gated until context retrieval runs.
+        src_hook = self.target / ".agentrail" / "hooks" / "context-first.sh"
+        if src_hook.exists() and not (dst_dir / "hooks" / "context-first.sh").exists():
+            (dst_dir / "hooks").mkdir(parents=True, exist_ok=True)
+            shutil.copy(src_hook, dst_dir / "hooks" / "context-first.sh")
+            (dst_dir / "hooks" / "context-first.sh").chmod(0o755)
+        src_settings = self.target / ".claude" / "settings.json"
+        dst_settings = path / ".claude" / "settings.json"
+        if src_settings.exists() and not dst_settings.exists():
+            dst_settings.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(src_settings, dst_settings)
 
     def _remove_worktree(self, path: Path) -> None:
         subprocess.run(["git", "-C", str(self.target), "worktree", "remove",

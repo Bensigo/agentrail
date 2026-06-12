@@ -124,6 +124,64 @@ def _install_claude_skills(repo_dir: Path, target_dir: Path) -> None:
         print(f"installed skill: .claude/skills/{skill_name}/SKILL.md")
 
 
+def _install_claude_hooks(repo_dir: Path, target_dir: Path) -> None:
+    """Install the context-first PreToolUse hook (claude-only enforcement, #519).
+
+    Copies ``templates/scripts/context-first.sh`` to
+    ``<target>/.agentrail/hooks/context-first.sh`` (chmod +x) and merges a
+    ``hooks.PreToolUse`` entry into ``<target>/.claude/settings.json`` without
+    clobbering existing user settings. Idempotent: re-running refreshes the
+    script and skips re-adding an already-wired hook entry.
+    """
+    hook_src = repo_dir / "templates" / "scripts" / "context-first.sh"
+    if not hook_src.is_file():
+        return
+
+    hook_dest = target_dir / ".agentrail" / "hooks" / "context-first.sh"
+    hook_dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(hook_src), str(hook_dest))
+    hook_dest.chmod(0o755)
+    print("installed hook: .agentrail/hooks/context-first.sh")
+
+    settings_path = target_dir / ".claude" / "settings.json"
+    settings: Dict[str, Any] = {}
+    if settings_path.exists():
+        try:
+            loaded = json.loads(settings_path.read_text())
+            if isinstance(loaded, dict):
+                settings = loaded
+        except (OSError, ValueError):
+            settings = {}
+
+    command = ".agentrail/hooks/context-first.sh"
+    hooks = settings.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        hooks = {}
+        settings["hooks"] = hooks
+    pre_tool_use = hooks.setdefault("PreToolUse", [])
+    if not isinstance(pre_tool_use, list):
+        pre_tool_use = []
+        hooks["PreToolUse"] = pre_tool_use
+
+    already_wired = any(
+        isinstance(entry, dict)
+        and any(
+            isinstance(h, dict) and h.get("command") == command
+            for h in (entry.get("hooks") or [])
+            if isinstance(entry.get("hooks"), list)
+        )
+        for entry in pre_tool_use
+    )
+    if not already_wired:
+        pre_tool_use.append({
+            "matcher": "Grep|Glob|Bash",
+            "hooks": [{"type": "command", "command": command}],
+        })
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+        print("updated: .claude/settings.json")
+
+
 def _create_github_labels(target_dir: Path) -> None:
     from agentrail.cli.commands.doctor import REQUIRED_LABELS
 
@@ -274,6 +332,9 @@ def run_install(args: List[str], *, _now: Optional[str] = None) -> int:
 
     # Install repo skills into .claude/skills/ for native Claude Code lazy-loading
     _install_claude_skills(repo_dir, target_dir)
+
+    # Install the context-first PreToolUse hook (claude-only enforcement, #519)
+    _install_claude_hooks(repo_dir, target_dir)
 
     # GitHub labels
     if github_labels:

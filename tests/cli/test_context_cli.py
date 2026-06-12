@@ -327,5 +327,43 @@ class ContextCliTests(unittest.TestCase):
         self.assertTrue(report["fixtures"][0]["topResults"][0]["candidateId"])
 
 
+class ContextMarkerTests(unittest.TestCase):
+    """#519: context query/search touch the context-first marker file."""
+
+    def _install(self) -> Path:
+        repo = Path(__file__).resolve().parents[2]
+        root = Path(tempfile.mkdtemp())
+        subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+        subprocess.run(
+            [str(repo / "scripts" / "agentrail"), "install", "--target", str(root)],
+            check=True, stdout=subprocess.DEVNULL,
+        )
+        (root / "src").mkdir(exist_ok=True)
+        (root / "src" / "thing.py").write_text("def thing():\n    return 'thing'\n", encoding="utf-8")
+        return root
+
+    def test_query_writes_marker(self):
+        repo = Path(__file__).resolve().parents[2]
+        root = self._install()
+        marker = root / ".agentrail" / "tmp" / "context-queried"
+        self.assertFalse(marker.exists())
+        subprocess.run(
+            [str(repo / "scripts" / "agentrail"), "context", "query", "thing", "--target", str(root), "--json"],
+            check=True, stdout=subprocess.DEVNULL,
+        )
+        self.assertTrue(marker.exists())
+
+    def test_search_writes_marker(self):
+        repo = Path(__file__).resolve().parents[2]
+        root = self._install()
+        marker = root / ".agentrail" / "tmp" / "context-queried"
+        self.assertFalse(marker.exists())
+        subprocess.run(
+            [str(repo / "scripts" / "agentrail"), "context", "search", "thing", "--target", str(root), "--json"],
+            check=True, stdout=subprocess.DEVNULL,
+        )
+        self.assertTrue(marker.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

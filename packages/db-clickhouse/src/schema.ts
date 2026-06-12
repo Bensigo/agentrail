@@ -19,6 +19,26 @@ export const ALTER_CONTEXT_PACKS_ADD_TOKENS_SAVED = `
 ALTER TABLE context_packs ADD COLUMN IF NOT EXISTS tokens_saved UInt64 DEFAULT 0
 `;
 
+export const ALTER_CONTEXT_PACKS_ADD_PRECISION_AT_BUDGET = `
+ALTER TABLE context_packs ADD COLUMN IF NOT EXISTS precision_at_budget Float32 DEFAULT 0
+`;
+
+export const ALTER_CONTEXT_PACKS_ADD_CITATION_COVERAGE = `
+ALTER TABLE context_packs ADD COLUMN IF NOT EXISTS citation_coverage Float32 DEFAULT 0
+`;
+
+export const ALTER_CONTEXT_PACKS_ADD_STALE_COUNT = `
+ALTER TABLE context_packs ADD COLUMN IF NOT EXISTS stale_count UInt16 DEFAULT 0
+`;
+
+export const ALTER_CONTEXT_PACKS_ADD_DENIED_COUNT = `
+ALTER TABLE context_packs ADD COLUMN IF NOT EXISTS denied_count UInt16 DEFAULT 0
+`;
+
+export const ALTER_CONTEXT_PACKS_ADD_SOURCE_HASH_LIST = `
+ALTER TABLE context_packs ADD COLUMN IF NOT EXISTS source_hash_list Array(String) DEFAULT []
+`;
+
 export interface ContextPackRecord {
   workspace_id: string;
   run_id: string;
@@ -29,6 +49,16 @@ export interface ContextPackRecord {
   tokens_saved: number;
   anchors_extracted: number;
   sources_considered: number;
+  /** Fraction of token budget filled by required sources (0.0–1.0). */
+  precision_at_budget: number;
+  /** Fraction of included items that carry a citation (0.0–1.0). */
+  citation_coverage: number;
+  /** Number of included items whose source hash is older than the current index snapshot. */
+  stale_count: number;
+  /** Number of candidate items excluded by source custody policy. */
+  denied_count: number;
+  /** Ordered list of SHA hashes for every included source item. */
+  source_hash_list: string[];
   occurred_at: Date;
 }
 

@@ -171,6 +171,11 @@ async function main() {
       tokens_saved: 0,
       anchors_extracted: 5,
       sources_considered: 23,
+      precision_at_budget: 0,
+      citation_coverage: 0,
+      stale_count: 0,
+      denied_count: 0,
+      source_hash_list: [],
       occurred_at: new Date("2026-06-08T08:01:00.000Z"),
     },
   ];

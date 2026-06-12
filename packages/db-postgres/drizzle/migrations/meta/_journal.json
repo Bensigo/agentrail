@@ -85,6 +85,13 @@
       "when": 1780907365684,
       "tag": "0011_add_review_gate_findings",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1780907365685,
+      "tag": "0012_add_memory_repository_id",
+      "breakpoints": true
     }
   ]
 }

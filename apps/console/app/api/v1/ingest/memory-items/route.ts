@@ -84,6 +84,7 @@ export async function POST(req: NextRequest) {
   try {
     await insertMemoryItems({
       workspaceId,
+      repositoryId: body.repository_id,
       source: "review",
       items: itemsWithRunTag,
     });

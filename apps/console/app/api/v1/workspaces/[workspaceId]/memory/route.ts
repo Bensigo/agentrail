@@ -22,6 +22,7 @@ export async function GET(
     const serialized = items.map((item) => ({
       id: item.id,
       source: item.source,
+      repository_name: item.repositoryName,
       content_preview: item.content.slice(0, 200),
       content: item.content,
       tags: item.tags,
@@ -29,7 +30,11 @@ export async function GET(
       last_used_at: item.lastUsedAt ? item.lastUsedAt.toISOString() : null,
     }));
     return NextResponse.json({ items: serialized });
-  } catch {
-    return NextResponse.json({ items: [] });
+  } catch (err) {
+    console.error("[workspaces/memory] Postgres query failed:", err);
+    return NextResponse.json(
+      { error: "Failed to load memory items" },
+      { status: 500 }
+    );
   }
 }

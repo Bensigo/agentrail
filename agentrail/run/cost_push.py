@@ -44,6 +44,10 @@ def push_cost_event(
         "model": usage.model,
         "occurred_at": _now_iso(),
         "event_id": str(uuid.uuid4()),
+        "phase": phase,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_tokens": usage.cache_tokens,
     }
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(

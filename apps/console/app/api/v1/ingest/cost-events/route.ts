@@ -21,6 +21,10 @@ interface RawCostEvent {
   cost_usd: number;
   model: string;
   occurred_at: string;
+  phase?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_tokens?: number;
 }
 
 function isRawCostEvent(v: unknown): v is RawCostEvent {
@@ -92,6 +96,10 @@ export async function POST(req: NextRequest) {
     cost_usd: e.cost_usd,
     model: e.model,
     occurred_at: e.occurred_at,
+    phase: e.phase ?? "",
+    input_tokens: e.input_tokens ?? 0,
+    output_tokens: e.output_tokens ?? 0,
+    cache_tokens: e.cache_tokens ?? 0,
   }));
 
   let accepted = 0;

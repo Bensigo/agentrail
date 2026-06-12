@@ -806,6 +806,77 @@ class DoctorCorruptRegistryTests(RunDoctorSetup, unittest.TestCase):
         self.assertRegex(out, r"skills:\n(?:.*\n)*  error ")
 
 
+# ---------------------------------------------------------------------------
+# Partial hidden source missing (ported from scripts/test-doctor lines 55–63)
+# ---------------------------------------------------------------------------
+
+class DoctorPartialSourceMissingTests(RunDoctorSetup, unittest.TestCase):
+    """status: modified because .agentrail/source/package.json is absent (hidden_source_missing)."""
+
+    def setUp(self):
+        super().setUp()
+        agentrail_dir = self.target / ".agentrail"
+        agentrail_dir.mkdir()
+        # Intentionally do NOT create .agentrail/source/package.json
+
+        state = {"agentrailVersion": "1.0.0", "managedFiles": []}
+        (agentrail_dir / "state.json").write_text(json.dumps(state))
+
+        docs_agents = self.target / "docs" / "agents"
+        docs_agents.mkdir(parents=True)
+        (docs_agents / "skill-registry.json").write_text(
+            json.dumps({"schemaVersion": 1, "skills": []})
+        )
+
+    def test_status_modified(self):
+        rc, out = self._run()
+        self.assertEqual(rc, 0)
+        self.assertIn("status: modified", out)
+
+    def test_recommendation_reinstall(self):
+        _, out = self._run()
+        self.assertIn("run agentrail install --target", out)
+
+
+# ---------------------------------------------------------------------------
+# Legacy raw workflow scripts detected (ported from scripts/test-doctor lines 66–75)
+# ---------------------------------------------------------------------------
+
+class DoctorLegacyScriptTests(RunDoctorSetup, unittest.TestCase):
+    """scripts/ralph-loop present but NOT in managed inventory → warn + recommend removal."""
+
+    def setUp(self):
+        super().setUp()
+        agentrail_dir = self.target / ".agentrail"
+        agentrail_dir.mkdir()
+        source_dir = agentrail_dir / "source"
+        source_dir.mkdir()
+        (source_dir / "package.json").write_text(json.dumps({"version": "1.0.0"}))
+
+        state = {"agentrailVersion": "1.0.0", "managedFiles": []}
+        (agentrail_dir / "state.json").write_text(json.dumps(state))
+
+        docs_agents = self.target / "docs" / "agents"
+        docs_agents.mkdir(parents=True)
+        (docs_agents / "skill-registry.json").write_text(
+            json.dumps({"schemaVersion": 1, "skills": []})
+        )
+
+        scripts_dir = self.target / "scripts"
+        scripts_dir.mkdir()
+        legacy = scripts_dir / "ralph-loop"
+        legacy.write_text("#!/usr/bin/env bash\necho legacy\n")
+        legacy.chmod(0o755)
+
+    def test_warn_legacy_scripts_present(self):
+        _, out = self._run()
+        self.assertIn("  warn legacy raw workflow scripts present: scripts/ralph-loop", out)
+
+    def test_recommendation_remove_legacy_scripts(self):
+        _, out = self._run()
+        self.assertIn("remove legacy raw workflow scripts", out)
+
+
 class MainRoutesDoctorTests(unittest.TestCase):
     def test_main_routes_doctor(self):
         with tempfile.TemporaryDirectory() as tmp:

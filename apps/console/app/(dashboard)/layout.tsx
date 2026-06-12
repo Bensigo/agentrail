@@ -1,12 +1,12 @@
-import { auth } from "@agentrail/auth";
 import { redirect } from "next/navigation";
+import { getSession } from "../../lib/cached";
 
 export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const session = await auth();
+  const session = await getSession();
   if (!session?.user) {
     redirect("/login");
   }

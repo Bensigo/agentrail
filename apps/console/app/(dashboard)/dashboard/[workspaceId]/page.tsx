@@ -1,9 +1,5 @@
-import { auth } from "@agentrail/auth";
-import {
-  getWorkspace,
-  getWorkspaceMembership,
-  getWorkspaceOverviewCounts,
-} from "@agentrail/db-postgres";
+import { Suspense } from "react";
+import { getWorkspace, getWorkspaceOverviewCounts } from "@agentrail/db-postgres";
 import type { WorkspaceOverviewCounts } from "@agentrail/db-postgres";
 import { getWorkspaceTelemetryCounts } from "@agentrail/db-clickhouse";
 import type { WorkspaceTelemetryCounts } from "@agentrail/db-clickhouse";
@@ -20,6 +16,8 @@ import {
   Key,
   Users,
 } from "lucide-react";
+import { SkeletonCardGrid } from "../../../components/loading-skeleton";
+import { getMembership, getSession } from "../../../../lib/cached";
 
 const EMPTY_COUNTS: WorkspaceOverviewCounts = {
   runs: 0,
@@ -43,34 +41,16 @@ function formatCost(usd: number): string {
   return usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`;
 }
 
-export default async function WorkspaceDashboardPage({
-  params,
-}: {
-  params: Promise<{ workspaceId: string }>;
-}) {
-  const { workspaceId } = await params;
-  const session = await auth();
-  if (!session?.user?.id) return notFound();
-
-  const [workspace, membership] = await Promise.all([
-    getWorkspace(workspaceId),
-    getWorkspaceMembership(session.user.id, workspaceId),
+// Streams in behind a Suspense boundary so the workspace header paints as
+// soon as the fast Postgres lookups resolve, without waiting on the slower
+// count/telemetry (ClickHouse) aggregations.
+async function SectionGrid({ workspaceId }: { workspaceId: string }) {
+  // Counts and telemetry are independent — fetch them in parallel, and fall
+  // back to zeros per source if a backend is unavailable.
+  const [counts, telemetry] = await Promise.all([
+    getWorkspaceOverviewCounts(workspaceId).catch(() => EMPTY_COUNTS),
+    getWorkspaceTelemetryCounts(workspaceId).catch(() => EMPTY_TELEMETRY),
   ]);
-
-  if (!workspace || !membership) return notFound();
-
-  let counts = EMPTY_COUNTS;
-  try {
-    counts = await getWorkspaceOverviewCounts(workspaceId);
-  } catch {
-    // Postgres counts unavailable; render zeros
-  }
-  let telemetry = EMPTY_TELEMETRY;
-  try {
-    telemetry = await getWorkspaceTelemetryCounts(workspaceId);
-  } catch {
-    // ClickHouse unavailable; render zeros
-  }
 
   const sections = [
     { label: "Runs", icon: Play, href: "runs", value: String(counts.runs) },
@@ -133,6 +113,50 @@ export default async function WorkspaceDashboardPage({
   ];
 
   return (
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {sections.map(({ label, icon: Icon, href, value, detail }) => (
+        <Link
+          key={label}
+          href={`/dashboard/${workspaceId}/${href}`}
+          className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4 transition-colors hover:border-[var(--gray-08)] hover:bg-[var(--gray-03)]"
+        >
+          <div className="flex items-center gap-2">
+            <Icon className="h-4 w-4 text-[var(--gray-09)]" />
+            <p className="text-xs uppercase tracking-wide text-[var(--gray-09)]">
+              {label}
+            </p>
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <p className="font-mono text-2xl font-bold text-[var(--gray-12)]">
+              {value}
+            </p>
+            {detail ? (
+              <p className="font-mono text-xs text-[var(--gray-09)]">{detail}</p>
+            ) : null}
+          </div>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+export default async function WorkspaceDashboardPage({
+  params,
+}: {
+  params: Promise<{ workspaceId: string }>;
+}) {
+  const { workspaceId } = await params;
+  const session = await getSession();
+  if (!session?.user?.id) return notFound();
+
+  const [workspace, membership] = await Promise.all([
+    getWorkspace(workspaceId),
+    getMembership(session.user.id, workspaceId),
+  ]);
+
+  if (!workspace || !membership) return notFound();
+
+  return (
     <div className="mx-auto max-w-[1440px]">
       <div className="flex items-center gap-3">
         <h1 className="text-2xl font-bold tracking-tight text-[var(--gray-12)]">
@@ -146,29 +170,10 @@ export default async function WorkspaceDashboardPage({
         {workspace.slug} · {workspace.id}
       </p>
 
-      <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {sections.map(({ label, icon: Icon, href, value, detail }) => (
-          <Link
-            key={label}
-            href={`/dashboard/${workspaceId}/${href}`}
-            className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4 transition-colors hover:border-[var(--gray-08)] hover:bg-[var(--gray-03)]"
-          >
-            <div className="flex items-center gap-2">
-              <Icon className="h-4 w-4 text-[var(--gray-09)]" />
-              <p className="text-xs uppercase tracking-wide text-[var(--gray-09)]">
-                {label}
-              </p>
-            </div>
-            <div className="mt-2 flex items-baseline gap-2">
-              <p className="font-mono text-2xl font-bold text-[var(--gray-12)]">
-                {value}
-              </p>
-              {detail ? (
-                <p className="font-mono text-xs text-[var(--gray-09)]">{detail}</p>
-              ) : null}
-            </div>
-          </Link>
-        ))}
+      <div className="mt-8">
+        <Suspense fallback={<SkeletonCardGrid cards={9} />}>
+          <SectionGrid workspaceId={workspaceId} />
+        </Suspense>
       </div>
     </div>
   );

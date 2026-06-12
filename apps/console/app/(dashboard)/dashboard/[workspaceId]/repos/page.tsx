@@ -1,35 +1,35 @@
-import { auth } from "@agentrail/auth";
-import { getWorkspaceMembership, listWorkspaceRepositories } from "@agentrail/db-postgres";
+import { Suspense } from "react";
+import { listWorkspaceRepositories } from "@agentrail/db-postgres";
 import { getLatestIndexSnapshotsForWorkspace } from "@agentrail/db-clickhouse";
 import type { IndexSnapshotRecord } from "@agentrail/db-clickhouse";
 import { ReposTable } from "./components/repos-table";
+import { SkeletonTable } from "../../../../components/loading-skeleton";
 import { repoHealth } from "../../../../../lib/repo-health";
+import { getMembership, getSession } from "../../../../../lib/cached";
 
-export default async function ReposPage({
-  params,
-}: {
-  params: Promise<{ workspaceId: string }>;
-}) {
-  const { workspaceId } = await params;
-
-  const session = await auth();
+// Streams in behind Suspense so the page shell paints immediately while the
+// membership/repo/snapshot lookups resolve.
+async function ReposSection({ workspaceId }: { workspaceId: string }) {
+  const session = await getSession();
   const userId = session?.user?.id ?? null;
 
   let canManage = false;
   let repos: Awaited<ReturnType<typeof listWorkspaceRepositories>> = [];
 
   if (userId) {
-    try {
-      const membership = await getWorkspaceMembership(userId, workspaceId);
-      if (membership) {
-        canManage = membership.role === "owner" || membership.role === "admin";
-        repos = await listWorkspaceRepositories(workspaceId);
-      }
-    } catch {
-      // DB unavailable
+    // Membership and the repo list are independent lookups — run them in
+    // parallel and only use the repos if the membership check passes.
+    const [membership, repoRows] = await Promise.all([
+      getMembership(userId, workspaceId).catch(() => null),
+      listWorkspaceRepositories(workspaceId).catch(() => null),
+    ]);
+    if (membership) {
+      canManage = membership.role === "owner" || membership.role === "admin";
+      repos = repoRows ?? [];
     }
   }
 
+  // Snapshots depend on the repo ids, so they stay sequential.
   const repoIds = repos.map((r) => r.id);
   let snapshots: IndexSnapshotRecord[] = [];
   try {
@@ -57,15 +57,25 @@ export default async function ReposPage({
   });
 
   return (
+    <ReposTable workspaceId={workspaceId} initialRows={rows} canManage={canManage} />
+  );
+}
+
+export default async function ReposPage({
+  params,
+}: {
+  params: Promise<{ workspaceId: string }>;
+}) {
+  const { workspaceId } = await params;
+
+  return (
     <div className="mx-auto max-w-[1440px]">
       <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
         Repos &amp; Health
       </h1>
-      <ReposTable
-        workspaceId={workspaceId}
-        initialRows={rows}
-        canManage={canManage}
-      />
+      <Suspense fallback={<SkeletonTable columns={6} rows={6} />}>
+        <ReposSection workspaceId={workspaceId} />
+      </Suspense>
     </div>
   );
 }

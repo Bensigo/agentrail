@@ -1,14 +1,13 @@
-import { auth } from "@agentrail/auth";
-import { listWorkspacesForUser } from "@agentrail/db-postgres";
 import { redirect } from "next/navigation";
+import { getSession, getWorkspacesForUser } from "../../../lib/cached";
 
 export default async function DashboardPage() {
-  const session = await auth();
+  const session = await getSession();
   if (!session?.user?.id) {
     redirect("/login");
   }
 
-  const workspaces = await listWorkspacesForUser(session.user.id);
+  const workspaces = await getWorkspacesForUser(session.user.id);
   if (workspaces.length > 0) {
     redirect(`/dashboard/${workspaces[0].id}`);
   }

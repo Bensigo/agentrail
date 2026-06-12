@@ -7,6 +7,12 @@ const nextConfig: NextConfig = {
     // is not yet declared on ExperimentalConfig's types.
     // @ts-expect-error -- remove once Next types include nodeMiddleware
     nodeMiddleware: true,
+    // Next 15 defaults the client router cache to 0s for dynamic segments, so
+    // every sidebar navigation refetches the RSC payload. Keep dynamic pages
+    // fresh for 30s so back/forward and repeat navigations are instant.
+    staleTimes: {
+      dynamic: 30,
+    },
   },
 };
 

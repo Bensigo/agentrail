@@ -1,8 +1,40 @@
-import { auth, signOut } from "@agentrail/auth";
-import { listWorkspacesForUser } from "@agentrail/db-postgres";
+import { Suspense } from "react";
+import { signOut } from "@agentrail/auth";
 import { redirect } from "next/navigation";
 import { Sidebar } from "../../../components/sidebar";
 import { ThemeToggle } from "../../../components/theme-toggle";
+import { getSession, getWorkspacesForUser } from "../../../../lib/cached";
+
+type SidebarUser = {
+  name?: string | null;
+  email?: string | null;
+  image?: string | null;
+};
+
+// Streams in the workspace list for the switcher without blocking the page
+// shell: the surrounding Suspense fallback renders the full sidebar (nav,
+// user, sign-out) immediately with an empty switcher.
+async function SidebarWithWorkspaces({
+  userId,
+  workspaceId,
+  user,
+  signOutAction,
+}: {
+  userId: string;
+  workspaceId: string;
+  user: SidebarUser;
+  signOutAction: () => Promise<void>;
+}) {
+  const workspaces = await getWorkspacesForUser(userId);
+  return (
+    <Sidebar
+      workspaces={workspaces}
+      workspaceId={workspaceId}
+      user={user}
+      signOutAction={signOutAction}
+    />
+  );
+}
 
 export default async function WorkspaceLayout({
   children,
@@ -11,13 +43,10 @@ export default async function WorkspaceLayout({
   children: React.ReactNode;
   params: Promise<{ workspaceId: string }>;
 }) {
-  const { workspaceId } = await params;
-  const session = await auth();
+  const [{ workspaceId }, session] = await Promise.all([params, getSession()]);
   if (!session?.user?.id) {
     redirect("/login");
   }
-
-  const workspaces = await listWorkspacesForUser(session.user.id);
 
   async function handleSignOut() {
     "use server";
@@ -26,12 +55,23 @@ export default async function WorkspaceLayout({
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar
-        workspaces={workspaces}
-        workspaceId={workspaceId}
-        user={session.user}
-        signOutAction={handleSignOut}
-      />
+      <Suspense
+        fallback={
+          <Sidebar
+            workspaces={[]}
+            workspaceId={workspaceId}
+            user={session.user}
+            signOutAction={handleSignOut}
+          />
+        }
+      >
+        <SidebarWithWorkspaces
+          userId={session.user.id}
+          workspaceId={workspaceId}
+          user={session.user}
+          signOutAction={handleSignOut}
+        />
+      </Suspense>
       <div className="flex-1 pl-[220px] max-md:pl-12">
         <div className="flex h-12 items-center justify-end border-b border-[var(--gray-05)] px-4">
           <ThemeToggle />

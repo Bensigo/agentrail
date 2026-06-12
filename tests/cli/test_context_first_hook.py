@@ -1,9 +1,10 @@
-"""Tests for the context-first PreToolUse hook (#519).
+"""Tests for the context-first PreToolUse hook (#519, hard mode).
 
 Drives ``templates/scripts/context-first.sh`` directly via ``subprocess`` with
-fixture stdin payloads shaped like Claude Code's PreToolUse hook JSON, asserting
-the block-then-allow behavior, the exact redirect feedback text, and that
-non-matching Bash commands always pass.
+fixture stdin payloads shaped like Claude Code's PreToolUse hook JSON. Hard mode
+denies every broad search (``Grep``/``Glob`` tools and Bash ``grep``/``rg``/
+``find``) outright — there is no marker escape — while non-search tools, Read,
+non-matching Bash, and malformed input all pass.
 """
 from __future__ import annotations
 
@@ -17,8 +18,9 @@ from pathlib import Path
 HOOK = Path(__file__).resolve().parents[2] / "templates" / "scripts" / "context-first.sh"
 
 FEEDBACK = (
-    'Use `agentrail context query "<your term>" --json` first — ranked retrieval '
-    "is cheaper than repo-wide grep. Grep is allowed after retrieval has been tried."
+    "Repo-wide search is disabled (AgentRail hard mode). Use "
+    '`agentrail context query "<your term>" --json` for ranked retrieval, then '
+    "Read the cited files. The Grep/Glob tools and bare grep/rg/find are blocked."
 )
 
 
@@ -44,45 +46,47 @@ class ContextFirstHookTests(unittest.TestCase):
         marker.touch()
         return marker
 
-    # --- AC1: first broad grep blocked with redirect message -----------------
+    # --- broad searches are always blocked with the redirect message ---------
 
-    def test_grep_tool_blocked_without_marker(self):
+    def test_grep_tool_blocked(self):
         result = _run({"tool_name": "Grep", "tool_input": {"pattern": "foo"}}, self.project)
         self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stderr.strip(), FEEDBACK)
 
-    def test_glob_tool_blocked_without_marker(self):
+    def test_glob_tool_blocked(self):
         result = _run({"tool_name": "Glob", "tool_input": {"pattern": "**/*.py"}}, self.project)
         self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stderr.strip(), FEEDBACK)
 
-    def test_bash_grep_blocked_without_marker(self):
+    def test_bash_grep_blocked(self):
         result = _run({"tool_name": "Bash", "tool_input": {"command": "grep -r foo ."}}, self.project)
         self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stderr.strip(), FEEDBACK)
 
-    def test_bash_rg_blocked_without_marker(self):
+    def test_bash_rg_blocked(self):
         result = _run({"tool_name": "Bash", "tool_input": {"command": "rg foo"}}, self.project)
         self.assertEqual(result.returncode, 2)
 
-    def test_bash_find_blocked_without_marker(self):
+    def test_bash_find_blocked(self):
         result = _run({"tool_name": "Bash", "tool_input": {"command": "find . -name '*.py'"}}, self.project)
         self.assertEqual(result.returncode, 2)
 
-    # --- AC2: marker honored; non-matching Bash always passes -----------------
+    # --- hard mode: a prior context query (marker) does NOT re-enable grep ----
 
-    def test_grep_tool_allowed_with_marker(self):
+    def test_grep_tool_blocked_even_with_marker(self):
         self._marker()
         result = _run({"tool_name": "Grep", "tool_input": {"pattern": "foo"}}, self.project)
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stderr.strip(), FEEDBACK)
 
-    def test_bash_grep_allowed_with_marker(self):
+    def test_bash_grep_blocked_even_with_marker(self):
         self._marker()
         result = _run({"tool_name": "Bash", "tool_input": {"command": "grep -r foo ."}}, self.project)
-        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 2)
 
-    def test_non_matching_bash_passes_without_marker(self):
+    # --- non-search tools / commands always pass ------------------------------
+
+    def test_non_matching_bash_passes(self):
         for command in ("git status", "pytest", "agentrail context query foo", "ls -la", "cat file"):
             with self.subTest(command=command):
                 result = _run({"tool_name": "Bash", "tool_input": {"command": command}}, self.project)

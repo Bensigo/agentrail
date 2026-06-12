@@ -18,6 +18,9 @@ from agentrail.run.context import (
     context_retrieval_metadata,
     context_pack_summary,
     context_selected_snippets,
+    _MAX_CONTENT_SNIPPETS,
+    _MAX_SNIPPET_LINES,
+    _MAX_TOTAL_CHARS,
 )
 
 
@@ -206,12 +209,161 @@ class ContextSelectedSnippetsTests(unittest.TestCase):
             result = context_selected_snippets(Path("/tmp/repo"), "auth login")
         self.assertIn("agentrail context get", result)
 
-    def test_snippet_lines_indented(self) -> None:
+    def test_snippet_lines_indented_when_file_unreadable(self) -> None:
+        # When the file cannot be read, top results fall back to 4-space indented
+        # snippet lines from the search result's snippet field.
         fake = {"results": self._make_results(), "runMetadata": {}}
         with patch("agentrail.run.context.search_context", return_value=fake):
+            # /tmp/repo/src/auth.py does not exist → OSError → pointer fallback
             result = context_selected_snippets(Path("/tmp/repo"), "auth login")
-        # snippet lines should be indented with 4 spaces
         self.assertIn("    def login(user):", result)
+
+
+class ContextSelectedSnippetsContentTests(unittest.TestCase):
+    """Tests for fenced content injection in context_selected_snippets."""
+
+    def _make_result(self, path: str, line_start: int, line_end: int, snippet: str = "") -> dict:
+        return {
+            "path": path,
+            "lineStart": line_start,
+            "lineEnd": line_end,
+            "symbol": None,
+            "tokenEstimate": 10,
+            "reason": "test reason",
+            "snippet": snippet,
+        }
+
+    def test_fenced_block_present_for_readable_file(self) -> None:
+        """AC1: assembled output contains a fenced code block with real content."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            (target / "src").mkdir()
+            src_file = target / "src" / "auth.py"
+            src_file.write_text("def login():\n    pass\n")
+            results = [self._make_result("src/auth.py", 1, 2)]
+            fake = {"results": results, "runMetadata": {}}
+            with patch("agentrail.run.context.search_context", return_value=fake):
+                result = context_selected_snippets(target, "login")
+        self.assertIn("```src/auth.py:1-2", result)
+        self.assertIn("def login():", result)
+
+    def test_at_most_max_content_snippets_fenced_blocks(self) -> None:
+        """Top _MAX_CONTENT_SNIPPETS results get fenced blocks; rest get pointers."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            results = []
+            for i in range(5):
+                fname = f"file{i}.py"
+                (target / fname).write_text(f"# file {i}\ncode = {i}\n")
+                results.append(self._make_result(fname, 1, 2, snippet=f"# file {i}"))
+            fake = {"results": results, "runMetadata": {}}
+            with patch("agentrail.run.context.search_context", return_value=fake):
+                result = context_selected_snippets(target, "code")
+        # Count fenced opening lines
+        fenced_count = result.count("\n```")
+        # Each fenced block contributes one opening ``` and one closing ```
+        # Count opening fences (lines starting with ```)
+        fence_opens = [l for l in result.splitlines() if l.startswith("```") and not l == "```"]
+        self.assertLessEqual(len(fence_opens), _MAX_CONTENT_SNIPPETS)
+
+    def test_line_count_cap_respected(self) -> None:
+        """Content is capped at _MAX_SNIPPET_LINES lines per snippet."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            # Write a file with more lines than the cap
+            long_content = "\n".join(f"line {j}" for j in range(_MAX_SNIPPET_LINES + 20))
+            (target / "big.py").write_text(long_content)
+            results = [self._make_result("big.py", 1, _MAX_SNIPPET_LINES + 20)]
+            fake = {"results": results, "runMetadata": {}}
+            with patch("agentrail.run.context.search_context", return_value=fake):
+                result = context_selected_snippets(target, "line")
+        # Extract content between the fences
+        lines = result.splitlines()
+        in_fence = False
+        fence_lines = []
+        for l in lines:
+            if l.startswith("```big.py:"):
+                in_fence = True
+                continue
+            if in_fence and l == "```":
+                break
+            if in_fence:
+                fence_lines.append(l)
+        self.assertLessEqual(len(fence_lines), _MAX_SNIPPET_LINES)
+
+    def test_char_cap_triggers_pointer_fallback(self) -> None:
+        """When total chars are exhausted, subsequent top results fall back to pointer."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            # First result: huge content that fills the char cap
+            big_line = "x" * 200
+            big_content = "\n".join(big_line for _ in range(_MAX_SNIPPET_LINES))
+            (target / "big.py").write_text(big_content)
+            # Second result: small readable file
+            (target / "small.py").write_text("def foo(): pass\n")
+            results = [
+                self._make_result("big.py", 1, _MAX_SNIPPET_LINES, snippet="# big"),
+                self._make_result("small.py", 1, 1, snippet="# small fallback"),
+            ]
+            # Override MAX_TOTAL_CHARS with a tiny cap so first result exhausts it
+            import agentrail.run.context as ctx_mod
+            original = ctx_mod._MAX_TOTAL_CHARS
+            ctx_mod._MAX_TOTAL_CHARS = 10  # tiny cap — big.py won't fit either
+            try:
+                fake = {"results": results, "runMetadata": {}}
+                with patch("agentrail.run.context.search_context", return_value=fake):
+                    result = context_selected_snippets(target, "foo")
+            finally:
+                ctx_mod._MAX_TOTAL_CHARS = original
+        # Neither file should appear as fenced content (cap = 10 chars, both exceeded)
+        self.assertNotIn("```big.py:", result)
+        self.assertNotIn("```small.py:", result)
+        # Both should still appear as pointer lines
+        self.assertIn("big.py:1-", result)
+        self.assertIn("small.py:1-", result)
+
+    def test_unreadable_file_falls_back_to_pointer(self) -> None:
+        """When file cannot be read (OSError), result falls back to indented snippet."""
+        results = [
+            {
+                "path": "nonexistent/path.py",
+                "lineStart": 5,
+                "lineEnd": 10,
+                "symbol": "foo",
+                "tokenEstimate": 20,
+                "reason": "some reason",
+                "snippet": "def foo():\n    return 42\n",
+            }
+        ]
+        fake = {"results": results, "runMetadata": {}}
+        with patch("agentrail.run.context.search_context", return_value=fake):
+            # Use /tmp/nonexistent_repo so path.py definitely doesn't exist
+            result = context_selected_snippets(Path("/tmp/nonexistent_repo"), "foo")
+        # Should not have fenced block
+        self.assertNotIn("```nonexistent/path.py:", result)
+        # Should still have the pointer line
+        self.assertIn("nonexistent/path.py:5-10", result)
+        # Should fall back to indented snippet
+        self.assertIn("    def foo():", result)
+
+    def test_results_beyond_limit_use_pointer_format(self) -> None:
+        """Results beyond _MAX_CONTENT_SNIPPETS always get pointer format."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            results = []
+            for i in range(_MAX_CONTENT_SNIPPETS + 2):
+                fname = f"f{i}.py"
+                (target / fname).write_text(f"code = {i}\n")
+                results.append(self._make_result(fname, 1, 1, snippet=f"code = {i}"))
+            fake = {"results": results, "runMetadata": {}}
+            with patch("agentrail.run.context.search_context", return_value=fake):
+                result = context_selected_snippets(target, "code")
+        # Results _MAX_CONTENT_SNIPPETS and _MAX_CONTENT_SNIPPETS+1 should not be fenced
+        beyond_path = f"f{_MAX_CONTENT_SNIPPETS}.py"
+        fence_tag = f"```{beyond_path}:"
+        self.assertNotIn(fence_tag, result)
+        # But pointer line must be present
+        self.assertIn(f"{beyond_path}:1-", result)
 
 
 class BuildPackTests(unittest.TestCase):

@@ -126,11 +126,20 @@ def context_pack_summary(target_dir: Path, pack_file: Optional[str]) -> str:
     return "\n".join(lines)
 
 
-def context_selected_snippets(target_dir: Path, query: str) -> str:
-    """Compact 'path:lineStart-lineEnd' lines from search_context results (limit 6).
+_MAX_CONTENT_SNIPPETS = 3
+_MAX_SNIPPET_LINES = 40
+_MAX_TOTAL_CHARS = 8000  # ≈ 2 000 tokens at 4 chars/token
 
-    Reproduces the exact output of the legacy Node.js block at
-    scripts/agentrail-legacy lines 4897-4914.
+
+def context_selected_snippets(target_dir: Path, query: str) -> str:
+    """Context pointers with fenced content for top results.
+
+    Top _MAX_CONTENT_SNIPPETS results include the actual file content as a
+    fenced code block (≤_MAX_SNIPPET_LINES lines each, ≤_MAX_TOTAL_CHARS chars
+    total).  Remaining results and any result whose file is unreadable or
+    whose content would exceed the char cap fall back to the compact
+    'path:lineStart-lineEnd' pointer format with the first 4 snippet lines
+    indented.
 
     Returns empty string on exception; returns a 'none' fallback line when
     results are empty.
@@ -150,7 +159,9 @@ def context_selected_snippets(target_dir: Path, query: str) -> str:
     lines = [
         "Selected context (compact — read these line ranges before broad discovery):",
     ]
-    for r in results:
+    total_chars = 0
+
+    for i, r in enumerate(results):
         sym = f" {r['symbol']}" if r.get("symbol") else ""
         tok = r.get("tokenEstimate", 0)
         reason = r.get("reason") or ""
@@ -160,14 +171,45 @@ def context_selected_snippets(target_dir: Path, query: str) -> str:
         lines.append(
             f"- {path}:{line_start}-{line_end}{sym} (~{tok} tok) — {reason}"
         )
-        snippet_raw = str(r.get("snippet") or "")
-        snippet_lines = [
-            f"    {l}"
-            for l in snippet_raw.split("\n")[:4]
-            if l.strip()
-        ]
-        if snippet_lines:
-            lines.append("\n".join(snippet_lines))
+
+        if i < _MAX_CONTENT_SNIPPETS:
+            # Attempt to inject fenced file content
+            injected = False
+            try:
+                file_path = Path(target_dir) / path
+                raw_lines = file_path.read_text(encoding="utf-8").splitlines()
+                start_idx = max(0, line_start - 1)
+                end_idx = line_end  # 1-based inclusive → slice end exclusive
+                content_lines = raw_lines[start_idx:end_idx][:_MAX_SNIPPET_LINES]
+                content = "\n".join(content_lines)
+                fence = f"```{path}:{line_start}-{line_end}\n{content}\n```"
+                if total_chars + len(fence) <= _MAX_TOTAL_CHARS:
+                    lines.append(fence)
+                    total_chars += len(fence)
+                    injected = True
+            except OSError:
+                pass
+
+            if not injected:
+                # Fall back to indented snippet from search result
+                snippet_raw = str(r.get("snippet") or "")
+                snippet_lines = [
+                    f"    {l}"
+                    for l in snippet_raw.split("\n")[:4]
+                    if l.strip()
+                ]
+                if snippet_lines:
+                    lines.append("\n".join(snippet_lines))
+        else:
+            # Results beyond content limit: pointer only with short snippet
+            snippet_raw = str(r.get("snippet") or "")
+            snippet_lines = [
+                f"    {l}"
+                for l in snippet_raw.split("\n")[:4]
+                if l.strip()
+            ]
+            if snippet_lines:
+                lines.append("\n".join(snippet_lines))
 
     lines.append(
         "Use `agentrail context get <path> --lines A-B` to expand any of these."

@@ -421,6 +421,42 @@ class IssueBasePromptTests(unittest.TestCase):
         )
         self.assertIn("agentrail run issue 99", result)
 
+    def test_codex_task_block_has_context_query_instruction(self):
+        """AC2: codex task block instructs agentrail context query before grep."""
+        result = self._fn(
+            "codex", 7,
+            header="H\n", skill_block="S\n",
+            context_summary="CS", context_snippets="CP",
+        )
+        self.assertIn("agentrail context query", result)
+        self.assertIn("--json --limit 6", result)
+
+    def test_claude_task_block_has_context_query_instruction(self):
+        """AC2: claude task block instructs agentrail context query before grep."""
+        result = self._fn(
+            "claude", 7,
+            header="H\n", skill_block="S\n",
+            context_summary="CS", context_snippets="CP",
+        )
+        self.assertIn("agentrail context query", result)
+        self.assertIn("--json --limit 6", result)
+
+    def test_codex_context_query_mentions_grep_fallback(self):
+        result = self._fn(
+            "codex", 7,
+            header="H\n", skill_block="S\n",
+            context_summary="CS", context_snippets="CP",
+        )
+        self.assertIn("before grep/glob", result)
+
+    def test_claude_context_query_mentions_grep_fallback(self):
+        result = self._fn(
+            "claude", 7,
+            header="H\n", skill_block="S\n",
+            context_summary="CS", context_snippets="CP",
+        )
+        self.assertIn("before grep/glob", result)
+
 
 class IssueRunPhasePromptTests(unittest.TestCase):
     """Tests for issue_run_phase_prompt()."""

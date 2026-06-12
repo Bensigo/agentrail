@@ -152,6 +152,7 @@ Hard limits:
 - Read the issue body, comments, labels, and linked PRD or milestone before editing.
 - Read CONTEXT.md, TASTE.md if present, and relevant project memory.
 - Run agentrail memory recall for the issue title and key terms when available.
+- When you need code you don't see, FIRST run `agentrail context query "<term>" --json --limit 6` (ranked, cheap) before grep/glob.
 - If starting or resuming execution yourself, use agentrail run issue {issue}; AgentRail invokes Ralph internally during the execute phase.
 - Implement the smallest coherent change that satisfies the issue acceptance criteria.
 - Run relevant verification.
@@ -172,6 +173,7 @@ Hard limits:
 - Read the issue body, comments, labels, and linked PRD or milestone before editing.
 - Read CONTEXT.md, TASTE.md if present, and relevant project memory.
 - Run agentrail memory recall for the issue title and key terms when available.
+- When you need code you don't see, FIRST run `agentrail context query "<term>" --json --limit 6` (ranked, cheap) before grep/glob.
 - If starting or resuming execution yourself, use agentrail run issue {issue}; AgentRail invokes Ralph internally during the execute phase.
 - Implement the smallest coherent change that satisfies the issue acceptance criteria.
 - Run relevant verification.

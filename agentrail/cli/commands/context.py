@@ -103,9 +103,21 @@ def run_context(args: List[str]) -> int:
             return 0
         if kind == "index":
             target, remaining = _parse_target(rest)
+            no_push = "--no-push" in remaining
+            remaining = [a for a in remaining if a != "--no-push"]
             if remaining:
                 raise SystemExit(f"Unknown option: {remaining[0]}")
-            _print_json(build_index(target))
+            result = build_index(target)
+            _print_json(result)
+            if not no_push:
+                from agentrail.context.snapshot_push import load_link, push_index_snapshot
+                if push_index_snapshot(target, result):
+                    print("pushed index snapshot to dashboard", file=sys.stderr)
+                elif load_link(target) is not None:
+                    print(
+                        "warning: failed to push index snapshot; repo health may stay stale",
+                        file=sys.stderr,
+                    )
             return 0
         if kind == "embed" and rest and rest[0] == "setup":
             preset = rest[1] if len(rest) > 1 and not rest[1].startswith("--") else ""

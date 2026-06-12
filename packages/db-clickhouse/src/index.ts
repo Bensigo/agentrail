@@ -26,6 +26,8 @@ export {
   aggregateWorkspaceCosts,
   getLatestIndexSnapshotsForWorkspace,
   insertAfkRunEvents,
+  insertIndexSnapshots,
+  deriveSnapshotEventId,
   getRunEventsByRunId,
 } from "./queries";
 export type {
@@ -35,5 +37,6 @@ export type {
   CostAggregateRow,
   AggregateCostsOptions,
   AfkRunEventInput,
+  IndexSnapshotInput,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems } from "./context-queries";

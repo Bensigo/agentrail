@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Plus } from "lucide-react";
 import { AddRepositoryDialog, type RepoRow } from "./add-repository-dialog";
+import { reindexCommand } from "./reindex-command";
 
 type HealthStatus = "healthy" | "stale" | "critical";
 
@@ -58,6 +59,7 @@ function repoRowFromApi(repo: RepoRow): ReposTableRow {
 export function ReposTable({ workspaceId, initialRows, canManage }: ReposTableProps) {
   const [rows, setRows] = useState<ReposTableRow[]>(initialRows);
   const [showAdd, setShowAdd] = useState(false);
+  const [reindexOpenFor, setReindexOpenFor] = useState<string | null>(null);
 
   function handleAdded(repo: RepoRow) {
     setRows((prev) => [repoRowFromApi(repo), ...prev]);
@@ -110,6 +112,7 @@ export function ReposTable({ workspaceId, initialRows, canManage }: ReposTablePr
                 <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
                   Codebase Units
                 </th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -161,6 +164,25 @@ export function ReposTable({ workspaceId, initialRows, canManage }: ReposTablePr
                       </span>
                     ) : (
                       <span className="text-xs text-[var(--gray-08)]">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right relative">
+                    <button
+                      type="button"
+                      onClick={() => setReindexOpenFor(reindexOpenFor === row.id ? null : row.id)}
+                      className="text-[#70b8ff] hover:underline text-sm"
+                    >
+                      Re-index
+                    </button>
+                    {reindexOpenFor === row.id && (
+                      <div className="absolute right-0 mt-1 z-10 w-72 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-3 text-left shadow">
+                        <p className="text-xs text-[var(--gray-09)] mb-1">
+                          Run this from the repo root to re-index and refresh health:
+                        </p>
+                        <code className="block text-xs bg-black/30 rounded px-2 py-1 select-all">
+                          {reindexCommand()}
+                        </code>
+                      </div>
                     )}
                   </td>
                 </tr>

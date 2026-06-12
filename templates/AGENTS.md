@@ -173,12 +173,13 @@ but each MCP call carries protocol overhead and costs more tokens than the CLI �
 prefer the CLI when token budget matters.
 
 Under Claude Code this is **enforced**, not just advised: a `PreToolUse` hook
-(`.agentrail/hooks/context-first.sh`, wired in `.claude/settings.json`) blocks
-the first broad search — `Grep`/`Glob` and `Bash` commands starting with
-`grep `/`rg `/`find ` — until `agentrail context query` or `context search` has
-run this session. After one retrieval the hook is permissive (retrieval can
-miss, so grep is never hard-locked). Enforcement is **claude-only**: Codex has
-no hook mechanism and relies on this prompt steering alone.
+(`.agentrail/hooks/context-first.sh`, wired in `.claude/settings.json`) **blocks
+repo-wide search outright** — the `Grep`/`Glob` tools and `Bash` commands
+starting with `grep `/`rg `/`find ` are denied (hard mode). Locate code with
+`agentrail context query`/`context search` and then `Read` the cited files;
+there is no marker escape, so a prior retrieval does not re-enable grep.
+Enforcement is **claude-only**: Codex has no hook mechanism and relies on this
+prompt steering alone.
 
 AgentRail is the harness. The configured runner is the worker. Ralph is the internal one-issue executor invoked by `agentrail run issue`. AFK is the queue/worktree loop invoked by `agentrail afk`.
 

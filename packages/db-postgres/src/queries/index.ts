@@ -1,4 +1,4 @@
-import { eq, and, lt, gte, lte, desc, isNull, count, inArray, gt } from "drizzle-orm";
+import { eq, and, lt, gte, lte, desc, isNull, count, inArray, gt, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { randomBytes } from "crypto";
 import { db } from "../db.js";
@@ -256,6 +256,40 @@ export async function listMemoryItems(workspaceId: string): Promise<MemoryItemRo
     .select()
     .from(memoryItems)
     .where(eq(memoryItems.workspaceId, workspaceId))
+    .orderBy(desc(memoryItems.createdAt));
+  return rows as MemoryItemRow[];
+}
+
+export async function insertMemoryItems(data: {
+  workspaceId: string;
+  source: string;
+  items: Array<{ content: string; tags: string[] }>;
+}): Promise<void> {
+  if (data.items.length === 0) return;
+  await db.insert(memoryItems).values(
+    data.items.map((item) => ({
+      workspaceId: data.workspaceId,
+      source: data.source,
+      content: item.content,
+      tags: item.tags,
+    }))
+  );
+}
+
+export async function listMemoryItemsByRunId(
+  workspaceId: string,
+  runId: string
+): Promise<MemoryItemRow[]> {
+  const tag = `run:${runId}`;
+  const rows = await db
+    .select()
+    .from(memoryItems)
+    .where(
+      and(
+        eq(memoryItems.workspaceId, workspaceId),
+        sql`${memoryItems.tags} @> ARRAY[${tag}]::text[]`
+      )
+    )
     .orderBy(desc(memoryItems.createdAt));
   return rows as MemoryItemRow[];
 }

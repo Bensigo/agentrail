@@ -10,6 +10,7 @@ import { FailuresSection } from "./components/failures-section";
 import { CostSection } from "./components/cost-section";
 import { WaterfallSection } from "./components/waterfall-section";
 import { ContextSection } from "./components/context-section";
+import { MemorySection } from "./components/memory-section";
 import type { RunDetail } from "./components/run-detail-header";
 import type { TimelineEvent } from "./components/run-timeline";
 
@@ -196,6 +197,8 @@ export default function RunDetailPage() {
       )}
 
       {run && <FailuresSection workspaceId={workspaceId} runId={runId} />}
+
+      {run && <MemorySection workspaceId={workspaceId} runId={runId} />}
     </div>
   );
 }

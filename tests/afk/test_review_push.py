@@ -355,3 +355,151 @@ def test_push_findings_default_empty(tmp_path: Path, monkeypatch) -> None:
 
     review_push.push_review_gate(tmp_path, "run-g", 1, _make_outcome())
     assert captured["body"]["findings"] == []
+
+
+# ---------------------------------------------------------------------------
+# extract_memory_suggestions
+# ---------------------------------------------------------------------------
+
+
+def _make_outcome_with_memory(suggestions) -> ReviewOutcome:
+    return ReviewOutcome(blocking=[], advisory=[], memory_suggestions=suggestions)
+
+
+def test_extract_memory_suggestions_empty_list() -> None:
+    outcome = _make_outcome_with_memory([])
+    assert review_push.extract_memory_suggestions(outcome) == []
+
+
+def test_extract_memory_suggestions_none() -> None:
+    outcome = _make_outcome_with_memory(None)
+    assert review_push.extract_memory_suggestions(outcome) == []
+
+
+def test_extract_memory_suggestions_present() -> None:
+    suggestions = [
+        {
+            "kind": "lesson",
+            "title": "Always mock subprocess",
+            "target_file": "tests/conftest.py",
+            "source": "review",
+            "body": "Always mock subprocess calls in tests to prevent hangs.",
+        }
+    ]
+    outcome = _make_outcome_with_memory(suggestions)
+    items = review_push.extract_memory_suggestions(outcome)
+    assert len(items) == 1
+    assert items[0]["content"] == "Always mock subprocess calls in tests to prevent hangs."
+    assert "kind:lesson" in items[0]["tags"]
+    assert "file:tests/conftest.py" in items[0]["tags"]
+
+
+def test_extract_memory_suggestions_skips_empty_body() -> None:
+    suggestions = [
+        {"kind": "lesson", "title": "No body here", "body": ""},
+        {"kind": "note", "title": "Also empty", "body": "   "},
+        {"kind": "tip", "title": "Has body", "body": "Use fixtures."},
+    ]
+    outcome = _make_outcome_with_memory(suggestions)
+    items = review_push.extract_memory_suggestions(outcome)
+    assert len(items) == 1
+    assert items[0]["content"] == "Use fixtures."
+
+
+def test_extract_memory_suggestions_multiple() -> None:
+    suggestions = [
+        {"body": "First note.", "kind": "lesson", "target_file": "a.py"},
+        {"body": "Second note.", "kind": "pattern"},
+        {"body": "Third note."},
+    ]
+    outcome = _make_outcome_with_memory(suggestions)
+    items = review_push.extract_memory_suggestions(outcome)
+    assert len(items) == 3
+    assert items[0]["content"] == "First note."
+    assert "kind:lesson" in items[0]["tags"]
+    assert "file:a.py" in items[0]["tags"]
+    assert items[1]["content"] == "Second note."
+    assert "kind:pattern" in items[1]["tags"]
+    assert "file:a.py" not in items[1]["tags"]
+    assert items[2]["content"] == "Third note."
+    assert items[2]["tags"] == []
+
+
+# ---------------------------------------------------------------------------
+# push_memory_items
+# ---------------------------------------------------------------------------
+
+
+def test_push_memory_items_returns_true_when_no_suggestions(tmp_path: Path, monkeypatch) -> None:
+    """No items → returns True without making HTTP call."""
+    captured = []
+
+    def fake_urlopen(req, timeout):
+        captured.append(req)
+        return FakeResp()
+
+    monkeypatch.setattr(review_push.urllib.request, "urlopen", fake_urlopen)
+    outcome = _make_outcome_with_memory([])
+    result = review_push.push_memory_items(tmp_path, "run-m1", outcome)
+    assert result is True
+    assert not captured
+
+
+def test_push_memory_items_returns_false_when_not_linked(tmp_path: Path, monkeypatch) -> None:
+    """Items present but no server.json → False, no HTTP."""
+    for key in ("AGENTRAIL_SERVER_BASE_URL", "AGENTRAIL_SERVER_API_KEY",
+                "AGENTRAIL_SERVER_REPOSITORY_ID"):
+        monkeypatch.delenv(key, raising=False)
+
+    captured = []
+
+    def fake_urlopen(req, timeout):
+        captured.append(req)
+        return FakeResp()
+
+    monkeypatch.setattr(review_push.urllib.request, "urlopen", fake_urlopen)
+    outcome = _make_outcome_with_memory([{"body": "note", "kind": "lesson"}])
+    result = review_push.push_memory_items(tmp_path, "run-m2", outcome)
+    assert result is False
+    assert not captured
+
+
+def test_push_memory_items_payload(tmp_path: Path, monkeypatch) -> None:
+    _write_server_json(tmp_path, base_url="http://localhost:5000",
+                       api_key="key-mem", repository_id="repo-mem")
+    captured: dict = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["auth"] = req.get_header("Authorization")
+        captured["body"] = json.loads(req.data)
+        return FakeResp()
+
+    monkeypatch.setattr(review_push.urllib.request, "urlopen", fake_urlopen)
+
+    suggestions = [{"body": "Mock subprocess in tests.", "kind": "lesson"}]
+    outcome = _make_outcome_with_memory(suggestions)
+    result = review_push.push_memory_items(tmp_path, "run-m3", outcome)
+
+    assert result is True
+    assert captured["url"] == "http://localhost:5000/api/v1/ingest/memory-items"
+    assert captured["auth"] == "Bearer key-mem"
+    body = captured["body"]
+    assert body["run_id"] == "run-m3"
+    assert body["repository_id"] == "repo-mem"
+    assert len(body["items"]) == 1
+    assert body["items"][0]["content"] == "Mock subprocess in tests."
+    assert "kind:lesson" in body["items"][0]["tags"]
+
+
+def test_push_memory_items_non_fatal_on_error(tmp_path: Path, monkeypatch) -> None:
+    _write_server_json(tmp_path)
+
+    def boom(req, timeout):
+        raise OSError("network down")
+
+    monkeypatch.setattr(review_push.urllib.request, "urlopen", boom)
+    suggestions = [{"body": "Some note.", "kind": "tip"}]
+    outcome = _make_outcome_with_memory(suggestions)
+    result = review_push.push_memory_items(tmp_path, "run-m4", outcome)
+    assert result is False  # never raises

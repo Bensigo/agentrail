@@ -993,6 +993,29 @@ def _source_tree_fingerprint(walked: List[Any]) -> str:
     return sha256_text("\n".join(paths))
 
 
+def _indexable_entries(root: Path, cfg: ContextConfig) -> List[Any]:
+    """The glob-filtered file set the freshness fingerprint is built from.
+
+    Both the write side (build_index → freshness.json) and the check side
+    (_cached_index_is_fresh) MUST derive the fingerprint from this exact set.
+    Deriving the write side from post-skip records (which also drop binary,
+    gitignored, and oversized files) makes the fingerprints permanently
+    disagree on any real repo — a permanent cache miss.
+    """
+    walked = walk_files(root, cfg.excludeGlobs)
+    return [
+        entry for entry in walked
+        if not entry.directory
+        and matches_any(cfg.includeGlobs, entry.relative_path)
+        and not matches_any(cfg.excludeGlobs, entry.relative_path)
+    ]
+
+
+def _indexable_fingerprint(root: Path, cfg: ContextConfig) -> str:
+    entries = _indexable_entries(root, cfg)
+    return sha256_text("\n".join(sorted(e.relative_path for e in entries)))
+
+
 def _cached_index_is_fresh(root: Path, cfg: ContextConfig, index_path: Path) -> bool:
     """Return True only if no indexed file changed since the index was written.
 
@@ -1006,14 +1029,9 @@ def _cached_index_is_fresh(root: Path, cfg: ContextConfig, index_path: Path) -> 
         index_mtime = index_path.stat().st_mtime
     except (OSError, ValueError):
         return False
-    walked = walk_files(root, cfg.excludeGlobs)
-    # Only consider files that would actually be indexed.
-    indexable = [
-        entry for entry in walked
-        if not entry.directory
-        and matches_any(cfg.includeGlobs, entry.relative_path)
-        and not matches_any(cfg.excludeGlobs, entry.relative_path)
-    ]
+    # Only consider files that would actually be indexed — via the shared
+    # helper so write and check sides can never diverge.
+    indexable = _indexable_entries(root, cfg)
     fp = sha256_text("\n".join(sorted(e.relative_path for e in indexable)))
     if fp != stored.get("sourceTreeFingerprint"):
         return False
@@ -1277,11 +1295,11 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
         "skipped": skipped_records,
     }
     write_json(index_dir / "index.json", index)
-    # Fingerprint over indexed-file paths only (excludes skipped/excluded files and
-    # external descriptors which have no filesystem path).  Must match the filtering
-    # in _cached_index_is_fresh so the comparison is consistent.
-    indexed_file_paths = sorted(r.path for r in records if r.sourceType != "external_descriptor")
-    write_json(index_dir / "freshness.json", {"sourceTreeFingerprint": sha256_text("\n".join(indexed_file_paths)), "builtAt": built_at})
+    # Fingerprint over the glob-filtered indexable set — the SAME set that
+    # _cached_index_is_fresh checks (via the shared helper). Deriving it from
+    # records would drop binary/gitignored/oversized files and cause a
+    # permanent cache miss on any real repo.
+    write_json(index_dir / "freshness.json", {"sourceTreeFingerprint": _indexable_fingerprint(root, cfg), "builtAt": built_at})
     write_json(index_dir / "sources.json", [record.to_json(include_content=False) for record in records])
     append_audit(root, {"event": "external_provider_call", "mode": provider_mode, "provider": cfg.embedding.provider, "model": cfg.embedding.model, "action": "skipped_local_only" if provider_mode == "disabled" else "deferred_to_context_embed", "payloadCount": 0 if provider_mode == "disabled" else len(chunks)})
     append_audit(root, {"event": "contextual_summary", "mode": summary_mode, "provider": cfg.summary.provider, "model": cfg.summary.model, "action": "skipped_local_only" if summary_mode == "disabled" else "not_implemented", "payloadCount": 0 if summary_mode == "disabled" else len(chunks)})

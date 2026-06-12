@@ -76,6 +76,26 @@ class ContentBasedCacheTests(unittest.TestCase):
         self.assertEqual(r2["rebuiltSources"], 0)
         self.assertGreater(r2["reusedSources"], 0)
 
+    def test_cache_hit_with_binary_and_gitignored_files(self) -> None:
+        """P1 regression (PR #521 review): the freshness fingerprint must use
+        the same file set on write and check. Binary and gitignored files are
+        skipped from records but ARE in the glob-filtered walk — deriving the
+        write-side fingerprint from records made every cache check miss."""
+        root = make_repo()
+        # Binary file inside the indexed tree (skipBinary drops it from records).
+        (root / "src" / "blob.bin").write_bytes(b"\x00\x01\x02\xff" * 64)
+        # Gitignored file inside the indexed tree (respectGitIgnore drops it).
+        (root / ".gitignore").write_text("src/generated.py\n", encoding="utf-8")
+        (root / "src" / "generated.py").write_text("# generated\n", encoding="utf-8")
+
+        r1 = build_index(root)
+        self.assertIs(r1["cacheHit"], False)
+
+        r2 = build_index(root)
+        self.assertIs(r2["cacheHit"], True,
+                      "binary/gitignored files must not poison the fingerprint")
+        self.assertEqual(r2["rebuiltSources"], 0)
+
     def test_cache_hit_after_120s_window(self) -> None:
         """Index age > 120s must NOT trigger a full rebuild if content is unchanged."""
         root = make_repo()

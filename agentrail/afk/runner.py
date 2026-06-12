@@ -46,11 +46,15 @@ REVIEWED_LABEL = "pr-reviewed"
 
 
 def _agent_command(engine: str, model: str = "") -> str:
+    # The returned string is shell-evaluated (bash -lc) downstream, so the
+    # model token is quoted — config values must never become shell code.
+    import shlex
+    quoted = shlex.quote(model) if model else ""
     if engine == "codex":
         base = "codex exec --sandbox danger-full-access -"
-        return f"{base} -m {model}" if model else base
+        return f"{base} -m {quoted}" if model else base
     base = "claude -p --dangerously-skip-permissions"
-    return f"{base} --model {model}" if model else base
+    return f"{base} --model {quoted}" if model else base
 
 
 def _agentrail_runner(target: Path) -> str:

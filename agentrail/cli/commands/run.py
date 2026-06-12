@@ -180,12 +180,19 @@ def resolve_model_for_phase(agent: str, model_flag: str, target: str, phase: str
 
 
 def append_model_to_command(command: str, agent: str, model: str) -> str:
-    """Append model flag to command string; return command unchanged when model is empty."""
+    """Append model flag to command string; return command unchanged when model is empty.
+
+    The command string is later evaluated by ``bash -lc``, so the model token
+    is shell-quoted — a config/flag value with metacharacters must never
+    become shell code.
+    """
     if not model:
         return command
+    import shlex
+    quoted = shlex.quote(model)
     if agent == "codex":
-        return f"{command} -m {model}"
-    return f"{command} --model {model}"
+        return f"{command} -m {quoted}"
+    return f"{command} --model {quoted}"
 
 
 def ensure_command_available(command_line: str) -> None:

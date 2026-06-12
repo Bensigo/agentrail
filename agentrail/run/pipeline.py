@@ -108,8 +108,10 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     # 9. Write prompt file
     phase_prompt_file.write_text(phase_prompt)
 
-    # 10. Phase command string (metadata only)
-    phase_command = rc.agent_command
+    # 10. Phase command string (metadata only) — the EFFECTIVE command for
+    # this phase (incl. model override), not the base agent_command, so
+    # artifacts record what actually ran.
+    phase_command = rc.phase_commands.get(phase, rc.agent_command)
 
     # 11. Write initial phase status
     artifacts.write_phase_status(

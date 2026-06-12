@@ -55,6 +55,11 @@ def _usage() -> str:
 Bare `run` selects the next queued GitHub issue (labels: afk, ready-for-agent;
 excludes afk-in-progress) and runs it. `run issue N` runs a specific issue.
 `run batch` runs several issues in parallel, each in its own git worktree.
+
+Budget: when --budget-usd is omitted, the default cap is read from
+`budgets.per_issue_usd` in .agentrail/config.json (0 or unset = uncapped).
+Passing --budget-usd 0 explicitly disables the cap even when the config
+sets a default.
 """
 
 
@@ -79,6 +84,7 @@ class RunOptions:
     model: str = ""
     command_explicit: bool = False
     budget_usd: float = 0.0
+    budget_explicit: bool = False
 
 
 def _need_value(args: List[str], i: int, flag: str) -> str:
@@ -117,6 +123,7 @@ def parse_run_options(args: List[str]) -> RunOptions:
             # float('-1.5') parses fine — the sign needs its own check.
             if opts.budget_usd < 0:
                 raise UsageError("--budget-usd must be a non-negative number")
+            opts.budget_explicit = True
             i += 2
         elif a in ("-h", "--help"):
             print(_usage()); raise UsageError("", code=0)
@@ -133,6 +140,40 @@ def _read_config(target: str) -> dict:
         return json.loads(path.read_text())
     except (ValueError, OSError):
         return {}
+
+
+def resolve_default_budget(target: str) -> float:
+    """Return `budgets.per_issue_usd` from .agentrail/config.json, or 0.0.
+
+    A bad value (non-numeric, negative) warns to stderr and is ignored — a
+    broken config must never crash or silently cap a run.
+    """
+    cfg = _read_config(target)
+    raw = (cfg.get("budgets") or {}).get("per_issue_usd") if cfg else None
+    if raw is None:
+        return 0.0
+    # JSON true/false would float() to 1.0/0.0 — treat booleans as non-numeric.
+    if isinstance(raw, bool):
+        value = None
+    else:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = None
+    if value is None or value < 0:
+        print(f"warning: ignoring invalid budgets.per_issue_usd in "
+              f".agentrail/config.json: {raw!r} (must be a non-negative number)",
+              file=sys.stderr)
+        return 0.0
+    return value
+
+
+def effective_budget(opts: RunOptions) -> float:
+    """Effective per-issue budget: explicit --budget-usd (0 disables the cap,
+    overriding any config default) > budgets.per_issue_usd > 0 (uncapped)."""
+    if opts.budget_explicit:
+        return opts.budget_usd
+    return resolve_default_budget(opts.target)
 
 
 def resolve_agent_name(target: str, fallback: str) -> str:
@@ -321,7 +362,7 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
     return run_issue(target, issue, agent=agent, command=command,
                      repo_dir=_repo_dir(), log_dir=log_dir,
                      run_id=opts.run_id, phase_commands=phase_commands,
-                     budget_usd=opts.budget_usd)
+                     budget_usd=effective_budget(opts))
 
 
 @dataclass

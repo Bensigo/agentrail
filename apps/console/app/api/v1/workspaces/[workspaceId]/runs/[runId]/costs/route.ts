@@ -32,6 +32,11 @@ export async function GET(
     );
     return NextResponse.json({ rows, totals });
   } catch {
-    return NextResponse.json({ rows: [], totals: { total_cost_usd: 0, input_tokens: 0, output_tokens: 0, cache_tokens: 0, tokens: 0 } });
+    // A 200 with zeros would make a ClickHouse outage indistinguishable from
+    // a legitimately cost-free run; surface the failure instead.
+    return NextResponse.json(
+      { error: "Failed to load cost events" },
+      { status: 500 }
+    );
   }
 }

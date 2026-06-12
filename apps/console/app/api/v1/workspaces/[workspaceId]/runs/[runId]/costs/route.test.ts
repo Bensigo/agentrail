@@ -97,4 +97,12 @@ describe("GET /api/v1/workspaces/[workspaceId]/runs/[runId]/costs", () => {
     expect(json.rows).toHaveLength(0);
     expect(json.totals.total_cost_usd).toBe(0);
   });
+
+  it("500 when ClickHouse query throws (no silent 200)", async () => {
+    vi.mocked(getRunCosts).mockRejectedValue(new Error("CH down"));
+    const res = await GET(req(), { params: params() });
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json.error).toBeTruthy();
+  });
 });

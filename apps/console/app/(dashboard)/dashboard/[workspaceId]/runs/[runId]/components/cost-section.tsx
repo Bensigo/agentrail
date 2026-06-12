@@ -91,7 +91,7 @@ export function CostSection({ workspaceId, runId }: CostSectionProps) {
     );
   }
 
-  const model = rows[0]?.model ?? "";
+  const models = [...new Set(rows.map((r) => r.model).filter(Boolean))];
 
   return (
     <div className="space-y-4">
@@ -125,9 +125,12 @@ export function CostSection({ workspaceId, runId }: CostSectionProps) {
         </div>
       </div>
 
-      {model && (
+      {models.length > 0 && (
         <p className="text-xs text-[var(--gray-09)]">
-          Model: <span className="font-mono text-[var(--gray-11)]">{model}</span>
+          {models.length === 1 ? "Model" : "Models"}:{" "}
+          <span className="font-mono text-[var(--gray-11)]">
+            {models.join(", ")}
+          </span>
         </p>
       )}
 

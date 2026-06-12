@@ -27,6 +27,14 @@ interface CostsResponse {
   totals: CostTotals;
 }
 
+interface ContextPackTokens {
+  tokens_saved: number;
+}
+
+interface ContextPacksResponse {
+  context_packs: ContextPackTokens[];
+}
+
 interface CostSectionProps {
   workspaceId: string;
   runId: string;
@@ -44,6 +52,7 @@ function fmtUsd(n: number): string {
 export function CostSection({ workspaceId, runId, runStatus }: CostSectionProps) {
   const [rows, setRows] = useState<RunCostRow[]>([]);
   const [totals, setTotals] = useState<CostTotals | null>(null);
+  const [packTokensSaved, setPackTokensSaved] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,7 +79,25 @@ export function CostSection({ workspaceId, runId, runStatus }: CostSectionProps)
         setLoading(false);
       }
     }
+    async function loadPackSavings() {
+      // Tokens saved by context retrieval comes from this run's context packs.
+      // A failure here must not blank the cost section; the stat falls back to
+      // cache-read savings only.
+      try {
+        const res = await fetch(
+          `/api/v1/workspaces/${workspaceId}/runs/${runId}/context-packs`
+        );
+        if (!res.ok) return;
+        const json = (await res.json()) as ContextPacksResponse;
+        setPackTokensSaved(
+          json.context_packs.reduce((sum, p) => sum + (p.tokens_saved || 0), 0)
+        );
+      } catch {
+        // keep 0
+      }
+    }
     load();
+    loadPackSavings();
   }, [workspaceId, runId]);
 
   if (loading) {
@@ -81,13 +108,29 @@ export function CostSection({ workspaceId, runId, runStatus }: CostSectionProps)
     return <p className="text-sm text-[#ff9592] py-4">{error}</p>;
   }
 
+  const tokensSaved = packTokensSaved + (totals?.cache_tokens ?? 0);
+  const tokensSavedCard = (
+    <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 py-2">
+      <p className="text-xs text-[var(--gray-09)] mb-0.5">Tokens saved</p>
+      <p className="text-sm font-mono font-semibold text-[var(--gray-12)]">
+        {fmt(tokensSaved)}
+      </p>
+      <p className="text-[11px] text-[var(--gray-09)]">
+        context retrieval + cache reads
+      </p>
+    </div>
+  );
+
   if (rows.length === 0) {
     return (
-      <SectionEmpty
-        runStatus={runStatus}
-        waitingText="Run in progress — cost events arrive as each phase completes."
-        emptyText="No cost events recorded for this run."
-      />
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">{tokensSavedCard}</div>
+        <SectionEmpty
+          runStatus={runStatus}
+          waitingText="Run in progress — cost events arrive as each phase completes."
+          emptyText="No cost events recorded for this run."
+        />
+      </div>
     );
   }
 
@@ -96,7 +139,7 @@ export function CostSection({ workspaceId, runId, runStatus }: CostSectionProps)
   return (
     <div className="space-y-4">
       {/* Summary cards */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 py-2">
           <p className="text-xs text-[var(--gray-09)] mb-0.5">Total cost</p>
           <p className="text-sm font-mono font-semibold text-[var(--gray-12)]">
@@ -123,6 +166,7 @@ export function CostSection({ workspaceId, runId, runStatus }: CostSectionProps)
             {totals ? fmt(totals.cache_tokens) : "—"}
           </p>
         </div>
+        {tokensSavedCard}
       </div>
 
       {models.length > 0 && (

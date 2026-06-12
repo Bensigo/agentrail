@@ -87,6 +87,7 @@ def push_context_pack(
         "context_pack_id": str(uuid.uuid4()),
         "token_budget": int(max_tokens or 0),
         "tokens_used": int(retrieval.get("selectedContextTokens") or 0),
+        "tokens_saved": int(retrieval.get("tokensSaved") or 0),
         "sources_considered": len(retrieval.get("selectedSources") or []),
         "occurred_at": _now_iso(),
         "items": _build_items(retrieval),

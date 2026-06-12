@@ -72,6 +72,7 @@ describe("POST /api/v1/ingest/context-packs", () => {
         run_id: valid.run_id,
         token_budget: valid.token_budget,
         tokens_used: valid.tokens_used,
+        tokens_saved: 0,
         anchors_extracted: 0,
         sources_considered: valid.sources_considered,
         occurred_at: valid.occurred_at,

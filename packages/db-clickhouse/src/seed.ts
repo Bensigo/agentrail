@@ -168,6 +168,7 @@ async function main() {
       context_pack_id: "pack-001",
       token_budget: 16000,
       tokens_used: 11432,
+      tokens_saved: 0,
       anchors_extracted: 5,
       sources_considered: 23,
       occurred_at: new Date("2026-06-08T08:01:00.000Z"),

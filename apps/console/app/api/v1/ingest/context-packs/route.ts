@@ -35,6 +35,8 @@ interface RawContextPack {
   sources_considered: number;
   occurred_at: string;
   anchors_extracted?: number;
+  /** Estimated tokens saved by bounded retrieval vs reading full files. */
+  tokens_saved?: number;
   items?: RawContextItem[];
 }
 
@@ -61,6 +63,7 @@ function isRawContextPack(v: unknown): v is RawContextPack {
     typeof o.sources_considered === "number" &&
     typeof o.occurred_at === "string" &&
     (o.anchors_extracted === undefined || typeof o.anchors_extracted === "number") &&
+    (o.tokens_saved === undefined || typeof o.tokens_saved === "number") &&
     (o.items === undefined ||
       (Array.isArray(o.items) &&
         o.items.length <= 100 &&
@@ -94,7 +97,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Each event must have repository_id (string), run_id (string), context_pack_id (string), token_budget (number), tokens_used (number), sources_considered (number), occurred_at (string); optional items is an array of up to 100 {path, reason?, score?, included?} objects",
+            "Each event must have repository_id (string), run_id (string), context_pack_id (string), token_budget (number), tokens_used (number), sources_considered (number), occurred_at (string); optional tokens_saved (number); optional items is an array of up to 100 {path, reason?, score?, included?} objects",
         },
         { status: 400 }
       );
@@ -117,6 +120,7 @@ export async function POST(req: NextRequest) {
     run_id: e.run_id,
     token_budget: e.token_budget,
     tokens_used: e.tokens_used,
+    tokens_saved: e.tokens_saved ?? 0,
     anchors_extracted: e.anchors_extracted ?? 0,
     sources_considered: e.sources_considered,
     occurred_at: e.occurred_at,

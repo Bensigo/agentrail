@@ -709,6 +709,8 @@ export interface ContextPackInput {
   run_id: string;
   token_budget: number;
   tokens_used: number;
+  /** Estimated tokens saved by bounded retrieval vs reading the full files. */
+  tokens_saved: number;
   anchors_extracted: number;
   sources_considered: number;
   occurred_at: string; // ISO 8601
@@ -760,6 +762,7 @@ export async function insertContextPacks(packs: ContextPackInput[]): Promise<num
     context_pack_id,
     token_budget: p.token_budget,
     tokens_used: p.tokens_used,
+    tokens_saved: p.tokens_saved,
     anchors_extracted: p.anchors_extracted,
     sources_considered: p.sources_considered,
     occurred_at: new Date(p.occurred_at)

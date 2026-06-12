@@ -51,6 +51,7 @@ export async function GET(
           context_pack_id: pack.context_pack_id,
           token_budget: pack.token_budget,
           tokens_used: pack.tokens_used,
+          tokens_saved: pack.tokens_saved,
           anchors_extracted: pack.anchors_extracted,
           sources_considered: pack.sources_considered,
           occurred_at: pack.occurred_at.toISOString(),

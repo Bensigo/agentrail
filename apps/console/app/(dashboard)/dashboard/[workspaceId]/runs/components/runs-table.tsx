@@ -17,6 +17,7 @@ export interface RunRecord {
   repositoryId: string;
   agent: string;
   branch: string;
+  title: string | null;
   status: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -76,6 +77,12 @@ function formatStartedAt(iso: string | null): string {
 const columnHelper = createColumnHelper<RunRecord>();
 
 const columns = [
+  columnHelper.accessor("title", {
+    header: "Feature",
+    cell: (info) => (
+      <span className="font-medium">{info.getValue() || "—"}</span>
+    ),
+  }),
   columnHelper.accessor("id", {
     header: "Run ID",
     cell: (info) => (

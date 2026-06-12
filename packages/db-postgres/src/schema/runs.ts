@@ -16,6 +16,7 @@ export const runs = pgTable("runs", {
   repositoryId: text("repository_id").notNull(),
   agent: text("agent").notNull(),
   branch: text("branch").notNull(),
+  title: text("title"),
   status: runStatusEnum("status").notNull().default("queued"),
   startedAt: timestamp("started_at", { withTimezone: true }),
   finishedAt: timestamp("finished_at", { withTimezone: true }),

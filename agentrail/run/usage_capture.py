@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -42,10 +43,11 @@ def capture_usage(agent: str, target: Path, since_ts: float) -> Optional[Usage]:
 def _claude_projects_dir(target: Path) -> Path:
     """Resolve ~/.claude/projects/<encoded-cwd> for *target*.
 
-    Claude encodes the absolute path by replacing every '/' with '-', so
-    '/Users/alice/project' becomes '-Users-alice-project'.
+    Claude encodes the cwd by replacing every non-alphanumeric character with
+    '-' (not just '/'): '/repo/.afk/wt' becomes '-repo--afk-wt'. Dots matter —
+    afk worktrees live under '.afk/', so a '/'-only encoding never matches.
     """
-    encoded = str(target.resolve()).replace("/", "-")
+    encoded = re.sub(r"[^A-Za-z0-9-]", "-", str(target.resolve()))
     return Path.home() / ".claude" / "projects" / encoded
 
 

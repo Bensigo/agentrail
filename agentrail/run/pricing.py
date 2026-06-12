@@ -22,14 +22,16 @@ class _Rates(NamedTuple):
 # Source: public Anthropic and OpenAI pricing pages (as of 2026-06).
 # ---------------------------------------------------------------------------
 PRICES: dict[str, _Rates] = {
-    # Claude 4.x family
-    "claude-opus-4-8":              _Rates(input=15.00, output=75.00, cache=1.50),
-    "claude-opus-4-5":              _Rates(input=15.00, output=75.00, cache=1.50),
-    "claude-opus-4-6":              _Rates(input=15.00, output=75.00, cache=1.50),
+    # Claude — current generation (cache = ~0.1x input, the cache-read rate)
+    "claude-fable-5":               _Rates(input=10.00, output=50.00, cache=1.00),
+    "claude-opus-4-8":              _Rates(input=5.00,  output=25.00, cache=0.50),
+    "claude-opus-4-7":              _Rates(input=5.00,  output=25.00, cache=0.50),
+    "claude-opus-4-6":              _Rates(input=5.00,  output=25.00, cache=0.50),
+    "claude-opus-4-5":              _Rates(input=5.00,  output=25.00, cache=0.50),
     "claude-sonnet-4-6":            _Rates(input=3.00,  output=15.00, cache=0.30),
     "claude-sonnet-4-5":            _Rates(input=3.00,  output=15.00, cache=0.30),
-    "claude-haiku-4-5":             _Rates(input=0.80,  output=4.00,  cache=0.08),
-    "claude-haiku-4-5-20251001":    _Rates(input=0.80,  output=4.00,  cache=0.08),
+    "claude-haiku-4-5":             _Rates(input=1.00,  output=5.00,  cache=0.10),
+    "claude-haiku-4-5-20251001":    _Rates(input=1.00,  output=5.00,  cache=0.10),
     # Claude 3.x family (still in use)
     "claude-opus-3-5":              _Rates(input=15.00, output=75.00, cache=1.50),
     "claude-sonnet-3-7":            _Rates(input=3.00,  output=15.00, cache=0.30),

@@ -9,6 +9,16 @@ import type {
 } from "./schema";
 
 async function main() {
+  // House rule: the dashboard runs on REAL data only. Seeding is for throwaway
+  // local databases — never the linked instance. Fixture rows that reach the
+  // real workspace pollute Costs/Scorecard aggregates (it happened: run-001).
+  if (process.env.AGENTRAIL_ALLOW_SEED !== "1") {
+    console.error(
+      "Refusing to seed: set AGENTRAIL_ALLOW_SEED=1 to seed a throwaway local database. " +
+        "Never seed the linked instance — the dashboard uses real run data only."
+    );
+    process.exit(1);
+  }
   console.log("Seeding ClickHouse run_events...");
 
   const events: TelemetryEventRecord[] = [

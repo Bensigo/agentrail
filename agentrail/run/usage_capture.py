@@ -11,7 +11,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, List, Optional
 
 
 @dataclass
@@ -116,21 +116,23 @@ def _extract_claude(target: Path, since_ts: float) -> Optional[Usage]:
 # Codex extractor
 # ---------------------------------------------------------------------------
 
-def _extract_codex(target: Path, since_ts: float) -> Optional[Usage]:
+def _codex_session_records(target: Path, since_ts: float) -> Iterator[List[dict]]:
+    """Yield parsed record lists for codex rollout files matching *target*.
+
+    Scans ~/.codex/sessions/**/rollout-*.jsonl, skips files modified before
+    *since_ts*, and yields the parsed JSON records of each file whose
+    session_meta.cwd equals the resolved target path. Shared by the usage
+    extractor below and the agent-activity extractor (activity_push.py).
+    """
     sessions_dir = Path.home() / ".codex" / "sessions"
     if not sessions_dir.exists():
-        return None
+        return
 
     target_str = str(target.resolve())
 
-    # Scan all rollout-*.jsonl files under ~/.codex/sessions/**/
-    candidates = list(sessions_dir.glob("**/rollout-*.jsonl"))
-    if not candidates:
-        return None
-
     # Process each candidate file that was modified >= since_ts and whose
     # session_meta.cwd matches the target repo.
-    for jsonl_file in sorted(candidates):
+    for jsonl_file in sorted(sessions_dir.glob("**/rollout-*.jsonl")):
         if os.path.getmtime(jsonl_file) < since_ts:
             continue
 
@@ -139,14 +141,10 @@ def _extract_codex(target: Path, since_ts: float) -> Optional[Usage]:
         except OSError:
             continue
 
-        lines = text.splitlines()
-
-        # First pass: check that session_meta.cwd matches target.
         session_cwd: Optional[str] = None
-        session_model: Optional[str] = None
-        last_token_usage: Optional[dict] = None
+        records: List[dict] = []
 
-        for line in lines:
+        for line in text.splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -154,14 +152,26 @@ def _extract_codex(target: Path, since_ts: float) -> Optional[Usage]:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(record, dict):
+                continue
+            records.append(record)
+            if record.get("type") == "session_meta":
+                session_cwd = record.get("cwd")
 
+        if session_cwd == target_str:
+            yield records
+
+
+def _extract_codex(target: Path, since_ts: float) -> Optional[Usage]:
+    for records in _codex_session_records(target, since_ts):
+        session_model: Optional[str] = None
+        last_token_usage: Optional[dict] = None
+
+        for record in records:
             try:
                 record_type = record.get("type")
 
-                if record_type == "session_meta":
-                    session_cwd = record.get("cwd")
-
-                elif record_type == "turn_context":
+                if record_type == "turn_context":
                     m = record.get("model")
                     if m:
                         session_model = m
@@ -173,9 +183,6 @@ def _extract_codex(target: Path, since_ts: float) -> Optional[Usage]:
                         last_token_usage = total
             except (TypeError, AttributeError):
                 continue
-
-        if session_cwd != target_str:
-            continue
 
         if last_token_usage is None:
             continue

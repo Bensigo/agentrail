@@ -161,8 +161,12 @@ class Runner:
                "--target", str(wt)]
         if self.model:
             cmd += ["--model", self.model]
-        if self.budget_per_issue > 0:
-            cmd += ["--budget-usd", str(self.budget_per_issue)]
+        # Always forward the resolved budget — run_afk has already applied the
+        # flag > config > 0 precedence. Forwarding an explicit 0 matters: the
+        # worktree carries a copy of .agentrail/config.json, so omitting the
+        # flag would let `run issue` re-apply budgets.per_issue_usd from config
+        # even when the user disabled the cap with --budget-per-issue 0.
+        cmd += ["--budget-usd", str(self.budget_per_issue)]
         sid = getattr(self, "session_id", None)
         if sid:
             from agentrail.afk.run_register import run_uuid

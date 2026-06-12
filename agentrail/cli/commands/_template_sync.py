@@ -127,6 +127,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "name": "codex",
         "command": "codex exec --sandbox danger-full-access -",
     },
+    # Default per-issue cost cap in USD for `agentrail run` / `agentrail afk`.
+    # 0 = uncapped. An explicit --budget-usd / --budget-per-issue flag (even 0)
+    # overrides this value.
+    "budgets": {
+        "per_issue_usd": 0,
+    },
     "context": {
         "includeGlobs": ["**/*"],
         "excludeGlobs": [

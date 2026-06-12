@@ -22,6 +22,7 @@ def _usage() -> str:
   agentrail afk [--concurrency N] [--engine claude|codex] [--base BRANCH]
                 [--afk-label LABEL] [--queue-labels a,b] [--max-retries N]
                 [--max-review-rounds N] [--dry-run] [--allow-dirty]
+                [--model MODEL] [--budget-per-issue FLOAT]
 
 Runs the AFK workflow: pick approved GitHub issues, implement each in an
 isolated worktree, open a PR, review it, and either merge, auto-fix P0/P1
@@ -30,6 +31,11 @@ findings in place, or comment P2/P3 findings for the engineer to decide.
 State is a single JSON snapshot at .agentrail/afk/state.json (the single source
 of truth). Slot claiming is synchronous, so two workers never take the same
 issue.
+
+Budget: when --budget-per-issue is omitted, the default per-issue cap is read
+from `budgets.per_issue_usd` in .agentrail/config.json (0 or unset = uncapped).
+Passing --budget-per-issue 0 explicitly disables the cap even when the config
+sets a default.
 """
 
 
@@ -47,6 +53,7 @@ def _parse(args: List[str]) -> dict:
         "allow_dirty": False,
         "model": "",
         "budget_per_issue": 0.0,
+        "budget_explicit": False,
     }
     i = 0
     while i < len(args):
@@ -74,7 +81,8 @@ def _parse(args: List[str]) -> dict:
         elif a == "--model":
             opts["model"] = args[i + 1]; i += 2
         elif a == "--budget-per-issue":
-            opts["budget_per_issue"] = float(args[i + 1]); i += 2
+            opts["budget_per_issue"] = float(args[i + 1])
+            opts["budget_explicit"] = True; i += 2
         elif a in ("-h", "--help"):
             print(_usage()); raise SystemExit(0)
         else:
@@ -85,6 +93,13 @@ def _parse(args: List[str]) -> dict:
 def run_afk(args: List[str]) -> int:
     opts = _parse(args)
     target = opts["target"].resolve()
+
+    # No explicit --budget-per-issue: fall back to budgets.per_issue_usd from
+    # .agentrail/config.json. An explicit 0 disables the cap even when the
+    # config sets a default.
+    if not opts["budget_explicit"]:
+        from agentrail.cli.commands.run import resolve_default_budget
+        opts["budget_per_issue"] = resolve_default_budget(str(target))
 
     if opts["engine"] not in ("claude", "codex"):
         print(f"unsupported engine: {opts['engine']}"); return 1

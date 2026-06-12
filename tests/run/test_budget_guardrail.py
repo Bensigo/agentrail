@@ -207,5 +207,95 @@ class TestNegativeBudgetRejected(unittest.TestCase):
             parse_run_options(["--budget-usd", "-1.5"])
 
 
+# ---------------------------------------------------------------------------
+# Default budget from config: budgets.per_issue_usd (flag > config > 0)
+# ---------------------------------------------------------------------------
+
+def _write_config(target: Path, config: dict) -> None:
+    agentrail_dir = target / ".agentrail"
+    agentrail_dir.mkdir(parents=True, exist_ok=True)
+    (agentrail_dir / "config.json").write_text(json.dumps(config))
+
+
+class TestDefaultBudgetFromConfig(unittest.TestCase):
+    """Default per-issue budget read from budgets.per_issue_usd in
+    .agentrail/config.json when --budget-usd is not given."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.target = Path(self.tmp.name) / "target"
+        self.target.mkdir(parents=True)
+
+    def test_config_default_applied_when_no_flag(self) -> None:
+        from agentrail.cli.commands.run import RunOptions, effective_budget
+        _write_config(self.target, {"budgets": {"per_issue_usd": 5.0}})
+        opts = RunOptions(target=str(self.target))
+        self.assertEqual(effective_budget(opts), 5.0)
+
+    def test_flag_overrides_config_default(self) -> None:
+        from agentrail.cli.commands.run import effective_budget, parse_run_options
+        _write_config(self.target, {"budgets": {"per_issue_usd": 5.0}})
+        opts = parse_run_options(["--target", str(self.target), "--budget-usd", "2.5"])
+        self.assertEqual(effective_budget(opts), 2.5)
+
+    def test_flag_zero_disables_cap_despite_config(self) -> None:
+        from agentrail.cli.commands.run import effective_budget, parse_run_options
+        _write_config(self.target, {"budgets": {"per_issue_usd": 5.0}})
+        opts = parse_run_options(["--target", str(self.target), "--budget-usd", "0"])
+        self.assertEqual(effective_budget(opts), 0.0)
+
+    def test_no_flag_no_config_is_uncapped(self) -> None:
+        from agentrail.cli.commands.run import RunOptions, effective_budget
+        opts = RunOptions(target=str(self.target))
+        self.assertEqual(effective_budget(opts), 0.0)
+
+    def test_numeric_string_in_config_is_accepted(self) -> None:
+        from agentrail.cli.commands.run import resolve_default_budget
+        _write_config(self.target, {"budgets": {"per_issue_usd": "3.5"}})
+        self.assertEqual(resolve_default_budget(str(self.target)), 3.5)
+
+
+class TestBadConfigBudgetIgnoredWithWarning(unittest.TestCase):
+    """Non-numeric or negative budgets.per_issue_usd warns to stderr and is
+    treated as uncapped — a bad config must never crash a run."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.target = Path(self.tmp.name) / "target"
+        self.target.mkdir(parents=True)
+
+    def _resolve(self, raw) -> tuple:
+        import io
+        from contextlib import redirect_stderr
+        from agentrail.cli.commands.run import resolve_default_budget
+        _write_config(self.target, {"budgets": {"per_issue_usd": raw}})
+        err = io.StringIO()
+        with redirect_stderr(err):
+            value = resolve_default_budget(str(self.target))
+        return value, err.getvalue()
+
+    def test_non_numeric_value_warns_and_is_ignored(self) -> None:
+        value, err = self._resolve("five dollars")
+        self.assertEqual(value, 0.0)
+        self.assertIn("budgets.per_issue_usd", err)
+
+    def test_negative_value_warns_and_is_ignored(self) -> None:
+        value, err = self._resolve(-3)
+        self.assertEqual(value, 0.0)
+        self.assertIn("budgets.per_issue_usd", err)
+
+    def test_boolean_value_warns_and_is_ignored(self) -> None:
+        value, err = self._resolve(True)
+        self.assertEqual(value, 0.0)
+        self.assertIn("budgets.per_issue_usd", err)
+
+    def test_null_value_is_silently_uncapped(self) -> None:
+        value, err = self._resolve(None)
+        self.assertEqual(value, 0.0)
+        self.assertEqual(err, "")
+
+
 if __name__ == "__main__":
     unittest.main()

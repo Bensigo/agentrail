@@ -8,6 +8,10 @@ import {
   CREATE_COST_EVENTS_TABLE,
   ALTER_RUN_EVENTS_ADD_SESSION_ID,
   ALTER_RUN_EVENTS_ADD_SEQ,
+  ALTER_COST_EVENTS_ADD_PHASE,
+  ALTER_COST_EVENTS_ADD_INPUT_TOKENS,
+  ALTER_COST_EVENTS_ADD_OUTPUT_TOKENS,
+  ALTER_COST_EVENTS_ADD_CACHE_TOKENS,
 } from "./schema";
 
 async function main() {
@@ -28,6 +32,12 @@ async function main() {
   console.log("Created index_snapshots table.");
   await client.command({ query: CREATE_COST_EVENTS_TABLE });
   console.log("Created cost_events table.");
+  // Additive columns for per-phase cost tracking (safe on existing tables).
+  await client.command({ query: ALTER_COST_EVENTS_ADD_PHASE });
+  await client.command({ query: ALTER_COST_EVENTS_ADD_INPUT_TOKENS });
+  await client.command({ query: ALTER_COST_EVENTS_ADD_OUTPUT_TOKENS });
+  await client.command({ query: ALTER_COST_EVENTS_ADD_CACHE_TOKENS });
+  console.log("Applied cost_events ALTER TABLE migrations.");
   await client.close();
   console.log("ClickHouse migration complete.");
 }

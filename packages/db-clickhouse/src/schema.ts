@@ -180,6 +180,23 @@ PARTITION BY (workspace_id, toYYYYMM(occurred_at))
 ORDER BY (workspace_id, occurred_at, event_id)
 `;
 
+/** ALTER TABLE statements for cost_events columns added after initial table creation. */
+export const ALTER_COST_EVENTS_ADD_PHASE = `
+ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS phase String DEFAULT ''
+`;
+
+export const ALTER_COST_EVENTS_ADD_INPUT_TOKENS = `
+ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS input_tokens UInt64 DEFAULT 0
+`;
+
+export const ALTER_COST_EVENTS_ADD_OUTPUT_TOKENS = `
+ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS output_tokens UInt64 DEFAULT 0
+`;
+
+export const ALTER_COST_EVENTS_ADD_CACHE_TOKENS = `
+ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS cache_tokens UInt64 DEFAULT 0
+`;
+
 export interface CostEventRecord {
   workspace_id: string;
   run_id: string;
@@ -191,6 +208,10 @@ export interface CostEventRecord {
   tokens: number;
   cost_usd: number;
   model: string;
+  phase: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_tokens: number;
   occurred_at: Date;
   event_id: string;
 }

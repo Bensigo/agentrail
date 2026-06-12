@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { RunDetailHeader } from "./components/run-detail-header";
 import { RunTimeline } from "./components/run-timeline";
 import { ReviewGatesSection } from "./components/review-gates-section";
+import { CostSection } from "./components/cost-section";
 import type { RunDetail } from "./components/run-detail-header";
 import type { TimelineEvent } from "./components/run-timeline";
 
@@ -126,6 +127,13 @@ export default function RunDetailPage() {
       </h1>
 
       {run && <RunDetailHeader run={run} />}
+
+      <div className="mt-6">
+        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+          Cost &amp; tokens
+        </h2>
+        <CostSection workspaceId={workspaceId} runId={runId} />
+      </div>
 
       <div className="mt-6">
         <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">

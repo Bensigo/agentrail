@@ -30,6 +30,11 @@ export async function GET(
     }));
     return NextResponse.json({ items: serialized });
   } catch {
-    return NextResponse.json({ items: [] });
+    // A 200 with no items would make a DB outage indistinguishable from a
+    // run that simply produced no memory; surface the failure instead.
+    return NextResponse.json(
+      { error: "Failed to load memory items" },
+      { status: 500 }
+    );
   }
 }

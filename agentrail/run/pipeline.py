@@ -9,9 +9,10 @@ import time
 from dataclasses import dataclass, field
 from datetime import timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from agentrail.run import artifacts, context as ctx, prompts, skills, state as state_mod
+from agentrail.run.context_pack_push import push_context_pack
 from agentrail.run.cost_push import push_cost_event
 from agentrail.run.pricing import cost_usd
 from agentrail.run.proc import run_with_timeout
@@ -41,6 +42,7 @@ class RunContext:
     max_execution_attempts: int
     agent_timeout: int = 1800
     failed_verification_attempts: int = 0
+    context_retrieval: Dict[str, Any] = field(default_factory=dict)
 
 
 def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
@@ -215,6 +217,12 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
             push_cost_event(rc.target_dir, rc.run_id, phase, usage, cost)
     except Exception as _exc:
         _log.debug("cost capture skipped: %s", _exc)
+
+    # 17b. Context pack telemetry — non-fatal
+    try:
+        push_context_pack(rc.target_dir, rc.run_id, rc.context_retrieval)
+    except Exception as _exc:
+        _log.debug("context pack push skipped: %s", _exc)
 
     # 18. Update artifacts based on success/failure
     if status == 0:
@@ -409,6 +417,7 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
         resolution_text=resolution_text,
         run_context_pack_file=run_context_pack_file,
         max_execution_attempts=max_execution_attempts,
+        context_retrieval=run_context_retrieval,
     )
 
     # 11. Determine plan skip

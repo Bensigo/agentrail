@@ -180,3 +180,34 @@ def test_push_context_pack_empty_retrieval_sends_zeros(tmp_path: Path, monkeypat
     assert body["token_budget"] == 0
     assert body["tokens_used"] == 0
     assert body["sources_considered"] == 0
+
+
+def test_payload_handles_dict_retrieval_budget(tmp_path, monkeypatch):
+    # retrievalBudget is a dict {maxItems, maxTokens}; token_budget must be its
+    # maxTokens, not int(dict) (which used to raise and silently drop the push).
+    monkeypatch.setenv("AGENTRAIL_SERVER_BASE_URL", "http://x")
+    monkeypatch.setenv("AGENTRAIL_SERVER_API_KEY", "ar_k")
+    monkeypatch.setenv("AGENTRAIL_SERVER_REPOSITORY_ID", "repo")
+    captured = {}
+
+    class FakeResp:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = req.data
+        return FakeResp()
+
+    monkeypatch.setattr(context_pack_push.urllib.request, "urlopen", fake_urlopen)
+    ok = context_pack_push.push_context_pack(
+        tmp_path, "run-1",
+        {"selectedContextTokens": 743, "selectedSources": ["a", "b"],
+         "retrievalBudget": {"maxItems": 10, "maxTokens": 5000}},
+    )
+    assert ok is True
+    import json as _json
+    payload = _json.loads(captured["body"])
+    assert payload["token_budget"] == 5000
+    assert payload["tokens_used"] == 743
+    assert payload["sources_considered"] == 2

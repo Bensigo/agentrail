@@ -45,4 +45,4 @@ export type {
   CostEventInput,
   ContextPackInput,
 } from "./queries";
-export { getContextPacksForRun, getContextPackItems } from "./context-queries";
+export { getContextPacksForRun, getContextPackItems, getWorkspaceContextPacks } from "./context-queries";

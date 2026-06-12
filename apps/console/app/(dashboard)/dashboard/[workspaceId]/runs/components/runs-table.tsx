@@ -97,6 +97,14 @@ const columns = [
       <span className="text-[var(--gray-11)]">{info.getValue()}</span>
     ),
   }),
+  columnHelper.accessor("branch", {
+    header: "Branch",
+    cell: (info) => (
+      <span className="font-mono text-[var(--gray-10)] text-xs">
+        {info.getValue() || "—"}
+      </span>
+    ),
+  }),
   columnHelper.accessor("status", {
     header: "Status",
     cell: (info) => <StatusBadge status={info.getValue()} />,

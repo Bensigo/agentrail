@@ -46,6 +46,8 @@ class RunContext:
     failed_verification_attempts: int = 0
     context_retrieval: Dict[str, Any] = field(default_factory=dict)
     phase_commands: Dict[str, str] = field(default_factory=dict)
+    budget_usd: float = 0.0
+    cumulative_cost_usd: float = 0.0
 
 
 def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
@@ -222,6 +224,7 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
         if usage:
             cost = cost_usd(usage)
             push_cost_event(rc.target_dir, rc.run_id, phase, usage, cost)
+            rc.cumulative_cost_usd += cost
     except Exception as _exc:
         _log.debug("cost capture skipped: %s", _exc)
 
@@ -325,7 +328,8 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
 def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
               repo_dir: Path, log_dir: Optional[Path] = None,
               run_id: str = "",
-              phase_commands: Optional[Dict[str, str]] = None) -> int:
+              phase_commands: Optional[Dict[str, str]] = None,
+              budget_usd: float = 0.0) -> int:
     """Native port of legacy run_issue (scripts/agentrail-legacy:6376-6566).
     Assumes guards (source-run, active-run conflict, command availability) were
     already done by the caller (agentrail/cli/commands/run.py:_dispatch).
@@ -442,6 +446,7 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
         max_execution_attempts=max_execution_attempts,
         context_retrieval=run_context_retrieval,
         phase_commands=phase_commands or {},
+        budget_usd=budget_usd,
     )
 
     # 11. Determine plan skip
@@ -497,6 +502,16 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
     else:
         status, plan_output = run_issue_phase(rc, "plan", 1)
         last_phase = "plan"
+
+    if status == 0 and rc.budget_usd > 0 and rc.cumulative_cost_usd >= rc.budget_usd:
+        msg = (f"run stopped: ${rc.cumulative_cost_usd:.2f} spent of "
+               f"${rc.budget_usd:.2f} budget")
+        print(f"budget exceeded after {last_phase} phase: {msg}", file=sys.stderr)
+        try:
+            push_failure_event(rc.target_dir, rc.run_id, "budget_exceeded", last_phase, msg)
+        except Exception as _exc:
+            _log.debug("budget failure push skipped: %s", _exc)
+        status = 1
 
     if status == 0:
         status, _ = run_issue_phase(rc, "execute", 1, verifier_findings_file="", plan_output=plan_output)

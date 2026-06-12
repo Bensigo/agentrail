@@ -42,6 +42,7 @@ export {
   insertContextEvents,
   getWorkspaceTelemetryCounts,
   getRunCosts,
+  getAgentModelCosts,
 } from "./queries";
 export type {
   RunEventSummary,
@@ -57,5 +58,6 @@ export type {
   ContextEventInput,
   WorkspaceTelemetryCounts,
   RunCostRow,
+  AgentModelCostRow,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems, getWorkspaceContextPacks } from "./context-queries";

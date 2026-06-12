@@ -33,11 +33,15 @@ def push_context_pack(
     link = load_link(target)
     if link is None:
         return False
+    # retrievalBudget is a dict like {"maxItems": 10, "maxTokens": 5000} (or null);
+    # the token budget is its maxTokens, not the dict itself.
+    budget = retrieval.get("retrievalBudget")
+    max_tokens = budget.get("maxTokens") if isinstance(budget, dict) else budget
     payload = {
         "run_id": run_id,
         "repository_id": link["repository_id"],
         "context_pack_id": str(uuid.uuid4()),
-        "token_budget": int(retrieval.get("retrievalBudget") or 0),
+        "token_budget": int(max_tokens or 0),
         "tokens_used": int(retrieval.get("selectedContextTokens") or 0),
         "sources_considered": len(retrieval.get("selectedSources") or []),
         "occurred_at": _now_iso(),

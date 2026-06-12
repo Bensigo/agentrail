@@ -108,6 +108,20 @@ class TestClaudeExtractor:
 
         assert len(entries) == 1
         assert entries[0].summary == "x" * SUMMARY_MAX_CHARS + "…"
+        # long turns also carry fuller text so the dashboard can expand them
+        assert entries[0].full_text == "x" * 500
+
+    def test_full_text_empty_for_short_turns_and_capped_for_huge(self, tmp_path: Path) -> None:
+        from agentrail.run.activity_push import FULL_TEXT_MAX_CHARS
+        target = tmp_path / "repo"
+        target.mkdir()
+        entries = self._extract(tmp_path, target, [
+            _assistant_turn([{"type": "text", "text": "short"}]),
+            _assistant_turn([{"type": "text", "text": "y" * (FULL_TEXT_MAX_CHARS + 500)}]),
+        ])
+
+        assert entries[0].full_text == ""  # summary already carries it
+        assert entries[1].full_text == "y" * FULL_TEXT_MAX_CHARS + "…"
 
     def test_thinking_preferred_over_text(self, tmp_path: Path) -> None:
         target = tmp_path / "repo"

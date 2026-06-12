@@ -305,6 +305,14 @@ class Runner:
                 self._fail(issue, "review produced no parseable output")
                 return
 
+            # Push review-gate telemetry (non-fatal).
+            sid = getattr(self, "session_id", None)
+            if sid:
+                from agentrail.afk.review_push import push_review_gate
+                from agentrail.afk.run_register import run_uuid
+                round_no = self.store.state.issues[issue].review_rounds
+                push_review_gate(self.target, run_uuid(sid, issue), round_no, outcome)
+
             if outcome.is_clean:
                 if await self._merge(pr):
                     self.store.dispatch(SetStatus(issue, IssueStatus.MERGED))

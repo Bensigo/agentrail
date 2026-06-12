@@ -114,6 +114,9 @@ def parse_run_options(args: List[str]) -> RunOptions:
                 opts.budget_usd = float(raw)
             except ValueError:
                 raise UsageError("--budget-usd must be a non-negative number")
+            # float('-1.5') parses fine — the sign needs its own check.
+            if opts.budget_usd < 0:
+                raise UsageError("--budget-usd must be a non-negative number")
             i += 2
         elif a in ("-h", "--help"):
             print(_usage()); raise UsageError("", code=0)

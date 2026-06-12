@@ -196,5 +196,16 @@ class TestZeroBudgetIsUnlimited(unittest.TestCase):
                 self.assertNotEqual(a.get("failure_type", c[0][2] if c[0] else ""), "budget_exceeded")
 
 
+class TestNegativeBudgetRejected(unittest.TestCase):
+    """P2 regression (PR #525 review): float('-1.5') parses, so the sign
+    needs its own check — a negative budget must be a usage error, not
+    silently treated as unlimited."""
+
+    def test_negative_budget_raises_usage_error(self) -> None:
+        from agentrail.cli.commands.run import parse_run_options, UsageError
+        with self.assertRaises(UsageError):
+            parse_run_options(["--budget-usd", "-1.5"])
+
+
 if __name__ == "__main__":
     unittest.main()

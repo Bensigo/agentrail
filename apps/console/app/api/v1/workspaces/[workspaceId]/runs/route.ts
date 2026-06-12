@@ -3,6 +3,7 @@ import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
   listRunsWithCursor,
+  listWorkspaceRepositories,
 } from "@agentrail/db-postgres";
 import type { RunStatus } from "@agentrail/db-postgres";
 import {
@@ -91,6 +92,15 @@ export async function GET(
     // ClickHouse unavailable; tokens saved render as zero
   }
 
+  // Repository id -> name, so the list shows the repo name instead of a uuid.
+  const repoNameById = new Map<string, string>();
+  try {
+    const repos = await listWorkspaceRepositories(workspaceId);
+    for (const repo of repos) repoNameById.set(repo.id, repo.name);
+  } catch {
+    // Postgres unavailable; fall back to the id below
+  }
+
   const enriched = runs.map((run) => {
     const summary = summaryMap.get(run.id) ?? {
       failure_count: 0,
@@ -106,6 +116,7 @@ export async function GET(
       id: run.id,
       workspaceId: run.workspaceId,
       repositoryId: run.repositoryId,
+      repository_name: repoNameById.get(run.repositoryId) ?? null,
       agent: run.agent,
       branch: run.branch,
       title: run.title ?? null,

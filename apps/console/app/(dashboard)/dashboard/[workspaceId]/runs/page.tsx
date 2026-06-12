@@ -1,4 +1,4 @@
-import { listRuns } from "@agentrail/db-postgres";
+import { listWorkspaceRepositories } from "@agentrail/db-postgres";
 import { RunsTable } from "./components/runs-table";
 
 export default async function RunsPage({
@@ -8,15 +8,11 @@ export default async function RunsPage({
 }) {
   const { workspaceId } = await params;
 
-  // Fetch distinct repos for the filter dropdown (graceful fallback)
-  let repositories: string[] = [];
+  // Repos for the filter dropdown — shown by name, filtered by id.
+  let repositories: { id: string; name: string }[] = [];
   try {
-    const runs = await listRuns(workspaceId);
-    repositories = [
-      ...new Set(
-        runs.map((r) => r.repositoryId).filter((r): r is string => r !== null)
-      ),
-    ].sort();
+    const repos = await listWorkspaceRepositories(workspaceId);
+    repositories = repos.map((r) => ({ id: r.id, name: r.name }));
   } catch {
     // DB unavailable; empty repo list is acceptable
   }

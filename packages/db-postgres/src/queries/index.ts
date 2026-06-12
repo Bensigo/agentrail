@@ -186,6 +186,7 @@ export interface RunRow {
   repositoryId: string;
   agent: string;
   branch: string;
+  title: string | null;
   status: RunStatus;
   startedAt: Date | null;
   finishedAt: Date | null;

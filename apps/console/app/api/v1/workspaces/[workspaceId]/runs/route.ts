@@ -78,6 +78,7 @@ export async function GET(
       repositoryId: run.repositoryId,
       agent: run.agent,
       branch: run.branch,
+      title: run.title ?? null,
       status: run.status,
       startedAt: run.startedAt?.toISOString() ?? null,
       finishedAt: run.finishedAt?.toISOString() ?? null,

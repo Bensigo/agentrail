@@ -363,7 +363,7 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
     context_summary = ctx.context_pack_summary(target_dir, run_context_pack_file)
     context_snippets = ctx.context_selected_snippets(target_dir, resolution_text)
     header = prompts.common_header(agent, state_mod.render_state_summary(target_dir))
-    skill_block = prompts.format_skill_resolution(resolution, mode="prompt")
+    skill_block = prompts.format_skill_resolution(resolution, mode="prompt", engine=agent)
     base_prompt = prompts.issue_base_prompt(
         agent, issue,
         header=header,

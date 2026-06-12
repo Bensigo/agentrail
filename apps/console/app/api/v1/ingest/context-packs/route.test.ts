@@ -3,6 +3,10 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-clickhouse", () => ({
   insertContextPacks: vi.fn(),
+  insertContextEvents: vi.fn(),
+  deriveContextPackId: vi.fn(
+    (ws: string, run: string, at: string) => `derived:${ws}:${run}:${at}`
+  ),
 }));
 vi.mock("@agentrail/db-postgres", () => ({
   getRepository: vi.fn(),
@@ -12,7 +16,7 @@ vi.mock("../../../../../lib/bearer-auth", () => ({
 }));
 
 import { POST } from "./route";
-import { insertContextPacks } from "@agentrail/db-clickhouse";
+import { insertContextPacks, insertContextEvents } from "@agentrail/db-clickhouse";
 import { getRepository } from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 
@@ -45,6 +49,7 @@ beforeEach(() => {
   vi.mocked(requireBearer).mockResolvedValue({ workspaceId: WS } as never);
   vi.mocked(getRepository).mockResolvedValue({ id: REPO, workspaceId: WS } as never);
   vi.mocked(insertContextPacks).mockResolvedValue(1);
+  vi.mocked(insertContextEvents).mockResolvedValue(0);
 });
 
 describe("POST /api/v1/ingest/context-packs", () => {
@@ -99,5 +104,75 @@ describe("POST /api/v1/ingest/context-packs", () => {
     const batch = Array.from({ length: 101 }, () => ({ ...valid }));
     const res = await POST(req(batch));
     expect(res.status).toBe(400);
+  });
+
+  it("202 without items does not write context events", async () => {
+    const res = await POST(req(valid));
+    expect(res.status).toBe(202);
+    expect(insertContextEvents).not.toHaveBeenCalled();
+  });
+
+  it("202 with items writes context_events rows keyed by derived pack id", async () => {
+    vi.mocked(insertContextEvents).mockResolvedValue(2);
+    const res = await POST(
+      req({
+        ...valid,
+        items: [
+          { path: "src/a.py", reason: "lexical match", score: 0.91 },
+          { path: "src/b.py", included: false },
+        ],
+      })
+    );
+    expect(res.status).toBe(202);
+    expect(insertContextEvents).toHaveBeenCalledWith([
+      {
+        workspace_id: WS,
+        run_id: valid.run_id,
+        context_pack_id: `derived:${WS}:${valid.run_id}:${valid.occurred_at}`,
+        item_path: "src/a.py",
+        item_hash: "",
+        included: 1,
+        citation: "",
+        reason: "lexical match",
+        score: 0.91,
+        occurred_at: valid.occurred_at,
+      },
+      {
+        workspace_id: WS,
+        run_id: valid.run_id,
+        context_pack_id: `derived:${WS}:${valid.run_id}:${valid.occurred_at}`,
+        item_path: "src/b.py",
+        item_hash: "",
+        included: 0,
+        citation: "",
+        reason: "",
+        score: 0,
+        occurred_at: valid.occurred_at,
+      },
+    ]);
+  });
+
+  it("202 with empty items array does not write context events", async () => {
+    const res = await POST(req({ ...valid, items: [] }));
+    expect(res.status).toBe(202);
+    expect(insertContextEvents).not.toHaveBeenCalled();
+  });
+
+  it("400 on malformed items (path missing)", async () => {
+    const res = await POST(req({ ...valid, items: [{ reason: "no path" }] }));
+    expect(res.status).toBe(400);
+    expect(insertContextPacks).not.toHaveBeenCalled();
+  });
+
+  it("400 when items exceed 100", async () => {
+    const items = Array.from({ length: 101 }, (_, i) => ({ path: `f${i}.py` }));
+    const res = await POST(req({ ...valid, items }));
+    expect(res.status).toBe(400);
+  });
+
+  it("502 when context event insert fails", async () => {
+    vi.mocked(insertContextEvents).mockRejectedValue(new Error("CH down"));
+    const res = await POST(req({ ...valid, items: [{ path: "src/a.py" }] }));
+    expect(res.status).toBe(502);
   });
 });

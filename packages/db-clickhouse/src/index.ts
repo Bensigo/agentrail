@@ -39,6 +39,7 @@ export {
   getRunEventsByRunId,
   insertContextPacks,
   deriveContextPackId,
+  insertContextEvents,
   getWorkspaceTelemetryCounts,
   getRunCosts,
 } from "./queries";
@@ -53,6 +54,7 @@ export type {
   FailureEventInput,
   CostEventInput,
   ContextPackInput,
+  ContextEventInput,
   WorkspaceTelemetryCounts,
   RunCostRow,
 } from "./queries";

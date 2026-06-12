@@ -62,7 +62,11 @@ export async function GET(
 
     return NextResponse.json({ context_packs: packsWithItems });
   } catch {
-    // ClickHouse unavailable
-    return NextResponse.json({ context_packs: [] });
+    // A 200 with no packs would make a ClickHouse outage indistinguishable
+    // from a run that genuinely recorded none; surface the failure instead.
+    return NextResponse.json(
+      { error: "Failed to load context packs" },
+      { status: 500 }
+    );
   }
 }

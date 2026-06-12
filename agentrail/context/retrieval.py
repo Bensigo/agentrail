@@ -861,6 +861,7 @@ def search_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str
         "retrievalBudget": raw.get("retrievalBudget"),
         "citations": [entry["citation"] for entry in results],
         "reasons": [entry["reason"] for entry in results],
+        "scores": [entry["score"] for entry in results],
         "staleOrDeniedLeakage": len(raw.get("excluded") or []),
         "staleEmbeddingLeakage": integrity.get("staleEmbeddingLeakage", 0),
     }

@@ -8,6 +8,7 @@ import { RunTimeline } from "./components/run-timeline";
 import { ReviewGatesSection } from "./components/review-gates-section";
 import { FailuresSection } from "./components/failures-section";
 import { CostSection } from "./components/cost-section";
+import { ContextSection } from "./components/context-section";
 import type { RunDetail } from "./components/run-detail-header";
 import type { TimelineEvent } from "./components/run-timeline";
 
@@ -144,6 +145,13 @@ export default function RunDetailPage() {
           Cost &amp; tokens
         </h2>
         <CostSection workspaceId={workspaceId} runId={runId} />
+      </div>
+
+      <div className="mt-6">
+        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+          Context
+        </h2>
+        <ContextSection workspaceId={workspaceId} runId={runId} />
       </div>
 
       <div className="mt-6">

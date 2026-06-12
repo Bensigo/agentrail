@@ -9,9 +9,22 @@
  * Returns: 202 { accepted: N }
  */
 import { NextRequest, NextResponse } from "next/server";
-import { insertContextPacks, ContextPackInput } from "@agentrail/db-clickhouse";
+import {
+  insertContextPacks,
+  insertContextEvents,
+  deriveContextPackId,
+  ContextPackInput,
+  ContextEventInput,
+} from "@agentrail/db-clickhouse";
 import { getRepository } from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
+
+interface RawContextItem {
+  path: string;
+  reason?: string;
+  score?: number;
+  included?: boolean;
+}
 
 interface RawContextPack {
   repository_id: string;
@@ -22,6 +35,18 @@ interface RawContextPack {
   sources_considered: number;
   occurred_at: string;
   anchors_extracted?: number;
+  items?: RawContextItem[];
+}
+
+function isRawContextItem(v: unknown): v is RawContextItem {
+  if (!v || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.path === "string" &&
+    (o.reason === undefined || typeof o.reason === "string") &&
+    (o.score === undefined || typeof o.score === "number") &&
+    (o.included === undefined || typeof o.included === "boolean")
+  );
 }
 
 function isRawContextPack(v: unknown): v is RawContextPack {
@@ -35,7 +60,11 @@ function isRawContextPack(v: unknown): v is RawContextPack {
     typeof o.tokens_used === "number" &&
     typeof o.sources_considered === "number" &&
     typeof o.occurred_at === "string" &&
-    (o.anchors_extracted === undefined || typeof o.anchors_extracted === "number")
+    (o.anchors_extracted === undefined || typeof o.anchors_extracted === "number") &&
+    (o.items === undefined ||
+      (Array.isArray(o.items) &&
+        o.items.length <= 100 &&
+        o.items.every(isRawContextItem)))
   );
 }
 
@@ -65,7 +94,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Each event must have repository_id (string), run_id (string), context_pack_id (string), token_budget (number), tokens_used (number), sources_considered (number), occurred_at (string)",
+            "Each event must have repository_id (string), run_id (string), context_pack_id (string), token_budget (number), tokens_used (number), sources_considered (number), occurred_at (string); optional items is an array of up to 100 {path, reason?, score?, included?} objects",
         },
         { status: 400 }
       );
@@ -93,9 +122,29 @@ export async function POST(req: NextRequest) {
     occurred_at: e.occurred_at,
   }));
 
+  // Items live in context_events keyed by the server-derived pack id (the
+  // client-supplied context_pack_id is not stored — see insertContextPacks).
+  const itemInputs: ContextEventInput[] = valid.flatMap((e) =>
+    (e.items ?? []).map((item) => ({
+      workspace_id: workspaceId,
+      run_id: e.run_id,
+      context_pack_id: deriveContextPackId(workspaceId, e.run_id, e.occurred_at),
+      item_path: item.path,
+      item_hash: "",
+      included: item.included === false ? 0 : 1,
+      citation: "",
+      reason: item.reason ?? "",
+      score: item.score ?? 0,
+      occurred_at: e.occurred_at,
+    }))
+  );
+
   let accepted = 0;
   try {
     accepted = await insertContextPacks(inputs);
+    if (itemInputs.length > 0) {
+      await insertContextEvents(itemInputs);
+    }
   } catch (err) {
     console.error("[ingest/context-packs] ClickHouse insert failed:", err);
     return NextResponse.json({ error: "Upstream storage error" }, { status: 502 });

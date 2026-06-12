@@ -211,3 +211,91 @@ def test_payload_handles_dict_retrieval_budget(tmp_path, monkeypatch):
     assert payload["token_budget"] == 5000
     assert payload["tokens_used"] == 743
     assert payload["sources_considered"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Item extraction (_build_items) — drill-down payload
+# ---------------------------------------------------------------------------
+
+
+def test_build_items_from_string_sources_with_parallel_lists() -> None:
+    items = context_pack_push._build_items({
+        "selectedSources": ["src/a.py", "src/b.py"],
+        "reasons": ["lexical match", "graph neighbor"],
+        "scores": [0.91, 0.42],
+    })
+    assert items == [
+        {"path": "src/a.py", "reason": "lexical match", "score": 0.91, "included": True},
+        {"path": "src/b.py", "reason": "graph neighbor", "score": 0.42, "included": True},
+    ]
+
+
+def test_build_items_from_dict_sources() -> None:
+    items = context_pack_push._build_items({
+        "selectedSources": [
+            {"path": "src/a.py", "reason": "anchor", "score": 1.5, "included": False},
+            {"path": "src/b.py"},
+        ],
+    })
+    assert items == [
+        {"path": "src/a.py", "reason": "anchor", "score": 1.5, "included": False},
+        {"path": "src/b.py", "reason": "", "score": 0.0, "included": True},
+    ]
+
+
+def test_build_items_defensive_on_missing_or_malformed_fields() -> None:
+    items = context_pack_push._build_items({
+        # shorter parallel lists, None score, non-string reason, bool score,
+        # plus entries with no usable path that must be dropped
+        "selectedSources": ["src/a.py", {"path": ""}, {"reason": "no path"}, None, 42, "src/b.py"],
+        "reasons": [None],
+        "scores": ["high", None, None, None, None, True],
+    })
+    assert items == [
+        {"path": "src/a.py", "reason": "", "score": 0.0, "included": True},
+        {"path": "src/b.py", "reason": "", "score": 0.0, "included": True},
+    ]
+
+
+def test_build_items_handles_non_list_and_empty_retrieval() -> None:
+    assert context_pack_push._build_items({}) == []
+    assert context_pack_push._build_items({"selectedSources": "src/a.py"}) == []
+    assert context_pack_push._build_items({"selectedSources": [], "reasons": "x"}) == []
+
+
+def test_build_items_caps_at_100() -> None:
+    items = context_pack_push._build_items({
+        "selectedSources": [f"src/f{i}.py" for i in range(150)],
+    })
+    assert len(items) == 100
+    assert items[0]["path"] == "src/f0.py"
+    assert items[-1]["path"] == "src/f99.py"
+
+
+def test_payload_includes_items(tmp_path: Path, monkeypatch) -> None:
+    _write_server_json(tmp_path)
+    captured: dict = {}
+
+    class FakeResp:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data)
+        return FakeResp()
+
+    monkeypatch.setattr(context_pack_push.urllib.request, "urlopen", fake_urlopen)
+    ok = context_pack_push.push_context_pack(
+        tmp_path, "run-items",
+        {
+            "selectedContextTokens": 10,
+            "selectedSources": ["src/a.py"],
+            "reasons": ["match"],
+            "scores": [0.7],
+        },
+    )
+    assert ok is True
+    assert captured["body"]["items"] == [
+        {"path": "src/a.py", "reason": "match", "score": 0.7, "included": True},
+    ]

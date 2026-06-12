@@ -367,6 +367,90 @@ export async function getFailureById(
 }
 
 // ---------------------------------------------------------------------------
+// Index snapshot ingestion
+// ---------------------------------------------------------------------------
+
+export interface IndexSnapshotInput {
+  workspace_id: string;
+  repository_id: string;
+  commit_sha: string;
+  indexed_at: string; // ISO 8601
+  source_count: number;
+  graph_edge_count: number;
+}
+
+export function deriveSnapshotEventId(
+  workspaceId: string,
+  repositoryId: string,
+  commitSha: string,
+  indexedAt: string
+): string {
+  return createHash("sha1")
+    .update(`${workspaceId}:${repositoryId}:${commitSha}:${indexedAt}`)
+    .digest("hex");
+}
+
+/**
+ * Insert index snapshots into ClickHouse, deduplicating on
+ * (workspace_id, repository_id, commit_sha, indexed_at) via a pre-existence check.
+ * Returns the number of rows actually inserted.
+ */
+export async function insertIndexSnapshots(
+  snapshots: IndexSnapshotInput[]
+): Promise<number> {
+  if (snapshots.length === 0) return 0;
+
+  const candidates = snapshots.map((s) => ({
+    s,
+    event_id: deriveSnapshotEventId(
+      s.workspace_id,
+      s.repository_id,
+      s.commit_sha,
+      s.indexed_at
+    ),
+  }));
+
+  const eventIds = candidates.map((c) => c.event_id);
+  const checkResult = await client.query({
+    query: `
+      SELECT event_id
+      FROM index_snapshots
+      WHERE workspace_id = {workspaceId: String}
+        AND event_id IN ({eventIds: Array(String)})
+    `,
+    query_params: { workspaceId: snapshots[0].workspace_id, eventIds },
+    format: "JSONEachRow",
+  });
+  const existing = new Set(
+    (await checkResult.json<{ event_id: string }>()).map((r) => r.event_id)
+  );
+
+  const toInsert = candidates.filter((c) => !existing.has(c.event_id));
+  if (toInsert.length === 0) return 0;
+
+  const rows = toInsert.map(({ s, event_id }) => ({
+    workspace_id: s.workspace_id,
+    repository_id: s.repository_id,
+    commit_sha: s.commit_sha,
+    indexed_at: new Date(s.indexed_at)
+      .toISOString()
+      .replace("T", " ")
+      .replace("Z", ""),
+    source_count: s.source_count,
+    graph_edge_count: s.graph_edge_count,
+    event_id,
+  }));
+
+  await client.insert({
+    table: "index_snapshots",
+    values: rows,
+    format: "JSONEachRow",
+  });
+
+  return toInsert.length;
+}
+
+// ---------------------------------------------------------------------------
 // AFK run-event ingestion
 // ---------------------------------------------------------------------------
 

@@ -19,6 +19,9 @@ import urllib.error
 from pathlib import Path
 from typing import List
 
+from agentrail.context.index import build_index
+from agentrail.context.snapshot_push import push_index_snapshot
+
 # Base URL precedence: --base-url flag > $AGENTRAIL_BASE_URL > localhost default.
 # No hardcoded production host — the console URL is environment-specific.
 DEFAULT_BASE_URL = os.environ.get("AGENTRAIL_BASE_URL", "http://localhost:3000")
@@ -28,7 +31,7 @@ SERVER_JSON = ".agentrail/server.json"
 def _usage() -> str:
     return """Usage:
   agentrail link --workspace <ws_id> --repo <repo_id> --key ar_...
-                 [--base-url <url>] [--force]
+                 [--base-url <url>] [--force] [--no-index]
 
 Options:
   --workspace  Workspace ID (UUID)
@@ -37,11 +40,42 @@ Options:
   --base-url   Server base URL (overrides $AGENTRAIL_BASE_URL;
                default http://localhost:3000)
   --force      Overwrite an existing .agentrail/server.json
+  --no-index   Skip the initial index build and snapshot push
 """
 
 
 def _find_server_json(cwd: Path) -> Path:
     return cwd / SERVER_JSON
+
+
+def _post_link(base_url: str, workspace_id: str, repo_id: str, api_key: str) -> dict:
+    """POST to /api/v1/cli/link and return the parsed JSON response dict.
+
+    Raises on network failure or non-200 response (caller handles errors).
+    """
+    url = f"{base_url}/api/v1/cli/link"
+    payload = json.dumps(
+        {"workspace_id": workspace_id, "repository_id": repo_id}
+    ).encode()
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+
+    with urllib.request.urlopen(req) as resp:
+        status = resp.status
+        body = json.loads(resp.read().decode())
+
+    if status != 200:
+        server_msg = body.get("error", "unknown error") if isinstance(body, dict) else "unknown error"
+        raise ValueError(f"HTTP {status} — {server_msg}")
+
+    return body
 
 
 def run_link(args: List[str]) -> int:
@@ -50,6 +84,7 @@ def run_link(args: List[str]) -> int:
     api_key: str | None = None
     base_url: str = DEFAULT_BASE_URL
     force: bool = False
+    no_index: bool = False
 
     i = 0
     while i < len(args):
@@ -83,6 +118,8 @@ def run_link(args: List[str]) -> int:
             base_url = args[i].rstrip("/")
         elif a == "--force":
             force = True
+        elif a == "--no-index":
+            no_index = True
         else:
             print(f"unknown option: {a}", file=sys.stderr)
             print(_usage(), file=sys.stderr)
@@ -123,29 +160,13 @@ def run_link(args: List[str]) -> int:
         return 1
 
     # AC1: POST to /api/v1/cli/link with Bearer auth
-    url = f"{base_url}/api/v1/cli/link"
-    payload = json.dumps(
-        {"workspace_id": workspace_id, "repository_id": repo_id}
-    ).encode()
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-    )
-
     try:
-        with urllib.request.urlopen(req) as resp:
-            status = resp.status
-            body = json.loads(resp.read().decode())
+        body = _post_link(base_url, workspace_id, repo_id, api_key)
     except urllib.error.HTTPError as e:
         status = e.code
         try:
-            body = json.loads(e.read().decode())
-            server_msg = body.get("error", str(e.reason))
+            err_body = json.loads(e.read().decode())
+            server_msg = err_body.get("error", str(e.reason))
         except Exception:
             server_msg = str(e.reason)
         # AC2: single-line error, exit non-zero
@@ -153,11 +174,6 @@ def run_link(args: List[str]) -> int:
         return 1
     except Exception as e:
         print(f"link failed: {e}", file=sys.stderr)
-        return 1
-
-    if status != 200:
-        server_msg = body.get("error", "unknown error") if isinstance(body, dict) else "unknown error"
-        print(f"link failed: HTTP {status} — {server_msg}", file=sys.stderr)
         return 1
 
     # Write .agentrail/server.json
@@ -174,4 +190,17 @@ def run_link(args: List[str]) -> int:
     repo_name = body.get("repository", {}).get("name", repo_id) if isinstance(body, dict) else repo_id
     print(f"linked: workspace={ws_name}, repo={repo_name}")
     print(f"config written to {server_json}")
+
+    # Auto-index so the dashboard gets an initial snapshot and repo health goes
+    # green immediately. Never fails the link — server.json is already written.
+    if not no_index:
+        try:
+            result = build_index(cwd)
+            if push_index_snapshot(cwd, result):
+                print("indexed and pushed snapshot — repo health will update shortly")
+            else:
+                print("indexed locally, but snapshot push failed; run `agentrail context index` to retry")
+        except Exception as exc:  # noqa: BLE001
+            print(f"linked, but initial index failed ({exc}); run `agentrail context index` manually")
+
     return 0

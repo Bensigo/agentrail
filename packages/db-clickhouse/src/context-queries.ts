@@ -16,6 +16,11 @@ export async function getContextPacksForRun(
         tokens_saved,
         anchors_extracted,
         sources_considered,
+        precision_at_budget,
+        citation_coverage,
+        stale_count,
+        denied_count,
+        source_hash_list,
         occurred_at
       FROM context_packs
       WHERE workspace_id = {workspaceId: String}
@@ -34,6 +39,11 @@ export async function getContextPacksForRun(
     tokens_saved: string | number;
     anchors_extracted: string | number;
     sources_considered: string | number;
+    precision_at_budget: string | number;
+    citation_coverage: string | number;
+    stale_count: string | number;
+    denied_count: string | number;
+    source_hash_list: string[];
     occurred_at: string;
   }>();
   return rows.map((r) => ({
@@ -45,6 +55,11 @@ export async function getContextPacksForRun(
     tokens_saved: Number(r.tokens_saved),
     anchors_extracted: Number(r.anchors_extracted),
     sources_considered: Number(r.sources_considered),
+    precision_at_budget: Number(r.precision_at_budget),
+    citation_coverage: Number(r.citation_coverage),
+    stale_count: Number(r.stale_count),
+    denied_count: Number(r.denied_count),
+    source_hash_list: r.source_hash_list ?? [],
     occurred_at: new Date(r.occurred_at),
   }));
 }
@@ -65,6 +80,11 @@ export async function getWorkspaceContextPacks(
         tokens_saved,
         anchors_extracted,
         sources_considered,
+        precision_at_budget,
+        citation_coverage,
+        stale_count,
+        denied_count,
+        source_hash_list,
         occurred_at
       FROM context_packs
       WHERE workspace_id = {workspaceId: String}
@@ -83,6 +103,11 @@ export async function getWorkspaceContextPacks(
     tokens_saved: string | number;
     anchors_extracted: string | number;
     sources_considered: string | number;
+    precision_at_budget: string | number;
+    citation_coverage: string | number;
+    stale_count: string | number;
+    denied_count: string | number;
+    source_hash_list: string[];
     occurred_at: string;
   }>();
   return rows.map((r) => ({
@@ -94,6 +119,11 @@ export async function getWorkspaceContextPacks(
     tokens_saved: Number(r.tokens_saved),
     anchors_extracted: Number(r.anchors_extracted),
     sources_considered: Number(r.sources_considered),
+    precision_at_budget: Number(r.precision_at_budget),
+    citation_coverage: Number(r.citation_coverage),
+    stale_count: Number(r.stale_count),
+    denied_count: Number(r.denied_count),
+    source_hash_list: r.source_hash_list ?? [],
     occurred_at: new Date(r.occurred_at),
   }));
 }
@@ -146,6 +176,11 @@ export async function listWorkspaceContextPacks(
         tokens_saved,
         anchors_extracted,
         sources_considered,
+        precision_at_budget,
+        citation_coverage,
+        stale_count,
+        denied_count,
+        source_hash_list,
         occurred_at
       FROM context_packs
       WHERE ${conditions.join(" AND ")}
@@ -164,6 +199,11 @@ export async function listWorkspaceContextPacks(
     tokens_saved: string | number;
     anchors_extracted: string | number;
     sources_considered: string | number;
+    precision_at_budget: string | number;
+    citation_coverage: string | number;
+    stale_count: string | number;
+    denied_count: string | number;
+    source_hash_list: string[];
     occurred_at: string;
   }>();
 
@@ -178,6 +218,11 @@ export async function listWorkspaceContextPacks(
     tokens_saved: Number(r.tokens_saved),
     anchors_extracted: Number(r.anchors_extracted),
     sources_considered: Number(r.sources_considered),
+    precision_at_budget: Number(r.precision_at_budget),
+    citation_coverage: Number(r.citation_coverage),
+    stale_count: Number(r.stale_count),
+    denied_count: Number(r.denied_count),
+    source_hash_list: r.source_hash_list ?? [],
     occurred_at: new Date(r.occurred_at),
   }));
   const last = packs[packs.length - 1];

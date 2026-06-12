@@ -45,10 +45,12 @@ IN_PROGRESS_LABEL = "afk-in-progress"
 REVIEWED_LABEL = "pr-reviewed"
 
 
-def _agent_command(engine: str) -> str:
+def _agent_command(engine: str, model: str = "") -> str:
     if engine == "codex":
-        return "codex exec --sandbox danger-full-access -"
-    return "claude -p --dangerously-skip-permissions"
+        base = "codex exec --sandbox danger-full-access -"
+        return f"{base} -m {model}" if model else base
+    base = "claude -p --dangerously-skip-permissions"
+    return f"{base} --model {model}" if model else base
 
 
 def _agentrail_runner(target: Path) -> str:
@@ -83,10 +85,11 @@ async def _sh(args: List[str], cwd: Optional[Path] = None,
 class Runner:
     def __init__(self, target: Path, *, engine: str, base: str,
                  concurrency: int, afk_label: str, queue_labels: List[str],
-                 run_dir: Path, store: Store) -> None:
+                 run_dir: Path, store: Store, model: str = "") -> None:
         self.target = target
         self.engine = engine
         self.base = base
+        self.model = model
         self.concurrency = concurrency
         self.afk_label = afk_label
         self.queue_labels = queue_labels
@@ -135,7 +138,9 @@ class Runner:
         wt = self._worktree(slot, issue)
         self._setup_worktree(wt, f"origin/{self.base}")
         cmd = [self.agentrail, "run", "issue", str(issue), "--agent", self.engine,
-               "--target", str(wt), "--command", _agent_command(self.engine)]
+               "--target", str(wt)]
+        if self.model:
+            cmd += ["--model", self.model]
         sid = getattr(self, "session_id", None)
         if sid:
             from agentrail.afk.run_register import run_uuid
@@ -216,7 +221,7 @@ class Runner:
             prompt = review_policy.autofix_prompt(pr, outcome)
             prompt_file = self.logs / f"pr-{pr}-autofix-prompt.txt"
             prompt_file.write_text(prompt)
-            cmd = _agent_command(self.engine)
+            cmd = _agent_command(self.engine, self.model)
             rc = await _sh(
                 ["bash", "-lc", f"{cmd} < {prompt_file}"],
                 cwd=wt,

@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { buildWaterfall } from "../../../../../../../lib/phase-waterfall";
 import type { WaterfallPhase } from "../../../../../../../lib/phase-waterfall";
 import type { TimelineEvent } from "./run-timeline";
+import { SectionSkeleton, SectionEmpty } from "./section-states";
 
 interface CostRow {
   phase: string;
@@ -19,6 +20,7 @@ interface WaterfallSectionProps {
   workspaceId: string;
   runId: string;
   events: TimelineEvent[];
+  runStatus?: string;
 }
 
 function fmtMs(ms: number): string {
@@ -107,6 +109,7 @@ export function WaterfallSection({
   workspaceId,
   runId,
   events,
+  runStatus,
 }: WaterfallSectionProps) {
   const [costRows, setCostRows] = useState<CostRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -132,11 +135,7 @@ export function WaterfallSection({
   }, [workspaceId, runId]);
 
   if (loading) {
-    return (
-      <p className="text-sm text-[var(--gray-09)] animate-pulse py-4">
-        Loading waterfall…
-      </p>
-    );
+    return <SectionSkeleton lines={3} />;
   }
 
   // Derive phases from events + cost rows.
@@ -152,9 +151,11 @@ export function WaterfallSection({
   // Empty state: fewer than 2 phases with data.
   if (phases.length < 2) {
     return (
-      <p className="text-sm text-[var(--gray-09)] py-4">
-        Not enough phase data to show a waterfall.
-      </p>
+      <SectionEmpty
+        runStatus={runStatus}
+        waitingText="Run in progress — the waterfall appears once at least two phases complete."
+        emptyText="Not enough phase data to show a waterfall."
+      />
     );
   }
 

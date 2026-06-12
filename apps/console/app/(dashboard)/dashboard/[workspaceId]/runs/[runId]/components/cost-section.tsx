@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { SectionSkeleton, SectionEmpty } from "./section-states";
 
 interface RunCostRow {
   phase: string;
@@ -29,6 +30,7 @@ interface CostsResponse {
 interface CostSectionProps {
   workspaceId: string;
   runId: string;
+  runStatus?: string;
 }
 
 function fmt(n: number): string {
@@ -39,7 +41,7 @@ function fmtUsd(n: number): string {
   return `$${n.toFixed(4)}`;
 }
 
-export function CostSection({ workspaceId, runId }: CostSectionProps) {
+export function CostSection({ workspaceId, runId, runStatus }: CostSectionProps) {
   const [rows, setRows] = useState<RunCostRow[]>([]);
   const [totals, setTotals] = useState<CostTotals | null>(null);
   const [loading, setLoading] = useState(true);
@@ -72,11 +74,7 @@ export function CostSection({ workspaceId, runId }: CostSectionProps) {
   }, [workspaceId, runId]);
 
   if (loading) {
-    return (
-      <p className="text-sm text-[var(--gray-09)] animate-pulse py-4">
-        Loading costs…
-      </p>
-    );
+    return <SectionSkeleton lines={3} />;
   }
 
   if (error) {
@@ -85,9 +83,11 @@ export function CostSection({ workspaceId, runId }: CostSectionProps) {
 
   if (rows.length === 0) {
     return (
-      <p className="text-sm text-[var(--gray-09)] py-4">
-        No cost events recorded for this run.
-      </p>
+      <SectionEmpty
+        runStatus={runStatus}
+        waitingText="Run in progress — cost events arrive as each phase completes."
+        emptyText="No cost events recorded for this run."
+      />
     );
   }
 

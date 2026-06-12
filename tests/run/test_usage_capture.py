@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -37,10 +38,17 @@ def _set_mtime(path: Path, ts: float) -> None:
 
 class TestClaudeExtractor:
     def _make_projects_dir(self, tmp_path: Path, target: Path) -> Path:
-        encoded = str(target.resolve()).replace("/", "-")
+        encoded = re.sub(r"[^A-Za-z0-9-]", "-", str(target.resolve()))
         projects_dir = tmp_path / "claude" / ".claude" / "projects" / encoded
         projects_dir.mkdir(parents=True, exist_ok=True)
         return projects_dir
+
+    def test_encodes_dots_like_claude(self, tmp_path: Path) -> None:
+        # afk worktrees live under '.afk/'; Claude encodes '.' as '-' too,
+        # so '/repo/.afk/wt' must resolve to '...-repo--afk-wt'.
+        target = tmp_path / "repo" / ".afk" / "wt"
+        assert ".afk" not in _claude_projects_dir(target).name
+        assert "--afk-" in _claude_projects_dir(target).name
 
     def test_basic_usage_extraction(self, tmp_path: Path) -> None:
         target = tmp_path / "repo"

@@ -15,6 +15,8 @@ export type TimelineItem =
 export interface ActivityEntryView {
   summary: string;
   tools: string[];
+  /** Fuller turn text (CLI caps it); empty when the summary already carries everything. */
+  fullText: string;
 }
 
 export function groupTimelineEvents(events: TimelineEvent[]): TimelineItem[] {
@@ -45,10 +47,11 @@ export function parseActivityEntry(raw: string): ActivityEntryView {
         tools: Array.isArray(o.tools)
           ? o.tools.filter((t): t is string => typeof t === "string")
           : [],
+        fullText: typeof o.full_text === "string" ? o.full_text : "",
       };
     }
   } catch {
     // fall through
   }
-  return { summary: raw, tools: [] };
+  return { summary: raw, tools: [], fullText: "" };
 }

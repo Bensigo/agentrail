@@ -25,6 +25,9 @@ from agentrail.run.usage_capture import _claude_projects_dir, _codex_session_rec
 # One entry per assistant turn, capped so a long phase cannot flood the rail.
 MAX_ENTRIES_PER_PHASE = 50
 SUMMARY_MAX_CHARS = 200
+# Fuller text kept alongside the summary so the dashboard can expand an entry
+# for investigation; bounded so one verbose turn cannot bloat the payload.
+FULL_TEXT_MAX_CHARS = 4000
 
 
 @dataclass
@@ -33,6 +36,7 @@ class ActivityEntry:
     summary: str
     tools: List[str] = field(default_factory=list)
     ts: str = ""  # transcript timestamp (ISO) when available, else ""
+    full_text: str = ""  # set only when the turn text extends past the summary
 
 
 def _now_iso() -> str:
@@ -44,6 +48,22 @@ def _truncate(text: str) -> str:
     if len(text) <= SUMMARY_MAX_CHARS:
         return text
     return text[:SUMMARY_MAX_CHARS].rstrip() + "…"
+
+
+def _entry_texts(text: str) -> tuple[str, str]:
+    """Return (summary, full_text) for a turn's text.
+
+    full_text is empty when the summary already carries everything, so short
+    turns add no payload weight.
+    """
+    text = text.strip()
+    summary = _truncate(text)
+    if len(text) <= SUMMARY_MAX_CHARS:
+        return summary, ""
+    full = text[:FULL_TEXT_MAX_CHARS]
+    if len(text) > FULL_TEXT_MAX_CHARS:
+        full = full.rstrip() + "…"
+    return summary, full
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +130,7 @@ def _extract_claude_activity(target: Path, since_ts: float) -> List[ActivityEntr
                     if name:
                         tools.append(str(name))
 
-            summary = _truncate(thinking or plain_text)
+            summary, full_text = _entry_texts(thinking or plain_text)
             if not summary and not tools:
                 continue
 
@@ -119,6 +139,7 @@ def _extract_claude_activity(target: Path, since_ts: float) -> List[ActivityEntr
                 summary=summary,
                 tools=tools,
                 ts=ts if isinstance(ts, str) else "",
+                full_text=full_text,
             ))
             if len(entries) >= MAX_ENTRIES_PER_PHASE:
                 return entries
@@ -149,12 +170,14 @@ def _extract_codex_activity(target: Path, since_ts: float) -> List[ActivityEntry
             if ptype == "reasoning":
                 text = _first_text(payload.get("summary"), key="text")
                 if text:
-                    entries.append(ActivityEntry(summary=_truncate(text), ts=ts))
+                    summary, full_text = _entry_texts(text)
+                    entries.append(ActivityEntry(summary=summary, ts=ts, full_text=full_text))
 
             elif ptype == "message" and payload.get("role") == "assistant":
                 text = _first_text(payload.get("content"), key="text")
                 if text:
-                    entries.append(ActivityEntry(summary=_truncate(text), ts=ts))
+                    summary, full_text = _entry_texts(text)
+                    entries.append(ActivityEntry(summary=summary, ts=ts, full_text=full_text))
 
             elif ptype in ("function_call", "local_shell_call", "custom_tool_call"):
                 name = str(payload.get("name") or ptype)
@@ -236,6 +259,7 @@ def push_agent_activity(
                 "turn": turn,
                 "summary": entry.summary,
                 "tools": entry.tools,
+                **({"full_text": entry.full_text} if entry.full_text else {}),
             },
             "digest": entry.summary[:64],
         })

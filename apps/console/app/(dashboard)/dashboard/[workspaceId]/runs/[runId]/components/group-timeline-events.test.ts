@@ -99,16 +99,30 @@ describe("parseActivityEntry", () => {
 
     expect(entry.summary).toBe("Let me read the config first.");
     expect(entry.tools).toEqual(["Read", "Grep"]);
+    expect(entry.fullText).toBe("");
+  });
+
+  it("extracts full_text when present for per-entry expansion", () => {
+    const entry = parseActivityEntry(
+      JSON.stringify({
+        summary: "truncated…",
+        tools: [],
+        full_text: "the whole long reasoning text",
+      })
+    );
+    expect(entry.fullText).toBe("the whole long reasoning text");
   });
 
   it("is defensive about malformed payloads", () => {
     expect(parseActivityEntry("not json")).toEqual({
       summary: "not json",
       tools: [],
+      fullText: "",
     });
-    expect(parseActivityEntry(JSON.stringify({ tools: [1, "Bash"] }))).toEqual({
+    expect(parseActivityEntry(JSON.stringify({ tools: [1, "Bash"], full_text: 7 }))).toEqual({
       summary: "",
       tools: ["Bash"],
+      fullText: "",
     });
   });
 });

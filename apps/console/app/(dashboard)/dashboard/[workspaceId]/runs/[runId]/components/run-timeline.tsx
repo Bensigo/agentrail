@@ -6,6 +6,7 @@ import {
   groupTimelineEvents,
   parseActivityEntry,
 } from "./group-timeline-events";
+import type { ActivityEntryView } from "./group-timeline-events";
 
 export interface TimelineEvent {
   event_id: string;
@@ -238,31 +239,52 @@ function ActivityGroup({ phase, events, isLast }: ActivityGroupProps) {
 
         {expanded && (
           <div className="mt-2 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] divide-y divide-[var(--gray-04)]">
-            {events.map((event) => {
-              const entry = parseActivityEntry(event.payload);
-              return (
-                <div key={event.event_id} className="p-3 flex flex-col gap-1.5">
-                  {entry.summary && (
-                    <p className="text-xs text-[var(--gray-11)] whitespace-pre-wrap break-words">
-                      {entry.summary}
-                    </p>
-                  )}
-                  {entry.tools.length > 0 && (
-                    <div className="flex items-center gap-1 flex-wrap">
-                      {entry.tools.map((tool, i) => (
-                        <span
-                          key={`${event.event_id}-${tool}-${i}`}
-                          className="text-xs px-1 py-0.5 rounded-sm bg-[var(--gray-03)] text-[var(--gray-09)] font-mono"
-                        >
-                          {tool}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {events.map((event) => (
+              <ActivityEntryRow
+                key={event.event_id}
+                eventId={event.event_id}
+                entry={parseActivityEntry(event.payload)}
+              />
+            ))}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ActivityEntryRow({
+  eventId,
+  entry,
+}: {
+  eventId: string;
+  entry: ActivityEntryView;
+}) {
+  const [showFull, setShowFull] = useState(false);
+
+  return (
+    <div className="p-3 flex flex-col gap-1.5">
+      {entry.summary && (
+        <p className="text-xs text-[var(--gray-11)] whitespace-pre-wrap break-words">
+          {showFull && entry.fullText ? entry.fullText : entry.summary}
+        </p>
+      )}
+      <div className="flex items-center gap-2 flex-wrap">
+        {entry.tools.map((tool, i) => (
+          <span
+            key={`${eventId}-${tool}-${i}`}
+            className="text-xs px-1 py-0.5 rounded-sm bg-[var(--gray-03)] text-[var(--gray-09)] font-mono"
+          >
+            {tool}
+          </span>
+        ))}
+        {entry.fullText && (
+          <button
+            onClick={() => setShowFull((v) => !v)}
+            className="text-xs text-[#70b8ff] hover:underline"
+          >
+            {showFull ? "Show less" : "Show full text"}
+          </button>
         )}
       </div>
     </div>

@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 import urllib.error
 import urllib.request
 
+from agentrail.afk.run_register import run_uuid
 from agentrail.afk.state import Store
 
 
@@ -215,8 +216,10 @@ def attach_telemetry(store: Store, target: Path, session_id: str) -> None:
                 action_dict = action_to_dict(action)
             except TypeError:
                 return
+            num = getattr(action, "number", None)
+            rid = run_uuid(session_id, num) if isinstance(num, int) else session_id
             event: Dict[str, Any] = {
-                "session_id": session_id,
+                "session_id": rid,
                 "seq": seq["n"],
                 "ts": ts,
                 "kind": "action",

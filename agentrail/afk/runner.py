@@ -92,6 +92,9 @@ class Runner:
         self.logs = run_dir / "logs"
         self.logs.mkdir(parents=True, exist_ok=True)
         self.agentrail = _agentrail_runner(target)
+        # session_id is stashed on the store by build_store after attach_journal;
+        # fall back to None so the runner is safe if constructed without it.
+        self.session_id: Optional[str] = getattr(store, "_session_id", None)
 
     # --- worktree helpers ----------------------------------------------------
 
@@ -216,32 +219,46 @@ class Runner:
 
     async def _process(self, slot: int, issue_state: IssueState) -> None:
         issue = issue_state.number
+        self._register_run(issue_state, "running", started=True)
         gh.add_issue_label(issue, IN_PROGRESS_LABEL)
 
-        # Idempotency: if a PR already exists for this issue (a retry after a
-        # failed review, or a resumed run), do NOT re-implement — that would
-        # collide with the existing branch/worktree. Go straight to review.
-        pr = issue_state.pr or gh.detect_pr_for_issue(issue)
-        if pr:
+        _FINISH_STATUS_MAP = {
+            IssueStatus.MERGED: "success",
+            IssueStatus.COMMENTED: "success",
+            IssueStatus.HUMAN_REVIEW: "success",
+            IssueStatus.FAILED: "failed",
+        }
+
+        try:
+            # Idempotency: if a PR already exists for this issue (a retry after a
+            # failed review, or a resumed run), do NOT re-implement — that would
+            # collide with the existing branch/worktree. Go straight to review.
+            pr = issue_state.pr or gh.detect_pr_for_issue(issue)
+            if pr:
+                self.store.dispatch(SetPr(issue, pr))
+                self.store.dispatch(SetStatus(issue, IssueStatus.PR_OPEN))
+                await self._review_loop(slot, issue, pr)
+                return
+
+            self.store.dispatch(SetStatus(issue, IssueStatus.RUNNING))
+            ok = await self._implement(slot, issue)
+            if not ok:
+                self._fail(issue, "implementation failed")
+                return
+
+            pr = gh.detect_pr_for_issue(issue)
+            if not pr:
+                self._fail(issue, "no PR opened")
+                return
             self.store.dispatch(SetPr(issue, pr))
             self.store.dispatch(SetStatus(issue, IssueStatus.PR_OPEN))
+
             await self._review_loop(slot, issue, pr)
-            return
-
-        self.store.dispatch(SetStatus(issue, IssueStatus.RUNNING))
-        ok = await self._implement(slot, issue)
-        if not ok:
-            self._fail(issue, "implementation failed")
-            return
-
-        pr = gh.detect_pr_for_issue(issue)
-        if not pr:
-            self._fail(issue, "no PR opened")
-            return
-        self.store.dispatch(SetPr(issue, pr))
-        self.store.dispatch(SetStatus(issue, IssueStatus.PR_OPEN))
-
-        await self._review_loop(slot, issue, pr)
+        finally:
+            final_issue = self.store.state.issues.get(issue)
+            if final_issue is not None:
+                run_status = _FINISH_STATUS_MAP.get(final_issue.status, "failed")
+                self._register_run(final_issue, run_status, finished=True)
 
     async def _review_loop(self, slot: int, issue: int, pr: int) -> None:
         max_rounds = self.store.state.max_review_rounds
@@ -291,6 +308,37 @@ class Runner:
             return
 
     # --- helpers -------------------------------------------------------------
+
+    def _register_run(self, issue_state: IssueState, status: str, *,
+                      started: bool = False, finished: bool = False) -> None:
+        try:
+            from agentrail.afk.run_register import run_uuid, register_run
+            from datetime import datetime, timezone
+            sid = getattr(self, "session_id", None)
+            if not sid:
+                return
+            now = datetime.now(timezone.utc).isoformat()
+            branch = f"afk/issue-{issue_state.number}"
+            pr = getattr(issue_state, "pr", None)
+            if pr:
+                rc = subprocess.run(
+                    ["gh", "pr", "view", str(pr), "--json", "headRefName", "-q", ".headRefName"],
+                    cwd=str(self.target), capture_output=True, text=True, check=False,
+                )
+                if rc.returncode == 0 and rc.stdout.strip():
+                    branch = rc.stdout.strip()
+            register_run(
+                self.target,
+                run_id=run_uuid(sid, issue_state.number),
+                agent=self.engine,
+                branch=branch,
+                title=issue_state.title or f"Issue #{issue_state.number}",
+                status=status,
+                started_at=now if started else None,
+                finished_at=now if finished else None,
+            )
+        except Exception:  # noqa: BLE001 — non-fatal
+            pass
 
     def _fail(self, issue: int, reason: str) -> None:
         self.store.dispatch(RecordFailure(issue, reason))
@@ -353,6 +401,7 @@ def build_store(target: Path, *, concurrency: int, max_retries: int,
     session_id = attach_journal(store, target)
     # Telemetry poster: ship each action to the AgentRail server when configured.
     attach_telemetry(store, target, session_id)
+    store._session_id = session_id  # expose for Runner.session_id wiring
     for item in issues:
         num = item["number"]
         existing_issue = store.state.issues.get(num)

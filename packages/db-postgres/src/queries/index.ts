@@ -532,6 +532,42 @@ export async function getInviteByToken(token: string) {
   return rows[0] ?? null;
 }
 
+export interface UpsertRunInput {
+  id: string;
+  workspaceId: string;
+  repositoryId: string;
+  agent: string;
+  branch: string;
+  title?: string | null;
+  status: "queued" | "running" | "success" | "failed";
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}
+
+export async function upsertRun(input: UpsertRunInput): Promise<void> {
+  await db
+    .insert(runs)
+    .values({
+      id: input.id,
+      workspaceId: input.workspaceId,
+      repositoryId: input.repositoryId,
+      agent: input.agent,
+      branch: input.branch,
+      title: input.title ?? null,
+      status: input.status,
+      startedAt: input.startedAt ? new Date(input.startedAt) : null,
+      finishedAt: input.finishedAt ? new Date(input.finishedAt) : null,
+    })
+    .onConflictDoUpdate({
+      target: runs.id,
+      set: {
+        status: input.status,
+        title: input.title ?? null,
+        finishedAt: input.finishedAt ? new Date(input.finishedAt) : null,
+      },
+    });
+}
+
 export async function claimInvitesForUser(data: {
   userId: string;
   email: string;

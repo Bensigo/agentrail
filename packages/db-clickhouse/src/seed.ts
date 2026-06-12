@@ -9,6 +9,16 @@ import type {
 } from "./schema";
 
 async function main() {
+  // House rule: the dashboard runs on REAL data only. Seeding is for throwaway
+  // local databases — never the linked instance. Fixture rows that reach the
+  // real workspace pollute Costs/Scorecard aggregates (it happened: run-001).
+  if (process.env.AGENTRAIL_ALLOW_SEED !== "1") {
+    console.error(
+      "Refusing to seed: set AGENTRAIL_ALLOW_SEED=1 to seed a throwaway local database. " +
+        "Never seed the linked instance — the dashboard uses real run data only."
+    );
+    process.exit(1);
+  }
   console.log("Seeding ClickHouse run_events...");
 
   const events: TelemetryEventRecord[] = [
@@ -258,6 +268,10 @@ async function main() {
       team_id: "team-eng",
       api_key_id: "key-alpha",
       cost_type: "model_call",
+      phase: "",
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_tokens: 0,
       tokens: 8200,
       cost_usd: 0.0246,
       model: "claude-sonnet-4-6",
@@ -271,6 +285,10 @@ async function main() {
       team_id: "team-eng",
       api_key_id: "key-alpha",
       cost_type: "embedding",
+      phase: "",
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_tokens: 0,
       tokens: 3100,
       cost_usd: 0.0031,
       model: "text-embedding-3-small",
@@ -284,6 +302,10 @@ async function main() {
       team_id: "team-eng",
       api_key_id: "key-alpha",
       cost_type: "reranking",
+      phase: "",
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_tokens: 0,
       tokens: 1500,
       cost_usd: 0.0015,
       model: "cohere-rerank-v3",
@@ -298,6 +320,10 @@ async function main() {
       team_id: "team-platform",
       api_key_id: "key-beta",
       cost_type: "model_call",
+      phase: "",
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_tokens: 0,
       tokens: 14800,
       cost_usd: 0.0444,
       model: "claude-opus-4-6",
@@ -311,6 +337,10 @@ async function main() {
       team_id: "team-platform",
       api_key_id: "key-beta",
       cost_type: "embedding",
+      phase: "",
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_tokens: 0,
       tokens: 5200,
       cost_usd: 0.0052,
       model: "text-embedding-3-small",
@@ -324,6 +354,10 @@ async function main() {
       team_id: "team-platform",
       api_key_id: "key-beta",
       cost_type: "storage",
+      phase: "",
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_tokens: 0,
       tokens: 0,
       cost_usd: 0.0008,
       model: "",
@@ -338,6 +372,10 @@ async function main() {
       team_id: "team-eng",
       api_key_id: "key-alpha",
       cost_type: "model_call",
+      phase: "",
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_tokens: 0,
       tokens: 6600,
       cost_usd: 0.0198,
       model: "claude-sonnet-4-6",
@@ -351,6 +389,10 @@ async function main() {
       team_id: "team-eng",
       api_key_id: "key-alpha",
       cost_type: "reranking",
+      phase: "",
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_tokens: 0,
       tokens: 900,
       cost_usd: 0.0009,
       model: "cohere-rerank-v3",
@@ -365,6 +407,10 @@ async function main() {
       team_id: "team-platform",
       api_key_id: "key-gamma",
       cost_type: "model_call",
+      phase: "",
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_tokens: 0,
       tokens: 22000,
       cost_usd: 0.066,
       model: "claude-opus-4-6",
@@ -378,6 +424,10 @@ async function main() {
       team_id: "team-platform",
       api_key_id: "key-gamma",
       cost_type: "embedding",
+      phase: "",
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_tokens: 0,
       tokens: 9800,
       cost_usd: 0.0098,
       model: "text-embedding-3-large",
@@ -391,6 +441,10 @@ async function main() {
       team_id: "team-platform",
       api_key_id: "key-gamma",
       cost_type: "storage",
+      phase: "",
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_tokens: 0,
       tokens: 0,
       cost_usd: 0.0024,
       model: "",

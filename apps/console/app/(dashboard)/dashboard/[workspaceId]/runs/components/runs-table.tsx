@@ -133,9 +133,14 @@ const columns = [
   }),
   columnHelper.accessor("total_cost", {
     header: "Cost",
-    cell: () => (
-      <span className="font-mono text-[var(--gray-10)] text-xs">—</span>
-    ),
+    cell: (info) => {
+      const cost = info.getValue();
+      return (
+        <span className="font-mono text-[var(--gray-10)] text-xs">
+          {cost > 0 ? `$${cost.toFixed(4)}` : "—"}
+        </span>
+      );
+    },
   }),
 ];
 

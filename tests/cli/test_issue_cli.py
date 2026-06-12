@@ -298,10 +298,13 @@ class IssueHeadlessDryRunTests(unittest.TestCase):
         rc, _, _, _ = self._run_headless(returncode=1, agent_output="")
         self.assertEqual(rc, 1)
 
-    def test_no_markers_warns_and_returns_zero(self):
+    def test_no_markers_fails_loudly(self):
+        # A headless run that parsed no issue bodies published nothing and must
+        # NOT report success (regression: it used to return 0 and look fine,
+        # masking the agent shelling out to `gh issue create` and failing).
         rc, out, err, _ = self._run_headless(agent_output="no markers here")
-        self.assertEqual(rc, 0)
-        self.assertIn("no issue bodies found", err)
+        self.assertEqual(rc, 1)
+        self.assertIn("no issue bodies", err)
 
     def test_headless_seed_contains_skill_body(self):
         """Agent subprocess receives a seed prompt containing the skill body."""

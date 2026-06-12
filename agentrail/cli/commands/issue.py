@@ -47,22 +47,26 @@ EXTRA_CONTEXT = ["TASTE.md", "docs/agents/triage-labels.md"]
 # individual issue bodies from the agent's captured stdout.
 _HEADLESS_OUTPUT_INSTRUCTION = """\
 
-## Output instructions (headless mode)
+## Output instructions (headless mode) — READ CAREFULLY
 
-You are running in headless (unattended) mode. For each issue body you produce,
-wrap the complete markdown content between these exact marker lines, each on
-its own line:
+You are running in headless (unattended) mode. Do EXACTLY this and nothing else:
+
+1. Do NOT run ``gh``, ``git``, or any command that creates, edits, or publishes
+   issues. You are NOT publishing anything yourself — the CLI publishes from your
+   stdout after you finish. Running ``gh issue create`` will fail and is wrong.
+
+2. Print each proposed issue's COMPLETE markdown body to stdout, wrapped between
+   these exact marker lines, each on its own line:
 
 <!-- ISSUE START -->
 <full issue body here>
 <!-- ISSUE END -->
 
-Output ALL issues in dependency order (blockers first). Do not include the
-markers themselves in the text you post to the issue tracker — they are
-parsed by the CLI to extract individual bodies. After all markers, you may
-add a brief plain-text summary for logging purposes.
-
-The triage label to apply is: ``{label}``.
+3. Output ALL issues in dependency order (blockers first). The CLI parses the
+   marker pairs to extract and publish each body, and applies the triage label
+   ``{label}`` itself — you do not. Do not put the markers anywhere except around
+   each body. After the last marker you may add a short plain-text summary for
+   logs.
 """.format(label=TRIAGE_LABEL)
 
 _USAGE = """\
@@ -273,13 +277,17 @@ def _run_headless(
     bodies = parse_issue_bodies(output)
 
     if not bodies:
+        # Fail loudly: a headless run that published nothing must NOT look like
+        # success. The usual cause is the agent ignoring the output contract and
+        # trying to run `gh issue create` itself.
         print(
-            "warning: no issue bodies found in agent output "
-            "(expected <!-- ISSUE START --> / <!-- ISSUE END --> markers).",
+            "error: agent produced no issue bodies "
+            "(expected <!-- ISSUE START --> / <!-- ISSUE END --> markers); "
+            "nothing was published.",
             file=sys.stderr,
         )
-        print(output)
-        return 0
+        sys.stderr.write(output)
+        return 1
 
     if dry_run:
         for idx, body in enumerate(bodies, 1):

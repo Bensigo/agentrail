@@ -25,6 +25,22 @@ def test_payload_maps_build_result_fields(tmp_path):
     assert payload["indexed_at"].endswith("Z")
 
 
+def test_payload_reads_cached_index_shape(tmp_path):
+    # A build_index cache hit returns the persisted index.json, where the fields
+    # live under a nested "snapshot" dict instead of at the top level. The payload
+    # must still carry real numbers, not zeros.
+    cached = {
+        "snapshot": {
+            "commitSha": "cafef00d",
+            "ingestionHealth": {"indexedCount": 410, "graphEdgeCount": 8604},
+        },
+    }
+    payload = snapshot_push.snapshot_payload(cached, "repo-1")
+    assert payload["commit_sha"] == "cafef00d"
+    assert payload["source_count"] == 410
+    assert payload["graph_edge_count"] == 8604
+
+
 def test_push_skipped_when_not_linked(tmp_path):
     assert snapshot_push.load_link(tmp_path) is None
     assert snapshot_push.push_index_snapshot(tmp_path, {"commitSha": "x"}) is False

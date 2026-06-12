@@ -544,6 +544,83 @@ export async function insertCostEvents(events: CostEventInput[]): Promise<number
 }
 
 // ---------------------------------------------------------------------------
+// Context pack ingestion
+// ---------------------------------------------------------------------------
+
+export interface ContextPackInput {
+  workspace_id: string;
+  run_id: string;
+  token_budget: number;
+  tokens_used: number;
+  anchors_extracted: number;
+  sources_considered: number;
+  occurred_at: string; // ISO 8601
+}
+
+export function deriveContextPackId(
+  workspaceId: string,
+  runId: string,
+  occurredAt: string
+): string {
+  return createHash("sha1")
+    .update(`${workspaceId}:${runId}:${occurredAt}`)
+    .digest("hex");
+}
+
+/**
+ * Insert context packs into ClickHouse, deduplicating on
+ * (workspace_id, run_id, occurred_at) via a pre-existence check on context_pack_id.
+ * Returns the number of rows actually inserted.
+ */
+export async function insertContextPacks(packs: ContextPackInput[]): Promise<number> {
+  if (packs.length === 0) return 0;
+
+  const candidates = packs.map((p) => ({
+    p,
+    context_pack_id: deriveContextPackId(p.workspace_id, p.run_id, p.occurred_at),
+  }));
+
+  const packIds = candidates.map((c) => c.context_pack_id);
+  const checkResult = await client.query({
+    query: `
+      SELECT context_pack_id
+      FROM context_packs
+      WHERE context_pack_id IN ({packIds: Array(String)})
+    `,
+    query_params: { packIds },
+    format: "JSONEachRow",
+  });
+  const existing = new Set(
+    (await checkResult.json<{ context_pack_id: string }>()).map((r) => r.context_pack_id)
+  );
+
+  const toInsert = candidates.filter((c) => !existing.has(c.context_pack_id));
+  if (toInsert.length === 0) return 0;
+
+  const rows = toInsert.map(({ p, context_pack_id }) => ({
+    workspace_id: p.workspace_id,
+    run_id: p.run_id,
+    context_pack_id,
+    token_budget: p.token_budget,
+    tokens_used: p.tokens_used,
+    anchors_extracted: p.anchors_extracted,
+    sources_considered: p.sources_considered,
+    occurred_at: new Date(p.occurred_at)
+      .toISOString()
+      .replace("T", " ")
+      .replace("Z", ""),
+  }));
+
+  await client.insert({
+    table: "context_packs",
+    values: rows,
+    format: "JSONEachRow",
+  });
+
+  return toInsert.length;
+}
+
+// ---------------------------------------------------------------------------
 // AFK run-event ingestion
 // ---------------------------------------------------------------------------
 

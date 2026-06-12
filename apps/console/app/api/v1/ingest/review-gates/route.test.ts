@@ -73,8 +73,40 @@ describe("POST /api/v1/ingest/review-gates", () => {
       conditions: [{ key: "tests", value: "green" }],
       blockingReasons: [],
       evidenceRefs: [{ label: "CI run", url: "https://ci.example.com/1" }],
+      findings: [],
       evaluatedAt: "2026-06-12T10:00:00.000Z",
     });
+  });
+
+  it("202 and findings passed through to upsertReviewGate", async () => {
+    const findings = [
+      {
+        severity: "critical",
+        description: "Null deref in main.py",
+        suggested_fix: "Guard against None before dereferencing",
+      },
+      {
+        severity: "minor",
+        description: "Typo in log message",
+        suggested_fix: "Fix spelling",
+      },
+    ];
+    const res = await POST(req({ ...valid, findings }));
+    expect(res.status).toBe(202);
+    expect(upsertReviewGate).toHaveBeenCalledWith(
+      expect.objectContaining({ findings })
+    );
+  });
+
+  it("400 when findings is malformed (bad severity)", async () => {
+    const res = await POST(
+      req({
+        ...valid,
+        findings: [{ severity: "P1", description: "x", suggested_fix: "y" }],
+      })
+    );
+    expect(res.status).toBe(400);
+    expect(upsertReviewGate).not.toHaveBeenCalled();
   });
 
   it("404 when repo not in workspace (upsertReviewGate NOT called)", async () => {

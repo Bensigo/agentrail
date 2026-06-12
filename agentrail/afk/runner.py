@@ -311,7 +311,13 @@ class Runner:
                 from agentrail.afk.review_push import push_review_gate
                 from agentrail.afk.run_register import run_uuid
                 round_no = self.store.state.issues[issue].review_rounds
-                push_review_gate(self.target, run_uuid(sid, issue), round_no, outcome)
+                review_file = self.logs / f"pr-{pr}-review.md"
+                try:
+                    review_text = review_file.read_text()
+                except OSError:
+                    review_text = ""
+                push_review_gate(self.target, run_uuid(sid, issue), round_no, outcome,
+                                 review_text=review_text)
 
             if outcome.is_clean:
                 if await self._merge(pr):

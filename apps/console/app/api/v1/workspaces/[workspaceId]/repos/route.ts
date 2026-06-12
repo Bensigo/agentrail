@@ -61,9 +61,17 @@ export async function GET(
     let stalenessSeconds: number | null = null;
 
     if (snap) {
+      // ClickHouse returns DateTime64 as "YYYY-MM-DD HH:MM:SS.mmm" in UTC with
+      // no timezone marker. `new Date(...)` on that space-separated form parses
+      // it as LOCAL time, which inflates staleness by the server's UTC offset
+      // and makes every fresh snapshot look "stale". Normalize to explicit UTC.
+      const toUtc = (s: string): Date =>
+        /[zZ]|[+-]\d\d:?\d\d$/.test(s)
+          ? new Date(s)
+          : new Date(s.replace(" ", "T") + "Z");
       const indexedDate =
         typeof snap.indexed_at === "string"
-          ? new Date(snap.indexed_at)
+          ? toUtc(snap.indexed_at)
           : snap.indexed_at;
       lastIndexedAt = indexedDate.toISOString();
       stalenessSeconds = Math.floor((now - indexedDate.getTime()) / 1000);

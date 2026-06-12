@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { BookOpen } from "lucide-react";
 import { StatusBadge } from "../../runs/components/status-badge";
 import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
@@ -59,6 +59,7 @@ function retrievedSummary(p: ContextPackRow): string {
 }
 
 export function ContextPacksTable({ workspaceId }: ContextPacksTableProps) {
+  const router = useRouter();
   const [data, setData] = useState<ContextPackRow[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -159,18 +160,22 @@ export function ContextPacksTable({ workspaceId }: ContextPacksTableProps) {
                 return (
                   <tr
                     key={p.context_pack_id}
-                    className="border-b border-[var(--gray-04)] last:border-0"
+                    onClick={() =>
+                      router.push(`/dashboard/${workspaceId}/runs/${p.run_id}`)
+                    }
+                    className="border-b border-[var(--gray-04)] last:border-0 hover:bg-[var(--gray-02)] cursor-pointer transition-colors"
                   >
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-2">
-                        <Link
-                          href={`/dashboard/${workspaceId}/runs/${p.run_id}`}
-                          className="text-[#70b8ff] hover:underline"
-                        >
-                          {p.run_title || (
-                            <span className="font-mono">{p.run_id.slice(0, 8)}</span>
-                          )}
-                        </Link>
+                        {p.run_title ? (
+                          <span className="font-medium text-[var(--gray-12)]">
+                            {p.run_title}
+                          </span>
+                        ) : (
+                          <span className="font-mono text-[var(--gray-12)]">
+                            {p.run_id.slice(0, 8)}
+                          </span>
+                        )}
                         {p.run_status && <StatusBadge status={p.run_status} />}
                       </div>
                     </td>

@@ -2,6 +2,10 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import {
+  groupTimelineEvents,
+  parseActivityEntry,
+} from "./group-timeline-events";
 
 export interface TimelineEvent {
   event_id: string;
@@ -24,6 +28,7 @@ const EVENT_TYPE_COLORS: Record<string, string> = {
   review_gate: "#f76b15",
   cost_event: "#0090ff",
   audit_event: "#ffa057",
+  agent_activity: "#b58df1",
   // AFK action types map to teal / semantic colors
   EnqueueIssue: "#12a594",
   ClaimIssue: "#12a594",
@@ -174,6 +179,96 @@ function TimelineEntry({
   );
 }
 
+interface ActivityGroupProps {
+  phase: string;
+  events: TimelineEvent[];
+  isLast: boolean;
+}
+
+function ActivityGroup({ phase, events, isLast }: ActivityGroupProps) {
+  const [expanded, setExpanded] = useState(false);
+  const color = EVENT_TYPE_COLORS.agent_activity;
+
+  return (
+    <div className="flex gap-3">
+      {/* Left column: line + dot */}
+      <div className="flex flex-col items-center" style={{ width: "16px" }}>
+        <div
+          className="rounded-full shrink-0"
+          style={{
+            width: "8px",
+            height: "8px",
+            backgroundColor: color,
+            marginTop: "4px",
+          }}
+        />
+        {!isLast && (
+          <div
+            className="flex-1 mt-1"
+            style={{ width: "2px", backgroundColor: "var(--gray-05)" }}
+          />
+        )}
+      </div>
+
+      {/* Right column: content */}
+      <div className="flex-1 pb-4">
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="w-full text-left flex items-start justify-between gap-2 group"
+        >
+          <div className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm text-[var(--gray-12)] group-hover:text-white transition-colors">
+                Agent activity ({events.length})
+              </span>
+              {phase && (
+                <span className="text-xs px-1 py-0.5 rounded-sm bg-[var(--gray-03)] text-[var(--gray-09)] font-mono">
+                  {phase}
+                </span>
+              )}
+            </div>
+            <span className="text-xs font-mono text-[var(--gray-09)]">
+              {formatTimestamp(events[0].occurred_at)}
+            </span>
+          </div>
+          <span className="text-xs text-[var(--gray-08)] mt-0.5 shrink-0">
+            {expanded ? "▲" : "▼"}
+          </span>
+        </button>
+
+        {expanded && (
+          <div className="mt-2 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] divide-y divide-[var(--gray-04)]">
+            {events.map((event) => {
+              const entry = parseActivityEntry(event.payload);
+              return (
+                <div key={event.event_id} className="p-3 flex flex-col gap-1.5">
+                  {entry.summary && (
+                    <p className="text-xs text-[var(--gray-11)] whitespace-pre-wrap break-words">
+                      {entry.summary}
+                    </p>
+                  )}
+                  {entry.tools.length > 0 && (
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {entry.tools.map((tool, i) => (
+                        <span
+                          key={`${event.event_id}-${tool}-${i}`}
+                          className="text-xs px-1 py-0.5 rounded-sm bg-[var(--gray-03)] text-[var(--gray-09)] font-mono"
+                        >
+                          {tool}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 interface RunTimelineProps {
   events: TimelineEvent[];
   workspaceId: string;
@@ -202,17 +297,28 @@ export function RunTimeline({
     );
   }
 
+  const items = groupTimelineEvents(events);
+
   return (
     <div className="flex flex-col">
-      {events.map((event, i) => (
-        <TimelineEntry
-          key={event.event_id}
-          event={event}
-          workspaceId={workspaceId}
-          runId={runId}
-          isLast={i === events.length - 1}
-        />
-      ))}
+      {items.map((item, i) =>
+        item.type === "activity" ? (
+          <ActivityGroup
+            key={item.events[0].event_id}
+            phase={item.phase}
+            events={item.events}
+            isLast={i === items.length - 1}
+          />
+        ) : (
+          <TimelineEntry
+            key={item.event.event_id}
+            event={item.event}
+            workspaceId={workspaceId}
+            runId={runId}
+            isLast={i === items.length - 1}
+          />
+        )
+      )}
     </div>
   );
 }

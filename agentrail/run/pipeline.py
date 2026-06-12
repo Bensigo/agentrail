@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agentrail.run import artifacts, context as ctx, prompts, skills, state as state_mod
+from agentrail.run.activity_push import push_agent_activity
 from agentrail.run.context_pack_push import push_context_pack
 from agentrail.run.cost_push import push_cost_event
 from agentrail.run.failure_push import push_failure_event
@@ -219,7 +220,13 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     except Exception as _exc:
         _log.debug("cost capture skipped: %s", _exc)
 
-    # 17b. Context pack telemetry — non-fatal
+    # 17b. Agent activity telemetry — non-fatal
+    try:
+        push_agent_activity(rc.target_dir, rc.run_id, phase, rc.agent, phase_start_ts)
+    except Exception as _exc:
+        _log.debug("agent activity push skipped: %s", _exc)
+
+    # 17c. Context pack telemetry — non-fatal
     try:
         push_context_pack(rc.target_dir, rc.run_id, rc.context_retrieval)
     except Exception as _exc:

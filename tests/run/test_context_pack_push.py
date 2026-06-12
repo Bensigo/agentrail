@@ -110,6 +110,7 @@ def test_push_context_pack_payload_and_headers(tmp_path: Path, monkeypatch) -> N
     retrieval = {
         "retrievalBudget": 10000,
         "selectedContextTokens": 4500,
+        "tokensSaved": 12000,
         "selectedSources": ["a.py", "b.py"],
     }
     context_pack_push.push_context_pack(
@@ -125,6 +126,7 @@ def test_push_context_pack_payload_and_headers(tmp_path: Path, monkeypatch) -> N
     assert body["repository_id"] == "repo-xyz"
     assert body["token_budget"] == 10000
     assert body["tokens_used"] == 4500
+    assert body["tokens_saved"] == 12000
     assert body["sources_considered"] == 2
     assert body["occurred_at"].endswith("Z")
     assert len(body["context_pack_id"]) == 36  # uuid4 format
@@ -179,6 +181,7 @@ def test_push_context_pack_empty_retrieval_sends_zeros(tmp_path: Path, monkeypat
     body = captured["body"]
     assert body["token_budget"] == 0
     assert body["tokens_used"] == 0
+    assert body["tokens_saved"] == 0
     assert body["sources_considered"] == 0
 
 
@@ -203,6 +206,7 @@ def test_payload_handles_dict_retrieval_budget(tmp_path, monkeypatch):
     ok = context_pack_push.push_context_pack(
         tmp_path, "run-1",
         {"selectedContextTokens": 743, "selectedSources": ["a", "b"],
+         "tokensSaved": 9001,
          "retrievalBudget": {"maxItems": 10, "maxTokens": 5000}},
     )
     assert ok is True
@@ -210,6 +214,7 @@ def test_payload_handles_dict_retrieval_budget(tmp_path, monkeypatch):
     payload = _json.loads(captured["body"])
     assert payload["token_budget"] == 5000
     assert payload["tokens_used"] == 743
+    assert payload["tokens_saved"] == 9001
     assert payload["sources_considered"] == 2
 
 

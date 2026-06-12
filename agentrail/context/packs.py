@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List
 
 from agentrail.context.compiler import compiler_contract
 from agentrail.context.index import append_audit, load_index
-from agentrail.context.retrieval import query_context
+from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_saved, query_context
 from agentrail.shared.json import write_json
 
 
@@ -363,6 +363,7 @@ def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
         [
             "## Metadata",
             f"- Retrieval budget: maxItems={pack['retrievalBudget']['maxItems']}, maxTokens={pack['retrievalBudget']['maxTokens']}",
+            f"- Tokens saved vs reading full files: {pack.get('tokensSaved', 0)}",
             f"- Index: {pack['index'].get('version')} builtAt={pack['index'].get('builtAt')}",
             f"- Provider mode: {pack['provider'].get('mode')}",
             f"- Audit event: {pack['audit'].get('event')} citation={pack['audit'].get('citation')}",
@@ -379,7 +380,7 @@ def build_context_pack(target_dir: Path, target_kind: str, target_number: int, p
     if target_kind == "issue" and phase not in {"plan", "execute", "verify"} or target_kind == "pr" and phase != "review":
         raise RuntimeError("context build phase must be one of: issue plan|execute|verify, pr review")
 
-    retrieval_budget = {"maxItems": 20, "maxTokens": 6000}
+    retrieval_budget = {"maxItems": 20, "maxTokens": RETRIEVAL_MAX_TOKENS}
     query_text = _query_for(target_kind, target_number, phase)
     query = query_context(root, query_text, limit=retrieval_budget["maxItems"])
     index = load_index(root)
@@ -418,6 +419,9 @@ def build_context_pack(target_dir: Path, target_kind: str, target_number: int, p
     }
     pack["included"] = _all_included(pack)
     pack["excluded"] = pack["excludedContext"]
+    # Estimated tokens the bounded snippets saved versus reading every selected
+    # file in full (ceil(chars/4) per file, each distinct file counted once).
+    pack["tokensSaved"] = compute_tokens_saved(root, pack["included"])
     pack["compiler"] = compiler_contract(
         target_kind,
         query_text,
@@ -462,6 +466,7 @@ def build_context_pack(target_dir: Path, target_kind: str, target_number: int, p
         "markdownPath": _relative(root, md_path),
         "index": pack["index"],
         "retrievalBudget": pack["retrievalBudget"],
+        "tokensSaved": pack["tokensSaved"],
         "provider": pack["provider"],
         "audit": audit,
         "compiler": pack["compiler"],

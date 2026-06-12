@@ -13,6 +13,7 @@ export async function getContextPacksForRun(
         context_pack_id,
         token_budget,
         tokens_used,
+        tokens_saved,
         anchors_extracted,
         sources_considered,
         occurred_at
@@ -30,6 +31,7 @@ export async function getContextPacksForRun(
     context_pack_id: string;
     token_budget: string | number;
     tokens_used: string | number;
+    tokens_saved: string | number;
     anchors_extracted: string | number;
     sources_considered: string | number;
     occurred_at: string;
@@ -40,6 +42,7 @@ export async function getContextPacksForRun(
     context_pack_id: r.context_pack_id,
     token_budget: Number(r.token_budget),
     tokens_used: Number(r.tokens_used),
+    tokens_saved: Number(r.tokens_saved),
     anchors_extracted: Number(r.anchors_extracted),
     sources_considered: Number(r.sources_considered),
     occurred_at: new Date(r.occurred_at),
@@ -59,6 +62,7 @@ export async function getWorkspaceContextPacks(
         context_pack_id,
         token_budget,
         tokens_used,
+        tokens_saved,
         anchors_extracted,
         sources_considered,
         occurred_at
@@ -76,6 +80,7 @@ export async function getWorkspaceContextPacks(
     context_pack_id: string;
     token_budget: string | number;
     tokens_used: string | number;
+    tokens_saved: string | number;
     anchors_extracted: string | number;
     sources_considered: string | number;
     occurred_at: string;
@@ -86,6 +91,7 @@ export async function getWorkspaceContextPacks(
     context_pack_id: r.context_pack_id,
     token_budget: Number(r.token_budget),
     tokens_used: Number(r.tokens_used),
+    tokens_saved: Number(r.tokens_saved),
     anchors_extracted: Number(r.anchors_extracted),
     sources_considered: Number(r.sources_considered),
     occurred_at: new Date(r.occurred_at),

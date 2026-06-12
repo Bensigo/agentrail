@@ -20,6 +20,7 @@ interface ContextPack {
   context_pack_id: string;
   token_budget: number;
   tokens_used: number;
+  tokens_saved: number;
   anchors_extracted: number;
   sources_considered: number;
   occurred_at: string;
@@ -41,15 +42,25 @@ function fmt(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-function BudgetBar({ used, budget }: { used: number; budget: number }) {
+function BudgetBar({
+  used,
+  budget,
+  saved,
+}: {
+  used: number;
+  budget: number;
+  saved: number;
+}) {
   const pct = budget > 0 ? Math.min((used / budget) * 100, 100) : 0;
   const over = budget > 0 && used > budget;
   return (
     <div className="space-y-1">
       <div className="flex items-baseline justify-between text-xs">
-        <span className="text-[var(--gray-09)]">Tokens used vs budget</span>
+        <span className="text-[var(--gray-09)]">Retrieval tokens</span>
         <span className="font-mono text-[var(--gray-11)]">
-          {fmt(used)} / {budget > 0 ? fmt(budget) : "—"}
+          {budget > 0
+            ? `${fmt(used)} used of ${fmt(budget)} budget`
+            : `${fmt(used)} used`}
         </span>
       </div>
       <div className="h-1.5 w-full rounded-full bg-[var(--gray-04)] overflow-hidden">
@@ -58,6 +69,17 @@ function BudgetBar({ used, budget }: { used: number; budget: number }) {
           style={{ width: `${pct}%` }}
         />
       </div>
+      <p className="text-xs text-[var(--gray-09)]">
+        {saved > 0 ? (
+          <>
+            Saved an estimated{" "}
+            <span className="font-mono text-[var(--gray-11)]">{fmt(saved)}</span>{" "}
+            tokens by sending bounded snippets instead of whole files.
+          </>
+        ) : (
+          "No token savings recorded for this pack."
+        )}
+      </p>
     </div>
   );
 }
@@ -68,7 +90,11 @@ function PackCard({ pack }: { pack: ContextPack }) {
 
   return (
     <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 py-3 space-y-3">
-      <BudgetBar used={pack.tokens_used} budget={pack.token_budget} />
+      <BudgetBar
+        used={pack.tokens_used}
+        budget={pack.token_budget}
+        saved={pack.tokens_saved}
+      />
 
       <button
         onClick={() => setExpanded((e) => !e)}

@@ -6,7 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agentrail.context.retrieval import get_file_lines, get_file_symbol, search_context
+from agentrail.context.retrieval import (
+    RETRIEVAL_MAX_TOKENS,
+    compute_tokens_saved,
+    estimate_tokens,
+    get_file_lines,
+    get_file_symbol,
+    search_context,
+)
 
 
 class GetFileLinesTests(unittest.TestCase):
@@ -125,6 +132,26 @@ class SearchContextTests(unittest.TestCase):
         self.assertEqual(rm["selectedContextTokens"], sum(r["tokenEstimate"] for r in output["results"]))
         self.assertEqual(rm["selectedSources"], [r["path"] for r in output["results"]])
 
+    def test_run_metadata_budget_and_tokens_saved_are_real_numbers(self) -> None:
+        # Run-level retrieval must record the real token budget (never 0/None,
+        # which used to surface as token_budget=0 in pushed telemetry) and the
+        # estimated tokens saved by bounded snippets vs full files.
+        root = self.make_repo()
+        output = search_context(root, "build_context_pack", limit=5)
+        rm = output["runMetadata"]
+        self.assertEqual(rm["retrievalBudget"]["maxTokens"], RETRIEVAL_MAX_TOKENS)
+        self.assertEqual(rm["retrievalBudget"]["maxItems"], 5)
+        self.assertIn("tokensSaved", rm)
+        full_file_tokens = estimate_tokens(
+            (root / "src" / "retrieval_helper.py").read_text(encoding="utf-8")
+        )
+        snippet_tokens = sum(
+            r["tokenEstimate"] for r in output["results"]
+            if r["path"] == "src/retrieval_helper.py"
+        )
+        self.assertEqual(rm["tokensSaved"], max(0, full_file_tokens - snippet_tokens))
+        self.assertGreater(rm["tokensSaved"], 0)
+
     def test_snippet_is_bounded_not_whole_file(self) -> None:
         root = self.make_repo()
         output = search_context(root, "build_context_pack", limit=5)
@@ -132,6 +159,58 @@ class SearchContextTests(unittest.TestCase):
         # The source file has 40+ lines; a compact snippet must not echo all of them.
         self.assertLessEqual(len(top["snippet"].splitlines()), 12)
         self.assertNotIn("content", top, "compact search must not emit full-file content")
+
+
+class ComputeTokensSavedTests(unittest.TestCase):
+    def make_repo(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        (root / "src").mkdir(parents=True)
+        return root
+
+    def test_full_file_minus_snippet_tokens(self) -> None:
+        root = self.make_repo()
+        (root / "src" / "a.py").write_text("x" * 400, encoding="utf-8")  # 100 tokens
+        items = [{"path": "src/a.py", "content": "x" * 80}]  # 20 tokens used
+        self.assertEqual(compute_tokens_saved(root, items), 80)
+
+    def test_distinct_file_counted_once_with_snippets_summed(self) -> None:
+        root = self.make_repo()
+        (root / "src" / "a.py").write_text("x" * 400, encoding="utf-8")  # 100 tokens
+        items = [
+            {"path": "src/a.py", "content": "x" * 40},  # 10 tokens
+            {"path": "src/a.py", "content": "x" * 40},  # 10 tokens
+        ]
+        # 100 - (10 + 10), not (100 - 10) * 2
+        self.assertEqual(compute_tokens_saved(root, items), 80)
+
+    def test_clamped_at_zero_when_snippets_exceed_file(self) -> None:
+        root = self.make_repo()
+        (root / "src" / "a.py").write_text("x" * 40, encoding="utf-8")  # 10 tokens
+        items = [{"path": "src/a.py", "content": "x" * 400}]  # 100 tokens used
+        self.assertEqual(compute_tokens_saved(root, items), 0)
+
+    def test_unreadable_or_virtual_paths_contribute_nothing(self) -> None:
+        root = self.make_repo()
+        (root / "src" / "a.py").write_text("x" * 400, encoding="utf-8")
+        items = [
+            {"path": "src/a.py", "content": "x" * 80},
+            {"path": "memory/not-a-file.md", "content": "x" * 80},
+            {"path": "../escape.py", "content": "x" * 80},
+            {"path": "", "content": "x"},
+            {"content": "no path"},
+            "not-a-dict",
+        ]
+        self.assertEqual(compute_tokens_saved(root, items), 80)
+
+    def test_falls_back_to_token_estimate_when_no_content(self) -> None:
+        root = self.make_repo()
+        (root / "src" / "a.py").write_text("x" * 400, encoding="utf-8")  # 100 tokens
+        items = [{"path": "src/a.py", "tokenEstimate": 30}]
+        self.assertEqual(compute_tokens_saved(root, items), 70)
+
+    def test_empty_items_is_zero(self) -> None:
+        root = self.make_repo()
+        self.assertEqual(compute_tokens_saved(root, []), 0)
 
 
 if __name__ == "__main__":

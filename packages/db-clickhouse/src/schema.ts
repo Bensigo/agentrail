@@ -14,12 +14,19 @@ PARTITION BY (workspace_id, toYYYYMM(occurred_at))
 ORDER BY (workspace_id, run_id, context_pack_id)
 `;
 
+/** ALTER TABLE statements for context_packs columns added after initial table creation. */
+export const ALTER_CONTEXT_PACKS_ADD_TOKENS_SAVED = `
+ALTER TABLE context_packs ADD COLUMN IF NOT EXISTS tokens_saved UInt64 DEFAULT 0
+`;
+
 export interface ContextPackRecord {
   workspace_id: string;
   run_id: string;
   context_pack_id: string;
   token_budget: number;
   tokens_used: number;
+  /** Estimated tokens saved by bounded retrieval vs reading the full files. */
+  tokens_saved: number;
   anchors_extracted: number;
   sources_considered: number;
   occurred_at: Date;

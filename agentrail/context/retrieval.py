@@ -7,7 +7,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from agentrail.context.compiler import compiler_contract, extract_anchors
 from agentrail.context.config import read_context_config
@@ -163,6 +163,51 @@ def bounded_content(source: Dict[str, Any], chunk: Optional[Dict[str, Any]]) -> 
 def estimate_tokens(text: str) -> int:
     """Rough shared token estimator (chars / 4) used across compact retrieval."""
     return (len(text) + 3) // 4
+
+
+# Token budget for run-level retrieval and context packs. The same budget is
+# recorded in pack retrievalBudget metadata and pushed as token_budget telemetry.
+RETRIEVAL_MAX_TOKENS = 6000
+
+
+def compute_tokens_saved(root: Path, items: Iterable[Dict[str, Any]]) -> int:
+    """Estimated tokens saved by bounded retrieval versus reading whole files.
+
+    For each distinct file path among the selected items, compares the
+    full-file token estimate (ceil(chars/4)) against the tokens actually used
+    by the bounded snippets selected from that file (summed when several
+    snippets come from one file; the full file is counted once). Items whose
+    path cannot be read under ``root`` (memory entries, deleted files, binary
+    content) contribute nothing. Each file's saving is clamped at >= 0, so the
+    result is always >= 0.
+    """
+    root = root.resolve()
+    used_by_path: Dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        content = item.get("content")
+        if isinstance(content, str):
+            used = estimate_tokens(content)
+        else:
+            token_estimate = item.get("tokenEstimate")
+            is_number = isinstance(token_estimate, (int, float)) and not isinstance(token_estimate, bool)
+            used = int(token_estimate) if is_number else 0
+        used_by_path[path] = used_by_path.get(path, 0) + used
+    saved = 0
+    for path, used in used_by_path.items():
+        try:
+            file_path = (root / path).resolve()
+            if root not in file_path.parents and file_path != root:
+                continue
+            full = estimate_tokens(file_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        saved += max(0, full - used)
+    return saved
 
 
 def get_file_lines(target_dir: Path, path: str, line_start: int, line_end: int) -> Dict[str, Any]:
@@ -851,14 +896,22 @@ def search_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str
         })
     selected_sources = [entry["path"] for entry in results]
     integrity = raw.get("retrievalIntegrity") or {}
+    # query_context records maxTokens=None (a plain query has no token budget),
+    # but run-level retrieval operates under the shared pack budget. Fill in the
+    # real numeric budget so downstream telemetry never reports 0.
+    run_budget = dict(raw.get("retrievalBudget") or {})
+    run_budget.setdefault("maxItems", limit)
+    if not run_budget.get("maxTokens"):
+        run_budget["maxTokens"] = RETRIEVAL_MAX_TOKENS
     run_metadata = {
         "retrievalMode": raw.get("retrievalMode"),
         "selectedSources": selected_sources,
         "selectedContextTokens": sum(entry["tokenEstimate"] for entry in results),
+        "tokensSaved": compute_tokens_saved(target_dir.resolve(), results),
         # Ground-truth-free at run time; the benchmark measures waste against
         # known required sources. Recorded for schema completeness.
         "wastedContextTokens": 0,
-        "retrievalBudget": raw.get("retrievalBudget"),
+        "retrievalBudget": run_budget,
         "citations": [entry["citation"] for entry in results],
         "reasons": [entry["reason"] for entry in results],
         "scores": [entry["score"] for entry in results],

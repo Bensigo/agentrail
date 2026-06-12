@@ -47,6 +47,7 @@ def _usage() -> str:
                 [--log-dir DIR]
   agentrail run issue N [--agent NAME] [--target DIR] [--command CMD]
                         [--model MODEL] [--log-dir DIR] [--run-id ID]
+                        [--budget-usd FLOAT]
   agentrail run batch [--concurrency N] [--agent NAME] [--target DIR]
                       [--command CMD] [--model MODEL] [--base BRANCH]
                       [--] ISSUE [ISSUE ...]
@@ -77,6 +78,7 @@ class RunOptions:
     run_id: str = ""
     model: str = ""
     command_explicit: bool = False
+    budget_usd: float = 0.0
 
 
 def _need_value(args: List[str], i: int, flag: str) -> str:
@@ -106,6 +108,13 @@ def parse_run_options(args: List[str]) -> RunOptions:
             opts.log_dir = _need_value(args, i, "--log-dir"); i += 2
         elif a == "--run-id":
             opts.run_id = _need_value(args, i, "--run-id"); i += 2
+        elif a == "--budget-usd":
+            raw = _need_value(args, i, "--budget-usd")
+            try:
+                opts.budget_usd = float(raw)
+            except ValueError:
+                raise UsageError("--budget-usd must be a non-negative number")
+            i += 2
         elif a in ("-h", "--help"):
             print(_usage()); raise UsageError("", code=0)
         else:
@@ -308,7 +317,8 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
 
     return run_issue(target, issue, agent=agent, command=command,
                      repo_dir=_repo_dir(), log_dir=log_dir,
-                     run_id=opts.run_id, phase_commands=phase_commands)
+                     run_id=opts.run_id, phase_commands=phase_commands,
+                     budget_usd=opts.budget_usd)
 
 
 @dataclass

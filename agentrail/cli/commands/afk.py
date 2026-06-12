@@ -46,6 +46,7 @@ def _parse(args: List[str]) -> dict:
         "dry_run": False,
         "allow_dirty": False,
         "model": "",
+        "budget_per_issue": 0.0,
     }
     i = 0
     while i < len(args):
@@ -72,6 +73,8 @@ def _parse(args: List[str]) -> dict:
             opts["allow_dirty"] = True; i += 1
         elif a == "--model":
             opts["model"] = args[i + 1]; i += 2
+        elif a == "--budget-per-issue":
+            opts["budget_per_issue"] = float(args[i + 1]); i += 2
         elif a in ("-h", "--help"):
             print(_usage()); raise SystemExit(0)
         else:
@@ -143,6 +146,7 @@ def run_afk(args: List[str]) -> int:
         run_dir=run_dir,
         store=store,
         model=opts["model"],
+        budget_per_issue=opts["budget_per_issue"],
     )
 
     print(f"AFK: {len(issues)} issue(s), concurrency {opts['concurrency']}, "

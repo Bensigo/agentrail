@@ -89,11 +89,13 @@ async def _sh(args: List[str], cwd: Optional[Path] = None,
 class Runner:
     def __init__(self, target: Path, *, engine: str, base: str,
                  concurrency: int, afk_label: str, queue_labels: List[str],
-                 run_dir: Path, store: Store, model: str = "") -> None:
+                 run_dir: Path, store: Store, model: str = "",
+                 budget_per_issue: float = 0.0) -> None:
         self.target = target
         self.engine = engine
         self.base = base
         self.model = model
+        self.budget_per_issue = budget_per_issue
         self.concurrency = concurrency
         self.afk_label = afk_label
         self.queue_labels = queue_labels
@@ -145,6 +147,8 @@ class Runner:
                "--target", str(wt)]
         if self.model:
             cmd += ["--model", self.model]
+        if self.budget_per_issue > 0:
+            cmd += ["--budget-usd", str(self.budget_per_issue)]
         sid = getattr(self, "session_id", None)
         if sid:
             from agentrail.afk.run_register import run_uuid

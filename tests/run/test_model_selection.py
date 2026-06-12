@@ -169,7 +169,7 @@ class ModelFlagOnRunIssueTests(unittest.TestCase):
         captured: list[dict] = []
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
-                           log_dir=None, run_id="", phase_commands=None):
+                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0):
             captured.append({"phase_commands": phase_commands or {}})
             return 0
 
@@ -196,7 +196,7 @@ class ModelFlagOnRunIssueTests(unittest.TestCase):
         captured: list[dict] = []
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
-                           log_dir=None, run_id="", phase_commands=None):
+                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0):
             captured.append({"phase_commands": phase_commands or {}})
             return 0
 
@@ -228,7 +228,7 @@ class PerPhaseConfigTests(unittest.TestCase):
         captured: list[dict] = []
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
-                           log_dir=None, run_id="", phase_commands=None):
+                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0):
             captured.append({"command": command, "phase_commands": phase_commands or {}})
             return 0
 
@@ -272,7 +272,7 @@ class ExplicitCommandNotMutatedTests(unittest.TestCase):
         captured: list[dict] = []
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
-                           log_dir=None, run_id="", phase_commands=None):
+                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0):
             captured.append({"command": command, "phase_commands": phase_commands or {}})
             return 0
 
@@ -307,7 +307,7 @@ class NoModelPassthroughTests(unittest.TestCase):
         captured: list[dict] = []
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
-                           log_dir=None, run_id="", phase_commands=None):
+                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0):
             captured.append({"phase_commands": phase_commands or {}})
             return 0
 

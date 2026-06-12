@@ -40,16 +40,16 @@ const valid = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  (requireBearer as any).mockResolvedValue({ workspaceId: WS, apiKeyId: "k1", teamId: null });
-  (getRepository as any).mockResolvedValue({ id: REPO, workspaceId: WS });
-  (insertIndexSnapshots as any).mockResolvedValue(1);
+  vi.mocked(requireBearer).mockResolvedValue({ workspaceId: WS, apiKeyId: "k1", teamId: null } as never);
+  vi.mocked(getRepository).mockResolvedValue({ id: REPO, workspaceId: WS } as never);
+  vi.mocked(insertIndexSnapshots).mockResolvedValue(1);
 });
 
 describe("POST /api/v1/ingest/index-snapshots", () => {
   it("401 when requireBearer rejects", async () => {
     const { NextResponse } = await import("next/server");
-    (requireBearer as any).mockResolvedValue(
-      NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    vi.mocked(requireBearer).mockResolvedValue(
+      NextResponse.json({ error: "Unauthorized" }, { status: 401 }) as never
     );
     const res = await POST(req(valid, false));
     expect(res.status).toBe(401);
@@ -65,7 +65,7 @@ describe("POST /api/v1/ingest/index-snapshots", () => {
   });
 
   it("404 when repo not in the key's workspace", async () => {
-    (getRepository as any).mockResolvedValue(null);
+    vi.mocked(getRepository).mockResolvedValue(null as never);
     const res = await POST(req(valid));
     expect(res.status).toBe(404);
     expect(insertIndexSnapshots).not.toHaveBeenCalled();

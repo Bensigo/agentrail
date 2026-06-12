@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
+import { ArrowLeft } from "lucide-react";
 import { RunDetailHeader } from "./components/run-detail-header";
 import { RunTimeline } from "./components/run-timeline";
 import { ReviewGatesSection } from "./components/review-gates-section";
@@ -23,6 +24,7 @@ interface EventsResponse {
 export default function RunDetailPage() {
   const params = useParams<{ workspaceId: string; runId: string }>();
   const { workspaceId, runId } = params;
+  const router = useRouter();
 
   const [run, setRun] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
@@ -112,6 +114,14 @@ export default function RunDetailPage() {
   return (
     <div className="mx-auto max-w-[1440px]">
       <div className="mb-2 flex items-center gap-2 text-xs text-[var(--gray-09)]">
+        <button
+          onClick={() => router.push(`/dashboard/${workspaceId}/runs`)}
+          className="flex items-center gap-1 rounded px-1.5 py-1 text-[var(--gray-11)] transition-colors hover:bg-[var(--gray-03)] hover:text-[var(--gray-12)]"
+          aria-label="Back to runs"
+        >
+          <ArrowLeft size={14} />
+          Back
+        </button>
         <a
           href={`/dashboard/${workspaceId}/runs`}
           className="hover:text-[var(--gray-11)] transition-colors"

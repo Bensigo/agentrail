@@ -69,7 +69,9 @@ export function RunDetailHeader({ run }: { run: RunDetail }) {
         <span className="text-xs text-[var(--gray-09)] uppercase tracking-wide">
           Cost
         </span>
-        <span className="text-sm font-mono text-[var(--gray-11)]">—</span>
+        <span className="text-sm font-mono text-[var(--gray-11)]">
+          {run.total_cost > 0 ? `$${run.total_cost.toFixed(4)}` : "—"}
+        </span>
       </div>
     </div>
   );

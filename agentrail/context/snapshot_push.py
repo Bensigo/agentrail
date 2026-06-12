@@ -39,13 +39,39 @@ def load_link(target: Path) -> Optional[Dict[str, str]]:
         return None
 
 
+def _summarize(result: Dict[str, Any]) -> tuple[str, int, int]:
+    """Extract (commit_sha, source_count, graph_edge_count) from a build_index result.
+
+    build_index returns two shapes: a fresh build exposes commitSha/indexed/
+    graphEdges/ingestionHealth at the top level, while a cache hit returns the
+    persisted index.json, where those live under a nested ``snapshot`` dict.
+    Read whichever is present so a cached build still pushes real numbers.
+    """
+    snapshot = result.get("snapshot")
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    health = result.get("ingestionHealth") or snapshot.get("ingestionHealth") or {}
+
+    commit_sha = result.get("commitSha") or snapshot.get("commitSha") or ""
+
+    source_count = result.get("indexed")
+    if source_count is None:
+        source_count = health.get("indexedCount")
+
+    graph_edge_count = result.get("graphEdges")
+    if graph_edge_count is None:
+        graph_edge_count = health.get("graphEdgeCount")
+
+    return str(commit_sha), int(source_count or 0), int(graph_edge_count or 0)
+
+
 def snapshot_payload(result: Dict[str, Any], repository_id: str) -> Dict[str, Any]:
+    commit_sha, source_count, graph_edge_count = _summarize(result)
     return {
         "repository_id": repository_id,
-        "commit_sha": str(result.get("commitSha") or ""),
+        "commit_sha": commit_sha,
         "indexed_at": _now_iso(),
-        "source_count": int(result.get("indexed") or 0),
-        "graph_edge_count": int(result.get("graphEdges") or 0),
+        "source_count": source_count,
+        "graph_edge_count": graph_edge_count,
     }
 
 

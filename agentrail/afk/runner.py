@@ -318,6 +318,8 @@ class Runner:
                     review_text = ""
                 push_review_gate(self.target, run_uuid(sid, issue), round_no, outcome,
                                  review_text=review_text)
+                from agentrail.afk.review_push import push_memory_items
+                push_memory_items(self.target, run_uuid(sid, issue), outcome)
 
             if outcome.is_clean:
                 if await self._merge(pr):

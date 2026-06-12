@@ -79,6 +79,71 @@ def parse_findings(review_text: str) -> List[dict]:
     return []
 
 
+def extract_memory_suggestions(outcome) -> list:
+    """Extract memory-worthy suggestions from a ReviewOutcome.
+
+    Returns a list of dicts with 'content' and 'tags' keys, filtered to items
+    where 'body' is non-empty. Returns [] when none are present.
+    """
+    suggestions = getattr(outcome, "memory_suggestions", None)
+    if not isinstance(suggestions, list):
+        return []
+    items = []
+    for m in suggestions:
+        if not isinstance(m, dict):
+            continue
+        body = str(m.get("body") or "").strip()
+        if not body:
+            continue
+        tags: list = []
+        kind = str(m.get("kind") or "").strip()
+        if kind:
+            tags.append(f"kind:{kind}")
+        target = str(m.get("target_file") or "").strip()
+        if target:
+            tags.append(f"file:{target}")
+        items.append({"content": body, "tags": tags})
+    return items
+
+
+def push_memory_items(
+    target,  # Path
+    run_id: str,
+    outcome,  # ReviewOutcome — avoid circular import at module level
+) -> bool:
+    """POST memory suggestions extracted from a review outcome.
+
+    Returns True only on HTTP 202; returns False (never raises) otherwise.
+    Skips silently when no memory suggestions are present.
+    """
+    try:
+        items = extract_memory_suggestions(outcome)
+        if not items:
+            return True  # nothing to push — not a failure
+        link = load_link(target)
+        if link is None:
+            return False
+        payload = {
+            "run_id": run_id,
+            "repository_id": link["repository_id"],
+            "items": items,
+        }
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            f"{link['base_url']}/api/v1/ingest/memory-items",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {link['api_key']}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return int(resp.status) == 202
+    except Exception:  # noqa: BLE001 — non-fatal by design
+        return False
+
+
 def push_review_gate(
     target: Path,
     run_id: str,

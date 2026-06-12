@@ -25,6 +25,7 @@ export interface RunRecord {
   duration: number | null;
   failure_count: number;
   total_cost: number;
+  tokens_saved: number;
 }
 
 interface RunsTableProps {
@@ -61,6 +62,13 @@ function formatDuration(seconds: number | null): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+function formatTokens(n: number): string {
+  if (n <= 0) return "—";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
 }
 
 function formatStartedAt(iso: string | null): string {
@@ -138,6 +146,20 @@ const columns = [
       return (
         <span className="font-mono text-[var(--gray-10)] text-xs">
           {cost > 0 ? `$${cost.toFixed(4)}` : "—"}
+        </span>
+      );
+    },
+  }),
+  columnHelper.accessor("tokens_saved", {
+    header: "Tokens saved",
+    cell: (info) => {
+      const saved = info.getValue();
+      return (
+        <span
+          className="font-mono text-xs text-[#1fd8a4]"
+          title="Context retrieval + cache reads"
+        >
+          {formatTokens(saved)}
         </span>
       );
     },

@@ -766,3 +766,40 @@ export async function getRunEventsByRunId(
     seq: Number(r.seq ?? 0),
   }));
 }
+
+export interface WorkspaceTelemetryCounts {
+  contextPacks: number;
+  failures: number;
+  totalCostUsd: number;
+  totalTokens: number;
+}
+
+/** Scalar counts for the workspace Overview cards, fetched in one query. */
+export async function getWorkspaceTelemetryCounts(
+  workspaceId: string
+): Promise<WorkspaceTelemetryCounts> {
+  const result = await client.query({
+    query: `
+      SELECT
+        (SELECT count() FROM context_packs WHERE workspace_id = {workspaceId: String}) AS context_packs,
+        (SELECT count() FROM failure_events WHERE workspace_id = {workspaceId: String}) AS failures,
+        (SELECT sum(cost_usd) FROM cost_events WHERE workspace_id = {workspaceId: String}) AS total_cost_usd,
+        (SELECT sum(tokens) FROM cost_events WHERE workspace_id = {workspaceId: String}) AS total_tokens
+    `,
+    query_params: { workspaceId },
+    format: "JSONEachRow",
+  });
+  const rows = await result.json<{
+    context_packs: string | number;
+    failures: string | number;
+    total_cost_usd: string | number | null;
+    total_tokens: string | number | null;
+  }>();
+  const row = rows[0];
+  return {
+    contextPacks: Number(row?.context_packs ?? 0),
+    failures: Number(row?.failures ?? 0),
+    totalCostUsd: Number(row?.total_cost_usd ?? 0),
+    totalTokens: Number(row?.total_tokens ?? 0),
+  };
+}

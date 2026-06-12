@@ -669,3 +669,55 @@ export async function listWorkspaceMembers(workspaceId: string) {
     .orderBy(workspaceMemberships.createdAt);
   return rows;
 }
+
+export interface WorkspaceOverviewCounts {
+  runs: number;
+  reviewGates: number;
+  repositories: number;
+  apiKeys: number;
+  teams: number;
+  members: number;
+  memoryItems: number;
+}
+
+/** Row counts for the workspace Overview cards, fetched in one round of queries. */
+export async function getWorkspaceOverviewCounts(
+  workspaceId: string
+): Promise<WorkspaceOverviewCounts> {
+  const countWhere = async (table: any, condition: SQL | undefined) => {
+    const rows = await db.select({ n: count() }).from(table).where(condition);
+    return Number(rows[0]?.n ?? 0);
+  };
+  const [
+    runCount,
+    gateCount,
+    repoCount,
+    keyCount,
+    teamCount,
+    memberCount,
+    memoryCount,
+  ] = await Promise.all([
+    countWhere(runs, eq(runs.workspaceId, workspaceId)),
+    countWhere(reviewGates, eq(reviewGates.workspaceId, workspaceId)),
+    countWhere(repositories, eq(repositories.workspaceId, workspaceId)),
+    countWhere(
+      apiKeys,
+      and(eq(apiKeys.workspaceId, workspaceId), isNull(apiKeys.revokedAt))
+    ),
+    countWhere(teams, eq(teams.workspaceId, workspaceId)),
+    countWhere(
+      workspaceMemberships,
+      eq(workspaceMemberships.workspaceId, workspaceId)
+    ),
+    countWhere(memoryItems, eq(memoryItems.workspaceId, workspaceId)),
+  ]);
+  return {
+    runs: runCount,
+    reviewGates: gateCount,
+    repositories: repoCount,
+    apiKeys: keyCount,
+    teams: teamCount,
+    members: memberCount,
+    memoryItems: memoryCount,
+  };
+}

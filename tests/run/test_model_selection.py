@@ -367,8 +367,8 @@ class TestModelShellSafety:
     def test_model_with_shell_metacharacters_is_quoted(self) -> None:
         from agentrail.cli.commands.run import append_model_to_command
         cmd = append_model_to_command("claude -p", "claude", "x; rm -rf /")
-        assert "; rm" not in cmd.replace("'", "")  # quoted, not bare
-        assert "'x; rm -rf /'" in cmd
+        # the metacharacter payload must be wrapped in shell quotes
+        assert cmd == "claude -p --model 'x; rm -rf /'"
 
     def test_runner_agent_command_quotes_model(self) -> None:
         from agentrail.afk.runner import _agent_command

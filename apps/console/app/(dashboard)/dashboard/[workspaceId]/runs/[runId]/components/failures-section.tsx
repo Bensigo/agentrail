@@ -119,32 +119,41 @@ export function FailuresSection({ workspaceId, runId }: FailuresSectionProps) {
     load();
   }, [workspaceId, runId]);
 
-  if (loading) {
-    return (
-      <p className="text-sm text-[var(--gray-09)] animate-pulse py-4">
-        Loading failures…
-      </p>
-    );
-  }
-
-  if (error) {
-    return <p className="text-sm text-[#ff9592] py-4">{error}</p>;
-  }
-
-  if (failures.length === 0) {
+  // The whole section (heading included) only appears when there is something
+  // to say — a run without failures shouldn't advertise an empty section.
+  if (loading || (!error && failures.length === 0)) {
     return null;
   }
 
   return (
-    <div>
-      <div className="flex items-center gap-3 mb-3">
-        <span className="text-xs text-[#ff9592]">{failures.length} failure{failures.length !== 1 ? "s" : ""}</span>
+    <div className="mt-8">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+          Failures
+        </h2>
+        <a
+          href={`/dashboard/${workspaceId}/failures?runId=${runId}`}
+          className="text-xs text-[#70b8ff] hover:underline"
+        >
+          View all →
+        </a>
       </div>
-      <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] overflow-hidden">
-        {failures.map((f) => (
-          <FailureRow key={f.event_id} failure={f} />
-        ))}
-      </div>
+      {error ? (
+        <p className="text-sm text-[#ff9592] py-4">{error}</p>
+      ) : (
+        <>
+          <div className="flex items-center gap-3 mb-3">
+            <span className="text-xs text-[#ff9592]">
+              {failures.length} failure{failures.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+          <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] overflow-hidden">
+            {failures.map((f) => (
+              <FailureRow key={f.event_id} failure={f} />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

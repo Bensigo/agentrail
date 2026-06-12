@@ -38,6 +38,11 @@ interface RawContextPack {
   /** Estimated tokens saved by bounded retrieval vs reading full files. */
   tokens_saved?: number;
   items?: RawContextItem[];
+  precision_at_budget?: number;
+  citation_coverage?: number;
+  stale_count?: number;
+  denied_count?: number;
+  source_hash_list?: string[];
 }
 
 function isRawContextItem(v: unknown): v is RawContextItem {
@@ -64,6 +69,13 @@ function isRawContextPack(v: unknown): v is RawContextPack {
     typeof o.occurred_at === "string" &&
     (o.anchors_extracted === undefined || typeof o.anchors_extracted === "number") &&
     (o.tokens_saved === undefined || typeof o.tokens_saved === "number") &&
+    (o.precision_at_budget === undefined || typeof o.precision_at_budget === "number") &&
+    (o.citation_coverage === undefined || typeof o.citation_coverage === "number") &&
+    (o.stale_count === undefined || typeof o.stale_count === "number") &&
+    (o.denied_count === undefined || typeof o.denied_count === "number") &&
+    (o.source_hash_list === undefined ||
+      (Array.isArray(o.source_hash_list) &&
+        o.source_hash_list.every((s: unknown) => typeof s === "string"))) &&
     (o.items === undefined ||
       (Array.isArray(o.items) &&
         o.items.length <= 100 &&
@@ -124,6 +136,11 @@ export async function POST(req: NextRequest) {
     anchors_extracted: e.anchors_extracted ?? 0,
     sources_considered: e.sources_considered,
     occurred_at: e.occurred_at,
+    precision_at_budget: e.precision_at_budget ?? 0,
+    citation_coverage: e.citation_coverage ?? 0,
+    stale_count: e.stale_count ?? 0,
+    denied_count: e.denied_count ?? 0,
+    source_hash_list: e.source_hash_list ?? [],
   }));
 
   // Items live in context_events keyed by the server-derived pack id (the

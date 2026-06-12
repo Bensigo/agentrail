@@ -76,6 +76,11 @@ describe("POST /api/v1/ingest/context-packs", () => {
         anchors_extracted: 0,
         sources_considered: valid.sources_considered,
         occurred_at: valid.occurred_at,
+        precision_at_budget: 0,
+        citation_coverage: 0,
+        stale_count: 0,
+        denied_count: 0,
+        source_hash_list: [],
       },
     ]);
   });
@@ -175,5 +180,51 @@ describe("POST /api/v1/ingest/context-packs", () => {
     vi.mocked(insertContextEvents).mockRejectedValue(new Error("CH down"));
     const res = await POST(req({ ...valid, items: [{ path: "src/a.py" }] }));
     expect(res.status).toBe(502);
+  });
+
+  it("202 with all five quality fields — passes them to insertContextPacks", async () => {
+    const withQuality = {
+      ...valid,
+      precision_at_budget: 0.85,
+      citation_coverage: 0.72,
+      stale_count: 3,
+      denied_count: 1,
+      source_hash_list: ["abc123", "def456"],
+    };
+    const res = await POST(req(withQuality));
+    expect(res.status).toBe(202);
+    expect(insertContextPacks).toHaveBeenCalledWith([
+      expect.objectContaining({
+        precision_at_budget: 0.85,
+        citation_coverage: 0.72,
+        stale_count: 3,
+        denied_count: 1,
+        source_hash_list: ["abc123", "def456"],
+      }),
+    ]);
+  });
+
+  it("202 without quality fields — defaults to 0/[] in insertContextPacks", async () => {
+    const res = await POST(req(valid));
+    expect(res.status).toBe(202);
+    expect(insertContextPacks).toHaveBeenCalledWith([
+      expect.objectContaining({
+        precision_at_budget: 0,
+        citation_coverage: 0,
+        stale_count: 0,
+        denied_count: 0,
+        source_hash_list: [],
+      }),
+    ]);
+  });
+
+  it("400 when precision_at_budget is not a number", async () => {
+    const res = await POST(req({ ...valid, precision_at_budget: "high" }));
+    expect(res.status).toBe(400);
+  });
+
+  it("400 when source_hash_list contains non-strings", async () => {
+    const res = await POST(req({ ...valid, source_hash_list: ["ok", 42] }));
+    expect(res.status).toBe(400);
   });
 });

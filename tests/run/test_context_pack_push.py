@@ -183,6 +183,11 @@ def test_push_context_pack_empty_retrieval_sends_zeros(tmp_path: Path, monkeypat
     assert body["tokens_used"] == 0
     assert body["tokens_saved"] == 0
     assert body["sources_considered"] == 0
+    assert body["precision_at_budget"] == 0.0
+    assert body["citation_coverage"] == 0.0
+    assert body["stale_count"] == 0
+    assert body["denied_count"] == 0
+    assert body["source_hash_list"] == []
 
 
 def test_payload_handles_dict_retrieval_budget(tmp_path, monkeypatch):
@@ -275,6 +280,93 @@ def test_build_items_caps_at_100() -> None:
     assert len(items) == 100
     assert items[0]["path"] == "src/f0.py"
     assert items[-1]["path"] == "src/f99.py"
+
+
+# ---------------------------------------------------------------------------
+# AC1 — quality fields present in payload when supplied
+# ---------------------------------------------------------------------------
+
+
+def test_push_context_pack_quality_fields_in_payload(tmp_path: Path, monkeypatch) -> None:
+    _write_server_json(tmp_path)
+    captured: dict = {}
+
+    class FakeResp:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data)
+        return FakeResp()
+
+    monkeypatch.setattr(context_pack_push.urllib.request, "urlopen", fake_urlopen)
+    retrieval = {
+        "selectedContextTokens": 1000,
+        "selectedSources": ["a.py"],
+        "precision_at_budget": 0.85,
+        "citation_coverage": 0.72,
+        "stale_count": 3,
+        "denied_count": 1,
+        "source_hash_list": ["abc123", "def456"],
+    }
+    result = context_pack_push.push_context_pack(tmp_path, "run-q", retrieval)
+    assert result is True
+    body = captured["body"]
+    assert body["precision_at_budget"] == 0.85
+    assert body["citation_coverage"] == 0.72
+    assert body["stale_count"] == 3
+    assert body["denied_count"] == 1
+    assert body["source_hash_list"] == ["abc123", "def456"]
+
+
+# AC2 — missing quality fields → safe defaults; returns True on 202
+
+
+def test_push_context_pack_missing_quality_fields_use_defaults(tmp_path: Path, monkeypatch) -> None:
+    _write_server_json(tmp_path)
+    captured: dict = {}
+
+    class FakeResp:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data)
+        return FakeResp()
+
+    monkeypatch.setattr(context_pack_push.urllib.request, "urlopen", fake_urlopen)
+    result = context_pack_push.push_context_pack(tmp_path, "run-defaults", {})
+    assert result is True
+    body = captured["body"]
+    assert body["precision_at_budget"] == 0.0
+    assert body["citation_coverage"] == 0.0
+    assert body["stale_count"] == 0
+    assert body["denied_count"] == 0
+    assert body["source_hash_list"] == []
+
+
+def test_push_context_pack_source_hash_list_filters_non_strings(tmp_path: Path, monkeypatch) -> None:
+    _write_server_json(tmp_path)
+    captured: dict = {}
+
+    class FakeResp:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data)
+        return FakeResp()
+
+    monkeypatch.setattr(context_pack_push.urllib.request, "urlopen", fake_urlopen)
+    retrieval = {
+        "source_hash_list": ["valid", 42, None, "also_valid"],
+    }
+    result = context_pack_push.push_context_pack(tmp_path, "run-filter", retrieval)
+    assert result is True
+    assert captured["body"]["source_hash_list"] == ["valid", "also_valid"]
 
 
 def test_payload_includes_items(tmp_path: Path, monkeypatch) -> None:

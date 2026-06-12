@@ -46,6 +46,11 @@ const samplePack = {
   anchors_extracted: 0,
   sources_considered: 2,
   occurred_at: new Date("2026-06-12T10:00:00.000Z"),
+  precision_at_budget: 0,
+  citation_coverage: 0,
+  stale_count: 0,
+  denied_count: 0,
+  source_hash_list: [],
 };
 
 const sampleItems = [

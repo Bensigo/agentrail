@@ -98,6 +98,96 @@ export async function getWorkspaceContextPacks(
   }));
 }
 
+export interface ListWorkspaceContextPacksOptions {
+  limit?: number;
+  cursor?: string;
+}
+
+/**
+ * Cursor-paginated workspace context packs, newest first. The cursor is a
+ * composite "<occurred_at_iso>|<context_pack_id>" so ties on occurred_at page
+ * deterministically (mirrors listWorkspaceFailures). Fetches limit+1 to detect
+ * whether more pages exist.
+ */
+export async function listWorkspaceContextPacks(
+  workspaceId: string,
+  opts: ListWorkspaceContextPacksOptions = {}
+): Promise<{ packs: ContextPackRecord[]; nextCursor: string | null }> {
+  const { limit = 50, cursor } = opts;
+
+  const conditions: string[] = ["workspace_id = {workspaceId: String}"];
+  const queryParams: Record<string, unknown> = { workspaceId };
+
+  if (cursor) {
+    const separatorIndex = cursor.indexOf("|");
+    if (separatorIndex !== -1) {
+      const cursorTs = cursor.slice(0, separatorIndex).replace("T", " ").replace("Z", "");
+      const cursorId = cursor.slice(separatorIndex + 1);
+      conditions.push(
+        "(occurred_at, context_pack_id) < ({cursorTs: DateTime64(3)}, {cursorId: String})"
+      );
+      queryParams.cursorTs = cursorTs;
+      queryParams.cursorId = cursorId;
+    } else {
+      conditions.push("occurred_at < {cursor: DateTime64(3)}");
+      queryParams.cursor = cursor;
+    }
+  }
+
+  const fetchLimit = limit + 1;
+  const result = await client.query({
+    query: `
+      SELECT
+        workspace_id,
+        run_id,
+        context_pack_id,
+        token_budget,
+        tokens_used,
+        tokens_saved,
+        anchors_extracted,
+        sources_considered,
+        occurred_at
+      FROM context_packs
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY occurred_at DESC, context_pack_id DESC
+      LIMIT ${fetchLimit}
+    `,
+    query_params: queryParams,
+    format: "JSONEachRow",
+  });
+  const rows = await result.json<{
+    workspace_id: string;
+    run_id: string;
+    context_pack_id: string;
+    token_budget: string | number;
+    tokens_used: string | number;
+    tokens_saved: string | number;
+    anchors_extracted: string | number;
+    sources_considered: string | number;
+    occurred_at: string;
+  }>();
+
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  const packs: ContextPackRecord[] = page.map((r) => ({
+    workspace_id: r.workspace_id,
+    run_id: r.run_id,
+    context_pack_id: r.context_pack_id,
+    token_budget: Number(r.token_budget),
+    tokens_used: Number(r.tokens_used),
+    tokens_saved: Number(r.tokens_saved),
+    anchors_extracted: Number(r.anchors_extracted),
+    sources_considered: Number(r.sources_considered),
+    occurred_at: new Date(r.occurred_at),
+  }));
+  const last = packs[packs.length - 1];
+  const nextCursor = hasMore && last
+    ? `${last.occurred_at.toISOString()}|${last.context_pack_id}`
+    : null;
+
+  return { packs, nextCursor };
+}
+
 export async function getContextPackItems(
   workspaceId: string,
   runId: string,

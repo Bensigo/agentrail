@@ -31,6 +31,8 @@ export {
   insertCostEvents,
   deriveCostEventId,
   getRunEventsByRunId,
+  insertContextPacks,
+  deriveContextPackId,
 } from "./queries";
 export type {
   RunEventSummary,
@@ -41,5 +43,6 @@ export type {
   AfkRunEventInput,
   IndexSnapshotInput,
   CostEventInput,
+  ContextPackInput,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems } from "./context-queries";

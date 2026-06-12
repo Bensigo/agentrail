@@ -568,6 +568,49 @@ export async function upsertRun(input: UpsertRunInput): Promise<void> {
     });
 }
 
+export interface UpsertReviewGateInput {
+  id?: string;
+  workspaceId: string;
+  runId: string;
+  gateName: string;
+  status: "passed" | "failed" | "pending";
+  conditions?: Record<string, unknown>[];
+  blockingReasons?: Record<string, unknown>[];
+  evidenceRefs?: Array<{ label: string; url: string }>;
+  evaluatedAt?: string | Date | null;
+}
+
+export async function upsertReviewGate(input: UpsertReviewGateInput): Promise<void> {
+  const evaluatedAt = input.evaluatedAt
+    ? input.evaluatedAt instanceof Date
+      ? input.evaluatedAt
+      : new Date(input.evaluatedAt)
+    : new Date();
+
+  await db
+    .insert(reviewGates)
+    .values({
+      ...(input.id ? { id: input.id } : {}),
+      workspaceId: input.workspaceId,
+      runId: input.runId,
+      gateName: input.gateName,
+      status: input.status,
+      conditions: input.conditions ?? [],
+      blockingReasons: (input.blockingReasons ?? []) as unknown as string[],
+      evidenceRefs: input.evidenceRefs ?? [],
+      evaluatedAt,
+    })
+    .onConflictDoUpdate({
+      target: reviewGates.id,
+      set: {
+        status: input.status,
+        conditions: input.conditions ?? [],
+        blockingReasons: (input.blockingReasons ?? []) as unknown as string[],
+        evaluatedAt,
+      },
+    });
+}
+
 export async function claimInvitesForUser(data: {
   userId: string;
   email: string;

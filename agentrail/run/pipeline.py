@@ -240,6 +240,20 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     except Exception as _exc:
         _log.debug("context pack push skipped: %s", _exc)
 
+    # 17d. Index snapshot telemetry — non-fatal. Keeps the dashboard repos
+    # health view fresh on every run instead of only after a manual
+    # `agentrail context index`. build_index already ran incrementally during
+    # context-pack retrieval, so this is a cache-hit read plus one POST.
+    # Plan-phase only: once per run is enough.
+    if phase == "plan":
+        try:
+            from agentrail.context.index import build_index
+            from agentrail.context.snapshot_push import push_index_snapshot
+
+            push_index_snapshot(rc.target_dir, build_index(rc.target_dir))
+        except Exception as _exc:
+            _log.debug("index snapshot push skipped: %s", _exc)
+
     # 17c. Failure telemetry — non-fatal
     if status != 0:
         try:

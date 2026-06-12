@@ -7,6 +7,7 @@ import {
   createRepository,
 } from "@agentrail/db-postgres";
 import { getLatestIndexSnapshotsForWorkspace } from "@agentrail/db-clickhouse";
+import { repoHealth, type HealthStatus } from "../../../../../../lib/repo-health";
 
 const ADMIN_ROLES = ["owner", "admin"] as const;
 
@@ -16,15 +17,6 @@ const GIT_UNSAFE_RE = /[\x00-\x1f\x7f ~^:?*[\\\s]|\.\.|\.lock$|\/$/ ;
 
 function isGitSafeRef(ref: string): boolean {
   return ref.length > 0 && !ref.startsWith("/") && !GIT_UNSAFE_RE.test(ref);
-}
-
-type HealthStatus = "healthy" | "stale" | "critical";
-
-function computeHealth(stalenessSeconds: number | null): HealthStatus {
-  if (stalenessSeconds === null) return "critical";
-  if (stalenessSeconds < 3600) return "healthy";
-  if (stalenessSeconds < 86400) return "stale";
-  return "critical";
 }
 
 export async function GET(
@@ -57,36 +49,18 @@ export async function GET(
 
   const result = repos.map((repo) => {
     const snap = snapshotByRepo.get(repo.id) ?? null;
-    let lastIndexedAt: string | null = null;
-    let stalenessSeconds: number | null = null;
-
-    if (snap) {
-      // ClickHouse returns DateTime64 as "YYYY-MM-DD HH:MM:SS.mmm" in UTC with
-      // no timezone marker. `new Date(...)` on that space-separated form parses
-      // it as LOCAL time, which inflates staleness by the server's UTC offset
-      // and makes every fresh snapshot look "stale". Normalize to explicit UTC.
-      const toUtc = (s: string): Date =>
-        /[zZ]|[+-]\d\d:?\d\d$/.test(s)
-          ? new Date(s)
-          : new Date(s.replace(" ", "T") + "Z");
-      const indexedDate =
-        typeof snap.indexed_at === "string"
-          ? toUtc(snap.indexed_at)
-          : snap.indexed_at;
-      lastIndexedAt = indexedDate.toISOString();
-      stalenessSeconds = Math.floor((now - indexedDate.getTime()) / 1000);
-    }
+    const health = repoHealth(snap, now);
 
     return {
       id: repo.id,
       name: repo.name,
       url: repo.url,
       default_branch: repo.defaultBranch,
-      last_indexed_at: lastIndexedAt,
+      last_indexed_at: health.last_indexed_at,
       last_commit_sha: snap?.commit_sha ?? null,
-      staleness_seconds: stalenessSeconds,
+      staleness_seconds: health.staleness_seconds,
       codebase_units_count: snap?.source_count ?? null,
-      health_status: computeHealth(stalenessSeconds),
+      health_status: health.health_status,
     };
   });
 

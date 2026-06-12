@@ -6,6 +6,7 @@ import { ArrowLeft } from "lucide-react";
 import { RunDetailHeader } from "./components/run-detail-header";
 import { RunTimeline } from "./components/run-timeline";
 import { ReviewGatesSection } from "./components/review-gates-section";
+import { FailuresSection } from "./components/failures-section";
 import { CostSection } from "./components/cost-section";
 import type { RunDetail } from "./components/run-detail-header";
 import type { TimelineEvent } from "./components/run-timeline";
@@ -173,6 +174,8 @@ export default function RunDetailPage() {
           <ReviewGatesSection workspaceId={workspaceId} runId={runId} />
         </div>
       )}
+
+      {run && <FailuresSection workspaceId={workspaceId} runId={runId} />}
     </div>
   );
 }

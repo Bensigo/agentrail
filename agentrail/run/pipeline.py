@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 from agentrail.run import artifacts, context as ctx, prompts, skills, state as state_mod
 from agentrail.run.context_pack_push import push_context_pack
 from agentrail.run.cost_push import push_cost_event
+from agentrail.run.failure_push import push_failure_event
 from agentrail.run.pricing import cost_usd
 from agentrail.run.proc import run_with_timeout
 from agentrail.run.usage_capture import capture_usage
@@ -223,6 +224,15 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
         push_context_pack(rc.target_dir, rc.run_id, rc.context_retrieval)
     except Exception as _exc:
         _log.debug("context pack push skipped: %s", _exc)
+
+    # 17c. Failure telemetry — non-fatal
+    if status != 0:
+        try:
+            failure_type = "timeout" if status == 124 else "phase_failure"
+            push_failure_event(rc.target_dir, rc.run_id, failure_type, phase,
+                               f"{phase} phase exited with status {status}")
+        except Exception as _exc:
+            _log.debug("failure push skipped: %s", _exc)
 
     # 18. Update artifacts based on success/failure
     if status == 0:

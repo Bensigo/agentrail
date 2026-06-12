@@ -450,6 +450,96 @@ export async function insertIndexSnapshots(
 }
 
 // ---------------------------------------------------------------------------
+// Failure event ingestion
+// ---------------------------------------------------------------------------
+
+export interface FailureEventInput {
+  /** Set server-side from bearer key — never from request body. */
+  workspace_id: string;
+  run_id: string;
+  repository_id: string;
+  failure_type: string;
+  message: string;
+  evidence: string;
+  phase: string;
+  severity: string;
+  occurred_at: string; // ISO 8601
+}
+
+export function deriveFailureEventId(
+  workspaceId: string,
+  runId: string,
+  phase: string,
+  failureType: string,
+  occurredAt: string
+): string {
+  return createHash("sha1")
+    .update(`${workspaceId}:${runId}:${phase}:${failureType}:${occurredAt}`)
+    .digest("hex");
+}
+
+/**
+ * Insert failure events into ClickHouse, deduplicating on
+ * (workspace_id, run_id, phase, failure_type, occurred_at) via a pre-existence check.
+ * Returns the number of rows actually inserted.
+ */
+export async function insertFailureEvents(events: FailureEventInput[]): Promise<number> {
+  if (events.length === 0) return 0;
+
+  const candidates = events.map((e) => ({
+    e,
+    event_id: deriveFailureEventId(
+      e.workspace_id,
+      e.run_id,
+      e.phase,
+      e.failure_type,
+      e.occurred_at
+    ),
+  }));
+
+  const eventIds = candidates.map((c) => c.event_id);
+  const checkResult = await client.query({
+    query: `
+      SELECT event_id
+      FROM failure_events
+      WHERE event_id IN ({eventIds: Array(String)})
+    `,
+    query_params: { eventIds },
+    format: "JSONEachRow",
+  });
+  const existing = new Set(
+    (await checkResult.json<{ event_id: string }>()).map((r) => r.event_id)
+  );
+
+  const toInsert = candidates.filter((c) => !existing.has(c.event_id));
+  if (toInsert.length === 0) return 0;
+
+  const rows = toInsert.map(({ e, event_id }) => ({
+    workspace_id: e.workspace_id,
+    run_id: e.run_id,
+    repository_id: e.repository_id,
+    failure_type: e.failure_type,
+    message: e.message,
+    evidence: e.evidence,
+    phase: e.phase,
+    severity: e.severity,
+    occurred_at: new Date(e.occurred_at)
+      .toISOString()
+      .replace("T", " ")
+      .replace("Z", ""),
+    event_id,
+  }));
+
+  await client.insert({
+    table: "failure_events",
+    values: rows,
+    format: "JSONEachRow",
+  });
+
+  return toInsert.length;
+}
+
+// ---------------------------------------------------------------------------
 // Cost event ingestion
 // ---------------------------------------------------------------------------
 

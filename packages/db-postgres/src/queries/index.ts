@@ -711,6 +711,66 @@ export async function listWorkspaceMembers(workspaceId: string) {
   return rows;
 }
 
+export interface AgentRunStatsRow {
+  agent: string;
+  runCount: number;
+  finishedCount: number;
+  successCount: number;
+  successRate: number;
+  avgDurationS: number | null;
+  avgReviewRounds: number;
+}
+
+/**
+ * Per-agent aggregate stats derived from runs and review_gates.
+ * Skips runs with empty agent strings.
+ */
+export async function getAgentRunStats(
+  workspaceId: string
+): Promise<AgentRunStatsRow[]> {
+  const result = await db.execute(sql`
+    WITH gate_counts AS (
+      SELECT run_id, COUNT(*) AS gate_count
+      FROM review_gates
+      WHERE workspace_id = ${workspaceId}
+      GROUP BY run_id
+    )
+    SELECT
+      LOWER(r.agent)                                                     AS agent,
+      COUNT(*)                                                           AS run_count,
+      COUNT(*) FILTER (WHERE r.status IN ('success', 'failed'))          AS finished_count,
+      COUNT(*) FILTER (WHERE r.status = 'success')                      AS success_count,
+      AVG(EXTRACT(EPOCH FROM (r.finished_at - r.started_at)))
+        FILTER (WHERE r.started_at IS NOT NULL AND r.finished_at IS NOT NULL) AS avg_duration_s,
+      AVG(COALESCE(gc.gate_count, 0))                                   AS avg_review_rounds
+    FROM runs r
+    LEFT JOIN gate_counts gc ON gc.run_id = r.id
+    WHERE r.workspace_id = ${workspaceId}
+      AND r.agent != ''
+    GROUP BY LOWER(r.agent)
+    ORDER BY run_count DESC
+  `);
+
+  return (Array.from(result) as Record<string, unknown>[]).map((r) => {
+    const runCount = Number(r.run_count ?? 0);
+    const finishedCount = Number(r.finished_count ?? 0);
+    const successCount = Number(r.success_count ?? 0);
+    const successRate = finishedCount > 0 ? successCount / finishedCount : 0;
+    const avgDurationRaw = r.avg_duration_s !== null && r.avg_duration_s !== undefined
+      ? Number(r.avg_duration_s)
+      : null;
+    return {
+      agent: String(r.agent ?? ""),
+      runCount,
+      finishedCount,
+      successCount,
+      successRate,
+      avgDurationS: avgDurationRaw !== null && !isNaN(avgDurationRaw) ? avgDurationRaw : null,
+      avgReviewRounds: Number(r.avg_review_rounds ?? 0),
+    };
+  });
+}
+
 export interface WorkspaceOverviewCounts {
   runs: number;
   reviewGates: number;

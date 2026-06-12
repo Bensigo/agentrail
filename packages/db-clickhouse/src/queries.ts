@@ -92,6 +92,66 @@ export async function aggregateWorkspaceCosts(
   }));
 }
 
+export interface AgentModelCostRow {
+  model: string;
+  runCount: number;
+  totalCostUsd: number;
+  avgCostUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheTokens: number;
+  cacheRatio: number;
+}
+
+/**
+ * Per-model cost aggregates from cost_events for a workspace.
+ * Filters to cost_type = 'model_call' and excludes rows with empty model strings.
+ */
+export async function getAgentModelCosts(
+  workspaceId: string
+): Promise<AgentModelCostRow[]> {
+  const result = await client.query({
+    query: `
+      SELECT
+        model,
+        uniqExact(run_id)                                             AS run_count,
+        sum(cost_usd)                                                 AS total_cost_usd,
+        sum(cost_usd) / uniqExact(run_id)                            AS avg_cost_usd,
+        sum(input_tokens)                                             AS input_tokens,
+        sum(output_tokens)                                            AS output_tokens,
+        sum(cache_tokens)                                             AS cache_tokens,
+        sum(cache_tokens) / (sum(input_tokens) + sum(output_tokens) + sum(cache_tokens) + 1) AS cache_ratio
+      FROM cost_events
+      WHERE workspace_id = {workspaceId: String}
+        AND cost_type = 'model_call'
+        AND model != ''
+      GROUP BY model
+      ORDER BY total_cost_usd DESC
+    `,
+    query_params: { workspaceId },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<Record<string, unknown>>();
+  return rows.map((r) => {
+    const inputTokens = Number(r.input_tokens ?? 0);
+    const outputTokens = Number(r.output_tokens ?? 0);
+    const cacheTokens = Number(r.cache_tokens ?? 0);
+    const denominator = inputTokens + outputTokens + cacheTokens;
+    const cacheRatio = denominator > 0 ? cacheTokens / denominator : 0;
+    return {
+      model: String(r.model ?? ""),
+      runCount: Number(r.run_count ?? 0),
+      totalCostUsd: Number(r.total_cost_usd ?? 0),
+      avgCostUsd: Number(r.avg_cost_usd ?? 0),
+      inputTokens,
+      outputTokens,
+      cacheTokens,
+      cacheRatio,
+    };
+  });
+}
+
 export async function getRunEvents(
   workspaceId: string,
   runId: string

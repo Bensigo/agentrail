@@ -1,16 +1,23 @@
 from __future__ import annotations
 import datetime as _dt
 import json
+import logging
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import timezone
 from pathlib import Path
 from typing import Optional
 
 from agentrail.run import artifacts, context as ctx, prompts, skills, state as state_mod
+from agentrail.run.cost_push import push_cost_event
+from agentrail.run.pricing import cost_usd
 from agentrail.run.proc import run_with_timeout
+from agentrail.run.usage_capture import capture_usage
+
+_log = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
@@ -185,6 +192,7 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     # 16. Execute
     # Both plan and execute run natively: a single bounded agent invocation
     # (bash -lc <agent_command>) with the phase prompt on stdin.
+    phase_start_ts = time.time()
     status = run_with_timeout(
         ["bash", "-lc", rc.agent_command],
         cwd=rc.target_dir,
@@ -198,6 +206,15 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
 
     # 17. Phase finished timestamp
     phase_finished_at = _utc_now_iso()
+
+    # 17a. Cost capture — non-fatal
+    try:
+        usage = capture_usage(rc.agent, rc.target_dir, phase_start_ts)
+        if usage:
+            cost = cost_usd(usage)
+            push_cost_event(rc.target_dir, rc.run_id, phase, usage, cost)
+    except Exception as _exc:
+        _log.debug("cost capture skipped: %s", _exc)
 
     # 18. Update artifacts based on success/failure
     if status == 0:

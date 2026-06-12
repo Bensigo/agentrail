@@ -1181,5 +1181,125 @@ class RunIssueResumeNewestTests(unittest.TestCase):
         self.assertEqual(captured.get("execute_plan_output"), "NEW")
 
 
+# ---------------------------------------------------------------------------
+# Cost capture tests (issue #460)
+# ---------------------------------------------------------------------------
+
+class CostCaptureNonFatalTests(unittest.TestCase):
+    """AC2: any exception in capture/cost/push is non-fatal; run exit code unchanged."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        target = _make_target(self._tmp.name)
+        run_dir = Path(self._tmp.name) / "run"
+        self.target = target
+        self.run_dir = run_dir
+        self.rc = _make_rc(target, run_dir)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
+    @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
+    @patch("agentrail.run.pipeline.capture_usage", side_effect=RuntimeError("transcript error"))
+    def test_capture_usage_raises_does_not_change_exit_0(self, mock_capture, mock_summary, mock_build):
+        """AC2: capture_usage raising must not affect the phase exit code."""
+        stub = _stub_run_with_timeout(0)
+        with patch("agentrail.run.pipeline.run_with_timeout", stub):
+            exit_status, _ = run_issue_phase(self.rc, "plan", 1)
+        self.assertEqual(exit_status, 0)
+        mock_capture.assert_called_once()
+
+    @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
+    @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
+    @patch("agentrail.run.pipeline.push_cost_event", side_effect=RuntimeError("network down"))
+    @patch("agentrail.run.pipeline.cost_usd", return_value=0.05)
+    @patch("agentrail.run.pipeline.capture_usage")
+    def test_push_cost_event_raises_does_not_change_exit_0(
+        self, mock_capture, mock_cost, mock_push, mock_summary, mock_build
+    ):
+        """AC2: push_cost_event raising must not affect the phase exit code."""
+        from agentrail.run.usage_capture import Usage
+        mock_capture.return_value = Usage(
+            model="claude-sonnet-4-6", input_tokens=100, output_tokens=50, cache_tokens=0
+        )
+        stub = _stub_run_with_timeout(0)
+        with patch("agentrail.run.pipeline.run_with_timeout", stub):
+            exit_status, _ = run_issue_phase(self.rc, "execute", 1)
+        self.assertEqual(exit_status, 0)
+        mock_push.assert_called_once()
+
+    @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
+    @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
+    @patch("agentrail.run.pipeline.capture_usage", side_effect=RuntimeError("oops"))
+    def test_capture_raises_on_failed_phase_exit_still_nonzero(
+        self, mock_capture, mock_summary, mock_build
+    ):
+        """AC2: non-fatal cost block must not mask a real phase failure (exit != 0)."""
+        stub = _stub_run_with_timeout(1)
+        with patch("agentrail.run.pipeline.run_with_timeout", stub):
+            exit_status, _ = run_issue_phase(self.rc, "plan", 1)
+        self.assertEqual(exit_status, 1)
+
+
+class CostCaptureHappyPathTests(unittest.TestCase):
+    """AC1 proxy: capture_usage, cost_usd, push_cost_event each called once per phase."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        target = _make_target(self._tmp.name)
+        run_dir = Path(self._tmp.name) / "run"
+        self.target = target
+        self.run_dir = run_dir
+        self.rc = _make_rc(target, run_dir)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
+    @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
+    @patch("agentrail.run.pipeline.push_cost_event", return_value=True)
+    @patch("agentrail.run.pipeline.cost_usd", return_value=0.042)
+    @patch("agentrail.run.pipeline.capture_usage")
+    def test_cost_functions_called_once_on_success(
+        self, mock_capture, mock_cost, mock_push, mock_summary, mock_build
+    ):
+        """AC1 proxy: all three cost functions invoked once when usage is returned."""
+        from agentrail.run.usage_capture import Usage
+        fake_usage = Usage(
+            model="claude-sonnet-4-6", input_tokens=1000, output_tokens=500, cache_tokens=100
+        )
+        mock_capture.return_value = fake_usage
+
+        stub = _stub_run_with_timeout(0)
+        with patch("agentrail.run.pipeline.run_with_timeout", stub):
+            exit_status, _ = run_issue_phase(self.rc, "plan", 1)
+
+        self.assertEqual(exit_status, 0)
+        mock_capture.assert_called_once_with(self.rc.agent, self.rc.target_dir, unittest.mock.ANY)
+        mock_cost.assert_called_once_with(fake_usage)
+        mock_push.assert_called_once_with(
+            self.rc.target_dir, self.rc.run_id, "plan", fake_usage, 0.042
+        )
+
+    @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
+    @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
+    @patch("agentrail.run.pipeline.push_cost_event", return_value=True)
+    @patch("agentrail.run.pipeline.cost_usd", return_value=0.0)
+    @patch("agentrail.run.pipeline.capture_usage", return_value=None)
+    def test_cost_push_skipped_when_capture_returns_none(
+        self, mock_capture, mock_cost, mock_push, mock_summary, mock_build
+    ):
+        """When capture_usage returns None (unknown agent), push is not called."""
+        stub = _stub_run_with_timeout(0)
+        with patch("agentrail.run.pipeline.run_with_timeout", stub):
+            exit_status, _ = run_issue_phase(self.rc, "plan", 1)
+
+        self.assertEqual(exit_status, 0)
+        mock_capture.assert_called_once()
+        mock_cost.assert_not_called()
+        mock_push.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

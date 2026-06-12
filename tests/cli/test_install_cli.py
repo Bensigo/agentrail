@@ -186,7 +186,8 @@ class TestClaudeHooksInstall(TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["matcher"], "Grep|Glob|Bash")
         self.assertEqual(
-            entries[0]["hooks"][0]["command"], ".agentrail/hooks/context-first.sh"
+            entries[0]["hooks"][0]["command"],
+            "$CLAUDE_PROJECT_DIR/.agentrail/hooks/context-first.sh",
         )
 
     def test_settings_merge_preserves_existing(self):
@@ -203,6 +204,20 @@ class TestClaudeHooksInstall(TestCase):
         _run_install(self.repo, self.target)
         _run_install(self.repo, self.target)
         settings = json.loads((self.target / ".claude" / "settings.json").read_text())
+        self.assertEqual(len(settings["hooks"]["PreToolUse"]), 1)
+
+    def test_reinstall_over_legacy_relative_command_no_duplicate(self):
+        # Installs made before the $CLAUDE_PROJECT_DIR fix wired a relative
+        # command; reinstalling must recognize it and not add a second entry.
+        settings_path = self.target / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps({"hooks": {"PreToolUse": [{
+            "matcher": "Grep|Glob|Bash",
+            "hooks": [{"type": "command",
+                       "command": ".agentrail/hooks/context-first.sh"}],
+        }]}}))
+        _run_install(self.repo, self.target)
+        settings = json.loads(settings_path.read_text())
         self.assertEqual(len(settings["hooks"]["PreToolUse"]), 1)
 
     def test_no_hook_source_does_not_error(self):

@@ -75,7 +75,31 @@ describe("POST /api/v1/ingest/cost-events", () => {
         cost_usd: valid.cost_usd,
         model: valid.model,
         occurred_at: valid.occurred_at,
+        phase: "",
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_tokens: 0,
       },
+    ]);
+  });
+
+  it("202 + passes through phase and token split fields", async () => {
+    const withSplit = {
+      ...valid,
+      phase: "execute",
+      input_tokens: 200,
+      output_tokens: 80,
+      cache_tokens: 40,
+    };
+    const res = await POST(req(withSplit));
+    expect(res.status).toBe(202);
+    expect(insertCostEvents).toHaveBeenCalledWith([
+      expect.objectContaining({
+        phase: "execute",
+        input_tokens: 200,
+        output_tokens: 80,
+        cache_tokens: 40,
+      }),
     ]);
   });
 

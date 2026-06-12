@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import { getWorkspaceMembership, getRun } from "@agentrail/db-postgres";
-import { getRunEvents } from "@agentrail/db-clickhouse";
+import { getRunEvents, getRunCosts } from "@agentrail/db-clickhouse";
 
 export async function GET(
   _request: NextRequest,
@@ -37,6 +37,14 @@ export async function GET(
     // ClickHouse unavailable; return empty timeline
   }
 
+  let totalCost = 0;
+  try {
+    const costRows = await getRunCosts(workspaceId, runId);
+    totalCost = costRows.reduce((acc, r) => acc + r.cost_usd, 0);
+  } catch {
+    // ClickHouse unavailable; cost renders as zero
+  }
+
   return NextResponse.json({
     run: {
       id: run.id,
@@ -49,7 +57,7 @@ export async function GET(
       finishedAt: run.finishedAt?.toISOString() ?? null,
       createdAt: run.createdAt.toISOString(),
       duration,
-      total_cost: 0,
+      total_cost: totalCost,
     },
     events: events.map((e) => ({
       event_id: e.event_id,

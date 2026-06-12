@@ -8,6 +8,10 @@ export {
   CREATE_COST_EVENTS_TABLE,
   ALTER_RUN_EVENTS_ADD_SESSION_ID,
   ALTER_RUN_EVENTS_ADD_SEQ,
+  ALTER_COST_EVENTS_ADD_PHASE,
+  ALTER_COST_EVENTS_ADD_INPUT_TOKENS,
+  ALTER_COST_EVENTS_ADD_OUTPUT_TOKENS,
+  ALTER_COST_EVENTS_ADD_CACHE_TOKENS,
 } from "./schema";
 export type {
   TelemetryEventRecord,
@@ -36,6 +40,7 @@ export {
   insertContextPacks,
   deriveContextPackId,
   getWorkspaceTelemetryCounts,
+  getRunCosts,
 } from "./queries";
 export type {
   RunEventSummary,
@@ -49,5 +54,6 @@ export type {
   CostEventInput,
   ContextPackInput,
   WorkspaceTelemetryCounts,
+  RunCostRow,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems, getWorkspaceContextPacks } from "./context-queries";

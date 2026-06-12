@@ -557,6 +557,10 @@ export interface CostEventInput {
   cost_usd: number;
   model: string;
   occurred_at: string; // ISO 8601
+  phase?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_tokens?: number;
 }
 
 export function deriveCostEventId(
@@ -617,6 +621,10 @@ export async function insertCostEvents(events: CostEventInput[]): Promise<number
     tokens: e.tokens,
     cost_usd: e.cost_usd,
     model: e.model,
+    phase: e.phase ?? "",
+    input_tokens: e.input_tokens ?? 0,
+    output_tokens: e.output_tokens ?? 0,
+    cache_tokens: e.cache_tokens ?? 0,
     occurred_at: new Date(e.occurred_at)
       .toISOString()
       .replace("T", " ")
@@ -854,6 +862,58 @@ export async function getRunEventsByRunId(
     payload: String(r.payload ?? ""),
     session_id: String(r.session_id ?? ""),
     seq: Number(r.seq ?? 0),
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Per-run cost rows
+// ---------------------------------------------------------------------------
+
+export interface RunCostRow {
+  phase: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_tokens: number;
+  tokens: number;
+  cost_usd: number;
+  occurred_at: string;
+}
+
+export async function getRunCosts(
+  workspaceId: string,
+  runId: string
+): Promise<RunCostRow[]> {
+  const result = await client.query({
+    query: `
+      SELECT
+        phase,
+        model,
+        input_tokens,
+        output_tokens,
+        cache_tokens,
+        tokens,
+        cost_usd,
+        occurred_at
+      FROM cost_events
+      WHERE workspace_id = {workspaceId: String}
+        AND run_id = {runId: String}
+      ORDER BY occurred_at ASC
+    `,
+    query_params: { workspaceId, runId },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<Record<string, unknown>>();
+  return rows.map((r) => ({
+    phase: String(r.phase ?? ""),
+    model: String(r.model ?? ""),
+    input_tokens: Number(r.input_tokens ?? 0),
+    output_tokens: Number(r.output_tokens ?? 0),
+    cache_tokens: Number(r.cache_tokens ?? 0),
+    tokens: Number(r.tokens ?? 0),
+    cost_usd: Number(r.cost_usd ?? 0),
+    occurred_at: String(r.occurred_at ?? ""),
   }));
 }
 

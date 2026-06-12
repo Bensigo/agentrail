@@ -5,7 +5,10 @@ import {
   listRunsWithCursor,
 } from "@agentrail/db-postgres";
 import type { RunStatus } from "@agentrail/db-postgres";
-import { getRunEventSummaries } from "@agentrail/db-clickhouse";
+import {
+  getRunEventSummaries,
+  aggregateWorkspaceCosts,
+} from "@agentrail/db-clickhouse";
 
 export async function GET(
   request: NextRequest,
@@ -33,6 +36,11 @@ export async function GET(
   const timeFrom = searchParams.get("time_from");
   const timeTo = searchParams.get("time_to");
   const cursor = searchParams.get("cursor") ?? undefined;
+  const limitParam = Number(searchParams.get("limit"));
+  const limit =
+    Number.isFinite(limitParam) && limitParam > 0
+      ? Math.min(limitParam, 100)
+      : 25;
 
   const { runs, nextCursor } = await listRunsWithCursor(workspaceId, {
     status,
@@ -40,7 +48,7 @@ export async function GET(
     timeFrom: timeFrom ? new Date(timeFrom) : undefined,
     timeTo: timeTo ? new Date(timeTo) : undefined,
     cursor,
-    limit: 50,
+    limit,
   });
 
   // Enrich with ClickHouse event counts (graceful fallback if unavailable)
@@ -59,6 +67,18 @@ export async function GET(
     }
   } catch {
     // ClickHouse unavailable; return zeros
+  }
+
+  const costByRun = new Map<string, number>();
+  try {
+    const costRows = await aggregateWorkspaceCosts(workspaceId, {
+      groupBy: "run",
+    });
+    for (const row of costRows) {
+      costByRun.set(row.entity_id, row.total_cost_usd);
+    }
+  } catch {
+    // ClickHouse unavailable; costs render as zero
   }
 
   const enriched = runs.map((run) => {
@@ -85,7 +105,7 @@ export async function GET(
       createdAt: run.createdAt.toISOString(),
       duration,
       failure_count: summary.failure_count,
-      total_cost: 0, // placeholder; no cost_events table yet
+      total_cost: costByRun.get(run.id) ?? 0,
     };
   });
 

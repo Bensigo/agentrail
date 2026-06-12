@@ -132,6 +132,11 @@ def test_push_cost_event_payload_and_headers(tmp_path: Path, monkeypatch) -> Non
     assert body["model"] == "claude-opus-4-6"
     assert body["occurred_at"].endswith("Z")
     assert len(body["event_id"]) == 36  # uuid4 format
+    # New per-phase + token-split fields (AC2).
+    assert body["phase"] == "execute"
+    assert body["input_tokens"] == 200
+    assert body["output_tokens"] == 80
+    assert body["cache_tokens"] == 40
 
 
 # ---------------------------------------------------------------------------

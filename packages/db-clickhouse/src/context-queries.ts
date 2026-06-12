@@ -150,3 +150,53 @@ export async function getContextPackItems(
     occurred_at: new Date(r.occurred_at),
   }));
 }
+
+/**
+ * Tokens saved per run, mirroring the run-detail "Tokens saved" card:
+ * context-retrieval savings (sum of context_packs.tokens_saved) plus tokens
+ * served from cache (sum of cost_events.cache_tokens). Returned as a map keyed
+ * by run_id for cheap enrichment of the runs list. Runs absent from both tables
+ * simply don't appear (caller defaults to 0). One query per table, scoped to
+ * the given run ids.
+ */
+export async function getTokensSavedByRun(
+  workspaceId: string,
+  runIds: string[]
+): Promise<Map<string, number>> {
+  const saved = new Map<string, number>();
+  if (runIds.length === 0) return saved;
+
+  const params: Record<string, unknown> = { workspaceId, runIds };
+
+  const packResult = await client.query({
+    query: `
+      SELECT run_id, sum(tokens_saved) AS tokens_saved
+      FROM context_packs
+      WHERE workspace_id = {workspaceId: String}
+        AND run_id IN {runIds: Array(String)}
+      GROUP BY run_id
+    `,
+    query_params: params,
+    format: "JSONEachRow",
+  });
+  for (const r of await packResult.json<{ run_id: string; tokens_saved: string | number }>()) {
+    saved.set(r.run_id, Number(r.tokens_saved));
+  }
+
+  const cacheResult = await client.query({
+    query: `
+      SELECT run_id, sum(cache_tokens) AS cache_tokens
+      FROM cost_events
+      WHERE workspace_id = {workspaceId: String}
+        AND run_id IN {runIds: Array(String)}
+      GROUP BY run_id
+    `,
+    query_params: params,
+    format: "JSONEachRow",
+  });
+  for (const r of await cacheResult.json<{ run_id: string; cache_tokens: string | number }>()) {
+    saved.set(r.run_id, (saved.get(r.run_id) ?? 0) + Number(r.cache_tokens));
+  }
+
+  return saved;
+}

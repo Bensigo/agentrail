@@ -8,6 +8,7 @@ import type { RunStatus } from "@agentrail/db-postgres";
 import {
   getRunEventSummaries,
   aggregateWorkspaceCosts,
+  getTokensSavedByRun,
 } from "@agentrail/db-clickhouse";
 
 export async function GET(
@@ -81,6 +82,15 @@ export async function GET(
     // ClickHouse unavailable; costs render as zero
   }
 
+  // Tokens saved per run (context retrieval + cache reads), mirroring the
+  // run-detail card. Graceful fallback to zero if ClickHouse is unavailable.
+  let tokensSavedByRun = new Map<string, number>();
+  try {
+    tokensSavedByRun = await getTokensSavedByRun(workspaceId, runIds);
+  } catch {
+    // ClickHouse unavailable; tokens saved render as zero
+  }
+
   const enriched = runs.map((run) => {
     const summary = summaryMap.get(run.id) ?? {
       failure_count: 0,
@@ -106,6 +116,7 @@ export async function GET(
       duration,
       failure_count: summary.failure_count,
       total_cost: costByRun.get(run.id) ?? 0,
+      tokens_saved: tokensSavedByRun.get(run.id) ?? 0,
     };
   });
 

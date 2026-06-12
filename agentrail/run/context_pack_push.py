@@ -11,13 +11,57 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from agentrail.context.snapshot_push import load_link
+
+# Server-side batch limit; also keeps payloads bounded.
+_MAX_ITEMS = 100
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _build_items(retrieval: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Derive context-pack items from retrieval metadata, capped at _MAX_ITEMS.
+
+    runMetadata carries selectedSources as a list of path strings with parallel
+    reasons/scores lists; entries may also be dicts (path/reason/score) from
+    other producers. Missing or malformed fields degrade to defaults — an item
+    is dropped only when it has no usable path.
+    """
+    sources = retrieval.get("selectedSources")
+    if not isinstance(sources, list):
+        return []
+    reasons = retrieval.get("reasons")
+    reasons = reasons if isinstance(reasons, list) else []
+    scores = retrieval.get("scores")
+    scores = scores if isinstance(scores, list) else []
+    items: List[Dict[str, Any]] = []
+    for i, src in enumerate(sources):
+        if len(items) >= _MAX_ITEMS:
+            break
+        if isinstance(src, dict):
+            path = src.get("path")
+            reason = src.get("reason")
+            score = src.get("score")
+            included = src.get("included", True)
+        else:
+            path = src
+            reason = reasons[i] if i < len(reasons) else None
+            score = scores[i] if i < len(scores) else None
+            included = True
+        if not isinstance(path, str) or not path:
+            continue
+        is_number = isinstance(score, (int, float)) and not isinstance(score, bool)
+        items.append({
+            "path": path,
+            "reason": reason if isinstance(reason, str) else "",
+            "score": float(score) if is_number else 0.0,
+            "included": bool(included),
+        })
+    return items
 
 
 def push_context_pack(
@@ -45,6 +89,7 @@ def push_context_pack(
         "tokens_used": int(retrieval.get("selectedContextTokens") or 0),
         "sources_considered": len(retrieval.get("selectedSources") or []),
         "occurred_at": _now_iso(),
+        "items": _build_items(retrieval),
     }
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(

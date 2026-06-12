@@ -628,6 +628,71 @@ export async function insertContextPacks(packs: ContextPackInput[]): Promise<num
   return toInsert.length;
 }
 
+export interface ContextEventInput {
+  workspace_id: string;
+  run_id: string;
+  context_pack_id: string;
+  item_path: string;
+  item_hash: string;
+  /** 1 = included, 0 = excluded */
+  included: number;
+  citation: string;
+  reason: string;
+  score: number;
+  occurred_at: string; // ISO 8601
+}
+
+/**
+ * Insert context-pack items into ClickHouse. A pack's items are written once
+ * with the pack, so dedupe is per context_pack_id: packs that already have
+ * any rows in context_events are skipped wholesale.
+ * Returns the number of rows actually inserted.
+ */
+export async function insertContextEvents(events: ContextEventInput[]): Promise<number> {
+  if (events.length === 0) return 0;
+
+  const packIds = [...new Set(events.map((e) => e.context_pack_id))];
+  const checkResult = await client.query({
+    query: `
+      SELECT DISTINCT context_pack_id
+      FROM context_events
+      WHERE context_pack_id IN ({packIds: Array(String)})
+    `,
+    query_params: { packIds },
+    format: "JSONEachRow",
+  });
+  const existing = new Set(
+    (await checkResult.json<{ context_pack_id: string }>()).map((r) => r.context_pack_id)
+  );
+
+  const toInsert = events.filter((e) => !existing.has(e.context_pack_id));
+  if (toInsert.length === 0) return 0;
+
+  const rows = toInsert.map((e) => ({
+    workspace_id: e.workspace_id,
+    run_id: e.run_id,
+    context_pack_id: e.context_pack_id,
+    item_path: e.item_path,
+    item_hash: e.item_hash,
+    included: e.included,
+    citation: e.citation,
+    reason: e.reason,
+    score: e.score,
+    occurred_at: new Date(e.occurred_at)
+      .toISOString()
+      .replace("T", " ")
+      .replace("Z", ""),
+  }));
+
+  await client.insert({
+    table: "context_events",
+    values: rows,
+    format: "JSONEachRow",
+  });
+
+  return toInsert.length;
+}
+
 // ---------------------------------------------------------------------------
 // AFK run-event ingestion
 // ---------------------------------------------------------------------------

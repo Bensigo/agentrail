@@ -119,7 +119,7 @@ class SearchContextTests(unittest.TestCase):
         output = search_context(root, "build_context_pack", limit=5)
         rm = output["runMetadata"]
         for key in ("retrievalMode", "selectedSources", "selectedContextTokens",
-                    "wastedContextTokens", "retrievalBudget", "citations", "reasons",
+                    "wastedContextTokens", "retrievalBudget", "citations", "reasons", "scores",
                     "staleOrDeniedLeakage", "staleEmbeddingLeakage"):
             self.assertIn(key, rm)
         self.assertEqual(rm["selectedContextTokens"], sum(r["tokenEstimate"] for r in output["results"]))

@@ -18,7 +18,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 AGENTS = {"codex", "claude", "cursor", "hermes", "custom"}
 
@@ -43,11 +43,13 @@ class UsageError(Exception):
 
 def _usage() -> str:
     return """Usage:
-  agentrail run [--agent NAME] [--target DIR] [--command CMD] [--log-dir DIR]
-  agentrail run issue N [--agent NAME] [--target DIR] [--command CMD] [--log-dir DIR]
-                        [--run-id ID]
+  agentrail run [--agent NAME] [--target DIR] [--command CMD] [--model MODEL]
+                [--log-dir DIR]
+  agentrail run issue N [--agent NAME] [--target DIR] [--command CMD]
+                        [--model MODEL] [--log-dir DIR] [--run-id ID]
   agentrail run batch [--concurrency N] [--agent NAME] [--target DIR]
-                      [--command CMD] [--base BRANCH] [--] ISSUE [ISSUE ...]
+                      [--command CMD] [--model MODEL] [--base BRANCH]
+                      [--] ISSUE [ISSUE ...]
 
 Bare `run` selects the next queued GitHub issue (labels: afk, ready-for-agent;
 excludes afk-in-progress) and runs it. `run issue N` runs a specific issue.
@@ -73,6 +75,8 @@ class RunOptions:
     command: str = ""
     log_dir: str = ""
     run_id: str = ""
+    model: str = ""
+    command_explicit: bool = False
 
 
 def _need_value(args: List[str], i: int, flag: str) -> str:
@@ -94,7 +98,10 @@ def parse_run_options(args: List[str]) -> RunOptions:
         elif a == "--target":
             opts.target = _need_value(args, i, "--target"); i += 2
         elif a == "--command":
-            opts.command = _need_value(args, i, "--command"); i += 2
+            opts.command = _need_value(args, i, "--command")
+            opts.command_explicit = True; i += 2
+        elif a == "--model":
+            opts.model = _need_value(args, i, "--model"); i += 2
         elif a == "--log-dir":
             opts.log_dir = _need_value(args, i, "--log-dir"); i += 2
         elif a == "--run-id":
@@ -143,6 +150,49 @@ def resolve_agent_command(agent: str, explicit: str, target: str) -> str:
     if generic:
         return generic
     return DEFAULT_COMMANDS.get(agent, "")
+
+
+def resolve_model_from_config(agent: str, target: str, phase: str = "") -> str:
+    """Return the model string from config for agent/phase, or '' if unset.
+
+    Precedence: runners.<agent>.models[phase] > runners.<agent>.model > ''
+    """
+    cfg = _read_config(target)
+    if not cfg:
+        return ""
+    runners = cfg.get("runners") or {}
+    runner_cfg = runners.get(agent) or {}
+    if phase:
+        models_map = runner_cfg.get("models") or {}
+        if phase in models_map:
+            return models_map[phase]
+    return runner_cfg.get("model") or ""
+
+
+def resolve_model_for_phase(agent: str, model_flag: str, target: str, phase: str) -> str:
+    """Resolve the effective model for a phase.
+
+    Precedence: --model flag > runners.<agent>.models[phase] > runners.<agent>.model > ''
+    """
+    if model_flag:
+        return model_flag
+    return resolve_model_from_config(agent, target, phase)
+
+
+def append_model_to_command(command: str, agent: str, model: str) -> str:
+    """Append model flag to command string; return command unchanged when model is empty.
+
+    The command string is later evaluated by ``bash -lc``, so the model token
+    is shell-quoted — a config/flag value with metacharacters must never
+    become shell code.
+    """
+    if not model:
+        return command
+    import shlex
+    quoted = shlex.quote(model)
+    if agent == "codex":
+        return f"{command} -m {quoted}"
+    return f"{command} --model {quoted}"
 
 
 def ensure_command_available(command_line: str) -> None:
@@ -246,9 +296,19 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
     command = resolve_agent_command(agent, opts.command, opts.target)
     target = Path(opts.target).resolve()
     log_dir = Path(opts.log_dir) if opts.log_dir else None
+
+    # Build per-phase command overrides. Skip when --command was explicit — the
+    # user owns that string entirely and we never mutate it.
+    phase_commands: Dict[str, str] = {}
+    if not opts.command_explicit:
+        for phase in ("plan", "execute"):
+            model = resolve_model_for_phase(agent, opts.model, str(target), phase)
+            if model:
+                phase_commands[phase] = append_model_to_command(command, agent, model)
+
     return run_issue(target, issue, agent=agent, command=command,
                      repo_dir=_repo_dir(), log_dir=log_dir,
-                     run_id=opts.run_id)
+                     run_id=opts.run_id, phase_commands=phase_commands)
 
 
 @dataclass
@@ -259,6 +319,7 @@ class BatchConfig:
     target: str = ""
     command: str = ""
     base: str = "main"
+    model: str = ""
 
 
 def parse_batch_args(args: List[str]) -> BatchConfig:
@@ -286,6 +347,8 @@ def parse_batch_args(args: List[str]) -> BatchConfig:
             cfg.target = _need_value(args, i, "--target"); i += 2
         elif a == "--command":
             cfg.command = _need_value(args, i, "--command"); i += 2
+        elif a == "--model":
+            cfg.model = _need_value(args, i, "--model"); i += 2
         elif a == "--base":
             cfg.base = _need_value(args, i, "--base"); i += 2
         elif a == "--":
@@ -347,7 +410,8 @@ def run_batch(args: List[str]) -> int:
             worktrees.append(wt)
         _git_worktree_add(cfg.target, wt, f"origin/{cfg.base}")
         _seed_agentrail(cfg.target, wt)
-        opts = RunOptions(agent=cfg.agent, target=wt, command=cfg.command)
+        opts = RunOptions(agent=cfg.agent, target=wt, command=cfg.command,
+                          command_explicit=bool(cfg.command), model=cfg.model)
         rc = exec_issue(issue, opts, allow_source=True)
         print(f"batch: issue #{issue} {'completed' if rc == 0 else 'failed'}")
         return rc

@@ -45,6 +45,7 @@ def _parse(args: List[str]) -> dict:
         "max_review_rounds": 3,
         "dry_run": False,
         "allow_dirty": False,
+        "model": "",
     }
     i = 0
     while i < len(args):
@@ -69,6 +70,8 @@ def _parse(args: List[str]) -> dict:
             opts["dry_run"] = True; i += 1
         elif a == "--allow-dirty":
             opts["allow_dirty"] = True; i += 1
+        elif a == "--model":
+            opts["model"] = args[i + 1]; i += 2
         elif a in ("-h", "--help"):
             print(_usage()); raise SystemExit(0)
         else:
@@ -139,6 +142,7 @@ def run_afk(args: List[str]) -> int:
         queue_labels=opts["queue_labels"],
         run_dir=run_dir,
         store=store,
+        model=opts["model"],
     )
 
     print(f"AFK: {len(issues)} issue(s), concurrency {opts['concurrency']}, "

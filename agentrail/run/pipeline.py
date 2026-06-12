@@ -45,6 +45,7 @@ class RunContext:
     agent_timeout: int = 1800
     failed_verification_attempts: int = 0
     context_retrieval: Dict[str, Any] = field(default_factory=dict)
+    phase_commands: Dict[str, str] = field(default_factory=dict)
 
 
 def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
@@ -107,8 +108,10 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     # 9. Write prompt file
     phase_prompt_file.write_text(phase_prompt)
 
-    # 10. Phase command string (metadata only)
-    phase_command = rc.agent_command
+    # 10. Phase command string (metadata only) — the EFFECTIVE command for
+    # this phase (incl. model override), not the base agent_command, so
+    # artifacts record what actually ran.
+    phase_command = rc.phase_commands.get(phase, rc.agent_command)
 
     # 11. Write initial phase status
     artifacts.write_phase_status(
@@ -196,9 +199,11 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     # 16. Execute
     # Both plan and execute run natively: a single bounded agent invocation
     # (bash -lc <agent_command>) with the phase prompt on stdin.
+    # Per-phase command override (e.g. model-specific command) wins when set.
+    effective_command = rc.phase_commands.get(phase, rc.agent_command)
     phase_start_ts = time.time()
     status = run_with_timeout(
-        ["bash", "-lc", rc.agent_command],
+        ["bash", "-lc", effective_command],
         cwd=rc.target_dir,
         timeout=agent_timeout,
         output_file=phase_output_file,
@@ -319,7 +324,8 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
 
 def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
               repo_dir: Path, log_dir: Optional[Path] = None,
-              run_id: str = "") -> int:
+              run_id: str = "",
+              phase_commands: Optional[Dict[str, str]] = None) -> int:
     """Native port of legacy run_issue (scripts/agentrail-legacy:6376-6566).
     Assumes guards (source-run, active-run conflict, command availability) were
     already done by the caller (agentrail/cli/commands/run.py:_dispatch).
@@ -435,6 +441,7 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
         run_context_pack_file=run_context_pack_file,
         max_execution_attempts=max_execution_attempts,
         context_retrieval=run_context_retrieval,
+        phase_commands=phase_commands or {},
     )
 
     # 11. Determine plan skip

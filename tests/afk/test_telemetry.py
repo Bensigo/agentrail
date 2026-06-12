@@ -234,7 +234,10 @@ def test_attach_telemetry_posts_on_dispatch(tmp_path: Path) -> None:
 
     assert len(posted) == 1
     ev = posted[0]
-    assert ev["session_id"] == "sess-001"
+    # EnqueueIssue has number=1, so session_id is the derived canonical run uuid
+    # (run_uuid("sess-001", 1)), not the raw session string.
+    from agentrail.afk.run_register import run_uuid
+    assert ev["session_id"] == run_uuid("sess-001", 1)
     assert ev["seq"] == 1
     assert ev["kind"] == "action"
     assert ev["action"]["type"] == "EnqueueIssue"

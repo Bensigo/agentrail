@@ -119,8 +119,7 @@ export async function getAgentModelCosts(
         sum(cost_usd) / uniqExact(run_id)                            AS avg_cost_usd,
         sum(input_tokens)                                             AS input_tokens,
         sum(output_tokens)                                            AS output_tokens,
-        sum(cache_tokens)                                             AS cache_tokens,
-        sum(cache_tokens) / (sum(input_tokens) + sum(output_tokens) + sum(cache_tokens) + 1) AS cache_ratio
+        sum(cache_tokens)                                             AS cache_tokens
       FROM cost_events
       WHERE workspace_id = {workspaceId: String}
         AND cost_type = 'model_call'

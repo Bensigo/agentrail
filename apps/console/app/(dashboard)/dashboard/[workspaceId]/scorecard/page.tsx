@@ -141,9 +141,11 @@ export default async function ScorecardPage({
 }) {
   const { workspaceId } = await params;
 
+  // No .catch(() => []): a DB outage must surface via the Next.js error
+  // boundary, not render as a legitimate-looking empty scorecard.
   const [pgRows, chRows] = await Promise.all([
-    getAgentRunStats(workspaceId).catch(() => []),
-    getAgentModelCosts(workspaceId).catch(() => []),
+    getAgentRunStats(workspaceId),
+    getAgentModelCosts(workspaceId),
   ]);
 
   const { agents, models } = buildScorecard(pgRows, chRows);

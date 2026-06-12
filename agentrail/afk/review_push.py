@@ -5,12 +5,78 @@ NON-FATAL: every failure is swallowed; the afk run is never affected.
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import List
 
+from agentrail.afk.review import extract_json_block
 from agentrail.context.snapshot_push import load_link
+
+# Reviewer priorities → dashboard severities (anything else → minor).
+_SEVERITY_MAP = {"P0": "critical", "P1": "critical", "P2": "major"}
+
+# Prose that signals the reviewer found something blocking (fallback path).
+_BLOCKING_RE = re.compile(
+    r"\bP[01]\b|\bblocking\b|must[\s-]+fix|\bcritical\b|\bbug\b", re.IGNORECASE
+)
+# Prose that signals a clean pass — checked before the blocking heuristics so
+# "no blocking issues found" does not become a finding.
+_CLEAN_RE = re.compile(
+    r"no\s+(blocking\s+)?(issues?|findings?|problems?)|lgtm|looks\s+good", re.IGNORECASE
+)
+
+_FALLBACK_SNIPPET_LIMIT = 1000
+
+
+def parse_findings(review_text: str) -> List[dict]:
+    """Parse reviewer findings out of raw review output text.
+
+    Primary path: the machine-readable BEGIN/END_REVIEW_FIX_ISSUES_JSON block
+    (``fix_issues``). Fallback: if there is no parseable block but the prose
+    clearly describes blocking problems, emit a single finding carrying the
+    raw text. An empty or clean review yields no findings.
+    """
+    text = (review_text or "").strip()
+    if not text:
+        return []
+
+    data = extract_json_block(text)
+    if data is not None and isinstance(data.get("fix_issues"), list):
+        findings: List[dict] = []
+        for item in data["fix_issues"]:
+            if not isinstance(item, dict):
+                continue
+            sev_raw = str(item.get("severity") or "").strip().upper()
+            severity = _SEVERITY_MAP.get(sev_raw, "minor")
+            title = str(item.get("title") or "").strip()
+            body = str(item.get("body") or "").strip()
+            file_ = item.get("file")
+            description = title or body or "(untitled finding)"
+            if file_:
+                description = f"{description} ({file_})"
+            findings.append({
+                "severity": severity,
+                "description": description,
+                "suggested_fix": body or title or "See full review output.",
+            })
+        return findings
+
+    # Fallback: no machine-readable block — be liberal.
+    if _CLEAN_RE.search(text) and not re.search(r"\bP[01]\b", text):
+        return []
+    if _BLOCKING_RE.search(text):
+        snippet = text
+        if len(snippet) > _FALLBACK_SNIPPET_LIMIT:
+            snippet = snippet[:_FALLBACK_SNIPPET_LIMIT] + "…"
+        return [{
+            "severity": "critical",
+            "description": snippet,
+            "suggested_fix": "Address the blocking issues described in the review output.",
+        }]
+    return []
 
 
 def push_review_gate(
@@ -18,6 +84,7 @@ def push_review_gate(
     run_id: str,
     round_no: int,
     outcome,  # ReviewOutcome — avoid circular import at module level
+    review_text: str = "",
 ) -> bool:
     """POST a review-gate record for one completed review round.
 
@@ -45,6 +112,7 @@ def push_review_gate(
                 }
                 for f in outcome.blocking
             ],
+            "findings": parse_findings(review_text),
             "evaluated_at": datetime.now(timezone.utc).isoformat(),
         }
         body = json.dumps(payload).encode("utf-8")

@@ -577,6 +577,7 @@ export interface UpsertReviewGateInput {
   conditions?: Record<string, unknown>[];
   blockingReasons?: Record<string, unknown>[];
   evidenceRefs?: Array<{ label: string; url: string }>;
+  findings?: Array<{ severity: "critical" | "major" | "minor"; description: string; suggested_fix: string }>;
   evaluatedAt?: string | Date | null;
 }
 
@@ -598,6 +599,7 @@ export async function upsertReviewGate(input: UpsertReviewGateInput): Promise<vo
       conditions: input.conditions ?? [],
       blockingReasons: (input.blockingReasons ?? []) as unknown as string[],
       evidenceRefs: input.evidenceRefs ?? [],
+      findings: input.findings ?? [],
       evaluatedAt,
     })
     .onConflictDoUpdate({
@@ -606,6 +608,7 @@ export async function upsertReviewGate(input: UpsertReviewGateInput): Promise<vo
         status: input.status,
         conditions: input.conditions ?? [],
         blockingReasons: (input.blockingReasons ?? []) as unknown as string[],
+        findings: input.findings ?? [],
         evaluatedAt,
       },
     });

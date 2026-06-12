@@ -8,6 +8,12 @@ interface EvidenceRef {
   url: string;
 }
 
+interface ReviewGateFinding {
+  severity: "critical" | "major" | "minor";
+  description: string;
+  suggested_fix: string;
+}
+
 interface ReviewGate {
   id: string;
   runId: string;
@@ -16,6 +22,7 @@ interface ReviewGate {
   conditions: Record<string, unknown>[];
   blockingReasons: string[];
   evidenceRefs: EvidenceRef[];
+  findings: ReviewGateFinding[] | null;
   evaluatedAt: string | null;
 }
 
@@ -54,8 +61,21 @@ function StatusBadge({ status }: { status: ReviewGate["status"] }) {
   );
 }
 
+function FindingsCountBadge({ count }: { count: number }) {
+  if (count === 0) return null;
+  return (
+    <span
+      title={`${count} bug${count === 1 ? "" : "s"} found`}
+      className="px-1.5 py-0.5 rounded-sm text-xs font-medium shrink-0 bg-[#3d1a1a] text-[#ff9592]"
+    >
+      {count} bug{count === 1 ? "" : "s"}
+    </span>
+  );
+}
+
 function GateRow({ gate, workspaceId }: { gate: ReviewGate; workspaceId: string }) {
   const [expanded, setExpanded] = useState(false);
+  const findings = gate.findings ?? [];
 
   return (
     <div className="border-b border-[var(--gray-04)] last:border-0">
@@ -70,6 +90,7 @@ function GateRow({ gate, workspaceId }: { gate: ReviewGate; workspaceId: string 
             run:{gate.runId.slice(0, 8)}
           </span>
         </div>
+        <FindingsCountBadge count={findings.length} />
         <StatusBadge status={gate.status} />
         <a
           href={`/dashboard/${workspaceId}/runs/${gate.runId}`}

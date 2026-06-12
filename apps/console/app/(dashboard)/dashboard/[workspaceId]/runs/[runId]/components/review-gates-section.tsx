@@ -7,6 +7,12 @@ export interface EvidenceRef {
   url: string;
 }
 
+export interface ReviewGateFinding {
+  severity: "critical" | "major" | "minor";
+  description: string;
+  suggested_fix: string;
+}
+
 export interface ReviewGate {
   id: string;
   gateName: string;
@@ -14,6 +20,7 @@ export interface ReviewGate {
   conditions: Record<string, unknown>[];
   blockingReasons: string[];
   evidenceRefs: EvidenceRef[];
+  findings: ReviewGateFinding[] | null;
   evaluatedAt: string | null;
 }
 
@@ -73,8 +80,61 @@ function StatusBadge({ status }: { status: ReviewGate["status"] }) {
   );
 }
 
+function SeverityBadge({
+  severity,
+}: {
+  severity: ReviewGateFinding["severity"];
+}) {
+  const styles: Record<ReviewGateFinding["severity"], string> = {
+    critical: "bg-[#3d1a1a] text-[#ff9592]",
+    major: "bg-[#3d2a1a] text-[#ffb077]",
+    minor: "bg-[var(--gray-04)] text-[var(--gray-10)]",
+  };
+  return (
+    <span
+      className={`px-1.5 py-0.5 rounded-sm text-xs font-medium shrink-0 ${styles[severity]}`}
+    >
+      {severity}
+    </span>
+  );
+}
+
+function FindingsList({ findings }: { findings: ReviewGateFinding[] }) {
+  return (
+    <div>
+      <p className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] mb-1">
+        Bugs found
+      </p>
+      <ul className="space-y-2">
+        {findings.map((finding, i) => (
+          <li
+            key={i}
+            className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3 space-y-1"
+          >
+            <div className="flex items-start gap-2">
+              <SeverityBadge severity={finding.severity} />
+              <span className="text-xs text-[var(--gray-12)] whitespace-pre-wrap break-words">
+                {finding.description}
+              </span>
+            </div>
+            {finding.suggested_fix && (
+              <p className="text-xs text-[var(--gray-10)]">
+                <span className="font-medium text-[var(--gray-09)]">
+                  How to fix:
+                </span>{" "}
+                {finding.suggested_fix}
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function GateRow({ gate }: { gate: ReviewGate }) {
   const [expanded, setExpanded] = useState(false);
+  const findings = gate.findings ?? [];
 
   return (
     <div className="border-b border-[var(--gray-04)] last:border-0">
@@ -106,6 +166,8 @@ function GateRow({ gate }: { gate: ReviewGate }) {
               </div>
             </div>
           )}
+
+          {findings.length > 0 && <FindingsList findings={findings} />}
 
           {gate.blockingReasons.length > 0 && (
             <div>
@@ -160,6 +222,7 @@ function GateRow({ gate }: { gate: ReviewGate }) {
           )}
 
           {gate.conditions.length === 0 &&
+            findings.length === 0 &&
             gate.blockingReasons.length === 0 &&
             gate.evidenceRefs.length === 0 &&
             !gate.evaluatedAt && (

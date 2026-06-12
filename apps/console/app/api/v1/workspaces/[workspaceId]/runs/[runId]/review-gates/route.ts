@@ -26,8 +26,9 @@ export async function GET(
   try {
     const gates = await getReviewGatesForRun(workspaceId, runId);
     return NextResponse.json({ gates });
-  } catch {
-    return NextResponse.json({ gates: [] });
+  } catch (err) {
+    console.error("[review-gates] failed to load gates for run:", err);
+    return NextResponse.json({ error: "Failed to load review gates" }, { status: 500 });
   }
 }
 

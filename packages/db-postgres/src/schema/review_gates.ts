@@ -8,6 +8,12 @@ export const reviewGateStatusEnum = pgEnum("review_gate_status", [
   "pending",
 ]);
 
+export type ReviewGateFinding = {
+  severity: "critical" | "major" | "minor";
+  description: string;
+  suggested_fix: string;
+};
+
 export const reviewGates = pgTable("review_gates", {
   id: uuid("id").primaryKey().defaultRandom(),
   workspaceId: uuid("workspace_id")
@@ -21,6 +27,7 @@ export const reviewGates = pgTable("review_gates", {
   conditions: jsonb("conditions").$type<Record<string, unknown>[]>().default([]),
   blockingReasons: jsonb("blocking_reasons").$type<string[]>().default([]),
   evidenceRefs: jsonb("evidence_refs").$type<Array<{ label: string; url: string }>>().default([]),
+  findings: jsonb("findings").$type<ReviewGateFinding[]>().default([]),
   evaluatedAt: timestamp("evaluated_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

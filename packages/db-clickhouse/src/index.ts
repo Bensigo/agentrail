@@ -66,3 +66,5 @@ export type {
   AgentModelCostRow,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems, getWorkspaceContextPacks, listWorkspaceContextPacks, getTokensSavedByRun } from "./context-queries";
+export { computeQualityMetrics, getQualityMetrics } from "./quality-metrics";
+export type { QualityMetricsResult, QualityMetricsOpts, QualityPackRow } from "./quality-metrics";

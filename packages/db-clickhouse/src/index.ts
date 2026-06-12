@@ -47,4 +47,10 @@ export type {
   ContextPackInput,
   WorkspaceTelemetryCounts,
 } from "./queries";
-export { getContextPacksForRun, getContextPackItems, getWorkspaceContextPacks } from "./context-queries";
+export {
+  getContextPacksForRun,
+  getContextPackItems,
+  getWorkspaceContextPacks,
+  insertContextEvents,
+} from "./context-queries";
+export type { ContextEventInput } from "./context-queries";

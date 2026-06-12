@@ -20,6 +20,31 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _extract_items(retrieval: Dict[str, Any]) -> list:
+    """Extract per-item source data from retrieval metadata.
+
+    Uses selectedSources (string[]) zipped with reasons (string[]).
+    All items are marked included=True (selectedSources are the included set).
+    score defaults to 0.0 (not available in runMetadata).
+    Caps at 100 items; skips any entry whose path is falsy or non-string.
+    """
+    sources = retrieval.get("selectedSources") or []
+    reasons = retrieval.get("reasons") or []
+    if not isinstance(sources, list):
+        sources = []
+    if not isinstance(reasons, list):
+        reasons = []
+    items = []
+    for i, path in enumerate(sources[:100]):
+        if not path or not isinstance(path, str):
+            continue
+        reason = reasons[i] if i < len(reasons) else ""
+        if not isinstance(reason, str):
+            reason = ""
+        items.append({"path": path, "reason": reason, "score": 0.0, "included": True})
+    return items
+
+
 def push_context_pack(
     target: Path,
     run_id: str,
@@ -46,6 +71,9 @@ def push_context_pack(
         "sources_considered": len(retrieval.get("selectedSources") or []),
         "occurred_at": _now_iso(),
     }
+    items = _extract_items(retrieval)
+    if items:
+        payload["items"] = items
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         f"{link['base_url']}/api/v1/ingest/context-packs",

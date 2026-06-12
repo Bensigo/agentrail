@@ -3,6 +3,14 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-clickhouse", () => ({
   insertContextPacks: vi.fn(),
+  insertContextEvents: vi.fn().mockResolvedValue(undefined),
+  deriveContextPackId: vi.fn().mockReturnValue("derived-pack-id"),
+}));
+vi.mock("crypto", () => ({
+  createHash: vi.fn().mockReturnValue({
+    update: vi.fn().mockReturnThis(),
+    digest: vi.fn().mockReturnValue("abc123"),
+  }),
 }));
 vi.mock("@agentrail/db-postgres", () => ({
   getRepository: vi.fn(),
@@ -12,7 +20,7 @@ vi.mock("../../../../../lib/bearer-auth", () => ({
 }));
 
 import { POST } from "./route";
-import { insertContextPacks } from "@agentrail/db-clickhouse";
+import { insertContextPacks, insertContextEvents, deriveContextPackId } from "@agentrail/db-clickhouse";
 import { getRepository } from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 
@@ -99,5 +107,53 @@ describe("POST /api/v1/ingest/context-packs", () => {
     const batch = Array.from({ length: 101 }, () => ({ ...valid }));
     const res = await POST(req(batch));
     expect(res.status).toBe(400);
+  });
+
+  it("202 and calls insertContextEvents when items are present", async () => {
+    const packWithItems = {
+      ...valid,
+      items: [
+        { path: "src/a.py", reason: "anchor match", score: 0.9, included: true },
+        { path: "src/b.py", reason: "graph hop", score: 0.7, included: true },
+      ],
+    };
+    const res = await POST(req(packWithItems));
+    expect(res.status).toBe(202);
+    // insertContextEvents should be called (fire-and-forget, may need await flush)
+    await new Promise((r) => setTimeout(r, 0));
+    expect(insertContextEvents).toHaveBeenCalledTimes(1);
+    const rows = vi.mocked(insertContextEvents).mock.calls[0][0];
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      workspace_id: WS,
+      run_id: valid.run_id,
+      context_pack_id: "derived-pack-id",
+      item_path: "src/a.py",
+      included: 1,
+      reason: "anchor match",
+      score: 0.9,
+    });
+    expect(deriveContextPackId).toHaveBeenCalledWith(WS, valid.run_id, valid.occurred_at);
+  });
+
+  it("202 and does not call insertContextEvents when no items", async () => {
+    const res = await POST(req(valid));
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(insertContextEvents).not.toHaveBeenCalled();
+  });
+
+  it("202 even when item has bad shape (lenient)", async () => {
+    const packWithBadItem = {
+      ...valid,
+      items: [
+        { path: "", reason: "bad", score: 0.5, included: true }, // empty path — skipped
+      ],
+    };
+    const res = await POST(req(packWithBadItem));
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 0));
+    // empty path skipped → no rows → insertContextEvents not called
+    expect(insertContextEvents).not.toHaveBeenCalled();
   });
 });

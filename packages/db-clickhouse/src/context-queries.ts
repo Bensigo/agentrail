@@ -1,6 +1,45 @@
 import { client } from "./client";
 import type { ContextPackRecord, ContextEventRecord } from "./schema";
 
+export interface ContextEventInput {
+  workspace_id: string;
+  run_id: string;
+  context_pack_id: string;
+  item_path: string;
+  /** SHA1 or similar content hash; pass empty string when unavailable. */
+  item_hash: string;
+  /** 1 = included, 0 = excluded */
+  included: number;
+  citation: string;
+  reason: string;
+  score: number;
+  occurred_at: string; // ISO 8601
+}
+
+export async function insertContextEvents(events: ContextEventInput[]): Promise<void> {
+  if (events.length === 0) return;
+  const rows = events.map((e) => ({
+    workspace_id: e.workspace_id,
+    run_id: e.run_id,
+    context_pack_id: e.context_pack_id,
+    item_path: e.item_path,
+    item_hash: e.item_hash,
+    included: e.included,
+    citation: e.citation,
+    reason: e.reason,
+    score: e.score,
+    occurred_at: new Date(e.occurred_at)
+      .toISOString()
+      .replace("T", " ")
+      .replace("Z", ""),
+  }));
+  await client.insert({
+    table: "context_events",
+    values: rows,
+    format: "JSONEachRow",
+  });
+}
+
 export async function getContextPacksForRun(
   workspaceId: string,
   runId: string

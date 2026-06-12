@@ -182,6 +182,119 @@ def test_push_context_pack_empty_retrieval_sends_zeros(tmp_path: Path, monkeypat
     assert body["sources_considered"] == 0
 
 
+# ---------------------------------------------------------------------------
+# AC2 — _extract_items: item extraction and defensiveness
+# ---------------------------------------------------------------------------
+
+
+def test_extract_items_normal_case() -> None:
+    retrieval = {
+        "selectedSources": ["src/a.py", "src/b.py"],
+        "reasons": ["reason A", "reason B"],
+    }
+    items = context_pack_push._extract_items(retrieval)
+    assert items == [
+        {"path": "src/a.py", "reason": "reason A", "score": 0.0, "included": True},
+        {"path": "src/b.py", "reason": "reason B", "score": 0.0, "included": True},
+    ]
+
+
+def test_extract_items_capped_at_100() -> None:
+    retrieval = {"selectedSources": [f"src/{i}.py" for i in range(150)]}
+    items = context_pack_push._extract_items(retrieval)
+    assert len(items) == 100
+
+
+def test_extract_items_missing_reasons_default_empty() -> None:
+    retrieval = {"selectedSources": ["a.py", "b.py"]}
+    items = context_pack_push._extract_items(retrieval)
+    assert len(items) == 2
+    assert all(i["reason"] == "" for i in items)
+
+
+def test_extract_items_partial_reasons() -> None:
+    """Fewer reasons than sources → missing ones default to ""."""
+    retrieval = {"selectedSources": ["a.py", "b.py", "c.py"], "reasons": ["r1"]}
+    items = context_pack_push._extract_items(retrieval)
+    assert items[0]["reason"] == "r1"
+    assert items[1]["reason"] == ""
+    assert items[2]["reason"] == ""
+
+
+def test_extract_items_empty_sources() -> None:
+    assert context_pack_push._extract_items({}) == []
+
+
+def test_extract_items_skips_falsy_paths() -> None:
+    retrieval = {"selectedSources": ["valid.py", "", None, "other.py"]}
+    items = context_pack_push._extract_items(retrieval)
+    paths = [i["path"] for i in items]
+    assert paths == ["valid.py", "other.py"]
+
+
+def test_extract_items_non_list_sources_treated_as_empty() -> None:
+    retrieval = {"selectedSources": "not-a-list"}
+    assert context_pack_push._extract_items(retrieval) == []
+
+
+def test_extract_items_all_included_true() -> None:
+    retrieval = {"selectedSources": ["a.py", "b.py"]}
+    items = context_pack_push._extract_items(retrieval)
+    assert all(i["included"] is True for i in items)
+
+
+def test_extract_items_score_defaults_to_zero() -> None:
+    retrieval = {"selectedSources": ["a.py"]}
+    items = context_pack_push._extract_items(retrieval)
+    assert items[0]["score"] == 0.0
+
+
+def test_payload_includes_items_when_sources_present(tmp_path: Path, monkeypatch) -> None:
+    _write_server_json(tmp_path)
+    captured: dict = {}
+
+    class FakeResp:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data)
+        return FakeResp()
+
+    monkeypatch.setattr(context_pack_push.urllib.request, "urlopen", fake_urlopen)
+    context_pack_push.push_context_pack(
+        tmp_path,
+        run_id="run-items",
+        retrieval={"selectedSources": ["a.py", "b.py"], "reasons": ["r1", "r2"]},
+    )
+    body = captured["body"]
+    assert "items" in body
+    assert len(body["items"]) == 2
+    assert body["items"][0]["path"] == "a.py"
+    assert body["items"][0]["reason"] == "r1"
+    assert body["items"][0]["score"] == 0.0
+    assert body["items"][0]["included"] is True
+
+
+def test_payload_omits_items_when_sources_empty(tmp_path: Path, monkeypatch) -> None:
+    _write_server_json(tmp_path)
+    captured: dict = {}
+
+    class FakeResp:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data)
+        return FakeResp()
+
+    monkeypatch.setattr(context_pack_push.urllib.request, "urlopen", fake_urlopen)
+    context_pack_push.push_context_pack(tmp_path, run_id="run-no-items", retrieval={})
+    assert "items" not in captured["body"]
+
+
 def test_payload_handles_dict_retrieval_budget(tmp_path, monkeypatch):
     # retrievalBudget is a dict {maxItems, maxTokens}; token_budget must be its
     # maxTokens, not int(dict) (which used to raise and silently drop the push).

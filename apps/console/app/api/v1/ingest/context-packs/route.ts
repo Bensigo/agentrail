@@ -8,10 +8,24 @@
  *
  * Returns: 202 { accepted: N }
  */
+import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { insertContextPacks, ContextPackInput } from "@agentrail/db-clickhouse";
+import {
+  insertContextPacks,
+  insertContextEvents,
+  deriveContextPackId,
+  ContextPackInput,
+  ContextEventInput,
+} from "@agentrail/db-clickhouse";
 import { getRepository } from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
+
+interface RawItem {
+  path: string;
+  reason: string;
+  score: number;
+  included: boolean;
+}
 
 interface RawContextPack {
   repository_id: string;
@@ -22,6 +36,7 @@ interface RawContextPack {
   sources_considered: number;
   occurred_at: string;
   anchors_extracted?: number;
+  items?: RawItem[];
 }
 
 function isRawContextPack(v: unknown): v is RawContextPack {
@@ -99,6 +114,33 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     console.error("[ingest/context-packs] ClickHouse insert failed:", err);
     return NextResponse.json({ error: "Upstream storage error" }, { status: 502 });
+  }
+
+  // Write context_events rows when items are present (non-fatal).
+  const eventRows: ContextEventInput[] = [];
+  for (const e of valid) {
+    if (!Array.isArray(e.items) || e.items.length === 0) continue;
+    const packId = deriveContextPackId(workspaceId, e.run_id, e.occurred_at);
+    for (const item of e.items) {
+      if (!item || typeof item.path !== "string" || !item.path) continue;
+      eventRows.push({
+        workspace_id: workspaceId,
+        run_id: e.run_id,
+        context_pack_id: packId,
+        item_path: item.path,
+        item_hash: createHash("sha1").update(item.path).digest("hex"),
+        included: item.included ? 1 : 0,
+        citation: "",
+        reason: typeof item.reason === "string" ? item.reason : "",
+        score: typeof item.score === "number" ? item.score : 0,
+        occurred_at: e.occurred_at,
+      });
+    }
+  }
+  if (eventRows.length > 0) {
+    insertContextEvents(eventRows).catch((err) => {
+      console.error("[ingest/context-packs] context_events insert failed:", err);
+    });
   }
 
   return NextResponse.json({ accepted }, { status: 202 });

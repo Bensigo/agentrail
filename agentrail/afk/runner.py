@@ -115,6 +115,12 @@ class Runner:
         src_cfg = self.target / ".agentrail" / "config.json"
         if src_cfg.exists() and not (dst_dir / "config.json").exists():
             shutil.copy(src_cfg, dst_dir / "config.json")
+        # The dashboard link lives in the main checkout, but the pipeline runs with
+        # --target=<worktree>; without server.json here its cost/context-pack pushes
+        # (which read .agentrail/server.json from the target) silently no-op.
+        src_link = self.target / ".agentrail" / "server.json"
+        if src_link.exists() and not (dst_dir / "server.json").exists():
+            shutil.copy(src_link, dst_dir / "server.json")
 
     def _remove_worktree(self, path: Path) -> None:
         subprocess.run(["git", "-C", str(self.target), "worktree", "remove",

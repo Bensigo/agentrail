@@ -450,6 +450,100 @@ export async function insertIndexSnapshots(
 }
 
 // ---------------------------------------------------------------------------
+// Cost event ingestion
+// ---------------------------------------------------------------------------
+
+export interface CostEventInput {
+  /** Set server-side from bearer key — never from request body. */
+  workspace_id: string;
+  run_id: string;
+  repository_id: string;
+  /** Set server-side from bearer key — never from request body. */
+  team_id: string;
+  /** Set server-side from bearer key — never from request body. */
+  api_key_id: string;
+  cost_type: string;
+  tokens: number;
+  cost_usd: number;
+  model: string;
+  occurred_at: string; // ISO 8601
+}
+
+export function deriveCostEventId(
+  workspaceId: string,
+  runId: string,
+  repositoryId: string,
+  costType: string,
+  occurredAt: string
+): string {
+  return createHash("sha1")
+    .update(`${workspaceId}:${runId}:${repositoryId}:${costType}:${occurredAt}`)
+    .digest("hex");
+}
+
+/**
+ * Insert cost events into ClickHouse, deduplicating on
+ * (workspace_id, run_id, repository_id, cost_type, occurred_at) via a pre-existence check.
+ * Returns the number of rows actually inserted.
+ */
+export async function insertCostEvents(events: CostEventInput[]): Promise<number> {
+  if (events.length === 0) return 0;
+
+  const candidates = events.map((e) => ({
+    e,
+    event_id: deriveCostEventId(
+      e.workspace_id,
+      e.run_id,
+      e.repository_id,
+      e.cost_type,
+      e.occurred_at
+    ),
+  }));
+
+  const eventIds = candidates.map((c) => c.event_id);
+  const checkResult = await client.query({
+    query: `
+      SELECT event_id
+      FROM cost_events
+      WHERE event_id IN ({eventIds: Array(String)})
+    `,
+    query_params: { eventIds },
+    format: "JSONEachRow",
+  });
+  const existing = new Set(
+    (await checkResult.json<{ event_id: string }>()).map((r) => r.event_id)
+  );
+
+  const toInsert = candidates.filter((c) => !existing.has(c.event_id));
+  if (toInsert.length === 0) return 0;
+
+  const rows = toInsert.map(({ e, event_id }) => ({
+    workspace_id: e.workspace_id,
+    run_id: e.run_id,
+    repository_id: e.repository_id,
+    team_id: e.team_id,
+    api_key_id: e.api_key_id,
+    cost_type: e.cost_type,
+    tokens: e.tokens,
+    cost_usd: e.cost_usd,
+    model: e.model,
+    occurred_at: new Date(e.occurred_at)
+      .toISOString()
+      .replace("T", " ")
+      .replace("Z", ""),
+    event_id,
+  }));
+
+  await client.insert({
+    table: "cost_events",
+    values: rows,
+    format: "JSONEachRow",
+  });
+
+  return toInsert.length;
+}
+
+// ---------------------------------------------------------------------------
 // AFK run-event ingestion
 // ---------------------------------------------------------------------------
 

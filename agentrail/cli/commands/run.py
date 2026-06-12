@@ -45,6 +45,7 @@ def _usage() -> str:
     return """Usage:
   agentrail run [--agent NAME] [--target DIR] [--command CMD] [--log-dir DIR]
   agentrail run issue N [--agent NAME] [--target DIR] [--command CMD] [--log-dir DIR]
+                        [--run-id ID]
   agentrail run batch [--concurrency N] [--agent NAME] [--target DIR]
                       [--command CMD] [--base BRANCH] [--] ISSUE [ISSUE ...]
 
@@ -71,6 +72,7 @@ class RunOptions:
     target: str = ""
     command: str = ""
     log_dir: str = ""
+    run_id: str = ""
 
 
 def _need_value(args: List[str], i: int, flag: str) -> str:
@@ -95,6 +97,8 @@ def parse_run_options(args: List[str]) -> RunOptions:
             opts.command = _need_value(args, i, "--command"); i += 2
         elif a == "--log-dir":
             opts.log_dir = _need_value(args, i, "--log-dir"); i += 2
+        elif a == "--run-id":
+            opts.run_id = _need_value(args, i, "--run-id"); i += 2
         elif a in ("-h", "--help"):
             print(_usage()); raise UsageError("", code=0)
         else:
@@ -243,7 +247,8 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
     target = Path(opts.target).resolve()
     log_dir = Path(opts.log_dir) if opts.log_dir else None
     return run_issue(target, issue, agent=agent, command=command,
-                     repo_dir=_repo_dir(), log_dir=log_dir)
+                     repo_dir=_repo_dir(), log_dir=log_dir,
+                     run_id=opts.run_id)
 
 
 @dataclass

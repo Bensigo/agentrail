@@ -293,7 +293,8 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
 
 
 def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
-              repo_dir: Path, log_dir: Optional[Path] = None) -> int:
+              repo_dir: Path, log_dir: Optional[Path] = None,
+              run_id: str = "") -> int:
     """Native port of legacy run_issue (scripts/agentrail-legacy:6376-6566).
     Assumes guards (source-run, active-run conflict, command availability) were
     already done by the caller (agentrail/cli/commands/run.py:_dispatch).
@@ -358,7 +359,7 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
     # 7. Run dir setup
     started_at = _utc_now_iso()
     log_dir = log_dir or (target_dir / ".agentrail" / "runs")
-    run_id = (
+    run_id = run_id or (
         f"{_dt.datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
         f"-issue-{issue}-{agent}-{os.getpid()}"
     )

@@ -125,9 +125,14 @@ class Runner:
     async def _implement(self, slot: int, issue: int) -> bool:
         wt = self._worktree(slot, issue)
         self._setup_worktree(wt, f"origin/{self.base}")
+        cmd = [self.agentrail, "run", "issue", str(issue), "--agent", self.engine,
+               "--target", str(wt), "--command", _agent_command(self.engine)]
+        sid = getattr(self, "session_id", None)
+        if sid:
+            from agentrail.afk.run_register import run_uuid
+            cmd += ["--run-id", run_uuid(sid, issue)]
         rc = await _sh(
-            [self.agentrail, "run", "issue", str(issue), "--agent", self.engine,
-             "--target", str(wt), "--command", _agent_command(self.engine)],
+            cmd,
             cwd=wt,
             log=self.logs / f"issue-{issue}-implement.log",
         )

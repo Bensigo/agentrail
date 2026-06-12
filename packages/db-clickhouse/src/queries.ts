@@ -714,6 +714,11 @@ export interface ContextPackInput {
   anchors_extracted: number;
   sources_considered: number;
   occurred_at: string; // ISO 8601
+  precision_at_budget?: number;
+  citation_coverage?: number;
+  stale_count?: number;
+  denied_count?: number;
+  source_hash_list?: string[];
 }
 
 export function deriveContextPackId(
@@ -769,6 +774,11 @@ export async function insertContextPacks(packs: ContextPackInput[]): Promise<num
       .toISOString()
       .replace("T", " ")
       .replace("Z", ""),
+    precision_at_budget: p.precision_at_budget ?? 0,
+    citation_coverage: p.citation_coverage ?? 0,
+    stale_count: p.stale_count ?? 0,
+    denied_count: p.denied_count ?? 0,
+    source_hash_list: p.source_hash_list ?? [],
   }));
 
   await client.insert({

@@ -81,6 +81,11 @@ def push_context_pack(
     # the token budget is its maxTokens, not the dict itself.
     budget = retrieval.get("retrievalBudget")
     max_tokens = budget.get("maxTokens") if isinstance(budget, dict) else budget
+    source_hash_list = retrieval.get("source_hash_list")
+    if not isinstance(source_hash_list, list):
+        source_hash_list = []
+    else:
+        source_hash_list = [s for s in source_hash_list if isinstance(s, str)]
     payload = {
         "run_id": run_id,
         "repository_id": link["repository_id"],
@@ -91,6 +96,11 @@ def push_context_pack(
         "sources_considered": len(retrieval.get("selectedSources") or []),
         "occurred_at": _now_iso(),
         "items": _build_items(retrieval),
+        "precision_at_budget": float(retrieval.get("precision_at_budget") or 0.0),
+        "citation_coverage": float(retrieval.get("citation_coverage") or 0.0),
+        "stale_count": int(retrieval.get("stale_count") or 0),
+        "denied_count": int(retrieval.get("denied_count") or 0),
+        "source_hash_list": source_hash_list,
     }
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(

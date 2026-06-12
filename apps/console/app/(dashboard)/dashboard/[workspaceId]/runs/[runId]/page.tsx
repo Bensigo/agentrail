@@ -145,7 +145,7 @@ export default function RunDetailPage() {
         <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
           Cost &amp; tokens
         </h2>
-        <CostSection workspaceId={workspaceId} runId={runId} />
+        <CostSection workspaceId={workspaceId} runId={runId} runStatus={run?.status} />
       </div>
 
       <div className="mt-6">
@@ -156,6 +156,7 @@ export default function RunDetailPage() {
           workspaceId={workspaceId}
           runId={runId}
           events={events}
+          runStatus={run?.status}
         />
       </div>
 
@@ -163,7 +164,7 @@ export default function RunDetailPage() {
         <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
           Context
         </h2>
-        <ContextSection workspaceId={workspaceId} runId={runId} />
+        <ContextSection workspaceId={workspaceId} runId={runId} runStatus={run?.status} />
       </div>
 
       <div className="mt-6">
@@ -191,7 +192,7 @@ export default function RunDetailPage() {
               View all →
             </a>
           </div>
-          <ReviewGatesSection workspaceId={workspaceId} runId={runId} />
+          <ReviewGatesSection workspaceId={workspaceId} runId={runId} runStatus={run.status} />
         </div>
       )}
 

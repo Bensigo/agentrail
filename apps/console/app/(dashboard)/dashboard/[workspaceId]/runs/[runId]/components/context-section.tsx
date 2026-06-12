@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { SectionSkeleton, SectionEmpty } from "./section-states";
 
 interface IncludedItem {
   path: string;
@@ -33,6 +34,7 @@ interface ContextPacksResponse {
 interface ContextSectionProps {
   workspaceId: string;
   runId: string;
+  runStatus?: string;
 }
 
 function fmt(n: number): string {
@@ -122,7 +124,7 @@ function PackCard({ pack }: { pack: ContextPack }) {
   );
 }
 
-export function ContextSection({ workspaceId, runId }: ContextSectionProps) {
+export function ContextSection({ workspaceId, runId, runStatus }: ContextSectionProps) {
   const [packs, setPacks] = useState<ContextPack[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -153,11 +155,7 @@ export function ContextSection({ workspaceId, runId }: ContextSectionProps) {
   }, [workspaceId, runId]);
 
   if (loading) {
-    return (
-      <p className="text-sm text-[var(--gray-09)] animate-pulse py-4">
-        Loading context…
-      </p>
-    );
+    return <SectionSkeleton lines={2} />;
   }
 
   if (error) {
@@ -166,9 +164,11 @@ export function ContextSection({ workspaceId, runId }: ContextSectionProps) {
 
   if (packs.length === 0) {
     return (
-      <p className="text-sm text-[var(--gray-09)] py-4">
-        No context packs recorded for this run.
-      </p>
+      <SectionEmpty
+        runStatus={runStatus}
+        waitingText="Run in progress — the context pack is recorded as each phase completes."
+        emptyText="No context packs recorded for this run."
+      />
     );
   }
 

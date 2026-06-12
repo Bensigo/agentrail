@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { SectionSkeleton, SectionEmpty } from "./section-states";
 
 export interface EvidenceRef {
   label: string;
@@ -239,11 +240,13 @@ function GateRow({ gate }: { gate: ReviewGate }) {
 interface ReviewGatesSectionProps {
   workspaceId: string;
   runId: string;
+  runStatus?: string;
 }
 
 export function ReviewGatesSection({
   workspaceId,
   runId,
+  runStatus,
 }: ReviewGatesSectionProps) {
   const [gates, setGates] = useState<ReviewGate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -275,11 +278,7 @@ export function ReviewGatesSection({
   }, [workspaceId, runId]);
 
   if (loading) {
-    return (
-      <p className="text-sm text-[var(--gray-09)] animate-pulse py-4">
-        Loading review gates…
-      </p>
-    );
+    return <SectionSkeleton lines={2} />;
   }
 
   if (error) {
@@ -290,9 +289,11 @@ export function ReviewGatesSection({
 
   if (gates.length === 0) {
     return (
-      <p className="text-sm text-[var(--gray-09)] py-4">
-        No review gates recorded for this run.
-      </p>
+      <SectionEmpty
+        runStatus={runStatus}
+        waitingText="Run in progress — review gates are recorded when the review rounds run."
+        emptyText="No review gates recorded for this run."
+      />
     );
   }
 

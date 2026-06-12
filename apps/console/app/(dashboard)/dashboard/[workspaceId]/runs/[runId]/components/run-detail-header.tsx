@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { StatusBadge } from "../../components/status-badge";
 
 export interface RunDetail {
@@ -21,7 +22,23 @@ function formatDuration(seconds: number | null): string {
   return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }
 
+/** Live elapsed seconds for a running run; null when not applicable. */
+function useLiveElapsed(run: RunDetail): number | null {
+  const running = run.status === "running" && !!run.startedAt;
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+
+  if (!running) return null;
+  return Math.max(0, Math.round((now - new Date(run.startedAt!).getTime()) / 1000));
+}
+
 export function RunDetailHeader({ run }: { run: RunDetail }) {
+  const liveElapsed = useLiveElapsed(run);
   return (
     <div className="flex flex-wrap items-start gap-6 py-4 border-b border-[var(--gray-05)]">
       <div className="flex flex-col gap-0.5 min-w-[140px]">
@@ -61,7 +78,7 @@ export function RunDetailHeader({ run }: { run: RunDetail }) {
           Duration
         </span>
         <span className="text-sm font-mono text-[var(--gray-11)]">
-          {formatDuration(run.duration)}
+          {liveElapsed !== null ? `${formatDuration(liveElapsed)}…` : formatDuration(run.duration)}
         </span>
       </div>
 

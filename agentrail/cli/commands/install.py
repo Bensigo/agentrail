@@ -153,7 +153,10 @@ def _install_claude_hooks(repo_dir: Path, target_dir: Path) -> None:
         except (OSError, ValueError):
             settings = {}
 
-    command = ".agentrail/hooks/context-first.sh"
+    # $CLAUDE_PROJECT_DIR (set by Claude Code when running hooks) makes the
+    # path independent of the hook's working directory — the docs-recommended
+    # way to reference project-local hook scripts.
+    command = "$CLAUDE_PROJECT_DIR/.agentrail/hooks/context-first.sh"
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         hooks = {}
@@ -163,10 +166,13 @@ def _install_claude_hooks(repo_dir: Path, target_dir: Path) -> None:
         pre_tool_use = []
         hooks["PreToolUse"] = pre_tool_use
 
+    # Match both the current command and the pre-fix relative form so
+    # re-running install never duplicates the hook entry.
+    known_commands = {command, ".agentrail/hooks/context-first.sh"}
     already_wired = any(
         isinstance(entry, dict)
         and any(
-            isinstance(h, dict) and h.get("command") == command
+            isinstance(h, dict) and h.get("command") in known_commands
             for h in (entry.get("hooks") or [])
             if isinstance(entry.get("hooks"), list)
         )

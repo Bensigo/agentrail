@@ -28,6 +28,8 @@ export {
   insertAfkRunEvents,
   insertIndexSnapshots,
   deriveSnapshotEventId,
+  insertCostEvents,
+  deriveCostEventId,
   getRunEventsByRunId,
 } from "./queries";
 export type {
@@ -38,5 +40,6 @@ export type {
   AggregateCostsOptions,
   AfkRunEventInput,
   IndexSnapshotInput,
+  CostEventInput,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems } from "./context-queries";

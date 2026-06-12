@@ -77,6 +77,7 @@ def common_header(agent: str, state_summary: str) -> str:
 def format_skill_resolution(
     resolution: dict[str, Any],
     mode: str = "prompt",
+    engine: str = "codex",
 ) -> str:
     """Reproduce legacy print_skill_resolution output for mode='prompt'.
 
@@ -89,6 +90,11 @@ def format_skill_resolution(
                 ...
             ],
         }
+
+    When *engine* is ``"claude"`` and skills are resolved, returns a single-line
+    block instructing the model to invoke installed Claude Code skills rather than
+    reading SKILL.md files in full (lazy-loading token win).  All other cases use
+    the legacy "Read these SKILL.md files" block.
 
     Only ``mode='prompt'`` is supported; any other value raises NotImplementedError.
     The returned string always ends with a trailing blank line (``\\n``), mirroring
@@ -104,6 +110,12 @@ def format_skill_resolution(
         if not resolution["autoSkills"]:
             lines.append("- Automatic skill resolution disabled.")
         lines.append("- No skills resolved.")
+    elif engine == "claude":
+        # Claude Code lazy-loads skills from .claude/skills/; no need to read files.
+        lines.append(
+            "Project skills are installed and load on demand — "
+            "invoke them; do not paste their contents"
+        )
     else:
         lines.append("Resolved AgentRail skills:")
         lines.append(

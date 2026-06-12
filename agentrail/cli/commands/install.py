@@ -107,6 +107,23 @@ _LABEL_SPECS: Dict[str, tuple] = {
 }
 
 
+def _install_claude_skills(repo_dir: Path, target_dir: Path) -> None:
+    """Copy repo skills into target's .claude/skills/ for native Claude Code lazy-loading.
+
+    Idempotent: overwrites on reinstall. Each skill lands at:
+      <target_dir>/.claude/skills/<skill_name>/SKILL.md
+    """
+    skills_src = repo_dir / "skills"
+    if not skills_src.is_dir():
+        return
+    for skill_md in sorted(skills_src.glob("*/SKILL.md")):
+        skill_name = skill_md.parent.name
+        dest = target_dir / ".claude" / "skills" / skill_name / "SKILL.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(skill_md), str(dest))
+        print(f"installed skill: .claude/skills/{skill_name}/SKILL.md")
+
+
 def _create_github_labels(target_dir: Path) -> None:
     from agentrail.cli.commands.doctor import REQUIRED_LABELS
 
@@ -254,6 +271,9 @@ def run_install(args: List[str], *, _now: Optional[str] = None) -> int:
 
     # Materialize trimmed .agentrail/source (#404 Option B)
     _materialize_source(repo_dir, target_dir)
+
+    # Install repo skills into .claude/skills/ for native Claude Code lazy-loading
+    _install_claude_skills(repo_dir, target_dir)
 
     # GitHub labels
     if github_labels:

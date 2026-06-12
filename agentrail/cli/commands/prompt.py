@@ -141,7 +141,7 @@ def run_prompt(args: List[str]) -> int:
         pack = build_issue_context_pack(target_path, issue, "plan")
         summary = context_pack_summary(target_path, pack)
         snippets = context_selected_snippets(target_path, resolution_text)
-        skill_block = format_skill_resolution(resolution, mode="prompt")
+        skill_block = format_skill_resolution(resolution, mode="prompt", engine=agent)
         print(issue_base_prompt(
             agent, issue,
             header=header,

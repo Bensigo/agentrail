@@ -232,6 +232,83 @@ class FormatSkillResolutionTests(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             format_skill_resolution(resolution, mode="cli")
 
+    # --- AC2: engine-aware skill block ---
+
+    def test_claude_engine_with_skills_returns_one_liner(self):
+        """AC2: Claude prompt no longer instructs reading SKILL.md files in full."""
+        resolution = {
+            "autoSkills": True,
+            "resolved": [
+                {"name": "tdd", "localPath": "skills/tdd/SKILL.md", "reasons": ["keyword"]}
+            ],
+        }
+        result = self._fn(resolution, engine="claude")
+        self.assertIn(
+            "Project skills are installed and load on demand — invoke them; do not paste their contents",
+            result,
+        )
+
+    def test_claude_engine_with_skills_omits_read_these_files(self):
+        """Claude prompt must NOT say 'Read these SKILL.md files'."""
+        resolution = {
+            "autoSkills": True,
+            "resolved": [
+                {"name": "tdd", "localPath": "skills/tdd/SKILL.md", "reasons": ["keyword"]}
+            ],
+        }
+        result = self._fn(resolution, engine="claude")
+        self.assertNotIn("Read these SKILL.md files before editing", result)
+
+    def test_claude_engine_with_skills_omits_skill_paths(self):
+        """Claude one-liner must NOT list individual skill paths."""
+        resolution = {
+            "autoSkills": True,
+            "resolved": [
+                {"name": "tdd", "localPath": "skills/tdd/SKILL.md", "reasons": ["keyword"]}
+            ],
+        }
+        result = self._fn(resolution, engine="claude")
+        self.assertNotIn("path: skills/tdd/SKILL.md", result)
+
+    def test_codex_engine_with_skills_uses_read_these_files(self):
+        """AC2: Codex prompt unchanged — still shows 'Read these SKILL.md files'."""
+        resolution = {
+            "autoSkills": True,
+            "resolved": [
+                {"name": "tdd", "localPath": "skills/tdd/SKILL.md", "reasons": ["keyword"]}
+            ],
+        }
+        result = self._fn(resolution, engine="codex")
+        self.assertIn("Read these SKILL.md files before editing", result)
+
+    def test_default_engine_with_skills_uses_read_these_files(self):
+        """Default engine (no engine kwarg) preserves existing codex behavior."""
+        resolution = {
+            "autoSkills": True,
+            "resolved": [
+                {"name": "tdd", "localPath": "skills/tdd/SKILL.md", "reasons": ["keyword"]}
+            ],
+        }
+        result = self._fn(resolution)
+        self.assertIn("Read these SKILL.md files before editing", result)
+
+    def test_claude_engine_no_skills_uses_no_skills_block(self):
+        """Claude engine with empty resolved list still shows no-skills block."""
+        resolution = {"autoSkills": True, "resolved": []}
+        result = self._fn(resolution, engine="claude")
+        self.assertIn("- No skills resolved.", result)
+        self.assertNotIn("Project skills are installed", result)
+
+    def test_claude_one_liner_ends_with_trailing_newline(self):
+        resolution = {
+            "autoSkills": True,
+            "resolved": [
+                {"name": "tdd", "localPath": "skills/tdd/SKILL.md", "reasons": ["keyword"]}
+            ],
+        }
+        result = self._fn(resolution, engine="claude")
+        self.assertTrue(result.endswith("\n"))
+
 
 class IssueBasePromptTests(unittest.TestCase):
     """Tests for issue_base_prompt()."""

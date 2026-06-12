@@ -108,6 +108,53 @@ class TestFreshInstall(TestCase):
         self.assertEqual(skill["source"], "skills/my-skill/SKILL.md")
 
 
+class TestClaudeSkillsInstall(TestCase):
+    """AC1: .claude/skills/<name>/SKILL.md installed for every repo skill."""
+
+    def setUp(self):
+        self.repo = _make_repo()
+        self.target = Path(tempfile.mkdtemp())
+
+    def test_skill_installed_in_claude_skills(self):
+        _run_install(self.repo, self.target)
+        self.assertTrue(
+            (self.target / ".claude" / "skills" / "my-skill" / "SKILL.md").exists()
+        )
+
+    def test_skill_content_copied(self):
+        _run_install(self.repo, self.target)
+        content = (self.target / ".claude" / "skills" / "my-skill" / "SKILL.md").read_text()
+        self.assertEqual(content, "# Skill\n")
+
+    def test_reinstall_overwrites_skill(self):
+        _run_install(self.repo, self.target)
+        # Overwrite the installed copy with different content
+        dest = self.target / ".claude" / "skills" / "my-skill" / "SKILL.md"
+        dest.write_text("# Old\n")
+        # Re-run install
+        _run_install(self.repo, self.target)
+        self.assertEqual(dest.read_text(), "# Skill\n")
+
+    def test_multiple_skills_all_installed(self):
+        # Add a second skill to the repo
+        (self.repo / "skills" / "other-skill").mkdir(parents=True, exist_ok=True)
+        (self.repo / "skills" / "other-skill" / "SKILL.md").write_text("# Other\n")
+        _run_install(self.repo, self.target)
+        self.assertTrue(
+            (self.target / ".claude" / "skills" / "my-skill" / "SKILL.md").exists()
+        )
+        self.assertTrue(
+            (self.target / ".claude" / "skills" / "other-skill" / "SKILL.md").exists()
+        )
+
+    def test_no_skills_dir_does_not_error(self):
+        # Remove skills dir from repo
+        import shutil as _sh
+        _sh.rmtree(str(self.repo / "skills"))
+        rc = _run_install(self.repo, self.target)
+        self.assertEqual(rc, 0)
+
+
 class TestVendorTrim(TestCase):
     """#404 Option B: only the native package + runtime data dirs + package.json."""
 

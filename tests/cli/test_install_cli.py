@@ -29,6 +29,11 @@ def _make_repo() -> Path:
     (repo / "skills" / "my-skill").mkdir(parents=True)
     (repo / "skills" / "my-skill" / "SKILL.md").write_text("# Skill\n")
 
+    # context-first hook source (#519) — lives under templates/scripts (hidden
+    # prefix, not installed to the surface) and is placed by _install_claude_hooks.
+    (repo / "templates" / "scripts").mkdir(exist_ok=True)
+    (repo / "templates" / "scripts" / "context-first.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+
     scripts = repo / "scripts"
     scripts.mkdir()
     launcher = scripts / "agentrail"
@@ -153,6 +158,58 @@ class TestClaudeSkillsInstall(TestCase):
         _sh.rmtree(str(self.repo / "skills"))
         rc = _run_install(self.repo, self.target)
         self.assertEqual(rc, 0)
+
+
+class TestClaudeHooksInstall(TestCase):
+    """#519: context-first PreToolUse hook installed + wired into settings.json."""
+
+    def setUp(self):
+        self.repo = _make_repo()
+        self.target = Path(tempfile.mkdtemp())
+
+    def test_hook_script_installed_and_executable(self):
+        _run_install(self.repo, self.target)
+        hook = self.target / ".agentrail" / "hooks" / "context-first.sh"
+        self.assertTrue(hook.exists())
+        self.assertTrue(os.access(hook, os.X_OK))
+
+    def test_hook_not_placed_on_project_surface(self):
+        # templates/scripts/* is the hidden prefix — never installed as a managed file.
+        _run_install(self.repo, self.target)
+        self.assertFalse((self.target / "scripts" / "context-first.sh").exists())
+        self.assertFalse((self.target / "hooks" / "context-first.sh").exists())
+
+    def test_settings_json_wired(self):
+        _run_install(self.repo, self.target)
+        settings = json.loads((self.target / ".claude" / "settings.json").read_text())
+        entries = settings["hooks"]["PreToolUse"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["matcher"], "Grep|Glob|Bash")
+        self.assertEqual(
+            entries[0]["hooks"][0]["command"], ".agentrail/hooks/context-first.sh"
+        )
+
+    def test_settings_merge_preserves_existing(self):
+        settings_path = self.target / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps({"model": "opus", "hooks": {"PostToolUse": []}}))
+        _run_install(self.repo, self.target)
+        settings = json.loads(settings_path.read_text())
+        self.assertEqual(settings["model"], "opus")
+        self.assertIn("PostToolUse", settings["hooks"])
+        self.assertEqual(len(settings["hooks"]["PreToolUse"]), 1)
+
+    def test_reinstall_idempotent_no_duplicate_entry(self):
+        _run_install(self.repo, self.target)
+        _run_install(self.repo, self.target)
+        settings = json.loads((self.target / ".claude" / "settings.json").read_text())
+        self.assertEqual(len(settings["hooks"]["PreToolUse"]), 1)
+
+    def test_no_hook_source_does_not_error(self):
+        (self.repo / "templates" / "scripts" / "context-first.sh").unlink()
+        rc = _run_install(self.repo, self.target)
+        self.assertEqual(rc, 0)
+        self.assertFalse((self.target / ".agentrail" / "hooks" / "context-first.sh").exists())
 
 
 class TestVendorTrim(TestCase):

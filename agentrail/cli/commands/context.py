@@ -19,6 +19,21 @@ def _resolve_target(value: str | None) -> Path:
     return Path(value or ".").resolve()
 
 
+def _touch_context_marker(target: Path) -> None:
+    """Mark that context retrieval ran this session (#519).
+
+    The context-first PreToolUse hook gates broad grep on this marker, so every
+    ``context query`` / ``context search`` writes it. Best-effort: never fail a
+    retrieval just because the marker could not be written.
+    """
+    try:
+        marker = target / ".agentrail" / "tmp" / "context-queried"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except OSError:
+        pass
+
+
 def _parse_target(args: List[str]) -> Tuple[Path, List[str]]:
     target: str | None = None
     remaining: List[str] = []
@@ -188,7 +203,9 @@ def run_context(args: List[str]) -> int:
                     index += 2
                 else:
                     raise SystemExit(f"Unknown context query option: {arg}")
-            output = query_context(_resolve_target(target), query, limit=max(1, min(100, limit)))
+            resolved_target = _resolve_target(target)
+            _touch_context_marker(resolved_target)
+            output = query_context(resolved_target, query, limit=max(1, min(100, limit)))
             if json_output:
                 _print_json(output)
             else:
@@ -226,7 +243,9 @@ def run_context(args: List[str]) -> int:
                     index += 2
                 else:
                     raise SystemExit(f"Unknown context search option: {arg}")
-            output = search_context(_resolve_target(target), query, limit=max(1, min(100, limit)))
+            resolved_target = _resolve_target(target)
+            _touch_context_marker(resolved_target)
+            output = search_context(resolved_target, query, limit=max(1, min(100, limit)))
             if json_output:
                 _print_json(output)
             else:

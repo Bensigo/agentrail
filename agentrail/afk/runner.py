@@ -351,6 +351,17 @@ class Runner:
             if not sid:
                 return
             now = datetime.now(timezone.utc).isoformat()
+            # Remember the start time so the finish upsert can carry it too —
+            # if the start registration was lost (server briefly down), the
+            # run would otherwise never get a started_at, and duration on the
+            # dashboard stays blank forever.
+            if not hasattr(self, "_run_starts"):
+                self._run_starts: dict[int, str] = {}
+            if started:
+                self._run_starts[issue_state.number] = now
+            started_at = now if started else (
+                self._run_starts.get(issue_state.number) if finished else None
+            )
             branch = f"afk/issue-{issue_state.number}"
             pr = getattr(issue_state, "pr", None)
             if pr:
@@ -367,7 +378,7 @@ class Runner:
                 branch=branch,
                 title=issue_state.title or f"Issue #{issue_state.number}",
                 status=status,
-                started_at=now if started else None,
+                started_at=started_at,
                 finished_at=now if finished else None,
             )
         except Exception:  # noqa: BLE001 — non-fatal

@@ -563,6 +563,10 @@ export async function upsertRun(input: UpsertRunInput): Promise<void> {
       set: {
         status: input.status,
         title: input.title ?? null,
+        // Backfill startedAt when the caller supplies it: the finish upsert
+        // carries the start time so a run whose start registration was lost
+        // (server briefly down) still gets a duration.
+        ...(input.startedAt ? { startedAt: new Date(input.startedAt) } : {}),
         finishedAt: input.finishedAt ? new Date(input.finishedAt) : null,
       },
     });

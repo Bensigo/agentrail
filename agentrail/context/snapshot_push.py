@@ -8,6 +8,7 @@ stands on its own.
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -24,19 +25,30 @@ def _now_iso() -> str:
 # snapshots require. Kept separate to avoid a context->afk layer dependency;
 # unify into a neutral shared loader if a third reader appears.
 def load_link(target: Path) -> Optional[Dict[str, str]]:
-    """Return {base_url, api_key, repository_id} from server.json, or None."""
+    """Return {base_url, api_key, repository_id} from server.json, or env, or None.
+
+    Prefers ``<target>/.agentrail/server.json``. Falls back to the
+    ``AGENTRAIL_SERVER_*`` env vars — afk sets these when it invokes the pipeline,
+    because the pipeline runs with --target=<worktree>, an ephemeral git worktree
+    that does not carry server.json (it is gitignored and stripped by git ops).
+    """
     path = target / ".agentrail" / "server.json"
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text())
-        return {
-            "base_url": str(data["base_url"]).rstrip("/"),
-            "api_key": str(data["api_key"]),
-            "repository_id": str(data["repository_id"]),
-        }
-    except (KeyError, ValueError, OSError):
-        return None
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+            return {
+                "base_url": str(data["base_url"]).rstrip("/"),
+                "api_key": str(data["api_key"]),
+                "repository_id": str(data["repository_id"]),
+            }
+        except (KeyError, ValueError, OSError):
+            pass
+    base = os.environ.get("AGENTRAIL_SERVER_BASE_URL")
+    key = os.environ.get("AGENTRAIL_SERVER_API_KEY")
+    repo = os.environ.get("AGENTRAIL_SERVER_REPOSITORY_ID")
+    if base and key and repo:
+        return {"base_url": base.rstrip("/"), "api_key": key, "repository_id": repo}
+    return None
 
 
 def _summarize(result: Dict[str, Any]) -> tuple[str, int, int]:

@@ -54,9 +54,16 @@ export default async function ReposPage({
     let stalenessSeconds: number | null = null;
 
     if (snap) {
+      // ClickHouse DateTime64 comes back as "YYYY-MM-DD HH:MM:SS.mmm" in UTC with
+      // no tz marker; new Date() parses that as LOCAL time and inflates staleness
+      // by the server's UTC offset, making fresh snapshots read "stale".
+      const toUtc = (s: string): Date =>
+        /[zZ]|[+-]\d\d:?\d\d$/.test(s)
+          ? new Date(s)
+          : new Date(s.replace(" ", "T") + "Z");
       const indexedDate =
         typeof snap.indexed_at === "string"
-          ? new Date(snap.indexed_at)
+          ? toUtc(snap.indexed_at)
           : snap.indexed_at;
       stalenessSeconds = Math.floor((now - indexedDate.getTime()) / 1000);
     }

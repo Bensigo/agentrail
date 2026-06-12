@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agentrail.context.config import ContextConfig, read_context_config
-from agentrail.context.models import ChunkRecord, RedactionFinding, SourceRecord
+from agentrail.context.models import ChunkRecord, Freshness, RedactionFinding, SourceRecord
 from agentrail.context.redaction import redact_text
 from agentrail.context.sources import external_record, source_record_for_file
 from agentrail.shared.fs import is_binary_file, matches_any, sha256_text, walk_files
@@ -996,9 +996,9 @@ def _source_tree_fingerprint(walked: List[Any]) -> str:
 def _cached_index_is_fresh(root: Path, cfg: ContextConfig, index_path: Path) -> bool:
     """Return True only if no indexed file changed since the index was written.
 
-    The time-based cache window is a fast path, not a correctness guarantee: a
-    file edited inside the window must still invalidate the cache so retrieval
-    (and any embeddings keyed on chunk content) never compete with stale text.
+    Only files that would actually be indexed (matching includeGlobs, not
+    excludeGlobs) are considered.  Changes to excluded or non-included paths
+    do not invalidate the index.
     """
     freshness_path = index_path.parent / "freshness.json"
     try:
@@ -1007,11 +1007,17 @@ def _cached_index_is_fresh(root: Path, cfg: ContextConfig, index_path: Path) -> 
     except (OSError, ValueError):
         return False
     walked = walk_files(root, cfg.excludeGlobs)
-    if _source_tree_fingerprint(walked) != stored.get("sourceTreeFingerprint"):
+    # Only consider files that would actually be indexed.
+    indexable = [
+        entry for entry in walked
+        if not entry.directory
+        and matches_any(cfg.includeGlobs, entry.relative_path)
+        and not matches_any(cfg.excludeGlobs, entry.relative_path)
+    ]
+    fp = sha256_text("\n".join(sorted(e.relative_path for e in indexable)))
+    if fp != stored.get("sourceTreeFingerprint"):
         return False
-    for entry in walked:
-        if entry.directory:
-            continue
+    for entry in indexable:
         try:
             if entry.full_path.stat().st_mtime > index_mtime:
                 return False
@@ -1020,16 +1026,121 @@ def _cached_index_is_fresh(root: Path, cfg: ContextConfig, index_path: Path) -> 
     return True
 
 
+def _source_record_from_json(data: Dict[str, Any]) -> SourceRecord:
+    """Reconstruct a SourceRecord from its persisted JSON representation."""
+    f = data.get("freshness") or {}
+    return SourceRecord(
+        id=data["id"],
+        sourceType=data["sourceType"],
+        path=data["path"],
+        contentHash=data["contentHash"],
+        modifiedAt=data.get("modifiedAt"),
+        freshness=Freshness(
+            status=f.get("status", "fresh"),
+            observedAt=f.get("observedAt"),
+            expiresAt=f.get("expiresAt"),
+        ),
+        authority=data.get("authority", "local"),
+        visibility=data.get("visibility", "internal"),
+        linkedIssues=data.get("linkedIssues") or [],
+        linkedPullRequests=data.get("linkedPullRequests") or [],
+        chunkIds=data.get("chunkIds") or [],
+        auditRef=data.get("auditRef", ""),
+        redactions=[RedactionFinding(**r) for r in (data.get("redactions") or [])],
+        content=data.get("content"),
+        memory=data.get("memory"),
+        priorMistake=data.get("priorMistake"),
+    )
+
+
+def _chunk_record_from_json(data: Dict[str, Any]) -> ChunkRecord:
+    """Reconstruct a ChunkRecord from its persisted JSON representation."""
+    return ChunkRecord(
+        id=data["id"],
+        sourceId=data["sourceId"],
+        sourceType=data["sourceType"],
+        path=data["path"],
+        language=data.get("language", ""),
+        headingPath=data.get("headingPath") or [],
+        parentContext=data.get("parentContext", ""),
+        startLine=data.get("startLine"),
+        endLine=data.get("endLine"),
+        symbolHints=data.get("symbolHints") or [],
+        importHints=data.get("importHints") or [],
+        textHash=data.get("textHash", ""),
+        summary=data.get("summary"),
+        citation=data.get("citation", ""),
+        content=data.get("content", ""),
+        memory=data.get("memory"),
+        priorMistake=data.get("priorMistake"),
+        symbol=data.get("symbol"),
+        kind=data.get("kind"),
+    )
+
+
+def _load_existing_records_and_chunks(
+    index_path: Path,
+) -> Tuple[Dict[str, SourceRecord], Dict[str, List[ChunkRecord]]]:
+    """Load SourceRecords and ChunkRecords from a persisted index.json.
+
+    Returns (records_by_path, chunks_by_source_id).  Both dicts are empty if
+    the index is missing or malformed.
+    """
+    try:
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}, {}
+    records_by_path: Dict[str, SourceRecord] = {}
+    for rec_data in data.get("records") or []:
+        try:
+            rec = _source_record_from_json(rec_data)
+            records_by_path[rec.path] = rec
+        except (KeyError, TypeError):
+            continue
+    chunks_by_source_id: Dict[str, List[ChunkRecord]] = {}
+    for chunk_data in data.get("chunks") or []:
+        try:
+            chunk = _chunk_record_from_json(chunk_data)
+            chunks_by_source_id.setdefault(chunk.sourceId, []).append(chunk)
+        except (KeyError, TypeError):
+            continue
+    return records_by_path, chunks_by_source_id
+
+
 def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[str, Any]:
     root = target_dir.resolve()
     index_path = root / ".agentrail" / "context" / "index" / "index.json"
     cfg = config or read_context_config(root)
-    try:
-        age = datetime.now(timezone.utc).timestamp() - index_path.stat().st_mtime
-        if age < _BUILD_INDEX_STALENESS_SECONDS and _cached_index_is_fresh(root, cfg, index_path):
-            return load_index(root)
-    except OSError:
-        pass
+    # Content-based cache: return cached result when nothing changed, regardless of age.
+    # _BUILD_INDEX_STALENESS_SECONDS is kept as a constant for callers that may read it,
+    # but the cache decision is driven entirely by _cached_index_is_fresh.
+    if _cached_index_is_fresh(root, cfg, index_path):
+        try:
+            index_data = load_index(root)
+            snap = index_data.get("snapshot") or {}
+            prov = index_data.get("provider") or {}
+            prov_sum = prov.get("summary") or {}
+            ingestion_health = index_data.get("ingestionHealth") or snap.get("ingestionHealth") or {}
+            return {
+                "indexPath": ".agentrail/context/index/index.json",
+                "auditPath": ".agentrail/context/audit/events.jsonl",
+                "embeddingPayloadPath": ".agentrail/context/index/embedding-payloads.jsonl",
+                "providerMode": prov.get("mode", "disabled"),
+                "summaryMode": prov_sum.get("mode", "disabled"),
+                "commitSha": snap.get("commitSha", ""),
+                "graphNodes": len((index_data.get("graph") or {}).get("nodes") or []),
+                "graphEdges": len((index_data.get("graph") or {}).get("edges") or []),
+                "ingestionHealth": ingestion_health,
+                "indexed": len(index_data.get("records") or []),
+                "chunks": len(index_data.get("chunks") or []),
+                "skipped": snap.get("skipped", 0),
+                "redactions": snap.get("redactionCount", 0),
+                "cacheHit": True,
+                "reusedSources": len(index_data.get("records") or []),
+                "rebuiltSources": 0,
+            }
+        except OSError:
+            pass  # Index disappeared between check and read — fall through to rebuild
     provider_mode = cfg.embedding.mode
     summary_mode = cfg.summary.mode
     if summary_mode != "disabled" and not cfg.summary.provider:
@@ -1042,6 +1153,14 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
     embedding_payload_path = index_dir / "embedding-payloads.jsonl"
     embedding_payload_path.write_text("", encoding="utf-8")
 
+    # Load existing records for incremental reuse.
+    old_records, old_chunks_by_source_id = _load_existing_records_and_chunks(index_path)
+    had_prior_index = bool(old_records)
+    try:
+        index_mtime: Optional[float] = index_path.stat().st_mtime
+    except OSError:
+        index_mtime = None
+
     walked = walk_files(root, cfg.excludeGlobs, include_skipped_dirs=True)
     ignored = git_ignored_set(root, [file.relative_path for file in walked if not file.directory], cfg.respectGitIgnore)
     records: List[SourceRecord] = []
@@ -1049,6 +1168,8 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
     skipped = 0
     redaction_count = 0
     skipped_records: List[Dict[str, Any]] = []
+    reused_sources = 0
+    rebuilt_sources = 0
 
     for file in walked:
         if file.directory:
@@ -1082,6 +1203,18 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
             skipped += 1
             skip_event(root, cfg, skipped_records, file.relative_path, "binary")
             continue
+        # Incremental reuse: if the file has not been modified since the last index
+        # write AND we have a stored record, skip re-reading and re-chunking.
+        old_rec = old_records.get(file.relative_path)
+        if (
+            old_rec is not None
+            and index_mtime is not None
+            and stats.st_mtime <= index_mtime
+        ):
+            records.append(old_rec)
+            chunks.extend(old_chunks_by_source_id.get(old_rec.id) or [])
+            reused_sources += 1
+            continue
         try:
             raw_text = file.full_path.read_text(encoding="utf-8")
         except Exception:
@@ -1091,11 +1224,20 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
         redacted = redact_text(raw_text) if cfg.secretRedaction.enabled else None
         redacted_text = redacted.text if redacted else raw_text
         redactions = redacted.findings if redacted else []
-        record = source_record_for_file(file.full_path, file.relative_path, content_hash=sha256_text(redacted_text), content=redacted_text, redactions=redactions)
+        content_hash = sha256_text(redacted_text)
+        # Content-hash reuse: mtime changed but content is identical (e.g. touch or
+        # a git operation that preserved the bytes).
+        if old_rec is not None and old_rec.contentHash == content_hash:
+            records.append(old_rec)
+            chunks.extend(old_chunks_by_source_id.get(old_rec.id) or [])
+            reused_sources += 1
+            continue
+        record = source_record_for_file(file.full_path, file.relative_path, content_hash=content_hash, content=redacted_text, redactions=redactions)
         source_chunks = chunks_for_source(record, file.relative_path, redacted_text)
         record.chunkIds = [chunk.id for chunk in source_chunks]
         records.append(record)
         chunks.extend(source_chunks)
+        rebuilt_sources += 1
         append_audit(root, {"event": "indexed_file", "path": record.path, "contentHash": record.contentHash, "chunkCount": len(source_chunks), "redactionCount": sum(finding.count for finding in record.redactions)})
         for finding in record.redactions:
             redaction_count += finding.count
@@ -1111,6 +1253,7 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
         record.chunkIds = [external_chunk.id]
         records.append(record)
         chunks.append(external_chunk)
+        rebuilt_sources += 1
         append_audit(root, {"event": "indexed_external_descriptor", "path": record.path, "contentHash": record.contentHash, "chunkCount": 1})
         for finding in record.redactions:
             redaction_count += finding.count
@@ -1134,7 +1277,11 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
         "skipped": skipped_records,
     }
     write_json(index_dir / "index.json", index)
-    write_json(index_dir / "freshness.json", {"sourceTreeFingerprint": _source_tree_fingerprint(walked), "builtAt": built_at})
+    # Fingerprint over indexed-file paths only (excludes skipped/excluded files and
+    # external descriptors which have no filesystem path).  Must match the filtering
+    # in _cached_index_is_fresh so the comparison is consistent.
+    indexed_file_paths = sorted(r.path for r in records if r.sourceType != "external_descriptor")
+    write_json(index_dir / "freshness.json", {"sourceTreeFingerprint": sha256_text("\n".join(indexed_file_paths)), "builtAt": built_at})
     write_json(index_dir / "sources.json", [record.to_json(include_content=False) for record in records])
     append_audit(root, {"event": "external_provider_call", "mode": provider_mode, "provider": cfg.embedding.provider, "model": cfg.embedding.model, "action": "skipped_local_only" if provider_mode == "disabled" else "deferred_to_context_embed", "payloadCount": 0 if provider_mode == "disabled" else len(chunks)})
     append_audit(root, {"event": "contextual_summary", "mode": summary_mode, "provider": cfg.summary.provider, "model": cfg.summary.model, "action": "skipped_local_only" if summary_mode == "disabled" else "not_implemented", "payloadCount": 0 if summary_mode == "disabled" else len(chunks)})
@@ -1155,6 +1302,9 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
         "chunks": len(chunks),
         "skipped": skipped,
         "redactions": redaction_count,
+        "cacheHit": "incremental" if had_prior_index else False,
+        "reusedSources": reused_sources,
+        "rebuiltSources": rebuilt_sources,
     }
 
 

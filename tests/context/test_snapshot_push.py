@@ -38,3 +38,25 @@ def test_push_failure_is_nonfatal(tmp_path, monkeypatch):
 
     monkeypatch.setattr(snapshot_push.urllib.request, "urlopen", boom)
     assert snapshot_push.push_index_snapshot(tmp_path, {"commitSha": "x", "indexed": 1, "graphEdges": 2}) is False
+
+
+def test_push_returns_true_on_202(tmp_path, monkeypatch):
+    _link(tmp_path)
+    captured = {}
+
+    class FakeResp:
+        status = 202
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["auth"] = req.get_header("Authorization")
+        return FakeResp()
+
+    monkeypatch.setattr(snapshot_push.urllib.request, "urlopen", fake_urlopen)
+    assert snapshot_push.push_index_snapshot(tmp_path, {"commitSha": "x", "indexed": 1, "graphEdges": 2}) is True
+    assert captured["url"] == "http://localhost:3000/api/v1/ingest/index-snapshots"
+    assert captured["auth"] == "Bearer ar_test"

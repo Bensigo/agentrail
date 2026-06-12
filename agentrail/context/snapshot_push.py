@@ -19,6 +19,10 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+# NOTE: parallels agentrail/afk/telemetry.py:load_server_config (same server.json
+# read + error handling) but additionally returns repository_id, which index
+# snapshots require. Kept separate to avoid a context->afk layer dependency;
+# unify into a neutral shared loader if a third reader appears.
 def load_link(target: Path) -> Optional[Dict[str, str]]:
     """Return {base_url, api_key, repository_id} from server.json, or None."""
     path = target / ".agentrail" / "server.json"

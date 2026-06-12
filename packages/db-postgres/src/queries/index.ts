@@ -1,4 +1,4 @@
-import { eq, and, lt, gte, lte, desc, isNull, count, inArray, gt, sql } from "drizzle-orm";
+import { eq, and, lt, gte, lte, desc, isNull, count, inArray, gt, sql, or } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { randomBytes } from "crypto";
 import { db } from "../db.js";
@@ -708,6 +708,39 @@ export async function claimInvitesForUser(data: {
   }
 
   return claimedWorkspaceIds;
+}
+
+export interface StaleMemoryItemRow {
+  id: string;
+  source: string;
+  lastUsedAt: Date | null;
+}
+
+/**
+ * Returns memory items for a workspace whose `last_used_at` is null or older
+ * than `before`. Used by the Context Rot Scorer to measure memory staleness.
+ */
+export async function getStaleMemoryItems(
+  workspaceId: string,
+  before: Date,
+  repositoryId?: string
+): Promise<StaleMemoryItemRow[]> {
+  const conditions = [
+    eq(memoryItems.workspaceId, workspaceId),
+    or(isNull(memoryItems.lastUsedAt), lt(memoryItems.lastUsedAt, before)),
+  ];
+  if (repositoryId) {
+    conditions.push(eq(memoryItems.repositoryId, repositoryId));
+  }
+  const rows = await db
+    .select({
+      id: memoryItems.id,
+      source: memoryItems.source,
+      lastUsedAt: memoryItems.lastUsedAt,
+    })
+    .from(memoryItems)
+    .where(and(...conditions));
+  return rows;
 }
 
 export async function listWorkspaceMembers(workspaceId: string) {

@@ -48,6 +48,7 @@ export {
   getWorkspaceTelemetryCounts,
   getRunCosts,
   getAgentModelCosts,
+  countDistinctSourceHashLists,
 } from "./queries";
 export type {
   RunEventSummary,
@@ -64,6 +65,7 @@ export type {
   WorkspaceTelemetryCounts,
   RunCostRow,
   AgentModelCostRow,
+  HashChurnResult,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems, getWorkspaceContextPacks, listWorkspaceContextPacks, getTokensSavedByRun } from "./context-queries";
 export { computeQualityMetrics, getQualityMetrics } from "./quality-metrics";

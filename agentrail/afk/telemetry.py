@@ -115,6 +115,93 @@ def count_outbox(target: Path) -> int:
     return sum(1 for line in path.read_text().splitlines() if line.strip())
 
 
+def _now_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).isoformat()
+
+
+def _synthetic_seq(batch: List[Dict[str, Any]], offset: int = 0) -> int:
+    max_batch_seq = 0
+    for event in batch:
+        seq = event.get("seq")
+        if isinstance(seq, int):
+            max_batch_seq = max(max_batch_seq, seq)
+    now_ms = int(_dt.datetime.now(_dt.timezone.utc).timestamp() * 1000)
+    return max(now_ms + offset, max_batch_seq + offset + 1)
+
+
+def _event_field(event: Dict[str, Any], field: str) -> str:
+    value = event.get(field)
+    if isinstance(value, str):
+        return value
+    action = event.get("action")
+    if isinstance(action, dict):
+        action_value = action.get(field)
+        if isinstance(action_value, str):
+            return action_value
+    return ""
+
+
+def _outbox_flushed_events(
+    batch: List[Dict[str, Any]],
+    *,
+    pending_before: int,
+    pending_after: int,
+    occurred_at: str,
+) -> List[Dict[str, Any]]:
+    by_session: Dict[str, Dict[str, Any]] = {}
+    for event in batch:
+        session_id = _event_field(event, "session_id") or _event_field(event, "run_id")
+        if session_id and session_id not in by_session:
+            by_session[session_id] = event
+
+    events: List[Dict[str, Any]] = []
+    for offset, (session_id, source) in enumerate(by_session.items()):
+        workspace_id = _event_field(source, "workspace_id")
+        action = {
+            "type": "outbox_flushed",
+            "event_type": "outbox_flushed",
+            "run_id": session_id,
+            "workspace_id": workspace_id,
+            "occurred_at": occurred_at,
+            "payload": {
+                "pending_before": pending_before,
+                "pending_after": pending_after,
+            },
+        }
+        events.append({
+            "workspace_id": workspace_id,
+            "session_id": session_id,
+            "seq": _synthetic_seq(batch, offset=offset),
+            "ts": occurred_at,
+            "kind": "outbox_flush",
+            "action": action,
+            "digest": f"outbox_flushed:{session_id}:{pending_before}->{pending_after}",
+        })
+    return events
+
+
+def _post_outbox_flushed_events(
+    config: ServerConfig,
+    batch: List[Dict[str, Any]],
+    *,
+    pending_before: int,
+    pending_after: int,
+    occurred_at: str,
+) -> None:
+    events = _outbox_flushed_events(
+        batch,
+        pending_before=pending_before,
+        pending_after=pending_after,
+        occurred_at=occurred_at,
+    )
+    if not events:
+        return
+    try:
+        _do_post(config, events)
+    except Exception:  # noqa: BLE001 - synthetic signal must never affect the real drain
+        pass
+
+
 def _save_last_flush(target: Path, ts: str) -> None:
     path = _telemetry_state_path(target)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,9 +258,18 @@ def flush_outbox(config: ServerConfig, target: Path, batch_size: int = 100) -> b
     if not outbox:
         return True
     batch, remaining = outbox[:batch_size], outbox[batch_size:]
+    pending_before = len(outbox)
     if _do_post(config, batch):
         _write_outbox(target, remaining)
-        _save_last_flush(target, _dt.datetime.now(_dt.timezone.utc).isoformat())
+        flushed_at = _now_iso()
+        _save_last_flush(target, flushed_at)
+        _post_outbox_flushed_events(
+            config,
+            batch,
+            pending_before=pending_before,
+            pending_after=len(remaining),
+            occurred_at=flushed_at,
+        )
         return True
     return False
 

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 import re
 from typing import List, Mapping, Optional, Type, Union
 
+from agentrail.server.cost_baseline import compute_baseline
 from agentrail.server.product import InMemoryProductAuthStore, PRODUCT_AUTH_SUBMISSION_KINDS
 from agentrail.server.telemetry import InMemoryTelemetryStore, TELEMETRY_SUBMISSION_KINDS
 
@@ -1749,6 +1750,7 @@ def ingest(
         product_store.write(envelope)
     elif payload_kind in TELEMETRY_SUBMISSION_KINDS:
         telemetry_store.write(envelope)
+        _maybe_emit_cost_anomaly(envelope, telemetry_store)
     else:
         return IngestionResult(
             accepted=False,
@@ -1761,3 +1763,59 @@ def ingest(
             ],
         )
     return IngestionResult(accepted=True)
+
+
+def _maybe_emit_cost_anomaly(envelope: IngestionEnvelope, telemetry_store: InMemoryTelemetryStore) -> None:
+    payload = envelope.payload
+    if not isinstance(payload, CostEventSubmission):
+        return
+
+    repository_id = envelope.repository_id or ""
+    try:
+        baseline = compute_baseline(
+            envelope.workspace_id,
+            payload.model,
+            payload.phase or "",
+            repository_id,
+            payload.cost_usd,
+            client=telemetry_store,
+        )
+        if not baseline.is_anomaly:
+            return
+
+        event_id = f"{payload.event_id}:cost_anomaly"
+        if _event_already_written(telemetry_store, event_id):
+            return
+
+        anomaly_payload = {
+            "model": payload.model,
+            "phase": payload.phase or "",
+            "repository_id": repository_id,
+            "cost_usd": payload.cost_usd,
+            "mean": baseline.mean,
+            "stddev": baseline.stddev,
+            "deviation_sigmas": baseline.deviation_sigmas,
+        }
+        telemetry_store.write(
+            IngestionEnvelope(
+                workspace_id=envelope.workspace_id,
+                repository_id=repository_id,
+                payload=RunEventSubmission(
+                    event_id=event_id,
+                    run_id=payload.run_id,
+                    event_type="cost_anomaly",
+                    phase=payload.phase or "",
+                    severity="warning",
+                    occurred_at=payload.occurred_at,
+                    agent=payload.agent,
+                    metadata={**anomaly_payload, "payload": anomaly_payload},
+                ),
+            )
+        )
+    except Exception:  # noqa: BLE001 - anomaly detection must never block cost ingestion
+        return
+
+
+def _event_already_written(telemetry_store: InMemoryTelemetryStore, event_id: str) -> bool:
+    records = getattr(telemetry_store, "event_records", [])
+    return any(getattr(record, "event_id", None) == event_id for record in records)

@@ -145,8 +145,10 @@ def test_post_event_flushes_outbox_first(tmp_path: Path) -> None:
 
     # First call: flush the outbox (old_event).
     assert calls[0] == [old_event]
-    # Second call: the new event.
-    assert calls[1] == [new_event]
+    # Second call: synthetic flush signal for telemetry health.
+    assert calls[1][0]["action"]["type"] == "outbox_flushed"
+    # Third call: the new event.
+    assert calls[2] == [new_event]
     assert count_outbox(tmp_path) == 0
 
 

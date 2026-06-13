@@ -118,6 +118,10 @@ def test_push_failure_event_payload_and_headers(tmp_path: Path, monkeypatch) -> 
     assert body["failure_type"] == "timeout"
     assert body["phase"] == "execute"
     assert body["message"] == "agent timed out after 1800s"
+    assert body["normalized_error"]
+    assert body["normalized_error"] != body["message"]
+    assert "1800" not in body["normalized_error"]
+    assert body["fingerprint"]
     assert body["severity"] == "error"
     assert body["occurred_at"].endswith("Z")
 

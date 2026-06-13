@@ -18,6 +18,8 @@ interface RawFailureEvent {
   run_id: string;
   failure_type: string;
   message: string;
+  normalized_error?: string;
+  fingerprint?: string;
   evidence?: string;
   phase: string;
   severity?: string;
@@ -87,6 +89,8 @@ export async function POST(req: NextRequest) {
     repository_id: e.repository_id,
     failure_type: e.failure_type,
     message: e.message,
+    normalized_error: e.normalized_error ?? "",
+    fingerprint: e.fingerprint ?? "",
     evidence: e.evidence ?? "",
     phase: e.phase,
     severity: e.severity ?? "error",

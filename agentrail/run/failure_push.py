@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agentrail.context.snapshot_push import load_link
+from agentrail.run.fingerprinter import FailureFingerprinter
 
 
 def _now_iso() -> str:
@@ -32,11 +33,15 @@ def push_failure_event(
     link = load_link(target)
     if link is None:
         return False
+    fingerprinter = FailureFingerprinter()
+    normalized_error = fingerprinter.normalize(message)
     payload = {
         "run_id": run_id,
         "repository_id": link["repository_id"],
         "failure_type": failure_type,
         "message": message,
+        "normalized_error": normalized_error,
+        "fingerprint": fingerprinter.fingerprint(message),
         "phase": phase,
         "severity": "error",
         "occurred_at": _now_iso(),

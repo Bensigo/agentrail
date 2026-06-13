@@ -87,6 +87,8 @@ async function main() {
       repository_id: "bensigo/agentrail",
       failure_type: "tool_error",
       message: "Bash command timed out after 120s",
+      normalized_error: "Bash command timed out after <duration>",
+      fingerprint: "sha256:seed-timeout",
       evidence: JSON.stringify({
         command: "pnpm tsc --noEmit",
         exit_code: null,
@@ -104,6 +106,8 @@ async function main() {
       repository_id: "bensigo/agentrail",
       failure_type: "context_error",
       message: "Required source file not found in context pack",
+      normalized_error: "Required source file not found in context pack",
+      fingerprint: "sha256:seed-context",
       evidence: JSON.stringify({
         missing_file: "apps/console/app/api/v1/workspaces/route.ts",
         pack_id: "pack-abc123",
@@ -120,6 +124,8 @@ async function main() {
       repository_id: "bensigo/agentrail",
       failure_type: "auth_error",
       message: "GitHub token expired during PR creation",
+      normalized_error: "GitHub token expired during PR creation",
+      fingerprint: "sha256:seed-auth",
       evidence: JSON.stringify({
         step: "create_pr",
         http_status: 401,
@@ -136,6 +142,8 @@ async function main() {
       repository_id: "bensigo/agentrail",
       failure_type: "lint_error",
       message: "ESLint: 3 errors found in modified files",
+      normalized_error: "ESLint: 3 errors found in modified files",
+      fingerprint: "sha256:seed-lint",
       evidence: JSON.stringify({
         errors: [
           { file: "apps/console/app/page.tsx", line: 12, rule: "no-unused-vars" },

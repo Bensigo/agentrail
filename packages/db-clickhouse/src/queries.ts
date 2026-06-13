@@ -232,6 +232,8 @@ export async function getFailuresForRun(
         repository_id,
         failure_type,
         message,
+        normalized_error,
+        fingerprint,
         evidence,
         phase,
         severity,
@@ -319,6 +321,8 @@ export async function listWorkspaceFailures(
         repository_id,
         failure_type,
         message,
+        normalized_error,
+        fingerprint,
         evidence,
         phase,
         severity,
@@ -342,6 +346,60 @@ export async function listWorkspaceFailures(
     : null;
 
   return { failures, nextCursor };
+}
+
+export interface FailureClusterRecord {
+  fingerprint: string;
+  phase: string;
+  failure_type: string;
+  count: number;
+  first_seen: string;
+  last_seen: string;
+  run_ids: string[];
+}
+
+export async function listFailureClusters(
+  workspaceId: string
+): Promise<FailureClusterRecord[]> {
+  const result = await client.query({
+    query: `
+      SELECT
+        fingerprint,
+        phase,
+        failure_type,
+        count() AS count,
+        min(occurred_at) AS first_seen,
+        max(occurred_at) AS last_seen,
+        arraySlice(arraySort(groupUniqArray(run_id)), 1, 20) AS run_ids
+      FROM failure_events
+      WHERE workspace_id = {workspaceId: String}
+      GROUP BY fingerprint, phase, failure_type
+      ORDER BY count DESC, last_seen DESC
+      LIMIT 100
+    `,
+    query_params: { workspaceId },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<{
+    fingerprint: string;
+    phase: string;
+    failure_type: string;
+    count: string | number;
+    first_seen: string;
+    last_seen: string;
+    run_ids: string[];
+  }>();
+
+  return rows.map((r) => ({
+    fingerprint: String(r.fingerprint ?? ""),
+    phase: String(r.phase ?? ""),
+    failure_type: String(r.failure_type ?? ""),
+    count: Number(r.count ?? 0),
+    first_seen: String(r.first_seen ?? ""),
+    last_seen: String(r.last_seen ?? ""),
+    run_ids: Array.isArray(r.run_ids) ? r.run_ids.map(String) : [],
+  }));
 }
 
 export async function getLatestIndexSnapshotsForWorkspace(
@@ -408,6 +466,8 @@ export async function getFailureById(
         repository_id,
         failure_type,
         message,
+        normalized_error,
+        fingerprint,
         evidence,
         phase,
         severity,
@@ -519,6 +579,8 @@ export interface FailureEventInput {
   repository_id: string;
   failure_type: string;
   message: string;
+  normalized_error: string;
+  fingerprint: string;
   evidence: string;
   phase: string;
   severity: string;
@@ -579,6 +641,8 @@ export async function insertFailureEvents(events: FailureEventInput[]): Promise<
     repository_id: e.repository_id,
     failure_type: e.failure_type,
     message: e.message,
+    normalized_error: e.normalized_error,
+    fingerprint: e.fingerprint,
     evidence: e.evidence,
     phase: e.phase,
     severity: e.severity,

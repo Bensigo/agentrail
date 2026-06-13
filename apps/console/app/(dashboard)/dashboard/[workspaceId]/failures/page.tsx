@@ -1,4 +1,5 @@
 import { listRuns } from "@agentrail/db-postgres";
+import { FailureClusters } from "./components/failure-clusters";
 import { FailuresTable } from "./components/failures-table";
 
 export default async function FailuresPage({
@@ -28,6 +29,7 @@ export default async function FailuresPage({
       <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
         Failures
       </h1>
+      <FailureClusters workspaceId={workspaceId} />
       <FailuresTable
         workspaceId={workspaceId}
         repositories={repositories}

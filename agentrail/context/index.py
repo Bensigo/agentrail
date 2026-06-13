@@ -729,7 +729,14 @@ def _ast_symbols_from_root(
                                 walk(body.children, in_class=True)
 
             elif grammar_name in ("javascript", "typescript", "tsx"):
-                if t == "function_declaration":
+                if t == "export_statement":
+                    # Unwrap: `export function foo()`, `export class Foo {}`, etc.
+                    decl = node.child_by_field_name("declaration")
+                    if decl is not None:
+                        walk([decl], in_class)
+                    else:
+                        walk(node.children, in_class)
+                elif t == "function_declaration":
                     nm = _name(node)
                     if nm:
                         symbols.append(_sym(nm, "method" if in_class else "function", node))
@@ -983,6 +990,16 @@ def import_resolution_candidates(importer_path: str, specifier: str) -> List[str
     elif re.match(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$", specifier):
         base = specifier.replace(".", "/")
         candidates.extend([f"{base}.py", f"{base}/__init__.py"])
+    elif re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", specifier):
+        # Single-segment bare module name: try in importer's directory first, then root.
+        # Handles `import helpers` when helpers.py is co-located or at repo root.
+        dir_pos = importer_dir.as_posix()
+        if dir_pos and dir_pos != ".":
+            candidates.extend([
+                f"{dir_pos}/{specifier}.py",
+                f"{dir_pos}/{specifier}/__init__.py",
+            ])
+        candidates.extend([f"{specifier}.py", f"{specifier}/__init__.py"])
     return [Path(candidate).as_posix().lstrip("./") for candidate in candidates]
 
 
@@ -991,6 +1008,255 @@ def resolve_import_target(importer_path: str, specifier: str, record_paths: set[
         if candidate in record_paths:
             return candidate
     return None
+
+
+def _python_name_imports(text: str) -> Dict[str, str]:
+    """Parse ``from X import Y [as Z], ...`` and return ``{callable_name: specifier}``.
+
+    Used for call resolution when the callee name has no module prefix (e.g.
+    ``from pkg.utils import helper; helper()``).
+    """
+    result: Dict[str, str] = {}
+    pattern = re.compile(
+        r"^\s*from\s+([A-Za-z0-9_\.]+|\.+[A-Za-z0-9_\.]*)\s+import\s+(.+)$",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(text):
+        specifier = match.group(1)
+        names_str = match.group(2).strip().strip("()")
+        for part in names_str.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if " as " in part:
+                _orig, alias = part.split(" as ", 1)
+                alias = alias.strip()
+            else:
+                alias = part.strip()
+            if re.match(r"^[A-Za-z_]\w*$", alias):
+                result.setdefault(alias, specifier)
+    return result
+
+
+def _ts_named_imports(text: str) -> Dict[str, str]:
+    """Parse TypeScript/JavaScript named and default imports.
+
+    Handles:
+    - ``import { foo [as bar], baz } from './mod'``
+    - ``import DefaultExport from './mod'``
+
+    Returns ``{imported_name: specifier}``.
+    """
+    result: Dict[str, str] = {}
+    # Named imports: import { foo, bar as b } from './mod'
+    named = re.compile(
+        r"import\s*\{([^}]+)\}\s*from\s*[\"']([^\"']+)[\"']", re.MULTILINE
+    )
+    for match in named.finditer(text):
+        specifier = match.group(2)
+        for part in match.group(1).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if " as " in part:
+                _orig, alias = part.split(" as ", 1)
+                alias = alias.strip()
+            else:
+                alias = part.strip()
+            if re.match(r"^[A-Za-z_$][\w$]*$", alias):
+                result.setdefault(alias, specifier)
+    # Default import: import Foo from './mod'
+    default = re.compile(
+        r"import\s+([A-Za-z_$][\w$]*)\s+from\s*[\"']([^\"']+)[\"']"
+    )
+    for match in default.finditer(text):
+        name = match.group(1)
+        if name in ("type", "interface"):
+            continue
+        result.setdefault(name, match.group(2))
+    return result
+
+
+def _ast_calls_from_root(
+    root_node: Any, relative_path: str, grammar_name: str
+) -> List[Dict[str, Any]]:
+    """Walk an AST root and return call expression dicts for each function body.
+
+    Each dict has:
+        callerName (str), callerLine (int), callee (str|None),
+        calleeModule (str|None), callLine (int), dynamic (bool)
+
+    Supports Python, JavaScript, TypeScript, and TSX.
+    Nested function definitions are not descended into (they are separate symbols).
+    """
+    calls: List[Dict[str, Any]] = []
+
+    # Node types that end the scope of a caller (nested callables)
+    if grammar_name == "python":
+        _SKIP_TYPES: set[str] = {"function_definition", "class_definition", "decorated_definition"}
+        _CALL_TYPE = "call"
+    elif grammar_name in ("javascript", "typescript", "tsx"):
+        _SKIP_TYPES = {
+            "function_declaration",
+            "function_expression",
+            "arrow_function",
+            "method_definition",
+            "class_declaration",
+        }
+        _CALL_TYPE = "call_expression"
+    else:
+        return []
+
+    def _callee_info(func_node: Any) -> Tuple[Optional[str], Optional[str], bool]:
+        """Return (callee_name, module_name, is_dynamic)."""
+        if grammar_name == "python":
+            if func_node.type == "identifier":
+                return func_node.text.decode("utf-8", errors="replace"), None, False
+            if func_node.type == "attribute":
+                obj = func_node.child_by_field_name("object")
+                attr = func_node.child_by_field_name("attribute")
+                if obj is not None and attr is not None and obj.type == "identifier":
+                    return (
+                        attr.text.decode("utf-8", errors="replace"),
+                        obj.text.decode("utf-8", errors="replace"),
+                        False,
+                    )
+            return None, None, True
+        else:  # javascript / typescript / tsx
+            if func_node.type == "identifier":
+                return func_node.text.decode("utf-8", errors="replace"), None, False
+            if func_node.type == "member_expression":
+                obj = func_node.child_by_field_name("object")
+                prop = func_node.child_by_field_name("property")
+                if obj is not None and prop is not None and obj.type == "identifier":
+                    return (
+                        prop.text.decode("utf-8", errors="replace"),
+                        obj.text.decode("utf-8", errors="replace"),
+                        False,
+                    )
+            return None, None, True
+
+    def _walk_body(body_node: Any, caller_name: str, caller_line: int) -> None:
+        """DFS walk of body_node, recording call expressions (not crossing scope)."""
+        if body_node is None:
+            return
+        for child in body_node.children:
+            if not child.is_named:
+                continue
+            if child.type == _CALL_TYPE:
+                func_node = child.child_by_field_name("function")
+                if func_node is not None:
+                    callee, module, is_dynamic = _callee_info(func_node)
+                    calls.append({
+                        "callerName": caller_name,
+                        "callerLine": caller_line,
+                        "callee": callee,
+                        "calleeModule": module,
+                        "callLine": child.start_point[0] + 1,
+                        "dynamic": is_dynamic,
+                    })
+                # Recurse into call node to find nested calls (e.g. foo(bar()))
+                _walk_body(child, caller_name, caller_line)
+            elif child.type not in _SKIP_TYPES:
+                _walk_body(child, caller_name, caller_line)
+
+    def _get_name(node: Any) -> Optional[str]:
+        n = node.child_by_field_name("name")
+        return n.text.decode("utf-8", errors="replace") if n is not None else None
+
+    def _walk_top(nodes: Any) -> None:
+        for node in nodes:
+            if not node.is_named:
+                continue
+            t = node.type
+
+            if grammar_name == "python":
+                if t == "decorated_definition":
+                    inner = node.child_by_field_name("definition")
+                    if inner is not None:
+                        _walk_top([inner])
+                elif t == "function_definition":
+                    name = _get_name(node)
+                    if name:
+                        body = node.child_by_field_name("body")
+                        _walk_body(body, name, node.start_point[0] + 1)
+                elif t == "class_definition":
+                    body = node.child_by_field_name("body")
+                    if body:
+                        _walk_top(body.children)
+
+            elif grammar_name in ("javascript", "typescript", "tsx"):
+                if t == "export_statement":
+                    # Unwrap: `export function foo()`, `export const foo = () => {}`
+                    decl = node.child_by_field_name("declaration")
+                    if decl is not None:
+                        _walk_top([decl])
+                    else:
+                        _walk_top(node.children)
+                elif t == "function_declaration":
+                    name = _get_name(node)
+                    if name:
+                        body = node.child_by_field_name("body")
+                        _walk_body(body, name, node.start_point[0] + 1)
+                elif t == "class_declaration":
+                    body = node.child_by_field_name("body")
+                    if body:
+                        _walk_top(body.children)
+                elif t == "method_definition":
+                    name = _get_name(node)
+                    if name:
+                        body = node.child_by_field_name("body")
+                        _walk_body(body, name, node.start_point[0] + 1)
+                elif t == "lexical_declaration":
+                    # Arrow function or function expression assigned to a const/let
+                    for child in node.children:
+                        if child.type != "variable_declarator":
+                            continue
+                        name_node = child.child_by_field_name("name")
+                        value_node = child.child_by_field_name("value")
+                        if value_node is None:
+                            for cc in child.children:
+                                if cc.type in ("arrow_function", "function_expression"):
+                                    value_node = cc
+                                    break
+                        if name_node and value_node:
+                            fn_name = name_node.text.decode("utf-8", errors="replace")
+                            body = value_node.child_by_field_name("body")
+                            if body is not None:
+                                _walk_body(body, fn_name, node.start_point[0] + 1)
+
+    _walk_top(root_node.children)
+    return calls
+
+
+def extracted_calls(text: str, relative_path: str) -> List[Dict[str, Any]]:
+    """Extract call expressions from function/method bodies using the tree-sitter AST.
+
+    Returns a list of dicts with keys:
+        ``callerName`` (str) — name of the containing function/method
+        ``callerLine`` (int) — 1-based line of the caller definition
+        ``callee`` (str|None) — name of the called function (None when dynamic)
+        ``calleeModule`` (str|None) — object/module prefix if qualified (e.g. ``os``)
+        ``callLine`` (int) — 1-based line of the call expression
+        ``dynamic`` (bool) — True for computed/anonymous call targets
+
+    Only Python, JavaScript, TypeScript, and TSX are supported.
+    Returns an empty list for unsupported grammars or on parse errors.
+    """
+    grammar = grammar_for(relative_path)
+    if grammar not in ("python", "javascript", "typescript", "tsx"):
+        return []
+    try:
+        import tree_sitter_language_pack  # noqa: PLC0415
+        parser = tree_sitter_language_pack.get_parser(grammar)
+        tree = parser.parse(text.encode("utf-8", errors="replace"))
+        root_node = tree.root_node
+    except Exception:
+        return []
+    try:
+        return _ast_calls_from_root(root_node, relative_path, grammar)
+    except Exception:
+        return []
 
 
 def is_test_path(path: str) -> bool:
@@ -1253,6 +1519,150 @@ def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], cod
                     "deterministic": True,
                 }
             )
+
+    # Build symbol node lookup for call resolution: {path: {name: node_id}}.
+    # Reuses already-emitted symbol nodes to avoid re-calling extracted_symbols.
+    _symbol_node_lookup: Dict[str, Dict[str, str]] = {}
+    for _node in nodes:
+        if _node.get("kind") == "symbol":
+            _sp = str(_node.get("path", ""))
+            _sn = str(_node.get("name", ""))
+            _snid = str(_node.get("id", ""))
+            if _sp and _sn and _snid:
+                _symbol_node_lookup.setdefault(_sp, {}).setdefault(_sn, _snid)
+
+    _denied_paths = {rec.path for rec in records if rec.authority == "denied"}
+
+    for record in records:
+        if record.authority == "denied" or not record.content:
+            continue
+        file_node_id = file_node_by_path.get(record.path)
+        if not file_node_id:
+            continue
+
+        _call_list = extracted_calls(record.content, record.path)
+        if not _call_list:
+            continue
+
+        _language = language_for(record.path)
+        # Module-alias → specifier (for `import module` or `import pkg.module` style)
+        _module_imports: Dict[str, str] = {}
+        for _imp in extracted_imports(record.content, record.path):
+            _spec = str(_imp["specifier"])
+            if not _spec.startswith("."):
+                _last = _spec.split(".")[-1]
+                _module_imports.setdefault(_last, _spec)
+
+        # Name → specifier (for `from X import name` / TS `import { name } from X`)
+        _name_imports: Dict[str, str] = {}
+        if _language == "python":
+            _name_imports = _python_name_imports(record.content)
+        elif _language in ("javascript", "typescript"):
+            _name_imports = _ts_named_imports(record.content)
+
+        _local_syms = _symbol_node_lookup.get(record.path, {})
+
+        for _call in _call_list:
+            _caller_name = str(_call["callerName"])
+            _call_line = int(_call["callLine"])
+            _is_dynamic = bool(_call["dynamic"])
+            _callee: Optional[str] = _call.get("callee")
+            _callee_mod: Optional[str] = _call.get("calleeModule")
+
+            # Caller must be in the symbol table (only index known symbols)
+            _caller_nid = _local_syms.get(_caller_name)
+            if _caller_nid is None:
+                continue
+
+            if _is_dynamic or not _callee:
+                _fp = f"{_caller_nid}:calls:dynamic:{_call_line}"
+                edges.append({
+                    "id": f"graph:edge:{sha256_text(_fp)[7:23]}",
+                    "kind": "calls",
+                    "from": _caller_nid,
+                    "to": None,
+                    "callerPath": record.path,
+                    "callerLine": _call_line,
+                    "resolved": False,
+                    "unresolvedReason": "dynamic_call",
+                    "evidence": "deterministic_call_parse",
+                    "authority": "deterministic",
+                    "deterministic": True,
+                })
+                continue
+
+            _target_path: Optional[str] = None
+            _callee_nid: Optional[str] = None
+            _unresolved: Optional[str] = None
+
+            if _callee_mod:
+                # Qualified call: module.func()
+                _specifier = _module_imports.get(_callee_mod) or _name_imports.get(_callee_mod)
+                if _specifier is None:
+                    _unresolved = "no_import"
+                else:
+                    _target_path = resolve_import_target(record.path, _specifier, record_paths)
+                    if _target_path is None:
+                        _unresolved = "external_module"
+                    elif _target_path in _denied_paths:
+                        continue  # AC4: never emit edges to denied targets
+                    else:
+                        _callee_nid = _symbol_node_lookup.get(_target_path, {}).get(_callee)
+                        if _callee_nid is None:
+                            _unresolved = "no_import"
+            else:
+                # Unqualified call: check local symbols first, then name imports
+                _local_nid = _local_syms.get(_callee)
+                if _local_nid:
+                    _callee_nid = _local_nid
+                    _target_path = record.path
+                else:
+                    _specifier = _name_imports.get(_callee)
+                    if _specifier is None:
+                        _unresolved = "no_import"
+                    else:
+                        _target_path = resolve_import_target(record.path, _specifier, record_paths)
+                        if _target_path is None:
+                            _unresolved = "external_module"
+                        elif _target_path in _denied_paths:
+                            continue  # AC4
+                        else:
+                            _callee_nid = _symbol_node_lookup.get(_target_path, {}).get(_callee)
+                            if _callee_nid is None:
+                                _unresolved = "no_import"
+
+            if _callee_nid is not None:
+                _fp = f"{_caller_nid}:calls:{_callee_nid}:{_call_line}"
+                edges.append({
+                    "id": f"graph:edge:{sha256_text(_fp)[7:23]}",
+                    "kind": "calls",
+                    "from": _caller_nid,
+                    "to": _callee_nid,
+                    "callerPath": record.path,
+                    "callerLine": _call_line,
+                    "calleePath": _target_path,
+                    "calleeSymbol": _callee,
+                    "resolved": True,
+                    "evidence": "deterministic_call_parse",
+                    "authority": "deterministic",
+                    "deterministic": True,
+                })
+            else:
+                _fp = f"{_caller_nid}:calls:unresolved:{_callee or 'unknown'}:{_call_line}"
+                edges.append({
+                    "id": f"graph:edge:{sha256_text(_fp)[7:23]}",
+                    "kind": "calls",
+                    "from": _caller_nid,
+                    "to": None,
+                    "callerPath": record.path,
+                    "callerLine": _call_line,
+                    "callee": _callee,
+                    "resolved": False,
+                    "unresolvedReason": _unresolved or "no_import",
+                    "evidence": "deterministic_call_parse",
+                    "authority": "deterministic",
+                    "deterministic": True,
+                })
 
     for chunk in chunks:
         node_id = graph_chunk_node_id(chunk)

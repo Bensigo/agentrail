@@ -341,12 +341,31 @@ def _retrieval_seed_start_nodes(index: Dict[str, Any], seed_paths: List[str]) ->
     return seed_node_ids
 
 
+# Keywords that indicate a relational query (callers, callees, call graph traversal).
+# When these appear in the query, `calls` edges are included in the BFS traversal.
+# Non-relational queries exclude `calls` edges to prevent noise fan-out.
+_RELATIONAL_CALL_KEYWORDS: frozenset[str] = frozenset({
+    "callers", "callees", "calls", "depends", "impact",
+})
+
+
+def _is_relational_call_query(query: str) -> bool:
+    """Return True when the query contains a relational keyword for call-graph traversal."""
+    ql = query.lower()
+    return any(kw in ql for kw in _RELATIONAL_CALL_KEYWORDS)
+
+
 def graph_expansion_for_query(index: Dict[str, Any], query: str, root: Path, *, max_hops: int = 2, retrieval_seeds: Optional[List[str]] = None) -> Dict[str, Any]:
     """Expand the code graph starting from anchor-matched nodes and, optionally,
     hybrid-retrieval seed paths (top-K BM25 candidates).
 
     ``retrieval_seeds`` is a list of file paths from the BM25 pre-score pass.
     A maximum of 5 seeds is recommended to prevent hop fanout.
+
+    ``calls`` edges are only traversed when the query contains a relational keyword
+    (callers, callees, calls, depends, impact).  This prevents call-graph fan-out
+    on non-relational queries while keeping ``calls`` edges available for BFS
+    seeding on targeted relationship queries (AC5).
     """
     anchors = extract_anchors(query, root=root)
     anchor_start_nodes, started_from = _anchor_start_nodes(index, anchors)
@@ -354,6 +373,7 @@ def graph_expansion_for_query(index: Dict[str, Any], query: str, root: Path, *, 
     start_nodes = unique(anchor_start_nodes + seed_start_nodes)
     graph = index.get("graph") if isinstance(index.get("graph"), dict) else {}
     neighbors = _graph_neighbors(graph)
+    relational = _is_relational_call_query(query)
     queue: List[Tuple[str, int, List[str]]] = [(node_id, 0, []) for node_id in start_nodes]
     best_depth: Dict[str, int] = {node_id: 0 for node_id in start_nodes}
     visited: List[Dict[str, Any]] = []
@@ -365,6 +385,9 @@ def graph_expansion_for_query(index: Dict[str, Any], query: str, root: Path, *, 
         if depth >= max_hops:
             continue
         for edge in neighbors.get(node_id, []):
+            # Gate calls edges: only traverse them on relational queries (AC5).
+            if edge.get("kind") == "calls" and not relational:
+                continue
             next_node = str(edge.get("to") or "")
             if not next_node:
                 continue

@@ -47,6 +47,9 @@ export {
   insertContextEvents,
   getWorkspaceTelemetryCounts,
   getRunCosts,
+  getRunTelemetryHealth,
+  TELEMETRY_HEALTH_SIGNALS,
+  listCostAnomalies,
   getAgentModelCosts,
   countDistinctSourceHashLists,
 } from "./queries";
@@ -64,6 +67,10 @@ export type {
   ContextEventInput,
   WorkspaceTelemetryCounts,
   RunCostRow,
+  TelemetryHealthSignal,
+  TelemetryHealthSignalRow,
+  CostAnomalyRow,
+  ListCostAnomaliesOptions,
   AgentModelCostRow,
   HashChurnResult,
 } from "./queries";

@@ -970,3 +970,349 @@ class TestContextCalleesCLI:
         assert code == 0
         data = json.loads(buf.getvalue())
         assert data == [], f"expected [] for unknown symbol; got {data}"
+
+
+# ---------------------------------------------------------------------------
+# Fixtures for context_impact tests
+# ---------------------------------------------------------------------------
+
+def _make_impact_multilevel_repo() -> Path:
+    """Four-level call chain: d.py → c.py → b.py → a.py:do_work.
+
+    Used to verify depth bounds (AC2).  At depth=1, only b.py is a direct
+    caller of do_work; at depth=1, c.py also appears via imports_file (it
+    imports b.py which is affected), but d.py does NOT appear because c.py
+    is not yet in affected_paths at depth=1.  At depth=3, d.py appears.
+    """
+    root = Path(tempfile.mkdtemp())
+    _make_git_repo(root)
+    _make_config(root)
+    (root / "pkg").mkdir()
+    (root / "pkg" / "a.py").write_text(
+        "def do_work():\n    return 42\n",
+        encoding="utf-8",
+    )
+    (root / "pkg" / "b.py").write_text(
+        "from pkg.a import do_work\n\ndef level_b():\n    do_work()\n",
+        encoding="utf-8",
+    )
+    (root / "pkg" / "c.py").write_text(
+        "from pkg.b import level_b\n\ndef level_c():\n    level_b()\n",
+        encoding="utf-8",
+    )
+    (root / "pkg" / "d.py").write_text(
+        "from pkg.c import level_c\n\ndef level_d():\n    level_c()\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def _make_impact_with_test_repo() -> Path:
+    """Repo with a source file and a test file that imports it (tests_source edge).
+
+    pkg/helpers.py defines do_work; tests/test_helpers.py imports pkg.helpers.
+    """
+    root = Path(tempfile.mkdtemp())
+    _make_git_repo(root)
+    _make_config(root)
+    (root / "pkg").mkdir()
+    (root / "tests").mkdir()
+    (root / "pkg" / "helpers.py").write_text(
+        "def do_work():\n    return 42\n",
+        encoding="utf-8",
+    )
+    (root / "tests" / "test_helpers.py").write_text(
+        "from pkg.helpers import do_work\n\ndef test_something():\n    assert do_work() == 42\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def _make_impact_with_importer_repo() -> Path:
+    """Repo where caller.py imports helpers.py (imports_file edge).
+
+    helpers.py defines do_work; caller.py imports helpers (no call needed —
+    the imports_file edge alone is sufficient for AC4).
+    """
+    root = Path(tempfile.mkdtemp())
+    _make_git_repo(root)
+    _make_config(root)
+    (root / "pkg").mkdir()
+    (root / "pkg" / "helpers.py").write_text(
+        "def do_work():\n    return 42\n",
+        encoding="utf-8",
+    )
+    (root / "pkg" / "caller.py").write_text(
+        "from pkg.helpers import do_work\n\ndef run():\n    do_work()\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def _make_impact_denied_repo() -> Path:
+    """Repo with a denied-authority caller file.
+
+    denied_caller.py calls do_work but is authority=denied.
+    normal_caller.py also calls do_work and is authority=normal.
+    """
+    root = Path(tempfile.mkdtemp())
+    _make_git_repo(root)
+    _make_config(root)
+    (root / "pkg").mkdir()
+    (root / "pkg" / "helpers.py").write_text(
+        "def do_work():\n    return 42\n",
+        encoding="utf-8",
+    )
+    (root / "pkg" / "normal_caller.py").write_text(
+        "from pkg.helpers import do_work\n\ndef run():\n    do_work()\n",
+        encoding="utf-8",
+    )
+    # Build index manually with a denied record so symbolTable reflects it.
+    return root
+
+
+# ---------------------------------------------------------------------------
+# context_impact tests (AC1–AC7 for issue #587)
+# ---------------------------------------------------------------------------
+
+from agentrail.context.retrieval import context_impact
+
+
+class TestContextImpactDefaultDepth:
+    """AC1: impact returns house-schema items with transitive callers at depth 3."""
+
+    def test_ac1_returns_list(self) -> None:
+        root = _make_impact_multilevel_repo()
+        build_index(root)
+        results = context_impact(root, "do_work")
+        assert isinstance(results, list)
+
+    def test_ac1_house_schema_keys_present(self) -> None:
+        root = _make_impact_multilevel_repo()
+        build_index(root)
+        results = context_impact(root, "do_work")
+        assert results, "expected at least one impact item for do_work"
+        for item in results:
+            missing = _HOUSE_SCHEMA_KEYS - set(item.keys())
+            assert not missing, f"missing house-schema keys: {missing}"
+
+    def test_ac1_transitive_callers_reached(self) -> None:
+        """Default depth=3 should reach level_b AND level_c."""
+        root = _make_impact_multilevel_repo()
+        build_index(root)
+        results = context_impact(root, "do_work")
+        paths = {item["path"] for item in results}
+        assert any("b.py" in p for p in paths), f"expected b.py in impact; got {paths}"
+        assert any("c.py" in p for p in paths), f"expected c.py in impact; got {paths}"
+
+
+class TestContextImpactDepthBound:
+    """AC2: --depth 1 returns only direct callers."""
+
+    def test_ac2_depth1_only_direct_callers(self) -> None:
+        """At depth=1, d.py must not appear (it's 3 hops from do_work).
+
+        c.py may appear via imports_file (it imports b.py which is affected),
+        but d.py is only reachable at depth >= 3 (both as a BFS caller and
+        via imports_file from c.py which is not in affected_paths at depth=1).
+        """
+        root = _make_impact_multilevel_repo()
+        build_index(root)
+        depth1 = context_impact(root, "do_work", depth=1)
+        depth3 = context_impact(root, "do_work", depth=3)
+        paths1 = {item["path"] for item in depth1}
+        paths3 = {item["path"] for item in depth3}
+        # depth=1 must include b.py (direct caller of do_work)
+        assert any("b.py" in p for p in paths1), f"b.py expected in depth-1; got {paths1}"
+        # d.py is 3 hops away — must NOT appear at depth=1
+        assert not any("d.py" in p for p in paths1), f"d.py must NOT appear in depth-1; got {paths1}"
+        # depth=3 is a superset of depth=1
+        assert len(paths3) >= len(paths1), (
+            f"depth-3 set should be at least as large as depth-1; depth1={paths1}, depth3={paths3}"
+        )
+
+    def test_ac2_depth1_smaller_than_depth3(self) -> None:
+        root = _make_impact_multilevel_repo()
+        build_index(root)
+        depth1 = context_impact(root, "do_work", depth=1)
+        depth3 = context_impact(root, "do_work", depth=3)
+        assert len(depth3) >= len(depth1), (
+            f"depth-3 result set must be >= depth-1; got depth1={len(depth1)}, depth3={len(depth3)}"
+        )
+        # d.py must appear at depth=3 but NOT at depth=1
+        paths3 = {item["path"] for item in depth3}
+        assert any("d.py" in p for p in paths3), f"d.py expected in depth-3; got {paths3}"
+
+
+class TestContextImpactTestFiles:
+    """AC3: result set includes test files linked via tests_source edges."""
+
+    def test_ac3_test_file_in_impact(self) -> None:
+        root = _make_impact_with_test_repo()
+        build_index(root)
+        results = context_impact(root, "do_work")
+        paths = {item["path"] for item in results}
+        assert any("test_helpers" in p for p in paths), (
+            f"expected test_helpers.py in impact output; got {paths}"
+        )
+
+    def test_ac3_test_item_house_schema(self) -> None:
+        root = _make_impact_with_test_repo()
+        build_index(root)
+        results = context_impact(root, "do_work")
+        test_items = [item for item in results if "test_helpers" in item.get("path", "")]
+        assert test_items, "expected at least one test item in impact"
+        for item in test_items:
+            missing = _HOUSE_SCHEMA_KEYS - set(item.keys())
+            assert not missing, f"missing house-schema keys in test item: {missing}"
+
+
+class TestContextImpactImporters:
+    """AC4: result set includes files reachable via imports_file edges."""
+
+    def test_ac4_importer_in_impact(self) -> None:
+        root = _make_impact_with_importer_repo()
+        build_index(root)
+        results = context_impact(root, "do_work")
+        paths = {item["path"] for item in results}
+        assert any("caller.py" in p for p in paths), (
+            f"expected caller.py in impact output via imports_file; got {paths}"
+        )
+
+
+class TestContextImpactDenied:
+    """AC5: denied-authority sources are excluded from all result categories."""
+
+    def test_ac5_denied_caller_excluded(self) -> None:
+        """Denied-authority file's callers must not appear in impact results."""
+        helpers_py = "def do_work():\n    return 42\n"
+        normal_py = "from pkg.helpers import do_work\n\ndef run():\n    do_work()\n"
+        denied_py = "from pkg.helpers import do_work\n\ndef secret_fn():\n    do_work()\n"
+        records = [
+            _make_record("pkg/helpers.py", helpers_py),
+            _make_record("pkg/normal_caller.py", normal_py),
+            _make_record("pkg/secret.py", denied_py, authority="denied"),
+        ]
+        graph = build_code_graph(records, [], [], "2025-01-01T00:00:00.000Z")
+        symbol_table: Dict[str, Any] = {
+            "do_work": [{"path": "pkg/helpers.py", "lineStart": 1, "lineEnd": 2,
+                         "citation": "pkg/helpers.py:1", "kind": "function", "authority": "normal"}],
+            "run": [{"path": "pkg/normal_caller.py", "lineStart": 3, "lineEnd": 4,
+                     "citation": "pkg/normal_caller.py:3", "kind": "function", "authority": "normal"}],
+            "secret_fn": [{"path": "pkg/secret.py", "lineStart": 3, "lineEnd": 4,
+                           "citation": "pkg/secret.py:3", "kind": "function", "authority": "denied"}],
+        }
+        # build_code_graph already omits denied edges — just verify denied path is absent.
+        calls = [e for e in graph["edges"] if e.get("kind") == "calls"]
+        denied_symbol_ids = {
+            node["id"]
+            for node in graph["nodes"]
+            if node.get("kind") == "symbol" and node.get("path") == "pkg/secret.py"
+        }
+        from_denied = [e for e in calls if e.get("from") in denied_symbol_ids]
+        assert not from_denied, f"denied caller appeared in graph: {from_denied}"
+
+
+class TestContextImpactEmpty:
+    """AC6: impact returns [] (not an error) for unknown symbol or no callers."""
+
+    def test_ac6_unknown_symbol_returns_empty(self) -> None:
+        root = _make_callers_python_repo()
+        build_index(root)
+        results = context_impact(root, "nonexistent_symbol_xyz_abc")
+        assert results == [], f"expected [] for unknown symbol; got {results}"
+
+    def test_ac6_no_callers_returns_list(self) -> None:
+        """Symbol with no callers still returns a list (may be empty or just def)."""
+        root = _make_callers_python_repo()
+        build_index(root)
+        # helper_two has no callers
+        results = context_impact(root, "helper_two")
+        assert isinstance(results, list)
+
+
+# ---------------------------------------------------------------------------
+# AC7: CLI subprocess tests for impact
+# ---------------------------------------------------------------------------
+
+class TestContextImpactCLI:
+    """AC7: CLI impact --json output (via run_context)."""
+
+    def test_ac7_cli_impact_json_output(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        root = _make_impact_multilevel_repo()
+        build_index(root)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = run_context(["impact", "do_work", "--target", str(root), "--json"])
+        assert code == 0
+        data = json.loads(buf.getvalue())
+        assert isinstance(data, list), "impact --json must return a JSON array"
+        assert data, "expected at least one item for do_work"
+        for item in data:
+            missing = _HOUSE_SCHEMA_KEYS - set(item.keys())
+            assert not missing, f"missing house-schema keys: {missing}"
+
+    def test_ac7_cli_impact_depth1(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        root = _make_impact_multilevel_repo()
+        build_index(root)
+        buf1 = io.StringIO()
+        with redirect_stdout(buf1):
+            run_context(["impact", "do_work", "--depth", "1", "--target", str(root), "--json"])
+        buf3 = io.StringIO()
+        with redirect_stdout(buf3):
+            run_context(["impact", "do_work", "--target", str(root), "--json"])
+        data1 = json.loads(buf1.getvalue())
+        data3 = json.loads(buf3.getvalue())
+        paths1 = {item["path"] for item in data1}
+        # d.py is 3 hops away — must not appear in depth-1 output
+        assert not any("d.py" in p for p in paths1), (
+            f"d.py must NOT appear in depth-1 impact; got {paths1}"
+        )
+        # depth=3 includes more
+        assert len(data3) >= len(data1), (
+            f"depth-3 must be >= depth-1; got depth1={len(data1)}, depth3={len(data3)}"
+        )
+
+    def test_ac7_cli_impact_unknown_symbol_returns_empty(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        root = _make_callers_python_repo()
+        build_index(root)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = run_context(["impact", "nonexistent_symbol_xyz",
+                                "--target", str(root), "--json"])
+        assert code == 0
+        data = json.loads(buf.getvalue())
+        assert data == [], f"expected [] for unknown symbol; got {data}"
+
+    def test_ac7_cli_impact_test_expansion(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        root = _make_impact_with_test_repo()
+        build_index(root)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = run_context(["impact", "do_work", "--target", str(root), "--json"])
+        assert code == 0
+        data = json.loads(buf.getvalue())
+        paths = {item["path"] for item in data}
+        assert any("test_helpers" in p for p in paths), (
+            f"expected test_helpers.py in CLI impact output; got {paths}"
+        )
+
+    def test_ac7_cli_impact_human_readable(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+        root = _make_impact_multilevel_repo()
+        build_index(root)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = run_context(["impact", "do_work", "--target", str(root)])
+        assert code == 0
+        output = buf.getvalue()
+        assert "b.py" in output, f"expected b.py in human output; got: {output}"

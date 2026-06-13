@@ -1,3 +1,31 @@
+export const CREATE_AFK_RUN_EVENTS_TABLE = `
+CREATE TABLE IF NOT EXISTS afk_run_events (
+  run_id           String,
+  workspace_id     String,
+  slot             UInt8,
+  event_type       LowCardinality(String),
+  ts               DateTime64(3, 'UTC'),
+  payload_json     String,
+  digest           String,
+  kind             LowCardinality(String)
+)
+ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMM(ts)
+ORDER BY (workspace_id, run_id, ts, slot)
+`;
+
+export interface AfkRunEventRow {
+  run_id: string;
+  workspace_id: string;
+  slot: number;
+  event_type: string;
+  /** ISO 8601 string */
+  ts: string;
+  payload_json: string;
+  digest: string;
+  kind: string;
+}
+
 export const CREATE_CONTEXT_PACKS_TABLE = `
 CREATE TABLE IF NOT EXISTS context_packs (
   workspace_id        String,

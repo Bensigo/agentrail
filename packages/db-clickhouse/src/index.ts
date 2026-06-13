@@ -1,5 +1,6 @@
 export { client } from "./client";
 export {
+  CREATE_AFK_RUN_EVENTS_TABLE,
   CREATE_RUN_EVENTS_TABLE,
   CREATE_FAILURE_EVENTS_TABLE,
   CREATE_CONTEXT_PACKS_TABLE,
@@ -25,6 +26,7 @@ export type {
   ContextEventRecord,
   IndexSnapshotRecord,
   CostEventRecord,
+  AfkRunEventRow,
 } from "./schema";
 export {
   getRunEvents,
@@ -52,6 +54,7 @@ export {
   listCostAnomalies,
   getAgentModelCosts,
   countDistinctSourceHashLists,
+  getAfkRunEvents,
 } from "./queries";
 export type {
   RunEventSummary,

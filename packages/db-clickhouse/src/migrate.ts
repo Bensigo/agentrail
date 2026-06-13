@@ -1,5 +1,6 @@
 import { client } from "./client";
 import {
+  CREATE_AFK_RUN_EVENTS_TABLE,
   CREATE_RUN_EVENTS_TABLE,
   CREATE_FAILURE_EVENTS_TABLE,
   CREATE_CONTEXT_PACKS_TABLE,
@@ -52,6 +53,8 @@ async function main() {
   await client.command({ query: ALTER_COST_EVENTS_ADD_OUTPUT_TOKENS });
   await client.command({ query: ALTER_COST_EVENTS_ADD_CACHE_TOKENS });
   console.log("Applied cost_events ALTER TABLE migrations.");
+  await client.command({ query: CREATE_AFK_RUN_EVENTS_TABLE });
+  console.log("Created afk_run_events table.");
   await client.close();
   console.log("ClickHouse migration complete.");
 }

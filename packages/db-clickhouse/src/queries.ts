@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { client } from "./client";
-import type { TelemetryEventRecord, FailureEventRecord, IndexSnapshotRecord } from "./schema";
+import type { TelemetryEventRecord, FailureEventRecord, IndexSnapshotRecord, AfkRunEventRow } from "./schema";
 
 export type CostGroupBy = "team" | "repo" | "api_key" | "run";
 
@@ -1471,4 +1471,57 @@ export async function countDistinctSourceHashLists(
     distinct_lists: Number(r.distinct_lists),
     run_count: Number(r.run_count),
   };
+}
+
+// ---------------------------------------------------------------------------
+// AFK run-event read path (afk_run_events table)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch all rows from `afk_run_events` for a given (workspace_id, run_id),
+ * sorted by ts ASC then slot ASC for deterministic analysis.
+ */
+export async function getAfkRunEvents(
+  workspaceId: string,
+  runId: string
+): Promise<AfkRunEventRow[]> {
+  const result = await client.query({
+    query: `
+      SELECT
+        run_id,
+        workspace_id,
+        slot,
+        event_type,
+        ts,
+        payload_json,
+        digest,
+        kind
+      FROM afk_run_events
+      WHERE workspace_id = {workspaceId: String}
+        AND run_id = {runId: String}
+      ORDER BY ts ASC, slot ASC
+    `,
+    query_params: { workspaceId, runId },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<Record<string, unknown>>();
+  return rows.map((r) => {
+    const rawTs = String(r.ts ?? "");
+    // Normalize ClickHouse DateTime64 "YYYY-MM-DD HH:mm:ss.sss" → ISO 8601
+    const ts =
+      rawTs.includes("T") || rawTs.trim() === ""
+        ? rawTs
+        : rawTs.replace(" ", "T") + "Z";
+    return {
+      run_id: String(r.run_id ?? ""),
+      workspace_id: String(r.workspace_id ?? ""),
+      slot: Number(r.slot ?? 0),
+      event_type: String(r.event_type ?? ""),
+      ts,
+      payload_json: String(r.payload_json ?? ""),
+      digest: String(r.digest ?? ""),
+      kind: String(r.kind ?? ""),
+    };
+  });
 }

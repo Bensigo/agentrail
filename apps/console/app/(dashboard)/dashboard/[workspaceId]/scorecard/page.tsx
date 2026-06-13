@@ -1,7 +1,9 @@
-import { getAgentRunStats } from "@agentrail/db-postgres";
+import { Suspense } from "react";
+import { getAgentRunStats, listWorkspaceRepositories } from "@agentrail/db-postgres";
 import { getAgentModelCosts } from "@agentrail/db-clickhouse";
 import { buildScorecard } from "../../../../../lib/scorecard";
 import type { AgentScorecardRow, ModelScorecardRow } from "../../../../../lib/scorecard";
+import { RunnerScorecardSection } from "./components/runner-scorecard-section";
 
 function fmtPct(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`;
@@ -148,6 +150,15 @@ export default async function ScorecardPage({
     getAgentModelCosts(workspaceId),
   ]);
 
+  let repositories: { id: string; name: string }[] = [];
+  try {
+    const repos = await listWorkspaceRepositories(workspaceId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    repositories = repos.map((r: any) => ({ id: r.id, name: r.name }));
+  } catch {
+    // DB unavailable; empty repo list renders filter without options
+  }
+
   const { agents, models } = buildScorecard(pgRows, chRows);
 
   const hasFinishedRuns = agents.some((a) => a.finishedRuns > 0);
@@ -179,6 +190,24 @@ export default async function ScorecardPage({
             </h2>
             <ModelTable rows={models} />
           </section>
+
+          <Suspense
+            fallback={
+              <section>
+                <h2 className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+                  By runner
+                </h2>
+                <div className="rounded border border-[var(--gray-05)] px-3 py-8 text-center text-sm text-[var(--gray-09)] animate-pulse">
+                  Loading runner data…
+                </div>
+              </section>
+            }
+          >
+            <RunnerScorecardSection
+              workspaceId={workspaceId}
+              repositories={repositories}
+            />
+          </Suspense>
         </div>
       )}
     </div>

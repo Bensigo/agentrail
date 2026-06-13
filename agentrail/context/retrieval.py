@@ -240,6 +240,46 @@ def get_file_lines(target_dir: Path, path: str, line_start: int, line_end: int) 
     }
 
 
+def context_def(root: Path, name: str) -> List[Dict[str, Any]]:
+    """Look up symbol NAME in index.json symbolTable (O(1)).
+
+    Returns house-schema items for all matching definitions.  Multi-definition
+    aware: all matches are returned (same name, multiple files).  Entries with
+    ``authority: "denied"`` are excluded.  Returns an empty list when the symbol
+    is unknown or the index has no symbolTable.
+    """
+    index = load_index(root)
+    records = index.get("symbolTable", {}).get(name, [])
+    results: List[Dict[str, Any]] = []
+    for rec in records:
+        if rec.get("authority") == "denied":
+            continue
+        path = rec.get("path", "")
+        line_start = int(rec.get("lineStart", 1))
+        line_end = int(rec.get("lineEnd", line_start))
+        citation = rec.get("citation") or f"{path}:{line_start}"
+        try:
+            file_info = get_file_lines(root, path, line_start, line_end)
+            content = file_info["content"]
+            token_estimate = file_info["tokenEstimate"]
+        except SystemExit:
+            content = ""
+            token_estimate = estimate_tokens(content)
+        results.append({
+            "path": path,
+            "lineStart": line_start,
+            "lineEnd": line_end,
+            "content": content,
+            "citation": citation,
+            "reason": "symbol definition",
+            "score": 1.0,
+            "tokenEstimate": token_estimate,
+            "deterministic": True,
+            "kind": rec.get("kind", "symbol"),
+        })
+    return results
+
+
 def get_file_symbol(target_dir: Path, path: str, symbol: str) -> Dict[str, Any]:
     """Return only the line range of a named symbol in a file, never the whole file."""
     from agentrail.context.index import extracted_symbols
@@ -297,6 +337,47 @@ def _graph_neighbors(graph: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
     return neighbors
 
 
+_SYMBOL_NODE_MAP_CACHE_KEY = "_agentrail_symbol_node_map"
+
+
+def _build_symbol_node_map(index: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    """Build a name → [graph node dict, ...] map via symbolTable (O(1) per name).
+
+    The map is cached on the index dict so it is built at most once per loaded
+    index object.  Each graph node dict has at minimum an ``id`` key.
+
+    Fall back to an empty dict — callers must then do their own linear scan —
+    when the index lacks a ``symbolTable`` key (schemaVersion 1).
+    """
+    cached = index.get(_SYMBOL_NODE_MAP_CACHE_KEY)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+
+    # Build (path, line) → node_id from the graph symbol nodes.
+    path_line_to_node_id: Dict[Tuple[str, int], str] = {}
+    for node in index.get("graph", {}).get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        if node.get("kind") == "symbol" and node.get("id"):
+            key = (str(node.get("path", "")), int(node.get("line", 0)))
+            path_line_to_node_id[key] = str(node["id"])
+
+    # Map symbol name → list of matching graph node dicts via symbolTable.
+    result: Dict[str, List[Dict[str, Any]]] = {}
+    for sym_name, sym_records in index.get("symbolTable", {}).items():
+        node_dicts: List[Dict[str, Any]] = []
+        for rec in sym_records:
+            key = (str(rec.get("path", "")), int(rec.get("lineStart", 0)))
+            node_id = path_line_to_node_id.get(key)
+            if node_id:
+                node_dicts.append({"id": node_id})
+        if node_dicts:
+            result[str(sym_name)] = node_dicts
+
+    index[_SYMBOL_NODE_MAP_CACHE_KEY] = result
+    return result
+
+
 def _anchor_start_nodes(index: Dict[str, Any], anchors: List[Dict[str, str]]) -> Tuple[List[str], List[Dict[str, Any]]]:
     nodes = [node for node in index.get("graph", {}).get("nodes", []) if isinstance(node, dict)]
     starts: List[str] = []
@@ -310,7 +391,13 @@ def _anchor_start_nodes(index: Dict[str, Any], anchors: List[Dict[str, str]]) ->
             matches = [node for node in nodes if node.get("path") == path and node.get("kind") in {"file", "test", "chunk", "symbol"}]
         elif kind == "symbol":
             symbol = _normalized_anchor_symbol(value)
-            matches = [node for node in nodes if node.get("kind") == "symbol" and node.get("name") == symbol]
+            if "symbolTable" in index:
+                # O(1) lookup via pre-built symbol→node map.
+                symbol_node_map = _build_symbol_node_map(index)
+                matches = symbol_node_map.get(symbol, [])
+            else:
+                # schemaVersion 1 fallback: linear scan over all graph nodes.
+                matches = [node for node in nodes if node.get("kind") == "symbol" and node.get("name") == symbol]
         if not matches:
             continue
         node_ids = [str(node["id"]) for node in matches if node.get("id")]

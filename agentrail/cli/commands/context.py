@@ -13,7 +13,7 @@ from agentrail.context.evaluation import evaluate_retrieval, format_evaluation_r
 from agentrail.context.git_commands import git_blame, git_changed, git_history
 from agentrail.context.index import build_index
 from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
-from agentrail.context.retrieval import compute_tokens_saved, get_file_lines, get_file_symbol, query_context, search_context
+from agentrail.context.retrieval import compute_tokens_saved, context_def, get_file_lines, get_file_symbol, query_context, search_context
 from agentrail.context.sources import inventory_sources
 
 
@@ -68,6 +68,7 @@ def _usage() -> str:
   agentrail context embed [--target DIR]
   agentrail context embed setup (ollama|openai|custom|disable) [--model M] [--base-url URL] [--api-key-env VAR] [--command CMD] [--name N] [--no-validate] [--target DIR] [--json]
   agentrail context ast "<s-expression>" [--target DIR] [--json] [--limit N]
+  agentrail context def NAME [--target DIR] [--json]
   agentrail context query "<task>" [--target DIR] [--json] [--limit N]
   agentrail context search "<query>" [--target DIR] [--json] [--limit N]
   agentrail context get PATH (--lines A-B | --symbol NAME) [--target DIR] [--json]
@@ -217,6 +218,33 @@ def run_context(args: List[str]) -> int:
             else:
                 for item in output["results"]:
                     print(f"{item['citation']} {item['reason']}")
+            return 0
+        if kind == "def":
+            if not rest or rest[0].startswith("--"):
+                raise SystemExit("context def requires a symbol name")
+            name = rest[0]
+            target: str | None = None
+            json_output = False
+            index = 1
+            while index < len(rest):
+                arg = rest[index]
+                if arg == "--target":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--target requires a directory")
+                    target = rest[index + 1]
+                    index += 2
+                elif arg == "--json":
+                    json_output = True
+                    index += 1
+                else:
+                    raise SystemExit(f"Unknown context def option: {arg}")
+            resolved_target = _resolve_target(target)
+            results = context_def(resolved_target, name)
+            if json_output:
+                _print_json(results)
+            else:
+                for item in results:
+                    print(f"{item['path']}:{item['lineStart']} — {item['kind']} {name}")
             return 0
         if kind == "query":
             if not rest or rest[0].startswith("--"):

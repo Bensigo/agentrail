@@ -8,6 +8,7 @@ import { RunTimeline } from "./components/run-timeline";
 import { ReviewGatesSection } from "./components/review-gates-section";
 import { FailuresSection } from "./components/failures-section";
 import { CostSection } from "./components/cost-section";
+import { TelemetryHealthSection } from "./components/telemetry-health-section";
 import { WaterfallSection } from "./components/waterfall-section";
 import { ContextSection } from "./components/context-section";
 import { MemorySection } from "./components/memory-section";
@@ -147,6 +148,10 @@ export default function RunDetailPage() {
           Cost &amp; tokens
         </h2>
         <CostSection workspaceId={workspaceId} runId={runId} runStatus={run?.status} />
+      </div>
+
+      <div className="mt-6">
+        <TelemetryHealthSection workspaceId={workspaceId} runId={runId} />
       </div>
 
       <div className="mt-6">

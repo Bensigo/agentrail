@@ -92,6 +92,13 @@
       "when": 1780907365685,
       "tag": "0012_add_memory_repository_id",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1780907365686,
+      "tag": "0013_add_baseline_window_days",
+      "breakpoints": true
     }
   ]
 }

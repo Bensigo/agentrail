@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
-import { getWorkspaceMembership } from "@agentrail/db-postgres";
+import { getWorkspaceMembership, getWorkspace } from "@agentrail/db-postgres";
 import { getQualityMetrics } from "@agentrail/db-clickhouse";
 
 export async function GET(
@@ -22,9 +22,16 @@ export async function GET(
 
   const repositoryId = searchParams.get("repositoryId") ?? undefined;
 
-  // Parse and validate windowDays (integer, 7–90, default 30)
+  // Fetch workspace to get the baseline_window_days default.
+  const workspace = await getWorkspace(workspaceId);
+  if (!workspace) {
+    return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+  }
+  const workspaceDefault = workspace.baselineWindowDays;
+
+  // Parse and validate windowDays (integer, 7–90, default from workspace)
   const windowDaysParam = searchParams.get("windowDays");
-  let windowDays = 30;
+  let windowDays = workspaceDefault;
   if (windowDaysParam !== null) {
     const parsed = Number(windowDaysParam);
     if (!Number.isInteger(parsed) || isNaN(parsed)) {
@@ -80,7 +87,7 @@ export async function GET(
       to,
       windowDays,
     });
-    return NextResponse.json(result);
+    return NextResponse.json({ ...result, baseline_window_days: workspaceDefault });
   } catch {
     return NextResponse.json(
       { error: "Failed to load quality metrics" },

@@ -6,6 +6,7 @@ vi.mock("@agentrail/auth", () => ({
 }));
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
+  getWorkspace: vi.fn(),
 }));
 vi.mock("@agentrail/db-clickhouse", () => ({
   getQualityMetrics: vi.fn(),
@@ -13,7 +14,7 @@ vi.mock("@agentrail/db-clickhouse", () => ({
 
 import { GET } from "./route";
 import { auth } from "@agentrail/auth";
-import { getWorkspaceMembership } from "@agentrail/db-postgres";
+import { getWorkspaceMembership, getWorkspace } from "@agentrail/db-postgres";
 import { getQualityMetrics } from "@agentrail/db-clickhouse";
 
 const WS = "00000000-0000-0000-0000-000000000001";
@@ -59,6 +60,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
   vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1" } as never);
+  vi.mocked(getWorkspace).mockResolvedValue({ id: WS, baselineWindowDays: 30 } as never);
   vi.mocked(getQualityMetrics).mockResolvedValue(sampleResult);
 });
 
@@ -170,5 +172,51 @@ describe("GET /api/v1/workspaces/[workspaceId]/context-quality/metrics", () => {
     expect(getQualityMetrics).toHaveBeenCalledWith(
       expect.objectContaining({ windowDays: 90 })
     );
+  });
+
+  it("AC3: uses workspace baseline_window_days as default when windowDays param is absent", async () => {
+    vi.mocked(getWorkspace).mockResolvedValue({ id: WS, baselineWindowDays: 45 } as never);
+    const res = await GET(req(), { params: params() });
+    expect(res.status).toBe(200);
+    expect(getQualityMetrics).toHaveBeenCalledWith(
+      expect.objectContaining({ windowDays: 45 })
+    );
+    const json = await res.json();
+    expect(json.baseline_window_days).toBe(45);
+  });
+
+  it("AC4: caller-supplied windowDays=7 overrides workspace default of 45", async () => {
+    vi.mocked(getWorkspace).mockResolvedValue({ id: WS, baselineWindowDays: 45 } as never);
+    const res = await GET(req("?windowDays=7"), { params: params() });
+    expect(res.status).toBe(200);
+    expect(getQualityMetrics).toHaveBeenCalledWith(
+      expect.objectContaining({ windowDays: 7 })
+    );
+    const json = await res.json();
+    expect(json.baseline_window_days).toBe(45);
+  });
+
+  it("AC5: returns HTTP 200 with insufficient_data: true when aggregator reports < 5 runs", async () => {
+    vi.mocked(getQualityMetrics).mockResolvedValue({ insufficient_data: true });
+    const res = await GET(req(), { params: params() });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.insufficient_data).toBe(true);
+    expect(json.baseline_window_days).toBe(30);
+  });
+
+  it("AC6: response includes baseline_window_days from workspace for UI selector initialisation", async () => {
+    const res = await GET(req(), { params: params() });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.baseline_window_days).toBe(30);
+  });
+
+  it("404 when workspace does not exist", async () => {
+    vi.mocked(getWorkspace).mockResolvedValue(null as never);
+    const res = await GET(req(), { params: params() });
+    expect(res.status).toBe(404);
+    const json = await res.json();
+    expect(json.error).toBeTruthy();
   });
 });

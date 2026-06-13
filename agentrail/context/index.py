@@ -1928,6 +1928,33 @@ def _load_existing_records_and_chunks(
     return records_by_path, chunks_by_source_id
 
 
+def _build_postings(records_json: List[Dict[str, Any]], chunks_json: List[Dict[str, Any]], built_at: str) -> Dict[str, Any]:
+    """Build precomputed BM25 term-postings for the indexed corpus.
+
+    Uses a deferred import of record_text/tokenize from retrieval to avoid the
+    retrieval→index circular import (retrieval imports build_index/load_index at
+    module top).
+
+    Schema: {"version": 1, "builtAt": <ISO-8601>, "postings": {term: [{id, tf}, ...]}}
+    where ``id`` is the corpus item id (chunk id when chunks exist, else source id)
+    and ``tf`` is term frequency within that item's record_text.
+    """
+    from agentrail.context.retrieval import record_text, tokenize  # deferred: avoids circular import
+    sources = {r["id"]: r for r in records_json}
+    items: List[Any] = [(sources.get(c.get("sourceId"), {}), c) for c in chunks_json] if chunks_json else [(r, None) for r in records_json]
+    postings: Dict[str, List[Dict[str, Any]]] = {}
+    for source, chunk in items:
+        item_id = str((chunk or {}).get("id") or source.get("id"))
+        text = record_text(source, chunk)
+        tokens = tokenize(text)
+        term_counts: Dict[str, int] = {}
+        for token in tokens:
+            term_counts[token] = term_counts.get(token, 0) + 1
+        for term, tf in term_counts.items():
+            postings.setdefault(term, []).append({"id": item_id, "tf": tf})
+    return {"version": 1, "builtAt": built_at, "postings": postings}
+
+
 def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[str, Any]:
     root = target_dir.resolve()
     index_path = root / ".agentrail" / "context" / "index" / "index.json"
@@ -2100,6 +2127,7 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
         "skipped": skipped_records,
     }
     write_json(index_dir / "index.json", index)
+    write_json(index_dir / "postings.json", _build_postings(index["records"], index["chunks"], built_at))
     # Fingerprint over the glob-filtered indexable set — the SAME set that
     # _cached_index_is_fresh checks (via the shared helper). Deriving it from
     # records would drop binary/gitignored/oversized files and cause a

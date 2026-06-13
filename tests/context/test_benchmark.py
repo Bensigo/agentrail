@@ -16,6 +16,7 @@ from agentrail.context.benchmark import (
     run_benchmark,
 )
 from agentrail.context.index import build_index
+from agentrail.context.retrieval import query_context
 
 
 def make_repo() -> Path:
@@ -251,6 +252,94 @@ class BuildTimeBenchmarkTests(unittest.TestCase):
             f"tree-sitter build ({ts_s:.4f}s) exceeded 2× baseline ({baseline_s:.4f}s). "
             f"ratio={ratio:.2f}",
         )
+
+
+def _make_cold_query_repo() -> Path:
+    """Fixture repo with enough content to exercise the cold query path."""
+    root = Path(tempfile.mkdtemp())
+    subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+    (root / ".agentrail").mkdir()
+    (root / ".agentrail" / "config.json").write_text(json.dumps({
+        "schemaVersion": 1,
+        "context": {
+            "includeGlobs": ["**/*"],
+            "excludeGlobs": [".git/**", ".agentrail/context/**"],
+            "maxFileSizeBytes": 262144,
+            "skipBinary": True,
+            "respectGitIgnore": True,
+            "secretRedaction": {"enabled": False, "action": "exclude", "denyGlobs": []},
+            "embedding": {"mode": "disabled", "provider": None, "model": None},
+            "summary": {"mode": "disabled", "provider": None, "model": None},
+        },
+    }, indent=2), encoding="utf-8")
+    (root / "src").mkdir(parents=True)
+    body = "\n".join(f"    detail_{n} = compute_{n}()" for n in range(60))
+    (root / "src" / "widget.py").write_text(
+        f"def alpha_token_handler():\n{body}\n    return alpha_token_handler\n", encoding="utf-8")
+    (root / "src" / "unrelated.py").write_text("def something_else():\n    return 0\n", encoding="utf-8")
+    return root
+
+
+class ColdLatencyBenchmarkTests(unittest.TestCase):
+    """AC4 (M020): cold query latency with postings.json < 1.5 s."""
+
+    def test_cold_query_latency_with_postings(self) -> None:
+        """Build index (writes postings.json), then run a cold query; assert < 1.5 s."""
+        root = _make_cold_query_repo()
+        # Build index — this should write both index.json and postings.json
+        build_index(root)
+        postings_path = root / ".agentrail" / "context" / "index" / "postings.json"
+        self.assertTrue(postings_path.exists(), "postings.json must be written by build_index")
+
+        # Cold query: index is already built so build_index inside query_context is a cache hit;
+        # the corpus is built from postings.json, not by re-tokenizing.
+        t0 = time.perf_counter()
+        result = query_context(root, "alpha_token_handler")
+        elapsed = time.perf_counter() - t0
+
+        print("\n")
+        print("## Cold query latency benchmark (M020 postings.json verification)")
+        print("")
+        print(f"| metric             | value      | threshold  |")
+        print(f"|--------------------|------------|------------|")
+        print(f"| cold latency (s)   | {elapsed:.4f}     | < 1.5000   |")
+        print(f"| postings.json      | present    | required   |")
+        print(f"| results returned   | {len(result.get('results', []))}          | >= 1       |")
+        print("")
+
+        self.assertLess(elapsed, 1.5, f"Cold query took {elapsed:.4f}s, expected < 1.5s")
+        self.assertGreater(len(result.get("results", [])), 0, "Query must return at least one result")
+
+    def test_fallback_when_postings_absent(self) -> None:
+        """Query succeeds and returns results when postings.json is deleted (fallback path)."""
+        root = _make_cold_query_repo()
+        build_index(root)
+        postings_path = root / ".agentrail" / "context" / "index" / "postings.json"
+        postings_path.unlink()
+
+        result = query_context(root, "alpha_token_handler")
+        self.assertGreater(len(result.get("results", [])), 0, "Fallback query must return results")
+
+    def test_fallback_when_postings_malformed(self) -> None:
+        """Query succeeds when postings.json contains invalid JSON."""
+        root = _make_cold_query_repo()
+        build_index(root)
+        postings_path = root / ".agentrail" / "context" / "index" / "postings.json"
+        postings_path.write_text("{not valid json", encoding="utf-8")
+
+        result = query_context(root, "alpha_token_handler")
+        self.assertGreater(len(result.get("results", [])), 0, "Fallback on malformed postings must return results")
+
+    def test_postings_schema(self) -> None:
+        """postings.json has required keys: version, builtAt, postings."""
+        root = _make_cold_query_repo()
+        build_index(root)
+        postings_path = root / ".agentrail" / "context" / "index" / "postings.json"
+        data = json.loads(postings_path.read_text(encoding="utf-8"))
+        self.assertEqual(data.get("version"), 1)
+        self.assertIn("builtAt", data)
+        self.assertIn("postings", data)
+        self.assertIsInstance(data["postings"], dict)
 
 
 if __name__ == "__main__":

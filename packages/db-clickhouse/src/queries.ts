@@ -1,6 +1,11 @@
 import { createHash } from "crypto";
 import { client } from "./client";
-import type { TelemetryEventRecord, FailureEventRecord, IndexSnapshotRecord } from "./schema";
+import type {
+  AfkRunEventRecord,
+  TelemetryEventRecord,
+  FailureEventRecord,
+  IndexSnapshotRecord,
+} from "./schema";
 
 export type CostGroupBy = "team" | "repo" | "api_key" | "run";
 
@@ -1662,6 +1667,42 @@ export async function insertFlightRecorderEvents(
   }
 
   return { accepted: toInsert.length, duplicate };
+}
+
+export async function getAfkRunEvents(
+  workspaceId: string,
+  runId: string,
+  ch: QueryClient = client
+): Promise<AfkRunEventRecord[]> {
+  const result = await ch.query({
+    query: `
+      SELECT
+        run_id,
+        workspace_id,
+        slot,
+        event_type,
+        ts,
+        payload_json,
+        digest
+      FROM afk_run_events
+      WHERE workspace_id = {workspaceId: String}
+        AND run_id = {runId: String}
+      ORDER BY ts ASC, slot ASC
+    `,
+    query_params: { workspaceId, runId },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<Record<string, unknown>>();
+  return rows.map((r) => ({
+    run_id: String(r.run_id ?? ""),
+    workspace_id: String(r.workspace_id ?? ""),
+    slot: Number(r.slot ?? 0),
+    event_type: String(r.event_type ?? ""),
+    ts: timestampForApi(r.ts) ?? String(r.ts ?? ""),
+    payload_json: String(r.payload_json ?? ""),
+    digest: String(r.digest ?? ""),
+  }));
 }
 
 export interface RunnerCostStatsRow {

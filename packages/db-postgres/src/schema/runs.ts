@@ -15,6 +15,7 @@ export const runs = pgTable("runs", {
     .references(() => workspaces.id, { onDelete: "cascade" }),
   repositoryId: text("repository_id").notNull(),
   agent: text("agent").notNull(),
+  runnerName: text("runner_name").default(""),
   branch: text("branch").notNull(),
   title: text("title"),
   status: runStatusEnum("status").notNull().default("queued"),

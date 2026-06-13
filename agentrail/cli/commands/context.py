@@ -15,6 +15,7 @@ from agentrail.context.index import build_index
 from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
 from agentrail.context.retrieval import compute_tokens_saved, context_callers, context_callees, context_def, context_impact, get_file_lines, get_file_symbol, query_context, search_context
 from agentrail.context.sources import inventory_sources
+from agentrail.context import daemon as _daemon_mod
 
 
 def _resolve_target(value: str | None) -> Path:
@@ -85,6 +86,9 @@ def _usage() -> str:
   agentrail context show PACK [--target DIR] [--json]
   agentrail context explain PACK [--target DIR] [--json]
   agentrail context savings [--target DIR] [--json]
+  agentrail context daemon start [--target DIR]
+  agentrail context daemon stop [--target DIR]
+  agentrail context daemon status [--target DIR] [--json]
   agentrail memory recall QUERY [--target DIR]
   agentrail memory capture KIND TITLE [--target DIR]
   agentrail skills validate [--target DIR]
@@ -115,6 +119,105 @@ Commands:
   afk       Run the AFK queue/worktree loop through the AgentRail CLI.
   cleanup   Inspect or remove AgentRail-owned worktrees.
   run       Generate a bounded prompt and execute a configured agent command."""
+
+
+def _run_daemon(args: List[str]) -> int:
+    """Dispatch ``agentrail context daemon start|stop|status``."""
+    action = args[0] if args else ""
+    rest = args[1:] if args else []
+
+    if action not in {"start", "stop", "status"}:
+        raise SystemExit(
+            f"Unknown daemon action: {action!r}. Use start, stop, or status."
+            if action
+            else "context daemon requires an action: start, stop, or status"
+        )
+
+    # Parse shared options: --target and (for status) --json
+    target_str: str | None = None
+    json_output = False
+    index = 0
+    while index < len(rest):
+        arg = rest[index]
+        if arg == "--target":
+            if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                raise SystemExit("--target requires a directory")
+            target_str = rest[index + 1]
+            index += 2
+        elif arg == "--json":
+            if action != "status":
+                raise SystemExit(f"--json is only valid for daemon status")
+            json_output = True
+            index += 1
+        else:
+            raise SystemExit(f"Unknown daemon {action} option: {arg}")
+
+    target = _resolve_target(target_str)
+    socket_path = _daemon_mod.socket_path_for(target)
+
+    if action == "start":
+        # Idempotency: if socket exists and daemon responds, report it running.
+        if socket_path.exists() and _daemon_mod.ping(socket_path):
+            try:
+                status_resp = _daemon_mod.rpc(socket_path, "status")
+                pid = status_resp.get("pid", "?")
+            except Exception:
+                pid = "?"
+            print(f"Daemon already running (pid={pid})")
+            return 0
+        # Remove stale socket before spawning.
+        if socket_path.exists():
+            try:
+                socket_path.unlink()
+            except OSError:
+                pass
+        pid = _daemon_mod.start_detached(target)
+        if not _daemon_mod._wait_for_socket(socket_path, timeout=10.0):
+            print(
+                f"warning: daemon process spawned (pid={pid}) but socket did not appear "
+                f"at {socket_path} within 10 s",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"Daemon started (pid={pid})")
+        return 0
+
+    if action == "stop":
+        if not socket_path.exists() or not _daemon_mod.ping(socket_path):
+            print(f"Daemon not running for target {target}", file=sys.stderr)
+            return 1
+        try:
+            _daemon_mod.rpc(socket_path, "shutdown", timeout=5.0)
+        except Exception:
+            pass  # daemon may close before replying
+        if _daemon_mod._wait_for_socket_gone(socket_path, timeout=5.0):
+            print("Daemon stopped")
+            return 0
+        print("warning: daemon did not stop within 5 s; socket still present", file=sys.stderr)
+        return 1
+
+    # action == "status"
+    if not socket_path.exists() or not _daemon_mod.ping(socket_path):
+        print(f"Daemon not running for target {target}", file=sys.stderr)
+        return 1
+    try:
+        resp = _daemon_mod.rpc(socket_path, "status", timeout=5.0)
+    except Exception as exc:
+        print(f"Daemon not running for target {target}", file=sys.stderr)
+        return 1
+    if json_output:
+        _print_json(resp)
+    else:
+        pid = resp.get("pid", "?")
+        uptime = resp.get("uptimeSeconds", "?")
+        last_indexed = resp.get("lastIndexedAt", "?")
+        state = resp.get("state", "?")
+        print(f"PID:          {pid}")
+        print(f"uptime:       {uptime}s")
+        print(f"last indexed: {last_indexed}")
+        print(f"socket:       {resp.get('socketPath', socket_path)}")
+        print(f"state:        {state}")
+    return 0
 
 
 def run_context(args: List[str]) -> int:
@@ -728,6 +831,8 @@ def run_context(args: List[str]) -> int:
                 for session in sessions:
                     print(f"{session['generatedAt']} {session['packId']} tokensSaved={session['tokensSaved']}")
             return 0
+        if kind == "daemon":
+            return _run_daemon(rest)
         if kind in {"", "-h", "--help"}:
             print(_usage())
             return 0

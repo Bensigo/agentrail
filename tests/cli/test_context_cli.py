@@ -48,6 +48,9 @@ class ContextCliTests(unittest.TestCase):
                 self.assertIn("agentrail context build pr NUMBER --phase review [--target DIR] [--json]", result.stdout)
                 self.assertIn("agentrail context show PACK [--target DIR] [--json]", result.stdout)
                 self.assertIn("agentrail context explain PACK [--target DIR] [--json]", result.stdout)
+                self.assertIn("agentrail context daemon start [--target DIR]", result.stdout)
+                self.assertIn("agentrail context daemon stop [--target DIR]", result.stdout)
+                self.assertIn("agentrail context daemon status [--target DIR] [--json]", result.stdout)
                 self.assertEqual(result.stderr, "")
 
     def test_unknown_context_command_prints_usage_to_stderr(self) -> None:

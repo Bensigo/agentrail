@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx src/migrate.ts",
     "db:seed": "tsx src/seed.ts",
+    "seed:m016": "tsx src/seed-milestone-016.ts",
     "seed:quality": "tsx src/seed-quality-metrics.ts",
     "test": "vitest run"
   },

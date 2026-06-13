@@ -4,6 +4,7 @@ import {
   deriveContextPackId,
   getRunTelemetryHealth,
   insertFlightRecorderEvents,
+  getAfkRunEvents,
   getRunnerContextEfficiency,
   getRunnerCostStats,
   listCostAnomalies,
@@ -306,5 +307,43 @@ describe("runner scorecard ClickHouse queries", () => {
     expect(calls[0]?.query).toContain("GROUP BY run_id");
     expect(calls[0]?.query).not.toContain("runner_name");
     expect(calls[0]?.query_params).toEqual({ workspaceId: "ws-1", runIds: ["run-1"] });
+  });
+});
+
+describe("getAfkRunEvents", () => {
+  it("reads AFK events for a run with bound workspace/run parameters", async () => {
+    const { client, calls } = fakeQueryClient([
+      [
+        {
+          run_id: "run-1",
+          workspace_id: "ws-1",
+          slot: "1",
+          event_type: "READ",
+          ts: "2026-06-13 10:00:00.000",
+          payload_json: "{\"path\":\"README.md\"}",
+          digest: "abc123",
+        },
+      ],
+    ]);
+
+    const rows = await getAfkRunEvents("ws-1", "run-1", client);
+
+    expect(rows).toEqual([
+      {
+        run_id: "run-1",
+        workspace_id: "ws-1",
+        slot: 1,
+        event_type: "READ",
+        ts: "2026-06-13T10:00:00.000Z",
+        payload_json: "{\"path\":\"README.md\"}",
+        digest: "abc123",
+      },
+    ]);
+    expect(calls[0]?.query).toContain("FROM afk_run_events");
+    expect(calls[0]?.query).toContain("workspace_id = {workspaceId: String}");
+    expect(calls[0]?.query).toContain("run_id = {runId: String}");
+    expect(calls[0]?.query).toContain("ORDER BY ts ASC, slot ASC");
+    expect(calls[0]?.query).not.toContain("kind");
+    expect(calls[0]?.query_params).toEqual({ workspaceId: "ws-1", runId: "run-1" });
   });
 });

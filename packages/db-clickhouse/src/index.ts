@@ -63,6 +63,7 @@ export {
   getAgentModelCosts,
   countDistinctSourceHashLists,
   insertFlightRecorderEvents,
+  getAfkRunEvents,
   getRunnerCostStats,
   getRunnerContextEfficiency,
 } from "./queries";

@@ -17,6 +17,7 @@ export {
   ALTER_COST_EVENTS_ADD_INPUT_TOKENS,
   ALTER_COST_EVENTS_ADD_OUTPUT_TOKENS,
   ALTER_COST_EVENTS_ADD_CACHE_TOKENS,
+  CREATE_AFK_RUN_EVENTS_TABLE,
 } from "./schema";
 export type {
   TelemetryEventRecord,
@@ -25,6 +26,7 @@ export type {
   ContextEventRecord,
   IndexSnapshotRecord,
   CostEventRecord,
+  AfkRunEventRecord,
 } from "./schema";
 export {
   getRunEvents,
@@ -52,6 +54,7 @@ export {
   listCostAnomalies,
   getAgentModelCosts,
   countDistinctSourceHashLists,
+  insertFlightRecorderEvents,
 } from "./queries";
 export type {
   RunEventSummary,
@@ -73,6 +76,8 @@ export type {
   ListCostAnomaliesOptions,
   AgentModelCostRow,
   HashChurnResult,
+  AfkFlightEventInput,
+  InsertFlightRecorderResult,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems, getWorkspaceContextPacks, listWorkspaceContextPacks, getTokensSavedByRun } from "./context-queries";
 export { computeQualityMetrics, getQualityMetrics } from "./quality-metrics";

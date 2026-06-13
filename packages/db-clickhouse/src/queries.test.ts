@@ -3,6 +3,7 @@ import {
   deriveSnapshotEventId,
   deriveContextPackId,
   getRunTelemetryHealth,
+  insertFlightRecorderEvents,
   listCostAnomalies,
 } from "./queries";
 
@@ -27,6 +28,45 @@ function fakeQueryClient(responses: Array<Record<string, unknown>[]>) {
             return rows as T[];
           },
         };
+      },
+    },
+  };
+}
+
+function fakeInsertClient(responses: Array<Record<string, unknown>[]>) {
+  const calls: Array<{
+    query: string;
+    query_params?: Record<string, unknown>;
+    format: "JSONEachRow";
+  }> = [];
+  const inserts: Array<{
+    table: string;
+    values: Record<string, unknown>[];
+    format: "JSONEachRow";
+  }> = [];
+  return {
+    calls,
+    inserts,
+    client: {
+      async query(args: {
+        query: string;
+        query_params?: Record<string, unknown>;
+        format: "JSONEachRow";
+      }) {
+        calls.push(args);
+        const rows = responses.shift() ?? [];
+        return {
+          async json<T>() {
+            return rows as T[];
+          },
+        };
+      },
+      async insert(args: {
+        table: string;
+        values: Record<string, unknown>[];
+        format: "JSONEachRow";
+      }) {
+        inserts.push(args);
       },
     },
   };
@@ -172,5 +212,65 @@ describe("listCostAnomalies", () => {
       timeFrom: "2026-06-13 08:00:00.000",
       timeTo: "2026-06-13 09:00:00.000",
     });
+  });
+});
+
+describe("insertFlightRecorderEvents", () => {
+  it("dedupes with bound ClickHouse parameters instead of interpolated tuples", async () => {
+    const workspaceId = "ws-1";
+    const { client, calls, inserts } = fakeInsertClient([
+      [{ run_id: "sess-' OR 1=1 --", ts: "2026-06-13 10:00:00.000", slot: 0 }],
+    ]);
+
+    const result = await insertFlightRecorderEvents(
+      [
+        {
+          v: 1,
+          session: "sess-' OR 1=1 --",
+          seq: 1,
+          ts: "2026-06-13T10:00:00.000Z",
+          kind: "action",
+          action: { type: "Read", slot: 0 },
+          digest: "aaa",
+          workspace_id: workspaceId,
+        },
+        {
+          v: 1,
+          session: "sess-2",
+          seq: 2,
+          ts: "2026-06-13T10:00:01.000Z",
+          kind: "state",
+          state: { status: "running" },
+          digest: "bbb",
+          workspace_id: workspaceId,
+        },
+      ],
+      client
+    );
+
+    expect(result).toEqual({ accepted: 1, duplicate: 1 });
+    expect(calls[0]?.query).toContain("run_id IN ({runIds:Array(String)})");
+    expect(calls[0]?.query).toContain("ts IN ({timestamps:Array(DateTime64(3))})");
+    expect(calls[0]?.query).toContain("slot IN ({slots:Array(UInt8)})");
+    expect(calls[0]?.query).not.toContain("sess-' OR 1=1 --");
+    expect(calls[0]?.query).not.toContain("(run_id, ts, slot) IN (");
+    expect(calls[0]?.query_params).toEqual({
+      workspaceId,
+      runIds: ["sess-' OR 1=1 --", "sess-2"],
+      timestamps: ["2026-06-13 10:00:00.000", "2026-06-13 10:00:01.000"],
+      slots: [0],
+    });
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]?.values).toEqual([
+      {
+        run_id: "sess-2",
+        workspace_id: workspaceId,
+        slot: 0,
+        event_type: "state",
+        ts: "2026-06-13 10:00:01.000",
+        payload_json: JSON.stringify({ status: "running" }),
+        digest: "bbb",
+      },
+    ]);
   });
 });

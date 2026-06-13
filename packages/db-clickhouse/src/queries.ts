@@ -1089,6 +1089,14 @@ type QueryClient = {
   }): Promise<QueryJsonResult>;
 };
 
+type InsertClient = QueryClient & {
+  insert(args: {
+    table: string;
+    values: Record<string, unknown>[];
+    format: "JSONEachRow";
+  }): Promise<unknown>;
+};
+
 function formatClickHouseDateTime(date: Date): string {
   return date.toISOString().replace("T", " ").replace("Z", "");
 }
@@ -1471,4 +1479,103 @@ export async function countDistinctSourceHashLists(
     distinct_lists: Number(r.distinct_lists),
     run_count: Number(r.run_count),
   };
+}
+
+// ---------------------------------------------------------------------------
+// AFK flight-recorder events → afk_run_events table
+// ---------------------------------------------------------------------------
+
+/** A single events.jsonl line from the AFK flight recorder. */
+export interface AfkFlightEventInput {
+  /** Schema version */
+  v: number;
+  /** AFK session identifier — becomes run_id */
+  session: string;
+  seq: number;
+  ts: string;
+  kind: string;
+  action?: Record<string, unknown>;
+  state?: Record<string, unknown>;
+  digest: string;
+  /** Injected from bearer context — NOT from request body */
+  workspace_id: string;
+}
+
+export interface InsertFlightRecorderResult {
+  accepted: number;
+  duplicate: number;
+}
+
+/**
+ * Insert AFK flight-recorder events into the `afk_run_events` table.
+ *
+ * Deduplication key: (run_id, ts, slot). A read-before-write check on these
+ * three columns identifies duplicates; only new rows are inserted.
+ */
+export async function insertFlightRecorderEvents(
+  events: AfkFlightEventInput[],
+  ch: InsertClient = client
+): Promise<InsertFlightRecorderResult> {
+  if (events.length === 0) return { accepted: 0, duplicate: 0 };
+
+  // Build the candidate rows.
+  const candidates = events.map((ev) => ({
+    ev,
+    run_id: ev.session,
+    slot: (ev.action?.slot as number | undefined) ?? 0,
+    event_type: String((ev.action?.type as string | undefined) ?? ev.kind),
+    payload_json: JSON.stringify(ev.action ?? ev.state ?? {}),
+    ts: new Date(ev.ts).toISOString().replace("T", " ").replace("Z", ""),
+  }));
+
+  const runIds = [...new Set(candidates.map((c) => c.run_id))];
+  const timestamps = [...new Set(candidates.map((c) => c.ts))];
+  const slots = [...new Set(candidates.map((c) => c.slot))];
+
+  // Read-before-write: fetch candidate matches with bound parameters, then
+  // apply the exact (run_id, ts, slot) key check locally.
+  const checkResult = await ch.query({
+    query: `
+      SELECT run_id, ts, slot
+      FROM afk_run_events
+      WHERE workspace_id = {workspaceId: String}
+        AND run_id IN ({runIds:Array(String)})
+        AND ts IN ({timestamps:Array(DateTime64(3))})
+        AND slot IN ({slots:Array(UInt8)})
+    `,
+    query_params: {
+      workspaceId: events[0].workspace_id,
+      runIds,
+      timestamps,
+      slots,
+    },
+    format: "JSONEachRow",
+  });
+  const existingRows = await checkResult.json<{ run_id: string; ts: string; slot: number }>();
+  const existingKeys = new Set(existingRows.map((r) => `${r.run_id}|${r.ts}|${r.slot}`));
+
+  const toInsert = candidates.filter(
+    (c) => !existingKeys.has(`${c.run_id}|${c.ts}|${c.slot}`)
+  );
+  const duplicate = candidates.length - toInsert.length;
+
+  if (toInsert.length > 0) {
+    const rows = toInsert.map((c) => ({
+      run_id: c.run_id,
+      workspace_id: c.ev.workspace_id,
+      slot: c.slot,
+      event_type: c.event_type,
+      ts: c.ts,
+      payload_json: c.payload_json,
+      digest: c.ev.digest,
+    }));
+
+    await ch.insert({
+      table: "afk_run_events",
+      values: rows,
+      format: "JSONEachRow",
+    });
+  }
+
+  return { accepted: toInsert.length, duplicate };
 }

@@ -252,3 +252,28 @@ export interface CostEventRecord {
   occurred_at: Date;
   event_id: string;
 }
+
+export const CREATE_AFK_RUN_EVENTS_TABLE = `
+CREATE TABLE IF NOT EXISTS afk_run_events (
+  run_id       String,
+  workspace_id String,
+  slot         UInt8,
+  event_type   LowCardinality(String),
+  ts           DateTime64(3, 'UTC'),
+  payload_json String,
+  digest       String
+)
+ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMM(ts)
+ORDER BY (run_id, ts, slot)
+`;
+
+export interface AfkRunEventRecord {
+  run_id: string;
+  workspace_id: string;
+  slot: number;
+  event_type: string;
+  ts: string;
+  payload_json: string;
+  digest: string;
+}

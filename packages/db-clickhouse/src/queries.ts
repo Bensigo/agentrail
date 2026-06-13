@@ -1141,3 +1141,231 @@ export async function countDistinctSourceHashLists(
     run_count: Number(r.run_count),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Telemetry completeness — per-run signal presence
+// ---------------------------------------------------------------------------
+
+export interface TelemetryHealthSignal {
+  signal: string;
+  present: boolean;
+  /**
+   * For absent signals, the run's earliest `run_events` timestamp (the anchor),
+   * or `null` when present or when the run has no events to anchor against.
+   */
+  missing_since: string | null;
+}
+
+/**
+ * Stable, public ordering of the eight telemetry signals. Mirrors `SIGNALS` in
+ * `agentrail/server/telemetry_completeness.py`; `getRunTelemetryHealth` always
+ * returns one entry per member, in this order.
+ */
+export const TELEMETRY_SIGNALS = [
+  "run_start",
+  "context_pack",
+  "cost_event",
+  "review_gate",
+  "failure_event",
+  "memory_items",
+  "index_snapshot",
+  "outbox_flush",
+] as const;
+
+// Index snapshots are workspace-scoped; one counts as present for a run if
+// recorded within this window of the run start (mirrors INDEX_SNAPSHOT_RECENCY).
+const INDEX_SNAPSHOT_RECENCY_MS = 48 * 60 * 60 * 1000;
+
+function toClickHouseDateTime(date: Date): string {
+  return date.toISOString().replace("T", " ").replace("Z", "");
+}
+
+async function countRows(query: string, params: Record<string, unknown>): Promise<number> {
+  const result = await client.query({
+    query,
+    query_params: params,
+    format: "JSONEachRow",
+  });
+  const rows = await result.json<{ cnt: string | number }>();
+  return Number(rows[0]?.cnt ?? 0);
+}
+
+/**
+ * Return one {@link TelemetryHealthSignal} per named signal, in
+ * {@link TELEMETRY_SIGNALS} order, by reading the existing ClickHouse-backed
+ * tables (no new schema). Ports the signal-to-table logic from
+ * `agentrail/server/telemetry_completeness.py`.
+ */
+export async function getRunTelemetryHealth(
+  workspaceId: string,
+  runId: string
+): Promise<TelemetryHealthSignal[]> {
+  // Anchor: the run's earliest run_events timestamp. Also doubles as the
+  // run_start presence check.
+  const anchorResult = await client.query({
+    query: `
+      SELECT min(occurred_at) AS anchor, count() AS cnt
+      FROM run_events
+      WHERE workspace_id = {workspaceId: String}
+        AND run_id = {runId: String}
+    `,
+    query_params: { workspaceId, runId },
+    format: "JSONEachRow",
+  });
+  const anchorRows = await anchorResult.json<{ anchor: string; cnt: string | number }>();
+  const runEventCount = Number(anchorRows[0]?.cnt ?? 0);
+  const anchor = runEventCount > 0 ? String(anchorRows[0]?.anchor) : null;
+
+  const runScoped = { workspaceId, runId };
+  const [
+    contextPackCount,
+    costEventCount,
+    reviewGateCount,
+    failureEventCount,
+    memoryItemsCount,
+    outboxFlushCount,
+    indexSnapshotCount,
+  ] = await Promise.all([
+    countRows(
+      `SELECT count() AS cnt FROM context_packs WHERE workspace_id = {workspaceId: String} AND run_id = {runId: String}`,
+      runScoped
+    ),
+    countRows(
+      `SELECT count() AS cnt FROM cost_events WHERE workspace_id = {workspaceId: String} AND run_id = {runId: String}`,
+      runScoped
+    ),
+    countRows(
+      `SELECT count() AS cnt FROM run_events WHERE workspace_id = {workspaceId: String} AND run_id = {runId: String} AND (submission_kind = 'review_gate' OR event_type LIKE 'review_gate%')`,
+      runScoped
+    ),
+    countRows(
+      `SELECT count() AS cnt FROM failure_events WHERE workspace_id = {workspaceId: String} AND run_id = {runId: String}`,
+      runScoped
+    ),
+    countRows(
+      `SELECT count() AS cnt FROM run_events WHERE workspace_id = {workspaceId: String} AND run_id = {runId: String} AND (submission_kind = 'memory' OR event_type LIKE 'memory_items%')`,
+      runScoped
+    ),
+    countRows(
+      `SELECT count() AS cnt FROM run_events WHERE workspace_id = {workspaceId: String} AND run_id = {runId: String} AND event_type = 'outbox_flushed'`,
+      runScoped
+    ),
+    // index_snapshot: workspace-scoped within the recency window before the anchor.
+    anchor === null
+      ? Promise.resolve(0)
+      : countRows(
+          `SELECT count() AS cnt FROM index_snapshots WHERE workspace_id = {workspaceId: String} AND indexed_at >= {since: DateTime64(3, 'UTC')}`,
+          {
+            workspaceId,
+            since: toClickHouseDateTime(
+              new Date(new Date(`${anchor.replace(" ", "T")}Z`).getTime() - INDEX_SNAPSHOT_RECENCY_MS)
+            ),
+          }
+        ),
+  ]);
+
+  const presence: Record<(typeof TELEMETRY_SIGNALS)[number], boolean> = {
+    run_start: runEventCount > 0,
+    context_pack: contextPackCount > 0,
+    cost_event: costEventCount > 0,
+    review_gate: reviewGateCount > 0,
+    failure_event: failureEventCount > 0,
+    memory_items: memoryItemsCount > 0,
+    index_snapshot: indexSnapshotCount > 0,
+    outbox_flush: outboxFlushCount > 0,
+  };
+
+  return TELEMETRY_SIGNALS.map((signal) => {
+    const present = presence[signal];
+    return {
+      signal,
+      present,
+      missing_since: present ? null : anchor,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Cost anomalies — emitted as run_events of event_type 'cost_anomaly'
+// ---------------------------------------------------------------------------
+
+export interface CostAnomalyRow {
+  run_id: string;
+  model: string;
+  phase: string;
+  repository_id: string;
+  cost_usd: number;
+  mean: number;
+  stddev: number;
+  deviation_sigmas: number;
+  occurred_at: string;
+}
+
+export interface CostAnomaliesOptions {
+  timeFrom?: Date;
+  timeTo?: Date;
+}
+
+/**
+ * List cost-anomaly events for a workspace. Anomalies are recorded in
+ * `run_events` with `event_type = 'cost_anomaly'`; the per-anomaly metrics
+ * (model, cost, baseline mean/stddev, deviation) live in the JSON `payload`.
+ */
+export async function getCostAnomalies(
+  workspaceId: string,
+  opts: CostAnomaliesOptions = {}
+): Promise<CostAnomalyRow[]> {
+  const { timeFrom, timeTo } = opts;
+
+  const conditions: string[] = [
+    "workspace_id = {workspaceId: String}",
+    "event_type = 'cost_anomaly'",
+  ];
+  const queryParams: Record<string, unknown> = { workspaceId };
+
+  if (timeFrom) {
+    conditions.push("occurred_at >= {timeFrom: DateTime64(3)}");
+    queryParams.timeFrom = toClickHouseDateTime(timeFrom);
+  }
+  if (timeTo) {
+    conditions.push("occurred_at <= {timeTo: DateTime64(3)}");
+    queryParams.timeTo = toClickHouseDateTime(timeTo);
+  }
+
+  const result = await client.query({
+    query: `
+      SELECT
+        run_id,
+        phase,
+        repository_id,
+        occurred_at,
+        payload
+      FROM run_events
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY occurred_at DESC
+    `,
+    query_params: queryParams,
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<Record<string, unknown>>();
+  return rows.map((r) => {
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = JSON.parse(String(r.payload ?? "{}")) as Record<string, unknown>;
+    } catch {
+      payload = {};
+    }
+    return {
+      run_id: String(r.run_id ?? ""),
+      model: String(payload.model ?? ""),
+      phase: String(r.phase ?? ""),
+      repository_id: String(r.repository_id ?? ""),
+      cost_usd: Number(payload.cost_usd ?? 0),
+      mean: Number(payload.mean ?? 0),
+      stddev: Number(payload.stddev ?? 0),
+      deviation_sigmas: Number(payload.deviation_sigmas ?? 0),
+      occurred_at: String(r.occurred_at ?? ""),
+    };
+  });
+}

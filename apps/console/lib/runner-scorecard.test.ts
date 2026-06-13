@@ -17,16 +17,15 @@ function makePgRow(overrides: Partial<RunnerRunStatsRow> = {}): RunnerRunStatsRo
 
 function makeCostRow(overrides: Partial<RunnerCostStatsRow> = {}): RunnerCostStatsRow {
   return {
-    runner_name: "claude",
+    run_id: "run-1",
     total_cost_usd: 6.0,
-    run_count: 4,
     ...overrides,
   };
 }
 
 function makeEffRow(overrides: Partial<RunnerContextEfficiencyRow> = {}): RunnerContextEfficiencyRow {
   return {
-    runner_name: "claude",
+    run_id: "run-1",
     tokens_saved_sum: 800,
     token_budget_sum: 1000,
     ...overrides,
@@ -40,12 +39,16 @@ describe("buildRunnerScorecard", () => {
       makePgRow({ runner_name: "codex",  total_count: 2, success_count: 1, human_review_count: 0, review_fix_count: 1, run_ids: ["r5", "r6"] }),
     ];
     const cost = [
-      makeCostRow({ runner_name: "claude", total_cost_usd: 6.0 }),
-      makeCostRow({ runner_name: "codex",  total_cost_usd: 2.0 }),
+      makeCostRow({ run_id: "r1", total_cost_usd: 2.0 }),
+      makeCostRow({ run_id: "r2", total_cost_usd: 4.0 }),
+      makeCostRow({ run_id: "r5", total_cost_usd: 2.0 }),
+      makeCostRow({ run_id: "ignored", total_cost_usd: 99.0 }),
     ];
     const eff = [
-      makeEffRow({ runner_name: "claude", tokens_saved_sum: 800, token_budget_sum: 1000 }),
-      makeEffRow({ runner_name: "codex",  tokens_saved_sum: 300, token_budget_sum: 600 }),
+      makeEffRow({ run_id: "r1", tokens_saved_sum: 300, token_budget_sum: 400 }),
+      makeEffRow({ run_id: "r2", tokens_saved_sum: 500, token_budget_sum: 600 }),
+      makeEffRow({ run_id: "r5", tokens_saved_sum: 300, token_budget_sum: 600 }),
+      makeEffRow({ run_id: "ignored", tokens_saved_sum: 1000, token_budget_sum: 1000 }),
     ];
 
     const rows = buildRunnerScorecard(pg, cost, eff);
@@ -76,7 +79,7 @@ describe("buildRunnerScorecard", () => {
 
   it("AC3: context_efficiency is null when no context_packs rows for a runner", () => {
     const pg = [makePgRow({ runner_name: "claude" })];
-    const cost = [makeCostRow({ runner_name: "claude" })];
+    const cost = [makeCostRow({ run_id: "run-1" })];
     // No eff row for "claude"
     const rows = buildRunnerScorecard(pg, cost, []);
     expect(rows[0].context_efficiency).toBeNull();
@@ -84,7 +87,7 @@ describe("buildRunnerScorecard", () => {
 
   it("AC3: context_efficiency is null when token_budget_sum is 0", () => {
     const pg = [makePgRow({ runner_name: "claude" })];
-    const eff = [makeEffRow({ runner_name: "claude", tokens_saved_sum: 0, token_budget_sum: 0 })];
+    const eff = [makeEffRow({ run_id: "run-1", tokens_saved_sum: 0, token_budget_sum: 0 })];
     const rows = buildRunnerScorecard(pg, [], eff);
     expect(rows[0].context_efficiency).toBeNull();
   });
@@ -108,6 +111,29 @@ describe("buildRunnerScorecard", () => {
     const cost = [makeCostRow({ total_cost_usd: 5.0 })];
     const rows = buildRunnerScorecard(pg, cost, []);
     expect(rows[0].cost_per_merged_pr).toBeNull();
+  });
+
+  it("human_review_rate is null when the source count is absent", () => {
+    const pg = [makePgRow({ human_review_count: null })];
+    const rows = buildRunnerScorecard(pg, [], []);
+    expect(rows[0].human_review_rate).toBeNull();
+  });
+
+  it("ignores ClickHouse rows outside the runner's run_ids", () => {
+    const pg = [makePgRow({ success_count: 2, run_ids: ["run-a", "run-b"] })];
+    const cost = [
+      makeCostRow({ run_id: "run-a", total_cost_usd: 3 }),
+      makeCostRow({ run_id: "other-run", total_cost_usd: 20 }),
+    ];
+    const eff = [
+      makeEffRow({ run_id: "run-b", tokens_saved_sum: 30, token_budget_sum: 60 }),
+      makeEffRow({ run_id: "other-run", tokens_saved_sum: 100, token_budget_sum: 100 }),
+    ];
+
+    const rows = buildRunnerScorecard(pg, cost, eff);
+
+    expect(rows[0].cost_per_merged_pr).toBeCloseTo(3 / 2);
+    expect(rows[0].context_efficiency).toBeCloseTo(30 / 60);
   });
 
   it("returns empty array when pgRows is empty", () => {

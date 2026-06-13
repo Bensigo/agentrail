@@ -4,6 +4,8 @@ import {
   deriveContextPackId,
   getRunTelemetryHealth,
   insertFlightRecorderEvents,
+  getRunnerContextEfficiency,
+  getRunnerCostStats,
   listCostAnomalies,
 } from "./queries";
 
@@ -272,5 +274,37 @@ describe("insertFlightRecorderEvents", () => {
         digest: "bbb",
       },
     ]);
+  });
+});
+
+describe("runner scorecard ClickHouse queries", () => {
+  it("getRunnerCostStats aggregates by run_id, not runner_name", async () => {
+    const { client, calls } = fakeQueryClient([
+      [{ run_id: "run-1", total_cost_usd: "2.5" }],
+    ]);
+
+    const rows = await getRunnerCostStats("ws-1", ["run-1"], client);
+
+    expect(rows).toEqual([{ run_id: "run-1", total_cost_usd: 2.5 }]);
+    expect(calls[0]?.query).toContain("SELECT");
+    expect(calls[0]?.query).toContain("run_id");
+    expect(calls[0]?.query).toContain("GROUP BY run_id");
+    expect(calls[0]?.query).not.toContain("runner_name");
+    expect(calls[0]?.query_params).toEqual({ workspaceId: "ws-1", runIds: ["run-1"] });
+  });
+
+  it("getRunnerContextEfficiency aggregates by run_id, not runner_name", async () => {
+    const { client, calls } = fakeQueryClient([
+      [{ run_id: "run-1", tokens_saved_sum: "500", token_budget_sum: "1000" }],
+    ]);
+
+    const rows = await getRunnerContextEfficiency("ws-1", ["run-1"], client);
+
+    expect(rows).toEqual([
+      { run_id: "run-1", tokens_saved_sum: 500, token_budget_sum: 1000 },
+    ]);
+    expect(calls[0]?.query).toContain("GROUP BY run_id");
+    expect(calls[0]?.query).not.toContain("runner_name");
+    expect(calls[0]?.query_params).toEqual({ workspaceId: "ws-1", runIds: ["run-1"] });
   });
 });

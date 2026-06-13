@@ -52,6 +52,8 @@ export {
   listCostAnomalies,
   getAgentModelCosts,
   countDistinctSourceHashLists,
+  getRunnerCostStats,
+  getRunnerContextEfficiency,
 } from "./queries";
 export type {
   RunEventSummary,
@@ -73,6 +75,8 @@ export type {
   ListCostAnomaliesOptions,
   AgentModelCostRow,
   HashChurnResult,
+  RunnerCostStatsRow,
+  RunnerContextEfficiencyRow,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems, getWorkspaceContextPacks, listWorkspaceContextPacks, getTokensSavedByRun } from "./context-queries";
 export { computeQualityMetrics, getQualityMetrics } from "./quality-metrics";

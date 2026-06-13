@@ -870,3 +870,78 @@ export async function getWorkspaceOverviewCounts(
     memoryItems: memoryCount,
   };
 }
+
+export interface RunnerRunStatsRow {
+  runner_name: string;
+  run_ids: string[];
+  total_count: number;
+  success_count: number;
+  human_review_count: number;
+  review_fix_count: number;
+}
+
+export interface GetRunnerRunStatsFilters {
+  repositoryId?: string;
+  from?: Date;
+  to?: Date;
+  taskType?: string;
+}
+
+/**
+ * Per-runner aggregate stats from runs and review_gates.
+ * Requires runner_name column on runs table (added by upstream migration).
+ * review_fix_count = runs that have at least one review gate with status='passed'.
+ */
+export async function getRunnerRunStats(
+  workspaceId: string,
+  filters?: GetRunnerRunStatsFilters
+): Promise<RunnerRunStatsRow[]> {
+  const conditions: SQL[] = [
+    sql`r.workspace_id = ${workspaceId}`,
+    sql`r.runner_name IS NOT NULL AND r.runner_name != ''`,
+  ];
+  if (filters?.repositoryId) {
+    conditions.push(sql`r.repository_id = ${filters.repositoryId}`);
+  }
+  if (filters?.from) {
+    conditions.push(sql`r.created_at >= ${filters.from}`);
+  }
+  if (filters?.to) {
+    conditions.push(sql`r.created_at <= ${filters.to}`);
+  }
+  if (filters?.taskType) {
+    conditions.push(sql`r.task_type = ${filters.taskType}`);
+  }
+
+  const whereClause = sql.join(conditions, sql` AND `);
+
+  const result = await db.execute(sql`
+    WITH review_fix_runs AS (
+      SELECT DISTINCT rg.run_id
+      FROM review_gates rg
+      WHERE rg.workspace_id = ${workspaceId}
+        AND rg.status = 'passed'
+    )
+    SELECT
+      r.runner_name,
+      ARRAY_AGG(r.id)                                                AS run_ids,
+      COUNT(*)                                                       AS total_count,
+      COUNT(*) FILTER (WHERE r.status = 'success')                  AS success_count,
+      COUNT(*) FILTER (WHERE r.status = 'human_review')             AS human_review_count,
+      COUNT(*) FILTER (WHERE rfr.run_id IS NOT NULL)                AS review_fix_count
+    FROM runs r
+    LEFT JOIN review_fix_runs rfr ON rfr.run_id = r.id
+    WHERE ${whereClause}
+    GROUP BY r.runner_name
+    ORDER BY total_count DESC
+  `);
+
+  return (Array.from(result) as Record<string, unknown>[]).map((r) => ({
+    runner_name: String(r.runner_name ?? ""),
+    run_ids: Array.isArray(r.run_ids) ? (r.run_ids as string[]) : [],
+    total_count: Number(r.total_count ?? 0),
+    success_count: Number(r.success_count ?? 0),
+    human_review_count: Number(r.human_review_count ?? 0),
+    review_fix_count: Number(r.review_fix_count ?? 0),
+  }));
+}

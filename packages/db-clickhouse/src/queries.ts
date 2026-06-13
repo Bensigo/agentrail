@@ -1472,3 +1472,84 @@ export async function countDistinctSourceHashLists(
     run_count: Number(r.run_count),
   };
 }
+
+export interface RunnerCostStatsRow {
+  runner_name: string;
+  total_cost_usd: number;
+  run_count: number;
+}
+
+/**
+ * Per-runner cost aggregates from cost_events for a set of run IDs.
+ * Requires runner_name column on cost_events (set by upstream ingest pipeline).
+ */
+export async function getRunnerCostStats(
+  workspaceId: string,
+  runIds: string[]
+): Promise<RunnerCostStatsRow[]> {
+  if (runIds.length === 0) return [];
+
+  const result = await client.query({
+    query: `
+      SELECT
+        runner_name,
+        sum(cost_usd)         AS total_cost_usd,
+        uniqExact(run_id)     AS run_count
+      FROM cost_events
+      WHERE workspace_id = {workspaceId: String}
+        AND run_id IN ({runIds: Array(String)})
+        AND runner_name != ''
+      GROUP BY runner_name
+      ORDER BY total_cost_usd DESC
+    `,
+    query_params: { workspaceId, runIds },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<Record<string, unknown>>();
+  return rows.map((r) => ({
+    runner_name: String(r.runner_name ?? ""),
+    total_cost_usd: Number(r.total_cost_usd ?? 0),
+    run_count: Number(r.run_count ?? 0),
+  }));
+}
+
+export interface RunnerContextEfficiencyRow {
+  runner_name: string;
+  tokens_saved_sum: number;
+  token_budget_sum: number;
+}
+
+/**
+ * Per-runner context efficiency from context_packs for a set of run IDs.
+ * context_efficiency = tokens_saved_sum / token_budget_sum.
+ */
+export async function getRunnerContextEfficiency(
+  workspaceId: string,
+  runIds: string[]
+): Promise<RunnerContextEfficiencyRow[]> {
+  if (runIds.length === 0) return [];
+
+  const result = await client.query({
+    query: `
+      SELECT
+        runner_name,
+        sum(tokens_saved)  AS tokens_saved_sum,
+        sum(token_budget)  AS token_budget_sum
+      FROM context_packs
+      WHERE workspace_id = {workspaceId: String}
+        AND run_id IN ({runIds: Array(String)})
+        AND runner_name != ''
+      GROUP BY runner_name
+    `,
+    query_params: { workspaceId, runIds },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<Record<string, unknown>>();
+  return rows.map((r) => ({
+    runner_name: String(r.runner_name ?? ""),
+    tokens_saved_sum: Number(r.tokens_saved_sum ?? 0),
+    token_budget_sum: Number(r.token_budget_sum ?? 0),
+  }));
+}

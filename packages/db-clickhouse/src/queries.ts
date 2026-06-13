@@ -1089,6 +1089,14 @@ type QueryClient = {
   }): Promise<QueryJsonResult>;
 };
 
+type InsertClient = QueryClient & {
+  insert(args: {
+    table: string;
+    values: Record<string, unknown>[];
+    format: "JSONEachRow";
+  }): Promise<unknown>;
+};
+
 function formatClickHouseDateTime(date: Date): string {
   return date.toISOString().replace("T", " ").replace("Z", "");
 }
@@ -1505,7 +1513,8 @@ export interface InsertFlightRecorderResult {
  * three columns identifies duplicates; only new rows are inserted.
  */
 export async function insertFlightRecorderEvents(
-  events: AfkFlightEventInput[]
+  events: AfkFlightEventInput[],
+  ch: InsertClient = client
 ): Promise<InsertFlightRecorderResult> {
   if (events.length === 0) return { accepted: 0, duplicate: 0 };
 
@@ -1519,16 +1528,27 @@ export async function insertFlightRecorderEvents(
     ts: new Date(ev.ts).toISOString().replace("T", " ").replace("Z", ""),
   }));
 
-  // Read-before-write: check which (run_id, ts, slot) tuples already exist.
-  const tuples = candidates.map((c) => `('${c.run_id}','${c.ts}',${c.slot})`).join(",");
-  const checkResult = await client.query({
+  const runIds = [...new Set(candidates.map((c) => c.run_id))];
+  const timestamps = [...new Set(candidates.map((c) => c.ts))];
+  const slots = [...new Set(candidates.map((c) => c.slot))];
+
+  // Read-before-write: fetch candidate matches with bound parameters, then
+  // apply the exact (run_id, ts, slot) key check locally.
+  const checkResult = await ch.query({
     query: `
       SELECT run_id, ts, slot
       FROM afk_run_events
       WHERE workspace_id = {workspaceId: String}
-        AND (run_id, ts, slot) IN (${tuples})
+        AND run_id IN ({runIds:Array(String)})
+        AND ts IN ({timestamps:Array(DateTime64(3))})
+        AND slot IN ({slots:Array(UInt8)})
     `,
-    query_params: { workspaceId: events[0].workspace_id },
+    query_params: {
+      workspaceId: events[0].workspace_id,
+      runIds,
+      timestamps,
+      slots,
+    },
     format: "JSONEachRow",
   });
   const existingRows = await checkResult.json<{ run_id: string; ts: string; slot: number }>();
@@ -1550,7 +1570,7 @@ export async function insertFlightRecorderEvents(
       digest: c.ev.digest,
     }));
 
-    await client.insert({
+    await ch.insert({
       table: "afk_run_events",
       values: rows,
       format: "JSONEachRow",

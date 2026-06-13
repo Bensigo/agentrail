@@ -440,10 +440,11 @@ class ContextModuleTests(unittest.TestCase):
 
     def test_parser_failure_falls_back_to_line_window_chunks(self) -> None:
         root = Path(tempfile.mkdtemp())
-        # Ruby is not in the supported language list — extracted_symbols returns []
-        rb_text = "def unsupported_language\n  puts 'hi'\nend\n"
-        source = self._make_source_for_text(root, "src/app.rb", rb_text)
-        chunks = symbol_aware_code_chunks(source, rb_text, "src/app.rb")
+        # C# has no registered tree-sitter grammar — extracted_symbols falls back
+        # to the regex path, which has no C# patterns, so it returns [].
+        cs_text = "public void UnsupportedLanguage()\n{\n    Console.WriteLine(\"hi\");\n}\n"
+        source = self._make_source_for_text(root, "src/app.cs", cs_text)
+        chunks = symbol_aware_code_chunks(source, cs_text, "src/app.cs")
         # Should fall back to line-window chunks (L1-L...)
         self.assertTrue(chunks, "fallback produced no chunks")
         for chunk in chunks:

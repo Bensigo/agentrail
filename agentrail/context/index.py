@@ -559,7 +559,167 @@ def detect_codebase_units(root: Path, cfg: ContextConfig, records: List[SourceRe
     return [codebase_unit("root", root.name, ".", "fallback")]
 
 
-def extracted_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
+# Node types whose direct function/method children are methods (class-like containers).
+_CLASS_LIKE_NODES = {
+    "class_definition",      # python
+    "class_declaration",     # js/ts/java/kotlin/php
+    "class_specifier",       # cpp
+    "struct_specifier",      # c/cpp (methods in C++ structs)
+    "struct_item",           # rust
+    "impl_item",             # rust
+    "trait_item",            # rust
+    "interface_declaration", # ts/java/php
+    "trait_declaration",     # php
+    "enum_declaration",      # java/ts/php (methods on enums)
+    "object_declaration",    # kotlin
+    "class",                 # ruby
+    "module",                # ruby
+}
+
+# Identifier-bearing child node types used to recover a symbol name when the
+# grammar does not expose a "name" field (e.g. ruby constant/identifier, bash word).
+_NAME_CHILD_NODES = {
+    "identifier", "type_identifier", "field_identifier", "name", "word",
+    "simple_identifier", "constant", "property_identifier", "scoped_identifier",
+}
+
+
+def _tree_sitter_symbols(text: str, relative_path: str, grammar_name: str) -> List[Dict[str, Any]]:
+    """Walk a tree-sitter AST and collect symbol definitions.
+
+    Returns dicts with the same schema as the regex path:
+    {name, kind, line, citation, deterministic}. Raises on any tree-sitter
+    failure so the caller can fall back to the regex path.
+    """
+    from tree_sitter_language_pack import get_parser
+
+    parser = get_parser(grammar_name)
+    src = text.encode("utf-8")
+    tree = parser.parse(src)
+    root = tree.root_node
+
+    def text_of(node: Any) -> str:
+        return src[node.start_byte:node.end_byte].decode("utf-8", "replace")
+
+    def name_of(node: Any) -> Optional[str]:
+        field = node.child_by_field_name("name")
+        if field is not None:
+            return text_of(field)
+        for child in node.children:
+            if child.type in _NAME_CHILD_NODES:
+                return text_of(child)
+        return None
+
+    def c_function_name(node: Any) -> Optional[str]:
+        # C/C++ function names live inside a declarator subtree, not a name field.
+        cur = node.child_by_field_name("declarator")
+        while cur is not None:
+            if cur.type in {"identifier", "field_identifier"}:
+                return text_of(cur)
+            nxt = cur.child_by_field_name("declarator")
+            if nxt is None:
+                for child in cur.children:
+                    if child.type in {"identifier", "field_identifier"}:
+                        return text_of(child)
+                return None
+            cur = nxt
+        return None
+
+    out: List[Dict[str, Any]] = []
+
+    def add(name: Optional[str], kind: str, node: Any) -> None:
+        if not name:
+            return
+        line = node.start_point[0] + 1
+        out.append({
+            "name": name,
+            "kind": kind,
+            "line": line,
+            "citation": f"{relative_path}#L{line}",
+            "deterministic": True,
+        })
+
+    def walk(node: Any, in_class: bool) -> None:
+        t = node.type
+        recurse_in_class = in_class
+        if t == "function_definition":  # python, php, c, cpp, bash
+            name = c_function_name(node) if grammar_name in {"c", "cpp"} else name_of(node)
+            add(name, "method" if in_class else "function", node)
+        elif t in {"function_declaration", "function_item"}:  # js/ts/go/kotlin, rust
+            add(name_of(node), "method" if in_class else "function", node)
+        elif t == "method":  # ruby
+            add(name_of(node), "method" if in_class else "function", node)
+        elif t in {"method_declaration", "method_definition", "singleton_method"}:
+            add(name_of(node), "method", node)
+        elif t == "function_expression":  # js/ts named function expression
+            name = name_of(node)
+            if name:
+                add(name, "function", node)
+        elif t in {"class_declaration", "class_definition", "class_specifier", "class"}:
+            kind = "interface" if any(c.type == "interface" for c in node.children) else "class"
+            add(name_of(node), kind, node)
+            recurse_in_class = True
+        elif t == "module" and grammar_name == "ruby":  # ruby (python's root is also "module")
+            add(name_of(node), "module", node)
+            recurse_in_class = True
+        elif t in {"struct_specifier", "struct_item"}:
+            add(name_of(node), "struct", node)
+            recurse_in_class = True
+        elif t in {"enum_specifier", "enum_declaration", "enum_item"}:
+            add(name_of(node), "enum", node)
+        elif t in {"interface_declaration", "trait_item"}:
+            add(name_of(node), "interface", node)
+            recurse_in_class = True
+        elif t == "trait_declaration":  # php
+            add(name_of(node), "class", node)
+            recurse_in_class = True
+        elif t == "type_alias_declaration":  # ts
+            add(name_of(node), "type", node)
+        elif t == "type_declaration":  # go
+            for spec in node.children:
+                if spec.type != "type_spec":
+                    continue
+                kind = "type"
+                for child in spec.children:
+                    if child.type == "struct_type":
+                        kind = "struct"
+                    elif child.type == "interface_type":
+                        kind = "interface"
+                add(name_of(spec), kind, spec)
+        elif t == "const_declaration":  # go
+            for spec in node.children:
+                if spec.type == "const_spec":
+                    add(name_of(spec), "const", spec)
+        elif t in {"const_item", "static_item"}:  # rust
+            add(name_of(node), "const", node)
+        elif t == "impl_item":  # rust container
+            recurse_in_class = True
+        elif t == "variable_declarator":  # js/ts: const x = () => / function expr
+            value = node.child_by_field_name("value")
+            if value is not None and value.type in {"arrow_function", "function_expression", "function"}:
+                add(name_of(node), "function", node)
+        for child in node.children:
+            walk(child, recurse_in_class)
+
+    walk(root, False)
+
+    if not out and root.has_error:
+        # Genuine parse failure with nothing recovered — let the caller fall back.
+        raise ValueError("tree-sitter parse produced no symbols on errored source")
+
+    out.sort(key=lambda s: (s["line"], s["name"]))
+    seen: set[Tuple[str, int]] = set()
+    deduped: List[Dict[str, Any]] = []
+    for sym in out:
+        key = (sym["name"], sym["line"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(sym)
+    return deduped
+
+
+def _regex_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
     language = language_for(relative_path)
     patterns: List[Tuple[str, re.Pattern[str]]] = []
     if language in {"javascript", "typescript"}:
@@ -597,6 +757,25 @@ def extracted_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
                     "deterministic": True,
                 }
             )
+    return symbols
+
+
+def extracted_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
+    """Extract top-level symbol definitions from source.
+
+    Uses a tree-sitter AST backend when a grammar is registered for the file's
+    extension. Falls back to the legacy regex path (tagged ``parsedBy:
+    "regex_fallback"``) for unsupported languages or parse failures.
+    """
+    grammar_name = grammar_for(relative_path)
+    if grammar_name is not None:
+        try:
+            return _tree_sitter_symbols(text, relative_path, grammar_name)
+        except Exception:
+            pass
+    symbols = _regex_symbols(text, relative_path)
+    for sym in symbols:
+        sym["parsedBy"] = "regex_fallback"
     return symbols
 
 

@@ -11,7 +11,7 @@ from agentrail.context.benchmark import format_benchmark_summary, run_benchmark
 from agentrail.context.evaluation import evaluate_retrieval, format_evaluation_report
 from agentrail.context.index import build_index
 from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
-from agentrail.context.retrieval import get_file_lines, get_file_symbol, query_context, search_context
+from agentrail.context.retrieval import compute_tokens_saved, get_file_lines, get_file_symbol, query_context, search_context
 from agentrail.context.sources import inventory_sources
 
 
@@ -74,6 +74,7 @@ def _usage() -> str:
   agentrail context build pr NUMBER --phase review [--target DIR] [--json]
   agentrail context show PACK [--target DIR] [--json]
   agentrail context explain PACK [--target DIR] [--json]
+  agentrail context savings [--target DIR] [--json]
   agentrail memory recall QUERY [--target DIR]
   agentrail memory capture KIND TITLE [--target DIR]
   agentrail skills validate [--target DIR]
@@ -448,6 +449,41 @@ def run_context(args: List[str]) -> int:
                         print(f"{section}: {len(items)}")
                         for item in items:
                             print(f"- {item['path']}: {item['reason']} citation={item['citation']}")
+            return 0
+        if kind == "savings":
+            target, remaining = _parse_target(rest)
+            json_output = "--json" in remaining
+            remaining = [a for a in remaining if a != "--json"]
+            if remaining:
+                raise SystemExit(f"Unknown context savings option: {remaining[0]}")
+            packs_dir = target / ".agentrail" / "context" / "packs"
+            sessions: List[dict] = []
+            total = 0
+            for pack_file in sorted(packs_dir.glob("*.json")):
+                try:
+                    pack = json.loads(pack_file.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(pack, dict):
+                    continue
+                included = pack.get("included")
+                if not isinstance(included, list):
+                    included = []
+                saved = compute_tokens_saved(target, included)
+                total += saved
+                sessions.append({
+                    "packId": pack.get("packId") if isinstance(pack.get("packId"), str) else pack_file.stem,
+                    "generatedAt": pack.get("generatedAt") if isinstance(pack.get("generatedAt"), str) else "",
+                    "tokensSaved": saved,
+                })
+            sessions.sort(key=lambda s: s["generatedAt"], reverse=True)
+            output = {"tokensSaved": total, "sessions": sessions}
+            if json_output:
+                _print_json(output)
+            else:
+                print(f"tokensSaved: {total}")
+                for session in sessions:
+                    print(f"{session['generatedAt']} {session['packId']} tokensSaved={session['tokensSaved']}")
             return 0
         if kind in {"", "-h", "--help"}:
             print(_usage())

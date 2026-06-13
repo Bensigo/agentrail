@@ -108,7 +108,12 @@ CREATE TABLE IF NOT EXISTS run_events (
   submission_kind String,
   payload       String,
   session_id    String DEFAULT '',
-  seq           Int64  DEFAULT 0
+  seq           Int64  DEFAULT 0,
+  files_read_count UInt32 DEFAULT 0,
+  full_file_read UInt8 DEFAULT 0,
+  tool_loop_count UInt16 DEFAULT 0,
+  edit_without_context UInt8 DEFAULT 0,
+  verification_skip UInt8 DEFAULT 0
 )
 ENGINE = MergeTree()
 PARTITION BY (workspace_id, toYYYYMM(occurred_at))
@@ -122,6 +127,26 @@ ALTER TABLE run_events ADD COLUMN IF NOT EXISTS session_id String DEFAULT ''
 
 export const ALTER_RUN_EVENTS_ADD_SEQ = `
 ALTER TABLE run_events ADD COLUMN IF NOT EXISTS seq Int64 DEFAULT 0
+`;
+
+export const ALTER_RUN_EVENTS_ADD_FILES_READ_COUNT = `
+ALTER TABLE run_events ADD COLUMN IF NOT EXISTS files_read_count UInt32 DEFAULT 0
+`;
+
+export const ALTER_RUN_EVENTS_ADD_FULL_FILE_READ = `
+ALTER TABLE run_events ADD COLUMN IF NOT EXISTS full_file_read UInt8 DEFAULT 0
+`;
+
+export const ALTER_RUN_EVENTS_ADD_TOOL_LOOP_COUNT = `
+ALTER TABLE run_events ADD COLUMN IF NOT EXISTS tool_loop_count UInt16 DEFAULT 0
+`;
+
+export const ALTER_RUN_EVENTS_ADD_EDIT_WITHOUT_CONTEXT = `
+ALTER TABLE run_events ADD COLUMN IF NOT EXISTS edit_without_context UInt8 DEFAULT 0
+`;
+
+export const ALTER_RUN_EVENTS_ADD_VERIFICATION_SKIP = `
+ALTER TABLE run_events ADD COLUMN IF NOT EXISTS verification_skip UInt8 DEFAULT 0
 `;
 
 export interface TelemetryEventRecord {
@@ -139,6 +164,11 @@ export interface TelemetryEventRecord {
   payload: string;
   session_id: string;
   seq: number;
+  files_read_count?: number;
+  full_file_read?: number;
+  tool_loop_count?: number;
+  edit_without_context?: number;
+  verification_skip?: number;
 }
 
 export const CREATE_FAILURE_EVENTS_TABLE = `

@@ -8,6 +8,11 @@ import {
   CREATE_COST_EVENTS_TABLE,
   ALTER_RUN_EVENTS_ADD_SESSION_ID,
   ALTER_RUN_EVENTS_ADD_SEQ,
+  ALTER_RUN_EVENTS_ADD_FILES_READ_COUNT,
+  ALTER_RUN_EVENTS_ADD_FULL_FILE_READ,
+  ALTER_RUN_EVENTS_ADD_TOOL_LOOP_COUNT,
+  ALTER_RUN_EVENTS_ADD_EDIT_WITHOUT_CONTEXT,
+  ALTER_RUN_EVENTS_ADD_VERIFICATION_SKIP,
   ALTER_CONTEXT_PACKS_ADD_TOKENS_SAVED,
   ALTER_CONTEXT_PACKS_ADD_PRECISION_AT_BUDGET,
   ALTER_CONTEXT_PACKS_ADD_CITATION_COVERAGE,
@@ -30,6 +35,11 @@ async function main() {
   // Additive columns for AFK telemetry (safe on existing tables).
   await client.command({ query: ALTER_RUN_EVENTS_ADD_SESSION_ID });
   await client.command({ query: ALTER_RUN_EVENTS_ADD_SEQ });
+  await client.command({ query: ALTER_RUN_EVENTS_ADD_FILES_READ_COUNT });
+  await client.command({ query: ALTER_RUN_EVENTS_ADD_FULL_FILE_READ });
+  await client.command({ query: ALTER_RUN_EVENTS_ADD_TOOL_LOOP_COUNT });
+  await client.command({ query: ALTER_RUN_EVENTS_ADD_EDIT_WITHOUT_CONTEXT });
+  await client.command({ query: ALTER_RUN_EVENTS_ADD_VERIFICATION_SKIP });
   console.log("Applied run_events ALTER TABLE migrations.");
   await client.command({ query: CREATE_FAILURE_EVENTS_TABLE });
   console.log("Created failure_events table.");

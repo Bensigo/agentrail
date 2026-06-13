@@ -10,6 +10,11 @@ export {
   ALTER_RUN_EVENTS_ADD_SEQ,
   ALTER_FAILURE_EVENTS_ADD_NORMALIZED_ERROR,
   ALTER_FAILURE_EVENTS_ADD_FINGERPRINT,
+  ALTER_RUN_EVENTS_ADD_FILES_READ_COUNT,
+  ALTER_RUN_EVENTS_ADD_FULL_FILE_READ,
+  ALTER_RUN_EVENTS_ADD_TOOL_LOOP_COUNT,
+  ALTER_RUN_EVENTS_ADD_EDIT_WITHOUT_CONTEXT,
+  ALTER_RUN_EVENTS_ADD_VERIFICATION_SKIP,
   ALTER_CONTEXT_PACKS_ADD_PRECISION_AT_BUDGET,
   ALTER_CONTEXT_PACKS_ADD_CITATION_COVERAGE,
   ALTER_CONTEXT_PACKS_ADD_STALE_COUNT,
@@ -90,3 +95,13 @@ export type {
 export { getContextPacksForRun, getContextPackItems, getWorkspaceContextPacks, listWorkspaceContextPacks, getTokensSavedByRun } from "./context-queries";
 export { computeQualityMetrics, getQualityMetrics } from "./quality-metrics";
 export type { QualityMetricsResult, QualityMetricsOpts, QualityPackRow } from "./quality-metrics";
+export {
+  AgentBehaviorLinter,
+  DEFAULT_BEHAVIOR_THRESHOLDS,
+} from "./linter";
+export type {
+  BehaviorRule,
+  BehaviorThresholds,
+  LintFinding,
+  LintSeverity,
+} from "./linter";

@@ -104,7 +104,7 @@ function TimelineEntry({
   const displayDigest = event.digest ?? event.event_id.slice(0, 8);
 
   return (
-    <div className="flex gap-3">
+    <div id={`event-${event.event_id}`} className="flex scroll-mt-6 gap-3">
       {/* Left column: line + dot */}
       <div className="flex flex-col items-center" style={{ width: "16px" }}>
         <div
@@ -213,6 +213,15 @@ function ActivityGroup({ phase, events, isLast }: ActivityGroupProps) {
 
       {/* Right column: content */}
       <div className="flex-1 pb-4">
+        <div aria-hidden="true" className="sr-only">
+          {events.map((event) => (
+            <span
+              key={event.event_id}
+              id={`event-${event.event_id}`}
+              className="scroll-mt-6"
+            />
+          ))}
+        </div>
         <button
           onClick={() => setExpanded((v) => !v)}
           className="w-full text-left flex items-start justify-between gap-2 group"

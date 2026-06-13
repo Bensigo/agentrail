@@ -238,6 +238,7 @@ def test_parse_findings_structured_json() -> None:
     assert len(findings) == 3
 
     assert findings[0]["severity"] == "critical"  # P1 → critical
+    assert findings[0]["category"] == "blocked"
     assert "Null deref on missing config" in findings[0]["description"]
     assert "app/main.py" in findings[0]["description"]
     assert findings[0]["suggested_fix"] == (
@@ -246,6 +247,8 @@ def test_parse_findings_structured_json() -> None:
 
     assert findings[1]["severity"] == "major"     # P2 → major
     assert findings[2]["severity"] == "minor"     # P3 → minor
+    assert findings[1]["category"] == "ac"
+    assert findings[2]["category"] == "ac"
     assert findings[2]["suggested_fix"] == "s/recieved/received/"
 
 
@@ -259,8 +262,25 @@ def test_parse_findings_p0_and_unknown_severity() -> None:
     )
     findings = review_push.parse_findings(text)
     assert findings[0]["severity"] == "critical"  # P0 → critical
+    assert findings[0]["category"] == "blocked"
     assert findings[1]["severity"] == "minor"     # other → minor
+    assert findings[1]["category"] == "ac"
     assert findings[1]["suggested_fix"] == "Meh"  # falls back to title
+
+
+def test_parse_findings_assigns_evidence_categories() -> None:
+    text = (
+        "BEGIN_REVIEW_FIX_ISSUES_JSON\n"
+        '{"fix_issues": ['
+        '{"title": "Coverage missing", "severity": "P2", "body": "CI test coverage failed"},'
+        '{"title": "Screenshot absent", "severity": "P3", "body": "UI visual evidence is missing"},'
+        '{"title": "Sources unclear", "severity": "P3", "body": "Add citations to source context"},'
+        '{"title": "Acceptance criteria gap", "severity": "P3", "body": "Map AC2 explicitly"}'
+        '], "memory_suggestions": []}\n'
+        "END_REVIEW_FIX_ISSUES_JSON\n"
+    )
+    findings = review_push.parse_findings(text)
+    assert [f["category"] for f in findings] == ["tests", "visual", "citations", "ac"]
 
 
 def test_parse_findings_structured_empty_fix_issues_is_clean() -> None:
@@ -292,6 +312,7 @@ def test_parse_findings_prose_fallback_single_finding() -> None:
     assert len(findings) == 1
     f = findings[0]
     assert f["severity"] == "critical"
+    assert f["category"] == "blocked"
     assert "retry loop in worker.py" in f["description"]
     assert f["suggested_fix"]  # non-empty how-to-fix text
 
@@ -340,7 +361,8 @@ def test_push_includes_findings_from_review_text(tmp_path: Path, monkeypatch) ->
     findings = captured["body"]["findings"]
     assert len(findings) == 3
     assert findings[0]["severity"] == "critical"
-    assert {"severity", "description", "suggested_fix"} <= set(findings[0])
+    assert findings[0]["category"] == "blocked"
+    assert {"severity", "category", "description", "suggested_fix"} <= set(findings[0])
 
 
 def test_push_findings_default_empty(tmp_path: Path, monkeypatch) -> None:

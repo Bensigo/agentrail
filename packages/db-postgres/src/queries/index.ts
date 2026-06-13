@@ -16,6 +16,11 @@ import {
   workspaceInvites,
   users,
 } from "../schema/index.js";
+import type {
+  ReviewGate,
+  ReviewGateFindingCategory,
+} from "../schema/index.js";
+import { reviewGateFindingCategories } from "../schema/index.js";
 
 export type RunStatus = "queued" | "running" | "success" | "failed";
 
@@ -69,6 +74,64 @@ export async function getReviewGatesForRun(workspaceId: string, runId: string) {
       )
     )
     .orderBy(reviewGates.createdAt);
+}
+
+export async function getReviewGate(
+  workspaceId: string,
+  gateId: string
+): Promise<ReviewGate | null> {
+  const rows = await db
+    .select()
+    .from(reviewGates)
+    .where(and(eq(reviewGates.workspaceId, workspaceId), eq(reviewGates.id, gateId)))
+    .limit(1);
+  return (rows[0] as ReviewGate) ?? null;
+}
+
+export interface CategoryStatus {
+  category: ReviewGateFindingCategory;
+  present: boolean;
+  finding_count: number;
+}
+
+function isReviewGateFindingCategory(value: unknown): value is ReviewGateFindingCategory {
+  return (
+    typeof value === "string" &&
+    (reviewGateFindingCategories as readonly string[]).includes(value)
+  );
+}
+
+export async function getReviewGateExplainer(
+  workspaceId: string,
+  gateId: string
+): Promise<{ gate: ReviewGate; explainer: CategoryStatus[] } | null> {
+  const gate = await getReviewGate(workspaceId, gateId);
+  if (!gate) return null;
+
+  const counts = new Map<ReviewGateFindingCategory, number>(
+    reviewGateFindingCategories.map((category) => [category, 0])
+  );
+
+  const findings = Array.isArray(gate.findings) ? gate.findings : [];
+  for (const finding of findings) {
+    if (!finding || typeof finding !== "object") continue;
+    const category = (finding as Record<string, unknown>).category;
+    if (isReviewGateFindingCategory(category)) {
+      counts.set(category, (counts.get(category) ?? 0) + 1);
+    }
+  }
+
+  return {
+    gate,
+    explainer: reviewGateFindingCategories.map((category) => {
+      const findingCount = counts.get(category) ?? 0;
+      return {
+        category,
+        present: findingCount > 0,
+        finding_count: findingCount,
+      };
+    }),
+  };
 }
 
 export async function getRunEvidenceFields(workspaceId: string, runId: string) {
@@ -630,7 +693,12 @@ export interface UpsertReviewGateInput {
   conditions?: Record<string, unknown>[];
   blockingReasons?: Record<string, unknown>[];
   evidenceRefs?: Array<{ label: string; url: string }>;
-  findings?: Array<{ severity: "critical" | "major" | "minor"; description: string; suggested_fix: string }>;
+  findings?: Array<{
+    severity: "critical" | "major" | "minor";
+    category: ReviewGateFindingCategory;
+    description: string;
+    suggested_fix: string;
+  }>;
   evaluatedAt?: string | Date | null;
 }
 

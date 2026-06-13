@@ -99,6 +99,13 @@ function GateRow({ gate, workspaceId }: { gate: ReviewGate; workspaceId: string 
         >
           run →
         </a>
+        <a
+          href={`/dashboard/${workspaceId}/review-gates/${gate.id}`}
+          onClick={(e) => e.stopPropagation()}
+          className="text-xs text-[#70b8ff] hover:underline ml-2 shrink-0"
+        >
+          detail →
+        </a>
         <span className="text-xs text-[var(--gray-08)] ml-2 shrink-0">
           {expanded ? "▲" : "▼"}
         </span>

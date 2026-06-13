@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import asyncio
 
 import pytest
 
+from agentrail.afk.runner import Runner
+from agentrail.afk.state import AfkState, Store
 from agentrail.afk.telemetry import ServerConfig, flush_afk_events
 
 
@@ -168,3 +171,40 @@ def test_flush_afk_events_accepts_2xx_range(tmp_path: Path, monkeypatch, status:
     monkeypatch.setattr(tel.urllib.request, "urlopen", fake_urlopen)
 
     assert flush_afk_events(cfg, tmp_path) is True
+
+
+# ---------------------------------------------------------------------------
+# AC5: Runner.run() calls flush_afk_events at completion when configured
+# ---------------------------------------------------------------------------
+
+
+def test_runner_run_flushes_afk_events_when_server_config_exists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cfg = _make_config()
+    calls: list[tuple[ServerConfig, Path]] = []
+
+    import agentrail.afk.telemetry as tel
+
+    monkeypatch.setattr(tel, "load_server_config", lambda target: cfg)
+    monkeypatch.setattr(
+        tel,
+        "flush_afk_events",
+        lambda config, target: calls.append((config, target)) or True,
+    )
+
+    store = Store(AfkState(concurrency=1, slots={0: None}))
+    runner = Runner(
+        tmp_path,
+        engine="codex",
+        base="main",
+        concurrency=1,
+        afk_label="codex",
+        queue_labels=["ready-for-agent"],
+        run_dir=tmp_path / "run",
+        store=store,
+    )
+
+    asyncio.run(runner.run())
+
+    assert calls == [(cfg, tmp_path)]

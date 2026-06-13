@@ -8,6 +8,10 @@
  *   - context_get          only the requested line range / symbol block (never whole files)
  *   - context_build_pack    a bounded context pack for an issue or PR
  *   - context_explain_pack  why sources were included / excluded / boosted / demoted
+ *   - context_def          symbol definition lookup by name (house-schema JSON)
+ *   - context_callers      inbound call-graph edges for a symbol (house-schema JSON)
+ *   - context_callees      outbound call-graph edges for a symbol (house-schema JSON)
+ *   - context_impact       transitive callers + linked tests (blast-radius, house-schema JSON)
  *
  * Each tool shells out to the existing `agentrail context ...` CLI (so there is
  * one source of truth for retrieval behaviour). The CLI binary is resolved from
@@ -168,6 +172,88 @@ server.registerTool(
   },
   async ({ pack, target }) => {
     return runAgentrail(withTarget(["context", "explain", pack], target));
+  },
+);
+
+server.registerTool(
+  "context_def",
+  {
+    title: "AgentRail context def",
+    description:
+      "Look up the definition(s) of a symbol by name; returns house-schema JSON candidates " +
+      "from the global symbol table. Multi-definition symbols (overloads, same name in " +
+      "multiple files) return all matches. Denied sources are excluded.",
+    inputSchema: {
+      name: z.string().min(1).describe("Symbol name to look up."),
+      target: z.string().optional().describe("Repo directory (defaults to AGENTRAIL_TARGET/cwd)."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ name, target }) => {
+    return runAgentrail(withTarget(["context", "def", name], target));
+  },
+);
+
+server.registerTool(
+  "context_callers",
+  {
+    title: "AgentRail context callers",
+    description:
+      "Find inbound call-graph edges for a symbol by name; returns house-schema JSON with " +
+      "callerPath and callerLine fields. Unresolved edges include a reason field.",
+    inputSchema: {
+      name: z.string().min(1).describe("Symbol name to find callers for."),
+      target: z.string().optional().describe("Repo directory (defaults to AGENTRAIL_TARGET/cwd)."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ name, target }) => {
+    return runAgentrail(withTarget(["context", "callers", name], target));
+  },
+);
+
+server.registerTool(
+  "context_callees",
+  {
+    title: "AgentRail context callees",
+    description:
+      "Find outbound call-graph edges from a symbol by name; returns house-schema JSON " +
+      "listing what the symbol calls. Unresolved edges include a reason field.",
+    inputSchema: {
+      name: z.string().min(1).describe("Symbol name to find callees for."),
+      target: z.string().optional().describe("Repo directory (defaults to AGENTRAIL_TARGET/cwd)."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ name, target }) => {
+    return runAgentrail(withTarget(["context", "callees", name], target));
+  },
+);
+
+server.registerTool(
+  "context_impact",
+  {
+    title: "AgentRail context impact",
+    description:
+      "Assess blast radius for a symbol: transitive callers (BFS to depth N) plus tests " +
+      "linked via tests_source edges and files with imports_file edges; returns house-schema JSON.",
+    inputSchema: {
+      name: z.string().min(1).describe("Symbol name to assess impact for."),
+      depth: z
+        .number()
+        .int()
+        .min(1)
+        .max(10)
+        .optional()
+        .describe("BFS traversal depth (default 3)."),
+      target: z.string().optional().describe("Repo directory (defaults to AGENTRAIL_TARGET/cwd)."),
+    },
+    annotations: READ_ONLY,
+  },
+  async ({ name, depth, target }) => {
+    const args = ["context", "impact", name];
+    if (depth) args.push("--depth", String(depth));
+    return runAgentrail(withTarget(args, target));
   },
 );
 

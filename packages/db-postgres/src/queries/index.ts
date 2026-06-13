@@ -957,17 +957,18 @@ export interface GetRunnerRunStatsFilters {
 
 /**
  * Per-runner aggregate stats from runs and review_gates.
- * Uses the existing runs.agent column as the current runner identity source.
- * A future runner_name column can replace this once the migration is live.
+ * Uses runs.runner_name as the runner identity source and falls back to
+ * runs.agent for legacy rows that predate the migration.
  * review_fix_count = runs that have at least one review gate with status='passed'.
  */
 export async function getRunnerRunStats(
   workspaceId: string,
   filters?: GetRunnerRunStatsFilters
 ): Promise<RunnerRunStatsRow[]> {
+  const runnerIdentitySql = sql`LOWER(COALESCE(NULLIF(r.runner_name, ''), NULLIF(r.agent, '')))`;
   const conditions: SQL[] = [
     sql`r.workspace_id = ${workspaceId}`,
-    sql`r.agent IS NOT NULL AND r.agent != ''`,
+    sql`COALESCE(NULLIF(r.runner_name, ''), NULLIF(r.agent, '')) IS NOT NULL`,
   ];
   if (filters?.repositoryId) {
     conditions.push(sql`r.repository_id = ${filters.repositoryId}`);
@@ -994,7 +995,7 @@ export async function getRunnerRunStats(
         AND rg.status = 'passed'
     )
     SELECT
-      LOWER(r.agent)                                                AS runner_name,
+      ${runnerIdentitySql}                                          AS runner_name,
       ARRAY_AGG(r.id)                                                AS run_ids,
       COUNT(*)                                                       AS total_count,
       COUNT(*) FILTER (WHERE r.status = 'success')                  AS success_count,
@@ -1003,7 +1004,7 @@ export async function getRunnerRunStats(
     FROM runs r
     LEFT JOIN review_fix_runs rfr ON rfr.run_id = r.id
     WHERE ${whereClause}
-    GROUP BY LOWER(r.agent)
+    GROUP BY ${runnerIdentitySql}
     ORDER BY total_count DESC
   `);
 

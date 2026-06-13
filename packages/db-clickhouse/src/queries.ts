@@ -1579,3 +1579,83 @@ export async function insertFlightRecorderEvents(
 
   return { accepted: toInsert.length, duplicate };
 }
+
+export interface RunnerCostStatsRow {
+  run_id: string;
+  total_cost_usd: number;
+}
+
+/**
+ * Per-run cost aggregates from cost_events for a set of run IDs.
+ *
+ * Runner identity lives in Postgres runs. ClickHouse cost_events does not carry
+ * runner_name, so the scorecard joins these rows back to runners by run_id.
+ */
+export async function getRunnerCostStats(
+  workspaceId: string,
+  runIds: string[],
+  ch: QueryClient = client
+): Promise<RunnerCostStatsRow[]> {
+  if (runIds.length === 0) return [];
+
+  const result = await ch.query({
+    query: `
+      SELECT
+        run_id,
+        sum(cost_usd) AS total_cost_usd
+      FROM cost_events
+      WHERE workspace_id = {workspaceId: String}
+        AND run_id IN ({runIds: Array(String)})
+      GROUP BY run_id
+      ORDER BY total_cost_usd DESC
+    `,
+    query_params: { workspaceId, runIds },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<Record<string, unknown>>();
+  return rows.map((r) => ({
+    run_id: String(r.run_id ?? ""),
+    total_cost_usd: Number(r.total_cost_usd ?? 0),
+  }));
+}
+
+export interface RunnerContextEfficiencyRow {
+  run_id: string;
+  tokens_saved_sum: number;
+  token_budget_sum: number;
+}
+
+/**
+ * Per-run context efficiency from context_packs for a set of run IDs.
+ * context_efficiency = tokens_saved_sum / token_budget_sum.
+ */
+export async function getRunnerContextEfficiency(
+  workspaceId: string,
+  runIds: string[],
+  ch: QueryClient = client
+): Promise<RunnerContextEfficiencyRow[]> {
+  if (runIds.length === 0) return [];
+
+  const result = await ch.query({
+    query: `
+      SELECT
+        run_id,
+        sum(tokens_saved)  AS tokens_saved_sum,
+        sum(token_budget)  AS token_budget_sum
+      FROM context_packs
+      WHERE workspace_id = {workspaceId: String}
+        AND run_id IN ({runIds: Array(String)})
+      GROUP BY run_id
+    `,
+    query_params: { workspaceId, runIds },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<Record<string, unknown>>();
+  return rows.map((r) => ({
+    run_id: String(r.run_id ?? ""),
+    tokens_saved_sum: Number(r.tokens_saved_sum ?? 0),
+    token_budget_sum: Number(r.token_budget_sum ?? 0),
+  }));
+}

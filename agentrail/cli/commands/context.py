@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 from agentrail.context.embeddings import embed_context, setup_embeddings
+from agentrail.context.ast_search import ast_query
 from agentrail.context.benchmark import format_benchmark_summary, run_benchmark
 from agentrail.context.evaluation import evaluate_retrieval, format_evaluation_report
 from agentrail.context.git_commands import git_blame, git_changed, git_history
@@ -66,6 +67,7 @@ def _usage() -> str:
   agentrail context index [--target DIR]
   agentrail context embed [--target DIR]
   agentrail context embed setup (ollama|openai|custom|disable) [--model M] [--base-url URL] [--api-key-env VAR] [--command CMD] [--name N] [--no-validate] [--target DIR] [--json]
+  agentrail context ast "<s-expression>" [--target DIR] [--json] [--limit N]
   agentrail context query "<task>" [--target DIR] [--json] [--limit N]
   agentrail context search "<query>" [--target DIR] [--json] [--limit N]
   agentrail context get PATH (--lines A-B | --symbol NAME) [--target DIR] [--json]
@@ -182,6 +184,39 @@ def run_context(args: List[str]) -> int:
             if remaining:
                 raise SystemExit(f"Unknown option: {remaining[0]}")
             _print_json(embed_context(target))
+            return 0
+        if kind == "ast":
+            if not rest or rest[0].startswith("--"):
+                raise SystemExit("context ast requires an s-expression")
+            s_expr = rest[0]
+            target: str | None = None
+            json_output = False
+            limit = 50
+            index = 1
+            while index < len(rest):
+                arg = rest[index]
+                if arg == "--target":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--target requires a directory")
+                    target = rest[index + 1]
+                    index += 2
+                elif arg == "--json":
+                    json_output = True
+                    index += 1
+                elif arg == "--limit":
+                    if index + 1 >= len(rest) or not rest[index + 1].isdigit():
+                        raise SystemExit("--limit requires a numeric value")
+                    limit = int(rest[index + 1])
+                    index += 2
+                else:
+                    raise SystemExit(f"Unknown context ast option: {arg}")
+            resolved_target = _resolve_target(target)
+            output = ast_query(resolved_target, s_expr, limit=max(1, min(100, limit)))
+            if json_output:
+                _print_json(output)
+            else:
+                for item in output["results"]:
+                    print(f"{item['citation']} {item['reason']}")
             return 0
         if kind == "query":
             if not rest or rest[0].startswith("--"):

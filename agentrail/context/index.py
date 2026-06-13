@@ -31,24 +31,53 @@ def slugify(value: str) -> str:
     return slug or "section"
 
 
+_LANGUAGE_TABLE: Dict[str, Dict[str, Optional[str]]] = {
+    ".js":   {"language": "javascript", "grammar": "javascript"},
+    ".mjs":  {"language": "javascript", "grammar": "javascript"},
+    ".cjs":  {"language": "javascript", "grammar": "javascript"},
+    ".jsx":  {"language": "javascript", "grammar": "javascript"},
+    ".ts":   {"language": "typescript", "grammar": "typescript"},
+    ".tsx":  {"language": "typescript", "grammar": "tsx"},
+    ".py":   {"language": "python",     "grammar": "python"},
+    ".rb":   {"language": "ruby",       "grammar": "ruby"},
+    ".go":   {"language": "go",         "grammar": "go"},
+    ".rs":   {"language": "rust",       "grammar": "rust"},
+    ".java": {"language": "java",       "grammar": "java"},
+    ".kt":   {"language": "kotlin",     "grammar": "kotlin"},
+    ".php":  {"language": "php",        "grammar": "php"},
+    ".cs":   {"language": "csharp",     "grammar": None},
+    ".c":    {"language": "c",          "grammar": "c"},
+    ".h":    {"language": "c",          "grammar": "c"},
+    ".cpp":  {"language": "cpp",        "grammar": "cpp"},
+    ".cc":   {"language": "cpp",        "grammar": "cpp"},
+    ".hpp":  {"language": "cpp",        "grammar": "cpp"},
+    ".sh":   {"language": "shell",      "grammar": "bash"},
+    ".bash": {"language": "shell",      "grammar": "bash"},
+    ".zsh":  {"language": "shell",      "grammar": "bash"},
+    ".json": {"language": "json",       "grammar": None},
+    ".yaml": {"language": "yaml",       "grammar": None},
+    ".yml":  {"language": "yaml",       "grammar": None},
+    ".toml": {"language": "toml",       "grammar": None},
+    ".md":   {"language": "markdown",   "grammar": None},
+}
+
+
 def language_for(relative_path: str) -> str:
     ext = Path(relative_path).suffix.lower()
     name = Path(relative_path).name.lower()
-    by_ext = {
-        ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
-        ".ts": "typescript", ".tsx": "typescript", ".py": "python", ".rb": "ruby", ".go": "go",
-        ".rs": "rust", ".java": "java", ".kt": "kotlin", ".php": "php", ".cs": "csharp",
-        ".c": "c", ".h": "c", ".cpp": "cpp", ".cc": "cpp", ".hpp": "cpp", ".sh": "shell",
-        ".bash": "shell", ".zsh": "shell", ".json": "json", ".yaml": "yaml", ".yml": "yaml",
-        ".toml": "toml", ".md": "markdown",
-    }
-    if ext in by_ext:
-        return by_ext[ext]
+    if ext in _LANGUAGE_TABLE:
+        return _LANGUAGE_TABLE[ext]["language"]  # type: ignore[return-value]
     if name == "dockerfile":
         return "dockerfile"
     if not ext and relative_path.startswith(("scripts/", "templates/scripts/")):
         return "shell"
     return ext[1:] if ext else "text"
+
+
+def grammar_for(relative_path: str) -> Optional[str]:
+    ext = Path(relative_path).suffix.lower()
+    entry = _LANGUAGE_TABLE.get(ext)
+    return entry["grammar"] if entry else None
 
 
 def cheap_import_hints(text: str) -> List[str]:

@@ -161,19 +161,47 @@ def _do_post(config: ServerConfig, events: List[Dict[str, Any]]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _build_outbox_flushed_event(
+    batch: List[Dict[str, Any]], pending_before: int, pending_after: int
+) -> Dict[str, Any]:
+    """
+    Build a synthetic ``outbox_flushed`` run event from a drained batch.
+    ``run_id`` comes from the batch's ``session_id`` (the canonical run uuid);
+    ``workspace_id`` is best-effort (the ``_ship`` event carries no such field).
+    """
+    first = batch[0] if batch else {}
+    return {
+        "event_type": "outbox_flushed",
+        "submission_kind": "run_event",
+        "run_id": first.get("session_id", ""),
+        "workspace_id": first.get("workspace_id", ""),
+        "occurred_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "payload": {"pending_before": pending_before, "pending_after": pending_after},
+    }
+
+
 def flush_outbox(config: ServerConfig, target: Path, batch_size: int = 100) -> bool:
     """
     Drain up to ``batch_size`` events from the outbox and POST them.
     Returns True when the batch was accepted (outbox may still have remaining events).
     Remaining events stay in the outbox; on success the flush timestamp is updated.
+    On a successful non-empty drain, a best-effort synthetic ``outbox_flushed``
+    run event is posted so the Telemetry Completeness Checker can observe it;
+    any failure of that emit is swallowed and never affects the drain result.
     """
     outbox = _read_outbox(target)
     if not outbox:
         return True
+    pending_before = len(outbox)
     batch, remaining = outbox[:batch_size], outbox[batch_size:]
     if _do_post(config, batch):
         _write_outbox(target, remaining)
         _save_last_flush(target, _dt.datetime.now(_dt.timezone.utc).isoformat())
+        try:
+            synthetic = _build_outbox_flushed_event(batch, pending_before, len(remaining))
+            _do_post(config, [synthetic])
+        except Exception:  # noqa: BLE001
+            pass
         return True
     return False
 

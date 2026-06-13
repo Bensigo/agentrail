@@ -146,7 +146,7 @@ def _resolve_required(required: List[str], path_map: Dict[str, str]) -> Any:
     return resolved, missing
 
 
-def run_benchmark(target_dir: Path, fixture_file: Path) -> Dict[str, Any]:
+def run_benchmark(target_dir: Path, fixture_file: Path, compare_grep: bool = False) -> Dict[str, Any]:
     root = target_dir.resolve()
     fixtures_path = fixture_file if fixture_file.is_absolute() else root / fixture_file
     fixtures = load_fixtures(fixtures_path)
@@ -196,6 +196,14 @@ def run_benchmark(target_dir: Path, fixture_file: Path) -> Dict[str, Any]:
             fixture_entry["variants"][name] = metrics
             variant_sources[name].update(metrics["selectedSources"])
             _accumulate(variant_totals[name], metrics, fixture_count)
+        if compare_grep:
+            # grep cost: whole-file tokens for every file a keyword grep returns,
+            # which is exactly the baseline variant's fullFileReadTokens.
+            grep_tokens = fixture_entry["variants"]["search_full_file_baseline"]["fullFileReadTokens"]
+            context_tokens = fixture_entry["variants"]["planner_hybrid"]["selectedContextTokens"]
+            fixture_entry["grepTokens"] = grep_tokens
+            fixture_entry["contextTokens"] = context_tokens
+            fixture_entry["savedVsGrep"] = max(0, grep_tokens - context_tokens)
         fixture_reports.append(fixture_entry)
 
     invalid_fixtures = [f["name"] for f in fixture_reports if f["requiredSourcesMissingFromRepo"]]
@@ -250,7 +258,7 @@ def _pct_drop(new: float, old: float) -> str:
     return f"-{round((old - new) / old * 100)}%"
 
 
-def format_benchmark_summary(report: Dict[str, Any]) -> str:
+def format_benchmark_summary(report: Dict[str, Any], compare_grep: bool = False) -> str:
     planner = report["variants"]["planner_hybrid"]["metrics"]
     current = report["variants"]["current"]["metrics"]
     baseline = report["variants"]["search_full_file_baseline"]["metrics"]
@@ -274,13 +282,25 @@ def format_benchmark_summary(report: Dict[str, Any]) -> str:
         f"Stale/denied/stale-embedding leakage (planner_hybrid): {planner['staleSourceLeakage']}/{planner['deniedSourceLeakage']}/{planner['staleEmbeddingLeakage']}",
         f"All pass gates: {'PASS' if report['passed'] else 'FAIL'}",
         "",
-        "| variant | reqInclusion | precision@budget | selectedTokens | fullFileTokens | wasted |",
-        "| --- | --- | --- | --- | --- | --- |",
     ]
+    grep_tokens = baseline["fullFileReadTokens"] if compare_grep else None
+    if compare_grep:
+        lines.append("| variant | reqInclusion | precision@budget | selectedTokens | fullFileTokens | wasted | grep tokens | saved vs grep |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+    else:
+        lines.append("| variant | reqInclusion | precision@budget | selectedTokens | fullFileTokens | wasted |")
+        lines.append("| --- | --- | --- | --- | --- | --- |")
     for name in BENCHMARK_VARIANTS:
         m = report["variants"][name]["metrics"]
-        lines.append(
+        row = (
             f"| {name} | {round(m['requiredSourceInclusion'] * 100)}% | {m['precisionAtBudget']} | "
             f"{m['selectedContextTokens']} | {m['fullFileReadTokens']} | {m['wastedContextTokens']} |"
         )
+        if compare_grep:
+            if grep_tokens is None:
+                row += " — | — |"
+            else:
+                saved = max(0, grep_tokens - m["selectedContextTokens"])
+                row += f" {grep_tokens} | {saved} |"
+        lines.append(row)
     return "\n".join(lines) + "\n"

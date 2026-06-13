@@ -123,6 +123,44 @@ class BenchmarkHarnessTests(unittest.TestCase):
         self.assertIn("Context Retrieval Benchmark", summary)
         self.assertIn("planner_hybrid", summary)
 
+    def test_compare_grep_populates_per_fixture_fields(self) -> None:
+        root = make_repo()
+        report = run_benchmark(root, write_fixtures(root), compare_grep=True)
+        for fixture in report["fixtures"]:
+            self.assertIsInstance(fixture["grepTokens"], int)
+            self.assertIsInstance(fixture["contextTokens"], int)
+            self.assertIsInstance(fixture["savedVsGrep"], int)
+            self.assertGreaterEqual(fixture["savedVsGrep"], 0)
+
+    def test_compare_grep_grep_tokens_match_baseline_full_file(self) -> None:
+        root = make_repo()
+        report = run_benchmark(root, write_fixtures(root), compare_grep=True)
+        for fixture in report["fixtures"]:
+            baseline = fixture["variants"]["search_full_file_baseline"]
+            self.assertEqual(fixture["grepTokens"], baseline["fullFileReadTokens"])
+
+    def test_without_compare_grep_no_new_fields(self) -> None:
+        root = make_repo()
+        report = run_benchmark(root, write_fixtures(root))
+        for fixture in report["fixtures"]:
+            self.assertNotIn("grepTokens", fixture)
+            self.assertNotIn("contextTokens", fixture)
+            self.assertNotIn("savedVsGrep", fixture)
+
+    def test_compare_grep_summary_has_columns(self) -> None:
+        root = make_repo()
+        report = run_benchmark(root, write_fixtures(root), compare_grep=True)
+        summary = format_benchmark_summary(report, compare_grep=True)
+        self.assertIn("grep tokens", summary)
+        self.assertIn("saved vs grep", summary)
+
+    def test_summary_without_compare_grep_has_no_grep_columns(self) -> None:
+        root = make_repo()
+        report = run_benchmark(root, write_fixtures(root))
+        summary = format_benchmark_summary(report)
+        self.assertNotIn("grep tokens", summary)
+        self.assertNotIn("saved vs grep", summary)
+
 
 if __name__ == "__main__":
     unittest.main()

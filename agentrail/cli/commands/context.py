@@ -16,6 +16,7 @@ from agentrail.context.packs import build_context_pack, explain_context_pack, sh
 from agentrail.context.retrieval import compute_tokens_saved, context_callers, context_callees, context_def, context_impact, get_file_lines, get_file_symbol, query_context, search_context
 from agentrail.context.sources import inventory_sources
 from agentrail.context import daemon as _daemon_mod
+from agentrail.context.client import _resolve_context_client
 
 
 def _resolve_target(value: str | None) -> Path:
@@ -345,7 +346,7 @@ def run_context(args: List[str]) -> int:
                 else:
                     raise SystemExit(f"Unknown context def option: {arg}")
             resolved_target = _resolve_target(target)
-            results = context_def(resolved_target, name)
+            results = _resolve_context_client(resolved_target).def_(name)
             if json_output:
                 _print_json(results)
             else:
@@ -372,15 +373,16 @@ def run_context(args: List[str]) -> int:
                 else:
                     raise SystemExit(f"Unknown context {kind} option: {arg}")
             resolved_target = _resolve_target(target)
+            client = _resolve_context_client(resolved_target)
             if kind == "callers":
-                results = context_callers(resolved_target, name)
+                results = client.callers(name)
                 if json_output:
                     _print_json(results)
                 else:
                     for item in results:
                         print(f"{item['callerPath']}:{item['callerLine']} calls {name}")
             else:
-                results = context_callees(resolved_target, name)
+                results = client.callees(name)
                 if json_output:
                     _print_json(results)
                 else:
@@ -416,7 +418,7 @@ def run_context(args: List[str]) -> int:
                 else:
                     raise SystemExit(f"Unknown context impact option: {arg}")
             resolved_target = _resolve_target(target)
-            results = context_impact(resolved_target, name, depth=impact_depth)
+            results = _resolve_context_client(resolved_target).impact(name, depth=impact_depth)
             if json_output:
                 _print_json(results)
             else:
@@ -450,7 +452,7 @@ def run_context(args: List[str]) -> int:
                     raise SystemExit(f"Unknown context query option: {arg}")
             resolved_target = _resolve_target(target)
             _touch_context_marker(resolved_target)
-            output = query_context(resolved_target, query, limit=max(1, min(100, limit)))
+            output = _resolve_context_client(resolved_target).query(query, limit=max(1, min(100, limit)))
             if json_output:
                 _print_json(output)
             else:
@@ -490,7 +492,7 @@ def run_context(args: List[str]) -> int:
                     raise SystemExit(f"Unknown context search option: {arg}")
             resolved_target = _resolve_target(target)
             _touch_context_marker(resolved_target)
-            output = search_context(resolved_target, query, limit=max(1, min(100, limit)))
+            output = _resolve_context_client(resolved_target).search(query, limit=max(1, min(100, limit)))
             if json_output:
                 _print_json(output)
             else:

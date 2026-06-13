@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import { AlertTriangle, CheckCircle } from "lucide-react";
 import { Skeleton } from "../../../../../components/loading-skeleton";
+import { RotScoreCard } from "./rot-score-card";
 
 type RangeKey = "7d" | "30d" | "90d" | "custom";
 
@@ -257,7 +258,7 @@ export function QualityChartsClient({ workspaceId }: { workspaceId: string }) {
   }, [fetchMetrics]);
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-6">
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-2">
         <select
@@ -388,6 +389,9 @@ export function QualityChartsClient({ workspaceId }: { workspaceId: string }) {
           </div>
         </>
       )}
+
+      {/* Rot Score Card — always shown; re-fetches when repositoryId changes */}
+      <RotScoreCard workspaceId={workspaceId} repositoryId={repositoryId} />
     </div>
   );
 }

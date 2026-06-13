@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 import re
 from typing import List, Mapping, Optional, Type, Union
 
+from agentrail.server.cost_baseline import ClickHouseClient, compute_baseline
 from agentrail.server.product import InMemoryProductAuthStore, PRODUCT_AUTH_SUBMISSION_KINDS
 from agentrail.server.telemetry import InMemoryTelemetryStore, TELEMETRY_SUBMISSION_KINDS
 
@@ -1740,6 +1741,7 @@ def ingest(
     policy: SourceCustodyPolicy,
     product_store: InMemoryProductAuthStore,
     telemetry_store: InMemoryTelemetryStore,
+    cost_baseline_client: Optional[ClickHouseClient] = None,
 ) -> IngestionResult:
     errors = _validate_payload(envelope, policy)
     if errors:
@@ -1749,6 +1751,8 @@ def ingest(
         product_store.write(envelope)
     elif payload_kind in TELEMETRY_SUBMISSION_KINDS:
         telemetry_store.write(envelope)
+        if payload_kind == "cost_event":
+            _maybe_emit_cost_anomaly(envelope, telemetry_store, cost_baseline_client)
     else:
         return IngestionResult(
             accepted=False,
@@ -1761,3 +1765,61 @@ def ingest(
             ],
         )
     return IngestionResult(accepted=True)
+
+
+def _maybe_emit_cost_anomaly(
+    envelope: IngestionEnvelope,
+    telemetry_store: InMemoryTelemetryStore,
+    client: Optional[ClickHouseClient],
+) -> None:
+    """Detect a mid-run cost anomaly and emit a synthetic ``cost_anomaly`` run event.
+
+    Baseline computation is best-effort: any failure (including a missing or
+    failing ClickHouse client) is swallowed so it can never block or fail the
+    accepted ``cost_event`` ingest.
+    """
+    try:
+        payload = envelope.payload
+        model = payload.model
+        phase = payload.phase or ""
+        repository_id = envelope.repository_id or ""
+        result = compute_baseline(
+            workspace_id=envelope.workspace_id,
+            model=model,
+            phase=phase,
+            repository_id=repository_id,
+            observed_cost_usd=payload.cost_usd,
+            client=client,
+        )
+        if not result.is_anomaly:
+            return
+        anomaly_event = RunEventSubmission(
+            # Deterministic id derived from the source cost event so outbox
+            # replays collapse at the dedup layer instead of duplicating.
+            event_id=f"cost_anomaly:{payload.event_id}",
+            run_id=payload.run_id,
+            event_type="cost_anomaly",
+            phase=phase,
+            severity="warning",
+            occurred_at=payload.occurred_at,
+            agent=payload.agent,
+            metadata={
+                "model": model,
+                "phase": phase,
+                "repository_id": repository_id,
+                "cost_usd": payload.cost_usd,
+                "mean": result.mean,
+                "stddev": result.stddev,
+                "deviation_sigmas": result.deviation_sigmas,
+            },
+        )
+        telemetry_store.write(
+            IngestionEnvelope(
+                workspace_id=envelope.workspace_id,
+                repository_id=envelope.repository_id,
+                payload=anomaly_event,
+            )
+        )
+    except Exception:
+        # Anomaly detection is advisory; never let it affect cost_event ingest.
+        return

@@ -597,6 +597,7 @@ def _regex_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
                 "name": name,
                 "kind": kind,
                 "line": line_number,
+                "lineEnd": line_number,
                 "citation": f"{relative_path}#L{line_number}",
                 "deterministic": True,
                 "parsedBy": "regex_fallback",
@@ -615,10 +616,12 @@ def _ast_symbols_from_root(
 
     def _sym(name: str, kind: str, node: Any) -> Dict[str, Any]:
         line = node.start_point[0] + 1
+        line_end = node.end_point[0] + 1
         return {
             "name": name,
             "kind": kind,
             "line": line,
+            "lineEnd": line_end,
             "citation": f"{relative_path}#L{line}",
             "deterministic": True,
         }
@@ -1380,6 +1383,32 @@ def _indexable_fingerprint(root: Path, cfg: ContextConfig) -> str:
     return sha256_text("\n".join(sorted(e.relative_path for e in entries)))
 
 
+def build_symbol_table(records: List[SourceRecord]) -> Dict[str, List[Dict[str, Any]]]:
+    """Build a name-keyed symbol table from all indexed source records.
+
+    Each entry is a list of definition records (multi-definition aware):
+    ``[{path, lineStart, lineEnd, kind, language, citation, deterministic, authority}, ...]``
+    """
+    table: Dict[str, List[Dict[str, Any]]] = {}
+    for record in records:
+        if not record.content:
+            continue
+        language = language_for(record.path)
+        for sym in extracted_symbols(record.content, record.path):
+            entry: Dict[str, Any] = {
+                "path": record.path,
+                "lineStart": int(sym["line"]),
+                "lineEnd": int(sym.get("lineEnd", sym["line"])),
+                "kind": sym["kind"],
+                "language": language,
+                "citation": sym["citation"],
+                "deterministic": bool(sym["deterministic"]),
+                "authority": record.authority,
+            }
+            table.setdefault(str(sym["name"]), []).append(entry)
+    return table
+
+
 def _cached_index_is_fresh(root: Path, cfg: ContextConfig, index_path: Path) -> bool:
     """Return True only if no indexed file changed since the index was written.
 
@@ -1647,13 +1676,15 @@ def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[s
     codebase_units = detect_codebase_units(root, cfg, records)
     graph = build_code_graph(records, chunks, codebase_units, built_at)
     snapshot = build_index_snapshot(root, records, graph, built_at, skipped, redaction_count)
+    symbol_table = build_symbol_table(records)
     index = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "version": "context-index-v1",
         "builtAt": built_at,
         "snapshot": snapshot,
         "provider": {"mode": provider_mode, "summary": {"mode": summary_mode, "provider": cfg.summary.provider, "model": cfg.summary.model}, "externalCalls": []},
         "graph": graph,
+        "symbolTable": symbol_table,
         "records": [record.to_json(include_content=True) for record in records],
         "chunks": [chunk.to_json() for chunk in chunks],
         "skipped": skipped_records,
@@ -1704,5 +1735,8 @@ def load_index(target_dir: Path) -> Dict[str, Any]:
     if cached and cached[0] == mtime:
         return cached[1]
     data = json.loads(index_path.read_text(encoding="utf-8"))
+    # schemaVersion 1 → 2 migration: treat absent symbolTable as empty dict.
+    # Do NOT mutate schemaVersion — callers may need to detect the legacy schema.
+    data.setdefault("symbolTable", {})
     _index_cache[cache_key] = (mtime, data)
     return data

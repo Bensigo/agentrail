@@ -10,7 +10,7 @@ vi.mock("../db.js", () => ({
 }));
 
 import { db } from "../db.js";
-import { upsertReviewGate } from "../queries/index.js";
+import { getReviewGateExplainer, upsertReviewGate } from "../queries/index.js";
 import type { UpsertReviewGateInput } from "../queries/index.js";
 
 const mockDb = vi.mocked(db);
@@ -30,6 +30,14 @@ function makeChain(finalValue: unknown = undefined) {
   (chain as Record<string, unknown>).onConflictDoUpdate = vi.fn(() =>
     Promise.resolve(finalValue)
   );
+  return chain;
+}
+
+function makeSelectChain(rows: unknown[]) {
+  const chain: Record<string, unknown> = {};
+  chain.from = vi.fn(() => chain);
+  chain.where = vi.fn(() => chain);
+  chain.limit = vi.fn(() => Promise.resolve(rows));
   return chain;
 }
 
@@ -134,5 +142,68 @@ describe("upsertReviewGate", () => {
     const row = valuesCalls[0][0];
     expect(row.conditions).toEqual([]);
     expect(row.blockingReasons).toEqual([]);
+  });
+});
+
+describe("getReviewGateExplainer", () => {
+  it("returns all categories with presence and counts from findings JSON", async () => {
+    const gate = {
+      id: "gate-1",
+      workspaceId: "ws-1",
+      runId: "run-1",
+      gateName: "review-round-1",
+      status: "failed",
+      conditions: [],
+      blockingReasons: [],
+      evidenceRefs: [],
+      findings: [
+        {
+          severity: "major",
+          category: "tests",
+          description: "CI failed",
+          suggested_fix: "Fix tests",
+        },
+        {
+          severity: "minor",
+          category: "visual",
+          description: "Screenshot missing",
+          suggested_fix: "Add screenshot",
+        },
+        {
+          severity: "minor",
+          category: "tests",
+          description: "Coverage missing",
+          suggested_fix: "Add coverage",
+        },
+        {
+          severity: "minor",
+          category: "unknown",
+          description: "Legacy malformed finding",
+          suggested_fix: "Ignore",
+        },
+      ],
+      evaluatedAt: new Date("2026-06-12T10:00:00.000Z"),
+      createdAt: new Date("2026-06-12T10:00:00.000Z"),
+    };
+    const chain = makeSelectChain([gate]);
+    mockDb.select = vi.fn(() => chain as ReturnType<typeof db.select>);
+
+    const result = await getReviewGateExplainer("ws-1", "gate-1");
+
+    expect(result?.gate).toBe(gate);
+    expect(result?.explainer).toEqual([
+      { category: "tests", present: true, finding_count: 2 },
+      { category: "visual", present: true, finding_count: 1 },
+      { category: "citations", present: false, finding_count: 0 },
+      { category: "ac", present: false, finding_count: 0 },
+      { category: "blocked", present: false, finding_count: 0 },
+    ]);
+  });
+
+  it("returns null when the gate is not found in the workspace", async () => {
+    const chain = makeSelectChain([]);
+    mockDb.select = vi.fn(() => chain as ReturnType<typeof db.select>);
+
+    await expect(getReviewGateExplainer("ws-1", "missing")).resolves.toBeNull();
   });
 });

@@ -8,8 +8,19 @@ export const reviewGateStatusEnum = pgEnum("review_gate_status", [
   "pending",
 ]);
 
+export const reviewGateFindingCategories = [
+  "tests",
+  "visual",
+  "citations",
+  "ac",
+  "blocked",
+] as const;
+
+export type ReviewGateFindingCategory = (typeof reviewGateFindingCategories)[number];
+
 export type ReviewGateFinding = {
   severity: "critical" | "major" | "minor";
+  category: ReviewGateFindingCategory;
   description: string;
   suggested_fix: string;
 };

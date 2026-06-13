@@ -223,6 +223,20 @@ async function seed() {
         evidenceRefs: [
           { label: "Failure detail", url: `/dashboard/${DEV_WORKSPACE_ID}/failures?runId=${DEV_RUN_ID}` },
         ],
+        findings: [
+          {
+            severity: "major",
+            category: "tests",
+            description: "CI test output is attached to the review gate fixture.",
+            suggested_fix: "Keep passing test output linked from the gate record.",
+          },
+          {
+            severity: "minor",
+            category: "visual",
+            description: "Browser screenshot evidence is attached to the review gate fixture.",
+            suggested_fix: "Keep visual evidence linked from the gate record.",
+          },
+        ],
         evaluatedAt: new Date("2026-06-08T08:04:00Z"),
       },
       {
@@ -237,6 +251,35 @@ async function seed() {
         blockingReasons: [],
         evidenceRefs: [],
         evaluatedAt: null,
+      },
+      {
+        id: "00000000-0000-0000-0000-000000000023",
+        workspaceId: DEV_WORKSPACE_ID,
+        runId: DEV_RUN_ID,
+        gateName: "Gate explainer fixture",
+        status: "passed",
+        conditions: [
+          { key: "evidence_categories", operator: "covers", value: ["tests", "visual"] },
+        ],
+        blockingReasons: [],
+        evidenceRefs: [
+          { label: "Run detail", url: `/dashboard/${DEV_WORKSPACE_ID}/runs/${DEV_RUN_ID}` },
+        ],
+        findings: [
+          {
+            severity: "major",
+            category: "tests",
+            description: "CI test output is attached to the review gate fixture.",
+            suggested_fix: "Keep passing test output linked from the gate record.",
+          },
+          {
+            severity: "minor",
+            category: "visual",
+            description: "Browser screenshot evidence is attached to the review gate fixture.",
+            suggested_fix: "Keep visual evidence linked from the gate record.",
+          },
+        ],
+        evaluatedAt: new Date("2026-06-08T08:06:00Z"),
       },
     ])
     .onConflictDoNothing();

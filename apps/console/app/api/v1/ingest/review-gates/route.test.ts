@@ -82,11 +82,13 @@ describe("POST /api/v1/ingest/review-gates", () => {
     const findings = [
       {
         severity: "critical",
+        category: "blocked",
         description: "Null deref in main.py",
         suggested_fix: "Guard against None before dereferencing",
       },
       {
         severity: "minor",
+        category: "ac",
         description: "Typo in log message",
         suggested_fix: "Fix spelling",
       },
@@ -103,6 +105,17 @@ describe("POST /api/v1/ingest/review-gates", () => {
       req({
         ...valid,
         findings: [{ severity: "P1", description: "x", suggested_fix: "y" }],
+      })
+    );
+    expect(res.status).toBe(400);
+    expect(upsertReviewGate).not.toHaveBeenCalled();
+  });
+
+  it("400 when findings is malformed (missing category)", async () => {
+    const res = await POST(
+      req({
+        ...valid,
+        findings: [{ severity: "minor", description: "x", suggested_fix: "y" }],
       })
     );
     expect(res.status).toBe(400);

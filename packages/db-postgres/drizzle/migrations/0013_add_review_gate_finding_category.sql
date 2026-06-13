@@ -1,0 +1,5 @@
+-- Schema documentation migration for issue #555.
+-- review_gates.findings remains JSONB; each finding object must include:
+--   category: 'tests' | 'visual' | 'citations' | 'ac' | 'blocked'
+-- The JSON shape is enforced at the application boundary because the category
+-- is nested inside the existing findings JSONB array.

@@ -16,7 +16,30 @@ from agentrail.afk.review import extract_json_block
 from agentrail.context.snapshot_push import load_link
 
 # Reviewer priorities → dashboard severities (anything else → minor).
-_SEVERITY_MAP = {"P0": "critical", "P1": "critical", "P2": "major"}
+_SEVERITY_MAP = {
+    "P0": "critical",
+    "P1": "critical",
+    "P2": "major",
+    "P3": "minor",
+    "CRITICAL": "critical",
+    "MAJOR": "major",
+    "MINOR": "minor",
+}
+
+_TESTS_CATEGORY_RE = re.compile(
+    r"\b(test|tests|testing|pytest|vitest|coverage|ci|typecheck|build)\b|"
+    r"\bfailing\s+tests?\b|\btest\s+failures?\b",
+    re.IGNORECASE,
+)
+_VISUAL_CATEGORY_RE = re.compile(
+    r"\b(screenshot|screenshots|ui|visual|browser|rendered|rendering)\b|"
+    r"\bvisual\s+evidence\b",
+    re.IGNORECASE,
+)
+_CITATIONS_CATEGORY_RE = re.compile(
+    r"\b(context|source|sources|citation|citations|cited|cites)\b",
+    re.IGNORECASE,
+)
 
 # Prose that signals the reviewer found something blocking (fallback path).
 _BLOCKING_RE = re.compile(
@@ -29,6 +52,20 @@ _CLEAN_RE = re.compile(
 )
 
 _FALLBACK_SNIPPET_LIMIT = 1000
+
+
+def _finding_category(severity: str, title: str, body: str) -> str:
+    """Map a review finding to the fixed review-gate evidence vocabulary."""
+    if severity == "critical":
+        return "blocked"
+    haystack = f"{title}\n{body}"
+    if _TESTS_CATEGORY_RE.search(haystack):
+        return "tests"
+    if _VISUAL_CATEGORY_RE.search(haystack):
+        return "visual"
+    if _CITATIONS_CATEGORY_RE.search(haystack):
+        return "citations"
+    return "ac"
 
 
 def parse_findings(review_text: str) -> List[dict]:
@@ -59,6 +96,7 @@ def parse_findings(review_text: str) -> List[dict]:
                 description = f"{description} ({file_})"
             findings.append({
                 "severity": severity,
+                "category": _finding_category(severity, title, body),
                 "description": description,
                 "suggested_fix": body or title or "See full review output.",
             })
@@ -73,6 +111,7 @@ def parse_findings(review_text: str) -> List[dict]:
             snippet = snippet[:_FALLBACK_SNIPPET_LIMIT] + "…"
         return [{
             "severity": "critical",
+            "category": "blocked",
             "description": snippet,
             "suggested_fix": "Address the blocking issues described in the review output.",
         }]

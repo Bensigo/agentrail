@@ -99,6 +99,13 @@
       "when": 1780907365686,
       "tag": "0013_add_baseline_window_days",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1780907365687,
+      "tag": "0013_add_review_gate_finding_category",
+      "breakpoints": true
     }
   ]
 }

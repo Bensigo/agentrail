@@ -148,6 +148,8 @@ CREATE TABLE IF NOT EXISTS failure_events (
   repository_id String,
   failure_type  String,
   message       String,
+  normalized_error String DEFAULT '',
+  fingerprint String DEFAULT '',
   evidence      String,
   phase         String,
   severity      String,
@@ -159,12 +161,23 @@ PARTITION BY (workspace_id, toYYYYMM(occurred_at))
 ORDER BY (workspace_id, occurred_at, event_id)
 `;
 
+/** ALTER TABLE statements for failure_events columns added after initial table creation. */
+export const ALTER_FAILURE_EVENTS_ADD_NORMALIZED_ERROR = `
+ALTER TABLE failure_events ADD COLUMN IF NOT EXISTS normalized_error String DEFAULT ''
+`;
+
+export const ALTER_FAILURE_EVENTS_ADD_FINGERPRINT = `
+ALTER TABLE failure_events ADD COLUMN IF NOT EXISTS fingerprint String DEFAULT ''
+`;
+
 export interface FailureEventRecord {
   workspace_id: string;
   run_id: string;
   repository_id: string;
   failure_type: string;
   message: string;
+  normalized_error: string;
+  fingerprint: string;
   /** JSON-encoded evidence string */
   evidence: string;
   phase: string;

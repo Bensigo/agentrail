@@ -69,6 +69,8 @@ describe("POST /api/v1/ingest/failure-events", () => {
         repository_id: valid.repository_id,
         failure_type: valid.failure_type,
         message: valid.message,
+        normalized_error: "",
+        fingerprint: "",
         evidence: "",
         phase: valid.phase,
         severity: "error",
@@ -78,12 +80,20 @@ describe("POST /api/v1/ingest/failure-events", () => {
   });
 
   it("202 with optional fields (evidence + severity)", async () => {
-    const withOptional = { ...valid, evidence: '{"exit":1}', severity: "critical" };
+    const withOptional = {
+      ...valid,
+      evidence: '{"exit":1}',
+      severity: "critical",
+      normalized_error: "execute phase exited with status <n>",
+      fingerprint: "sha256:abc",
+    };
     const res = await POST(req(withOptional));
     expect(res.status).toBe(202);
     const call = vi.mocked(insertFailureEvents).mock.calls[0][0][0];
     expect(call.evidence).toBe('{"exit":1}');
     expect(call.severity).toBe("critical");
+    expect(call.normalized_error).toBe("execute phase exited with status <n>");
+    expect(call.fingerprint).toBe("sha256:abc");
   });
 
   it("404 when repo not in the key's workspace", async () => {

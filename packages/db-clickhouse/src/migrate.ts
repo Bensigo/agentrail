@@ -14,6 +14,8 @@ import {
   ALTER_CONTEXT_PACKS_ADD_STALE_COUNT,
   ALTER_CONTEXT_PACKS_ADD_DENIED_COUNT,
   ALTER_CONTEXT_PACKS_ADD_SOURCE_HASH_LIST,
+  ALTER_FAILURE_EVENTS_ADD_NORMALIZED_ERROR,
+  ALTER_FAILURE_EVENTS_ADD_FINGERPRINT,
   ALTER_COST_EVENTS_ADD_PHASE,
   ALTER_COST_EVENTS_ADD_INPUT_TOKENS,
   ALTER_COST_EVENTS_ADD_OUTPUT_TOKENS,
@@ -31,6 +33,9 @@ async function main() {
   console.log("Applied run_events ALTER TABLE migrations.");
   await client.command({ query: CREATE_FAILURE_EVENTS_TABLE });
   console.log("Created failure_events table.");
+  await client.command({ query: ALTER_FAILURE_EVENTS_ADD_NORMALIZED_ERROR });
+  await client.command({ query: ALTER_FAILURE_EVENTS_ADD_FINGERPRINT });
+  console.log("Applied failure_events ALTER TABLE migrations.");
   await client.command({ query: CREATE_CONTEXT_PACKS_TABLE });
   console.log("Created context_packs table.");
   // Additive columns for tokens-saved and context-quality telemetry (safe on existing tables).

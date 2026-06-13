@@ -1,4 +1,4 @@
-import { CostsTable } from "./components/costs-table";
+import { CostsClient } from "./components/costs-client";
 
 export default async function CostsPage({
   params,
@@ -12,7 +12,7 @@ export default async function CostsPage({
       <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
         Costs
       </h1>
-      <CostsTable workspaceId={workspaceId} />
+      <CostsClient workspaceId={workspaceId} />
     </div>
   );
 }

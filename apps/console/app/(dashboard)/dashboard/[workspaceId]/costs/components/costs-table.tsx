@@ -11,6 +11,11 @@ import {
   type ColumnDef,
 } from "@tanstack/react-table";
 import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
+import {
+  TIME_RANGES,
+  timeRangeToFrom,
+  type TimeRange,
+} from "./cost-filters";
 
 export interface CostRow {
   entity_id: string;
@@ -28,19 +33,12 @@ export interface CostRow {
 }
 
 type GroupBy = "team" | "repo" | "api_key" | "run";
-type TimeRange = "1h" | "6h" | "24h" | "7d" | "30d" | "";
 
 interface CostsTableProps {
   workspaceId: string;
+  timeRange: TimeRange;
+  onTimeRangeToggle: (range: TimeRange) => void;
 }
-
-const TIME_RANGES: { label: string; value: TimeRange }[] = [
-  { label: "1h", value: "1h" },
-  { label: "6h", value: "6h" },
-  { label: "24h", value: "24h" },
-  { label: "7d", value: "7d" },
-  { label: "30d", value: "30d" },
-];
 
 const GROUP_BY_OPTIONS: { label: string; value: GroupBy }[] = [
   { label: "Repo", value: "repo" },
@@ -55,19 +53,6 @@ const GROUP_LABEL: Record<GroupBy, string> = {
   api_key: "API Key",
   run: "Run ID",
 };
-
-function timeRangeToFrom(range: TimeRange): Date | undefined {
-  if (!range) return undefined;
-  const now = new Date();
-  const ms: Record<string, number> = {
-    "1h": 1 * 60 * 60 * 1000,
-    "6h": 6 * 60 * 60 * 1000,
-    "24h": 24 * 60 * 60 * 1000,
-    "7d": 7 * 24 * 60 * 60 * 1000,
-    "30d": 30 * 24 * 60 * 60 * 1000,
-  };
-  return new Date(now.getTime() - ms[range]);
-}
 
 function fmtCost(usd: number): string {
   if (usd === 0) return "$0.00";
@@ -186,12 +171,15 @@ function buildColumns(groupBy: GroupBy): ColumnDef<CostRow, unknown>[] {
   ] as ColumnDef<CostRow, unknown>[];
 }
 
-export function CostsTable({ workspaceId }: CostsTableProps) {
+export function CostsTable({
+  workspaceId,
+  timeRange,
+  onTimeRangeToggle,
+}: CostsTableProps) {
   const [data, setData] = useState<CostRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [groupBy, setGroupBy] = useState<GroupBy>("repo");
-  const [timeRange, setTimeRange] = useState<TimeRange>("");
   const [sorting, setSorting] = useState<SortingState>([
     { id: "total_cost_usd", desc: true },
   ]);
@@ -232,19 +220,7 @@ export function CostsTable({ workspaceId }: CostsTableProps) {
 
   useEffect(() => {
     fetchCosts(groupBy, timeRange);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const handleGroupByChange = (gb: GroupBy) => {
-    setGroupBy(gb);
-    fetchCosts(gb, timeRange);
-  };
-
-  const handleTimeRangeToggle = (tr: TimeRange) => {
-    const next = timeRange === tr ? "" : tr;
-    setTimeRange(next);
-    fetchCosts(groupBy, next);
-  };
+  }, [fetchCosts, groupBy, timeRange]);
 
   const table = useReactTable({
     data,
@@ -265,7 +241,7 @@ export function CostsTable({ workspaceId }: CostsTableProps) {
           {GROUP_BY_OPTIONS.map(({ label, value }) => (
             <button
               key={value}
-              onClick={() => handleGroupByChange(value)}
+              onClick={() => setGroupBy(value)}
               className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
                 groupBy === value
                   ? "bg-[#ffe629] text-black border-[#ffe629]"
@@ -284,7 +260,7 @@ export function CostsTable({ workspaceId }: CostsTableProps) {
           {TIME_RANGES.map(({ label, value }) => (
             <button
               key={value}
-              onClick={() => handleTimeRangeToggle(value)}
+              onClick={() => onTimeRangeToggle(value)}
               className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
                 timeRange === value
                   ? "bg-[#ffe629] text-black border-[#ffe629]"

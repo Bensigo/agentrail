@@ -223,6 +223,59 @@ def post_event(config: ServerConfig, target: Path, event: Dict[str, Any]) -> Non
             pass
 
 
+def _post_afk_events(config: ServerConfig, batch: List[Dict[str, Any]]) -> bool:
+    """POST a batch to /api/v1/ingest/afk-events. Returns True on 2xx, False otherwise. Never raises."""
+    body = json.dumps(batch).encode("utf-8")
+    req = urllib.request.Request(
+        f"{config.base_url}/api/v1/ingest/afk-events",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {config.api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return 200 <= int(resp.status) < 300
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def flush_afk_events(config: ServerConfig, target: Path, batch_size: int = 100) -> bool:
+    """
+    Read ``.agentrail/afk/events.jsonl`` from *target* and POST each batch of
+    up to *batch_size* lines to ``POST {config.base_url}/api/v1/ingest/afk-events``.
+
+    Returns ``True`` if the file is absent or all batches succeed (2xx).
+    Returns ``False`` on any HTTP or network error.
+    Never raises.
+    """
+    try:
+        from agentrail.afk.journal import events_path  # local import avoids cycle
+
+        path = events_path(target)
+        if not path.exists():
+            return True
+
+        lines: List[Dict[str, Any]] = []
+        for raw in path.read_text().splitlines():
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                lines.append(json.loads(raw))
+            except json.JSONDecodeError:
+                pass
+
+        for i in range(0, len(lines), batch_size):
+            if not _post_afk_events(config, lines[i : i + batch_size]):
+                return False
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def attach_telemetry(store: Store, target: Path, session_id: str) -> None:
     """
     Subscribe a second listener on ``store`` that ships every dispatched

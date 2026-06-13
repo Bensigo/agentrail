@@ -255,5 +255,33 @@ class ExcludedPathTests(unittest.TestCase):
         self.assertEqual(r["rebuiltSources"], 0)
 
 
+class TreeSitterReuseTests(unittest.TestCase):
+    """AC2 (M018): mtime+hash cache fires correctly when tree-sitter is active.
+
+    The fixture repo contains both a .py file and a .ts file so that
+    symbol_aware_code_chunks exercises the tree-sitter path (grammar_for returns
+    non-None for both extensions).  A second build with no file changes must
+    return cacheHit=True with reusedSources > 0 and rebuiltSources == 0.
+    """
+
+    def test_tree_sitter_reuse_fires(self) -> None:
+        """Second build returns cacheHit=True; mtime+hash cache not invalidated by tree-sitter."""
+        root = make_repo()
+        # Add a TypeScript file so tree-sitter's typescript grammar is exercised.
+        (root / "src" / "widget.ts").write_text(
+            "function greet(name: string): string {\n    return `Hello, ${name}`;\n}\n",
+            encoding="utf-8",
+        )
+
+        r1 = build_index(root)
+        self.assertIs(r1["cacheHit"], False, "first build must not be a cache hit")
+        self.assertGreater(r1["indexed"], 0, "first build must index at least one file")
+
+        r2 = build_index(root)
+        self.assertIs(r2["cacheHit"], True, "second build must be a cache hit when nothing changed")
+        self.assertGreater(r2["reusedSources"], 0, "reusedSources must be > 0 on cache hit")
+        self.assertEqual(r2["rebuiltSources"], 0, "rebuiltSources must be 0 on cache hit")
+
+
 if __name__ == "__main__":
     unittest.main()

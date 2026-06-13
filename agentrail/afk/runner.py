@@ -473,6 +473,13 @@ class Runner:
         workers = [asyncio.create_task(self._worker(s))
                    for s in range(self.concurrency)]
         await asyncio.gather(*workers)
+        try:
+            from agentrail.afk.telemetry import flush_afk_events, load_server_config
+            config = load_server_config(self.target)
+            if config is not None:
+                flush_afk_events(config, self.target)
+        except Exception:  # noqa: BLE001
+            pass
         return self.store.state
 
 

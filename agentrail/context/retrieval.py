@@ -1001,6 +1001,28 @@ def apply_graph_expansion_policy(index: Dict[str, Any], graph_expansion: Dict[st
     return graph_expansion
 
 
+def _load_postings(root: Path, index: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Load precomputed postings.json if it exists, is valid JSON, and matches the index builtAt.
+
+    Returns a term-centric postings dict ``{term: [{id, tf}, ...]}`` on success,
+    or ``None`` when the file is absent, malformed, schema-mismatched, or stale
+    (different builtAt than the index).  Callers must fall back to tokenize() on None.
+    """
+    postings_path = root / ".agentrail" / "context" / "index" / "postings.json"
+    try:
+        data = json.loads(postings_path.read_text(encoding="utf-8"))
+        if (
+            data.get("version") == 1
+            and "postings" in data
+            and "builtAt" in data
+            and data.get("builtAt") == index.get("builtAt")
+        ):
+            return data["postings"]
+    except Exception:
+        pass
+    return None
+
+
 def _pre_bm25_scores(corpus: List[Dict[str, Any]], query_tokens: List[str], doc_count: int, avg_len: float, doc_freq: Dict[str, int]) -> Dict[str, float]:
     """Compute a lightweight BM25 score for each corpus item for retrieval seed extraction.
 
@@ -1018,7 +1040,7 @@ def _pre_bm25_scores(corpus: List[Dict[str, Any]], query_tokens: List[str], doc_
             if tf:
                 df = doc_freq.get(token, 0)
                 idf = math.log(1 + (doc_count - df + 0.5) / (df + 0.5))
-                score += idf * ((tf * 2.2) / (tf + 1.2 * (1 - 0.75 + 0.75 * (len(doc["tokens"]) / avg_len))))
+                score += idf * ((tf * 2.2) / (tf + 1.2 * (1 - 0.75 + 0.75 * (doc["tokenLen"] / avg_len))))
         scores[item_id] = score
     return scores
 
@@ -1107,17 +1129,35 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
         active_issue = None
     effective_issue_refs = query_issue_refs or ([] if query_pr_refs or not active_issue else [active_issue])
 
-    # Build corpus once; used for both pre-BM25 seed extraction and full scoring
+    # Build corpus once; used for both pre-BM25 seed extraction and full scoring.
+    # When postings.json was written at index time, load it to avoid re-tokenizing.
+    precomputed_postings = _load_postings(root, index)
+    postings_by_id: Optional[Dict[str, Dict[str, int]]] = None
+    if precomputed_postings is not None:
+        postings_by_id = {}
+        for _term, _entries in precomputed_postings.items():
+            for _entry in _entries:
+                _pid = str(_entry["id"])
+                if _pid not in postings_by_id:
+                    postings_by_id[_pid] = {}
+                postings_by_id[_pid][_term] = int(_entry.get("tf", 0))
     corpus: List[Dict[str, Any]] = []
     for source, chunk in items:
         text = record_text(source, chunk)
-        tokens = tokenize(text)
-        term_counts: Dict[str, int] = {}
-        for token in tokens:
-            term_counts[token] = term_counts.get(token, 0) + 1
-        corpus.append({"source": source, "chunk": chunk, "text": text, "textLower": text.lower(), "tokens": tokens, "termCounts": term_counts})
+        item_id = str((chunk or {}).get("id") or source.get("id"))
+        if postings_by_id is not None:
+            term_counts: Dict[str, int] = postings_by_id.get(item_id, {})
+            token_len = sum(term_counts.values())
+            tokens: List[str] = []
+        else:
+            tokens = tokenize(text)
+            term_counts = {}
+            for token in tokens:
+                term_counts[token] = term_counts.get(token, 0) + 1
+            token_len = len(tokens)
+        corpus.append({"source": source, "chunk": chunk, "text": text, "textLower": text.lower(), "tokens": tokens, "termCounts": term_counts, "tokenLen": token_len})
     doc_count = max(1, len(corpus))
-    avg_len = sum(len(doc["tokens"]) for doc in corpus) / doc_count if corpus else 1
+    avg_len = sum(doc["tokenLen"] for doc in corpus) / doc_count if corpus else 1
     doc_freq = {token: sum(1 for doc in corpus if token in doc["termCounts"]) for token in query_tokens}
 
     # Symbol-aware hybrid retrieval: BM25 pre-score → seed extraction → graph expansion
@@ -1169,7 +1209,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str,
             if tf:
                 df = doc_freq.get(token, 0)
                 idf = math.log(1 + (doc_count - df + 0.5) / (df + 0.5))
-                bm25 += idf * ((tf * 2.2) / (tf + 1.2 * (1 - 0.75 + 0.75 * (len(doc["tokens"]) / avg_len))))
+                bm25 += idf * ((tf * 2.2) / (tf + 1.2 * (1 - 0.75 + 0.75 * (doc["tokenLen"] / avg_len))))
         for phrase in phrases:
             if len(phrase) > 8 and phrase in doc["textLower"]:
                 keyword += 1; reasons.add("exact identifier")

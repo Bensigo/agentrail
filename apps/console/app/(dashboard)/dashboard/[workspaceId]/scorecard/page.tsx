@@ -1,7 +1,9 @@
-import { getAgentRunStats } from "@agentrail/db-postgres";
+import { Suspense } from "react";
+import { getAgentRunStats, listWorkspaceRepositories } from "@agentrail/db-postgres";
 import { getAgentModelCosts } from "@agentrail/db-clickhouse";
 import { buildScorecard } from "../../../../../lib/scorecard";
 import type { AgentScorecardRow, ModelScorecardRow } from "../../../../../lib/scorecard";
+import { RunnerScorecard } from "./components/runner-scorecard";
 
 function fmtPct(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`;
@@ -143,9 +145,10 @@ export default async function ScorecardPage({
 
   // No .catch(() => []): a DB outage must surface via the Next.js error
   // boundary, not render as a legitimate-looking empty scorecard.
-  const [pgRows, chRows] = await Promise.all([
+  const [pgRows, chRows, repoRows] = await Promise.all([
     getAgentRunStats(workspaceId),
     getAgentModelCosts(workspaceId),
+    listWorkspaceRepositories(workspaceId),
   ]);
 
   const { agents, models } = buildScorecard(pgRows, chRows);
@@ -159,10 +162,18 @@ export default async function ScorecardPage({
       </h1>
 
       {!hasFinishedRuns && agents.length === 0 ? (
-        <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-6 py-10 text-center">
-          <p className="text-sm text-[var(--gray-09)]">
-            No finished runs yet. Scorecard will populate once runs complete.
-          </p>
+        <div className="flex flex-col gap-8">
+          <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-6 py-10 text-center">
+            <p className="text-sm text-[var(--gray-09)]">
+              No finished runs yet. Scorecard will populate once runs complete.
+            </p>
+          </div>
+          <Suspense fallback={null}>
+            <RunnerScorecard
+              workspaceId={workspaceId}
+              repositories={repoRows.map((r) => ({ id: r.id, name: r.name }))}
+            />
+          </Suspense>
         </div>
       ) : (
         <div className="flex flex-col gap-8">
@@ -179,6 +190,13 @@ export default async function ScorecardPage({
             </h2>
             <ModelTable rows={models} />
           </section>
+
+          <Suspense fallback={null}>
+            <RunnerScorecard
+              workspaceId={workspaceId}
+              repositories={repoRows.map((r) => ({ id: r.id, name: r.name }))}
+            />
+          </Suspense>
         </div>
       )}
     </div>

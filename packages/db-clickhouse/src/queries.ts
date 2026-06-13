@@ -1054,6 +1054,337 @@ export async function getRunCosts(
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Telemetry health
+// ---------------------------------------------------------------------------
+
+export const TELEMETRY_HEALTH_SIGNALS = [
+  "run_start",
+  "context_pack",
+  "cost_event",
+  "review_gate",
+  "failure_event",
+  "memory_items",
+  "index_snapshot",
+  "outbox_flush",
+] as const;
+
+export type TelemetryHealthSignal = (typeof TELEMETRY_HEALTH_SIGNALS)[number];
+
+export interface TelemetryHealthSignalRow {
+  signal: TelemetryHealthSignal;
+  present: boolean;
+  missing_since: string | null;
+}
+
+type QueryJsonResult = {
+  json<T>(): Promise<T[]>;
+};
+
+type QueryClient = {
+  query(args: {
+    query: string;
+    query_params?: Record<string, unknown>;
+    format: "JSONEachRow";
+  }): Promise<QueryJsonResult>;
+};
+
+function formatClickHouseDateTime(date: Date): string {
+  return date.toISOString().replace("T", " ").replace("Z", "");
+}
+
+function parseClickHouseTimestamp(value: unknown): Date | null {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value !== "string" || value.trim() === "") {
+    return null;
+  }
+
+  const raw = value.trim();
+  const normalized =
+    raw.includes("T") || /[zZ]|[+-]\d{2}:?\d{2}$/.test(raw)
+      ? raw
+      : `${raw.replace(" ", "T")}Z`;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function timestampForApi(value: unknown): string | null {
+  const parsed = parseClickHouseTimestamp(value);
+  if (parsed) return parsed.toISOString();
+  if (typeof value === "string" && value.trim() !== "") return value;
+  return null;
+}
+
+async function hasRows(
+  ch: QueryClient,
+  query: string,
+  queryParams: Record<string, unknown>
+): Promise<boolean> {
+  const result = await ch.query({
+    query,
+    query_params: queryParams,
+    format: "JSONEachRow",
+  });
+  const rows = await result.json<Record<string, unknown>>();
+  return Number(rows[0]?.count ?? 0) > 0;
+}
+
+export async function getRunTelemetryHealth(
+  workspaceId: string,
+  runId: string,
+  ch: QueryClient = client
+): Promise<TelemetryHealthSignalRow[]> {
+  const runStartResult = await ch.query({
+    query: `
+      SELECT occurred_at
+      FROM run_events
+      WHERE workspace_id = {workspaceId: String}
+        AND run_id = {runId: String}
+      ORDER BY occurred_at ASC
+      LIMIT 1
+    `,
+    query_params: { workspaceId, runId },
+    format: "JSONEachRow",
+  });
+  const runStartRows = await runStartResult.json<Record<string, unknown>>();
+  const anchorValue = runStartRows[0]?.occurred_at;
+  const anchor = parseClickHouseTimestamp(anchorValue);
+  const missingSince = timestampForApi(anchorValue);
+
+  const [
+    contextPack,
+    costEvent,
+    reviewGate,
+    failureEvent,
+    memoryItems,
+    outboxFlush,
+  ] = await Promise.all([
+    hasRows(
+      ch,
+      `
+        SELECT count() AS count
+        FROM context_packs
+        WHERE workspace_id = {workspaceId: String}
+          AND run_id = {runId: String}
+      `,
+      { workspaceId, runId }
+    ),
+    hasRows(
+      ch,
+      `
+        SELECT count() AS count
+        FROM cost_events
+        WHERE workspace_id = {workspaceId: String}
+          AND run_id = {runId: String}
+      `,
+      { workspaceId, runId }
+    ),
+    hasRows(
+      ch,
+      `
+        SELECT count() AS count
+        FROM run_events
+        WHERE workspace_id = {workspaceId: String}
+          AND run_id = {runId: String}
+          AND (submission_kind = 'review_gate' OR event_type LIKE 'review_gate%')
+      `,
+      { workspaceId, runId }
+    ),
+    hasRows(
+      ch,
+      `
+        SELECT count() AS count
+        FROM failure_events
+        WHERE workspace_id = {workspaceId: String}
+          AND run_id = {runId: String}
+      `,
+      { workspaceId, runId }
+    ),
+    hasRows(
+      ch,
+      `
+        SELECT count() AS count
+        FROM run_events
+        WHERE workspace_id = {workspaceId: String}
+          AND run_id = {runId: String}
+          AND (submission_kind = 'memory' OR event_type LIKE 'memory_items%')
+      `,
+      { workspaceId, runId }
+    ),
+    hasRows(
+      ch,
+      `
+        SELECT count() AS count
+        FROM run_events
+        WHERE workspace_id = {workspaceId: String}
+          AND run_id = {runId: String}
+          AND event_type = 'outbox_flushed'
+      `,
+      { workspaceId, runId }
+    ),
+  ]);
+
+  const indexSnapshot = anchor
+    ? await hasRows(
+        ch,
+        `
+          SELECT count() AS count
+          FROM index_snapshots
+          WHERE workspace_id = {workspaceId: String}
+            AND indexed_at >= {since: DateTime64(3)}
+        `,
+        {
+          workspaceId,
+          since: formatClickHouseDateTime(
+            new Date(anchor.getTime() - 48 * 60 * 60 * 1000)
+          ),
+        }
+      )
+    : false;
+
+  const presentBySignal: Record<TelemetryHealthSignal, boolean> = {
+    run_start: Boolean(anchorValue),
+    context_pack: contextPack,
+    cost_event: costEvent,
+    review_gate: reviewGate,
+    failure_event: failureEvent,
+    memory_items: memoryItems,
+    index_snapshot: indexSnapshot,
+    outbox_flush: outboxFlush,
+  };
+
+  return TELEMETRY_HEALTH_SIGNALS.map((signal) => ({
+    signal,
+    present: presentBySignal[signal],
+    missing_since: presentBySignal[signal] ? null : missingSince,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Cost anomalies
+// ---------------------------------------------------------------------------
+
+export interface CostAnomalyRow {
+  run_id: string;
+  model: string;
+  phase: string;
+  repository_id: string;
+  cost_usd: number;
+  mean: number;
+  stddev: number;
+  deviation_sigmas: number;
+  occurred_at: string;
+}
+
+export interface ListCostAnomaliesOptions {
+  timeFrom?: Date;
+  timeTo?: Date;
+}
+
+function parsePayload(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== "string" || value.trim() === "") {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "") {
+      return value;
+    }
+  }
+  return "";
+}
+
+function firstNumber(...values: unknown[]): number {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return 0;
+}
+
+export async function listCostAnomalies(
+  workspaceId: string,
+  opts: ListCostAnomaliesOptions = {},
+  ch: QueryClient = client
+): Promise<CostAnomalyRow[]> {
+  const conditions = [
+    "workspace_id = {workspaceId: String}",
+    "event_type = 'cost_anomaly'",
+  ];
+  const queryParams: Record<string, unknown> = { workspaceId };
+
+  if (opts.timeFrom) {
+    conditions.push("occurred_at >= {timeFrom: DateTime64(3)}");
+    queryParams.timeFrom = formatClickHouseDateTime(opts.timeFrom);
+  }
+  if (opts.timeTo) {
+    conditions.push("occurred_at <= {timeTo: DateTime64(3)}");
+    queryParams.timeTo = formatClickHouseDateTime(opts.timeTo);
+  }
+
+  const result = await ch.query({
+    query: `
+      SELECT
+        run_id,
+        repository_id,
+        phase,
+        occurred_at,
+        payload
+      FROM run_events
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY occurred_at DESC
+    `,
+    query_params: queryParams,
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<Record<string, unknown>>();
+  return rows.map((row) => {
+    const payload = parsePayload(row.payload);
+    return {
+      run_id: String(row.run_id ?? ""),
+      model: firstString(payload.model, payload.model_name),
+      phase: firstString(row.phase, payload.phase),
+      repository_id: firstString(row.repository_id, payload.repository_id),
+      cost_usd: firstNumber(
+        payload.cost_usd,
+        payload.observed_cost_usd,
+        payload.costUsd,
+        payload.observedCostUsd
+      ),
+      mean: firstNumber(payload.mean),
+      stddev: firstNumber(payload.stddev),
+      deviation_sigmas: firstNumber(
+        payload.deviation_sigmas,
+        payload.deviationSigmas
+      ),
+      occurred_at: timestampForApi(row.occurred_at) ?? "",
+    };
+  });
+}
+
 export interface WorkspaceTelemetryCounts {
   contextPacks: number;
   failures: number;

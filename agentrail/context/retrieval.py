@@ -280,6 +280,209 @@ def context_def(root: Path, name: str) -> List[Dict[str, Any]]:
     return results
 
 
+def context_callers(root: Path, name: str) -> List[Dict[str, Any]]:
+    """Return house-schema items for every distinct call site that invokes NAME.
+
+    Traverses ``calls`` graph edges where ``to`` resolves to a symbol node
+    for NAME.  One item per distinct ``(callerPath, callerLine)`` call site.
+    Denied-authority sources are excluded.  Returns [] when NAME has no
+    inbound edges or is unknown.
+    """
+    index = load_index(root)
+    graph = index.get("graph", {})
+
+    # Build denied-path set from symbolTable authority records (belt-and-suspenders;
+    # graph build already excludes denied edges).
+    denied_paths: Set[str] = set()
+    for sym_records in index.get("symbolTable", {}).values():
+        for rec in sym_records:
+            if rec.get("authority") == "denied":
+                denied_paths.add(str(rec.get("path", "")))
+
+    # Get symbol node IDs for NAME (O(1) via pre-built map).
+    symbol_node_map = _build_symbol_node_map(index)
+    target_node_ids: Set[str] = {
+        str(entry["id"])
+        for entry in symbol_node_map.get(name, [])
+        if entry.get("id")
+    }
+    if not target_node_ids:
+        return []
+
+    seen: Set[Tuple[str, int]] = set()
+    results: List[Dict[str, Any]] = []
+
+    for edge in graph.get("edges", []):
+        if not isinstance(edge, dict) or edge.get("kind") != "calls":
+            continue
+        if not edge.get("resolved"):
+            continue
+        to_id = edge.get("to")
+        if to_id is None or str(to_id) not in target_node_ids:
+            continue
+
+        caller_path = str(edge.get("callerPath", ""))
+        caller_line = int(edge.get("callerLine", 0))
+        if not caller_path or not caller_line:
+            continue
+
+        if caller_path in denied_paths:
+            continue
+
+        key: Tuple[str, int] = (caller_path, caller_line)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        citation = f"{caller_path}:{caller_line}"
+        try:
+            file_info = get_file_lines(root, caller_path, caller_line, caller_line)
+            content = file_info["content"]
+            token_estimate = file_info["tokenEstimate"]
+        except SystemExit:
+            content = ""
+            token_estimate = estimate_tokens(content)
+
+        results.append({
+            "path": caller_path,
+            "lineStart": caller_line,
+            "lineEnd": caller_line,
+            "content": content,
+            "citation": citation,
+            "reason": f"calls {name}",
+            "score": 1.0,
+            "tokenEstimate": token_estimate,
+            "deterministic": True,
+            "callerPath": caller_path,
+            "callerLine": caller_line,
+        })
+
+    return results
+
+
+def context_callees(root: Path, name: str) -> List[Dict[str, Any]]:
+    """Return house-schema items for every symbol NAME calls.
+
+    Traverses ``calls`` graph edges where ``from`` resolves to a symbol node
+    for NAME.  Resolved callees become house-schema items for the callee
+    definition.  Unresolved stubs are always included with ``resolved: false``
+    and ``unresolvedReason``.  Resolved items from denied-authority sources
+    are excluded.  Returns [] when NAME has no outbound edges or is unknown.
+    """
+    index = load_index(root)
+    graph = index.get("graph", {})
+    symbol_table = index.get("symbolTable", {})
+
+    # Build denied-path set.
+    denied_paths: Set[str] = set()
+    for sym_records in symbol_table.values():
+        for rec in sym_records:
+            if rec.get("authority") == "denied":
+                denied_paths.add(str(rec.get("path", "")))
+
+    # Build node_id → node map for symbol nodes.
+    node_map: Dict[str, Dict[str, Any]] = {}
+    for node in graph.get("nodes", []):
+        if isinstance(node, dict) and node.get("id"):
+            node_map[str(node["id"])] = node
+
+    # Get symbol node IDs for NAME (O(1) via pre-built map).
+    symbol_node_map = _build_symbol_node_map(index)
+    from_node_ids: Set[str] = {
+        str(entry["id"])
+        for entry in symbol_node_map.get(name, [])
+        if entry.get("id")
+    }
+    if not from_node_ids:
+        return []
+
+    seen_resolved: Set[str] = set()  # keyed by to-node ID
+    seen_unresolved: Set[Tuple[str, str]] = set()  # keyed by (callee, reason)
+    results: List[Dict[str, Any]] = []
+
+    for edge in graph.get("edges", []):
+        if not isinstance(edge, dict) or edge.get("kind") != "calls":
+            continue
+        from_id = edge.get("from")
+        if from_id is None or str(from_id) not in from_node_ids:
+            continue
+
+        if edge.get("resolved"):
+            to_id = edge.get("to")
+            if to_id is None:
+                continue
+            to_id_str = str(to_id)
+            if to_id_str in seen_resolved:
+                continue
+            seen_resolved.add(to_id_str)
+
+            to_node = node_map.get(to_id_str)
+            if not to_node:
+                continue
+            callee_path = str(to_node.get("path", ""))
+            callee_line = int(to_node.get("line", 0))
+
+            if callee_path in denied_paths:
+                continue
+
+            # Resolve lineEnd from symbolTable by matching (path, lineStart).
+            callee_name = str(to_node.get("name", ""))
+            line_end = callee_line
+            citation = f"{callee_path}:{callee_line}"
+            for rec in symbol_table.get(callee_name, []):
+                if (rec.get("path") == callee_path
+                        and int(rec.get("lineStart", 0)) == callee_line):
+                    line_end = int(rec.get("lineEnd", callee_line))
+                    citation = rec.get("citation") or citation
+                    break
+
+            try:
+                file_info = get_file_lines(root, callee_path, callee_line, line_end)
+                content = file_info["content"]
+                token_estimate = file_info["tokenEstimate"]
+            except SystemExit:
+                content = ""
+                token_estimate = estimate_tokens(content)
+
+            results.append({
+                "path": callee_path,
+                "lineStart": callee_line,
+                "lineEnd": line_end,
+                "content": content,
+                "citation": citation,
+                "reason": f"called by {name}",
+                "score": 1.0,
+                "tokenEstimate": token_estimate,
+                "deterministic": True,
+                "resolved": True,
+            })
+        else:
+            # Unresolved stub — always included regardless of source authority.
+            callee_sym = str(edge.get("callee", ""))
+            unresolved_reason = str(edge.get("unresolvedReason", ""))
+            key_u: Tuple[str, str] = (callee_sym, unresolved_reason)
+            if key_u in seen_unresolved:
+                continue
+            seen_unresolved.add(key_u)
+
+            citation = f"unresolved:{callee_sym}" if callee_sym else "unresolved"
+            results.append({
+                "path": "",
+                "lineStart": 0,
+                "lineEnd": 0,
+                "content": "",
+                "citation": citation,
+                "reason": unresolved_reason or "unresolved",
+                "score": 1.0,
+                "tokenEstimate": 0,
+                "deterministic": True,
+                "resolved": False,
+                "unresolvedReason": unresolved_reason,
+            })
+
+    return results
+
+
 def get_file_symbol(target_dir: Path, path: str, symbol: str) -> Dict[str, Any]:
     """Return only the line range of a named symbol in a file, never the whole file."""
     from agentrail.context.index import extracted_symbols

@@ -9,6 +9,7 @@ from typing import List, Tuple
 from agentrail.context.embeddings import embed_context, setup_embeddings
 from agentrail.context.benchmark import format_benchmark_summary, run_benchmark
 from agentrail.context.evaluation import evaluate_retrieval, format_evaluation_report
+from agentrail.context.git_commands import git_blame, git_changed, git_history
 from agentrail.context.index import build_index
 from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
 from agentrail.context.retrieval import get_file_lines, get_file_symbol, query_context, search_context
@@ -68,6 +69,9 @@ def _usage() -> str:
   agentrail context query "<task>" [--target DIR] [--json] [--limit N]
   agentrail context search "<query>" [--target DIR] [--json] [--limit N]
   agentrail context get PATH (--lines A-B | --symbol NAME) [--target DIR] [--json]
+  agentrail context blame PATH --lines A-B [--target DIR] [--json]
+  agentrail context history PATH [--symbol NAME] [--target DIR] [--json]
+  agentrail context changed [--since REF] [--target DIR] [--json]
   agentrail context evaluate FIXTURE [--target DIR] [--json]
   agentrail context benchmark FIXTURE [--target DIR] [--json]
   agentrail context build issue NUMBER --phase PHASE [--target DIR] [--json]
@@ -306,6 +310,104 @@ def run_context(args: List[str]) -> int:
                     header += f" ({output['symbol']})"
                 print(header)
                 print(output["content"])
+            return 0
+        if kind == "blame":
+            if not rest or rest[0].startswith("--"):
+                raise SystemExit("context blame requires a path")
+            path = rest[0]
+            target: str | None = None
+            json_output = False
+            lines_spec: str | None = None
+            index = 1
+            while index < len(rest):
+                arg = rest[index]
+                if arg == "--target":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--target requires a directory")
+                    target = rest[index + 1]
+                    index += 2
+                elif arg == "--lines":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--lines requires a RANGE like A-B")
+                    lines_spec = rest[index + 1]
+                    index += 2
+                elif arg == "--json":
+                    json_output = True
+                    index += 1
+                else:
+                    raise SystemExit(f"Unknown context blame option: {arg}")
+            if not lines_spec:
+                raise SystemExit("context blame requires --lines A-B")
+            match = re.fullmatch(r"(\d+)-(\d+)", lines_spec)
+            if not match:
+                raise SystemExit("--lines must be a numeric range like 12-48")
+            output = git_blame(_resolve_target(target), path, int(match.group(1)), int(match.group(2)))
+            if json_output:
+                _print_json(output)
+            else:
+                for entry in output:
+                    print(f"{entry['line']}\t{entry['sha'][:8]}\t{entry['author']}\t{entry['content']}")
+            return 0
+        if kind == "history":
+            if not rest or rest[0].startswith("--"):
+                raise SystemExit("context history requires a path")
+            path = rest[0]
+            target: str | None = None
+            json_output = False
+            symbol: str | None = None
+            index = 1
+            while index < len(rest):
+                arg = rest[index]
+                if arg == "--target":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--target requires a directory")
+                    target = rest[index + 1]
+                    index += 2
+                elif arg == "--symbol":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--symbol requires a name")
+                    symbol = rest[index + 1]
+                    index += 2
+                elif arg == "--json":
+                    json_output = True
+                    index += 1
+                else:
+                    raise SystemExit(f"Unknown context history option: {arg}")
+            output = git_history(_resolve_target(target), path, symbol=symbol)
+            if json_output:
+                _print_json(output)
+            else:
+                for entry in output:
+                    print(f"{entry['sha'][:8]}\t{entry['date']}\t{entry['author']}\t{entry['summary']}")
+            return 0
+        if kind == "changed":
+            target: str | None = None
+            json_output = False
+            since = "HEAD"
+            index = 0
+            while index < len(rest):
+                arg = rest[index]
+                if arg == "--target":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--target requires a directory")
+                    target = rest[index + 1]
+                    index += 2
+                elif arg == "--since":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--since requires a ref")
+                    since = rest[index + 1]
+                    index += 2
+                elif arg == "--json":
+                    json_output = True
+                    index += 1
+                else:
+                    raise SystemExit(f"Unknown context changed option: {arg}")
+            output = git_changed(_resolve_target(target), since=since)
+            if json_output:
+                _print_json(output)
+            else:
+                for entry in output:
+                    print(f"{entry['status']}\t{entry['path']}")
             return 0
         if kind == "evaluate":
             if not rest or rest[0].startswith("--"):

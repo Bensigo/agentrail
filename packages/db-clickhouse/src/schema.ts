@@ -307,7 +307,7 @@ CREATE TABLE IF NOT EXISTS afk_run_events (
   digest       String
 )
 ENGINE = ReplacingMergeTree()
-PARTITION BY toYYYYMM(ts)
+PARTITION BY (workspace_id, toYYYYMM(ts))
 ORDER BY (run_id, ts, slot)
 `;
 

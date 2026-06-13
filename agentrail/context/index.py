@@ -559,7 +559,11 @@ def detect_codebase_units(root: Path, cfg: ContextConfig, records: List[SourceRe
     return [codebase_unit("root", root.name, ".", "fallback")]
 
 
-def extracted_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
+def _regex_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
+    """Regex-based symbol extraction (fallback path).
+
+    Each returned dict includes ``parsedBy: "regex_fallback"``.
+    """
     language = language_for(relative_path)
     patterns: List[Tuple[str, re.Pattern[str]]] = []
     if language in {"javascript", "typescript"}:
@@ -588,15 +592,330 @@ def extracted_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
             if key in seen:
                 continue
             seen.add(key)
-            symbols.append(
-                {
-                    "name": name,
-                    "kind": kind,
-                    "line": line_number,
-                    "citation": f"{relative_path}#L{line_number}",
-                    "deterministic": True,
-                }
-            )
+            symbols.append({
+                "name": name,
+                "kind": kind,
+                "line": line_number,
+                "citation": f"{relative_path}#L{line_number}",
+                "deterministic": True,
+                "parsedBy": "regex_fallback",
+            })
+    return symbols
+
+
+def _ast_symbols_from_root(
+    root_node: Any, relative_path: str, grammar_name: str
+) -> List[Dict[str, Any]]:
+    """Walk a tree-sitter AST root and return symbol definition dicts.
+
+    Output schema: ``{name, kind, line, citation, deterministic}`` — no ``parsedBy`` field.
+    """
+    symbols: List[Dict[str, Any]] = []
+
+    def _sym(name: str, kind: str, node: Any) -> Dict[str, Any]:
+        line = node.start_point[0] + 1
+        return {
+            "name": name,
+            "kind": kind,
+            "line": line,
+            "citation": f"{relative_path}#L{line}",
+            "deterministic": True,
+        }
+
+    def _name(node: Any) -> Optional[str]:
+        n = node.child_by_field_name("name")
+        return n.text.decode("utf-8", errors="replace") if n is not None else None
+
+    def _kotlin_name(node: Any) -> Optional[str]:
+        for child in node.children:
+            if child.type in ("simple_identifier", "type_identifier"):
+                return child.text.decode("utf-8", errors="replace")
+        return None
+
+    def _c_func_name(node: Any) -> Optional[str]:
+        def _find_id(n: Any) -> Optional[str]:
+            if n.type == "identifier":
+                return n.text.decode("utf-8", errors="replace")
+            for c in n.children:
+                r = _find_id(c)
+                if r:
+                    return r
+            return None
+        for child in node.children:
+            if "declarator" in child.type:
+                return _find_id(child)
+        return None
+
+    def _js_arrow_name(node: Any) -> Optional[str]:
+        for child in node.children:
+            if child.type != "variable_declarator":
+                continue
+            name_node = child.child_by_field_name("name")
+            if name_node is None:
+                for cc in child.children:
+                    if cc.type == "identifier":
+                        name_node = cc
+                        break
+            value_node = child.child_by_field_name("value")
+            if value_node is None:
+                for cc in child.children:
+                    if cc.type in ("arrow_function", "function_expression", "generator_function_expression"):
+                        value_node = cc
+                        break
+            if name_node and value_node:
+                return name_node.text.decode("utf-8", errors="replace")
+        return None
+
+    def _go_type_sym(node: Any) -> Optional[Dict[str, Any]]:
+        for child in node.children:
+            if child.type == "type_spec":
+                name_node: Any = None
+                kind = "type"
+                for cc in child.children:
+                    if cc.type == "type_identifier" and name_node is None:
+                        name_node = cc
+                    elif cc.type == "struct_type":
+                        kind = "struct"
+                    elif cc.type == "interface_type":
+                        kind = "interface"
+                if name_node:
+                    return _sym(name_node.text.decode("utf-8", errors="replace"), kind, node)
+            elif child.type == "type_alias":
+                name_node = child.child_by_field_name("name")
+                if name_node is None:
+                    for cc in child.children:
+                        if cc.type == "type_identifier":
+                            name_node = cc
+                            break
+                if name_node:
+                    return _sym(name_node.text.decode("utf-8", errors="replace"), "type", node)
+        return None
+
+    def _body(node: Any, *fallback_types: str) -> Optional[Any]:
+        b = node.child_by_field_name("body")
+        if b is not None:
+            return b
+        for child in node.children:
+            if child.type in fallback_types:
+                return child
+        return None
+
+    def walk(nodes: Any, in_class: bool = False) -> None:
+        for node in nodes:
+            if not node.is_named:
+                continue
+            t = node.type
+
+            if grammar_name == "python":
+                if t == "decorated_definition":
+                    inner = node.child_by_field_name("definition")
+                    if inner is not None:
+                        walk([inner], in_class)
+                elif t == "function_definition":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "method" if in_class else "function", node))
+                elif t == "class_definition":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "class", node))
+                        if not in_class:
+                            body = _body(node, "block", "suite")
+                            if body:
+                                walk(body.children, in_class=True)
+
+            elif grammar_name in ("javascript", "typescript", "tsx"):
+                if t == "function_declaration":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "method" if in_class else "function", node))
+                elif t == "class_declaration":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "class", node))
+                        if not in_class:
+                            body = _body(node, "class_body")
+                            if body:
+                                walk(body.children, in_class=True)
+                elif t in ("interface_declaration", "enum_declaration"):
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, t.split("_")[0], node))
+                elif t == "type_alias_declaration":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "type", node))
+                elif t == "lexical_declaration" and not in_class:
+                    nm = _js_arrow_name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "function", node))
+                elif t == "method_definition" and in_class:
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "method", node))
+
+            elif grammar_name == "go":
+                if t == "function_declaration":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "function", node))
+                elif t == "method_declaration":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "method", node))
+                elif t == "type_declaration":
+                    s = _go_type_sym(node)
+                    if s:
+                        symbols.append(s)
+
+            elif grammar_name == "rust":
+                if t == "function_item":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "method" if in_class else "function", node))
+                elif t == "struct_item":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "struct", node))
+                elif t == "enum_item":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "enum", node))
+                elif t == "type_item":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "type", node))
+                elif t == "impl_item":
+                    body = _body(node, "declaration_list")
+                    if body:
+                        walk(body.children, in_class=True)
+
+            elif grammar_name == "java":
+                if t == "class_declaration":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "class", node))
+                        if not in_class:
+                            body = _body(node, "class_body")
+                            if body:
+                                walk(body.children, in_class=True)
+                elif t == "interface_declaration":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "interface", node))
+                elif t == "enum_declaration":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "enum", node))
+                elif t == "method_declaration" and in_class:
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "method", node))
+
+            elif grammar_name == "kotlin":
+                if t == "function_declaration":
+                    nm = _kotlin_name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "method" if in_class else "function", node))
+                elif t in ("class_declaration", "object_declaration"):
+                    nm = _kotlin_name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "class", node))
+                        if not in_class:
+                            body = _body(node, "class_body")
+                            if body:
+                                walk(body.children, in_class=True)
+
+            elif grammar_name == "ruby":
+                if t == "method":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "method" if in_class else "function", node))
+                elif t in ("class", "module"):
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "class", node))
+                        if not in_class:
+                            body = _body(node, "body_statement")
+                            if body:
+                                walk(body.children, in_class=True)
+
+            elif grammar_name == "php":
+                if t == "function_definition":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "method" if in_class else "function", node))
+                elif t == "class_declaration":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "class", node))
+                        if not in_class:
+                            body = _body(node, "declaration_list")
+                            if body:
+                                walk(body.children, in_class=True)
+                elif t == "method_declaration" and in_class:
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "method", node))
+
+            elif grammar_name in ("c", "cpp"):
+                if t == "function_definition":
+                    nm = _c_func_name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "method" if in_class else "function", node))
+                elif t == "declaration":
+                    # Function prototype (header file declaration, no body)
+                    has_func_decl = any("declarator" in c.type for c in node.children)
+                    if has_func_decl:
+                        nm = _c_func_name(node)
+                        if nm:
+                            symbols.append(_sym(nm, "method" if in_class else "function", node))
+                elif t == "struct_specifier":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "struct", node))
+                elif t == "class_specifier" and grammar_name == "cpp":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "class", node))
+                        if not in_class:
+                            body = _body(node, "field_declaration_list")
+                            if body:
+                                walk(body.children, in_class=True)
+
+            elif grammar_name == "bash":
+                if t == "function_definition":
+                    nm = _name(node)
+                    if nm:
+                        symbols.append(_sym(nm, "function", node))
+
+    walk(root_node.children)
+    return symbols
+
+
+def extracted_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
+    """Extract top-level symbol definitions from source text.
+
+    Uses tree-sitter AST for supported languages (grammar_for returns non-None).
+    Falls back to regex for unsupported extensions, parse errors, or zero symbols
+    with parse errors. Fallback symbols include ``parsedBy: "regex_fallback"``.
+    Schema: ``{name, kind, line, citation, deterministic}``; tree-sitter path omits
+    ``parsedBy``; fallback path adds it.
+    """
+    grammar = grammar_for(relative_path)
+    if grammar is None:
+        return _regex_symbols(text, relative_path)
+    root_node = None
+    try:
+        import tree_sitter_language_pack  # noqa: PLC0415
+        parser = tree_sitter_language_pack.get_parser(grammar)
+        tree = parser.parse(text.encode("utf-8", errors="replace"))
+        root_node = tree.root_node
+        symbols = _ast_symbols_from_root(root_node, relative_path, grammar)
+    except Exception:
+        return _regex_symbols(text, relative_path)
+    if not symbols and root_node is not None and root_node.has_error:
+        return _regex_symbols(text, relative_path)
     return symbols
 
 

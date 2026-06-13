@@ -943,6 +943,21 @@ function deriveEventId(workspaceId: string, sessionId: string, seq: number): str
     .digest("hex");
 }
 
+function numberField(record: Record<string, unknown>, key: string): number {
+  const value = record[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.trunc(value));
+  }
+  if (typeof value === "boolean") {
+    return value ? 1 : 0;
+  }
+  return 0;
+}
+
+function bitField(record: Record<string, unknown>, key: string): number {
+  return numberField(record, key) > 0 ? 1 : 0;
+}
+
 /**
  * Insert AFK run events into ClickHouse, deduplicating on
  * (workspace_id, session_id, seq) via a pre-existence check.
@@ -993,6 +1008,11 @@ export async function insertAfkRunEvents(events: AfkRunEventInput[]): Promise<nu
     payload: JSON.stringify(ev.action),
     session_id: ev.session_id,
     seq: ev.seq,
+    files_read_count: numberField(ev.action, "files_read_count"),
+    full_file_read: bitField(ev.action, "full_file_read"),
+    tool_loop_count: numberField(ev.action, "tool_loop_count"),
+    edit_without_context: bitField(ev.action, "edit_without_context"),
+    verification_skip: bitField(ev.action, "verification_skip"),
   }));
 
   await client.insert({

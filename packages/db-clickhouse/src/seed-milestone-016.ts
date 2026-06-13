@@ -298,6 +298,8 @@ function buildMissingTelemetryScenario(
       repository_id: REPOSITORY_ID,
       failure_type: "fixture_warning",
       message: "Synthetic warning keeps failure_event health signal green.",
+      normalized_error: "synthetic warning keeps failure_event health signal green.",
+      fingerprint: "sha256:m016-fixture-warning",
       evidence: JSON.stringify({ fixture: "m016-missing-cost" }),
       phase: PHASE,
       severity: "low",

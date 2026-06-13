@@ -37,6 +37,12 @@ class ActivityEntry:
     tools: List[str] = field(default_factory=list)
     ts: str = ""  # transcript timestamp (ISO) when available, else ""
     full_text: str = ""  # set only when the turn text extends past the summary
+    files_read_count: int = 0
+    full_file_read: int = 0
+    tool_loop_count: int = 0
+    edit_without_context: int = 0
+    verification_skip: int = 0
+    _tool_calls: List[Dict[str, Any]] = field(default_factory=list, repr=False, compare=False)
 
 
 def _now_iso() -> str:
@@ -64,6 +70,202 @@ def _entry_texts(text: str) -> tuple[str, str]:
     if len(text) > FULL_TEXT_MAX_CHARS:
         full = full.rstrip() + "…"
     return summary, full
+
+
+def _tool_input(block: Dict[str, Any]) -> Dict[str, Any]:
+    raw = block.get("input")
+    if raw is None:
+        raw = block.get("arguments")
+    if raw is None:
+        raw = block.get("params")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            return {"command": raw}
+    return {}
+
+
+def _codex_tool_input(payload: Dict[str, Any]) -> Dict[str, Any]:
+    for key in ("arguments", "input", "params", "action"):
+        raw = payload.get(key)
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                return {"command": raw}
+    return {}
+
+
+def _command_text(args: Dict[str, Any]) -> str:
+    for key in ("command", "cmd", "script"):
+        value = args.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _normalise_tool_name(name: str) -> str:
+    return name.strip().lower().replace("-", "_")
+
+
+def _is_read_tool(name: str, args: Dict[str, Any]) -> bool:
+    lname = _normalise_tool_name(name)
+    if lname in {"read", "read_file"} or lname.endswith("__read_file"):
+        return True
+    command = _command_text(args).strip()
+    return bool(command) and (
+        command.startswith("cat ")
+        or command.startswith("nl ")
+        or command.startswith("sed ")
+    )
+
+
+def _read_identifier(name: str, args: Dict[str, Any]) -> str:
+    for key in ("file_path", "path", "absolute_path", "uri", "url"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    command = _command_text(args).strip()
+    if command:
+        return command
+    return _tool_signature(name, args)
+
+
+def _is_limited_read(args: Dict[str, Any]) -> bool:
+    return any(
+        key in args and args.get(key) not in (None, "")
+        for key in ("offset", "limit", "start", "start_line", "end", "end_line")
+    )
+
+
+def _is_full_file_read(name: str, args: Dict[str, Any]) -> bool:
+    if not _is_read_tool(name, args):
+        return False
+    command = _command_text(args).strip()
+    if command:
+        return command.startswith("cat ") or command.startswith("nl ")
+    return not _is_limited_read(args)
+
+
+def _is_edit_tool(name: str, args: Dict[str, Any]) -> bool:
+    lname = _normalise_tool_name(name)
+    if lname in {"edit", "multiedit", "multi_edit", "write", "apply_patch"}:
+        return True
+    if lname.endswith("apply_patch"):
+        return True
+    command = _command_text(args)
+    return "apply_patch" in command
+
+
+def _is_context_tool(name: str, args: Dict[str, Any]) -> bool:
+    lname = _normalise_tool_name(name)
+    if (
+        _is_read_tool(name, args)
+        or lname in {"grep", "glob", "ls", "find"}
+        or "search" in lname
+        or "context" in lname
+    ):
+        return True
+    command = _command_text(args).strip()
+    if not command:
+        return False
+    return command.startswith((
+        "rg ",
+        "grep ",
+        "sed ",
+        "ls ",
+        "find ",
+        "git show ",
+        "git diff ",
+        "agentrail context ",
+    ))
+
+
+def _is_verification_tool(name: str, args: Dict[str, Any]) -> bool:
+    lname = _normalise_tool_name(name)
+    if any(term in lname for term in ("test", "pytest", "vitest", "typecheck", "lint")):
+        return True
+    command = _command_text(args).lower()
+    return any(
+        term in command
+        for term in (
+            "npm test",
+            "pnpm test",
+            "yarn test",
+            "pytest",
+            "vitest",
+            "tsc",
+            "typecheck",
+            "lint",
+            "go test",
+            "cargo test",
+            "ruff",
+            "mypy",
+            "playwright",
+        )
+    )
+
+
+def _tool_signature(name: str, args: Dict[str, Any]) -> str:
+    try:
+        encoded = json.dumps(args, sort_keys=True, separators=(",", ":"))
+    except TypeError:
+        encoded = str(args)
+    return f"{name}:{encoded}"
+
+
+def _behavior_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, int]:
+    read_targets: set[str] = set()
+    signatures: Dict[str, int] = {}
+    has_full_read = False
+    has_edit = False
+    has_context = False
+    has_verification = False
+
+    for call in tool_calls:
+        name = str(call.get("name") or "")
+        args = call.get("input") if isinstance(call.get("input"), dict) else {}
+        signature = _tool_signature(name, args)
+        signatures[signature] = signatures.get(signature, 0) + 1
+
+        if _is_read_tool(name, args):
+            read_targets.add(_read_identifier(name, args))
+        if _is_full_file_read(name, args):
+            has_full_read = True
+        if _is_edit_tool(name, args):
+            has_edit = True
+        if _is_context_tool(name, args):
+            has_context = True
+        if _is_verification_tool(name, args):
+            has_verification = True
+
+    duplicate_count = sum(max(0, count - 1) for count in signatures.values())
+    return {
+        "files_read_count": len(read_targets),
+        "full_file_read": 1 if has_full_read else 0,
+        "tool_loop_count": duplicate_count,
+        "edit_without_context": 1 if has_edit and not has_context else 0,
+        "verification_skip": 1 if has_edit and not has_verification else 0,
+    }
+
+
+def _apply_behavior_metrics(entry: ActivityEntry) -> ActivityEntry:
+    metrics = _behavior_metrics(entry._tool_calls)
+    entry.files_read_count = metrics["files_read_count"]
+    entry.full_file_read = metrics["full_file_read"]
+    entry.tool_loop_count = metrics["tool_loop_count"]
+    entry.edit_without_context = metrics["edit_without_context"]
+    entry.verification_skip = metrics["verification_skip"]
+    return entry
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +319,7 @@ def _extract_claude_activity(target: Path, since_ts: float) -> List[ActivityEntr
             thinking = ""
             plain_text = ""
             tools: List[str] = []
+            tool_calls: List[Dict[str, Any]] = []
             for block in content:
                 if not isinstance(block, dict):
                     continue
@@ -128,19 +331,23 @@ def _extract_claude_activity(target: Path, since_ts: float) -> List[ActivityEntr
                 elif btype == "tool_use":
                     name = block.get("name")
                     if name:
-                        tools.append(str(name))
+                        tool_name = str(name)
+                        tools.append(tool_name)
+                        tool_calls.append({"name": tool_name, "input": _tool_input(block)})
 
             summary, full_text = _entry_texts(thinking or plain_text)
             if not summary and not tools:
                 continue
 
             ts = record.get("timestamp")
-            entries.append(ActivityEntry(
+            entry = ActivityEntry(
                 summary=summary,
                 tools=tools,
                 ts=ts if isinstance(ts, str) else "",
                 full_text=full_text,
-            ))
+                _tool_calls=tool_calls,
+            )
+            entries.append(_apply_behavior_metrics(entry))
             if len(entries) >= MAX_ENTRIES_PER_PHASE:
                 return entries
 
@@ -181,10 +388,19 @@ def _extract_codex_activity(target: Path, since_ts: float) -> List[ActivityEntry
 
             elif ptype in ("function_call", "local_shell_call", "custom_tool_call"):
                 name = str(payload.get("name") or ptype)
+                tool_call = {"name": name, "input": _codex_tool_input(payload)}
                 if entries:
                     entries[-1].tools.append(name)
+                    entries[-1]._tool_calls.append(tool_call)
+                    _apply_behavior_metrics(entries[-1])
                 else:
-                    entries.append(ActivityEntry(summary="", tools=[name], ts=ts))
+                    entry = ActivityEntry(
+                        summary="",
+                        tools=[name],
+                        ts=ts,
+                        _tool_calls=[tool_call],
+                    )
+                    entries.append(_apply_behavior_metrics(entry))
 
             if len(entries) >= MAX_ENTRIES_PER_PHASE:
                 return entries
@@ -259,6 +475,11 @@ def push_agent_activity(
                 "turn": turn,
                 "summary": entry.summary,
                 "tools": entry.tools,
+                "files_read_count": entry.files_read_count,
+                "full_file_read": entry.full_file_read,
+                "tool_loop_count": entry.tool_loop_count,
+                "edit_without_context": entry.edit_without_context,
+                "verification_skip": entry.verification_skip,
                 **({"full_text": entry.full_text} if entry.full_text else {}),
             },
             "digest": entry.summary[:64],

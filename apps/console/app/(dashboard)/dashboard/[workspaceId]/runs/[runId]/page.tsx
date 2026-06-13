@@ -12,6 +12,7 @@ import { TelemetryHealthSection } from "./components/telemetry-health-section";
 import { WaterfallSection } from "./components/waterfall-section";
 import { ContextSection } from "./components/context-section";
 import { MemorySection } from "./components/memory-section";
+import { BehaviorLintSection } from "./components/behavior-lint-section";
 import type { RunDetail } from "./components/run-detail-header";
 import type { TimelineEvent } from "./components/run-timeline";
 
@@ -174,6 +175,17 @@ export default function RunDetailPage() {
           Context
         </h2>
         <ContextSection workspaceId={workspaceId} runId={runId} runStatus={run?.status} />
+      </div>
+
+      <div className="mt-6">
+        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+          Behavior
+        </h2>
+        <BehaviorLintSection
+          workspaceId={workspaceId}
+          runId={runId}
+          runStatus={run?.status}
+        />
       </div>
 
       <div className="mt-6">

@@ -98,6 +98,42 @@ class TestClaudeExtractor:
         assert entries[0].tools == ["Read", "Grep"]
         assert entries[0].ts == "2026-06-12T10:00:00.000Z"
 
+    def test_behavior_metrics_are_computed_from_tool_blocks(self, tmp_path: Path) -> None:
+        target = tmp_path / "repo"
+        target.mkdir()
+        entries = self._extract(tmp_path, target, [
+            _assistant_turn([
+                {"type": "text", "text": "read then edit"},
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "a.ts"}},
+                {
+                    "type": "tool_use",
+                    "name": "Read",
+                    "input": {"file_path": "b.ts", "offset": 1, "limit": 40},
+                },
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "a.ts"}},
+                {"type": "tool_use", "name": "Edit", "input": {"file_path": "c.ts"}},
+            ]),
+        ])
+
+        assert len(entries) == 1
+        assert entries[0].files_read_count == 2
+        assert entries[0].full_file_read == 1
+        assert entries[0].tool_loop_count == 1
+        assert entries[0].edit_without_context == 0
+        assert entries[0].verification_skip == 1
+
+    def test_context_blind_edit_metric_when_turn_edits_without_context(self, tmp_path: Path) -> None:
+        target = tmp_path / "repo"
+        target.mkdir()
+        entries = self._extract(tmp_path, target, [
+            _assistant_turn([
+                {"type": "text", "text": "edit directly"},
+                {"type": "tool_use", "name": "Edit", "input": {"file_path": "c.ts"}},
+            ]),
+        ])
+
+        assert entries[0].edit_without_context == 1
+
     def test_text_truncated_to_200_chars(self, tmp_path: Path) -> None:
         target = tmp_path / "repo"
         target.mkdir()
@@ -319,6 +355,15 @@ class TestPushAgentActivity:
             assert ev["action"]["type"] == "agent_activity"
             assert ev["action"]["phase"] == "execute"
             assert ev["action"]["turn"] == i + 1
+            for field in (
+                "files_read_count",
+                "full_file_read",
+                "tool_loop_count",
+                "edit_without_context",
+                "verification_skip",
+            ):
+                assert field in ev["action"]
+                assert isinstance(ev["action"][field], int)
         assert events[0]["action"]["summary"] == "thinking about it"
         assert events[0]["action"]["tools"] == ["Read"]
         assert events[0]["ts"] == "2026-06-12T10:00:00.000Z"

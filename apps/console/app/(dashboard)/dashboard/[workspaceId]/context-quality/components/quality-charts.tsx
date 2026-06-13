@@ -186,11 +186,25 @@ function MetricChart({
   );
 }
 
-export function QualityChartsClient({ workspaceId }: { workspaceId: string }) {
+function deriveInitialRange(days: number): { rangeKey: RangeKey; customFrom: string } {
+  if (days === 7) return { rangeKey: "7d", customFrom: toISO(daysAgo(7)) };
+  if (days === 30) return { rangeKey: "30d", customFrom: toISO(daysAgo(30)) };
+  if (days === 90) return { rangeKey: "90d", customFrom: toISO(daysAgo(90)) };
+  return { rangeKey: "custom", customFrom: toISO(daysAgo(days)) };
+}
+
+export function QualityChartsClient({
+  workspaceId,
+  baselineWindowDays,
+}: {
+  workspaceId: string;
+  baselineWindowDays: number;
+}) {
+  const initial = deriveInitialRange(baselineWindowDays);
   const [repos, setRepos] = useState<Repo[]>([]);
   const [repositoryId, setRepositoryId] = useState<string>("");
-  const [rangeKey, setRangeKey] = useState<RangeKey>("30d");
-  const [customFrom, setCustomFrom] = useState(toISO(daysAgo(30)));
+  const [rangeKey, setRangeKey] = useState<RangeKey>(initial.rangeKey);
+  const [customFrom, setCustomFrom] = useState(initial.customFrom);
   const [customTo, setCustomTo] = useState(toISO(new Date()));
   const [result, setResult] = useState<QualityMetricsResult | null>(null);
   const [loading, setLoading] = useState(true);

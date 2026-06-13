@@ -1,3 +1,4 @@
+import { getWorkspace } from "@agentrail/db-postgres";
 import { QualityChartsClient } from "./components/quality-charts";
 
 export default async function ContextQualityPage({
@@ -6,6 +7,16 @@ export default async function ContextQualityPage({
   params: Promise<{ workspaceId: string }>;
 }) {
   const { workspaceId } = await params;
+
+  let baselineWindowDays = 30;
+  try {
+    const workspace = await getWorkspace(workspaceId);
+    if (workspace) {
+      baselineWindowDays = workspace.baselineWindowDays;
+    }
+  } catch {
+    // fallback to 30 if workspace fetch fails
+  }
 
   return (
     <div className="mx-auto max-w-[1440px]">
@@ -16,7 +27,10 @@ export default async function ContextQualityPage({
         Precision, citation coverage, staleness, and denied-source counts across
         runs for this workspace.
       </p>
-      <QualityChartsClient workspaceId={workspaceId} />
+      <QualityChartsClient
+        workspaceId={workspaceId}
+        baselineWindowDays={baselineWindowDays}
+      />
     </div>
   );
 }

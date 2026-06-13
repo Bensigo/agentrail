@@ -119,6 +119,33 @@ class InMemoryTelemetryStore:
             and (occurred_to is None or record.occurred_at <= occurred_to)
         ]
 
+    def query_cost_per_run(
+        self,
+        *,
+        workspace_id: str,
+        model: str,
+        phase: str,
+        repository_id: str,
+        window_days: int,
+    ) -> List[float]:
+        _ = window_days
+        totals_by_run: dict[str, float] = {}
+        for record in self.event_records:
+            if record.submission_kind != "cost_event":
+                continue
+            if record.workspace_id != workspace_id or record.repository_id != repository_id:
+                continue
+            payload = record.payload
+            if getattr(payload, "model", None) != model or getattr(payload, "phase", None) != phase:
+                continue
+            run_id = record.run_id
+            if run_id is None:
+                continue
+            totals_by_run[run_id] = totals_by_run.get(run_id, 0.0) + float(
+                getattr(payload, "cost_usd", 0.0)
+            )
+        return list(totals_by_run.values())
+
 
 def _is_duplicate_idempotent_metadata(envelope: "IngestionEnvelope", records: List["IngestionEnvelope"]) -> bool:
     payload = envelope.payload

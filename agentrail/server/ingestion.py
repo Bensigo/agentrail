@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 import re
 from typing import List, Mapping, Optional, Type, Union
 
+from agentrail.server.cost_baseline import ClickHouseClient, compute_baseline
 from agentrail.server.product import InMemoryProductAuthStore, PRODUCT_AUTH_SUBMISSION_KINDS
 from agentrail.server.telemetry import InMemoryTelemetryStore, TELEMETRY_SUBMISSION_KINDS
 
@@ -1740,6 +1741,7 @@ def ingest(
     policy: SourceCustodyPolicy,
     product_store: InMemoryProductAuthStore,
     telemetry_store: InMemoryTelemetryStore,
+    cost_baseline_client: Optional[ClickHouseClient] = None,
 ) -> IngestionResult:
     errors = _validate_payload(envelope, policy)
     if errors:
@@ -1749,6 +1751,14 @@ def ingest(
         product_store.write(envelope)
     elif payload_kind in TELEMETRY_SUBMISSION_KINDS:
         telemetry_store.write(envelope)
+        if isinstance(envelope.payload, CostEventSubmission):
+            _emit_cost_anomaly_if_needed(
+                envelope,
+                policy=policy,
+                product_store=product_store,
+                telemetry_store=telemetry_store,
+                cost_baseline_client=cost_baseline_client,
+            )
     else:
         return IngestionResult(
             accepted=False,
@@ -1761,3 +1771,73 @@ def ingest(
             ],
         )
     return IngestionResult(accepted=True)
+
+
+def _emit_cost_anomaly_if_needed(
+    envelope: IngestionEnvelope,
+    *,
+    policy: SourceCustodyPolicy,
+    product_store: InMemoryProductAuthStore,
+    telemetry_store: InMemoryTelemetryStore,
+    cost_baseline_client: Optional[ClickHouseClient],
+) -> None:
+    payload = envelope.payload
+    if not isinstance(payload, CostEventSubmission):
+        return
+    if envelope.repository_id is None or payload.phase is None:
+        return
+
+    anomaly_event_id = _cost_anomaly_event_id(payload.event_id)
+    if _event_id_already_recorded(telemetry_store, anomaly_event_id):
+        return
+
+    client = cost_baseline_client if cost_baseline_client is not None else telemetry_store
+    try:
+        baseline = compute_baseline(
+            workspace_id=envelope.workspace_id,
+            model=payload.model,
+            phase=payload.phase,
+            repository_id=envelope.repository_id,
+            observed_cost_usd=payload.cost_usd,
+            client=client,
+        )
+        if not baseline.is_anomaly:
+            return
+        ingest(
+            IngestionEnvelope(
+                workspace_id=envelope.workspace_id,
+                repository_id=envelope.repository_id,
+                payload=RunEventSubmission(
+                    event_id=anomaly_event_id,
+                    run_id=payload.run_id,
+                    event_type="cost_anomaly",
+                    phase=payload.phase,
+                    severity="warning",
+                    occurred_at=payload.occurred_at,
+                    agent=payload.agent,
+                    metadata={
+                        "model": payload.model,
+                        "phase": payload.phase,
+                        "repository_id": envelope.repository_id,
+                        "cost_usd": payload.cost_usd,
+                        "mean": baseline.mean,
+                        "stddev": baseline.stddev,
+                        "deviation_sigmas": baseline.deviation_sigmas,
+                    },
+                ),
+            ),
+            policy=policy,
+            product_store=product_store,
+            telemetry_store=telemetry_store,
+            cost_baseline_client=cost_baseline_client,
+        )
+    except Exception:
+        return
+
+
+def _cost_anomaly_event_id(cost_event_id: str) -> str:
+    return f"{cost_event_id}:cost_anomaly"
+
+
+def _event_id_already_recorded(telemetry_store: InMemoryTelemetryStore, event_id: str) -> bool:
+    return any(record.event_id == event_id for record in telemetry_store.event_records)

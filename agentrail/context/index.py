@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import re
 from datetime import datetime, timezone
@@ -1304,6 +1305,20 @@ def build_code_graph(records: List[SourceRecord], chunks: List[ChunkRecord], cod
     }
 
 
+def _parser_versions() -> Dict[str, str]:
+    """Return a dict mapping each non-None grammar in _LANGUAGE_TABLE to its installed version.
+
+    All grammars come from tree-sitter-language-pack, so they share one version string.
+    Falls back to "unknown" if the package is not importable.
+    """
+    try:
+        pack_version = importlib.metadata.version("tree-sitter-language-pack")
+    except Exception:
+        pack_version = "unknown"
+    grammars = sorted({v["grammar"] for v in _LANGUAGE_TABLE.values() if v["grammar"] is not None})
+    return {grammar: pack_version for grammar in grammars}
+
+
 def build_index_snapshot(root: Path, records: List[SourceRecord], graph: Dict[str, Any], built_at: str, skipped: int, redaction_count: int) -> Dict[str, Any]:
     source_hashes = {record.path: record.contentHash for record in records}
     freshness = {record.path: record.freshness.to_json() for record in records}
@@ -1314,6 +1329,7 @@ def build_index_snapshot(root: Path, records: List[SourceRecord], graph: Dict[st
         "redactionCount": redaction_count,
         "graphNodeCount": len(graph["nodes"]),
         "graphEdgeCount": len(graph["edges"]),
+        "parserVersions": _parser_versions(),
     }
     return {
         "schemaVersion": 1,

@@ -58,11 +58,17 @@ def _make_indexed_repo() -> Path:
 
 def _impact_cli_available() -> bool:
     """Return True if `agentrail context impact` is a recognised subcommand."""
-    result = subprocess.run(
-        ["agentrail", "context", "impact", "_probe_", "--json"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["agentrail", "context", "impact", "_probe_", "--json"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        # `agentrail` binary not on PATH (e.g. CI runs pytest without the shim).
+        # Mirror _node_available: treat an absent binary as "not available" so
+        # the impact suite skips cleanly instead of erroring at collection.
+        return False
     # If the exit message starts with "Unknown context command" it is absent.
     return "Unknown context command" not in (result.stderr or "")
 

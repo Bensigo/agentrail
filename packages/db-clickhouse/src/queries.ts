@@ -1054,6 +1054,249 @@ export async function getRunCosts(
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Telemetry completeness — per-run signal health
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable, public ordering of the eight telemetry signals. Mirrors
+ * ``SIGNALS`` in ``agentrail/server/telemetry_completeness.py``;
+ * ``getRunTelemetryHealth`` always returns one entry per signal, in this order.
+ */
+export const TELEMETRY_SIGNALS = [
+  "run_start",
+  "context_pack",
+  "cost_event",
+  "review_gate",
+  "failure_event",
+  "memory_items",
+  "index_snapshot",
+  "outbox_flush",
+] as const;
+
+export type TelemetrySignal = (typeof TELEMETRY_SIGNALS)[number];
+
+export interface TelemetryHealthSignal {
+  signal: TelemetrySignal;
+  present: boolean;
+  /**
+   * For absent signals, the run's earliest ``run_events`` timestamp as an ISO
+   * string (the anchor); ``null`` when present, or when the run has no events
+   * to anchor against.
+   */
+  missing_since: string | null;
+}
+
+// Index snapshots are workspace-scoped (not run-scoped); a snapshot counts as
+// present for a run if one was recorded within this window before the run
+// start. Matches INDEX_SNAPSHOT_RECENCY (48h) in the Python checker.
+const INDEX_SNAPSHOT_RECENCY_MS = 48 * 60 * 60 * 1000;
+
+/** Convert a ClickHouse DateTime64 string ("YYYY-MM-DD HH:MM:SS.mmm", UTC) to a Date. */
+function parseClickHouseDate(value: string): Date {
+  return new Date(value.replace(" ", "T") + "Z");
+}
+
+/** Convert a Date to the ClickHouse DateTime64 parameter format. */
+function toClickHouseParam(date: Date): string {
+  return date.toISOString().replace("T", " ").replace("Z", "");
+}
+
+/**
+ * Return one {@link TelemetryHealthSignal} per named signal, in
+ * {@link TELEMETRY_SIGNALS} order. A signal is ``present`` when at least one
+ * matching record exists. For absent signals ``missing_since`` is the run's
+ * earliest ``run_events`` timestamp (the anchor), or ``null`` when the run has
+ * no events to anchor against. Mirrors ``check_run_telemetry`` in
+ * ``agentrail/server/telemetry_completeness.py``.
+ */
+export async function getRunTelemetryHealth(
+  workspaceId: string,
+  runId: string
+): Promise<TelemetryHealthSignal[]> {
+  // All run_events for the run drive run_start, review_gate, memory_items,
+  // outbox_flush and the missing-since anchor in a single read.
+  const eventsResult = await client.query({
+    query: `
+      SELECT occurred_at, submission_kind, event_type
+      FROM run_events
+      WHERE workspace_id = {workspaceId: String}
+        AND run_id = {runId: String}
+      ORDER BY occurred_at ASC
+    `,
+    query_params: { workspaceId, runId },
+    format: "JSONEachRow",
+  });
+  const eventRows = await eventsResult.json<{
+    occurred_at: string;
+    submission_kind: string;
+    event_type: string;
+  }>();
+
+  const anchor = eventRows.length > 0 ? parseClickHouseDate(eventRows[0].occurred_at) : null;
+  const anchorIso = anchor ? anchor.toISOString() : null;
+
+  const runStartPresent = eventRows.length > 0;
+  const reviewGatePresent = eventRows.some(
+    (r) => r.submission_kind === "review_gate" || r.event_type.startsWith("review_gate")
+  );
+  const memoryItemsPresent = eventRows.some(
+    (r) => r.submission_kind === "memory" || r.event_type.startsWith("memory_items")
+  );
+  const outboxFlushPresent = eventRows.some((r) => r.event_type === "outbox_flushed");
+
+  // Per-run table presence (context_pack, cost_event, failure_event) in one round-trip.
+  const countsResult = await client.query({
+    query: `
+      SELECT
+        (SELECT count() FROM context_packs  WHERE workspace_id = {workspaceId: String} AND run_id = {runId: String}) AS context_pack,
+        (SELECT count() FROM cost_events    WHERE workspace_id = {workspaceId: String} AND run_id = {runId: String}) AS cost_event,
+        (SELECT count() FROM failure_events WHERE workspace_id = {workspaceId: String} AND run_id = {runId: String}) AS failure_event
+    `,
+    query_params: { workspaceId, runId },
+    format: "JSONEachRow",
+  });
+  const countsRows = await countsResult.json<{
+    context_pack: string | number;
+    cost_event: string | number;
+    failure_event: string | number;
+  }>();
+  const counts = countsRows[0];
+  const contextPackPresent = Number(counts?.context_pack ?? 0) > 0;
+  const costEventPresent = Number(counts?.cost_event ?? 0) > 0;
+  const failureEventPresent = Number(counts?.failure_event ?? 0) > 0;
+
+  // index_snapshot is workspace-scoped with a recency window anchored to the run start.
+  let indexSnapshotPresent = false;
+  if (anchor) {
+    const since = new Date(anchor.getTime() - INDEX_SNAPSHOT_RECENCY_MS);
+    const snapResult = await client.query({
+      query: `
+        SELECT 1
+        FROM index_snapshots
+        WHERE workspace_id = {workspaceId: String}
+          AND indexed_at >= {since: DateTime64(3)}
+        LIMIT 1
+      `,
+      query_params: { workspaceId, since: toClickHouseParam(since) },
+      format: "JSONEachRow",
+    });
+    const snapRows = await snapResult.json();
+    indexSnapshotPresent = snapRows.length > 0;
+  }
+
+  const presence: Record<TelemetrySignal, boolean> = {
+    run_start: runStartPresent,
+    context_pack: contextPackPresent,
+    cost_event: costEventPresent,
+    review_gate: reviewGatePresent,
+    failure_event: failureEventPresent,
+    memory_items: memoryItemsPresent,
+    index_snapshot: indexSnapshotPresent,
+    outbox_flush: outboxFlushPresent,
+  };
+
+  return TELEMETRY_SIGNALS.map((signal) => ({
+    signal,
+    present: presence[signal],
+    missing_since: presence[signal] ? null : anchorIso,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Cost anomalies — workspace-scoped cost_anomaly run events
+// ---------------------------------------------------------------------------
+
+export interface CostAnomaliesOptions {
+  timeFrom?: Date;
+  timeTo?: Date;
+}
+
+export interface CostAnomalyRow {
+  run_id: string;
+  model: string;
+  phase: string;
+  repository_id: string;
+  cost_usd: number;
+  mean: number;
+  stddev: number;
+  deviation_sigmas: number;
+  occurred_at: string;
+}
+
+/**
+ * Read workspace-scoped ``cost_anomaly`` run events, newest first, with optional
+ * time filtering. The anomaly metadata (model/phase/repository_id/cost_usd/
+ * mean/stddev/deviation_sigmas) is serialized into ``run_events.payload`` by the
+ * Python ingest path (``_maybe_emit_cost_anomaly``); it is read back here either
+ * from the payload's top level or a nested ``metadata`` object.
+ */
+export async function getCostAnomalies(
+  workspaceId: string,
+  opts: CostAnomaliesOptions = {}
+): Promise<CostAnomalyRow[]> {
+  const { timeFrom, timeTo } = opts;
+
+  const conditions: string[] = [
+    "workspace_id = {workspaceId: String}",
+    "event_type = 'cost_anomaly'",
+  ];
+  const queryParams: Record<string, unknown> = { workspaceId };
+
+  if (timeFrom) {
+    conditions.push("occurred_at >= {timeFrom: DateTime64(3)}");
+    queryParams.timeFrom = toClickHouseParam(timeFrom);
+  }
+  if (timeTo) {
+    conditions.push("occurred_at <= {timeTo: DateTime64(3)}");
+    queryParams.timeTo = toClickHouseParam(timeTo);
+  }
+
+  const result = await client.query({
+    query: `
+      SELECT run_id, phase, repository_id, occurred_at, payload
+      FROM run_events
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY occurred_at DESC
+    `,
+    query_params: queryParams,
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<{
+    run_id: string;
+    phase: string;
+    repository_id: string;
+    occurred_at: string;
+    payload: string;
+  }>();
+
+  return rows.map((r) => {
+    let meta: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(r.payload || "{}") as Record<string, unknown>;
+      const nested = parsed.metadata;
+      meta =
+        nested && typeof nested === "object"
+          ? (nested as Record<string, unknown>)
+          : parsed;
+    } catch {
+      meta = {};
+    }
+    return {
+      run_id: r.run_id,
+      model: String(meta.model ?? ""),
+      phase: String(meta.phase ?? r.phase ?? ""),
+      repository_id: String(meta.repository_id ?? r.repository_id ?? ""),
+      cost_usd: Number(meta.cost_usd ?? 0),
+      mean: Number(meta.mean ?? 0),
+      stddev: Number(meta.stddev ?? 0),
+      deviation_sigmas: Number(meta.deviation_sigmas ?? 0),
+      occurred_at: String(r.occurred_at ?? ""),
+    };
+  });
+}
+
 export interface WorkspaceTelemetryCounts {
   contextPacks: number;
   failures: number;

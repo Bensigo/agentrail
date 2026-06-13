@@ -49,6 +49,9 @@ export {
   getRunCosts,
   getAgentModelCosts,
   countDistinctSourceHashLists,
+  getRunTelemetryHealth,
+  getCostAnomalies,
+  TELEMETRY_SIGNALS,
 } from "./queries";
 export type {
   RunEventSummary,
@@ -66,6 +69,10 @@ export type {
   RunCostRow,
   AgentModelCostRow,
   HashChurnResult,
+  TelemetrySignal,
+  TelemetryHealthSignal,
+  CostAnomaliesOptions,
+  CostAnomalyRow,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems, getWorkspaceContextPacks, listWorkspaceContextPacks, getTokensSavedByRun } from "./context-queries";
 export { computeQualityMetrics, getQualityMetrics } from "./quality-metrics";

@@ -14,6 +14,7 @@ import {
   Brain,
   Key,
   Users,
+  Activity,
 } from "lucide-react";
 import { WorkspaceSwitcher } from "../(dashboard)/components/WorkspaceSwitcher";
 
@@ -32,6 +33,7 @@ const navItems = [
   { label: "Review Gates", href: "review-gates", icon: ShieldCheck },
   { label: "Costs", href: "costs", icon: DollarSign },
   { label: "Scorecard", href: "scorecard", icon: TrendingUp },
+  { label: "Context Quality", href: "context-quality", icon: Activity },
   { label: "Repos & Health", href: "repos", icon: Database },
   { label: "Memory", href: "memory", icon: Brain },
   { label: "API Keys", href: "api-keys", icon: Key },

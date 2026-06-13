@@ -104,9 +104,6 @@ export function TelemetryHealthSection({
 
   return (
     <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
-      <h3 className="mb-3 text-sm font-semibold text-[var(--gray-12)]">
-        Telemetry Health
-      </h3>
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-[var(--gray-05)]">

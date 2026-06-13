@@ -1,0 +1,90 @@
+{
+  "python": [
+    {
+      "id": "chunk:chunking_compat_sample.py#preamble",
+      "symbol": null,
+      "kind": null,
+      "startLine": 1,
+      "endLine": 6
+    },
+    {
+      "id": "chunk:chunking_compat_sample.py#symbol:parse_config:7",
+      "symbol": "parse_config",
+      "kind": "function",
+      "startLine": 7,
+      "endLine": 11
+    },
+    {
+      "id": "chunk:chunking_compat_sample.py#symbol:validate:12",
+      "symbol": "validate",
+      "kind": "function",
+      "startLine": 12,
+      "endLine": 17
+    },
+    {
+      "id": "chunk:chunking_compat_sample.py#symbol:ConfigLoader:18",
+      "symbol": "ConfigLoader",
+      "kind": "class",
+      "startLine": 18,
+      "endLine": 18
+    },
+    {
+      "id": "chunk:chunking_compat_sample.py#symbol:load:19",
+      "symbol": "load",
+      "kind": "method",
+      "startLine": 19,
+      "endLine": 21
+    },
+    {
+      "id": "chunk:chunking_compat_sample.py#symbol:validate:22",
+      "symbol": "validate",
+      "kind": "method",
+      "startLine": 22,
+      "endLine": 24
+    }
+  ],
+  "typescript": [
+    {
+      "id": "chunk:chunking_compat_sample.ts#preamble",
+      "symbol": null,
+      "kind": null,
+      "startLine": 1,
+      "endLine": 3
+    },
+    {
+      "id": "chunk:chunking_compat_sample.ts#symbol:parseConfig:4",
+      "symbol": "parseConfig",
+      "kind": "function",
+      "startLine": 4,
+      "endLine": 7
+    },
+    {
+      "id": "chunk:chunking_compat_sample.ts#symbol:validate:8",
+      "symbol": "validate",
+      "kind": "function",
+      "startLine": 8,
+      "endLine": 12
+    },
+    {
+      "id": "chunk:chunking_compat_sample.ts#symbol:Loader:13",
+      "symbol": "Loader",
+      "kind": "interface",
+      "startLine": 13,
+      "endLine": 16
+    },
+    {
+      "id": "chunk:chunking_compat_sample.ts#symbol:ConfigLoader:17",
+      "symbol": "ConfigLoader",
+      "kind": "class",
+      "startLine": 17,
+      "endLine": 17
+    },
+    {
+      "id": "chunk:chunking_compat_sample.ts#symbol:load:18",
+      "symbol": "load",
+      "kind": "method",
+      "startLine": 18,
+      "endLine": 22
+    }
+  ]
+}

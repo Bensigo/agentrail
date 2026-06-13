@@ -870,3 +870,87 @@ export async function getWorkspaceOverviewCounts(
     memoryItems: memoryCount,
   };
 }
+
+export interface RunnerRunStatsRow {
+  runner_name: string;
+  run_ids: string[];
+  total_count: number;
+  success_count: number;
+  human_review_count: number | null;
+  review_fix_count: number | null;
+}
+
+export interface GetRunnerRunStatsFilters {
+  repositoryId?: string;
+  from?: Date;
+  to?: Date;
+  taskType?: string;
+}
+
+/**
+ * Per-runner aggregate stats from runs and review_gates.
+ * Uses the existing runs.agent column as the current runner identity source.
+ * A future runner_name column can replace this once the migration is live.
+ * review_fix_count = runs that have at least one review gate with status='passed'.
+ */
+export async function getRunnerRunStats(
+  workspaceId: string,
+  filters?: GetRunnerRunStatsFilters
+): Promise<RunnerRunStatsRow[]> {
+  const conditions: SQL[] = [
+    sql`r.workspace_id = ${workspaceId}`,
+    sql`r.agent IS NOT NULL AND r.agent != ''`,
+  ];
+  if (filters?.repositoryId) {
+    conditions.push(sql`r.repository_id = ${filters.repositoryId}`);
+  }
+  if (filters?.from) {
+    conditions.push(sql`r.created_at >= ${filters.from}`);
+  }
+  if (filters?.to) {
+    conditions.push(sql`r.created_at <= ${filters.to}`);
+  }
+  if (filters?.taskType) {
+    // runs.task_type does not exist yet. Fail closed instead of returning
+    // misleading unfiltered scorecard rows for a requested task filter.
+    conditions.push(sql`FALSE`);
+  }
+
+  const whereClause = sql.join(conditions, sql` AND `);
+
+  const result = await db.execute(sql`
+    WITH review_fix_runs AS (
+      SELECT DISTINCT rg.run_id
+      FROM review_gates rg
+      WHERE rg.workspace_id = ${workspaceId}
+        AND rg.status = 'passed'
+    )
+    SELECT
+      LOWER(r.agent)                                                AS runner_name,
+      ARRAY_AGG(r.id)                                                AS run_ids,
+      COUNT(*)                                                       AS total_count,
+      COUNT(*) FILTER (WHERE r.status = 'success')                  AS success_count,
+      NULL::integer                                                  AS human_review_count,
+      COUNT(*) FILTER (WHERE rfr.run_id IS NOT NULL)                AS review_fix_count
+    FROM runs r
+    LEFT JOIN review_fix_runs rfr ON rfr.run_id = r.id
+    WHERE ${whereClause}
+    GROUP BY LOWER(r.agent)
+    ORDER BY total_count DESC
+  `);
+
+  return (Array.from(result) as Record<string, unknown>[]).map((r) => ({
+    runner_name: String(r.runner_name ?? ""),
+    run_ids: Array.isArray(r.run_ids) ? (r.run_ids as string[]) : [],
+    total_count: Number(r.total_count ?? 0),
+    success_count: Number(r.success_count ?? 0),
+    human_review_count:
+      r.human_review_count === null || r.human_review_count === undefined
+        ? null
+        : Number(r.human_review_count),
+    review_fix_count:
+      r.review_fix_count === null || r.review_fix_count === undefined
+        ? null
+        : Number(r.review_fix_count),
+  }));
+}

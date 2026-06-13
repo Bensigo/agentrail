@@ -55,6 +55,8 @@ export {
   getAgentModelCosts,
   countDistinctSourceHashLists,
   insertFlightRecorderEvents,
+  getRunnerCostStats,
+  getRunnerContextEfficiency,
 } from "./queries";
 export type {
   RunEventSummary,
@@ -78,6 +80,8 @@ export type {
   HashChurnResult,
   AfkFlightEventInput,
   InsertFlightRecorderResult,
+  RunnerCostStatsRow,
+  RunnerContextEfficiencyRow,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems, getWorkspaceContextPacks, listWorkspaceContextPacks, getTokensSavedByRun } from "./context-queries";
 export { computeQualityMetrics, getQualityMetrics } from "./quality-metrics";

@@ -13,6 +13,7 @@ import { WaterfallSection } from "./components/waterfall-section";
 import { ContextSection } from "./components/context-section";
 import { MemorySection } from "./components/memory-section";
 import { BehaviorLintSection } from "./components/behavior-lint-section";
+import { ReplaySection } from "./components/replay-section";
 import type { RunDetail } from "./components/run-detail-header";
 import type { TimelineEvent } from "./components/run-timeline";
 
@@ -199,6 +200,15 @@ export default function RunDetailPage() {
           loading={loadingEvents}
         />
       </div>
+
+      {run && (
+        <div className="mt-6">
+          <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+            Replay
+          </h2>
+          <ReplaySection workspaceId={workspaceId} runId={runId} />
+        </div>
+      )}
 
       {run && (
         <div className="mt-8">

@@ -483,6 +483,213 @@ def context_callees(root: Path, name: str) -> List[Dict[str, Any]]:
     return results
 
 
+def _bfs_transitive_callers(
+    graph: Dict[str, Any],
+    start_node_ids: Set[str],
+    max_depth: int,
+) -> Set[str]:
+    """BFS over inbound ``calls`` edges starting from ``start_node_ids``.
+
+    Builds a ``to → [from, ...]`` adjacency map from resolved ``calls`` edges,
+    then walks up to ``max_depth`` hops collecting all reached caller node IDs.
+    The seed nodes themselves are NOT included in the returned set.
+
+    Returns an empty set when there are no inbound calls edges or start_node_ids
+    is empty.
+    """
+    # Build to → [from] adjacency for resolved calls edges.
+    inbound: Dict[str, List[str]] = {}
+    for edge in graph.get("edges", []):
+        if not isinstance(edge, dict) or edge.get("kind") != "calls":
+            continue
+        if not edge.get("resolved"):
+            continue
+        to_id = edge.get("to")
+        from_id = edge.get("from")
+        if to_id is None or from_id is None:
+            continue
+        inbound.setdefault(str(to_id), []).append(str(from_id))
+
+    visited: Set[str] = set()
+    frontier: Set[str] = set(start_node_ids)
+    for _depth in range(max_depth):
+        next_frontier: Set[str] = set()
+        for node_id in frontier:
+            for caller_id in inbound.get(node_id, []):
+                if caller_id not in visited and caller_id not in start_node_ids:
+                    next_frontier.add(caller_id)
+        if not next_frontier:
+            break
+        visited.update(next_frontier)
+        frontier = next_frontier
+
+    return visited
+
+
+def context_impact(root: Path, name: str, depth: int = 3) -> List[Dict[str, Any]]:
+    """Return house-schema items for the blast radius of NAME.
+
+    Performs BFS over inbound ``calls`` edges from NAME's symbol node(s) up to
+    ``depth`` hops (default 3), then expands the affected file set by following
+    ``tests_source`` edges (test files linked to affected source files) and
+    ``imports_file`` edges (files that import affected paths).
+
+    Denied-authority sources are excluded.  Returns ``[]`` (not an error) when
+    NAME has no symbol nodes or no callers/tests/importers.
+    """
+    index = load_index(root)
+    graph = index.get("graph", {})
+
+    # Build denied-path set from symbolTable authority records.
+    denied_paths: Set[str] = set()
+    for sym_records in index.get("symbolTable", {}).values():
+        for rec in sym_records:
+            if rec.get("authority") == "denied":
+                denied_paths.add(str(rec.get("path", "")))
+
+    # Resolve NAME's symbol node IDs (O(1) via pre-built map).
+    symbol_node_map = _build_symbol_node_map(index)
+    seed_node_ids: Set[str] = {
+        str(entry["id"])
+        for entry in symbol_node_map.get(name, [])
+        if entry.get("id")
+    }
+    if not seed_node_ids:
+        return []
+
+    # Build node_id → node dict for all nodes.
+    node_map: Dict[str, Dict[str, Any]] = {}
+    for node in graph.get("nodes", []):
+        if isinstance(node, dict) and node.get("id"):
+            node_map[str(node["id"])] = node
+
+    # Collect seed def file paths (NAME's own definition files).
+    seed_paths: Set[str] = set()
+    for node_id in seed_node_ids:
+        node = node_map.get(node_id)
+        if node and node.get("path"):
+            seed_paths.add(str(node["path"]))
+
+    # BFS to collect transitive caller node IDs.
+    caller_node_ids = _bfs_transitive_callers(graph, seed_node_ids, max_depth=depth)
+
+    # Affected file paths = seed definition files + files containing caller nodes.
+    affected_paths: Set[str] = set(seed_paths)
+    for caller_id in caller_node_ids:
+        caller_node = node_map.get(caller_id)
+        if caller_node and caller_node.get("path"):
+            affected_paths.add(str(caller_node["path"]))
+
+    results: List[Dict[str, Any]] = []
+    seen: Set[Tuple[str, int, str]] = set()  # (path, line, category)
+
+    def _add_item(path: str, line_start: int, line_end: int, reason: str, category: str, extra: Dict[str, Any] | None = None) -> None:
+        if path in denied_paths:
+            return
+        key: Tuple[str, int, str] = (path, line_start, category)
+        if key in seen:
+            return
+        seen.add(key)
+        citation = f"{path}:{line_start}" if line_start else path
+        try:
+            file_info = get_file_lines(root, path, line_start or 1, line_end or 1)
+            content = file_info["content"]
+            token_estimate = file_info["tokenEstimate"]
+        except SystemExit:
+            content = ""
+            token_estimate = estimate_tokens(content)
+        item: Dict[str, Any] = {
+            "path": path,
+            "lineStart": line_start,
+            "lineEnd": line_end,
+            "content": content,
+            "citation": citation,
+            "reason": reason,
+            "score": 1.0,
+            "tokenEstimate": token_estimate,
+            "deterministic": True,
+        }
+        if extra:
+            item.update(extra)
+        results.append(item)
+
+    # 1. Transitive caller nodes — one item per caller call site.
+    #    Mirror context_callers: emit (callerPath, callerLine) for each resolved edge
+    #    whose `from` is in caller_node_ids.
+    caller_seen: Set[Tuple[str, int]] = set()
+    for edge in graph.get("edges", []):
+        if not isinstance(edge, dict) or edge.get("kind") != "calls":
+            continue
+        if not edge.get("resolved"):
+            continue
+        from_id = edge.get("from")
+        if from_id is None or str(from_id) not in caller_node_ids:
+            continue
+        # Also include edges where `from` is a seed node calling something else
+        # (seed's own call sites are not the blast radius — skip seed-from edges).
+        caller_path = str(edge.get("callerPath", ""))
+        caller_line = int(edge.get("callerLine", 0))
+        if not caller_path or not caller_line:
+            continue
+        site_key = (caller_path, caller_line)
+        if site_key in caller_seen:
+            continue
+        caller_seen.add(site_key)
+        if caller_path in denied_paths:
+            continue
+        key3: Tuple[str, int, str] = (caller_path, caller_line, "caller")
+        if key3 in seen:
+            continue
+        seen.add(key3)
+        citation = f"{caller_path}:{caller_line}"
+        try:
+            file_info = get_file_lines(root, caller_path, caller_line, caller_line)
+            content = file_info["content"]
+            token_estimate = file_info["tokenEstimate"]
+        except SystemExit:
+            content = ""
+            token_estimate = estimate_tokens(content)
+        results.append({
+            "path": caller_path,
+            "lineStart": caller_line,
+            "lineEnd": caller_line,
+            "content": content,
+            "citation": citation,
+            "reason": f"transitive caller of {name}",
+            "score": 1.0,
+            "tokenEstimate": token_estimate,
+            "deterministic": True,
+            "callerPath": caller_path,
+            "callerLine": caller_line,
+        })
+
+    # 2. Test files reachable via tests_source edges from affected paths.
+    for edge in graph.get("edges", []):
+        if not isinstance(edge, dict) or edge.get("kind") != "tests_source":
+            continue
+        target_path = str(edge.get("targetPath", ""))
+        if target_path not in affected_paths:
+            continue
+        test_path = str(edge.get("path", ""))
+        if not test_path:
+            continue
+        _add_item(test_path, 1, 1, f"tests source affected by {name}", "test")
+
+    # 3. Files reachable via imports_file edges from affected paths.
+    for edge in graph.get("edges", []):
+        if not isinstance(edge, dict) or edge.get("kind") != "imports_file":
+            continue
+        target_path = str(edge.get("targetPath", ""))
+        if target_path not in affected_paths:
+            continue
+        importer_path = str(edge.get("path", ""))
+        if not importer_path:
+            continue
+        _add_item(importer_path, 1, 1, f"imports path affected by {name}", "import")
+
+    return results
+
+
 def get_file_symbol(target_dir: Path, path: str, symbol: str) -> Dict[str, Any]:
     """Return only the line range of a named symbol in a file, never the whole file."""
     from agentrail.context.index import extracted_symbols

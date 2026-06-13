@@ -13,7 +13,7 @@ from agentrail.context.evaluation import evaluate_retrieval, format_evaluation_r
 from agentrail.context.git_commands import git_blame, git_changed, git_history
 from agentrail.context.index import build_index
 from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
-from agentrail.context.retrieval import compute_tokens_saved, context_callers, context_callees, context_def, get_file_lines, get_file_symbol, query_context, search_context
+from agentrail.context.retrieval import compute_tokens_saved, context_callers, context_callees, context_def, context_impact, get_file_lines, get_file_symbol, query_context, search_context
 from agentrail.context.sources import inventory_sources
 
 
@@ -71,6 +71,7 @@ def _usage() -> str:
   agentrail context def NAME [--target DIR] [--json]
   agentrail context callers NAME [--target DIR] [--json]
   agentrail context callees NAME [--target DIR] [--json]
+  agentrail context impact NAME [--depth N] [--target DIR] [--json]
   agentrail context query "<task>" [--target DIR] [--json] [--limit N]
   agentrail context search "<query>" [--target DIR] [--json] [--limit N]
   agentrail context get PATH (--lines A-B | --symbol NAME) [--target DIR] [--json]
@@ -285,6 +286,39 @@ def run_context(args: List[str]) -> int:
                             print(f"unresolved:{item.get('unresolvedReason', '')} {item['citation']}")
                         else:
                             print(f"{item['path']}:{item['lineStart']} callee of {name}")
+            return 0
+        if kind == "impact":
+            if not rest or rest[0].startswith("--"):
+                raise SystemExit("context impact requires a symbol name")
+            name = rest[0]
+            target: str | None = None
+            json_output = False
+            impact_depth = 3
+            index = 1
+            while index < len(rest):
+                arg = rest[index]
+                if arg == "--target":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--target requires a directory")
+                    target = rest[index + 1]
+                    index += 2
+                elif arg == "--json":
+                    json_output = True
+                    index += 1
+                elif arg == "--depth":
+                    if index + 1 >= len(rest) or not rest[index + 1].isdigit():
+                        raise SystemExit("--depth requires a numeric value")
+                    impact_depth = int(rest[index + 1])
+                    index += 2
+                else:
+                    raise SystemExit(f"Unknown context impact option: {arg}")
+            resolved_target = _resolve_target(target)
+            results = context_impact(resolved_target, name, depth=impact_depth)
+            if json_output:
+                _print_json(results)
+            else:
+                for item in results:
+                    print(f"{item['path']}:{item['lineStart']} — {item['reason']}")
             return 0
         if kind == "query":
             if not rest or rest[0].startswith("--"):

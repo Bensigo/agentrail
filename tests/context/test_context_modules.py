@@ -440,10 +440,12 @@ class ContextModuleTests(unittest.TestCase):
 
     def test_parser_failure_falls_back_to_line_window_chunks(self) -> None:
         root = Path(tempfile.mkdtemp())
-        # Ruby is not in the supported language list — extracted_symbols returns []
-        rb_text = "def unsupported_language\n  puts 'hi'\nend\n"
-        source = self._make_source_for_text(root, "src/app.rb", rb_text)
-        chunks = symbol_aware_code_chunks(source, rb_text, "src/app.rb")
+        # .xyz is not in the supported language list — extracted_symbols returns regex fallback
+        # which finds no symbols in this text, so symbol_aware_code_chunks falls back to
+        # line-window chunks.
+        xyz_text = "this is plain text with no symbols\nline two\nline three\n"
+        source = self._make_source_for_text(root, "src/app.xyz", xyz_text)
+        chunks = symbol_aware_code_chunks(source, xyz_text, "src/app.xyz")
         # Should fall back to line-window chunks (L1-L...)
         self.assertTrue(chunks, "fallback produced no chunks")
         for chunk in chunks:

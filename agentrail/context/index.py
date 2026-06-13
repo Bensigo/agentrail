@@ -559,7 +559,9 @@ def detect_codebase_units(root: Path, cfg: ContextConfig, records: List[SourceRe
     return [codebase_unit("root", root.name, ".", "fallback")]
 
 
-def extracted_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
+def _regex_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
+    """Regex-based symbol extraction. Used as fallback when tree-sitter is unavailable
+    or the language is not supported. Each returned dict includes ``parsedBy: "regex_fallback"``."""
     language = language_for(relative_path)
     patterns: List[Tuple[str, re.Pattern[str]]] = []
     if language in {"javascript", "typescript"}:
@@ -595,9 +597,298 @@ def extracted_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
                     "line": line_number,
                     "citation": f"{relative_path}#L{line_number}",
                     "deterministic": True,
+                    "parsedBy": "regex_fallback",
                 }
             )
     return symbols
+
+
+# Node-type spec table for tree-sitter AST walking.
+# Each entry maps node_type -> (kind, name_strategy, children_container)
+# name_strategy: "name" = field "name"; "declarator" = descend declarator for identifier;
+#   "first_named" = first named child; "constant" = first child of type "constant";
+#   "simple_identifier" = child of type "simple_identifier"; "word" = child of type "word"
+# children_container: None = top-level only; str = field name of child block to recurse into
+#   for nested method extraction; list = list of child node types whose block children to recurse
+_TS_SPEC: Dict[str, List[Tuple[str, str, str, Optional[str]]]] = {
+    # (node_type, kind, name_strategy, recurse_into_field_or_None)
+    "python": [
+        ("function_definition", "function", "name", None),
+        ("class_definition",    "class",    "name", "block"),
+    ],
+    "javascript": [
+        ("function_declaration",   "function", "name",       None),
+        ("class_declaration",      "class",    "name",       "class_body"),
+        ("method_definition",      "method",   "property_identifier", None),
+    ],
+    "typescript": [
+        ("function_declaration",    "function",  "name",       None),
+        ("class_declaration",       "class",     "type_identifier", None),
+        ("interface_declaration",   "interface", "type_identifier", None),
+        ("type_alias_declaration",  "type",      "type_identifier", None),
+        ("enum_declaration",        "enum",      "name",       None),
+        ("method_definition",       "method",    "property_identifier", None),
+    ],
+    "tsx": [
+        ("function_declaration",    "function",  "name",       None),
+        ("class_declaration",       "class",     "type_identifier", None),
+        ("interface_declaration",   "interface", "type_identifier", None),
+        ("type_alias_declaration",  "type",      "type_identifier", None),
+        ("enum_declaration",        "enum",      "name",       None),
+        ("method_definition",       "method",    "property_identifier", None),
+    ],
+    "go": [
+        ("function_declaration",  "function", "name",           None),
+        ("method_declaration",    "function", "name",           None),
+        ("type_spec",             "struct",   "type_identifier", None),
+        ("const_spec",            "const",    "name",           None),
+    ],
+    "rust": [
+        ("function_item",   "function",  "name",           None),
+        ("struct_item",     "struct",    "type_identifier", None),
+        ("enum_item",       "enum",      "type_identifier", None),
+        ("trait_item",      "interface", "type_identifier", None),
+        ("const_item",      "const",     "name",           None),
+        ("static_item",     "const",     "name",           None),
+        ("impl_item",       "_impl",     "type_identifier", "declaration_list"),
+    ],
+    "java": [
+        ("class_declaration",     "class",     "name",           "class_body"),
+        ("interface_declaration", "interface", "name",           "class_body"),
+        ("enum_declaration",      "enum",      "name",           "class_body"),
+        ("method_declaration",    "method",    "name",           None),
+    ],
+    "kotlin": [
+        ("function_declaration", "function",  "simple_identifier", None),
+        ("class_declaration",    "class",     "type_identifier",   "class_body"),
+    ],
+    "ruby": [
+        ("method",  "function", "identifier",  None),
+        ("class",   "class",    "constant",     "body_statement"),
+        ("module",  "class",    "constant",     "body_statement"),
+    ],
+    "php": [
+        ("function_definition", "function",  "name",           None),
+        ("class_declaration",   "class",     "name",           "declaration_list"),
+        ("interface_declaration", "interface", "name",         "declaration_list"),
+        ("method_declaration",  "method",    "name",           None),
+    ],
+    "c": [
+        ("function_definition", "function", "declarator",     None),
+        ("struct_specifier",    "struct",   "type_identifier", None),
+        ("enum_specifier",      "enum",     "type_identifier", None),
+    ],
+    "cpp": [
+        ("function_definition", "function", "declarator",     None),
+        ("class_specifier",     "class",    "type_identifier", None),
+        ("struct_specifier",    "struct",   "type_identifier", None),
+        ("enum_specifier",      "enum",     "type_identifier", None),
+    ],
+    "bash": [
+        ("function_definition", "function", "word", None),
+    ],
+}
+
+
+def _resolve_name(node: Any, strategy: str) -> Optional[str]:
+    """Extract a symbol name from an AST node using the given strategy."""
+    # Direct named-field strategies
+    if strategy in {"name", "type_identifier", "simple_identifier",
+                    "property_identifier", "identifier", "word", "constant"}:
+        child = node.child_by_field_name("name")
+        if child and child.type in {strategy, "identifier", "type_identifier",
+                                     "simple_identifier", "property_identifier", "word", "constant"}:
+            return child.text.decode("utf-8") if child.text else None
+        # Fallback: find first named child whose type matches strategy
+        for child in node.children:
+            if child.is_named and child.type == strategy:
+                return child.text.decode("utf-8") if child.text else None
+        # Broader fallback: any named identifier-like child
+        for child in node.children:
+            if child.is_named and child.type in {
+                "identifier", "type_identifier", "simple_identifier",
+                "property_identifier", "word", "constant",
+            }:
+                return child.text.decode("utf-8") if child.text else None
+        return None
+    if strategy == "declarator":
+        # C/C++ function: descend into function_declarator → identifier
+        decl = node.child_by_field_name("declarator")
+        if decl is None:
+            return None
+        # May be nested: pointer_declarator → function_declarator
+        while decl is not None and decl.type not in {"function_declarator", "identifier"}:
+            decl = decl.child_by_field_name("declarator") or next(
+                (c for c in decl.children if c.is_named), None
+            )
+        if decl is None:
+            return None
+        if decl.type == "identifier":
+            return decl.text.decode("utf-8") if decl.text else None
+        # function_declarator: first child should be identifier
+        for child in decl.children:
+            if child.type == "identifier":
+                return child.text.decode("utf-8") if child.text else None
+        return None
+    return None
+
+
+def _walk_ts_nodes(
+    nodes: Any,
+    specs: List[Tuple[str, str, str, Optional[str]]],
+    relative_path: str,
+    symbols: List[Dict[str, Any]],
+    seen: set,
+    nested: bool = False,
+) -> None:
+    """Recursively walk AST nodes and collect symbols matching the spec."""
+    for node in nodes:
+        for (node_type, kind, name_strat, recurse_field) in specs:
+            if node.type != node_type:
+                continue
+            # For Go type_declaration, descend to type_spec children
+            if node_type == "type_declaration":
+                for child in node.children:
+                    if child.type == "type_spec":
+                        _walk_ts_nodes([child], specs, relative_path, symbols, seen, nested)
+                break
+            name = _resolve_name(node, name_strat)
+            if not name:
+                break
+            line = node.start_point[0] + 1
+            emit_kind = kind if kind != "_impl" else "class"
+            if kind != "_impl":
+                key = (name, line)
+                if key not in seen:
+                    seen.add(key)
+                    symbols.append({
+                        "name": name,
+                        "kind": emit_kind,
+                        "line": line,
+                        "citation": f"{relative_path}#L{line}",
+                        "deterministic": True,
+                    })
+            # Recurse into a child block for nested method extraction
+            if recurse_field:
+                container = node.child_by_field_name(recurse_field)
+                if container is None:
+                    # Try by node type name
+                    for child in node.children:
+                        if child.type == recurse_field:
+                            container = child
+                            break
+                if container is not None:
+                    # For Rust impl blocks, collect function_item as methods
+                    if kind == "_impl":
+                        rust_method_specs = [("function_item", "method", "name", None)]
+                        _walk_ts_nodes(
+                            container.children, rust_method_specs,
+                            relative_path, symbols, seen, nested=True
+                        )
+                    else:
+                        # Build nested method specs: same node types but force kind=method,
+                        # no further recursion (nested=None).
+                        nested_method_specs = [
+                            (s[0], "method", s[2], None)
+                            for s in specs
+                            if s[1] in {"method", "function"}
+                        ]
+                        _walk_ts_nodes(
+                            container.children, nested_method_specs,
+                            relative_path, symbols, seen, nested=True
+                        )
+            break
+
+
+def _treesitter_symbols(
+    text: str, relative_path: str, grammar: str
+) -> Optional[List[Dict[str, Any]]]:
+    """Parse ``text`` with tree-sitter and return symbol dicts, or None on parse error.
+
+    Returns:
+        List of symbol dicts (may be empty for a valid file with no top-level defs).
+        None when the parse tree has errors — caller should fall back to regex.
+    """
+    from tree_sitter_language_pack import get_parser  # imported lazily to keep startup fast
+
+    parser = get_parser(grammar)
+    tree = parser.parse(text.encode("utf-8"))
+    root = tree.root_node
+
+    if root.has_error:
+        return None  # signal caller to use regex fallback
+
+    if grammar not in _TS_SPEC:
+        return None
+
+    specs = _TS_SPEC[grammar]
+    symbols: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    # Special case: Go wraps type_spec inside type_declaration
+    top_level: List[Any] = list(root.children)
+    if grammar == "go":
+        expanded: List[Any] = []
+        for node in top_level:
+            if node.type == "type_declaration":
+                for child in node.children:
+                    if child.type == "type_spec":
+                        expanded.append(child)
+            else:
+                expanded.append(node)
+        top_level = expanded
+
+    # Special case: C/C++ typedef wraps struct/enum in type_definition
+    if grammar in {"c", "cpp"}:
+        expanded_c: List[Any] = []
+        for node in top_level:
+            if node.type == "type_definition":
+                for child in node.children:
+                    if child.type in {"struct_specifier", "enum_specifier", "class_specifier"}:
+                        expanded_c.append(child)
+            else:
+                expanded_c.append(node)
+        top_level = expanded_c
+
+    _walk_ts_nodes(top_level, specs, relative_path, symbols, seen)
+
+    # JS/TS/TSX: extract arrow-function consts from lexical/variable declarations
+    if grammar in {"javascript", "typescript", "tsx"}:
+        for node in root.children:
+            if node.type in {"lexical_declaration", "variable_declaration"}:
+                for child in node.children:
+                    if child.type == "variable_declarator":
+                        has_arrow = any(c.type == "arrow_function" for c in child.children)
+                        if has_arrow:
+                            name_node = child.child_by_field_name("name")
+                            if name_node and name_node.text:
+                                name = name_node.text.decode("utf-8")
+                                line = child.start_point[0] + 1
+                                key = (name, line)
+                                if key not in seen:
+                                    seen.add(key)
+                                    symbols.append({
+                                        "name": name,
+                                        "kind": "function",
+                                        "line": line,
+                                        "citation": f"{relative_path}#L{line}",
+                                        "deterministic": True,
+                                    })
+
+    symbols.sort(key=lambda s: s["line"])
+    return symbols
+
+
+def extracted_symbols(text: str, relative_path: str) -> List[Dict[str, Any]]:
+    grammar = grammar_for(relative_path)
+    if grammar is not None:
+        try:
+            result = _treesitter_symbols(text, relative_path, grammar)
+            if result is not None:
+                return result
+        except Exception:
+            pass
+    return _regex_symbols(text, relative_path)
 
 
 def extracted_imports(text: str, relative_path: str) -> List[Dict[str, Any]]:

@@ -1182,12 +1182,86 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
     graph_paths = set(graph_expansion.get("paths") or [])
     graph_chunk_ids = set(graph_expansion.get("chunkIds") or [])
 
+    # Read embedding config once, before the scoring loop, so we can use it both
+    # for candidate filtering and for the semantic scoring section below.
+    embedding_cfg = read_context_config(root).embedding
+    embedding_mode = embedding_cfg.mode
+    if embedding_mode not in {"disabled", "custom-command", "openai-compatible"}:
+        raise RuntimeError(f"context embedding mode '{embedding_mode}' is not supported by this AgentRail version; config is reserved for future provider extension")
+
+    # Candidate-filter: when postings.json is loaded and embeddings are inactive,
+    # build a candidate_ids set so we only score chunks that have query-term overlap
+    # or are anchored by metadata/graph signals.  Non-candidates score exactly 0 and
+    # are skipped, eliminating the ~O(corpus) definition-pattern regex calls.
+    # Falls back to full-corpus scan when postings are absent/stale (AC4).
+    embeddings_inactive = (
+        embedding_mode == "disabled"
+        or not (root / ".agentrail/context/index/embeddings.json").exists()
+    )
+    candidate_ids: Optional[Set[str]] = None
+    if precomputed_postings is not None and embeddings_inactive:
+        term_lookup = set(query_tokens) | {str(n) for n in effective_issue_refs} | {str(n) for n in query_pr_refs}
+        candidate_ids = set()
+        for _term in term_lookup:
+            for _entry in precomputed_postings.get(_term, []):
+                candidate_ids.add(str(_entry["id"]))
+        # Metadata pass: graph anchors, linked issues/PRs, deterministic sources —
+        # none of these are derivable from postings tokens alone.
+        for _doc in corpus:
+            _src = _doc["source"]
+            _chk = _doc["chunk"]
+            _iid = str((_chk or {}).get("id") or _src.get("id"))
+            _sid = str(_src.get("id") or "")
+            _spa = str(_src.get("path") or "")
+            _cid = str((_chk or {}).get("id") or "")
+            if _sid in graph_source_ids or _spa in graph_paths or _cid in graph_chunk_ids:
+                candidate_ids.add(_iid)
+                continue
+            if any(_n in _src.get("linkedIssues", []) for _n in effective_issue_refs):
+                candidate_ids.add(_iid)
+                continue
+            if any(_n in _src.get("linkedPullRequests", []) for _n in query_pr_refs):
+                candidate_ids.add(_iid)
+                continue
+            if _spa == ".agentrail/state.json" and active_issue and active_issue in effective_issue_refs:
+                candidate_ids.add(_iid)
+                continue
+            if _src.get("sourceType") == "run_artifact" and any(
+                f"issue-{_n}" in _doc["textLower"] or f'"issue": {_n}' in _doc["textLower"] or f'targetissue": {_n}' in _doc["textLower"]
+                for _n in effective_issue_refs
+            ):
+                candidate_ids.add(_iid)
+                continue
+            if _src.get("sourceType") in {"context_doc", "taste_doc"} and re.search(r"context|taste|required", query_lower):
+                candidate_ids.add(_iid)
+                continue
+            # Symbol hints (cheap metadata check, no regex)
+            if definition_use_hint and query_symbols and any(str(_h).lower() in query_symbols for _h in ((_chk or {}).get("symbolHints") or [])):
+                candidate_ids.add(_iid)
+                continue
+            # Substring issue/PR ref checks (#{n}, /issues/{n}, /pull/{n})
+            for _n in effective_issue_refs:
+                if f"#{_n}" in _doc["textLower"] or f"/issues/{_n}" in _doc["textLower"]:
+                    candidate_ids.add(_iid)
+                    break
+            else:
+                for _n in query_pr_refs:
+                    if f"/pull/{_n}" in _doc["textLower"] or f"pr #{_n}" in _doc["textLower"]:
+                        candidate_ids.add(_iid)
+                        break
+
     scored: List[Dict[str, Any]] = []
     lexical_raw: Dict[str, float] = {}
     phrases = re.findall(r"[a-z0-9_-]+(?:\s+[a-z0-9_-]+){1,4}", query_lower)
     for doc in corpus:
         source = doc["source"]
         chunk = doc["chunk"]
+        # Skip non-candidates early when candidate filtering is active (AC1/AC3).
+        # All non-candidates score exactly 0 so skipping them is safe.
+        if candidate_ids is not None:
+            _doc_id = str((chunk or {}).get("id") or source.get("id"))
+            if _doc_id not in candidate_ids:
+                continue
         reasons: Set[str] = set()
         deterministic = keyword = bm25 = 0.0
         linked_issue = any(number in source.get("linkedIssues", []) for number in effective_issue_refs)
@@ -1269,10 +1343,6 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
 
     lexical_rank = {str((entry["chunk"] or {}).get("id") or entry["source"].get("id")): idx + 1 for idx, entry in enumerate(sorted([entry for entry in scored if lexical_raw[str((entry["chunk"] or {}).get("id") or entry["source"].get("id"))] > 0], key=lambda entry: lexical_raw[str((entry["chunk"] or {}).get("id") or entry["source"].get("id"))], reverse=True))}
     provider: Dict[str, Any] = {"mode": "disabled", "provider": None, "model": None}
-    embedding_cfg = read_context_config(root).embedding
-    embedding_mode = embedding_cfg.mode
-    if embedding_mode not in {"disabled", "custom-command", "openai-compatible"}:
-        raise RuntimeError(f"context embedding mode '{embedding_mode}' is not supported by this AgentRail version; config is reserved for future provider extension")
     query_vector: Optional[List[float]] = None
     embedding_records: List[Dict[str, Any]] = []
     if embedding_mode != "disabled" and (root / ".agentrail/context/index/embeddings.json").exists():

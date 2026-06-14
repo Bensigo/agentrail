@@ -319,6 +319,7 @@ def run_context(args: List[str]) -> int:
                 else:
                     raise SystemExit(f"Unknown context ast option: {arg}")
             resolved_target = _resolve_target(target)
+            _touch_context_marker(resolved_target)
             output = ast_query(resolved_target, s_expr, limit=max(1, min(100, limit)))
             if json_output:
                 _print_json(output)

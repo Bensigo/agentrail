@@ -167,3 +167,12 @@ def _wait_for_socket_gone(socket_path: Path, timeout: float = 5.0, interval: flo
             return True
         time.sleep(interval)
     return False
+
+
+# ---------------------------------------------------------------------------
+# __main__ shim — allows: python -m agentrail.context.daemon --target DIR
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    from agentrail.context.daemon_server import main as _server_main
+    _server_main()

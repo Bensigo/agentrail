@@ -43,8 +43,17 @@ SOCKET_PATH_FORMULA = "~/.agentrail/daemon-<sha256(str(realpath(target)))[:8]>.s
 
 
 def _target_hash(target: Path) -> str:
-    """Return an 8-char hex digest keyed on the resolved absolute target path."""
-    return hashlib.sha256(str(target).encode()).hexdigest()[:8]
+    """Return an 8-char hex digest keyed on the resolved absolute target path.
+
+    The target is resolved here so the socket path is identical whether the
+    caller passes a raw or already-resolved path. This MUST match the server,
+    which resolves its target before binding (daemon_server.py: ``target.resolve()``);
+    without resolving here, a caller passing ``/var/...`` would look at a
+    different socket than the server bound at ``/private/var/...`` (macOS
+    symlink), so the daemon would appear absent and every query fell back to
+    the cold path.
+    """
+    return hashlib.sha256(str(Path(target).resolve()).encode()).hexdigest()[:8]
 
 
 def socket_path_for(target: Path) -> Path:

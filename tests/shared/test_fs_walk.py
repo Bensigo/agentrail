@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agentrail.shared.fs import matches_glob, walk_files
+from agentrail.shared.fs import _doublestar_regex, glob_to_regex, matches_any, matches_glob, walk_files
 
 
 class MatchesGlobNestedTest(unittest.TestCase):
@@ -53,6 +53,60 @@ class WalkFilesSymlinkTest(unittest.TestCase):
 
             self.assertIn("src/app.py", rels)
             self.assertNotIn("src/node_modules/big.js", rels)
+
+
+class GlobCacheMemoizationTest(unittest.TestCase):
+    """AC1 (#686): glob_to_regex and _doublestar_regex are compiled once per distinct glob."""
+
+    def setUp(self) -> None:
+        glob_to_regex.cache_clear()
+        _doublestar_regex.cache_clear()
+
+    def tearDown(self) -> None:
+        glob_to_regex.cache_clear()
+        _doublestar_regex.cache_clear()
+
+    def test_glob_to_regex_compiles_once_per_distinct_glob(self) -> None:
+        """Calling glob_to_regex N times with the same glob string hits the cache N-1 times."""
+        globs = ["**/*.py", "node_modules/**", "*.json"]
+        paths = [f"src/module_{i}.py" for i in range(1000)]
+
+        # Simulate walking 1000 paths against a few globs (the hot path in matches_any).
+        for path in paths:
+            matches_any(globs, path)
+
+        info = glob_to_regex.cache_info()
+        # There are 3 distinct globs; one of them ("**/*.py") goes through _doublestar_regex
+        # rather than glob_to_regex directly, but the suffix is compiled via glob_to_regex.
+        # The important invariant: misses ≤ distinct glob strings, not O(paths).
+        distinct_globs = len(set(globs)) + 1  # +1 for the "*.py" suffix of "**/*.py"
+        self.assertLessEqual(
+            info.misses,
+            distinct_globs,
+            f"glob_to_regex compiled {info.misses} times; expected ≤ {distinct_globs} "
+            f"(distinct globs), not O(paths={len(paths)})",
+        )
+
+    def test_doublestar_regex_compiles_once_per_distinct_glob(self) -> None:
+        """_doublestar_regex is compiled once per distinct **/-prefixed glob."""
+        globs = ["**/*.py", "**/*.ts", "**/*.json"]
+        paths = [f"src/deep/module_{i}.py" for i in range(500)]
+
+        for path in paths:
+            matches_any(globs, path)
+
+        ds_info = _doublestar_regex.cache_info()
+        self.assertLessEqual(
+            ds_info.misses,
+            len(globs),
+            f"_doublestar_regex compiled {ds_info.misses} times; expected ≤ {len(globs)}",
+        )
+        # Verify hits >> misses: the cache is actually being used across paths.
+        self.assertGreater(
+            ds_info.hits,
+            ds_info.misses * 10,
+            f"Cache hit rate too low: hits={ds_info.hits}, misses={ds_info.misses}",
+        )
 
 
 if __name__ == "__main__":

@@ -284,6 +284,46 @@ def _make_cold_query_repo() -> Path:
     return root
 
 
+def _make_large_query_repo(num_files: int = 320) -> Path:
+    """Fixture repo with ≥300 files to exercise realistic cold/warm query latency (AC3 #686)."""
+    root = Path(tempfile.mkdtemp())
+    subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+    (root / ".agentrail").mkdir()
+    (root / ".agentrail" / "config.json").write_text(json.dumps({
+        "schemaVersion": 1,
+        "context": {
+            "includeGlobs": ["**/*"],
+            "excludeGlobs": [".git/**", ".agentrail/context/**"],
+            "maxFileSizeBytes": 262144,
+            "skipBinary": True,
+            "respectGitIgnore": True,
+            "secretRedaction": {"enabled": False, "action": "exclude", "denyGlobs": []},
+            "embedding": {"mode": "disabled", "provider": None, "model": None},
+            "summary": {"mode": "disabled", "provider": None, "model": None},
+        },
+    }, indent=2), encoding="utf-8")
+    # Spread files across several subdirectories to exercise glob matching at depth
+    subdirs = ["src/core", "src/utils", "src/api", "src/models", "src/handlers",
+               "lib/helpers", "lib/transforms", "tests/unit", "tests/integration", "docs"]
+    for d in subdirs:
+        (root / d).mkdir(parents=True, exist_ok=True)
+    body = "\n".join(f"    detail_{n} = compute_{n}()" for n in range(20))
+    # Primary searchable file
+    (root / "src" / "core" / "widget.py").write_text(
+        f"def alpha_token_handler():\n{body}\n    return alpha_token_handler\n", encoding="utf-8")
+    # Fill remaining files across subdirs with generic content
+    files_written = 1
+    for i in range(num_files - 1):
+        subdir = subdirs[i % len(subdirs)]
+        ext = ".py" if i % 3 != 0 else (".ts" if i % 3 == 1 else ".md")
+        ext = [".py", ".ts", ".md"][i % 3]
+        fname = f"module_{i:04d}{ext}"
+        content = f"# module {i}\ndef func_{i}():\n    return {i}\n"
+        (root / subdir / fname).write_text(content, encoding="utf-8")
+        files_written += 1
+    return root
+
+
 class ColdLatencyBenchmarkTests(unittest.TestCase):
     """AC4 (M020): cold query latency with postings.json < 1.5 s."""
 
@@ -437,6 +477,92 @@ def test_warm_query_latency() -> None:
         )
         assert p95_ms < p95_threshold_ms, (
             f"Warm query p95 {p95_ms:.1f} ms >= {p95_threshold_ms:.1f} ms threshold"
+        )
+
+    finally:
+        try:
+            _daemon_helpers.rpc(socket_path, "shutdown", timeout=3.0)
+        except Exception:
+            pass
+        _daemon_helpers._wait_for_socket_gone(socket_path, timeout=3.0)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+        socket_path.unlink(missing_ok=True)
+
+
+def test_cold_query_latency_large_repo() -> None:
+    """AC3 (#686): cold query median < 1.5 s on a ≥300-file realistic fixture."""
+    root = _make_large_query_repo(num_files=320)
+    build_index(root)
+
+    threshold_ms = 1500.0
+    latencies_ms: list[float] = []
+    rows: list[tuple[str, str, float, float, bool]] = []
+
+    for i in range(5):
+        t0 = time.perf_counter()
+        query_context(root, "alpha_token_handler")
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        latencies_ms.append(elapsed_ms)
+        rows.append((str(i + 1), "cold-large", elapsed_ms, threshold_ms, elapsed_ms < threshold_ms))
+
+    median_ms = statistics.median(latencies_ms)
+    rows.append(("median", "cold-large", median_ms, threshold_ms, median_ms < threshold_ms))
+
+    _print_latency_table(rows, title="Cold query latency benchmark — 320-file repo (issue #686 AC3)")
+
+    assert median_ms < threshold_ms, (
+        f"Cold query (320-file repo) median {median_ms:.1f} ms >= {threshold_ms:.1f} ms threshold"
+    )
+
+
+def test_warm_query_latency_large_repo() -> None:
+    """AC3 (#686): warm daemon query median < 150 ms on a ≥300-file realistic fixture."""
+    root = _make_large_query_repo(num_files=320)
+    build_index(root)
+
+    socket_path = _daemon_helpers.socket_path_for(root)
+    pid = _daemon_helpers.start_detached(root)
+
+    try:
+        ready = _daemon_helpers._wait_for_socket(socket_path, timeout=10.0)
+        assert ready, "Daemon socket did not become ready within 10 s"
+
+        client = _resolve_context_client(root)
+        assert client.mode == "warm", f"Expected warm client, got mode={client.mode!r}"
+
+        # Discard one priming query so startup I/O doesn't skew timings
+        client.query("alpha_token_handler")
+
+        median_threshold_ms = 150.0
+        p95_threshold_ms = 200.0
+        latencies_ms: list[float] = []
+        rows: list[tuple[str, str, float, float, bool]] = []
+
+        for i in range(10):
+            t0 = time.perf_counter()
+            client.query("alpha_token_handler")
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            latencies_ms.append(elapsed_ms)
+            rows.append((str(i + 1), "warm-large", elapsed_ms, p95_threshold_ms, elapsed_ms < p95_threshold_ms))
+
+        median_ms = statistics.median(latencies_ms)
+        sorted_ms = sorted(latencies_ms)
+        p95_idx = min(len(sorted_ms) - 1, int(len(sorted_ms) * 0.95))
+        p95_ms = sorted_ms[p95_idx]
+
+        rows.append(("median", "warm-large", median_ms, median_threshold_ms, median_ms < median_threshold_ms))
+        rows.append(("p95", "warm-large", p95_ms, p95_threshold_ms, p95_ms < p95_threshold_ms))
+
+        _print_latency_table(rows, title="Warm query latency benchmark — 320-file repo (issue #686 AC3)")
+
+        assert median_ms < median_threshold_ms, (
+            f"Warm query (320-file repo) median {median_ms:.1f} ms >= {median_threshold_ms:.1f} ms threshold"
+        )
+        assert p95_ms < p95_threshold_ms, (
+            f"Warm query (320-file repo) p95 {p95_ms:.1f} ms >= {p95_threshold_ms:.1f} ms threshold"
         )
 
     finally:

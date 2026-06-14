@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import re
@@ -36,6 +37,7 @@ def escape_regex(value: str) -> str:
     return re.escape(value)
 
 
+@functools.lru_cache(maxsize=512)
 def glob_to_regex(glob: str) -> re.Pattern[str]:
     regex = ""
     index = 0
@@ -61,7 +63,17 @@ def glob_to_regex(glob: str) -> re.Pattern[str]:
     return re.compile(f"^{regex}$", re.IGNORECASE)
 
 
-_GLOB_CACHE: dict[str, re.Pattern[str]] = {}
+@functools.lru_cache(maxsize=512)
+def _doublestar_regex(glob: str) -> re.Pattern[str]:
+    """Return compiled regex for a **/-prefixed glob (any-depth path match).
+
+    Cached per glob string so the pattern is compiled once, not per path.
+    ``glob`` must start with '**/'.
+    """
+    suffix = glob[3:]
+    suffix_regex = glob_to_regex(suffix)
+    inner = suffix_regex.pattern[1:-1]  # strip leading ^ and trailing $
+    return re.compile(f"^(?:.*/)?{inner}$", re.IGNORECASE)
 
 
 def matches_glob(glob: str, relative_path: str, is_directory: bool = False) -> bool:
@@ -75,13 +87,10 @@ def matches_glob(glob: str, relative_path: str, is_directory: bool = False) -> b
         prefix = glob[:-3]
         return relative_path == prefix or relative_path.startswith(f"{prefix}/")
     if glob.startswith("**/"):
-        suffix = glob[3:]
-        suffix_regex = glob_to_regex(suffix)
-        inner = suffix_regex.pattern[1:-1]
-        if re.match(f"^(?:.*/)?{inner}$", relative_path, re.IGNORECASE):
+        if _doublestar_regex(glob).match(relative_path):
             return True
     target = f"{relative_path}/" if is_directory else relative_path
-    pattern = _GLOB_CACHE.setdefault(glob, glob_to_regex(glob))
+    pattern = glob_to_regex(glob)
     return bool(pattern.match(relative_path) or pattern.match(target))
 
 

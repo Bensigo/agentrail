@@ -4,10 +4,16 @@
 
 Product repositioning: AgentRail's moat is reducing what teams spend on coding
 agents (Claude Code / Codex / Cursor) by 50–70% through context — **without
-replacing the high-value agent**. Target market: engineers and startups. The
-product is paid, so the one metric that matters everywhere is **savings net of
-subscription price**. For this market the **CLI is the product**; the dashboard
-is the cost + billing surface (Milestone 023).
+replacing the high-value agent and without lowering quality**. The belief: high
+quality does not require emptying your bank. The **workflow itself is a cost
+lever** — a good workflow (loop, review, gates, memory) produces correct work
+the first time, so the team pays for fewer failed and retried runs. We do not
+remove commands or the existing workflow.
+
+**Surfaces:** the tool is built **for agents**, not humans. The agent surface is
+the CLI, MCP tools, hooks, and the workflow (loop / run / review). The **human
+surface is the dashboard only** (Milestone 023) — that is where savings, cost,
+and billing are read. Auth is via **API key** (no interactive login).
 
 ## Required Context
 
@@ -29,19 +35,20 @@ is the cost + billing surface (Milestone 023).
 
 ## Outcome
 
-A focused, paid, self-serve cost-saver. `agentrail init <claude|cursor|codex>`
-wires the MCP server and (where supported) the context-first hook into that
-agent's config in one command. Every `context search/get/def` prints an opt-in
-per-call savings footer priced in real $ for the active model. `agentrail
-savings` reports this-week / this-repo **$ saved vs $ you pay us**. All token
-costs are priced from a real per-provider price table, never `chars/4`.
+`agentrail init <claude|cursor|codex>` wires the MCP server and (where
+supported) the context-first hook into that agent's config in one command, using
+the configured **API key**. Every context call records a real-$ savings figure
+(priced for the active model) into the run's telemetry, which the **human reads
+on the dashboard** — not as a human-facing terminal footer. `agentrail savings`
+exposes the same data as JSON for tooling. All token costs are priced from a
+real per-provider price table, never `chars/4`.
 
-## Wedge vs platform split
+## Workflow is kept (it is the quality-at-low-cost lever)
 
-The SDLC-orchestration commands (`prd`, `milestone`, `issue`, `grill`, `afk`,
-`run`, `timeline`, `review`) are a **separate track**, not part of the
-cost-saver onboarding path. This milestone scopes only the `context` cost-saver
-and its auth/pricing surface.
+No commands are removed. The full workflow (`run`, `loop`, `review`, gates,
+`memory`, `prd`, `milestone`, `issue`, `afk`, `timeline`) stays — it is how the
+agent produces high-quality work the team does not have to pay to redo. The
+cost-saver and the workflow are **one product for the agent**, not two tracks.
 
 ## Acceptance Criteria
 
@@ -53,17 +60,19 @@ and its auth/pricing surface.
       estimate.
 - [ ] `agentrail init <claude|cursor|codex> [--target DIR]` writes the correct
       MCP-server + hook config for that agent (claude: MCP + context-first hook;
-      codex/cursor: MCP + prompt steering, since they have no hook mechanism);
-      idempotent; prints what it wired and the next step.
-- [ ] Per-call savings footer (opt-in, e.g. `--savings` or config flag): each
-      `context search/get/def` prints `saved ~N tokens (~$X.XX on <model>) vs
-      full-file read`, priced via the cost engine.
-- [ ] `agentrail savings [--target DIR] [--json]` reports per-developer /
-      per-repo cumulative **$ saved** and **$ saved vs $ subscription** (net),
-      this-week and this-repo breakdowns; reads existing `runMetadata`.
-- [ ] `agentrail login` / `agentrail plan` (or `usage`): auth + plan + usage this
-      cycle + savings-vs-spend. Stub the billing backend behind a clear interface
-      if the plan API is not yet live.
+      codex/cursor: MCP + prompt steering, since they have no hook mechanism),
+      using the configured **API key**; idempotent; prints what it wired.
+- [ ] **API-key auth**: the key is read from env / config (no interactive login
+      flow). `init` and the MCP server use it to attribute runs and usage.
+- [ ] Per-call savings is **recorded into run telemetry** (priced via the cost
+      engine) so it aggregates to the dashboard. A `--savings` flag may echo it to
+      the agent's run log, but the human-facing view is the dashboard, not a
+      terminal footer.
+- [ ] `agentrail savings [--target DIR] [--json]` exposes cumulative **$ saved**
+      and **$ saved vs $ subscription** (net) as JSON for tooling; reads existing
+      `runMetadata`. Human reading happens on the dashboard.
+- [ ] `agentrail plan` / `usage` (optional): plan + usage this cycle behind a
+      billing interface; stub the backend if the plan API is not yet live.
 - [ ] All existing `context` CLI contracts unchanged (additive only).
 - [ ] Existing retrieval quality-gate fixture suite stays green.
 
@@ -82,10 +91,10 @@ and its auth/pricing surface.
 ## Likely Issue Slices
 
 - Provider price table + model-aware cost engine (input/output/cached split)
-- `agentrail init` wiring for claude / codex / cursor
-- Per-call savings footer (opt-in)
-- `agentrail savings` reworked for the individual (net-of-subscription)
-- `agentrail login` / `plan` / `usage` (billing interface, stubbed backend OK)
+- `agentrail init` wiring for claude / codex / cursor (API-key auth)
+- Per-call savings recorded into run telemetry (feeds the dashboard)
+- `agentrail savings` JSON output (net-of-subscription)
+- `agentrail plan` / `usage` (billing interface, stubbed backend OK)
 
 ## Notes
 

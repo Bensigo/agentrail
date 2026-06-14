@@ -2,11 +2,13 @@
 
 ## Source
 
-Product repositioning (see Milestone 022). For engineers/startups the dashboard
-is **not** an enterprise ops console — it is a focused **cost-control + billing**
-surface. The one headline metric is **savings net of subscription price**,
-normalized to $ across providers (Claude / Codex / Cursor). Everything that is
-not cost / savings / billing is demoted to Settings.
+Product repositioning (see Milestone 022). The tool is built **for agents**; the
+**dashboard is the human's only surface** — the window into what the agent did,
+how well, and what it cost. So the dashboard carries **both** workflow health
+(runs, failures, review gates, memory) **and** cost/savings. The change is one of
+**priority, not removal**: make **savings net of subscription price** (normalized
+to $ across Claude / Codex / Cursor) the headline, and add the cost panels —
+without removing any existing operational page or feature.
 
 ## Required Context
 
@@ -33,14 +35,16 @@ per-provider cost split — not a workspace inventory. Supporting panels show
 where to save more. A billing page shows plan, usage this cycle, and
 savings-vs-spend.
 
-## Remove / demote (to a single Settings area)
+## Reprioritize (do NOT remove anything)
 
-- **API Keys, Team / Members, Memory-as-a-count, raw Context-Packs count, raw
-  Failures count** as hero tiles.
-- **Review Gates** and **Failures** as top-level nav — fold the pages into
-  Settings / run-detail. **Keep the underlying gate + failure events**: they
-  feed the context-lazy-run detector and the retry-tax view. Demote the surface,
-  reuse the data.
+Nothing is removed. Memory, API Keys, Review Gates, Failures, Runs all stay —
+they are the human's window into the agent's workflow, and the workflow is itself
+a cost lever (quality-first → fewer paid retries). The only change to the
+**overview hero** is ordering: lead with the savings/cost ROI block, then the
+operational tiles below it. Memory and API Keys remain (memory avoids
+re-derivation = savings; the API key is the auth mechanism). The gate + failure
+events additionally **feed** the context-lazy-run detector and retry-tax view —
+they are reused for cost, not relocated.
 
 ## Add
 
@@ -78,8 +82,9 @@ savings-vs-spend.
 - [ ] Cache-hit panel reads from `cache_ratio` and shows $-left-on-the-table.
 - [ ] Context-lazy run detector lists runs that read full files without an
       AgentRail context call, sourced from retained gate/failure events.
-- [ ] API Keys, Team, Memory, Review Gates, Failures removed from the overview
-      hero and reachable from Settings; no data loss (events still ingested).
+- [ ] Overview leads with the savings/cost ROI block; operational tiles (Runs,
+      Memory, API Keys, Review Gates, Failures) remain present below it — nothing
+      removed, only reordered.
 - [ ] Billing page shows plan / usage / savings-vs-spend.
 - [ ] Savings figures derive from real per-run data, not the fixture benchmark.
 
@@ -94,7 +99,7 @@ savings-vs-spend.
 ## Likely Issue Slices
 
 - Savings + per-provider aggregation queries
-- Overview hero (ROI) + demotion of inventory tiles to Settings
+- Overview hero (ROI) reorder (operational tiles kept below)
 - Cache-hit lever panel (from `cache_ratio`)
 - Context-lazy run detector (from retained gate signal)
 - Model-tier mix panel (consumes Milestone 024)

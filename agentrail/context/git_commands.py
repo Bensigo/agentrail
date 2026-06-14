@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import List, Optional
 
 _SHA_HEADER = re.compile(r"^([0-9a-f]{40}) \d+ (\d+)(?: \d+)?$")
+_HIST_HEADER = re.compile(r"^[0-9a-f]{40} ")
 _STATUS_MAP = {"A": "added", "M": "modified", "D": "deleted"}
 
 
@@ -116,27 +117,24 @@ def git_history(target: Path, path: str, symbol: Optional[str] = None) -> List[d
 
 
 def _history_symbol(target: Path, path: str, symbol: str) -> List[dict]:
-    result = _git(target, "log", "-L", f":{symbol}:{path}", check=False)
+    result = _git(target, "log", "-L", f":{symbol}:{path}", "--format=%H %ae %ai %s", check=False)
     if result.returncode != 0:
         return []
     entries: List[dict] = []
-    current: Optional[dict] = None
     for raw in result.stdout.splitlines():
-        if raw.startswith("commit "):
-            if current is not None:
-                entries.append(current)
-            sha = raw[len("commit "):].strip().split(" ")[0]
-            current = {"sha": sha, "author": "", "date": "", "summary": ""}
-        elif current is None:
+        if not _HIST_HEADER.match(raw):
             continue
-        elif raw.startswith("Author:"):
-            current["author"] = raw[len("Author:"):].strip()
-        elif raw.startswith("Date:"):
-            current["date"] = raw[len("Date:"):].strip()
-        elif not current["summary"] and raw.startswith("    "):
-            current["summary"] = raw.strip()
-    if current is not None:
-        entries.append(current)
+        parts = raw.split(" ")
+        if len(parts) < 5:
+            continue
+        entries.append(
+            {
+                "sha": parts[0],
+                "author": parts[1],
+                "date": " ".join(parts[2:5]),
+                "summary": " ".join(parts[5:]),
+            }
+        )
     return entries
 
 

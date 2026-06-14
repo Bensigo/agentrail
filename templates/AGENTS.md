@@ -158,6 +158,16 @@ spend tokens on relevant code instead of noise.
   paths, line ranges, symbols, bounded snippets, reasons, and scores.
 - Use `agentrail context get <path> --lines A-B` (or `--symbol NAME`) to read
   only the lines or symbol you need.
+- Use `agentrail context query "<term>" --json` for ranked BM25 retrieval; returns scored candidates with file, line, and snippet.
+- Use `agentrail context def NAME` to look up symbol definitions by name across all files.
+- Use `agentrail context callers NAME` to find every call site for a named function.
+- Use `agentrail context callees NAME` to list functions called by a named function.
+- Use `agentrail context impact NAME` to see the transitive blast radius of a symbol change.
+- Use `agentrail context ast "<pattern>"` to match tree-sitter s-expression patterns structurally.
+- Use `agentrail context blame <path>` to see per-line author and commit SHA.
+- Use `agentrail context history <path>` to list commits that touched a file.
+- Use `agentrail context changed [--since REF]` to list files modified since a ref or in the working tree.
+- Use `agentrail context savings` to report token savings from retrieval versus raw file reads.
 - Do not read full files until AgentRail returns candidate line ranges. Only
   request a whole file when the snippets are genuinely insufficient.
 - Prefer `agentrail context search` / `agentrail context get` over raw file

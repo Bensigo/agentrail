@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 import os
 import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -28,6 +30,37 @@ from unittest import mock
 
 from agentrail.context import daemon as daemon_mod
 from agentrail.cli.commands.context import _run_daemon, _resolve_target
+
+
+# ---------------------------------------------------------------------------
+# Shared helper: create a minimal indexable temp repo
+# ---------------------------------------------------------------------------
+
+def _make_temp_repo() -> Path:
+    """Create a minimal temp repo with .agentrail/config.json and a Python file."""
+    root = Path(tempfile.mkdtemp()).resolve()
+    (root / ".agentrail").mkdir()
+    cfg = {
+        "schemaVersion": 1,
+        "context": {
+            "includeGlobs": ["**/*.py"],
+            "excludeGlobs": [".git/**", ".agentrail/**"],
+            "maxFileSizeBytes": 262144,
+            "skipBinary": True,
+            "respectGitIgnore": False,
+            "secretRedaction": {"enabled": False, "action": "exclude", "denyGlobs": []},
+            "embedding": {"mode": "disabled", "provider": None, "model": None},
+            "summary": {"mode": "disabled", "provider": None, "model": None},
+        },
+    }
+    (root / ".agentrail" / "config.json").write_text(
+        json.dumps(cfg), encoding="utf-8"
+    )
+    (root / "src").mkdir()
+    (root / "src" / "main.py").write_text(
+        "def hello():\n    return 'hello world'\n", encoding="utf-8"
+    )
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +388,97 @@ class TestWaitHelpers(unittest.TestCase):
             self.assertFalse(result)
         finally:
             sock.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Tests: real daemon process (AC1 — socket, status schema, clean shutdown)
+# ---------------------------------------------------------------------------
+
+class TestRealDaemonLifecycle(unittest.TestCase):
+    """Start the actual daemon_server process and verify observable behaviour."""
+
+    def setUp(self) -> None:
+        self._tmp = _make_temp_repo()
+        self._sock = daemon_mod.socket_path_for(self._tmp)
+        self._proc: subprocess.Popen | None = None
+        # Remove stale socket from a previous run
+        self._sock.unlink(missing_ok=True)
+
+    def tearDown(self) -> None:
+        if self._proc and self._proc.poll() is None:
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+        self._sock.unlink(missing_ok=True)
+
+    def _spawn(self) -> None:
+        env = os.environ.copy()
+        # Use a long freshness interval so the freshness loop doesn't interfere.
+        env["AGENTRAIL_DAEMON_FRESHNESS_INTERVAL"] = "60"
+        self._proc = subprocess.Popen(
+            [
+                sys.executable, "-m", "agentrail.context.daemon_server",
+                "--target", str(self._tmp),
+            ],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def test_socket_exists_after_start(self) -> None:
+        """AC1: socket file appears after the daemon starts."""
+        self._spawn()
+        self.assertTrue(
+            daemon_mod._wait_for_socket(self._sock, timeout=10.0),
+            "Daemon socket did not appear within 10 s",
+        )
+
+    def test_status_rpc_schema(self) -> None:
+        """AC1: status RPC returns correct field types."""
+        self._spawn()
+        self.assertTrue(daemon_mod._wait_for_socket(self._sock, timeout=10.0))
+        resp = daemon_mod.rpc(self._sock, "status", timeout=5.0)
+        self.assertIsInstance(resp.get("pid"), int, "pid must be int")
+        self.assertIsInstance(resp.get("uptimeSeconds"), float, "uptimeSeconds must be float")
+        self.assertIsInstance(resp.get("socketPath"), str, "socketPath must be str")
+        self.assertIsInstance(resp.get("state"), str, "state must be str")
+        last_indexed = resp.get("lastIndexedAt")
+        self.assertTrue(
+            last_indexed is None or isinstance(last_indexed, str),
+            f"lastIndexedAt must be str or None, got {type(last_indexed)}",
+        )
+
+    def test_pid_matches_process(self) -> None:
+        """AC1: pid field in status response matches the spawned process PID."""
+        self._spawn()
+        self.assertTrue(daemon_mod._wait_for_socket(self._sock, timeout=10.0))
+        resp = daemon_mod.rpc(self._sock, "status", timeout=5.0)
+        self.assertEqual(resp.get("pid"), self._proc.pid)
+
+    def test_clean_shutdown(self) -> None:
+        """AC1: sending shutdown removes the socket and exits the process."""
+        self._spawn()
+        self.assertTrue(daemon_mod._wait_for_socket(self._sock, timeout=10.0))
+        daemon_mod.rpc(self._sock, "shutdown", timeout=5.0)
+        # Socket must disappear
+        self.assertTrue(
+            daemon_mod._wait_for_socket_gone(self._sock, timeout=10.0),
+            "Socket did not disappear within 10 s after shutdown",
+        )
+        # Process must exit
+        try:
+            self._proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            self.fail("Daemon process did not exit within 5 s after shutdown")
+        # PID must be gone
+        try:
+            os.kill(self._proc.pid, 0)
+            self.fail("PID still alive after shutdown")
+        except OSError:
+            pass  # expected: process gone
 
 
 if __name__ == "__main__":

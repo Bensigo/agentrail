@@ -115,7 +115,8 @@ class DaemonServer:
 
     def _freshness_loop(self) -> None:
         """Periodically check staleness and trigger background re-index."""
-        while not self._stop_event.wait(30.0):
+        interval = float(os.environ.get("AGENTRAIL_DAEMON_FRESHNESS_INTERVAL", "30"))
+        while not self._stop_event.wait(interval):
             try:
                 if not self._is_fresh():
                     with self._lock:

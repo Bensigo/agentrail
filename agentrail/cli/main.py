@@ -13,6 +13,7 @@ from agentrail.cli.commands.milestone import run_milestone
 from agentrail.cli.commands.prd import run_prd
 from agentrail.cli.commands.console import run_console
 from agentrail.cli.commands.context import run_context
+from agentrail.cli.commands.init_agent import run_init_agent
 from agentrail.cli.commands.install import run_install
 from agentrail.cli.commands.internal import run_internal
 from agentrail.cli.commands.labels import run_labels
@@ -43,6 +44,7 @@ def _usage() -> str:
         "  agentrail status [--target DIR]\n"
         "  agentrail doctor [--target DIR]\n"
         "  agentrail upgrade [--target DIR] [--force]\n"
+        "  agentrail init <claude|cursor|codex> [--target DIR] [--force]\n"
         "  agentrail init [--target DIR] [--force]\n"
         "  agentrail install [--target DIR] [--force]\n"
         "  agentrail grill-me [plan-or-path] [--agent codex|claude] [--target DIR] [--headless]\n"
@@ -97,7 +99,12 @@ def main(argv: List[str] | None = None) -> int:
         print(_usage(), end="")
         return 0
 
-    if args[0] in ("init", "install"):
+    if args[0] == "init":
+        _AGENT_NAMES = {"claude", "codex", "cursor"}
+        if len(args) > 1 and args[1] in _AGENT_NAMES:
+            return run_init_agent(args[1:])
+        return run_install(args[1:])
+    if args[0] == "install":
         return run_install(args[1:])
     if args[0] == "doctor":
         return run_doctor(args[1:])

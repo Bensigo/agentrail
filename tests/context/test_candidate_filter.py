@@ -186,64 +186,50 @@ class CandidateFilterRegexBoundTests(unittest.TestCase):
     """AC3: definition_patterns regex evaluated on O(candidates), not O(all chunks)."""
 
     def test_regex_call_count_bounded_by_candidates(self) -> None:
-        """With postings, regex calls are proportional to candidate count, not corpus size."""
+        """Definition regex is bounded by chunks CONTAINING the symbol, not corpus size.
+
+        The regex is gated on a termCount membership check (the symbol must be in
+        the chunk to define it), so it never scales with corpus size — for a token
+        unique to 1 file among 50+ noise files, it runs only a handful of times.
+        """
         root = _make_fixture_repo(num_noise_files=50)
         build_index(root)
         index = load_index(root)
-        pp = _postings_path(root)
-
-        # Count regex calls WITH candidate filtering (postings present)
         count_filtered = _count_pattern_searches(root, "xyzzy_token_handler", index)
-
-        # Count regex calls WITHOUT filtering (postings absent → full scan)
-        backup = pp.read_bytes()
-        pp.unlink()
-        count_fullscan = _count_pattern_searches(root, "xyzzy_token_handler", index)
-        pp.write_bytes(backup)
-
-        # Candidate filtering must use substantially fewer regex calls than full scan.
-        # The unique token "xyzzy_token_handler" appears in only 1 of 51 files, so
-        # candidate set is tiny.  Full scan processes all ~51+ chunks.
         self.assertLess(
-            count_filtered,
-            count_fullscan,
-            f"Candidate filter used {count_filtered} regex calls; "
-            f"full scan used {count_fullscan}. Filter must use fewer."
-        )
-        self.assertGreater(
-            count_fullscan,
-            0,
-            "Full scan must have performed at least one regex call (definition patterns active)"
+            count_filtered, 10,
+            f"regex ran {count_filtered}x on a 50+ chunk corpus; must be bounded by "
+            "the single symbol-bearing chunk, not the corpus size",
         )
 
-    def test_regex_not_called_on_noise_files_when_postings_present(self) -> None:
-        """With postings, noise files (no query tokens) never reach the regex."""
-        # Build repo where only 1 file has the query term; noise files have none.
+    def test_regex_not_called_on_noise_files(self) -> None:
+        """Noise files (no query token) never reach the definition regex.
+
+        The termCount gate skips the regex for any chunk that doesn't contain the
+        symbol — so neither the postings (candidate-filtered) nor the
+        postings-absent path scans the 40 noise files.
+        """
         root = _make_fixture_repo(num_noise_files=40)
         build_index(root)
         index = load_index(root)
         pp = _postings_path(root)
 
-        # With postings: candidate set = {the 1 widget.py chunk}
         count_with = _count_pattern_searches(root, "xyzzy_token_handler", index)
-
-        # Without postings: full scan over all 41+ chunks
         backup = pp.read_bytes()
         pp.unlink()
         count_without = _count_pattern_searches(root, "xyzzy_token_handler", index)
         pp.write_bytes(backup)
 
-        # Ratio should be significantly >1 (candidate filtering much cheaper)
-        if count_with > 0:
-            ratio = count_without / count_with
-            self.assertGreater(
-                ratio, 5.0,
-                f"Expected >5x reduction in regex calls; got {ratio:.1f}x "
-                f"(with={count_with}, without={count_without})"
-            )
-        else:
-            # Zero calls with filtering → all calls happen in full-scan, also valid
-            self.assertGreater(count_without, 0)
+        # Both paths gate on termCount membership, so neither touches the noise
+        # files — regex calls are bounded by the single symbol-bearing chunk.
+        self.assertLess(
+            count_with, 10,
+            f"with postings: {count_with} regex calls — noise files must be skipped",
+        )
+        self.assertLess(
+            count_without, 10,
+            f"without postings: {count_without} regex calls — termCount gate still skips noise",
+        )
 
 
 # ---------------------------------------------------------------------------

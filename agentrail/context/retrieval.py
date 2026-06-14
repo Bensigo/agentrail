@@ -1088,62 +1088,37 @@ def _extract_retrieval_seeds(corpus: List[Dict[str, Any]], pre_bm25: Dict[str, f
     return seeds
 
 
-def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    from agentrail.context.planner import classify_query
+# Query-independent scoring corpus, cached per (root, index builtAt). A long-lived
+# daemon process builds it once and reuses it across queries; a fresh CLI process
+# builds it once. Invalidates automatically when the index is rebuilt (builtAt
+# changes). Bounded to a few entries so re-indexing doesn't leak memory.
+_corpus_cache: Dict[str, Any] = {}
 
-    planner = classify_query(query)
-    exact_mode = planner["retrievalMode"] in {"exact", "exact_bm25", "exact_graph"}
-    root = target_dir.resolve()
-    if index is None:
-        build_index(root)
-        index = load_index(root)
+
+def _prepare_corpus(root: Path, index: Dict[str, Any]):
+    """Build (and cache) the query-independent scoring corpus for *index*.
+
+    Returns ``(corpus, postings_by_id, precomputed_postings, doc_count, avg_len)``.
+    The corpus (per-chunk text / textLower / termCounts / tokenLen) depends only
+    on the index, never the query, so it is safe to cache and reuse — only
+    per-query ``doc_freq`` and scoring are recomputed by the caller. This is the
+    fix for warm-query latency: previously ``record_text``/lowercasing ran over
+    every chunk on *every* query even with the index in memory.
+    """
+    cache_key = (
+        f"{root}|{index.get('builtAt', '')}|"
+        f"{len(index.get('chunks') or [])}|{len(index.get('records') or [])}"
+    )
+    cached = _corpus_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     sources = {record["id"]: record for record in index.get("records", [])}
-    items = [(sources.get(chunk.get("sourceId"), {}), chunk) for chunk in index.get("chunks", [])] if index.get("chunks") else [(record, None) for record in index.get("records", [])]
-    query_tokens = unique(tokenize(query))
-    # Normalized symbol candidates: strip edge punctuation ("req.param" tokenizes
-    # to "req"/".param") and take the member after a dot, so a symbol query matches
-    # the chunk that *defines* the symbol, not just files that mention it.
-    query_symbols: Set[str] = set()
-    for token in query_tokens:
-        stripped = re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", token)
-        if stripped:
-            query_symbols.add(stripped)
-        if "." in token:
-            tail = token.rsplit(".", 1)[-1]
-            if tail:
-                query_symbols.add(tail)
-    # Definition-site patterns: a file that *assigns/defines* the queried symbol
-    # (e.g. "req.accepts =", "function View") is the answer for a symbol lookup —
-    # far more precise than symbolHints, which miss chunk-spanning defs and fire
-    # on test mocks. Used to tier definitions above dense reference/call sites.
-    definition_patterns: List[Any] = []
-    raw_lower = query.strip().lower()
-    definition_use_hint = True
-    if re.fullmatch(r"[a-z_$][\w$]*\.[a-z_$][\w$]*", raw_lower):
-        # Dotted member ("res.json"): the only definition is the assignment
-        # "res.json =". The bare tail ("json") and symbolHints fire on every
-        # file defining an unrelated json — so use the precise pattern alone.
-        definition_patterns.append(re.compile(re.escape(raw_lower) + r"\s*[:=]"))
-        definition_use_hint = False
-    else:
-        for sym in query_symbols:
-            if len(sym) >= 4:
-                esc = re.escape(sym)
-                definition_patterns.append(re.compile(rf"\bfunction\s+{esc}\b"))
-                definition_patterns.append(re.compile(rf"\b{esc}\s*[:=]\s*(?:async\s*)?(?:function|\()"))
-                definition_patterns.append(re.compile(rf"\b(?:def|class)\s+{esc}\b"))
-    query_lower = query.lower()
-    query_issue_refs = issue_refs(query)
-    query_pr_refs = pr_refs(query)
-    try:
-        state = json.loads((root / ".agentrail" / "state.json").read_text(encoding="utf-8"))
-        active_issue = int(state.get("workflow", {}).get("activeIssue") or state.get("workflow", {}).get("activeRun", {}).get("targetIssue") or 0) or None
-    except Exception:
-        active_issue = None
-    effective_issue_refs = query_issue_refs or ([] if query_pr_refs or not active_issue else [active_issue])
-
-    # Build corpus once; used for both pre-BM25 seed extraction and full scoring.
-    # When postings.json was written at index time, load it to avoid re-tokenizing.
+    items = (
+        [(sources.get(chunk.get("sourceId"), {}), chunk) for chunk in index.get("chunks", [])]
+        if index.get("chunks")
+        else [(record, None) for record in index.get("records", [])]
+    )
     precomputed_postings = _load_postings(root, index)
     postings_by_id: Optional[Dict[str, Dict[str, int]]] = None
     if precomputed_postings is not None:
@@ -1171,7 +1146,85 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
         corpus.append({"source": source, "chunk": chunk, "text": text, "textLower": text.lower(), "tokens": tokens, "termCounts": term_counts, "tokenLen": token_len})
     doc_count = max(1, len(corpus))
     avg_len = sum(doc["tokenLen"] for doc in corpus) / doc_count if corpus else 1
-    doc_freq = {token: sum(1 for doc in corpus if token in doc["termCounts"]) for token in query_tokens}
+
+    result = (corpus, postings_by_id, precomputed_postings, doc_count, avg_len)
+    if len(_corpus_cache) >= 4:  # bound memory across re-indexes
+        _corpus_cache.pop(next(iter(_corpus_cache)))
+    _corpus_cache[cache_key] = result
+    return result
+
+
+def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    from agentrail.context.planner import classify_query
+
+    planner = classify_query(query)
+    exact_mode = planner["retrievalMode"] in {"exact", "exact_bm25", "exact_graph"}
+    root = target_dir.resolve()
+    if index is None:
+        build_index(root)
+        index = load_index(root)
+    query_tokens = unique(tokenize(query))
+    # Normalized symbol candidates: strip edge punctuation ("req.param" tokenizes
+    # to "req"/".param") and take the member after a dot, so a symbol query matches
+    # the chunk that *defines* the symbol, not just files that mention it.
+    query_symbols: Set[str] = set()
+    for token in query_tokens:
+        stripped = re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", token)
+        if stripped:
+            query_symbols.add(stripped)
+        if "." in token:
+            tail = token.rsplit(".", 1)[-1]
+            if tail:
+                query_symbols.add(tail)
+    # Definition-site patterns: a file that *assigns/defines* the queried symbol
+    # (e.g. "req.accepts =", "function View") is the answer for a symbol lookup —
+    # far more precise than symbolHints, which miss chunk-spanning defs and fire
+    # on test mocks. Used to tier definitions above dense reference/call sites.
+    definition_patterns: List[Any] = []
+    # Token(s) the patterns require: a chunk can only DEFINE one of these symbols
+    # if it contains it, so we gate the (expensive) regex below on an O(1)
+    # termCounts membership check — skipping the scan for chunks that can't match.
+    definition_symbols: Set[str] = set()
+    raw_lower = query.strip().lower()
+    definition_use_hint = True
+    if re.fullmatch(r"[a-z_$][\w$]*\.[a-z_$][\w$]*", raw_lower):
+        # Dotted member ("res.json"): the only definition is the assignment
+        # "res.json =". The bare tail ("json") and symbolHints fire on every
+        # file defining an unrelated json — so use the precise pattern alone.
+        definition_patterns.append(re.compile(re.escape(raw_lower) + r"\s*[:=]"))
+        definition_use_hint = False
+        # "res.json" contains the token "json" once tokenized — a necessary
+        # condition for the literal to appear, so it's a safe (superset) gate.
+        definition_symbols.add(raw_lower.rsplit(".", 1)[-1])
+    else:
+        for sym in query_symbols:
+            if len(sym) >= 4:
+                esc = re.escape(sym)
+                definition_patterns.append(re.compile(rf"\bfunction\s+{esc}\b"))
+                definition_patterns.append(re.compile(rf"\b{esc}\s*[:=]\s*(?:async\s*)?(?:function|\()"))
+                definition_patterns.append(re.compile(rf"\b(?:def|class)\s+{esc}\b"))
+                definition_symbols.add(sym)
+    query_lower = query.lower()
+    query_issue_refs = issue_refs(query)
+    query_pr_refs = pr_refs(query)
+    try:
+        state = json.loads((root / ".agentrail" / "state.json").read_text(encoding="utf-8"))
+        active_issue = int(state.get("workflow", {}).get("activeIssue") or state.get("workflow", {}).get("activeRun", {}).get("targetIssue") or 0) or None
+    except Exception:
+        active_issue = None
+    effective_issue_refs = query_issue_refs or ([] if query_pr_refs or not active_issue else [active_issue])
+
+    # Prepare (and cache) the query-independent scoring corpus once per index
+    # version — the daemon holds the index hot, so warm queries reuse it instead
+    # of rebuilding record_text/textLower/term-counts over every chunk per query
+    # (that O(all chunks) rebuild was the dominant warm-query cost).
+    corpus, postings_by_id, precomputed_postings, doc_count, avg_len = _prepare_corpus(root, index)
+    if precomputed_postings is not None:
+        # doc-frequency straight from the inverted index — O(query tokens), not
+        # O(corpus): postings[token] already lists every doc containing it.
+        doc_freq = {token: len(precomputed_postings.get(token, [])) for token in query_tokens}
+    else:
+        doc_freq = {token: sum(1 for doc in corpus if token in doc["termCounts"]) for token in query_tokens}
 
     # Symbol-aware hybrid retrieval: BM25 pre-score → seed extraction → graph expansion
     pre_bm25 = _pre_bm25_scores(corpus, query_tokens, doc_count, avg_len, doc_freq)
@@ -1300,7 +1353,11 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
         for phrase in phrases:
             if len(phrase) > 8 and phrase in doc["textLower"]:
                 keyword += 1; reasons.add("exact identifier")
-        defines_by_pattern = bool(definition_patterns and any(p.search(doc["textLower"]) for p in definition_patterns))
+        defines_by_pattern = (
+            bool(definition_patterns)
+            and any(s in doc["termCounts"] for s in definition_symbols)
+            and any(p.search(doc["textLower"]) for p in definition_patterns)
+        )
         defines_by_hint = definition_use_hint and bool(query_symbols and any(str(hint).lower() in query_symbols for hint in ((chunk or {}).get("symbolHints") or [])))
         is_definition = defines_by_pattern or defines_by_hint
         if is_definition:

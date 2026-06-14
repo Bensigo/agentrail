@@ -28,6 +28,20 @@ from typing import Any
 # Socket-path derivation
 # ---------------------------------------------------------------------------
 
+# Formula: ~/.agentrail/daemon-<sha256(str(realpath(target)))[:8]>.sock
+#
+# The sha256 prefix is intentional: AFK runs multiple worktrees concurrently,
+# each with a different resolved --target path.  Keying the socket name on a
+# hash of that path guarantees per-worktree isolation — two worktrees sharing
+# the same daemon socket would corrupt each other's index state.
+#
+# Note: callers are responsible for resolving symlinks before passing *target*
+# (i.e. ``target = Path(target).resolve()``).  The hash covers the resolved
+# string so that ``/repo`` and ``/private/repo`` (macOS symlink for /var)
+# produce the same socket path when they resolve to the same inode.
+SOCKET_PATH_FORMULA = "~/.agentrail/daemon-<sha256(str(realpath(target)))[:8]>.sock"
+
+
 def _target_hash(target: Path) -> str:
     """Return an 8-char hex digest keyed on the resolved absolute target path."""
     return hashlib.sha256(str(target).encode()).hexdigest()[:8]
@@ -37,7 +51,8 @@ def socket_path_for(target: Path) -> Path:
     """Return the Unix-domain socket path for *target*.
 
     The path is keyed by a hash of the resolved absolute target path so that
-    different worktrees never share a socket.
+    different worktrees never share a socket.  See :data:`SOCKET_PATH_FORMULA`
+    for the exact formula and rationale.
 
     Layout: ``~/.agentrail/daemon-<hash>.sock``
     """

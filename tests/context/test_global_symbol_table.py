@@ -204,9 +204,9 @@ class TestAnchorStartNodesO1(unittest.TestCase):
         self.assertIn("symbolTable", index)
         anchors = [{"kind": "symbol", "value": "process"}]
         starts, started_from = _anchor_start_nodes(index, anchors)
-        # starts may be empty if process has no graph node, but must not raise
-        self.assertIsInstance(starts, list)
-        self.assertIsInstance(started_from, list)
+        self.assertGreater(len(starts), 0, "O(1) symbol-anchor resolution must return non-empty node IDs for known symbol 'process'")
+        self.assertGreater(len(started_from), 0, "started_from must be non-empty when anchors resolve")
+        self.assertTrue(all("process" in nid or "symbol" in nid for nid in starts), "resolved node IDs should correspond to the 'process' symbol")
 
     def test_fallback_without_symbol_table(self) -> None:
         """When symbolTable key is absent (v1), linear scan is used; no error."""

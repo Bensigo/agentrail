@@ -43,6 +43,73 @@ def _parse_target(args: List[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Daemon section helpers
+# ---------------------------------------------------------------------------
+
+def _format_uptime(seconds: int) -> str:
+    """Format *seconds* as a compact human-readable string (e.g. '3m42s', '1h5m')."""
+    if seconds < 60:
+        return f"{seconds}s"
+    elif seconds < 3600:
+        m, s = divmod(seconds, 60)
+        return f"{m}m{s}s"
+    else:
+        h, rem = divmod(seconds, 3600)
+        m = rem // 60
+        return f"{h}h{m}m"
+
+
+def _collapse_home(path_str: str) -> str:
+    """Collapse the home-directory prefix of *path_str* to ``~``."""
+    home = str(Path.home())
+    if path_str.startswith(home):
+        return "~" + path_str[len(home):]
+    return path_str
+
+
+def render_daemon_section(target_dir: Path) -> None:
+    """Print a read-only Daemon section for *target_dir*.
+
+    Never spawns the daemon, never blocks, never raises — if anything goes
+    wrong the section shows 'Daemon  stopped'.
+    """
+    try:
+        from agentrail.context import daemon as daemon_mod  # noqa: PLC0415
+    except ImportError:
+        return
+
+    target_resolved = target_dir.resolve()
+    try:
+        socket_path = daemon_mod.socket_path_for(target_resolved)
+    except Exception:  # noqa: BLE001
+        print("Daemon  stopped")
+        return
+
+    if not socket_path.exists():
+        print("Daemon  stopped")
+        return
+
+    try:
+        resp = daemon_mod.rpc(socket_path, "status", timeout=2.0)
+    except Exception:  # noqa: BLE001
+        print("Daemon  stopped")
+        return
+
+    state = resp.get("state", "running")
+    pid = resp.get("pid", "?")
+    uptime_sec = int(resp.get("uptimeSeconds", 0))
+    last_indexed = resp.get("lastIndexedAt", "unknown")
+    sock_display = _collapse_home(str(resp.get("socketPath") or socket_path))
+    up_str = _format_uptime(uptime_sec)
+
+    if state == "stale":
+        print(f"Daemon  stale (re-indexing)  pid={pid}")
+    else:
+        print(f"Daemon           {state}  pid={pid}  up={up_str}  last-indexed={last_indexed}")
+    print(f"  socket         {sock_display}")
+
+
+# ---------------------------------------------------------------------------
 # render_status — native Python port of the legacy JS block in run_status
 # ---------------------------------------------------------------------------
 
@@ -159,6 +226,9 @@ def run_status(args: List[str], target: Optional[Path] = None) -> int:
         target_dir = Path(target_str)
 
     rc = render_status(target_dir)
+
+    # Daemon section (read-only; never spawns or blocks).
+    render_daemon_section(target_dir)
 
     # Dashboard line (after the main block, regardless of rc).
     # We always print it even on corrupt-state to mirror legacy behaviour where

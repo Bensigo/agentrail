@@ -1100,5 +1100,92 @@ class ShippedSkillRegistryRegressionTest(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Tests: daemon health section (AC4, AC5)
+# ---------------------------------------------------------------------------
+
+class TestDaemonHealthDoctor(unittest.TestCase):
+    """Tests for the 'daemon:' section added to agentrail doctor."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self._sock = Path(self._tmp) / "daemon-test.sock"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _run_doctor_for(self, target_dir: str):
+        with patch("subprocess.run") as mock_sub:
+            mock_sub.return_value = MagicMock(returncode=1, stdout="", stderr="")
+            rc, out = _capture(run_doctor, ["--target", target_dir])
+        return rc, out
+
+    def test_daemon_skipped_when_not_running(self):
+        """AC4 (SKIP): no socket → 'skipped daemon not running'."""
+        with patch("agentrail.context.daemon.socket_path_for", return_value=self._sock):
+            rc, out = self._run_doctor_for(self._tmp)
+        self.assertIn("daemon:", out)
+        self.assertIn("skipped", out)
+        self.assertIn("not running", out)
+
+    def test_daemon_ok_when_running(self):
+        """AC4 (OK): running daemon → '  ok daemon running ...'."""
+        self._sock.touch()
+        status_resp = {
+            "pid": 55555,
+            "uptimeSeconds": 60,
+            "lastIndexedAt": "2026-06-13T10:22:01Z",
+            "socketPath": str(self._sock),
+            "state": "running",
+        }
+        with patch("agentrail.context.daemon.socket_path_for", return_value=self._sock), \
+             patch("agentrail.context.daemon.rpc", return_value=status_resp):
+            rc, out = self._run_doctor_for(self._tmp)
+        self.assertIn("daemon:", out)
+        self.assertIn("  ok", out)
+        self.assertIn("55555", out)
+
+    def test_daemon_warn_when_stale(self):
+        """AC4 (WARN): stale daemon → '  warn stale ...'."""
+        self._sock.touch()
+        status_resp = {
+            "pid": 77777,
+            "uptimeSeconds": 5,
+            "lastIndexedAt": "2026-06-13T10:00:00Z",
+            "socketPath": str(self._sock),
+            "state": "stale",
+        }
+        with patch("agentrail.context.daemon.socket_path_for", return_value=self._sock), \
+             patch("agentrail.context.daemon.rpc", return_value=status_resp):
+            rc, out = self._run_doctor_for(self._tmp)
+        self.assertIn("daemon:", out)
+        self.assertIn("warn", out)
+        self.assertIn("stale", out)
+        self.assertIn("77777", out)
+
+    def test_daemon_rpc_error_shows_skipped(self):
+        """AC4 (SKIP): RPC error → skipped."""
+        self._sock.touch()
+        with patch("agentrail.context.daemon.socket_path_for", return_value=self._sock), \
+             patch("agentrail.context.daemon.rpc", side_effect=OSError("refused")):
+            rc, out = self._run_doctor_for(self._tmp)
+        self.assertIn("daemon:", out)
+        self.assertIn("skipped", out)
+
+    def test_ac5_existing_sections_present(self):
+        """AC5: daemon section added without removing existing doctor sections."""
+        with patch("agentrail.context.daemon.socket_path_for", return_value=self._sock):
+            rc, out = self._run_doctor_for(self._tmp)
+        # Core sections must remain
+        self.assertIn("AgentRail doctor:", out)
+        self.assertIn("core:", out)
+        self.assertIn("state:", out)
+        self.assertIn("dashboard:", out)
+        self.assertIn("daemon:", out)
+        self.assertIn("github:", out)
+        self.assertIn("recommendations:", out)
+
+
 if __name__ == "__main__":
     unittest.main()

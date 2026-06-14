@@ -548,5 +548,124 @@ class TestNullCoalesceFields(unittest.TestCase):
         self.assertIn("  active issue: 0", out)
 
 
+# ---------------------------------------------------------------------------
+# Tests: daemon section (AC1, AC2, AC3, AC5)
+# ---------------------------------------------------------------------------
+
+class TestDaemonSection(unittest.TestCase):
+    """Tests for the Daemon section added to agentrail status."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self.target = Path(self._tmp) / "target"
+        self.target.mkdir()
+        self._sock = Path(self._tmp) / "daemon-test.sock"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _run(self, extra_env=None):
+        env = os.environ.copy()
+        env.pop("AGENTRAIL_API_KEY", None)
+        if extra_env:
+            env.update(extra_env)
+        with patch.dict(os.environ, env, clear=True):
+            return _capture(run_status, ["--target", str(self.target)])
+
+    def test_daemon_stopped_no_socket(self):
+        """AC2: no socket → 'Daemon  stopped' on one line."""
+        # No socket file exists in self._tmp / "daemon-test.sock"
+        with patch("agentrail.context.daemon.socket_path_for", return_value=self._sock):
+            out, rc = self._run()
+        self.assertIn("Daemon  stopped", out)
+        # No extra fields when stopped
+        self.assertNotIn("pid=", out.split("Daemon  stopped")[1] if "Daemon  stopped" in out else "")
+
+    def test_daemon_running_shows_fields(self):
+        """AC1: running daemon → section with pid, uptime, last-indexed, socket."""
+        self._sock.touch()
+        status_resp = {
+            "pid": 12345,
+            "uptimeSeconds": 222,  # 3m42s
+            "lastIndexedAt": "2026-06-13T10:22:01Z",
+            "socketPath": str(self._sock),
+            "state": "running",
+        }
+        with patch("agentrail.context.daemon.socket_path_for", return_value=self._sock), \
+             patch("agentrail.context.daemon.rpc", return_value=status_resp):
+            out, rc = self._run()
+
+        self.assertIn("Daemon", out)
+        self.assertIn("running", out)
+        self.assertIn("pid=12345", out)
+        self.assertIn("up=3m42s", out)
+        self.assertIn("last-indexed=2026-06-13T10:22:01Z", out)
+        self.assertIn("socket", out)
+
+    def test_daemon_stale_shows_reindexing(self):
+        """AC3: stale daemon → 'stale (re-indexing)' with PID."""
+        self._sock.touch()
+        status_resp = {
+            "pid": 99999,
+            "uptimeSeconds": 10,
+            "lastIndexedAt": "2026-06-13T10:00:00Z",
+            "socketPath": str(self._sock),
+            "state": "stale",
+        }
+        with patch("agentrail.context.daemon.socket_path_for", return_value=self._sock), \
+             patch("agentrail.context.daemon.rpc", return_value=status_resp):
+            out, rc = self._run()
+
+        self.assertIn("stale (re-indexing)", out)
+        self.assertIn("pid=99999", out)
+
+    def test_daemon_rpc_error_shows_stopped(self):
+        """AC2: RPC error (daemon crashed) → 'Daemon  stopped'."""
+        self._sock.touch()
+        with patch("agentrail.context.daemon.socket_path_for", return_value=self._sock), \
+             patch("agentrail.context.daemon.rpc", side_effect=OSError("refused")):
+            out, rc = self._run()
+
+        self.assertIn("Daemon  stopped", out)
+
+    def test_ac5_existing_sections_unchanged(self):
+        """AC5: existing status sections still present when daemon stopped."""
+        _write_state(self.target, {
+            "agentrailVersion": "1.0.0",
+            "installedAt": "x",
+            "updatedAt": "x",
+            "legacyAdopted": False,
+            "workflow": {"phase": "idle"},
+        })
+        with patch("agentrail.context.daemon.socket_path_for", return_value=self._sock):
+            out, rc = self._run()
+
+        self.assertIn("install status: state-present", out)
+        self.assertIn("agentrail version: 1.0.0", out)
+        self.assertIn("dashboard:", out)
+        self.assertIn("Daemon  stopped", out)
+
+
+class TestFormatUptime(unittest.TestCase):
+    """Tests for _format_uptime helper."""
+
+    def _fmt(self, seconds):
+        from agentrail.cli.commands.status import _format_uptime
+        return _format_uptime(seconds)
+
+    def test_seconds_only(self):
+        self.assertEqual(self._fmt(42), "42s")
+
+    def test_minutes_and_seconds(self):
+        self.assertEqual(self._fmt(222), "3m42s")
+
+    def test_hours_and_minutes(self):
+        self.assertEqual(self._fmt(3661), "1h1m")
+
+    def test_zero(self):
+        self.assertEqual(self._fmt(0), "0s")
+
+
 if __name__ == "__main__":
     unittest.main()

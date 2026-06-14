@@ -379,6 +379,49 @@ def validate_skill_registry(target_dir: str, repo_dir: Path) -> SkillRegistryRes
 
 
 # ---------------------------------------------------------------------------
+# check_daemon_health
+# ---------------------------------------------------------------------------
+
+def check_daemon_health(target_dir: str) -> None:
+    """Print a 'daemon:' section reflecting the per-target daemon health."""
+    print("daemon:")
+    try:
+        from agentrail.context import daemon as daemon_mod  # noqa: PLC0415
+    except ImportError:
+        print("  skipped daemon module not available")
+        return
+
+    target_resolved = Path(target_dir).resolve()
+    try:
+        socket_path = daemon_mod.socket_path_for(target_resolved)
+    except Exception:  # noqa: BLE001
+        print("  skipped daemon not running")
+        return
+
+    if not socket_path.exists():
+        print("  skipped daemon not running")
+        return
+
+    try:
+        resp = daemon_mod.rpc(socket_path, "status", timeout=2.0)
+    except Exception:  # noqa: BLE001
+        print("  skipped daemon not running")
+        return
+
+    state = resp.get("state", "running")
+    pid = resp.get("pid", "?")
+    uptime_sec = int(resp.get("uptimeSeconds", 0))
+
+    from agentrail.cli.commands.status import _format_uptime  # noqa: PLC0415
+    up_str = _format_uptime(uptime_sec)
+
+    if state == "stale":
+        print(f"  warn stale (re-indexing) pid={pid}")
+    else:
+        print(f"  ok daemon running (pid={pid}, up={up_str})")
+
+
+# ---------------------------------------------------------------------------
 # check_github_labels
 # ---------------------------------------------------------------------------
 
@@ -595,6 +638,9 @@ def run_doctor(args: List[str]) -> int:
         print("  ok AGENTRAIL_API_KEY configured")
     else:
         print("  info AGENTRAIL_API_KEY not configured (local-only mode — dashboard features disabled)")
+
+    # daemon: section
+    check_daemon_health(target_dir)
 
     # github: section
     check_github_labels(target_dir)

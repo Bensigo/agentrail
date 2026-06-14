@@ -147,16 +147,18 @@ class DaemonServer:
                 last_indexed = self._last_indexed_at
             uptime = (datetime.now(timezone.utc) - self._started_at).total_seconds()
             return {
-                "pid": os.getpid(),
-                "uptimeSeconds": uptime,
-                "lastIndexedAt": last_indexed.isoformat() if last_indexed else None,
-                "socketPath": str(self._socket_path),
-                "state": state,
+                "result": {
+                    "pid": os.getpid(),
+                    "uptimeSeconds": uptime,
+                    "lastIndexedAt": last_indexed.isoformat() if last_indexed else None,
+                    "socketPath": str(self._socket_path),
+                    "state": state,
+                }
             }
 
         if method == "shutdown":
             self._stop_event.set()
-            return {"ok": True}
+            return {"result": {"ok": True}}
 
         # Retrieval methods — serve from in-memory index (no rebuild)
         _serve_cached.active = True

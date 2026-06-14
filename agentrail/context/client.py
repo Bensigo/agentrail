@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from agentrail.context import daemon as _daemon_mod
+from agentrail.context.config import read_context_config
 from agentrail.context.retrieval import (
     context_callers,
     context_callees,
@@ -101,8 +102,18 @@ def _resolve_context_client(target: Path) -> _WarmClient | _ColdClient:
     try:
         socket_path = _daemon_mod.socket_path_for(target)
         if not socket_path.exists():
+            try:
+                if read_context_config(target).daemonAutoSpawn:
+                    _daemon_mod.start_detached(target)
+            except Exception:
+                pass
             return _ColdClient(target)
         _daemon_mod.rpc(socket_path, "ping", timeout=0.1)
         return _WarmClient(target, socket_path)
     except Exception:
+        try:
+            if read_context_config(target).daemonAutoSpawn:
+                _daemon_mod.start_detached(target)
+        except Exception:
+            pass
         return _ColdClient(target)

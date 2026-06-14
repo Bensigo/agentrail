@@ -88,6 +88,7 @@ class ContextConfig:
     summary: ProviderConfig = field(default_factory=ProviderConfig)
     externalSources: List[Dict[str, Any]] = field(default_factory=list)
     codebaseUnits: List[Dict[str, Any]] = field(default_factory=list)
+    daemonAutoSpawn: bool = False
 
 
 def read_context_config(target_dir: Path) -> ContextConfig:
@@ -120,4 +121,5 @@ def read_context_config(target_dir: Path) -> ContextConfig:
         summary=ProviderConfig.from_dict(context.get("summary") if isinstance(context.get("summary"), dict) else None),
         externalSources=context.get("externalSources") if isinstance(context.get("externalSources"), list) else [],
         codebaseUnits=context.get("codebaseUnits") if isinstance(context.get("codebaseUnits"), list) else [],
+        daemonAutoSpawn=bool(context.get("daemonAutoSpawn", False)),
     )

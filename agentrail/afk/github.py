@@ -7,8 +7,9 @@ runner calls them off the event loop via ``asyncio.to_thread`` where needed.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Set, Tuple
 
 
 def _run(args: List[str], check: bool = False) -> Tuple[int, str, str]:
@@ -20,11 +21,59 @@ def _run(args: List[str], check: bool = False) -> Tuple[int, str, str]:
     return proc.returncode, proc.stdout, proc.stderr
 
 
+_BLOCKED_BY_SECTION = re.compile(
+    r"(?im)^\#{1,6}\s*blocked\s*by\s*\n(.*?)(?=^\#{1,6}\s|\Z)", re.S
+)
+
+
+def parse_blocked_by(body: Optional[str]) -> List[int]:
+    """Extract blocker issue numbers from an issue body's ``## Blocked by`` section.
+
+    Only ``#<n>`` references inside that section count — prose like "None — can
+    start immediately." yields ``[]``. Order-preserving, de-duplicated. A body
+    with no Blocked-by section (or no ``#n`` in it) is unblocked.
+    """
+    if not body:
+        return []
+    m = _BLOCKED_BY_SECTION.search(body)
+    if not m:
+        return []
+    nums: List[int] = []
+    seen: Set[int] = set()
+    for tok in re.findall(r"#(\d+)", m.group(1)):
+        n = int(tok)
+        if n not in seen:
+            seen.add(n)
+            nums.append(n)
+    return nums
+
+
+def open_issue_numbers(candidates: Iterable[int]) -> Set[int]:
+    """Return the subset of *candidates* that are still OPEN issues.
+
+    One ``gh`` call lists all open issues; we intersect. Fails open (empty set)
+    on error so a transient GitHub blip does not wedge the queue.
+    """
+    wanted = {int(n) for n in candidates}
+    if not wanted:
+        return set()
+    rc, out, _ = _run([
+        "issue", "list", "--state", "open", "--limit", "500", "--json", "number",
+    ])
+    if rc != 0 or not out.strip():
+        return set()
+    try:
+        open_nums = {int(it["number"]) for it in json.loads(out)}
+    except (ValueError, KeyError, TypeError):
+        return set()
+    return wanted & open_nums
+
+
 def list_queue_issues(afk_label: str, queue_labels: List[str]) -> List[dict]:
     """
     Issues approved for AFK and ready, oldest first, that do NOT already have an
-    open PR. Returns dicts with number/title/url. Original (non review-fix)
-    issues are prioritized over review-fix follow-ups.
+    open PR. Returns dicts with number/title/url/blocked_by. Original (non
+    review-fix) issues are prioritized over review-fix follow-ups.
     """
     seen: dict = {}
     ordered: List[dict] = []
@@ -33,7 +82,7 @@ def list_queue_issues(afk_label: str, queue_labels: List[str]) -> List[dict]:
             "issue", "list", "--state", "open",
             "--label", afk_label, "--label", label,
             "--search", "sort:created-asc -label:afk-in-progress",
-            "--limit", "100", "--json", "number,title,url",
+            "--limit", "100", "--json", "number,title,url,body",
         ])
         if rc != 0 or not out.strip():
             continue
@@ -42,7 +91,12 @@ def list_queue_issues(afk_label: str, queue_labels: List[str]) -> List[dict]:
             if n in seen:
                 continue
             seen[n] = True
-            ordered.append(item)
+            ordered.append({
+                "number": n,
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "blocked_by": parse_blocked_by(item.get("body", "")),
+            })
     return ordered
 
 

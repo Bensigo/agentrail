@@ -112,8 +112,12 @@ def run_afk(args: List[str]) -> int:
     if opts["dry_run"]:
         print(f"AFK dry-run — would process {len(issues)} issue(s) "
               f"at concurrency {opts['concurrency']}:")
+        blockers = sorted({b for it in issues for b in it.get("blocked_by") or ()})
+        open_blockers = gh.open_issue_numbers(blockers) if blockers else set()
         for it in issues:
-            print(f"  #{it['number']} {it['title']}")
+            held = sorted(set(it.get("blocked_by") or ()) & open_blockers)
+            tag = f"  [blocked by {', '.join('#%d' % b for b in held)}]" if held else ""
+            print(f"  #{it['number']} {it['title']}{tag}")
         return 0
 
     # Guard: AFK mutates the main checkout during PR review — it runs

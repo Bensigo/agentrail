@@ -432,3 +432,85 @@ class TestMainRouting(TestCase):
             rc = m.main(["install", "--github-labels"])
         mock_ri.assert_called_once_with(["--github-labels"])
         self.assertEqual(rc, 0)
+
+
+# ---------------------------------------------------------------------------
+# Safe in-place updates: managed blocks, atomic write + backup, dry-run preview
+# ---------------------------------------------------------------------------
+
+class TestSafeUpdates(TestCase):
+    def setUp(self):
+        self.repo = _make_repo()
+        self.target = Path(tempfile.mkdtemp())
+
+    def test_force_backs_up_previous_mcp_json(self):
+        _run(self.repo, "claude", self.target)
+        before = (self.target / ".mcp.json").read_text()
+        _run(self.repo, "cursor", self.target)  # different file, no-op for .mcp.json
+        # change something and force-rewrite to trigger a backup
+        (self.target / ".mcp.json").write_text('{"mcpServers": {"other": {"command": "x"}}}')
+        _run(self.repo, "claude", self.target, extra_args=["--force"])
+        bak = self.target / ".mcp.json.bak"
+        self.assertTrue(bak.exists(), "previous .mcp.json must be backed up before overwrite")
+        # backup holds the pre-write content; live file has both servers merged
+        data = json.loads((self.target / ".mcp.json").read_text())
+        self.assertIn("other", data["mcpServers"])
+        self.assertIn("agentrail-context", data["mcpServers"])
+
+    def test_mcp_json_indent_preserved(self):
+        mcp = self.target / ".mcp.json"
+        mcp.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}, indent=4))
+        _run(self.repo, "claude", self.target)
+        # 4-space indent detected and kept
+        self.assertIn('\n    "mcpServers"', mcp.read_text())
+
+    def test_codex_managed_block_preserves_comments(self):
+        toml = self.target / ".codex" / "config.toml"
+        toml.parent.mkdir(parents=True, exist_ok=True)
+        toml.write_text('# my comment\n[other]\nkeep = "me"  # inline\n')
+        _run(self.repo, "codex", self.target)
+        _run(self.repo, "codex", self.target, extra_args=["--force"])
+        content = toml.read_text()
+        self.assertIn("# my comment", content)
+        self.assertIn('keep = "me"  # inline', content)
+        self.assertIn("# >>> agentrail-context", content)
+        self.assertEqual(content.count("[mcp.servers.agentrail-context]"), 1)
+
+    def test_invalid_json_prints_snippet_to_paste(self):
+        import io
+        from agentrail.cli.commands.init_agent import run_init_agent
+        mcp = self.target / ".mcp.json"
+        mcp.write_text('{ broken')
+        buf = io.StringIO()
+        with patch("agentrail.cli.commands.init_agent._repo_dir", return_value=self.repo), \
+             patch("sys.stderr", buf), patch.dict(os.environ, {}, clear=False):
+            rc = run_init_agent(["claude", "--target", str(self.target)])
+        self.assertEqual(rc, 2)
+        self.assertIn("agentrail-context", buf.getvalue())  # snippet printed
+        self.assertEqual(mcp.read_text(), '{ broken')  # untouched
+
+    def test_dry_run_writes_nothing(self):
+        import io
+        from agentrail.cli.commands.init_agent import run_init_agent
+        out = io.StringIO()
+        with patch("agentrail.cli.commands.init_agent._repo_dir", return_value=self.repo), \
+             patch("sys.stdout", out), patch.dict(os.environ, {}, clear=False):
+            rc = run_init_agent(["codex", "--target", str(self.target), "--print"])
+        self.assertEqual(rc, 0)
+        self.assertFalse((self.target / ".codex" / "config.toml").exists())
+        self.assertFalse((self.target / "AGENTS.md").exists())
+        self.assertIn("would write", out.getvalue())
+
+    def test_agents_md_steering_updates_in_place(self):
+        agents = self.target / "AGENTS.md"
+        agents.write_text(
+            "# Project\n\n<!-- agentrail-mcp:start -->\nOLD STALE BLOCK\n"
+            "<!-- agentrail-mcp:end -->\n\n## Keep me\n"
+        )
+        _run(self.repo, "codex", self.target)
+        content = agents.read_text()
+        self.assertNotIn("OLD STALE BLOCK", content)
+        self.assertIn("Context Retrieval (AgentRail MCP)", content)
+        self.assertIn("# Project", content)
+        self.assertIn("## Keep me", content)
+        self.assertEqual(content.count("agentrail-mcp:start"), 1)

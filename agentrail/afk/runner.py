@@ -19,8 +19,9 @@ import asyncio
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
-from typing import List, Optional
+from typing import FrozenSet, List, Optional
 
 from agentrail.afk import github as gh
 from agentrail.afk import review as review_policy
@@ -32,6 +33,7 @@ from agentrail.afk.state import (
     IssueStatus,
     RecordFailure,
     RequeueIssue,
+    SetBlockedBy,
     SetPr,
     SetStatus,
     Store,
@@ -455,21 +457,75 @@ class Runner:
 
     # --- workers -------------------------------------------------------------
 
+    async def _open_blockers(self, *, force: bool = False) -> FrozenSet[int]:
+        """Set of blocker issue numbers (across the queue) that are still OPEN.
+
+        Cached for ~15s so a tight claim loop doesn't hammer ``gh``. An issue is
+        withheld from claiming while any of its ``blocked_by`` is in this set.
+        Fails open (empty set) if ``gh`` errors, so a transient GitHub blip
+        degrades to the old non-dependency-aware behaviour rather than stalling.
+        """
+        universe = self._blocker_universe
+        if not universe:
+            return frozenset()
+        now = time.monotonic()
+        if force or (now - self._ob_ts) > 15.0:
+            try:
+                self._ob_cache = frozenset(
+                    await asyncio.to_thread(gh.open_issue_numbers, universe)
+                )
+            except Exception:  # noqa: BLE001 - fail open
+                self._ob_cache = frozenset()
+            self._ob_ts = now
+        return self._ob_cache
+
+    def _log_blocked_stall(self, state: AfkState, open_blockers: FrozenSet[int]) -> None:
+        blocked = [
+            (i.number, sorted(set(i.blocked_by) & open_blockers))
+            for i in state.issues.values()
+            if i.status == IssueStatus.QUEUED and (set(i.blocked_by) & open_blockers)
+        ]
+        detail = "; ".join(f"#{n} waits on {b}" for n, b in sorted(blocked))
+        print(
+            "AFK: remaining issues are blocked by still-open issues and nothing "
+            f"is in flight to unblock them — stopping. {detail}",
+            flush=True,
+        )
+
     async def _worker(self, slot: int) -> None:
         while True:
-            claimed = self.store.claim_next()
+            open_blockers = await self._open_blockers()
+            claimed = self.store.claim_next(open_blockers)
             if claimed is None:
-                # nothing claimable right now; stop if fully drained
-                if self.store.state.is_drained():
+                state = self.store.state
+                # fully done?
+                if state.is_drained():
                     return
-                await asyncio.sleep(1)
-                continue
+                # If nothing is in flight but issues remain queued, they must be
+                # withheld by open blockers. Re-check blockers fresh (the cache
+                # may be stale right after a blocker merged) before giving up.
+                if state.active_count() == 0 and state.next_queued() is not None:
+                    fresh = await self._open_blockers(force=True)
+                    claimed = self.store.claim_next(fresh)
+                    if claimed is None:
+                        self._log_blocked_stall(state, fresh)
+                        return
+                else:
+                    await asyncio.sleep(1)
+                    continue
             try:
                 await self._process(slot, claimed)
             except Exception as exc:  # noqa: BLE001
                 self._fail(claimed.number, f"worker exception: {exc}")
 
     async def run(self) -> AfkState:
+        # Universe of blocker issue numbers referenced across the queue, used to
+        # batch-resolve which blockers are still open (see _open_blockers).
+        self._blocker_universe: FrozenSet[int] = frozenset(
+            b for i in self.store.state.issues.values() for b in i.blocked_by
+        )
+        self._ob_cache: FrozenSet[int] = frozenset()
+        self._ob_ts: float = -1.0e9
         workers = [asyncio.create_task(self._worker(s))
                    for s in range(self.concurrency)]
         await asyncio.gather(*workers)
@@ -509,15 +565,22 @@ def build_store(target: Path, *, concurrency: int, max_retries: int,
     store._session_id = session_id  # expose for Runner.session_id wiring
     for item in issues:
         num = item["number"]
+        blocked_by = tuple(item.get("blocked_by") or ())
         existing_issue = store.state.issues.get(num)
         if existing_issue is None:
-            store.dispatch(EnqueueIssue(num, item.get("title", ""), item.get("url", "")))
-        elif existing_issue.status != IssueStatus.QUEUED:
-            # The issue is still open in the GitHub queue but the saved snapshot
-            # has it in some non-queued state — either terminal (human_review /
-            # merged) or an in-flight state (reviewing / running) orphaned by a
-            # killed run. On a fresh process nothing is actually in flight, so
-            # reset it for a clean attempt (RequeueIssue keeps the PR ref, so
-            # the pipeline reviews the existing PR rather than re-implementing).
-            store.dispatch(RequeueIssue(num))
+            store.dispatch(EnqueueIssue(num, item.get("title", ""),
+                                        item.get("url", ""), blocked_by=blocked_by))
+        else:
+            # Refresh blockers from the freshly-parsed body (handles snapshots
+            # written before dependency-awareness existed, or re-scoped deps).
+            store.dispatch(SetBlockedBy(num, blocked_by))
+            if existing_issue.status != IssueStatus.QUEUED:
+                # The issue is still open in the GitHub queue but the saved
+                # snapshot has it in some non-queued state — either terminal
+                # (human_review / merged) or an in-flight state (reviewing /
+                # running) orphaned by a killed run. On a fresh process nothing
+                # is actually in flight, so reset it for a clean attempt
+                # (RequeueIssue keeps the PR ref, so the pipeline reviews the
+                # existing PR rather than re-implementing).
+                store.dispatch(RequeueIssue(num))
     return store

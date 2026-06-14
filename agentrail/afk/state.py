@@ -17,7 +17,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, FrozenSet, List, Optional, Tuple
 
 
 class IssueStatus(str, Enum):
@@ -50,6 +50,9 @@ class IssueState:
     retries: int = 0
     review_rounds: int = 0
     error: Optional[str] = None
+    # Issue numbers this issue is blocked by (parsed from its "## Blocked by"
+    # section). An issue is not claimable while any of these is still OPEN.
+    blocked_by: Tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,29 @@ class AfkState:
         if not candidates:
             return None
         return sorted(candidates, key=lambda i: i.number)[0]
+
+    def next_claimable(self, open_blockers: FrozenSet[int] = frozenset()) -> Optional[IssueState]:
+        """Lowest-numbered QUEUED issue whose blockers are all resolved. Pure.
+
+        An issue is claimable only when none of its ``blocked_by`` numbers is in
+        *open_blockers* (the set of blocker issues still open). With an empty
+        *open_blockers* this is identical to :meth:`next_queued`.
+        """
+        candidates = [
+            i for i in self.issues.values()
+            if i.status == IssueStatus.QUEUED
+            and not (open_blockers and set(i.blocked_by) & open_blockers)
+        ]
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda i: i.number)[0]
+
+    def has_blocked_pending(self, open_blockers: FrozenSet[int]) -> bool:
+        """True when some issue is QUEUED but withheld by an open blocker."""
+        return any(
+            i.status == IssueStatus.QUEUED and (set(i.blocked_by) & open_blockers)
+            for i in self.issues.values()
+        )
 
     def free_slot(self) -> Optional[int]:
         for idx in range(self.concurrency):
@@ -99,6 +125,14 @@ class EnqueueIssue:
     number: int
     title: str
     url: str
+    blocked_by: Tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class SetBlockedBy:
+    """Refresh an existing issue's blocker list (e.g. on resume / re-seed)."""
+    number: int
+    blocked_by: Tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -174,8 +208,15 @@ def reduce(state: AfkState, action: Action) -> AfkState:
         if action.number in issues:
             return state  # idempotent: already known
         issues[action.number] = IssueState(
-            number=action.number, title=action.title, url=action.url
+            number=action.number, title=action.title, url=action.url,
+            blocked_by=tuple(action.blocked_by),
         )
+
+    elif isinstance(action, SetBlockedBy):
+        issue = issues.get(action.number)
+        if issue is None or tuple(issue.blocked_by) == tuple(action.blocked_by):
+            return state  # unknown issue or no change
+        issues[action.number] = replace(issue, blocked_by=tuple(action.blocked_by))
 
     elif isinstance(action, ClaimIssue):
         issue = _require(state, action.number)
@@ -319,8 +360,8 @@ class Store:
     # Atomic claim: select + transition in one synchronous step. This is the
     # slot-race fix — only one coroutine runs this at a time, so the gap between
     # "pick next" and "mark claimed" cannot interleave.
-    def claim_next(self) -> Optional[IssueState]:
-        nxt = self._state.next_queued()
+    def claim_next(self, open_blockers: FrozenSet[int] = frozenset()) -> Optional[IssueState]:
+        nxt = self._state.next_claimable(open_blockers)
         if nxt is None:
             return None
         slot = self._state.free_slot()

@@ -64,6 +64,32 @@ class GitCommandsTests(unittest.TestCase):
         self.assertGreaterEqual(len(result), 1)
         self.assertTrue(SHA_RE.match(result[0]["sha"]))
 
+    def test_history_parity_author_date_format(self):
+        """Both paths must return the same author (email-only) and date (%ai) format."""
+        EMAIL_RE = re.compile(r"^[^@\s<>]+@[^@\s<>]+$")
+        # %ai format: "YYYY-MM-DD HH:MM:SS +HHMM"
+        DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}$")
+
+        root = self.make_repo()
+        regular = git_history(root, "sample.py")
+        symbol = git_history(root, "sample.py", symbol="greet")
+
+        self.assertGreaterEqual(len(regular), 1)
+        self.assertGreaterEqual(len(symbol), 1)
+
+        # The fixture has one commit that touches both the file and greet.
+        # Find the shared SHA and compare field values directly.
+        regular_by_sha = {e["sha"]: e for e in regular}
+        for sym_entry in symbol:
+            sha = sym_entry["sha"]
+            self.assertIn(sha, regular_by_sha, f"symbol SHA {sha} not found in regular history")
+            reg_entry = regular_by_sha[sha]
+            self.assertEqual(sym_entry["author"], reg_entry["author"], "author fields differ")
+            self.assertEqual(sym_entry["date"], reg_entry["date"], "date fields differ")
+            # Verify the actual format (email-only, no angle brackets or spaces)
+            self.assertRegex(sym_entry["author"], EMAIL_RE, "author must be email-only")
+            self.assertRegex(sym_entry["date"], DATE_RE, "date must be %ai format")
+
     def test_changed_clean_tree_empty(self):
         root = self.make_repo()
         self.assertEqual(git_changed(root, since="HEAD"), [])

@@ -89,7 +89,7 @@ def _poll_state(sock: Path, target_state: str, deadline: float, interval: float 
     while time.monotonic() < deadline:
         try:
             resp = daemon_mod.rpc(sock, "status", timeout=5.0)
-            if resp.get("state") == target_state:
+            if resp.get("result", {}).get("state") == target_state:
                 return True
         except (OSError, TimeoutError, ValueError):
             pass
@@ -102,7 +102,7 @@ def _poll_until_reindexed(sock: Path, initial_indexed_at: str | None, deadline: 
     while time.monotonic() < deadline:
         try:
             resp = daemon_mod.rpc(sock, "status", timeout=5.0)
-            current = resp.get("lastIndexedAt")
+            current = resp.get("result", {}).get("lastIndexedAt")
             if current is not None and current != initial_indexed_at:
                 return True
         except (OSError, TimeoutError, ValueError):
@@ -164,7 +164,7 @@ class TestDaemonStaleness(unittest.TestCase):
 
         # Confirm initial state is running
         resp = daemon_mod.rpc(self._sock, "status", timeout=5.0)
-        self.assertEqual(resp.get("state"), "running", "Expected initial state=running")
+        self.assertEqual(resp.get("result", {}).get("state"), "running", "Expected initial state=running")
 
         # Write to the source file.  Because the repo fixture aged index.json to
         # 60 s ago, any write with current mtime is clearly newer.
@@ -186,7 +186,7 @@ class TestDaemonStaleness(unittest.TestCase):
         self.assertTrue(daemon_mod._wait_for_socket(self._sock, timeout=10.0))
 
         initial_resp = daemon_mod.rpc(self._sock, "status", timeout=5.0)
-        initial_indexed_at = initial_resp.get("lastIndexedAt")
+        initial_indexed_at = initial_resp.get("result", {}).get("lastIndexedAt")
 
         # Write to the source file (current mtime >> aged index.json mtime).
         source_file = self._tmp / "src" / "base.py"
@@ -210,7 +210,7 @@ class TestDaemonStaleness(unittest.TestCase):
 
         resp = daemon_mod.rpc(self._sock, "status", timeout=5.0)
         self.assertEqual(
-            resp.get("state"), "running", "Expected state=running after reindex"
+            resp.get("result", {}).get("state"), "running", "Expected state=running after reindex"
         )
 
     def test_post_reindex_query_reflects_modified_file(self) -> None:
@@ -221,7 +221,7 @@ class TestDaemonStaleness(unittest.TestCase):
 
         # Capture the initial lastIndexedAt so we can detect the reindex.
         initial_resp = daemon_mod.rpc(self._sock, "status", timeout=5.0)
-        initial_indexed_at = initial_resp.get("lastIndexedAt")
+        initial_indexed_at = initial_resp.get("result", {}).get("lastIndexedAt")
 
         # Write a new file with the unique token (fingerprint change → reliably stale).
         new_file = self._tmp / "src" / "new_feature.py"
@@ -242,7 +242,7 @@ class TestDaemonStaleness(unittest.TestCase):
 
         # State must be running after the reindex settles.
         resp = daemon_mod.rpc(self._sock, "status", timeout=5.0)
-        self.assertEqual(resp.get("state"), "running", "Expected state=running after reindex")
+        self.assertEqual(resp.get("result", {}).get("state"), "running", "Expected state=running after reindex")
 
         # Query the daemon for the unique token via RPC.
         resp = daemon_mod.rpc(

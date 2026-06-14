@@ -110,15 +110,50 @@ def _write_mcp_json(path: Path, server_entry: Dict, force: bool) -> bool:
     if path.exists():
         try:
             existing = json.loads(path.read_text())
-        except (OSError, ValueError):
-            existing = {}
-        if not force and "mcpServers" in existing and "agentrail-context" in existing["mcpServers"]:
+        except (OSError, ValueError) as exc:
+            # Never silently discard a config we cannot parse — that would drop
+            # any other MCP servers the user has wired. Refuse and let them fix it.
+            raise UsageError(
+                f"refusing to modify {path}: it exists but is not valid JSON "
+                f"({exc}). Fix or remove it, then re-run."
+            )
+        if not isinstance(existing, dict):
+            raise UsageError(
+                f"refusing to modify {path}: top-level JSON is not an object."
+            )
+        if not force and "agentrail-context" in existing.get("mcpServers", {}):
             return False
 
     existing.setdefault("mcpServers", {})["agentrail-context"] = server_entry
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(existing, indent=2) + "\n")
     return True
+
+
+_CODEX_HEADERS = (
+    "[mcp.servers.agentrail-context]",
+    "[mcp.servers.agentrail-context.env]",
+)
+
+
+def _strip_agentrail_codex_section(text: str) -> str:
+    """Remove any existing agentrail-context section group from TOML text.
+
+    A TOML section runs until the next ``[`` header at line start, so we drop
+    every line belonging to one of our two known headers. Used under --force so
+    we replace the section in place instead of appending a duplicate (which most
+    TOML parsers reject).
+    """
+    out: List[str] = []
+    skipping = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("["):
+            header = stripped.split("]", 1)[0] + "]"
+            skipping = header in _CODEX_HEADERS
+        if not skipping:
+            out.append(line)
+    return "".join(out)
 
 
 def _write_codex_toml(path: Path, server_entry: Dict, force: bool) -> bool:
@@ -131,8 +166,14 @@ def _write_codex_toml(path: Path, server_entry: Dict, force: bool) -> bool:
     existing_text = ""
     if path.exists():
         existing_text = path.read_text()
-        if not force and "[mcp.servers.agentrail-context]" in existing_text:
-            return False
+        if "[mcp.servers.agentrail-context]" in existing_text:
+            if not force:
+                return False
+            # force=True: drop the old section so we replace rather than
+            # duplicate it (duplicate top-level keys are invalid TOML).
+            existing_text = _strip_agentrail_codex_section(existing_text).rstrip("\n")
+            if existing_text:
+                existing_text += "\n"
 
     mcp_dist = server_entry["args"][0]
     agentrail_bin = server_entry["env"].get("AGENTRAIL_BIN", "")
@@ -215,6 +256,15 @@ def run_init_agent(args: List[str]) -> int:
             print(str(exc), file=sys.stderr)
         return exc.code
 
+    try:
+        return _run_init_agent(agent, target_str, force)
+    except UsageError as exc:
+        if str(exc):
+            print(str(exc), file=sys.stderr)
+        return exc.code
+
+
+def _run_init_agent(agent: str, target_str: str, force: bool) -> int:
     target_dir = Path(target_str).resolve()
     repo_dir = _repo_dir()
 

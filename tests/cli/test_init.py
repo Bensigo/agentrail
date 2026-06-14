@@ -309,6 +309,51 @@ class TestIdempotency(TestCase):
         data = json.loads((self.target / ".mcp.json").read_text())
         self.assertEqual(data["mcpServers"]["agentrail-context"]["command"], "node")
 
+    def test_codex_force_replaces_not_duplicates(self):
+        """--force must replace the section, not append a duplicate (invalid TOML)."""
+        _run(self.repo, "codex", self.target)
+        rc = _run(self.repo, "codex", self.target, extra_args=["--force"])
+        self.assertEqual(rc, 0)
+        content = (self.target / ".codex" / "config.toml").read_text()
+        self.assertEqual(content.count("[mcp.servers.agentrail-context]"), 1)
+        self.assertEqual(content.count("[mcp.servers.agentrail-context.env]"), 1)
+
+    def test_codex_force_preserves_other_sections(self):
+        """--force strips only our section; the user's other TOML is preserved."""
+        toml = self.target / ".codex" / "config.toml"
+        toml.parent.mkdir(parents=True, exist_ok=True)
+        toml.write_text('[other]\nkeep = "me"\n')
+        _run(self.repo, "codex", self.target)
+        _run(self.repo, "codex", self.target, extra_args=["--force"])
+        content = toml.read_text()
+        self.assertIn('[other]', content)
+        self.assertIn('keep = "me"', content)
+        self.assertEqual(content.count("[mcp.servers.agentrail-context]"), 1)
+
+
+class TestNoSilentDataLoss(TestCase):
+    """init must never silently discard config it cannot understand."""
+
+    def setUp(self):
+        self.repo = _make_repo()
+        self.target = Path(tempfile.mkdtemp())
+
+    def test_claude_preserves_other_mcp_servers(self):
+        mcp = self.target / ".mcp.json"
+        mcp.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}))
+        _run(self.repo, "claude", self.target)
+        data = json.loads(mcp.read_text())
+        self.assertIn("other", data["mcpServers"])
+        self.assertIn("agentrail-context", data["mcpServers"])
+
+    def test_refuses_to_clobber_invalid_json(self):
+        mcp = self.target / ".mcp.json"
+        original = '{"mcpServers": {"other": {"command": "x"}}'  # missing closing brace
+        mcp.write_text(original)
+        rc = _run(self.repo, "claude", self.target)
+        self.assertNotEqual(rc, 0, "must refuse rather than overwrite unparseable JSON")
+        self.assertEqual(mcp.read_text(), original, "file must be left untouched")
+
 
 # ---------------------------------------------------------------------------
 # Arg parsing and routing

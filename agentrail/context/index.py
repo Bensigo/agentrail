@@ -1956,6 +1956,15 @@ def _build_postings(records_json: List[Dict[str, Any]], chunks_json: List[Dict[s
 
 
 def build_index(target_dir: Path, config: ContextConfig | None = None) -> Dict[str, Any]:
+    # Guard: daemon request threads must never trigger a synchronous re-index.
+    # The daemon server sets this flag in daemon_server._serve_cached before
+    # calling retrieval functions so that serve always returns the cached index.
+    try:
+        from agentrail.context import daemon_server as _ds
+        if _ds._is_serve_cached():
+            return load_index(target_dir.resolve())
+    except ImportError:
+        pass
     root = target_dir.resolve()
     index_path = root / ".agentrail" / "context" / "index" / "index.json"
     cfg = config or read_context_config(root)

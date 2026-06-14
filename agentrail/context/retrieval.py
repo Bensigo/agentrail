@@ -240,15 +240,18 @@ def get_file_lines(target_dir: Path, path: str, line_start: int, line_end: int) 
     }
 
 
-def context_def(root: Path, name: str) -> List[Dict[str, Any]]:
+def context_def(root: Path, name: str, *, index: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """Look up symbol NAME in index.json symbolTable (O(1)).
 
     Returns house-schema items for all matching definitions.  Multi-definition
     aware: all matches are returned (same name, multiple files).  Entries with
     ``authority: "denied"`` are excluded.  Returns an empty list when the symbol
     is unknown or the index has no symbolTable.
+
+    Pass ``index=`` to skip the disk read (daemon warm path).
     """
-    index = load_index(root)
+    if index is None:
+        index = load_index(root)
     records = index.get("symbolTable", {}).get(name, [])
     results: List[Dict[str, Any]] = []
     for rec in records:
@@ -280,15 +283,18 @@ def context_def(root: Path, name: str) -> List[Dict[str, Any]]:
     return results
 
 
-def context_callers(root: Path, name: str) -> List[Dict[str, Any]]:
+def context_callers(root: Path, name: str, *, index: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """Return house-schema items for every distinct call site that invokes NAME.
 
     Traverses ``calls`` graph edges where ``to`` resolves to a symbol node
     for NAME.  One item per distinct ``(callerPath, callerLine)`` call site.
     Denied-authority sources are excluded.  Returns [] when NAME has no
     inbound edges or is unknown.
+
+    Pass ``index=`` to skip the disk read (daemon warm path).
     """
-    index = load_index(root)
+    if index is None:
+        index = load_index(root)
     graph = index.get("graph", {})
 
     # Build denied-path set from symbolTable authority records (belt-and-suspenders;
@@ -360,7 +366,7 @@ def context_callers(root: Path, name: str) -> List[Dict[str, Any]]:
     return results
 
 
-def context_callees(root: Path, name: str) -> List[Dict[str, Any]]:
+def context_callees(root: Path, name: str, *, index: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """Return house-schema items for every symbol NAME calls.
 
     Traverses ``calls`` graph edges where ``from`` resolves to a symbol node
@@ -368,8 +374,11 @@ def context_callees(root: Path, name: str) -> List[Dict[str, Any]]:
     definition.  Unresolved stubs are always included with ``resolved: false``
     and ``unresolvedReason``.  Resolved items from denied-authority sources
     are excluded.  Returns [] when NAME has no outbound edges or is unknown.
+
+    Pass ``index=`` to skip the disk read (daemon warm path).
     """
-    index = load_index(root)
+    if index is None:
+        index = load_index(root)
     graph = index.get("graph", {})
     symbol_table = index.get("symbolTable", {})
 
@@ -526,7 +535,7 @@ def _bfs_transitive_callers(
     return visited
 
 
-def context_impact(root: Path, name: str, depth: int = 3) -> List[Dict[str, Any]]:
+def context_impact(root: Path, name: str, depth: int = 3, *, index: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """Return house-schema items for the blast radius of NAME.
 
     Performs BFS over inbound ``calls`` edges from NAME's symbol node(s) up to
@@ -536,8 +545,11 @@ def context_impact(root: Path, name: str, depth: int = 3) -> List[Dict[str, Any]
 
     Denied-authority sources are excluded.  Returns ``[]`` (not an error) when
     NAME has no symbol nodes or no callers/tests/importers.
+
+    Pass ``index=`` to skip the disk read (daemon warm path).
     """
-    index = load_index(root)
+    if index is None:
+        index = load_index(root)
     graph = index.get("graph", {})
 
     # Build denied-path set from symbolTable authority records.
@@ -1076,14 +1088,15 @@ def _extract_retrieval_seeds(corpus: List[Dict[str, Any]], pre_bm25: Dict[str, f
     return seeds
 
 
-def query_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str, Any]:
+def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     from agentrail.context.planner import classify_query
 
     planner = classify_query(query)
     exact_mode = planner["retrievalMode"] in {"exact", "exact_bm25", "exact_graph"}
     root = target_dir.resolve()
-    build_index(root)
-    index = load_index(root)
+    if index is None:
+        build_index(root)
+        index = load_index(root)
     sources = {record["id"]: record for record in index.get("records", [])}
     items = [(sources.get(chunk.get("sourceId"), {}), chunk) for chunk in index.get("chunks", [])] if index.get("chunks") else [(record, None) for record in index.get("records", [])]
     query_tokens = unique(tokenize(query))
@@ -1428,14 +1441,16 @@ def _bounded_snippet(content: Any, *, max_lines: int = 10, max_chars: int = 600)
     return snippet
 
 
-def search_context(target_dir: Path, query: str, *, limit: int = 20) -> Dict[str, Any]:
+def search_context(target_dir: Path, query: str, *, limit: int = 20, index: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Compact exact-leaning retrieval.
 
     Returns ranked candidates as path + line range + symbol + bounded snippet +
     reason + score, never whole-file bodies.  Whole-file or wider context must be
     fetched explicitly with ``get_file_lines`` / ``get_file_symbol``.
+
+    Pass ``index=`` to skip the disk read (daemon warm path).
     """
-    raw = query_context(target_dir, query, limit=limit)
+    raw = query_context(target_dir, query, limit=limit, index=index)
     results: List[Dict[str, Any]] = []
     for entry in raw.get("results", []):
         line_start = entry.get("startLine") or 1

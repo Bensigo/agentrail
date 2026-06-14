@@ -132,6 +132,8 @@ class TestDaemonStaleness(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 self._proc.kill()
         self._sock.unlink(missing_ok=True)
+        import shutil
+        shutil.rmtree(self._tmp, ignore_errors=True)
 
     def _spawn(self, interval: float = 2.0) -> None:
         env = os.environ.copy()

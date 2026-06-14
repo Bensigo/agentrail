@@ -161,7 +161,7 @@ def _run_daemon(args: List[str]) -> int:
         if socket_path.exists() and _daemon_mod.ping(socket_path):
             try:
                 status_resp = _daemon_mod.rpc(socket_path, "status")
-                pid = status_resp.get("pid", "?")
+                pid = status_resp.get("result", status_resp).get("pid", "?")
             except Exception:
                 pid = "?"
             print(f"Daemon already running (pid={pid})")
@@ -206,17 +206,18 @@ def _run_daemon(args: List[str]) -> int:
     except Exception as exc:
         print(f"Daemon not running for target {target}", file=sys.stderr)
         return 1
+    status = resp.get("result", resp)
     if json_output:
-        _print_json(resp)
+        _print_json(status)
     else:
-        pid = resp.get("pid", "?")
-        uptime = resp.get("uptimeSeconds", "?")
-        last_indexed = resp.get("lastIndexedAt", "?")
-        state = resp.get("state", "?")
+        pid = status.get("pid", "?")
+        uptime = status.get("uptimeSeconds", "?")
+        last_indexed = status.get("lastIndexedAt", "?")
+        state = status.get("state", "?")
         print(f"PID:          {pid}")
         print(f"uptime:       {uptime}s")
         print(f"last indexed: {last_indexed}")
-        print(f"socket:       {resp.get('socketPath', socket_path)}")
+        print(f"socket:       {status.get('socketPath', socket_path)}")
         print(f"state:        {state}")
     return 0
 

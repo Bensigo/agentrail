@@ -79,11 +79,13 @@ class _FakeDaemonServer:
 
     def _status_response(self) -> dict:
         return {
-            "pid": self.pid,
-            "uptimeSeconds": 42,
-            "lastIndexedAt": "2026-06-14T00:00:00Z",
-            "socketPath": str(self.socket_path),
-            "state": "running",
+            "result": {
+                "pid": self.pid,
+                "uptimeSeconds": 42,
+                "lastIndexedAt": "2026-06-14T00:00:00Z",
+                "socketPath": str(self.socket_path),
+                "state": "running",
+            }
         }
 
     def _handle(self, conn: socket.socket) -> None:
@@ -107,7 +109,7 @@ class _FakeDaemonServer:
             if method == "status":
                 resp = self._status_response()
             elif method == "shutdown":
-                resp = {"ok": True}
+                resp = {"result": {"ok": True}}
                 conn.sendall(json.dumps(resp).encode())
                 conn.close()
                 # Shut down the server after responding
@@ -199,11 +201,13 @@ class TestRpcAndPing(unittest.TestCase):
 
     def test_rpc_status_returns_expected_fields(self) -> None:
         resp = daemon_mod.rpc(self._sock, "status", timeout=3.0)
-        self.assertIn("pid", resp)
-        self.assertIn("uptimeSeconds", resp)
-        self.assertIn("lastIndexedAt", resp)
-        self.assertIn("socketPath", resp)
-        self.assertIn("state", resp)
+        self.assertIn("result", resp)
+        status = resp["result"]
+        self.assertIn("pid", status)
+        self.assertIn("uptimeSeconds", status)
+        self.assertIn("lastIndexedAt", status)
+        self.assertIn("socketPath", status)
+        self.assertIn("state", status)
 
     def test_ping_returns_true_when_server_running(self) -> None:
         self.assertTrue(daemon_mod.ping(self._sock, timeout=2.0))
@@ -441,11 +445,13 @@ class TestRealDaemonLifecycle(unittest.TestCase):
         self._spawn()
         self.assertTrue(daemon_mod._wait_for_socket(self._sock, timeout=10.0))
         resp = daemon_mod.rpc(self._sock, "status", timeout=5.0)
-        self.assertIsInstance(resp.get("pid"), int, "pid must be int")
-        self.assertIsInstance(resp.get("uptimeSeconds"), float, "uptimeSeconds must be float")
-        self.assertIsInstance(resp.get("socketPath"), str, "socketPath must be str")
-        self.assertIsInstance(resp.get("state"), str, "state must be str")
-        last_indexed = resp.get("lastIndexedAt")
+        self.assertIn("result", resp)
+        status = resp["result"]
+        self.assertIsInstance(status.get("pid"), int, "pid must be int")
+        self.assertIsInstance(status.get("uptimeSeconds"), float, "uptimeSeconds must be float")
+        self.assertIsInstance(status.get("socketPath"), str, "socketPath must be str")
+        self.assertIsInstance(status.get("state"), str, "state must be str")
+        last_indexed = status.get("lastIndexedAt")
         self.assertTrue(
             last_indexed is None or isinstance(last_indexed, str),
             f"lastIndexedAt must be str or None, got {type(last_indexed)}",
@@ -456,7 +462,8 @@ class TestRealDaemonLifecycle(unittest.TestCase):
         self._spawn()
         self.assertTrue(daemon_mod._wait_for_socket(self._sock, timeout=10.0))
         resp = daemon_mod.rpc(self._sock, "status", timeout=5.0)
-        self.assertEqual(resp.get("pid"), self._proc.pid)
+        self.assertIn("result", resp)
+        self.assertEqual(resp["result"].get("pid"), self._proc.pid)
 
     def test_clean_shutdown(self) -> None:
         """AC1: sending shutdown removes the socket and exits the process."""

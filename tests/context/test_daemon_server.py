@@ -431,5 +431,131 @@ class TestBuildSuppression(unittest.TestCase):
             ds._serve_cached.active = False
 
 
+# ---------------------------------------------------------------------------
+# Issue #688: AC2 — daemon dispatch never calls build_index per query
+# ---------------------------------------------------------------------------
+
+class TestDaemonNoBuildIndexPerQuery(unittest.TestCase):
+    """AC2 (#688): build_index must not be called on the daemon query path."""
+
+    def setUp(self) -> None:
+        self._tmp = Path(tempfile.mkdtemp()).resolve()
+        self._server: DaemonServer | None = None
+
+    def tearDown(self) -> None:
+        if self._server:
+            _stop_server(self._server)
+
+    def test_ac2_688_build_index_not_called_on_query(self) -> None:
+        """AC2: daemon query dispatch passes index= to query_context; build_index call count == 0."""
+        fake_index = {"records": [], "chunks": [], "graph": {"nodes": [], "edges": []}, "symbolTable": {}}
+        with mock.patch("agentrail.context.daemon_server.DaemonServer._load_index_from_disk"), \
+             mock.patch("agentrail.context.index.build_index") as mock_build:
+            server = _start_server(self._tmp)
+            self._server = server
+            # Inject a known index directly (bypasses disk)
+            with server._lock:
+                server._index = fake_index
+
+        mock_build.reset_mock()
+
+        # Patch retrieval to record whether build_index was invoked on the retrieval side.
+        build_index_calls: list[int] = []
+
+        def _counting_build_index(*args: object, **kwargs: object) -> dict:
+            build_index_calls.append(1)
+            return {}
+
+        with mock.patch("agentrail.context.index.build_index", side_effect=_counting_build_index), \
+             mock.patch("agentrail.context.retrieval.query_context", return_value=_QUERY_RESULT) as mock_qc:
+            resp = daemon_mod.rpc(
+                server._socket_path, "query",
+                params={"query": "alpha_token", "limit": 5},
+                timeout=3.0,
+            )
+
+        self.assertIn("result", resp)
+        # build_index must not be called during a daemon query
+        self.assertEqual(
+            build_index_calls, [],
+            f"build_index was called {len(build_index_calls)} time(s) during a daemon query",
+        )
+        # query_context must have been called with index= kwarg (not None)
+        mock_qc.assert_called_once()
+        _, kw = mock_qc.call_args
+        self.assertIn("index", kw, "query_context was not called with index= kwarg")
+        self.assertIs(kw["index"], fake_index, "query_context received wrong index object")
+
+    def test_ac2_688_def_rpc_uses_passed_index(self) -> None:
+        """AC2: daemon 'def' RPC passes index= to context_def; no load_index disk read."""
+        fake_index = {"records": [], "chunks": [], "graph": {"nodes": [], "edges": []}, "symbolTable": {}}
+        with mock.patch("agentrail.context.daemon_server.DaemonServer._load_index_from_disk"), \
+             mock.patch("agentrail.context.index.build_index"):
+            server = _start_server(self._tmp)
+            self._server = server
+            with server._lock:
+                server._index = fake_index
+
+        with mock.patch("agentrail.context.retrieval.context_def", return_value=[]) as mock_def:
+            resp = daemon_mod.rpc(
+                server._socket_path, "def",
+                params={"name": "my_func"},
+                timeout=3.0,
+            )
+
+        self.assertIn("result", resp)
+        mock_def.assert_called_once()
+        _, kw = mock_def.call_args
+        self.assertIn("index", kw, "context_def was not called with index= kwarg")
+        self.assertIs(kw["index"], fake_index)
+
+
+# ---------------------------------------------------------------------------
+# Issue #688: AC3 — query_context with index= returns identical results to cold path
+# ---------------------------------------------------------------------------
+
+class TestQueryContextIndexParamIdentity(unittest.TestCase):
+    """AC3 (#688): query_context(root, q, index=load_index(root)) == query_context(root, q)."""
+
+    def test_ac3_688_index_param_yields_identical_results(self) -> None:
+        """AC3: passing index= to query_context returns same result as cold path."""
+        import json
+        import subprocess
+        from agentrail.context.index import build_index, load_index
+        from agentrail.context.retrieval import query_context
+
+        root = Path(tempfile.mkdtemp()).resolve()
+        subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+        (root / ".agentrail").mkdir()
+        (root / ".agentrail" / "config.json").write_text(json.dumps({
+            "schemaVersion": 1,
+            "context": {
+                "includeGlobs": ["**/*"],
+                "excludeGlobs": [".git/**", ".agentrail/context/**"],
+                "maxFileSizeBytes": 262144,
+                "skipBinary": True,
+                "respectGitIgnore": True,
+                "secretRedaction": {"enabled": False, "action": "exclude", "denyGlobs": []},
+                "embedding": {"mode": "disabled", "provider": None, "model": None},
+                "summary": {"mode": "disabled", "provider": None, "model": None},
+            },
+        }), encoding="utf-8")
+        (root / "src").mkdir()
+        (root / "src" / "widget.py").write_text(
+            "def alpha_token_handler():\n    return 42\n", encoding="utf-8"
+        )
+
+        build_index(root)
+        idx = load_index(root)
+
+        cold = query_context(root, "alpha_token_handler")
+        warm = query_context(root, "alpha_token_handler", index=idx)
+
+        cold_paths = [r["path"] for r in cold.get("results", [])]
+        warm_paths = [r["path"] for r in warm.get("results", [])]
+        self.assertEqual(cold_paths, warm_paths, "Ranking differs between cold and warm (index=) paths")
+        self.assertEqual(cold.get("retrievalMode"), warm.get("retrievalMode"))
+
+
 if __name__ == "__main__":
     unittest.main()

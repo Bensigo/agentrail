@@ -177,28 +177,31 @@ class DaemonServer:
             context_impact,
         )
         root = self._root
+        # Serve directly from the in-memory index — no build_index/load_index per query.
+        with self._lock:
+            index = self._index
         try:
             if method == "query":
                 query = params.get("query", "")
                 limit = int(params.get("limit", 20))
-                return {"result": query_context(root, query, limit=limit)}
+                return {"result": query_context(root, query, limit=limit, index=index)}
             if method == "search":
                 query = params.get("query", "")
                 limit = int(params.get("limit", 20))
-                return {"result": search_context(root, query, limit=limit)}
+                return {"result": search_context(root, query, limit=limit, index=index)}
             if method == "def":
                 name = params.get("name", "")
-                return {"result": context_def(root, name)}
+                return {"result": context_def(root, name, index=index)}
             if method == "callers":
                 name = params.get("name", "")
-                return {"result": context_callers(root, name)}
+                return {"result": context_callers(root, name, index=index)}
             if method == "callees":
                 name = params.get("name", "")
-                return {"result": context_callees(root, name)}
+                return {"result": context_callees(root, name, index=index)}
             if method == "impact":
                 name = params.get("name", "")
                 depth = int(params.get("depth", 3))
-                return {"result": context_impact(root, name, depth=depth)}
+                return {"result": context_impact(root, name, depth=depth, index=index)}
             return {"error": f"unknown method: {method}"}
         except Exception as exc:
             return {"error": str(exc)}

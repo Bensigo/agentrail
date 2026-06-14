@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import signal
 import statistics
 import subprocess
 import tempfile
@@ -10,11 +12,13 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+from agentrail.context import daemon as _daemon_helpers
 from agentrail.context.benchmark import (
     BENCHMARK_VARIANTS,
     format_benchmark_summary,
     run_benchmark,
 )
+from agentrail.context.client import _resolve_context_client
 from agentrail.context.index import build_index
 from agentrail.context.retrieval import query_context
 
@@ -340,6 +344,112 @@ class ColdLatencyBenchmarkTests(unittest.TestCase):
         self.assertIn("builtAt", data)
         self.assertIn("postings", data)
         self.assertIsInstance(data["postings"], dict)
+
+
+def _print_latency_table(
+    rows: list[tuple[str, str, float, float, bool]],
+    *,
+    title: str,
+) -> None:
+    """Print a latency results table to stdout.
+
+    Each row: (run_label, path, latency_ms, threshold_ms, pass_flag)
+    """
+    print("\n")
+    print(f"## {title}")
+    print("")
+    print(f"| {'run':<8} | {'path':<8} | {'latency_ms':>10} | {'threshold_ms':>12} | {'pass':<4} |")
+    print(f"|{'-'*10}|{'-'*10}|{'-'*12}|{'-'*14}|{'-'*6}|")
+    for run_label, path, latency_ms, threshold_ms, passed in rows:
+        pass_str = "PASS" if passed else "FAIL"
+        print(f"| {run_label:<8} | {path:<8} | {latency_ms:>10.1f} | {threshold_ms:>12.1f} | {pass_str:<4} |")
+    print("")
+
+
+def test_cold_query_latency() -> None:
+    """AC1 (M020): cold query latency (no daemon) — median < 1.5 s over 5 runs."""
+    root = _make_cold_query_repo()
+    build_index(root)
+
+    threshold_ms = 1500.0
+    latencies_ms: list[float] = []
+    rows: list[tuple[str, str, float, float, bool]] = []
+
+    for i in range(5):
+        t0 = time.perf_counter()
+        query_context(root, "alpha_token_handler")
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        latencies_ms.append(elapsed_ms)
+        rows.append((str(i + 1), "cold", elapsed_ms, threshold_ms, elapsed_ms < threshold_ms))
+
+    median_ms = statistics.median(latencies_ms)
+    rows.append(("median", "cold", median_ms, threshold_ms, median_ms < threshold_ms))
+
+    _print_latency_table(rows, title="Cold query latency benchmark (M020 AC1)")
+
+    assert median_ms < threshold_ms, (
+        f"Cold query median {median_ms:.1f} ms >= {threshold_ms:.1f} ms threshold"
+    )
+
+
+def test_warm_query_latency() -> None:
+    """AC2 (M020): warm query latency (via daemon) — median < 150 ms, p95 < 200 ms over 10 runs."""
+    root = _make_cold_query_repo()
+    build_index(root)
+
+    socket_path = _daemon_helpers.socket_path_for(root)
+    pid = _daemon_helpers.start_detached(root)
+
+    try:
+        ready = _daemon_helpers._wait_for_socket(socket_path, timeout=10.0)
+        assert ready, "Daemon socket did not become ready within 10 s"
+
+        client = _resolve_context_client(root)
+        assert client.mode == "warm", f"Expected warm client, got mode={client.mode!r}"
+
+        # Discard one priming query so startup I/O doesn't skew timings
+        client.query("alpha_token_handler")
+
+        median_threshold_ms = 150.0
+        p95_threshold_ms = 200.0
+        latencies_ms: list[float] = []
+        rows: list[tuple[str, str, float, float, bool]] = []
+
+        for i in range(10):
+            t0 = time.perf_counter()
+            client.query("alpha_token_handler")
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            latencies_ms.append(elapsed_ms)
+            rows.append((str(i + 1), "warm", elapsed_ms, p95_threshold_ms, elapsed_ms < p95_threshold_ms))
+
+        median_ms = statistics.median(latencies_ms)
+        sorted_ms = sorted(latencies_ms)
+        p95_idx = min(len(sorted_ms) - 1, int(len(sorted_ms) * 0.95))
+        p95_ms = sorted_ms[p95_idx]
+
+        rows.append(("median", "warm", median_ms, median_threshold_ms, median_ms < median_threshold_ms))
+        rows.append(("p95", "warm", p95_ms, p95_threshold_ms, p95_ms < p95_threshold_ms))
+
+        _print_latency_table(rows, title="Warm query latency benchmark (M020 AC2)")
+
+        assert median_ms < median_threshold_ms, (
+            f"Warm query median {median_ms:.1f} ms >= {median_threshold_ms:.1f} ms threshold"
+        )
+        assert p95_ms < p95_threshold_ms, (
+            f"Warm query p95 {p95_ms:.1f} ms >= {p95_threshold_ms:.1f} ms threshold"
+        )
+
+    finally:
+        try:
+            _daemon_helpers.rpc(socket_path, "shutdown", timeout=3.0)
+        except Exception:
+            pass
+        _daemon_helpers._wait_for_socket_gone(socket_path, timeout=3.0)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+        socket_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

@@ -357,5 +357,101 @@ class TestWaitHelpers(unittest.TestCase):
             sock.unlink(missing_ok=True)
 
 
+# ---------------------------------------------------------------------------
+# Tests: real daemon subprocess lifecycle (M020 AC1)
+# ---------------------------------------------------------------------------
+
+class TestRealDaemonLifecycle(unittest.TestCase):
+    """AC1: real daemon subprocess — socket creation, status schema, clean shutdown.
+
+    These tests spawn an actual detached daemon process via start_detached() and
+    communicate with it exclusively through the public RPC interface.  Every
+    operation is bounded by an explicit timeout so the tests cannot hang.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = Path(tempfile.mkdtemp()).resolve()
+        self._sock = daemon_mod.socket_path_for(self._tmp)
+        self._pid: int | None = None
+
+    def tearDown(self) -> None:
+        import signal as _signal
+        if self._pid is not None:
+            try:
+                os.kill(self._pid, _signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+        try:
+            self._sock.unlink()
+        except OSError:
+            pass
+
+    def _spawn_and_wait(self) -> bool:
+        """Start daemon and wait up to 10 s for socket to be reachable."""
+        self._pid = daemon_mod.start_detached(self._tmp)
+        return daemon_mod._wait_for_socket(self._sock, timeout=10.0)
+
+    def test_ac1_socket_created(self) -> None:
+        """Spawning real daemon creates socket file within 10 s."""
+        ready = self._spawn_and_wait()
+        self.assertTrue(ready, "Daemon socket did not appear within 10 s")
+        self.assertTrue(self._sock.exists(), "Socket file absent after wait")
+
+    def test_ac1_status_schema(self) -> None:
+        """status RPC returns typed JSON: pid int, uptimeSeconds float, state str, socketPath str."""
+        ready = self._spawn_and_wait()
+        self.assertTrue(ready, "Daemon socket not ready")
+
+        resp = daemon_mod.rpc(self._sock, "status", timeout=5.0)
+
+        self.assertIsInstance(resp.get("pid"), int, "pid must be int")
+        self.assertIsInstance(resp.get("uptimeSeconds"), float, "uptimeSeconds must be float")
+        self.assertIn(
+            resp.get("state"),
+            {"starting", "running", "stale", "error"},
+            f"unexpected state: {resp.get('state')}",
+        )
+        self.assertIsInstance(resp.get("socketPath"), str, "socketPath must be str")
+        lat = resp.get("lastIndexedAt")
+        self.assertTrue(
+            lat is None or isinstance(lat, str),
+            f"lastIndexedAt must be str or None, got {lat!r}",
+        )
+
+    def test_ac1_clean_shutdown(self) -> None:
+        """shutdown RPC removes socket and daemon process exits within 10 s."""
+        ready = self._spawn_and_wait()
+        self.assertTrue(ready, "Daemon socket not ready")
+
+        daemon_mod.rpc(self._sock, "shutdown", timeout=5.0)
+
+        gone = daemon_mod._wait_for_socket_gone(self._sock, timeout=10.0)
+        self.assertTrue(gone, "Socket file not removed after shutdown")
+
+        # Confirm process is no longer running (allow up to 10 s).
+        # Use os.waitpid to reap the child so zombies don't cause false failures:
+        # start_detached() leaves a zombie when we only save the PID and never
+        # call Popen.wait().  waitpid reaps it and tells us the exit status.
+        # Fall back to os.kill(0) for non-child processes.
+        pid = self._pid
+        self._pid = None  # prevent tearDown double-kill
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            try:
+                wpid, _ = os.waitpid(pid, os.WNOHANG)
+                if wpid == pid:
+                    return  # reaped — process exited
+            except ChildProcessError:
+                return  # not our child or already reaped
+            except OSError:
+                pass
+            try:
+                os.kill(pid, 0)
+            except (ProcessLookupError, OSError):
+                return  # process gone
+            time.sleep(0.2)
+        self.fail(f"Daemon process {pid} still alive 10 s after shutdown")
+
+
 if __name__ == "__main__":
     unittest.main()

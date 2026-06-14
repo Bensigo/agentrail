@@ -15,6 +15,7 @@ from __future__ import annotations
 import io
 import json
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -428,6 +429,119 @@ class TestRpcParamsBackcompat(unittest.TestCase):
         from agentrail.context import daemon as d
         resp = d.rpc(self._sock, "query", timeout=2.0, params={"query": "hello", "limit": 5})
         self.assertIsInstance(resp, dict)
+
+
+# ---------------------------------------------------------------------------
+# Tests: CLI retrieval commands via subprocess — cold path (M020 AC3)
+# ---------------------------------------------------------------------------
+
+class TestCLISubprocessFallback(unittest.TestCase):
+    """AC3: all six retrieval CLI commands exit 0 + produce output when no daemon is present.
+
+    Each test runs the CLI as a real subprocess against an isolated temp
+    directory so there is no daemon socket — this forces the cold path through
+    _resolve_context_client.  All subprocess.run calls have an explicit
+    timeout ≤ 10 s (AC4).
+    """
+
+    # Tiny fixture: a Python module with a defined+called symbol so that
+    # def / callers / callees / impact have something to report.
+    _FIXTURE_SRC = (
+        "def helper_func():\n"
+        "    '''Return a fixed value.'''\n"
+        "    return 42\n"
+        "\n"
+        "def main_func():\n"
+        "    '''Call helper and return result.'''\n"
+        "    result = helper_func()\n"
+        "    return result\n"
+    )
+
+    def setUp(self) -> None:
+        self._tmp = Path(tempfile.mkdtemp()).resolve()
+        # Write the fixture source file into the temp repo
+        (self._tmp / "sample.py").write_text(self._FIXTURE_SRC)
+        # Pre-build the index so def/callers/callees/impact can load it.
+        # query/search call build_index themselves; the others call load_index
+        # directly and fail with FileNotFoundError if the index is absent.
+        from agentrail.context.index import build_index
+        build_index(self._tmp)
+
+    def _run_cli(self, *args: str) -> "subprocess.CompletedProcess[bytes]":
+        import subprocess
+        cmd = [sys.executable, "-m", "agentrail.cli.main", "context", *args,
+               "--target", str(self._tmp), "--json"]
+        return subprocess.run(cmd, capture_output=True, timeout=10)
+
+    def test_ac3_query_exits_zero_with_output(self) -> None:
+        """context query exits 0 and produces non-empty JSON stdout."""
+        proc = self._run_cli("query", "helper function return value")
+        self.assertEqual(proc.returncode, 0, f"query exited {proc.returncode}: {proc.stderr!r}")
+        self.assertGreater(len(proc.stdout), 0, "query produced no stdout")
+        # Validate JSON structure
+        data = json.loads(proc.stdout.decode())
+        self.assertIn("results", data)
+
+    def test_ac3_search_exits_zero_with_output(self) -> None:
+        """context search exits 0 and produces non-empty JSON stdout."""
+        proc = self._run_cli("search", "helper_func")
+        self.assertEqual(proc.returncode, 0, f"search exited {proc.returncode}: {proc.stderr!r}")
+        self.assertGreater(len(proc.stdout), 0, "search produced no stdout")
+        data = json.loads(proc.stdout.decode())
+        self.assertIn("results", data)
+
+    def test_ac3_def_exits_zero_with_output(self) -> None:
+        """context def exits 0 and produces non-empty JSON stdout."""
+        proc = self._run_cli("def", "helper_func")
+        self.assertEqual(proc.returncode, 0, f"def exited {proc.returncode}: {proc.stderr!r}")
+        self.assertGreater(len(proc.stdout), 0, "def produced no stdout")
+        # Output is a JSON array
+        json.loads(proc.stdout.decode())  # must parse without error
+
+    def test_ac3_callers_exits_zero_with_output(self) -> None:
+        """context callers exits 0 and produces non-empty JSON stdout."""
+        proc = self._run_cli("callers", "helper_func")
+        self.assertEqual(proc.returncode, 0, f"callers exited {proc.returncode}: {proc.stderr!r}")
+        self.assertGreater(len(proc.stdout), 0, "callers produced no stdout")
+        json.loads(proc.stdout.decode())
+
+    def test_ac3_callees_exits_zero_with_output(self) -> None:
+        """context callees exits 0 and produces non-empty JSON stdout."""
+        proc = self._run_cli("callees", "main_func")
+        self.assertEqual(proc.returncode, 0, f"callees exited {proc.returncode}: {proc.stderr!r}")
+        self.assertGreater(len(proc.stdout), 0, "callees produced no stdout")
+        json.loads(proc.stdout.decode())
+
+    def test_ac3_impact_exits_zero_with_output(self) -> None:
+        """context impact exits 0 and produces non-empty JSON stdout."""
+        proc = self._run_cli("impact", "helper_func")
+        self.assertEqual(proc.returncode, 0, f"impact exited {proc.returncode}: {proc.stderr!r}")
+        self.assertGreater(len(proc.stdout), 0, "impact produced no stdout")
+        json.loads(proc.stdout.decode())
+
+    def test_ac3_no_error_text_in_stderr(self) -> None:
+        """None of the six commands produce error-level text in stderr."""
+        commands = [
+            ("query", "main function"),
+            ("search", "helper_func"),
+            ("def", "helper_func"),
+            ("callers", "helper_func"),
+            ("callees", "main_func"),
+            ("impact", "helper_func"),
+        ]
+        for cmd_args in commands:
+            with self.subTest(cmd=cmd_args[0]):
+                proc = self._run_cli(*cmd_args)
+                stderr_text = proc.stderr.decode(errors="replace")
+                # Allow logging noise but reject actual Python exceptions
+                self.assertNotIn(
+                    "Traceback", stderr_text,
+                    f"context {cmd_args[0]} printed a traceback to stderr:\n{stderr_text}",
+                )
+                self.assertNotIn(
+                    "Error:", stderr_text,
+                    f"context {cmd_args[0]} printed an Error: line to stderr:\n{stderr_text}",
+                )
 
 
 if __name__ == "__main__":

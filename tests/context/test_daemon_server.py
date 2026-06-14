@@ -207,7 +207,7 @@ class TestFreshnessAndReindex(unittest.TestCase):
                     server._state = "stale"
             resp = daemon_mod.rpc(server._socket_path, "status", timeout=3.0)
 
-        self.assertEqual(resp.get("state"), "stale")
+        self.assertEqual(resp.get("result", {}).get("state"), "stale")
 
     def test_ac3_reindex_restores_running_state(self) -> None:
         """AC3: after reindex completes, state returns to 'running'."""
@@ -271,8 +271,9 @@ class TestStatusRpc(unittest.TestCase):
             server = _start_server(self._tmp)
             self._server = server
         resp = daemon_mod.rpc(server._socket_path, "status", timeout=3.0)
+        self.assertIn("result", resp, f"expected 'result' key in response: {resp}")
         for field in ("pid", "uptimeSeconds", "lastIndexedAt", "socketPath", "state"):
-            self.assertIn(field, resp, f"missing field: {field}")
+            self.assertIn(field, resp["result"], f"missing field: {field}")
 
     def test_ac4_status_pid_is_int(self) -> None:
         with mock.patch("agentrail.context.daemon_server.DaemonServer._load_index_from_disk"), \
@@ -280,8 +281,8 @@ class TestStatusRpc(unittest.TestCase):
             server = _start_server(self._tmp)
             self._server = server
         resp = daemon_mod.rpc(server._socket_path, "status", timeout=3.0)
-        self.assertIsInstance(resp["pid"], int)
-        self.assertEqual(resp["pid"], os.getpid())
+        self.assertIsInstance(resp["result"]["pid"], int)
+        self.assertEqual(resp["result"]["pid"], os.getpid())
 
     def test_ac4_status_uptime_is_non_negative(self) -> None:
         with mock.patch("agentrail.context.daemon_server.DaemonServer._load_index_from_disk"), \
@@ -289,7 +290,7 @@ class TestStatusRpc(unittest.TestCase):
             server = _start_server(self._tmp)
             self._server = server
         resp = daemon_mod.rpc(server._socket_path, "status", timeout=3.0)
-        self.assertGreaterEqual(resp["uptimeSeconds"], 0.0)
+        self.assertGreaterEqual(resp["result"]["uptimeSeconds"], 0.0)
 
     def test_ac4_status_socket_path_matches(self) -> None:
         with mock.patch("agentrail.context.daemon_server.DaemonServer._load_index_from_disk"), \
@@ -297,7 +298,7 @@ class TestStatusRpc(unittest.TestCase):
             server = _start_server(self._tmp)
             self._server = server
         resp = daemon_mod.rpc(server._socket_path, "status", timeout=3.0)
-        self.assertEqual(resp["socketPath"], str(server._socket_path))
+        self.assertEqual(resp["result"]["socketPath"], str(server._socket_path))
 
     def test_ac4_status_state_is_valid(self) -> None:
         with mock.patch("agentrail.context.daemon_server.DaemonServer._load_index_from_disk"), \
@@ -305,7 +306,7 @@ class TestStatusRpc(unittest.TestCase):
             server = _start_server(self._tmp)
             self._server = server
         resp = daemon_mod.rpc(server._socket_path, "status", timeout=3.0)
-        self.assertIn(resp["state"], {"running", "stale", "error", "starting"})
+        self.assertIn(resp["result"]["state"], {"running", "stale", "error", "starting"})
 
 
 # ---------------------------------------------------------------------------

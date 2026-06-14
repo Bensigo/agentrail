@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -25,6 +27,7 @@ from unittest import mock
 
 from agentrail.context import daemon as daemon_mod
 from agentrail.context.client import _ColdClient, _WarmClient, _resolve_context_client
+from agentrail.context.index import build_index
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +431,100 @@ class TestRpcParamsBackcompat(unittest.TestCase):
         from agentrail.context import daemon as d
         resp = d.rpc(self._sock, "query", timeout=2.0, params={"query": "hello", "limit": 5})
         self.assertIsInstance(resp, dict)
+
+
+# ---------------------------------------------------------------------------
+# AC3: cold-path CLI fallback — all six retrieval commands exit 0 with output
+# ---------------------------------------------------------------------------
+
+def _make_fallback_repo() -> Path:
+    """Create a temp repo with caller/callee relationships for retrieval tests."""
+    root = Path(tempfile.mkdtemp()).resolve()
+    (root / ".agentrail").mkdir()
+    cfg = {
+        "schemaVersion": 1,
+        "context": {
+            "includeGlobs": ["**/*.py"],
+            "excludeGlobs": [".git/**", ".agentrail/**"],
+            "maxFileSizeBytes": 262144,
+            "skipBinary": True,
+            "respectGitIgnore": False,
+            "secretRedaction": {"enabled": False, "action": "exclude", "denyGlobs": []},
+            "embedding": {"mode": "disabled", "provider": None, "model": None},
+            "summary": {"mode": "disabled", "provider": None, "model": None},
+        },
+    }
+    (root / ".agentrail" / "config.json").write_text(
+        json.dumps(cfg), encoding="utf-8"
+    )
+    (root / "src").mkdir()
+    (root / "src" / "helpers.py").write_text(
+        "def process():\n    return 42\n",
+        encoding="utf-8",
+    )
+    (root / "src" / "main.py").write_text(
+        "from src.helpers import process\n\ndef entry():\n    return process()\n",
+        encoding="utf-8",
+    )
+    # Pre-build the index so CLI commands don't rebuild (avoids any log output)
+    build_index(root)
+    return root
+
+
+class TestColdPathCLIFallback(unittest.TestCase):
+    """AC3: with no daemon running the six retrieval CLI commands exit 0 with output."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._repo = _make_fallback_repo()
+        # Ensure no daemon socket exists for this target
+        sock = daemon_mod.socket_path_for(cls._repo)
+        sock.unlink(missing_ok=True)
+
+    def _run_cmd(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-m", "agentrail.cli.main", "context"] + list(args)
+            + ["--target", str(self._repo), "--json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    def test_query_exits_0_with_output(self) -> None:
+        r = self._run_cmd("query", "process")
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        self.assertTrue(r.stdout.strip(), "Expected non-empty stdout")
+        self.assertEqual(r.stderr, "", f"Unexpected stderr: {r.stderr}")
+
+    def test_search_exits_0_with_output(self) -> None:
+        r = self._run_cmd("search", "process")
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        self.assertTrue(r.stdout.strip(), "Expected non-empty stdout")
+        self.assertEqual(r.stderr, "", f"Unexpected stderr: {r.stderr}")
+
+    def test_def_exits_0_with_output(self) -> None:
+        r = self._run_cmd("def", "process")
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        self.assertTrue(r.stdout.strip(), "Expected non-empty stdout")
+        self.assertEqual(r.stderr, "", f"Unexpected stderr: {r.stderr}")
+
+    def test_callers_exits_0_with_output(self) -> None:
+        r = self._run_cmd("callers", "process")
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        self.assertTrue(r.stdout.strip(), "Expected non-empty stdout")
+        self.assertEqual(r.stderr, "", f"Unexpected stderr: {r.stderr}")
+
+    def test_callees_exits_0_with_output(self) -> None:
+        r = self._run_cmd("callees", "entry")
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        self.assertTrue(r.stdout.strip(), "Expected non-empty stdout")
+        self.assertEqual(r.stderr, "", f"Unexpected stderr: {r.stderr}")
+
+    def test_impact_exits_0_with_output(self) -> None:
+        r = self._run_cmd("impact", "process")
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        self.assertTrue(r.stdout.strip(), "Expected non-empty stdout")
+        self.assertEqual(r.stderr, "", f"Unexpected stderr: {r.stderr}")
 
 
 if __name__ == "__main__":

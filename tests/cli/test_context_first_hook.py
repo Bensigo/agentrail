@@ -19,8 +19,10 @@ HOOK = Path(__file__).resolve().parents[2] / "templates" / "scripts" / "context-
 
 FEEDBACK = (
     "Repo-wide search is disabled (AgentRail hard mode). Use "
-    '`agentrail context query "<your term>" --json` for ranked retrieval, then '
-    "Read the cited files. The Grep/Glob tools and bare grep/rg/find are blocked."
+    '`agentrail context query "<your term>" --json` for ranked retrieval; for '
+    "structural navigation use `context def`, `context callers`, `context impact`, "
+    "and `context ast`, then Read the cited files. The Grep/Glob tools and bare "
+    "grep/rg/find are blocked."
 )
 
 

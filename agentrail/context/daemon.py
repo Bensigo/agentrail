@@ -50,14 +50,26 @@ def socket_path_for(target: Path) -> Path:
 # RPC client
 # ---------------------------------------------------------------------------
 
-def rpc(socket_path: Path, method: str, timeout: float = 5.0) -> dict[str, Any]:
+def rpc(
+    socket_path: Path,
+    method: str,
+    timeout: float = 5.0,
+    *,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Send a JSON-RPC-style request to the daemon and return the response dict.
 
     Raises ``ConnectionRefusedError`` / ``FileNotFoundError`` if the socket is
     absent or connection is refused.  Raises ``TimeoutError`` if no response
     arrives within *timeout* seconds.  Raises ``ValueError`` on malformed JSON.
+
+    *params* is an optional dict sent as the ``"params"`` field of the request.
+    When ``None`` (the default), the field is omitted for backward compatibility.
     """
-    request = json.dumps({"method": method}).encode()
+    payload: dict[str, Any] = {"method": method}
+    if params is not None:
+        payload["params"] = params
+    request = json.dumps(payload).encode()
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     try:

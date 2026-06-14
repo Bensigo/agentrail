@@ -154,10 +154,20 @@ Before broad repo exploration, use AgentRail context retrieval. It returns the
 right files as bounded line ranges and symbols, not whole-file dumps, so you
 spend tokens on relevant code instead of noise.
 
+- Use `agentrail context query "<term>" --json` to get ranked retrieval candidates with scores.
 - Use `agentrail context search "<query>"` first to get ranked candidates with
   paths, line ranges, symbols, bounded snippets, reasons, and scores.
 - Use `agentrail context get <path> --lines A-B` (or `--symbol NAME`) to read
   only the lines or symbol you need.
+- Use `agentrail context def NAME` to look up where a symbol is defined across the repo.
+- Use `agentrail context callers NAME` to find all call sites for a function.
+- Use `agentrail context callees NAME` to list what a function calls.
+- Use `agentrail context impact NAME` to assess the blast radius of changing a symbol.
+- Use `agentrail context ast "<s-expr>"` to run a structural tree-sitter pattern match.
+- Use `agentrail context blame <path> <line>` to see who last changed a line and why.
+- Use `agentrail context history <path>` to view the commit history for a file.
+- Use `agentrail context changed [--since REF]` to list files changed since a commit.
+- Use `agentrail context savings` to see token and retrieval efficiency stats.
 - Do not read full files until AgentRail returns candidate line ranges. Only
   request a whole file when the snippets are genuinely insufficient.
 - Prefer `agentrail context search` / `agentrail context get` over raw file

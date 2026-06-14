@@ -51,5 +51,5 @@ if [ "$decision" != "block" ]; then
   exit 0
 fi
 
-echo 'Repo-wide search is disabled (AgentRail hard mode). Use `agentrail context query "<your term>" --json` for ranked retrieval, then Read the cited files. The Grep/Glob tools and bare grep/rg/find are blocked.' >&2
+echo 'Repo-wide search is disabled (AgentRail hard mode). Use `agentrail context query "<your term>" --json` for ranked retrieval; for structural navigation use `context def`, `context callers`, `context impact`, and `context ast`, then Read the cited files. The Grep/Glob tools and bare grep/rg/find are blocked.' >&2
 exit 2

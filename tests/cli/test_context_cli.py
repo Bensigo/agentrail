@@ -367,6 +367,17 @@ class ContextMarkerTests(unittest.TestCase):
         )
         self.assertTrue(marker.exists())
 
+    def test_ast_writes_marker(self):
+        repo = Path(__file__).resolve().parents[2]
+        root = self._install()
+        marker = root / ".agentrail" / "tmp" / "context-queried"
+        self.assertFalse(marker.exists())
+        subprocess.run(
+            [str(repo / "scripts" / "agentrail"), "context", "ast", "(function_definition)", "--target", str(root), "--json"],
+            check=True, stdout=subprocess.DEVNULL,
+        )
+        self.assertTrue(marker.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

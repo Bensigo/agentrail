@@ -16,15 +16,18 @@ from agentrail.shared.json import write_json
 
 
 PACK_SECTION_KEYS = [
-    "requiredContext",
+    # --- stable cache-eligible prefix (same across repeated calls) ---
+    "requiredContext",    # CONTEXT.md, TASTE.md — never changes mid-run
+    "availableSkills",   # local skill blocks — stable per project
+    "availableTools",    # agentrail tool list — stable per install
+    # --- dynamic / per-task retrieval results ---
     "likelyFiles",
     "likelyDocs",
     "relevantMemory",
     "priorMistakes",
     "activeState",
-    "availableTools",
-    "availableSkills",
     "goals",
+    # --- metadata / excluded ---
     "excludedContext",
     "openQuestions",
 ]

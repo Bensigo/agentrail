@@ -1300,6 +1300,30 @@ class CostCaptureHappyPathTests(unittest.TestCase):
         mock_cost.assert_not_called()
         mock_push.assert_not_called()
 
+    @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
+    @patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary")
+    @patch("agentrail.run.pipeline.build_cost_record", side_effect=RuntimeError("boom"))
+    @patch("agentrail.run.pipeline.push_cost_event", return_value=True)
+    @patch("agentrail.run.pipeline.cost_usd", return_value=0.042)
+    @patch("agentrail.run.pipeline.capture_usage")
+    def test_ledger_write_failure_does_not_skip_cost_accounting(
+        self, mock_capture, mock_cost, mock_push, mock_record, mock_summary, mock_build
+    ):
+        """Regression (#714): a ledger-write failure must NOT skip cumulative cost
+        accounting — otherwise the budget guardrail is silently defeated."""
+        from agentrail.run.usage_capture import Usage
+        mock_capture.return_value = Usage(
+            model="claude-sonnet-4-6", input_tokens=1000, output_tokens=500, cache_tokens=100
+        )
+        before = self.rc.cumulative_cost_usd
+        stub = _stub_run_with_timeout(0)
+        with patch("agentrail.run.pipeline.run_with_timeout", stub):
+            run_issue_phase(self.rc, "plan", 1)
+
+        # cost was accounted despite build_cost_record/ledger blowing up
+        self.assertAlmostEqual(self.rc.cumulative_cost_usd, before + 0.042)
+        mock_push.assert_called_once()  # remote push still attempted
+
 
 if __name__ == "__main__":
     unittest.main()

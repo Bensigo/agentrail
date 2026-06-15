@@ -5,9 +5,10 @@ import re
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from agentrail.context.compiler import compiler_contract
+from agentrail.context.dedup import compute_retrieval_dedup
 from agentrail.context.index import append_audit, load_index
 from agentrail.context.pricing import cost_for
 from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_saved, estimate_tokens, query_context
@@ -472,6 +473,30 @@ def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _load_prior_run_items(packs_dir: Path, run_id: str, target_kind: str, target_number: int) -> List[Dict[str, Any]]:
+    """Return included items from all packs in *packs_dir* that share *run_id*, target_kind, target_number."""
+    prior_items: List[Dict[str, Any]] = []
+    if not packs_dir.exists():
+        return prior_items
+    for json_file in sorted(packs_dir.glob("*.json")):
+        try:
+            data = json.loads(json_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict) or data.get("runId") != run_id:
+            continue
+        tgt = data.get("target") or {}
+        if tgt.get("kind") != target_kind or tgt.get("number") != target_number:
+            continue
+        phase_label = str(tgt.get("phase") or "prior")
+        for item in (data.get("included") or []):
+            if isinstance(item, dict):
+                annotated = dict(item)
+                annotated["_firstPhase"] = phase_label
+                prior_items.append(annotated)
+    return prior_items
+
+
 def build_context_pack(
     target_dir: Path,
     target_kind: str,
@@ -480,6 +505,7 @@ def build_context_pack(
     *,
     budget_usd: float | None = None,
     model: str = _DEFAULT_BUDGET_MODEL,
+    run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     root = target_dir.resolve()
     if target_kind not in {"issue", "pr"}:
@@ -534,11 +560,22 @@ def build_context_pack(
         pack["packCostUsd"] = budget_meta["packCostUsd"]
         pack["itemsDropped"] = budget_meta["itemsDropped"]
         pack["costModel"] = model
+    if run_id is not None:
+        pack["runId"] = run_id
     pack["included"] = _all_included(pack)
     pack["excluded"] = pack["excludedContext"]
     # Estimated tokens the bounded snippets saved versus reading every selected
     # file in full (ceil(chars/4) per file, each distinct file counted once).
     pack["tokensSaved"] = compute_tokens_saved(root, pack["included"])
+    # Cross-phase retrieval dedup: detect items already retrieved in prior phases
+    # of the same run and report avoided tokens/cost.  Always present (zeros when
+    # nothing is reused).
+    _dedup_model = (query.get("provider") or {}).get("model") or "claude-sonnet-4-6"
+    if run_id is not None:
+        prior_items = _load_prior_run_items(packs_dir, run_id, target_kind, target_number)
+    else:
+        prior_items = []
+    pack["retrieval_dedup"] = compute_retrieval_dedup(prior_items, pack["included"], _dedup_model)
     pack["compiler"] = compiler_contract(
         target_kind,
         query_text,
@@ -573,7 +610,7 @@ def build_context_pack(
             "providerMode": pack["provider"].get("mode"),
         },
     )
-    summary: Dict[str, Any] = {
+    result: Dict[str, Any] = {
         "schemaVersion": 1,
         "command": "context.build",
         "packId": pack_id,
@@ -587,13 +624,16 @@ def build_context_pack(
         "provider": pack["provider"],
         "audit": audit,
         "compiler": pack["compiler"],
+        "retrieval_dedup": pack["retrieval_dedup"],
     }
     if budget_meta:
-        summary["budgetUsd"] = budget_meta["budgetUsd"]
-        summary["packCostUsd"] = budget_meta["packCostUsd"]
-        summary["itemsDropped"] = budget_meta["itemsDropped"]
-        summary["costModel"] = model
-    return summary
+        result["budgetUsd"] = budget_meta["budgetUsd"]
+        result["packCostUsd"] = budget_meta["packCostUsd"]
+        result["itemsDropped"] = budget_meta["itemsDropped"]
+        result["costModel"] = model
+    if run_id is not None:
+        result["runId"] = run_id
+    return result
 
 
 def _pack_path(root: Path, pack: str) -> Path:

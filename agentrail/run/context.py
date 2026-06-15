@@ -34,19 +34,19 @@ def issue_resolution_text(target_dir: Path, issue: int) -> str:
     return text or f"GitHub issue #{issue}"
 
 
-def build_pack(target_dir: Path, kind: str, number: int, phase: str) -> Optional[str]:
+def build_pack(target_dir: Path, kind: str, number: int, phase: str, *, run_id: Optional[str] = None) -> Optional[str]:
     """Build a context pack for any target kind ('issue'|'pr'); return relative jsonPath
     or None on failure. Mirrors legacy build_context_pack_file."""
     try:
-        pack = build_context_pack(target_dir, kind, number, phase)
+        pack = build_context_pack(target_dir, kind, number, phase, run_id=run_id)
     except Exception:
         return None
     return pack.get("jsonPath")
 
 
-def build_issue_context_pack(target_dir: Path, issue: int, phase: str) -> Optional[str]:
+def build_issue_context_pack(target_dir: Path, issue: int, phase: str, *, run_id: Optional[str] = None) -> Optional[str]:
     """Build a context pack; return relative jsonPath or None on failure."""
-    return build_pack(target_dir, "issue", issue, phase)
+    return build_pack(target_dir, "issue", issue, phase, run_id=run_id)
 
 
 def context_retrieval_metadata(target_dir: Path, query: str) -> Dict[str, Any]:

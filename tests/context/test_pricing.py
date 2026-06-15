@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from agentrail.context.pricing import cost_for
 
@@ -108,6 +109,43 @@ class PricingLookupTests(unittest.TestCase):
     def test_zero_tokens_returns_zero_dollars(self) -> None:
         result = cost_for("claude-sonnet-4-5")
         self.assertEqual(result["dollars"], 0.0)
+
+
+class SingleSourceOfTruthTests(unittest.TestCase):
+    """#715: there must be exactly one price table — run/pricing derives from it."""
+
+    def test_run_prices_derived_from_canonical_table(self) -> None:
+        from agentrail.context.pricing import PRICE_TABLE
+        from agentrail.run.pricing import PRICES
+
+        # Same model coverage.
+        self.assertEqual(set(PRICES), set(PRICE_TABLE))
+        # Every run/pricing rate must equal the canonical table (cache=cached_read).
+        for model, rates in PRICES.items():
+            canon = PRICE_TABLE[model]
+            self.assertEqual(rates.input, canon["input"], model)
+            self.assertEqual(rates.output, canon["output"], model)
+            self.assertEqual(rates.cache, canon["cached_read"], model)
+
+    def test_run_pricing_has_no_second_hardcoded_table(self) -> None:
+        """run/pricing.py must not hardcode numeric rates (it derives from the canonical table)."""
+        import re
+        import agentrail.run.pricing as rp
+        src = Path(rp.__file__).read_text(encoding="utf-8")
+        # A hardcoded table would have `_Rates(input=10.00, ...)` literals with digits.
+        # The derivation comprehension uses `_Rates(input=r["input"], ...)` (no digit).
+        hardcoded = re.findall(r"_Rates\(input=\s*\d", src)
+        self.assertEqual(hardcoded, [],
+                         "run/pricing.py reintroduced a hardcoded numeric rate table — "
+                         "derive from context.pricing.PRICE_TABLE instead")
+
+    def test_no_rate_conflicts_for_shared_models(self) -> None:
+        """The opus-4-6 / haiku-4-5 conflicts that motivated #715 stay resolved."""
+        from agentrail.context.pricing import PRICE_TABLE
+        self.assertEqual(PRICE_TABLE["claude-opus-4-6"]["input"], 5.0)
+        self.assertEqual(PRICE_TABLE["claude-opus-4-6"]["output"], 25.0)
+        self.assertEqual(PRICE_TABLE["claude-haiku-4-5"]["input"], 1.0)
+        self.assertEqual(PRICE_TABLE["claude-haiku-4-5"]["output"], 5.0)
 
 
 if __name__ == "__main__":

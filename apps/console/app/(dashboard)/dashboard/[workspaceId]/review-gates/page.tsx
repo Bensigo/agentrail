@@ -32,11 +32,23 @@ interface ReviewGate {
   evaluatedAt: string | null;
 }
 
+// Relative time ("3m ago") with the absolute time on hover — human-readable first.
+function relTime(iso: string | null): { label: string; title: string } {
+  if (!iso) return { label: "—", title: "" };
+  const d = new Date(iso);
+  const diff = Date.now() - d.getTime();
+  const m = Math.round(diff / 60000);
+  const h = Math.round(diff / 3600000);
+  const days = Math.round(diff / 86400000);
+  const label = m < 1 ? "just now" : m < 60 ? `${m}m ago` : h < 24 ? `${h}h ago` : `${days}d ago`;
+  return { label, title: d.toLocaleString() };
+}
+
 function StatusBadge({ status }: { status: ReviewGate["status"] }) {
   const styles: Record<ReviewGate["status"], string> = {
-    passed: "bg-[#1a3d33] text-[#1fd8a4]",
-    failed: "bg-[#3d1a1a] text-[#ff9592]",
-    pending: "bg-[#3d3a1a] text-[#f5e147]",
+    passed: "bg-[color-mix(in_srgb,var(--green-11)_16%,transparent)] text-[var(--green-11)]",
+    failed: "bg-[color-mix(in_srgb,var(--red-11)_16%,transparent)] text-[var(--red-11)]",
+    pending: "bg-[color-mix(in_srgb,var(--yellow-11)_16%,transparent)] text-[var(--yellow-11)]",
   };
   return (
     <span className={`px-1.5 py-0.5 rounded-sm text-xs font-medium ${styles[status]}`}>
@@ -50,7 +62,7 @@ function FindingsCountBadge({ count }: { count: number }) {
   return (
     <span
       title={`${count} bug${count === 1 ? "" : "s"} found`}
-      className="px-1.5 py-0.5 rounded-sm text-xs font-medium shrink-0 bg-[#3d1a1a] text-[#ff9592]"
+      className="px-1.5 py-0.5 rounded-sm text-xs font-medium shrink-0 bg-[color-mix(in_srgb,var(--red-11)_16%,transparent)] text-[var(--red-11)]"
     >
       {count} bug{count === 1 ? "" : "s"}
     </span>
@@ -70,12 +82,24 @@ function GateSubRow({
       {gate.conditions.length > 0 && (
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] mb-1">
-            Conditions
+            Criteria checked
           </p>
-          <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3 overflow-x-auto">
-            <pre className="text-xs font-mono text-[var(--gray-11)] whitespace-pre-wrap break-words">
-              {JSON.stringify(gate.conditions, null, 2)}
-            </pre>
+          <div className="space-y-1.5">
+            {gate.conditions.map((cond, i) => (
+              <div
+                key={i}
+                className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 py-2"
+              >
+                {Object.entries(cond).map(([k, v]) => (
+                  <span key={k} className="text-xs">
+                    <span className="text-[var(--gray-09)]">{k}: </span>
+                    <span className="font-mono text-[var(--gray-12)]">
+                      {typeof v === "object" ? JSON.stringify(v) : String(v)}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -89,7 +113,7 @@ function GateSubRow({
             {gate.blockingReasons.map((reason, i) => (
               <li
                 key={i}
-                className="text-xs font-mono text-[#ff9592] flex items-start gap-1.5"
+                className="text-xs font-mono text-[var(--red-11)] flex items-start gap-1.5"
               >
                 <span className="mt-0.5 shrink-0">✕</span>
                 <span>{reason}</span>
@@ -109,7 +133,7 @@ function GateSubRow({
               <a
                 key={i}
                 href={ref.url}
-                className="text-xs text-[#70b8ff] hover:underline font-mono"
+                className="text-xs text-[var(--blue-11)] hover:underline font-mono"
               >
                 {ref.label} →
               </a>
@@ -129,10 +153,10 @@ function GateSubRow({
                 <span
                   className={`mt-0.5 shrink-0 font-mono ${
                     f.severity === "critical"
-                      ? "text-[#ff9592]"
+                      ? "text-[var(--red-11)]"
                       : f.severity === "major"
-                      ? "text-[#ffa057]"
-                      : "text-[#f5e147]"
+                      ? "text-[var(--orange-11)]"
+                      : "text-[var(--yellow-11)]"
                   }`}
                 >
                   [{f.severity}]
@@ -145,29 +169,21 @@ function GateSubRow({
       )}
 
       {gate.evaluatedAt && (
-        <p className="text-xs font-mono text-[var(--gray-09)]">
-          Evaluated:{" "}
-          {new Date(gate.evaluatedAt).toLocaleString("en-US", {
-            month: "short",
-            day: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-            hour12: false,
-          })}
+        <p className="text-xs text-[var(--gray-09)]" title={relTime(gate.evaluatedAt).title}>
+          Evaluated {relTime(gate.evaluatedAt).label}
         </p>
       )}
 
       <div className="flex gap-3 pt-1">
         <a
           href={`/dashboard/${workspaceId}/runs/${gate.runId}`}
-          className="text-xs text-[#70b8ff] hover:underline"
+          className="text-xs text-[var(--blue-11)] hover:underline"
         >
           View run →
         </a>
         <a
           href={`/dashboard/${workspaceId}/review-gates/${gate.id}`}
-          className="text-xs text-[#70b8ff] hover:underline"
+          className="text-xs text-[var(--blue-11)] hover:underline"
         >
           Gate detail →
         </a>
@@ -217,14 +233,8 @@ function buildColumns(): ColumnDef<ReviewGate, unknown>[] {
       meta: { mono: true },
       cell: ({ row }) =>
         row.original.evaluatedAt ? (
-          <span className="font-mono text-[13px] text-[var(--gray-09)]">
-            {new Date(row.original.evaluatedAt).toLocaleString("en-US", {
-              month: "short",
-              day: "2-digit",
-              hour: "2-digit",
-              minute: "2-digit",
-              hour12: false,
-            })}
+          <span className="text-[13px] text-[var(--gray-09)]" title={relTime(row.original.evaluatedAt).title}>
+            {relTime(row.original.evaluatedAt).label}
           </span>
         ) : (
           <span className="text-[var(--gray-07)]">—</span>
@@ -311,7 +321,7 @@ export default function ReviewGatesPage() {
         value={runIdInput}
         onChange={(e) => setRunIdInput(e.target.value)}
         placeholder="Filter by run ID…"
-        className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 text-sm font-mono text-[var(--gray-12)] placeholder-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[#ffe629] focus:ring-offset-2 focus:ring-offset-[var(--gray-00)]"
+        className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 text-sm font-mono text-[var(--gray-12)] placeholder-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)] focus:ring-offset-2 focus:ring-offset-[var(--gray-00)]"
         style={{ minWidth: "260px" }}
       />
       <button
@@ -333,9 +343,19 @@ export default function ReviewGatesPage() {
 
   return (
     <div className="mx-auto max-w-[1440px] flex flex-col gap-4">
-      <h1 className="text-sm font-semibold text-[var(--gray-12)]">
-        Review Gates
-      </h1>
+      <div>
+        <h1 className="text-sm font-semibold text-[var(--gray-12)]">
+          Review Gates
+        </h1>
+        <p className="mt-1 max-w-[80ch] text-xs leading-relaxed text-[var(--gray-09)]">
+          A review gate is a policy checkpoint between an agent&apos;s phases. It
+          evaluates the run&apos;s evidence — acceptance criteria, citations, tests,
+          and visual checks — then <span className="text-[var(--green-11)]">passes</span>,{" "}
+          <span className="text-[var(--red-11)]">fails</span>, or{" "}
+          <span className="text-[var(--yellow-11)]">holds</span>. Expand a row to see
+          the criteria it checked, the evidence, and why it blocked.
+        </p>
+      </div>
 
       {loading ? (
         <LoadingState variant="list" rows={8} />

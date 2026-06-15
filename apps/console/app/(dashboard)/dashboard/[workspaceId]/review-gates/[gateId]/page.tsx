@@ -2,6 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
+import { PageHeader } from "../../../../../components/page-header";
+import { SectionHeader } from "../../../../components/section-header";
+import { LoadingState } from "../../../../components/loading-state";
+import { ErrorState } from "../../../../components/error-state";
 
 type ReviewGateStatus = "passed" | "failed" | "pending";
 type Category = "tests" | "visual" | "citations" | "ac" | "blocked";
@@ -115,30 +119,6 @@ export default function ReviewGateDetailPage() {
     );
   }, [explainer]);
 
-  if (loading) {
-    return (
-      <div className="mx-auto max-w-[900px]">
-        <p className="text-sm text-[var(--gray-09)] animate-pulse py-8">
-          Loading review gate...
-        </p>
-      </div>
-    );
-  }
-
-  if (error || !gate) {
-    return (
-      <div className="mx-auto max-w-[900px]">
-        <a
-          href={`/dashboard/${workspaceId}/review-gates`}
-          className="mb-4 inline-flex text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)] transition-colors"
-        >
-          ← gates
-        </a>
-        <p className="text-sm text-[#ff9592] py-8">{error ?? "Review gate not found"}</p>
-      </div>
-    );
-  }
-
   return (
     <div className="mx-auto max-w-[900px]">
       <a
@@ -148,47 +128,51 @@ export default function ReviewGateDetailPage() {
         ← gates
       </a>
 
-      <div className="mb-6 flex flex-col gap-3 border-b border-[var(--gray-05)] pb-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="text-sm font-semibold text-[var(--gray-12)]">
-            {gate.gateName}
-          </h1>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--gray-09)]">
-            <a
-              href={`/dashboard/${workspaceId}/runs/${gate.runId}`}
-              className="font-mono text-[#70b8ff] hover:underline"
-            >
-              run:{gate.runId}
-            </a>
-            <span className="font-mono">{formatEvaluatedAt(gate.evaluatedAt)}</span>
-          </div>
-        </div>
-        <StatusBadge status={gate.status} />
-      </div>
-
-      <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
-        <div className="border-b border-[var(--gray-05)] px-4 py-3">
-          <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-            Gate Explainer
-          </h2>
-        </div>
-        <div className="divide-y divide-[var(--gray-04)]">
-          {rows.map((row) => (
-            <div
-              key={row.category}
-              className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 px-4 py-2.5"
-            >
-              <span className="font-mono text-sm text-[var(--gray-12)]">
-                {row.category}
-              </span>
-              <EvidenceBadge present={row.present} />
-              <span className="w-16 text-right font-mono text-xs text-[var(--gray-09)]">
-                {row.finding_count} finding{row.finding_count === 1 ? "" : "s"}
-              </span>
+      {loading ? (
+        <LoadingState variant="list" rows={5} />
+      ) : error || !gate ? (
+        <ErrorState message={error ?? "Review gate not found"} />
+      ) : (
+        <>
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <PageHeader title={gate.gateName} subtitle={gateId} />
+              <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--gray-09)]">
+                <a
+                  href={`/dashboard/${workspaceId}/runs/${gate.runId}`}
+                  className="font-mono text-[#70b8ff] hover:underline"
+                >
+                  run:{gate.runId}
+                </a>
+                <span className="font-mono">{formatEvaluatedAt(gate.evaluatedAt)}</span>
+              </div>
             </div>
-          ))}
-        </div>
-      </section>
+            <StatusBadge status={gate.status} />
+          </div>
+
+          <div className="mb-4 border-b border-[var(--gray-05)]" />
+
+          <SectionHeader title="Gate Explainer" />
+          <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+            <div className="divide-y divide-[var(--gray-04)]">
+              {rows.map((row) => (
+                <div
+                  key={row.category}
+                  className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 px-4 py-2.5"
+                >
+                  <span className="font-mono text-sm text-[var(--gray-12)]">
+                    {row.category}
+                  </span>
+                  <EvidenceBadge present={row.present} />
+                  <span className="w-16 text-right font-mono text-xs text-[var(--gray-09)]">
+                    {row.finding_count} finding{row.finding_count === 1 ? "" : "s"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+        </>
+      )}
     </div>
   );
 }

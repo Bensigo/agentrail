@@ -8,6 +8,7 @@ import { StatHeader } from "../../../components/stat-header";
 import { EmptyState } from "../../../components/empty-state";
 import { ErrorState } from "../../../components/error-state";
 import { LoadingState } from "../../../components/loading-state";
+import { PageHeader } from "../../../../components/page-header";
 
 interface EvidenceRef {
   label: string;
@@ -333,9 +334,7 @@ export default function ReviewGatesPage() {
 
   return (
     <div className="mx-auto max-w-[1440px] flex flex-col gap-4">
-      <h1 className="text-sm font-semibold text-[var(--gray-12)]">
-        Review Gates
-      </h1>
+      <PageHeader title="Review Gates" />
 
       {loading ? (
         <LoadingState variant="list" rows={8} />

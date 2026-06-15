@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { SectionHeader } from "../../../../../components/section-header";
+import { ErrorState } from "../../../../../components/error-state";
 
 export interface FailureEvent {
   event_id: string;
@@ -126,20 +128,20 @@ export function FailuresSection({ workspaceId, runId }: FailuresSectionProps) {
   }
 
   return (
-    <div className="mt-8">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-          Failures
-        </h2>
-        <a
-          href={`/dashboard/${workspaceId}/failures?runId=${runId}`}
-          className="text-xs text-[#70b8ff] hover:underline"
-        >
-          View all →
-        </a>
-      </div>
+    <div>
+      <SectionHeader
+        title="Failures"
+        action={
+          <a
+            href={`/dashboard/${workspaceId}/failures?runId=${runId}`}
+            className="text-xs text-[#70b8ff] hover:underline"
+          >
+            View all →
+          </a>
+        }
+      />
       {error ? (
-        <p className="text-sm text-[#ff9592] py-4">{error}</p>
+        <ErrorState message={error} />
       ) : (
         <>
           <div className="flex items-center gap-3 mb-3">

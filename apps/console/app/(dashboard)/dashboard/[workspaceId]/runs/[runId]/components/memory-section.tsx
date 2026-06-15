@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useState, useEffect } from "react";
+import { SectionHeader } from "../../../../../components/section-header";
 
 interface MemoryItem {
   id: string;
@@ -70,18 +71,18 @@ export function MemorySection({ workspaceId, runId }: MemorySectionProps) {
   }
 
   return (
-    <div className="mt-8">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-          Memory
-        </h2>
-        <a
-          href={`/dashboard/${workspaceId}/memory`}
-          className="text-xs text-[#70b8ff] hover:underline"
-        >
-          View all →
-        </a>
-      </div>
+    <div>
+      <SectionHeader
+        title="Memory"
+        action={
+          <a
+            href={`/dashboard/${workspaceId}/memory`}
+            className="text-xs text-[#70b8ff] hover:underline"
+          >
+            View all →
+          </a>
+        }
+      />
       <div className="rounded border border-[var(--gray-05)] overflow-hidden">
         <table className="w-full text-sm border-collapse">
           <thead>

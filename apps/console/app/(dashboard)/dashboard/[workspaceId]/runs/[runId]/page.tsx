@@ -3,6 +3,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
+import { PageHeader } from "../../../../../components/page-header";
+import { SectionHeader } from "../../../../components/section-header";
+import { LoadingState } from "../../../../components/loading-state";
+import { ErrorState } from "../../../../components/error-state";
 import { RunDetailHeader } from "./components/run-detail-header";
 import { RunTimeline } from "./components/run-timeline";
 import { ReviewGatesSection } from "./components/review-gates-section";
@@ -100,24 +104,6 @@ export default function RunDetailPage() {
     return () => clearInterval(id);
   }, [pollEvents]);
 
-  if (loadingRun && loadingEvents) {
-    return (
-      <div className="mx-auto max-w-[1440px]">
-        <p className="text-sm text-[var(--gray-09)] animate-pulse py-8">
-          Loading run…
-        </p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="mx-auto max-w-[1440px]">
-        <p className="text-sm text-[#ff9592] py-8">{error}</p>
-      </div>
-    );
-  }
-
   return (
     <div className="mx-auto max-w-[1440px]">
       <div className="mb-2 flex items-center gap-2 text-xs text-[var(--gray-09)]">
@@ -139,92 +125,71 @@ export default function RunDetailPage() {
         <span className="font-mono">{runId.slice(0, 8)}</span>
       </div>
 
-      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
-        Run detail
-      </h1>
+      {loadingRun ? (
+        <LoadingState variant="list" rows={3} />
+      ) : (
+        <>
+          <PageHeader title="Run detail" subtitle={runId} />
+          {run && <RunDetailHeader run={run} />}
+        </>
+      )}
 
-      {run && <RunDetailHeader run={run} />}
+      {error && <ErrorState message={error} />}
 
-      <div className="mt-6">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-          Cost &amp; tokens
-        </h2>
-        <CostSection workspaceId={workspaceId} runId={runId} runStatus={run?.status} />
-      </div>
+      <SectionHeader title="Cost & tokens" />
+      <CostSection workspaceId={workspaceId} runId={runId} runStatus={run?.status} />
 
-      <div className="mt-6">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-          Telemetry Health
-        </h2>
-        <TelemetryHealthSection workspaceId={workspaceId} runId={runId} />
-      </div>
+      <SectionHeader title="Telemetry Health" />
+      <TelemetryHealthSection workspaceId={workspaceId} runId={runId} />
 
-      <div className="mt-6">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-          Where the time went
-        </h2>
-        <WaterfallSection
-          workspaceId={workspaceId}
-          runId={runId}
-          events={events}
-          runStatus={run?.status}
-        />
-      </div>
+      <SectionHeader title="Where the time went" />
+      <WaterfallSection
+        workspaceId={workspaceId}
+        runId={runId}
+        events={events}
+        runStatus={run?.status}
+      />
 
-      <div className="mt-6">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-          Context
-        </h2>
-        <ContextSection workspaceId={workspaceId} runId={runId} runStatus={run?.status} />
-      </div>
+      <SectionHeader title="Context" />
+      <ContextSection workspaceId={workspaceId} runId={runId} runStatus={run?.status} />
 
-      <div className="mt-6">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-          Behavior
-        </h2>
-        <BehaviorLintSection
-          workspaceId={workspaceId}
-          runId={runId}
-          runStatus={run?.status}
-        />
-      </div>
+      <SectionHeader title="Behavior" />
+      <BehaviorLintSection
+        workspaceId={workspaceId}
+        runId={runId}
+        runStatus={run?.status}
+      />
 
-      <div className="mt-6">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-          Timeline
-        </h2>
-        <RunTimeline
-          events={events}
-          workspaceId={workspaceId}
-          runId={runId}
-          loading={loadingEvents}
-        />
-      </div>
+      <SectionHeader title="Timeline" />
+      <RunTimeline
+        events={events}
+        workspaceId={workspaceId}
+        runId={runId}
+        loading={loadingEvents}
+      />
 
       {run && (
-        <div className="mt-6">
-          <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-            Replay
-          </h2>
+        <>
+          <SectionHeader title="Replay" />
           <ReplaySection workspaceId={workspaceId} runId={runId} />
-        </div>
+        </>
       )}
 
       {run && (
-        <div className="mt-8">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-              Review Gates
-            </h2>
-            <a
-              href={`/dashboard/${workspaceId}/review-gates?runId=${runId}`}
-              className="text-xs text-[#70b8ff] hover:underline"
-            >
-              View all →
-            </a>
-          </div>
+        <>
+          <SectionHeader
+            title="Review Gates"
+            action={
+              <a
+                href={`/dashboard/${workspaceId}/review-gates?runId=${runId}`}
+                className="text-xs text-[#70b8ff] hover:underline"
+              >
+                View all →
+              </a>
+            }
+          />
           <ReviewGatesSection workspaceId={workspaceId} runId={runId} runStatus={run.status} />
-        </div>
+        </>
       )}
 
       {run && <FailuresSection workspaceId={workspaceId} runId={runId} />}

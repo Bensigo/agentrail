@@ -1,10 +1,10 @@
 type StatColor = "green" | "red" | "orange" | "yellow" | "gray";
 
 const COLOR_MAP: Record<StatColor, string> = {
-  green: "#1fd8a4",
-  red: "#ff9592",
-  orange: "#ffa057",
-  yellow: "#f5e147",
+  green: "var(--green-11)",
+  red: "var(--red-11)",
+  orange: "var(--orange-11)",
+  yellow: "var(--yellow-11)",
   gray: "var(--gray-09)",
 };
 

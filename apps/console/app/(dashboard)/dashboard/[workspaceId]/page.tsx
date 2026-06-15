@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { SkeletonCardGrid } from "../../../components/loading-skeleton";
 import { getMembership, getSession } from "../../../../lib/cached";
+import { PageHeader } from "../../../components/page-header";
 
 const EMPTY_COUNTS: WorkspaceOverviewCounts = {
   runs: 0,
@@ -158,19 +159,17 @@ export default async function WorkspaceDashboardPage({
 
   return (
     <div className="mx-auto max-w-[1440px]">
-      <div className="flex items-center gap-3">
-        <h1 className="text-2xl font-bold tracking-tight text-[var(--gray-12)]">
-          {workspace.name}
-        </h1>
-        <span className="rounded-sm bg-[var(--gray-03)] px-1.5 py-0.5 text-xs font-medium text-[var(--gray-09)]">
-          {membership.role}
-        </span>
-      </div>
-      <p className="mt-1 font-mono text-xs text-[var(--gray-09)]">
-        {workspace.slug} · {workspace.id}
-      </p>
+      <PageHeader
+        title={workspace.name}
+        subtitle={`${workspace.slug} · ${workspace.id}`}
+        actions={
+          <span className="rounded-sm bg-[var(--gray-03)] px-1.5 py-0.5 text-xs font-medium text-[var(--gray-09)]">
+            {membership.role}
+          </span>
+        }
+      />
 
-      <div className="mt-8">
+      <div className="mt-2">
         <Suspense fallback={<SkeletonCardGrid cards={9} />}>
           <SectionGrid workspaceId={workspaceId} />
         </Suspense>

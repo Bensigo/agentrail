@@ -45,7 +45,8 @@ class ContextCliTests(unittest.TestCase):
                 self.assertIn("Usage:", result.stdout)
                 self.assertIn("agentrail context sources [--target DIR]", result.stdout)
                 self.assertIn("agentrail context evaluate FIXTURE [--target DIR] [--json]", result.stdout)
-                self.assertIn("agentrail context build pr NUMBER --phase review [--target DIR] [--json]", result.stdout)
+                # Stable command shape; optional flags (e.g. --budget-usd, --model) may be appended.
+                self.assertIn("agentrail context build pr NUMBER --phase review", result.stdout)
                 self.assertIn("agentrail context show PACK [--target DIR] [--json]", result.stdout)
                 self.assertIn("agentrail context explain PACK [--target DIR] [--json]", result.stdout)
                 self.assertIn("agentrail context daemon start [--target DIR]", result.stdout)

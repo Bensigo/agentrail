@@ -395,6 +395,10 @@ def issue_run_phase_prompt(
             "- In the PR body, map every acceptance criterion to implementation and verification evidence.\n"
             "- Stop when the PR is ready or when blocked.\n"
             "\n"
+            "Output token preference:\n"
+            "- When editing an existing file, prefer producing a unified diff / patch over a full-file rewrite.\n"
+            "- A full rewrite is acceptable when creating a new file, renaming, or when the scope of change makes a diff impractical.\n"
+            "\n"
         )
 
         # Core body up through base_prompt

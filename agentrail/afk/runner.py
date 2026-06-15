@@ -189,6 +189,30 @@ class Runner:
             log=self.logs / f"issue-{issue}-implement.log",
             env=env,
         )
+
+        # Compute diff savings and append to the AFK journal (non-fatal).
+        try:
+            import datetime as _dt
+            from agentrail.afk.diff_savings import collect_worktree_diff, estimate_output_savings
+            from agentrail.afk.journal import _append, events_path
+            entries = collect_worktree_diff(wt, self.base)
+            savings = estimate_output_savings(entries, self.model or "")
+            sid = getattr(self, "session_id", None)
+            if sid:
+                _append(
+                    events_path(self.target),
+                    {
+                        "v": 1,
+                        "kind": "cost_optimizer",
+                        "session": sid,
+                        "issue": issue,
+                        "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                        "payload": savings,
+                    },
+                )
+        except Exception:  # noqa: BLE001 — non-fatal
+            pass
+
         return rc == 0
 
     def _git(self, *args: str) -> subprocess.CompletedProcess:

@@ -37,10 +37,11 @@ class ContextSavingsTests(unittest.TestCase):
             [{"path": "big.py", "content": "x = 1\n"}],
         )
 
-    def _run_json(self, root: Path) -> dict:
+    def _run_json(self, root: Path, extra_args: list[str] | None = None) -> dict:
+        args = ["savings", "--target", str(root), "--json"] + (extra_args or [])
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            code = run_context(["savings", "--target", str(root), "--json"])
+            code = run_context(args)
         self.assertEqual(code, 0)
         return json.loads(buffer.getvalue())
 
@@ -55,8 +56,13 @@ class ContextSavingsTests(unittest.TestCase):
         root = self._make_root()
         self._make_pack_with_savings(root, "issue-1-plan-20260101T000000000Z", "2026-01-01T00:00:00.000Z")
         result = self._run_json(root)
-        self.assertEqual(set(result.keys()), {"tokensSaved", "sessions", "cacheSavings"})
+        # Top-level keys must include dollar/model/rate (#695) and cacheSavings (#704)
+        required_keys = {"tokensSaved", "dollarsSaved", "model", "rate", "sessions", "cacheSavings"}
+        self.assertTrue(required_keys.issubset(set(result.keys())))
         self.assertIsInstance(result["tokensSaved"], int)
+        self.assertIsInstance(result["dollarsSaved"], float)
+        self.assertIsInstance(result["model"], str)
+        self.assertIsInstance(result["rate"], float)
         self.assertIsInstance(result["sessions"], list)
         session = result["sessions"][0]
         self.assertEqual(set(session.keys()), {"packId", "generatedAt", "tokensSaved"})
@@ -110,6 +116,33 @@ class ContextSavingsTests(unittest.TestCase):
         self.assertEqual(cs["cached_usd_saved"], "estimate unavailable")
         self.assertEqual(cs["baseline_uncached_usd"], "estimate unavailable")
 
+    def test_dollars_saved_non_negative(self) -> None:
+        root = self._make_root()
+        self._make_pack_with_savings(root, "issue-1-plan-20260101T000000000Z", "2026-01-01T00:00:00.000Z")
+        result = self._run_json(root)
+        self.assertGreaterEqual(result["dollarsSaved"], 0.0)
+        self.assertIn("model", result)
+        self.assertIn("rate", result)
+
+    def test_known_model_no_estimate(self) -> None:
+        root = self._make_root()
+        self._make_pack_with_savings(root, "issue-1-plan-20260101T000000000Z", "2026-01-01T00:00:00.000Z")
+        result = self._run_json(root, ["--model", "claude-sonnet-4-6"])
+        self.assertEqual(result["model"], "claude-sonnet-4-6")
+        self.assertAlmostEqual(result["rate"], 3.0, places=4)
+        self.assertFalse(result.get("estimate", False))
+        # dollarsSaved = tokensSaved * 3.0 / 1_000_000
+        expected = result["tokensSaved"] * 3.0 / 1_000_000
+        self.assertAlmostEqual(result["dollarsSaved"], expected, places=10)
+
+    def test_unknown_model_estimate_flag(self) -> None:
+        root = self._make_root()
+        self._make_pack_with_savings(root, "issue-1-plan-20260101T000000000Z", "2026-01-01T00:00:00.000Z")
+        result = self._run_json(root, ["--model", "unknown-model-xyz"])
+        self.assertTrue(result.get("estimate"), "estimate should be true for unknown model")
+        self.assertGreaterEqual(result["dollarsSaved"], 0.0)
+        self.assertEqual(result["model"], "unknown-model-xyz")
+
     def test_sessions_sorted_newest_first(self) -> None:
         root = self._make_root()
         (root / "big.py").write_text("x = 1\n" * 500, encoding="utf-8")
@@ -142,6 +175,9 @@ class ContextSavingsTests(unittest.TestCase):
         self.assertEqual(code, 0)
         out = buffer.getvalue()
         self.assertIn("tokensSaved:", out)
+        self.assertIn("dollarsSaved:", out)
+        self.assertIn("model=", out)
+        self.assertIn("rate=", out)
         self.assertIn("issue-1-plan-20260101T000000000Z", out)
 
 

@@ -26,6 +26,7 @@ from agentrail.cli.commands.run import run_run
 from agentrail.cli.commands.status import run_status
 from agentrail.cli.commands.upgrade import run_upgrade
 from agentrail.cli.commands.timeline import run_timeline
+from agentrail.cli.commands.cost import run_cost
 
 
 def _repo_dir() -> Path:
@@ -64,6 +65,8 @@ def _usage() -> str:
         "  agentrail console [--target DIR]\n"
         "  agentrail link [--target DIR]\n"
         "  agentrail timeline [--target DIR]\n"
+        "  agentrail cost [--target DIR] [--run ID] [--since REF] [--json]\n"
+        "  agentrail cost [RUN_ID] --recommend [--json]\n"
         "\n"
         "Commands:\n"
         "  context     Build/query the context index\n"
@@ -88,6 +91,7 @@ def _usage() -> str:
         "  console     Open the interactive console\n"
         "  link        Link a worktree to a session\n"
         "  timeline    Show session timeline\n"
+        "  cost        Per-issue real-dollar cost from the AFK journal\n"
     )
 
 
@@ -120,6 +124,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_link(args[1:])
     if args[0] == "timeline":
         return run_timeline(args[1:])
+    if args[0] == "cost":
+        return run_cost(args[1:])
     if args[0] == "resume":
         return run_resume(args[1:])
     if args[0] == "status":

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import List, Tuple
 
+from agentrail.context.pricing import cost_for as _cost_for
 from agentrail.context.embeddings import embed_context, setup_embeddings
 from agentrail.context.ast_search import ast_query
 from agentrail.context.benchmark import format_benchmark_summary, run_benchmark
@@ -82,11 +83,11 @@ def _usage() -> str:
   agentrail context changed [--since REF] [--target DIR] [--json]
   agentrail context evaluate FIXTURE [--target DIR] [--json]
   agentrail context benchmark FIXTURE [--target DIR] [--json] [--compare-grep]
-  agentrail context build issue NUMBER --phase PHASE [--target DIR] [--json]
-  agentrail context build pr NUMBER --phase review [--target DIR] [--json]
+  agentrail context build issue NUMBER --phase PHASE [--budget-usd N] [--model M] [--target DIR] [--json]
+  agentrail context build pr NUMBER --phase review [--budget-usd N] [--model M] [--target DIR] [--json]
   agentrail context show PACK [--target DIR] [--json]
   agentrail context explain PACK [--target DIR] [--json]
-  agentrail context savings [--target DIR] [--json]
+  agentrail context savings [--model M] [--target DIR] [--json]
   agentrail context daemon start [--target DIR]
   agentrail context daemon stop [--target DIR]
   agentrail context daemon status [--target DIR] [--json]
@@ -732,6 +733,8 @@ def run_context(args: List[str]) -> int:
             target: str | None = None
             phase = ""
             json_output = False
+            budget_usd: float | None = None
+            build_model: str = "claude-sonnet-4-6"
             index = 2
             while index < len(rest):
                 arg = rest[index]
@@ -745,6 +748,22 @@ def run_context(args: List[str]) -> int:
                         raise SystemExit("--phase requires a value")
                     phase = rest[index + 1]
                     index += 2
+                elif arg == "--budget-usd":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--budget-usd requires a value")
+                    try:
+                        parsed_budget = float(rest[index + 1])
+                        if parsed_budget <= 0:
+                            raise ValueError("non-positive")
+                        budget_usd = parsed_budget
+                    except ValueError:
+                        print(f"Warning: --budget-usd value '{rest[index + 1]}' is invalid; skipping budget trim.", file=sys.stderr)
+                    index += 2
+                elif arg == "--model":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--model requires a model name")
+                    build_model = rest[index + 1]
+                    index += 2
                 elif arg == "--json":
                     json_output = True
                     index += 1
@@ -754,12 +773,30 @@ def run_context(args: List[str]) -> int:
                 raise SystemExit("context build requires --phase")
             if target_kind == "issue" and phase not in {"plan", "execute", "verify"} or target_kind == "pr" and phase != "review":
                 raise SystemExit("context build phase must be one of: issue plan|execute|verify, pr review")
-            output = build_context_pack(_resolve_target(target), target_kind, target_number, phase)
+            # Read contextBudgetUsd from config if not provided via flag
+            if budget_usd is None:
+                try:
+                    config_path = _resolve_target(target) / ".agentrail" / "config.json"
+                    if config_path.exists():
+                        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                        cfg_budget = (cfg or {}).get("contextBudgetUsd")
+                        if isinstance(cfg_budget, (int, float)) and cfg_budget > 0:
+                            budget_usd = float(cfg_budget)
+                except Exception:
+                    pass
+            output = build_context_pack(
+                _resolve_target(target), target_kind, target_number, phase,
+                budget_usd=budget_usd, model=build_model,
+            )
             if json_output:
                 _print_json(output)
             else:
                 print(f"jsonPath={output['jsonPath']}")
                 print(f"markdownPath={output['markdownPath']}")
+                if "budgetUsd" in output:
+                    print(f"budgetUsd=${output['budgetUsd']:.6f}")
+                    print(f"packCostUsd=${output['packCostUsd']:.6f}  (model={output['costModel']})")
+                    print(f"itemsDropped={output['itemsDropped']}")
             return 0
         if kind in {"show", "explain"}:
             if not rest or rest[0].startswith("--"):
@@ -801,9 +838,23 @@ def run_context(args: List[str]) -> int:
                             print(f"- {item['path']}: {item['reason']} citation={item['citation']}")
             return 0
         if kind == "savings":
+            _DEFAULT_SAVINGS_MODEL = "claude-sonnet-4-6"
             target, remaining = _parse_target(rest)
             json_output = "--json" in remaining
             remaining = [a for a in remaining if a != "--json"]
+            model = _DEFAULT_SAVINGS_MODEL
+            i = 0
+            filtered: List[str] = []
+            while i < len(remaining):
+                if remaining[i] == "--model":
+                    if i + 1 >= len(remaining) or remaining[i + 1].startswith("--"):
+                        raise SystemExit("--model requires a model name")
+                    model = remaining[i + 1]
+                    i += 2
+                else:
+                    filtered.append(remaining[i])
+                    i += 1
+            remaining = filtered
             if remaining:
                 raise SystemExit(f"Unknown context savings option: {remaining[0]}")
             packs_dir = target / ".agentrail" / "context" / "packs"
@@ -827,8 +878,7 @@ def run_context(args: List[str]) -> int:
                     "tokensSaved": saved,
                 })
             sessions.sort(key=lambda s: s["generatedAt"], reverse=True)
-
-            # --- Aggregate cache savings from the local cost-events ledger ---
+            # --- Aggregate cache savings from the local cost-events ledger (#704) ---
             ledger_path = target / ".agentrail" / "run" / "cost-events.jsonl"
             total_cache_tokens = 0
             total_prompt_tokens = 0
@@ -865,11 +915,26 @@ def run_context(args: List[str]) -> int:
                 "baseline_uncached_usd": total_baseline_uncached_usd if has_pricing else "estimate unavailable",
             }
 
-            output = {"tokensSaved": total, "sessions": sessions, "cacheSavings": cache_savings_out}
+            # Real-dollar savings (#695) + cache savings (#704)
+            cost = _cost_for(model, input_tokens=total)
+            dollars_saved = cost["dollars"]
+            rate = cost["rates"]["input"]
+            is_estimate = cost["estimate"]
+            output: dict = {
+                "tokensSaved": total,
+                "dollarsSaved": dollars_saved,
+                "model": model,
+                "rate": rate,
+                "sessions": sessions,
+                "cacheSavings": cache_savings_out,
+            }
+            if is_estimate:
+                output["estimate"] = True
             if json_output:
                 _print_json(output)
             else:
                 print(f"tokensSaved: {total}")
+                print(f"dollarsSaved: ${dollars_saved:.4f}  (model={model}, rate=${rate:.2f}/MTok{', estimate=true' if is_estimate else ''})")
                 for session in sessions:
                     print(f"{session['generatedAt']} {session['packId']} tokensSaved={session['tokensSaved']}")
                 hit_pct = f"{aggregate_hit_rate * 100:.1f}%"

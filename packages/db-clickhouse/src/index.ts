@@ -66,6 +66,10 @@ export {
   getAfkRunEvents,
   getRunnerCostStats,
   getRunnerContextEfficiency,
+  aggregateWorkspaceSavings,
+  getAgentSavingsBreakdown,
+  SAVINGS_REPRESENTATIVE_MODEL,
+  SAVINGS_RATE_PER_MTOK,
 } from "./queries";
 export type {
   RunEventSummary,
@@ -92,6 +96,10 @@ export type {
   InsertFlightRecorderResult,
   RunnerCostStatsRow,
   RunnerContextEfficiencyRow,
+  SavingsTimeOptions,
+  WorkspaceSavingsResult,
+  AgentSavingsBreakdownRow,
+  SavingsAgentName,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems, getWorkspaceContextPacks, listWorkspaceContextPacks, getTokensSavedByRun } from "./context-queries";
 export { computeQualityMetrics, getQualityMetrics } from "./quality-metrics";

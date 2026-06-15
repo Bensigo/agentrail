@@ -394,7 +394,7 @@ class BuildPackTests(unittest.TestCase):
             "agentrail.run.context.build_context_pack", return_value=fake_pack
         ) as mock_bcp:
             build_pack(Path("/tmp/repo"), "pr", 7, "review")
-        mock_bcp.assert_called_once_with(Path("/tmp/repo"), "pr", 7, "review")
+        mock_bcp.assert_called_once_with(Path("/tmp/repo"), "pr", 7, "review", run_id=None)
 
     def test_build_issue_context_pack_delegates(self) -> None:
         """build_issue_context_pack should delegate to build_pack."""

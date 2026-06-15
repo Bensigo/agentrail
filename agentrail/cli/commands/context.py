@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import List, Tuple
 
+from agentrail.context.pricing import cost_for as _cost_for
 from agentrail.context.embeddings import embed_context, setup_embeddings
 from agentrail.context.ast_search import ast_query
 from agentrail.context.benchmark import format_benchmark_summary, run_benchmark
@@ -86,7 +87,7 @@ def _usage() -> str:
   agentrail context build pr NUMBER --phase review [--target DIR] [--json]
   agentrail context show PACK [--target DIR] [--json]
   agentrail context explain PACK [--target DIR] [--json]
-  agentrail context savings [--target DIR] [--json]
+  agentrail context savings [--model M] [--target DIR] [--json]
   agentrail context daemon start [--target DIR]
   agentrail context daemon stop [--target DIR]
   agentrail context daemon status [--target DIR] [--json]
@@ -801,9 +802,23 @@ def run_context(args: List[str]) -> int:
                             print(f"- {item['path']}: {item['reason']} citation={item['citation']}")
             return 0
         if kind == "savings":
+            _DEFAULT_SAVINGS_MODEL = "claude-sonnet-4-6"
             target, remaining = _parse_target(rest)
             json_output = "--json" in remaining
             remaining = [a for a in remaining if a != "--json"]
+            model = _DEFAULT_SAVINGS_MODEL
+            i = 0
+            filtered: List[str] = []
+            while i < len(remaining):
+                if remaining[i] == "--model":
+                    if i + 1 >= len(remaining) or remaining[i + 1].startswith("--"):
+                        raise SystemExit("--model requires a model name")
+                    model = remaining[i + 1]
+                    i += 2
+                else:
+                    filtered.append(remaining[i])
+                    i += 1
+            remaining = filtered
             if remaining:
                 raise SystemExit(f"Unknown context savings option: {remaining[0]}")
             packs_dir = target / ".agentrail" / "context" / "packs"
@@ -827,11 +842,18 @@ def run_context(args: List[str]) -> int:
                     "tokensSaved": saved,
                 })
             sessions.sort(key=lambda s: s["generatedAt"], reverse=True)
-            output = {"tokensSaved": total, "sessions": sessions}
+            cost = _cost_for(model, input_tokens=total)
+            dollars_saved = cost["dollars"]
+            rate = cost["rates"]["input"]
+            is_estimate = cost["estimate"]
+            output: dict = {"tokensSaved": total, "dollarsSaved": dollars_saved, "model": model, "rate": rate, "sessions": sessions}
+            if is_estimate:
+                output["estimate"] = True
             if json_output:
                 _print_json(output)
             else:
                 print(f"tokensSaved: {total}")
+                print(f"dollarsSaved: ${dollars_saved:.4f}  (model={model}, rate=${rate:.2f}/MTok{', estimate=true' if is_estimate else ''})")
                 for session in sessions:
                     print(f"{session['generatedAt']} {session['packId']} tokensSaved={session['tokensSaved']}")
             return 0

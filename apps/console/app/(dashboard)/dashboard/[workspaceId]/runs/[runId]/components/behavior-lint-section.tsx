@@ -21,23 +21,52 @@ interface BehaviorLintSectionProps {
   runStatus?: string;
 }
 
-const RULE_LABELS: Record<string, string> = {
-  excessive_file_reads: "Excessive file reads",
-  full_file_read: "Full-file read",
-  tool_loop: "Tool loop",
-  context_blind_edit: "Context-blind edit",
-  verification_skip: "Verification skip",
+// Each rule: a plain label, what it detects, and why it matters — so a finding
+// is self-explanatory without reading the linter source.
+const RULE_INFO: Record<string, { label: string; detects: string; why: string }> = {
+  excessive_file_reads: {
+    label: "Excessive file reads",
+    detects: "The agent opened far more files than the task needed.",
+    why: "Burns tokens and signals it was searching blindly instead of using compiled context.",
+  },
+  full_file_read: {
+    label: "Full-file read",
+    detects: "The agent read an entire file instead of the relevant line range.",
+    why: "Whole-file reads are the main avoidable token cost — context packs return just the needed lines.",
+  },
+  tool_loop: {
+    label: "Tool loop",
+    detects: "The agent repeated the same tool call without making progress.",
+    why: "Wastes tokens and time, and usually means it was stuck.",
+  },
+  context_blind_edit: {
+    label: "Context-blind edit",
+    detects: "The agent edited a file it never retrieved context for.",
+    why: "High risk of incorrect changes — the edit wasn't grounded in the code it touched.",
+  },
+  verification_skip: {
+    label: "Verification skip",
+    detects: "The agent finished without running tests or a verification step.",
+    why: "Unverified work is the top cause of failed review gates.",
+  },
 };
 
-function ruleLabel(rule: string): string {
-  return RULE_LABELS[rule] ?? rule.replace(/_/g, " ");
+function ruleInfo(rule: string) {
+  return RULE_INFO[rule] ?? { label: rule.replace(/_/g, " "), detects: "", why: "" };
 }
 
+// error = likely-wrong-output risk; warning = wasteful/sloppy but not unsafe.
 function severityClass(severity: LintSeverity): string {
   if (severity === "error") {
-    return "border-[#e5484d] bg-[#2a1516] text-[#ff9592]";
+    return "border-[var(--red-11)] bg-[color-mix(in_srgb,var(--red-11)_14%,transparent)] text-[var(--red-11)]";
   }
-  return "border-[#f76b15] bg-[#2a1b12] text-[#ffa057]";
+  return "border-[var(--orange-11)] bg-[color-mix(in_srgb,var(--orange-11)_14%,transparent)] text-[var(--orange-11)]";
+}
+
+function severityMeaning(severity: LintSeverity): string {
+  return severity === "error"
+    ? "Error — likely affected the output's correctness; worth reviewing."
+    : "Warning — wasteful or sloppy, but not a correctness risk.";
 }
 
 export function BehaviorLintSection({
@@ -82,7 +111,7 @@ export function BehaviorLintSection({
   }
 
   if (error) {
-    return <p className="py-4 text-sm text-[#ff9592]">{error}</p>;
+    return <p className="py-4 text-sm text-[var(--red-11)]">{error}</p>;
   }
 
   if (findings.length === 0) {
@@ -96,39 +125,50 @@ export function BehaviorLintSection({
   }
 
   return (
-    <div className="overflow-hidden rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
-      <div className="hidden border-b border-[var(--gray-05)] px-3 py-2 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] sm:grid sm:grid-cols-[1fr_96px_minmax(180px,240px)]">
-        <span>Rule</span>
-        <span>Severity</span>
-        <span>Evidence</span>
-      </div>
-      <div className="divide-y divide-[var(--gray-04)]">
-        {findings.map((finding, index) => {
-          const anchorId = `event-${finding.evidence_event_id}`;
-          return (
-            <div
-              key={`${finding.rule}-${finding.evidence_event_id}-${index}`}
-              className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[1fr_96px_minmax(180px,240px)] sm:items-center"
-            >
-              <span className="font-medium text-[var(--gray-12)]">
-                {ruleLabel(finding.rule)}
-              </span>
-              <span
-                className={`inline-flex w-fit items-center rounded-sm border px-1.5 py-0.5 font-medium uppercase ${severityClass(
-                  finding.severity
-                )}`}
+    <div className="space-y-2">
+      <p className="max-w-[80ch] text-xs leading-relaxed text-[var(--gray-09)]">
+        Behavior findings flag wasteful or risky things the agent did during this
+        run — reading whole files, looping on a tool, editing code it never read,
+        skipping verification. They explain cost spikes and failed gates.
+      </p>
+      <div className="overflow-hidden rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
+        <div className="divide-y divide-[var(--gray-04)]">
+          {findings.map((finding, index) => {
+            const anchorId = `event-${finding.evidence_event_id}`;
+            const info = ruleInfo(finding.rule);
+            return (
+              <div
+                key={`${finding.rule}-${finding.evidence_event_id}-${index}`}
+                className="flex flex-col gap-1.5 px-3 py-2.5 text-xs sm:flex-row sm:items-start sm:gap-3"
               >
-                {finding.severity}
-              </span>
-              <a
-                href={`#${encodeURIComponent(anchorId)}`}
-                className="font-mono text-[#70b8ff] hover:underline"
-              >
-                {finding.evidence_event_id}
-              </a>
-            </div>
-          );
-        })}
+                <span
+                  title={severityMeaning(finding.severity)}
+                  className={`inline-flex w-fit shrink-0 items-center rounded-sm border px-1.5 py-0.5 font-medium uppercase ${severityClass(
+                    finding.severity
+                  )}`}
+                >
+                  {finding.severity}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <span className="font-medium text-[var(--gray-12)]">{info.label}</span>
+                  {info.detects && (
+                    <p className="mt-0.5 text-[var(--gray-10)]">{info.detects}</p>
+                  )}
+                  {info.why && (
+                    <p className="mt-0.5 text-[var(--gray-09)]">{info.why}</p>
+                  )}
+                </div>
+                <a
+                  href={`#${encodeURIComponent(anchorId)}`}
+                  title={`Timeline event ${finding.evidence_event_id}`}
+                  className="shrink-0 text-[var(--blue-11)] hover:underline"
+                >
+                  View in timeline →
+                </a>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

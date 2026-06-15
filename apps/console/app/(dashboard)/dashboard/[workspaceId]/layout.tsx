@@ -3,6 +3,7 @@ import { signOut } from "@agentrail/auth";
 import { redirect } from "next/navigation";
 import { Sidebar } from "../../../components/sidebar";
 import { ThemeToggle } from "../../../components/theme-toggle";
+import { TopBarBreadcrumb } from "../../../components/breadcrumb";
 import { getSession, getWorkspacesForUser } from "../../../../lib/cached";
 
 type SidebarUser = {
@@ -73,7 +74,8 @@ export default async function WorkspaceLayout({
         />
       </Suspense>
       <div className="flex-1 pl-[220px] max-md:pl-12">
-        <div className="flex h-12 items-center justify-end border-b border-[var(--gray-05)] px-4">
+        <div className="flex h-12 items-center justify-between border-b border-[var(--gray-05)] px-4">
+          <TopBarBreadcrumb />
           <ThemeToggle />
         </div>
         <div className="p-6">{children}</div>

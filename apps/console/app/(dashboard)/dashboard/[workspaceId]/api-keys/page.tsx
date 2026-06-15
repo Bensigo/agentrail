@@ -2,6 +2,7 @@ import { listApiKeys } from "@agentrail/db-postgres";
 import { ApiKeysTable } from "./components/api-keys-table";
 import type { ApiKeyRow } from "./components/create-key-dialog";
 import { getMembership, getSession } from "../../../../../lib/cached";
+import { PageHeader } from "../../../../components/page-header";
 
 export default async function ApiKeysPage({
   params,
@@ -40,9 +41,10 @@ export default async function ApiKeysPage({
 
   return (
     <div className="mx-auto max-w-[1440px]">
-      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
-        API Keys
-      </h1>
+      <PageHeader
+        title="API Keys"
+        subtitle="Authenticate CLI and integrations against this workspace."
+      />
       <ApiKeysTable
         workspaceId={workspaceId}
         initialKeys={keys}

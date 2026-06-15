@@ -35,7 +35,7 @@ export function SectionEmpty({
   if (inFlight) {
     return (
       <p className="text-sm text-[var(--gray-09)] py-4 flex items-center gap-2">
-        <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#f76b15] animate-pulse" />
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--orange-11)] animate-pulse" />
         {waitingText}
       </p>
     );

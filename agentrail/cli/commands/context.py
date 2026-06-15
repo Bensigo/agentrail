@@ -83,8 +83,8 @@ def _usage() -> str:
   agentrail context changed [--since REF] [--target DIR] [--json]
   agentrail context evaluate FIXTURE [--target DIR] [--json]
   agentrail context benchmark FIXTURE [--target DIR] [--json] [--compare-grep]
-  agentrail context build issue NUMBER --phase PHASE [--target DIR] [--json]
-  agentrail context build pr NUMBER --phase review [--target DIR] [--json]
+  agentrail context build issue NUMBER --phase PHASE [--budget-usd N] [--model M] [--target DIR] [--json]
+  agentrail context build pr NUMBER --phase review [--budget-usd N] [--model M] [--target DIR] [--json]
   agentrail context show PACK [--target DIR] [--json]
   agentrail context explain PACK [--target DIR] [--json]
   agentrail context savings [--model M] [--target DIR] [--json]
@@ -733,6 +733,8 @@ def run_context(args: List[str]) -> int:
             target: str | None = None
             phase = ""
             json_output = False
+            budget_usd: float | None = None
+            build_model: str = "claude-sonnet-4-6"
             index = 2
             while index < len(rest):
                 arg = rest[index]
@@ -746,6 +748,22 @@ def run_context(args: List[str]) -> int:
                         raise SystemExit("--phase requires a value")
                     phase = rest[index + 1]
                     index += 2
+                elif arg == "--budget-usd":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--budget-usd requires a value")
+                    try:
+                        parsed_budget = float(rest[index + 1])
+                        if parsed_budget <= 0:
+                            raise ValueError("non-positive")
+                        budget_usd = parsed_budget
+                    except ValueError:
+                        print(f"Warning: --budget-usd value '{rest[index + 1]}' is invalid; skipping budget trim.", file=sys.stderr)
+                    index += 2
+                elif arg == "--model":
+                    if index + 1 >= len(rest) or rest[index + 1].startswith("--"):
+                        raise SystemExit("--model requires a model name")
+                    build_model = rest[index + 1]
+                    index += 2
                 elif arg == "--json":
                     json_output = True
                     index += 1
@@ -755,12 +773,30 @@ def run_context(args: List[str]) -> int:
                 raise SystemExit("context build requires --phase")
             if target_kind == "issue" and phase not in {"plan", "execute", "verify"} or target_kind == "pr" and phase != "review":
                 raise SystemExit("context build phase must be one of: issue plan|execute|verify, pr review")
-            output = build_context_pack(_resolve_target(target), target_kind, target_number, phase)
+            # Read contextBudgetUsd from config if not provided via flag
+            if budget_usd is None:
+                try:
+                    config_path = _resolve_target(target) / ".agentrail" / "config.json"
+                    if config_path.exists():
+                        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                        cfg_budget = (cfg or {}).get("contextBudgetUsd")
+                        if isinstance(cfg_budget, (int, float)) and cfg_budget > 0:
+                            budget_usd = float(cfg_budget)
+                except Exception:
+                    pass
+            output = build_context_pack(
+                _resolve_target(target), target_kind, target_number, phase,
+                budget_usd=budget_usd, model=build_model,
+            )
             if json_output:
                 _print_json(output)
             else:
                 print(f"jsonPath={output['jsonPath']}")
                 print(f"markdownPath={output['markdownPath']}")
+                if "budgetUsd" in output:
+                    print(f"budgetUsd=${output['budgetUsd']:.6f}")
+                    print(f"packCostUsd=${output['packCostUsd']:.6f}  (model={output['costModel']})")
+                    print(f"itemsDropped={output['itemsDropped']}")
             return 0
         if kind in {"show", "explain"}:
             if not rest or rest[0].startswith("--"):

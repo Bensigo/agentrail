@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Tuple
 
 from agentrail.context.compiler import compiler_contract
 from agentrail.context.index import append_audit, load_index
-from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_saved, query_context
+from agentrail.context.pricing import cost_for
+from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_saved, estimate_tokens, query_context
 from agentrail.shared.json import write_json
 
 
@@ -341,6 +343,95 @@ def _render_item(item: Dict[str, Any]) -> str:
     return f"- `{item.get('path')}`: {item.get('reason')} Citation: {item.get('citation')}.{score_text}"
 
 
+# ---------------------------------------------------------------------------
+# Budget trimming helpers
+# ---------------------------------------------------------------------------
+
+_RETRIEVAL_SECTION_KEYS = [
+    "likelyFiles",
+    "likelyDocs",
+    "relevantMemory",
+    "priorMistakes",
+    "activeState",
+]
+
+_DEFAULT_BUDGET_MODEL = "claude-sonnet-4-6"
+
+
+def _item_tokens(item: Dict[str, Any]) -> int:
+    content = item.get("content")
+    if isinstance(content, str):
+        return estimate_tokens(content)
+    return 0
+
+
+def _pack_input_tokens(sections: Dict[str, List[Dict[str, Any]]]) -> int:
+    return sum(_item_tokens(item) for items in sections.values() for item in items)
+
+
+def _score_final(item: Dict[str, Any]) -> float:
+    score = item.get("score")
+    if isinstance(score, dict):
+        val = score.get("final")
+        if isinstance(val, (int, float)):
+            return float(val)
+    return float("inf")
+
+
+def _trim_to_budget(
+    sections: Dict[str, List[Dict[str, Any]]],
+    budget_usd: float,
+    model: str,
+) -> Dict[str, Any]:
+    """Drop lowest-value items until the pack's input-token cost ≤ budget_usd.
+
+    Drop order: excludedContext, openQuestions, then retrieval items ascending
+    by score.final.  requiredContext, availableTools, availableSkills, and goals
+    are never dropped.
+
+    Returns a dict with budgetUsd, packCostUsd, and itemsDropped.
+    """
+    total_tokens = _pack_input_tokens(sections)
+    result = cost_for(model, input_tokens=total_tokens)
+
+    if result["estimate"]:
+        warnings.warn(
+            f"Unknown model '{model}': cannot price context pack for --budget-usd; skipping trim.",
+            stacklevel=4,
+        )
+        return {"itemsDropped": 0, "packCostUsd": result["dollars"], "budgetUsd": budget_usd}
+
+    if result["dollars"] <= budget_usd:
+        return {"itemsDropped": 0, "packCostUsd": result["dollars"], "budgetUsd": budget_usd}
+
+    # Build droppable list in priority order
+    droppable: List[Tuple[str, Dict[str, Any]]] = []
+    for item in list(sections.get("excludedContext", [])):
+        droppable.append(("excludedContext", item))
+    for item in list(sections.get("openQuestions", [])):
+        droppable.append(("openQuestions", item))
+    retrieval_pairs: List[Tuple[str, Dict[str, Any]]] = []
+    for key in _RETRIEVAL_SECTION_KEYS:
+        for item in sections.get(key, []):
+            retrieval_pairs.append((key, item))
+    retrieval_pairs.sort(key=lambda pair: _score_final(pair[1]))
+    droppable.extend(retrieval_pairs)
+
+    items_dropped = 0
+    for section_key, item in droppable:
+        if result["dollars"] <= budget_usd:
+            break
+        try:
+            sections[section_key].remove(item)
+        except ValueError:
+            continue
+        items_dropped += 1
+        total_tokens -= _item_tokens(item)
+        result = cost_for(model, input_tokens=total_tokens)
+
+    return {"itemsDropped": items_dropped, "packCostUsd": result["dollars"], "budgetUsd": budget_usd}
+
+
 def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
     lines = [
         f"# Context Pack: {pack['target']['kind']} #{pack['target']['number']} {pack['target']['phase']}",
@@ -359,11 +450,19 @@ def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
         else:
             lines.append("None.")
         lines.append("")
+    budget_lines = []
+    if pack.get("budgetUsd") is not None:
+        budget_lines = [
+            f"- Budget: ${pack['budgetUsd']:.6f} USD",
+            f"- Pack cost: ${pack['packCostUsd']:.6f} USD (model={pack.get('costModel', _DEFAULT_BUDGET_MODEL)})",
+            f"- Items dropped to meet budget: {pack['itemsDropped']}",
+        ]
     lines.extend(
         [
             "## Metadata",
             f"- Retrieval budget: maxItems={pack['retrievalBudget']['maxItems']}, maxTokens={pack['retrievalBudget']['maxTokens']}",
             f"- Tokens saved vs reading full files: {pack.get('tokensSaved', 0)}",
+            *budget_lines,
             f"- Index: {pack['index'].get('version')} builtAt={pack['index'].get('builtAt')}",
             f"- Provider mode: {pack['provider'].get('mode')}",
             f"- Audit event: {pack['audit'].get('event')} citation={pack['audit'].get('citation')}",
@@ -373,7 +472,15 @@ def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def build_context_pack(target_dir: Path, target_kind: str, target_number: int, phase: str) -> Dict[str, Any]:
+def build_context_pack(
+    target_dir: Path,
+    target_kind: str,
+    target_number: int,
+    phase: str,
+    *,
+    budget_usd: float | None = None,
+    model: str = _DEFAULT_BUDGET_MODEL,
+) -> Dict[str, Any]:
     root = target_dir.resolve()
     if target_kind not in {"issue", "pr"}:
         raise RuntimeError("context build requires target kind: issue or pr")
@@ -391,6 +498,11 @@ def build_context_pack(target_dir: Path, target_kind: str, target_number: int, p
     sections["excludedContext"] = _excluded_context(query.get("excluded", []))
     _ensure_required_sections(root, sections, index)
     sections["goals"] = _relevant_goals(root, target_kind, target_number, phase)
+
+    # Budget trimming (AC1-AC5)
+    budget_meta: Dict[str, Any] = {}
+    if budget_usd is not None:
+        budget_meta = _trim_to_budget(sections, budget_usd, model)
 
     generated_at = _now()
     pack_id = f"{target_kind}-{target_number}-{phase}-{_pack_slug(generated_at)}"
@@ -417,6 +529,11 @@ def build_context_pack(target_dir: Path, target_kind: str, target_number: int, p
         "goal": _primary_goal(target_kind, target_number, phase, sections["goals"]),
         **sections,
     }
+    if budget_meta:
+        pack["budgetUsd"] = budget_meta["budgetUsd"]
+        pack["packCostUsd"] = budget_meta["packCostUsd"]
+        pack["itemsDropped"] = budget_meta["itemsDropped"]
+        pack["costModel"] = model
     pack["included"] = _all_included(pack)
     pack["excluded"] = pack["excludedContext"]
     # Estimated tokens the bounded snippets saved versus reading every selected
@@ -456,7 +573,7 @@ def build_context_pack(target_dir: Path, target_kind: str, target_number: int, p
             "providerMode": pack["provider"].get("mode"),
         },
     )
-    return {
+    summary: Dict[str, Any] = {
         "schemaVersion": 1,
         "command": "context.build",
         "packId": pack_id,
@@ -471,6 +588,12 @@ def build_context_pack(target_dir: Path, target_kind: str, target_number: int, p
         "audit": audit,
         "compiler": pack["compiler"],
     }
+    if budget_meta:
+        summary["budgetUsd"] = budget_meta["budgetUsd"]
+        summary["packCostUsd"] = budget_meta["packCostUsd"]
+        summary["itemsDropped"] = budget_meta["itemsDropped"]
+        summary["costModel"] = model
+    return summary
 
 
 def _pack_path(root: Path, pack: str) -> Path:

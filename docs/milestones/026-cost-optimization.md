@@ -27,6 +27,8 @@ Five additive optimizers, each pricing through M022: (1) prompt-cache exploitati
   - **Price-aware context budgeting**: a `--budget-usd` option (and/or config) that trims the pack to a dollar budget by dropping lowest-value chunks first, priced via M022; reported alongside the token budget.
   - **Cost-saving recommendations**: `agentrail cost --recommend` emits concrete "do X, save ~$Y" advice (enable caching / downgrade phase / tighten pack) derived from M024 per-run cost.
   - **Redundant-retrieval dedup**: detect identical context re-fetched across phases of a run and reuse it, reporting the avoided tokens/$.
+  - **Reduce output-token waste**: output tokens cost ~5× input, so measure the output:input ratio per run, flag wasteful/verbose runs, and steer agents toward terse, structured output; report output-$ saved.
+  - **Diffs over full-file rewrites**: in the AFK execute phase, steer agents to emit unified diffs/patches instead of rewriting whole files; measure the output tokens (and $) saved vs the full-file baseline.
 - Data/storage: no destructive schema changes (reads existing telemetry/journal; optional config keys for budgets/routing).
 - Integrations/jobs: recommendations/cache stats consumable by the console cost surface (M025).
 - Tests: per-technique unit tests (cache-hit accounting; routing flag fires when cheaper model suffices; pack trimmed to dollar budget; recommendation text + quantified savings; dedup avoids re-fetch).
@@ -39,7 +41,9 @@ Five additive optimizers, each pricing through M022: (1) prompt-cache exploitati
 - [ ] AC3: `--budget-usd N` (CLI/config) trims a context pack to a dollar budget by dropping lowest-value chunks first; the resulting pack cost ≤ budget, priced via M022.
 - [ ] AC4: `agentrail cost --recommend` emits actionable, quantified "do X, save ~$Y" recommendations derived from M024 per-run cost; no vague advice.
 - [ ] AC5: Redundant-retrieval dedup detects identical context re-fetched across phases and reuses it, reporting avoided tokens/$.
-- [ ] AC6: All dollar math routes through M022 `cost_for`/`cost_usd`; every technique's savings is auditable (baseline + after); all prior suites stay green.
+- [ ] AC6: Output-token waste is measured per run (output:input ratio, priced at the output rate via M022), wasteful runs flagged, and output-$ saved reported.
+- [ ] AC7: AFK execute steers agents to emit diffs/patches over full-file rewrites; the output tokens (and $) saved vs the full-file baseline are measured and reported.
+- [ ] AC8: All dollar math routes through M022 `cost_for`/`cost_usd`; every technique's savings is auditable (baseline + after); all prior suites stay green.
 
 ## Likely Issue Slices
 
@@ -48,6 +52,8 @@ Five additive optimizers, each pricing through M022: (1) prompt-cache exploitati
 - Price-aware context budgeting: `--budget-usd` pack trim by cost-ranked drop.
 - Cost-saving recommendations: `agentrail cost --recommend` quantified advice.
 - Redundant-retrieval dedup: detect + reuse identical cross-phase context.
+- Reduce output-token waste: measure output:input ratio + flag wasteful runs (output priced ~5× via M022).
+- Diffs over full-file rewrites: steer AFK execute to patch-style edits; measure output tokens/$ saved.
 
 ## Blocked By
 

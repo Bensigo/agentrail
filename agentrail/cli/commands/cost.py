@@ -24,6 +24,7 @@ from agentrail.run.pricing import cost_usd
 from agentrail.run.usage_capture import capture_usage
 from agentrail.run.cost_recommend import recommend, ESTIMATE_UNAVAILABLE
 from agentrail.cli.commands.run import _read_config, resolve_agent_name, resolve_default_budget
+from agentrail.context.pricing import cost_for
 
 
 def _rows_have_usage(rows: List[dict]) -> bool:
@@ -51,11 +52,15 @@ prints real-dollar cost attribution per issue, priced through the model
 rate table.
 
 Options:
-  --target DIR   Project root (default: .)
-  --run ID       Scope to a single session; error if not found
-  --since REF    ISO timestamp or YYYY-MM-DD; exclude earlier sessions
-  --recommend    Emit prioritised cost-saving recommendations for a run
-  --json         Emit machine-readable JSON
+  --target DIR                    Project root (default: .)
+  --run ID                        Scope to a single session; error if not found
+  --since REF                     ISO timestamp or YYYY-MM-DD; exclude earlier sessions
+  --recommend                     Emit prioritised cost-saving recommendations for a run
+  --output-ratio-threshold FLOAT  Flag runs as output-wasteful when output:input token
+                                  ratio exceeds this value (default: 2.0; 0 disables).
+                                  Also configurable via budgets.output_ratio_threshold
+                                  in .agentrail/config.json.
+  --json                          Emit machine-readable JSON
 """
 
 
@@ -66,6 +71,7 @@ def _parse(args: List[str]) -> dict:
         "since": None,
         "json": False,
         "recommend": False,
+        "output_ratio_threshold": None,  # None = use config / default
     }
     i = 0
     while i < len(args):
@@ -80,6 +86,12 @@ def _parse(args: List[str]) -> dict:
             opts["json"] = True; i += 1
         elif a == "--recommend":
             opts["recommend"] = True; i += 1
+        elif a == "--output-ratio-threshold":
+            try:
+                opts["output_ratio_threshold"] = float(args[i + 1])
+            except (IndexError, ValueError):
+                raise SystemExit("--output-ratio-threshold: expected a numeric value")
+            i += 2
         elif a in ("-h", "--help"):
             print(_usage_text()); raise SystemExit(0)
         elif not a.startswith("-"):
@@ -92,6 +104,40 @@ def _parse(args: List[str]) -> dict:
         else:
             raise SystemExit(f"unknown option: {a}")
     return opts
+
+
+def resolve_output_ratio_threshold(target: str, cli_value: Optional[float] = None) -> float:
+    """Return the output:input ratio flag threshold.
+
+    Resolution order:
+      1. CLI flag ``--output-ratio-threshold`` (``cli_value``).
+      2. ``budgets.output_ratio_threshold`` from .agentrail/config.json.
+      3. Default: 2.0.
+
+    A negative or non-numeric config value warns and falls back to the default.
+    """
+    if cli_value is not None:
+        return cli_value
+    cfg = _read_config(target)
+    raw = (cfg.get("budgets") or {}).get("output_ratio_threshold") if cfg else None
+    if raw is None:
+        return 2.0
+    if isinstance(raw, bool):
+        raw_val = None
+    else:
+        try:
+            raw_val = float(raw)
+        except (TypeError, ValueError):
+            raw_val = None
+    if raw_val is None or raw_val < 0:
+        import sys as _sys
+        print(
+            f"warning: ignoring invalid budgets.output_ratio_threshold in "
+            f".agentrail/config.json: {raw!r} (must be a non-negative number)",
+            file=_sys.stderr,
+        )
+        return 2.0
+    return raw_val
 
 
 def _epoch(ts_iso: str) -> float:
@@ -150,6 +196,27 @@ def _session_claims(events: List[dict]) -> List[tuple]:
     return claims
 
 
+def _output_waste_fields(model: str, input_tokens: int, output_tokens: int) -> dict:
+    """Compute output-waste metric fields for a row using M022 cost_for.
+
+    Returns:
+        outputTokens      — raw output token count
+        outputInputRatio  — round(output/input, 2), or None when input==0
+        outputCostUsd     — output tokens priced at the model's output rate (M022)
+        estimate          — True when the model is unknown to the M022 price table
+    """
+    ratio: Optional[float] = None
+    if input_tokens > 0:
+        ratio = round(output_tokens / input_tokens, 2)
+    output_cost_result = cost_for(model, output_tokens=output_tokens)
+    return {
+        "outputTokens": output_tokens,
+        "outputInputRatio": ratio,
+        "outputCostUsd": output_cost_result["dollars"],
+        "estimate": output_cost_result["estimate"],
+    }
+
+
 def _collect_rows(
     all_events: List[dict],
     sessions: List[str],
@@ -162,6 +229,7 @@ def _collect_rows(
         for issue_num, claim_ts in _session_claims(evs):
             usage = capture_usage(agent, target, claim_ts)
             if usage is None:
+                waste = _output_waste_fields("", 0, 0)
                 rows.append({
                     "session": sid,
                     "issue": issue_num,
@@ -170,8 +238,11 @@ def _collect_rows(
                     "output_tokens": 0,
                     "cache_tokens": 0,
                     "cost_usd": 0.0,
+                    **waste,
+                    "flags": [],
                 })
             else:
+                waste = _output_waste_fields(usage.model, usage.input_tokens, usage.output_tokens)
                 rows.append({
                     "session": sid,
                     "issue": issue_num,
@@ -180,6 +251,8 @@ def _collect_rows(
                     "output_tokens": usage.output_tokens,
                     "cache_tokens": usage.cache_tokens,
                     "cost_usd": cost_usd(usage),
+                    **waste,
+                    "flags": [],
                 })
     return rows
 
@@ -224,21 +297,32 @@ def _render_human(rows: List[dict], total: float) -> None:
     col_model = 24
     col_tokens = 10
     col_cost = 12
+    col_ratio = 7
+    col_out_cost = 12
+    col_flags = 15
     header = (
         f"{'SESSION':<{col_session}}  {'ISSUE':>{col_issue}}  "
         f"{'MODEL':<{col_model}}  {'IN':>{col_tokens}}  {'OUT':>{col_tokens}}  "
-        f"{'CACHE':>{col_tokens}}  {'COST USD':>{col_cost}}"
+        f"{'CACHE':>{col_tokens}}  {'COST USD':>{col_cost}}  "
+        f"{'OUT/IN':>{col_ratio}}  {'OUT COST':>{col_out_cost}}  {'FLAGS':<{col_flags}}"
     )
     sep = "-" * len(header)
     print(header)
     print(sep)
     for r in rows:
         cost_str = f"${r['cost_usd']:.6f}"
+        ratio = r.get("outputInputRatio")
+        ratio_str = f"{ratio:.2f}" if ratio is not None else "N/A"
+        out_cost_str = f"${r.get('outputCostUsd', 0.0):.6f}"
+        flags_str = ",".join(r.get("flags", [])) or ""
+        if r.get("estimate"):
+            flags_str = (flags_str + " ~est").strip()
         print(
             f"{r['session']:<{col_session}}  {r['issue']:>{col_issue}}  "
             f"{r['model']:<{col_model}}  {r['input_tokens']:>{col_tokens}}  "
             f"{r['output_tokens']:>{col_tokens}}  {r['cache_tokens']:>{col_tokens}}  "
-            f"{cost_str:>{col_cost}}"
+            f"{cost_str:>{col_cost}}  {ratio_str:>{col_ratio}}  "
+            f"{out_cost_str:>{col_out_cost}}  {flags_str:<{col_flags}}"
         )
     print(sep)
     total_str = f"${total:.6f}"
@@ -383,6 +467,13 @@ def run_cost(args: List[str]) -> int:
                 file=sys.stderr,
             )
     total = sum(r["cost_usd"] for r in rows)
+
+    # Apply output-wasteful flag based on configured/CLI threshold.
+    ratio_threshold = resolve_output_ratio_threshold(str(target), opts.get("output_ratio_threshold"))
+    for row in rows:
+        ratio = row.get("outputInputRatio")
+        if ratio is not None and ratio > ratio_threshold:
+            row["flags"].append("output-wasteful")
 
     threshold = resolve_default_budget(str(target))
     violations = _emit_budget_warnings(rows, threshold, target)

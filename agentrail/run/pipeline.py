@@ -223,14 +223,21 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
         usage = capture_usage(rc.agent, rc.target_dir, phase_start_ts)
         if usage:
             cost = cost_usd(usage)
-            record = build_cost_record(rc.run_id, phase, usage, cost)
-            # Persist to local append-only ledger for `agentrail context savings`
-            ledger = rc.target_dir / ".agentrail" / "run" / "cost-events.jsonl"
-            ledger.parent.mkdir(parents=True, exist_ok=True)
-            with ledger.open("a", encoding="utf-8") as _f:
-                _f.write(json.dumps(record) + "\n")
-            push_cost_event(rc.target_dir, rc.run_id, phase, usage, cost)
+            # Cost accounting FIRST — the budget guardrail depends on this, so it
+            # must never be skipped by a later ledger/push failure.
             rc.cumulative_cost_usd += cost
+            push_cost_event(rc.target_dir, rc.run_id, phase, usage, cost)
+            # Local append-only ledger for `agentrail context savings` — isolated
+            # in its own try/except so a write failure cannot disable the cost
+            # accounting above (which would silently defeat the budget guardrail).
+            try:
+                record = build_cost_record(rc.run_id, phase, usage, cost)
+                ledger = rc.target_dir / ".agentrail" / "run" / "cost-events.jsonl"
+                ledger.parent.mkdir(parents=True, exist_ok=True)
+                with ledger.open("a", encoding="utf-8") as _f:
+                    _f.write(json.dumps(record) + "\n")
+            except Exception as _exc:
+                _log.debug("cost ledger write skipped: %s", _exc)
     except Exception as _exc:
         _log.debug("cost capture skipped: %s", _exc)
 

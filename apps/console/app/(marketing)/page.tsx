@@ -173,8 +173,10 @@ export default async function LandingPage() {
       </header>
 
       {/* Hero */}
-      <section className="relative z-10 px-6 pb-10 pt-24">
-        <div className="mx-auto max-w-[1180px]">
+      <section className="relative z-10 px-6 pb-16 pt-20">
+        <div className="mx-auto grid max-w-[1180px] items-center gap-12 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] lg:gap-10">
+          {/* Left — editorial copy column */}
+          <div>
           <div
             className="ar-rise mb-6 inline-flex items-center gap-2 rounded-full border border-[var(--gray-05)] bg-[var(--gray-01)]/70 px-3 py-1"
             style={{ animationDelay: "0ms" }}
@@ -186,7 +188,7 @@ export default async function LandingPage() {
           </div>
 
           <h1
-            className={`${display.className} ar-rise max-w-[18ch] text-balance text-[clamp(2.8rem,7vw,5.4rem)] font-extrabold leading-[0.95] tracking-[-0.04em]`}
+            className={`${display.className} ar-rise max-w-[16ch] text-balance text-[clamp(2.4rem,5vw,3.9rem)] font-extrabold leading-[0.98] tracking-[-0.04em]`}
             style={{ animationDelay: "80ms" }}
           >
             Put your coding agents{" "}
@@ -261,18 +263,17 @@ export default async function LandingPage() {
               />
             </div>
           )}
-        </div>
-      </section>
+          </div>
 
-      {/* The console — product shot */}
-      <section className="relative z-10 px-6 pb-12 pt-4">
-        <div className="mx-auto max-w-[1180px]">
-          <Reveal delay={80}>
-            <DashboardDemo />
-          </Reveal>
-          <p className="mt-5 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--gray-09)]">
-            Interactive · click the sidebar — every developer&apos;s runs, context, cost, gates &amp; audit
-          </p>
+          {/* Right — real product surface, adjacent (stacks below on mobile) */}
+          <div className="ar-rise min-w-0" style={{ animationDelay: "200ms" }}>
+            <Reveal delay={120}>
+              <DashboardDemo />
+            </Reveal>
+            <p className="mt-4 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--gray-09)]">
+              Interactive · click the sidebar — runs, context, cost, gates &amp; audit
+            </p>
+          </div>
         </div>
       </section>
 

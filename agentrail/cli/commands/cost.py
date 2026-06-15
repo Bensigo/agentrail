@@ -22,6 +22,7 @@ from typing import List, Optional
 from agentrail.afk import journal as _journal
 from agentrail.run.pricing import cost_usd
 from agentrail.run.usage_capture import capture_usage
+from agentrail.run.cost_recommend import recommend, ESTIMATE_UNAVAILABLE
 from agentrail.cli.commands.run import _read_config, resolve_agent_name, resolve_default_budget
 
 
@@ -43,6 +44,7 @@ def _candidate_agents(target: Path, primary: str) -> List[str]:
 def _usage_text() -> str:
     return """Usage:
   agentrail cost [--target DIR] [--run ID] [--since REF] [--json]
+  agentrail cost [RUN_ID] --recommend [--json]
 
 Reads the AFK flight-recorder journal (.agentrail/afk/events.jsonl) and
 prints real-dollar cost attribution per issue, priced through the model
@@ -52,6 +54,7 @@ Options:
   --target DIR   Project root (default: .)
   --run ID       Scope to a single session; error if not found
   --since REF    ISO timestamp or YYYY-MM-DD; exclude earlier sessions
+  --recommend    Emit prioritised cost-saving recommendations for a run
   --json         Emit machine-readable JSON
 """
 
@@ -62,6 +65,7 @@ def _parse(args: List[str]) -> dict:
         "run": None,
         "since": None,
         "json": False,
+        "recommend": False,
     }
     i = 0
     while i < len(args):
@@ -74,8 +78,17 @@ def _parse(args: List[str]) -> dict:
             opts["since"] = args[i + 1]; i += 2
         elif a == "--json":
             opts["json"] = True; i += 1
+        elif a == "--recommend":
+            opts["recommend"] = True; i += 1
         elif a in ("-h", "--help"):
             print(_usage_text()); raise SystemExit(0)
+        elif not a.startswith("-"):
+            # Positional: treat as run_id (forward-compat with `agentrail cost <run_id> --recommend`)
+            if opts["run"] is None:
+                opts["run"] = a
+            else:
+                raise SystemExit(f"unexpected positional argument: {a!r}")
+            i += 1
         else:
             raise SystemExit(f"unknown option: {a}")
     return opts
@@ -236,6 +249,84 @@ def _render_human(rows: List[dict], total: float) -> None:
     )
 
 
+def _build_run_record(
+    rows: List[dict],
+    session: str,
+    all_events: List[dict],
+) -> dict:
+    """Assemble a per-run cost record for the recommend engine.
+
+    The base fields come from journal rows for *session*. Optimizer-signal
+    fields (cache_hit_rate, model_routing, pack_cost_usd, …) are read from
+    any ``cost_optimizer`` events in the journal; they are absent today until
+    M026 feeder slices (#704, #706, #707) land.
+    """
+    session_rows = [r for r in rows if r["session"] == session]
+    # Aggregate tokens and cost across all issues claimed in this session.
+    total_input = sum(r["input_tokens"] for r in session_rows)
+    total_output = sum(r["output_tokens"] for r in session_rows)
+    total_cache = sum(r["cache_tokens"] for r in session_rows)
+    total_cost = sum(r["cost_usd"] for r in session_rows)
+    model = session_rows[0]["model"] if session_rows else ""
+
+    record: dict = {
+        "session": session,
+        "model": model,
+        "input_tokens": total_input,
+        "output_tokens": total_output,
+        "cache_tokens": total_cache,
+        "cost_usd": total_cost,
+    }
+
+    # Pull optimizer signals from journal events if present (future feeder slices).
+    evs = _journal.session_events(all_events, session)
+    for ev in evs:
+        if ev.get("kind") == "cost_optimizer":
+            payload = ev.get("payload") or {}
+            # Cache signal (M026 slice 1 / #704)
+            if "cache_hit_rate" in payload:
+                record["cache_hit_rate"] = payload["cache_hit_rate"]
+            if "cache_eligible_tokens" in payload:
+                record["cache_eligible_tokens"] = payload["cache_eligible_tokens"]
+            # Routing signal (M026 slice 4 / #707)
+            if "model_routing" in payload:
+                record["model_routing"] = payload["model_routing"]
+            # Pack signal (M026 slice 3 / #706)
+            if "pack_cost_usd" in payload:
+                record["pack_cost_usd"] = payload["pack_cost_usd"]
+            if "budget_usd" in payload:
+                record["budget_usd"] = payload["budget_usd"]
+            if "items_dropped" in payload:
+                record["items_dropped"] = payload["items_dropped"]
+            if "pack_threshold_usd" in payload:
+                record["pack_threshold_usd"] = payload["pack_threshold_usd"]
+
+    return record
+
+
+def _render_recommend(recs: list, as_json: bool, session: str) -> None:
+    """Print recommendations in human or JSON format."""
+    if as_json:
+        print(json.dumps(recs, indent=2))
+        return
+
+    if not recs:
+        print(f"No cost-saving recommendations for this run.")
+        return
+
+    print(f"Cost-saving recommendations for run {session}:")
+    print()
+    for i, rec in enumerate(recs, 1):
+        saving = rec["estimated_saving_usd"]
+        if isinstance(saving, (int, float)):
+            saving_str = f"~${saving:.4f}"
+        else:
+            saving_str = saving
+        print(f"  {i}. [{rec['technique']}] estimated saving {saving_str}")
+        print(f"     {rec['action']}")
+        print()
+
+
 def run_cost(args: List[str]) -> int:
     opts = _parse(args)
     target = opts["target"].resolve()
@@ -295,6 +386,17 @@ def run_cost(args: List[str]) -> int:
 
     threshold = resolve_default_budget(str(target))
     violations = _emit_budget_warnings(rows, threshold, target)
+
+    # --recommend: build a per-run record and emit recommendations.
+    if opts["recommend"]:
+        run_id = opts["run"]
+        if run_id is None:
+            # No session specified — use the first (or only) session found.
+            run_id = sessions[0] if sessions else ""
+        record = _build_run_record(rows, run_id, all_events)
+        recs = recommend(record)
+        _render_recommend(recs, opts["json"], run_id)
+        return 0
 
     if opts["json"]:
         out: dict = {"runs": rows, "total_usd": total}

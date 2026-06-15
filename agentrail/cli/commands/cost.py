@@ -150,6 +150,24 @@ def _session_claims(events: List[dict]) -> List[tuple]:
     return claims
 
 
+def _savings_for_issue(all_events: List[dict], session: str, issue: int) -> dict:
+    """Extract outputTokensSaved/outputDollarsSaved from cost_optimizer events."""
+    for ev in all_events:
+        if (
+            ev.get("kind") == "cost_optimizer"
+            and ev.get("session") == session
+            and ev.get("issue") == issue
+        ):
+            payload = ev.get("payload") or {}
+            if "outputTokensSaved" in payload:
+                return {
+                    "output_tokens_saved": payload.get("outputTokensSaved", 0),
+                    "output_dollars_saved": payload.get("outputDollarsSaved", 0.0),
+                    "savings_estimate": payload.get("estimate", False),
+                }
+    return {"output_tokens_saved": 0, "output_dollars_saved": 0.0, "savings_estimate": False}
+
+
 def _collect_rows(
     all_events: List[dict],
     sessions: List[str],
@@ -160,6 +178,7 @@ def _collect_rows(
     for sid in sessions:
         evs = _journal.session_events(all_events, sid)
         for issue_num, claim_ts in _session_claims(evs):
+            savings = _savings_for_issue(all_events, sid, issue_num)
             usage = capture_usage(agent, target, claim_ts)
             if usage is None:
                 rows.append({
@@ -170,6 +189,7 @@ def _collect_rows(
                     "output_tokens": 0,
                     "cache_tokens": 0,
                     "cost_usd": 0.0,
+                    **savings,
                 })
             else:
                 rows.append({
@@ -180,6 +200,7 @@ def _collect_rows(
                     "output_tokens": usage.output_tokens,
                     "cache_tokens": usage.cache_tokens,
                     "cost_usd": cost_usd(usage),
+                    **savings,
                 })
     return rows
 
@@ -224,28 +245,32 @@ def _render_human(rows: List[dict], total: float) -> None:
     col_model = 24
     col_tokens = 10
     col_cost = 12
+    col_saved = 12
     header = (
         f"{'SESSION':<{col_session}}  {'ISSUE':>{col_issue}}  "
         f"{'MODEL':<{col_model}}  {'IN':>{col_tokens}}  {'OUT':>{col_tokens}}  "
-        f"{'CACHE':>{col_tokens}}  {'COST USD':>{col_cost}}"
+        f"{'CACHE':>{col_tokens}}  {'COST USD':>{col_cost}}  {'SAVED $':>{col_saved}}"
     )
     sep = "-" * len(header)
     print(header)
     print(sep)
     for r in rows:
         cost_str = f"${r['cost_usd']:.6f}"
+        saved_str = f"${r.get('output_dollars_saved', 0.0):.6f}"
         print(
             f"{r['session']:<{col_session}}  {r['issue']:>{col_issue}}  "
             f"{r['model']:<{col_model}}  {r['input_tokens']:>{col_tokens}}  "
             f"{r['output_tokens']:>{col_tokens}}  {r['cache_tokens']:>{col_tokens}}  "
-            f"{cost_str:>{col_cost}}"
+            f"{cost_str:>{col_cost}}  {saved_str:>{col_saved}}"
         )
     print(sep)
     total_str = f"${total:.6f}"
+    total_saved = sum(r.get("output_dollars_saved", 0.0) for r in rows)
+    total_saved_str = f"${total_saved:.6f}"
     print(
         f"{'TOTAL':<{col_session}}  {'':>{col_issue}}  "
         f"{'':>{col_model}}  {'':>{col_tokens}}  {'':>{col_tokens}}  "
-        f"{'':>{col_tokens}}  {total_str:>{col_cost}}"
+        f"{'':>{col_tokens}}  {total_str:>{col_cost}}  {total_saved_str:>{col_saved}}"
     )
 
 
@@ -280,6 +305,8 @@ def _build_run_record(
 
     # Pull optimizer signals from journal events if present (future feeder slices).
     evs = _journal.session_events(all_events, session)
+    total_output_tokens_saved = 0
+    total_output_dollars_saved = 0.0
     for ev in evs:
         if ev.get("kind") == "cost_optimizer":
             payload = ev.get("payload") or {}
@@ -300,6 +327,14 @@ def _build_run_record(
                 record["items_dropped"] = payload["items_dropped"]
             if "pack_threshold_usd" in payload:
                 record["pack_threshold_usd"] = payload["pack_threshold_usd"]
+            # Diff-savings signal (M026 slice 7 / #709)
+            if "outputTokensSaved" in payload:
+                total_output_tokens_saved += payload.get("outputTokensSaved", 0)
+                total_output_dollars_saved += payload.get("outputDollarsSaved", 0.0)
+
+    if total_output_tokens_saved:
+        record["output_tokens_saved"] = total_output_tokens_saved
+        record["output_dollars_saved"] = total_output_dollars_saved
 
     return record
 

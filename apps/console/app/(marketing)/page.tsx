@@ -277,13 +277,6 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* Rail motif */}
-      <section className="relative z-10 px-6 pb-16 pt-4">
-        <div className="mx-auto max-w-[1180px]">
-          <RailFlow />
-        </div>
-      </section>
-
       {/* How it works — STEP 01–04 */}
       <section
         id="how"
@@ -370,118 +363,9 @@ export default async function LandingPage() {
             </h2>
           </Reveal>
 
-          <div className="mt-10 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {/* Featured: context engine */}
-            <Reveal className="sm:col-span-2 lg:row-span-2" delay={0}>
-              <BentoCard featured>
-                <CardHead icon={<IconPack />} title="Context packs" tag="retrieval engine" />
-                <p className="mt-3 text-[14px] leading-relaxed text-[var(--gray-10)]">
-                  A hybrid index — BM25 + code graph + embeddings — returns the{" "}
-                  <span className="text-[var(--gray-12)]">exact line ranges</span>{" "}
-                  an agent needs, with citations and a reason for every pick.
-                  Bounded, inspectable, and the source of the {reduction}% token win.
-                </p>
-                <div className="mt-5 space-y-2">
-                  {[
-                    { f: "lib/response.js", l: "L142–L168", r: "symbol definition" },
-                    { f: "lib/request.js", l: "L88–L101", r: "graph expansion" },
-                    { f: "test/res.json.js", l: "L12–L40", r: "BM25 keyword match" },
-                  ].map((row) => (
-                    <div
-                      key={row.f}
-                      className="flex items-center gap-3 rounded-md border border-[var(--gray-05)] bg-[var(--gray-00)]/60 px-3 py-2"
-                    >
-                      <span className="font-mono text-[12px] text-[var(--gray-12)]">{row.f}</span>
-                      <span
-                        className="font-mono text-[12px]"
-                        style={{ color: ACCENT }}
-                      >
-                        {row.l}
-                      </span>
-                      <span className="ml-auto font-mono text-[11px] text-[var(--gray-09)]">
-                        {row.r}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={60}>
-              <BentoCard>
-                <CardHead icon={<IconRuns />} title="Agent runs" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Every run&apos;s events, timing, tokens, and outcome — replayable.
-                </p>
-                <MiniTimeline />
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={120}>
-              <BentoCard>
-                <CardHead icon={<IconGate />} title="Review gates" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Policy checkpoints between phases. Agents stop and show evidence
-                  before they continue.
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={60}>
-              <BentoCard>
-                <CardHead icon={<IconAfk />} title="AFK mode" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Unattended, multi-phase agent work — review-gated so you stay in
-                  control without babysitting.
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={120}>
-              <BentoCard>
-                <CardHead icon={<IconCost />} title="Costs" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Token + dollar spend per run, repo, and workspace.
-                </p>
-                <p className={`${display.className} mt-3 text-3xl font-extrabold tracking-tight`}>
-                  $<CountUp to={1284} decimals={0} />
-                  <span className="ml-1 align-middle text-[12px] font-medium text-[var(--gray-09)]">
-                    / mo tracked
-                  </span>
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={60}>
-              <BentoCard>
-                <CardHead icon={<IconFail />} title="Failures" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Structured root-cause records, linked to the run and the context
-                  that triggered them.
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={120}>
-              <BentoCard>
-                <CardHead icon={<IconMemory />} title="Memory" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Durable project knowledge agents recall across runs — no repeated
-                  mistakes.
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={60}>
-              <BentoCard>
-                <CardHead icon={<IconAudit />} title="Audit" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Source-linked events for every sensitive action, redaction, and
-                  provider call.
-                </p>
-              </BentoCard>
-            </Reveal>
-          </div>
+          <Reveal delay={80} className="mt-10">
+            <DashboardDemo />
+          </Reveal>
         </div>
       </section>
 
@@ -903,106 +787,6 @@ function AgentABBars({
   );
 }
 
-function RailFlow() {
-  const stops = ["Issue", "Context pack", "Bounded run", "Review gate", "Merge"];
-  return (
-    <div className="relative">
-      <div className="absolute left-0 right-0 top-[11px] h-px bg-[var(--gray-05)]" />
-      <div
-        aria-hidden
-        className="absolute left-0 top-[10px] h-[3px] w-24 rounded-full"
-        style={{
-          background: `linear-gradient(90deg, transparent, ${ACCENT}, transparent)`,
-        }}
-      >
-        <span className="ar-scan block h-full w-full rounded-full" style={{ background: `linear-gradient(90deg, transparent, ${ACCENT}, transparent)` }} />
-      </div>
-      <ol className="relative flex items-start justify-between gap-2">
-        {stops.map((s, i) => (
-          <li key={s} className="flex flex-1 flex-col items-center text-center">
-            <span
-              className="mb-3 h-[22px] w-[22px] rounded-full border-2"
-              style={{
-                borderColor: ACCENT,
-                background: i === 0 ? ACCENT : "var(--gray-00)",
-              }}
-            />
-            <span className="font-mono text-[11px] uppercase tracking-wider text-[var(--gray-10)]">
-              {s}
-            </span>
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
-}
-
-function BentoCard({
-  children,
-  featured,
-}: {
-  children: React.ReactNode;
-  featured?: boolean;
-}) {
-  return (
-    <div
-      className={`ar-cell flex h-full flex-col rounded-xl border border-[var(--gray-05)] p-5 ${
-        featured ? "bg-[var(--gray-01)]" : "bg-[var(--gray-01)]/60"
-      }`}
-    >
-      {children}
-    </div>
-  );
-}
-
-function CardHead({
-  icon,
-  title,
-  tag,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  tag?: string;
-}) {
-  return (
-    <div className="flex items-center gap-2.5">
-      <span
-        className="flex h-8 w-8 items-center justify-center rounded-md border border-[var(--gray-05)] bg-[var(--gray-00)] text-[var(--gray-11)]"
-        style={{ color: ACCENT }}
-      >
-        {icon}
-      </span>
-      <span className="text-[15px] font-bold text-[var(--gray-12)]">{title}</span>
-      {tag && (
-        <span className="ml-auto rounded-full border border-[var(--gray-05)] px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-[var(--gray-09)]">
-          {tag}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function MiniTimeline() {
-  const bars = [40, 70, 35, 90, 55, 75, 45];
-  return (
-    <div className="mt-auto flex items-end gap-1 pt-4">
-      {bars.map((h, i) => (
-        <span
-          key={i}
-          className="ar-bar flex-1 rounded-sm"
-          style={{
-            height: `${h * 0.4 + 8}px`,
-            background:
-              i === 3 ? ACCENT : "color-mix(in srgb, var(--gray-08) 60%, transparent)",
-            animationDelay: `${i * 80}ms`,
-            transformOrigin: "bottom",
-          }}
-        />
-      ))}
-    </div>
-  );
-}
-
 function ValueRow({ text, muted }: { text: string; muted?: boolean }) {
   return (
     <li className="flex items-start gap-2.5">
@@ -1036,35 +820,6 @@ function RailMark() {
       <rect x="2" y="12.4" width="16" height="1.6" rx="0.8" fill="var(--gray-08)" />
     </svg>
   );
-}
-
-const ic = { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
-
-function IconPack() {
-  return (
-    <svg {...ic}><path d="M21 8 12 3 3 8l9 5 9-5Z" /><path d="m3 12 9 5 9-5" /><path d="m3 16 9 5 9-5" /></svg>
-  );
-}
-function IconRuns() {
-  return <svg {...ic}><path d="M3 12h4l3 8 4-16 3 8h4" /></svg>;
-}
-function IconGate() {
-  return <svg {...ic}><path d="M12 3v18" /><path d="M5 7h14" /><circle cx="12" cy="12" r="3" /></svg>;
-}
-function IconAfk() {
-  return <svg {...ic}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>;
-}
-function IconCost() {
-  return <svg {...ic}><path d="M12 2v20" /><path d="M17 6.5C17 4.5 14.8 4 12 4S7 4.8 7 7s2.5 2.7 5 3 5 1 5 3.2-2.2 2.8-5 2.8-5-.7-5-2.8" /></svg>;
-}
-function IconFail() {
-  return <svg {...ic}><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /></svg>;
-}
-function IconMemory() {
-  return <svg {...ic}><rect x="4" y="4" width="16" height="16" rx="2" /><path d="M9 9h6v6H9z" /><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2" /></svg>;
-}
-function IconAudit() {
-  return <svg {...ic}><path d="M14 3v4a1 1 0 0 0 1 1h4" /><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z" /><path d="m9 15 2 2 4-4" /></svg>;
 }
 
 function GitHubIcon() {

@@ -173,106 +173,89 @@ export default async function LandingPage() {
       </header>
 
       {/* Hero */}
-      <section className="relative z-10 px-6 pb-10 pt-24">
+      <section className="relative z-10 px-6 pb-10 pt-20">
         <div className="mx-auto max-w-[1180px]">
-          <div
-            className="ar-rise mb-6 inline-flex items-center gap-2 rounded-full border border-[var(--gray-05)] bg-[var(--gray-01)]/70 px-3 py-1"
-            style={{ animationDelay: "0ms" }}
-          >
-            <span className="ar-pulse h-1.5 w-1.5 rounded-full" style={{ background: ACCENT }} />
-            <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--gray-10)]">
-              Agent control plane
-            </span>
-          </div>
+          <div className="grid grid-cols-1 items-start gap-10 lg:grid-cols-[5fr_7fr] lg:gap-14">
+            {/* Left column: copy */}
+            <div className="flex flex-col">
+              <p className="mb-4 font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--gray-09)]">
+                Agent control plane
+              </p>
 
-          <h1
-            className={`${display.className} ar-rise max-w-[18ch] text-balance text-[clamp(2.8rem,7vw,5.4rem)] font-extrabold leading-[0.95] tracking-[-0.04em]`}
-            style={{ animationDelay: "80ms" }}
-          >
-            Put your coding agents{" "}
-            <span className="relative whitespace-nowrap">
-              <span style={{ color: ACCENT }}>on rails.</span>
-              <span
-                aria-hidden
-                className="absolute -bottom-1 left-0 h-[3px] w-full rounded-full opacity-60"
-                style={{ background: ACCENT }}
-              />
-            </span>
-          </h1>
-
-          <p
-            className="ar-rise mt-7 max-w-[60ch] text-[clamp(1rem,1.6vw,1.2rem)] leading-relaxed text-[var(--gray-10)]"
-            style={{ animationDelay: "160ms" }}
-          >
-            AgentRail is the <span className="text-[var(--gray-12)]">console</span>{" "}
-            for your team&apos;s coding agents — every run, the context it used,
-            what it cost, the <span className="text-[var(--gray-12)]">review gates</span>{" "}
-            it passed, and a full audit, in one workspace. The agents that feed it
-            run leaner, too —{" "}
-            <span style={{ color: ACCENT }}>{reduction}% fewer tokens</span>, measured.
-          </p>
-
-          <div
-            className="ar-rise mt-9 flex flex-wrap items-center gap-3"
-            style={{ animationDelay: "240ms" }}
-          >
-            <form
-              action={async () => {
-                "use server";
-                await signIn("github", { redirectTo: "/" });
-              }}
-            >
-              <button
-                type="submit"
-                className="group inline-flex items-center gap-2 rounded-md bg-[#ffe629] px-5 py-3 text-[15px] font-bold text-black shadow-[0_8px_30px_-12px_rgba(255,230,41,0.6)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#ffdc00] hover:shadow-[0_12px_36px_-12px_rgba(255,230,41,0.8)]"
+              <h1
+                className={`${display.className} text-[clamp(2.4rem,4.5vw,3.6rem)] font-extrabold leading-[1.02] tracking-[-0.04em]`}
               >
-                <GitHubIcon />
-                Sign in with GitHub
-              </button>
-            </form>
-            <a
-              href="#proof"
-              className="inline-flex items-center gap-2 rounded-md border border-[var(--gray-05)] px-5 py-3 text-[15px] font-medium text-[var(--gray-11)] transition-colors hover:border-[var(--gray-07)] hover:text-[var(--gray-12)]"
-            >
-              See the proof
-              <span aria-hidden>→</span>
-            </a>
-          </div>
+                Every run, its{" "}
+                <span style={{ color: ACCENT }}>context pack,</span>{" "}
+                cost, and{" "}
+                <span style={{ color: ACCENT }}>review gate</span>{" "}
+                — in one workspace.
+              </h1>
 
-          {/* Signal stat — the real end-to-end agent A/B */}
-          {agentab && (
-            <div
-              className="ar-rise mt-12 flex flex-wrap items-stretch gap-px overflow-hidden rounded-xl border border-[var(--gray-05)] bg-[var(--gray-05)]"
-              style={{ animationDelay: "320ms" }}
-            >
-              <SignalStat
-                kpi={`−${reduction}%`}
-                label="total agent tokens, real run"
-                accent
-              />
-              <SignalStat kpi="100%" label="context found — both arms" />
-              <SignalStat
-                kpi={agentab.agentrailTokens.toLocaleString("en-US")}
-                label={`vs ${agentab.plainTokens.toLocaleString("en-US")} without AgentRail`}
-              />
-              <SignalStat
-                kpi={`${agentab.repetitions}×`}
-                label="repetitions, averaged"
-              />
+              <p className="mt-6 text-[clamp(0.9rem,1.3vw,1.05rem)] leading-relaxed text-[var(--gray-10)]">
+                AgentRail is the control plane for your team&apos;s coding agents.
+                Each run lands with its{" "}
+                <span className="text-[var(--gray-12)]">context pack</span> — exact
+                line ranges cited per pick — its{" "}
+                <span className="text-[var(--gray-12)]">cost events</span>, and the{" "}
+                <span className="text-[var(--gray-12)]">review gate</span> evidence it
+                passed. The context compile cuts{" "}
+                <span style={{ color: ACCENT }}>{reduction}% of agent tokens</span>, end to end, measured.
+              </p>
+
+              <div className="mt-8 flex flex-wrap items-center gap-3">
+                <form
+                  action={async () => {
+                    "use server";
+                    await signIn("github", { redirectTo: "/" });
+                  }}
+                >
+                  <button
+                    type="submit"
+                    className="group inline-flex items-center gap-2 rounded-md bg-[#ffe629] px-5 py-3 text-[15px] font-bold text-black shadow-[0_8px_30px_-12px_rgba(255,230,41,0.6)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#ffdc00] hover:shadow-[0_12px_36px_-12px_rgba(255,230,41,0.8)]"
+                  >
+                    <GitHubIcon />
+                    Sign in with GitHub
+                  </button>
+                </form>
+                <a
+                  href="#proof"
+                  className="inline-flex items-center gap-2 rounded-md border border-[var(--gray-05)] px-5 py-3 text-[15px] font-medium text-[var(--gray-11)] transition-colors hover:border-[var(--gray-07)] hover:text-[var(--gray-12)]"
+                >
+                  See the proof
+                  <span aria-hidden>→</span>
+                </a>
+              </div>
+
+              {/* Signal stat — the real end-to-end agent A/B */}
+              {agentab && (
+                <div className="mt-10 flex flex-wrap items-stretch gap-px overflow-hidden rounded-xl border border-[var(--gray-05)] bg-[var(--gray-05)]">
+                  <SignalStat
+                    kpi={`−${reduction}%`}
+                    label="total agent tokens, real run"
+                    accent
+                  />
+                  <SignalStat kpi="100%" label="context found — both arms" />
+                  <SignalStat
+                    kpi={agentab.agentrailTokens.toLocaleString("en-US")}
+                    label={`vs ${agentab.plainTokens.toLocaleString("en-US")} without AgentRail`}
+                  />
+                  <SignalStat
+                    kpi={`${agentab.repetitions}×`}
+                    label="repetitions, averaged"
+                  />
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </section>
 
-      {/* The console — product shot */}
-      <section className="relative z-10 px-6 pb-12 pt-4">
-        <div className="mx-auto max-w-[1180px]">
-          <Reveal delay={80}>
-            <DashboardDemo />
-          </Reveal>
-          <p className="mt-5 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--gray-09)]">
-            Interactive · click the sidebar — every developer&apos;s runs, context, cost, gates &amp; audit
-          </p>
+            {/* Right column: real product surface */}
+            <div className="w-full overflow-hidden rounded-xl border border-[var(--gray-05)]">
+              <DashboardDemo />
+              <p className="border-t border-[var(--gray-04)] px-4 py-2.5 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--gray-09)]">
+                Interactive · click the sidebar — runs, context, cost, gates &amp; audit
+              </p>
+            </div>
+          </div>
         </div>
       </section>
 

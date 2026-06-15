@@ -10,6 +10,8 @@ from __future__ import annotations
 import warnings
 from typing import Any, Dict, NamedTuple, Union
 
+from agentrail.context.pricing import PRICE_TABLE as _PRICE_TABLE
+
 
 class _Rates(NamedTuple):
     input: float   # $/MTok
@@ -18,33 +20,13 @@ class _Rates(NamedTuple):
 
 
 # ---------------------------------------------------------------------------
-# Rate table — update when provider changes pricing.
-# Source: public Anthropic and OpenAI pricing pages (as of 2026-06).
+# Rate table — DERIVED from the single canonical table in
+# ``agentrail.context.pricing.PRICE_TABLE`` (#715). Do not hardcode a second
+# table here. ``cache`` maps to the canonical ``cached_read`` rate.
 # ---------------------------------------------------------------------------
 PRICES: dict[str, _Rates] = {
-    # Claude — current generation (cache = ~0.1x input, the cache-read rate)
-    "claude-fable-5":               _Rates(input=10.00, output=50.00, cache=1.00),
-    "claude-opus-4-8":              _Rates(input=5.00,  output=25.00, cache=0.50),
-    "claude-opus-4-7":              _Rates(input=5.00,  output=25.00, cache=0.50),
-    "claude-opus-4-6":              _Rates(input=5.00,  output=25.00, cache=0.50),
-    "claude-opus-4-5":              _Rates(input=5.00,  output=25.00, cache=0.50),
-    "claude-sonnet-4-6":            _Rates(input=3.00,  output=15.00, cache=0.30),
-    "claude-sonnet-4-5":            _Rates(input=3.00,  output=15.00, cache=0.30),
-    "claude-haiku-4-5":             _Rates(input=1.00,  output=5.00,  cache=0.10),
-    "claude-haiku-4-5-20251001":    _Rates(input=1.00,  output=5.00,  cache=0.10),
-    # Claude 3.x family (still in use)
-    "claude-opus-3-5":              _Rates(input=15.00, output=75.00, cache=1.50),
-    "claude-sonnet-3-7":            _Rates(input=3.00,  output=15.00, cache=0.30),
-    "claude-sonnet-3-5":            _Rates(input=3.00,  output=15.00, cache=0.30),
-    "claude-haiku-3-5":             _Rates(input=0.80,  output=4.00,  cache=0.08),
-    # OpenAI / Codex models
-    "gpt-5.5":                      _Rates(input=2.00,  output=8.00,  cache=1.00),
-    "gpt-5":                        _Rates(input=10.00, output=40.00, cache=2.50),
-    "gpt-5-codex":                  _Rates(input=15.00, output=60.00, cache=3.75),
-    "gpt-4o":                       _Rates(input=2.50,  output=10.00, cache=1.25),
-    "gpt-4o-mini":                  _Rates(input=0.15,  output=0.60,  cache=0.075),
-    "o3":                           _Rates(input=10.00, output=40.00, cache=2.50),
-    "o4-mini":                      _Rates(input=1.10,  output=4.40,  cache=0.275),
+    model: _Rates(input=r["input"], output=r["output"], cache=r["cached_read"])
+    for model, r in _PRICE_TABLE.items()
 }
 
 

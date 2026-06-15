@@ -31,149 +31,47 @@ class _Rates(TypedDict):
     cached_write: float
 
 
+
+# ---------------------------------------------------------------------------
+# Canonical price table — SINGLE source of truth for all dollar math (#715).
+# Rates verified against https://platform.claude.com/docs/.../pricing (2026-06).
+# Claude: cached_read = 0.1x input, 5m cached_write = 1.25x input.
+# run/pricing.py derives its PRICES view from this table — do not add a second table.
+# ---------------------------------------------------------------------------
+
 PRICE_TABLE: dict[str, _Rates] = {
-    # -----------------------------------------------------------------------
-    # Anthropic  (claude-* models)
-    # -----------------------------------------------------------------------
-    # Claude Opus 4 / 4.6
-    "claude-opus-4-6": {
-        "input":        15.00,
-        "output":       75.00,
-        "cached_read":   1.50,
-        "cached_write": 18.75,
-    },
-    # Claude Opus 4 (alias)
-    "claude-opus-4": {
-        "input":        15.00,
-        "output":       75.00,
-        "cached_read":   1.50,
-        "cached_write": 18.75,
-    },
-    # Claude Sonnet 4.5 / 4.6
-    "claude-sonnet-4-5": {
-        "input":         3.00,
-        "output":        15.00,
-        "cached_read":   0.30,
-        "cached_write":  3.75,
-    },
-    "claude-sonnet-4-6": {
-        "input":         3.00,
-        "output":        15.00,
-        "cached_read":   0.30,
-        "cached_write":  3.75,
-    },
-    # Claude Haiku 4.5
-    "claude-haiku-4-5": {
-        "input":         0.80,
-        "output":         4.00,
-        "cached_read":   0.08,
-        "cached_write":  1.00,
-    },
-    # Older Anthropic model aliases still seen in the wild
-    "claude-3-5-sonnet-20241022": {
-        "input":         3.00,
-        "output":        15.00,
-        "cached_read":   0.30,
-        "cached_write":  3.75,
-    },
-    "claude-3-5-haiku-20241022": {
-        "input":         0.80,
-        "output":         4.00,
-        "cached_read":   0.08,
-        "cached_write":  1.00,
-    },
-    "claude-3-opus-20240229": {
-        "input":        15.00,
-        "output":       75.00,
-        "cached_read":   1.50,
-        "cached_write": 18.75,
-    },
-
-    # -----------------------------------------------------------------------
-    # OpenAI / Codex
-    # -----------------------------------------------------------------------
-    "gpt-4o": {
-        "input":         2.50,
-        "output":        10.00,
-        "cached_read":   1.25,
-        "cached_write":  2.50,
-    },
-    "gpt-4o-mini": {
-        "input":         0.15,
-        "output":         0.60,
-        "cached_read":   0.075,
-        "cached_write":  0.15,
-    },
-    # GPT-4.1 family (released 2025)
-    "gpt-4.1": {
-        "input":         2.00,
-        "output":         8.00,
-        "cached_read":   0.50,
-        "cached_write":  2.00,
-    },
-    "gpt-4.1-mini": {
-        "input":         0.40,
-        "output":         1.60,
-        "cached_read":   0.10,
-        "cached_write":  0.40,
-    },
-    "gpt-4.1-nano": {
-        "input":         0.10,
-        "output":         0.40,
-        "cached_read":   0.025,
-        "cached_write":  0.10,
-    },
-    # o-series reasoning models
-    "o3": {
-        "input":        10.00,
-        "output":       40.00,
-        "cached_read":   2.50,
-        "cached_write": 10.00,
-    },
-    "o4-mini": {
-        "input":         1.10,
-        "output":         4.40,
-        "cached_read":   0.275,
-        "cached_write":  1.10,
-    },
-    # Codex CLI default model
-    "codex-mini-latest": {
-        "input":         1.50,
-        "output":         6.00,
-        "cached_read":   0.375,
-        "cached_write":  1.50,
-    },
-
-    # -----------------------------------------------------------------------
-    # Cursor  (proxied models; priced at the underlying model rate)
-    # Note: Cursor bills via subscription tiers for most usage.  These rates
-    # reflect the cost of the underlying model that Cursor routes to and are
-    # used here for cost-estimation purposes only.
-    # -----------------------------------------------------------------------
-    "cursor/claude-sonnet-4-5": {
-        "input":         3.00,
-        "output":        15.00,
-        "cached_read":   0.30,
-        "cached_write":  3.75,
-    },
-    "cursor/claude-opus-4-6": {
-        "input":        15.00,
-        "output":       75.00,
-        "cached_read":   1.50,
-        "cached_write": 18.75,
-    },
-    "cursor/gpt-4o": {
-        "input":         2.50,
-        "output":        10.00,
-        "cached_read":   1.25,
-        "cached_write":  2.50,
-    },
-    "cursor/gpt-4.1": {
-        "input":         2.00,
-        "output":         8.00,
-        "cached_read":   0.50,
-        "cached_write":  2.00,
-    },
+    'claude-3-5-haiku-20241022': {"input": 0.8, "output": 4.0, "cached_read": 0.08, "cached_write": 1.0},
+    'claude-3-5-sonnet-20241022': {"input": 3.0, "output": 15.0, "cached_read": 0.3, "cached_write": 3.75},
+    'claude-3-opus-20240229': {"input": 15.0, "output": 75.0, "cached_read": 1.5, "cached_write": 18.75},
+    'claude-fable-5': {"input": 10.0, "output": 50.0, "cached_read": 1.0, "cached_write": 12.5},
+    'claude-haiku-3-5': {"input": 0.8, "output": 4.0, "cached_read": 0.08, "cached_write": 1.0},
+    'claude-haiku-4-5': {"input": 1.0, "output": 5.0, "cached_read": 0.1, "cached_write": 1.25},
+    'claude-haiku-4-5-20251001': {"input": 1.0, "output": 5.0, "cached_read": 0.1, "cached_write": 1.25},
+    'claude-opus-3-5': {"input": 15.0, "output": 75.0, "cached_read": 1.5, "cached_write": 18.75},
+    'claude-opus-4': {"input": 15.0, "output": 75.0, "cached_read": 1.5, "cached_write": 18.75},
+    'claude-opus-4-5': {"input": 5.0, "output": 25.0, "cached_read": 0.5, "cached_write": 6.25},
+    'claude-opus-4-6': {"input": 5.0, "output": 25.0, "cached_read": 0.5, "cached_write": 6.25},
+    'claude-opus-4-7': {"input": 5.0, "output": 25.0, "cached_read": 0.5, "cached_write": 6.25},
+    'claude-opus-4-8': {"input": 5.0, "output": 25.0, "cached_read": 0.5, "cached_write": 6.25},
+    'claude-sonnet-3-5': {"input": 3.0, "output": 15.0, "cached_read": 0.3, "cached_write": 3.75},
+    'claude-sonnet-3-7': {"input": 3.0, "output": 15.0, "cached_read": 0.3, "cached_write": 3.75},
+    'claude-sonnet-4-5': {"input": 3.0, "output": 15.0, "cached_read": 0.3, "cached_write": 3.75},
+    'claude-sonnet-4-6': {"input": 3.0, "output": 15.0, "cached_read": 0.3, "cached_write": 3.75},
+    'codex-mini-latest': {"input": 1.5, "output": 6.0, "cached_read": 0.375, "cached_write": 1.5},
+    'cursor/claude-opus-4-6': {"input": 5.0, "output": 25.0, "cached_read": 0.5, "cached_write": 6.25},
+    'cursor/claude-sonnet-4-5': {"input": 3.0, "output": 15.0, "cached_read": 0.3, "cached_write": 3.75},
+    'cursor/gpt-4.1': {"input": 2.0, "output": 8.0, "cached_read": 0.5, "cached_write": 2.0},
+    'cursor/gpt-4o': {"input": 2.5, "output": 10.0, "cached_read": 1.25, "cached_write": 2.5},
+    'gpt-4.1': {"input": 2.0, "output": 8.0, "cached_read": 0.5, "cached_write": 2.0},
+    'gpt-4.1-mini': {"input": 0.4, "output": 1.6, "cached_read": 0.1, "cached_write": 0.4},
+    'gpt-4.1-nano': {"input": 0.1, "output": 0.4, "cached_read": 0.025, "cached_write": 0.1},
+    'gpt-4o': {"input": 2.5, "output": 10.0, "cached_read": 1.25, "cached_write": 2.5},
+    'gpt-4o-mini': {"input": 0.15, "output": 0.6, "cached_read": 0.075, "cached_write": 0.15},
+    'gpt-5': {"input": 10.0, "output": 40.0, "cached_read": 2.5, "cached_write": 10.0},
+    'gpt-5-codex': {"input": 15.0, "output": 60.0, "cached_read": 3.75, "cached_write": 15.0},
+    'gpt-5.5': {"input": 2.0, "output": 8.0, "cached_read": 1.0, "cached_write": 2.0},
+    'o3': {"input": 10.0, "output": 40.0, "cached_read": 2.5, "cached_write": 10.0},
+    'o4-mini': {"input": 1.1, "output": 4.4, "cached_read": 0.275, "cached_write": 1.1},
 }
 
 # ---------------------------------------------------------------------------

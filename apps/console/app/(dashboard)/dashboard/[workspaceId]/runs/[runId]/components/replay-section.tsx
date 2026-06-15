@@ -79,9 +79,9 @@ function Badge({
 }) {
   const classes =
     tone === "retry"
-      ? "border-[rgba(255,230,41,0.35)] bg-[rgba(255,230,41,0.12)] text-[var(--yellow-11)]"
+      ? "border-[color-mix(in_srgb,var(--yellow-11)_35%,transparent)] bg-[color-mix(in_srgb,var(--yellow-11)_12%,transparent)] text-[var(--yellow-11)]"
       : tone === "digest"
-        ? "border-[rgba(229,72,77,0.35)] bg-[rgba(229,72,77,0.12)] text-[var(--red-11)]"
+        ? "border-[color-mix(in_srgb,var(--red-11)_35%,transparent)] bg-[color-mix(in_srgb,var(--red-11)_12%,transparent)] text-[var(--red-11)]"
         : "border-[var(--gray-05)] bg-[var(--gray-03)] text-[var(--gray-10)]";
   return (
     <span className={`inline-flex items-center rounded-sm border px-1.5 py-0.5 text-xs font-medium ${classes}`}>
@@ -146,13 +146,17 @@ export function ReplaySection({ workspaceId, runId }: ReplaySectionProps) {
   if (loading) return <ReplaySkeleton />;
 
   if (error) {
-    return <p className="py-4 text-sm text-[#ff9592]">{error}</p>;
+    return <p className="py-4 text-sm text-[var(--red-11)]">{error}</p>;
   }
 
   if (!timeline || events.length === 0) {
     return (
-      <div className="rounded border border-[var(--gray-05)] py-6 text-center text-sm text-[var(--gray-09)]">
-        No flight-recorder events for this run.
+      <div className="rounded border border-[var(--gray-05)] px-4 py-6 text-center">
+        <p className="text-sm text-[var(--gray-10)]">No replay recorded for this run.</p>
+        <p className="mt-1 text-xs text-[var(--gray-09)]">
+          Replay is built from AFK flight-recorder events. Runs from before the
+          workspace was connected — or non-AFK runs — won&apos;t have one.
+        </p>
       </div>
     );
   }

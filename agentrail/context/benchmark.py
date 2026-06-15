@@ -22,7 +22,10 @@ from typing import Any, Dict, List
 from agentrail.context.config import read_context_config
 from agentrail.context.evaluation import _precision_at_budget, _recall, _unique, load_fixtures
 from agentrail.context.index import build_index, load_index
+from agentrail.context.pricing import cost_for
 from agentrail.context.retrieval import estimate_tokens, query_context, search_context
+
+BENCHMARK_PRICING_MODEL = "claude-sonnet-4-6"
 
 BENCHMARK_VARIANTS = [
     "search_full_file_baseline",
@@ -204,6 +207,8 @@ def run_benchmark(target_dir: Path, fixture_file: Path, compare_grep: bool = Fal
             fixture_entry["grepTokens"] = grep_tokens
             fixture_entry["contextTokens"] = context_tokens
             fixture_entry["savedVsGrep"] = max(0, grep_tokens - context_tokens)
+            fixture_entry["grepDollars"] = cost_for(BENCHMARK_PRICING_MODEL, input_tokens=grep_tokens)["dollars"]
+            fixture_entry["engineDollars"] = cost_for(BENCHMARK_PRICING_MODEL, input_tokens=context_tokens)["dollars"]
         fixture_reports.append(fixture_entry)
 
     invalid_fixtures = [f["name"] for f in fixture_reports if f["requiredSourcesMissingFromRepo"]]
@@ -284,9 +289,14 @@ def format_benchmark_summary(report: Dict[str, Any], compare_grep: bool = False)
         "",
     ]
     grep_tokens = baseline["fullFileReadTokens"] if compare_grep else None
+    _pricing_info = cost_for(BENCHMARK_PRICING_MODEL, input_tokens=1_000_000) if compare_grep else None
+    _estimate = _pricing_info["estimate"] if _pricing_info else False
+    _input_rate = _pricing_info["rates"]["input"] if _pricing_info else None
     if compare_grep:
-        lines.append("| variant | reqInclusion | precision@budget | selectedTokens | fullFileTokens | wasted | grep tokens | saved vs grep |")
-        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+        grep_col = "grep $ (est)" if _estimate else "grep $"
+        engine_col = "engine $ (est)" if _estimate else "engine $"
+        lines.append(f"| variant | reqInclusion | precision@budget | selectedTokens | fullFileTokens | wasted | grep tokens | saved vs grep | {grep_col} | {engine_col} |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     else:
         lines.append("| variant | reqInclusion | precision@budget | selectedTokens | fullFileTokens | wasted |")
         lines.append("| --- | --- | --- | --- | --- | --- |")
@@ -298,9 +308,14 @@ def format_benchmark_summary(report: Dict[str, Any], compare_grep: bool = False)
         )
         if compare_grep:
             if grep_tokens is None:
-                row += " — | — |"
+                row += " — | — | — | — |"
             else:
                 saved = max(0, grep_tokens - m["selectedContextTokens"])
-                row += f" {grep_tokens} | {saved} |"
+                grep_d = cost_for(BENCHMARK_PRICING_MODEL, input_tokens=grep_tokens)["dollars"]
+                engine_d = cost_for(BENCHMARK_PRICING_MODEL, input_tokens=m["selectedContextTokens"])["dollars"]
+                row += f" {grep_tokens} | {saved} | {grep_d:.6f} | {engine_d:.6f} |"
         lines.append(row)
+    if compare_grep and _input_rate is not None:
+        rate_str = f"{_input_rate:.2f} $/Mtok (estimate)" if _estimate else f"{_input_rate:.2f} $/Mtok"
+        lines.append(f"_Pricing: model={BENCHMARK_PRICING_MODEL}, input rate={rate_str}_")
     return "\n".join(lines) + "\n"

@@ -827,13 +827,58 @@ def run_context(args: List[str]) -> int:
                     "tokensSaved": saved,
                 })
             sessions.sort(key=lambda s: s["generatedAt"], reverse=True)
-            output = {"tokensSaved": total, "sessions": sessions}
+
+            # --- Aggregate cache savings from the local cost-events ledger ---
+            ledger_path = target / ".agentrail" / "run" / "cost-events.jsonl"
+            total_cache_tokens = 0
+            total_prompt_tokens = 0
+            total_cached_usd_saved = 0.0
+            total_baseline_uncached_usd = 0.0
+            has_pricing = False
+            if ledger_path.is_file():
+                try:
+                    for line in ledger_path.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            event = json.loads(line)
+                        except ValueError:
+                            continue
+                        cs = event.get("cache_savings") if isinstance(event, dict) else None
+                        if not isinstance(cs, dict):
+                            continue
+                        total_cache_tokens += int(event.get("cache_tokens", 0))
+                        total_prompt_tokens += int(event.get("input_tokens", 0)) + int(event.get("cache_tokens", 0))
+                        cusd = cs.get("cached_usd_saved")
+                        busd = cs.get("baseline_uncached_usd")
+                        if isinstance(cusd, (int, float)) and isinstance(busd, (int, float)):
+                            total_cached_usd_saved += float(cusd)
+                            total_baseline_uncached_usd += float(busd)
+                            has_pricing = True
+                except OSError:
+                    pass
+            aggregate_hit_rate = total_cache_tokens / total_prompt_tokens if total_prompt_tokens > 0 else 0.0
+            cache_savings_out: dict = {
+                "cache_hit_rate": aggregate_hit_rate,
+                "cached_usd_saved": total_cached_usd_saved if has_pricing else "estimate unavailable",
+                "baseline_uncached_usd": total_baseline_uncached_usd if has_pricing else "estimate unavailable",
+            }
+
+            output = {"tokensSaved": total, "sessions": sessions, "cacheSavings": cache_savings_out}
             if json_output:
                 _print_json(output)
             else:
                 print(f"tokensSaved: {total}")
                 for session in sessions:
                     print(f"{session['generatedAt']} {session['packId']} tokensSaved={session['tokensSaved']}")
+                hit_pct = f"{aggregate_hit_rate * 100:.1f}%"
+                cusd = cache_savings_out["cached_usd_saved"]
+                busd = cache_savings_out["baseline_uncached_usd"]
+                if isinstance(cusd, float) and isinstance(busd, float):
+                    print(f"cacheHitRate: {hit_pct}  cachedUsdSaved: ${cusd:.6f}  baselineUncachedUsd: ${busd:.6f}")
+                else:
+                    print(f"cacheHitRate: {hit_pct}  cachedUsdSaved: {cusd}  baselineUncachedUsd: {busd}")
             return 0
         if kind == "daemon":
             return _run_daemon(rest)

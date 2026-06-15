@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 from agentrail.run import artifacts, context as ctx, prompts, skills, state as state_mod
 from agentrail.run.activity_push import push_agent_activity
 from agentrail.run.context_pack_push import push_context_pack
-from agentrail.run.cost_push import push_cost_event
+from agentrail.run.cost_push import build_cost_record, push_cost_event
 from agentrail.run.failure_push import push_failure_event
 from agentrail.run.pricing import cost_usd
 from agentrail.run.proc import run_with_timeout
@@ -223,6 +223,12 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
         usage = capture_usage(rc.agent, rc.target_dir, phase_start_ts)
         if usage:
             cost = cost_usd(usage)
+            record = build_cost_record(rc.run_id, phase, usage, cost)
+            # Persist to local append-only ledger for `agentrail context savings`
+            ledger = rc.target_dir / ".agentrail" / "run" / "cost-events.jsonl"
+            ledger.parent.mkdir(parents=True, exist_ok=True)
+            with ledger.open("a", encoding="utf-8") as _f:
+                _f.write(json.dumps(record) + "\n")
             push_cost_event(rc.target_dir, rc.run_id, phase, usage, cost)
             rc.cumulative_cost_usd += cost
     except Exception as _exc:

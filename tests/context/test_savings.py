@@ -55,7 +55,7 @@ class ContextSavingsTests(unittest.TestCase):
         root = self._make_root()
         self._make_pack_with_savings(root, "issue-1-plan-20260101T000000000Z", "2026-01-01T00:00:00.000Z")
         result = self._run_json(root)
-        self.assertEqual(set(result.keys()), {"tokensSaved", "sessions"})
+        self.assertEqual(set(result.keys()), {"tokensSaved", "sessions", "cacheSavings"})
         self.assertIsInstance(result["tokensSaved"], int)
         self.assertIsInstance(result["sessions"], list)
         session = result["sessions"][0]
@@ -63,6 +63,52 @@ class ContextSavingsTests(unittest.TestCase):
         self.assertIsInstance(session["packId"], str)
         self.assertIsInstance(session["generatedAt"], str)
         self.assertIsInstance(session["tokensSaved"], int)
+
+    def test_cache_savings_key_present(self) -> None:
+        root = self._make_root()
+        self._make_pack_with_savings(root, "issue-1-plan-20260101T000000000Z", "2026-01-01T00:00:00.000Z")
+        result = self._run_json(root)
+        self.assertIn("cacheSavings", result)
+        cs = result["cacheSavings"]
+        self.assertIn("cache_hit_rate", cs)
+        self.assertIn("cached_usd_saved", cs)
+        self.assertIn("baseline_uncached_usd", cs)
+
+    def test_cache_savings_with_ledger(self) -> None:
+        """When cost-events.jsonl exists with cache data, cacheSavings shows real numbers."""
+        root = self._make_root()
+        self._make_pack_with_savings(root, "issue-1-plan-20260101T000000000Z", "2026-01-01T00:00:00.000Z")
+        ledger = root / ".agentrail" / "run" / "cost-events.jsonl"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        event = {
+            "run_id": "test-run",
+            "phase": "execute",
+            "model": "claude-sonnet-4-6",
+            "input_tokens": 800_000,
+            "output_tokens": 50_000,
+            "cache_tokens": 200_000,
+            "cost_usd": 0.05,
+            "cache_savings": {
+                "cache_hit_rate": 0.2,
+                "cached_usd_saved": 0.54,
+                "baseline_uncached_usd": 3.75,
+            },
+        }
+        ledger.write_text(json.dumps(event) + "\n", encoding="utf-8")
+        result = self._run_json(root)
+        cs = result["cacheSavings"]
+        self.assertAlmostEqual(cs["cache_hit_rate"], 0.2, places=6)
+        self.assertAlmostEqual(cs["cached_usd_saved"], 0.54, places=6)
+        self.assertAlmostEqual(cs["baseline_uncached_usd"], 3.75, places=6)
+
+    def test_cache_savings_no_ledger_has_estimate_unavailable(self) -> None:
+        """No ledger → cached_usd_saved is 'estimate unavailable'."""
+        root = self._make_root()
+        self._make_pack_with_savings(root, "issue-1-plan-20260101T000000000Z", "2026-01-01T00:00:00.000Z")
+        result = self._run_json(root)
+        cs = result["cacheSavings"]
+        self.assertEqual(cs["cached_usd_saved"], "estimate unavailable")
+        self.assertEqual(cs["baseline_uncached_usd"], "estimate unavailable")
 
     def test_sessions_sorted_newest_first(self) -> None:
         root = self._make_root()

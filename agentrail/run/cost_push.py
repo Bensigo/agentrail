@@ -13,11 +13,30 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agentrail.context.snapshot_push import load_link
+from agentrail.run.pricing import cache_savings
 from agentrail.run.usage_capture import Usage
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def build_cost_record(run_id: str, phase: str, usage: Usage, cost: float) -> dict:
+    """Build a cost event record dict (for both local ledger and remote push)."""
+    return {
+        "run_id": run_id,
+        "cost_type": "model_call",
+        "tokens": usage.input_tokens + usage.output_tokens + usage.cache_tokens,
+        "cost_usd": cost,
+        "model": usage.model,
+        "occurred_at": _now_iso(),
+        "event_id": str(uuid.uuid4()),
+        "phase": phase,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_tokens": usage.cache_tokens,
+        "cache_savings": cache_savings(usage),
+    }
 
 
 def push_cost_event(
@@ -36,18 +55,8 @@ def push_cost_event(
     if link is None:
         return False
     payload = {
-        "run_id": run_id,
+        **build_cost_record(run_id, phase, usage, cost),
         "repository_id": link["repository_id"],
-        "cost_type": "model_call",
-        "tokens": usage.input_tokens + usage.output_tokens + usage.cache_tokens,
-        "cost_usd": cost,
-        "model": usage.model,
-        "occurred_at": _now_iso(),
-        "event_id": str(uuid.uuid4()),
-        "phase": phase,
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "cache_tokens": usage.cache_tokens,
     }
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(

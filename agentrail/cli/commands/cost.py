@@ -22,7 +22,7 @@ from typing import List, Optional
 from agentrail.afk import journal as _journal
 from agentrail.run.pricing import cost_usd
 from agentrail.run.usage_capture import capture_usage
-from agentrail.cli.commands.run import _read_config, resolve_agent_name
+from agentrail.cli.commands.run import _read_config, resolve_agent_name, resolve_default_budget
 
 
 def _rows_have_usage(rows: List[dict]) -> bool:
@@ -171,6 +171,37 @@ def _collect_rows(
     return rows
 
 
+def _emit_budget_warnings(rows: List[dict], threshold: float, target: Path) -> List[dict]:
+    """Print stderr warnings and append journal events for over-threshold issues.
+
+    Returns a list of violation dicts (one per exceeding row). Does nothing
+    when threshold <= 0 or no rows exceed it.
+    """
+    if threshold <= 0:
+        return []
+    violations: List[dict] = []
+    for row in rows:
+        if row["cost_usd"] > threshold:
+            print(
+                f"WARNING budget exceeded: session {row['session']} "
+                f"issue #{row['issue']} cost ${row['cost_usd']:.6f} "
+                f"(threshold ${threshold:.6f})",
+                file=sys.stderr,
+            )
+            record = {
+                "v": 1,
+                "kind": "budget_warning",
+                "session": row["session"],
+                "issue": row["issue"],
+                "cost_usd": row["cost_usd"],
+                "threshold_usd": threshold,
+                "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            }
+            _journal._append(_journal.events_path(target), record)
+            violations.append(record)
+    return violations
+
+
 def _render_human(rows: List[dict], total: float) -> None:
     if not rows:
         print("No issues found in journal.")
@@ -262,8 +293,14 @@ def run_cost(args: List[str]) -> int:
             )
     total = sum(r["cost_usd"] for r in rows)
 
+    threshold = resolve_default_budget(str(target))
+    violations = _emit_budget_warnings(rows, threshold, target)
+
     if opts["json"]:
-        print(json.dumps({"runs": rows, "total_usd": total}, indent=2))
+        out: dict = {"runs": rows, "total_usd": total}
+        if violations:
+            out["warnings"] = violations
+        print(json.dumps(out, indent=2))
         return 0
 
     _render_human(rows, total)

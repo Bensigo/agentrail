@@ -323,33 +323,64 @@ export default async function LandingPage() {
         <div className="mx-auto max-w-[1180px]">
           <Reveal>
             <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--gray-09)]">
-              Real agent · with vs without · {agentab ? agentab.repetitions : 3} reps
+              Benchmark
             </p>
             <h2
-              className={`${display.className} mt-3 max-w-[20ch] text-[clamp(1.8rem,3.4vw,2.8rem)] font-extrabold tracking-[-0.03em]`}
+              className={`${display.className} mt-3 max-w-[36ch] text-[clamp(1.5rem,2.8vw,2.2rem)] font-extrabold tracking-[-0.03em]`}
             >
-              We didn&apos;t claim it. We benchmarked it.
+              {agentab
+                ? `−${agentab.reduction}% total tokens · same task on psf/requests · ${agentab.repetitions} repetitions`
+                : "Token reduction benchmark — same task, two setups"}
             </h2>
-            <p className="mt-3 max-w-[64ch] text-[15px] leading-relaxed text-[var(--gray-10)]">
-              We ran the <span className="text-[var(--gray-12)]">same</span> multi-file
-              coding task on a real repo (<span className="font-mono text-[13px]">psf/requests</span>),
-              through the <span className="text-[var(--gray-12)]">same</span> agent,
-              {" "}{agentab ? agentab.repetitions : 3}× each way. The only difference
-              was whether it had AgentRail. Total tokens, end to end —
-              not a synthetic context-gathering estimate.
-            </p>
           </Reveal>
 
-          {agentab ? (
-            <Reveal delay={120} className="mt-10">
-              <AgentABBars data={agentab} reduction={reduction} />
+          <div className="mt-10 grid grid-cols-1 gap-10 lg:grid-cols-[1fr_1.3fr]">
+            {/* Left: methodology provenance — typography only, no cards */}
+            <Reveal delay={60}>
+              <div className="space-y-5 text-[14px] leading-relaxed text-[var(--gray-10)]">
+                <p>
+                  <span className="font-semibold text-[var(--gray-12)]">What was benchmarked.</span>{" "}
+                  One multi-file coding task on{" "}
+                  <span className="font-mono text-[13px] text-[var(--gray-12)]">psf/requests</span>{" "}
+                  — spanning <span className="font-mono text-[13px]">models.py</span>{" "}
+                  (1184 LOC), <span className="font-mono text-[13px]">sessions.py</span>{" "}
+                  (920), <span className="font-mono text-[13px]">adapters.py</span> (748).
+                </p>
+                <p>
+                  <span className="font-semibold text-[var(--gray-12)]">How it was run.</span>{" "}
+                  Same agent, same prompt, {agentab ? agentab.repetitions : 3} repetitions per arm.
+                  Arm A: plain agent navigating the repo with its own grep and whole-file reads.
+                  Arm B: same agent using{" "}
+                  <span className="font-mono text-[13px]">agentrail context search</span>{" "}
+                  and <span className="font-mono text-[13px]">get</span> for bounded retrieval.
+                </p>
+                <p>
+                  <span className="font-semibold text-[var(--gray-12)]">What was measured.</span>{" "}
+                  Total tokens, end-to-end — not a synthetic estimate.
+                  Both arms found the required files every time; this is a cost
+                  comparison at equal context accuracy.
+                </p>
+                <p className="text-[var(--gray-09)]">
+                  Full methodology:{" "}
+                  <span className="font-mono text-[12px]">docs/benchmarks/agent-ab-protocol.md</span>
+                  . One task, one repo, one model — directional evidence, not a
+                  generalised claim.
+                </p>
+              </div>
             </Reveal>
-          ) : (
-            <div className="mt-10 rounded-lg border border-[var(--gray-05)] bg-[var(--gray-02)] p-6 text-sm text-[var(--gray-09)]">
-              Benchmark results will render here once the harness produces
-              measured data.
-            </div>
-          )}
+
+            {/* Right: the result */}
+            <Reveal delay={120}>
+              {agentab ? (
+                <AgentABBars data={agentab} reduction={reduction} />
+              ) : (
+                <div className="flex min-h-[180px] items-center justify-center rounded-lg border border-[var(--gray-05)] bg-[var(--gray-02)] p-8 text-[13px] leading-relaxed text-[var(--gray-09)]">
+                  Benchmark data generates here once the harness produces a run.
+                  The methodology block describes what will be measured.
+                </div>
+              )}
+            </Reveal>
+          </div>
         </div>
       </section>
 
@@ -843,28 +874,39 @@ function AgentABBars({
   ];
 
   return (
-    <div className="rounded-xl border border-[var(--gray-05)] bg-[var(--gray-01)] p-6 sm:p-8">
-      <div className="space-y-6">
+    <div className="space-y-6">
+      {/* Reduction headline */}
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className={`${display.className} text-[clamp(2.4rem,5vw,3.5rem)] font-extrabold leading-none`} style={{ color: ACCENT }}>
+          −{reduction}%
+        </span>
+        <span className="text-[14px] text-[var(--gray-10)]">
+          total tokens · equal context accuracy
+        </span>
+      </div>
+
+      {/* Token count comparison rows */}
+      <div className="space-y-5">
         {rows.map((row, i) => (
           <div key={row.label}>
-            <div className="mb-2 flex items-baseline gap-3">
+            <div className="mb-1.5 flex items-baseline gap-3">
               <span
-                className="text-[15px] font-bold"
-                style={{ color: row.accent ? ACCENT : "var(--gray-12)" }}
+                className="text-[13px] font-semibold"
+                style={{ color: row.accent ? ACCENT : "var(--gray-11)" }}
               >
                 {row.label}
               </span>
-              <span className="text-[12px] text-[var(--gray-09)]">{row.sub}</span>
+              <span className="text-[11px] text-[var(--gray-08)]">{row.sub}</span>
               <span
-                className="ml-auto font-mono text-[14px]"
-                style={{ color: row.accent ? ACCENT : "var(--gray-11)" }}
+                className="ml-auto font-mono text-[13px]"
+                style={{ color: row.accent ? ACCENT : "var(--gray-10)" }}
               >
                 <CountUp to={row.tokens} /> tk
               </span>
             </div>
-            <div className="h-7 w-full overflow-hidden rounded bg-[var(--gray-03)]">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--gray-03)]">
               <div
-                className="ar-bar h-full rounded"
+                className="ar-bar h-full rounded-full"
                 style={{
                   width: `${row.pct}%`,
                   background: row.accent ? ACCENT : "var(--gray-06)",
@@ -874,30 +916,14 @@ function AgentABBars({
             </div>
           </div>
         ))}
-
-        <div className="flex items-center gap-2 rounded border border-[var(--gray-05)] bg-[var(--gray-00)]/50 px-4 py-3">
-          <span
-            className="flex h-5 w-5 items-center justify-center rounded-full"
-            style={{ background: ACCENT }}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="black" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-          </span>
-          <span className="text-[13px] text-[var(--gray-10)]">
-            Both arms found the required files{" "}
-            <span className="text-[var(--gray-12)]">every time</span> — fewer
-            tokens, not less context.
-          </span>
-        </div>
       </div>
 
-      <div className="mt-7 flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-[var(--gray-04)] pt-6">
-        <span className={`${display.className} text-4xl font-extrabold`} style={{ color: ACCENT }}>
-          −{reduction}%
-        </span>
-        <span className="text-[14px] text-[var(--gray-10)]">
-          total tokens through a real coding agent, at equal accuracy. One task,
-          one repo, one model — directional, and honest about it.
-        </span>
+      {/* Raw counts in mono */}
+      <div className="border-t border-[var(--gray-04)] pt-4 text-[12px] text-[var(--gray-09)]">
+        <span className="font-mono">{data.plainTokens.toLocaleString()}</span>{" "}
+        plain →{" "}
+        <span className="font-mono" style={{ color: ACCENT }}>{data.agentrailTokens.toLocaleString()}</span>{" "}
+        with AgentRail · both arms found required files every time
       </div>
     </div>
   );

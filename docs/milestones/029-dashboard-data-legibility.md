@@ -1,0 +1,55 @@
+# Milestone 029: Dashboard Data Legibility & Coverage
+
+## Source PRD
+
+The dashboard *has* data but users can't make meaning of it: rows don't say which **repo/branch/run** they belong to, core concepts (**review gate**, **behavior linter**) are shown without explanation, and the **M026 optimizations** (prompt caching, output-token reduction, model routing, diffs-over-rewrites) have **no surface at all**. This milestone makes the dashboard data legible and complete. It is about data semantics and coverage — complementary to M028 (visual structure) and bound by the same `docs/design/redesign-direction.md` (dense, scannable, real data, no slop) and TASTE (explain jargon, explicit states).
+
+## Required Context
+
+- `CONTEXT.md`: dashboard pages under `apps/console/app/(dashboard)/dashboard/[workspaceId]/`. Key surfaces: `runs/` (+ `runs/[runId]` with `context-section.tsx`, `cost-section.tsx`, `behavior-lint-section.tsx`), `review-gates/` (+ `[gateId]` with a "Gate Explainer"), `costs/` (with M025 `savings-panel.tsx`, `agent-breakdown.tsx`), `scorecard/`, `context-quality/` (`quality-charts.tsx`), `context-packs/`, `failures/`. M026 data sources: cache-hit/cached-$ (#704), model-routing/recommend (`agentrail/run/cost_recommend.py`, #707/#708), output-waste (#710), diffs-over-rewrites (#709) — these emit telemetry/`cost_optimizer` events but have no console surface.
+- `docs/design/redesign-direction.md`: dense observability, real data, no decoration, scanability over hero.
+- `TASTE.md`: explain domain concepts where shown; name object/action/result; explicit empty/loading/error; monospace for IDs/paths/timestamps; numbers carry units + scope.
+
+## Outcome
+
+Every dashboard surface states its repo/branch/run scope and explains its concept inline; the M026 optimizations are visible (cache hit-rate + cached-$, output-token waste/savings, model-routing/overspend, diffs savings); review gates and behavior findings are self-explanatory; jargon is defined.
+
+## Users
+
+- Operator who must understand, from the dashboard alone, what a run did, on which repo/branch, what it cost, what the engine saved, whether gates passed and why.
+
+## Vertical Scope (each slice shippable + browser-verified)
+
+- **Repo/branch/run scoping everywhere**: show repo + branch + (short) run ID on every relevant row; add a branch filter to Review Gates and a visible repo filter to Costs/Scorecard; detail pages show repo+branch+commit prominently.
+- **Review-gate legibility**: an inline explanation of what a gate is (acceptance criteria evaluated against run evidence), label each category (ac / tests / citations / visual / blocked) with a one-line meaning, and tie the gate to its run/repo/branch.
+- **Behavior-linter legibility**: a description + "why it matters" for each rule (excessive_file_reads, full_file_read, tool_loop, context_blind_edit, verification_skip) and what severity implies; make the evidence link obvious.
+- **Context-engine usage clarity**: make citations show real line ranges, indicate the context-first hook was enforced for the run, and separate cache-read savings from retrieval savings (today they're combined).
+- **M026 caching surface**: cache **hit-rate %** and **cached-$ saved** (distinct from context-pack savings) per run and per workspace, from #704 telemetry.
+- **M026 output-token surface**: output:input ratio with wasteful-run flag, and diffs-over-rewrites output-tokens/$ saved (#709/#710).
+- **M026 model-routing surface**: per-run routing recommendations / cheaper-model overspend flags from `cost_recommend.py` (#707/#708).
+- **Jargon glossary / inline definitions**: define "stale sources", "denied sources", "precision at budget", "citation coverage", "context pack", "review gate" where they appear (tooltip/inline).
+
+## Acceptance Criteria
+
+- [ ] AC1: Every list row and detail header for runs, review-gates, context-packs, failures, costs states its repo + branch (or an explicit "all repos" scope); Review Gates gains a branch filter and Costs/Scorecard a visible repo filter.
+- [ ] AC2: The review-gates surface explains what a gate is and labels each category (ac/tests/citations/visual/blocked) with a one-line meaning; a gate clearly shows the run/repo/branch it evaluated.
+- [ ] AC3: Each behavior-lint rule shows a plain description + why-it-matters + what its severity implies; evidence links are obviously clickable to the timeline event.
+- [ ] AC4: Run context view shows real citation line ranges, indicates context-first hook enforcement, and separates cache-read savings from context-retrieval savings.
+- [ ] AC5: The dashboard surfaces M026 cache hit-rate + cached-$ saved, output-token waste + diffs savings, and model-routing/overspend — each labeled with units and scope, sourced from the M026 telemetry/`cost_optimizer` events.
+- [ ] AC6: Undefined jargon (stale/denied sources, precision at budget, citation coverage, context pack, review gate) has an inline definition or tooltip where shown.
+- [ ] AC7: Design tokens/fonts/colors unchanged; explicit empty/loading/error states; each PR has before/after screenshots of the changed surfaces.
+
+## Likely Issue Slices
+
+- Repo/branch/run scoping + filters across pages.
+- Review-gate legibility (explain + category labels + scope).
+- Behavior-linter legibility (rule descriptions + severity meaning).
+- Context-engine usage clarity (citations/line-ranges, hook-enforced indicator, cache vs retrieval split).
+- M026 caching surface (hit-rate + cached-$).
+- M026 output-token surface (waste + diffs savings).
+- M026 model-routing surface (recommendations/overspend).
+- Jargon glossary / inline definitions.
+
+## Blocked By
+
+Builds on M028's shared primitives (#728 DataTable/StatHeader/states) where available, but each slice can land independently. Reads existing M024/M025/M026 telemetry — no new pipeline work required.

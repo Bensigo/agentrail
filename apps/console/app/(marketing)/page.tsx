@@ -370,117 +370,72 @@ export default async function LandingPage() {
             </h2>
           </Reveal>
 
-          <div className="mt-10 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {/* Featured: context engine */}
-            <Reveal className="sm:col-span-2 lg:row-span-2" delay={0}>
-              <BentoCard featured>
-                <CardHead icon={<IconPack />} title="Context packs" tag="retrieval engine" />
-                <p className="mt-3 text-[14px] leading-relaxed text-[var(--gray-10)]">
+          {/* Featured — the context engine, shown with a real pack */}
+          <Reveal>
+            <div className="mt-10 grid items-start gap-8 border-t border-[var(--gray-04)] pt-10 lg:grid-cols-[0.85fr_1.15fr] lg:gap-12">
+              <div>
+                <div className="flex items-center gap-2.5 text-[var(--gray-09)]">
+                  <IconPack />
+                  <span className="font-mono text-[11px] uppercase tracking-[0.18em]">
+                    retrieval engine
+                  </span>
+                </div>
+                <h3 className={`${display.className} mt-3 text-[clamp(1.5rem,2.6vw,2.1rem)] font-bold tracking-[-0.02em]`}>
+                  Context packs
+                </h3>
+                <p className="mt-3 max-w-[46ch] text-[14px] leading-relaxed text-[var(--gray-10)]">
                   A hybrid index — BM25 + code graph + embeddings — returns the{" "}
                   <span className="text-[var(--gray-12)]">exact line ranges</span>{" "}
-                  an agent needs, with citations and a reason for every pick.
+                  an agent needs, with a citation and a reason for every pick.
                   Bounded, inspectable, and the source of the {reduction}% token win.
                 </p>
-                <div className="mt-5 space-y-2">
-                  {[
-                    { f: "lib/response.js", l: "L142–L168", r: "symbol definition" },
-                    { f: "lib/request.js", l: "L88–L101", r: "graph expansion" },
-                    { f: "test/res.json.js", l: "L12–L40", r: "BM25 keyword match" },
-                  ].map((row) => (
-                    <div
-                      key={row.f}
-                      className="flex items-center gap-3 rounded-md border border-[var(--gray-05)] bg-[var(--gray-00)]/60 px-3 py-2"
-                    >
-                      <span className="font-mono text-[12px] text-[var(--gray-12)]">{row.f}</span>
-                      <span
-                        className="font-mono text-[12px]"
-                        style={{ color: ACCENT }}
-                      >
-                        {row.l}
-                      </span>
-                      <span className="ml-auto font-mono text-[11px] text-[var(--gray-09)]">
-                        {row.r}
-                      </span>
-                    </div>
-                  ))}
+              </div>
+              <div className="space-y-2">
+                {[
+                  { f: "lib/response.js", l: "L142–L168", r: "symbol definition" },
+                  { f: "lib/request.js", l: "L88–L101", r: "graph expansion" },
+                  { f: "test/res.json.js", l: "L12–L40", r: "BM25 keyword match" },
+                ].map((row) => (
+                  <div
+                    key={row.f}
+                    className="flex items-center gap-3 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)]/60 px-3 py-2.5"
+                  >
+                    <span className="font-mono text-[12px] text-[var(--gray-12)]">{row.f}</span>
+                    <span className="font-mono text-[12px]" style={{ color: ACCENT }}>
+                      {row.l}
+                    </span>
+                    <span className="ml-auto font-mono text-[11px] text-[var(--gray-09)]">
+                      {row.r}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Reveal>
+
+          {/* The rest of the platform — editorial capability index, not a card grid */}
+          <div className="mt-4 grid sm:grid-cols-2 sm:gap-x-14">
+            {[
+              { icon: <IconRuns />, title: "Agent runs", desc: "Every run's events, timing, tokens, and outcome — replayable end to end." },
+              { icon: <IconGate />, title: "Review gates", desc: "Policy checkpoints between phases: agents stop and show evidence before continuing." },
+              { icon: <IconAfk />, title: "AFK mode", desc: "Unattended, multi-phase agent work — review-gated, so you stay in control without babysitting." },
+              { icon: <IconCost />, title: "Costs", desc: "Real-dollar token spend per run, repo, and workspace — with savings attributed." },
+              { icon: <IconFail />, title: "Failures", desc: "Structured root-cause records, linked to the run and the context that triggered them." },
+              { icon: <IconMemory />, title: "Memory", desc: "Durable project knowledge agents recall across runs — no repeated mistakes." },
+              { icon: <IconAudit />, title: "Audit", desc: "Source-linked events for every sensitive action, redaction, and provider call." },
+            ].map((c, i) => (
+              <Reveal key={c.title} delay={(i % 2) * 60}>
+                <div className="flex gap-4 border-b border-[var(--gray-04)] py-5">
+                  <span className="mt-0.5 shrink-0 text-[var(--gray-08)]">{c.icon}</span>
+                  <div>
+                    <h3 className="text-[15px] font-bold text-[var(--gray-12)]">{c.title}</h3>
+                    <p className="mt-1 text-[13px] leading-relaxed text-[var(--gray-10)]">
+                      {c.desc}
+                    </p>
+                  </div>
                 </div>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={60}>
-              <BentoCard>
-                <CardHead icon={<IconRuns />} title="Agent runs" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Every run&apos;s events, timing, tokens, and outcome — replayable.
-                </p>
-                <MiniTimeline />
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={120}>
-              <BentoCard>
-                <CardHead icon={<IconGate />} title="Review gates" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Policy checkpoints between phases. Agents stop and show evidence
-                  before they continue.
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={60}>
-              <BentoCard>
-                <CardHead icon={<IconAfk />} title="AFK mode" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Unattended, multi-phase agent work — review-gated so you stay in
-                  control without babysitting.
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={120}>
-              <BentoCard>
-                <CardHead icon={<IconCost />} title="Costs" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Token + dollar spend per run, repo, and workspace.
-                </p>
-                <p className={`${display.className} mt-3 text-3xl font-extrabold tracking-tight`}>
-                  $<CountUp to={1284} decimals={0} />
-                  <span className="ml-1 align-middle text-[12px] font-medium text-[var(--gray-09)]">
-                    / mo tracked
-                  </span>
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={60}>
-              <BentoCard>
-                <CardHead icon={<IconFail />} title="Failures" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Structured root-cause records, linked to the run and the context
-                  that triggered them.
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={120}>
-              <BentoCard>
-                <CardHead icon={<IconMemory />} title="Memory" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Durable project knowledge agents recall across runs — no repeated
-                  mistakes.
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={60}>
-              <BentoCard>
-                <CardHead icon={<IconAudit />} title="Audit" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Source-linked events for every sensitive action, redaction, and
-                  provider call.
-                </p>
-              </BentoCard>
-            </Reveal>
+              </Reveal>
+            ))}
           </div>
         </div>
       </section>
@@ -933,72 +888,6 @@ function RailFlow() {
           </li>
         ))}
       </ol>
-    </div>
-  );
-}
-
-function BentoCard({
-  children,
-  featured,
-}: {
-  children: React.ReactNode;
-  featured?: boolean;
-}) {
-  return (
-    <div
-      className={`ar-cell flex h-full flex-col rounded-xl border border-[var(--gray-05)] p-5 ${
-        featured ? "bg-[var(--gray-01)]" : "bg-[var(--gray-01)]/60"
-      }`}
-    >
-      {children}
-    </div>
-  );
-}
-
-function CardHead({
-  icon,
-  title,
-  tag,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  tag?: string;
-}) {
-  return (
-    <div className="flex items-center gap-2.5">
-      <span
-        className="flex h-8 w-8 items-center justify-center rounded-md border border-[var(--gray-05)] bg-[var(--gray-00)] text-[var(--gray-11)]"
-        style={{ color: ACCENT }}
-      >
-        {icon}
-      </span>
-      <span className="text-[15px] font-bold text-[var(--gray-12)]">{title}</span>
-      {tag && (
-        <span className="ml-auto rounded-full border border-[var(--gray-05)] px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-[var(--gray-09)]">
-          {tag}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function MiniTimeline() {
-  const bars = [40, 70, 35, 90, 55, 75, 45];
-  return (
-    <div className="mt-auto flex items-end gap-1 pt-4">
-      {bars.map((h, i) => (
-        <span
-          key={i}
-          className="ar-bar flex-1 rounded-sm"
-          style={{
-            height: `${h * 0.4 + 8}px`,
-            background:
-              i === 3 ? ACCENT : "color-mix(in srgb, var(--gray-08) 60%, transparent)",
-            animationDelay: `${i * 80}ms`,
-            transformOrigin: "bottom",
-          }}
-        />
-      ))}
     </div>
   );
 }

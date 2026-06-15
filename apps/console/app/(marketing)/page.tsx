@@ -119,28 +119,17 @@ export default async function LandingPage() {
   const reduction = agentab ? agentab.reduction : 24;
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-[var(--gray-00)] text-[var(--gray-12)]">
-      {/* Atmosphere */}
-      <div aria-hidden className="pointer-events-none absolute inset-0 ar-grid opacity-70" />
-      <div
-        aria-hidden
-        className="ar-drift pointer-events-none absolute -top-40 left-1/2 h-[640px] w-[900px] -translate-x-1/2 rounded-full opacity-[0.18]"
-        style={{
-          background: `radial-gradient(50% 50% at 50% 50%, ${ACCENT} 0%, transparent 70%)`,
-          filter: "blur(40px)",
-        }}
-      />
-
-      {/* Nav */}
-      <header className="relative z-10 border-b border-[var(--gray-04)]/60 px-6 py-4 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-[1180px] items-center justify-between">
-          <div className="flex items-center gap-2.5">
+    <main id="top" className="relative min-h-screen bg-[var(--gray-00)] text-[var(--gray-12)]">
+      {/* Nav — hairline rule, wordmark left, links + one primary CTA right */}
+      <header className="sticky top-0 z-30 border-b border-[var(--gray-04)] bg-[var(--gray-00)]/80 backdrop-blur-md">
+        <div className="mx-auto flex h-14 max-w-[1180px] items-center justify-between px-6">
+          <a href="#top" className="flex items-center gap-2.5">
             <RailMark />
             <span className={`${display.className} text-[15px] font-extrabold tracking-tight`}>
               AgentRail
             </span>
-          </div>
-          <div className="flex items-center gap-1">
+          </a>
+          <nav className="flex items-center gap-1">
             <a
               href="#how"
               className="hidden rounded px-3 py-1.5 text-[13px] text-[var(--gray-10)] transition-colors hover:text-[var(--gray-12)] sm:block"
@@ -164,15 +153,22 @@ export default async function LandingPage() {
                 "use server";
                 await signIn("github", { redirectTo: "/" });
               }}
+              className="ml-1 flex items-center gap-1"
             >
               <button
                 type="submit"
-                className="rounded px-3 py-1.5 text-[13px] font-medium text-[var(--gray-11)] transition-colors hover:text-[var(--gray-12)]"
+                className="hidden rounded px-3 py-1.5 text-[13px] font-medium text-[var(--gray-11)] transition-colors hover:text-[var(--gray-12)] sm:block"
               >
                 Sign in
               </button>
+              <button
+                type="submit"
+                className="rounded-md bg-[var(--gray-12)] px-3.5 py-1.5 text-[13px] font-semibold text-[var(--gray-00)] transition-opacity hover:opacity-90"
+              >
+                Start free
+              </button>
             </form>
-          </div>
+          </nav>
         </div>
       </header>
 
@@ -659,23 +655,85 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="relative z-10 border-t border-[var(--gray-04)]/60 px-6 py-8">
-        <div className="mx-auto flex max-w-[1180px] flex-col items-center justify-between gap-2 sm:flex-row">
-          <div className="flex items-center gap-2">
-            <RailMark />
-            <span className="text-[13px] text-[var(--gray-10)]">
-              AgentRail — agent control plane for engineering teams
-            </span>
+      {/* Footer — structured, multi-column, editorial */}
+      <footer className="relative z-10 border-t border-[var(--gray-04)] px-6 pb-10 pt-16">
+        <div className="mx-auto grid max-w-[1180px] grid-cols-2 gap-10 md:grid-cols-[1.6fr_repeat(3,1fr)]">
+          {/* Brand column */}
+          <div className="col-span-2 max-w-[30ch] md:col-span-1">
+            <div className="flex items-center gap-2.5">
+              <RailMark />
+              <span className={`${display.className} text-[15px] font-extrabold tracking-tight`}>
+                AgentRail
+              </span>
+            </div>
+            <p className="mt-3 text-[13px] leading-relaxed text-[var(--gray-10)]">
+              The agent control plane for engineering teams — compiled context,
+              enforced review gates, and real-dollar cost in one workspace.
+            </p>
+            <p className="mt-4 font-mono text-[11px] text-[var(--gray-09)]">
+              repo-native · deterministic · inspectable
+            </p>
           </div>
-          <span className="font-mono text-[11px] text-[var(--gray-09)]">
-            repo-native · deterministic · inspectable
+
+          {FOOTER_COLUMNS.map((col) => (
+            <div key={col.title}>
+              <h3 className="font-mono text-[11px] uppercase tracking-wider text-[var(--gray-09)]">
+                {col.title}
+              </h3>
+              <ul className="mt-3 space-y-2">
+                {col.links.map((link) => (
+                  <li key={link.label}>
+                    <a
+                      href={link.href}
+                      className="text-[13px] text-[var(--gray-10)] transition-colors hover:text-[var(--gray-12)]"
+                    >
+                      {link.label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+
+        <div className="mx-auto mt-12 flex max-w-[1180px] flex-col items-start justify-between gap-3 border-t border-[var(--gray-04)] pt-6 sm:flex-row sm:items-center">
+          <span className="text-[12px] text-[var(--gray-09)]">
+            © {new Date().getFullYear()} AgentRail. All rights reserved.
+          </span>
+          <span className="font-mono text-[11px] text-[var(--gray-08)]">
+            Built for teams that run agents at scale.
           </span>
         </div>
       </footer>
     </main>
   );
 }
+
+const FOOTER_COLUMNS: { title: string; links: { label: string; href: string }[] }[] = [
+  {
+    title: "Product",
+    links: [
+      { label: "How it works", href: "#how" },
+      { label: "Benchmark", href: "#proof" },
+      { label: "Platform", href: "#capabilities" },
+    ],
+  },
+  {
+    title: "Resources",
+    links: [
+      { label: "Documentation", href: "https://github.com/Bensigo/agentrail#readme" },
+      { label: "GitHub", href: "https://github.com/Bensigo/agentrail" },
+      { label: "CLI", href: "https://github.com/Bensigo/agentrail#cli" },
+    ],
+  },
+  {
+    title: "Company",
+    links: [
+      { label: "FAQ", href: "#faq" },
+      { label: "Sign in", href: "/" },
+    ],
+  },
+];
 
 /* ---------------------------------------------------------------- pieces */
 

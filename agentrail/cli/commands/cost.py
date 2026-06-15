@@ -22,6 +22,7 @@ from typing import List, Optional
 from agentrail.afk import journal as _journal
 from agentrail.run.pricing import cost_usd
 from agentrail.run.usage_capture import capture_usage
+from agentrail.run.routing import _apply_routing, classify, routing_record
 from agentrail.run.cost_recommend import recommend, ESTIMATE_UNAVAILABLE
 from agentrail.cli.commands.run import _read_config, resolve_agent_name, resolve_default_budget
 from agentrail.context.pricing import cost_for
@@ -45,6 +46,7 @@ def _candidate_agents(target: Path, primary: str) -> List[str]:
 def _usage_text() -> str:
     return """Usage:
   agentrail cost [--target DIR] [--run ID] [--since REF] [--json]
+                 [--routing [--apply]]
   agentrail cost [RUN_ID] --recommend [--json]
 
 Reads the AFK flight-recorder journal (.agentrail/afk/events.jsonl) and
@@ -56,6 +58,9 @@ Options:
   --run ID                        Scope to a single session; error if not found
   --since REF                     ISO timestamp or YYYY-MM-DD; exclude earlier sessions
   --recommend                     Emit prioritised cost-saving recommendations for a run
+  --routing                       Show model_routing overspend report (same-family cheaper model)
+  --apply                         With --routing: write the cheaper model to .agentrail/config.json
+                                  idempotently (runners.<agent>.models.<phase>)
   --output-ratio-threshold FLOAT  Flag runs as output-wasteful when output:input token
                                   ratio exceeds this value (default: 2.0; 0 disables).
                                   Also configurable via budgets.output_ratio_threshold
@@ -70,6 +75,8 @@ def _parse(args: List[str]) -> dict:
         "run": None,
         "since": None,
         "json": False,
+        "routing": False,
+        "apply": False,
         "recommend": False,
         "output_ratio_threshold": None,  # None = use config / default
     }
@@ -84,6 +91,10 @@ def _parse(args: List[str]) -> dict:
             opts["since"] = args[i + 1]; i += 2
         elif a == "--json":
             opts["json"] = True; i += 1
+        elif a == "--routing":
+            opts["routing"] = True; i += 1
+        elif a == "--apply":
+            opts["apply"] = True; i += 1
         elif a == "--recommend":
             opts["recommend"] = True; i += 1
         elif a == "--output-ratio-threshold":
@@ -362,6 +373,31 @@ def _render_human(rows: List[dict], total: float) -> None:
     )
 
 
+def _agent_for_model(model: str) -> str:
+    """Infer the agent name from a model string (claude → 'claude', gpt/o* → 'codex')."""
+    result = classify(model)
+    if result and result[0] == "claude":
+        return "claude"
+    return "codex"
+
+
+def _render_routing_human(routing_records: List[dict]) -> None:
+    """Print the model_routing overspend report to stdout."""
+    if not routing_records:
+        print("No cheaper same-family model found for any row.")
+        return
+    print("\nModel Routing Overspend Report")
+    print("=" * 72)
+    for rec in routing_records:
+        print(
+            f"  phase={rec['phase']}  model_used={rec['model_used']}"
+            f"  cheaper_model={rec['cheaper_model']}\n"
+            f"  tokens={rec['tokens']}  cost_used=${rec['cost_used_usd']:.6f}"
+            f"  cost_cheaper=${rec['cost_cheaper_usd']:.6f}"
+            f"  overspend=${rec['overspend_usd']:.6f}"
+        )
+
+
 def _build_run_record(
     rows: List[dict],
     session: str,
@@ -528,6 +564,41 @@ def run_cost(args: List[str]) -> int:
         _render_recommend(recs, opts["json"], run_id)
         return 0
 
+    # --routing: build model_routing records for each row
+    routing_records: List[dict] = []
+    if opts["routing"]:
+        for row in rows:
+            if not row["model"]:
+                continue
+            # Reconstruct a usage-like object from the row dict
+            class _RowUsage:
+                model = row["model"]
+                input_tokens = row["input_tokens"]
+                output_tokens = row["output_tokens"]
+                cache_tokens = row["cache_tokens"]
+
+            rec = routing_record(_RowUsage(), phase="execute")
+            if rec is not None:
+                row["model_routing"] = rec
+                routing_records.append(rec)
+
+        if opts["apply"] and routing_records:
+            for rec in routing_records:
+                rec_agent = _agent_for_model(rec["model_used"])
+                updated = _apply_routing(rec, target, rec_agent)
+                if updated:
+                    print(
+                        f"Applied: runners.{rec_agent}.models.{rec['phase']} = "
+                        f"{rec['cheaper_model']} (was: {rec.get('model_used', '')})",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"No-op: runners.{rec_agent}.models.{rec['phase']} already "
+                        f"at {rec['cheaper_model']} or cheaper.",
+                        file=sys.stderr,
+                    )
+
     if opts["json"]:
         out: dict = {"runs": rows, "total_usd": total}
         if violations:
@@ -536,4 +607,6 @@ def run_cost(args: List[str]) -> int:
         return 0
 
     _render_human(rows, total)
+    if opts["routing"]:
+        _render_routing_human(routing_records)
     return 0

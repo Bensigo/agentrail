@@ -14,6 +14,7 @@ from pathlib import Path
 
 from agentrail.context import daemon as _daemon_helpers
 from agentrail.context.benchmark import (
+    BENCHMARK_PRICING_MODEL,
     BENCHMARK_VARIANTS,
     format_benchmark_summary,
     run_benchmark,
@@ -170,6 +171,59 @@ class BenchmarkHarnessTests(unittest.TestCase):
         summary = format_benchmark_summary(report)
         self.assertNotIn("grep tokens", summary)
         self.assertNotIn("saved vs grep", summary)
+
+    # --- AC6: dollar columns (issue #696) ---
+
+    def test_compare_grep_json_has_dollar_fields(self) -> None:
+        root = make_repo()
+        report = run_benchmark(root, write_fixtures(root), compare_grep=True)
+        for fixture in report["fixtures"]:
+            self.assertIn("grepDollars", fixture)
+            self.assertIn("engineDollars", fixture)
+            self.assertIsInstance(fixture["grepDollars"], float)
+            self.assertIsInstance(fixture["engineDollars"], float)
+            self.assertGreaterEqual(fixture["grepDollars"], 0.0)
+            self.assertGreaterEqual(fixture["engineDollars"], 0.0)
+
+    def test_compare_grep_dollar_values_match_pricing_engine(self) -> None:
+        from agentrail.context.pricing import cost_for
+        root = make_repo()
+        report = run_benchmark(root, write_fixtures(root), compare_grep=True)
+        for fixture in report["fixtures"]:
+            expected_grep = cost_for(BENCHMARK_PRICING_MODEL, input_tokens=fixture["grepTokens"])["dollars"]
+            expected_engine = cost_for(BENCHMARK_PRICING_MODEL, input_tokens=fixture["contextTokens"])["dollars"]
+            self.assertAlmostEqual(fixture["grepDollars"], expected_grep, places=10)
+            self.assertAlmostEqual(fixture["engineDollars"], expected_engine, places=10)
+
+    def test_compare_grep_summary_has_dollar_columns(self) -> None:
+        root = make_repo()
+        report = run_benchmark(root, write_fixtures(root), compare_grep=True)
+        summary = format_benchmark_summary(report, compare_grep=True)
+        self.assertIn("grep $", summary)
+        self.assertIn("engine $", summary)
+
+    def test_compare_grep_summary_has_caption(self) -> None:
+        root = make_repo()
+        report = run_benchmark(root, write_fixtures(root), compare_grep=True)
+        summary = format_benchmark_summary(report, compare_grep=True)
+        self.assertIn("Pricing:", summary)
+        self.assertIn(BENCHMARK_PRICING_MODEL, summary)
+        self.assertIn("$/Mtok", summary)
+
+    def test_without_compare_grep_no_dollar_fields_in_json(self) -> None:
+        root = make_repo()
+        report = run_benchmark(root, write_fixtures(root))
+        for fixture in report["fixtures"]:
+            self.assertNotIn("grepDollars", fixture)
+            self.assertNotIn("engineDollars", fixture)
+
+    def test_without_compare_grep_no_dollar_columns_in_summary(self) -> None:
+        root = make_repo()
+        report = run_benchmark(root, write_fixtures(root))
+        summary = format_benchmark_summary(report)
+        self.assertNotIn("grep $", summary)
+        self.assertNotIn("engine $", summary)
+        self.assertNotIn("Pricing:", summary)
 
 
 def _make_build_repo() -> Path:

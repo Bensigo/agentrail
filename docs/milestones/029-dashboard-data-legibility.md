@@ -2,7 +2,9 @@
 
 ## Source PRD
 
-The dashboard *has* data but users can't make meaning of it: rows don't say which **repo/branch/run** they belong to, core concepts (**review gate**, **behavior linter**) are shown without explanation, and the **M026 optimizations** (prompt caching, output-token reduction, model routing, diffs-over-rewrites) have **no surface at all**. This milestone makes the dashboard data legible and complete. It is about data semantics and coverage — complementary to M028 (visual structure) and bound by the same `docs/design/redesign-direction.md` (dense, scannable, real data, no slop) and TASTE (explain jargon, explicit states).
+The dashboard *has* data but users can't make meaning of it. Three problems: (1) the **values shown are not human-readable** — surfaces display raw identifiers (`run:a1b2c3d4`, `repository_id`, gate IDs, timeline event IDs) and raw ISO timestamps where a name, title, branch, or relative time would be meaningful; (2) rows don't say which **repo/branch/run** they belong to; (3) core concepts (**review gate**, **behavior linter**) are shown without explanation, and the **M026 optimizations** (prompt caching, output-token reduction, model routing, diffs-over-rewrites) have **no surface at all**. This milestone makes the dashboard data **human-readable first** and complete — explainers are secondary to fixing the actual values on screen.
+
+**Guiding principle (applies to every slice):** show the human-readable value first — repo **name**, task/PR **title**, **branch**, model **name**, a **relative/clear time** ("3 min ago"), status in **words**. Show a raw ID only when there is no human alternative, and then make it secondary (small, monospace, copyable) — never the primary label when a name exists. It is about data semantics and coverage — complementary to M028 (visual structure) and bound by the same `docs/design/redesign-direction.md` (dense, scannable, real data, no slop) and TASTE (explain jargon, explicit states).
 
 ## Required Context
 
@@ -20,6 +22,7 @@ Every dashboard surface states its repo/branch/run scope and explains its concep
 
 ## Vertical Scope (each slice shippable + browser-verified)
 
+- **Human-readable values (cross-cutting, do first)**: across every surface, replace raw identifiers with their human-readable form — resolve `repository_id` → repo name, run ID → task/PR title (ID kept secondary), model IDs → model names, event IDs → a readable label, ISO timestamps → relative/clear time. Where only an ID exists, render it small/monospace/copyable, not as the primary label.
 - **Repo/branch/run scoping everywhere**: show repo + branch + (short) run ID on every relevant row; add a branch filter to Review Gates and a visible repo filter to Costs/Scorecard; detail pages show repo+branch+commit prominently.
 - **Review-gate legibility**: an inline explanation of what a gate is (acceptance criteria evaluated against run evidence), label each category (ac / tests / citations / visual / blocked) with a one-line meaning, and tie the gate to its run/repo/branch.
 - **Behavior-linter legibility**: a description + "why it matters" for each rule (excessive_file_reads, full_file_read, tool_loop, context_blind_edit, verification_skip) and what severity implies; make the evidence link obvious.
@@ -31,6 +34,7 @@ Every dashboard surface states its repo/branch/run scope and explains its concep
 
 ## Acceptance Criteria
 
+- [ ] AC0 (human-readable first, applies everywhere): No surface uses a raw identifier or raw ISO timestamp as a primary value where a human form exists — repo names, task/PR titles, model names, and relative/clear times are shown; any remaining ID is secondary (small, monospace, copyable). This is checked on every changed surface, not one page.
 - [ ] AC1: Every list row and detail header for runs, review-gates, context-packs, failures, costs states its repo + branch (or an explicit "all repos" scope); Review Gates gains a branch filter and Costs/Scorecard a visible repo filter.
 - [ ] AC2: The review-gates surface explains what a gate is and labels each category (ac/tests/citations/visual/blocked) with a one-line meaning; a gate clearly shows the run/repo/branch it evaluated.
 - [ ] AC3: Each behavior-lint rule shows a plain description + why-it-matters + what its severity implies; evidence links are obviously clickable to the timeline event.
@@ -41,6 +45,7 @@ Every dashboard surface states its repo/branch/run scope and explains its concep
 
 ## Likely Issue Slices
 
+- Human-readable values across the dashboard (resolve IDs → names/titles, ISO → relative time; IDs demoted to secondary).
 - Repo/branch/run scoping + filters across pages.
 - Review-gate legibility (explain + category labels + scope).
 - Behavior-linter legibility (rule descriptions + severity meaning).

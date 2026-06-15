@@ -66,6 +66,7 @@ def _usage() -> str:
         "  agentrail link [--target DIR]\n"
         "  agentrail timeline [--target DIR]\n"
         "  agentrail cost [--target DIR] [--run ID] [--since REF] [--json]\n"
+        "  agentrail cost [RUN_ID] --recommend [--json]\n"
         "\n"
         "Commands:\n"
         "  context     Build/query the context index\n"

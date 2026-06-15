@@ -23,6 +23,7 @@ from agentrail.afk import journal as _journal
 from agentrail.run.pricing import cost_usd
 from agentrail.run.usage_capture import capture_usage
 from agentrail.run.routing import _apply_routing, classify, routing_record
+from agentrail.run.cost_recommend import recommend, ESTIMATE_UNAVAILABLE
 from agentrail.cli.commands.run import _read_config, resolve_agent_name, resolve_default_budget
 
 
@@ -45,6 +46,7 @@ def _usage_text() -> str:
     return """Usage:
   agentrail cost [--target DIR] [--run ID] [--since REF] [--json]
                  [--routing [--apply]]
+  agentrail cost [RUN_ID] --recommend [--json]
 
 Reads the AFK flight-recorder journal (.agentrail/afk/events.jsonl) and
 prints real-dollar cost attribution per issue, priced through the model
@@ -54,6 +56,7 @@ Options:
   --target DIR   Project root (default: .)
   --run ID       Scope to a single session; error if not found
   --since REF    ISO timestamp or YYYY-MM-DD; exclude earlier sessions
+  --recommend    Emit prioritised cost-saving recommendations for a run
   --json         Emit machine-readable JSON
   --routing      Show model_routing overspend report (same-family cheaper model)
   --apply        With --routing: write the cheaper model to .agentrail/config.json
@@ -69,6 +72,7 @@ def _parse(args: List[str]) -> dict:
         "json": False,
         "routing": False,
         "apply": False,
+        "recommend": False,
     }
     i = 0
     while i < len(args):
@@ -85,8 +89,17 @@ def _parse(args: List[str]) -> dict:
             opts["routing"] = True; i += 1
         elif a == "--apply":
             opts["apply"] = True; i += 1
+        elif a == "--recommend":
+            opts["recommend"] = True; i += 1
         elif a in ("-h", "--help"):
             print(_usage_text()); raise SystemExit(0)
+        elif not a.startswith("-"):
+            # Positional: treat as run_id (forward-compat with `agentrail cost <run_id> --recommend`)
+            if opts["run"] is None:
+                opts["run"] = a
+            else:
+                raise SystemExit(f"unexpected positional argument: {a!r}")
+            i += 1
         else:
             raise SystemExit(f"unknown option: {a}")
     return opts
@@ -148,6 +161,24 @@ def _session_claims(events: List[dict]) -> List[tuple]:
     return claims
 
 
+def _savings_for_issue(all_events: List[dict], session: str, issue: int) -> dict:
+    """Extract outputTokensSaved/outputDollarsSaved from cost_optimizer events."""
+    for ev in all_events:
+        if (
+            ev.get("kind") == "cost_optimizer"
+            and ev.get("session") == session
+            and ev.get("issue") == issue
+        ):
+            payload = ev.get("payload") or {}
+            if "outputTokensSaved" in payload:
+                return {
+                    "output_tokens_saved": payload.get("outputTokensSaved", 0),
+                    "output_dollars_saved": payload.get("outputDollarsSaved", 0.0),
+                    "savings_estimate": payload.get("estimate", False),
+                }
+    return {"output_tokens_saved": 0, "output_dollars_saved": 0.0, "savings_estimate": False}
+
+
 def _collect_rows(
     all_events: List[dict],
     sessions: List[str],
@@ -158,6 +189,7 @@ def _collect_rows(
     for sid in sessions:
         evs = _journal.session_events(all_events, sid)
         for issue_num, claim_ts in _session_claims(evs):
+            savings = _savings_for_issue(all_events, sid, issue_num)
             usage = capture_usage(agent, target, claim_ts)
             if usage is None:
                 rows.append({
@@ -168,6 +200,7 @@ def _collect_rows(
                     "output_tokens": 0,
                     "cache_tokens": 0,
                     "cost_usd": 0.0,
+                    **savings,
                 })
             else:
                 rows.append({
@@ -178,6 +211,7 @@ def _collect_rows(
                     "output_tokens": usage.output_tokens,
                     "cache_tokens": usage.cache_tokens,
                     "cost_usd": cost_usd(usage),
+                    **savings,
                 })
     return rows
 
@@ -222,28 +256,32 @@ def _render_human(rows: List[dict], total: float) -> None:
     col_model = 24
     col_tokens = 10
     col_cost = 12
+    col_saved = 12
     header = (
         f"{'SESSION':<{col_session}}  {'ISSUE':>{col_issue}}  "
         f"{'MODEL':<{col_model}}  {'IN':>{col_tokens}}  {'OUT':>{col_tokens}}  "
-        f"{'CACHE':>{col_tokens}}  {'COST USD':>{col_cost}}"
+        f"{'CACHE':>{col_tokens}}  {'COST USD':>{col_cost}}  {'SAVED $':>{col_saved}}"
     )
     sep = "-" * len(header)
     print(header)
     print(sep)
     for r in rows:
         cost_str = f"${r['cost_usd']:.6f}"
+        saved_str = f"${r.get('output_dollars_saved', 0.0):.6f}"
         print(
             f"{r['session']:<{col_session}}  {r['issue']:>{col_issue}}  "
             f"{r['model']:<{col_model}}  {r['input_tokens']:>{col_tokens}}  "
             f"{r['output_tokens']:>{col_tokens}}  {r['cache_tokens']:>{col_tokens}}  "
-            f"{cost_str:>{col_cost}}"
+            f"{cost_str:>{col_cost}}  {saved_str:>{col_saved}}"
         )
     print(sep)
     total_str = f"${total:.6f}"
+    total_saved = sum(r.get("output_dollars_saved", 0.0) for r in rows)
+    total_saved_str = f"${total_saved:.6f}"
     print(
         f"{'TOTAL':<{col_session}}  {'':>{col_issue}}  "
         f"{'':>{col_model}}  {'':>{col_tokens}}  {'':>{col_tokens}}  "
-        f"{'':>{col_tokens}}  {total_str:>{col_cost}}"
+        f"{'':>{col_tokens}}  {total_str:>{col_cost}}  {total_saved_str:>{col_saved}}"
     )
 
 
@@ -270,6 +308,94 @@ def _render_routing_human(routing_records: List[dict]) -> None:
             f"  cost_cheaper=${rec['cost_cheaper_usd']:.6f}"
             f"  overspend=${rec['overspend_usd']:.6f}"
         )
+
+
+def _build_run_record(
+    rows: List[dict],
+    session: str,
+    all_events: List[dict],
+) -> dict:
+    """Assemble a per-run cost record for the recommend engine.
+
+    The base fields come from journal rows for *session*. Optimizer-signal
+    fields (cache_hit_rate, model_routing, pack_cost_usd, …) are read from
+    any ``cost_optimizer`` events in the journal; they are absent today until
+    M026 feeder slices (#704, #706, #707) land.
+    """
+    session_rows = [r for r in rows if r["session"] == session]
+    # Aggregate tokens and cost across all issues claimed in this session.
+    total_input = sum(r["input_tokens"] for r in session_rows)
+    total_output = sum(r["output_tokens"] for r in session_rows)
+    total_cache = sum(r["cache_tokens"] for r in session_rows)
+    total_cost = sum(r["cost_usd"] for r in session_rows)
+    model = session_rows[0]["model"] if session_rows else ""
+
+    record: dict = {
+        "session": session,
+        "model": model,
+        "input_tokens": total_input,
+        "output_tokens": total_output,
+        "cache_tokens": total_cache,
+        "cost_usd": total_cost,
+    }
+
+    # Pull optimizer signals from journal events if present (future feeder slices).
+    evs = _journal.session_events(all_events, session)
+    total_output_tokens_saved = 0
+    total_output_dollars_saved = 0.0
+    for ev in evs:
+        if ev.get("kind") == "cost_optimizer":
+            payload = ev.get("payload") or {}
+            # Cache signal (M026 slice 1 / #704)
+            if "cache_hit_rate" in payload:
+                record["cache_hit_rate"] = payload["cache_hit_rate"]
+            if "cache_eligible_tokens" in payload:
+                record["cache_eligible_tokens"] = payload["cache_eligible_tokens"]
+            # Routing signal (M026 slice 4 / #707)
+            if "model_routing" in payload:
+                record["model_routing"] = payload["model_routing"]
+            # Pack signal (M026 slice 3 / #706)
+            if "pack_cost_usd" in payload:
+                record["pack_cost_usd"] = payload["pack_cost_usd"]
+            if "budget_usd" in payload:
+                record["budget_usd"] = payload["budget_usd"]
+            if "items_dropped" in payload:
+                record["items_dropped"] = payload["items_dropped"]
+            if "pack_threshold_usd" in payload:
+                record["pack_threshold_usd"] = payload["pack_threshold_usd"]
+            # Diff-savings signal (M026 slice 7 / #709)
+            if "outputTokensSaved" in payload:
+                total_output_tokens_saved += payload.get("outputTokensSaved", 0)
+                total_output_dollars_saved += payload.get("outputDollarsSaved", 0.0)
+
+    if total_output_tokens_saved:
+        record["output_tokens_saved"] = total_output_tokens_saved
+        record["output_dollars_saved"] = total_output_dollars_saved
+
+    return record
+
+
+def _render_recommend(recs: list, as_json: bool, session: str) -> None:
+    """Print recommendations in human or JSON format."""
+    if as_json:
+        print(json.dumps(recs, indent=2))
+        return
+
+    if not recs:
+        print(f"No cost-saving recommendations for this run.")
+        return
+
+    print(f"Cost-saving recommendations for run {session}:")
+    print()
+    for i, rec in enumerate(recs, 1):
+        saving = rec["estimated_saving_usd"]
+        if isinstance(saving, (int, float)):
+            saving_str = f"~${saving:.4f}"
+        else:
+            saving_str = saving
+        print(f"  {i}. [{rec['technique']}] estimated saving {saving_str}")
+        print(f"     {rec['action']}")
+        print()
 
 
 def run_cost(args: List[str]) -> int:
@@ -331,6 +457,17 @@ def run_cost(args: List[str]) -> int:
 
     threshold = resolve_default_budget(str(target))
     violations = _emit_budget_warnings(rows, threshold, target)
+
+    # --recommend: build a per-run record and emit recommendations.
+    if opts["recommend"]:
+        run_id = opts["run"]
+        if run_id is None:
+            # No session specified — use the first (or only) session found.
+            run_id = sessions[0] if sessions else ""
+        record = _build_run_record(rows, run_id, all_events)
+        recs = recommend(record)
+        _render_recommend(recs, opts["json"], run_id)
+        return 0
 
     # --routing: build model_routing records for each row
     routing_records: List[dict] = []

@@ -49,8 +49,8 @@ A policy checkpoint that decides whether a run or PR has enough evidence, verifi
 _Avoid_: Generic checklist.
 
 **Agent Operations Console**:
-The team-facing dashboard for workspace switching, runs, context packs, failures, review gates, costs, repositories, indexing health, memory, API keys, and teams.
-_Avoid_: Generic analytics dashboard, vanity metrics page.
+The team-facing dashboard for workspace switching, runs, the **Issue Queue**, connectors, triggers/**Heartbeat** config, context packs, failures, review gates, costs, repositories, indexing health, memory, API keys, and teams. It obeys the console display rule: only *falsifiable* metrics (numbers that can come back negative). The one-sided "savings" surface is removed; the vs-**Raw-Agent Baseline** claim lives on a separate, dated validation-benchmark surface.
+_Avoid_: Generic analytics dashboard, vanity metrics page, any metric that cannot come back negative.
 
 **Console Design**:
 A dense, operational UI style using overview-to-drilldown dashboards, event tables, filters, health states, timelines, and clear evidence surfaces following observability product patterns.
@@ -79,6 +79,62 @@ _Avoid_: Subjective claims that retrieval is "good" without fixtures or evidence
 **Context Rot**:
 Context becoming misleading because source code, docs, ownership, failures, memory, or generated summaries no longer match the current repo state.
 _Avoid_: Treating old generated summaries as authoritative.
+
+**Completed Issue**:
+The unit of cost measurement: one good goal taken to a change that passes the **Objective Gate**. AgentRail's economics are measured per Completed Issue, not per prompt or per model call.
+_Avoid_: Measuring cost per prompt, per phase, or per retrieval call as if that were the product's cost.
+
+**Execution-Only Autonomy**:
+AgentRail's autonomy is in *execution*, not *goal selection*. Humans (or **Code Review** suggestions a human converts) create issues; the agent decides only *how* to complete each one. It never invents its own goals. Goal drift is therefore designed out, not detected.
+_Avoid_: Goal-seeking autonomy where the agent picks its own work from a "vision"; "give it your roadmap and walk away."
+
+**Issue Queue**:
+The concurrency-bounded queue of human-defined issues awaiting or undergoing autonomous execution. Each entry carries its tier (which model), remaining budget, and state. Escalation is a queue transition (re-enqueue at a higher tier with a compacted failure handoff and decremented budget).
+_Avoid_: An unbounded firehose of runs; a queue the agent fills itself.
+
+**Heartbeat**:
+The trigger layer that dispatches queued issues — event-first (issue labeled, CI fails on an open PR) with a scheduled-cadence fallback (scan backlog, run grabbable issues, post a triage summary). It stops when the queue is empty (every issue is green or escalated to a human).
+_Avoid_: A clock-only loop that runs regardless of whether there is grabbable work; a heartbeat enabled before the Objective Gate, budget cap, and accept-rate metric exist.
+
+**Objective Gate**:
+The falsifiable definition of "done" for a run: tests, build, and lint pass (and required acceptance criteria are met). It is the only signal that says a run is complete, and the signal that triggers model escalation when it fails.
+_Avoid_: Treating an LLM's opinion ("looks good") as the definition of done.
+
+**Run Outcome (terminal states)**:
+Every issue leaves the **Issue Queue** in exactly one terminal state, and there is no state that retries forever: (1) **Green** — Objective Gate + Independent Verification pass → PR ready (optionally awaiting human merge for irreversible actions); (2) **Escalated-to-human** — a hard stop fired (per-issue budget exhausted even after model escalation, max escalation tier reached with the gate still red, repeated Independent Verification failure, or a security block); state is preserved for human inspection or resume; (3) **Blocked** — an explicit `blocked-by` dependency is unmet → parked.
+_Avoid_: Infinite retry; a silent "failed" with no preserved state; burning budget with no human escalation.
+
+**Budget Leash**:
+The hard backstop that bounds spend per issue: a per-issue cost ceiling plus an escalation-attempt limit. Cheap model fails → escalate (compacted handoff) → if the strong model still cannot reach green within the remaining budget, stop and route to **Escalated-to-human**. This is what makes the loop safe to leave unattended.
+_Avoid_: A budget cap that only gates *before* the expensive phase; escalation with no attempt limit.
+
+**Code Review (advisory)**:
+Findings AgentRail surfaces about a change as suggestions the user can convert to issues on the dashboard. Advisory only — it does NOT decide whether a run is done.
+_Avoid_: Conflating advisory review with the **Objective Gate** or the policy-blocking **Review Gate**.
+
+**Independent Verification**:
+A blocking, narrow quality check performed by a *different* model than the one that produced the change. It verifies one falsifiable question — do the tests and the change genuinely satisfy the issue's acceptance criteria, or were they gamed/skipped? Prevents self-preferential bias (the maker grading its own homework). It is a meta-check on the **Objective Gate**, not a taste review.
+_Avoid_: Using the same model that wrote the code to verify it; treating Independent Verification as a style/taste review.
+
+**Quality (definition)**:
+A change is "good quality" when the **Objective Gate** passes AND **Independent Verification** confirms the tests genuinely cover the acceptance criteria. Everything else (style, design) is advisory **Code Review**. The quality ceiling is therefore bounded by the quality of the issue's acceptance criteria.
+_Avoid_: Equating "tests pass" alone with quality; relying on the maker's self-assessment.
+
+**Test-Author / Implementer / Verifier (the three roles)**:
+The subagent roles that defeat false-green. **Test-Author** (a checker) turns the issue's acceptance criteria into a *failing* acceptance test before any implementation. **Implementer** (the maker) writes the smallest change to turn that test green. **Verifier** (Independent Verification, a different model) confirms the solution AND the tests satisfy the AC contract. Authoring the test in a separate role from implementing prevents the maker from writing tautological tests in its own favour.
+_Avoid_: One agent that writes both the test and the solution; a verifier that uses the same model that implemented.
+
+**Red-Green Proof**:
+Required evidence that an acceptance test was observed *failing* before implementation and *passing* after. It proves the test is real (not tautological) and that the change caused the pass. The **Objective Gate** requires this evidence trail, not just a final green result.
+_Avoid_: Accepting a final "tests pass" with no proof the test ever failed; tests authored after the solution to fit it.
+
+**Raw-Agent Baseline**:
+The realistic alternative AgentRail is measured against: the same coding agent, given the same issue, run autonomously to the same **Objective Gate**, without AgentRail's context engine or structured loop. Includes the agent's own wasteful re-exploration.
+_Avoid_: Defining "raw agent" as a single clean prompt, or as a human's one-shot question.
+
+**Cost-per-Issue-to-Green**:
+The headline cost metric: total spend to take one issue to a passing **Objective Gate**, compared AgentRail's loop vs the **Raw-Agent Baseline**. The 20–30% cost-reduction aim is defined as this ratio.
+_Avoid_: Reporting context-retrieval token deltas (e.g. the −21% retrieval benchmark) as if they were the headline cost metric — that is evidence the engine helps, not the product's cost claim.
 
 ## Relationships
 
@@ -115,3 +171,9 @@ _Avoid_: Treating old generated summaries as authoritative.
 - "Dashboard" means **Agent Operations Console** with workspace switching, runs, context packs, failures, review gates, costs, repos/indexing health, memory, API keys, and teams.
 - "Console design" means the dense observability UI style defined in TASTE.md. AgentRail owns its visual system.
 - "Not noise" means required-source inclusion is 100% for fixtures, citation coverage is 100%, stale or denied leakage is 0, graph expansion is bounded, token budgets are explicit, and every included or excluded item has a reason.
+- "Raw agent" and "cost reduction" were ambiguous. Resolved: cost is measured as **Cost-per-Issue-to-Green** — AgentRail's loop vs the **Raw-Agent Baseline** (same agent, same issue, run autonomously to the same **Objective Gate**) — per **Completed Issue**, not per prompt. The −21% context-retrieval benchmark is supporting evidence the engine helps, not the headline cost claim.
+- "Done" was undefined, which caused unbounded loops. Resolved: a run is done when the **Objective Gate** (tests/build/lint + acceptance criteria) passes. Advisory **Code Review** does not define done.
+- "Quality" vs "review are suggestions" conflict. Resolved: quality is enforced by the **Objective Gate** plus a blocking, narrow **Independent Verification** by a different model; all other review is advisory **Code Review** (suggestions → issues). See [[Quality (definition)]].
+- "Savings" display was a one-sided counterfactual that could never go negative. Resolved by the **console display rule**: the **Agent Operations Console** shows only *falsifiable* metrics — numbers that can come back negative (Cost-per-Issue-to-Green, accept rate, gate/verification pass-fail, escalation rate, cache read-to-creation ratio, security flags). The one-sided savings number is removed. The "20–30% vs Raw-Agent Baseline" claim is a separate, dated **validation benchmark** surface, never a live per-run ticker (the raw-agent arm is not run in production).
+- "Tests pass but the change still misses things" (false-green). Resolved: a separate **Test-Author** role writes a *failing* acceptance test from the AC before implementation, the **Implementer** turns it green, and a different-model **Verifier** confirms solution and tests satisfy the contract. The **Objective Gate** requires the **Red-Green Proof** trail, not just a final green.
+- "Goal drift" / "vision" was vague. Resolved: **Execution-Only Autonomy** — the agent never selects its own work, so vision drift is designed out; per-run drift is caught by issue scope + **Independent Verification**; the **Heartbeat** stops on an empty **Issue Queue**.

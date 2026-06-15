@@ -284,7 +284,7 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* How it works — STEP 01–04 */}
+      {/* How it works — stepped editorial */}
       <section
         id="how"
         className="relative z-10 border-t border-[var(--gray-04)]/60 px-6 py-20"
@@ -305,10 +305,41 @@ export default async function LandingPage() {
             </h2>
           </Reveal>
 
-          <div className="mt-12 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="mt-14 divide-y divide-[var(--gray-04)]/60">
             {STEPS.map((s, i) => (
               <Reveal key={s.n} delay={i * 80}>
-                <Step n={s.n} title={s.title} desc={s.desc} cmd={s.cmd} />
+                <div className="grid grid-cols-1 gap-4 py-8 lg:grid-cols-[4.5rem_14rem_1fr] lg:gap-10 lg:py-10">
+                  {/* Step number */}
+                  <div className="flex items-start pt-0.5">
+                    <span
+                      className={`${display.className} text-[3rem] font-extrabold leading-none tracking-tight text-[var(--gray-05)]`}
+                    >
+                      {s.n}
+                    </span>
+                  </div>
+                  {/* Headline */}
+                  <div className="flex items-start lg:items-center">
+                    <h3 className="text-[16px] font-bold leading-snug text-[var(--gray-12)]">
+                      {s.title}
+                    </h3>
+                  </div>
+                  {/* Description + code or label */}
+                  <div className="flex flex-col justify-center">
+                    <p className="text-[14px] leading-relaxed text-[var(--gray-10)]">{s.desc}</p>
+                    {s.cmd.startsWith("agentrail") ? (
+                      <code
+                        className="mt-4 inline-block self-start border border-[var(--gray-05)] bg-[var(--gray-00)] px-2.5 py-1.5 font-mono text-[12px]"
+                        style={{ color: ACCENT }}
+                      >
+                        $ {s.cmd}
+                      </code>
+                    ) : (
+                      <span className="mt-4 inline-block self-start border border-[var(--gray-05)] bg-[var(--gray-00)] px-2.5 py-1 font-mono text-[11px] uppercase tracking-wider text-[var(--gray-09)]">
+                        {s.cmd}
+                      </span>
+                    )}
+                  </div>
+                </div>
               </Reveal>
             ))}
           </div>
@@ -353,139 +384,84 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* Capabilities — bento */}
+      {/* Platform framing */}
       <section
         id="capabilities"
         className="relative z-10 border-t border-[var(--gray-04)]/60 px-6 py-20"
       >
         <div className="mx-auto max-w-[1180px]">
           <Reveal>
-            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--gray-09)]">
-              The platform
-            </p>
-            <h2
-              className={`${display.className} mt-3 max-w-[24ch] text-[clamp(1.8rem,3.4vw,2.8rem)] font-extrabold tracking-[-0.03em]`}
-            >
-              One workspace for everything your agents do.
-            </h2>
+            <div className="grid grid-cols-1 gap-10 lg:grid-cols-[1fr_1.5fr] lg:gap-16">
+              {/* Left: section label + headline + pull-quote */}
+              <div>
+                <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--gray-09)]">
+                  The platform
+                </p>
+                <h2
+                  className={`${display.className} mt-3 text-[clamp(1.8rem,3.4vw,2.8rem)] font-extrabold tracking-[-0.03em]`}
+                >
+                  One workspace for everything your agents do.
+                </h2>
+                <p className="mt-5 text-[15px] leading-relaxed text-[var(--gray-10)]">
+                  Every run surfaces the context it pulled, what it spent, and
+                  what gates it cleared — searchable, replayable, and tied to
+                  the code that produced it.
+                </p>
+                <p className="mt-3 text-[15px] leading-relaxed text-[var(--gray-10)]">
+                  The CLI gives each developer compiled context. The console
+                  gives the team visibility and control over what every agent
+                  does across every repo.
+                </p>
+              </div>
+
+              {/* Right: tight two-column feature dl */}
+              <dl className="mt-2 grid grid-cols-1 gap-x-8 gap-y-5 sm:grid-cols-2">
+                {[
+                  {
+                    term: "Context Compiler",
+                    def: "Hybrid BM25 + code graph + embedding index built locally; returns bounded line-range packs with a cited reason per pick.",
+                  },
+                  {
+                    term: "Code Graph",
+                    def: "Symbol-level dependency map used alongside BM25 to expand context to callers and callees without including whole files.",
+                  },
+                  {
+                    term: "Review Gate",
+                    def: "Policy checkpoint between agent phases; the agent stops, shows evidence, and waits before it continues.",
+                  },
+                  {
+                    term: "AFK Mode",
+                    def: "Unattended multi-phase execution that stays inside configured review gates — no babysitting, no bypass.",
+                  },
+                  {
+                    term: "Audit Event",
+                    def: "Source-linked record for every sensitive agent action, redaction, and provider call across the workspace.",
+                  },
+                  {
+                    term: "Memory",
+                    def: "Durable project knowledge agents recall across runs; stored once, available to every developer on the team.",
+                  },
+                  {
+                    term: "Cost Event",
+                    def: "Token and dollar spend tracked per run, repo, and workspace — exact figures, not estimates.",
+                  },
+                ].map(({ term, def }) => (
+                  <div key={term} className="border-t border-[var(--gray-04)] pt-4">
+                    <dt className="font-mono text-[11px] uppercase tracking-[0.15em] text-[var(--gray-11)]">
+                      {term}
+                    </dt>
+                    <dd className="mt-1.5 text-[13px] leading-relaxed text-[var(--gray-09)]">
+                      {def}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
           </Reveal>
-
-          <div className="mt-10 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {/* Featured: context engine */}
-            <Reveal className="sm:col-span-2 lg:row-span-2" delay={0}>
-              <BentoCard featured>
-                <CardHead icon={<IconPack />} title="Context packs" tag="retrieval engine" />
-                <p className="mt-3 text-[14px] leading-relaxed text-[var(--gray-10)]">
-                  A hybrid index — BM25 + code graph + embeddings — returns the{" "}
-                  <span className="text-[var(--gray-12)]">exact line ranges</span>{" "}
-                  an agent needs, with citations and a reason for every pick.
-                  Bounded, inspectable, and the source of the {reduction}% token win.
-                </p>
-                <div className="mt-5 space-y-2">
-                  {[
-                    { f: "lib/response.js", l: "L142–L168", r: "symbol definition" },
-                    { f: "lib/request.js", l: "L88–L101", r: "graph expansion" },
-                    { f: "test/res.json.js", l: "L12–L40", r: "BM25 keyword match" },
-                  ].map((row) => (
-                    <div
-                      key={row.f}
-                      className="flex items-center gap-3 rounded-md border border-[var(--gray-05)] bg-[var(--gray-00)]/60 px-3 py-2"
-                    >
-                      <span className="font-mono text-[12px] text-[var(--gray-12)]">{row.f}</span>
-                      <span
-                        className="font-mono text-[12px]"
-                        style={{ color: ACCENT }}
-                      >
-                        {row.l}
-                      </span>
-                      <span className="ml-auto font-mono text-[11px] text-[var(--gray-09)]">
-                        {row.r}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={60}>
-              <BentoCard>
-                <CardHead icon={<IconRuns />} title="Agent runs" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Every run&apos;s events, timing, tokens, and outcome — replayable.
-                </p>
-                <MiniTimeline />
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={120}>
-              <BentoCard>
-                <CardHead icon={<IconGate />} title="Review gates" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Policy checkpoints between phases. Agents stop and show evidence
-                  before they continue.
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={60}>
-              <BentoCard>
-                <CardHead icon={<IconAfk />} title="AFK mode" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Unattended, multi-phase agent work — review-gated so you stay in
-                  control without babysitting.
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={120}>
-              <BentoCard>
-                <CardHead icon={<IconCost />} title="Costs" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Token + dollar spend per run, repo, and workspace.
-                </p>
-                <p className={`${display.className} mt-3 text-3xl font-extrabold tracking-tight`}>
-                  $<CountUp to={1284} decimals={0} />
-                  <span className="ml-1 align-middle text-[12px] font-medium text-[var(--gray-09)]">
-                    / mo tracked
-                  </span>
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={60}>
-              <BentoCard>
-                <CardHead icon={<IconFail />} title="Failures" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Structured root-cause records, linked to the run and the context
-                  that triggered them.
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={120}>
-              <BentoCard>
-                <CardHead icon={<IconMemory />} title="Memory" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Durable project knowledge agents recall across runs — no repeated
-                  mistakes.
-                </p>
-              </BentoCard>
-            </Reveal>
-
-            <Reveal delay={60}>
-              <BentoCard>
-                <CardHead icon={<IconAudit />} title="Audit" />
-                <p className="mt-2 text-[13px] leading-relaxed text-[var(--gray-10)]">
-                  Source-linked events for every sensitive action, redaction, and
-                  provider call.
-                </p>
-              </BentoCard>
-            </Reveal>
-          </div>
         </div>
       </section>
 
-      {/* CLI vs Console — why the dashboard */}
+      {/* CLI vs Console */}
       <section className="relative z-10 border-t border-[var(--gray-04)]/60 px-6 py-20">
         <div className="mx-auto max-w-[1180px]">
           <Reveal>
@@ -506,72 +482,130 @@ export default async function LandingPage() {
             </p>
           </Reveal>
 
-          <div className="mt-10 grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {/* CLI */}
-            <Reveal>
-              <div className="ar-cell flex h-full flex-col rounded-xl border border-[var(--gray-05)] bg-[var(--gray-01)]/60 p-6">
-                <div className="flex items-center justify-between">
-                  <span className="text-[15px] font-bold text-[var(--gray-12)]">
-                    AgentRail CLI
-                  </span>
-                  <span className="rounded-full border border-[var(--gray-05)] px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-[var(--gray-09)]">
-                    free · every developer
-                  </span>
-                </div>
-                <p className="mt-1 text-[13px] text-[var(--gray-09)]">
-                  Runs on your machine, in your terminal.
+          <div className="mt-10 grid grid-cols-1 border border-[var(--gray-05)] lg:grid-cols-2">
+            {/* CLI column */}
+            <Reveal className="border-b border-[var(--gray-05)] p-6 lg:border-b-0 lg:border-r">
+              <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--gray-09)]">
+                AgentRail CLI
+              </p>
+              <p className="mt-1 mb-5 text-[13px] text-[var(--gray-10)]">
+                Runs on your machine, in your terminal. Free for every developer.
+              </p>
+
+              {/* Terminal block */}
+              <div className="border border-[var(--gray-05)] bg-[var(--gray-00)] p-4 font-mono text-[12px]">
+                <p className="text-[var(--gray-08)]"># index your codebase once</p>
+                <p className="mt-1">
+                  <span className="text-[var(--gray-07)]">$ </span>
+                  <span style={{ color: ACCENT }}>agentrail init</span>
                 </p>
-                <ul className="mt-5 space-y-2.5">
-                  {[
-                    "Hybrid context retrieval — line ranges, not files",
-                    "Bounded, review-gated agent runs",
-                    "Durable project memory",
-                    "Repo-native, deterministic, offline",
-                  ].map((t) => (
-                    <ValueRow key={t} text={t} muted />
-                  ))}
-                </ul>
+                <p className="mt-3 text-[var(--gray-08)]"># run an agent with compiled context</p>
+                <p className="mt-1">
+                  <span className="text-[var(--gray-07)]">$ </span>
+                  <span style={{ color: ACCENT }}>agentrail run</span>
+                  <span className="text-[var(--gray-10)]"> --issue 42</span>
+                </p>
+                <p className="mt-3 text-[var(--gray-08)]"># connect to your team workspace</p>
+                <p className="mt-1">
+                  <span className="text-[var(--gray-07)]">$ </span>
+                  <span style={{ color: ACCENT }}>agentrail workspace connect</span>
+                </p>
               </div>
+
+              <dl className="mt-5 space-y-3">
+                {[
+                  { dt: "Hybrid context retrieval", dd: "Line-range packs, not whole files." },
+                  { dt: "Review-gated runs", dd: "Agents stop at policy checkpoints by default." },
+                  { dt: "Durable project memory", dd: "Knowledge persists across every run." },
+                  {
+                    dt: "Repo-native",
+                    dd: "Index stays local; nothing leaves your machine for retrieval.",
+                  },
+                ].map(({ dt, dd }) => (
+                  <div key={dt} className="flex gap-2.5">
+                    <span className="mt-0.5 shrink-0 font-mono text-[13px] text-[var(--gray-07)]">
+                      —
+                    </span>
+                    <div>
+                      <span className="text-[13px] font-medium text-[var(--gray-11)]">{dt}.</span>{" "}
+                      <span className="text-[13px] text-[var(--gray-09)]">{dd}</span>
+                    </div>
+                  </div>
+                ))}
+              </dl>
             </Reveal>
 
-            {/* Console */}
-            <Reveal delay={100}>
-              <div
-                className="ar-cell relative flex h-full flex-col rounded-xl border bg-[var(--gray-01)] p-6"
-                style={{ borderColor: "color-mix(in srgb, #ffe629 40%, var(--gray-05))" }}
+            {/* Console column */}
+            <Reveal delay={80} className="p-6">
+              <p
+                className="font-mono text-[11px] uppercase tracking-[0.2em]"
+                style={{ color: ACCENT }}
               >
-                <div
-                  aria-hidden
-                  className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full opacity-20"
-                  style={{ background: `radial-gradient(50% 50% at 50% 50%, ${ACCENT} 0%, transparent 70%)`, filter: "blur(20px)" }}
-                />
-                <div className="relative flex items-center justify-between">
-                  <span className="text-[15px] font-bold" style={{ color: ACCENT }}>
-                    AgentRail Console
-                  </span>
-                  <span
-                    className="rounded-full px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-black"
-                    style={{ background: ACCENT }}
-                  >
-                    teams · see &amp; govern
-                  </span>
+                AgentRail Console
+              </p>
+              <p className="mt-1 mb-5 text-[13px] text-[var(--gray-10)]">
+                Your terminal shows your runs. The console shows your team&apos;s.
+              </p>
+
+              {/* Workspace header snippet */}
+              <div className="border border-[var(--gray-05)] bg-[var(--gray-00)] p-4 font-mono text-[12px]">
+                <div className="flex items-center justify-between border-b border-[var(--gray-04)] pb-2 mb-3">
+                  <span className="text-[var(--gray-10)]">workspace / acme-corp</span>
+                  <span className="text-[var(--gray-07)]">3 members</span>
                 </div>
-                <p className="relative mt-1 text-[13px] text-[var(--gray-10)]">
-                  Your terminal shows your runs. The console shows your team&apos;s.
-                </p>
-                <ul className="relative mt-5 grid gap-2.5 sm:grid-cols-2">
-                  {[
-                    "Every developer's runs in one workspace",
-                    "Server-enforced review gates & policy",
-                    "Cost across repos, teams, workspaces",
-                    "Audit trail for every sensitive action",
-                    "Shared memory the whole team recalls",
-                    "Indexing health, API keys, members",
-                  ].map((t) => (
-                    <ValueRow key={t} text={t} />
-                  ))}
-                </ul>
+                <div className="space-y-1.5">
+                  <div className="flex justify-between">
+                    <span className="text-[var(--gray-09)]">runs (7d)</span>
+                    <span className="text-[var(--gray-11)]">142</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[var(--gray-09)]">cost (7d)</span>
+                    <span className="text-[var(--gray-11)]">$31.40</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[var(--gray-09)]">review gates</span>
+                    <span style={{ color: ACCENT }}>enforced</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[var(--gray-09)]">audit trail</span>
+                    <span style={{ color: ACCENT }}>active</span>
+                  </div>
+                </div>
               </div>
+
+              <dl className="mt-5 space-y-3">
+                {[
+                  {
+                    dt: "Every developer's runs in one workspace",
+                    dd: "Cross-repo, cross-developer, searchable and replayable.",
+                  },
+                  {
+                    dt: "Server-enforced review gates",
+                    dd: "Policy runs on the server — no agent can bypass it.",
+                  },
+                  {
+                    dt: "Cost across repos and teams",
+                    dd: "Token and dollar spend by repo, developer, or workspace.",
+                  },
+                  {
+                    dt: "Audit trail",
+                    dd: "Source-linked record for every sensitive action an agent takes.",
+                  },
+                ].map(({ dt, dd }) => (
+                  <div key={dt} className="flex gap-2.5">
+                    <span
+                      className="mt-0.5 shrink-0 font-mono text-[13px]"
+                      style={{ color: ACCENT }}
+                    >
+                      —
+                    </span>
+                    <div>
+                      <span className="text-[13px] font-medium text-[var(--gray-11)]">{dt}.</span>{" "}
+                      <span className="text-[13px] text-[var(--gray-09)]">{dd}</span>
+                    </div>
+                  </div>
+                ))}
+              </dl>
             </Reveal>
           </div>
 
@@ -738,42 +772,6 @@ const FOOTER_COLUMNS: { title: string; links: { label: string; href: string }[] 
 
 /* ---------------------------------------------------------------- pieces */
 
-function Step({
-  n,
-  title,
-  desc,
-  cmd,
-}: {
-  n: string;
-  title: string;
-  desc: string;
-  cmd: string;
-}) {
-  return (
-    <div className="ar-cell flex h-full flex-col rounded-xl border border-[var(--gray-05)] bg-[var(--gray-01)]/60 p-5">
-      <div className="flex items-baseline justify-between">
-        <span
-          className={`${display.className} text-[2.4rem] font-extrabold leading-none tracking-tight text-[var(--gray-06)]`}
-        >
-          {n}
-        </span>
-        <span className="rounded-full border border-[var(--gray-05)] px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-[var(--gray-09)]">
-          Step
-        </span>
-      </div>
-      <h3 className="mt-4 text-[15px] font-bold text-[var(--gray-12)]">{title}</h3>
-      <p className="mt-2 flex-1 text-[13px] leading-relaxed text-[var(--gray-10)]">
-        {desc}
-      </p>
-      <code
-        className="mt-4 inline-block self-start rounded-md border border-[var(--gray-05)] bg-[var(--gray-00)]/60 px-2.5 py-1.5 font-mono text-[12px]"
-        style={{ color: ACCENT }}
-      >
-        {cmd}
-      </code>
-    </div>
-  );
-}
 
 function Faq({ q, a }: { q: string; a: string }) {
   return (
@@ -937,94 +935,6 @@ function RailFlow() {
   );
 }
 
-function BentoCard({
-  children,
-  featured,
-}: {
-  children: React.ReactNode;
-  featured?: boolean;
-}) {
-  return (
-    <div
-      className={`ar-cell flex h-full flex-col rounded-xl border border-[var(--gray-05)] p-5 ${
-        featured ? "bg-[var(--gray-01)]" : "bg-[var(--gray-01)]/60"
-      }`}
-    >
-      {children}
-    </div>
-  );
-}
-
-function CardHead({
-  icon,
-  title,
-  tag,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  tag?: string;
-}) {
-  return (
-    <div className="flex items-center gap-2.5">
-      <span
-        className="flex h-8 w-8 items-center justify-center rounded-md border border-[var(--gray-05)] bg-[var(--gray-00)] text-[var(--gray-11)]"
-        style={{ color: ACCENT }}
-      >
-        {icon}
-      </span>
-      <span className="text-[15px] font-bold text-[var(--gray-12)]">{title}</span>
-      {tag && (
-        <span className="ml-auto rounded-full border border-[var(--gray-05)] px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-[var(--gray-09)]">
-          {tag}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function MiniTimeline() {
-  const bars = [40, 70, 35, 90, 55, 75, 45];
-  return (
-    <div className="mt-auto flex items-end gap-1 pt-4">
-      {bars.map((h, i) => (
-        <span
-          key={i}
-          className="ar-bar flex-1 rounded-sm"
-          style={{
-            height: `${h * 0.4 + 8}px`,
-            background:
-              i === 3 ? ACCENT : "color-mix(in srgb, var(--gray-08) 60%, transparent)",
-            animationDelay: `${i * 80}ms`,
-            transformOrigin: "bottom",
-          }}
-        />
-      ))}
-    </div>
-  );
-}
-
-function ValueRow({ text, muted }: { text: string; muted?: boolean }) {
-  return (
-    <li className="flex items-start gap-2.5">
-      <svg
-        width="15"
-        height="15"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke={muted ? "var(--gray-08)" : ACCENT}
-        strokeWidth={2.4}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        className="mt-0.5 shrink-0"
-        aria-hidden
-      >
-        <path d="M20 6 9 17l-5-5" />
-      </svg>
-      <span className="text-[13px] leading-snug text-[var(--gray-11)]">{text}</span>
-    </li>
-  );
-}
-
 /* ---------------------------------------------------------------- icons */
 
 function RailMark() {
@@ -1036,35 +946,6 @@ function RailMark() {
       <rect x="2" y="12.4" width="16" height="1.6" rx="0.8" fill="var(--gray-08)" />
     </svg>
   );
-}
-
-const ic = { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
-
-function IconPack() {
-  return (
-    <svg {...ic}><path d="M21 8 12 3 3 8l9 5 9-5Z" /><path d="m3 12 9 5 9-5" /><path d="m3 16 9 5 9-5" /></svg>
-  );
-}
-function IconRuns() {
-  return <svg {...ic}><path d="M3 12h4l3 8 4-16 3 8h4" /></svg>;
-}
-function IconGate() {
-  return <svg {...ic}><path d="M12 3v18" /><path d="M5 7h14" /><circle cx="12" cy="12" r="3" /></svg>;
-}
-function IconAfk() {
-  return <svg {...ic}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>;
-}
-function IconCost() {
-  return <svg {...ic}><path d="M12 2v20" /><path d="M17 6.5C17 4.5 14.8 4 12 4S7 4.8 7 7s2.5 2.7 5 3 5 1 5 3.2-2.2 2.8-5 2.8-5-.7-5-2.8" /></svg>;
-}
-function IconFail() {
-  return <svg {...ic}><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /></svg>;
-}
-function IconMemory() {
-  return <svg {...ic}><rect x="4" y="4" width="16" height="16" rx="2" /><path d="M9 9h6v6H9z" /><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2" /></svg>;
-}
-function IconAudit() {
-  return <svg {...ic}><path d="M14 3v4a1 1 0 0 0 1 1h4" /><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z" /><path d="m9 15 2 2 4-4" /></svg>;
 }
 
 function GitHubIcon() {

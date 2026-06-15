@@ -1,3 +1,4 @@
+import { PageHeader } from "../../../../components/page-header";
 import { CostsClient } from "./components/costs-client";
 
 export default async function CostsPage({
@@ -9,9 +10,7 @@ export default async function CostsPage({
 
   return (
     <div className="mx-auto max-w-[1440px]">
-      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
-        Costs
-      </h1>
+      <PageHeader title="Costs" />
       <CostsClient workspaceId={workspaceId} />
     </div>
   );

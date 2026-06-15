@@ -1,16 +1,9 @@
 "use client";
 
 import { useState, useCallback, useEffect, useMemo } from "react";
-import {
-  useReactTable,
-  getCoreRowModel,
-  getSortedRowModel,
-  flexRender,
-  createColumnHelper,
-  type SortingState,
-  type ColumnDef,
-} from "@tanstack/react-table";
-import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
+import { createColumnHelper, type ColumnDef } from "@tanstack/react-table";
+import { DataTable } from "../../../../components/data-table";
+import { StatHeader } from "../../../../components/stat-header";
 import {
   TIME_RANGES,
   timeRangeToFrom,
@@ -67,13 +60,6 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
-function SortIcon({ dir }: { dir: "asc" | "desc" | false }) {
-  if (!dir) return <span className="ml-0.5 text-[var(--gray-07)]">↕</span>;
-  return (
-    <span className="ml-0.5 text-[#ffe629]">{dir === "asc" ? "↑" : "↓"}</span>
-  );
-}
-
 const columnHelper = createColumnHelper<CostRow>();
 
 function buildColumns(groupBy: GroupBy): ColumnDef<CostRow, unknown>[] {
@@ -81,8 +67,9 @@ function buildColumns(groupBy: GroupBy): ColumnDef<CostRow, unknown>[] {
     columnHelper.accessor("entity_id", {
       id: "entity_id",
       header: GROUP_LABEL[groupBy],
+      meta: { mono: true },
       cell: (info) => (
-        <span className="font-mono text-xs text-[var(--gray-12)] truncate max-w-[200px] block">
+        <span className="truncate max-w-[200px] block text-[var(--gray-12)]">
           {info.getValue() || "—"}
         </span>
       ),
@@ -90,8 +77,9 @@ function buildColumns(groupBy: GroupBy): ColumnDef<CostRow, unknown>[] {
     columnHelper.accessor("total_tokens", {
       id: "total_tokens",
       header: "Total tokens",
+      meta: { mono: true },
       cell: (info) => (
-        <span className="font-mono text-xs text-[var(--gray-11)]">
+        <span className="text-[var(--gray-11)]">
           {fmtTokens(info.getValue() as number)}
         </span>
       ),
@@ -99,8 +87,9 @@ function buildColumns(groupBy: GroupBy): ColumnDef<CostRow, unknown>[] {
     columnHelper.accessor("total_cost_usd", {
       id: "total_cost_usd",
       header: "Total cost",
+      meta: { mono: true },
       cell: (info) => (
-        <span className="font-mono text-xs text-[var(--gray-12)] font-medium">
+        <span className="text-[var(--gray-12)] font-medium">
           {fmtCost(info.getValue() as number)}
         </span>
       ),
@@ -108,10 +97,11 @@ function buildColumns(groupBy: GroupBy): ColumnDef<CostRow, unknown>[] {
     columnHelper.accessor("model_call_cost_usd", {
       id: "model_call_cost_usd",
       header: "Model calls",
+      meta: { mono: true },
       cell: (info) => {
         const row = info.row.original;
         return (
-          <span className="font-mono text-xs text-[var(--gray-11)]">
+          <span className="text-[var(--gray-11)]">
             {fmtCost(info.getValue() as number)}{" "}
             <span className="text-[var(--gray-09)]">
               ({fmtTokens(row.model_call_tokens)})
@@ -123,10 +113,11 @@ function buildColumns(groupBy: GroupBy): ColumnDef<CostRow, unknown>[] {
     columnHelper.accessor("embedding_cost_usd", {
       id: "embedding_cost_usd",
       header: "Embeddings",
+      meta: { mono: true },
       cell: (info) => {
         const row = info.row.original;
         return (
-          <span className="font-mono text-xs text-[var(--gray-11)]">
+          <span className="text-[var(--gray-11)]">
             {fmtCost(info.getValue() as number)}{" "}
             <span className="text-[var(--gray-09)]">
               ({fmtTokens(row.embedding_tokens)})
@@ -138,10 +129,11 @@ function buildColumns(groupBy: GroupBy): ColumnDef<CostRow, unknown>[] {
     columnHelper.accessor("reranking_cost_usd", {
       id: "reranking_cost_usd",
       header: "Reranking",
+      meta: { mono: true },
       cell: (info) => {
         const row = info.row.original;
         return (
-          <span className="font-mono text-xs text-[var(--gray-11)]">
+          <span className="text-[var(--gray-11)]">
             {fmtCost(info.getValue() as number)}{" "}
             <span className="text-[var(--gray-09)]">
               ({fmtTokens(row.reranking_tokens)})
@@ -153,8 +145,9 @@ function buildColumns(groupBy: GroupBy): ColumnDef<CostRow, unknown>[] {
     columnHelper.accessor("storage_cost_usd", {
       id: "storage_cost_usd",
       header: "Storage",
+      meta: { mono: true },
       cell: (info) => (
-        <span className="font-mono text-xs text-[var(--gray-11)]">
+        <span className="text-[var(--gray-11)]">
           {fmtCost(info.getValue() as number)}
         </span>
       ),
@@ -162,8 +155,9 @@ function buildColumns(groupBy: GroupBy): ColumnDef<CostRow, unknown>[] {
     columnHelper.accessor("event_count", {
       id: "event_count",
       header: "Events",
+      meta: { mono: true },
       cell: (info) => (
-        <span className="font-mono text-xs text-[var(--gray-10)]">
+        <span className="text-[var(--gray-10)]">
           {(info.getValue() as number).toLocaleString()}
         </span>
       ),
@@ -180,9 +174,6 @@ export function CostsTable({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [groupBy, setGroupBy] = useState<GroupBy>("repo");
-  const [sorting, setSorting] = useState<SortingState>([
-    { id: "total_cost_usd", desc: true },
-  ]);
 
   const columns = useMemo(() => buildColumns(groupBy), [groupBy]);
 
@@ -222,132 +213,71 @@ export function CostsTable({
     fetchCosts(groupBy, timeRange);
   }, [fetchCosts, groupBy, timeRange]);
 
-  const table = useReactTable({
-    data,
-    columns,
-    state: { sorting },
-    onSortingChange: setSorting,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    manualSorting: false,
-  });
+  const totalCost = data.reduce((sum, r) => sum + r.total_cost_usd, 0);
+  const totalTokens = data.reduce((sum, r) => sum + r.total_tokens, 0);
+
+  const filterBar = (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="flex items-center gap-1">
+        {GROUP_BY_OPTIONS.map(({ label, value }) => (
+          <button
+            key={value}
+            onClick={() => setGroupBy(value)}
+            className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
+              groupBy === value
+                ? "bg-[#ffe629] text-black border-[#ffe629]"
+                : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="h-4 w-px bg-[var(--gray-05)]" />
+
+      <div className="flex items-center gap-1">
+        {TIME_RANGES.map(({ label, value }) => (
+          <button
+            key={value || "all"}
+            onClick={() => onTimeRangeToggle(value)}
+            className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
+              timeRange === value
+                ? "bg-[#ffe629] text-black border-[#ffe629]"
+                : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 
   return (
-    <div className="flex flex-col gap-3">
-      {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-2">
-        {/* Group-by selector */}
-        <div className="flex items-center gap-1">
-          {GROUP_BY_OPTIONS.map(({ label, value }) => (
-            <button
-              key={value}
-              onClick={() => setGroupBy(value)}
-              className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
-                groupBy === value
-                  ? "bg-[#ffe629] text-black border-[#ffe629]"
-                  : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        <div className="h-4 w-px bg-[var(--gray-05)]" />
-
-        {/* Time range buttons */}
-        <div className="flex items-center gap-1">
-          {TIME_RANGES.map(({ label, value }) => (
-            <button
-              key={value}
-              onClick={() => onTimeRangeToggle(value)}
-              className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
-                timeRange === value
-                  ? "bg-[#ffe629] text-black border-[#ffe629]"
-                  : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="rounded border border-[var(--gray-05)] overflow-hidden">
-        <table className="w-full text-sm border-collapse">
-          <thead>
-            <tr className="border-b border-[var(--gray-05)] bg-[var(--gray-01)]">
-              {table.getFlatHeaders().map((header) => (
-                <th
-                  key={header.id}
-                  onClick={header.column.getToggleSortingHandler()}
-                  className={`px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] select-none ${
-                    header.column.getCanSort()
-                      ? "cursor-pointer hover:text-[var(--gray-12)]"
-                      : ""
-                  }`}
-                >
-                  {flexRender(
-                    header.column.columnDef.header,
-                    header.getContext()
-                  )}
-                  {header.column.getCanSort() && (
-                    <SortIcon dir={header.column.getIsSorted()} />
-                  )}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <SkeletonTableRows columns={columns.length} rows={8} />
-            ) : error ? (
-              <tr>
-                <td
-                  colSpan={columns.length}
-                  className="px-3 py-8 text-center text-sm text-[#ff9592]"
-                >
-                  {error}
-                </td>
-              </tr>
-            ) : data.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={columns.length}
-                  className="px-3 py-8 text-center text-sm text-[var(--gray-09)]"
-                >
-                  No cost events found for the selected time range.
-                </td>
-              </tr>
-            ) : (
-              table.getRowModel().rows.map((row) => (
-                <tr
-                  key={row.id}
-                  className="border-b border-[var(--gray-04)] hover:bg-[var(--gray-02)] transition-colors"
-                  style={{ height: "34px" }}
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="px-3 py-1.5">
-                      {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      )}
-                    </td>
-                  ))}
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {!loading && !error && data.length > 0 && (
-        <p className="text-xs text-[var(--gray-09)]">
-          {data.length} {data.length === 1 ? "row" : "rows"} — grouped by{" "}
-          {GROUP_LABEL[groupBy].toLowerCase()}
-        </p>
+    <div className="flex flex-col gap-4">
+      {!loading && !error && (
+        <StatHeader
+          stats={[
+            { label: "Total cost", value: fmtCost(totalCost) },
+            { label: "Total tokens", value: fmtTokens(totalTokens) },
+            {
+              label: "Rows",
+              value: data.length,
+              detail: `grouped by ${GROUP_LABEL[groupBy].toLowerCase()}`,
+            },
+          ]}
+        />
       )}
+      <DataTable
+        columns={columns}
+        data={data}
+        loading={loading}
+        error={error}
+        emptyMessage="No cost events found for the selected time range."
+        filterBar={filterBar}
+        onRetry={() => fetchCosts(groupBy, timeRange)}
+      />
     </div>
   );
 }

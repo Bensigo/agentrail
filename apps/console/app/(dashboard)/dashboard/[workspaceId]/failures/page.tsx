@@ -1,4 +1,5 @@
 import { listRuns } from "@agentrail/db-postgres";
+import { PageHeader } from "../../../../components/page-header";
 import { FailureClusters } from "./components/failure-clusters";
 import { FailuresTable } from "./components/failures-table";
 
@@ -26,9 +27,7 @@ export default async function FailuresPage({
 
   return (
     <div className="mx-auto max-w-[1440px]">
-      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
-        Failures
-      </h1>
+      <PageHeader title="Failures" />
       <FailureClusters workspaceId={workspaceId} />
       <FailuresTable
         workspaceId={workspaceId}

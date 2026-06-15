@@ -1,8 +1,9 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
-import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
+import { useCallback, useEffect, useState } from "react";
+import { createColumnHelper, type ColumnDef } from "@tanstack/react-table";
+import { DataTable } from "../../../../components/data-table";
+import { StatHeader } from "../../../../components/stat-header";
 import {
   buildRunDetailHref,
   formatClusterTime,
@@ -31,9 +32,61 @@ function FailureTypeBadge({ value }: { value: string }) {
   );
 }
 
+const columnHelper = createColumnHelper<FailureCluster>();
+
+const columns: ColumnDef<FailureCluster, unknown>[] = [
+  columnHelper.accessor("fingerprint", {
+    header: "Fingerprint",
+    meta: { mono: true },
+    cell: (info) => (
+      <span
+        className="block max-w-[280px] truncate text-[var(--gray-12)]"
+        title={info.getValue()}
+      >
+        {truncateFingerprint(info.getValue() || "unfingerprinted")}
+      </span>
+    ),
+  }),
+  columnHelper.accessor("phase", {
+    header: "Phase",
+    meta: { mono: true },
+    cell: (info) => (
+      <span className="text-[var(--gray-10)]">{info.getValue() || "-"}</span>
+    ),
+  }),
+  columnHelper.accessor("failure_type", {
+    header: "Type",
+    cell: (info) => <FailureTypeBadge value={info.getValue()} />,
+  }),
+  columnHelper.accessor("count", {
+    header: "Count",
+    meta: { mono: true },
+    cell: (info) => (
+      <span className="text-[var(--gray-12)]">{info.getValue()}</span>
+    ),
+  }),
+  columnHelper.accessor("first_seen", {
+    header: "First Seen",
+    meta: { mono: true },
+    cell: (info) => (
+      <span className="text-[var(--gray-10)]">
+        {formatClusterTime(info.getValue())}
+      </span>
+    ),
+  }),
+  columnHelper.accessor("last_seen", {
+    header: "Last Seen",
+    meta: { mono: true },
+    cell: (info) => (
+      <span className="text-[var(--gray-10)]">
+        {formatClusterTime(info.getValue())}
+      </span>
+    ),
+  }),
+] as ColumnDef<FailureCluster, unknown>[];
+
 export function FailureClusters({ workspaceId }: FailureClustersProps) {
   const [clusters, setClusters] = useState<FailureCluster[]>([]);
-  const [expanded, setExpanded] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -61,133 +114,46 @@ export function FailureClusters({ workspaceId }: FailureClustersProps) {
     fetchClusters();
   }, [fetchClusters]);
 
+  const totalFailures = clusters.reduce((sum, c) => sum + c.count, 0);
+
   return (
-    <section className="mb-4">
-      <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-[var(--gray-12)]">
-          Failure Clusters
-        </h2>
-        <span className="font-mono text-xs text-[var(--gray-09)]">
-          {clusters.length} clusters
-        </span>
-      </div>
-      <div className="overflow-hidden rounded border border-[var(--gray-05)]">
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-[var(--gray-05)] bg-[var(--gray-01)]">
-              <th className="w-8 px-2 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]" />
-              <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-                Fingerprint
-              </th>
-              <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-                Phase
-              </th>
-              <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-                Type
-              </th>
-              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-                Count
-              </th>
-              <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-                First Seen
-              </th>
-              <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-                Last Seen
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <SkeletonTableRows columns={7} rows={4} />
-            ) : error ? (
-              <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-sm text-[#ff9592]">
-                  {error}
-                </td>
-              </tr>
-            ) : clusters.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-sm text-[var(--gray-09)]">
-                  No failure clusters found
-                </td>
-              </tr>
-            ) : (
-              clusters.map((cluster) => {
-                const key = `${cluster.fingerprint}:${cluster.phase}:${cluster.failure_type}`;
-                const isExpanded = expanded === key;
-                return (
-                  <Fragment key={key}>
-                    <tr
-                      className="border-b border-[var(--gray-04)] hover:bg-[var(--gray-02)]"
-                      style={{ height: "34px" }}
-                    >
-                      <td className="px-2 py-1.5">
-                        <button
-                          type="button"
-                          aria-label={isExpanded ? "Collapse cluster" : "Expand cluster"}
-                          onClick={() => setExpanded(isExpanded ? null : key)}
-                          className="flex h-6 w-6 items-center justify-center rounded text-[var(--gray-10)] hover:bg-[var(--gray-03)] hover:text-[var(--gray-12)]"
-                        >
-                          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                        </button>
-                      </td>
-                      <td className="px-3 py-1.5">
-                        <span
-                          className="block max-w-[280px] truncate font-mono text-xs text-[var(--gray-12)]"
-                          title={cluster.fingerprint}
-                        >
-                          {truncateFingerprint(cluster.fingerprint || "unfingerprinted")}
-                        </span>
-                      </td>
-                      <td className="px-3 py-1.5">
-                        <span className="font-mono text-xs text-[var(--gray-10)]">
-                          {cluster.phase || "-"}
-                        </span>
-                      </td>
-                      <td className="px-3 py-1.5">
-                        <FailureTypeBadge value={cluster.failure_type} />
-                      </td>
-                      <td className="px-3 py-1.5 text-right">
-                        <span className="font-mono text-xs text-[var(--gray-12)]">
-                          {cluster.count}
-                        </span>
-                      </td>
-                      <td className="px-3 py-1.5">
-                        <span className="font-mono text-xs text-[var(--gray-10)]">
-                          {formatClusterTime(cluster.first_seen)}
-                        </span>
-                      </td>
-                      <td className="px-3 py-1.5">
-                        <span className="font-mono text-xs text-[var(--gray-10)]">
-                          {formatClusterTime(cluster.last_seen)}
-                        </span>
-                      </td>
-                    </tr>
-                    {isExpanded && (
-                      <tr className="border-b border-[var(--gray-04)] bg-[var(--gray-01)]">
-                        <td />
-                        <td colSpan={6} className="px-3 py-2">
-                          <div className="flex flex-wrap gap-2">
-                            {cluster.run_ids.map((runId) => (
-                              <a
-                                key={runId}
-                                href={buildRunDetailHref(workspaceId, runId)}
-                                className="font-mono text-xs text-[#70b8ff] underline-offset-2 hover:text-[#ffe629] hover:underline"
-                              >
-                                {runId}
-                              </a>
-                            ))}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+    <section className="mb-6">
+      <h2 className="mb-3 text-sm font-semibold text-[var(--gray-12)]">
+        Failure Clusters
+      </h2>
+      {!loading && !error && (
+        <div className="mb-3">
+          <StatHeader
+            stats={[
+              { label: "Clusters", value: clusters.length },
+              { label: "Total failures", value: totalFailures, color: "red" },
+            ]}
+          />
+        </div>
+      )}
+      <DataTable
+        columns={columns}
+        data={clusters}
+        loading={loading}
+        error={error}
+        emptyMessage="No failure clusters found."
+        rowKey={(c) => `${c.fingerprint}:${c.phase}:${c.failure_type}`}
+        renderSubRow={(c) => (
+          <div className="flex flex-wrap gap-2">
+            {c.run_ids.map((runId) => (
+              <a
+                key={runId}
+                href={buildRunDetailHref(workspaceId, runId)}
+                className="font-mono text-xs text-[#70b8ff] underline-offset-2 hover:text-[#ffe629] hover:underline"
+              >
+                {runId}
+              </a>
+            ))}
+          </div>
+        )}
+        onRetry={fetchClusters}
+        skeletonRows={4}
+      />
     </section>
   );
 }

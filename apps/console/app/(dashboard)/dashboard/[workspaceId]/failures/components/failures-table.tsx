@@ -1,14 +1,9 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
-import { useRouter } from "next/navigation";
-import {
-  useReactTable,
-  getCoreRowModel,
-  flexRender,
-  createColumnHelper,
-} from "@tanstack/react-table";
-import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
+import { useState, useCallback, useEffect, useMemo } from "react";
+import { createColumnHelper, type ColumnDef } from "@tanstack/react-table";
+import { DataTable } from "../../../../components/data-table";
+import { StatHeader } from "../../../../components/stat-header";
 
 export interface FailureRecord {
   event_id: string;
@@ -32,6 +27,7 @@ interface FailuresTableProps {
 type TimeRange = "1h" | "6h" | "24h" | "7d" | "30d" | "";
 
 const TIME_RANGES: { label: string; value: TimeRange }[] = [
+  { label: "All", value: "" },
   { label: "1h", value: "1h" },
   { label: "6h", value: "6h" },
   { label: "24h", value: "24h" },
@@ -101,18 +97,39 @@ function SeverityBadge({ severity }: { severity: string }) {
 
 const columnHelper = createColumnHelper<FailureRecord>();
 
-function buildColumns(workspaceId: string) {
+function buildColumns(workspaceId: string): ColumnDef<FailureRecord, unknown>[] {
   return [
+    columnHelper.accessor("occurred_at", {
+      header: "When",
+      meta: { mono: true },
+      cell: (info) => (
+        <span className="text-[var(--gray-10)]">
+          {formatOccurredAt(info.getValue())}
+        </span>
+      ),
+    }),
+    columnHelper.accessor("run_id", {
+      header: "Run",
+      meta: { mono: true },
+      cell: (info) => (
+        <a
+          href={`/dashboard/${workspaceId}/runs/${info.getValue()}`}
+          onClick={(e) => e.stopPropagation()}
+          className="text-[var(--gray-11)] hover:text-[#ffe629] transition-colors"
+        >
+          {info.getValue().slice(0, 8)}
+        </a>
+      ),
+    }),
     columnHelper.accessor("severity", {
       header: "Severity",
       cell: (info) => <SeverityBadge severity={info.getValue()} />,
     }),
     columnHelper.accessor("failure_type", {
       header: "Type",
+      meta: { mono: true },
       cell: (info) => (
-        <span className="font-mono text-xs text-[var(--gray-11)]">
-          {info.getValue()}
-        </span>
+        <span className="text-[var(--gray-11)]">{info.getValue()}</span>
       ),
     }),
     columnHelper.accessor("message", {
@@ -131,33 +148,12 @@ function buildColumns(workspaceId: string) {
     }),
     columnHelper.accessor("phase", {
       header: "Phase",
+      meta: { mono: true },
       cell: (info) => (
-        <span className="font-mono text-xs text-[var(--gray-10)]">
-          {info.getValue()}
-        </span>
+        <span className="text-[var(--gray-10)]">{info.getValue()}</span>
       ),
     }),
-    columnHelper.accessor("run_id", {
-      header: "Run",
-      cell: (info) => (
-        <a
-          href={`/dashboard/${workspaceId}/failures?run_id=${info.getValue()}`}
-          onClick={(e) => e.stopPropagation()}
-          className="font-mono text-xs text-[var(--gray-11)] hover:text-[#ffe629] transition-colors"
-        >
-          {info.getValue().slice(0, 8)}
-        </a>
-      ),
-    }),
-    columnHelper.accessor("occurred_at", {
-      header: "When",
-      cell: (info) => (
-        <span className="font-mono text-xs text-[var(--gray-10)]">
-          {formatOccurredAt(info.getValue())}
-        </span>
-      ),
-    }),
-  ];
+  ] as ColumnDef<FailureRecord, unknown>[];
 }
 
 export function FailuresTable({
@@ -165,7 +161,6 @@ export function FailuresTable({
   repositories,
   initialRunId,
 }: FailuresTableProps) {
-  const router = useRouter();
   const [data, setData] = useState<FailureRecord[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -177,7 +172,7 @@ export function FailuresTable({
   const [failureType, setFailureType] = useState("");
   const [timeRange, setTimeRange] = useState<TimeRange>("");
 
-  const columns = buildColumns(workspaceId);
+  const columns = useMemo(() => buildColumns(workspaceId), [workspaceId]);
 
   const fetchFailures = useCallback(
     async (cursor?: string, append = false) => {
@@ -236,147 +231,99 @@ export function FailuresTable({
     if (nextCursor) fetchFailures(nextCursor, true);
   };
 
-  const table = useReactTable({
-    data,
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-  });
+  const critical = data.filter((f) => f.severity === "critical").length;
+  const high = data.filter((f) => f.severity === "high").length;
+  const medium = data.filter((f) => f.severity === "medium").length;
+  const low = data.filter((f) => f.severity === "low").length;
+
+  const filterBar = (
+    <div className="flex flex-wrap items-center gap-2">
+      <select
+        value={repoId}
+        onChange={(e) => setRepoId(e.target.value)}
+        className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
+      >
+        <option value="">All repos</option>
+        {repositories.map((r) => (
+          <option key={r} value={r}>
+            {r}
+          </option>
+        ))}
+      </select>
+
+      <select
+        value={severity}
+        onChange={(e) => setSeverity(e.target.value)}
+        className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
+      >
+        <option value="">All severities</option>
+        <option value="critical">Critical</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+      </select>
+
+      <select
+        value={failureType}
+        onChange={(e) => setFailureType(e.target.value)}
+        className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
+      >
+        <option value="">All types</option>
+        <option value="tool_error">tool_error</option>
+        <option value="context_error">context_error</option>
+        <option value="auth_error">auth_error</option>
+        <option value="lint_error">lint_error</option>
+        <option value="test_error">test_error</option>
+        <option value="build_error">build_error</option>
+      </select>
+
+      <div className="flex items-center gap-1">
+        {TIME_RANGES.map(({ label, value }) => (
+          <button
+            key={value || "all"}
+            onClick={() => setTimeRange(value)}
+            className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
+              timeRange === value
+                ? "bg-[#ffe629] text-black border-[#ffe629]"
+                : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <button
+        onClick={applyFilters}
+        className="h-8 px-3 rounded bg-[var(--gray-03)] border border-[var(--gray-06)] text-sm text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors"
+      >
+        Apply
+      </button>
+    </div>
+  );
 
   return (
-    <div className="flex flex-col gap-3">
-      {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-2">
-        <select
-          value={repoId}
-          onChange={(e) => setRepoId(e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
-        >
-          <option value="">All repos</option>
-          {repositories.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </select>
-
-        <select
-          value={severity}
-          onChange={(e) => setSeverity(e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
-        >
-          <option value="">All severities</option>
-          <option value="critical">Critical</option>
-          <option value="high">High</option>
-          <option value="medium">Medium</option>
-          <option value="low">Low</option>
-        </select>
-
-        <select
-          value={failureType}
-          onChange={(e) => setFailureType(e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
-        >
-          <option value="">All types</option>
-          <option value="tool_error">tool_error</option>
-          <option value="context_error">context_error</option>
-          <option value="auth_error">auth_error</option>
-          <option value="lint_error">lint_error</option>
-          <option value="test_error">test_error</option>
-          <option value="build_error">build_error</option>
-        </select>
-
-        <div className="flex items-center gap-1">
-          {TIME_RANGES.map(({ label, value }) => (
-            <button
-              key={value}
-              onClick={() =>
-                setTimeRange((prev) => (prev === value ? "" : value))
-              }
-              className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
-                timeRange === value
-                  ? "bg-[#ffe629] text-black border-[#ffe629]"
-                  : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        <button
-          onClick={applyFilters}
-          className="h-8 px-3 rounded bg-[var(--gray-03)] border border-[var(--gray-06)] text-sm text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors"
-        >
-          Apply
-        </button>
-      </div>
-
-      {/* Table */}
-      <div className="rounded border border-[var(--gray-05)] overflow-hidden">
-        <table className="w-full text-sm border-collapse">
-          <thead>
-            <tr className="border-b border-[var(--gray-05)] bg-[var(--gray-01)]">
-              {table.getFlatHeaders().map((header) => (
-                <th
-                  key={header.id}
-                  className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]"
-                >
-                  {flexRender(
-                    header.column.columnDef.header,
-                    header.getContext()
-                  )}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <SkeletonTableRows columns={columns.length} rows={8} />
-            ) : error ? (
-              <tr>
-                <td
-                  colSpan={columns.length}
-                  className="px-3 py-8 text-center text-sm text-[#ff9592]"
-                >
-                  {error}
-                </td>
-              </tr>
-            ) : data.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={columns.length}
-                  className="px-3 py-8 text-center text-sm text-[var(--gray-09)]"
-                >
-                  No failures found
-                </td>
-              </tr>
-            ) : (
-              table.getRowModel().rows.map((row) => (
-                <tr
-                  key={row.id}
-                  onClick={() =>
-                    router.push(
-                      `/dashboard/${workspaceId}/failures/${row.original.event_id}`
-                    )
-                  }
-                  className="border-b border-[var(--gray-04)] hover:bg-[var(--gray-02)] cursor-pointer transition-colors"
-                  style={{ height: "34px" }}
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="px-3 py-1.5">
-                      {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
-                      )}
-                    </td>
-                  ))}
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-
+    <div className="flex flex-col gap-4">
+      {!loading && !error && (
+        <StatHeader
+          stats={[
+            { label: "Total", value: data.length },
+            { label: "Critical", value: critical, color: "red" },
+            { label: "High", value: high, color: "orange" },
+            { label: "Medium", value: medium, color: "yellow" },
+            { label: "Low", value: low, color: "gray" },
+          ]}
+        />
+      )}
+      <DataTable
+        columns={columns}
+        data={data}
+        loading={loading}
+        error={error}
+        emptyMessage="No failures found."
+        filterBar={filterBar}
+        onRetry={() => fetchFailures()}
+      />
       {nextCursor && !loading && (
         <div className="flex justify-center pt-1">
           <button

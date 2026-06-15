@@ -1,4 +1,5 @@
 import { listWorkspaceRepositories } from "@agentrail/db-postgres";
+import { PageHeader } from "../../../../components/page-header";
 import { RunsTable } from "./components/runs-table";
 
 export default async function RunsPage({
@@ -19,9 +20,7 @@ export default async function RunsPage({
 
   return (
     <div className="mx-auto max-w-[1440px]">
-      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
-        Runs
-      </h1>
+      <PageHeader title="Runs" />
       <RunsTable workspaceId={workspaceId} repositories={repositories} />
     </div>
   );

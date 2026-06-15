@@ -1,6 +1,7 @@
 export type TimeRange = "1h" | "6h" | "24h" | "7d" | "30d" | "";
 
 export const TIME_RANGES: { label: string; value: TimeRange }[] = [
+  { label: "All", value: "" },
   { label: "1h", value: "1h" },
   { label: "6h", value: "6h" },
   { label: "24h", value: "24h" },

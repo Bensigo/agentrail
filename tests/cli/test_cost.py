@@ -284,5 +284,81 @@ class TestMissingJournal(unittest.TestCase):
         self.assertIn("No AFK flight recorder", captured.getvalue())
 
 
+class TestRobustness(unittest.TestCase):
+    """Regression coverage for the two review findings on PR #713."""
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self._target = Path(self._td.name)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_claim_without_number_is_skipped_not_crash(self) -> None:
+        """A malformed ClaimIssue event missing 'number' must not raise KeyError."""
+        from agentrail.cli.commands import cost as cost_mod
+
+        sid = "sess-1"
+        events = [
+            {"v": 1, "session": sid, "seq": 0, "kind": "init", "ts": "2026-06-15T00:00:00+00:00", "state": {}},
+            {"v": 1, "session": sid, "seq": 1, "kind": "action", "ts": "2026-06-15T00:01:00+00:00",
+             "action": {"type": "ClaimIssue", "slot": 0}},  # no "number"
+            {"v": 1, "session": sid, "seq": 2, "kind": "action", "ts": "2026-06-15T00:02:00+00:00",
+             "action": {"type": "ClaimIssue", "number": 42, "slot": 0}},
+        ]
+        _write_journal(self._target, events)
+        with patch.object(cost_mod, "capture_usage", return_value=_FIXED_USAGE), \
+             patch.object(cost_mod, "resolve_agent_name", return_value="claude"):
+            captured = StringIO()
+            with patch("sys.stdout", captured):
+                rc = cost_mod.run_cost(["--target", str(self._target), "--json"])
+        self.assertEqual(rc, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual([r["issue"] for r in data["runs"]], [42])  # malformed skipped
+
+    def test_warns_when_no_usage_found(self) -> None:
+        """When no agent yields usage, warn on stderr instead of silent $0.00."""
+        from agentrail.cli.commands import cost as cost_mod
+
+        sid = "sess-1"
+        events = [
+            {"v": 1, "session": sid, "seq": 0, "kind": "init", "ts": "2026-06-15T00:00:00+00:00", "state": {}},
+            {"v": 1, "session": sid, "seq": 1, "kind": "action", "ts": "2026-06-15T00:01:00+00:00",
+             "action": {"type": "ClaimIssue", "number": 42, "slot": 0}},
+        ]
+        _write_journal(self._target, events)
+        with patch.object(cost_mod, "capture_usage", return_value=None), \
+             patch.object(cost_mod, "resolve_agent_name", return_value="codex"):
+            out, err = StringIO(), StringIO()
+            with patch("sys.stdout", out), patch("sys.stderr", err):
+                rc = cost_mod.run_cost(["--target", str(self._target)])
+        self.assertEqual(rc, 0)
+        self.assertIn("no token usage found", err.getvalue())
+
+    def test_probes_alternate_agent_when_primary_empty(self) -> None:
+        """Primary agent (codex) has no usage; probing finds the real agent (claude)."""
+        from agentrail.cli.commands import cost as cost_mod
+
+        sid = "sess-1"
+        events = [
+            {"v": 1, "session": sid, "seq": 0, "kind": "init", "ts": "2026-06-15T00:00:00+00:00", "state": {}},
+            {"v": 1, "session": sid, "seq": 1, "kind": "action", "ts": "2026-06-15T00:01:00+00:00",
+             "action": {"type": "ClaimIssue", "number": 42, "slot": 0}},
+        ]
+        _write_journal(self._target, events)
+
+        def _usage(agent, target, since_ts):
+            return _FIXED_USAGE if agent == "claude" else None
+
+        with patch.object(cost_mod, "capture_usage", side_effect=_usage), \
+             patch.object(cost_mod, "resolve_agent_name", return_value="codex"):
+            out = StringIO()
+            with patch("sys.stdout", out):
+                rc = cost_mod.run_cost(["--target", str(self._target), "--json"])
+        self.assertEqual(rc, 0)
+        data = json.loads(out.getvalue())
+        self.assertGreater(data["total_usd"], 0.0)  # found claude usage, not $0.00
+
+
 if __name__ == "__main__":
     unittest.main()

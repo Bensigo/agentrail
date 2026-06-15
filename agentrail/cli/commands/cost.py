@@ -22,7 +22,22 @@ from typing import List, Optional
 from agentrail.afk import journal as _journal
 from agentrail.run.pricing import cost_usd
 from agentrail.run.usage_capture import capture_usage
-from agentrail.cli.commands.run import resolve_agent_name
+from agentrail.cli.commands.run import _read_config, resolve_agent_name
+
+
+def _rows_have_usage(rows: List[dict]) -> bool:
+    return any(
+        r["input_tokens"] or r["output_tokens"] or r["cache_tokens"] for r in rows
+    )
+
+
+def _candidate_agents(target: Path, primary: str) -> List[str]:
+    """Agents to probe for usage: primary first, then configured runners, then known."""
+    ordered: List[str] = []
+    for a in [primary, *(_read_config(str(target)) or {}).get("runners", {}), "claude", "codex", "cursor"]:
+        if a and a not in ordered:
+            ordered.append(a)
+    return ordered
 
 
 def _usage_text() -> str:
@@ -106,12 +121,19 @@ def _session_claims(events: List[dict]) -> List[tuple]:
             continue
         action = ev.get("action") or {}
         if action.get("type") == "ClaimIssue":
+            number = action.get("number")
+            if number is None:
+                continue  # malformed claim event — skip rather than crash
+            try:
+                number = int(number)
+            except (TypeError, ValueError):
+                continue
             ts_iso = ev.get("ts", "")
             try:
                 epoch = _epoch(ts_iso)
             except (ValueError, AttributeError):
                 epoch = 0.0
-            claims.append((int(action["number"]), epoch))
+            claims.append((number, epoch))
     return claims
 
 
@@ -219,6 +241,25 @@ def run_cost(args: List[str]) -> int:
 
     agent = resolve_agent_name(str(target), "__config__")
     rows = _collect_rows(all_events, sessions, agent, target)
+    # The configured agent may not be the one that actually ran (e.g. config uses
+    # a `runners` map with no top-level `runner.name`, so resolution defaults to
+    # codex while Claude really ran). If the primary agent yields no usage, probe
+    # the other candidates so Claude users don't silently see $0.00.
+    if rows and not _rows_have_usage(rows):
+        for alt in _candidate_agents(target, agent):
+            if alt == agent:
+                continue
+            alt_rows = _collect_rows(all_events, sessions, alt, target)
+            if _rows_have_usage(alt_rows):
+                agent, rows = alt, alt_rows
+                break
+        else:
+            print(
+                f"warning: no token usage found for agent '{agent}' or any configured "
+                "runner; costs shown as $0.00 — check that transcripts exist for the "
+                "agent that actually ran.",
+                file=sys.stderr,
+            )
     total = sum(r["cost_usd"] for r in rows)
 
     if opts["json"]:

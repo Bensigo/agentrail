@@ -21,7 +21,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from agentrail.cli.commands.run import (
     AGENTS,
@@ -56,17 +56,19 @@ You are running in headless (unattended) mode. Do EXACTLY this and nothing else:
    stdout after you finish. Running ``gh issue create`` will fail and is wrong.
 
 2. Print each proposed issue's COMPLETE markdown body to stdout, wrapped between
-   these exact marker lines, each on its own line:
+   these exact marker lines, each on its own line. The FIRST line inside the body
+   MUST be a TITLE marker with a short imperative issue title (<= 80 chars):
 
 <!-- ISSUE START -->
+<!-- TITLE: short imperative issue title -->
 <full issue body here>
 <!-- ISSUE END -->
 
 3. Output ALL issues in dependency order (blockers first). The CLI parses the
-   marker pairs to extract and publish each body, and applies the triage label
-   ``{label}`` itself — you do not. Do not put the markers anywhere except around
-   each body. After the last marker you may add a short plain-text summary for
-   logs.
+   marker pairs to extract the title and publish each body, and applies the
+   triage label ``{label}`` itself — you do not. Every issue MUST include its
+   TITLE marker. Do not put the markers anywhere except around each body. After
+   the last marker you may add a short plain-text summary for logs.
 """.format(label=TRIAGE_LABEL)
 
 _USAGE = """\
@@ -89,34 +91,75 @@ publishing). --headless/--yes skips the quiz and publishes without prompting.
 # ---------------------------------------------------------------------------
 
 
-def parse_issue_bodies(output: str) -> List[str]:
-    """Extract issue bodies delimited by ``<!-- ISSUE START/END -->`` markers.
+_ISSUE_RE = re.compile(
+    r"<!--\s*ISSUE START\s*-->(.*?)<!--\s*ISSUE END\s*-->",
+    re.DOTALL | re.IGNORECASE,
+)
+_TITLE_RE = re.compile(r"<!--\s*TITLE:\s*(.*?)\s*-->", re.IGNORECASE)
+_SECTION_HEADINGS = {
+    "parent", "required context", "what to build", "acceptance criteria",
+    "verification evidence", "verification", "blocked by",
+}
 
-    Leading and trailing whitespace within each body is stripped; empty bodies
-    are discarded. Handles leading/trailing prose around the markers.
+
+def _derive_title(body: str) -> str:
+    """Last-resort title when no ``<!-- TITLE: -->`` marker was emitted.
+
+    Prefer the first markdown heading that is not a house-template section name;
+    otherwise the first non-empty, non-marker line; otherwise a generic title.
     """
-    pattern = re.compile(
-        r"<!--\s*ISSUE START\s*-->(.*?)<!--\s*ISSUE END\s*-->",
-        re.DOTALL | re.IGNORECASE,
-    )
-    bodies: List[str] = []
-    for match in pattern.finditer(output):
-        body = match.group(1).strip()
-        if body:
-            bodies.append(body)
-    return bodies
+    for line in body.splitlines():
+        s = line.strip()
+        if s.startswith("#"):
+            text = s.lstrip("# ").strip()
+            if text and text.lower() not in _SECTION_HEADINGS:
+                return text[:100]
+    for line in body.splitlines():
+        s = line.strip()
+        if s and not s.startswith("<!--"):
+            return s[:100]
+    return "AgentRail issue"
 
 
-def publish_issue(body: str, target_dir: str, _subprocess=None) -> int:
-    """Call ``gh issue create`` with *body* and the house triage label.
+def parse_issues(output: str) -> List[Tuple[str, str]]:
+    """Extract ``(title, body)`` pairs from ``<!-- ISSUE START/END -->`` markers.
 
-    Returns the ``gh`` exit code.
+    Title comes from a leading ``<!-- TITLE: ... -->`` marker (stripped out of the
+    body); when absent it is derived from the body. Empty bodies are discarded.
+    """
+    issues: List[Tuple[str, str]] = []
+    for match in _ISSUE_RE.finditer(output):
+        raw = match.group(1).strip()
+        if not raw:
+            continue
+        title: Optional[str] = None
+        tm = _TITLE_RE.search(raw)
+        if tm:
+            title = tm.group(1).strip() or None
+            raw = _TITLE_RE.sub("", raw, count=1).strip()
+        if not raw:
+            continue
+        issues.append((title or _derive_title(raw), raw))
+    return issues
+
+
+def parse_issue_bodies(output: str) -> List[str]:
+    """Back-compat: just the bodies (see :func:`parse_issues`)."""
+    return [body for _title, body in parse_issues(output)]
+
+
+def publish_issue(body: str, target_dir: str, _subprocess=None, title: Optional[str] = None) -> int:
+    """Call ``gh issue create`` with *title*, *body*, and the house triage label.
+
+    A title is always passed (``gh`` requires one in non-interactive mode); when
+    not supplied it is derived from the body. Returns the ``gh`` exit code.
     """
     import subprocess as _sp
 
     proc_module = _subprocess if _subprocess is not None else _sp
+    title = title or _derive_title(body)
     result = proc_module.run(
-        ["gh", "issue", "create", "--label", TRIAGE_LABEL, "--body", body],
+        ["gh", "issue", "create", "--title", title, "--label", TRIAGE_LABEL, "--body", body],
         cwd=target_dir,
     )
     return result.returncode
@@ -274,9 +317,9 @@ def _run_headless(
         return proc.returncode
 
     output = proc.stdout or ""
-    bodies = parse_issue_bodies(output)
+    issues = parse_issues(output)
 
-    if not bodies:
+    if not issues:
         # Fail loudly: a headless run that published nothing must NOT look like
         # success. The usual cause is the agent ignoring the output contract and
         # trying to run `gh issue create` itself.
@@ -290,15 +333,15 @@ def _run_headless(
         return 1
 
     if dry_run:
-        for idx, body in enumerate(bodies, 1):
-            print(f"--- Issue {idx} (dry-run) ---")
+        for idx, (title, body) in enumerate(issues, 1):
+            print(f"--- Issue {idx} (dry-run) — {title} ---")
             print(body)
             print()
         return 0
 
     overall_rc = 0
-    for body in bodies:
-        rc = publish_issue(body, target, proc_module)
+    for title, body in issues:
+        rc = publish_issue(body, target, proc_module, title=title)
         if rc != 0:
             overall_rc = rc
     return overall_rc

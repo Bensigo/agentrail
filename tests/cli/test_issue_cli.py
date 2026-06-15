@@ -14,6 +14,7 @@ from agentrail.cli.commands.issue import (
     SKILL_NAME,
     TRIAGE_LABEL,
     parse_issue_bodies,
+    parse_issues,
     publish_issue,
     run_issue,
 )
@@ -113,6 +114,27 @@ class ParseIssueBodiesTests(unittest.TestCase):
         self.assertEqual(parse_issue_bodies(output), ["trimmed"])
 
 
+class ParseIssuesTitleTests(unittest.TestCase):
+    def test_extracts_title_marker_and_strips_it(self):
+        output = (
+            "<!-- ISSUE START -->\n<!-- TITLE: Wire the cache -->\n"
+            "## Parent\nbody\n<!-- ISSUE END -->"
+        )
+        issues = parse_issues(output)
+        self.assertEqual(len(issues), 1)
+        title, body = issues[0]
+        self.assertEqual(title, "Wire the cache")
+        self.assertNotIn("TITLE:", body)
+        self.assertIn("## Parent", body)
+
+    def test_derives_title_when_marker_absent(self):
+        output = "<!-- ISSUE START -->\n## Parent\nstuff\n<!-- ISSUE END -->"
+        title, _ = parse_issues(output)[0]
+        # "Parent" is a section heading, not a title → falls through to first line
+        self.assertNotEqual(title.lower(), "parent")
+        self.assertTrue(title)
+
+
 # ---------------------------------------------------------------------------
 # publish_issue — unit (mock subprocess)
 # ---------------------------------------------------------------------------
@@ -134,6 +156,18 @@ class PublishIssueTests(unittest.TestCase):
         self.assertIn("--body", call_args)
         body_idx = call_args.index("--body")
         self.assertEqual(call_args[body_idx + 1], "body text")
+        # gh requires a title in non-interactive mode — always passed
+        self.assertIn("--title", call_args)
+        title_idx = call_args.index("--title")
+        self.assertTrue(call_args[title_idx + 1])  # non-empty derived title
+
+    def test_passes_explicit_title(self):
+        sp = MagicMock()
+        sp.run.return_value = SimpleNamespace(returncode=0)
+        publish_issue("body", "/tmp", sp, title="Wire the thing")
+        call_args = sp.run.call_args[0][0]
+        title_idx = call_args.index("--title")
+        self.assertEqual(call_args[title_idx + 1], "Wire the thing")
 
     def test_forwards_nonzero_rc(self):
         sp = MagicMock()

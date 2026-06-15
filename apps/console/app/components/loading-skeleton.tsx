@@ -93,21 +93,38 @@ export function SkeletonTable({
 }
 
 /**
- * Card grid skeleton matching the workspace overview's section cards.
+ * Stat header skeleton matching the StatHeader primitive's dimensions.
+ * Renders 4 stat cells in the same 2-col/4-col grid layout.
+ */
+export function SkeletonStatHeader({ items = 4 }: { items?: number }) {
+  return (
+    <div className="mb-4 grid grid-cols-2 gap-px overflow-hidden rounded border border-[var(--gray-05)] bg-[var(--gray-05)] sm:grid-cols-4">
+      {Array.from({ length: items }).map((_, i) => (
+        <div key={i} className="bg-[var(--gray-02)] px-4 py-3">
+          <Skeleton className="h-2.5 w-14" />
+          <Skeleton className="mt-1.5 h-3.5 w-10" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Card grid skeleton matching the workspace overview's compact section cards.
  */
 export function SkeletonCardGrid({ cards = 6 }: { cards?: number }) {
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {Array.from({ length: cards }).map((_, i) => (
         <div
           key={i}
-          className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4"
+          className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 py-3"
         >
           <div className="flex items-center gap-2">
-            <Skeleton className="h-4 w-4 rounded-sm" />
-            <Skeleton className="h-2.5 w-24" />
+            <Skeleton className="h-3.5 w-3.5 shrink-0 rounded-sm" />
+            <Skeleton className="h-2.5 flex-1" />
+            <Skeleton className="h-3.5 w-8" />
           </div>
-          <Skeleton className="mt-2 h-7 w-12" />
         </div>
       ))}
     </div>

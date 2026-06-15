@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { AgentBreakdown } from "./agent-breakdown";
 import { CostAnomalyTable } from "./cost-anomaly-table";
 import { CostsTable } from "./costs-table";
 import type { TimeRange } from "./cost-filters";
@@ -25,6 +26,7 @@ export function CostsClient({ workspaceId }: CostsClientProps) {
         onTimeRangeToggle={handleTimeRangeToggle}
       />
       <SavingsPanel workspaceId={workspaceId} timeRange={timeRange} />
+      <AgentBreakdown workspaceId={workspaceId} timeRange={timeRange} />
       <CostAnomalyTable workspaceId={workspaceId} timeRange={timeRange} />
     </div>
   );

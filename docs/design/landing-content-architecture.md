@@ -9,7 +9,7 @@ Decide the content before the UI. Each section's UI slice (#732-#738) implements
 - **Lead with cost.** The headline, proof, and CTA are about money saved (run the best models, pay far less).
 - **Workflow is the supporting act, not the headline.** Compiled context, review gates, AFK, audit are *how* quality stays high while cost drops — they support the cost story, they don't lead it.
 - **Paid product (not free).** The CLI is **no longer free** — if AgentRail cuts thousands off the bill, it's a paid tool. Remove every "free CLI / free forever / free while in preview" claim across the page (hero, FAQ, footer). Positioning is value-based.
-- **(Open) pricing specifics** — the actual model/tiers/price points are the owner's call (not invented here). A real pricing section likely belongs on the page now that it's paid.
+- **Pricing = per-seat tiers** (decided 2026-06-15; e.g. Pro / Team per developer/month). Exact price points TBD by owner; the Pricing section is built around per-seat tiers.
 
 ## Section-by-section: what it says → which design fits
 

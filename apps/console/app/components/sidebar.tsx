@@ -17,6 +17,7 @@ import {
   Users,
   Activity,
   Plug,
+  GitMerge,
 } from "lucide-react";
 import { WorkspaceSwitcher } from "../(dashboard)/components/WorkspaceSwitcher";
 
@@ -35,6 +36,7 @@ const navItems = [
   { label: "Context Packs", href: "context-packs", icon: Package },
   { label: "Failures", href: "failures", icon: AlertTriangle },
   { label: "Review Gates", href: "review-gates", icon: ShieldCheck },
+  { label: "Merge Approvals", href: "approvals", icon: GitMerge },
   { label: "Costs", href: "costs", icon: DollarSign },
   { label: "Scorecard", href: "scorecard", icon: TrendingUp },
   { label: "Context Quality", href: "context-quality", icon: Activity },

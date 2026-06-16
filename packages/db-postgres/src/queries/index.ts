@@ -15,6 +15,7 @@ import {
   memoryItems,
   workspaceInvites,
   users,
+  accounts,
 } from "../schema/index.js";
 import type {
   ReviewGate,
@@ -240,6 +241,37 @@ export async function setDiscordWebhookUrl(
     .update(workspaces)
     .set({ discordWebhookUrl: webhookUrl, updatedAt: new Date() })
     .where(eq(workspaces.id, workspaceId));
+}
+
+/**
+ * GitHub OAuth connector (MVP): the workspace owner's stored GitHub OAuth
+ * `access_token`, used to poll labeled issues, post results, and create issues
+ * over the GitHub REST API (no PAT, no `gh` CLI). The token is the one NextAuth
+ * persisted in the `accounts` table at login; it carries the `repo` scope only
+ * after the owner re-logs in once to grant it. Returns null when the workspace
+ * has no owner, the owner never linked GitHub, or no token is stored.
+ */
+export async function getGithubToken(
+  workspaceId: string
+): Promise<string | null> {
+  const rows = await db
+    .select({ accessToken: accounts.access_token })
+    .from(workspaceMemberships)
+    .innerJoin(
+      accounts,
+      and(
+        eq(accounts.userId, workspaceMemberships.userId),
+        eq(accounts.provider, "github")
+      )
+    )
+    .where(
+      and(
+        eq(workspaceMemberships.workspaceId, workspaceId),
+        eq(workspaceMemberships.role, "owner")
+      )
+    )
+    .limit(1);
+  return rows[0]?.accessToken ?? null;
 }
 
 export async function getWorkspaceMembership(

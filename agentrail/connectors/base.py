@@ -50,6 +50,25 @@ class IngestedIssue:
 
 
 @dataclass(frozen=True)
+class IssueRef:
+    """A reference to one external source issue (the unit ``poll`` returns).
+
+    The MVP polling intake (GitHub OAuth) lists the labeled open issues and hands
+    each back as an ``IssueRef``: enough to (a) feed the body through the
+    input-contract gate and (b) address the *back* channel later — ``repo`` +
+    ``number`` together locate the issue for ``post_result``. ``url`` is the
+    human link. This is the connector's address for an issue, distinct from
+    :class:`IngestedIssue` (the gate's verdict on that issue).
+    """
+
+    repo: str
+    number: int
+    title: str = ""
+    body: str = ""
+    url: str = ""
+
+
+@dataclass(frozen=True)
 class OutcomeReport:
     """A run's terminal **Run Outcome** to report back on the source issue.
 

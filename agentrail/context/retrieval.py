@@ -149,7 +149,7 @@ def reciprocal_rank(rank: int) -> float:
 
 
 def build_reason(parts: Set[str]) -> str:
-    ordered = ["deterministic required context", "active workflow state", "same issue prior failure", "prior mistake", "linked issue", "linked pull request", "symbol definition", "exact identifier", "exact path", "graph expansion", "BM25 keyword match", "embedding similarity", "high authority source", "current memory", "stale memory", "expired memory", "stale prior mistake", "resolved prior mistake", "unrelated prior mistake", "low authority source"]
+    ordered = ["deterministic required context", "active workflow state", "same issue prior failure", "prior mistake", "linked issue", "linked pull request", "symbol definition", "exact identifier", "exact path", "lesson target", "graph expansion", "BM25 keyword match", "embedding similarity", "high authority source", "current memory", "stale memory", "expired memory", "stale prior mistake", "resolved prior mistake", "unrelated prior mistake", "low authority source"]
     return "; ".join(item for item in ordered if item in parts) or "Included by hybrid retrieval score."
 
 
@@ -1061,6 +1061,9 @@ def _pre_bm25_scores(corpus: List[Dict[str, Any]], query_tokens: List[str], doc_
 # at least this fraction of the strongest BM25 score, otherwise weak lexical
 # matches flood the code graph and tank precision-at-budget.
 _SEED_CONFIDENCE_RATIO = 0.5
+_LESSON_TARGET_BOOST = 3.0
+_MAX_LESSON_TARGET_MEMORIES = 5
+_MAX_LESSON_TARGET_PATHS = 8
 
 
 def _extract_retrieval_seeds(corpus: List[Dict[str, Any]], pre_bm25: Dict[str, float], max_seeds: int = 5) -> List[str]:
@@ -1086,6 +1089,87 @@ def _extract_retrieval_seeds(corpus: List[Dict[str, Any]], pre_bm25: Dict[str, f
         if path and path not in seeds:
             seeds.append(path)
     return seeds
+
+
+def _lesson_target_hints(
+    root: Path,
+    index: Dict[str, Any],
+    corpus: List[Dict[str, Any]],
+    pre_bm25: Dict[str, float],
+    effective_issue_refs: List[int],
+    query_pr_refs: List[int],
+) -> Dict[str, Any]:
+    """Extract advisory source targets from current, relevant memory lessons.
+
+    Memory is allowed to pre-target current source areas, but only when the
+    memory itself is fresh/current. Stale or low-confidence lessons remain
+    searchable evidence and never create source boosts.
+    """
+    eligible_sources = [
+        record
+        for record in index.get("records", [])
+        if isinstance(record, dict)
+        and record.get("sourceType") != "memory"
+        and record.get("authority") != "denied"
+        and record.get("visibility") != "denied"
+        and str(record.get("freshness", {}).get("status", "current")).lower() == "current"
+        and record.get("path")
+    ]
+    eligible_paths = [str(record["path"]) for record in eligible_sources]
+    if not eligible_paths:
+        return {"enabled": False, "lessonPaths": [], "targetPaths": []}
+
+    target_paths: List[str] = []
+    lesson_paths: List[str] = []
+    memory_docs: List[Tuple[float, Dict[str, Any]]] = []
+    for doc in corpus:
+        source = doc["source"]
+        chunk = doc["chunk"]
+        if source.get("sourceType") != "memory":
+            continue
+        if source.get("authority") == "denied" or source.get("visibility") == "denied":
+            continue
+        freshness_penalty, _freshness_reasons = freshness_demotion(source, chunk)
+        if freshness_penalty > 0:
+            continue
+        memory = (chunk or {}).get("memory") or source.get("memory") or {}
+        if str(memory.get("confidence", "")).lower() == "low":
+            continue
+        item_id = str((chunk or {}).get("id") or source.get("id"))
+        relevance = pre_bm25.get(item_id, 0.0)
+        linked_issue = any(number in source.get("linkedIssues", []) for number in effective_issue_refs)
+        linked_pr = any(number in source.get("linkedPullRequests", []) for number in query_pr_refs)
+        if relevance <= 0 and not linked_issue and not linked_pr:
+            continue
+        memory_docs.append((relevance, doc))
+
+    for _score, doc in sorted(memory_docs, key=lambda item: item[0], reverse=True)[:_MAX_LESSON_TARGET_MEMORIES]:
+        source = doc["source"]
+        memory_path = str(source.get("path") or "")
+        if memory_path and memory_path not in lesson_paths:
+            lesson_paths.append(memory_path)
+        for anchor in extract_anchors(doc["text"], root=root, source="memory"):
+            if anchor.get("kind") not in {"path", "test"}:
+                continue
+            anchor_path = _anchor_path(str(anchor.get("normalized") or anchor.get("value") or ""))
+            if not anchor_path:
+                continue
+            prefix = anchor_path.rstrip("/")
+            for source_path in eligible_paths:
+                if source_path == anchor_path or (prefix and source_path.startswith(f"{prefix}/")):
+                    if source_path not in target_paths:
+                        target_paths.append(source_path)
+                    break
+            if len(target_paths) >= _MAX_LESSON_TARGET_PATHS:
+                break
+        if len(target_paths) >= _MAX_LESSON_TARGET_PATHS:
+            break
+
+    return {
+        "enabled": bool(target_paths),
+        "lessonPaths": lesson_paths,
+        "targetPaths": target_paths,
+    }
 
 
 # Query-independent scoring corpus, cached per (root, index builtAt). A long-lived
@@ -1228,7 +1312,17 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
 
     # Symbol-aware hybrid retrieval: BM25 pre-score → seed extraction → graph expansion
     pre_bm25 = _pre_bm25_scores(corpus, query_tokens, doc_count, avg_len, doc_freq)
-    retrieval_seeds = _extract_retrieval_seeds(corpus, pre_bm25)
+    intent_compounding = _lesson_target_hints(
+        root,
+        index,
+        corpus,
+        pre_bm25,
+        effective_issue_refs,
+        query_pr_refs,
+    )
+    lesson_target_paths = set(intent_compounding.get("targetPaths") or [])
+    bm25_retrieval_seeds = _extract_retrieval_seeds(corpus, pre_bm25)
+    retrieval_seeds = list(intent_compounding.get("targetPaths") or []) or bm25_retrieval_seeds
     graph_expansion = graph_expansion_for_query(index, query, root, retrieval_seeds=retrieval_seeds)
     graph_expansion = apply_graph_expansion_policy(index, graph_expansion)
     graph_source_ids = set(graph_expansion.get("sourceIds") or [])
@@ -1267,6 +1361,9 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
             _sid = str(_src.get("id") or "")
             _spa = str(_src.get("path") or "")
             _cid = str((_chk or {}).get("id") or "")
+            if _spa in lesson_target_paths:
+                candidate_ids.add(_iid)
+                continue
             if _sid in graph_source_ids or _spa in graph_paths or _cid in graph_chunk_ids:
                 candidate_ids.add(_iid)
                 continue
@@ -1333,6 +1430,10 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
         chunk_id = str((chunk or {}).get("id") or "")
         source_id = str(source.get("id") or "")
         source_path = str(source.get("path") or "")
+        lesson_target_boost = _LESSON_TARGET_BOOST if source_path in lesson_target_paths else 0.0
+        if lesson_target_boost:
+            deterministic += lesson_target_boost
+            reasons.add("lesson target")
         if source_id in graph_source_ids or source_path in graph_paths or chunk_id in graph_chunk_ids:
             deterministic += 1.75
             reasons.add("graph expansion")
@@ -1386,17 +1487,9 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
         lexical_raw[str(item_id)] = lexical
         # lexicalScore = pure lexical (BM25 + keyword boosts, without deterministic)
         # denseScore and fusedScore are filled in after embedding scoring
-        scored.append({"source": source, "chunk": chunk, "reasons": reasons, "definitionTier": 1 if (is_definition and exact_mode) else 0, "score": {"deterministic": deterministic, "keyword": keyword, "bm25": bm25, "lexicalScore": keyword + bm25, "denseScore": None, "fusedScore": 0.0, "embedding": None, "rrf": 0.0, "authorityBoost": authority_boost, "authorityDemotion": 0 if authority_penalty >= 999 else authority_penalty, "freshnessDemotion": freshness_penalty, "priorMistakeDemotion": prior_penalty, "final": 0.0}})
+        scored.append({"source": source, "chunk": chunk, "reasons": reasons, "definitionTier": 1 if (is_definition and exact_mode) else 0, "score": {"deterministic": deterministic, "keyword": keyword, "bm25": bm25, "lexicalScore": keyword + bm25, "denseScore": None, "fusedScore": 0.0, "embedding": None, "rrf": 0.0, "lessonTargetBoost": lesson_target_boost, "authorityBoost": authority_boost, "authorityDemotion": 0 if authority_penalty >= 999 else authority_penalty, "freshnessDemotion": freshness_penalty, "priorMistakeDemotion": prior_penalty, "final": 0.0}})
 
-    _bm25_by_path: List[Tuple[float, str]] = [(entry["score"]["bm25"], str(entry["source"].get("path") or "")) for entry in scored if entry["score"]["bm25"] > 0 and entry["source"].get("path")]
-    _bm25_by_path.sort(key=lambda _x: _x[0], reverse=True)
-    _seen_seed_paths: Set[str] = set()
-    _seed_paths: List[str] = []
-    for _, _p in _bm25_by_path:
-        if _p not in _seen_seed_paths:
-            _seen_seed_paths.add(_p)
-            _seed_paths.append(_p)
-    graph_expansion["startedFromRetrievalSeeds"] = _seed_paths
+    graph_expansion["startedFromRetrievalSeeds"] = retrieval_seeds
 
     lexical_rank = {str((entry["chunk"] or {}).get("id") or entry["source"].get("id")): idx + 1 for idx, entry in enumerate(sorted([entry for entry in scored if lexical_raw[str((entry["chunk"] or {}).get("id") or entry["source"].get("id"))] > 0], key=lambda entry: lexical_raw[str((entry["chunk"] or {}).get("id") or entry["source"].get("id"))], reverse=True))}
     provider: Dict[str, Any] = {"mode": "disabled", "provider": None, "model": None}
@@ -1535,6 +1628,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
         "retrievalBudget": retrieval_budget,
         "provider": provider,
         "audit": audit,
+        "intentCompounding": intent_compounding,
         "results": formatted,
         "excluded": excluded,
         "compiler": compiler_contract(
@@ -1619,6 +1713,7 @@ def search_context(target_dir: Path, query: str, *, limit: int = 20, index: Opti
         "scores": [entry["score"] for entry in results],
         "staleOrDeniedLeakage": len(raw.get("excluded") or []),
         "staleEmbeddingLeakage": integrity.get("staleEmbeddingLeakage", 0),
+        "intentCompounding": raw.get("intentCompounding") or {"enabled": False, "lessonPaths": [], "targetPaths": []},
     }
     return {
         "schemaVersion": 1,
@@ -1630,6 +1725,7 @@ def search_context(target_dir: Path, query: str, *, limit: int = 20, index: Opti
         "runMetadata": run_metadata,
         "generatedAt": raw.get("generatedAt"),
         "provider": raw.get("provider"),
+        "intentCompounding": raw.get("intentCompounding") or {"enabled": False, "lessonPaths": [], "targetPaths": []},
         "retrievalBudget": raw.get("retrievalBudget"),
         "results": results,
         "excluded": raw.get("excluded", []),

@@ -1,36 +1,17 @@
 """
 AC5 tests for issue #709 — AFK execute-phase diff preference steering.
 
-Three sub-cases:
-  (a) steering text is present in the execute-phase prompt
+Two sub-cases remain after M030 enforcement removed the advisory prompt text:
   (b) outputTokensSaved accounting is correct for a diff edit
   (c) full-rewrite / new-file path records 0 saved without error
+
+Note: test_execute_prompt_has_diff_preference_text was removed in M030 (#768).
+The advisory "Output token preference" block is no longer injected into the
+execute-phase prompt; enforcement is now structural (output_enforcer.py).
 """
 from __future__ import annotations
 
 import pytest
-
-# ---------------------------------------------------------------------------
-# (a) Steering text is present in issue_run_phase_prompt("execute", …)
-# ---------------------------------------------------------------------------
-
-
-def test_execute_prompt_has_diff_preference_text():
-    from agentrail.run.prompts import issue_run_phase_prompt
-
-    prompt = issue_run_phase_prompt(
-        "execute",
-        123,
-        issue_context="Issue: add a feature",
-        base_prompt="base ralph instructions",
-        context_summary="context summary",
-    )
-    # Both keywords must appear — the preference and the exception path.
-    assert "unified diff" in prompt, "execute prompt must mention 'unified diff'"
-    assert "patch" in prompt, "execute prompt must mention 'patch'"
-    assert "full rewrite" in prompt or "full-file rewrite" in prompt, (
-        "execute prompt must mention when a full rewrite is acceptable"
-    )
 
 
 def test_plan_prompt_does_not_gain_diff_text():

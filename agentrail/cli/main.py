@@ -8,6 +8,7 @@ from agentrail.cli.commands.afk import run_afk
 from agentrail.cli.commands.cleanup import run_cleanup
 from agentrail.cli.commands.doctor import run_doctor
 from agentrail.cli.commands.grill import run_grill
+from agentrail.cli.commands.heartbeat import run_heartbeat
 from agentrail.cli.commands.issue import run_issue
 from agentrail.cli.commands.milestone import run_milestone
 from agentrail.cli.commands.prd import run_prd
@@ -42,6 +43,7 @@ def _usage() -> str:
         "  agentrail run [--agent codex|claude] [--target DIR]\n"
         "  agentrail run issue NUMBER [--agent codex|claude] [--target DIR]\n"
         "  agentrail afk [--concurrency 2] [--max-waves 20] [--base main] [--dry-run]\n"
+        "  agentrail heartbeat run [--workspace ID] [--once] [--interval SECONDS]\n"
         "  agentrail status [--target DIR]\n"
         "  agentrail doctor [--target DIR]\n"
         "  agentrail upgrade [--target DIR] [--force]\n"
@@ -72,6 +74,7 @@ def _usage() -> str:
         "  context     Build/query the context index\n"
         "  run         Run a workflow\n"
         "  afk         Run the AFK queue/worktree loop\n"
+        "  heartbeat   Run the live Heartbeat dispatcher loop (MVP)\n"
         "  status      Show worktree / session status\n"
         "  doctor      Check installation health\n"
         "  upgrade     Upgrade agentrail in this project\n"
@@ -116,6 +119,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_context(args[1:])
     if args[0] == "afk":
         return run_afk(args[1:])
+    if args[0] == "heartbeat":
+        return run_heartbeat(args[1:])
     if args[0] == "cleanup":
         return run_cleanup(args[1:])
     if args[0] == "console":

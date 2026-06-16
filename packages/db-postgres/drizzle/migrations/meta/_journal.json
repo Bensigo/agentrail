@@ -127,6 +127,13 @@
       "when": 1780907365690,
       "tag": "0016_durable_queue_and_run_registration",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1780907365691,
+      "tag": "0017_heartbeat_config",
+      "breakpoints": true
     }
   ]
 }

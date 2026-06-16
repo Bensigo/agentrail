@@ -1081,3 +1081,13 @@ export async function getRunnerRunStats(
         : Number(r.review_fix_count),
   }));
 }
+
+// Heartbeat trigger configuration (MVP, #4).
+export {
+  getHeartbeatConfig,
+  setHeartbeatConfig,
+  validateHeartbeatConfigUpdate,
+  MIN_POLL_INTERVAL_SECONDS,
+  MAX_POLL_INTERVAL_SECONDS,
+  type HeartbeatConfigUpdate,
+} from "./heartbeat-config.js";

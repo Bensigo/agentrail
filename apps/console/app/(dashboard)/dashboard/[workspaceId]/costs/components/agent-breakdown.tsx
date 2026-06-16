@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
 import type { TimeRange } from "./cost-filters";
 import {
-  buildSavingsUrl,
+  buildMeterUrl,
   deriveAgentRow,
   normalizeAgentBreakdown,
   type AgentBreakdownEntry,
@@ -16,7 +16,7 @@ interface AgentBreakdownProps {
   timeRange: TimeRange;
 }
 
-const COLUMNS = 4; // Agent, Cost, Saved, Runs
+const COLUMNS = 3; // Agent, Cost, Events
 
 export function AgentBreakdown({ workspaceId, timeRange }: AgentBreakdownProps) {
   const [rows, setRows] = useState<AgentBreakdownRow[]>([]);
@@ -30,7 +30,7 @@ export function AgentBreakdown({ workspaceId, timeRange }: AgentBreakdownProps) 
       setLoading(true);
       setError(null);
       try {
-        const url = buildSavingsUrl({
+        const url = buildMeterUrl({
           workspaceId,
           timeRange,
           origin: window.location.origin,
@@ -77,7 +77,7 @@ export function AgentBreakdown({ workspaceId, timeRange }: AgentBreakdownProps) 
         <table className="w-full text-sm border-collapse">
           <thead>
             <tr className="border-b border-[var(--gray-05)] bg-[var(--gray-01)]">
-              {["Agent", "Cost", "Saved", "Runs"].map((header) => (
+              {["Agent", "Cost", "Events"].map((header) => (
                 <th
                   key={header}
                   className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]"
@@ -126,17 +126,6 @@ export function AgentBreakdown({ workspaceId, timeRange }: AgentBreakdownProps) 
                       }`}
                     >
                       {row.cost}
-                    </span>
-                  </td>
-                  <td className="px-3 py-1.5">
-                    <span
-                      className={`font-mono text-xs ${
-                        row.muted
-                          ? "text-[var(--gray-09)]"
-                          : "text-[var(--gray-11)]"
-                      }`}
-                    >
-                      {row.savings}
                     </span>
                   </td>
                   <td className="px-3 py-1.5">

@@ -5,7 +5,7 @@ import { AgentBreakdown } from "./agent-breakdown";
 import { CostAnomalyTable } from "./cost-anomaly-table";
 import { CostsTable } from "./costs-table";
 import type { TimeRange } from "./cost-filters";
-import { SavingsPanel } from "./savings-panel";
+import { CostMeterPanel } from "./cost-meter-panel";
 import { OptimizationPanel } from "./optimization-panel";
 
 interface CostsClientProps {
@@ -26,7 +26,7 @@ export function CostsClient({ workspaceId }: CostsClientProps) {
         timeRange={timeRange}
         onTimeRangeToggle={handleTimeRangeToggle}
       />
-      <SavingsPanel workspaceId={workspaceId} timeRange={timeRange} />
+      <CostMeterPanel workspaceId={workspaceId} timeRange={timeRange} />
       <OptimizationPanel workspaceId={workspaceId} />
       <AgentBreakdown workspaceId={workspaceId} timeRange={timeRange} />
       <CostAnomalyTable workspaceId={workspaceId} timeRange={timeRange} />

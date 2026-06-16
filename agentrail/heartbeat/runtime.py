@@ -24,9 +24,12 @@ only place the real adapters are constructed.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Dict, FrozenSet, List, Optional, Protocol
+
+_log = logging.getLogger(__name__)
 
 from agentrail.afk.input_contract import Rejected
 from agentrail.afk.queue_state import (
@@ -409,10 +412,19 @@ class HeartbeatRuntime:
             current = self._with_running_tier(current, stronger)
 
         # Post back to the source issue + notify the channel with the FINAL result.
+        # Both are best-effort: a failed comment/notify (e.g. a token without
+        # `repo` scope → HTTP 401, or an unreachable webhook) must NOT crash the
+        # dispatcher — log and continue, like the cost/run-event pushes.
         assert final_result is not None
         outcome = self._outcome_report(ref, final_result)
-        self._connector.post_result(ref, outcome)
-        self._notifier.task_done(self._task_result(ref, final_result))
+        try:
+            self._connector.post_result(ref, outcome)
+        except Exception as exc:  # noqa: BLE001 - best-effort back-channel
+            _log.warning("post_result failed for issue %s: %s", getattr(ref, "number", "?"), exc)
+        try:
+            self._notifier.task_done(self._task_result(ref, final_result))
+        except Exception as exc:  # noqa: BLE001 - best-effort notify
+            _log.warning("notify failed for issue %s: %s", getattr(ref, "number", "?"), exc)
 
         report.dispatched += 1
         if final_result.status == "green":

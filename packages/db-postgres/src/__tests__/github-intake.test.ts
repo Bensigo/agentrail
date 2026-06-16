@@ -4,7 +4,10 @@ import { describe, it, expect, vi } from "vitest";
 // gate under test is pure and never touches it.
 vi.mock("../db.js", () => ({ db: {} }));
 
-import { validateAcceptanceCriteria } from "../queries/github_intake.js";
+import {
+  validateAcceptanceCriteria,
+  parseBlockedBy,
+} from "../queries/github_intake.js";
 
 /**
  * The TS AC gate must agree with the Python input-contract gate
@@ -54,5 +57,26 @@ describe("validateAcceptanceCriteria", () => {
     const result = validateAcceptanceCriteria(body);
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.criteria).toEqual(["real AC"]);
+  });
+});
+
+describe("parseBlockedBy", () => {
+  it("returns [] when there are no dependency declarations", () => {
+    expect(parseBlockedBy("## Summary\njust a normal issue\n")).toEqual([]);
+  });
+
+  it("parses a single 'Blocked by #N'", () => {
+    expect(parseBlockedBy("Blocked by #5\n")).toEqual([5]);
+  });
+
+  it("parses 'depends on', 'blocked-by:', and multiple refs, deduped + sorted", () => {
+    expect(parseBlockedBy("Depends on #7 and #3\nblocked-by: #7, #9\n")).toEqual([
+      3, 7, 9,
+    ]);
+  });
+
+  it("only counts refs on the dependency line, not other #N mentions", () => {
+    const body = "Fixes #99 in the handler.\nBlocked by #4\nsee #100 too\n";
+    expect(parseBlockedBy(body)).toEqual([4]);
   });
 });

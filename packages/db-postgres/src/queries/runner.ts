@@ -8,6 +8,7 @@ import type { ConnectorConfig } from "../schema/connectors.js";
 import { apiKeys } from "../schema/api_keys.js";
 import { runs } from "../schema/runs.js";
 import { repositories } from "../schema/repositories.js";
+import { unparkDependents } from "./github_intake.js";
 
 // ---------------------------------------------------------------------------
 // API-key minting (runner token)
@@ -391,6 +392,7 @@ export async function recordRunnerResult(data: {
   // attempt and, once it's exhausted, escalate to a human (terminal). green is
   // terminal; error blocks; running is a heartbeat.
   let updated = false;
+  let completedExternalId = "";
   if (data.status === "red") {
     // Decrement budget; terminal `escalated-to-human` when it would hit zero,
     // else re-queue at the strong tier for another (bounded) attempt.
@@ -420,10 +422,21 @@ export async function recordRunnerResult(data: {
           eq(queueEntries.workspaceId, data.workspaceId)
         )
       )
-      .returning({ id: queueEntries.id });
+      .returning({ id: queueEntries.id, externalId: queueEntries.externalId });
     updated = rows.length > 0;
+    if (updated) completedExternalId = rows[0]!.externalId;
   }
   if (!updated) return false;
+
+  // Dependency awareness: a green entry may release parked dependents that were
+  // blocked on it. Best-effort — never fail the result on this.
+  if (data.status === "green" && completedExternalId) {
+    try {
+      await unparkDependents(data.workspaceId, completedExternalId);
+    } catch {
+      // non-fatal
+    }
+  }
 
   // Mirror the outcome onto the `runs` row the dashboard shows (claim created it
   // with id = the queue entry id). green→success, red/error→failed,

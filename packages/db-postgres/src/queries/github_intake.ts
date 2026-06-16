@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { sql } from "drizzle-orm";
+import { sql, and, eq, inArray } from "drizzle-orm";
 import { db } from "../db.js";
 import { queueEntries } from "../schema/queue_entries.js";
 
@@ -58,6 +58,29 @@ export function validateAcceptanceCriteria(body: string): AcGateResult {
   return { ok: true, criteria };
 }
 
+// --- dependency parsing -------------------------------------------------------
+
+// "blocked by #5", "blocked-by: #5, #6", "depends on #7 and #8" — case
+// insensitive, captures every #N after the keyword phrase on that line.
+const BLOCKED_BY_PHRASE = /(?:blocked[\s-]?by|depends[\s-]?on)\b[^\n]*/gi;
+
+/**
+ * Parse the issue numbers this issue declares it is blocked by / depends on.
+ * Returns a sorted, de-duplicated list (empty when there are no declarations).
+ * This is what lets the queue know "what blocks what".
+ */
+export function parseBlockedBy(body: string): number[] {
+  const out = new Set<number>();
+  const text = body || "";
+  let phrase: RegExpExecArray | null;
+  BLOCKED_BY_PHRASE.lastIndex = 0;
+  while ((phrase = BLOCKED_BY_PHRASE.exec(text)) !== null) {
+    const refs = phrase[0].match(/#(\d+)/g) || [];
+    for (const ref of refs) out.add(parseInt(ref.slice(1), 10));
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
 // --- deterministic row id (matches queue_store._entry_uuid) -------------------
 
 // RFC 4122 URL namespace — the same one Python's uuid.NAMESPACE_URL uses.
@@ -106,7 +129,7 @@ export async function findWorkspaceByRepo(
 // --- enqueue ------------------------------------------------------------------
 
 export type EnqueueResult =
-  | { enqueued: true; id: string }
+  | { enqueued: true; id: string; state: "queued" | "parked"; blockedBy: number[] }
   | { enqueued: false; reason: string };
 
 /**
@@ -114,6 +137,84 @@ export type EnqueueResult =
  * a `queue_entries` row (tier 0, budget 2, state 'queued') with the deterministic
  * id so a re-delivery of the same issue dedupes (ON CONFLICT DO NOTHING).
  */
+/**
+ * Of the declared blockers, return those NOT yet satisfied — i.e. issues in the
+ * same repo that have a queue entry which has not reached the terminal `green`
+ * state. A blocker with no entry yet is treated as unmet (it may arrive later);
+ * the dependent stays parked until every blocker is green.
+ */
+async function unmetBlockers(
+  workspaceId: string,
+  repoFullName: string,
+  blockedBy: number[]
+): Promise<number[]> {
+  if (blockedBy.length === 0) return [];
+  const blockerIds = blockedBy.map((n) => `${repoFullName}#${n}`);
+  const greenRows = await db
+    .select({ externalId: queueEntries.externalId })
+    .from(queueEntries)
+    .where(
+      and(
+        eq(queueEntries.workspaceId, workspaceId),
+        inArray(queueEntries.externalId, blockerIds),
+        eq(queueEntries.state, "green")
+      )
+    );
+  const greenNumbers = new Set(
+    greenRows.map((r) => Number(r.externalId.split("#").pop()))
+  );
+  return blockedBy.filter((n) => !greenNumbers.has(n));
+}
+
+/**
+ * After an entry reaches `green`, release any parked entries that were waiting
+ * on it. For each parked dependent whose declared blockers are now ALL green,
+ * flip it to `queued` so the runner can claim it. Returns the external_ids
+ * unparked (for logging). Safe to call for any completed entry.
+ */
+export async function unparkDependents(
+  workspaceId: string,
+  completedExternalId: string
+): Promise<string[]> {
+  const hash = completedExternalId.lastIndexOf("#");
+  if (hash < 0) return [];
+  const repoFullName = completedExternalId.slice(0, hash);
+  const completedNumber = Number(completedExternalId.slice(hash + 1));
+  if (!Number.isFinite(completedNumber)) return [];
+
+  // Parked entries in this repo that list the completed issue as a blocker.
+  const parked = await db
+    .select({ externalId: queueEntries.externalId, blockedBy: queueEntries.blockedBy })
+    .from(queueEntries)
+    .where(
+      and(
+        eq(queueEntries.workspaceId, workspaceId),
+        eq(queueEntries.state, "parked"),
+        sql`${queueEntries.blockedBy} @> ${JSON.stringify([completedNumber])}::jsonb`
+      )
+    );
+
+  const released: string[] = [];
+  for (const entry of parked) {
+    const blockers = (entry.blockedBy ?? []) as number[];
+    const stillUnmet = await unmetBlockers(workspaceId, repoFullName, blockers);
+    if (stillUnmet.length === 0) {
+      await db
+        .update(queueEntries)
+        .set({ state: "queued", updatedAt: new Date() })
+        .where(
+          and(
+            eq(queueEntries.workspaceId, workspaceId),
+            eq(queueEntries.externalId, entry.externalId),
+            eq(queueEntries.state, "parked")
+          )
+        );
+      released.push(entry.externalId);
+    }
+  }
+  return released;
+}
+
 export async function enqueueGithubIssue(data: {
   workspaceId: string;
   repoFullName: string;
@@ -127,6 +228,13 @@ export async function enqueueGithubIssue(data: {
   const externalId = `${data.repoFullName}#${data.number}`;
   const id = entryId(data.workspaceId, "github", externalId);
 
+  // Dependency awareness: declared blockers that aren't green yet park the
+  // entry so the runner never claims it (claim only grabs `queued`). When the
+  // last blocker goes green, recordRunnerResult unparks it.
+  const blockedBy = parseBlockedBy(data.body);
+  const unmet = await unmetBlockers(data.workspaceId, data.repoFullName, blockedBy);
+  const state = unmet.length > 0 ? "parked" : "queued";
+
   const inserted = await db
     .insert(queueEntries)
     .values({
@@ -138,8 +246,8 @@ export async function enqueueGithubIssue(data: {
       body: data.body,
       tier: 0,
       remainingBudget: 2,
-      state: "queued",
-      blockedBy: [],
+      state,
+      blockedBy,
     })
     .onConflictDoNothing({ target: queueEntries.id })
     .returning({ id: queueEntries.id });
@@ -147,5 +255,5 @@ export async function enqueueGithubIssue(data: {
   if (inserted.length === 0) {
     return { enqueued: false, reason: "already queued (deduped)" };
   }
-  return { enqueued: true, id };
+  return { enqueued: true, id, state, blockedBy };
 }

@@ -15,7 +15,7 @@ import logging
 import time
 from typing import Callable, Optional
 
-from agentrail.runner.client import WorkItem
+from agentrail.runner.client import RunnerAuthError, WorkItem
 from agentrail.sandbox.docker_runner import RunResult
 
 _log = logging.getLogger("agentrail.runner.worker")
@@ -52,7 +52,18 @@ def run_worker(
     worker down.
     """
     while should_continue():
-        item = client.claim_next()
+        try:
+            item = client.claim_next()
+        except RunnerAuthError as exc:
+            # A rejected token is terminal — no amount of retrying fixes it.
+            # Stop the loop with a clear message instead of crashing.
+            _log.error("%s", exc)
+            print(f"\nRunner stopped: {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001 — a server hiccup must not kill it
+            _log.warning("claim failed (will retry): %s", exc)
+            sleep(idle_seconds)
+            continue
         if item is None:
             sleep(idle_seconds)
             continue

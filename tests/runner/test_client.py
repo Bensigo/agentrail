@@ -12,7 +12,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from agentrail.runner.client import Response, RunnerClient, WorkItem
+import pytest
+
+from agentrail.runner.client import (
+    Response,
+    RunnerAuthError,
+    RunnerClient,
+    RunnerError,
+    WorkItem,
+)
 
 
 class FakeTransport:
@@ -84,6 +92,26 @@ def test_claim_next_returns_none_when_nothing_grabbable():
     # 204 No Content with an empty body means "no work right now".
     transport = FakeTransport([Response(status=204, body=b"")])
     assert _client(transport).claim_next() is None
+
+
+def test_claim_next_raises_auth_error_on_401():
+    # A rejected/expired token must surface as a clear "re-login" error, not a
+    # KeyError from trying to parse the error body as a work item.
+    transport = FakeTransport([Response(status=401, body=b'{"error":"Unauthorized"}')])
+    with pytest.raises(RunnerAuthError):
+        _client(transport).claim_next()
+
+
+def test_claim_next_raises_auth_error_on_403():
+    transport = FakeTransport([Response(status=403, body=b'{"error":"wrong workspace"}')])
+    with pytest.raises(RunnerAuthError):
+        _client(transport).claim_next()
+
+
+def test_claim_next_raises_runner_error_on_server_error():
+    transport = FakeTransport([Response(status=500, body=b'{"error":"boom"}')])
+    with pytest.raises(RunnerError):
+        _client(transport).claim_next()
 
 
 # --- report_result: the reporting half of the protocol -----------------------

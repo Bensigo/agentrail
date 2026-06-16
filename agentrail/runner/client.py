@@ -24,6 +24,14 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
 
+class RunnerError(Exception):
+    """The backend returned an unexpected status the runner can't act on."""
+
+
+class RunnerAuthError(RunnerError):
+    """The runner token was rejected (401/403) — the user must log in again."""
+
+
 @dataclass(frozen=True)
 class Response:
     """A minimal HTTP response: the status code and the raw body bytes."""
@@ -114,7 +122,18 @@ class RunnerClient:
         """
         url = f"{self._base}/api/v1/runner/claim?workspace_id={self._workspace_id}"
         resp = self._transport("GET", url, headers=self._headers())
-        if resp.status == 204 or not resp.body:
+        if resp.status == 204:
+            return None
+        if resp.status in (401, 403):
+            raise RunnerAuthError(
+                "runner token was rejected — run `agentrail login` again"
+            )
+        if not (200 <= resp.status < 300):
+            raise RunnerError(
+                f"claim failed: HTTP {resp.status} "
+                f"{resp.body[:200].decode('utf-8', 'replace')}"
+            )
+        if not resp.body:
             return None
         return WorkItem.from_dict(json.loads(resp.body.decode("utf-8")))
 

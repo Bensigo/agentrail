@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from agentrail.runner.client import WorkItem
+from agentrail.runner.client import RunnerAuthError, RunnerError, WorkItem
 from agentrail.runner.worker import run_worker
 from agentrail.sandbox.docker_runner import RunResult
 
@@ -112,3 +112,54 @@ def test_worker_survives_an_execution_error_and_keeps_going():
     statuses = {r["id"]: r["status"] for r in client.reported}
     assert statuses["wi-1"] == "error"  # crash reported, not swallowed
     assert statuses["wi-2"] == "green"  # loop kept going
+
+
+def test_worker_stops_cleanly_on_auth_error():
+    # A rejected token must stop the loop with a message, not crash with a
+    # traceback (and certainly not try to execute anything).
+    class AuthFailClient:
+        def claim_next(self):
+            raise RunnerAuthError("re-login")
+
+        def report_result(self, *a, **k):  # pragma: no cover - never called
+            raise AssertionError("should not report on auth failure")
+
+    executed = []
+    # should_continue is always True; the auth error must break the loop itself.
+    run_worker(
+        AuthFailClient(),
+        execute=lambda item: executed.append(item),
+        sleep=lambda _s: None,
+        should_continue=lambda: True,
+    )
+    assert executed == []  # returned without crashing
+
+
+def test_worker_survives_a_transient_claim_error_and_keeps_polling():
+    # A non-auth claim error (server hiccup) should not kill the daemon: it
+    # sleeps and tries again, eventually picking up the item.
+    class FlakyClient:
+        def __init__(self):
+            self.calls = 0
+            self.reported = []
+
+        def claim_next(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise RunnerError("503 service unavailable")
+            if self.calls == 2:
+                return _item("9")
+            return None
+
+        def report_result(self, item, **kw):
+            self.reported.append(item.id)
+            return True
+
+    client = FlakyClient()
+    run_worker(
+        client,
+        execute=lambda item: RunResult(status="green"),
+        sleep=lambda _s: None,
+        should_continue=_stop_after(3),
+    )
+    assert client.reported == ["wi-9"]  # recovered and processed the item

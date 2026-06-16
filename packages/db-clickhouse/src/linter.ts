@@ -135,56 +135,89 @@ export async function AgentBehaviorLinter(
 
   const rows = await result.json<BehaviorEventRow>();
   const t = mergedThresholds(thresholds);
-  const findings: LintFinding[] = [];
+
+  // Aggregate RUN-LEVEL signals across all agent_activity turns. The linter is
+  // run-level (at most one finding per rule), NOT per-turn: the agent's natural
+  // rhythm — read in one turn, edit in the next — must not spam a finding every
+  // turn (that produced the duplicated wall of errors). Each rule fires once,
+  // pointing at the first/worst offending turn as evidence.
+  let maxFilesRead = 0;
+  let maxFilesReadEvent = "";
+  let fullReadTurns = 0;
+  let firstFullReadEvent = "";
+  let totalLoops = 0;
+  let firstLoopEvent = "";
+  let totalReads = 0;
+  let totalBlindEdits = 0;
+  let firstBlindEditEvent = "";
 
   for (const row of rows) {
     const payload = parsePayload(row.payload);
-    const evidence_event_id = String(row.event_id ?? "");
-    if (!evidence_event_id) continue;
+    const evt = String(row.event_id ?? "");
+    if (!evt) continue;
 
-    if (metric(row, payload, "files_read_count") > t.maxFilesReadCount) {
-      findings.push({
-        rule: "excessive_file_reads",
-        severity: "warning",
-        evidence_event_id,
-      });
-    }
+    const reads = metric(row, payload, "files_read_count");
+    const full = metric(row, payload, "full_file_read");
+    const loops = metric(row, payload, "tool_loop_count");
+    const blind = metric(row, payload, "edit_without_context");
 
-    if (metric(row, payload, "full_file_read") > t.maxFullFileReadCount) {
-      findings.push({
-        rule: "full_file_read",
-        severity: "warning",
-        evidence_event_id,
-      });
+    totalReads += reads;
+    totalLoops += loops;
+    totalBlindEdits += blind;
+    if (reads > maxFilesRead) {
+      maxFilesRead = reads;
+      maxFilesReadEvent = evt;
     }
-
-    if (metric(row, payload, "tool_loop_count") > t.maxToolLoopCount) {
-      findings.push({
-        rule: "tool_loop",
-        severity: "warning",
-        evidence_event_id,
-      });
+    if (full > 0) {
+      fullReadTurns += 1;
+      if (!firstFullReadEvent) firstFullReadEvent = evt;
     }
-
-    if (
-      metric(row, payload, "edit_without_context") >
-      t.maxEditWithoutContextCount
-    ) {
-      findings.push({
-        rule: "context_blind_edit",
-        severity: "error",
-        evidence_event_id,
-      });
-    }
-
-    if (metric(row, payload, "verification_skip") > t.maxVerificationSkipCount) {
-      findings.push({
-        rule: "verification_skip",
-        severity: "error",
-        evidence_event_id,
-      });
-    }
+    if (loops > 0 && !firstLoopEvent) firstLoopEvent = evt;
+    if (blind > 0 && !firstBlindEditEvent) firstBlindEditEvent = evt;
   }
+
+  const findings: LintFinding[] = [];
+
+  if (maxFilesRead > t.maxFilesReadCount) {
+    findings.push({
+      rule: "excessive_file_reads",
+      severity: "warning",
+      evidence_event_id: maxFilesReadEvent,
+    });
+  }
+  if (fullReadTurns > t.maxFullFileReadCount) {
+    findings.push({
+      rule: "full_file_read",
+      severity: "warning",
+      evidence_event_id: firstFullReadEvent,
+    });
+  }
+  if (totalLoops > t.maxToolLoopCount) {
+    findings.push({
+      rule: "tool_loop",
+      severity: "warning",
+      evidence_event_id: firstLoopEvent,
+    });
+  }
+  // context_blind_edit is a real risk ONLY when the run edited code but gathered
+  // NO context anywhere across the whole run (truly ungrounded). A single edit
+  // turn without same-turn reads is normal (context came from an earlier turn),
+  // so that is never flagged.
+  if (
+    totalBlindEdits > t.maxEditWithoutContextCount &&
+    totalReads === 0 &&
+    firstBlindEditEvent
+  ) {
+    findings.push({
+      rule: "context_blind_edit",
+      severity: "error",
+      evidence_event_id: firstBlindEditEvent,
+    });
+  }
+  // verification_skip is intentionally NOT emitted: in the verification-contract
+  // architecture the Objective Gate runs the tests (not the agent), so "the
+  // agent didn't run tests in a turn" is a false signal — the gate's green/red
+  // verdict is the real verification status, surfaced elsewhere.
 
   return findings;
 }

@@ -143,7 +143,7 @@ export function BehaviorLintSection({
               >
                 <span
                   title={severityMeaning(finding.severity)}
-                  className={`inline-flex w-fit shrink-0 items-center rounded-sm border px-1.5 py-0.5 font-medium uppercase ${severityClass(
+                  className={`inline-flex w-[4.5rem] shrink-0 items-center justify-center rounded-sm border px-1.5 py-0.5 font-medium uppercase ${severityClass(
                     finding.severity
                   )}`}
                 >

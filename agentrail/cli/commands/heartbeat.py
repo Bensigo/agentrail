@@ -163,7 +163,7 @@ def _build_runtime(
     from agentrail.connectors.github import GitHubOAuthClient
     from agentrail.heartbeat.runtime import HeartbeatRuntime, RuntimeConfig
     from agentrail.heartbeat.token_provider import get_github_token
-    from agentrail.sandbox.docker_runner import run_issue_in_sandbox
+    from agentrail.sandbox.native_runner import select_sandbox_runner
 
     executor = PostgresExecutor()
     store = QueueStore(executor)
@@ -225,10 +225,15 @@ def _build_runtime(
         cheap_model=cheap_model, strong_model=strong_model,
         ceiling=ceiling, attempt_limit=attempt_limit,
     )
+    # Pick the execution backend: host-native by default (local dev — the agent
+    # CLI uses the host login + its own native sandbox), Docker when an
+    # ANTHROPIC_API_KEY is present (CI / cloud, where API-key auth works in a
+    # container). See agentrail/sandbox/native_runner.select_sandbox_runner.
+    sandbox_runner = select_sandbox_runner(dict(os.environ))
     runtime = HeartbeatRuntime(
         connector=connector,
         store=store,
-        sandbox_runner=run_issue_in_sandbox,
+        sandbox_runner=sandbox_runner,
         notifier=notifier,
         config=config,
     )

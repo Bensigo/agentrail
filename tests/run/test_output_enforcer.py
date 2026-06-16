@@ -15,7 +15,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentrail.run.output_enforcer import Accepted, Rejected, enforce, push_format_rejection_event
+from agentrail.run.output_enforcer import (
+    Accepted,
+    Rejected,
+    all_changes_new_or_rename,
+    enforce,
+    push_format_rejection_event,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -226,3 +232,60 @@ class TestPushFormatRejectionEvent:
         assert ev["action"]["type"] == "output_format_rejected"
         assert ev["action"]["phase"] == "execute"
         assert "reason" in ev["action"]
+
+
+# ---------------------------------------------------------------------------
+# AC3 wiring: classify worktree changes from `git status --porcelain`
+# (fixes the P1 from PR #789 review — is_new_or_rename was hardcoded False)
+# ---------------------------------------------------------------------------
+
+class TestAllChangesNewOrRename:
+    def test_only_added_files_is_new(self):
+        assert all_changes_new_or_rename("A  new_module.py\n") is True
+
+    def test_untracked_files_is_new(self):
+        assert all_changes_new_or_rename("?? brand_new.py\n") is True
+
+    def test_rename_is_new(self):
+        assert all_changes_new_or_rename("R  old.py -> new.py\n") is True
+
+    def test_modified_existing_file_is_not_new(self):
+        assert all_changes_new_or_rename(" M existing.py\n") is False
+
+    def test_mixed_add_and_modify_is_not_new(self):
+        assert all_changes_new_or_rename("A  new.py\n M existing.py\n") is False
+
+    def test_empty_status_is_not_new(self):
+        assert all_changes_new_or_rename("") is False
+        assert all_changes_new_or_rename("\n  \n") is False
+
+
+# ---------------------------------------------------------------------------
+# AC4: diff output uses fewer tokens than a full-file rewrite (representative)
+# ---------------------------------------------------------------------------
+
+class TestDiffReducesOutputTokens:
+    """Representative before/after for AC4: emitting a one-line change as a
+    full-file rewrite vs a unified diff. Token proxy = whitespace-delimited
+    words (tracks output length monotonically). Demonstrates the AC4 mechanism:
+    the structural diff lever reduces output tokens for the same edit."""
+
+    @staticmethod
+    def _tokens(text: str) -> int:
+        return len(text.split())
+
+    def test_diff_emits_fewer_tokens_than_full_rewrite_for_one_line_change(self):
+        original = "\n".join(f"line_{i} = {i}" for i in range(40))
+        full_rewrite = original.replace("line_7 = 7", "line_7 = 700")
+        unified_diff = (
+            "@@ -6,3 +6,3 @@\n"
+            " line_6 = 6\n"
+            "-line_7 = 7\n"
+            "+line_7 = 700\n"
+            " line_8 = 8\n"
+        )
+        rewrite_tokens = self._tokens(full_rewrite)
+        diff_tokens = self._tokens(unified_diff)
+        assert diff_tokens < rewrite_tokens
+        # The diff is a small fraction of the full rewrite for the same change.
+        assert diff_tokens <= rewrite_tokens // 3

@@ -82,6 +82,32 @@ def enforce(content: str, *, is_new_or_rename: bool = False) -> EnforceResult:
 
 
 # ---------------------------------------------------------------------------
+# Change classification (pure — parses `git status --porcelain` text)
+# ---------------------------------------------------------------------------
+
+def all_changes_new_or_rename(porcelain: str) -> bool:
+    """Return ``True`` when *every* change in ``git status --porcelain`` output is a
+    newly-added, renamed, copied, or untracked file — i.e. there is no edit to a
+    pre-existing file for a diff to apply against.
+
+    Drives ``enforce(..., is_new_or_rename=...)`` from real worktree state instead
+    of a hardcoded flag, so AC3 (new files / renames accepted) actually fires and a
+    new-files-only phase is not a false-positive rejection.  Empty input
+    (no changes) → ``False``.
+    """
+    lines = [ln for ln in porcelain.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    for ln in lines:
+        code = ln[:2]
+        # ?? untracked; A added; R renamed; C copied (either index or worktree column)
+        if code == "??" or code[0] in ("A", "R", "C") or code[1] in ("A", "R", "C"):
+            continue
+        return False  # an existing-file edit (M/D/T/U) is present → enforce diff
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Run-event push (non-fatal)
 # ---------------------------------------------------------------------------
 

@@ -16,7 +16,12 @@ from agentrail.run.activity_push import push_agent_activity
 from agentrail.run.context_pack_push import push_context_pack
 from agentrail.run.cost_push import build_cost_record, push_cost_event
 from agentrail.run.failure_push import push_failure_event
-from agentrail.run.output_enforcer import Rejected, enforce, push_format_rejection_event
+from agentrail.run.output_enforcer import (
+    Rejected,
+    all_changes_new_or_rename,
+    enforce,
+    push_format_rejection_event,
+)
 from agentrail.run.pricing import cost_usd
 from agentrail.run.proc import run_with_timeout
 from agentrail.run.usage_capture import capture_usage
@@ -255,7 +260,20 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     if phase == "execute" and phase_output_file.exists():
         try:
             phase_output_text = phase_output_file.read_text(encoding="utf-8", errors="replace")
-            enforce_result = enforce(phase_output_text, is_new_or_rename=False)
+            # Drive is_new_or_rename from the real worktree state: a phase that only
+            # adds new files (no existing-file edit) must not be a false-positive
+            # rejection (AC3). Falls back to enforcing when git status is unavailable.
+            try:
+                porcelain = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=rc.target_dir, capture_output=True, text=True, timeout=10,
+                ).stdout
+            except Exception:
+                porcelain = ""
+            enforce_result = enforce(
+                phase_output_text,
+                is_new_or_rename=all_changes_new_or_rename(porcelain),
+            )
             if isinstance(enforce_result, Rejected):
                 push_format_rejection_event(
                     rc.target_dir,

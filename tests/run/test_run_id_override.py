@@ -62,6 +62,9 @@ def _make_target(tmp_path: Path) -> tuple[Path, Path]:
     agentrail_dir = tmp_path / ".agentrail"
     agentrail_dir.mkdir(parents=True)
     (agentrail_dir / "state.json").write_text(json.dumps({"workflow": {}}))
+    # A passing objective-gate verification so a successful run reaches GREEN
+    # (the gate now drives "done" — ADR 0007 / #769).
+    (agentrail_dir / "config.json").write_text(json.dumps({"verify": "true"}))
     stub_agent = tmp_path / "stub-agent"
     stub_agent.write_text("#!/bin/sh\nexit 0\n")
     stub_agent.chmod(stub_agent.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)

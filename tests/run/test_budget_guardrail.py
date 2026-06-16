@@ -25,6 +25,9 @@ def _make_target(tmp_dir: str) -> Path:
     agentrail_dir = target / ".agentrail"
     agentrail_dir.mkdir(parents=True, exist_ok=True)
     (agentrail_dir / "state.json").write_text(json.dumps({"workflow": {}}))
+    # Passing objective-gate verification so a successful run reaches GREEN
+    # (the gate drives "done" — ADR 0007 / #769).
+    (agentrail_dir / "config.json").write_text(json.dumps({"verify": "true"}))
     return target
 
 

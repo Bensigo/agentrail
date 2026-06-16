@@ -45,6 +45,11 @@ def _make_target(tmp_path: Path) -> tuple[Path, Path]:
     agentrail_dir = tmp_path / ".agentrail"
     agentrail_dir.mkdir(parents=True)
     (agentrail_dir / "state.json").write_text(json.dumps({"workflow": {}}))
+    # The Objective Gate (#769) now drives "done": a run reaches GREEN only when a
+    # declared `verify` check passes. Declare a trivially-passing check so this
+    # full-pipeline success test reflects the new contract. Without a declared
+    # verify the gate is correctly RED ("no objective verification declared").
+    (agentrail_dir / "config.json").write_text(json.dumps({"verify": "true"}))
 
     # Stub agent: used as the agent_command for both the plan and execute phases
     # (both phases now run natively via `bash -lc <agent_command>`).

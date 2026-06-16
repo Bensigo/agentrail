@@ -277,6 +277,10 @@ export const ALTER_COST_EVENTS_ADD_CACHE_TOKENS = `
 ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS cache_tokens UInt64 DEFAULT 0
 `;
 
+export const ALTER_COST_EVENTS_ADD_CACHE_CREATION_TOKENS = `
+ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS cache_creation_tokens UInt64 DEFAULT 0
+`;
+
 export interface CostEventRecord {
   workspace_id: string;
   run_id: string;
@@ -291,7 +295,10 @@ export interface CostEventRecord {
   phase: string;
   input_tokens: number;
   output_tokens: number;
+  /** cache-READ tokens (priced at cached_read rate). */
   cache_tokens: number;
+  /** cache-WRITE / cache-creation tokens (priced at cached_write rate). */
+  cache_creation_tokens: number;
   occurred_at: Date;
   event_id: string;
 }

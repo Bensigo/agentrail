@@ -22,6 +22,7 @@ class _Usage:
     input_tokens: int
     output_tokens: int
     cache_tokens: int
+    cache_creation_tokens: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +45,75 @@ def test_cost_usd_known_model(model: str) -> None:
         + 200_000 * rates.cache
     ) / 1_000_000
     assert cost_usd(usage) == pytest.approx(expected, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# AC2 — cache-creation (write) tokens priced at the cached_write rate
+# ---------------------------------------------------------------------------
+
+from agentrail.context.pricing import PRICE_TABLE  # noqa: E402
+
+
+def test_cost_usd_includes_cache_creation_at_write_rate() -> None:
+    """cost_usd charges cache_creation_tokens at the canonical cached_write rate."""
+    model = "claude-sonnet-4-6"
+    rates = PRICES[model]
+    write_rate = PRICE_TABLE[model]["cached_write"]
+    usage = _Usage(
+        model=model,
+        input_tokens=1_000_000,
+        output_tokens=500_000,
+        cache_tokens=200_000,
+        cache_creation_tokens=300_000,
+    )
+    expected = (
+        1_000_000 * rates.input
+        + 500_000 * rates.output
+        + 200_000 * rates.cache
+        + 300_000 * write_rate
+    ) / 1_000_000
+    assert cost_usd(usage) == pytest.approx(expected, rel=1e-9)
+
+
+def test_cost_usd_cache_creation_costs_more_than_cache_read() -> None:
+    """For the same token count, a cache WRITE costs more than a cache READ (1.25x vs 0.1x)."""
+    model = "claude-haiku-4-5"  # cached_write 1.25, cached_read 0.1
+    write_usage = _Usage(model=model, input_tokens=0, output_tokens=0,
+                         cache_tokens=0, cache_creation_tokens=1_000_000)
+    read_usage = _Usage(model=model, input_tokens=0, output_tokens=0,
+                        cache_tokens=1_000_000, cache_creation_tokens=0)
+    assert cost_usd(write_usage) > cost_usd(read_usage)
+
+
+def test_cost_usd_cache_creation_matches_canonical_table() -> None:
+    """AC2 parity: cost_usd equals the canonical cost_for() for a model with all four token kinds."""
+    from agentrail.context.pricing import cost_for
+
+    model = "claude-opus-4-6"
+    usage = _Usage(
+        model=model,
+        input_tokens=120_000,
+        output_tokens=45_000,
+        cache_tokens=33_000,
+        cache_creation_tokens=77_000,
+    )
+    canonical = cost_for(
+        model,
+        input_tokens=120_000,
+        output_tokens=45_000,
+        cached_read=33_000,
+        cached_write=77_000,
+    )["dollars"]
+    assert cost_usd(usage) == pytest.approx(canonical, rel=1e-9)
+
+
+def test_cost_usd_cache_creation_haiku_4_5_explicit_multipliers() -> None:
+    """haiku-4-5: input 1.0, cached_read 0.1 (0.1x), cached_write 1.25 (1.25x)."""
+    model = "claude-haiku-4-5"
+    usage = _Usage(model=model, input_tokens=0, output_tokens=0,
+                   cache_tokens=1_000_000, cache_creation_tokens=1_000_000)
+    # 1M cache_read * 0.1 + 1M cache_write * 1.25 = 0.1 + 1.25 = 1.35 USD
+    assert cost_usd(usage) == pytest.approx(1.35, rel=1e-9)
 
 
 def test_cost_usd_zero_tokens() -> None:

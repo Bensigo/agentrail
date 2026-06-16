@@ -14,18 +14,25 @@ from agentrail.context.pricing import PRICE_TABLE as _PRICE_TABLE
 
 
 class _Rates(NamedTuple):
-    input: float   # $/MTok
-    output: float  # $/MTok
-    cache: float   # $/MTok  (cache-read rate)
+    input: float        # $/MTok
+    output: float       # $/MTok
+    cache: float        # $/MTok  (cache-READ rate, canonical ``cached_read``)
+    cache_write: float  # $/MTok  (cache-WRITE rate, canonical ``cached_write``)
 
 
 # ---------------------------------------------------------------------------
 # Rate table — DERIVED from the single canonical table in
 # ``agentrail.context.pricing.PRICE_TABLE`` (#715). Do not hardcode a second
-# table here. ``cache`` maps to the canonical ``cached_read`` rate.
+# table here. ``cache`` maps to the canonical ``cached_read`` rate and
+# ``cache_write`` to ``cached_write`` (cache-creation; ~1.25x input for Claude).
 # ---------------------------------------------------------------------------
 PRICES: dict[str, _Rates] = {
-    model: _Rates(input=r["input"], output=r["output"], cache=r["cached_read"])
+    model: _Rates(
+        input=r["input"],
+        output=r["output"],
+        cache=r["cached_read"],
+        cache_write=r["cached_write"],
+    )
     for model, r in _PRICE_TABLE.items()
 }
 
@@ -35,7 +42,8 @@ def cost_usd(usage: object) -> float:
 
     *usage* must expose ``.model``, ``.input_tokens``, ``.output_tokens``,
     and ``.cache_tokens`` attributes (compatible with the ``Usage`` dataclass
-    from ``usage_capture.py``).
+    from ``usage_capture.py``). The optional ``.cache_creation_tokens``
+    attribute is priced at the cache-WRITE rate (defaults to 0 when absent).
 
     Unknown model → emits ``UserWarning`` and returns ``0.0`` so the calling
     pipeline is never blocked.
@@ -53,11 +61,13 @@ def cost_usd(usage: object) -> float:
     input_tokens: int = usage.input_tokens    # type: ignore[attr-defined]
     output_tokens: int = usage.output_tokens  # type: ignore[attr-defined]
     cache_tokens: int = usage.cache_tokens    # type: ignore[attr-defined]
+    cache_creation_tokens: int = getattr(usage, "cache_creation_tokens", 0)
 
     return (
         input_tokens * rates.input
         + output_tokens * rates.output
         + cache_tokens * rates.cache
+        + cache_creation_tokens * rates.cache_write
     ) / 1_000_000
 
 

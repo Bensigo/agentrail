@@ -26,7 +26,12 @@ def build_cost_record(run_id: str, phase: str, usage: Usage, cost: float) -> dic
     return {
         "run_id": run_id,
         "cost_type": "model_call",
-        "tokens": usage.input_tokens + usage.output_tokens + usage.cache_tokens,
+        "tokens": (
+            usage.input_tokens
+            + usage.output_tokens
+            + usage.cache_tokens
+            + usage.cache_creation_tokens
+        ),
         "cost_usd": cost,
         "model": usage.model,
         "occurred_at": _now_iso(),
@@ -35,6 +40,7 @@ def build_cost_record(run_id: str, phase: str, usage: Usage, cost: float) -> dic
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
         "cache_tokens": usage.cache_tokens,
+        "cache_creation_tokens": usage.cache_creation_tokens,
         "cache_savings": cache_savings(usage),
     }
 

@@ -43,6 +43,7 @@ def _sample_usage() -> Usage:
         input_tokens=100,
         output_tokens=50,
         cache_tokens=25,
+        cache_creation_tokens=10,
     )
 
 
@@ -112,7 +113,8 @@ def test_push_cost_event_payload_and_headers(tmp_path: Path, monkeypatch) -> Non
 
     monkeypatch.setattr(cost_push.urllib.request, "urlopen", fake_urlopen)
 
-    usage = Usage(model="claude-opus-4-6", input_tokens=200, output_tokens=80, cache_tokens=40)
+    usage = Usage(model="claude-opus-4-6", input_tokens=200, output_tokens=80,
+                  cache_tokens=40, cache_creation_tokens=15)
     cost_push.push_cost_event(
         tmp_path,
         run_id="run-verify",
@@ -127,7 +129,8 @@ def test_push_cost_event_payload_and_headers(tmp_path: Path, monkeypatch) -> Non
     assert body["run_id"] == "run-verify"
     assert body["repository_id"] == "repo-xyz"
     assert body["cost_type"] == "model_call"
-    assert body["tokens"] == 200 + 80 + 40
+    # cache_creation tokens are part of the total token count.
+    assert body["tokens"] == 200 + 80 + 40 + 15
     assert body["cost_usd"] == pytest.approx(0.123)
     assert body["model"] == "claude-opus-4-6"
     assert body["occurred_at"].endswith("Z")
@@ -137,6 +140,8 @@ def test_push_cost_event_payload_and_headers(tmp_path: Path, monkeypatch) -> Non
     assert body["input_tokens"] == 200
     assert body["output_tokens"] == 80
     assert body["cache_tokens"] == 40
+    # AC3 wiring: cache-creation tokens persisted as their own field.
+    assert body["cache_creation_tokens"] == 15
 
 
 # ---------------------------------------------------------------------------

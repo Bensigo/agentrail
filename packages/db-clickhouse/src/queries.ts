@@ -689,6 +689,7 @@ export interface CostEventInput {
   input_tokens?: number;
   output_tokens?: number;
   cache_tokens?: number;
+  cache_creation_tokens?: number;
 }
 
 export function deriveCostEventId(
@@ -753,6 +754,7 @@ export async function insertCostEvents(events: CostEventInput[]): Promise<number
     input_tokens: e.input_tokens ?? 0,
     output_tokens: e.output_tokens ?? 0,
     cache_tokens: e.cache_tokens ?? 0,
+    cache_creation_tokens: e.cache_creation_tokens ?? 0,
     occurred_at: new Date(e.occurred_at)
       .toISOString()
       .replace("T", " ")

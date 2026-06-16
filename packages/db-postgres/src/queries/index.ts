@@ -1101,6 +1101,16 @@ export {
   type RunnerStatus,
 } from "./runner.js";
 
+// GitHub issue intake — the webhook half of the queue: the AC gate + workspace
+// resolution + idempotent enqueue (deterministic id matches the Python store).
+export {
+  validateAcceptanceCriteria,
+  findWorkspaceByRepo,
+  enqueueGithubIssue,
+  type AcGateResult,
+  type EnqueueResult,
+} from "./github_intake.js";
+
 // Connectors — per-provider control surface that also configures the Heartbeat.
 // Folds in the former standalone heartbeat_config (#816); the daemon reads
 // connectors via list_active_connectors (agentrail/afk/connectors_store.py).

@@ -458,6 +458,25 @@ def issue_run_phase_prompt(
     if phase == "execute":
         bounded_plan = bounded_phase_text(plan_output, "approved plan output")
 
+        # Compacted failure handoff (cheap→strong escalation loop, ADR 0011): when
+        # the sandbox re-runs this issue on a stronger model after a red gate, it
+        # forwards the compaction.build output via AGENTRAIL_FAILURE_HANDOFF. Inject
+        # it here so the stronger model debugs the concrete prior failure (goal +
+        # attempt diff + exact gate error) instead of solving from a blank slate.
+        # Absent/blank env → no change (a first cheap attempt has no handoff).
+        raw_handoff = os.environ.get("AGENTRAIL_FAILURE_HANDOFF", "")
+        handoff_text = bounded_phase_text(raw_handoff, "failure handoff")
+        if handoff_text.strip():
+            handoff_segment = (
+                "Failure handoff from the previous (cheaper-model) attempt that "
+                "failed the Objective Gate. Use it as focused input: address the "
+                "exact gate error below; do not re-derive the exploration the cheap "
+                "attempt already did.\n"
+                f"{handoff_text}"
+            )
+        else:
+            handoff_segment = ""
+
         # Build the optional findings block — mirrors legacy $(if ... fi) in the heredoc.
         # When non-empty, inserts the findings text between the surrounding blank lines.
         if verifier_findings_text:
@@ -542,6 +561,11 @@ def issue_run_phase_prompt(
         else:
             # Legacy empty $(if...fi) slot → 3 blank lines between base_prompt and AgentRail
             body += "\n\n"
+
+        # The escalation handoff is additive and behind its env being present, so
+        # the unescalated execute prompt is byte-for-byte unchanged (legacy parity).
+        if handoff_segment:
+            body += handoff_segment + "\n\n"
 
         body += (
             "AgentRail will invoke the Ralph one-issue executor for this phase and capture its output under this run directory.\n"

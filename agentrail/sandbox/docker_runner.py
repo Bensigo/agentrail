@@ -48,6 +48,15 @@ DEFAULT_IMAGE = "agentrail/runner:latest"
 
 _LOGS_TAIL_LINES = 40
 
+# Env var names the escalation loop forwards into the container. ``AGENTRAIL_MODEL``
+# selects the model the in-container ``agentrail run issue`` runs on (cheap on the
+# first attempt, strong on an escalation); ``AGENTRAIL_FAILURE_HANDOFF`` carries the
+# compacted failure handoff (goal + attempt diff + gate error) the execute phase
+# injects as extra context. Both are forwarded by NAME (``docker run -e KEY``) so a
+# large/multiline handoff never lands on the process command line.
+ENV_MODEL = "AGENTRAIL_MODEL"
+ENV_FAILURE_HANDOFF = "AGENTRAIL_FAILURE_HANDOFF"
+
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -237,6 +246,8 @@ def run_issue_in_sandbox(
     cpus: str = DEFAULT_CPUS,
     memory: str = DEFAULT_MEMORY,
     timeout: int = DEFAULT_TIMEOUT,
+    model: Optional[str] = None,
+    failure_handoff: Optional[str] = None,
     run_container: RunContainer = subprocess_run_container,
 ) -> RunResult:
     """Run a single issue in a fresh, disposable Docker container.
@@ -250,12 +261,27 @@ def run_issue_in_sandbox(
     the run. Agent API key + git token are passed via ``env`` and forwarded into
     the container by name; their values never appear on the command line.
 
+    ``model`` selects which model the in-container run executes on (the escalation
+    loop passes the cheap model first, the strong model on a retry);
+    ``failure_handoff`` is the compacted handoff (goal + attempt diff + gate error)
+    the execute phase injects as extra context on a re-attempt. Both are forwarded
+    into the container by NAME (``-e AGENTRAIL_MODEL`` / ``-e AGENTRAIL_FAILURE_HANDOFF``)
+    so a large/multiline handoff never appears on the command line. When ``None``
+    they are not forwarded at all (a first cheap attempt with the image default).
+
     Returns ``status='error'`` (with a populated ``gate_reason``/``logs_tail``)
     for any sandbox-level failure — timeout, daemon error, or unparseable output
     — i.e. whenever we could not obtain a trustworthy gate verdict.
     """
     name = _container_name(workspace_id, issue_ref)
     env = dict(env or {})
+    # Forward the model + compacted handoff into the container by NAME, alongside
+    # the caller's secrets. Only set when present so an unescalated first attempt
+    # runs on the image's default model with no handoff.
+    if model is not None:
+        env[ENV_MODEL] = model
+    if failure_handoff is not None:
+        env[ENV_FAILURE_HANDOFF] = failure_handoff
     run_cmd = build_run_command(
         name=name,
         image=image,

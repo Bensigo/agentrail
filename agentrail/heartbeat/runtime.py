@@ -26,13 +26,22 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Callable, Dict, FrozenSet, List, Protocol
+from typing import Callable, Dict, FrozenSet, List, Optional, Protocol
 
 from agentrail.afk.input_contract import Rejected
-from agentrail.afk.queue_state import Event, QueueEntry, Terminal, is_terminal
+from agentrail.afk.queue_state import (
+    Event,
+    QueueEntry,
+    Terminal,
+    Tier,
+    is_terminal,
+)
 from agentrail.connectors.base import IssueRef, OutcomeReport
 from agentrail.connectors.discord import TaskResult
 from agentrail.heartbeat.gate import Capability, detect_capabilities, heartbeat_enabled
+from agentrail.run import budget_leash, compaction
+from agentrail.run.budget_leash import Decision
+from agentrail.run.routing import next_tier
 from agentrail.sandbox.docker_runner import RunResult
 
 
@@ -115,12 +124,31 @@ class RuntimeConfig:
     Injected so the same runtime works against args/env today and a
     dashboard-managed config table later (3b). ``env`` is the secret-bearing
     environment (agent API key, git token) forwarded into the sandbox by name.
+
+    Escalation knobs (cheap→strong loop, ADR 0011 / M036):
+
+    - ``cheap_model`` / ``strong_model`` — the two model names the loop runs the
+      sandbox on. The first attempt runs on ``cheap_model``; an escalation re-runs
+      on ``strong_model``. ``None`` means "let the image pick its default model".
+    - ``ceiling`` — the per-issue dollar cost ceiling (Budget Leash). ``0`` (the
+      default) is *uncapped*, mirroring the run budget guardrail; the attempt
+      limit still bounds the loop.
+    - ``attempt_limit`` — the maximum number of attempts (initial + escalations)
+      before a hard stop to human. Defaults to ``2`` (cheap then strong). Must be
+      >= 1.
+
+    A two-tier model ladder (``CHEAP`` → ``STRONG``) maps to these two names; see
+    :meth:`HeartbeatRuntime._model_for_tier`.
     """
 
     workspace_id: str
     repo_url: str
     ref: str = "main"
     env: Dict[str, str] = field(default_factory=dict)
+    cheap_model: Optional[str] = None
+    strong_model: Optional[str] = None
+    ceiling: float = 0.0
+    attempt_limit: int = 2
 
 
 # --------------------------------------------------------------------------- #
@@ -235,46 +263,153 @@ class HeartbeatRuntime:
         ref: IssueRef,
         report: CycleReport,
     ) -> None:
-        """Run a single grabbable entry through the sandbox and record it."""
+        """Run a grabbable entry through the cheap→strong escalation loop.
+
+        The MVP single-run is now a bounded loop (ADR 0011 / M036). Each iteration:
+
+        1. START (first attempt only) → RUNNING; register the in-flight run, then
+           execute in the sandbox on the *current tier's model*, carrying the
+           compacted failure handoff from the previous attempt (``None`` first).
+        2. Map status → queue Event; transition the entry + re-register the run
+           with its real cost.
+        3. On GATE_GREEN → done (the cheap tier, or whichever tier, was enough).
+        4. On GATE_RED/error → consult the **Budget Leash** (``budget_leash.check``)
+           with the accrued spend + attempt count:
+             - ESCALATE → step the tier up (``routing.next_tier``), build the
+               compacted handoff (``compaction.build`` from goal=issue title/body,
+               attempt diff = prior branch, gate error = prior gate_reason), and
+               loop to re-run on the stronger model.
+             - STOP_TO_HUMAN (or no stronger tier) → ESCALATED_TO_HUMAN terminal;
+               stop.
+
+        Termination: ``attempts`` strictly increases each iteration and
+        ``attempt_limit`` is a fixed positive integer, so the Budget Leash returns
+        STOP_TO_HUMAN in at most ``attempt_limit`` iterations regardless of cost —
+        the loop can never run forever (a green result stops it sooner, and a
+        capped ``ceiling`` stops it sooner still). The reused queue state machine
+        also caps escalation at the max tier.
+        """
         run_id = str(uuid.uuid4())
 
-        # START → RUNNING, register the in-flight run.
-        running = self._store.transition(entry, Event.START)
+        # START → RUNNING, register the first in-flight run. The entry's tier is
+        # the source of truth for which model runs (CHEAP first).
+        current = self._store.transition(entry, Event.START)
         self._store.register_run(
-            entry=running, run_id=run_id, phase="execute", status="running"
+            entry=current, run_id=run_id, phase="execute", status="running"
         )
 
-        # Execute in the sandbox. ``issue_ref`` is the bare issue number the
-        # runner image passes to ``agentrail run issue <n>``.
-        result = self._sandbox(
-            repo_url=self._config.repo_url,
-            ref=self._config.ref,
-            issue_ref=str(ref.number),
-            workspace_id=workspace_id,
-            env=dict(self._config.env),
-        )
+        spent = 0.0
+        attempts = 0
+        handoff_text: Optional[str] = None
+        final_result: Optional[RunResult] = None
 
-        # status → queue Event, transition + re-register with the run cost.
-        event = _STATUS_TO_EVENT.get(result.status, Event.GATE_RED)
-        self._store.transition(running, event)
-        self._store.register_run(
-            entry=running,
-            run_id=run_id,
-            phase="execute",
-            status=result.status,
-            cost_usd=result.cost_usd,
-        )
+        while True:
+            attempted_tier = current.tier
+            model = self._model_for_tier(attempted_tier)
+            result = self._sandbox(
+                repo_url=self._config.repo_url,
+                ref=self._config.ref,
+                issue_ref=str(ref.number),
+                workspace_id=workspace_id,
+                env=dict(self._config.env),
+                model=model,
+                failure_handoff=handoff_text,
+            )
+            final_result = result
+            spent += result.cost_usd
+            attempts += 1
 
-        # Post back to the source issue + notify the channel.
-        outcome = self._outcome_report(ref, result)
+            # status → queue Event, transition + re-register with the run cost. The
+            # GATE_RED transition itself escalates the tier (or hard-stops at max).
+            event = _STATUS_TO_EVENT.get(result.status, Event.GATE_RED)
+            current = self._store.transition(current, event)
+            self._store.register_run(
+                entry=current,
+                run_id=run_id,
+                phase="execute",
+                status=result.status,
+                cost_usd=result.cost_usd,
+            )
+
+            if result.status == "green":
+                break
+
+            # Red/error: the Budget Leash decides continue/escalate/stop (reused —
+            # not re-implemented). ``gate_red=True`` because the gate did not pass.
+            decision = budget_leash.check(
+                spent=spent,
+                attempts=attempts,
+                ceiling=self._config.ceiling,
+                attempt_limit=self._config.attempt_limit,
+                gate_red=True,
+            )
+            if decision is not Decision.ESCALATE:
+                # STOP_TO_HUMAN (budget/attempts exhausted) — the loop ends here.
+                break
+
+            # ``routing.next_tier`` is the pure cheap→strong step; if there is no
+            # stronger tier above the one we just attempted, there is nothing to
+            # escalate to (the queue transition will already have hard-stopped).
+            stronger = next_tier(attempted_tier)
+            if stronger is None or is_terminal(current.state):
+                break
+
+            # Build the compacted handoff (reused — goal + prior diff + gate error,
+            # redundant exploration dropped) the stronger model receives next.
+            handoff_text = compaction.build(
+                goal=self._goal_for(ref),
+                attempt_diff=result.branch or "",
+                gate_error=result.gate_reason or f"run {result.status}",
+            ).text
+
+            # Re-run on the next tier up. The GATE_RED transition already advanced
+            # the entry to ``stronger`` in QUEUED; the loop owns the slot, so move
+            # it straight to RUNNING for the next attempt.
+            current = self._with_running_tier(current, stronger)
+
+        # Post back to the source issue + notify the channel with the FINAL result.
+        assert final_result is not None
+        outcome = self._outcome_report(ref, final_result)
         self._connector.post_result(ref, outcome)
-        self._notifier.task_done(self._task_result(ref, result))
+        self._notifier.task_done(self._task_result(ref, final_result))
 
         report.dispatched += 1
-        if result.status == "green":
+        if final_result.status == "green":
             report.green += 1
         else:
             report.red += 1
+
+    # -- escalation helpers (pure) ----------------------------------------- #
+    def _model_for_tier(self, tier: Tier) -> Optional[str]:
+        """Map the entry's tier to the configured model name (CHEAP/STRONG).
+
+        ``None`` (no model configured for that tier) lets the runner image use its
+        default model, so the loop still runs when only one model is configured.
+        """
+        if tier >= Tier.STRONG:
+            return self._config.strong_model
+        return self._config.cheap_model
+
+    @staticmethod
+    def _goal_for(ref: IssueRef) -> str:
+        """The handoff goal: the issue title, falling back to body or a number ref.
+
+        ``compaction.build`` requires a non-empty goal, so we always supply one.
+        """
+        return ref.title or ref.body or f"issue #{ref.number}"
+
+    @staticmethod
+    def _with_running_tier(entry: QueueEntry, tier: Tier) -> QueueEntry:
+        """Return ``entry`` pinned to ``tier`` and RUNNING for the next attempt.
+
+        The GATE_RED transition re-enqueues the entry one tier up in QUEUED; the
+        loop attempts it immediately, so we move it straight to RUNNING on the
+        target tier (the loop owns the slot for the duration of the escalation).
+        """
+        from dataclasses import replace
+        from agentrail.afk.queue_state import QueueState
+
+        return replace(entry, tier=tier, state=QueueState.RUNNING)
 
     # -- daily digest ------------------------------------------------------- #
     def daily_digest(self, workspace_id: str) -> None:

@@ -19,13 +19,21 @@ Like the GitHub adapter, this is stdlib-only — the webhook POST goes through
 integration tests run against a mock with no live network. An unconfigured
 connector (no ``webhook_url``) is a safe no-op: a missing channel must never wedge
 a run or raise.
+
+**Adam** (MVP, outbound only) extends this same channel surface with two
+dispatcher-called seams: :func:`notify_task_done` posts a concise per-task update
+when a run finishes, and :func:`build_daily_digest` / :func:`notify_daily_digest`
+post a once-a-day summary of what happened — or nothing on an empty day (no spam).
+They reuse the same injectable stdlib ``Transport`` and the same Run-Outcome
+vocabulary; there is no command intake yet.
 """
 from __future__ import annotations
 
 import json
 import urllib.error
 import urllib.request
-from typing import Callable, List, Optional
+from dataclasses import dataclass
+from typing import Callable, List, Optional, Sequence
 
 from agentrail.afk.queue_state import Terminal
 from agentrail.connectors.base import (
@@ -158,3 +166,145 @@ class DiscordConnector(Connector):
         if event.detail:
             line = f"{line}\n{event.detail}"
         return line
+
+
+# --------------------------------------------------------------------------- #
+# Adam — outbound Discord updates (MVP).
+#
+# Adam is the outbound-only half of the Discord channel surface: when a task (an
+# Issue Queue run) reaches a **Run Outcome** terminal it posts a concise per-task
+# update, and once a day it posts a digest summarizing what happened — if anything
+# did. There is no command intake yet (outbound only). These are module-level
+# *seams* the run dispatcher calls; the webhook HTTP stays the same injectable
+# stdlib ``Transport`` the connector uses, so tests run with no live network.
+# --------------------------------------------------------------------------- #
+
+# How each **Run Outcome** terminal buckets in the daily digest, matching the
+# Heartbeat cadence's triage wording (green→merged-ish, escalated, blocked→failed)
+# but kept in Run-Outcome vocabulary so the channel speaks one language.
+_DIGEST_BUCKETS = (
+    (Terminal.GREEN.value, "green"),
+    (Terminal.ESCALATED_TO_HUMAN.value, "escalated"),
+    (Terminal.BLOCKED.value, "failed"),
+)
+
+
+@dataclass(frozen=True)
+class TaskResult:
+    """One finished task (Issue Queue run) the dispatcher hands to Adam.
+
+    ``state`` is the Run-Outcome wording (``green`` / ``escalated-to-human`` /
+    ``blocked``). ``url`` is the branch/PR link if the run produced one; ``cost_usd``
+    is the run's real-dollar cost. These are exactly the fields a per-task update
+    and the daily digest surface.
+    """
+
+    number: int
+    title: str
+    state: str
+    cost_usd: Optional[float] = None
+    url: str = ""
+
+    @property
+    def bucket(self) -> str:
+        """The digest bucket label for this result's terminal (green/escalated/failed)."""
+        for value, label in _DIGEST_BUCKETS:
+            if self.state == value:
+                return label
+        return "failed"  # any unknown/blocked-ish terminal is treated as failed
+
+
+def _post(webhook_url: Optional[str], content: str, transport: Transport) -> None:
+    """Best-effort POST of a channel message. Unconfigured/blip → safe no-op.
+
+    Mirrors :meth:`DiscordConnector.notify`: a missing webhook never wedges a run,
+    and a transport error is swallowed — a notification is best-effort, not a gate.
+    """
+    if not webhook_url:
+        return None
+    try:
+        transport(webhook_url, {"content": content})
+    except (urllib.error.URLError, OSError):
+        return None
+    return None
+
+
+def _fmt_cost(cost_usd: Optional[float]) -> str:
+    """Render a run cost as ``$0.14`` (two decimals), or empty when unknown."""
+    if cost_usd is None:
+        return ""
+    return f"${cost_usd:.2f}"
+
+
+def _render_task_done(result: TaskResult) -> str:
+    """Render the concise per-task update (Run-Outcome vocabulary)."""
+    line = f"AgentRail: #{result.number} {result.title} — {result.state}"
+    extras = []
+    cost = _fmt_cost(result.cost_usd)
+    if cost:
+        extras.append(cost)
+    if result.url:
+        extras.append(result.url)
+    if extras:
+        line = f"{line} ({' · '.join(extras)})"
+    return line
+
+
+def notify_task_done(
+    *,
+    webhook_url: Optional[str],
+    result: TaskResult,
+    transport: Optional[Transport] = None,
+) -> None:
+    """Post a concise per-task update when a run finishes (AC1).
+
+    Surfaces the issue ref/title, the Run-Outcome terminal (green / escalated /
+    blocked), the run cost, and the branch/PR link if any. An unconfigured channel
+    (no ``webhook_url``) is a safe no-op — a missing channel never wedges a run.
+    """
+    _post(webhook_url, _render_task_done(result), transport or _urllib_transport)
+    return None
+
+
+def build_daily_digest(finished: Sequence[TaskResult]) -> Optional[str]:
+    """Summarize the day's finished tasks (AC2/AC3). Pure.
+
+    Buckets each result by its **Run Outcome** terminal into green / escalated /
+    failed, with counts and a short per-issue list. Returns ``None`` for an empty
+    day so the caller posts nothing (AC3, no spam).
+    """
+    if not finished:
+        return None
+
+    buckets: dict[str, List[TaskResult]] = {"green": [], "escalated": [], "failed": []}
+    for result in finished:
+        buckets[result.bucket].append(result)
+
+    lines = [f"AgentRail daily digest — {len(finished)} finished"]
+    for _value, label in _DIGEST_BUCKETS:
+        items = buckets[label]
+        if not items:
+            lines.append(f"- {label}: 0")
+            continue
+        refs = ", ".join(f"#{r.number} {r.title}" for r in items)
+        lines.append(f"- {label}: {len(items)} — {refs}")
+    return "\n".join(lines)
+
+
+def notify_daily_digest(
+    *,
+    webhook_url: Optional[str],
+    finished: Sequence[TaskResult],
+    transport: Optional[Transport] = None,
+) -> None:
+    """Post the daily digest, or nothing on an empty day (AC2/AC3).
+
+    Builds the digest via :func:`build_daily_digest`; when the day is empty the
+    digest is ``None`` and nothing is posted (no spam). An unconfigured channel is
+    also a safe no-op.
+    """
+    text = build_daily_digest(finished)
+    if text is None:
+        return None
+    _post(webhook_url, text, transport or _urllib_transport)
+    return None

@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   Play,
+  ListChecks,
   Package,
   AlertTriangle,
   ShieldCheck,
@@ -28,6 +29,7 @@ interface SidebarProps {
 const navItems = [
   { label: "Overview", href: "", icon: LayoutDashboard },
   { label: "Runs", href: "runs", icon: Play },
+  { label: "Issue Queue", href: "queue", icon: ListChecks },
   { label: "Context Packs", href: "context-packs", icon: Package },
   { label: "Failures", href: "failures", icon: AlertTriangle },
   { label: "Review Gates", href: "review-gates", icon: ShieldCheck },

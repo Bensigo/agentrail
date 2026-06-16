@@ -162,6 +162,7 @@ class RunnerClient:
         branch: str = "",
         gate_reason: str = "",
         logs_tail: str = "",
+        pr_url: str = "",
     ) -> bool:
         """POST a run outcome back to the backend. ``True`` only on a 2xx.
 
@@ -178,6 +179,7 @@ class RunnerClient:
                 "branch": branch,
                 "gate_reason": gate_reason,
                 "logs_tail": logs_tail,
+                "pr_url": pr_url,
             }
         ).encode("utf-8")
         resp = self._transport("POST", url, headers=self._headers(), body=payload)

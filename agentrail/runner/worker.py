@@ -33,6 +33,7 @@ def _report(client, item: WorkItem, result: RunResult) -> None:
         branch=result.branch,
         gate_reason=result.gate_reason,
         logs_tail=result.logs_tail,
+        pr_url=getattr(result, "pr_url", ""),
     )
 
 

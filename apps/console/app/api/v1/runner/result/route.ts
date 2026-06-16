@@ -4,6 +4,7 @@ import {
   touchApiKeyLastUsed,
   type RunnerStatus,
 } from "@agentrail/db-postgres";
+import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 
 const RUNNER_STATUSES: readonly RunnerStatus[] = [
@@ -46,6 +47,7 @@ export async function POST(request: NextRequest) {
     branch?: string;
     gate_reason?: string;
     logs_tail?: string;
+    pr_url?: string;
   };
 
   const { id, workspace_id, status } = body;
@@ -82,6 +84,29 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: "Queue entry not found in this workspace" },
       { status: 404 }
+    );
+  }
+
+  // Timeline state markers: gate verdict, then the PR if one was opened.
+  const now = Date.now();
+  await recordRunLifecycleEvent(
+    workspace_id,
+    id,
+    `gate_${status}`,
+    status === "green"
+      ? "Objective gate green"
+      : status === "running"
+        ? "Run in progress"
+        : `Objective gate ${status}${body.gate_reason ? `: ${body.gate_reason}` : ""}`,
+    now
+  );
+  if (typeof body.pr_url === "string" && body.pr_url) {
+    await recordRunLifecycleEvent(
+      workspace_id,
+      id,
+      "pr_opened",
+      `Pull request opened: ${body.pr_url}`,
+      now + 1
     );
   }
 

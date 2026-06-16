@@ -131,3 +131,5 @@ export type {
   LintFinding,
   LintSeverity,
 } from "./linter";
+
+export { recordRunLifecycleEvent } from "./lifecycle";

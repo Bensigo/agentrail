@@ -52,6 +52,25 @@ from agentrail.afk.queue_state import (
 # Sources an entry can come from (mirrors the schema CHECK / drizzle enum).
 Source = str  # 'cli' | 'github' | 'linear'
 
+# The ``runs.status`` Postgres enum is {queued, running, success, failed}. The
+# dispatcher reports run outcomes in the Run-Outcome vocabulary (green / red /
+# error). Normalize to the enum so register_run never writes an invalid label
+# (caught against a real Postgres; the in-memory test executor accepted anything).
+_RUN_STATUS_ENUM = {
+    "queued": "queued",
+    "running": "running",
+    "success": "success",
+    "failed": "failed",
+    "green": "success",
+    "red": "failed",
+    "error": "failed",
+}
+
+
+def _normalize_run_status(status: str) -> str:
+    """Map a reported run status to the ``runs.status`` enum (unknown → failed)."""
+    return _RUN_STATUS_ENUM.get((status or "").lower(), "failed")
+
 
 class Executor(Protocol):
     """The injectable persistence seam.
@@ -240,7 +259,7 @@ class QueueStore:
                 "workspace_id": ident["workspace_id"],
                 "queue_entry_id": ident["id"],
                 "phase": phase,
-                "status": status,
+                "status": _normalize_run_status(status),
                 "cost_usd": cost_usd,
                 "updated_at": now,
                 # Legacy NOT NULL columns on ``runs`` (pre-MVP) that the

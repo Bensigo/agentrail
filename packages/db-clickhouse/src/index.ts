@@ -114,6 +114,11 @@ export type {
   AgentCostBreakdownRow,
 } from "./cost-meter";
 export {
+  computeHealthRates,
+  ACCEPT_RATE_HEALTH_LINE,
+} from "./health-metrics";
+export type { IssueOutcome, HealthRates } from "./health-metrics";
+export {
   AgentBehaviorLinter,
   DEFAULT_BEHAVIOR_THRESHOLDS,
 } from "./linter";

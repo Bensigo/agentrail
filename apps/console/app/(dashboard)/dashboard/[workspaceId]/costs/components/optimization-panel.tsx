@@ -81,7 +81,7 @@ export function OptimizationPanel({ workspaceId }: OptimizationPanelProps) {
         <Stat
           label="Prompt cache hit rate"
           value={pct(data.cache.hitRate)}
-          sub={`${usd(data.cache.cachedDollarsSaved)} saved vs uncached`}
+          sub={`${data.cache.cacheTokens.toLocaleString()} cache tokens`}
         />
         <Stat
           label="Output : input ratio"

@@ -342,8 +342,10 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     # health view fresh on every run instead of only after a manual
     # `agentrail context index`. build_index already ran incrementally during
     # context-pack retrieval, so this is a cache-hit read plus one POST.
-    # Plan-phase only: once per run is enough.
-    if phase == "plan":
+    # First-phase only: once per run is enough. With the plan phase removed
+    # (MVP), the run's first phase is now ``test-author`` (or ``execute`` when
+    # the spine is explicitly disabled).
+    if phase in ("test-author", "plan"):
         try:
             from agentrail.context.index import build_index
             from agentrail.context.snapshot_push import push_index_snapshot
@@ -561,59 +563,31 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
         budget_usd=budget_usd,
     )
 
-    # 11. Determine plan skip
-
-    # Review-fix check
-    is_review_fix = False
-    try:
-        gh_result = subprocess.run(
-            ["gh", "issue", "view", str(issue),
-             "--json", "labels",
-             "--jq", "[.labels[].name] | join(\",\")"],
-            cwd=target_dir,
-            capture_output=True,
-            text=True,
-        )
-        if gh_result.returncode == 0 and "review-fix" in gh_result.stdout:
-            is_review_fix = True
-    except Exception:
-        pass
-
-    # Resume check
-    prior_plan_output: Optional[str] = None
-    if os.environ.get("AGENTRAIL_RESUME") == "1":
-        for prior_dir in sorted(Path(log_dir).glob(f"*-issue-{issue}-*"), reverse=True):
-            if prior_dir == run_dir:
-                continue
-            plan_status_file = prior_dir / "plan" / "status.json"
-            plan_output_file = prior_dir / "plan" / "output.md"
-            if plan_status_file.exists() and plan_output_file.exists():
-                try:
-                    plan_status = json.loads(plan_status_file.read_text())
-                    if plan_status.get("status") == "completed":
-                        prior_plan_output = plan_output_file.read_text()
-                        break
-                except Exception:
-                    continue
-
-    # 12. Phase execution
+    # 11. Phase execution
+    #
+    # MVP flow (no plan phase): test-author → execute → verify → Objective Gate.
+    # The legacy plan phase has been removed from the DEFAULT run sequence; the
+    # plan prompt/handler in ``run_issue_phase`` is left dormant for any explicit
+    # caller, but ``run_issue`` no longer plans. ``plan_output`` is therefore
+    # always empty here and is passed through only to keep the phase prompt
+    # signature stable (the execute prompt tolerates an empty plan).
     plan_output = ""
     status = 0
     last_phase = "execute"
 
-    if is_review_fix:
-        print(
-            "skipped plan phase (review-fix issue — fix is described in issue body)",
-            file=sys.stderr,
-        )
-        status = 0
-    elif prior_plan_output is not None:
-        plan_output = prior_plan_output
-        status = 0
-        print("skipped plan phase (resumed from prior run)", file=sys.stderr)
-    else:
-        status, plan_output = run_issue_phase(rc, "plan", 1)
-        last_phase = "plan"
+    # The verification spine (ADR 0008) is ON BY DEFAULT in the MVP. A caller
+    # restores the minimal single-execute flow with ``"redGreenProof": false``.
+    require_red_green = red_green_proof_required(target_dir)
+
+    # Test-Author phase (ADR 0008, #775): a DISTINCT Test-Author role authors the
+    # failing acceptance test from the AC BEFORE any implementation (AC1, AC3).
+    # This runs ahead of the RED baseline below so the baseline observes the
+    # *authored* acceptance test failing — that red observation is what proves the
+    # test is real, and the Implementer (execute phase) is a separate role that
+    # turns it green (AC2). It is the FIRST phase now that plan is gone.
+    if status == 0 and require_red_green:
+        status, _ = run_issue_phase(rc, "test-author", 1, plan_output=plan_output)
+        last_phase = "test-author"
 
     if status == 0 and rc.budget_usd > 0 and rc.cumulative_cost_usd >= rc.budget_usd:
         msg = (f"run stopped: ${rc.cumulative_cost_usd:.2f} spent of "
@@ -625,23 +599,12 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
             _log.debug("budget failure push skipped: %s", _exc)
         status = 1
 
-    # Test-Author phase (ADR 0008, #775): when the run opts into the Red-Green
-    # Proof, a DISTINCT Test-Author role authors the failing acceptance test from
-    # the AC BEFORE any implementation (AC1, AC3). This runs ahead of the RED
-    # baseline below so the baseline observes the *authored* acceptance test
-    # failing — that red observation is what proves the test is real, and the
-    # Implementer (execute phase) is a separate role that turns it green (AC2).
-    require_red_green = red_green_proof_required(target_dir)
-    if status == 0 and require_red_green:
-        status, _ = run_issue_phase(rc, "test-author", 1, plan_output=plan_output)
-        last_phase = "test-author"
-
     # Red-Green Proof baseline (ADR 0008, #772): observe the declared acceptance
     # checks BEFORE implementation. With the Test-Author phase above, this
     # reflects the just-authored acceptance test — expected RED here. That red
     # observation is what proves the test is real (not tautological) once the
-    # implementation turns it green. The proof is opt-in (``redGreenProof``
-    # config); absent, behavior is unchanged.
+    # implementation turns it green. With the spine on by default this is the
+    # default path; an explicit ``redGreenProof: false`` opt-out skips it.
     red_green_observations: list[Observation] = []
     if status == 0 and require_red_green:
         try:

@@ -191,8 +191,11 @@ class ModelFlagOnRunIssueTests(unittest.TestCase):
         phase_commands = captured[0]["phase_commands"]
         self.assertIn("execute", phase_commands)
         self.assertIn("--model claude-fable-5", phase_commands["execute"])
-        self.assertIn("plan", phase_commands)
-        self.assertIn("--model claude-fable-5", phase_commands["plan"])
+        # The plan phase is gone (MVP); the model override now lands on the new
+        # first phase, test-author.
+        self.assertIn("test-author", phase_commands)
+        self.assertIn("--model claude-fable-5", phase_commands["test-author"])
+        self.assertNotIn("plan", phase_commands)
 
     def test_model_flag_appended_to_codex_command(self) -> None:
         captured: list[dict] = []
@@ -216,7 +219,8 @@ class ModelFlagOnRunIssueTests(unittest.TestCase):
 
         phase_commands = captured[0]["phase_commands"]
         self.assertIn("-m o3", phase_commands["execute"])
-        self.assertIn("-m o3", phase_commands["plan"])
+        self.assertIn("-m o3", phase_commands["test-author"])
+        self.assertNotIn("plan", phase_commands)
 
 
 # ---------------------------------------------------------------------------

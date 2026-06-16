@@ -401,7 +401,10 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
     # user owns that string entirely and we never mutate it.
     phase_commands: Dict[str, str] = {}
     if not opts.command_explicit:
-        for phase in ("plan", "execute"):
+        # The MVP flow is test-author → execute (the plan phase is gone); keep a
+        # "plan" override resolvable for any dormant caller, but the live phases
+        # are test-author and execute.
+        for phase in ("test-author", "execute"):
             model = resolve_model_for_phase(agent, opts.model, str(target), phase)
             if model:
                 phase_commands[phase] = append_model_to_command(command, agent, model)

@@ -25,16 +25,26 @@ def _make_target(tmp_dir: str) -> Path:
     agentrail_dir = target / ".agentrail"
     agentrail_dir.mkdir(parents=True, exist_ok=True)
     (agentrail_dir / "state.json").write_text(json.dumps({"workflow": {}}))
-    # Passing objective-gate verification so a successful run reaches GREEN
-    # (the gate drives "done" — ADR 0007 / #769).
-    (agentrail_dir / "config.json").write_text(json.dumps({"verify": "true"}))
+    # The verification spine is ON BY DEFAULT (MVP), so a successful run reaches
+    # GREEN only on a genuine red→green trail: the sentinel-file verify is RED at
+    # the baseline and turned GREEN by the execute phase (the stub creates the
+    # sentinel on its execute call). The flow is test-author → execute.
+    (agentrail_dir / "config.json").write_text(
+        json.dumps({"verify": f"test -f {target / 'impl_done'}"})
+    )
     return target
 
 
-def _stub_run_with_timeout(return_code: int, output_text: str = "agent output"):
+def _stub_run_with_timeout(return_code: int, output_text: str = "agent output",
+                           sentinel: Path | None = None):
+    """Stub for run_with_timeout. When ``sentinel`` is given, it is created on the
+    SECOND call (the execute phase, after test-author) so the red→green trail is
+    genuine and the spine-on gate reaches GREEN."""
     def _stub(argv, *, cwd, timeout, output_file, stdin_text=None, env=None):
         _stub.calls.append(argv)
         output_file.write_text(output_text)
+        if sentinel is not None and len(_stub.calls) == 2:
+            sentinel.write_text("x")
         return return_code
     _stub.calls = []
     return _stub
@@ -134,12 +144,13 @@ class TestBudgetExceededAfterPlan(unittest.TestCase):
 class TestUnderBudget(unittest.TestCase):
 
     def test_under_budget_both_phases_run(self):
-        """Cost below budget → both plan and execute run, no failure push."""
+        """Cost below budget → both spine phases (test-author + execute) run,
+        no failure push, gate green."""
         with tempfile.TemporaryDirectory() as tmp:
             target = _make_target(tmp)
             mocks = _apply_common_patches(self, target)
 
-            stub = _stub_run_with_timeout(0)
+            stub = _stub_run_with_timeout(0, sentinel=target / "impl_done")
             mock_usage = MagicMock()
 
             with patch("agentrail.run.pipeline.run_with_timeout", stub), \
@@ -176,7 +187,7 @@ class TestZeroBudgetIsUnlimited(unittest.TestCase):
             target = _make_target(tmp)
             mocks = _apply_common_patches(self, target)
 
-            stub = _stub_run_with_timeout(0)
+            stub = _stub_run_with_timeout(0, sentinel=target / "impl_done")
             mock_usage = MagicMock()
 
             with patch("agentrail.run.pipeline.run_with_timeout", stub), \

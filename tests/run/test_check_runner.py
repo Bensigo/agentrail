@@ -22,6 +22,7 @@ from agentrail.run.check_runner import (
     ac_coverage_for,
     exit_code_to_check_result,
     parse_verify_config,
+    red_green_proof_required,
     run_objective_checks,
 )
 from agentrail.run.objective_gate import AcCoverage, CheckResult
@@ -167,6 +168,48 @@ class RunObjectiveChecksTest(unittest.TestCase):
         self._write_config({"verify": "true"})
         results = run_objective_checks(self.target_dir)
         self.assertIsInstance(results[0], CheckResult)
+
+
+class RedGreenProofRequiredDefaultTest(unittest.TestCase):
+    """red_green_proof_required: the verification spine is ON BY DEFAULT (MVP).
+
+    The spine is the default unless a caller explicitly opts out with
+    ``"redGreenProof": false`` (AC2/AC3).
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target_dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write_config(self, payload: dict) -> None:
+        cfg = self.target_dir / ".agentrail" / "config.json"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(json.dumps(payload))
+
+    def test_no_config_is_on_by_default(self) -> None:
+        """No config file at all → spine ON (the gate will then be RED if no
+        verify is declared — an honest default, never a silent pass)."""
+        self.assertTrue(red_green_proof_required(self.target_dir))
+
+    def test_config_without_flag_is_on_by_default(self) -> None:
+        self._write_config({"verify": "true"})
+        self.assertTrue(red_green_proof_required(self.target_dir))
+
+    def test_explicit_true_is_on(self) -> None:
+        self._write_config({"redGreenProof": True})
+        self.assertTrue(red_green_proof_required(self.target_dir))
+
+    def test_null_flag_is_on_by_default(self) -> None:
+        self._write_config({"redGreenProof": None})
+        self.assertTrue(red_green_proof_required(self.target_dir))
+
+    def test_explicit_false_opts_out(self) -> None:
+        """AC3: an explicit ``redGreenProof: false`` is the documented opt-out."""
+        self._write_config({"redGreenProof": False})
+        self.assertFalse(red_green_proof_required(self.target_dir))
 
 
 if __name__ == "__main__":

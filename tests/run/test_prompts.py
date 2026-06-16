@@ -953,6 +953,74 @@ class ExecuteImplementerBoundaryTests(unittest.TestCase):
         )
 
 
+class VerifierPromptTests(unittest.TestCase):
+    """The ``verify`` phase prompt: **Independent Verification** (issue #782,
+    ADR 0008). A DIFFERENT model than the Implementer runs a blocking, narrow
+    check that the solution AND tests genuinely satisfy the AC and stay in scope,
+    and emits a structured accept/reject verdict."""
+
+    def _make(self, issue=7):
+        from agentrail.run.prompts import issue_run_phase_prompt
+        return issue_run_phase_prompt(
+            "verify", issue,
+            issue_context="Add a greet() function.\n## Acceptance criteria\n- greets",
+            base_prompt="BASE",
+            context_summary="CTX",
+        )
+
+    def test_identifies_as_verifier_role(self):
+        result = self._make()
+        self.assertIn("VERIFIER", result)
+
+    def test_states_independent_verification(self):
+        result = self._make()
+        self.assertIn("Independent Verification", result)
+
+    def test_states_different_model_than_implementer(self):
+        """AC1: the verifier is a different model than the implementer."""
+        result = self._make()
+        self.assertIn("different model", result)
+        self.assertIn("Implementer", result)
+
+    def test_is_blocking_and_narrow(self):
+        result = self._make()
+        self.assertIn("blocking", result.lower())
+        self.assertIn("narrow", result.lower())
+
+    def test_checks_ac_and_scope(self):
+        """The verifier checks the change + tests satisfy the AC and stay in scope."""
+        result = self._make()
+        self.assertIn("acceptance criteria", result.lower())
+        self.assertIn("scope", result.lower())
+
+    def test_must_reject_gamed_or_tautological_tests(self):
+        """AC2: a tautological/gamed test must be rejected."""
+        result = self._make()
+        self.assertIn("tautological", result.lower())
+
+    def test_not_a_taste_review(self):
+        """CONTEXT.md: it is a meta-check on the gate, not a style/taste review."""
+        result = self._make()
+        self.assertIn("not a", result.lower())
+        self.assertIn("taste", result.lower())
+
+    def test_requires_structured_verdict_output(self):
+        """The verdict must be a structured, machine-parseable accept/reject."""
+        result = self._make()
+        self.assertIn("VERDICT:", result)
+        self.assertIn("accept", result)
+        self.assertIn("reject", result)
+
+    def test_does_not_edit_or_implement(self):
+        result = self._make()
+        self.assertIn("Do not", result)
+
+    def test_carries_issue_number_and_context(self):
+        result = self._make(issue=42)
+        self.assertIn("#42", result)
+        self.assertIn("Add a greet() function.", result)
+
+
 class IssueRunPhasePromptUnknownPhaseTests(unittest.TestCase):
     def test_unknown_phase_raises(self):
         from agentrail.run.prompts import issue_run_phase_prompt

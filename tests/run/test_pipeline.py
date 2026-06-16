@@ -1670,5 +1670,150 @@ class RunIssueAntiFalseGreenTrailTests(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Independent Verifier wiring (issue #782, ADR 0008)
+# ---------------------------------------------------------------------------
+
+class RunIssueVerifierWiringTests(unittest.TestCase):
+    """When a DIFFERENT-model verifier command is configured (phase_commands
+    carries a distinct ``verify`` command) and the Red-Green Proof is on, the
+    pipeline runs a ``verify`` phase after execute, parses the structured verdict
+    from its output, and feeds it into the Objective Gate. A REJECT blocks done
+    (AC3); an ACCEPT lets a genuine trail reach GREEN. Without a verifier command
+    no verify phase runs (behavior unchanged).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_config(self, payload):
+        cfg = self.target / ".agentrail" / "config.json"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(json.dumps(payload))
+
+    def _run(self, *, phase_commands=None, verify_output="", execute_side_effect=None):
+        phase_calls = []
+
+        def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            phase_calls.append(phase)
+            if phase == "execute" and execute_side_effect is not None:
+                execute_side_effect()
+            # The verify phase writes its verdict to output.md — emulate the agent
+            # by writing the configured verdict text there.
+            if phase == "verify":
+                out = rc.run_dir / "verify" / "output.md"
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(verify_output)
+            return (0, "PLAN OUT") if phase == "plan" else (0, "")
+
+        gh_mock = MagicMock()
+        gh_mock.returncode = 1
+        gh_mock.stdout = ""
+
+        with patch("agentrail.run.pipeline.ctx.issue_resolution_text", return_value="T"), \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state"), \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
+             patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
+            result = run_issue(
+                self.target, 7, agent="claude", command="c", repo_dir=self.repo,
+                phase_commands=phase_commands or {},
+            )
+        runs_dir = self.target / ".agentrail" / "runs"
+        run_dir = next(runs_dir.iterdir())
+        return result, _read_json(run_dir / "run.json"), phase_calls
+
+    def test_verify_phase_runs_after_execute_with_distinct_command(self):
+        """AC1: a distinct verifier command → a verify phase runs after execute."""
+        sentinel = self.target / "impl_done"
+        self._write_config({"verify": f"test -f {sentinel}", "redGreenProof": True})
+        _, _, phase_calls = self._run(
+            phase_commands={"verify": "claude -p --model claude-sonnet-4-6"},
+            verify_output='VERDICT: {"verdict": "accept", "reason": "ok"}',
+            execute_side_effect=lambda: sentinel.write_text("x"),
+        )
+        self.assertIn("verify", phase_calls)
+        self.assertLess(phase_calls.index("execute"), phase_calls.index("verify"))
+
+    def test_verifier_rejection_blocks_done(self):
+        """AC2+AC3: the verifier REJECTS a gamed test → gate RED → not done, even
+        though the implementer's trail is genuine and verify passes."""
+        sentinel = self.target / "impl_done"
+        self._write_config({"verify": f"test -f {sentinel}", "redGreenProof": True})
+        result, run_json, _ = self._run(
+            phase_commands={"verify": "claude -p --model claude-sonnet-4-6"},
+            verify_output='VERDICT: {"verdict": "reject", "reason": "tautological test"}',
+            execute_side_effect=lambda: sentinel.write_text("x"),
+        )
+        self.assertNotEqual(result, 0)
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "red")
+        self.assertTrue(
+            any("verification" in r.lower()
+                for r in run_json["objectiveGate"]["failedReasons"])
+        )
+
+    def test_verifier_acceptance_allows_genuine_trail_to_green(self):
+        """A genuine red→green trail + an ACCEPT verdict reaches done."""
+        sentinel = self.target / "impl_done"
+        self._write_config({"verify": f"test -f {sentinel}", "redGreenProof": True})
+        result, run_json, _ = self._run(
+            phase_commands={"verify": "claude -p --model claude-sonnet-4-6"},
+            verify_output='VERDICT: {"verdict": "accept", "reason": "tests pin the AC"}',
+            execute_side_effect=lambda: sentinel.write_text("x"),
+        )
+        self.assertEqual(result, 0)
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
+
+    def test_unparseable_verifier_output_failcloses_to_reject(self):
+        """A verifier that emits no verdict is fail-closed → done blocked."""
+        sentinel = self.target / "impl_done"
+        self._write_config({"verify": f"test -f {sentinel}", "redGreenProof": True})
+        result, run_json, _ = self._run(
+            phase_commands={"verify": "claude -p --model claude-sonnet-4-6"},
+            verify_output="the verifier crashed",
+            execute_side_effect=lambda: sentinel.write_text("x"),
+        )
+        self.assertNotEqual(result, 0)
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "red")
+
+    def test_no_verify_phase_without_verifier_command(self):
+        """No distinct verifier command (e.g. no different model available) →
+        no verify phase runs; the red-green-only behavior is unchanged."""
+        sentinel = self.target / "impl_done"
+        self._write_config({"verify": f"test -f {sentinel}", "redGreenProof": True})
+        result, run_json, phase_calls = self._run(
+            phase_commands={},  # no verifier command
+            execute_side_effect=lambda: sentinel.write_text("x"),
+        )
+        self.assertNotIn("verify", phase_calls)
+        self.assertEqual(result, 0)
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
+
+    def test_no_verify_phase_when_red_green_off(self):
+        """Without the redGreenProof opt-in, the verifier never runs even if a
+        verifier command is present (the role split is behind the opt-in seam)."""
+        self._write_config({"verify": "true"})
+        _, _, phase_calls = self._run(
+            phase_commands={"verify": "claude -p --model claude-sonnet-4-6"},
+        )
+        self.assertNotIn("verify", phase_calls)
+
+
 if __name__ == "__main__":
     unittest.main()

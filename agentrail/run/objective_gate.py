@@ -109,12 +109,14 @@ def evaluate(
     checks: Sequence[CheckResult],
     ac_coverage: AcCoverage,
     red_green_evidence: Optional[Mapping[str, Any]] = None,
+    verification_evidence: Optional[Mapping[str, Any]] = None,
 ) -> GateResult:
     """Evaluate the Objective Gate.
 
     Green ONLY when every objective check (tests/build/lint) passed AND the
     acceptance-criteria coverage is satisfied AND — when a Red-Green Proof trail
-    is required — that trail is valid. Otherwise red, with ``failed_reasons``
+    is required — that trail is valid AND — when Independent Verification ran —
+    the Verifier accepted the change. Otherwise red, with ``failed_reasons``
     naming each failure.
 
     Args:
@@ -125,6 +127,13 @@ def evaluate(
             ``required`` and ``valid`` flags. When ``required`` is true and
             ``valid`` is false the gate is red even on an all-pass run. ``None``
             means no proof is required (this PR's default).
+        verification_evidence: optional **Independent Verification** seam (#782,
+            ADR 0008). A mapping with ``required`` and ``valid`` flags. When a
+            *different-model* Verifier ran and REJECTED the change
+            (``required=True, valid=False``) the gate is red even on an all-pass
+            run — a blocking Verifier rejection blocks done (AC3). ``None`` means
+            the verifier did not run (e.g. the proof is off), leaving prior
+            behavior unchanged.
     """
     evidence: List[Evidence] = []
     failed_reasons: List[str] = []
@@ -163,6 +172,23 @@ def evaluate(
         )
         if not valid:
             failed_reasons.append("red-green proof trail invalid")
+
+    # Independent Verification seam (#782): a blocking, narrow check by a
+    # DIFFERENT model than the Implementer. Only gates when the verifier ran
+    # (``required``). A rejection (``valid=False``) blocks done even on an
+    # all-pass run — the maker cannot grade its own homework (AC3).
+    if verification_evidence is not None and verification_evidence.get("required"):
+        accepted = bool(verification_evidence.get("valid"))
+        detail = (
+            "verifier accepted"
+            if accepted
+            else str(verification_evidence.get("reason") or "verifier rejected")
+        )
+        evidence.append(
+            Evidence(name="independent-verification", passed=accepted, detail=detail)
+        )
+        if not accepted:
+            failed_reasons.append("independent verification rejected")
 
     return GateResult(
         is_green=not failed_reasons,

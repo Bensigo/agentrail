@@ -142,3 +142,102 @@ def test_run_issue_full_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert last_run.get("status") == "completed", (
         f"last completed run status must be 'completed', got {last_run.get('status')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Independent Verifier e2e (issue #782, ADR 0008)
+# ---------------------------------------------------------------------------
+
+def _make_redgreen_target(tmp_path: Path, verifier_verdict: str) -> tuple[Path, Path, Path]:
+    """Set up a target whose Red-Green Proof is on, with a real fail→pass trail
+    and a stub verifier that emits ``verifier_verdict``.
+
+    Returns (target, plan/execute stub agent, verifier stub agent). The execute
+    stub creates an ``impl_done`` sentinel so the declared ``verify`` check is RED
+    at the baseline and GREEN after execute — a genuine trail. The verifier stub
+    writes the given verdict to stdout (captured into the verify phase output).
+    """
+    agentrail_dir = tmp_path / ".agentrail"
+    agentrail_dir.mkdir(parents=True)
+    (agentrail_dir / "state.json").write_text(json.dumps({"workflow": {}}))
+    sentinel = tmp_path / "impl_done"
+    (agentrail_dir / "config.json").write_text(json.dumps({
+        "verify": f"test -f {sentinel}",
+        "redGreenProof": True,
+    }))
+
+    # Implementer stub: on the execute phase it creates the sentinel (turns the
+    # acceptance check green). Plan/test-author/verify produce nothing harmful.
+    # We distinguish execute by reading the phase prompt on stdin.
+    impl_agent = tmp_path / "impl-agent"
+    impl_agent.write_text(
+        "#!/bin/sh\n"
+        "in=$(cat)\n"
+        "case \"$in\" in\n"
+        f"  *'phase 2 of 2: execute'*) : > '{sentinel}' ;;\n"
+        "esac\n"
+        "exit 0\n"
+    )
+    impl_agent.chmod(impl_agent.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    # Verifier stub: emits the configured structured verdict on stdout.
+    verifier_agent = tmp_path / "verifier-agent"
+    verifier_agent.write_text("#!/bin/sh\ncat >/dev/null\n" + f"echo '{verifier_verdict}'\n")
+    verifier_agent.chmod(
+        verifier_agent.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH
+    )
+
+    return tmp_path, impl_agent, verifier_agent
+
+
+def _run_redgreen(target: Path, impl_agent: Path, verifier_agent: Path):
+    skills_result = {**_STUB_SKILLS, "targetDir": str(target)}
+    with (
+        patch("agentrail.run.context.issue_resolution_text", return_value="Issue #1\nAdd feature"),
+        patch("agentrail.run.context.build_issue_context_pack", return_value=None),
+        patch("agentrail.run.context.context_selected_snippets", return_value=""),
+        patch("agentrail.run.context.context_retrieval_metadata", return_value={}),
+        patch("agentrail.run.skills.resolve_skills", return_value=skills_result),
+    ):
+        exit_code = run_issue(
+            target, 1,
+            agent="stub",
+            command=str(impl_agent),
+            repo_dir=target,
+            # Verifier runs on a DIFFERENT command (a different model in practice).
+            phase_commands={"verify": str(verifier_agent)},
+        )
+    runs_dir = target / ".agentrail" / "runs"
+    run_dir = next(runs_dir.glob("*-issue-1-stub-*"))
+    return exit_code, json.loads((run_dir / "run.json").read_text())
+
+
+def test_verifier_rejection_blocks_done_e2e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AC2+AC3 (hermetic e2e): a genuine red→green trail with a verifier that
+    REJECTS the test → the Objective Gate is RED and run_issue returns non-zero.
+    A rejected Independent Verification blocks done."""
+    monkeypatch.setenv("AGENTRAIL_AGENT_TIMEOUT", "30")
+    target, impl_agent, verifier_agent = _make_redgreen_target(
+        tmp_path, '{"verdict": "reject", "reason": "tautological test"}'
+    )
+    exit_code, run_meta = _run_redgreen(target, impl_agent, verifier_agent)
+
+    assert exit_code != 0, "a verifier rejection must block done (non-zero exit)"
+    assert run_meta["objectiveGate"]["verdict"] == "red"
+    assert any(
+        "verification" in r.lower()
+        for r in run_meta["objectiveGate"]["failedReasons"]
+    )
+
+
+def test_verifier_acceptance_reaches_done_e2e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A genuine red→green trail + a verifier ACCEPT verdict reaches done (green,
+    exit 0) — the verifier confirms the AC are satisfied."""
+    monkeypatch.setenv("AGENTRAIL_AGENT_TIMEOUT", "30")
+    target, impl_agent, verifier_agent = _make_redgreen_target(
+        tmp_path, '{"verdict": "accept", "reason": "tests pin the AC"}'
+    )
+    exit_code, run_meta = _run_redgreen(target, impl_agent, verifier_agent)
+
+    assert exit_code == 0
+    assert run_meta["objectiveGate"]["verdict"] == "green"

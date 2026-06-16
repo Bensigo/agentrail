@@ -25,6 +25,8 @@ from agentrail.cli.commands.run import (
     parse_run_options,
     resolve_model_for_phase,
     resolve_model_from_config,
+    resolve_verifier_command,
+    verifier_candidate_models,
 )
 
 
@@ -357,6 +359,105 @@ class ParseBatchArgsModelTests(unittest.TestCase):
     def test_model_default_empty(self) -> None:
         cfg = parse_batch_args(["42"])
         self.assertEqual(cfg.model, "")
+
+
+# ---------------------------------------------------------------------------
+# Independent Verifier: a DIFFERENT-model verify command (issue #782, AC1)
+# ---------------------------------------------------------------------------
+
+class ResolveVerifierCommandTests(unittest.TestCase):
+    def _make_target(self, runners_cfg: dict) -> str:
+        d = tempfile.mkdtemp()
+        agentrail_dir = Path(d) / ".agentrail"
+        agentrail_dir.mkdir()
+        (agentrail_dir / "config.json").write_text(
+            json.dumps({"runners": runners_cfg})
+        )
+        return d
+
+    def test_verifier_uses_model_different_from_implementer(self) -> None:
+        """AC1: the implementer runs execute on one model; the verifier command
+        carries a DIFFERENT model."""
+        target = self._make_target({
+            "claude": {"models": {"execute": "claude-opus-4-8",
+                                  "verify": "claude-sonnet-4-6"}}
+        })
+        cmd = resolve_verifier_command("claude", "claude -p", "", target)
+        self.assertIn("--model claude-sonnet-4-6", cmd)
+        self.assertNotIn("claude-opus-4-8", cmd)
+
+    def test_falls_back_to_other_phase_model_when_no_explicit_verify(self) -> None:
+        target = self._make_target({
+            "claude": {"models": {"execute": "claude-opus-4-8",
+                                  "plan": "claude-sonnet-4-6"}}
+        })
+        cmd = resolve_verifier_command("claude", "claude -p", "", target)
+        self.assertIn("--model claude-sonnet-4-6", cmd)
+
+    def test_empty_when_only_one_model_available(self) -> None:
+        """No model distinct from the implementer → no verifier command (the
+        pipeline then runs no verify phase; AC1 forbids a same-model verifier)."""
+        target = self._make_target({"claude": {"model": "claude-opus-4-8"}})
+        self.assertEqual(
+            resolve_verifier_command("claude", "claude -p", "", target), ""
+        )
+
+    def test_empty_when_no_config(self) -> None:
+        d = tempfile.mkdtemp()
+        self.assertEqual(resolve_verifier_command("claude", "claude -p", "", d), "")
+
+    def test_candidates_prefer_explicit_verify_model(self) -> None:
+        target = self._make_target({
+            "claude": {"model": "flat-m",
+                       "models": {"execute": "exec-m", "verify": "verify-m"}}
+        })
+        candidates = verifier_candidate_models("claude", target)
+        self.assertEqual(candidates[0], "verify-m")
+
+
+class VerifierCommandOnExecIssueTests(unittest.TestCase):
+    """exec_issue sets phase_commands['verify'] with a different-model command
+    when one is available, and omits it otherwise."""
+
+    def _run_and_capture(self, runners_cfg: dict) -> dict:
+        captured: list[dict] = []
+
+        def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
+                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0):
+            captured.append({"phase_commands": phase_commands or {}})
+            return 0
+
+        with patch("agentrail.run.pipeline.run_issue", side_effect=fake_run_issue), \
+             patch("agentrail.cli.commands.run._repo_dir", return_value=Path("/repo")):
+            with tempfile.TemporaryDirectory() as td:
+                agentrail_dir = Path(td) / ".agentrail"
+                agentrail_dir.mkdir()
+                (agentrail_dir / "config.json").write_text(
+                    json.dumps({"runners": runners_cfg})
+                )
+                opts = RunOptions(
+                    agent="claude",
+                    target=td,
+                    command="claude -p --dangerously-skip-permissions",
+                    model="",
+                    command_explicit=False,
+                )
+                exec_issue(1, opts)
+        return captured[0]["phase_commands"]
+
+    def test_verify_phase_command_set_with_distinct_model(self) -> None:
+        phase_commands = self._run_and_capture({
+            "claude": {"models": {"execute": "claude-opus-4-8",
+                                  "verify": "claude-sonnet-4-6"}}
+        })
+        self.assertIn("verify", phase_commands)
+        self.assertIn("--model claude-sonnet-4-6", phase_commands["verify"])
+
+    def test_no_verify_phase_command_when_single_model(self) -> None:
+        phase_commands = self._run_and_capture({
+            "claude": {"model": "claude-opus-4-8"}
+        })
+        self.assertNotIn("verify", phase_commands)
 
 
 if __name__ == "__main__":

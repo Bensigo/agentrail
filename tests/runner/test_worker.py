@@ -135,6 +135,56 @@ def test_worker_stops_cleanly_on_auth_error():
     assert executed == []  # returned without crashing
 
 
+def test_worker_runs_multiple_items_concurrently():
+    # With concurrency=3, three slots drain a shared queue so 6 items finish in
+    # ~2 waves instead of 6 serial ones — and the atomic claim means no item is
+    # processed twice.
+    import threading
+
+    lock = threading.Lock()
+    pending = [_item(str(n)) for n in range(6)]
+    reported: List[str] = []
+    max_in_flight = {"now": 0, "peak": 0}
+
+    class ConcurrentClient:
+        def claim_next(self):
+            with lock:
+                return pending.pop(0) if pending else None
+
+        def report_result(self, item, **kw):
+            with lock:
+                reported.append(item.id)
+                max_in_flight["now"] -= 1
+            return True
+
+    def execute(item: WorkItem) -> RunResult:
+        with lock:
+            max_in_flight["now"] += 1
+            max_in_flight["peak"] = max(max_in_flight["peak"], max_in_flight["now"])
+        # Hold the slot briefly so overlap is observable.
+        import time as _t
+
+        _t.sleep(0.02)
+        return RunResult(status="green")
+
+    # Stop once all 6 are reported.
+    def should_continue() -> bool:
+        with lock:
+            return len(reported) < 6
+
+    run_worker(
+        ConcurrentClient(),
+        execute=execute,
+        sleep=lambda _s: None,
+        concurrency=3,
+        should_continue=should_continue,
+    )
+
+    assert sorted(reported) == [f"wi-{n}" for n in range(6)]  # all done, no dupes
+    assert len(set(reported)) == 6
+    assert max_in_flight["peak"] >= 2  # genuinely overlapped
+
+
 def test_worker_survives_a_transient_claim_error_and_keeps_polling():
     # A non-auth claim error (server hiccup) should not kill the daemon: it
     # sleeps and tries again, eventually picking up the item.

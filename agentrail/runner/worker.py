@@ -12,8 +12,9 @@ hermetic in tests and so the same loop drives both a long-running daemon
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from typing import Callable, Optional
+from typing import Callable
 
 from agentrail.runner.client import RunnerAuthError, WorkItem
 from agentrail.sandbox.docker_runner import RunResult
@@ -35,30 +36,30 @@ def _report(client, item: WorkItem, result: RunResult) -> None:
     )
 
 
-def run_worker(
+def _run_slot(
     client,
     *,
     execute: Execute,
-    sleep: Callable[[float], None] = time.sleep,
-    idle_seconds: float = 10.0,
-    should_continue: Callable[[], bool] = lambda: True,
+    sleep: Callable[[float], None],
+    idle_seconds: float,
+    should_continue: Callable[[], bool],
+    stop: threading.Event,
 ) -> None:
-    """Run the claim→execute→report loop until ``should_continue()`` is false.
+    """One worker slot: the serial claim→execute→report loop.
 
-    Each cycle claims one item. With work, it runs and reports it, then loops
-    immediately (more may be queued). With nothing to claim, it waits
-    ``idle_seconds`` before trying again. An execution that raises is reported as
-    an ``error`` outcome and the loop continues — one bad issue never takes the
-    worker down.
+    ``run_worker`` runs ``concurrency`` of these. Because the backend's claim is
+    atomic (``FOR UPDATE SKIP LOCKED``), N slots never grab the same item, so N
+    issues run truly in parallel. ``stop`` is shared: a terminal auth failure in
+    any slot signals all of them to exit.
     """
-    while should_continue():
+    while should_continue() and not stop.is_set():
         try:
             item = client.claim_next()
         except RunnerAuthError as exc:
-            # A rejected token is terminal — no amount of retrying fixes it.
-            # Stop the loop with a clear message instead of crashing.
+            # A rejected token is terminal for every slot — no retry fixes it.
             _log.error("%s", exc)
             print(f"\nRunner stopped: {exc}")
+            stop.set()
             return
         except Exception as exc:  # noqa: BLE001 — a server hiccup must not kill it
             _log.warning("claim failed (will retry): %s", exc)
@@ -76,3 +77,57 @@ def run_worker(
             _report(client, item, result)
         except Exception as exc:  # noqa: BLE001 — reporting is best-effort
             _log.warning("could not report result for %s: %s", item.id, exc)
+
+
+def run_worker(
+    client,
+    *,
+    execute: Execute,
+    sleep: Callable[[float], None] = time.sleep,
+    idle_seconds: float = 10.0,
+    should_continue: Callable[[], bool] = lambda: True,
+    concurrency: int = 1,
+) -> None:
+    """Run the claim→execute→report loop until ``should_continue()`` is false.
+
+    With ``concurrency=1`` (default) this is a single serial loop in the caller's
+    thread. With ``concurrency>1`` it runs that many slots on background threads,
+    so up to N dispatched issues execute at once — and the atomic backend claim
+    guarantees no two slots take the same issue. Each slot, with nothing to
+    claim, waits ``idle_seconds`` before retrying; an execution that raises is
+    reported as ``error`` and the slot keeps going.
+    """
+    concurrency = max(1, int(concurrency))
+    stop = threading.Event()
+
+    if concurrency == 1:
+        _run_slot(
+            client,
+            execute=execute,
+            sleep=sleep,
+            idle_seconds=idle_seconds,
+            should_continue=should_continue,
+            stop=stop,
+        )
+        return
+
+    threads = [
+        threading.Thread(
+            target=_run_slot,
+            args=(client,),
+            kwargs=dict(
+                execute=execute,
+                sleep=sleep,
+                idle_seconds=idle_seconds,
+                should_continue=should_continue,
+                stop=stop,
+            ),
+            daemon=True,
+            name=f"runner-slot-{i}",
+        )
+        for i in range(concurrency)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()

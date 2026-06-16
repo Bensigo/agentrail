@@ -5,10 +5,11 @@ dispatched issues from the backend, runs each one locally (host-native, on the
 user's own agent subscription), and reports the outcome back. No DB URL, no API
 key, no webhook forwarding — the backend owns all of that.
 
-  agentrail runner [--idle SECONDS] [--once]
+  agentrail runner [--idle SECONDS] [--once] [--concurrency N]
 
 ``--once`` drains a single claim and exits (handy for a cron tick); the default
-runs forever.
+runs forever. ``--concurrency N`` runs N issues at once (the backend's atomic
+claim keeps two slots from grabbing the same issue).
 """
 from __future__ import annotations
 
@@ -61,6 +62,7 @@ def _make_execute(creds):
 def run_runner(args: List[str]) -> int:
     idle = 10.0
     once = False
+    concurrency = 1
     i = 0
     while i < len(args):
         a = args[i]
@@ -76,6 +78,16 @@ def run_runner(args: List[str]) -> int:
                 idle = float(args[i])
             except ValueError:
                 print("error: --idle must be a number", file=sys.stderr)
+                return 1
+        elif a == "--concurrency":
+            i += 1
+            if i >= len(args):
+                print("error: --concurrency requires a value", file=sys.stderr)
+                return 1
+            try:
+                concurrency = max(1, int(args[i]))
+            except ValueError:
+                print("error: --concurrency must be an integer", file=sys.stderr)
                 return 1
         elif a == "--once":
             once = True
@@ -95,9 +107,16 @@ def run_runner(args: List[str]) -> int:
         workspace_id=creds.workspace_id,
     )
 
+    # --once drains a single claim; concurrency only applies to the watch loop.
+    if once:
+        concurrency = 1
     print(
         f"Runner active — workspace {creds.workspace_id} @ {creds.base_url}. "
-        f"{'Draining one claim.' if once else 'Watching for queued issues.'}"
+        + (
+            "Draining one claim."
+            if once
+            else f"Watching for queued issues ({concurrency} in parallel)."
+        )
     )
 
     # --once: process at most one cycle. Default: run forever.
@@ -119,6 +138,7 @@ def run_runner(args: List[str]) -> int:
             sleep=time.sleep,
             idle_seconds=idle,
             should_continue=should_continue,
+            concurrency=concurrency,
         )
     except KeyboardInterrupt:
         print("\nRunner stopped.")

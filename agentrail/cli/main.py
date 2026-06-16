@@ -72,7 +72,7 @@ def _usage() -> str:
         "  agentrail login [--url BASE_URL]\n"
         "  agentrail logout\n"
         "  agentrail whoami\n"
-        "  agentrail runner [--idle SECONDS] [--once]\n"
+        "  agentrail runner [--idle SECONDS] [--once] [--concurrency N]\n"
         "  agentrail timeline [--target DIR]\n"
         "  agentrail cost [--target DIR] [--run ID] [--since REF] [--json]\n"
         "  agentrail cost [RUN_ID] --recommend [--json]\n"

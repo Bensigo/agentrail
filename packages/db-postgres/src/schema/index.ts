@@ -10,3 +10,4 @@ export * from "./api_keys.js";
 export * from "./review_gates.js";
 export * from "./memory_items.js";
 export * from "./workspace_invites.js";
+export * from "./queue_entries.js";

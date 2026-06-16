@@ -12,8 +12,14 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agentrail.run import artifacts, context as ctx, prompts, skills, state as state_mod
-from agentrail.run.check_runner import ac_coverage_for, load_verify_checks, run_objective_checks
+from agentrail.run.check_runner import (
+    ac_coverage_for,
+    load_verify_checks,
+    red_green_proof_required,
+    run_objective_checks,
+)
 from agentrail.run.objective_gate import CheckResult, GateResult, evaluate
+from agentrail.run.red_green import Observation, gate_evidence, verify_trail
 from agentrail.run.activity_push import push_agent_activity
 from agentrail.run.context_pack_push import push_context_pack
 from agentrail.run.cost_push import build_cost_record, push_cost_event
@@ -614,6 +620,22 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
             _log.debug("budget failure push skipped: %s", _exc)
         status = 1
 
+    # Red-Green Proof baseline (ADR 0008, #772): when the run opts into the
+    # proof, observe the declared acceptance checks BEFORE implementation. They
+    # are expected to be RED here — that red observation is what proves the test
+    # is real (not tautological) once the implementation turns it green. The
+    # proof is opt-in (``redGreenProof`` config); absent, behavior is unchanged.
+    require_red_green = red_green_proof_required(target_dir)
+    red_green_observations: list[Observation] = []
+    if status == 0 and require_red_green:
+        try:
+            baseline = run_objective_checks(target_dir)
+            red_green_observations.extend(
+                Observation(test=c.name, passed=c.passed) for c in baseline
+            )
+        except Exception as _exc:  # pragma: no cover - defensive
+            _log.debug("red-green baseline skipped: %s", _exc)
+
     if status == 0:
         status, _ = run_issue_phase(rc, "execute", 1, verifier_findings_file="", plan_output=plan_output)
         last_phase = "execute"
@@ -636,7 +658,25 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
             for c in declared
         ]
 
-    gate_result = evaluate(checks=gate_checks, ac_coverage=ac_coverage_for(declared))
+    # Red-Green Proof (ADR 0008, #772): when required, the post-implementation
+    # check results are the GREEN half of the trail. Combined with the
+    # pre-implementation RED baseline above, the recorder decides whether a valid
+    # fail→pass trail exists. The Objective Gate consults this evidence — a
+    # never-failed (tautological) acceptance test cannot produce a valid trail
+    # and so cannot reach done (AC3). When the proof is not required, no evidence
+    # is passed and the gate's behavior is unchanged.
+    red_green_evidence: Optional[Dict[str, Any]] = None
+    if require_red_green:
+        red_green_observations.extend(
+            Observation(test=c.name, passed=c.passed) for c in gate_checks
+        )
+        red_green_evidence = gate_evidence(verify_trail(red_green_observations))
+
+    gate_result = evaluate(
+        checks=gate_checks,
+        ac_coverage=ac_coverage_for(declared),
+        red_green_evidence=red_green_evidence,
+    )
     outcome = finalize_objective_gate(metadata_file, gate_result=gate_result, review_advisory=None)
 
     # Done is gate-driven: green → exit 0; red → non-zero. Preserve a genuine

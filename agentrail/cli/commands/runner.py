@@ -32,7 +32,7 @@ def _make_execute():
         return runner(
             repo_url=item.repo_url,
             ref=item.ref,
-            issue_ref=item.external_id,
+            issue_ref=item.issue_number,  # bare number; `run issue` rejects repo#N
             workspace_id=item.workspace_id,
             env=dict(os.environ),
         )

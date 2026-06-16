@@ -94,6 +94,23 @@ def test_claim_next_returns_none_when_nothing_grabbable():
     assert _client(transport).claim_next() is None
 
 
+def test_workitem_issue_number_extracts_bare_number():
+    # external_id is the GitHub identity (`repo#number`), but `agentrail run
+    # issue` needs the bare number. issue_number bridges that.
+    assert WorkItem(
+        id="x", workspace_id="w", source="github",
+        external_id="Bensigo/agentrail#826", repo_url="", ref="main",
+        title="", body="",
+    ).issue_number == "826"
+
+
+def test_workitem_issue_number_passthrough_when_already_numeric():
+    assert WorkItem(
+        id="x", workspace_id="w", source="github",
+        external_id="42", repo_url="", ref="main", title="", body="",
+    ).issue_number == "42"
+
+
 def test_claim_next_raises_auth_error_on_401():
     # A rejected/expired token must surface as a clear "re-login" error, not a
     # KeyError from trying to parse the error body as a work item.

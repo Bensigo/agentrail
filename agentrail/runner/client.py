@@ -19,6 +19,7 @@ points* (localhost today, a deployed domain tomorrow) is just a different
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
@@ -62,6 +63,17 @@ class WorkItem:
     ref: str
     title: str
     body: str
+
+    @property
+    def issue_number(self) -> str:
+        """The bare issue number for ``agentrail run issue``.
+
+        ``external_id`` is the GitHub identity (e.g. ``owner/name#826`` from the
+        webhook intake), but the run command takes a numeric issue number. Pull
+        the trailing number; fall back to the raw id if there is none.
+        """
+        match = re.search(r"(\d+)\s*$", self.external_id)
+        return match.group(1) if match else self.external_id
 
     @classmethod
     def from_dict(cls, d: Dict[str, object]) -> "WorkItem":

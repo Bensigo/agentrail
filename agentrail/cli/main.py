@@ -19,6 +19,8 @@ from agentrail.cli.commands.install import run_install
 from agentrail.cli.commands.internal import run_internal
 from agentrail.cli.commands.labels import run_labels
 from agentrail.cli.commands.link import run_link
+from agentrail.cli.commands.login import run_login, run_logout, run_whoami
+from agentrail.cli.commands.runner import run_runner
 from agentrail.cli.commands.memory import run_memory
 from agentrail.cli.commands.prompt import run_prompt
 from agentrail.cli.commands.skills import run_skills
@@ -67,6 +69,10 @@ def _usage() -> str:
         "  agentrail cleanup [--target DIR] [--dry-run]\n"
         "  agentrail console [--target DIR]\n"
         "  agentrail link [--target DIR]\n"
+        "  agentrail login [--url BASE_URL]\n"
+        "  agentrail logout\n"
+        "  agentrail whoami\n"
+        "  agentrail runner [--idle SECONDS] [--once]\n"
         "  agentrail timeline [--target DIR]\n"
         "  agentrail cost [--target DIR] [--run ID] [--since REF] [--json]\n"
         "  agentrail cost [RUN_ID] --recommend [--json]\n"
@@ -94,6 +100,10 @@ def _usage() -> str:
         "  cleanup     Clean up worktrees / sessions\n"
         "  console     Open the interactive console\n"
         "  link        Link a worktree to a session\n"
+        "  login       Sign this machine into an AgentRail workspace\n"
+        "  logout      Sign out (remove saved credentials)\n"
+        "  whoami      Show the logged-in workspace\n"
+        "  runner      Run the local worker that executes queued issues\n"
         "  timeline    Show session timeline\n"
         "  cost        Per-issue real-dollar cost from the AFK journal\n"
     )
@@ -128,6 +138,14 @@ def main(argv: List[str] | None = None) -> int:
         return run_console(args[1:])
     if args[0] == "link":
         return run_link(args[1:])
+    if args[0] == "login":
+        return run_login(args[1:])
+    if args[0] == "logout":
+        return run_logout(args[1:])
+    if args[0] == "whoami":
+        return run_whoami(args[1:])
+    if args[0] == "runner":
+        return run_runner(args[1:])
     if args[0] == "timeline":
         return run_timeline(args[1:])
     if args[0] == "cost":

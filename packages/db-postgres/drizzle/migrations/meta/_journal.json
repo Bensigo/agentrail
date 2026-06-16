@@ -141,6 +141,13 @@
       "when": 1780907365692,
       "tag": "0018_connectors_fold_heartbeat",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1780907365693,
+      "tag": "0019_add_device_codes",
+      "breakpoints": true
     }
   ]
 }

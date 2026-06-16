@@ -138,6 +138,22 @@ def load_verify_checks(target_dir: Path) -> List[VerifyCheck]:
     return parse_verify_config(_load_config(Path(target_dir)))
 
 
+def red_green_proof_required(target_dir: Path) -> bool:
+    """Whether this run requires a Red-Green Proof trail (thin I/O).
+
+    Reads the optional ``redGreenProof`` flag from ``.agentrail/config.json``.
+    The Red-Green Proof (ADR 0008) is opt-in: when ``redGreenProof`` is true the
+    pipeline must observe the acceptance test failing before implementation and
+    passing after, and the Objective Gate refuses done without that valid trail
+    (#772). Absent/false keeps the gate's prior behavior (proof not required),
+    matching the objective_gate seam's "default keeps behavior unchanged".
+    """
+    config = _load_config(Path(target_dir))
+    if not config:
+        return False
+    return bool(config.get("redGreenProof"))
+
+
 def run_objective_checks(
     target_dir: Path,
     *,

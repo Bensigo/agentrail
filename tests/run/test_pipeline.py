@@ -1431,5 +1431,87 @@ class RunIssueObjectiveGateWiringTests(unittest.TestCase):
         self.assertIn("bad", run_json["objectiveGate"]["failedReasons"])
 
 
+class RunIssueRedGreenProofWiringTests(unittest.TestCase):
+    """run_issue consults the Red-Green Proof recorder when ``redGreenProof`` is
+    set (#772, ADR 0008): the Objective Gate refuses done unless the acceptance
+    test was observed failing before implementation and passing after. A
+    never-failed (tautological) test cannot reach done even when verify passes.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_config(self, payload):
+        cfg = self.target / ".agentrail" / "config.json"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(json.dumps(payload))
+
+    def _run(self, execute_side_effect=None):
+        def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            if phase != "plan" and execute_side_effect is not None:
+                execute_side_effect()
+            return (0, "PLAN OUT") if phase == "plan" else (0, "")
+
+        gh_mock = MagicMock()
+        gh_mock.returncode = 1
+        gh_mock.stdout = ""
+
+        with patch("agentrail.run.pipeline.ctx.issue_resolution_text", return_value="T"), \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state"), \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
+             patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
+            result = run_issue(self.target, 7, agent="claude", command="c", repo_dir=self.repo)
+        runs_dir = self.target / ".agentrail" / "runs"
+        run_dir = next(runs_dir.iterdir())
+        return result, _read_json(run_dir / "run.json")
+
+    def test_refuses_done_when_test_never_failed(self):
+        """AC3: verify passes both before AND after implementation (never red →
+        tautological). With the proof required, the gate refuses done."""
+        self._write_config({"verify": "true", "redGreenProof": True})
+        result, run_json = self._run()
+        self.assertNotEqual(result, 0)
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "red")
+        self.assertTrue(
+            any("red-green" in r.lower() for r in run_json["objectiveGate"]["failedReasons"])
+        )
+
+    def test_done_with_a_real_fail_then_pass_trail(self):
+        """A genuine red→green trail reaches done: verify fails before the
+        execute phase (no sentinel) and passes after (the stub creates it)."""
+        sentinel = self.target / "impl_done"
+        self._write_config(
+            {"verify": f"test -f {sentinel}", "redGreenProof": True}
+        )
+        result, run_json = self._run(execute_side_effect=lambda: sentinel.write_text("x"))
+        self.assertEqual(result, 0)
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
+
+    def test_proof_not_required_keeps_prior_behavior(self):
+        """Without the opt-in flag, an always-passing verify is still done —
+        the Red-Green requirement does not retroactively change behavior."""
+        self._write_config({"verify": "true"})
+        result, run_json = self._run()
+        self.assertEqual(result, 0)
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
+
+
 if __name__ == "__main__":
     unittest.main()

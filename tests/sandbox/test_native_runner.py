@@ -234,6 +234,45 @@ class TestHappyPath:
         for d in dirs.created:
             assert not d.exists(), f"temp dir not cleaned: {d}"
 
+    def test_green_run_commits_pushes_and_opens_pr(self, tmp_path) -> None:
+        # A green gate must PUBLISH before the clone is torn down: commit the
+        # agent's uncommitted work to a feature branch, push it, open a PR.
+        run_dir = tmp_path / "run-1"
+
+        def _do_run(cmd, cwd, env):
+            log_dir = _extract_log_dir(cmd, run_dir)
+            run_id = _extract_run_id(cmd) or "host-run"
+            _write_run_json(Path(log_dir) / run_id, _green_run_json())
+            return _Completed(0, stdout="ran")
+
+        runner = FakeRunner([
+            _Completed(0, stdout="cloned"),                 # git clone
+            _do_run,                                        # agentrail run issue
+            _Completed(0, stdout="main"),                   # rev-parse (branch)
+            _Completed(0),                                  # checkout -B
+            _Completed(0),                                  # add -A
+            _Completed(0),                                  # commit
+            _Completed(0),                                  # push
+            _Completed(0, stdout="https://github.com/acme/widgets/pull/42"),  # gh pr create
+        ])
+        result, _ = self._run(tmp_path, runner, pr_title="Add a thing")
+        assert result.status == "green"
+        assert result.pr_url == "https://github.com/acme/widgets/pull/42"
+        assert result.branch == "agentrail/issue-7"
+        # The PR was opened against the right head branch + base.
+        pr_cmd = runner.command_with("create")
+        assert "gh" == pr_cmd[0] and "pr" in pr_cmd
+        assert "agentrail/issue-7" in pr_cmd and "main" in pr_cmd
+        # The push targets the feature branch, never main directly.
+        push_cmd = runner.command_with("push")
+        assert "HEAD:agentrail/issue-7" in push_cmd
+
+    def test_publish_disabled_leaves_no_pr(self, tmp_path) -> None:
+        runner = self._ok_runner(tmp_path / "run-1")
+        result, _ = self._run(tmp_path, runner, publish_pr=False)
+        assert result.status == "green"
+        assert result.pr_url == ""
+
 
 # ---------------------------------------------------------------------------
 # AC2 — timeout / non-zero run → status='error', temp dir still cleaned.

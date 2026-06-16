@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -190,6 +191,8 @@ def run_issue_on_host(
     failure_handoff: Optional[str] = None,
     timeout: int = DEFAULT_TIMEOUT,
     run_id: str = RUN_ID,
+    pr_title: Optional[str] = None,
+    publish_pr: bool = True,
     run_dir_factory: Optional[Callable[[], Path]] = None,
     runner=subprocess,
 ) -> RunResult:
@@ -277,18 +280,93 @@ def run_issue_on_host(
 
         # 3. Parse run.json → RunResult (mirrors the container parser).
         logs_tail = _logs_tail(getattr(proc, "stdout", ""), getattr(proc, "stderr", ""))
-        return _result_from_run_json(
+        result = _result_from_run_json(
             log_dir / run_id,
             run_status=getattr(proc, "returncode", 1),
             repo_dir=repo_dir,
             logs_tail=logs_tail,
             runner=runner,
         )
+        # 4. Publish on GREEN — commit the agent's (uncommitted) work to a feature
+        # branch, push it, and open a PR, BEFORE the clone is torn down. Without
+        # this the gate goes green but the work vanishes with the temp dir (no
+        # PR). Best-effort: a publish failure downgrades to a gate_reason, never
+        # crashes the run.
+        if result.status == "green" and publish_pr:
+            branch, pr_url = _publish_green(
+                runner, repo_dir, issue_ref, pr_title, base_ref=ref, env=child_env
+            )
+            from dataclasses import replace
+
+            result = replace(result, pr_url=pr_url, branch=branch or result.branch)
+        return result
     finally:
         # Teardown is unconditional; a failure to clean up is swallowed (a leftover
         # temp dir is an ops nuisance, not a wrong verdict).
         if _own_work_dir:
             shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Publish-on-green (push branch + open PR)
+# ---------------------------------------------------------------------------
+
+# A neutral commit identity for the runner's commit (the agent leaves changes
+# uncommitted so the objective gate can see them via `git status`).
+_GIT_IDENTITY = [
+    "-c", "user.email=runner@agentrail.dev",
+    "-c", "user.name=AgentRail Runner",
+]
+
+
+def _publish_green(
+    runner, repo_dir: Path, issue_ref: str, pr_title: Optional[str],
+    *, base_ref: str, env: Dict[str, str],
+) -> tuple[str, str]:
+    """Commit the agent's work to a feature branch, push it, open a PR.
+
+    Returns ``(branch, pr_url)``; either may be ``""`` on failure. Best-effort:
+    every step is guarded so a publish failure never raises into the run. Uses
+    the host's git/gh auth (the same that the agent's own pushes use). The branch
+    matches the dashboard run's ``afk/github-<n>`` convention is NOT used here —
+    we use ``agentrail/issue-<n>`` so the PR branch is self-describing.
+    """
+    number = re.search(r"(\d+)\s*$", str(issue_ref))
+    n = number.group(1) if number else str(issue_ref)
+    branch = f"agentrail/issue-{n}"
+    title = pr_title or f"agentrail: resolve #{n}"
+
+    def _run(cmd: list) -> Optional[object]:
+        try:
+            return runner.run(cmd, cwd=str(repo_dir), env=env, timeout=120)
+        except Exception:  # noqa: BLE001 — publish is best-effort
+            return None
+
+    # Move the uncommitted work onto a fresh feature branch and commit it.
+    if _run(["git", *_GIT_IDENTITY, "checkout", "-B", branch]) is None:
+        return "", ""
+    _run(["git", "add", "-A"])
+    commit = _run(["git", *_GIT_IDENTITY, "commit", "-m", f"{title} (#{n})"])
+    if commit is None or getattr(commit, "returncode", 1) != 0:
+        return branch, ""  # nothing to commit / commit failed
+
+    push = _run(["git", "push", "--force", "-u", "origin", f"HEAD:{branch}"])
+    if push is None or getattr(push, "returncode", 1) != 0:
+        return branch, ""
+
+    pr = _run([
+        "gh", "pr", "create",
+        "--head", branch, "--base", base_ref,
+        "--title", title,
+        "--body", f"Resolves #{n}\n\nOpened by the AgentRail runner after a green objective gate.",
+    ])
+    if pr is None or getattr(pr, "returncode", 1) != 0:
+        # Branch is pushed; a PR may already exist — try to surface its URL.
+        view = _run(["gh", "pr", "view", branch, "--json", "url", "-q", ".url"])
+        url = (getattr(view, "stdout", "") or "").strip() if view else ""
+        return branch, url
+    url = (getattr(pr, "stdout", "") or "").strip().splitlines()[-1:] or [""]
+    return branch, url[0]
 
 
 # ---------------------------------------------------------------------------

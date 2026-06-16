@@ -73,6 +73,7 @@ class RunResult:
     branch     : the branch the run produced (may be '' on error).
     gate_reason: human-readable reason for a red/error outcome ('' when green).
     logs_tail  : last lines of the container output, for triage.
+    pr_url     : the pull request opened for a green run ('' when none/not green).
     """
 
     status: str
@@ -80,6 +81,7 @@ class RunResult:
     branch: str = ""
     gate_reason: str = ""
     logs_tail: str = ""
+    pr_url: str = ""
 
 
 @dataclass

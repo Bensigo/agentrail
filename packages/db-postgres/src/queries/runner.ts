@@ -289,6 +289,28 @@ function issueNumberOf(externalId: string): string {
   return m ? m[1]! : "0";
 }
 
+/** Runs older than this with no terminal status are considered dead/abandoned. */
+export const STALE_RUN_MINUTES = 90;
+
+/**
+ * Mark runs stuck in `running` past {@link STALE_RUN_MINUTES} as `failed`. A
+ * killed or crashed runner never reports a result, so without this the run shows
+ * `running` forever on the dashboard. Called on every claim so the sweep is
+ * automatic. The threshold sits above the run timeout (1h) so a legitimately
+ * long run is never reaped. Returns the number reconciled.
+ */
+export async function reconcileStaleRuns(workspaceId: string): Promise<number> {
+  const rows = await db.execute(sql`
+    UPDATE runs
+    SET status = 'failed', finished_at = now(), updated_at = now()
+    WHERE workspace_id = ${workspaceId}
+      AND status = 'running'
+      AND started_at < now() - (${STALE_RUN_MINUTES} || ' minutes')::interval
+    RETURNING id
+  `);
+  return Array.from(rows).length;
+}
+
 /**
  * Atomically claim the oldest `queued` entry for a workspace, transitioning it
  * to `running`. The conditional UPDATE ... RETURNING means two concurrent
@@ -297,6 +319,12 @@ function issueNumberOf(externalId: string): string {
 export async function claimQueueEntry(
   workspaceId: string
 ): Promise<WorkItem | null> {
+  // Sweep dead runs first so the dashboard never shows a killed run as running.
+  try {
+    await reconcileStaleRuns(workspaceId);
+  } catch {
+    // best-effort — never fail a claim on reconciliation
+  }
   // Single statement: select-the-oldest-queued + flip to running, atomically.
   const result = await db.execute(sql`
     UPDATE queue_entries

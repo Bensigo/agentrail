@@ -1093,6 +1093,8 @@ export {
   approveDeviceCode,
   claimQueueEntry,
   recordRunnerResult,
+  reconcileStaleRuns,
+  STALE_RUN_MINUTES,
   DEVICE_CODE_TTL_MS,
   type StartedDeviceCode,
   type DeviceTokenResult,

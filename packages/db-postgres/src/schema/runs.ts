@@ -1,4 +1,12 @@
-import { pgTable, uuid, text, timestamp, pgEnum, jsonb } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  uuid,
+  text,
+  timestamp,
+  pgEnum,
+  jsonb,
+  doublePrecision,
+} from "drizzle-orm/pg-core";
 import { workspaces } from "./workspaces.js";
 
 export const runStatusEnum = pgEnum("run_status", [
@@ -27,4 +35,12 @@ export const runs = pgTable("runs", {
   selectedSources: jsonb("selected_sources").$type<string[]>(),
   retrievalBudget: jsonb("retrieval_budget").$type<Record<string, unknown>>(),
   citations: jsonb("citations").$type<Array<Record<string, unknown>>>(),
+  // Durable run-registration (MVP durable-queue): enough to resume a killed run.
+  // queueEntryId ties the run back to its Issue Queue entry; phase / costUsd /
+  // updatedAt let the dispatcher pick a partially-finished run back up after a
+  // close-laptop-and-resume.
+  queueEntryId: uuid("queue_entry_id"),
+  phase: text("phase"),
+  costUsd: doublePrecision("cost_usd").default(0),
+  updatedAt: timestamp("updated_at", { withTimezone: true }),
 });

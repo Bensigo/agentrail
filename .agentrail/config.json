@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "verify": "env -u AGENTRAIL_SERVER_BASE_URL -u AGENTRAIL_SERVER_API_KEY -u AGENTRAIL_SERVER_REPOSITORY_ID python3 -m pytest -q",
+  "verify": "bash .agentrail/verify.sh",
   "runner": {
     "name": "codex",
     "command": "codex exec --sandbox danger-full-access -"

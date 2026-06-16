@@ -4,6 +4,7 @@ import {
   DEFAULT_INGEST_LABEL,
   capabilitySummary,
   connectorStatusLabel,
+  maskWebhook,
   projectConnectors,
   type ConnectorConfigInput,
 } from "./connector-helpers";
@@ -45,6 +46,43 @@ describe("projectConnectors", () => {
     const github = projectConnectors([]).find((r) => r.kind === "github")!;
     expect(github.status).toBe("disconnected");
     expect(github.ingestLabel).toBeNull();
+  });
+
+  it("marks Discord connected when a webhook is configured (M038 AC3)", () => {
+    const discord = projectConnectors([
+      {
+        kind: "discord",
+        connected: false, // notify connectors derive from webhookUrl, not this
+        webhookUrl: "https://discord.com/api/webhooks/12345/secret-token",
+      },
+    ]).find((r) => r.kind === "discord")!;
+    expect(discord.availability).toBe("available");
+    expect(discord.status).toBe("connected");
+    // Notify-only: no ingest label, and the target masks the secret token.
+    expect(discord.ingestLabel).toBeNull();
+    expect(discord.target).toBe("webhook 12345");
+  });
+
+  it("treats Discord as disconnected without a webhook", () => {
+    const discord = projectConnectors([{ kind: "discord", connected: true }]).find(
+      (r) => r.kind === "discord"
+    )!;
+    expect(discord.status).toBe("disconnected");
+    expect(discord.target).toBeNull();
+  });
+});
+
+describe("maskWebhook", () => {
+  it("masks a discord webhook to its id, never the token", () => {
+    expect(
+      maskWebhook("https://discord.com/api/webhooks/98765/super-secret")
+    ).toBe("webhook 98765");
+  });
+
+  it("returns null for missing input and a generic label otherwise", () => {
+    expect(maskWebhook(null)).toBeNull();
+    expect(maskWebhook("")).toBeNull();
+    expect(maskWebhook("https://example.com/hook")).toBe("webhook configured");
   });
 });
 

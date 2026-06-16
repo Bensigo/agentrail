@@ -1,0 +1,88 @@
+import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@agentrail/auth";
+import {
+  getWorkspaceMembership,
+  setDiscordWebhookUrl,
+} from "@agentrail/db-postgres";
+
+/**
+ * Manage the Discord notify connector (M038, AC3). A workspace owner/admin
+ * connects Discord by saving a channel webhook URL, or disconnects by clearing
+ * it. The webhook is write-only here: the read model (GET ../connectors) only
+ * ever returns a masked target, never the secret token.
+ *
+ * A **Connector** (CONTEXT.md) is the two-way seam between an external tool and
+ * the Issue Queue; Discord is the *notify* half — it posts run completion and
+ * escalation-to-human notifications to this channel (agentrail/connectors/discord.py).
+ */
+function isDiscordWebhook(url: string): boolean {
+  // Accept the canonical Discord webhook host only — a real, falsifiable check
+  // (no arbitrary URL that would never deliver). discord.com / discordapp.com,
+  // https, under /api/webhooks/.
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return false;
+    const host = u.hostname.toLowerCase();
+    const okHost =
+      host === "discord.com" ||
+      host === "discordapp.com" ||
+      host === "ptb.discord.com" ||
+      host === "canary.discord.com";
+    return okHost && u.pathname.includes("/api/webhooks/");
+  } catch {
+    return false;
+  }
+}
+
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ workspaceId: string }> }
+) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { workspaceId } = await params;
+  const membership = await getWorkspaceMembership(session.user.id, workspaceId);
+  if (!membership) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  if (membership.role !== "owner" && membership.role !== "admin") {
+    return NextResponse.json(
+      { error: "Only an owner or admin can manage connectors" },
+      { status: 403 }
+    );
+  }
+
+  let body: { webhookUrl?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const raw = body.webhookUrl;
+  // null / empty → disconnect.
+  if (raw === null || raw === undefined || raw === "") {
+    await setDiscordWebhookUrl(workspaceId, null);
+    return NextResponse.json({ connected: false });
+  }
+  if (typeof raw !== "string" || !isDiscordWebhook(raw)) {
+    return NextResponse.json(
+      { error: "Provide a valid Discord channel webhook URL" },
+      { status: 400 }
+    );
+  }
+
+  try {
+    await setDiscordWebhookUrl(workspaceId, raw);
+    return NextResponse.json({ connected: true });
+  } catch (err) {
+    console.error("[connectors/discord] failed to save webhook:", err);
+    return NextResponse.json(
+      { error: "Failed to save Discord webhook" },
+      { status: 500 }
+    );
+  }
+}

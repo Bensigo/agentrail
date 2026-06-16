@@ -52,6 +52,13 @@ export interface ConnectorConfigInput {
   ingestLabel?: string | null;
   /** Repo / project / channel the connector is bound to, for display. */
   target?: string | null;
+  /**
+   * Discord notify connector: the configured webhook URL. Present + non-empty
+   * means the channel is wired (the connector posts completion / escalation
+   * notifications to it). Never sent back to the client in full — the read model
+   * masks it to a display target; see {@link maskWebhook}.
+   */
+  webhookUrl?: string | null;
 }
 
 /** One connector row as the management surface renders it. */
@@ -91,14 +98,28 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
   {
     kind: "discord",
     label: "Discord",
-    description: "Notify a channel on completion or escalation. Planned follow-up.",
-    availability: "planned",
+    description:
+      "Notify a channel on run completion or escalation-to-human via a webhook.",
+    availability: "available",
     capabilities: { ingest: false, postResult: false, notify: true },
   },
 ];
 
 /** Default ingest label, matching the AFK CLI's ready label / GitHubConnector. */
 export const DEFAULT_INGEST_LABEL = "ready-for-agent";
+
+/**
+ * Mask a Discord webhook URL into a safe, recognizable display target — never
+ * leak the secret token. A Discord webhook looks like
+ * `https://discord.com/api/webhooks/<id>/<token>`; we show the id and elide the
+ * token. Falsy / unparseable input yields `null` (nothing to display).
+ */
+export function maskWebhook(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const m = url.match(/\/webhooks\/(\d+)\//);
+  if (m) return `webhook ${m[1]}`;
+  return "webhook configured";
+}
 
 /**
  * Project the catalog against the workspace's stored connector config into the
@@ -115,10 +136,27 @@ export function projectConnectors(
 
   return CONNECTOR_CATALOG.map((entry) => {
     const cfg = byKind.get(entry.kind);
+    // Discord is a notify connector: it counts as connected when a webhook is
+    // configured (its real, falsifiable signal), independent of the ingest
+    // path. Other available connectors use the stored `connected` flag.
+    const connected =
+      entry.kind === "discord"
+        ? Boolean(cfg?.webhookUrl)
+        : Boolean(cfg?.connected);
     const status: ConnectorStatus =
-      entry.availability === "available" && cfg?.connected
+      entry.availability === "available" && connected
         ? "connected"
         : "disconnected";
+    // A notify-only connector has no ingest label; only ingest connectors do.
+    const ingestLabel =
+      status === "connected" && entry.capabilities.ingest
+        ? cfg?.ingestLabel ?? DEFAULT_INGEST_LABEL
+        : null;
+    // Discord's display target is the masked webhook; others use the stored one.
+    const target =
+      entry.kind === "discord"
+        ? maskWebhook(cfg?.webhookUrl)
+        : cfg?.target ?? null;
     return {
       kind: entry.kind,
       label: entry.label,
@@ -126,11 +164,8 @@ export function projectConnectors(
       availability: entry.availability,
       status,
       capabilities: entry.capabilities,
-      ingestLabel:
-        status === "connected"
-          ? cfg?.ingestLabel ?? DEFAULT_INGEST_LABEL
-          : null,
-      target: cfg?.target ?? null,
+      ingestLabel,
+      target,
     };
   });
 }

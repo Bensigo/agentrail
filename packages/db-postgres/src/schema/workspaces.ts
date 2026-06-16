@@ -11,6 +11,9 @@ export const workspaces = pgTable("workspaces", {
     .notNull()
     .defaultNow(),
   baselineWindowDays: integer("baseline_window_days").notNull().default(30),
+  // Discord notify connector (M038): the channel webhook a workspace's run
+  // completion / escalation notifications post to. Null = Discord not connected.
+  discordWebhookUrl: text("discord_webhook_url"),
 });
 
 export type Workspace = typeof workspaces.$inferSelect;

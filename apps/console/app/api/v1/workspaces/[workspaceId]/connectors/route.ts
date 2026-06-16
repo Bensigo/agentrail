@@ -3,6 +3,7 @@ import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
   listWorkspaceRepositories,
+  getDiscordWebhookUrl,
 } from "@agentrail/db-postgres";
 import {
   projectConnectors,
@@ -37,7 +38,10 @@ export async function GET(
   }
 
   try {
-    const repos = await listWorkspaceRepositories(workspaceId);
+    const [repos, discordWebhookUrl] = await Promise.all([
+      listWorkspaceRepositories(workspaceId),
+      getDiscordWebhookUrl(workspaceId),
+    ]);
     const githubConnected = repos.length > 0;
     const configs: ConnectorConfigInput[] = [
       {
@@ -50,6 +54,13 @@ export async function GET(
             ? repos[0].name
             : `${repos.length} repositories`
           : null,
+      },
+      {
+        // Discord notify connector (M038, AC3): connected iff a webhook is set.
+        // The read model only ever exposes the masked target, never the token.
+        kind: "discord",
+        connected: Boolean(discordWebhookUrl),
+        webhookUrl: discordWebhookUrl,
       },
     ];
     return NextResponse.json({

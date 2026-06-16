@@ -113,6 +113,13 @@
       "when": 1780907365688,
       "tag": "0014_add_runner_name_to_runs",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1780907365689,
+      "tag": "0015_add_discord_webhook_url",
+      "breakpoints": true
     }
   ]
 }

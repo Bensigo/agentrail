@@ -15,7 +15,15 @@ const KIND_ICON: Record<ConnectorKind, typeof Github> = {
   discord: MessageSquare,
 };
 
-function ConnectorCard({ connector }: { connector: ConnectorView }) {
+function ConnectorCard({
+  connector,
+  workspaceId,
+  onChanged,
+}: {
+  connector: ConnectorView;
+  workspaceId: string;
+  onChanged: () => void;
+}) {
   const Icon = KIND_ICON[connector.kind];
   const isPlanned = connector.availability === "planned";
   const isConnected = connector.status === "connected";
@@ -68,7 +76,13 @@ function ConnectorCard({ connector }: { connector: ConnectorView }) {
 
       {/* Action / status footer */}
       <div className="mt-auto border-t border-[var(--gray-04)] pt-3">
-        {isPlanned ? (
+        {connector.kind === "discord" ? (
+          <DiscordManage
+            connector={connector}
+            workspaceId={workspaceId}
+            onChanged={onChanged}
+          />
+        ) : isPlanned ? (
           <button
             disabled
             className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-02)] text-xs font-medium text-[var(--gray-08)] cursor-not-allowed"
@@ -92,6 +106,112 @@ function ConnectorCard({ connector }: { connector: ConnectorView }) {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Discord notify-connector management (M038, AC3). Lets a team connect /
+ * disconnect Discord by saving a channel webhook URL — the connector posts
+ * completion and escalation-to-human notifications to it (the Python adapter is
+ * agentrail/connectors/discord.py). The full webhook is write-only: the read
+ * model returns only a masked target, so we never render the secret token.
+ */
+function DiscordManage({
+  connector,
+  workspaceId,
+  onChanged,
+}: {
+  connector: ConnectorView;
+  workspaceId: string;
+  onChanged: () => void;
+}) {
+  const isConnected = connector.status === "connected";
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const save = useCallback(
+    async (url: string | null) => {
+      setSaving(true);
+      setErr(null);
+      try {
+        const res = await fetch(
+          `/api/v1/workspaces/${workspaceId}/connectors/discord`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ webhookUrl: url }),
+          }
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(
+            (body as { error?: string }).error ?? `HTTP ${res.status}`
+          );
+        }
+        setWebhookUrl("");
+        onChanged();
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "Failed to save webhook");
+      } finally {
+        setSaving(false);
+      }
+    },
+    [workspaceId, onChanged]
+  );
+
+  if (isConnected) {
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="text-xs text-[var(--gray-09)] leading-relaxed">
+          Connected. Run <strong>completion</strong> and{" "}
+          <strong>escalation-to-human</strong> notifications post to{" "}
+          <code className="font-mono text-[var(--gray-11)]">
+            {connector.target ?? "the configured webhook"}
+          </code>
+          .
+        </p>
+        <button
+          onClick={() => save(null)}
+          disabled={saving}
+          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-02)] text-xs font-medium text-[var(--gray-11)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+        >
+          {saving ? "Disconnecting…" : "Disconnect"}
+        </button>
+        {err && <p className="text-xs text-[#ff9592]">{err}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (webhookUrl.trim()) save(webhookUrl.trim());
+      }}
+      className="flex flex-col gap-2"
+    >
+      <label className="text-xs text-[var(--gray-09)]" htmlFor="discord-webhook">
+        Channel webhook URL
+      </label>
+      <input
+        id="discord-webhook"
+        type="url"
+        inputMode="url"
+        placeholder="https://discord.com/api/webhooks/…"
+        value={webhookUrl}
+        onChange={(e) => setWebhookUrl(e.target.value)}
+        className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 text-xs font-mono text-[var(--gray-12)] placeholder:text-[var(--gray-07)] focus:border-[var(--gray-08)] outline-none"
+      />
+      <button
+        type="submit"
+        disabled={saving || !webhookUrl.trim()}
+        className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+      >
+        {saving ? "Connecting…" : "Connect"}
+      </button>
+      {err && <p className="text-xs text-[#ff9592]">{err}</p>}
+    </form>
   );
 }
 
@@ -155,7 +275,12 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
       ) : (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
           {connectors.map((c) => (
-            <ConnectorCard key={c.kind} connector={c} />
+            <ConnectorCard
+              key={c.kind}
+              connector={c}
+              workspaceId={workspaceId}
+              onChanged={fetchConnectors}
+            />
           ))}
         </div>
       )}

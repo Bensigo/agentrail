@@ -1788,6 +1788,85 @@ export async function getRunnerContextEfficiency(
 }
 
 // ---------------------------------------------------------------------------
+// Audit Events for the human merge-approval surface (M037, issue #781)
+//
+// Irreversible actions and human approvals are Audit Events (CONTEXT.md). The
+// AFK guardrail / approval gate POST them via /api/v1/ingest/run-events, which
+// stores them in run_events with event_type = action.type
+// ("security_block" | "approval_granted") and payload = JSON.stringify(action).
+// The approval surface reads those two event types workspace-wide.
+// ---------------------------------------------------------------------------
+
+/** The audit event_types the approval surface cares about. */
+export const APPROVAL_AUDIT_EVENT_TYPES = [
+  "security_block",
+  "approval_granted",
+] as const;
+
+export interface AuditEventRow {
+  run_id: string;
+  /** "security_block" | "approval_granted" */
+  event_type: string;
+  /** Parsed action.type ("security_block" | "approval_granted"). */
+  type: string;
+  /** action.action_kind (approval_granted) or "" otherwise. */
+  action_kind: string;
+  /** action.target. */
+  target: string;
+  /** action.reason (security_block) or "". */
+  reason: string;
+  /** action.approved_by (approval_granted) or "". */
+  approved_by: string;
+  ts: string;
+}
+
+/**
+ * Read security_block + approval_granted Audit Events for a workspace,
+ * newest first. Each row's action fields are parsed from the JSON payload so
+ * the console projection (`projectApprovals`) can stay pure.
+ */
+export async function getWorkspaceAuditEvents(
+  workspaceId: string,
+  ch: QueryClient = client
+): Promise<AuditEventRow[]> {
+  const result = await ch.query({
+    query: `
+      SELECT run_id, event_type, payload, occurred_at
+      FROM run_events
+      WHERE workspace_id = {workspaceId: String}
+        AND event_type IN ({types: Array(String)})
+      ORDER BY occurred_at DESC, seq DESC
+      LIMIT 500
+    `,
+    query_params: { workspaceId, types: [...APPROVAL_AUDIT_EVENT_TYPES] },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<Record<string, unknown>>();
+  return rows.map((r) => {
+    let action: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(String(r.payload ?? "{}"));
+      if (parsed && typeof parsed === "object") {
+        action = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Malformed payload → empty action; the projection drops it safely.
+    }
+    return {
+      run_id: String(r.run_id ?? ""),
+      event_type: String(r.event_type ?? ""),
+      type: String(action.type ?? r.event_type ?? ""),
+      action_kind: String(action.action_kind ?? ""),
+      target: String(action.target ?? ""),
+      reason: String(action.reason ?? ""),
+      approved_by: String(action.approved_by ?? ""),
+      ts: timestampForApi(r.occurred_at) ?? String(r.occurred_at ?? ""),
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Per-agent cost breakdown
 //
 // The one-sided "savings" aggregation (M025) was removed under the console

@@ -66,6 +66,8 @@ export {
   getAfkRunEvents,
   getRunnerCostStats,
   getRunnerContextEfficiency,
+  getWorkspaceAuditEvents,
+  APPROVAL_AUDIT_EVENT_TYPES,
 } from "./queries";
 export type {
   RunEventSummary,
@@ -92,6 +94,7 @@ export type {
   InsertFlightRecorderResult,
   RunnerCostStatsRow,
   RunnerContextEfficiencyRow,
+  AuditEventRow,
 } from "./queries";
 export { getContextPacksForRun, getContextPackItems, getWorkspaceContextPacks, listWorkspaceContextPacks, getTokensSavedByRun } from "./context-queries";
 export { computeQualityMetrics, getQualityMetrics } from "./quality-metrics";

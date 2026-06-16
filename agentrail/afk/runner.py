@@ -41,6 +41,7 @@ from agentrail.afk.state import (
 from agentrail.afk.journal import attach_journal
 from agentrail.afk.store import attach_persistence, load_snapshot
 from agentrail.afk.telemetry import attach_telemetry
+from agentrail.run.push_guardrail import guard_push, make_server_emitter
 
 HUMAN_REVIEW_LABEL = "human-review-needed"
 IN_PROGRESS_LABEL = "afk-in-progress"
@@ -153,6 +154,49 @@ class Runner:
     def _remove_worktree(self, path: Path) -> None:
         subprocess.run(["git", "-C", str(self.target), "worktree", "remove",
                         "--force", str(path)], check=False, capture_output=True)
+
+    # --- push guardrail (#773 wired at the real push seam, #781) -------------
+
+    def _push_diff_content(self, wt: Path) -> str:
+        """Return the content the about-to-be-pushed commit introduces.
+
+        Used by the #773 secret guardrail to scan for secrets before the push.
+        Hermetic and non-fatal: any git failure yields "" (scan sees nothing,
+        the guardrail falls back to the protected-target check only) so a
+        guardrail-internal error can never silently let a secret through *or*
+        block a legitimate push.
+        """
+        proc = subprocess.run(
+            ["git", "-C", str(wt), "show", "--format=", "HEAD"],
+            check=False, capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            return ""
+        return proc.stdout or ""
+
+    def _guarded_push(self, wt: Path, head: str, run_id: str = "") -> bool:
+        """Push ``wt`` HEAD to ``origin HEAD:<head>`` through the #773 guardrail.
+
+        The guardrail (secret detection + protected-target) is the real
+        enforcement point #773 left as a follow-up. A block is audited (via the
+        server emitter, non-fatal/no-network when unlinked) and the dangerous
+        ``git push`` never runs. A clean push proceeds exactly as before, so the
+        env-sensitive ``*_push`` tests and normal feature-branch pushes are
+        unaffected.
+        """
+        decision = guard_push(
+            targets=[head],
+            content=self._push_diff_content(wt),
+            emit=make_server_emitter(self.target, run_id),
+            run_id=run_id,
+        )
+        if decision.blocked:
+            return False
+        push = subprocess.run(
+            ["git", "-C", str(wt), "push", "origin", f"HEAD:{head}"],
+            check=False, capture_output=True,
+        )
+        return push.returncode == 0
 
     # --- pipeline stages -----------------------------------------------------
 
@@ -287,9 +331,11 @@ class Runner:
             subprocess.run(["git", "-C", str(wt), "commit", "--no-verify", "-m",
                             f"fix: address P0/P1 review findings for PR #{pr}"],
                            check=False, capture_output=True)
-            push = subprocess.run(["git", "-C", str(wt), "push", "origin",
-                                   f"HEAD:{head}"], check=False, capture_output=True)
-            return push.returncode == 0
+            # Push through the #773 secret/prod-push guardrail (the real
+            # enforcement seam): a secret-bearing or protected-target push is
+            # blocked + audited before git push runs.
+            run_id = getattr(self, "session_id", "") or ""
+            return self._guarded_push(wt, head=head, run_id=run_id)
         finally:
             self._remove_worktree(wt)
 

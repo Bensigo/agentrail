@@ -24,12 +24,19 @@ from agentrail.run.pipeline import RunContext, run_issue, run_issue_phase
 # ---------------------------------------------------------------------------
 
 def _make_target(tmp_dir: str) -> Path:
-    """Create a minimal .agentrail/state.json so update_run_state works."""
+    """Create a minimal .agentrail/state.json so update_run_state works.
+
+    Also writes a passing objective-gate ``verify`` config so that a
+    successful agent run reaches GREEN: the Objective Gate now drives "done"
+    (ADR 0007 / #769), so a run with no declared verification is RED by design.
+    Tests that exercise the no-verify path configure it explicitly.
+    """
     target = Path(tmp_dir) / "target"
     agentrail_dir = target / ".agentrail"
     agentrail_dir.mkdir(parents=True, exist_ok=True)
     state_path = agentrail_dir / "state.json"
     state_path.write_text(json.dumps({"workflow": {}}))
+    (agentrail_dir / "config.json").write_text(json.dumps({"verify": "true"}))
     return target
 
 
@@ -1323,6 +1330,105 @@ class CostCaptureHappyPathTests(unittest.TestCase):
         # cost was accounted despite build_cost_record/ledger blowing up
         self.assertAlmostEqual(self.rc.cumulative_cost_usd, before + 0.042)
         mock_push.assert_called_once()  # remote push still attempted
+
+
+# ---------------------------------------------------------------------------
+# Objective Gate wiring tests (issue #769, AC2): done is gate-driven
+# ---------------------------------------------------------------------------
+
+class RunIssueObjectiveGateWiringTests(unittest.TestCase):
+    """run_issue runs the OBJECTIVE checks after execute, evaluates the gate, and
+    its returned done-ness reflects ``gate_result.is_green`` — NOT the raw agent
+    exit status (ADR 0007). These drive the full wiring through ``run_issue``
+    with the agent phases stubbed green and a real ``verify`` config.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_verify(self, payload):
+        cfg = self.target / ".agentrail" / "config.json"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(json.dumps(payload))
+
+    def _run(self):
+        def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            return (0, "PLAN OUT") if phase == "plan" else (0, "")
+
+        gh_mock = MagicMock()
+        gh_mock.returncode = 1
+        gh_mock.stdout = ""
+
+        with patch("agentrail.run.pipeline.ctx.issue_resolution_text", return_value="T"), \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state"), \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
+             patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
+            result = run_issue(self.target, 7, agent="claude", command="c", repo_dir=self.repo)
+        runs_dir = self.target / ".agentrail" / "runs"
+        run_dir = next(runs_dir.iterdir())
+        return result, _read_json(run_dir / "run.json")
+
+    def test_done_when_verify_passes_and_declared(self):
+        """verify command passes AND is declared → gate green → done (exit 0)."""
+        self._write_verify({"verify": "true"})
+        result, run_json = self._run()
+        self.assertEqual(result, 0)
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
+        self.assertTrue(run_json["objectiveGate"]["isGreen"])
+
+    def test_not_done_when_verify_fails(self):
+        """verify command fails → gate red → NOT done, even though the agent
+        phases exited 0."""
+        self._write_verify({"verify": "false"})
+        result, run_json = self._run()
+        self.assertNotEqual(result, 0)
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "red")
+
+    def test_not_done_when_no_verify_declared(self):
+        """No verify configured → AcCoverage(0,0) → gate red ('no verification
+        declared') → NOT done, regardless of a clean agent exit."""
+        # Remove the default passing verify config so NO verification is declared.
+        (self.target / ".agentrail" / "config.json").unlink()
+        result, run_json = self._run()
+        self.assertNotEqual(result, 0)
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "red")
+        self.assertIn(
+            "acceptance-criteria not satisfied",
+            run_json["objectiveGate"]["failedReasons"],
+        )
+
+    def test_gate_overrides_clean_agent_exit(self):
+        """The done signal is the gate, not the agent's self-reported exit: a
+        failing verify turns a clean (exit 0) agent run into not-done."""
+        self._write_verify({"verify": "false"})
+        result, _ = self._run()
+        self.assertNotEqual(result, 0)
+
+    def test_multiple_checks_one_failing_is_red(self):
+        self._write_verify(
+            {"verify": [{"name": "ok", "command": "true"},
+                        {"name": "bad", "command": "false"}]}
+        )
+        result, run_json = self._run()
+        self.assertNotEqual(result, 0)
+        self.assertIn("bad", run_json["objectiveGate"]["failedReasons"])
 
 
 if __name__ == "__main__":

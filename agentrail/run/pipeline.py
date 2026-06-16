@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agentrail.run import artifacts, context as ctx, prompts, skills, state as state_mod
-from agentrail.run.objective_gate import GateResult
+from agentrail.run.check_runner import ac_coverage_for, load_verify_checks, run_objective_checks
+from agentrail.run.objective_gate import CheckResult, GateResult, evaluate
 from agentrail.run.activity_push import push_agent_activity
 from agentrail.run.context_pack_push import push_context_pack
 from agentrail.run.cost_push import build_cost_record, push_cost_event
@@ -578,6 +579,35 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
     if status == 0:
         status, _ = run_issue_phase(rc, "execute", 1, verifier_findings_file="", plan_output=plan_output)
         last_phase = "execute"
+
+    # 12b. Objective Gate — the falsifiable definition of "done" (ADR 0007).
+    # AFTER the execute phase we run the OBJECTIVE checks ourselves (the agent's
+    # own "it works" is never trusted), evaluate the gate, and finalize. The
+    # run's done-ness is the gate verdict — NOT the raw agent exit status.
+    declared = load_verify_checks(target_dir)
+    if status == 0:
+        # Agent phases succeeded: actually run the declared checks.
+        gate_checks = run_objective_checks(target_dir)
+    else:
+        # Agent phase failed: there is nothing trustworthy to verify and the
+        # checks were NOT run. Record each declared check as a failure so the
+        # gate is red ("agent phase failed; verification not run"); if nothing
+        # was declared, the empty-coverage path makes it red anyway.
+        gate_checks = [
+            CheckResult(name=c.name, passed=False, detail="agent phase failed; not run")
+            for c in declared
+        ]
+
+    gate_result = evaluate(checks=gate_checks, ac_coverage=ac_coverage_for(declared))
+    outcome = finalize_objective_gate(metadata_file, gate_result=gate_result, review_advisory=None)
+
+    # Done is gate-driven: green → exit 0; red → non-zero. Preserve a genuine
+    # agent failure code when the agent itself failed, otherwise surface 1 for a
+    # red gate on an otherwise-clean run.
+    if outcome["done"]:
+        status = 0
+    elif status == 0:
+        status = 1
 
     # 13. Finalize
     finished_at = _utc_now_iso()

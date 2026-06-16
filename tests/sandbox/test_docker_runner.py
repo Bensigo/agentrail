@@ -267,3 +267,65 @@ class TestErrorAndTimeoutTeardown:
         ])
         result = self._run(runner)
         assert result.status == "green"
+
+
+# ---------------------------------------------------------------------------
+# AC4 (escalation loop) — model + compacted failure handoff are forwarded into
+#       the container by NAME (env), never on the argv (handoff can be large /
+#       multiline; the model name is harmless but kept uniform with secrets).
+# ---------------------------------------------------------------------------
+
+class TestModelAndHandoffForwarding:
+    def _run(self, runner, **over):
+        kwargs = dict(
+            repo_url="https://github.com/acme/widgets.git",
+            ref="main", issue_ref="7", workspace_id="ws-1",
+            env={"AGENT_API_KEY": "sk-secret"},
+            run_container=runner, image="img",
+        )
+        kwargs.update(over)
+        return run_issue_in_sandbox(**kwargs)
+
+    def _ok_runner(self) -> "FakeRunner":
+        return FakeRunner([
+            ContainerResult(exit_code=0, stdout=_wrap_result(_green_payload()), stderr=""),
+            ContainerResult(exit_code=0, stdout="", stderr=""),  # rm
+        ])
+
+    def test_model_forwarded_by_name_via_env(self) -> None:
+        runner = self._ok_runner()
+        self._run(runner, model="claude-opus-4-8")
+        run_cmd = next(c for c in runner.commands if "run" in c and "img" in c)
+        # forwarded by NAME (-e AGENTRAIL_MODEL), value lives in the subprocess env
+        assert "AGENTRAIL_MODEL" in run_cmd
+        run_env = next(c["env"] for c in runner.calls if "img" in c["cmd"])
+        assert run_env["AGENTRAIL_MODEL"] == "claude-opus-4-8"
+
+    def test_handoff_forwarded_by_name_via_env_not_argv(self) -> None:
+        handoff = "## Escalation\n### Goal\nadd widget\n### Exact gate error\nAC2 unverified"
+        runner = self._ok_runner()
+        self._run(runner, failure_handoff=handoff)
+        run_cmd = next(c for c in runner.commands if "run" in c and "img" in c)
+        joined = " ".join(run_cmd)
+        # the (possibly large/multiline) handoff value must NOT land on the argv
+        assert "AC2 unverified" not in joined
+        assert "AGENTRAIL_FAILURE_HANDOFF" in run_cmd
+        run_env = next(c["env"] for c in runner.calls if "img" in c["cmd"])
+        assert run_env["AGENTRAIL_FAILURE_HANDOFF"] == handoff
+
+    def test_omitted_model_and_handoff_are_not_forwarded(self) -> None:
+        runner = self._ok_runner()
+        self._run(runner)  # no model, no handoff
+        run_cmd = next(c for c in runner.commands if "run" in c and "img" in c)
+        assert "AGENTRAIL_MODEL" not in run_cmd
+        assert "AGENTRAIL_FAILURE_HANDOFF" not in run_cmd
+        run_env = next(c["env"] for c in runner.calls if "img" in c["cmd"])
+        assert "AGENTRAIL_MODEL" not in run_env
+        assert "AGENTRAIL_FAILURE_HANDOFF" not in run_env
+
+    def test_model_and_handoff_do_not_clobber_caller_env(self) -> None:
+        runner = self._ok_runner()
+        self._run(runner, model="m", failure_handoff="h")
+        run_env = next(c["env"] for c in runner.calls if "img" in c["cmd"])
+        # original secret still present alongside the injected pair
+        assert run_env["AGENT_API_KEY"] == "sk-secret"

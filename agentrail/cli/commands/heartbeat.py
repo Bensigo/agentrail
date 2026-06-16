@@ -61,6 +61,10 @@ def _usage() -> str:
         "  AGENTRAIL_WORKSPACE_ID    Default workspace id\n"
         "  AGENT_API_KEY / GIT_TOKEN Forwarded into the sandbox by name\n"
         "  DISCORD_WEBHOOK_URL       Channel webhook for notifications (optional)\n"
+        "  AGENTRAIL_CHEAP_MODEL     Model for the first (cheap) attempt (optional)\n"
+        "  AGENTRAIL_STRONG_MODEL    Model the loop escalates to on a red gate\n"
+        "  AGENTRAIL_PER_ISSUE_CEILING_USD  Per-issue cost ceiling (0 = uncapped)\n"
+        "  AGENTRAIL_ATTEMPT_LIMIT   Max attempts before stop-to-human (default 2)\n"
     )
 
 
@@ -202,8 +206,19 @@ def _build_runtime(
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     notifier = _DiscordNotifier(webhook_url)
 
+    # Cheap→strong escalation knobs (M036). The two model names map to the CHEAP
+    # and STRONG tiers; the per-issue ceiling + attempt limit bound the loop. These
+    # come from env today (a dashboard-managed config table is the later source);
+    # an unset model lets the runner image pick its default.
+    cheap_model = os.environ.get("AGENTRAIL_CHEAP_MODEL") or None
+    strong_model = os.environ.get("AGENTRAIL_STRONG_MODEL") or None
+    ceiling = _float_env("AGENTRAIL_PER_ISSUE_CEILING_USD", 0.0)
+    attempt_limit = max(1, int(_float_env("AGENTRAIL_ATTEMPT_LIMIT", 2)))
+
     config = RuntimeConfig(
-        workspace_id=workspace_id, repo_url=repo_url, ref=ref, env=env
+        workspace_id=workspace_id, repo_url=repo_url, ref=ref, env=env,
+        cheap_model=cheap_model, strong_model=strong_model,
+        ceiling=ceiling, attempt_limit=attempt_limit,
     )
     runtime = HeartbeatRuntime(
         connector=connector,
@@ -312,3 +327,14 @@ def _split_repos(raw: Optional[str]) -> List[str]:
     if not raw:
         return []
     return [r.strip() for r in raw.split(",") if r.strip()]
+
+
+def _float_env(name: str, default: float) -> float:
+    """Read a numeric env var, falling back to ``default`` on absent/bad values."""
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default

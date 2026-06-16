@@ -11,6 +11,10 @@
 # Required env (forwarded by the dispatcher via `docker run -e KEY`):
 #   ANTHROPIC_API_KEY / OPENAI_API_KEY   agent CLI credential
 #   GIT_TOKEN                            HTTPS clone token for private repos
+# Optional env (the cheap→strong escalation loop forwards these by NAME):
+#   AGENTRAIL_MODEL              model the run executes on (cheap first, strong on retry)
+#   AGENTRAIL_FAILURE_HANDOFF   compacted failure handoff injected into the execute phase
+#                               (the spine reads it from this env var; see run/prompts.py)
 set -uo pipefail
 
 REPO_URL="${1:?repo_url required}"
@@ -20,7 +24,11 @@ ISSUE_REF="${3:?issue_ref required}"
 RESULT_BEGIN="===AGENTRAIL_RESULT_BEGIN==="
 RESULT_END="===AGENTRAIL_RESULT_END==="
 
-LOG_DIR="/workspace/.agentrail-runs"
+# Workspace root. Defaults to /workspace (the image's writable scratch mount);
+# overridable so the entrypoint can be exercised hermetically off the real image.
+WORKSPACE_ROOT="${AGENTRAIL_WORKSPACE_ROOT:-/workspace}"
+REPO_DIR="$WORKSPACE_ROOT/repo"
+LOG_DIR="$WORKSPACE_ROOT/.agentrail-runs"
 RUN_ID="sandbox-issue-${ISSUE_REF}"
 
 emit_result() {
@@ -46,16 +54,26 @@ if [ -n "${GIT_TOKEN:-}" ] && printf '%s' "$REPO_URL" | grep -q '^https://'; the
 fi
 
 echo "==> cloning ${REPO_URL} @ ${REF}"
-if ! git clone --depth 50 "$CLONE_URL" /workspace/repo >&2; then
+if ! git clone --depth 50 "$CLONE_URL" "$REPO_DIR" >&2; then
   emit_result "error" "0" "" "git clone failed"
   exit 1
 fi
-cd /workspace/repo || { emit_result "error" "0" "" "workspace missing"; exit 1; }
+cd "$REPO_DIR" || { emit_result "error" "0" "" "workspace missing"; exit 1; }
 git checkout "$REF" >&2 2>&1 || git checkout -b "$REF" "origin/$REF" >&2 2>&1 || true
 
 # --- run the spine -----------------------------------------------------------
-echo "==> agentrail run issue ${ISSUE_REF}"
-agentrail run issue "$ISSUE_REF" --run-id "$RUN_ID" --log-dir "$LOG_DIR" >&2
+# Forward the escalation model (cheap first, strong on a retry) when present. The
+# compacted failure handoff is left in the environment as AGENTRAIL_FAILURE_HANDOFF
+# for the execute phase to read (agentrail/run/prompts.py) — it is NOT a CLI flag.
+# NOTE: built as a positional list (not "${arr[@]}") for bash 3.x + `set -u`
+# safety — an empty-array expansion under `set -u` errors on bash 3.2.
+echo "==> agentrail run issue ${ISSUE_REF}${AGENTRAIL_MODEL:+ (model ${AGENTRAIL_MODEL})}"
+if [ -n "${AGENTRAIL_MODEL:-}" ]; then
+  agentrail run issue "$ISSUE_REF" --run-id "$RUN_ID" --log-dir "$LOG_DIR" \
+    --model "$AGENTRAIL_MODEL" >&2
+else
+  agentrail run issue "$ISSUE_REF" --run-id "$RUN_ID" --log-dir "$LOG_DIR" >&2
+fi
 RUN_STATUS=$?
 
 # --- read the verdict + cost out of the run artifacts ------------------------

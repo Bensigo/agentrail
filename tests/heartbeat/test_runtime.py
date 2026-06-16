@@ -126,6 +126,8 @@ def _config(**overrides) -> RuntimeConfig:
         repo_url="https://github.com/acme/widgets.git",
         ref="main",
         env={"AGENT_API_KEY": "k"},
+        cheap_model="claude-haiku-4-5",
+        strong_model="claude-opus-4-8",
     )
     base.update(overrides)
     return RuntimeConfig(**base)
@@ -141,15 +143,18 @@ def _runtime(
     notifier,
     sandbox_results: Optional[Dict[str, RunResult]] = None,
     default_result: Optional[RunResult] = None,
+    result_sequence: Optional[List[RunResult]] = None,
     capabilities: FrozenSet[Capability] = REQUIRED_CAPABILITIES,
     config: Optional[RuntimeConfig] = None,
 ):
     sandbox_results = sandbox_results or {}
     default_result = default_result or RunResult(status="green", cost_usd=0.5,
                                                  branch="afk/1")
+    seq = list(result_sequence) if result_sequence is not None else None
     calls: List[dict] = []
 
-    def sandbox_runner(*, repo_url, ref, issue_ref, workspace_id, env):
+    def sandbox_runner(*, repo_url, ref, issue_ref, workspace_id, env,
+                       model=None, failure_handoff=None):
         calls.append(
             {
                 "repo_url": repo_url,
@@ -157,8 +162,12 @@ def _runtime(
                 "issue_ref": issue_ref,
                 "workspace_id": workspace_id,
                 "env": env,
+                "model": model,
+                "failure_handoff": failure_handoff,
             }
         )
+        if seq is not None:
+            return seq.pop(0)
         return sandbox_results.get(str(issue_ref), default_result)
 
     rt = HeartbeatRuntime(
@@ -286,41 +295,49 @@ def test_ac3_gate_disabled_refuses_to_dispatch():
 # --------------------------------------------------------------------------- #
 # AC4 — status → Event + TaskResult state mapping
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize(
-    "status,expected_event,expected_state",
-    [
-        ("green", Event.GATE_GREEN, "green"),
-        ("red", Event.GATE_RED, "escalated-to-human"),
-        ("error", Event.GATE_RED, "escalated-to-human"),
-    ],
-)
-def test_ac4_status_maps_to_event_and_state(status, expected_event, expected_state):
+def test_ac4_green_maps_to_gate_green_and_green_state():
     connector = FakeConnector(
         [IssueRef(repo="acme/widgets", number=7, body=_VALID_BODY)]
     )
     store = FakeStore()
     notifier = FakeNotifier()
-    # CHEAP tier with budget 1 so a single GATE_RED hard-stops to escalated.
-    result = RunResult(status=status, cost_usd=0.2, branch="afk/7",
-                       gate_reason="boom" if status != "green" else "")
     rt = _runtime(connector=connector, store=store, notifier=notifier,
-                  default_result=result)
-    # Force a budget-1 entry so red escalates straight to a terminal.
-    store._grabbable_budget = 1  # documented hint; FakeStore mints budget 2 by default
+                  default_result=RunResult(status="green", cost_usd=0.2,
+                                           branch="afk/7"))
 
     rt.poll_and_dispatch("ws-1")
 
     dispatch_events = [t[1] for t in store.transitions if t[1] != Event.START]
-    assert dispatch_events == [expected_event]
-    assert notifier.tasks[0].state == expected_state
-    # post_result state matches too
-    assert connector.posted[0][1].state == expected_state
+    assert dispatch_events == [Event.GATE_GREEN]
+    assert notifier.tasks[0].state == "green"
+    assert connector.posted[0][1].state == "green"
 
 
-def test_ac4_red_on_cheap_tier_with_budget_escalates_then_terminal_state_reported():
-    # With default budget 2, a single GATE_RED escalates to STRONG (not terminal),
-    # so the *reported* state should reflect a non-green outcome. We assert the
-    # TaskResult uses the run status mapping, independent of mid-flight tier.
+@pytest.mark.parametrize("status", ["red", "error"])
+def test_ac4_persistently_failing_status_ends_escalated_to_human(status):
+    """A status the loop can never bring green (red/error on every attempt) drives
+    a GATE_RED per attempt and ends in the ESCALATED_TO_HUMAN terminal (AC4/AC3)."""
+    connector = FakeConnector(
+        [IssueRef(repo="acme/widgets", number=7, body=_VALID_BODY)]
+    )
+    store = FakeStore()
+    notifier = FakeNotifier()
+    result = RunResult(status=status, cost_usd=0.2, branch="afk/7",
+                       gate_reason="boom")
+    rt = _runtime(connector=connector, store=store, notifier=notifier,
+                  default_result=result)
+
+    rt.poll_and_dispatch("ws-1")
+
+    dispatch_events = [t[1] for t in store.transitions if t[1] != Event.START]
+    # every attempt is a GATE_RED, and the loop is bounded (attempt_limit=2)
+    assert dispatch_events and all(e == Event.GATE_RED for e in dispatch_events)
+    assert notifier.tasks[0].state == "escalated-to-human"
+    assert connector.posted[0][1].state == "escalated-to-human"
+
+
+def test_ac4_red_then_green_is_reported_green():
+    """A red cheap attempt that the strong attempt turns green ends green."""
     connector = FakeConnector(
         [IssueRef(repo="acme/widgets", number=9, body=_VALID_BODY)]
     )
@@ -328,13 +345,184 @@ def test_ac4_red_on_cheap_tier_with_budget_escalates_then_terminal_state_reporte
     notifier = FakeNotifier()
     rt = _runtime(
         connector=connector, store=store, notifier=notifier,
-        default_result=RunResult(status="red", cost_usd=0.1, gate_reason="nope"),
+        result_sequence=[
+            RunResult(status="red", cost_usd=0.1, branch="afk/9", gate_reason="nope"),
+            RunResult(status="green", cost_usd=0.3, branch="afk/9-strong"),
+        ],
     )
     report = rt.poll_and_dispatch("ws-1")
+    assert report.green == 1
+    assert report.red == 0
+    assert notifier.tasks[0].state == "green"
+
+
+# --------------------------------------------------------------------------- #
+# Escalation loop (cheap→strong with compacted failure-handoff) — M036 live loop
+# --------------------------------------------------------------------------- #
+def test_red_first_attempt_escalates_to_strong_model_with_handoff():
+    """AC1+AC2: a red cheap attempt with budget left re-runs on the STRONG model
+    carrying a non-empty compacted handoff (goal + prior diff/branch + gate error)."""
+    connector = FakeConnector(
+        [IssueRef(repo="acme/widgets", number=7, title="Add widget",
+                  body=_VALID_BODY, url="https://gh/7")]
+    )
+    store = FakeStore()
+    notifier = FakeNotifier()
+    rt = _runtime(
+        connector=connector, store=store, notifier=notifier,
+        result_sequence=[
+            RunResult(status="red", cost_usd=0.1, branch="afk/7-cheap",
+                      gate_reason="AC2 unverified"),
+            RunResult(status="green", cost_usd=0.4, branch="afk/7-strong"),
+        ],
+    )
+
+    report = rt.poll_and_dispatch("ws-1")
+
+    # two sandbox attempts for the one issue
+    calls = rt._sandbox_calls
+    assert len(calls) == 2
+    # 1st attempt: cheap model, NO handoff
+    assert calls[0]["model"] == "claude-haiku-4-5"
+    assert not calls[0]["failure_handoff"]
+    # 2nd attempt: STRONG model, non-empty handoff
+    assert calls[1]["model"] == "claude-opus-4-8"
+    handoff = calls[1]["failure_handoff"]
+    assert handoff  # AC1: non-empty
+    # AC2: handoff carries goal + prior attempt diff/branch + gate error
+    assert "Add widget" in handoff or "widget" in handoff.lower()
+    assert "afk/7-cheap" in handoff
+    assert "AC2 unverified" in handoff
+
+    # ended green on the strong attempt
+    assert report.green == 1
+    assert report.red == 0
+    assert notifier.tasks[0].state == "green"
+
+
+def test_handoff_matches_compaction_build_output():
+    """AC2: the handoff text is exactly compaction.build(goal, diff, gate_error)."""
+    from agentrail.run import compaction
+
+    connector = FakeConnector(
+        [IssueRef(repo="acme/widgets", number=7, title="Ship the thing",
+                  body=_VALID_BODY)]
+    )
+    store = FakeStore()
+    notifier = FakeNotifier()
+    rt = _runtime(
+        connector=connector, store=store, notifier=notifier,
+        result_sequence=[
+            RunResult(status="red", cost_usd=0.1, branch="afk/7-cheap",
+                      gate_reason="gate said no"),
+            RunResult(status="green", cost_usd=0.4, branch="afk/7-strong"),
+        ],
+    )
+    rt.poll_and_dispatch("ws-1")
+
+    handoff = rt._sandbox_calls[1]["failure_handoff"]
+    expected = compaction.build(
+        goal="Ship the thing",
+        attempt_diff="afk/7-cheap",
+        gate_error="gate said no",
+    ).text
+    assert handoff == expected
+
+
+def test_green_on_first_attempt_does_not_escalate():
+    """AC3: green on the first (cheap) attempt → GATE_GREEN, no second run."""
+    connector = FakeConnector(
+        [IssueRef(repo="acme/widgets", number=7, body=_VALID_BODY)]
+    )
+    store = FakeStore()
+    notifier = FakeNotifier()
+    rt = _runtime(
+        connector=connector, store=store, notifier=notifier,
+        default_result=RunResult(status="green", cost_usd=0.3, branch="afk/7"),
+    )
+    report = rt.poll_and_dispatch("ws-1")
+
+    assert len(rt._sandbox_calls) == 1
+    assert rt._sandbox_calls[0]["model"] == "claude-haiku-4-5"
+    events = [t[1] for t in store.transitions]
+    assert Event.GATE_GREEN in events
+    assert report.green == 1
+
+
+def test_red_then_red_exhausts_attempts_and_stops_to_human():
+    """AC3: red on cheap then red on strong (attempt_limit=2) → ESCALATED_TO_HUMAN
+    terminal; the loop terminates (exactly two attempts, never more)."""
+    connector = FakeConnector(
+        [IssueRef(repo="acme/widgets", number=7, body=_VALID_BODY)]
+    )
+    store = FakeStore()
+    notifier = FakeNotifier()
+    rt = _runtime(
+        connector=connector, store=store, notifier=notifier,
+        result_sequence=[
+            RunResult(status="red", cost_usd=0.1, branch="afk/7-cheap",
+                      gate_reason="still red"),
+            RunResult(status="red", cost_usd=0.2, branch="afk/7-strong",
+                      gate_reason="strong red too"),
+        ],
+    )
+    report = rt.poll_and_dispatch("ws-1")
+
+    # bounded: exactly two attempts (cheap then strong), never a third
+    assert len(rt._sandbox_calls) == 2
     assert report.red == 1
     assert report.green == 0
-    # red maps to a non-green report state regardless of escalation bookkeeping
-    assert notifier.tasks[0].state != "green"
+    assert notifier.tasks[0].state == "escalated-to-human"
+    assert connector.posted[0][1].state == "escalated-to-human"
+
+
+def test_budget_ceiling_exhaustion_stops_before_escalation():
+    """AC3: a red attempt that already spent past the per-issue ceiling stops to
+    human without a second run (budget_leash STOP_TO_HUMAN dominates)."""
+    connector = FakeConnector(
+        [IssueRef(repo="acme/widgets", number=7, body=_VALID_BODY)]
+    )
+    store = FakeStore()
+    notifier = FakeNotifier()
+    rt = _runtime(
+        connector=connector, store=store, notifier=notifier,
+        config=_config(ceiling=0.05, attempt_limit=5),  # ceiling below the cheap cost
+        result_sequence=[
+            RunResult(status="red", cost_usd=0.10, branch="afk/7-cheap",
+                      gate_reason="red and over budget"),
+        ],
+    )
+    report = rt.poll_and_dispatch("ws-1")
+
+    assert len(rt._sandbox_calls) == 1  # no escalation: budget exhausted
+    assert report.red == 1
+    assert notifier.tasks[0].state == "escalated-to-human"
+
+
+def test_register_run_records_each_attempt():
+    """AC3 bookkeeping: register_run fires per attempt with phase/status/cost."""
+    connector = FakeConnector(
+        [IssueRef(repo="acme/widgets", number=7, body=_VALID_BODY)]
+    )
+    store = FakeStore()
+    notifier = FakeNotifier()
+    rt = _runtime(
+        connector=connector, store=store, notifier=notifier,
+        result_sequence=[
+            RunResult(status="red", cost_usd=0.1, branch="afk/7-cheap",
+                      gate_reason="nope"),
+            RunResult(status="green", cost_usd=0.4, branch="afk/7-strong"),
+        ],
+    )
+    rt.poll_and_dispatch("ws-1")
+
+    statuses = [r["status"] for r in store.runs]
+    # running (start) + red (attempt 1) + running? + green (attempt 2) — at least
+    # one terminal status per attempt and a green at the end.
+    assert "red" in statuses
+    assert statuses[-1] == "green"
+    costs = [r["cost_usd"] for r in store.runs if r["status"] in ("red", "green")]
+    assert 0.1 in costs and 0.4 in costs
 
 
 # --------------------------------------------------------------------------- #

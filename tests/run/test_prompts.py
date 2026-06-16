@@ -953,6 +953,44 @@ class ExecuteImplementerBoundaryTests(unittest.TestCase):
         )
 
 
+class ExecuteFailureHandoffTests(unittest.TestCase):
+    """The ``execute`` phase prompt injects the compacted failure handoff when the
+    sandbox forwarded one via ``AGENTRAIL_FAILURE_HANDOFF`` (the cheap→strong
+    escalation loop). Absent the env var the prompt is byte-for-byte unchanged."""
+
+    def _make(self):
+        from agentrail.run.prompts import issue_run_phase_prompt
+        return issue_run_phase_prompt(
+            "execute", 7,
+            issue_context="CTX",
+            base_prompt="BASE",
+            context_summary="SUM",
+            plan_output="PLAN",
+        )
+
+    def test_no_env_means_no_handoff_block(self):
+        env = {k: v for k, v in os.environ.items()
+               if k != "AGENTRAIL_FAILURE_HANDOFF"}
+        with patch.dict(os.environ, env, clear=True):
+            result = self._make()
+        self.assertNotIn("Failure handoff from the previous", result)
+
+    def test_handoff_env_is_injected_into_execute_prompt(self):
+        handoff = ("## Escalation: cheap-model attempt failed the Objective Gate\n"
+                   "### Goal\nadd a greet()\n### Exact gate error\nAC2 unverified")
+        with patch.dict(os.environ, {"AGENTRAIL_FAILURE_HANDOFF": handoff}):
+            result = self._make()
+        self.assertIn("Failure handoff from the previous", result)
+        # the verbatim handoff (goal + gate error) is carried into the prompt
+        self.assertIn("add a greet()", result)
+        self.assertIn("AC2 unverified", result)
+
+    def test_blank_handoff_env_is_ignored(self):
+        with patch.dict(os.environ, {"AGENTRAIL_FAILURE_HANDOFF": "   "}):
+            result = self._make()
+        self.assertNotIn("Failure handoff from the previous", result)
+
+
 class VerifierPromptTests(unittest.TestCase):
     """The ``verify`` phase prompt: **Independent Verification** (issue #782,
     ADR 0008). A DIFFERENT model than the Implementer runs a blocking, narrow

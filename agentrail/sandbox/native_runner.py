@@ -159,12 +159,12 @@ def _clone_command(repo_url: str, ref: str, dest: str) -> List[str]:
 
 def _build_run_command(
     *, issue_ref: str, agent: str, model: Optional[str], log_dir: str,
-    sandbox_runtime: bool,
+    sandbox_runtime: bool, run_id: str,
 ) -> List[str]:
     cmd: List[str] = [
         "agentrail", "run", "issue", str(issue_ref),
         "--agent", agent,
-        "--run-id", RUN_ID,
+        "--run-id", run_id,
         "--log-dir", log_dir,
     ]
     if model:
@@ -189,6 +189,7 @@ def run_issue_on_host(
     model: Optional[str] = None,
     failure_handoff: Optional[str] = None,
     timeout: int = DEFAULT_TIMEOUT,
+    run_id: str = RUN_ID,
     run_dir_factory: Optional[Callable[[], Path]] = None,
     runner=subprocess,
 ) -> RunResult:
@@ -259,6 +260,7 @@ def run_issue_on_host(
         run_cmd = _build_run_command(
             issue_ref=issue_ref, agent=agent, model=model,
             log_dir=str(log_dir), sandbox_runtime=sandbox_runtime,
+            run_id=run_id,
         )
         try:
             proc = runner.run(
@@ -276,7 +278,7 @@ def run_issue_on_host(
         # 3. Parse run.json → RunResult (mirrors the container parser).
         logs_tail = _logs_tail(getattr(proc, "stdout", ""), getattr(proc, "stderr", ""))
         return _result_from_run_json(
-            log_dir / RUN_ID,
+            log_dir / run_id,
             run_status=getattr(proc, "returncode", 1),
             repo_dir=repo_dir,
             logs_tail=logs_tail,

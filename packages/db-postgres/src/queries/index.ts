@@ -1082,6 +1082,35 @@ export async function getRunnerRunStats(
   }));
 }
 
+// Self-hosted runner protocol — device-flow auth, work-claim, and result.
+// The Python CLI half (`agentrail/runner/*`) calls the console routes that wrap
+// these; api_keys double as the runner token so `requireBearer` authenticates
+// the claim/result endpoints for free.
+export {
+  mintApiKey,
+  startDeviceCode,
+  exchangeDeviceCode,
+  approveDeviceCode,
+  claimQueueEntry,
+  recordRunnerResult,
+  DEVICE_CODE_TTL_MS,
+  type StartedDeviceCode,
+  type DeviceTokenResult,
+  type ApproveDeviceCodeResult,
+  type WorkItem,
+  type RunnerStatus,
+} from "./runner.js";
+
+// GitHub issue intake — the webhook half of the queue: the AC gate + workspace
+// resolution + idempotent enqueue (deterministic id matches the Python store).
+export {
+  validateAcceptanceCriteria,
+  findWorkspaceByRepo,
+  enqueueGithubIssue,
+  type AcGateResult,
+  type EnqueueResult,
+} from "./github_intake.js";
+
 // Connectors — per-provider control surface that also configures the Heartbeat.
 // Folds in the former standalone heartbeat_config (#816); the daemon reads
 // connectors via list_active_connectors (agentrail/afk/connectors_store.py).

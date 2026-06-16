@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "verify": "env -u AGENTRAIL_SERVER_BASE_URL -u AGENTRAIL_SERVER_API_KEY -u AGENTRAIL_SERVER_REPOSITORY_ID python3 -m pytest -q",
+  "runner": {
+    "name": "codex",
+    "command": "codex exec --sandbox danger-full-access -"
+  },
+  "runners": {
+    "codex": {
+      "command": "codex exec --sandbox danger-full-access -"
+    },
+    "claude": {
+      "command": "env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u AI_AGENT claude -p --allowedTools Bash,Edit,Read,Write --dangerously-skip-permissions",
+      "models": {
+        "plan": "claude-sonnet-4-6",
+        "execute": "claude-sonnet-4-6",
+        "review": "claude-sonnet-4-6"
+      }
+    }
+  },
+  "context": {
+    "embedding": {
+      "mode": "disabled"
+    }
+  }
+}

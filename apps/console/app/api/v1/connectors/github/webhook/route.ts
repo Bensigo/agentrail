@@ -1,0 +1,123 @@
+import { createHmac, timingSafeEqual } from "crypto";
+import { NextRequest, NextResponse } from "next/server";
+import {
+  findWorkspaceByRepo,
+  getConnector,
+  enqueueGithubIssue,
+} from "@agentrail/db-postgres";
+
+/**
+ * GitHub `issues` webhook receiver — the trigger that fills the queue.
+ *
+ * In the self-hosted-runner model the backend owns the queue, so admitting a
+ * GitHub issue is a SERVER job: GitHub POSTs an `issues` delivery here, and when
+ * the issue carries the workspace's trigger label we enqueue it (through the
+ * input-contract gate). The logged-in runner then claims it via
+ * `/api/v1/runner/claim`. Mirrors `agentrail/heartbeat/webhook.py`.
+ *
+ * Locally, point a tunnel (smee.io / `gh webhook forward`) at this route; when
+ * deployed it's the public webhook URL configured on the repo. Optional HMAC
+ * verification via `GITHUB_WEBHOOK_SECRET`.
+ */
+
+// Actions that (re)admit work; others (closed, edited, assigned, …) are ignored.
+const TRIGGER_ACTIONS = new Set(["opened", "reopened", "labeled"]);
+const SIGNATURE_HEADER = "x-hub-signature-256";
+
+function verifySignature(
+  raw: string,
+  signature: string | null,
+  secret: string | undefined
+): boolean {
+  if (!secret) return true; // no secret configured → skip (insecure but convenient)
+  if (!signature) return false;
+  const expected =
+    "sha256=" + createHmac("sha256", secret).update(raw).digest("hex");
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signature);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function labelNames(issue: Record<string, unknown>): Set<string> {
+  const labels = issue.labels;
+  const names = new Set<string>();
+  if (Array.isArray(labels)) {
+    for (const lab of labels) {
+      if (typeof lab === "string") names.add(lab);
+      else if (lab && typeof lab === "object" && typeof (lab as Record<string, unknown>).name === "string") {
+        names.add((lab as Record<string, string>).name);
+      }
+    }
+  }
+  return names;
+}
+
+export async function POST(request: NextRequest) {
+  const raw = await request.text();
+
+  if (
+    !verifySignature(
+      raw,
+      request.headers.get(SIGNATURE_HEADER),
+      process.env["GITHUB_WEBHOOK_SECRET"]
+    )
+  ) {
+    return NextResponse.json({ error: "invalid signature" }, { status: 401 });
+  }
+
+  // Only `issues` events carry work; ack ping / others.
+  const event = request.headers.get("x-github-event") ?? "";
+  if (event !== "issues") {
+    return NextResponse.json({ ignored: event || "unknown" });
+  }
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return NextResponse.json({ error: "invalid json" }, { status: 400 });
+  }
+
+  const action = payload.action;
+  if (typeof action !== "string" || !TRIGGER_ACTIONS.has(action)) {
+    return NextResponse.json({ matched: false, reason: `action ${String(action)} not a trigger` });
+  }
+
+  const issue = payload.issue;
+  const repository = payload.repository;
+  if (!issue || typeof issue !== "object" || !repository || typeof repository !== "object") {
+    return NextResponse.json({ matched: false, reason: "missing issue or repository" });
+  }
+  const issueObj = issue as Record<string, unknown>;
+  const repoFullName = (repository as Record<string, unknown>).full_name;
+  if (typeof repoFullName !== "string") {
+    return NextResponse.json({ matched: false, reason: "missing repository.full_name" });
+  }
+
+  // Resolve which workspace owns this repo (via its GitHub connector).
+  const workspaceId = await findWorkspaceByRepo(repoFullName);
+  if (!workspaceId) {
+    return NextResponse.json({ matched: false, reason: "no workspace owns this repo" });
+  }
+
+  // The trigger label is the connector's configured label.
+  const connector = await getConnector(workspaceId, "github");
+  const triggerLabel = connector?.config.triggerLabel;
+  if (!triggerLabel || !labelNames(issueObj).has(triggerLabel)) {
+    return NextResponse.json({ matched: false, reason: "trigger label not on issue" });
+  }
+
+  const number = Number(issueObj.number ?? 0);
+  const result = await enqueueGithubIssue({
+    workspaceId,
+    repoFullName,
+    number,
+    title: typeof issueObj.title === "string" ? issueObj.title : "",
+    body: typeof issueObj.body === "string" ? issueObj.body : "",
+  });
+
+  if (!result.enqueued) {
+    return NextResponse.json({ matched: true, enqueued: 0, reason: result.reason });
+  }
+  return NextResponse.json({ matched: true, enqueued: 1, id: result.id });
+}

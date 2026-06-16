@@ -1,11 +1,20 @@
 """Shared AgentRail helpers."""
+from __future__ import annotations
 
 
-def format_duration(seconds: int) -> str:
-    """Return a short human-readable string for a duration in seconds."""
-    h, remainder = divmod(seconds, 3600)
+def format_duration(seconds: int | float) -> str:
+    """Return a short human-readable string for a duration in seconds.
+
+    Examples:
+        format_duration(0)    -> "0s"
+        format_duration(5)    -> "5s"
+        format_duration(90)   -> "1m 30s"
+        format_duration(3661) -> "1h 1m 1s"
+    """
+    total = int(seconds)
+    h, remainder = divmod(total, 3600)
     m, s = divmod(remainder, 60)
-    parts = []
+    parts: list[str] = []
     if h:
         parts.append(f"{h}h")
     if m:

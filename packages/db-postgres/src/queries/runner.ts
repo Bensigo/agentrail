@@ -6,6 +6,7 @@ import { queueEntries } from "../schema/queue_entries.js";
 import { connectors } from "../schema/connectors.js";
 import type { ConnectorConfig } from "../schema/connectors.js";
 import { apiKeys } from "../schema/api_keys.js";
+import { runs } from "../schema/runs.js";
 
 // ---------------------------------------------------------------------------
 // API-key minting (runner token)
@@ -211,25 +212,21 @@ function repoSlugToUrl(slug: string): string {
 }
 
 /**
- * Derive the repo URL for a claimed work item. Prefer a repo encoded on the
- * entry's `externalId` (e.g. `owner/name#123` or a full issue URL); otherwise
- * fall back to the first repo configured on the workspace's GitHub connector.
+ * Derive the `owner/name` slug for a claimed entry. Prefer a repo encoded on the
+ * entry's `externalId` (a full issue URL or `owner/name#123`); otherwise fall
+ * back to the first repo configured on the workspace's GitHub connector. "" when
+ * none resolves.
  */
-async function deriveRepoUrl(
+async function deriveRepoSlug(
   workspaceId: string,
   externalId: string
 ): Promise<string> {
-  // A full GitHub URL on the externalId → strip to the repo root.
-  const urlMatch = externalId.match(
-    /^https?:\/\/github\.com\/([^/]+\/[^/#]+)/i
-  );
-  if (urlMatch) return repoSlugToUrl(urlMatch[1]!);
+  const urlMatch = externalId.match(/^https?:\/\/github\.com\/([^/]+\/[^/#]+)/i);
+  if (urlMatch) return urlMatch[1]!;
 
-  // `owner/name#123` or `owner/name` form.
   const slugMatch = externalId.match(/^([\w.-]+\/[\w.-]+)(?:#.*)?$/);
-  if (slugMatch) return repoSlugToUrl(slugMatch[1]!);
+  if (slugMatch) return slugMatch[1]!;
 
-  // Fall back to the GitHub connector config.
   const rows = await db
     .select({ config: connectors.config })
     .from(connectors)
@@ -241,8 +238,21 @@ async function deriveRepoUrl(
     )
     .limit(1);
   const cfg = rows[0]?.config as ConnectorConfig | null | undefined;
-  const repo = cfg?.repos?.[0];
-  return repo ? repoSlugToUrl(repo) : "";
+  return cfg?.repos?.[0] ?? "";
+}
+
+async function deriveRepoUrl(
+  workspaceId: string,
+  externalId: string
+): Promise<string> {
+  const slug = await deriveRepoSlug(workspaceId, externalId);
+  return slug ? repoSlugToUrl(slug) : "";
+}
+
+/** The issue number for a `runs` branch/identity (trailing digits, else 0). */
+function issueNumberOf(externalId: string): string {
+  const m = externalId.match(/(\d+)\s*$/);
+  return m ? m[1]! : "0";
 }
 
 /**
@@ -278,7 +288,32 @@ export async function claimQueueEntry(
   const row = claimed[0];
   if (!row) return null;
 
-  const repoUrl = await deriveRepoUrl(workspaceId, row.external_id);
+  const slug = await deriveRepoSlug(workspaceId, row.external_id);
+  const repoUrl = slug ? repoSlugToUrl(slug) : "";
+
+  // Register a `runs` row so the dashboard shows the issue was picked up. We use
+  // the queue entry id AS the run id so claim/result address the same run (one
+  // run per entry, idempotent). repositoryId is plain text here = the repo slug.
+  await db
+    .insert(runs)
+    .values({
+      id: row.id,
+      workspaceId: row.workspace_id,
+      repositoryId: slug || row.external_id,
+      agent: "claude",
+      runnerName: "self-hosted-runner",
+      branch: `afk/github-${issueNumberOf(row.external_id)}`,
+      title: row.title,
+      status: "running",
+      startedAt: new Date(),
+      queueEntryId: row.id,
+      phase: "execute",
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: runs.id,
+      set: { status: "running", startedAt: new Date(), updatedAt: new Date() },
+    });
 
   return {
     id: row.id,
@@ -309,6 +344,7 @@ export async function recordRunnerResult(data: {
   id: string;
   workspaceId: string;
   status: RunnerStatus;
+  costUsd?: number;
 }): Promise<boolean> {
   const nextState =
     data.status === "green"
@@ -329,5 +365,27 @@ export async function recordRunnerResult(data: {
       )
     )
     .returning({ id: queueEntries.id });
-  return rows.length > 0;
+  if (rows.length === 0) return false;
+
+  // Mirror the outcome onto the `runs` row the dashboard shows (claim created it
+  // with id = the queue entry id). green→success, red/error→failed,
+  // running→running (a heartbeat). Best-effort: never fail the result on this.
+  const runStatus =
+    data.status === "green"
+      ? "success"
+      : data.status === "running"
+        ? "running"
+        : "failed";
+  const finishedAt = data.status === "running" ? null : new Date();
+  await db
+    .update(runs)
+    .set({
+      status: runStatus,
+      finishedAt,
+      updatedAt: new Date(),
+      ...(data.costUsd !== undefined ? { costUsd: data.costUsd } : {}),
+    })
+    .where(and(eq(runs.id, data.id), eq(runs.workspaceId, data.workspaceId)));
+
+  return true;
 }

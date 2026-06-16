@@ -76,6 +76,7 @@ export async function POST(request: NextRequest) {
     id,
     workspaceId: workspace_id,
     status,
+    costUsd: typeof body.cost_usd === "number" ? body.cost_usd : undefined,
   });
   if (!updated) {
     return NextResponse.json(

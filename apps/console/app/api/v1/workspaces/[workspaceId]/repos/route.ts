@@ -5,6 +5,8 @@ import {
   listWorkspaceRepositories,
   getRepositoryByName,
   createRepository,
+  getConnector,
+  upsertConnector,
 } from "@agentrail/db-postgres";
 import { getLatestIndexSnapshotsForWorkspace } from "@agentrail/db-clickhouse";
 import { repoHealth, type HealthStatus } from "../../../../../../lib/repo-health";
@@ -146,6 +148,23 @@ export async function POST(
     url,
     defaultBranch,
   });
+
+  // Self-configure the GitHub connector (and thereby the heartbeat) on connect:
+  // linking a repo is how GitHub is "connected" to a workspace, so seed/extend
+  // the connector's polled repos with sane defaults (enabled, default label +
+  // interval). Best-effort — a connector write failure must not fail the repo
+  // link, which is the primary action.
+  try {
+    const existingConnector = await getConnector(workspaceId, "github");
+    const repos = new Set(existingConnector?.config.repos ?? []);
+    repos.add(name);
+    await upsertConnector(workspaceId, "github", {
+      enabled: true,
+      config: { repos: [...repos] },
+    });
+  } catch (err) {
+    console.error("[repos] failed to self-configure github connector:", err);
+  }
 
   return NextResponse.json(
     {

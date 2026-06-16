@@ -69,3 +69,71 @@ def test_run_subcommand_required():
     with patch("sys.stderr", new=err):
         rc = run_heartbeat(["bogus"], runtime_factory=lambda **_: FakeRuntime([]))
     assert rc == 2
+
+
+def test_factory_receives_connector_kwargs_defaulting_to_none():
+    # Without override flags, the daemon configures itself from the connector:
+    # the factory is called with repos/trigger_label/interval = None so
+    # _build_runtime sources them from list_active_connectors.
+    seen = {}
+
+    def factory(**kw):
+        seen.update(kw)
+        return FakeRuntime([CycleReport(polled=0, enqueued=0, dispatched=0)])
+
+    with patch("sys.stdout", new=StringIO()):
+        rc = run_heartbeat(
+            ["run", "--workspace", "ws-1", "--once"], runtime_factory=factory
+        )
+    assert rc == 0
+    assert seen["repos"] is None
+    assert seen["trigger_label"] is None
+    assert seen["interval"] is None
+
+
+def test_override_flags_are_passed_to_factory():
+    seen = {}
+
+    def factory(**kw):
+        seen.update(kw)
+        return FakeRuntime([CycleReport(polled=0, enqueued=0, dispatched=0)])
+
+    with patch("sys.stdout", new=StringIO()):
+        run_heartbeat(
+            [
+                "run",
+                "--workspace",
+                "ws-1",
+                "--once",
+                "--repos",
+                "o/r,a/b",
+                "--trigger-label",
+                "afk",
+                "--interval",
+                "300",
+            ],
+            runtime_factory=factory,
+        )
+    assert seen["repos"] == ["o/r", "a/b"]
+    assert seen["trigger_label"] == "afk"
+    assert seen["interval"] == 300
+
+
+def test_loop_sleeps_on_connector_derived_interval():
+    # When the factory returns (runtime, interval) — as the real one does after
+    # reading the connector — the loop sleeps on that interval, not the CLI default.
+    fake = FakeRuntime([CycleReport(polled=0, enqueued=0, dispatched=0)])
+    slept: list = []
+
+    def boom(_):
+        slept.append(_)
+        raise KeyboardInterrupt
+
+    with patch("sys.stdout", new=StringIO()), patch("sys.stderr", new=StringIO()):
+        rc = run_heartbeat(
+            ["run", "--workspace", "ws-1"],
+            runtime_factory=lambda **_: (fake, 222),
+            sleep=boom,
+        )
+    assert rc == 0
+    assert slept == [222]

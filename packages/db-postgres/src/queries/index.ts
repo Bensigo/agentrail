@@ -1082,12 +1082,16 @@ export async function getRunnerRunStats(
   }));
 }
 
-// Heartbeat trigger configuration (MVP, #4).
+// Connectors — per-provider control surface that also configures the Heartbeat.
+// Folds in the former standalone heartbeat_config (#816); the daemon reads
+// connectors via list_active_connectors (agentrail/afk/connectors_store.py).
 export {
-  getHeartbeatConfig,
-  setHeartbeatConfig,
-  validateHeartbeatConfigUpdate,
+  getConnectors,
+  getConnector,
+  upsertConnector,
+  validateConnectorUpdate,
+  isConnectorProvider,
   MIN_POLL_INTERVAL_SECONDS,
   MAX_POLL_INTERVAL_SECONDS,
-  type HeartbeatConfigUpdate,
-} from "./heartbeat-config.js";
+  type ConnectorUpdate,
+} from "./connectors.js";

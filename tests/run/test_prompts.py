@@ -854,5 +854,113 @@ class ReviewPromptTests(unittest.TestCase):
         self.assertLess(idx_snip, idx_task)
 
 
+# ---------------------------------------------------------------------------
+# Test-Author / Implementer role split (issue #775, ADR 0008)
+# ---------------------------------------------------------------------------
+
+class TestAuthorPromptTests(unittest.TestCase):
+    """The ``test-author`` phase prompt: a DISTINCT role that authors ONE failing
+    acceptance test from the AC and must NOT implement the feature (AC1, AC3)."""
+
+    def _make(self, issue=7):
+        from agentrail.run.prompts import issue_run_phase_prompt
+        return issue_run_phase_prompt(
+            "test-author", issue,
+            issue_context="Add a greet() function.\n## Acceptance criteria\n- greets",
+            base_prompt="BASE",
+            context_summary="CTX",
+        )
+
+    def test_identifies_as_test_author_role(self):
+        result = self._make()
+        self.assertIn("TEST-AUTHOR", result)
+
+    def test_states_distinct_from_implementer(self):
+        """AC3: the role is explicitly distinct from the implementer."""
+        result = self._make()
+        self.assertIn("DISTINCT", result)
+        self.assertIn("Implementer", result)
+
+    def test_requires_exactly_one_failing_test(self):
+        """AC1: author exactly one acceptance test that must fail now."""
+        result = self._make()
+        self.assertIn("exactly ONE", result)
+        self.assertIn("MUST FAIL", result)
+
+    def test_forbids_implementing_the_feature(self):
+        """AC1/AC3: the test-author must NOT implement the feature."""
+        result = self._make()
+        self.assertIn("DO NOT implement", result)
+
+    def test_tests_through_public_interface(self):
+        result = self._make()
+        self.assertIn("PUBLIC interface", result)
+
+    def test_carries_issue_number_and_context(self):
+        result = self._make(issue=42)
+        self.assertIn("#42", result)
+        self.assertIn("Add a greet() function.", result)
+
+
+class ExecuteImplementerBoundaryTests(unittest.TestCase):
+    """The ``execute`` phase prompt gains an Implementer role boundary when the
+    Red-Green Proof is active (red_green=True): the implementer turns the
+    separately-authored acceptance test green and must not author/weaken it."""
+
+    def _make(self, red_green):
+        from agentrail.run.prompts import issue_run_phase_prompt
+        return issue_run_phase_prompt(
+            "execute", 7,
+            issue_context="CTX",
+            base_prompt="BASE",
+            context_summary="SUM",
+            plan_output="PLAN",
+            red_green=red_green,
+        )
+
+    def test_default_execute_has_no_implementer_boundary(self):
+        """red_green defaults False → existing single-execute behavior unchanged."""
+        result = self._make(red_green=False)
+        self.assertNotIn("You are the IMPLEMENTER", result)
+
+    def test_red_green_execute_declares_implementer_role(self):
+        """AC3: with the proof active, the execute prompt names the Implementer role."""
+        result = self._make(red_green=True)
+        self.assertIn("You are the IMPLEMENTER", result)
+        self.assertIn("DISTINCT", result)
+        self.assertIn("Test-Author", result)
+
+    def test_implementer_must_turn_test_green(self):
+        """AC2: the implementer's job is the smallest change that turns it green."""
+        result = self._make(red_green=True)
+        self.assertIn("green", result)
+
+    def test_implementer_must_not_author_or_weaken_acceptance_test(self):
+        """AC3: the implementer never authors/rewrites/weakens its own acceptance test."""
+        result = self._make(red_green=True)
+        self.assertIn("DO NOT author, rewrite, weaken", result)
+
+    def test_implementer_may_write_narrower_unit_tests(self):
+        """Narrower unit tests for own code are explicitly allowed."""
+        result = self._make(red_green=True)
+        self.assertIn("NARROWER unit tests", result)
+
+    def test_boundary_appears_before_execute_body(self):
+        result = self._make(red_green=True)
+        self.assertLess(
+            result.index("You are the IMPLEMENTER"),
+            result.index("This is phase 2 of 2: execute."),
+        )
+
+
+class IssueRunPhasePromptUnknownPhaseTests(unittest.TestCase):
+    def test_unknown_phase_raises(self):
+        from agentrail.run.prompts import issue_run_phase_prompt
+        with self.assertRaises(ValueError):
+            issue_run_phase_prompt(
+                "bogus", 7, issue_context="", base_prompt="", context_summary=""
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

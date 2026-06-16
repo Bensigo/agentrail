@@ -83,8 +83,8 @@ describe("AgentBehaviorLinter", () => {
     ]);
   });
 
-  it("fires context_blind_edit independently", async () => {
-    mockRows([row("evt-edit", { edit_without_context: 1 })]);
+  it("fires context_blind_edit only when the run gathered NO context anywhere", async () => {
+    mockRows([row("evt-edit", { edit_without_context: 1, files_read_count: 0 })]);
 
     await expect(AgentBehaviorLinter(WORKSPACE_ID, RUN_ID)).resolves.toEqual([
       {
@@ -95,16 +95,36 @@ describe("AgentBehaviorLinter", () => {
     ]);
   });
 
-  it("fires verification_skip independently", async () => {
-    mockRows([row("evt-verify", { verification_skip: 1 })]);
-
-    await expect(AgentBehaviorLinter(WORKSPACE_ID, RUN_ID)).resolves.toEqual([
-      {
-        rule: "verification_skip",
-        severity: "error",
-        evidence_event_id: "evt-verify",
-      },
+  it("does NOT fire context_blind_edit when the run read files in another turn", async () => {
+    // Normal rhythm: edit in one turn, context-read in another → not blind.
+    mockRows([
+      row("evt-edit", { edit_without_context: 1, files_read_count: 0 }),
+      row("evt-read", { files_read_count: 2 }),
     ]);
+
+    await expect(AgentBehaviorLinter(WORKSPACE_ID, RUN_ID)).resolves.toEqual(
+      []
+    );
+  });
+
+  it("NEVER emits verification_skip (the Objective Gate is the verifier)", async () => {
+    mockRows([row("evt-verify", { verification_skip: 1, files_read_count: 1 })]);
+
+    const findings = await AgentBehaviorLinter(WORKSPACE_ID, RUN_ID);
+    expect(findings.some((f) => f.rule === "verification_skip")).toBe(false);
+  });
+
+  it("dedups: many full-file-read turns yield ONE finding, not one per turn", async () => {
+    mockRows([
+      row("evt-1", { full_file_read: 1 }),
+      row("evt-2", { full_file_read: 1 }),
+      row("evt-3", { full_file_read: 1 }),
+    ]);
+
+    const findings = await AgentBehaviorLinter(WORKSPACE_ID, RUN_ID);
+    const fullReads = findings.filter((f) => f.rule === "full_file_read");
+    expect(fullReads).toHaveLength(1);
+    expect(fullReads[0]!.evidence_event_id).toBe("evt-1"); // first offender
   });
 
   it("returns an empty array for a clean run", async () => {

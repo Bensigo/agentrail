@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Github, Layers, MessageSquare } from "lucide-react";
+import { Github, Layers, MessageSquare, Radio, AlertCircle } from "lucide-react";
 import { ConnectorStatusBadge } from "./connector-status-badge";
 import {
+  activeHeartbeatConnectors,
   capabilitySummary,
   type ConnectorKind,
   type ConnectorView,
@@ -15,13 +16,165 @@ const KIND_ICON: Record<ConnectorKind, typeof Github> = {
   discord: MessageSquare,
 };
 
-function ConnectorCard({
+/**
+ * Heartbeat trigger controls, folded into each connector card (#816). The
+ * standalone Heartbeat page is gone — a connector now self-configures the loop,
+ * and owner/admins tune it here: enabled toggle, trigger label, poll interval.
+ * Writes go to PUT /connectors with the provider; the daemon reads the same rows
+ * via list_active_connectors.
+ */
+function TriggerControls({
   connector,
   workspaceId,
+  canManage,
   onChanged,
 }: {
   connector: ConnectorView;
   workspaceId: string;
+  canManage: boolean;
+  onChanged: () => void;
+}) {
+  const [label, setLabel] = useState(connector.triggerLabel);
+  const [interval, setIntervalValue] = useState(
+    String(connector.pollIntervalSeconds)
+  );
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const dirty =
+    label.trim() !== connector.triggerLabel ||
+    Number(interval) !== connector.pollIntervalSeconds;
+
+  const put = useCallback(
+    async (patch: {
+      enabled?: boolean;
+      triggerLabel?: string;
+      pollIntervalSeconds?: number;
+    }) => {
+      setSaving(true);
+      setErr(null);
+      try {
+        const res = await fetch(`/api/v1/workspaces/${workspaceId}/connectors`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: connector.kind, ...patch }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(
+            (body as { error?: string }).error ?? `HTTP ${res.status}`
+          );
+        }
+        onChanged();
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "Failed to save");
+      } finally {
+        setSaving(false);
+      }
+    },
+    [workspaceId, connector.kind, onChanged]
+  );
+
+  // Only ingest connectors have a heartbeat trigger to manage.
+  if (!connector.capabilities.ingest) return null;
+
+  return (
+    <div className="mt-3 flex flex-col gap-3 border-t border-[var(--gray-04)] pt-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <Radio size={13} className="text-[var(--gray-09)]" />
+          <span className="text-xs font-medium text-[var(--gray-11)]">
+            Heartbeat trigger
+          </span>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={connector.enabled}
+          aria-label="Toggle heartbeat for this connector"
+          disabled={!canManage || saving}
+          onClick={() => put({ enabled: !connector.enabled })}
+          className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+            connector.enabled ? "bg-[#29a383]" : "bg-[var(--gray-06)]"
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+              connector.enabled ? "translate-x-[18px]" : "translate-x-0.5"
+            }`}
+          />
+        </button>
+      </div>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          put({
+            triggerLabel: label.trim(),
+            pollIntervalSeconds: Number(interval),
+          });
+        }}
+        className="flex flex-col gap-2"
+      >
+        <div className="flex flex-col gap-1">
+          <label
+            htmlFor={`trigger-label-${connector.kind}`}
+            className="text-xs text-[var(--gray-09)]"
+          >
+            Trigger label
+          </label>
+          <input
+            id={`trigger-label-${connector.kind}`}
+            type="text"
+            maxLength={50}
+            value={label}
+            disabled={!canManage}
+            placeholder="ready-for-agent"
+            onChange={(e) => setLabel(e.target.value)}
+            className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label
+            htmlFor={`poll-interval-${connector.kind}`}
+            className="text-xs text-[var(--gray-09)]"
+          >
+            Poll interval (seconds, 10–86400)
+          </label>
+          <input
+            id={`poll-interval-${connector.kind}`}
+            type="number"
+            min={10}
+            max={86400}
+            step={1}
+            value={interval}
+            disabled={!canManage}
+            onChange={(e) => setIntervalValue(e.target.value)}
+            className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={!canManage || saving || !dirty || !label.trim()}
+          className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] transition-colors hover:border-[var(--gray-08)] disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save trigger"}
+        </button>
+        {err && <p className="text-xs text-[#ff9592]">{err}</p>}
+      </form>
+    </div>
+  );
+}
+
+function ConnectorCard({
+  connector,
+  workspaceId,
+  canManage,
+  onChanged,
+}: {
+  connector: ConnectorView;
+  workspaceId: string;
+  canManage: boolean;
   onChanged: () => void;
 }) {
   const Icon = KIND_ICON[connector.kind];
@@ -114,6 +267,16 @@ function ConnectorCard({
           </p>
         )}
       </div>
+
+      {/* Heartbeat trigger config — only for connected ingest connectors. */}
+      {isConnected && connector.capabilities.ingest && (
+        <TriggerControls
+          connector={connector}
+          workspaceId={workspaceId}
+          canManage={canManage}
+          onChanged={onChanged}
+        />
+      )}
     </div>
   );
 }
@@ -224,8 +387,67 @@ function DiscordManage({
   );
 }
 
+/**
+ * Heartbeat status header (#816 folded in). Summarizes how many connectors are
+ * actively driving the autonomous loop and notes the prerequisite-capability
+ * gate the daemon enforces at runtime — replaces the standalone Heartbeat page's
+ * status card.
+ */
+function HeartbeatStatusHeader({ connectors }: { connectors: ConnectorView[] }) {
+  const active = activeHeartbeatConnectors(connectors);
+  return (
+    <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3">
+      <div className="flex items-center gap-1.5">
+        <Radio size={14} className="text-[var(--gray-10)]" />
+        <span className="text-xs font-semibold text-[var(--gray-12)]">
+          Heartbeat
+        </span>
+        <span
+          className={`ml-auto inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs font-medium ${
+            active.length > 0
+              ? "bg-[#29a383]/15 text-[#1fd8a4]"
+              : "bg-[var(--gray-04)] text-[var(--gray-10)]"
+          }`}
+        >
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              active.length > 0 ? "bg-[#1fd8a4]" : "bg-[var(--gray-08)]"
+            }`}
+          />
+          {active.length > 0
+            ? `${active.length} active`
+            : "No active connectors"}
+        </span>
+      </div>
+      <p className="mt-2 text-xs leading-relaxed text-[var(--gray-09)]">
+        {active.length > 0 ? (
+          <>
+            The autonomous loop polls{" "}
+            <span className="text-[var(--gray-11)]">
+              {active.map((c) => c.label).join(", ")}
+            </span>{" "}
+            for labeled issues and admits them into the Issue Queue. Tune each
+            connector&apos;s trigger below.
+          </>
+        ) : (
+          <>
+            No connector is currently driving the heartbeat. Connect and enable an
+            ingest connector below to start the autonomous loop.
+          </>
+        )}
+      </p>
+      <p className="mt-1.5 flex items-start gap-1.5 text-xs leading-relaxed text-[var(--gray-09)]">
+        <AlertCircle size={13} className="mt-0.5 shrink-0" />
+        The daemon only runs once all prerequisite capabilities are present
+        (agentrail/heartbeat/gate.py). Enabling here records operator intent.
+      </p>
+    </div>
+  );
+}
+
 export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
   const [connectors, setConnectors] = useState<ConnectorView[]>([]);
+  const [canManage, setCanManage] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -240,8 +462,12 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
           (body as { error?: string }).error ?? `HTTP ${res.status}`
         );
       }
-      const json = (await res.json()) as { connectors: ConnectorView[] };
+      const json = (await res.json()) as {
+        connectors: ConnectorView[];
+        canManage?: boolean;
+      };
       setConnectors(json.connectors ?? []);
+      setCanManage(Boolean(json.canManage));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load connectors");
     } finally {
@@ -255,6 +481,10 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
 
   return (
     <div className="flex flex-col gap-3">
+      {!loading && !error && connectors.length > 0 && (
+        <HeartbeatStatusHeader connectors={connectors} />
+      )}
+
       <div className="flex items-center">
         <button
           onClick={fetchConnectors}
@@ -288,6 +518,7 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
               key={c.kind}
               connector={c}
               workspaceId={workspaceId}
+              canManage={canManage}
               onChanged={fetchConnectors}
             />
           ))}

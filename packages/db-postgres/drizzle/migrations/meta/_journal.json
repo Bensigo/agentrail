@@ -134,6 +134,13 @@
       "when": 1780907365691,
       "tag": "0017_heartbeat_config",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1780907365692,
+      "tag": "0018_connectors_fold_heartbeat",
+      "breakpoints": true
     }
   ]
 }

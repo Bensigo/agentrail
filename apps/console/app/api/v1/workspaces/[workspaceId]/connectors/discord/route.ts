@@ -3,6 +3,7 @@ import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
   setDiscordWebhookUrl,
+  upsertConnector,
 } from "@agentrail/db-postgres";
 
 /**
@@ -66,6 +67,12 @@ export async function PUT(
   // null / empty → disconnect.
   if (raw === null || raw === undefined || raw === "") {
     await setDiscordWebhookUrl(workspaceId, null);
+    // Self-configure: disconnecting disables the discord connector row.
+    try {
+      await upsertConnector(workspaceId, "discord", { enabled: false });
+    } catch (err) {
+      console.error("[connectors/discord] failed to disable connector:", err);
+    }
     return NextResponse.json({ connected: false });
   }
   if (typeof raw !== "string" || !isDiscordWebhook(raw)) {
@@ -77,6 +84,13 @@ export async function PUT(
 
   try {
     await setDiscordWebhookUrl(workspaceId, raw);
+    // Self-configure on connect: upsert an enabled discord connector row with
+    // default trigger config. Best-effort — never fail the webhook save on it.
+    try {
+      await upsertConnector(workspaceId, "discord", { enabled: true });
+    } catch (err) {
+      console.error("[connectors/discord] failed to enable connector:", err);
+    }
     return NextResponse.json({ connected: true });
   } catch (err) {
     console.error("[connectors/discord] failed to save webhook:", err);

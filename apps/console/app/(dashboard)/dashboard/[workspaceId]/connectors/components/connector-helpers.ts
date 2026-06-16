@@ -59,7 +59,19 @@ export interface ConnectorConfigInput {
    * masks it to a display target; see {@link maskWebhook}.
    */
   webhookUrl?: string | null;
+  /**
+   * Heartbeat trigger config, folded in from the standalone heartbeat config
+   * (#816). The connector row drives the autonomous loop: whether it is enabled,
+   * the label that admits work, and the poll cadence. Absent → defaults
+   * (enabled, 'ready-for-agent', 60s).
+   */
+  enabled?: boolean;
+  triggerLabel?: string | null;
+  pollIntervalSeconds?: number | null;
 }
+
+/** Default poll cadence, mirroring CONNECTOR_CONFIG_DEFAULTS (db-postgres). */
+export const DEFAULT_POLL_INTERVAL_SECONDS = 60;
 
 /** One connector row as the management surface renders it. */
 export interface ConnectorView {
@@ -71,6 +83,10 @@ export interface ConnectorView {
   capabilities: ConnectorCapabilities;
   ingestLabel: string | null;
   target: string | null;
+  /** Heartbeat trigger config the Connectors page manages (folded in #816). */
+  enabled: boolean;
+  triggerLabel: string;
+  pollIntervalSeconds: number;
 }
 
 /**
@@ -167,8 +183,21 @@ export function projectConnectors(
       capabilities: entry.capabilities,
       ingestLabel,
       target,
+      // Heartbeat trigger config the card manages (folded in #816). Defaults when
+      // no connector row exists: a connector defaults enabled once connected.
+      enabled: cfg?.enabled ?? connected,
+      triggerLabel: cfg?.triggerLabel ?? DEFAULT_INGEST_LABEL,
+      pollIntervalSeconds:
+        cfg?.pollIntervalSeconds ?? DEFAULT_POLL_INTERVAL_SECONDS,
     };
   });
+}
+
+/** The connectors counted as actively driving the heartbeat (connected + enabled). */
+export function activeHeartbeatConnectors(
+  views: ConnectorView[]
+): ConnectorView[] {
+  return views.filter((v) => v.status === "connected" && v.enabled);
 }
 
 /** Human label for a connector status (direct, no hype — TASTE.md). */

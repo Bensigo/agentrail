@@ -15,7 +15,9 @@ export default async function ConnectorsPage({
       <p className="mb-4 text-xs text-[var(--gray-09)]">
         Two-way links between the tools your team already uses and the Issue
         Queue: connectors ingest human-created issues into the queue and post run
-        results back.
+        results back. Connecting a connector also configures the autonomous
+        Heartbeat for it — manage each connector&apos;s trigger (enabled, label,
+        poll interval) on its card below.
       </p>
       <ConnectorsPanel workspaceId={workspaceId} />
     </div>

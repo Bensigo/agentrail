@@ -1,0 +1,140 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
+
+vi.mock("@agentrail/auth", () => ({ auth: vi.fn() }));
+vi.mock("@agentrail/db-postgres", () => ({
+  getWorkspaceMembership: vi.fn(),
+  listWorkspaceRepositories: vi.fn(),
+  getDiscordWebhookUrl: vi.fn(),
+  getConnectors: vi.fn(),
+  upsertConnector: vi.fn(),
+  // Re-export the pure validators/guards from the real package — the route
+  // depends on their actual behavior, not a mock.
+  validateConnectorUpdate: (u: { enabled?: unknown; config?: Record<string, unknown> }) =>
+    realValidate(u),
+  isConnectorProvider: (v: unknown) => realIsProvider(v),
+}));
+
+import { auth } from "@agentrail/auth";
+import {
+  getWorkspaceMembership,
+  upsertConnector,
+} from "@agentrail/db-postgres";
+import { PUT } from "./route";
+
+// Minimal real implementations mirrored from db-postgres/queries/connectors.ts
+// so the route's validation is genuinely exercised in this hermetic test.
+function realIsProvider(v: unknown): boolean {
+  return v === "github" || v === "linear" || v === "discord";
+}
+function realValidate(u: { enabled?: unknown; config?: Record<string, unknown> }) {
+  const value: Record<string, unknown> = {};
+  if (u.enabled !== undefined) {
+    if (typeof u.enabled !== "boolean")
+      return { ok: false, error: "enabled must be a boolean" };
+    value.enabled = u.enabled;
+  }
+  if (u.config !== undefined) {
+    const out: Record<string, unknown> = {};
+    const c = u.config;
+    if (c.pollIntervalSeconds !== undefined) {
+      const n = c.pollIntervalSeconds;
+      if (typeof n !== "number" || !Number.isInteger(n) || n < 10 || n > 86400)
+        return { ok: false, error: "bad interval" };
+      out.pollIntervalSeconds = n;
+    }
+    if (c.triggerLabel !== undefined) {
+      const t = String(c.triggerLabel).trim();
+      if (!t || t.length > 50) return { ok: false, error: "bad label" };
+      out.triggerLabel = t;
+    }
+    value.config = out;
+  }
+  return { ok: true, value };
+}
+
+const WS = "00000000-0000-0000-0000-000000000001";
+const USER = "user-1";
+
+function params() {
+  return Promise.resolve({ workspaceId: WS });
+}
+function putReq(body: unknown): NextRequest {
+  return new NextRequest(`http://localhost/api/v1/workspaces/${WS}/connectors`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+beforeEach(() => {
+  vi.mocked(auth).mockReset();
+  vi.mocked(getWorkspaceMembership).mockReset();
+  vi.mocked(upsertConnector).mockReset();
+  vi.mocked(upsertConnector).mockResolvedValue({
+    provider: "github",
+    enabled: true,
+    config: { repos: [], triggerLabel: "afk", pollIntervalSeconds: 120 },
+    updatedAt: "2026-06-16T00:00:00.000Z",
+  } as never);
+});
+
+describe("PUT /connectors", () => {
+  it("401 when unauthenticated", async () => {
+    vi.mocked(auth).mockResolvedValue(null as never);
+    const res = await PUT(putReq({ provider: "github", enabled: true }), {
+      params: params(),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("403 when not owner/admin", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "member" } as never);
+    const res = await PUT(putReq({ provider: "github", enabled: true }), {
+      params: params(),
+    });
+    expect(res.status).toBe(403);
+    expect(upsertConnector).not.toHaveBeenCalled();
+  });
+
+  it("400 for an unknown provider", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "admin" } as never);
+    const res = await PUT(putReq({ provider: "slack", enabled: true }), {
+      params: params(),
+    });
+    expect(res.status).toBe(400);
+    expect(upsertConnector).not.toHaveBeenCalled();
+  });
+
+  it("400 for an out-of-bounds poll interval", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "admin" } as never);
+    const res = await PUT(putReq({ provider: "github", pollIntervalSeconds: 1 }), {
+      params: params(),
+    });
+    expect(res.status).toBe(400);
+    expect(upsertConnector).not.toHaveBeenCalled();
+  });
+
+  it("saves trigger config (enabled + label + interval) for owner/admin (AC3)", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
+    const res = await PUT(
+      putReq({
+        provider: "github",
+        enabled: true,
+        triggerLabel: "afk",
+        pollIntervalSeconds: 120,
+      }),
+      { params: params() }
+    );
+    expect(res.status).toBe(200);
+    expect(upsertConnector).toHaveBeenCalledWith(WS, "github", {
+      enabled: true,
+      config: { triggerLabel: "afk", pollIntervalSeconds: 120 },
+    });
+    const json = (await res.json()) as { connector: { enabled: boolean } };
+    expect(json.connector.enabled).toBe(true);
+  });
+});

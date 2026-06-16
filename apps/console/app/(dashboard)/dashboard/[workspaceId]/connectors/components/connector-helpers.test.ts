@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   CONNECTOR_CATALOG,
   DEFAULT_INGEST_LABEL,
+  DEFAULT_POLL_INTERVAL_SECONDS,
+  activeHeartbeatConnectors,
   capabilitySummary,
   connectorStatusLabel,
   maskWebhook,
@@ -81,6 +83,58 @@ describe("projectConnectors", () => {
     )!;
     expect(discord.status).toBe("disconnected");
     expect(discord.target).toBeNull();
+  });
+
+  it("folds in the heartbeat trigger config from the connector row (#816)", () => {
+    const github = projectConnectors([
+      {
+        kind: "github",
+        connected: true,
+        enabled: false,
+        triggerLabel: "afk",
+        pollIntervalSeconds: 300,
+      },
+    ]).find((r) => r.kind === "github")!;
+    expect(github.enabled).toBe(false);
+    expect(github.triggerLabel).toBe("afk");
+    expect(github.pollIntervalSeconds).toBe(300);
+  });
+
+  it("defaults trigger config: connected ⇒ enabled, default label + interval", () => {
+    const github = projectConnectors([
+      { kind: "github", connected: true },
+    ]).find((r) => r.kind === "github")!;
+    expect(github.enabled).toBe(true);
+    expect(github.triggerLabel).toBe(DEFAULT_INGEST_LABEL);
+    expect(github.pollIntervalSeconds).toBe(DEFAULT_POLL_INTERVAL_SECONDS);
+  });
+
+  it("a disconnected connector defaults disabled", () => {
+    const github = projectConnectors([]).find((r) => r.kind === "github")!;
+    expect(github.enabled).toBe(false);
+  });
+});
+
+describe("activeHeartbeatConnectors", () => {
+  it("returns only connected + enabled connectors", () => {
+    const views = projectConnectors([
+      { kind: "github", connected: true, enabled: true },
+      {
+        kind: "discord",
+        connected: false,
+        webhookUrl: "https://discord.com/api/webhooks/1/t",
+        enabled: false,
+      },
+    ]);
+    const active = activeHeartbeatConnectors(views);
+    expect(active.map((v) => v.kind)).toEqual(["github"]);
+  });
+
+  it("excludes a connected-but-disabled connector", () => {
+    const views = projectConnectors([
+      { kind: "github", connected: true, enabled: false },
+    ]);
+    expect(activeHeartbeatConnectors(views)).toEqual([]);
   });
 });
 

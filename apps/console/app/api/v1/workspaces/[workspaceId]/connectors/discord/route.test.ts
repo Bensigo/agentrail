@@ -5,12 +5,14 @@ vi.mock("@agentrail/auth", () => ({ auth: vi.fn() }));
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
   setDiscordWebhookUrl: vi.fn(),
+  upsertConnector: vi.fn(),
 }));
 
 import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
   setDiscordWebhookUrl,
+  upsertConnector,
 } from "@agentrail/db-postgres";
 import { PUT } from "./route";
 
@@ -33,6 +35,8 @@ beforeEach(() => {
   vi.mocked(auth).mockReset();
   vi.mocked(getWorkspaceMembership).mockReset();
   vi.mocked(setDiscordWebhookUrl).mockReset();
+  vi.mocked(upsertConnector).mockReset();
+  vi.mocked(upsertConnector).mockResolvedValue({} as never);
 });
 
 describe("PUT /connectors/discord", () => {
@@ -68,6 +72,10 @@ describe("PUT /connectors/discord", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ connected: true });
     expect(setDiscordWebhookUrl).toHaveBeenCalledWith(WS, GOOD);
+    // Self-configure (AC2): connecting enables the discord connector row.
+    expect(upsertConnector).toHaveBeenCalledWith(WS, "discord", {
+      enabled: true,
+    });
   });
 
   it("disconnects when webhookUrl is null", async () => {
@@ -79,6 +87,10 @@ describe("PUT /connectors/discord", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ connected: false });
     expect(setDiscordWebhookUrl).toHaveBeenCalledWith(WS, null);
+    // Disconnecting disables the connector row.
+    expect(upsertConnector).toHaveBeenCalledWith(WS, "discord", {
+      enabled: false,
+    });
   });
 
   it("400 for a non-Discord URL", async () => {

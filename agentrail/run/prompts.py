@@ -333,11 +333,50 @@ def issue_run_phase_prompt(
     verifier_findings_text: str = "",
     execution_attempt: int = 1,
     max_execution_attempts: int = 5,
+    red_green: bool = False,
 ) -> str:
-    """Plan/execute phase prompt (legacy issue_run_phase_prompt:5910-5989).
+    """Plan/test-author/execute phase prompt (legacy issue_run_phase_prompt:5910-5989).
+
+    ``red_green`` is the Test-Author/Implementer role split (M032, ADR 0008,
+    issue #775). When true the ``test-author`` phase is a distinct role that
+    authors a *failing* acceptance test from the AC before any implementation,
+    and the ``execute`` (Implementer) prompt gains an explicit role boundary:
+    the implementer turns the test green and must NOT author its own acceptance
+    test (AC3 — separation of concerns defeats the tautological self-test).
 
     Raises ValueError for unknown phase.
     """
+    if phase == "test-author":
+        return (
+            "Role: Test-Author (M032 / ADR 0008).\n"
+            "\n"
+            "You are the Test-Author, a role DISTINCT from the Implementer that "
+            "will turn your test green next. Your only job in this phase is to "
+            "turn the issue's acceptance criteria into a FAILING acceptance test "
+            "BEFORE any implementation exists.\n"
+            "\n"
+            "Issue context:\n"
+            f"{issue_context}\n"
+            "\n"
+            "Phase context pack:\n"
+            f"{context_summary}\n"
+            "\n"
+            "Base instructions:\n"
+            f"{base_prompt}\n"
+            "\n"
+            "Hard limits for this phase:\n"
+            "- Author exactly one acceptance test derived from the issue's "
+            "acceptance criteria. Test behaviour through the public interface.\n"
+            "- The test MUST fail now, because the feature is not implemented "
+            "yet — this failing (red) observation is the proof the test is real "
+            "and not tautological.\n"
+            "- DO NOT implement the feature, and do not edit non-test source to "
+            "make the test pass. Writing the production code is the Implementer's "
+            "job in the next phase.\n"
+            "- Add the test under the project's declared verification command so "
+            "the run's red→green baseline observes it.\n"
+        )
+
     if phase == "plan":
         return (
             "This is phase 1 of 2: plan.\n"
@@ -384,8 +423,30 @@ def issue_run_phase_prompt(
         # is NOT already carried by the base task block (_CLAUDE_TASK_BLOCK /
         # _CODEX_TASK_BLOCK) or the execute tail is included here, to avoid
         # duplicating hard limits the base prompt already states.
+        # Implementer role boundary (M032 AC3): when the Test-Author/Implementer
+        # role split is active, the execute phase IS the Implementer — a role
+        # distinct from the Test-Author. The implementer turns the already-red
+        # acceptance test green and must NOT author or weaken its own acceptance
+        # test (that would reintroduce the tautological self-test false-green).
+        if red_green:
+            implementer_boundary = (
+                "Role: Implementer (M032 / ADR 0008).\n"
+                "- A separate Test-Author role has already written a FAILING "
+                "acceptance test from the issue's acceptance criteria.\n"
+                "- Your job is to write the smallest change that turns that test "
+                "GREEN.\n"
+                "- Do NOT author, rewrite, weaken, or delete the acceptance test "
+                "the Test-Author wrote — you are not allowed to grade your own "
+                "homework. You may add narrower unit tests for your own code, but "
+                "the acceptance test stays as authored.\n"
+                "\n"
+            )
+        else:
+            implementer_boundary = ""
+
         ralph_preamble = (
-            "Ralph one-issue execution limits:\n"
+            implementer_boundary
+            + "Ralph one-issue execution limits:\n"
             f"- Handle exactly one issue: #{issue}. Do not continue into unrelated issues.\n"
             "- Read CONTEXT.md and docs/agents/ralph-loop.md before editing.\n"
             "- Run memory recall for the issue title and key terms before editing when available.\n"

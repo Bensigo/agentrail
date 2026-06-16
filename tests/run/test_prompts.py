@@ -854,5 +854,86 @@ class ReviewPromptTests(unittest.TestCase):
         self.assertLess(idx_snip, idx_task)
 
 
+class TestAuthorPhasePromptTests(unittest.TestCase):
+    """Test-Author role prompt (M032 / ADR 0008, issue #775).
+
+    The Test-Author turns the issue's acceptance criteria into a *failing*
+    acceptance test BEFORE any implementation. Its prompt must make that role
+    boundary explicit: write the test, do NOT implement the feature.
+    """
+
+    def _fn(self, **kwargs):
+        from agentrail.run.prompts import issue_run_phase_prompt
+        defaults = dict(
+            issue=775,
+            issue_context="Add a greet() function.\n\n## Acceptance criteria\n- [ ] greet() returns 'hi'.",
+            base_prompt="BASE",
+            context_summary="SUM",
+        )
+        defaults.update(kwargs)
+        return issue_run_phase_prompt("test-author", **defaults)
+
+    def test_names_the_test_author_role(self):
+        result = self._fn()
+        self.assertIn("Test-Author", result)
+
+    def test_instructs_failing_test_before_implementation(self):
+        result = self._fn()
+        # The test must be authored from the AC and must FAIL before any impl.
+        self.assertIn("acceptance criteria", result.lower())
+        self.assertIn("fail", result.lower())
+
+    def test_forbids_implementation_in_this_phase(self):
+        result = self._fn()
+        lowered = result.lower()
+        # The Test-Author authors the test only; it must not implement.
+        self.assertTrue(
+            "do not implement" in lowered or "must not implement" in lowered,
+            "test-author prompt must forbid implementing the feature",
+        )
+
+    def test_includes_issue_context_and_acceptance_criteria(self):
+        result = self._fn()
+        self.assertIn("greet()", result)
+
+
+class ImplementerBoundaryPromptTests(unittest.TestCase):
+    """Implementer role boundary (M032 AC3): the implementer must NOT author
+    its own acceptance test. When the role split is active (``red_green=True``),
+    the execute-phase prompt makes that boundary explicit."""
+
+    def _fn(self, **kwargs):
+        from agentrail.run.prompts import issue_run_phase_prompt
+        defaults = dict(
+            issue=775,
+            issue_context="CTX",
+            base_prompt="BASE",
+            context_summary="SUM",
+            plan_output="PLAN",
+        )
+        defaults.update(kwargs)
+        return issue_run_phase_prompt("execute", **defaults)
+
+    def test_role_split_off_by_default_no_boundary_text(self):
+        """Default execute prompt is unchanged (no role-split boundary line)."""
+        result = self._fn()
+        self.assertNotIn("Test-Author", result)
+
+    def test_role_split_on_forbids_authoring_own_test(self):
+        result = self._fn(red_green=True)
+        lowered = result.lower()
+        self.assertIn("test-author", lowered)
+        # AC3: implementer must not author / modify the acceptance test.
+        self.assertTrue(
+            "do not author" in lowered or "must not author" in lowered
+            or "not write" in lowered,
+            "implementer prompt must forbid authoring its own acceptance test",
+        )
+
+    def test_role_split_on_directs_turning_test_green(self):
+        result = self._fn(red_green=True)
+        self.assertIn("green", result.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

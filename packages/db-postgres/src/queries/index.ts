@@ -1092,6 +1092,7 @@ export {
   exchangeDeviceCode,
   approveDeviceCode,
   claimQueueEntry,
+  listQueueEntries,
   recordRunnerResult,
   reconcileStaleRuns,
   STALE_RUN_MINUTES,
@@ -1100,6 +1101,7 @@ export {
   type DeviceTokenResult,
   type ApproveDeviceCodeResult,
   type WorkItem,
+  type QueueEntryListItem,
   type RunnerStatus,
 } from "./runner.js";
 

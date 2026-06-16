@@ -308,7 +308,85 @@ export async function reconcileStaleRuns(workspaceId: string): Promise<number> {
       AND started_at < now() - (${STALE_RUN_MINUTES} || ' minutes')::interval
     RETURNING id
   `);
+
+  // Mirror the sweep onto the durable queue: a queue entry stuck in `running`
+  // past the threshold (its runner died mid-flight) would otherwise sit in the
+  // active queue forever. Re-admit it as `queued` so it gets another attempt
+  // rather than masquerading as in-progress. `updated_at` gates the staleness so
+  // a fresh claim is never reaped.
+  await db.execute(sql`
+    UPDATE queue_entries
+    SET state = 'queued', updated_at = now()
+    WHERE workspace_id = ${workspaceId}
+      AND state = 'running'
+      AND updated_at < now() - (${STALE_RUN_MINUTES} || ' minutes')::interval
+  `);
+
   return Array.from(rows).length;
+}
+
+/** A durable queue entry as the console queue view consumes it. */
+export interface QueueEntryListItem {
+  id: string;
+  externalId: string;
+  title: string;
+  tier: number;
+  remainingBudget: number;
+  state: string;
+  updatedAt: string;
+}
+
+/** Non-terminal states — an issue still in the queue (terminals have left). */
+const ACTIVE_QUEUE_STATES = ["queued", "parked", "running"] as const;
+
+/**
+ * List durable `queue_entries` for a workspace, newest activity first. This is
+ * the authoritative queue the runner claims from — unlike the legacy runs
+ * projection, it never shows phantom-queued or already-finished issues.
+ *
+ * `activeOnly` (default true) returns only non-terminal entries, so the queue
+ * surface self-flushes: an entry leaves the moment it reaches a terminal
+ * (green / escalated-to-human / blocked). Pass false to include history.
+ */
+export async function listQueueEntries(
+  workspaceId: string,
+  opts: { activeOnly?: boolean } = {}
+): Promise<QueueEntryListItem[]> {
+  const activeOnly = opts.activeOnly ?? true;
+  const rows = await db
+    .select({
+      id: queueEntries.id,
+      externalId: queueEntries.externalId,
+      title: queueEntries.title,
+      tier: queueEntries.tier,
+      remainingBudget: queueEntries.remainingBudget,
+      state: queueEntries.state,
+      updatedAt: queueEntries.updatedAt,
+    })
+    .from(queueEntries)
+    .where(
+      activeOnly
+        ? and(
+            eq(queueEntries.workspaceId, workspaceId),
+            sql`${queueEntries.state} IN (${sql.join(
+              ACTIVE_QUEUE_STATES.map((s) => sql`${s}`),
+              sql`, `
+            )})`
+          )
+        : eq(queueEntries.workspaceId, workspaceId)
+    )
+    .orderBy(sql`${queueEntries.updatedAt} DESC`);
+
+  return rows.map((r) => ({
+    id: r.id,
+    externalId: r.externalId,
+    title: r.title,
+    tier: r.tier,
+    remainingBudget: r.remainingBudget,
+    state: r.state,
+    updatedAt:
+      r.updatedAt instanceof Date ? r.updatedAt.toISOString() : String(r.updatedAt),
+  }));
 }
 
 /**

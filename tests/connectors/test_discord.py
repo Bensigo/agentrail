@@ -21,8 +21,12 @@ import unittest
 from agentrail.connectors.base import ConnectorEvent, OutcomeReport
 from agentrail.connectors.discord import (
     DiscordConnector,
+    TaskResult,
+    build_daily_digest,
     completion_event,
     escalation_event,
+    notify_daily_digest,
+    notify_task_done,
 )
 
 
@@ -169,6 +173,118 @@ class DefaultTransportTests(unittest.TestCase):
         body = json.loads(captured["data"].decode("utf-8"))
         self.assertIn("#5", body["content"])
         self.assertEqual(captured["content_type"], "application/json")
+
+
+class NotifyTaskDoneTests(unittest.TestCase):
+    """AC1 — Adam posts a per-task update when a run finishes (mocked webhook)."""
+
+    def test_green_run_posts_concise_update(self):
+        # AC1: a green run posts title/ref, outcome, cost, and the PR link.
+        transport = _FakeTransport()
+        result = TaskResult(
+            number=42,
+            title="Add Discord digest",
+            state="green",
+            cost_usd=0.137,
+            url="https://github.com/o/r/pull/99",
+        )
+        notify_task_done(
+            webhook_url=_WEBHOOK, result=result, transport=transport
+        )
+
+        self.assertEqual(len(transport.calls), 1)
+        url, payload = transport.calls[0]
+        self.assertEqual(url, _WEBHOOK)
+        content = payload["content"]
+        self.assertIn("#42", content)
+        self.assertIn("Add Discord digest", content)
+        self.assertIn("green", content.lower())
+        self.assertIn("0.14", content)  # cost rendered to cents
+        self.assertIn("https://github.com/o/r/pull/99", content)
+
+    def test_escalated_run_posts_update(self):
+        # AC1: an escalated run posts the escalated-to-human outcome.
+        transport = _FakeTransport()
+        result = TaskResult(
+            number=7,
+            title="Flaky verifier",
+            state="escalated-to-human",
+            cost_usd=1.5,
+        )
+        notify_task_done(
+            webhook_url=_WEBHOOK, result=result, transport=transport
+        )
+
+        self.assertEqual(len(transport.calls), 1)
+        content = transport.calls[0][1]["content"]
+        self.assertIn("#7", content)
+        self.assertIn("Flaky verifier", content)
+        self.assertIn("escalated-to-human", content.lower())
+
+    def test_without_a_webhook_is_a_safe_noop(self):
+        transport = _FakeTransport()
+        result = TaskResult(number=1, title="x", state="green")
+        self.assertIsNone(
+            notify_task_done(webhook_url=None, result=result, transport=transport)
+        )
+        self.assertEqual(transport.calls, [])
+
+
+class DailyDigestTests(unittest.TestCase):
+    """AC2/AC3 — the daily digest buckets terminals and stays silent on empty."""
+
+    def _results(self):
+        return [
+            TaskResult(number=1, title="Merged A", state="green"),
+            TaskResult(number=2, title="Merged B", state="green"),
+            TaskResult(number=3, title="Escalated C", state="escalated-to-human"),
+            TaskResult(number=4, title="Blocked D", state="blocked"),
+        ]
+
+    def test_build_daily_digest_buckets_terminals(self):
+        # AC2: counts of green vs escalated vs failed, plus a per-issue list.
+        text = build_daily_digest(self._results())
+        self.assertIsNotNone(text)
+        # Counts present (2 green, 1 escalated, 1 failed/blocked).
+        self.assertIn("2", text)
+        # Each issue appears in the per-issue list.
+        for n in (1, 2, 3, 4):
+            self.assertIn(f"#{n}", text)
+        # Vocabulary buckets.
+        low = text.lower()
+        self.assertIn("green", low)
+        self.assertIn("escalated", low)
+        self.assertIn("failed", low)
+
+    def test_empty_day_builds_nothing(self):
+        # AC3: empty day → no digest text (no spam).
+        self.assertIsNone(build_daily_digest([]))
+
+    def test_notify_daily_digest_posts(self):
+        # AC2: notify_daily_digest posts the built digest to the webhook.
+        transport = _FakeTransport()
+        notify_daily_digest(
+            webhook_url=_WEBHOOK, finished=self._results(), transport=transport
+        )
+        self.assertEqual(len(transport.calls), 1)
+        url, payload = transport.calls[0]
+        self.assertEqual(url, _WEBHOOK)
+        self.assertIn("#1", payload["content"])
+
+    def test_notify_daily_digest_empty_day_posts_nothing(self):
+        # AC3: empty day → no post (no spam).
+        transport = _FakeTransport()
+        notify_daily_digest(
+            webhook_url=_WEBHOOK, finished=[], transport=transport
+        )
+        self.assertEqual(transport.calls, [])
+
+    def test_notify_daily_digest_without_webhook_is_noop(self):
+        transport = _FakeTransport()
+        notify_daily_digest(
+            webhook_url=None, finished=self._results(), transport=transport
+        )
+        self.assertEqual(transport.calls, [])
 
 
 if __name__ == "__main__":

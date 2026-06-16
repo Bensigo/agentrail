@@ -12,6 +12,7 @@ runs forever.
 """
 from __future__ import annotations
 
+import inspect
 import os
 import sys
 import time
@@ -24,18 +25,35 @@ from agentrail.sandbox.docker_runner import RunResult
 from agentrail.sandbox.native_runner import select_sandbox_runner
 
 
-def _make_execute():
-    """Build the execute callback: run a claimed issue on the host."""
+def _make_execute(creds):
+    """Build the execute callback: run a claimed issue on the host.
+
+    The local run is linked back to the backend (``AGENTRAIL_SERVER_*``) so it
+    ingests cost events + run telemetry, keyed to this run's id (= the dashboard
+    run / queue entry id) so they join to the run the runner registered.
+    """
     runner = select_sandbox_runner(dict(os.environ))
+    accepts_run_id = "run_id" in inspect.signature(runner).parameters
 
     def execute(item: WorkItem) -> RunResult:
-        return runner(
+        run_env = dict(os.environ)
+        # Link this run to the backend so cost/telemetry land on the dashboard.
+        # Needs all three (base, key, repo) or load_link ignores it.
+        run_env["AGENTRAIL_SERVER_BASE_URL"] = creds.base_url
+        run_env["AGENTRAIL_SERVER_API_KEY"] = creds.token
+        if item.repository_id:
+            run_env["AGENTRAIL_SERVER_REPOSITORY_ID"] = item.repository_id
+        kwargs = dict(
             repo_url=item.repo_url,
             ref=item.ref,
             issue_ref=item.issue_number,  # bare number; `run issue` rejects repo#N
             workspace_id=item.workspace_id,
-            env=dict(os.environ),
+            env=run_env,
         )
+        if accepts_run_id:
+            # Use the dashboard run id so ingested cost events join to it.
+            kwargs["run_id"] = item.id
+        return runner(**kwargs)
 
     return execute
 
@@ -97,7 +115,7 @@ def run_runner(args: List[str]) -> int:
     try:
         run_worker(
             client,
-            execute=_make_execute(),
+            execute=_make_execute(creds),
             sleep=time.sleep,
             idle_seconds=idle,
             should_continue=should_continue,

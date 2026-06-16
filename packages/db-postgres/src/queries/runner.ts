@@ -7,6 +7,7 @@ import { connectors } from "../schema/connectors.js";
 import type { ConnectorConfig } from "../schema/connectors.js";
 import { apiKeys } from "../schema/api_keys.js";
 import { runs } from "../schema/runs.js";
+import { repositories } from "../schema/repositories.js";
 
 // ---------------------------------------------------------------------------
 // API-key minting (runner token)
@@ -202,6 +203,38 @@ export interface WorkItem {
   ref: string;
   title: string;
   body: string;
+  // The repositories row id, so the runner can link the local run's telemetry
+  // (cost events, run lifecycle) back to the backend for this repo.
+  repository_id: string;
+}
+
+/** Find (or create) the repositories row for a repo slug; returns its id. */
+async function findOrCreateRepository(
+  workspaceId: string,
+  slug: string
+): Promise<string> {
+  const existing = await db
+    .select({ id: repositories.id })
+    .from(repositories)
+    .where(
+      and(
+        eq(repositories.workspaceId, workspaceId),
+        eq(repositories.name, slug)
+      )
+    )
+    .limit(1);
+  if (existing[0]) return existing[0].id;
+
+  const inserted = await db
+    .insert(repositories)
+    .values({
+      workspaceId,
+      name: slug,
+      url: repoSlugToUrl(slug),
+      defaultBranch: "main",
+    })
+    .returning({ id: repositories.id });
+  return inserted[0]!.id;
 }
 
 /** `owner/name` → `https://github.com/owner/name`; pass through full URLs. */
@@ -290,16 +323,21 @@ export async function claimQueueEntry(
 
   const slug = await deriveRepoSlug(workspaceId, row.external_id);
   const repoUrl = slug ? repoSlugToUrl(slug) : "";
+  // Resolve a real repositories row so the local run can ingest cost/telemetry
+  // against it (the dashboard joins runs/cost-events by repository_id).
+  const repositoryId = slug
+    ? await findOrCreateRepository(workspaceId, slug)
+    : "";
 
   // Register a `runs` row so the dashboard shows the issue was picked up. We use
-  // the queue entry id AS the run id so claim/result address the same run (one
-  // run per entry, idempotent). repositoryId is plain text here = the repo slug.
+  // the queue entry id AS the run id so claim/result address the same run AND so
+  // the run's ingested cost events (pushed with this run_id) join to it.
   await db
     .insert(runs)
     .values({
       id: row.id,
       workspaceId: row.workspace_id,
-      repositoryId: slug || row.external_id,
+      repositoryId: repositoryId || slug || row.external_id,
       agent: "claude",
       runnerName: "self-hosted-runner",
       branch: `afk/github-${issueNumberOf(row.external_id)}`,
@@ -324,6 +362,7 @@ export async function claimQueueEntry(
     ref: "main",
     title: row.title,
     body: row.body,
+    repository_id: repositoryId,
   };
 }
 
@@ -346,26 +385,45 @@ export async function recordRunnerResult(data: {
   status: RunnerStatus;
   costUsd?: number;
 }): Promise<boolean> {
-  const nextState =
-    data.status === "green"
-      ? "green"
-      : data.status === "red"
-        ? "queued"
+  // Map the outcome onto the queue state machine. The critical case is `red`:
+  // it must NOT re-queue unconditionally (that loops forever, burning money and
+  // opening duplicate PRs). We spend one unit of remaining_budget per red
+  // attempt and, once it's exhausted, escalate to a human (terminal). green is
+  // terminal; error blocks; running is a heartbeat.
+  let updated = false;
+  if (data.status === "red") {
+    // Decrement budget; terminal `escalated-to-human` when it would hit zero,
+    // else re-queue at the strong tier for another (bounded) attempt.
+    const rows = await db.execute(sql`
+      UPDATE queue_entries
+      SET state = CASE WHEN remaining_budget <= 1 THEN 'escalated-to-human' ELSE 'queued' END,
+          remaining_budget = GREATEST(remaining_budget - 1, 0),
+          tier = 1,
+          updated_at = now()
+      WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
+      RETURNING id
+    `);
+    updated = Array.from(rows).length > 0;
+  } else {
+    const nextState =
+      data.status === "green"
+        ? "green"
         : data.status === "error"
           ? "blocked"
           : "running";
-
-  const rows = await db
-    .update(queueEntries)
-    .set({ state: nextState, updatedAt: new Date() })
-    .where(
-      and(
-        eq(queueEntries.id, data.id),
-        eq(queueEntries.workspaceId, data.workspaceId)
+    const rows = await db
+      .update(queueEntries)
+      .set({ state: nextState, updatedAt: new Date() })
+      .where(
+        and(
+          eq(queueEntries.id, data.id),
+          eq(queueEntries.workspaceId, data.workspaceId)
+        )
       )
-    )
-    .returning({ id: queueEntries.id });
-  if (rows.length === 0) return false;
+      .returning({ id: queueEntries.id });
+    updated = rows.length > 0;
+  }
+  if (!updated) return false;
 
   // Mirror the outcome onto the `runs` row the dashboard shows (claim created it
   // with id = the queue entry id). green→success, red/error→failed,

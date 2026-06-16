@@ -63,6 +63,9 @@ class WorkItem:
     ref: str
     title: str
     body: str
+    # The backend repositories row id, used to link this run's ingested cost /
+    # telemetry back to the dashboard. "" when the backend didn't resolve one.
+    repository_id: str = ""
 
     @property
     def issue_number(self) -> str:
@@ -86,6 +89,7 @@ class WorkItem:
             ref=str(d.get("ref") or "main"),
             title=str(d.get("title") or ""),
             body=str(d.get("body") or ""),
+            repository_id=str(d.get("repository_id") or ""),
         )
 
 

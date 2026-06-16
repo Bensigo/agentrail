@@ -1454,7 +1454,10 @@ class RunIssueRedGreenProofWiringTests(unittest.TestCase):
 
     def _run(self, execute_side_effect=None):
         def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
-            if phase != "plan" and execute_side_effect is not None:
+            # The Implementer is the EXECUTE phase only — the side effect that
+            # makes the acceptance test pass must fire there, not in the distinct
+            # test-author phase (which authors the failing test before any impl).
+            if phase == "execute" and execute_side_effect is not None:
                 execute_side_effect()
             return (0, "PLAN OUT") if phase == "plan" else (0, "")
 
@@ -1511,6 +1514,160 @@ class RunIssueRedGreenProofWiringTests(unittest.TestCase):
         result, run_json = self._run()
         self.assertEqual(result, 0)
         self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
+
+
+# ---------------------------------------------------------------------------
+# Test-Author / Implementer role split ordering (issue #775, ADR 0008)
+# ---------------------------------------------------------------------------
+
+class RunIssueTestAuthorPhaseOrderingTests(unittest.TestCase):
+    """When ``redGreenProof`` is set, a DISTINCT ``test-author`` phase runs
+    STRICTLY BEFORE the execute phase (AC1, AC3). Without the opt-in flag, no
+    test-author phase runs — the many existing single-execute fixtures stay
+    green (behavior unchanged).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_config(self, payload):
+        cfg = self.target / ".agentrail" / "config.json"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(json.dumps(payload))
+
+    def _run(self):
+        phase_calls = []
+
+        def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            phase_calls.append(phase)
+            return (0, "PLAN OUT") if phase == "plan" else (0, "")
+
+        gh_mock = MagicMock()
+        gh_mock.returncode = 1
+        gh_mock.stdout = ""
+
+        with patch("agentrail.run.pipeline.ctx.issue_resolution_text", return_value="T"), \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state"), \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
+             patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
+            run_issue(self.target, 7, agent="claude", command="c", repo_dir=self.repo)
+        return phase_calls
+
+    def test_test_author_runs_strictly_before_execute(self):
+        """AC1+AC3: with the proof on, a distinct test-author phase precedes execute."""
+        self._write_config({"verify": "true", "redGreenProof": True})
+        phase_calls = self._run()
+        self.assertIn("test-author", phase_calls)
+        self.assertIn("execute", phase_calls)
+        self.assertLess(
+            phase_calls.index("test-author"),
+            phase_calls.index("execute"),
+            "test-author must run before execute",
+        )
+
+    def test_test_author_runs_after_plan(self):
+        """The ordering is plan → test-author → execute."""
+        self._write_config({"verify": "true", "redGreenProof": True})
+        phase_calls = self._run()
+        self.assertEqual(phase_calls, ["plan", "test-author", "execute"])
+
+    def test_no_test_author_phase_without_opt_in(self):
+        """Without redGreenProof, no test-author phase runs (behavior unchanged)."""
+        self._write_config({"verify": "true"})
+        phase_calls = self._run()
+        self.assertNotIn("test-author", phase_calls)
+        self.assertEqual(phase_calls, ["plan", "execute"])
+
+
+class RunIssueAntiFalseGreenTrailTests(unittest.TestCase):
+    """The gate reaches GREEN only on a genuine red→green trail, and a
+    tautological acceptance test that never went red keeps the gate RED even
+    when the final verify passes (anti-false-green, AC2/AC3).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_config(self, payload):
+        cfg = self.target / ".agentrail" / "config.json"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(json.dumps(payload))
+
+    def _run(self, execute_side_effect=None):
+        def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            # Only the Implementer (execute) phase may make the test pass; the
+            # distinct test-author phase authors the failing test before any impl.
+            if phase == "execute" and execute_side_effect is not None:
+                execute_side_effect()
+            return (0, "PLAN OUT") if phase == "plan" else (0, "")
+
+        gh_mock = MagicMock()
+        gh_mock.returncode = 1
+        gh_mock.stdout = ""
+
+        with patch("agentrail.run.pipeline.ctx.issue_resolution_text", return_value="T"), \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state"), \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
+             patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
+            result = run_issue(self.target, 7, agent="claude", command="c", repo_dir=self.repo)
+        runs_dir = self.target / ".agentrail" / "runs"
+        run_dir = next(runs_dir.iterdir())
+        return result, _read_json(run_dir / "run.json")
+
+    def test_implementer_flips_red_to_green_reaches_done(self):
+        """AC2: the acceptance test fails before execute and passes after the
+        Implementer's change → valid fail→pass trail → gate green → done."""
+        sentinel = self.target / "impl_done"
+        self._write_config({"verify": f"test -f {sentinel}", "redGreenProof": True})
+        result, run_json = self._run(execute_side_effect=lambda: sentinel.write_text("x"))
+        self.assertEqual(result, 0)
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
+
+    def test_tautological_test_never_red_keeps_gate_red(self):
+        """Anti-false-green: a test that passes BOTH before and after (never
+        red) is tautological — the gate refuses done even though verify passes."""
+        # ``true`` passes at the baseline AND after execute → never observed red.
+        self._write_config({"verify": "true", "redGreenProof": True})
+        result, run_json = self._run()
+        self.assertNotEqual(result, 0)
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "red")
+        self.assertTrue(
+            any("red-green" in r.lower() for r in run_json["objectiveGate"]["failedReasons"])
+        )
 
 
 if __name__ == "__main__":

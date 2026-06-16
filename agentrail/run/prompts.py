@@ -333,11 +333,58 @@ def issue_run_phase_prompt(
     verifier_findings_text: str = "",
     execution_attempt: int = 1,
     max_execution_attempts: int = 5,
+    red_green: bool = False,
 ) -> str:
-    """Plan/execute phase prompt (legacy issue_run_phase_prompt:5910-5989).
+    """Plan / test-author / execute phase prompt.
+
+    When ``red_green`` is true (the run opts into the **Red-Green Proof**, ADR
+    0008), test authorship and implementation are split into two DISTINCT roles:
+
+    - ``phase == "test-author"`` returns the **Test-Author** prompt: author one
+      *failing* acceptance test from the AC, before any implementation exists.
+    - ``phase == "execute"`` is prefixed with an **Implementer** role boundary:
+      a *separate* Test-Author already wrote the failing acceptance test; the
+      Implementer turns it green and must not author, rewrite, weaken, or delete
+      that acceptance test (no grading its own homework).
+
+    ``red_green`` defaults to ``False`` so existing single-execute-phase callers
+    are unchanged (the role split is behind the ``redGreenProof`` opt-in).
 
     Raises ValueError for unknown phase.
     """
+    if phase == "test-author":
+        return (
+            "You are the TEST-AUTHOR. You are a DISTINCT role from the Implementer "
+            "(ADR 0008, anti-false-green): you author the acceptance test, and a "
+            "SEPARATE Implementer role will write the code that makes it pass. You "
+            "do NOT implement the feature.\n"
+            "\n"
+            "Issue context:\n"
+            f"{issue_context}\n"
+            "\n"
+            "Phase context pack:\n"
+            f"{context_summary}\n"
+            "\n"
+            "Base instructions:\n"
+            f"{base_prompt}\n"
+            "\n"
+            f"Your task — author the failing acceptance test for issue #{issue}:\n"
+            "- Write exactly ONE acceptance test that encodes the issue's "
+            "acceptance criteria.\n"
+            "- Test the behaviour through the PUBLIC interface (not internals), so "
+            "the test pins the AC contract rather than the implementation.\n"
+            "- The test MUST FAIL right now: nothing is implemented yet, so a "
+            "genuine acceptance test for unbuilt behaviour is red. A test that "
+            "passes before any implementation is tautological and is rejected.\n"
+            "- Add the test under the project's declared verification command so "
+            "the run can observe it failing now and passing after the Implementer's "
+            "change (the Red-Green Proof).\n"
+            "- DO NOT implement the feature, edit production code, or otherwise make "
+            "the test pass. Authoring the failing test is the whole job for this "
+            "phase; the Implementer is a separate role and turns it green next.\n"
+            "- Stop once the failing acceptance test is written."
+        )
+
     if phase == "plan":
         return (
             "This is phase 1 of 2: plan.\n"
@@ -397,9 +444,31 @@ def issue_run_phase_prompt(
             "\n"
         )
 
+        # Implementer role boundary (ADR 0008): when the Red-Green Proof is
+        # active, a SEPARATE Test-Author already authored the failing acceptance
+        # test. The Implementer turns it green and must not grade its own
+        # homework by authoring/weakening that acceptance test.
+        if red_green:
+            implementer_boundary = (
+                "You are the IMPLEMENTER. You are a DISTINCT role from the "
+                "Test-Author (ADR 0008, anti-false-green): a SEPARATE Test-Author "
+                "has ALREADY written a FAILING acceptance test from the issue's "
+                "acceptance criteria. Your job is to write the SMALLEST change that "
+                "turns that failing acceptance test green.\n"
+                "- DO NOT author, rewrite, weaken, skip, or delete the acceptance "
+                "test the Test-Author wrote — you do not grade your own homework. "
+                "Make the code satisfy the test, not the test satisfy the code.\n"
+                "- Writing NARROWER unit tests for code you add is fine; just do not "
+                "touch the acceptance test that defines the AC contract.\n"
+                "\n"
+            )
+        else:
+            implementer_boundary = ""
+
         # Core body up through base_prompt
         body = (
-            ralph_preamble
+            implementer_boundary
+            + ralph_preamble
             + "This is phase 2 of 2: execute.\n"
             f"Execution attempt: {execution_attempt} of {max_execution_attempts}.\n"
             "\n"

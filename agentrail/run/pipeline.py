@@ -143,7 +143,10 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     else:
         verifier_findings_text = ""
 
-    # 8. Build phase prompt
+    # 8. Build phase prompt. When the run opts into the Red-Green Proof (ADR
+    # 0008), the role split is active: the test-author phase authors the failing
+    # acceptance test and the execute prompt carries the Implementer boundary so
+    # the implementer never authors its own acceptance test (AC3).
     phase_prompt = prompts.issue_run_phase_prompt(
         phase, rc.issue,
         issue_context=rc.resolution_text,
@@ -153,6 +156,7 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
         verifier_findings_text=verifier_findings_text,
         execution_attempt=execution_attempt,
         max_execution_attempts=rc.max_execution_attempts,
+        red_green=red_green_proof_required(rc.target_dir),
     )
 
     # 9. Write prompt file
@@ -620,12 +624,23 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
             _log.debug("budget failure push skipped: %s", _exc)
         status = 1
 
-    # Red-Green Proof baseline (ADR 0008, #772): when the run opts into the
-    # proof, observe the declared acceptance checks BEFORE implementation. They
-    # are expected to be RED here — that red observation is what proves the test
-    # is real (not tautological) once the implementation turns it green. The
-    # proof is opt-in (``redGreenProof`` config); absent, behavior is unchanged.
+    # Test-Author phase (ADR 0008, #775): when the run opts into the Red-Green
+    # Proof, a DISTINCT Test-Author role authors the failing acceptance test from
+    # the AC BEFORE any implementation (AC1, AC3). This runs ahead of the RED
+    # baseline below so the baseline observes the *authored* acceptance test
+    # failing — that red observation is what proves the test is real, and the
+    # Implementer (execute phase) is a separate role that turns it green (AC2).
     require_red_green = red_green_proof_required(target_dir)
+    if status == 0 and require_red_green:
+        status, _ = run_issue_phase(rc, "test-author", 1, plan_output=plan_output)
+        last_phase = "test-author"
+
+    # Red-Green Proof baseline (ADR 0008, #772): observe the declared acceptance
+    # checks BEFORE implementation. With the Test-Author phase above, this
+    # reflects the just-authored acceptance test — expected RED here. That red
+    # observation is what proves the test is real (not tautological) once the
+    # implementation turns it green. The proof is opt-in (``redGreenProof``
+    # config); absent, behavior is unchanged.
     red_green_observations: list[Observation] = []
     if status == 0 and require_red_green:
         try:

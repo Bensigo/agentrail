@@ -142,16 +142,27 @@ def red_green_proof_required(target_dir: Path) -> bool:
     """Whether this run requires a Red-Green Proof trail (thin I/O).
 
     Reads the optional ``redGreenProof`` flag from ``.agentrail/config.json``.
-    The Red-Green Proof (ADR 0008) is opt-in: when ``redGreenProof`` is true the
-    pipeline must observe the acceptance test failing before implementation and
-    passing after, and the Objective Gate refuses done without that valid trail
-    (#772). Absent/false keeps the gate's prior behavior (proof not required),
-    matching the objective_gate seam's "default keeps behavior unchanged".
+    The Red-Green Proof (ADR 0008) is the **verification spine**, and the MVP
+    turns it ON BY DEFAULT: the pipeline runs the Test-Author → execute → verify
+    role split and the Objective Gate refuses done without a valid fail→pass
+    trail (#772). It is the DEFAULT unless a caller explicitly opts out with
+    ``"redGreenProof": false`` — that minimal flow is for callers who genuinely
+    need the old single-execute behavior (AC3).
+
+    Truth table (the value of ``redGreenProof``):
+      - missing / ``null`` / ``true``  → ``True``  (spine ON, the default)
+      - ``false``                      → ``False`` (explicit opt-out)
     """
     config = _load_config(Path(target_dir))
     if not config:
-        return False
-    return bool(config.get("redGreenProof"))
+        # No config at all → spine is still ON by default (MVP). A run with no
+        # declared verify will then be RED at the gate ("no verification
+        # declared"), which is the intended honest default — not a silent pass.
+        return True
+    value = config.get("redGreenProof")
+    if value is None:
+        return True
+    return bool(value)
 
 
 def run_objective_checks(

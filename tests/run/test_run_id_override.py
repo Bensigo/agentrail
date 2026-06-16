@@ -62,11 +62,23 @@ def _make_target(tmp_path: Path) -> tuple[Path, Path]:
     agentrail_dir = tmp_path / ".agentrail"
     agentrail_dir.mkdir(parents=True)
     (agentrail_dir / "state.json").write_text(json.dumps({"workflow": {}}))
-    # A passing objective-gate verification so a successful run reaches GREEN
-    # (the gate now drives "done" — ADR 0007 / #769).
-    (agentrail_dir / "config.json").write_text(json.dumps({"verify": "true"}))
+    # The verification spine is ON BY DEFAULT (MVP): a run reaches GREEN only on a
+    # genuine red→green trail. The declared sentinel-file verify is RED at the
+    # baseline and turned GREEN by the execute phase (the stub creates the
+    # sentinel on the execute phase, detected from the prompt on stdin).
+    sentinel = tmp_path / "impl_done"
+    (agentrail_dir / "config.json").write_text(
+        json.dumps({"verify": f"test -f {sentinel}"})
+    )
     stub_agent = tmp_path / "stub-agent"
-    stub_agent.write_text("#!/bin/sh\nexit 0\n")
+    stub_agent.write_text(
+        "#!/bin/sh\n"
+        "in=$(cat)\n"
+        "case \"$in\" in\n"
+        f"  *'phase 2 of 2: execute'*) : > '{sentinel}' ;;\n"
+        "esac\n"
+        "exit 0\n"
+    )
     stub_agent.chmod(stub_agent.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return tmp_path, stub_agent
 

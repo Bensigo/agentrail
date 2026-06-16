@@ -1,8 +1,9 @@
-"""Pipeline pushes an index snapshot once per run (plan phase only).
+"""Pipeline pushes an index snapshot once per run (first phase only).
 
 Keeps the dashboard repos health view fresh on every run instead of only
 after a manual `agentrail context index`. The push is non-fatal: a failure
-never affects the run exit code.
+never affects the run exit code. With the plan phase removed (MVP), the first
+phase is now ``test-author``.
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ class TestIndexSnapshotPushFromPipeline(unittest.TestCase):
     def _run(self, tmp: str, build_index_mock, push_mock) -> int:
         target = _make_target(tmp)
         _apply_common_patches(self, target)
-        stub = _stub_run_with_timeout(0)
+        stub = _stub_run_with_timeout(0, sentinel=target / "impl_done")
         with patch("agentrail.run.pipeline.run_with_timeout", stub), \
              patch("agentrail.run.pipeline.capture_usage", return_value=None), \
              patch("agentrail.context.index.build_index", build_index_mock), \
@@ -40,7 +41,7 @@ class TestIndexSnapshotPushFromPipeline(unittest.TestCase):
         self._stub = stub
         return rc
 
-    def test_snapshot_pushed_once_for_plan_phase_only(self):
+    def test_snapshot_pushed_once_for_first_phase_only(self):
         """A multi-phase run pushes exactly one snapshot, built from build_index."""
         build_result = {"cacheHit": True}
         build_index_mock = MagicMock(return_value=build_result)

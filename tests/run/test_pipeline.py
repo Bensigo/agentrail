@@ -26,18 +26,30 @@ from agentrail.run.pipeline import RunContext, run_issue, run_issue_phase
 def _make_target(tmp_dir: str) -> Path:
     """Create a minimal .agentrail/state.json so update_run_state works.
 
-    Also writes a passing objective-gate ``verify`` config so that a
-    successful agent run reaches GREEN: the Objective Gate now drives "done"
-    (ADR 0007 / #769), so a run with no declared verification is RED by design.
-    Tests that exercise the no-verify path configure it explicitly.
+    The Objective Gate (ADR 0007 / #769) drives "done" and the verification
+    spine (ADR 0008) is ON BY DEFAULT (MVP): a run reaches GREEN only on a
+    genuine red→green trail. We declare a sentinel-file ``verify`` check that is
+    RED at the baseline and turned GREEN by the execute phase (the ``run_issue``
+    fixtures below flip the sentinel in their execute stub). Helper
+    ``_sentinel(target)`` returns the sentinel path so stubs can create it.
+
+    Tests that exercise the no-verify or always-pass paths override the config
+    explicitly.
     """
     target = Path(tmp_dir) / "target"
     agentrail_dir = target / ".agentrail"
     agentrail_dir.mkdir(parents=True, exist_ok=True)
     state_path = agentrail_dir / "state.json"
     state_path.write_text(json.dumps({"workflow": {}}))
-    (agentrail_dir / "config.json").write_text(json.dumps({"verify": "true"}))
+    (agentrail_dir / "config.json").write_text(
+        json.dumps({"verify": f"test -f {_sentinel(target)}"})
+    )
     return target
+
+
+def _sentinel(target: Path) -> Path:
+    """Path to the per-target red→green sentinel the execute stub creates."""
+    return target / "impl_done"
 
 
 def _make_rc(target: Path, run_dir: Path,
@@ -654,8 +666,11 @@ class RunIssueHappyPathTests(unittest.TestCase):
 
         def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
             phase_calls.append({"phase": phase, "plan_output": plan_output})
-            if phase == "plan":
-                return (0, "PLAN OUT")
+            # The Implementer (execute) flips the sentinel red→green so the
+            # spine-on default reaches a GREEN gate (test-author authors the
+            # failing test; only execute makes it pass).
+            if phase == "execute":
+                _sentinel(self.target).write_text("x")
             return (0, "")
 
         side_effect = cfg.get("run_issue_phase_side_effect") or _phase_stub
@@ -726,11 +741,12 @@ class RunIssueHappyPathTests(unittest.TestCase):
         self.assertEqual(run_json["agent"], "claude")
         self.assertEqual(run_json["contextPackFile"], ".agentrail/context/packs/p.json")
 
-    def test_happy_path_run_issue_phase_called_plan_then_execute(self):
+    def test_happy_path_run_issue_phase_called_test_author_then_execute(self):
+        """MVP: the spine-on default runs test-author → execute, with NO plan."""
         _, phase_calls, _, _, _ = self._run_with_patches()
-        self.assertEqual(len(phase_calls), 2)
-        self.assertEqual(phase_calls[0]["phase"], "plan")
-        self.assertEqual(phase_calls[1]["phase"], "execute")
+        phases = [c["phase"] for c in phase_calls]
+        self.assertEqual(phases, ["test-author", "execute"])
+        self.assertNotIn("plan", phases)
 
     def test_happy_path_update_run_state_finish_called(self):
         _, _, _, mock_update_state, _ = self._run_with_patches()
@@ -739,8 +755,12 @@ class RunIssueHappyPathTests(unittest.TestCase):
         self.assertEqual(args[1], "finish")
 
 
-class RunIssueReviewFixTests(unittest.TestCase):
-    """review-fix label: plan phase skipped, only execute called."""
+class RunIssueNoPlanPhaseTests(unittest.TestCase):
+    """MVP: the plan phase is GONE from the default flow regardless of labels.
+
+    (Previously a ``review-fix`` label skipped plan; now there is no plan phase
+    to skip at all — the flow is test-author → execute either way.)
+    """
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -751,11 +771,13 @@ class RunIssueReviewFixTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_review_fix_skips_plan_calls_only_execute(self):
+    def test_no_plan_phase_runs(self):
         phase_calls = []
 
         def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
             phase_calls.append(phase)
+            if phase == "execute":
+                _sentinel(self.target).write_text("x")
             return (0, "")
 
         gh_mock = MagicMock()
@@ -781,11 +803,15 @@ class RunIssueReviewFixTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertNotIn("plan", phase_calls)
-        self.assertIn("execute", phase_calls)
+        self.assertEqual(phase_calls, ["test-author", "execute"])
 
 
 class RunIssueResumeTests(unittest.TestCase):
-    """AGENTRAIL_RESUME=1: prior completed plan is reused, plan phase skipped."""
+    """MVP: with the plan phase gone there is no prior-plan to resume.
+
+    A prior completed ``plan`` artifact on disk is simply ignored — the run
+    proceeds with the spine flow (test-author → execute) and never reads it.
+    """
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -796,11 +822,11 @@ class RunIssueResumeTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_resume_skips_plan_uses_prior_output(self):
+    def test_resume_ignores_prior_plan_and_runs_spine(self):
         runs_dir = self.target / ".agentrail" / "runs"
         runs_dir.mkdir(parents=True, exist_ok=True)
 
-        # Pre-create a prior run dir with completed plan
+        # Pre-create a prior run dir with a completed plan — it must be ignored.
         prior_dir = runs_dir / "20200101-000000-issue-7-claude-1"
         (prior_dir / "plan").mkdir(parents=True)
         (prior_dir / "plan" / "status.json").write_text(json.dumps({"status": "completed"}))
@@ -812,6 +838,8 @@ class RunIssueResumeTests(unittest.TestCase):
         def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
             phase_calls.append(phase)
             captured_plan_outputs.append(plan_output)
+            if phase == "execute":
+                _sentinel(self.target).write_text("x")
             return (0, plan_output)
 
         gh_mock = MagicMock()
@@ -844,10 +872,9 @@ class RunIssueResumeTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertNotIn("plan", phase_calls)
-        self.assertIn("execute", phase_calls)
-        # execute call received the prior plan output
-        execute_idx = phase_calls.index("execute")
-        self.assertEqual(captured_plan_outputs[execute_idx], "PRIOR PLAN")
+        self.assertEqual(phase_calls, ["test-author", "execute"])
+        # The prior plan output is never threaded in (plan is gone).
+        self.assertNotIn("PRIOR PLAN", captured_plan_outputs)
 
 
 class RunIssueSkillsFailureDegradeTests(unittest.TestCase):
@@ -870,7 +897,9 @@ class RunIssueSkillsFailureDegradeTests(unittest.TestCase):
         gh_mock.stdout = ""
 
         def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
-            return (0, "PLAN OUT") if phase == "plan" else (0, "")
+            if phase == "execute":
+                _sentinel(self.target).write_text("x")
+            return (0, "")
 
         with patch("agentrail.run.pipeline.ctx.issue_resolution_text", return_value="T"), \
              patch("agentrail.run.pipeline.skills.resolve_skills",
@@ -927,8 +956,12 @@ class RunIssueBadMaxAttemptsTests(unittest.TestCase):
         self.assertEqual(result, 2)
 
 
-class RunIssuePlanFailureShortCircuitsTests(unittest.TestCase):
-    """Plan failure: execute not called, final state has exit_status 1."""
+class RunIssueFirstPhaseFailureShortCircuitsTests(unittest.TestCase):
+    """First-phase (test-author) failure: execute not called, exit_status 1.
+
+    (Replaces the old plan-failure short-circuit: the test-author phase is now
+    the first phase, and a failure there must still short-circuit execute.)
+    """
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -939,12 +972,12 @@ class RunIssuePlanFailureShortCircuitsTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_plan_failure_short_circuits_execute(self):
+    def test_test_author_failure_short_circuits_execute(self):
         phase_calls = []
 
         def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
             phase_calls.append(phase)
-            if phase == "plan":
+            if phase == "test-author":
                 return (1, "")
             return (0, "")
 
@@ -971,6 +1004,7 @@ class RunIssuePlanFailureShortCircuitsTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         self.assertNotIn("execute", phase_calls)
+        self.assertEqual(phase_calls, ["test-author"])
         # update_run_state called with finish and exit_status=1
         args, kwargs = mock_update_state.call_args
         self.assertEqual(args[1], "finish")
@@ -1017,16 +1051,23 @@ class RunIssueNoRalphDependencyTests(unittest.TestCase):
             return run_issue(self.target, 7, agent="claude", command="c", repo_dir=self.repo)
 
     def test_proceeds_and_runs_phases(self):
-        """Native default: no ralph-loop required; phases still run to completion."""
-        mock_phase = MagicMock(return_value=(0, ""))
+        """Native default: no ralph-loop required; the spine phases still run to
+        completion and reach a GREEN gate on a genuine red→green trail."""
+        def _phase(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            if phase == "execute":
+                _sentinel(self.target).write_text("x")
+            return (0, "")
+
+        mock_phase = MagicMock(side_effect=_phase)
         result = self._run(mock_phase)
 
         self.assertEqual(result, 0)
         self.assertTrue(mock_phase.called)
 
 
-class RunIssueFinishPhaseOnPlanFailureTests(unittest.TestCase):
-    """Fix 2: finish event must report phase='plan' when plan fails and execute is skipped."""
+class RunIssueFinishPhaseOnFirstPhaseFailureTests(unittest.TestCase):
+    """Finish event must report phase='test-author' when the first (test-author)
+    phase fails and execute is skipped (was plan in the legacy flow)."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -1037,12 +1078,12 @@ class RunIssueFinishPhaseOnPlanFailureTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_finish_phase_is_plan_when_plan_fails(self):
+    def test_finish_phase_is_test_author_when_test_author_fails(self):
         phase_calls = []
 
         def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
             phase_calls.append(phase)
-            if phase == "plan":
+            if phase == "test-author":
                 return (1, "")
             return (0, "")
 
@@ -1069,15 +1110,16 @@ class RunIssueFinishPhaseOnPlanFailureTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         self.assertNotIn("execute", phase_calls)
-        # finish event must carry phase="plan" and exit_status=1
+        # finish event must carry phase="test-author" and exit_status=1
         args, kwargs = mock_update_state.call_args
         self.assertEqual(args[1], "finish")
-        self.assertEqual(kwargs["phase"], "plan")
+        self.assertEqual(kwargs["phase"], "test-author")
         self.assertEqual(kwargs["exit_status"], 1)
 
 
-class RunIssuePlanOutputThreadingTests(unittest.TestCase):
-    """Fix 2 (happy path): execute call receives the plan_output returned by plan phase."""
+class RunIssueNoPlanOutputThreadingTests(unittest.TestCase):
+    """MVP: with the plan phase gone, the execute phase receives an EMPTY
+    plan_output (there is no plan to thread through)."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -1088,13 +1130,13 @@ class RunIssuePlanOutputThreadingTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_execute_receives_plan_output(self):
+    def test_execute_receives_empty_plan_output(self):
         captured = {}
 
         def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
-            if phase == "plan":
-                return (0, "PLAN OUT")
-            captured["execute_plan_output"] = plan_output
+            if phase == "execute":
+                _sentinel(self.target).write_text("x")
+                captured["execute_plan_output"] = plan_output
             return (0, "")
 
         gh_mock = MagicMock()
@@ -1118,11 +1160,13 @@ class RunIssuePlanOutputThreadingTests(unittest.TestCase):
              patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
             run_issue(self.target, 7, agent="claude", command="c", repo_dir=self.repo)
 
-        self.assertEqual(captured.get("execute_plan_output"), "PLAN OUT")
+        self.assertEqual(captured.get("execute_plan_output"), "")
 
 
-class RunIssueResumeNewestTests(unittest.TestCase):
-    """Fix 3: with AGENTRAIL_RESUME=1 and two prior runs, the NEWEST plan is used."""
+class RunIssueResumeIgnoresPriorPlansTests(unittest.TestCase):
+    """MVP: with AGENTRAIL_RESUME=1 and prior runs on disk, no prior plan is
+    reused (the plan phase is gone). The execute phase gets an empty plan_output
+    regardless of any prior plan artifacts."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -1133,7 +1177,7 @@ class RunIssueResumeNewestTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_resume_picks_newest_prior_plan(self):
+    def test_resume_ignores_prior_plans(self):
         runs_dir = self.target / ".agentrail" / "runs"
         runs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1153,6 +1197,7 @@ class RunIssueResumeNewestTests(unittest.TestCase):
 
         def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
             if phase == "execute":
+                _sentinel(self.target).write_text("x")
                 captured["execute_plan_output"] = plan_output
             return (0, plan_output)
 
@@ -1185,7 +1230,7 @@ class RunIssueResumeNewestTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        self.assertEqual(captured.get("execute_plan_output"), "NEW")
+        self.assertEqual(captured.get("execute_plan_output"), "")
 
 
 # ---------------------------------------------------------------------------
@@ -1357,9 +1402,11 @@ class RunIssueObjectiveGateWiringTests(unittest.TestCase):
         cfg.parent.mkdir(parents=True, exist_ok=True)
         cfg.write_text(json.dumps(payload))
 
-    def _run(self):
+    def _run(self, execute_side_effect=None):
         def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
-            return (0, "PLAN OUT") if phase == "plan" else (0, "")
+            if phase == "execute" and execute_side_effect is not None:
+                execute_side_effect()
+            return (0, "")
 
         gh_mock = MagicMock()
         gh_mock.returncode = 1
@@ -1386,9 +1433,13 @@ class RunIssueObjectiveGateWiringTests(unittest.TestCase):
         return result, _read_json(run_dir / "run.json")
 
     def test_done_when_verify_passes_and_declared(self):
-        """verify command passes AND is declared → gate green → done (exit 0)."""
-        self._write_verify({"verify": "true"})
-        result, run_json = self._run()
+        """A declared verify on a genuine red→green trail → gate green → done.
+
+        (Spine-on by default: the check is RED at the baseline and GREEN after
+        the Implementer creates the sentinel, so it is not tautological.)"""
+        sentinel = self.target / "impl_done"
+        self._write_verify({"verify": f"test -f {sentinel}"})
+        result, run_json = self._run(execute_side_effect=lambda: sentinel.write_text("x"))
         self.assertEqual(result, 0)
         self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
         self.assertTrue(run_json["objectiveGate"]["isGreen"])
@@ -1507,10 +1558,11 @@ class RunIssueRedGreenProofWiringTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
 
-    def test_proof_not_required_keeps_prior_behavior(self):
-        """Without the opt-in flag, an always-passing verify is still done —
-        the Red-Green requirement does not retroactively change behavior."""
-        self._write_config({"verify": "true"})
+    def test_explicit_opt_out_keeps_minimal_behavior(self):
+        """With the explicit ``redGreenProof: false`` opt-out, an always-passing
+        verify is still done — the Red-Green requirement is bypassed (AC3). (The
+        spine is ON by default now, so this requires the explicit opt-out.)"""
+        self._write_config({"verify": "true", "redGreenProof": False})
         result, run_json = self._run()
         self.assertEqual(result, 0)
         self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
@@ -1571,7 +1623,8 @@ class RunIssueTestAuthorPhaseOrderingTests(unittest.TestCase):
         return phase_calls
 
     def test_test_author_runs_strictly_before_execute(self):
-        """AC1+AC3: with the proof on, a distinct test-author phase precedes execute."""
+        """AC1+AC3: with the spine on (default), a distinct test-author phase
+        precedes execute."""
         self._write_config({"verify": "true", "redGreenProof": True})
         phase_calls = self._run()
         self.assertIn("test-author", phase_calls)
@@ -1582,18 +1635,26 @@ class RunIssueTestAuthorPhaseOrderingTests(unittest.TestCase):
             "test-author must run before execute",
         )
 
-    def test_test_author_runs_after_plan(self):
-        """The ordering is plan → test-author → execute."""
+    def test_ordering_is_test_author_then_execute(self):
+        """MVP: the spine flow is test-author → execute (NO plan phase)."""
         self._write_config({"verify": "true", "redGreenProof": True})
         phase_calls = self._run()
-        self.assertEqual(phase_calls, ["plan", "test-author", "execute"])
+        self.assertEqual(phase_calls, ["test-author", "execute"])
 
-    def test_no_test_author_phase_without_opt_in(self):
-        """Without redGreenProof, no test-author phase runs (behavior unchanged)."""
+    def test_spine_on_by_default_runs_test_author(self):
+        """AC2: with no special config (spine ON by default) a test-author phase
+        runs as the first phase."""
         self._write_config({"verify": "true"})
         phase_calls = self._run()
+        self.assertEqual(phase_calls, ["test-author", "execute"])
+
+    def test_explicit_opt_out_skips_test_author(self):
+        """AC3: ``redGreenProof: false`` restores the minimal flow — no
+        test-author phase, just execute."""
+        self._write_config({"verify": "true", "redGreenProof": False})
+        phase_calls = self._run()
         self.assertNotIn("test-author", phase_calls)
-        self.assertEqual(phase_calls, ["plan", "execute"])
+        self.assertEqual(phase_calls, ["execute"])
 
 
 class RunIssueAntiFalseGreenTrailTests(unittest.TestCase):
@@ -1805,14 +1866,27 @@ class RunIssueVerifierWiringTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
 
-    def test_no_verify_phase_when_red_green_off(self):
-        """Without the redGreenProof opt-in, the verifier never runs even if a
-        verifier command is present (the role split is behind the opt-in seam)."""
-        self._write_config({"verify": "true"})
+    def test_no_verify_phase_when_explicitly_opted_out(self):
+        """With the explicit ``redGreenProof: false`` opt-out, the verifier never
+        runs even if a verifier command is present (the minimal flow has no
+        role split). (Spine is ON by default, so this needs the opt-out.)"""
+        self._write_config({"verify": "true", "redGreenProof": False})
         _, _, phase_calls = self._run(
             phase_commands={"verify": "claude -p --model claude-sonnet-4-6"},
         )
         self.assertNotIn("verify", phase_calls)
+
+    def test_verify_phase_runs_by_default_with_distinct_command(self):
+        """AC2: spine ON by default → a distinct verifier command runs a verify
+        phase after execute even with no explicit redGreenProof flag."""
+        sentinel = self.target / "impl_done"
+        self._write_config({"verify": f"test -f {sentinel}"})
+        _, _, phase_calls = self._run(
+            phase_commands={"verify": "claude -p --model claude-sonnet-4-6"},
+            verify_output='VERDICT: {"verdict": "accept", "reason": "ok"}',
+            execute_side_effect=lambda: sentinel.write_text("x"),
+        )
+        self.assertIn("verify", phase_calls)
 
 
 if __name__ == "__main__":

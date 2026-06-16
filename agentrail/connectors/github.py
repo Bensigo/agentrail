@@ -23,15 +23,22 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from typing import Iterable, List, Optional, Set, Tuple
+import urllib.request
+from typing import Callable, Iterable, List, Optional, Set, Tuple
 
 from agentrail.afk.input_contract import Rejected, admit_to_queue
 from agentrail.connectors.base import (
     Connector,
     ConnectorEvent,
     IngestedIssue,
+    IssueRef,
     OutcomeReport,
 )
+
+# The trigger label a human applies (or the CLI applies on create) to a GitHub
+# issue so the OAuth polling intake brings it into the queue.
+TRIGGER_LABEL = "ready-for-agent"
+GITHUB_API = "https://api.github.com"
 
 
 # --------------------------------------------------------------------------- #
@@ -295,3 +302,142 @@ class GitHubConnector(Connector):
         interface contract holds without a misleading second comment.
         """
         return None
+
+
+# --------------------------------------------------------------------------- #
+# OAuth REST client (MVP): poll labeled issues + post/create via the user's token
+# --------------------------------------------------------------------------- #
+# A REST transport runs one HTTP request and returns ``(status, parsed_json)``.
+# ``body`` is the raw request body (already-serialized JSON) or ``None``.
+RestTransport = Callable[..., Tuple[int, object]]
+
+
+def _default_rest_transport(token: str) -> RestTransport:
+    """Build the live transport: GitHub REST over stdlib urllib with the OAuth token.
+
+    No ``gh`` CLI (which needs its own auth) and no third-party HTTP client —
+    matches the no-new-deps constraint and mirrors the Linear adapter's reliance
+    on stdlib :mod:`urllib`. Authorization is the user's stored GitHub OAuth
+    ``access_token`` as a Bearer token.
+    """
+
+    def _transport(method, url, headers=None, body=None):
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        req = urllib.request.Request(url, data=data, method=method)
+        for key, value in (headers or {}).items():
+            req.add_header(key, value)
+        with urllib.request.urlopen(req) as resp:  # noqa: S310 (fixed github.com host)
+            raw = resp.read().decode("utf-8")
+            parsed = json.loads(raw) if raw else None
+            return resp.status, parsed
+
+    return _transport
+
+
+class GitHubOAuthClient:
+    """Poll-and-post GitHub intake driven by the user's OAuth token (MVP).
+
+    The connected-source path the MVP asks for: a labeled GitHub issue flows into
+    the queue and run results post back — authenticated with the user's stored
+    GitHub OAuth ``access_token`` (no PAT, no ``gh`` CLI). Three side effects, all
+    over the injectable ``transport`` so tests run against a mocked REST API:
+
+    - :meth:`poll` lists OPEN issues carrying the trigger label across the
+      workspace's linked repos, as :class:`~agentrail.connectors.base.IssueRef`.
+    - :meth:`post_result` posts the run outcome back as an issue comment.
+    - :meth:`create_issue` opens an issue WITH the trigger label so the polling
+      intake (or heartbeat) then picks it up.
+
+    The pure ``afk/input_contract`` gate is *not* re-implemented here; the caller
+    (heartbeat/orchestrator) feeds each polled ``IssueRef.body`` through
+    ``admit_to_queue`` exactly as :class:`GitHubConnector.ingest` does, so an
+    issue without machine-checkable AC still never enters the queue.
+    """
+
+    def __init__(
+        self,
+        *,
+        token: str,
+        repos: Optional[List[str]] = None,
+        trigger_label: str = TRIGGER_LABEL,
+        transport: Optional[RestTransport] = None,
+    ) -> None:
+        self.token = token
+        # Linked repos as "owner/name"; the workspace's repositories table feeds
+        # this in production (repositories.name), tests pass an explicit list.
+        self.repos = list(repos or [])
+        self.trigger_label = trigger_label
+        self._transport: RestTransport = transport or _default_rest_transport(token)
+
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+        }
+
+    def poll(self, workspace_id: str) -> List[IssueRef]:
+        """List OPEN, trigger-labeled issues across the linked repos as IssueRefs.
+
+        One REST call per linked repo to ``GET /repos/{repo}/issues`` filtered to
+        ``state=open`` and the trigger label. GitHub's issues endpoint also returns
+        pull requests (they carry a ``pull_request`` key); those are skipped so
+        only genuine issues enter the queue. ``workspace_id`` scopes which token /
+        repos the caller resolved; it is carried for symmetry with the other
+        connectors' workspace-scoped surface.
+        """
+        refs: List[IssueRef] = []
+        for repo in self.repos:
+            url = (
+                f"{GITHUB_API}/repos/{repo}/issues"
+                f"?state=open&labels={self.trigger_label}&per_page=100"
+            )
+            status, payload = self._transport("GET", url, headers=self._headers())
+            if status >= 300 or not isinstance(payload, list):
+                continue
+            for item in payload:
+                if not isinstance(item, dict) or "pull_request" in item:
+                    continue
+                refs.append(
+                    IssueRef(
+                        repo=repo,
+                        number=int(item.get("number", 0)),
+                        title=item.get("title") or "",
+                        body=item.get("body") or "",
+                        url=item.get("html_url") or "",
+                    )
+                )
+        return refs
+
+    def post_result(self, issue_ref: IssueRef, result: OutcomeReport) -> None:
+        """Post the run's terminal outcome back as a comment on the source issue.
+
+        Addresses the issue by ``repo`` + ``number`` (the IssueRef ``poll``
+        returned) — the *back* half of the two-way contract, over the OAuth token.
+        """
+        url = f"{GITHUB_API}/repos/{issue_ref.repo}/issues/{issue_ref.number}/comments"
+        body = json.dumps({"body": result.to_comment()})
+        self._transport("POST", url, headers=self._headers(), body=body)
+
+    def create_issue(self, *, repo: str, title: str, body: str) -> IssueRef:
+        """Create a GitHub issue WITH the trigger label and return its IssueRef.
+
+        Opening the issue already labeled is what lets the polling intake (or the
+        heartbeat) pick it up on the next cycle — closing the loop the CLI starts.
+        """
+        url = f"{GITHUB_API}/repos/{repo}/issues"
+        payload = json.dumps(
+            {"title": title, "body": body, "labels": [self.trigger_label]}
+        )
+        _status, created = self._transport(
+            "POST", url, headers=self._headers(), body=payload
+        )
+        created = created if isinstance(created, dict) else {}
+        return IssueRef(
+            repo=repo,
+            number=int(created.get("number", 0)),
+            title=created.get("title") or title,
+            body=body,
+            url=created.get("html_url") or "",
+        )

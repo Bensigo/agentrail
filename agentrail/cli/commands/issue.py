@@ -75,15 +75,24 @@ _USAGE = """\
 Usage:
   agentrail issue create <milestone-or-prd> [--agent codex|claude|cursor|hermes|custom]
                          [--target DIR] [--headless|--yes] [--dry-run]
+  agentrail issue create --connector github --repo <owner/name>
+                         --title <t> --body <b>
 
-Launches the configured agent seeded with the to-issues skill + CONTEXT.md +
-TASTE.md + triage-labels.md to break a milestone or PRD into house-template
-GitHub issues and publish them.
+Skill mode (default): launches the configured agent seeded with the to-issues
+skill + CONTEXT.md + TASTE.md + triage-labels.md to break a milestone or PRD into
+house-template GitHub issues and publish them. Interactive by default (the agent
+quizzes you on the slice breakdown before publishing). --headless/--yes skips the
+quiz and publishes without prompting. --dry-run prints what would be published.
 
-Interactive by default (the agent quizzes you on the slice breakdown before
-publishing). --headless/--yes skips the quiz and publishes without prompting.
---dry-run prints what would be published without calling gh.
+Connector mode (--connector github): creates a single GitHub issue directly via
+the user's stored GitHub OAuth token (env GITHUB_OAUTH_TOKEN or GITHUB_TOKEN),
+applying the ready-for-agent trigger label so the polling intake / heartbeat
+picks it up. No agent, no gh CLI.
 """
+
+# Env vars the connector path reads the user's GitHub OAuth access token from.
+# Preferred name first; GITHUB_TOKEN is accepted as a fallback for convenience.
+_GH_TOKEN_ENV = ("GITHUB_OAUTH_TOKEN", "GITHUB_TOKEN")
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +175,64 @@ def publish_issue(body: str, target_dir: str, _subprocess=None, title: Optional[
 
 
 # ---------------------------------------------------------------------------
+# Connector mode (GitHub OAuth: create one labeled issue directly)
+# ---------------------------------------------------------------------------
+
+
+def _github_oauth_token() -> Optional[str]:
+    """Return the user's stored GitHub OAuth access token from the environment.
+
+    Reads the preferred ``GITHUB_OAUTH_TOKEN`` first, then ``GITHUB_TOKEN``. The
+    token originates from the NextAuth ``accounts`` table (the console exposes it
+    to the CLI); here we accept it via env so the connector never shells out to
+    the ``gh`` CLI (which needs its own separate auth).
+    """
+    for name in _GH_TOKEN_ENV:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
+def _build_github_client(token: str, repo: str):
+    """Construct the OAuth REST client (seam patched in tests)."""
+    from agentrail.connectors.github import GitHubOAuthClient
+
+    return GitHubOAuthClient(token=token, repos=[repo])
+
+
+def _create_via_connector(
+    *, connector: str, repo: Optional[str], title: Optional[str], body: Optional[str]
+) -> int:
+    """Create a single labeled issue on an external connector via OAuth (MVP).
+
+    Currently supports ``github``: opens the issue with the ``ready-for-agent``
+    trigger label via the user's OAuth token so the polling intake picks it up.
+    """
+    if connector != "github":
+        raise UsageError(f"--connector must be 'github' (got {connector!r})")
+    if not repo:
+        raise UsageError("--connector github requires --repo <owner/name>")
+    if not title:
+        raise UsageError("--connector github requires --title")
+    if body is None:
+        raise UsageError("--connector github requires --body")
+
+    token = _github_oauth_token()
+    if not token:
+        raise UsageError(
+            "no GitHub OAuth token found; set GITHUB_OAUTH_TOKEN (or GITHUB_TOKEN) "
+            "to the access token granted at login (re-login once to grant the "
+            "'repo' scope)"
+        )
+
+    client = _build_github_client(token, repo)
+    ref = client.create_issue(repo=repo, title=title, body=body)
+    print(f"Created {ref.repo}#{ref.number} (label {TRIAGE_LABEL}): {ref.url}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -205,6 +272,10 @@ def _dispatch_create(args: List[str]) -> int:
     headless = False
     dry_run = False
     milestone: Optional[str] = None
+    connector: Optional[str] = None
+    repo: Optional[str] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
 
     i = 0
     while i < len(args):
@@ -217,6 +288,22 @@ def _dispatch_create(args: List[str]) -> int:
             i += 2
         elif a == "--target":
             target = _need_value(args, i, "--target")
+            i += 2
+        elif a == "--connector":
+            connector = _need_value(args, i, "--connector")
+            i += 2
+        elif a == "--repo":
+            repo = _need_value(args, i, "--repo")
+            i += 2
+        elif a == "--title":
+            title = _need_value(args, i, "--title")
+            i += 2
+        elif a == "--body":
+            # --body may legitimately be empty/start with markdown; take the
+            # next token verbatim rather than the strict _need_value guard.
+            if i + 1 >= len(args):
+                raise UsageError("--body requires a value")
+            body = args[i + 1]
             i += 2
         elif a in ("--headless", "--yes"):
             headless = True
@@ -231,6 +318,13 @@ def _dispatch_create(args: List[str]) -> int:
                 raise UsageError("issue create takes at most one milestone-or-prd argument")
             milestone = a
             i += 1
+
+    # Connector mode short-circuits the skill/agent path: create one labeled
+    # issue directly on the external source via the user's OAuth token.
+    if connector is not None:
+        return _create_via_connector(
+            connector=connector, repo=repo, title=title, body=body
+        )
 
     target = str(Path(target).resolve())
     agent = resolve_agent_name(target, agent_flag)

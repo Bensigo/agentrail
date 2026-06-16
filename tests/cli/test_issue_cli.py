@@ -484,5 +484,81 @@ class IssueSeedPromptTests(unittest.TestCase):
         self.assertIn("docs/agents/triage-labels.md", EXTRA_CONTEXT)
 
 
+class ConnectorCreateTests(unittest.TestCase):
+    """`agentrail issue create --connector github` creates a labeled GitHub issue.
+
+    The OAuth client is exercised against a mocked REST transport (no network).
+    """
+
+    def _fake_transport(self, created):
+        calls = []
+
+        def _t(method, url, headers=None, body=None):
+            calls.append({"method": method, "url": url, "headers": headers, "body": body})
+            return (201, created)
+
+        _t.calls = calls
+        return _t
+
+    def test_create_via_github_connector_injected_client(self):
+        import agentrail.cli.commands.issue as mod
+        from agentrail.connectors.github import GitHubOAuthClient
+
+        created = {
+            "number": 11,
+            "title": "Add thing",
+            "html_url": "https://github.com/acme/widgets/issues/11",
+        }
+        transport = self._fake_transport(created)
+
+        client = GitHubOAuthClient(
+            token="gho_x", repos=["acme/widgets"], transport=transport
+        )
+
+        out = StringIO()
+        with patch.dict("os.environ", {"GITHUB_OAUTH_TOKEN": "gho_x"}, clear=False), \
+            patch.object(mod, "_build_github_client", lambda token, repo: client), \
+            patch("sys.stdout", out):
+            rc = mod.run_issue([
+                "create", "--connector", "github",
+                "--repo", "acme/widgets",
+                "--title", "Add thing",
+                "--body", "## Acceptance criteria\n- [ ] AC1\n",
+            ])
+
+        self.assertEqual(rc, 0)
+        posts = [c for c in transport.calls if c["method"] == "POST"]
+        self.assertEqual(len(posts), 1)
+        import json as _json
+        sent = _json.loads(posts[0]["body"])
+        self.assertEqual(sent["title"], "Add thing")
+        self.assertIn("ready-for-agent", sent["labels"])
+        self.assertIn("11", out.getvalue())
+
+    def test_create_via_github_connector_requires_token(self):
+        out = StringIO()
+        err = StringIO()
+        with patch.dict("os.environ", {}, clear=True), \
+            patch("sys.stdout", out), patch("sys.stderr", err):
+            rc = run_issue([
+                "create", "--connector", "github",
+                "--repo", "acme/widgets",
+                "--title", "T", "--body", "B",
+            ])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("token", err.getvalue().lower())
+
+    def test_create_via_github_connector_requires_repo(self):
+        err = StringIO()
+        with patch.dict("os.environ", {"GITHUB_OAUTH_TOKEN": "gho_x"}, clear=False), \
+            patch("sys.stderr", err):
+            rc = run_issue([
+                "create", "--connector", "github",
+                "--title", "T", "--body", "B",
+            ])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("--repo", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,6 +20,13 @@ const result: NextAuthResult = NextAuth({
     GitHub({
       clientId: process.env["GITHUB_CLIENT_ID"]!,
       clientSecret: process.env["GITHUB_CLIENT_SECRET"]!,
+      // Request the `repo` scope so the stored OAuth access_token can read
+      // issues, post comments, and create issues for the GitHub connector
+      // (MVP). The default GitHub scope lacks repo access. Existing users must
+      // re-login once to grant the broadened scope.
+      authorization: {
+        params: { scope: "read:user user:email repo" },
+      },
     }),
   ],
   pages: {

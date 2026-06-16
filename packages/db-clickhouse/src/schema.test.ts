@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  ALTER_COST_EVENTS_ADD_CACHE_CREATION_TOKENS,
   ALTER_FAILURE_EVENTS_ADD_FINGERPRINT,
   ALTER_FAILURE_EVENTS_ADD_NORMALIZED_ERROR,
   CREATE_AFK_RUN_EVENTS_TABLE,
@@ -18,6 +19,14 @@ describe("failure_events schema", () => {
     );
     expect(ALTER_FAILURE_EVENTS_ADD_FINGERPRINT).toContain(
       "ALTER TABLE failure_events ADD COLUMN IF NOT EXISTS fingerprint String DEFAULT ''"
+    );
+  });
+});
+
+describe("cost_events cache_creation_tokens migration", () => {
+  it("exports an additive idempotent ALTER for cache_creation_tokens", () => {
+    expect(ALTER_COST_EVENTS_ADD_CACHE_CREATION_TOKENS).toContain(
+      "ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS cache_creation_tokens UInt64 DEFAULT 0"
     );
   });
 });

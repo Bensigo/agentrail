@@ -77,6 +77,57 @@ class TestClaudeExtractor:
         assert result.output_tokens == 130
         assert result.cache_tokens == 50
 
+    def test_captures_cache_creation_tokens(self, tmp_path: Path) -> None:
+        """AC1: cache_creation_input_tokens is summed into cache_creation_tokens."""
+        target = tmp_path / "repo"
+        target.mkdir()
+        projects_dir = self._make_projects_dir(tmp_path, target)
+
+        since = time.time() - 60
+        transcript = projects_dir / "session.jsonl"
+        _write_jsonl(transcript, [
+            {"message": {"usage": {"input_tokens": 100, "output_tokens": 50,
+                                   "cache_read_input_tokens": 20,
+                                   "cache_creation_input_tokens": 1000},
+                         "model": "claude-opus-4-6"}},
+            {"message": {"usage": {"input_tokens": 200, "output_tokens": 80,
+                                   "cache_read_input_tokens": 30,
+                                   "cache_creation_input_tokens": 500},
+                         "model": "claude-opus-4-6"}},
+        ])
+        _set_mtime(transcript, time.time())
+
+        fake_home = tmp_path / "claude"
+        with patch("agentrail.run.usage_capture.Path.home", return_value=fake_home):
+            result = capture_usage("claude", target, since)
+
+        assert result is not None
+        assert result.cache_creation_tokens == 1500
+        # cache_read tokens are kept distinct from cache_creation tokens.
+        assert result.cache_tokens == 50
+
+    def test_missing_cache_creation_defaults_to_zero(self, tmp_path: Path) -> None:
+        """Transcripts without cache_creation_input_tokens yield 0 (back-compat)."""
+        target = tmp_path / "repo"
+        target.mkdir()
+        projects_dir = self._make_projects_dir(tmp_path, target)
+
+        since = time.time() - 60
+        transcript = projects_dir / "session.jsonl"
+        _write_jsonl(transcript, [
+            {"message": {"usage": {"input_tokens": 100, "output_tokens": 50,
+                                   "cache_read_input_tokens": 20},
+                         "model": "claude-opus-4-6"}},
+        ])
+        _set_mtime(transcript, time.time())
+
+        fake_home = tmp_path / "claude"
+        with patch("agentrail.run.usage_capture.Path.home", return_value=fake_home):
+            result = capture_usage("claude", target, since)
+
+        assert result is not None
+        assert result.cache_creation_tokens == 0
+
     def test_since_ts_excludes_older_files(self, tmp_path: Path) -> None:
         target = tmp_path / "repo"
         target.mkdir()

@@ -19,7 +19,8 @@ class Usage:
     model: str
     input_tokens: int
     output_tokens: int
-    cache_tokens: int
+    cache_tokens: int  # cache-READ tokens (priced at cached_read rate)
+    cache_creation_tokens: int = 0  # cache-WRITE tokens (priced at cached_write rate)
 
 
 def capture_usage(agent: str, target: Path, since_ts: float) -> Optional[Usage]:
@@ -59,6 +60,7 @@ def _extract_claude(target: Path, since_ts: float) -> Optional[Usage]:
     input_tokens = 0
     output_tokens = 0
     cache_tokens = 0
+    cache_creation_tokens = 0
     model: Optional[str] = None
 
     found_any = False
@@ -92,6 +94,7 @@ def _extract_claude(target: Path, since_ts: float) -> Optional[Usage]:
                 input_tokens += int(usage.get("input_tokens", 0))
                 output_tokens += int(usage.get("output_tokens", 0))
                 cache_tokens += int(usage.get("cache_read_input_tokens", 0))
+                cache_creation_tokens += int(usage.get("cache_creation_input_tokens", 0))
 
                 msg_model = message.get("model")
                 if msg_model:
@@ -109,6 +112,7 @@ def _extract_claude(target: Path, since_ts: float) -> Optional[Usage]:
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_tokens=cache_tokens,
+        cache_creation_tokens=cache_creation_tokens,
     )
 
 

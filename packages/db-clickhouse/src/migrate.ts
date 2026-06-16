@@ -25,6 +25,7 @@ import {
   ALTER_COST_EVENTS_ADD_INPUT_TOKENS,
   ALTER_COST_EVENTS_ADD_OUTPUT_TOKENS,
   ALTER_COST_EVENTS_ADD_CACHE_TOKENS,
+  ALTER_COST_EVENTS_ADD_CACHE_CREATION_TOKENS,
   CREATE_AFK_RUN_EVENTS_TABLE,
 } from "./schema";
 
@@ -67,6 +68,7 @@ async function main() {
   await client.command({ query: ALTER_COST_EVENTS_ADD_INPUT_TOKENS });
   await client.command({ query: ALTER_COST_EVENTS_ADD_OUTPUT_TOKENS });
   await client.command({ query: ALTER_COST_EVENTS_ADD_CACHE_TOKENS });
+  await client.command({ query: ALTER_COST_EVENTS_ADD_CACHE_CREATION_TOKENS });
   console.log("Applied cost_events ALTER TABLE migrations.");
   await client.command({ query: CREATE_AFK_RUN_EVENTS_TABLE });
   console.log("Created afk_run_events table.");

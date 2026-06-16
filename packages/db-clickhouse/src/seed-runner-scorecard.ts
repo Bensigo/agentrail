@@ -127,6 +127,7 @@ async function main() {
     input_tokens: 8_000,
     output_tokens: 2_000,
     cache_tokens: 1_000,
+    cache_creation_tokens: 0,
     tokens: 11_000,
     cost_usd: runner.costUsd,
     model: "claude-sonnet-4-6",

@@ -79,6 +79,7 @@ describe("POST /api/v1/ingest/cost-events", () => {
         input_tokens: 0,
         output_tokens: 0,
         cache_tokens: 0,
+        cache_creation_tokens: 0,
       },
     ]);
   });
@@ -90,6 +91,7 @@ describe("POST /api/v1/ingest/cost-events", () => {
       input_tokens: 200,
       output_tokens: 80,
       cache_tokens: 40,
+      cache_creation_tokens: 15,
     };
     const res = await POST(req(withSplit));
     expect(res.status).toBe(202);
@@ -99,6 +101,7 @@ describe("POST /api/v1/ingest/cost-events", () => {
         input_tokens: 200,
         output_tokens: 80,
         cache_tokens: 40,
+        cache_creation_tokens: 15,
       }),
     ]);
   });

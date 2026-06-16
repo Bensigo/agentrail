@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agentrail.run import artifacts, context as ctx, prompts, skills, state as state_mod
+from agentrail.run.objective_gate import GateResult
 from agentrail.run.activity_push import push_agent_activity
 from agentrail.run.context_pack_push import push_context_pack
 from agentrail.run.cost_push import build_cost_record, push_cost_event
@@ -19,6 +20,7 @@ from agentrail.run.failure_push import push_failure_event
 from agentrail.run.pricing import cost_usd
 from agentrail.run.proc import run_with_timeout
 from agentrail.run.usage_capture import capture_usage
+from agentrail.shared.json import read_json, write_json
 
 _log = logging.getLogger(__name__)
 
@@ -48,6 +50,39 @@ class RunContext:
     phase_commands: Dict[str, str] = field(default_factory=dict)
     budget_usd: float = 0.0
     cumulative_cost_usd: float = 0.0
+
+
+def finalize_objective_gate(
+    metadata_file: Path,
+    *,
+    gate_result: GateResult,
+    review_advisory: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Mark a run done from the Objective Gate and record review as advisory.
+
+    Thin orchestration around the deep, pure ``objective_gate.evaluate`` (ADR
+    0007): a run is "done" if and only if the gate is GREEN. The LLM reviewer's
+    output is stored as **advisory** (``role: "advisory"``) and never changes
+    done-ness — a clean review cannot turn a red gate green, and a blocking
+    review cannot turn a green gate red. The gate verdict + full evidence trail
+    are persisted to the run metadata so the run surface can show *why* (AC3
+    data side; the console UI is a separate follow-up).
+
+    Returns a small outcome dict (``done`` + the persisted gate verdict) for the
+    caller; the source of truth is what is written to ``metadata_file``.
+    """
+    data = read_json(metadata_file) if metadata_file.exists() else {}
+
+    gate_payload = gate_result.to_dict()
+    data["objectiveGate"] = gate_payload
+
+    # Review is advisory only — recorded for the run surface, never gating.
+    if review_advisory is not None:
+        data["review"] = {"role": "advisory", "findings": review_advisory}
+
+    write_json(metadata_file, data)
+
+    return {"done": gate_result.is_green, "objectiveGate": gate_payload}
 
 
 def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,

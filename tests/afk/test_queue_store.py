@@ -20,7 +20,7 @@ from agentrail.afk.queue_state import (
     Tier,
     transition,
 )
-from agentrail.afk.queue_store import QueueStore
+from agentrail.afk.queue_store import QueueStore, _normalize_run_status
 
 
 # --- A tiny in-memory fake executor modelling the two tables ------------------
@@ -288,3 +288,26 @@ def test_list_queue_returns_all_workspace_entries_in_order():
     listed = store.list_queue("ws1")
     assert [e.number for e in listed] == [a.number, b.number]
     assert all(isinstance(e, QueueEntry) for e in listed)
+
+
+# --- run-status normalization (runs.status enum is {queued,running,success,failed}) ---
+
+
+def test_normalize_run_status_maps_outcome_vocabulary_to_enum():
+    assert _normalize_run_status("green") == "success"
+    assert _normalize_run_status("red") == "failed"
+    assert _normalize_run_status("error") == "failed"
+    assert _normalize_run_status("running") == "running"
+    assert _normalize_run_status("queued") == "queued"
+    assert _normalize_run_status("WeIrD") == "failed"  # unknown -> failed (enum-safe)
+
+
+def test_register_run_writes_enum_safe_status():
+    store, ex = _store()
+    e = store.enqueue(
+        workspace_id="ws1", source="cli", external_id="1",
+        title="a", body=_GOOD_BODY,
+    )
+    rid = "11111111-1111-1111-1111-111111111111"
+    store.register_run(entry=e, run_id=rid, phase="execute", status="green", cost_usd=0.5)
+    assert ex.runs[rid]["status"] == "success"  # dispatcher 'green' -> runs.status 'success'

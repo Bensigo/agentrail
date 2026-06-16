@@ -70,6 +70,7 @@ def test_worker_claims_runs_and_reports_one_item():
             "branch": "afk/github-42",
             "gate_reason": "",
             "logs_tail": "",
+            "pr_url": "",
         }
     ]
 

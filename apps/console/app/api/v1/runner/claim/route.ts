@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { claimQueueEntry, touchApiKeyLastUsed } from "@agentrail/db-postgres";
+import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 
 /**
@@ -34,6 +35,14 @@ export async function GET(request: NextRequest) {
   if (!item) {
     return new NextResponse(null, { status: 204 });
   }
+
+  // Timeline state marker: the run has started (best-effort).
+  await recordRunLifecycleEvent(
+    workspaceId,
+    item.id,
+    "run_started",
+    `Claimed ${item.external_id} — running locally`
+  );
 
   return NextResponse.json(item);
 }

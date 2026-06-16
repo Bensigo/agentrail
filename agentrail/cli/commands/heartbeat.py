@@ -37,6 +37,11 @@ def _usage() -> str:
     return (
         "Usage:\n"
         "  agentrail heartbeat run [--workspace ID] [--once] [--interval SECONDS]\n"
+        "  agentrail heartbeat serve [--workspace ID] [--port PORT]\n"
+        "\n"
+        "`run` polls GitHub on a cadence; `serve` reacts to delivered `issues`\n"
+        "webhooks (local forwarding via `gh webhook forward`) — see "
+        "`serve --help`.\n"
         "\n"
         "Runs the live Heartbeat dispatcher loop: poll GitHub → enqueue →\n"
         "dispatch grabbable issues in a Docker sandbox → post back + notify →\n"
@@ -266,6 +271,11 @@ def run_heartbeat(
         print(_usage(), end="")
         return 0
 
+    # The webhook receiver is a sibling subcommand of ``run``: it reacts to
+    # delivered GitHub events (local forwarding) instead of polling on a cadence.
+    if args and args[0] == "serve":
+        return serve_heartbeat(args)
+
     try:
         opts = _parse(args)
     except _UsageError as exc:
@@ -338,3 +348,165 @@ def _float_env(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+# --------------------------------------------------------------------------- #
+# ``agentrail heartbeat serve`` — the webhook receiver (local forwarding)
+# --------------------------------------------------------------------------- #
+DEFAULT_PORT = 8787
+
+
+def _serve_usage() -> str:
+    return (
+        "Usage:\n"
+        "  agentrail heartbeat serve [--workspace ID] [--port PORT]\n"
+        "\n"
+        "Starts a local HTTP receiver for GitHub `issues` webhooks. When an issue\n"
+        "is labeled with the workspace connector's trigger label, the issue is\n"
+        "enqueued (deduped) and dispatched through the cheap→strong escalation\n"
+        "loop — no polling; the delivered event IS the issue. Respects the\n"
+        "prerequisite gate (won't dispatch if OFF).\n"
+        "\n"
+        "Forward GitHub deliveries to it locally (no public ingress) with:\n"
+        "  gh webhook forward --repo <owner/name> --events issues \\\n"
+        "      --url http://localhost:<port>/webhook\n"
+        "(set --secret on `gh webhook forward` AND GITHUB_WEBHOOK_SECRET here to\n"
+        "require a verified HMAC-SHA256 signature; without a secret the receiver\n"
+        "accepts unsigned deliveries, which is insecure.)\n"
+        "\n"
+        "Options:\n"
+        "  --workspace ID   Workspace to serve for (or AGENTRAIL_WORKSPACE_ID)\n"
+        f"  --port PORT      Port to listen on (default {DEFAULT_PORT})\n"
+        "\n"
+        "Environment:\n"
+        "  DATABASE_URL            Postgres DSN for the Issue Queue store\n"
+        "  AGENTRAIL_WORKSPACE_ID  Default workspace id\n"
+        "  GITHUB_WEBHOOK_SECRET   Shared secret for X-Hub-Signature-256 (optional)\n"
+        "  AGENT_API_KEY / GIT_TOKEN  Forwarded into the sandbox by name\n"
+    )
+
+
+def _parse_serve(args: List[str]) -> dict:
+    """Parse the ``serve`` subcommand flags. Raises :class:`_UsageError`."""
+    opts = {
+        "workspace": os.environ.get("AGENTRAIL_WORKSPACE_ID"),
+        "port": DEFAULT_PORT,
+    }
+    rest = args[1:]
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--workspace":
+            i += 1
+            opts["workspace"] = _value(rest, i, "--workspace")
+        elif a == "--port":
+            i += 1
+            opts["port"] = _int(_value(rest, i, "--port"), "--port")
+        else:
+            raise _UsageError(f"heartbeat: unknown option {a!r}")
+        i += 1
+    if not opts["workspace"]:
+        raise _UsageError(
+            "heartbeat: --workspace is required (or set AGENTRAIL_WORKSPACE_ID)"
+        )
+    return opts
+
+
+def serve_heartbeat(
+    args: List[str],
+    *,
+    server_factory: Optional[Callable[..., object]] = None,
+) -> int:
+    """``agentrail heartbeat serve`` entry point.
+
+    Starts the webhook receiver, wiring the real adapters (PostgresExecutor store,
+    the active GitHub connector for the trigger label, the escalation runtime, the
+    GitHub OAuth token). ``server_factory`` is injectable so the CLI control flow
+    (flag parsing, the printed ``gh webhook forward`` hint, ``serve_forever``
+    dispatch) is unit-tested with a fake server — never touching Postgres / a real
+    socket.
+    """
+    if args and args[1:] and args[1] in ("-h", "--help"):
+        print(_serve_usage(), end="")
+        return 0
+    try:
+        opts = _parse_serve(args)
+    except _UsageError as exc:
+        print(str(exc), file=sys.stderr)
+        print(_serve_usage(), end="", file=sys.stderr)
+        return exc.code
+
+    factory = server_factory or _build_server
+    try:
+        built = factory(workspace_id=opts["workspace"], port=opts["port"])
+    except _UsageError as exc:
+        print(str(exc), file=sys.stderr)
+        return exc.code
+
+    # The factory may return ``server`` or ``(server, trigger_label, repos)`` so
+    # the CLI can print an accurate ``gh webhook forward`` hint.
+    trigger_label, repos = None, []
+    if isinstance(built, tuple):
+        server = built[0]
+        if len(built) > 1:
+            trigger_label = built[1]
+        if len(built) > 2:
+            repos = built[2] or []
+    else:
+        server = built
+
+    port = getattr(server, "port", opts["port"])
+    print(f"heartbeat: webhook receiver listening on http://localhost:{port}/webhook")
+    if trigger_label:
+        print(f"heartbeat: trigger label = {trigger_label!r}")
+    print("heartbeat: forward GitHub deliveries with:")
+    for repo in (repos or ["<owner/name>"]):
+        print(
+            f"  gh webhook forward --repo {repo} --events issues "
+            f"--url http://localhost:{port}/webhook"
+        )
+    if not os.environ.get("GITHUB_WEBHOOK_SECRET"):
+        print(
+            "heartbeat: WARNING — GITHUB_WEBHOOK_SECRET unset; accepting unsigned "
+            "deliveries (insecure). Set it and `gh webhook forward --secret` to verify."
+        )
+
+    server.serve_forever()
+    return 0
+
+
+def _build_server(
+    *, workspace_id: str, port: int
+):  # pragma: no cover - needs live creds/DB
+    """Construct the real WebhookServer — the only impure construction site.
+
+    Mirrors ``_build_runtime``: same PostgresExecutor-backed store, same
+    connector-sourced trigger config, same escalation runtime — only the trigger
+    is a delivered event instead of a poll. Returns
+    ``(server, trigger_label, repos)`` so the caller prints an accurate hint.
+    """
+    from agentrail.afk.connectors_store import get_active_connector
+    from agentrail.afk.queue_store import PostgresExecutor, QueueStore
+    from agentrail.heartbeat.webhook import WebhookServer
+
+    runtime, _interval = _build_runtime(workspace_id=workspace_id)
+    executor = PostgresExecutor()
+    store = QueueStore(executor)
+
+    gh = get_active_connector(workspace_id, "github", executor)
+    if gh is None:
+        raise _UsageError(
+            f"heartbeat: no enabled GitHub connector for workspace "
+            f"{workspace_id!r}; connect GitHub on the Connectors page first",
+            code=1,
+        )
+
+    server = WebhookServer(
+        workspace_id=workspace_id,
+        store=store,
+        runtime=runtime,
+        connector_config=gh,
+        port=port,
+        secret=os.environ.get("GITHUB_WEBHOOK_SECRET"),
+    )
+    return server, gh.trigger_label, gh.repos

@@ -247,14 +247,55 @@ class HeartbeatRuntime:
             report.enqueued += 1
             refs_by_number[admitted.number] = ref
 
-        # (c)/(d) dispatch loop until the queue has no grabbable work.
+        # (c)/(d) drain the grabbable queue (no poll — that already happened).
+        self._drain(workspace_id, refs_by_number, report)
+        return report
+
+    def dispatch_pending(
+        self,
+        workspace_id: str,
+        refs_by_number: Optional[Dict[int, IssueRef]] = None,
+    ) -> CycleReport:
+        """Drain the grabbable queue through the escalation dispatch — NO poll.
+
+        The webhook path (``agentrail/heartbeat/webhook.py``) already has the
+        issue *in hand* from the delivered event and has enqueued it; the event
+        IS the issue, so there is nothing to poll. This drains exactly the same
+        grabbable queue through exactly the same ``_dispatch_one`` escalation loop
+        that ``poll_and_dispatch`` uses — only the poll+enqueue step is skipped.
+
+        Respects the prerequisite gate (AC3) identically: a disabled gate returns
+        a disabled :class:`CycleReport` and dispatches nothing. ``refs_by_number``
+        lets the caller pass the originating :class:`IssueRef`\\ s (keyed by the
+        minted entry number) so post-back/notify address the right issue; entries
+        not in the map fall back to a by-number ref, exactly as polling does.
+
+        ``polled``/``enqueued`` stay 0 in the returned report — this path neither
+        polls nor enqueues; it only dispatches what is already queued.
+        """
+        if not heartbeat_enabled(self._detect()):
+            return CycleReport.disabled()
+        report = CycleReport()
+        self._drain(workspace_id, refs_by_number or {}, report)
+        return report
+
+    def _drain(
+        self,
+        workspace_id: str,
+        refs_by_number: Dict[int, IssueRef],
+        report: CycleReport,
+    ) -> None:
+        """Dispatch every grabbable entry until the queue has no grabbable work.
+
+        The single dispatch loop shared by ``poll_and_dispatch`` (after its poll)
+        and ``dispatch_pending`` (with no poll), so both paths run the identical
+        cheap→strong escalation dispatch (AC4 — no duplicated loop).
+        """
         entry = self._store.next_grabbable(workspace_id)
         while entry is not None:
             ref = self._ref_for(entry, refs_by_number)
             self._dispatch_one(workspace_id, entry, ref, report)
             entry = self._store.next_grabbable(workspace_id)
-
-        return report
 
     def _dispatch_one(
         self,

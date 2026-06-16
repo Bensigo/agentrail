@@ -137,3 +137,81 @@ def test_loop_sleeps_on_connector_derived_interval():
         )
     assert rc == 0
     assert slept == [222]
+
+
+# --------------------------------------------------------------------------- #
+# AC4 — `agentrail heartbeat serve` wiring (injected fakes, no socket/Postgres)
+# --------------------------------------------------------------------------- #
+from agentrail.cli.commands.heartbeat import serve_heartbeat  # noqa: E402
+
+
+class FakeServer:
+    def __init__(self, port=8787):
+        self.port = port
+        self.served = 0
+
+    def serve_forever(self):
+        self.served += 1
+
+
+def test_serve_help_returns_zero():
+    with patch("sys.stdout", new=StringIO()):
+        assert serve_heartbeat(["serve", "--help"]) == 0
+
+
+def test_serve_starts_server_and_prints_forward_command():
+    fake = FakeServer(port=9999)
+    out = StringIO()
+    with patch("sys.stdout", new=out):
+        rc = serve_heartbeat(
+            ["serve", "--workspace", "ws-1", "--port", "9999"],
+            server_factory=lambda **_: (fake, "ready-for-agent", ["acme/widgets"]),
+        )
+    assert rc == 0
+    assert fake.served == 1
+    text = out.getvalue()
+    assert "gh webhook forward" in text
+    assert "--repo acme/widgets" in text
+    assert "--events issues" in text
+    assert "http://localhost:9999/webhook" in text
+    assert "ready-for-agent" in text
+
+
+def test_serve_factory_receives_workspace_and_port():
+    seen = {}
+
+    def factory(**kw):
+        seen.update(kw)
+        return FakeServer(port=kw["port"])
+
+    with patch("sys.stdout", new=StringIO()):
+        rc = serve_heartbeat(
+            ["serve", "--workspace", "ws-9", "--port", "8000"],
+            server_factory=factory,
+        )
+    assert rc == 0
+    assert seen["workspace_id"] == "ws-9"
+    assert seen["port"] == 8000
+
+
+def test_serve_missing_workspace_is_usage_error():
+    import os
+
+    with patch("sys.stderr", new=StringIO()), patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("AGENTRAIL_WORKSPACE_ID", None)
+        rc = serve_heartbeat(
+            ["serve", "--port", "8000"],
+            server_factory=lambda **_: FakeServer(),
+        )
+    assert rc == 2
+
+
+def test_serve_routed_via_run_heartbeat():
+    # main.py dispatches `heartbeat serve` through run_heartbeat; ensure the
+    # subcommand is routed to serve (which fails usage without a workspace).
+    with patch("sys.stderr", new=StringIO()):
+        import os
+
+        os.environ.pop("AGENTRAIL_WORKSPACE_ID", None)
+        rc = run_heartbeat(["serve"])
+    assert rc == 2

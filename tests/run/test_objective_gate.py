@@ -176,3 +176,50 @@ def test_red_result_serializes_with_failed_reasons() -> None:
     payload = result.to_dict()
     assert payload["verdict"] == "red"
     assert "tests" in payload["failedReasons"]
+
+
+# ---------------------------------------------------------------------------
+# Independent Verification seam (#782, ADR 0008): a Verifier REJECTION blocks
+# done. The gate accepts an optional ``verification_evidence`` mapping mirroring
+# the Red-Green seam; required + invalid → RED even on an all-pass run (AC3).
+# ---------------------------------------------------------------------------
+
+def test_red_when_verification_required_and_invalid() -> None:
+    """A blocking Verifier rejection turns an otherwise-green gate RED (AC3)."""
+    result = evaluate(
+        checks=_passing_checks(),
+        ac_coverage=_full_coverage(),
+        verification_evidence={"required": True, "valid": False,
+                               "reason": "tautological test"},
+    )
+    assert result.is_green is False
+    assert any("verification" in r.lower() for r in result.failed_reasons)
+
+
+def test_green_when_verification_required_and_valid() -> None:
+    result = evaluate(
+        checks=_passing_checks(),
+        ac_coverage=_full_coverage(),
+        verification_evidence={"required": True, "valid": True},
+    )
+    assert result.is_green is True
+
+
+def test_verification_not_required_keeps_prior_behavior() -> None:
+    """``None`` verification evidence (the default) leaves the gate unchanged."""
+    result = evaluate(
+        checks=_passing_checks(),
+        ac_coverage=_full_coverage(),
+        verification_evidence=None,
+    )
+    assert result.is_green is True
+
+
+def test_verification_evidence_appears_in_trail() -> None:
+    result = evaluate(
+        checks=_passing_checks(),
+        ac_coverage=_full_coverage(),
+        verification_evidence={"required": True, "valid": False, "reason": "gamed"},
+    )
+    names = {e.name for e in result.evidence}
+    assert "independent-verification" in names

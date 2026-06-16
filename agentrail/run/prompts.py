@@ -335,7 +335,7 @@ def issue_run_phase_prompt(
     max_execution_attempts: int = 5,
     red_green: bool = False,
 ) -> str:
-    """Plan / test-author / execute phase prompt.
+    """Plan / test-author / execute / verify phase prompt.
 
     When ``red_green`` is true (the run opts into the **Red-Green Proof**, ADR
     0008), test authorship and implementation are split into two DISTINCT roles:
@@ -346,6 +346,11 @@ def issue_run_phase_prompt(
       a *separate* Test-Author already wrote the failing acceptance test; the
       Implementer turns it green and must not author, rewrite, weaken, or delete
       that acceptance test (no grading its own homework).
+    - ``phase == "verify"`` returns the **Verifier** prompt (Independent
+      Verification, #782): a DIFFERENT model than the Implementer runs a blocking,
+      narrow check that the solution and tests genuinely satisfy the AC and stay
+      in scope, emitting a structured accept/reject verdict. It is phase-agnostic
+      to ``red_green`` (the pipeline only runs it under the opt-in seam).
 
     ``red_green`` defaults to ``False`` so existing single-execute-phase callers
     are unchanged (the role split is behind the ``redGreenProof`` opt-in).
@@ -383,6 +388,46 @@ def issue_run_phase_prompt(
             "the test pass. Authoring the failing test is the whole job for this "
             "phase; the Implementer is a separate role and turns it green next.\n"
             "- Stop once the failing acceptance test is written."
+        )
+
+    if phase == "verify":
+        return (
+            "You are the VERIFIER. This is **Independent Verification** (ADR 0008, "
+            "CONTEXT.md): a blocking, narrow quality check run on a different model "
+            "than the Implementer used, so the maker is not grading its own "
+            "homework. You did NOT write this change or its tests.\n"
+            "\n"
+            "Issue context:\n"
+            f"{issue_context}\n"
+            "\n"
+            "Phase context pack:\n"
+            f"{context_summary}\n"
+            "\n"
+            "Base instructions:\n"
+            f"{base_prompt}\n"
+            "\n"
+            f"Your task — independently verify the change for issue #{issue}:\n"
+            "- Inspect the diff and the acceptance test(s). Confirm the SOLUTION "
+            "and the TESTS genuinely satisfy the issue's acceptance criteria.\n"
+            "- Confirm the change stayed IN SCOPE for this one issue (no unrelated "
+            "edits, no scope creep).\n"
+            "- REJECT if the acceptance test is tautological or gamed (asserts "
+            "nothing, asserts a constant, is skipped/xfailed, tests the test, or "
+            "was weakened to fit the code instead of pinning the AC). REJECT if the "
+            "change does not actually satisfy an acceptance criterion.\n"
+            "- This is NARROW: verify the falsifiable AC contract only. This is "
+            "NOT a style/design/taste review — those are advisory Code Review, not "
+            "your job.\n"
+            "- Do not edit files, implement anything, rewrite tests, commit, push, "
+            "or merge. Verification is read-only.\n"
+            "\n"
+            "Emit your verdict on its own line as STRICT JSON after the marker "
+            "(this is parsed by AgentRail):\n"
+            'VERDICT: {"verdict": "accept", "reason": "<one-line evidence>"}\n'
+            "or\n"
+            'VERDICT: {"verdict": "reject", "reason": "<one-line evidence>"}\n'
+            "Use \"accept\" only when the change and tests genuinely satisfy the AC "
+            "and stay in scope; otherwise \"reject\". If you cannot verify, reject."
         )
 
     if phase == "plan":

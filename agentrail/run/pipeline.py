@@ -32,6 +32,7 @@ from agentrail.run.output_enforcer import (
 )
 from agentrail.run.pricing import cost_usd
 from agentrail.run.proc import run_with_timeout
+from agentrail.run import verifier as verifier_mod
 from agentrail.run.usage_capture import capture_usage
 from agentrail.shared.json import read_json, write_json
 
@@ -655,6 +656,29 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
         status, _ = run_issue_phase(rc, "execute", 1, verifier_findings_file="", plan_output=plan_output)
         last_phase = "execute"
 
+    # 12a. Independent Verification (ADR 0008, #782): a blocking, narrow check by
+    # a DIFFERENT model than the Implementer. It runs after execute, ONLY when the
+    # Red-Green Proof is on AND a distinct verifier command is configured for the
+    # ``verify`` phase (``phase_commands["verify"]`` — built from a model that
+    # differs from the Implementer's, AC1). The verifier confirms the solution AND
+    # tests genuinely satisfy the AC and stayed in scope; its structured verdict
+    # (accept/reject) is parsed from the phase output and fed to the Objective
+    # Gate below so a REJECT blocks done (AC3). When no distinct verifier model is
+    # available, no verify phase runs and behavior is unchanged.
+    verification_evidence: Optional[Dict[str, Any]] = None
+    if status == 0 and require_red_green and "verify" in rc.phase_commands:
+        status, _ = run_issue_phase(rc, "verify", 1, plan_output=plan_output)
+        last_phase = "verify"
+        if status == 0:
+            verify_output_file = rc.run_dir / "verify" / "output.md"
+            verify_output = (
+                verify_output_file.read_text(encoding="utf-8", errors="replace")
+                if verify_output_file.exists()
+                else ""
+            )
+            verdict = verifier_mod.parse_verdict(verify_output)
+            verification_evidence = verifier_mod.gate_evidence(verdict)
+
     # 12b. Objective Gate — the falsifiable definition of "done" (ADR 0007).
     # AFTER the execute phase we run the OBJECTIVE checks ourselves (the agent's
     # own "it works" is never trusted), evaluate the gate, and finalize. The
@@ -691,6 +715,7 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
         checks=gate_checks,
         ac_coverage=ac_coverage_for(declared),
         red_green_evidence=red_green_evidence,
+        verification_evidence=verification_evidence,
     )
     outcome = finalize_objective_gate(metadata_file, gate_result=gate_result, review_advisory=None)
 

@@ -232,6 +232,53 @@ def resolve_model_for_phase(agent: str, model_flag: str, target: str, phase: str
     return resolve_model_from_config(agent, target, phase)
 
 
+def verifier_candidate_models(agent: str, target: str) -> List[str]:
+    """Candidate models for the Independent Verifier, in preference order.
+
+    The Verifier must run on a DIFFERENT model than the Implementer (AC1, #782).
+    Candidates come from the runner config: an explicit ``models.verify`` first,
+    then every other per-phase model, then the flat ``model``. The pure
+    ``verifier.select_verifier_model`` picks the first that differs from the
+    implementer's model; an empty list (or no distinct model) means no verifier
+    runs.
+    """
+    cfg = _read_config(target)
+    runner_cfg = ((cfg.get("runners") or {}).get(agent) or {}) if cfg else {}
+    models_map = runner_cfg.get("models") or {}
+    candidates: List[str] = []
+    verify_model = models_map.get("verify")
+    if verify_model:
+        candidates.append(str(verify_model))
+    for phase, model in models_map.items():
+        if phase == "verify" or not model:
+            continue
+        candidates.append(str(model))
+    flat = runner_cfg.get("model")
+    if flat:
+        candidates.append(str(flat))
+    return candidates
+
+
+def resolve_verifier_command(
+    agent: str, command: str, model_flag: str, target: str
+) -> str:
+    """Build the verify-phase command on a model DIFFERENT from the Implementer.
+
+    Returns ``""`` when no distinct verifier model is available (then no verify
+    phase runs — Independent Verification requires a different model, #782). The
+    Implementer's model is the resolved ``execute``-phase model.
+    """
+    from agentrail.run.verifier import select_verifier_model
+
+    implementer_model = resolve_model_for_phase(agent, model_flag, target, "execute")
+    chosen = select_verifier_model(
+        implementer_model, verifier_candidate_models(agent, target)
+    )
+    if not chosen:
+        return ""
+    return append_model_to_command(command, agent, chosen)
+
+
 def append_model_to_command(command: str, agent: str, model: str) -> str:
     """Append model flag to command string; return command unchanged when model is empty.
 
@@ -358,6 +405,14 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
             model = resolve_model_for_phase(agent, opts.model, str(target), phase)
             if model:
                 phase_commands[phase] = append_model_to_command(command, agent, model)
+        # Independent Verifier (#782): a DIFFERENT-model verify command. Only set
+        # when a model distinct from the Implementer's is available — otherwise
+        # the pipeline runs no verify phase (AC1: never a same-model verifier).
+        verify_command = resolve_verifier_command(
+            agent, command, opts.model, str(target)
+        )
+        if verify_command:
+            phase_commands["verify"] = verify_command
 
     return run_issue(target, issue, agent=agent, command=command,
                      repo_dir=_repo_dir(), log_dir=log_dir,

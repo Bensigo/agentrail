@@ -32,7 +32,7 @@ export function StatusBadge({ status }: { status: string }) {
 
   return (
     <span
-      className={`inline-flex items-center px-1.5 py-0.5 rounded-sm text-xs font-medium ${config.className}`}
+      className={`inline-flex w-[4.5rem] shrink-0 items-center justify-center px-1.5 py-0.5 rounded-sm text-xs font-medium ${config.className}`}
     >
       {config.label}
     </span>

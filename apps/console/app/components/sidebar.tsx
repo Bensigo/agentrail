@@ -16,6 +16,7 @@ import {
   Key,
   Users,
   Activity,
+  Plug,
 } from "lucide-react";
 import { WorkspaceSwitcher } from "../(dashboard)/components/WorkspaceSwitcher";
 
@@ -30,6 +31,7 @@ const navItems = [
   { label: "Overview", href: "", icon: LayoutDashboard },
   { label: "Runs", href: "runs", icon: Play },
   { label: "Issue Queue", href: "queue", icon: ListChecks },
+  { label: "Connectors", href: "connectors", icon: Plug },
   { label: "Context Packs", href: "context-packs", icon: Package },
   { label: "Failures", href: "failures", icon: AlertTriangle },
   { label: "Review Gates", href: "review-gates", icon: ShieldCheck },

@@ -34,7 +34,9 @@ def _make_execute(creds):
     run / queue entry id) so they join to the run the runner registered.
     """
     runner = select_sandbox_runner(dict(os.environ))
-    accepts_run_id = "run_id" in inspect.signature(runner).parameters
+    _params = inspect.signature(runner).parameters
+    accepts_run_id = "run_id" in _params
+    accepts_pr_title = "pr_title" in _params
 
     def execute(item: WorkItem) -> RunResult:
         run_env = dict(os.environ)
@@ -54,6 +56,8 @@ def _make_execute(creds):
         if accepts_run_id:
             # Use the dashboard run id so ingested cost events join to it.
             kwargs["run_id"] = item.id
+        if accepts_pr_title and item.title:
+            kwargs["pr_title"] = item.title
         return runner(**kwargs)
 
     return execute

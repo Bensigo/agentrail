@@ -216,6 +216,32 @@ export async function getWorkspace(id: string) {
   return rows[0] ?? null;
 }
 
+/**
+ * Discord notify connector (M038, AC3): the channel webhook a workspace's run
+ * completion / escalation notifications post to. Null = not connected.
+ */
+export async function getDiscordWebhookUrl(
+  workspaceId: string
+): Promise<string | null> {
+  const rows = await db
+    .select({ discordWebhookUrl: workspaces.discordWebhookUrl })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId))
+    .limit(1);
+  return rows[0]?.discordWebhookUrl ?? null;
+}
+
+/** Connect (set) or disconnect (pass null) the Discord webhook for a workspace. */
+export async function setDiscordWebhookUrl(
+  workspaceId: string,
+  webhookUrl: string | null
+): Promise<void> {
+  await db
+    .update(workspaces)
+    .set({ discordWebhookUrl: webhookUrl, updatedAt: new Date() })
+    .where(eq(workspaces.id, workspaceId));
+}
+
 export async function getWorkspaceMembership(
   userId: string,
   workspaceId: string

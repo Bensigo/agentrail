@@ -44,6 +44,7 @@ def _usage() -> str:
         "  agentrail run issue NUMBER [--agent codex|claude] [--target DIR]\n"
         "  agentrail afk [--concurrency 2] [--max-waves 20] [--base main] [--dry-run]\n"
         "  agentrail heartbeat run [--workspace ID] [--once] [--interval SECONDS]\n"
+        "  agentrail heartbeat serve [--workspace ID] [--port PORT]\n"
         "  agentrail status [--target DIR]\n"
         "  agentrail doctor [--target DIR]\n"
         "  agentrail upgrade [--target DIR] [--force]\n"

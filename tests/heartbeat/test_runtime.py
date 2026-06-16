@@ -549,3 +549,74 @@ def test_daily_digest_forwards_finished_terminals_to_notifier():
     states = {t.number: t.state for t in finished}
     assert states[1] == "green"
     assert states[2] == "escalated-to-human"
+
+
+# --------------------------------------------------------------------------- #
+# AC4 — dispatch_pending drains the queue WITHOUT polling (webhook path)
+# --------------------------------------------------------------------------- #
+def test_dispatch_pending_drains_queue_without_polling():
+    # The connector would raise if poll() were called: dispatch_pending must not.
+    class BoomConnector(FakeConnector):
+        def poll(self, workspace_id):  # pragma: no cover - asserted via no-call
+            raise AssertionError("dispatch_pending must not poll")
+
+    store = FakeStore()
+    notifier = FakeNotifier()
+    rt = _runtime(connector=BoomConnector([]), store=store, notifier=notifier)
+
+    # Seed two grabbable entries directly (as if a prior enqueue had run).
+    store._grabbable = [QueueEntry(number=1), QueueEntry(number=2)]
+
+    report = rt.dispatch_pending("ws-1")
+
+    assert report.polled == 0
+    assert report.enqueued == 0
+    assert report.dispatched == 2
+    # ran the escalation dispatch (sandbox) for each entry.
+    assert len(rt._sandbox_calls) == 2
+
+
+def test_dispatch_pending_uses_refs_by_number_for_postback():
+    store = FakeStore()
+    connector = FakeConnector([])
+    notifier = FakeNotifier()
+    rt = _runtime(connector=connector, store=store, notifier=notifier)
+
+    store._grabbable = [QueueEntry(number=5)]
+    ref = IssueRef(repo="acme/widgets", number=5, title="Hi", url="https://gh/5")
+
+    rt.dispatch_pending("ws-1", {5: ref})
+
+    # post_result addressed the exact ref the webhook handed in (not a by-number stub).
+    assert connector.posted
+    posted_ref, _outcome = connector.posted[0]
+    assert posted_ref.repo == "acme/widgets" and posted_ref.number == 5
+
+
+def test_dispatch_pending_respects_disabled_gate():
+    store = FakeStore()
+    notifier = FakeNotifier()
+    rt = _runtime(
+        connector=FakeConnector([]),
+        store=store,
+        notifier=notifier,
+        capabilities=frozenset(),  # gate OFF
+    )
+    store._grabbable = [QueueEntry(number=1)]
+
+    report = rt.dispatch_pending("ws-1")
+
+    assert report.enabled is False
+    assert report.dispatched == 0
+    assert len(rt._sandbox_calls) == 0
+
+
+def test_dispatch_pending_idles_on_empty_queue():
+    store = FakeStore()
+    notifier = FakeNotifier()
+    rt = _runtime(connector=FakeConnector([]), store=store, notifier=notifier)
+
+    report = rt.dispatch_pending("ws-1")
+
+    assert report.dispatched == 0
+    assert notifier.tasks == []

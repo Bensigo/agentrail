@@ -9,5 +9,9 @@ The shared interface lives in :mod:`agentrail.connectors.base`; each adapter is 
 deep module behind that small surface. The GitHub adapter
 (:mod:`agentrail.connectors.github`) is the single, consolidated home of the
 ``gh`` CLI client (formerly ``agentrail/afk/github.py``) — there is no second
-GitHub client.
+GitHub client. The Linear adapter (:mod:`agentrail.connectors.linear`) ingests
+labeled Linear issues into the queue and posts results back over Linear's GraphQL
+API (M038).
 """
+
+from agentrail.connectors.linear import LinearConnector  # noqa: F401

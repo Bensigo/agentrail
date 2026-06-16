@@ -67,10 +67,10 @@ export interface ConnectorView {
 }
 
 /**
- * The connector catalog. GitHub is the implemented adapter (M038 AC2); Linear
- * and Discord are planned follow-ups (M038 AC3/AC4) — shown so the surface is
- * honest about what can be connected today vs. what is coming, never faking a
- * capability that does not exist.
+ * The connector catalog. GitHub and Linear are implemented adapters (M038 AC2/AC3);
+ * Discord is a planned follow-up (M038 AC4) — shown so the surface is honest about
+ * what can be connected today vs. what is coming, never faking a capability that
+ * does not exist.
  */
 export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
   {
@@ -84,8 +84,9 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
   {
     kind: "linear",
     label: "Linear",
-    description: "Ingest issues and post results back. Planned follow-up.",
-    availability: "planned",
+    description:
+      "Ingest labeled Linear issues into the Issue Queue and post run results back on the issue.",
+    availability: "available",
     capabilities: { ingest: true, postResult: true, notify: false },
   },
   {

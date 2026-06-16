@@ -84,6 +84,15 @@ function ConnectorCard({ connector }: { connector: ConnectorView }) {
             </code>{" "}
             are ingested into the Issue Queue; run results post back on the issue.
           </p>
+        ) : connector.kind === "linear" ? (
+          <p className="text-xs text-[var(--gray-09)] leading-relaxed">
+            Not connected. Add a Linear API key for this workspace to ingest issues
+            labeled{" "}
+            <code className="font-mono text-[var(--gray-11)]">
+              {connector.ingestLabel ?? "ready-for-agent"}
+            </code>{" "}
+            into the Issue Queue; run results post back on the Linear issue.
+          </p>
         ) : (
           <p className="text-xs text-[var(--gray-09)] leading-relaxed">
             Not connected. Link a repository to this workspace (API Keys → Connect

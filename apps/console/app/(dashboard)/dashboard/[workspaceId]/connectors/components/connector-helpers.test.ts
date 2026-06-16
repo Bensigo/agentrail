@@ -32,14 +32,26 @@ describe("projectConnectors", () => {
     expect(github.ingestLabel).toBe(DEFAULT_INGEST_LABEL);
   });
 
-  it("never reports a planned connector as connected even if config claims it", () => {
-    // A planned connector's adapter does not exist yet — config can't fake it.
+  it("marks Linear connected when its config says so (M038 AC3)", () => {
+    // Linear's adapter now exists (agentrail/connectors/linear.py) → manageable.
     const linear = projectConnectors([
-      { kind: "linear", connected: true },
+      { kind: "linear", connected: true, ingestLabel: "afk-ready", target: "Team ENG" },
     ]).find((r) => r.kind === "linear")!;
-    expect(linear.availability).toBe("planned");
-    expect(linear.status).toBe("disconnected");
-    expect(linear.ingestLabel).toBeNull();
+    expect(linear.availability).toBe("available");
+    expect(linear.status).toBe("connected");
+    expect(linear.ingestLabel).toBe("afk-ready");
+    expect(linear.target).toBe("Team ENG");
+  });
+
+  it("never reports discord connected from a bare connected flag — only a real webhook counts", () => {
+    // Discord's falsifiable signal is a configured webhook, so a config that
+    // merely claims connected:true (no webhook) can't fake a connection.
+    const discord = projectConnectors([
+      { kind: "discord", connected: true },
+    ]).find((r) => r.kind === "discord")!;
+    expect(discord.availability).toBe("available");
+    expect(discord.status).toBe("disconnected");
+    expect(discord.ingestLabel).toBeNull();
   });
 
   it("treats a kind with no config as disconnected", () => {
@@ -97,6 +109,12 @@ describe("capabilitySummary", () => {
   it("summarizes the GitHub adapter's two-way capabilities", () => {
     const github = CONNECTOR_CATALOG.find((c) => c.kind === "github")!;
     expect(capabilitySummary(github.capabilities)).toBe("Ingest · Post result");
+  });
+
+  it("summarizes the Linear adapter's two-way capabilities", () => {
+    const linear = CONNECTOR_CATALOG.find((c) => c.kind === "linear")!;
+    expect(linear.availability).toBe("available");
+    expect(capabilitySummary(linear.capabilities)).toBe("Ingest · Post result");
   });
 
   it("summarizes the Discord adapter as notify-only", () => {

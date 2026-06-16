@@ -21,6 +21,12 @@ import {
  * that GitHub is wired to this workspace (the same repos the CLI links). This
  * avoids a fake "connected" flag with no backing; a durable connector-config
  * table can replace this input later without changing the surface.
+ *
+ * Linear (M038, AC3) is now an implemented adapter (agentrail/connectors/linear.py)
+ * and renders as a manageable card. Its connection is keyed on a stored Linear API
+ * key for the workspace; until that durable connector-config table exists we
+ * surface it honestly as available-but-not-connected (no fake "connected" flag),
+ * the same posture GitHub had before repos were linked.
  */
 export async function GET(
   _request: NextRequest,
@@ -61,6 +67,15 @@ export async function GET(
         kind: "discord",
         connected: Boolean(discordWebhookUrl),
         webhookUrl: discordWebhookUrl,
+      },
+      {
+        // Linear adapter (agentrail/connectors/linear.py). No durable Linear
+        // connector-config table yet, so this is honestly not-connected; the card
+        // is manageable and flips to connected once a Linear API key is stored.
+        kind: "linear",
+        connected: false,
+        ingestLabel: "ready-for-agent",
+        target: null,
       },
     ];
     return NextResponse.json({

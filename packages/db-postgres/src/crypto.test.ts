@@ -40,4 +40,20 @@ describe("connector secret encryption", () => {
     parts[4] = ct.slice(0, -1) + (ct.endsWith("A") ? "B" : "A");
     expect(() => decryptSecret(parts.join(":"))).toThrow();
   });
+
+  it("throws when CONNECTOR_SECRET_KEY is unset (no AUTH_SECRET fallback)", () => {
+    const key = process.env["CONNECTOR_SECRET_KEY"];
+    const auth = process.env["AUTH_SECRET"];
+    delete process.env["CONNECTOR_SECRET_KEY"];
+    // AUTH_SECRET must NOT be used as a fallback: encryption fails without the
+    // dedicated key even when a NextAuth secret is present.
+    process.env["AUTH_SECRET"] = "some-nextauth-session-secret";
+    try {
+      expect(() => encryptSecret("x")).toThrow(/CONNECTOR_SECRET_KEY/);
+    } finally {
+      if (key !== undefined) process.env["CONNECTOR_SECRET_KEY"] = key;
+      if (auth !== undefined) process.env["AUTH_SECRET"] = auth;
+      else delete process.env["AUTH_SECRET"];
+    }
+  });
 });

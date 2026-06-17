@@ -61,7 +61,7 @@ class TestReviewUsesWorktree(unittest.IsolatedAsyncioTestCase):
 
             git_mock = _make_git_mock(stdout="")
             clean_outcome = review_policy.ReviewOutcome(
-                blocking=[], advisory=[], memory_suggestions=[])
+                findings=[], memory_suggestions=[])
 
             with patch("agentrail.afk.runner.gh.pr_head_ref", return_value="feat-x"), \
                  patch.object(runner, "_git", git_mock), \
@@ -93,7 +93,7 @@ class TestReviewUsesWorktree(unittest.IsolatedAsyncioTestCase):
 
             git_mock = _make_git_mock(stdout="")
             clean_outcome = review_policy.ReviewOutcome(
-                blocking=[], advisory=[], memory_suggestions=[])
+                findings=[], memory_suggestions=[])
 
             with patch("agentrail.afk.runner.gh.pr_head_ref", return_value="feat-x"), \
                  patch.object(runner, "_git", git_mock), \
@@ -122,7 +122,7 @@ class TestReviewUsesWorktree(unittest.IsolatedAsyncioTestCase):
 
             git_mock = _make_git_mock(stdout="")
             clean_outcome = review_policy.ReviewOutcome(
-                blocking=[], advisory=[], memory_suggestions=[])
+                findings=[], memory_suggestions=[])
 
             with patch("agentrail.afk.runner.gh.pr_head_ref", return_value="feat-x"), \
                  patch.object(runner, "_git", git_mock), \
@@ -150,7 +150,7 @@ class TestReviewUsesWorktree(unittest.IsolatedAsyncioTestCase):
 
             git_mock = _make_git_mock(stdout="")
             clean_outcome = review_policy.ReviewOutcome(
-                blocking=[], advisory=[], memory_suggestions=[])
+                findings=[], memory_suggestions=[])
 
             with patch("agentrail.afk.runner.gh.pr_head_ref", return_value="feat-x"), \
                  patch.object(runner, "_git", git_mock), \

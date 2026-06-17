@@ -7,11 +7,12 @@ is synchronous (``store.claim_next``) so two workers can never take the same
 issue — the lock lives in local state, not in GitHub labels. GitHub label
 writes are confirmation side effects layered on top.
 
-Per-worker pipeline:
-  implement issue -> find PR -> review
-    -> clean        : merge
-    -> advisory only : comment (P2/P3), engineer decides, stop
-    -> blocking      : auto-fix P0/P1 in place, re-review (bounded by rounds)
+Per-worker pipeline (ADR 0007):
+  implement issue -> find PR -> advisory review (once, never blocks)
+    -> objective gate (CI checks + security):
+       -> pass : merge
+       -> fail : bounded agent fix (max 2) in place, re-run gate
+       -> still failing after the fix budget : escalate to human review
 """
 from __future__ import annotations
 
@@ -303,41 +304,93 @@ class Runner:
         finally:
             self._remove_worktree(wt)
 
-    async def _autofix(self, slot: int, issue: int, pr: int,
-                       outcome: review_policy.ReviewOutcome) -> bool:
+    async def _objective_gate(self, pr: int):
+        """Poll CI until checks resolve, then run the deterministic gate."""
+        from agentrail.afk import objective_gate as og
+
+        checks: list[dict] = []
+        for _ in range(60):  # ~5 min at 5s
+            checks = gh.pr_checks(pr)
+            ci = og.evaluate_ci(checks)
+            if ci is None or ci.state != "pending":
+                break
+            await asyncio.sleep(5)
+
+        added, deleted = self._pr_diff(pr)
+        references = self._references_for(deleted)
+        return og.evaluate(checks=checks, added_lines=added,
+                           deleted_files=deleted, references=references)
+
+    def _pr_diff(self, pr: int) -> tuple[list[str], list[str]]:
+        """Return (added diff lines, deleted file paths) for the PR vs base."""
+        head = gh.pr_head_ref(pr)
+        self._git("fetch", "origin", head)
+        diff = self._git("diff", f"origin/{self.base}...origin/{head}").stdout
+        added = [l[1:] for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++")]
+        names = self._git("diff", "--diff-filter=D", "--name-only",
+                          f"origin/{self.base}...origin/{head}").stdout
+        deleted = [n for n in names.splitlines() if n.strip()]
+        return added, deleted
+
+    def _references_for(self, deleted: list[str]) -> dict[str, list[str]]:
+        """For each deleted file, grep the tree for files still referencing it."""
+        refs: dict[str, list[str]] = {}
+        for path in deleted:
+            stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            if not stem:
+                refs[path] = []
+                continue
+            proc = self._git("grep", "-l", "-w", stem)
+            hits = [h for h in proc.stdout.splitlines() if h and h != path]
+            refs[path] = hits
+        return refs
+
+    async def _objective_fix(self, slot: int, issue: int, pr: int, gate) -> bool:
+        """Hand the objective failures to the agent to fix in place (bounded by caller)."""
+        from agentrail.afk import objective_gate as og
         head = gh.pr_head_ref(pr)
         if not head:
             return False
-        wt = self.run_dir / "worktrees" / f"autofix-pr-{pr}"
+        wt = self.run_dir / "worktrees" / f"objfix-pr-{pr}"
         subprocess.run(["git", "-C", str(self.target), "fetch", "origin", head],
                        check=False, capture_output=True)
         subprocess.run(["git", "-C", str(self.target), "worktree", "add",
                         str(wt), f"origin/{head}"], check=False, capture_output=True)
         try:
-            prompt = review_policy.autofix_prompt(pr, outcome)
-            prompt_file = self.logs / f"pr-{pr}-autofix-prompt.txt"
+            prompt = og.fix_prompt(pr, gate.reasons)
+            prompt_file = self.logs / f"pr-{pr}-objfix-prompt.txt"
             prompt_file.write_text(prompt)
             cmd = _agent_command(self.engine, self.model)
-            rc = await _sh(
-                ["bash", "-lc", f"{cmd} < {prompt_file}"],
-                cwd=wt,
-                log=self.logs / f"pr-{pr}-autofix.log",
-            )
+            rc = await _sh(["bash", "-lc", f"{cmd} < {prompt_file}"], cwd=wt,
+                          log=self.logs / f"pr-{pr}-objfix.log")
             if rc != 0:
                 return False
-            # commit anything the agent left uncommitted, then push
-            subprocess.run(["git", "-C", str(wt), "add", "-A"],
-                           check=False, capture_output=True)
+            subprocess.run(["git", "-C", str(wt), "add", "-A"], check=False, capture_output=True)
             subprocess.run(["git", "-C", str(wt), "commit", "--no-verify", "-m",
-                            f"fix: address P0/P1 review findings for PR #{pr}"],
+                            f"fix: resolve objective-gate failures for PR #{pr}"],
                            check=False, capture_output=True)
-            # Push through the #773 secret/prod-push guardrail (the real
-            # enforcement seam): a secret-bearing or protected-target push is
-            # blocked + audited before git push runs.
             run_id = getattr(self, "session_id", "") or ""
             return self._guarded_push(wt, head=head, run_id=run_id)
         finally:
             self._remove_worktree(wt)
+
+    def _push_gate(self, issue: int, pr: int, gate, review_text: str, round_no: int) -> None:
+        sid = getattr(self, "session_id", None)
+        if not sid:
+            return
+        from agentrail.afk.review_push import push_review_gate
+        from agentrail.afk.run_register import run_uuid
+        push_review_gate(self.target, run_uuid(sid, issue), round_no, gate, review_text=review_text)
+
+    def _escalate_human(self, issue: int, pr: int, reasons: list[str]) -> None:
+        gh.ensure_label(HUMAN_REVIEW_LABEL, "D4C5F9",
+                        "PR needs human review — objective gate failed.")
+        gh.add_pr_label(pr, HUMAN_REVIEW_LABEL)
+        if reasons:
+            gh.comment_on_pr(pr, "## Objective gate blocked merge\n\n"
+                             + "\n".join(f"- {r}" for r in reasons))
+        self.store.dispatch(SetStatus(issue, IssueStatus.HUMAN_REVIEW))
+        self._cleanup_issue_labels(issue)
 
     async def _merge(self, pr: int) -> bool:
         ok, _ = gh.merge_pr_squash(pr, f"AFK merge PR #{pr}")
@@ -365,7 +418,7 @@ class Runner:
             if pr:
                 self.store.dispatch(SetPr(issue, pr))
                 self.store.dispatch(SetStatus(issue, IssueStatus.PR_OPEN))
-                await self._review_loop(slot, issue, pr)
+                await self._review_and_gate(slot, issue, pr)
                 return
 
             self.store.dispatch(SetStatus(issue, IssueStatus.RUNNING))
@@ -381,50 +434,46 @@ class Runner:
             self.store.dispatch(SetPr(issue, pr))
             self.store.dispatch(SetStatus(issue, IssueStatus.PR_OPEN))
 
-            await self._review_loop(slot, issue, pr)
+            await self._review_and_gate(slot, issue, pr)
         finally:
             final_issue = self.store.state.issues.get(issue)
             if final_issue is not None:
                 run_status = _FINISH_STATUS_MAP.get(final_issue.status, "failed")
                 self._register_run(final_issue, run_status, finished=True)
 
-    async def _review_loop(self, slot: int, issue: int, pr: int) -> None:
-        max_rounds = self.store.state.max_review_rounds
+    async def _review_and_gate(self, slot: int, issue: int, pr: int) -> None:
+        max_fix = 2
+
+        # 1. Advisory review — runs once, never blocks (ADR 0007).
+        self.store.dispatch(SetStatus(issue, IssueStatus.REVIEWING))
+        outcome = await self._review(pr)
+        if outcome is None:
+            self._fail(issue, "review produced no parseable output")
+            return
+
+        review_file = self.logs / f"pr-{pr}-review.md"
+        try:
+            review_text = review_file.read_text()
+        except OSError:
+            review_text = ""
+
+        if outcome.has_findings:
+            gh.comment_on_pr(pr, review_policy.findings_comment(pr, outcome))
+
+        # Memory suggestions flow once per review (parity with the old loop).
+        sid = getattr(self, "session_id", None)
+        if sid:
+            from agentrail.afk.review_push import push_memory_items
+            from agentrail.afk.run_register import run_uuid
+            push_memory_items(self.target, run_uuid(sid, issue), outcome)
+
+        # 2. Objective gate, with a bounded fix loop.
+        attempts = 0
         while True:
-            rounds = self.store.state.issues[issue].review_rounds
-            if rounds >= max_rounds:
-                gh.ensure_label(HUMAN_REVIEW_LABEL, "D4C5F9",
-                                "PR needs human review — automated review failed repeatedly.")
-                gh.add_pr_label(pr, HUMAN_REVIEW_LABEL)
-                self.store.dispatch(SetStatus(issue, IssueStatus.HUMAN_REVIEW))
-                self._cleanup_issue_labels(issue)
-                return
+            gate = await self._objective_gate(pr)
+            self._push_gate(issue, pr, gate, review_text, round_no=attempts + 1)
 
-            self.store.dispatch(SetStatus(issue, IssueStatus.REVIEWING))
-            outcome = await self._review(pr)
-            self.store.dispatch(IncrementReviewRound(issue))
-
-            if outcome is None:
-                self._fail(issue, "review produced no parseable output")
-                return
-
-            # Push review-gate telemetry (non-fatal).
-            sid = getattr(self, "session_id", None)
-            if sid:
-                from agentrail.afk.review_push import push_review_gate
-                from agentrail.afk.run_register import run_uuid
-                round_no = self.store.state.issues[issue].review_rounds
-                review_file = self.logs / f"pr-{pr}-review.md"
-                try:
-                    review_text = review_file.read_text()
-                except OSError:
-                    review_text = ""
-                push_review_gate(self.target, run_uuid(sid, issue), round_no, outcome,
-                                 review_text=review_text)
-                from agentrail.afk.review_push import push_memory_items
-                push_memory_items(self.target, run_uuid(sid, issue), outcome)
-
-            if outcome.is_clean:
+            if gate.passed:
                 if await self._merge(pr):
                     self.store.dispatch(SetStatus(issue, IssueStatus.MERGED))
                     self._cleanup_issue_labels(issue)
@@ -432,24 +481,17 @@ class Runner:
                     self._fail(issue, "merge failed")
                 return
 
-            if outcome.has_blocking:
-                self.store.dispatch(SetStatus(issue, IssueStatus.AUTOFIXING))
-                fixed = await self._autofix(slot, issue, pr, outcome)
-                if not fixed:
-                    gh.ensure_label(HUMAN_REVIEW_LABEL, "D4C5F9",
-                                    "PR needs human review — automated review failed repeatedly.")
-                    gh.add_pr_label(pr, HUMAN_REVIEW_LABEL)
-                    self.store.dispatch(SetStatus(issue, IssueStatus.HUMAN_REVIEW))
-                    self._cleanup_issue_labels(issue)
-                    return
-                # re-review after the fix (loop continues; round already counted)
-                continue
+            if attempts >= max_fix:
+                self._escalate_human(issue, pr, gate.reasons)
+                return
 
-            # advisory only (P2/P3): comment and let the engineer decide
-            gh.comment_on_pr(pr, review_policy.advisory_comment(pr, outcome))
-            self.store.dispatch(SetStatus(issue, IssueStatus.COMMENTED))
-            self._cleanup_issue_labels(issue)
-            return
+            attempts += 1
+            self.store.dispatch(SetStatus(issue, IssueStatus.AUTOFIXING))
+            fixed = await self._objective_fix(slot, issue, pr, gate)
+            if not fixed:
+                self._escalate_human(issue, pr, gate.reasons)
+                return
+            # loop: re-run the objective gate after the fix
 
     # --- helpers -------------------------------------------------------------
 

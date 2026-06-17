@@ -29,7 +29,6 @@ from agentrail.afk import review as review_policy
 from agentrail.afk.state import (
     AfkState,
     EnqueueIssue,
-    IncrementReviewRound,
     IssueState,
     IssueStatus,
     RecordFailure,

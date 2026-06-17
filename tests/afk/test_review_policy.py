@@ -104,6 +104,11 @@ class FindingsCommentMemorySuggestionsTests(unittest.TestCase):
             p.write_text(_REVIEW_WITH_MEMORY)
             outcome = review_policy.classify(p)
         comment = review_policy.findings_comment(9, outcome)
+        # The finding row itself must render (guards the findings loop, not just
+        # the memory-suggestions section).
+        self.assertIn("Missing verification for AC2", comment)
+        self.assertIn("[P1]", comment)
+        self.assertIn("README.md", comment)
         self.assertIn("Suggested memory updates", comment)
         self.assertIn("Do not claim ACs without evidence", comment)
         self.assertIn("docs/memory/failure-patterns.md", comment)

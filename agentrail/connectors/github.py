@@ -225,26 +225,23 @@ def merge_pr_squash(pr: int, subject: str) -> Tuple[bool, str]:
     return False, (err2 or err).strip()
 
 
-def pr_checks(pr: int) -> list[dict]:
+def pr_checks(pr: int) -> List[dict]:
     """Return the PR's CI checks as ``[{"name": str, "state": str}]``.
 
     ``state`` is normalized to one of: "pass", "fail", "pending". An empty
     list means GitHub reports no checks for the PR.
     """
-    proc = subprocess.run(
-        ["gh", "pr", "checks", str(pr), "--json", "name,state,bucket"],
-        check=False, capture_output=True, text=True,
-    )
-    if proc.returncode != 0 or not proc.stdout.strip():
-        # `gh pr checks` exits non-zero when checks are failing OR when there
-        # are none; fall back to the JSON when present, else empty.
-        if not proc.stdout.strip():
-            return []
+    rc, stdout, _ = _run(["pr", "checks", str(pr), "--json", "name,state,bucket"])
+    # `gh pr checks` exits non-zero both when checks are failing and when
+    # there are none; rely on the JSON output, treating empty output as "no
+    # checks".
+    if not stdout.strip():
+        return []
     try:
-        raw = json.loads(proc.stdout)
+        raw = json.loads(stdout)
     except json.JSONDecodeError:
         return []
-    out: list[dict] = []
+    out: List[dict] = []
     for c in raw:
         out.append({"name": str(c.get("name", "")), "state": _norm_check(c)})
     return out

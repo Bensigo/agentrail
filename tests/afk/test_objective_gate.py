@@ -19,6 +19,16 @@ def test_ci_pending_holds():
     assert res is not None and res.state == "pending"
 
 
+def test_ci_failure_short_circuits_before_pending():
+    # A failing check wins over a still-pending one: don't wait on CI we already
+    # know will not merge.
+    checks = [{"name": "test", "state": "fail"}, {"name": "build", "state": "pending"}]
+    res = og.evaluate_ci(checks)
+    assert res is not None and res.state == "fail"
+    assert any("test" in r for r in res.reasons)
+    assert not any("build" in r for r in res.reasons)
+
+
 def test_ci_zero_checks_fails_not_silent_pass():
     res = og.evaluate_ci([])
     assert res is not None and res.state == "fail"

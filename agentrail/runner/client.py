@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import re
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional
 
 
@@ -66,6 +66,11 @@ class WorkItem:
     # The backend repositories row id, used to link this run's ingested cost /
     # telemetry back to the dashboard. "" when the backend didn't resolve one.
     repository_id: str = ""
+    # Decrypted MCP connector keys for this workspace, {provider: api_key}
+    # (linear/figma/context7). The runner exports each as
+    # AGENTRAIL_MCP_<PROVIDER>_KEY so native_runner writes the agent's MCP config
+    # into the clone. Empty when no MCP connector is connected.
+    mcp_keys: Dict[str, str] = field(default_factory=dict)
 
     @property
     def issue_number(self) -> str:
@@ -80,6 +85,14 @@ class WorkItem:
 
     @classmethod
     def from_dict(cls, d: Dict[str, object]) -> "WorkItem":
+        # MCP keys arrive as {provider: key}; keep only string→string pairs so a
+        # malformed payload can never crash the runner loop.
+        raw_keys = d.get("mcp_keys")
+        mcp_keys: Dict[str, str] = {}
+        if isinstance(raw_keys, dict):
+            for prov, key in raw_keys.items():
+                if isinstance(prov, str) and isinstance(key, str) and key:
+                    mcp_keys[prov] = key
         return cls(
             id=str(d["id"]),
             workspace_id=str(d["workspace_id"]),
@@ -90,6 +103,7 @@ class WorkItem:
             title=str(d.get("title") or ""),
             body=str(d.get("body") or ""),
             repository_id=str(d.get("repository_id") or ""),
+            mcp_keys=mcp_keys,
         )
 
 

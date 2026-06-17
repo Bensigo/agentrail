@@ -46,6 +46,11 @@ def _make_execute(creds):
         run_env["AGENTRAIL_SERVER_API_KEY"] = creds.token
         if item.repository_id:
             run_env["AGENTRAIL_SERVER_REPOSITORY_ID"] = item.repository_id
+        # Export connected MCP keys so native_runner writes the agent's MCP config
+        # (.mcp.json / .codex/config.toml) into the clone — the codebase-level
+        # half of MCP connectors. Keys arrive decrypted from the claim payload.
+        for provider, key in item.mcp_keys.items():
+            run_env[f"AGENTRAIL_MCP_{provider.upper()}_KEY"] = key
         kwargs = dict(
             repo_url=item.repo_url,
             ref=item.ref,

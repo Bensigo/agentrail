@@ -1,10 +1,14 @@
 import { Suspense } from "react";
 import { signOut } from "@agentrail/auth";
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { Sidebar } from "../../../components/sidebar";
 import { ThemeToggle } from "../../../components/theme-toggle";
 import { TopBarBreadcrumb } from "../../../components/breadcrumb";
-import { getSession, getWorkspacesForUser } from "../../../../lib/cached";
+import {
+  getSession,
+  getWorkspacesForUser,
+  getMembership,
+} from "../../../../lib/cached";
 
 type SidebarUser = {
   name?: string | null;
@@ -47,6 +51,15 @@ export default async function WorkspaceLayout({
   const [{ workspaceId }, session] = await Promise.all([params, getSession()]);
   if (!session?.user?.id) {
     redirect("/login");
+  }
+
+  // Authorization: a valid session is not enough — the user must be a member of
+  // THIS workspace. Without this guard any logged-in user could read another
+  // workspace's data (failures, runs, costs…) by guessing its id. Cached, so the
+  // pages this layout wraps reuse the same lookup rather than re-querying.
+  const membership = await getMembership(session.user.id, workspaceId);
+  if (!membership) {
+    notFound();
   }
 
   async function handleSignOut() {

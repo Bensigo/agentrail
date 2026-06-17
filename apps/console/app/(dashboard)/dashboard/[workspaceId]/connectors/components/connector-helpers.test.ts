@@ -6,15 +6,37 @@ import {
   activeHeartbeatConnectors,
   capabilitySummary,
   connectorStatusLabel,
+  isSlackWebhook,
+  isTelegramChatId,
+  isTelegramToken,
   maskWebhook,
   projectConnectors,
+  validateConnectorCredential,
   type ConnectorConfigInput,
 } from "./connector-helpers";
 
 describe("projectConnectors", () => {
-  it("returns one row per catalog entry (github, linear, discord)", () => {
+  it("returns one row per catalog entry, grouped https → mcp → gateway", () => {
     const rows = projectConnectors([]);
-    expect(rows.map((r) => r.kind)).toEqual(["github", "linear", "discord"]);
+    expect(rows.map((r) => r.kind)).toEqual([
+      "github",
+      "linear",
+      "figma",
+      "context7",
+      "discord",
+      "slack",
+      "telegram",
+    ]);
+    // Each row carries its catalog type so the page can section the cards.
+    expect(rows.map((r) => r.type)).toEqual([
+      "https",
+      "mcp",
+      "mcp",
+      "mcp",
+      "gateway",
+      "gateway",
+      "gateway",
+    ]);
   });
 
   it("marks an available connector connected when its config says so", () => {
@@ -34,15 +56,38 @@ describe("projectConnectors", () => {
     expect(github.ingestLabel).toBe(DEFAULT_INGEST_LABEL);
   });
 
-  it("marks Linear connected when its config says so (M038 AC3)", () => {
-    // Linear's adapter now exists (agentrail/connectors/linear.py) → manageable.
+  it("marks Linear (MCP) connected when an API key is stored", () => {
+    // Linear is an MCP key connector now — connected derives from hasSecret, not
+    // a bare connected flag (its falsifiable signal is a stored credential).
     const linear = projectConnectors([
-      { kind: "linear", connected: true, ingestLabel: "afk-ready", target: "Team ENG" },
+      { kind: "linear", hasSecret: true, ingestLabel: "afk-ready" },
     ]).find((r) => r.kind === "linear")!;
     expect(linear.availability).toBe("available");
+    expect(linear.type).toBe("mcp");
+    expect(linear.connectMethod).toBe("secret");
     expect(linear.status).toBe("connected");
     expect(linear.ingestLabel).toBe("afk-ready");
-    expect(linear.target).toBe("Team ENG");
+  });
+
+  it("never reports an MCP connector connected from a bare connected flag", () => {
+    // hasSecret is the only signal; connected:true without a key can't fake it.
+    const figma = projectConnectors([{ kind: "figma", connected: true }]).find(
+      (r) => r.kind === "figma"
+    )!;
+    expect(figma.status).toBe("disconnected");
+  });
+
+  it("marks Slack / Telegram (gateway) connected from a stored secret", () => {
+    const rows = projectConnectors([
+      { kind: "slack", hasSecret: true },
+      { kind: "telegram", hasSecret: true, chatId: "-1001234567890" },
+    ]);
+    const slack = rows.find((r) => r.kind === "slack")!;
+    const telegram = rows.find((r) => r.kind === "telegram")!;
+    expect(slack.status).toBe("connected");
+    expect(telegram.status).toBe("connected");
+    // Telegram surfaces its (non-secret) chat id as the display target.
+    expect(telegram.target).toBe("-1001234567890");
   });
 
   it("never reports discord connected from a bare connected flag — only a real webhook counts", () => {
@@ -165,14 +210,77 @@ describe("capabilitySummary", () => {
     expect(capabilitySummary(github.capabilities)).toBe("Ingest · Post result");
   });
 
-  it("summarizes the Linear adapter's two-way capabilities", () => {
+  it("summarizes the Linear adapter as ingest + post + tools (MCP)", () => {
     const linear = CONNECTOR_CATALOG.find((c) => c.kind === "linear")!;
     expect(linear.availability).toBe("available");
-    expect(capabilitySummary(linear.capabilities)).toBe("Ingest · Post result");
+    expect(capabilitySummary(linear.capabilities)).toBe(
+      "Ingest · Post result · Tools"
+    );
   });
 
-  it("summarizes the Discord adapter as notify-only", () => {
-    const discord = CONNECTOR_CATALOG.find((c) => c.kind === "discord")!;
-    expect(capabilitySummary(discord.capabilities)).toBe("Notify");
+  it("summarizes Figma / Context7 as tools-only (MCP)", () => {
+    for (const kind of ["figma", "context7"] as const) {
+      const e = CONNECTOR_CATALOG.find((c) => c.kind === kind)!;
+      expect(capabilitySummary(e.capabilities)).toBe("Tools");
+    }
+  });
+
+  it("summarizes the gateway adapters as notify-only", () => {
+    for (const kind of ["discord", "slack", "telegram"] as const) {
+      const e = CONNECTOR_CATALOG.find((c) => c.kind === kind)!;
+      expect(capabilitySummary(e.capabilities)).toBe("Notify");
+    }
+  });
+});
+
+describe("validateConnectorCredential", () => {
+  it("accepts well-formed MCP keys and rejects malformed ones", () => {
+    expect(validateConnectorCredential("linear", "lin_api_abc123")).toEqual({
+      ok: true,
+    });
+    expect(validateConnectorCredential("linear", "nope").ok).toBe(false);
+    expect(validateConnectorCredential("figma", "figd_xyz")).toEqual({ ok: true });
+    expect(validateConnectorCredential("figma", "ghp_x").ok).toBe(false);
+    expect(validateConnectorCredential("context7", "ctx7sk-abc")).toEqual({
+      ok: true,
+    });
+    expect(validateConnectorCredential("context7", "ctx7sk_abc")).toEqual({
+      ok: true,
+    });
+    expect(validateConnectorCredential("context7", "sk-abc").ok).toBe(false);
+  });
+
+  it("validates a Slack incoming webhook URL", () => {
+    expect(
+      validateConnectorCredential(
+        "slack",
+        "https://hooks.slack.com/services/T0/B0/abcDEF"
+      )
+    ).toEqual({ ok: true });
+    expect(isSlackWebhook("https://example.com/x")).toBe(false);
+    expect(validateConnectorCredential("slack", "http://hooks.slack.com/x").ok).toBe(
+      false
+    );
+  });
+
+  it("requires a valid Telegram token AND chat id", () => {
+    const token = "123456789:AAH" + "a".repeat(32);
+    expect(isTelegramToken(token)).toBe(true);
+    expect(isTelegramChatId("-1001234567890")).toBe(true);
+    expect(isTelegramChatId("@my_channel")).toBe(true);
+    expect(validateConnectorCredential("telegram", token, "-100123")).toEqual({
+      ok: true,
+    });
+    // Valid token but missing/blank chat id is rejected.
+    expect(validateConnectorCredential("telegram", token).ok).toBe(false);
+    // Bad token is rejected even with a chat id.
+    expect(validateConnectorCredential("telegram", "nope", "-100123").ok).toBe(
+      false
+    );
+  });
+
+  it("rejects credentials for non-credential connectors (github/discord)", () => {
+    expect(validateConnectorCredential("github", "x").ok).toBe(false);
+    expect(validateConnectorCredential("discord", "x").ok).toBe(false);
   });
 });

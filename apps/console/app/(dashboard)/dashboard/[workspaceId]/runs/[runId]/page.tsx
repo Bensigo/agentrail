@@ -171,7 +171,7 @@ export default function RunDetailPage() {
         />
       </div>
 
-      <div className="mt-6">
+      <div id="context" className="mt-6 scroll-mt-6">
         <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
           Context
         </h2>

@@ -72,8 +72,9 @@ function detailLink(
   workspaceId: string,
   runId: string
 ): string | null {
-  if (event_type === "context_event")
-    return `/dashboard/${workspaceId}/context-packs?runId=${runId}`;
+  // The context pack is rendered in the Context section on this same run page,
+  // so deep-link to that anchor rather than a separate page.
+  if (event_type === "context_event") return "#context";
   if (event_type === "failure_event")
     return `/dashboard/${workspaceId}/failures?runId=${runId}`;
   if (event_type === "review_gate")

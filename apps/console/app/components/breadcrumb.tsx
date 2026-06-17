@@ -4,7 +4,6 @@ import { usePathname } from "next/navigation";
 
 const SEGMENT_LABELS: Record<string, string> = {
   runs: "Runs",
-  "context-packs": "Context Packs",
   failures: "Failures",
   "review-gates": "Review Gates",
   costs: "Costs",

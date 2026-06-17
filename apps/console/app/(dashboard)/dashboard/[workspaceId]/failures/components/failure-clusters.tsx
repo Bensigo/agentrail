@@ -11,6 +11,8 @@ import {
 
 export interface FailureCluster {
   fingerprint: string;
+  /** Representative error message for the cluster — the human-readable cause. */
+  sample_message: string;
   phase: string;
   failure_type: string;
   count: number;
@@ -25,7 +27,7 @@ interface FailureClustersProps {
 
 function FailureTypeBadge({ value }: { value: string }) {
   return (
-    <span className="inline-flex items-center rounded-sm border border-[#e5484d]/30 bg-[#e5484d]/20 px-1.5 py-0.5 text-xs font-medium text-[#ff9592]">
+    <span className="inline-flex min-w-[112px] items-center justify-center rounded-sm border border-[#e5484d]/30 bg-[#e5484d]/20 px-1.5 py-0.5 text-xs font-medium text-[#ff9592]">
       {value || "failure"}
     </span>
   );
@@ -77,7 +79,7 @@ export function FailureClusters({ workspaceId }: FailureClustersProps) {
             <tr className="border-b border-[var(--gray-05)] bg-[var(--gray-01)]">
               <th className="w-8 px-2 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]" />
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
-                Fingerprint
+                Cause
               </th>
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
                 Phase
@@ -133,10 +135,17 @@ export function FailureClusters({ workspaceId }: FailureClustersProps) {
                       </td>
                       <td className="px-3 py-1.5">
                         <span
-                          className="block max-w-[280px] truncate font-mono text-xs text-[var(--gray-12)]"
-                          title={cluster.fingerprint}
+                          className="block max-w-[360px] truncate text-xs text-[var(--gray-12)]"
+                          title={
+                            cluster.fingerprint
+                              ? `${cluster.sample_message}\n\nfingerprint: ${cluster.fingerprint}`
+                              : cluster.sample_message
+                          }
                         >
-                          {truncateFingerprint(cluster.fingerprint || "unfingerprinted")}
+                          {cluster.sample_message ||
+                            truncateFingerprint(
+                              cluster.fingerprint || "Unknown cause"
+                            )}
                         </span>
                       </td>
                       <td className="px-3 py-1.5">
@@ -172,7 +181,7 @@ export function FailureClusters({ workspaceId }: FailureClustersProps) {
                               <a
                                 key={runId}
                                 href={buildRunDetailHref(workspaceId, runId)}
-                                className="font-mono text-xs text-[#70b8ff] underline-offset-2 hover:text-[#ffe629] hover:underline"
+                                className="font-mono text-xs text-[var(--gray-11)] underline-offset-2 hover:text-[#ffe629] hover:underline"
                               >
                                 {runId}
                               </a>

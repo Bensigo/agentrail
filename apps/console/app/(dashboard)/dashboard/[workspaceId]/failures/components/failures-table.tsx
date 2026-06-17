@@ -25,7 +25,7 @@ export interface FailureRecord {
 
 interface FailuresTableProps {
   workspaceId: string;
-  repositories: string[];
+  repositories: { id: string; name: string }[];
   initialRunId?: string;
 }
 
@@ -101,7 +101,10 @@ function SeverityBadge({ severity }: { severity: string }) {
 
 const columnHelper = createColumnHelper<FailureRecord>();
 
-function buildColumns(workspaceId: string) {
+function buildColumns(
+  workspaceId: string,
+  repoNames: Record<string, string>
+) {
   return [
     columnHelper.accessor("severity", {
       header: "Severity",
@@ -125,9 +128,14 @@ function buildColumns(workspaceId: string) {
     }),
     columnHelper.accessor("repository_id", {
       header: "Repo",
-      cell: (info) => (
-        <span className="text-[var(--gray-11)] text-xs">{info.getValue()}</span>
-      ),
+      cell: (info) => {
+        const id = info.getValue();
+        return (
+          <span className="text-[var(--gray-11)] text-xs" title={id}>
+            {repoNames[id] ?? id}
+          </span>
+        );
+      },
     }),
     columnHelper.accessor("phase", {
       header: "Phase",
@@ -177,7 +185,10 @@ export function FailuresTable({
   const [failureType, setFailureType] = useState("");
   const [timeRange, setTimeRange] = useState<TimeRange>("");
 
-  const columns = buildColumns(workspaceId);
+  const repoNames = Object.fromEntries(
+    repositories.map((r) => [r.id, r.name])
+  );
+  const columns = buildColumns(workspaceId, repoNames);
 
   const fetchFailures = useCallback(
     async (cursor?: string, append = false) => {
@@ -253,8 +264,8 @@ export function FailuresTable({
         >
           <option value="">All repos</option>
           {repositories.map((r) => (
-            <option key={r} value={r}>
-              {r}
+            <option key={r.id} value={r.id}>
+              {r.name}
             </option>
           ))}
         </select>

@@ -155,6 +155,13 @@
       "when": 1780907365694,
       "tag": "0020_connector_secret",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1780907365695,
+      "tag": "0021_failure_resolutions",
+      "breakpoints": true
     }
   ]
 }

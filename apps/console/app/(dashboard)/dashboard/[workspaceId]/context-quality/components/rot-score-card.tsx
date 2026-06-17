@@ -82,10 +82,9 @@ export function RotScoreCard({ workspaceId, repositoryId }: RotScoreCardProps) {
         <span className="text-xs font-semibold text-[var(--gray-12)]">
           Context Rot Score
         </span>
-        <Info
-          className="h-3.5 w-3.5 text-[var(--gray-08)]"
-          title="Composite staleness score (0–100) derived from memory item age, index snapshot freshness, and source hash churn."
-        />
+        <span title="Composite staleness score (0–100) derived from memory item age, index snapshot freshness, and source hash churn.">
+          <Info className="h-3.5 w-3.5 text-[var(--gray-08)]" />
+        </span>
       </div>
 
       {/* Loading skeleton */}

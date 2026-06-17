@@ -13,6 +13,7 @@ import {
   apiKeys,
   reviewGates,
   memoryItems,
+  failureResolutions,
   workspaceInvites,
   users,
   accounts,
@@ -410,6 +411,87 @@ export async function insertMemoryItems(data: {
       tags: item.tags,
     }))
   );
+}
+
+// ---- Failure resolutions (is-this-fixed state) ----
+
+export type FailureResolutionStatus = "open" | "fixed";
+
+export interface FailureResolutionRow {
+  failureKey: string;
+  status: FailureResolutionStatus;
+  note: string | null;
+  resolvedByUserId: string | null;
+  updatedAt: Date;
+}
+
+/**
+ * Return the resolution row for a failure key, or null when the user has never
+ * touched it (the implicit default is "open"). `failureKey` is the failure's
+ * fingerprint, falling back to its event_id — see failure_resolutions schema.
+ */
+export async function getFailureResolution(
+  workspaceId: string,
+  failureKey: string
+): Promise<FailureResolutionRow | null> {
+  const rows = await db
+    .select({
+      failureKey: failureResolutions.failureKey,
+      status: failureResolutions.status,
+      note: failureResolutions.note,
+      resolvedByUserId: failureResolutions.resolvedByUserId,
+      updatedAt: failureResolutions.updatedAt,
+    })
+    .from(failureResolutions)
+    .where(
+      and(
+        eq(failureResolutions.workspaceId, workspaceId),
+        eq(failureResolutions.failureKey, failureKey)
+      )
+    )
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  return { ...row, status: row.status as FailureResolutionStatus };
+}
+
+/** Set (upsert) the fixed/open state for a failure key. */
+export async function upsertFailureResolution(data: {
+  workspaceId: string;
+  failureKey: string;
+  status: FailureResolutionStatus;
+  note?: string | null;
+  resolvedByUserId?: string | null;
+}): Promise<FailureResolutionRow> {
+  const now = new Date();
+  const rows = await db
+    .insert(failureResolutions)
+    .values({
+      workspaceId: data.workspaceId,
+      failureKey: data.failureKey,
+      status: data.status,
+      note: data.note ?? null,
+      resolvedByUserId: data.resolvedByUserId ?? null,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [failureResolutions.workspaceId, failureResolutions.failureKey],
+      set: {
+        status: data.status,
+        note: data.note ?? null,
+        resolvedByUserId: data.resolvedByUserId ?? null,
+        updatedAt: now,
+      },
+    })
+    .returning({
+      failureKey: failureResolutions.failureKey,
+      status: failureResolutions.status,
+      note: failureResolutions.note,
+      resolvedByUserId: failureResolutions.resolvedByUserId,
+      updatedAt: failureResolutions.updatedAt,
+    });
+  const row = rows[0]!;
+  return { ...row, status: row.status as FailureResolutionStatus };
 }
 
 export async function listMemoryItemsByRunId(

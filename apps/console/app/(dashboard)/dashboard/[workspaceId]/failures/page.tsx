@@ -1,4 +1,4 @@
-import { listRuns } from "@agentrail/db-postgres";
+import { listWorkspaceRepositories } from "@agentrail/db-postgres";
 import { FailureClusters } from "./components/failure-clusters";
 import { FailuresTable } from "./components/failures-table";
 
@@ -12,14 +12,14 @@ export default async function FailuresPage({
   const { workspaceId } = await params;
   const { run_id: runId } = await searchParams;
 
-  let repositories: string[] = [];
+  // Repos carry id + human name so the table and filter can show "owner/repo"
+  // instead of the raw uuid the failure events are keyed by.
+  let repositories: { id: string; name: string }[] = [];
   try {
-    const runs = await listRuns(workspaceId);
-    repositories = [
-      ...new Set(
-        runs.map((r) => r.repositoryId).filter((r): r is string => r !== null)
-      ),
-    ].sort();
+    const repos = await listWorkspaceRepositories(workspaceId);
+    repositories = repos
+      .map((r) => ({ id: r.id, name: r.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   } catch {
     // DB unavailable; empty repo list is acceptable
   }

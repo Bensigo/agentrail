@@ -355,6 +355,8 @@ export async function listWorkspaceFailures(
 
 export interface FailureClusterRecord {
   fingerprint: string;
+  /** Most-recent representative error message for the cluster (the human cause). */
+  sample_message: string;
   phase: string;
   failure_type: string;
   count: number;
@@ -370,6 +372,7 @@ export async function listFailureClusters(
     query: `
       SELECT
         fingerprint,
+        argMax(message, occurred_at) AS sample_message,
         phase,
         failure_type,
         count() AS count,
@@ -388,6 +391,7 @@ export async function listFailureClusters(
 
   const rows = await result.json<{
     fingerprint: string;
+    sample_message: string;
     phase: string;
     failure_type: string;
     count: string | number;
@@ -398,6 +402,7 @@ export async function listFailureClusters(
 
   return rows.map((r) => ({
     fingerprint: String(r.fingerprint ?? ""),
+    sample_message: String(r.sample_message ?? ""),
     phase: String(r.phase ?? ""),
     failure_type: String(r.failure_type ?? ""),
     count: Number(r.count ?? 0),

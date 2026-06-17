@@ -34,4 +34,10 @@ describe("buildFindingIssue", () => {
     const { title } = buildFindingIssue(long, { runId: "r", prUrl: "u", gateId: "g", index: 0 });
     expect(title.length).toBeLessThanOrEqual("[review] ".length + 80);
   });
+
+  it("omits the PR segment when no prUrl is given", () => {
+    const { body } = buildFindingIssue(finding, { runId: "run9", gateId: "g9", index: 0 });
+    expect(body).toContain("Run run9");
+    expect(body).not.toContain(" · PR ");
+  });
 });

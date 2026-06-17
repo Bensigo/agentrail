@@ -19,7 +19,7 @@ const LINEAR_GRAPHQL = "https://api.linear.app/graphql";
 // Inlined here because the failures route's github-slug helper is not a
 // committed shared module on this branch.
 function parseGithubSlug(url: string): { owner: string; repo: string } | null {
-  const m = url.match(/github\.com[/:]([^/]+)\/([^/.]+)(?:\.git)?\/?$/i);
+  const m = url.match(/^(?:https?:\/\/|git@)github\.com[/:]([^/]+)\/([^/.]+?)(?:\.git)?\/?$/i);
   return m ? { owner: m[1], repo: m[2] } : null;
 }
 
@@ -58,11 +58,8 @@ export async function POST(
     );
   }
 
-  // runs has no PR-URL column on this branch, so fall back to a run reference.
-  const prUrl = `run ${gate.runId}`;
   const built = buildFindingIssue(finding, {
     runId: gate.runId,
-    prUrl,
     gateId,
     index: idx,
   });

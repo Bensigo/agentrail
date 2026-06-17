@@ -7,7 +7,7 @@ export interface ReviewGateFinding {
 
 interface IssueContext {
   runId: string;
-  prUrl: string;
+  prUrl?: string;
   gateId: string;
   index: number;
 }
@@ -31,7 +31,7 @@ export function buildFindingIssue(
   const title = `[review] ${truncate(finding.description, 80)}`;
   const body = [
     "## Parent",
-    `Run ${ctx.runId} · PR ${ctx.prUrl}`,
+    ctx.prUrl ? `Run ${ctx.runId} · PR ${ctx.prUrl}` : `Run ${ctx.runId}`,
     "",
     "## What to build",
     finding.description,

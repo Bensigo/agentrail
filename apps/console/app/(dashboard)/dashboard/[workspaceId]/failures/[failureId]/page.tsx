@@ -5,6 +5,7 @@ import {
   getFailureResolution,
   getRepository,
   getGithubToken,
+  getConnector,
 } from "@agentrail/db-postgres";
 import {
   ChevronLeft,
@@ -170,16 +171,18 @@ export default async function FailureDetailPage({
   // we can resolve it — "which repo" should read as a name, not a uuid.
   let repoLabel = failure.repository_id || "—";
   try {
-    const [resolution, repo, token] = await Promise.all([
+    const [resolution, repo, token, linear] = await Promise.all([
       getFailureResolution(workspaceId, failureKey),
       failure.repository_id
         ? getRepository(workspaceId, failure.repository_id)
         : Promise.resolve(null),
       getGithubToken(workspaceId),
+      getConnector(workspaceId, "linear"),
     ]);
     if (resolution?.status === "fixed") initialStatus = "fixed";
     if (repo?.name) repoLabel = repo.name;
     if (token && repo && parseGithubSlug(repo.url)) issueTargets.push("github");
+    if (linear?.enabled && linear.hasSecret) issueTargets.push("linear");
   } catch {
     // leave defaults; actions degrade gracefully
   }

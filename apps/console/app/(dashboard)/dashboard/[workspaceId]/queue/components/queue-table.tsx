@@ -9,10 +9,16 @@ import {
 } from "./queue-helpers";
 import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
 
-const STATE_FILTERS: { label: string; value: QueueState | "" }[] = [
+// Active queue: only states an issue occupies while it's still pending.
+const ACTIVE_FILTERS: { label: string; value: QueueState | "" }[] = [
   { label: "All", value: "" },
   { label: "Queued", value: "queued" },
+  { label: "Parked", value: "parked" },
   { label: "Running", value: "running" },
+];
+
+// Terminals only show under History (the queue self-flushes them otherwise).
+const TERMINAL_FILTERS: { label: string; value: QueueState | "" }[] = [
   { label: "Green", value: "green" },
   { label: "Escalated", value: "escalated-to-human" },
   { label: "Blocked", value: "blocked" },
@@ -37,13 +43,17 @@ export function QueueTable({ workspaceId }: { workspaceId: string }) {
   const [entries, setEntries] = useState<QueueEntryView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [stateFilter, setStateFilter] = useState<QueueState | "">("");
+  const [stateFilter, setStateFilter] = useState<QueueState | "">("queued");
+  // History off → fetch active-only (the queue self-flushes terminals); on →
+  // fetch everything so the terminal filters have rows to show.
+  const [showHistory, setShowHistory] = useState(false);
 
   const fetchQueue = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/v1/workspaces/${workspaceId}/queue`);
+      const qs = showHistory ? "?all=1" : "";
+      const res = await fetch(`/api/v1/workspaces/${workspaceId}/queue${qs}`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
@@ -55,12 +65,15 @@ export function QueueTable({ workspaceId }: { workspaceId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [workspaceId]);
+  }, [workspaceId, showHistory]);
 
   useEffect(() => {
     fetchQueue();
   }, [fetchQueue]);
 
+  const filters = showHistory
+    ? [...ACTIVE_FILTERS, ...TERMINAL_FILTERS]
+    : ACTIVE_FILTERS;
   const visible = stateFilter
     ? entries.filter((e) => e.state === stateFilter)
     : entries;
@@ -69,7 +82,7 @@ export function QueueTable({ workspaceId }: { workspaceId: string }) {
     <div className="flex flex-col gap-3">
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-1">
-        {STATE_FILTERS.map(({ label, value }) => (
+        {filters.map(({ label, value }) => (
           <button
             key={value || "all"}
             onClick={() => setStateFilter(value)}
@@ -83,8 +96,29 @@ export function QueueTable({ workspaceId }: { workspaceId: string }) {
           </button>
         ))}
         <button
+          onClick={() => {
+            // Leaving history view: snap any terminal filter back to Queued so
+            // the (now active-only) result isn't filtered to an empty set.
+            if (showHistory && stateFilter && stateFilter !== "queued") {
+              const stillVisible = ACTIVE_FILTERS.some(
+                (f) => f.value === stateFilter
+              );
+              if (!stillVisible) setStateFilter("queued");
+            }
+            setShowHistory((v) => !v);
+          }}
+          className={`ml-auto h-8 px-3 rounded text-sm border transition-colors ${
+            showHistory
+              ? "bg-[var(--gray-04)] text-[var(--gray-12)] border-[var(--gray-08)]"
+              : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
+          }`}
+          title="Show completed issues (Green / Escalated / Blocked). The queue itself only holds pending work."
+        >
+          {showHistory ? "Hide history" : "Show history"}
+        </button>
+        <button
           onClick={fetchQueue}
-          className="ml-auto h-8 px-3 rounded bg-[var(--gray-03)] border border-[var(--gray-06)] text-sm text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors"
+          className="h-8 px-3 rounded bg-[var(--gray-03)] border border-[var(--gray-06)] text-sm text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors"
         >
           Refresh
         </button>

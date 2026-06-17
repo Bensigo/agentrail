@@ -217,7 +217,7 @@ export function FailureActions({
           )}
 
           {issueState.kind === "ok" &&
-            (issueState.url ? (
+            (issueState.url && /^https:\/\//i.test(issueState.url) ? (
               <a
                 href={issueState.url}
                 target="_blank"

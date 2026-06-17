@@ -8,14 +8,9 @@ fed a review with a ``BEGIN_REVIEW_FIX_ISSUES_JSON`` block carrying both a
 machine-readable parser pulled them out (the legacy script then created GitHub
 issues from them).
 
-The native architecture changed *what happens* with the parsed data — memory
-suggestions are surfaced in the advisory PR comment rather than spawned as new
-issues (see ``agentrail/afk/review.py`` module docstring) — but the parsing
-contract is identical: the machine-readable block's ``fix_issues`` and
-``memory_suggestions`` arrays must be extracted faithfully, including each
-suggestion's title / target_file / body. These tests pin that contract against
-the native ``classify`` + ``advisory_comment`` (the byte-faithful prompt /
-validation side is covered by tests/afk/test_review_engine.py).
+Under ADR 0007 all findings are advisory-only. The ``classify`` function now
+returns a flat ``findings`` list (no blocking/advisory split). Memory suggestions
+are surfaced in the ``findings_comment`` PR comment.
 """
 from __future__ import annotations
 
@@ -55,18 +50,18 @@ _REVIEW_WITH_MEMORY = (
 )
 
 
-class ClassifyMemorySuggestionsTests(unittest.TestCase):
+class ClassifyFindingsTests(unittest.TestCase):
     def _classify(self, text: str):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "review.md"
             p.write_text(text)
             return review_policy.classify(p)
 
-    def test_parses_fix_issue_as_blocking(self):
+    def test_parses_fix_issue_into_flat_findings(self):
         outcome = self._classify(_REVIEW_WITH_MEMORY)
         self.assertIsNotNone(outcome)
-        self.assertTrue(outcome.has_blocking)
-        finding = outcome.blocking[0]
+        self.assertTrue(outcome.has_findings)
+        finding = outcome.findings[0]
         self.assertEqual(finding.title, "Missing verification for AC2")
         self.assertEqual(finding.severity, "P1")
         self.assertEqual(finding.file, "README.md")
@@ -98,23 +93,22 @@ class ClassifyMemorySuggestionsTests(unittest.TestCase):
         self.assertIsNone(outcome)
 
 
-class AdvisoryCommentMemorySuggestionsTests(unittest.TestCase):
-    """The native surface for memory suggestions is the advisory PR comment
+class FindingsCommentMemorySuggestionsTests(unittest.TestCase):
+    """The native surface for memory suggestions is the findings PR comment
     (replacing the legacy issue-spawning). It must render the suggestion title
     and its target memory file — the data the bash test asserted on the issue."""
 
-    def test_advisory_comment_renders_memory_suggestion(self):
+    def test_findings_comment_renders_memory_suggestion(self):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "review.md"
             p.write_text(_REVIEW_WITH_MEMORY)
             outcome = review_policy.classify(p)
-        # Force the finding into the advisory bucket so the comment renders.
-        advisory_outcome = review_policy.ReviewOutcome(
-            blocking=[],
-            advisory=outcome.blocking + outcome.advisory,
-            memory_suggestions=outcome.memory_suggestions,
-        )
-        comment = review_policy.advisory_comment(9, advisory_outcome)
+        comment = review_policy.findings_comment(9, outcome)
+        # The finding row itself must render (guards the findings loop, not just
+        # the memory-suggestions section).
+        self.assertIn("Missing verification for AC2", comment)
+        self.assertIn("[P1]", comment)
+        self.assertIn("README.md", comment)
         self.assertIn("Suggested memory updates", comment)
         self.assertIn("Do not claim ACs without evidence", comment)
         self.assertIn("docs/memory/failure-patterns.md", comment)

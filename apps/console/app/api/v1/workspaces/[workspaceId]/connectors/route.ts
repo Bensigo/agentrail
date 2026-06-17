@@ -54,9 +54,27 @@ export async function GET(
     const byProvider = new Map(storedConnectors.map((c) => [c.provider, c]));
     const githubRow = byProvider.get("github");
     const discordRow = byProvider.get("discord");
-    const linearRow = byProvider.get("linear");
 
     const githubConnected = repos.length > 0;
+
+    // Project a credential (mcp / slack / telegram) connector from its stored
+    // row: connected iff a credential is stored (`hasSecret`), with the folded-in
+    // trigger config. The raw secret never leaves the DB layer.
+    const secretConfig = (
+      kind: ConnectorConfigInput["kind"]
+    ): ConnectorConfigInput => {
+      const row = byProvider.get(kind);
+      return {
+        kind,
+        hasSecret: Boolean(row?.hasSecret),
+        ingestLabel: row?.config.triggerLabel ?? "ready-for-agent",
+        chatId: row?.config.chatId ?? null,
+        enabled: row?.enabled,
+        triggerLabel: row?.config.triggerLabel,
+        pollIntervalSeconds: row?.config.pollIntervalSeconds,
+      };
+    };
+
     const configs: ConnectorConfigInput[] = [
       {
         kind: "github",
@@ -73,27 +91,22 @@ export async function GET(
         triggerLabel: githubRow?.config.triggerLabel,
         pollIntervalSeconds: githubRow?.config.pollIntervalSeconds,
       },
+      // MCP key connectors — connected once an API key is stored.
+      secretConfig("linear"),
+      secretConfig("figma"),
+      secretConfig("context7"),
       {
         // Discord notify connector: connected iff a webhook is set. The read
         // model only ever exposes the masked target, never the token.
         kind: "discord",
-        connected: Boolean(discordWebhookUrl),
         webhookUrl: discordWebhookUrl,
         enabled: discordRow?.enabled,
         triggerLabel: discordRow?.config.triggerLabel,
         pollIntervalSeconds: discordRow?.config.pollIntervalSeconds,
       },
-      {
-        // Linear adapter (agentrail/connectors/linear.py). No durable Linear API
-        // key store yet, so this is honestly not-connected until one exists.
-        kind: "linear",
-        connected: false,
-        ingestLabel: linearRow?.config.triggerLabel ?? "ready-for-agent",
-        target: null,
-        enabled: linearRow?.enabled,
-        triggerLabel: linearRow?.config.triggerLabel,
-        pollIntervalSeconds: linearRow?.config.pollIntervalSeconds,
-      },
+      // Slack / Telegram gateways — connected once their credential is stored.
+      secretConfig("slack"),
+      secretConfig("telegram"),
     ];
     return NextResponse.json({
       connectors: projectConnectors(configs),

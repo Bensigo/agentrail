@@ -1,10 +1,26 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACTIVE_QUEUE_STATES,
+  mapQueueEntryRows,
   projectQueueEntries,
   queueStateLabel,
   resolveQueueState,
+  type QueueEntryRow,
   type QueueRunInput,
 } from "./queue-helpers";
+
+function entryRow(over: Partial<QueueEntryRow>): QueueEntryRow {
+  return {
+    id: "qe1",
+    externalId: "owner/name#12",
+    title: "Issue X",
+    tier: 0,
+    remainingBudget: 2,
+    state: "queued",
+    updatedAt: "2026-06-16T00:00:00.000Z",
+    ...over,
+  };
+}
 
 function run(over: Partial<QueueRunInput>): QueueRunInput {
   return {
@@ -69,6 +85,54 @@ describe("resolveQueueState", () => {
   it("maps an exhausted-budget failed issue to the ESCALATED_TO_HUMAN terminal", () => {
     // Two failed attempts with no success = budget exhausted → hard stop.
     expect(resolveQueueState(["failed", "failed"])).toBe("escalated-to-human");
+  });
+});
+
+describe("mapQueueEntryRows", () => {
+  it("maps a durable queue_entries row to a view entry, keyed by external id", () => {
+    const [view] = mapQueueEntryRows([
+      entryRow({ externalId: "owner/name#42", title: "Login", state: "queued" }),
+    ]);
+    expect(view.issueKey).toBe("owner/name#42");
+    expect(view.title).toBe("Login");
+    expect(view.state).toBe("queued");
+  });
+
+  it("reads tier directly from the entry (0 cheap, 1 strong) — not from attempt count", () => {
+    expect(mapQueueEntryRows([entryRow({ tier: 0 })])[0].tier).toBe("cheap");
+    expect(mapQueueEntryRows([entryRow({ tier: 1 })])[0].tier).toBe("strong");
+  });
+
+  it("carries remaining budget straight through and derives failed attempts from it", () => {
+    const [view] = mapQueueEntryRows([entryRow({ remainingBudget: 1 })]);
+    expect(view.remainingBudget).toBe(1);
+    expect(view.failedAttempts).toBe(1); // DEFAULT_BUDGET(2) - 1
+  });
+
+  it("preserves the parked state (blocked-on-dependency, still in the queue)", () => {
+    expect(mapQueueEntryRows([entryRow({ state: "parked" })])[0].state).toBe(
+      "parked"
+    );
+  });
+
+  it("sorts most-recently-updated first", () => {
+    const views = mapQueueEntryRows([
+      entryRow({ id: "old", updatedAt: "2026-06-15T00:00:00.000Z" }),
+      entryRow({ id: "new", updatedAt: "2026-06-16T00:00:00.000Z" }),
+    ]);
+    expect(views.map((v) => v.issueKey)).toBeTruthy();
+    expect(views[0].updatedAt > views[1].updatedAt).toBe(true);
+  });
+});
+
+describe("ACTIVE_QUEUE_STATES", () => {
+  it("is exactly the non-terminal states — terminals leave the queue", () => {
+    expect([...ACTIVE_QUEUE_STATES].sort()).toEqual(
+      ["parked", "queued", "running"].sort()
+    );
+    expect(ACTIVE_QUEUE_STATES).not.toContain("green");
+    expect(ACTIVE_QUEUE_STATES).not.toContain("escalated-to-human");
+    expect(ACTIVE_QUEUE_STATES).not.toContain("blocked");
   });
 });
 

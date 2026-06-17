@@ -1,5 +1,6 @@
 import { eq, and } from "drizzle-orm";
 import { db } from "../db.js";
+import { encryptSecret, decryptSecret } from "../crypto.js";
 import {
   connectors,
   connectorProviderEnum,
@@ -95,6 +96,20 @@ export function validateConnectorUpdate(
       out.repos = cfg.repos.map((r) => r.trim()).filter((r) => r.length > 0);
     }
 
+    if (cfg.chatId !== undefined) {
+      if (typeof cfg.chatId !== "string") {
+        return { ok: false, error: "chatId must be a string" };
+      }
+      const trimmed = cfg.chatId.trim();
+      if (trimmed.length === 0) {
+        return { ok: false, error: "chatId must not be empty" };
+      }
+      if (trimmed.length > 64) {
+        return { ok: false, error: "chatId must be at most 64 characters" };
+      }
+      out.chatId = trimmed;
+    }
+
     value.config = out;
   }
 
@@ -109,6 +124,8 @@ function completeConfig(stored: Partial<ConnectorConfig> | null | undefined): Co
     pollIntervalSeconds:
       stored?.pollIntervalSeconds ??
       CONNECTOR_CONFIG_DEFAULTS.pollIntervalSeconds,
+    // Optional telegram chat id — only present when stored.
+    ...(stored?.chatId ? { chatId: stored.chatId } : {}),
   };
 }
 
@@ -116,12 +133,14 @@ function toView(row: {
   provider: string;
   enabled: boolean;
   config: Partial<ConnectorConfig> | null;
+  secret?: string | null;
   updatedAt: Date | string | null;
 }): ConnectorRowView {
   return {
     provider: row.provider as ConnectorProvider,
     enabled: row.enabled,
     config: completeConfig(row.config),
+    hasSecret: Boolean(row.secret),
     updatedAt:
       row.updatedAt instanceof Date
         ? row.updatedAt.toISOString()
@@ -206,6 +225,111 @@ export async function upsertConnector(
     provider,
     enabled,
     config: mergedConfig,
+    hasSecret: existing?.hasSecret ?? false,
     updatedAt: now.toISOString(),
   };
+}
+
+/**
+ * Store (or clear, with `null`) a connector's write-only credential and upsert
+ * its row. Connecting a credential-based connector self-configures it ON; clearing
+ * the secret disables the row. The secret is NEVER read back to the client — only
+ * the daemon reads it via {@link getConnectorSecret}. `chatId` is the optional
+ * non-secret companion the telegram gateway needs (the bot's target chat).
+ */
+export async function setConnectorSecret(
+  workspaceId: string,
+  provider: ConnectorProvider,
+  secret: string | null,
+  opts: { chatId?: string | null } = {}
+): Promise<ConnectorRowView> {
+  const now = new Date();
+  const existing = await getConnector(workspaceId, provider);
+  const connecting = secret !== null && secret.length > 0;
+
+  // Merge chatId into config when provided; clearing the secret also clears it.
+  const mergedConfig: ConnectorConfig = {
+    ...completeConfig(existing?.config),
+  };
+  if (opts.chatId !== undefined) {
+    if (opts.chatId) mergedConfig.chatId = opts.chatId;
+    else delete mergedConfig.chatId;
+  }
+  if (!connecting) delete mergedConfig.chatId;
+
+  // Connecting enables the row; disconnecting disables it.
+  const enabled = connecting ? true : false;
+
+  // Encrypt at rest — the plaintext credential never touches the column.
+  const storedSecret = connecting ? encryptSecret(secret as string) : null;
+
+  await db
+    .insert(connectors)
+    .values({
+      workspaceId,
+      provider,
+      enabled,
+      secret: storedSecret,
+      config: mergedConfig,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [connectors.workspaceId, connectors.provider],
+      set: { enabled, secret: storedSecret, config: mergedConfig, updatedAt: now },
+    });
+
+  return {
+    provider,
+    enabled,
+    config: mergedConfig,
+    hasSecret: connecting,
+    updatedAt: now.toISOString(),
+  };
+}
+
+/**
+ * Read a connector's raw stored credential. DAEMON/SERVER ONLY — this returns
+ * the secret in full so the runner can call the upstream MCP server or post to a
+ * gateway channel. Never expose the result to a browser client. Null when the
+ * connector has no stored secret (not connected).
+ */
+export async function getConnectorSecret(
+  workspaceId: string,
+  provider: ConnectorProvider
+): Promise<string | null> {
+  const rows = await db
+    .select({ secret: connectors.secret })
+    .from(connectors)
+    .where(
+      and(
+        eq(connectors.workspaceId, workspaceId),
+        eq(connectors.provider, provider)
+      )
+    )
+    .limit(1);
+  const stored = rows[0]?.secret;
+  // Decrypt only at the point of use (materializing into code / posting). The
+  // ciphertext never leaves this layer.
+  return stored ? decryptSecret(stored) : null;
+}
+
+/** The MCP providers whose keys are materialized into a run's codebase config. */
+const MCP_PROVIDERS = ["linear", "figma", "context7"] as const;
+
+/**
+ * Decrypted MCP keys for a workspace's connected MCP connectors, keyed by
+ * provider — SERVER ONLY. The runner-claim route hands these to the runner (over
+ * the authenticated link) so it can write the agent's MCP config (.mcp.json /
+ * .codex/config.toml) into the cloned repo. Only providers with a stored secret
+ * appear; the plaintext never reaches a browser client.
+ */
+export async function getMcpConnectorKeys(
+  workspaceId: string
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const provider of MCP_PROVIDERS) {
+    const secret = await getConnectorSecret(workspaceId, provider);
+    if (secret) out[provider] = secret;
+  }
+  return out;
 }

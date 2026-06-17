@@ -30,10 +30,24 @@ export const DEFAULT_BUDGET = 2;
 /** Non-terminal lifecycle states + the three Run Outcome terminals. */
 export type QueueState =
   | "queued"
+  | "parked"
   | "running"
   | "green"
   | "escalated-to-human"
   | "blocked";
+
+/**
+ * The states an issue occupies while it is *still in the queue*. Terminals
+ * (green / escalated-to-human / blocked) have, by definition, left the queue —
+ * they live in Runs/history. The queue surface reads only these, so it
+ * self-flushes: an entry drops out the instant it reaches a terminal, with no
+ * cleanup job to run. `parked` is in-queue (waiting on a dependency), not done.
+ */
+export const ACTIVE_QUEUE_STATES = [
+  "queued",
+  "parked",
+  "running",
+] as const satisfies readonly QueueState[];
 
 /** The two model tiers from `queue_state.Tier` (cheap → strong). */
 export type QueueTier = "cheap" | "strong";
@@ -128,8 +142,75 @@ export function queueStateLabel(state: QueueState): string {
       return "Blocked";
     case "running":
       return "Running";
+    case "parked":
+      return "Parked";
     case "queued":
     default:
       return "Queued";
   }
+}
+
+// ---------------------------------------------------------------------------
+// Durable-queue projection (preferred): map authoritative `queue_entries` rows
+// straight to view entries. Unlike the runs-history projection above, this
+// cannot accumulate phantom-queued entries — the state column IS the truth, and
+// the read query excludes terminals, so the queue reflects only pending work.
+// ---------------------------------------------------------------------------
+
+/** A `queue_entries` row as the view needs it (subset of the durable schema). */
+export interface QueueEntryRow {
+  id: string;
+  externalId: string;
+  title: string;
+  /** queue_state.Tier: 0 = cheap, 1 = strong. */
+  tier: number;
+  remainingBudget: number;
+  /** queue_state vocabulary: queued|parked|running + terminals. */
+  state: string;
+  updatedAt: string;
+}
+
+/** queue_entries `tier` integer → the view's tier label. */
+function tierLabel(tier: number): QueueTier {
+  return tier >= 1 ? "strong" : "cheap";
+}
+
+/** Coerce a raw state string to a known QueueState (unknown → `queued`). */
+function asQueueState(state: string): QueueState {
+  switch (state) {
+    case "queued":
+    case "parked":
+    case "running":
+    case "green":
+    case "escalated-to-human":
+    case "blocked":
+      return state;
+    default:
+      return "queued";
+  }
+}
+
+/**
+ * Project authoritative `queue_entries` rows into view entries. Pure: tier and
+ * state come straight from the row (the state machine already decided them);
+ * failed attempts are inferred from the consumed budget. Most-recently-updated
+ * first, matching the runs projection's ordering.
+ */
+export function mapQueueEntryRows(rows: QueueEntryRow[]): QueueEntryView[] {
+  const entries = rows.map((row) => {
+    const failedAttempts = Math.max(DEFAULT_BUDGET - row.remainingBudget, 0);
+    return {
+      issueKey: row.externalId,
+      title: row.title || null,
+      agent: "claude",
+      tier: tierLabel(row.tier),
+      remainingBudget: row.remainingBudget,
+      state: asQueueState(row.state),
+      attempts: failedAttempts,
+      failedAttempts,
+      updatedAt: row.updatedAt,
+    } satisfies QueueEntryView;
+  });
+  entries.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  return entries;
 }

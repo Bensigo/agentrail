@@ -225,6 +225,45 @@ def merge_pr_squash(pr: int, subject: str) -> Tuple[bool, str]:
     return False, (err2 or err).strip()
 
 
+def pr_checks(pr: int) -> List[dict]:
+    """Return the PR's CI checks as ``[{"name": str, "state": str}]``.
+
+    ``state`` is normalized to one of: "pass", "fail", "pending". An empty
+    list means GitHub reports no checks for the PR.
+    """
+    rc, stdout, _ = _run(["pr", "checks", str(pr), "--json", "name,state,bucket"])
+    # `gh pr checks` exits non-zero both when checks are failing and when
+    # there are none; rely on the JSON output, treating empty output as "no
+    # checks".
+    if not stdout.strip():
+        return []
+    try:
+        raw = json.loads(stdout)
+    except json.JSONDecodeError:
+        return []
+    out: List[dict] = []
+    for c in raw:
+        out.append({"name": str(c.get("name", "")), "state": _norm_check(c)})
+    return out
+
+
+def _norm_check(c: dict) -> str:
+    # gh's `bucket` is the most reliable rollup: pass|fail|pending|skipping|cancel
+    bucket = str(c.get("bucket") or "").lower()
+    if bucket in {"pass", "skipping"}:
+        return "pass"
+    if bucket in {"fail", "cancel"}:
+        return "fail"
+    if bucket == "pending":
+        return "pending"
+    state = str(c.get("state") or "").lower()
+    if state in {"success", "neutral", "skipped"}:
+        return "pass"
+    if state in {"failure", "error", "timed_out", "cancelled", "action_required"}:
+        return "fail"
+    return "pending"
+
+
 # --------------------------------------------------------------------------- #
 # The GitHub adapter (implements the shared Connector interface)
 # --------------------------------------------------------------------------- #

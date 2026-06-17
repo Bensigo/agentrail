@@ -8,6 +8,7 @@ import { StatHeader } from "../../../components/stat-header";
 import { EmptyState } from "../../../components/empty-state";
 import { ErrorState } from "../../../components/error-state";
 import { LoadingState } from "../../../components/loading-state";
+import { CreateIssueButton } from "./components/create-issue-button";
 
 interface EvidenceRef {
   label: string;
@@ -61,10 +62,10 @@ function FindingsCountBadge({ count }: { count: number }) {
   if (count === 0) return null;
   return (
     <span
-      title={`${count} bug${count === 1 ? "" : "s"} found`}
-      className="px-1.5 py-0.5 rounded-sm text-xs font-medium shrink-0 bg-[color-mix(in_srgb,var(--red-11)_16%,transparent)] text-[var(--red-11)]"
+      title={`${count} advisory finding${count === 1 ? "" : "s"}`}
+      className="px-1.5 py-0.5 rounded-sm text-xs font-medium shrink-0 bg-[var(--gray-03)] text-[var(--gray-11)]"
     >
-      {count} bug{count === 1 ? "" : "s"}
+      {count} finding{count === 1 ? "" : "s"}
     </span>
   );
 }
@@ -107,7 +108,7 @@ function GateSubRow({
       {gate.blockingReasons.length > 0 && (
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] mb-1">
-            Blocking reasons
+            Why merge was blocked
           </p>
           <ul className="space-y-1">
             {gate.blockingReasons.map((reason, i) => (
@@ -149,19 +150,28 @@ function GateSubRow({
           </p>
           <ul className="space-y-1">
             {findings.map((f, i) => (
-              <li key={i} className="text-xs text-[var(--gray-11)] flex items-start gap-1.5">
-                <span
-                  className={`mt-0.5 shrink-0 font-mono ${
-                    f.severity === "critical"
-                      ? "text-[var(--red-11)]"
-                      : f.severity === "major"
-                      ? "text-[var(--orange-11)]"
-                      : "text-[var(--yellow-11)]"
-                  }`}
-                >
-                  [{f.severity}]
+              <li key={i} className="text-xs text-[var(--gray-11)] flex items-start justify-between gap-3">
+                <span className="flex items-start gap-1.5 min-w-0">
+                  <span
+                    className={`mt-0.5 shrink-0 font-mono ${
+                      f.severity === "critical"
+                        ? "text-[var(--red-11)]"
+                        : f.severity === "major"
+                        ? "text-[var(--orange-11)]"
+                        : "text-[var(--yellow-11)]"
+                    }`}
+                  >
+                    [{f.severity}]
+                  </span>
+                  <span>{f.description}</span>
                 </span>
-                <span>{f.description}</span>
+                <span className="shrink-0">
+                  <CreateIssueButton
+                    workspaceId={workspaceId}
+                    gateId={gate.id}
+                    findingIndex={i}
+                  />
+                </span>
               </li>
             ))}
           </ul>
@@ -348,12 +358,13 @@ export default function ReviewGatesPage() {
           Review Gates
         </h1>
         <p className="mt-1 max-w-[80ch] text-xs leading-relaxed text-[var(--gray-09)]">
-          A review gate is a policy checkpoint between an agent&apos;s phases. It
-          evaluates the run&apos;s evidence — acceptance criteria, citations, tests,
-          and visual checks — then <span className="text-[var(--green-11)]">passes</span>,{" "}
-          <span className="text-[var(--red-11)]">fails</span>, or{" "}
-          <span className="text-[var(--yellow-11)]">holds</span>. Expand a row to see
-          the criteria it checked, the evidence, and why it blocked.
+          A review gate decides whether a change may merge. It{" "}
+          <span className="text-[var(--green-11)]">passes</span> or{" "}
+          <span className="text-[var(--red-11)]">fails</span> on objective
+          evidence only — CI (tests, build, lint) and security checks. The
+          listed findings are <span className="text-[var(--gray-12)]">advisory</span>:
+          they never block merge. Convert any finding into a Linear or GitHub
+          issue from the row below.
         </p>
       </div>
 

@@ -7,7 +7,6 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import {
   Play,
-  Package,
   AlertTriangle,
   ShieldCheck,
   DollarSign,
@@ -55,12 +54,6 @@ async function SectionGrid({ workspaceId }: { workspaceId: string }) {
 
   const sections = [
     { label: "Runs", icon: Play, href: "runs", value: String(counts.runs) },
-    {
-      label: "Context Packs",
-      icon: Package,
-      href: "context-packs",
-      value: String(telemetry.contextPacks),
-    },
     {
       label: "Failures",
       icon: AlertTriangle,
@@ -170,7 +163,7 @@ export default async function WorkspaceDashboardPage({
       />
 
       <div className="mt-2">
-        <Suspense fallback={<SkeletonCardGrid cards={9} />}>
+        <Suspense fallback={<SkeletonCardGrid cards={8} />}>
           <SectionGrid workspaceId={workspaceId} />
         </Suspense>
       </div>

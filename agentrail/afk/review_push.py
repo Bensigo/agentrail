@@ -53,6 +53,8 @@ _CLEAN_RE = re.compile(
 
 _FALLBACK_SNIPPET_LIMIT = 1000
 
+_GATE_STATE_TO_STATUS = {"pass": "passed", "fail": "failed", "pending": "pending"}
+
 
 def _finding_category(severity: str, title: str, body: str) -> str:
     """Map a review finding to the fixed review-gate evidence vocabulary."""
@@ -183,42 +185,41 @@ def push_memory_items(
         return False
 
 
+def build_gate_payload(repository_id: str, run_id: str, round_no: int, gate,
+                       review_text: str) -> dict:
+    """Build the review-gate telemetry payload.
+
+    status / blocking_reasons describe the OBJECTIVE gate (CI + security).
+    findings is the advisory LLM review output, parsed from ``review_text``.
+    """
+    gate_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"review-gate:{run_id}:{round_no}"))
+    return {
+        "id": gate_id,
+        "repository_id": repository_id,
+        "run_id": run_id,
+        "gate_name": f"review-round-{round_no}",
+        "status": _GATE_STATE_TO_STATUS.get(gate.state, "pending"),
+        "blocking_reasons": list(gate.reasons),
+        "findings": parse_findings(review_text),
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def push_review_gate(
     target: Path,
     run_id: str,
     round_no: int,
-    outcome,  # ReviewOutcome — avoid circular import at module level
+    gate,  # ObjectiveGateResult
     review_text: str = "",
 ) -> bool:
-    """POST a review-gate record for one completed review round.
-
-    Returns True only on HTTP 202; returns False (never raises) otherwise.
-    ``round_no`` should be the post-increment value so it matches
-    'review round N completed' semantics.
-    """
+    """POST a review-gate record. status/reasons = objective gate; findings = advisory."""
     try:
         link = load_link(target)
         if link is None:
             return False
-        gate_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"review-gate:{run_id}:{round_no}"))
-        payload = {
-            "id": gate_id,
-            "repository_id": link["repository_id"],
-            "run_id": run_id,
-            "gate_name": f"review-round-{round_no}",
-            "status": "failed" if outcome.has_blocking else "passed",
-            "blocking_reasons": [
-                {
-                    "title": f.title,
-                    "severity": f.severity,
-                    "file": f.file,
-                    "body": f.body,
-                }
-                for f in outcome.blocking
-            ],
-            "findings": parse_findings(review_text),
-            "evaluated_at": datetime.now(timezone.utc).isoformat(),
-        }
+        payload = build_gate_payload(
+            link["repository_id"], run_id, round_no, gate, review_text
+        )
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             f"{link['base_url']}/api/v1/ingest/review-gates",

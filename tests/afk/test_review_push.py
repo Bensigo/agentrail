@@ -4,8 +4,9 @@ Coverage:
 - Correct payload mapping (id, run_id, gate_name, status, blocking_reasons, repository_id).
 - Not linked (no server.json) → returns False, no HTTP call made.
 - HTTP error → returns False, never raises (non-fatal).
-- "passed" status when no blocking findings.
-- "failed" status when blocking findings present.
+- "passed" status when objective gate passes.
+- "failed" status when objective gate fails.
+- build_gate_payload uses objective gate state, not review findings.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import pytest
 
 from agentrail.afk import review_push
 from agentrail.afk.review import Finding, ReviewOutcome
+from agentrail.afk.objective_gate import ObjectiveGateResult
 
 
 # ---------------------------------------------------------------------------
@@ -35,11 +37,10 @@ def _write_server_json(tmp_path: Path, base_url: str = "http://localhost:3000",
     }))
 
 
-def _make_outcome(blocking=(), advisory=()) -> ReviewOutcome:
+def _make_outcome(findings=(), memory_suggestions=()) -> ReviewOutcome:
     return ReviewOutcome(
-        blocking=list(blocking),
-        advisory=list(advisory),
-        memory_suggestions=[],
+        findings=list(findings),
+        memory_suggestions=list(memory_suggestions),
     )
 
 
@@ -72,7 +73,8 @@ def test_push_returns_false_when_not_linked(tmp_path: Path, monkeypatch) -> None
         return FakeResp()
 
     monkeypatch.setattr(review_push.urllib.request, "urlopen", fake_urlopen)
-    result = review_push.push_review_gate(tmp_path, "run-id", 1, _make_outcome())
+    gate = ObjectiveGateResult("pass", [])
+    result = review_push.push_review_gate(tmp_path, "run-id", 1, gate)
     assert result is False
     assert not captured
 
@@ -97,10 +99,9 @@ def test_push_payload_fields(tmp_path: Path, monkeypatch) -> None:
 
     run_id = "run-000"
     round_no = 3
-    finding = _finding(title="Null deref", severity="P0", file="main.py", body="check it")
-    outcome = _make_outcome(blocking=[finding])
+    gate = ObjectiveGateResult("fail", ["CI check 'test' failed"])
 
-    result = review_push.push_review_gate(tmp_path, run_id, round_no, outcome)
+    result = review_push.push_review_gate(tmp_path, run_id, round_no, gate)
 
     assert result is True
     assert captured["url"] == "http://localhost:4000/api/v1/ingest/review-gates"
@@ -110,18 +111,14 @@ def test_push_payload_fields(tmp_path: Path, monkeypatch) -> None:
     assert body["repository_id"] == "repo-xyz"
     assert body["gate_name"] == f"review-round-{round_no}"
     assert body["status"] == "failed"
-    assert len(body["blocking_reasons"]) == 1
-    assert body["blocking_reasons"][0]["title"] == "Null deref"
-    assert body["blocking_reasons"][0]["severity"] == "P0"
-    assert body["blocking_reasons"][0]["file"] == "main.py"
-    assert body["blocking_reasons"][0]["body"] == "check it"
+    assert body["blocking_reasons"] == ["CI check 'test' failed"]
     assert "evaluated_at" in body
     # id is uuid5 of review-gate:<run_id>:<round_no>
     expected_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"review-gate:{run_id}:{round_no}"))
     assert body["id"] == expected_id
 
 
-def test_push_status_passed_when_no_blocking(tmp_path: Path, monkeypatch) -> None:
+def test_push_status_passed_when_gate_passes(tmp_path: Path, monkeypatch) -> None:
     _write_server_json(tmp_path)
     captured: dict = {}
 
@@ -131,15 +128,14 @@ def test_push_status_passed_when_no_blocking(tmp_path: Path, monkeypatch) -> Non
 
     monkeypatch.setattr(review_push.urllib.request, "urlopen", fake_urlopen)
 
-    advisory_finding = _finding(severity="P2")
-    outcome = _make_outcome(advisory=[advisory_finding])
-    review_push.push_review_gate(tmp_path, "run-1", 1, outcome)
+    gate = ObjectiveGateResult("pass", [])
+    review_push.push_review_gate(tmp_path, "run-1", 1, gate)
 
     assert captured["body"]["status"] == "passed"
     assert captured["body"]["blocking_reasons"] == []
 
 
-def test_push_status_failed_when_blocking(tmp_path: Path, monkeypatch) -> None:
+def test_push_status_failed_when_gate_fails(tmp_path: Path, monkeypatch) -> None:
     _write_server_json(tmp_path)
     captured: dict = {}
 
@@ -149,8 +145,8 @@ def test_push_status_failed_when_blocking(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(review_push.urllib.request, "urlopen", fake_urlopen)
 
-    outcome = _make_outcome(blocking=[_finding(severity="P1")])
-    review_push.push_review_gate(tmp_path, "run-2", 1, outcome)
+    gate = ObjectiveGateResult("fail", ["CI check 'lint' failed"])
+    review_push.push_review_gate(tmp_path, "run-2", 1, gate)
 
     assert captured["body"]["status"] == "failed"
     assert len(captured["body"]["blocking_reasons"]) == 1
@@ -168,7 +164,8 @@ def test_push_returns_false_on_http_error(tmp_path: Path, monkeypatch) -> None:
         raise OSError("network down")
 
     monkeypatch.setattr(review_push.urllib.request, "urlopen", boom)
-    result = review_push.push_review_gate(tmp_path, "run-3", 1, _make_outcome())
+    gate = ObjectiveGateResult("pass", [])
+    result = review_push.push_review_gate(tmp_path, "run-3", 1, gate)
     assert result is False  # never raises
 
 
@@ -184,8 +181,9 @@ def test_push_id_is_deterministic(tmp_path: Path, monkeypatch) -> None:
 
     run_id = "stable-run"
     round_no = 2
-    review_push.push_review_gate(tmp_path, run_id, round_no, _make_outcome())
-    review_push.push_review_gate(tmp_path, run_id, round_no, _make_outcome())
+    gate = ObjectiveGateResult("pass", [])
+    review_push.push_review_gate(tmp_path, run_id, round_no, gate)
+    review_push.push_review_gate(tmp_path, run_id, round_no, gate)
 
     assert len(ids) == 2
     assert ids[0] == ids[1]
@@ -201,8 +199,9 @@ def test_push_id_differs_by_round(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(review_push.urllib.request, "urlopen", fake_urlopen)
 
-    review_push.push_review_gate(tmp_path, "run-x", 1, _make_outcome())
-    review_push.push_review_gate(tmp_path, "run-x", 2, _make_outcome())
+    gate = ObjectiveGateResult("pass", [])
+    review_push.push_review_gate(tmp_path, "run-x", 1, gate)
+    review_push.push_review_gate(tmp_path, "run-x", 2, gate)
 
     assert ids[0] != ids[1]
 
@@ -354,8 +353,8 @@ def test_push_includes_findings_from_review_text(tmp_path: Path, monkeypatch) ->
 
     monkeypatch.setattr(review_push.urllib.request, "urlopen", fake_urlopen)
 
-    outcome = _make_outcome(blocking=[_finding(severity="P1")])
-    review_push.push_review_gate(tmp_path, "run-f", 1, outcome,
+    gate = ObjectiveGateResult("fail", ["CI check 'test' failed"])
+    review_push.push_review_gate(tmp_path, "run-f", 1, gate,
                                  review_text=STRUCTURED_REVIEW)
 
     findings = captured["body"]["findings"]
@@ -375,8 +374,38 @@ def test_push_findings_default_empty(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(review_push.urllib.request, "urlopen", fake_urlopen)
 
-    review_push.push_review_gate(tmp_path, "run-g", 1, _make_outcome())
+    gate = ObjectiveGateResult("pass", [])
+    review_push.push_review_gate(tmp_path, "run-g", 1, gate)
     assert captured["body"]["findings"] == []
+
+
+# ---------------------------------------------------------------------------
+# build_gate_payload — new function tests (ADR 0007 realignment)
+# ---------------------------------------------------------------------------
+
+
+def test_build_gate_payload_uses_objective_status_and_advisory_findings():
+    gate = ObjectiveGateResult("fail", ["CI check 'test' failed"])
+    review_text = (
+        "BEGIN_REVIEW_FIX_ISSUES_JSON\n"
+        '{"fix_issues": [{"title":"x","severity":"P2","file":"a.py","body":"b"}]}\n'
+        "END_REVIEW_FIX_ISSUES_JSON\n"
+    )
+    payload = review_push.build_gate_payload(
+        repository_id="r", run_id="run1", round_no=1, gate=gate, review_text=review_text
+    )
+    assert payload["status"] == "failed"                      # from objective gate
+    assert payload["blocking_reasons"] == ["CI check 'test' failed"]
+    assert len(payload["findings"]) == 1                       # advisory, from review
+    assert payload["findings"][0]["severity"] == "major"
+
+
+def test_build_gate_payload_passed_status():
+    gate = ObjectiveGateResult("pass", [])
+    payload = review_push.build_gate_payload(
+        repository_id="r", run_id="run1", round_no=1, gate=gate, review_text=""
+    )
+    assert payload["status"] == "passed" and payload["blocking_reasons"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +414,7 @@ def test_push_findings_default_empty(tmp_path: Path, monkeypatch) -> None:
 
 
 def _make_outcome_with_memory(suggestions) -> ReviewOutcome:
-    return ReviewOutcome(blocking=[], advisory=[], memory_suggestions=suggestions)
+    return ReviewOutcome(findings=[], memory_suggestions=suggestions)
 
 
 def test_extract_memory_suggestions_empty_list() -> None:

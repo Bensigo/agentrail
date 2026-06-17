@@ -27,7 +27,21 @@ import { workspaces } from "./workspaces.js";
  * still governed by the prerequisite capability gate
  * (`agentrail/heartbeat/gate.py`); `enabled` here is operator intent.
  */
-export const connectorProviderEnum = ["github", "linear", "discord"] as const;
+export const connectorProviderEnum = [
+  // https — connected at login (GitHub OAuth), no stored secret here.
+  "github",
+  // mcp — Model-Context-Protocol tool servers the agent can call. Each stores
+  // a per-workspace API key/token in the connector's write-only `secret`.
+  "linear",
+  "figma",
+  "context7",
+  // gateway — outbound communication channels (notify). Discord keeps its
+  // legacy webhook on the workspaces row; slack/telegram store their credential
+  // in `secret` (telegram also needs `chatId`, kept in `config`).
+  "discord",
+  "slack",
+  "telegram",
+] as const;
 export type ConnectorProvider = (typeof connectorProviderEnum)[number];
 
 /** Trigger configuration stored on a connector row (jsonb `config`). */
@@ -38,6 +52,12 @@ export interface ConnectorConfig {
   triggerLabel: string;
   /** How often the daemon polls for labeled issues. */
   pollIntervalSeconds: number;
+  /**
+   * Telegram gateway: the chat id the bot posts to (a numeric id or `@channel`).
+   * Non-secret display field (the bot token is the secret). Absent for other
+   * providers.
+   */
+  chatId?: string;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */
@@ -60,6 +80,12 @@ export const connectors = pgTable(
     // Operator intent. A freshly-connected connector defaults ON — connecting a
     // tool self-configures (and enables) the heartbeat for it.
     enabled: boolean("enabled").notNull().default(true),
+    // Write-only credential for credential-based connectors: the MCP API key
+    // (linear / figma / context7) or the gateway secret (slack webhook URL,
+    // telegram bot token). NEVER returned to the client in full — the read model
+    // exposes only `hasSecret` + a masked display target. Null = not connected.
+    // (Discord's legacy webhook stays on workspaces.discord_webhook_url.)
+    secret: text("secret"),
     // Trigger config (repos / label / interval). Shape: ConnectorConfig.
     config: jsonb("config")
       .$type<ConnectorConfig>()
@@ -88,5 +114,12 @@ export interface ConnectorRowView {
   provider: ConnectorProvider;
   enabled: boolean;
   config: ConnectorConfig;
+  /**
+   * Whether a credential is stored for this connector — a safe boolean the
+   * console uses to derive connected state. The raw `secret` is NEVER projected
+   * here; the daemon reads it via {@link getConnectorSecret} when it needs to
+   * actually call the upstream.
+   */
+  hasSecret: boolean;
   updatedAt: string | null;
 }

@@ -259,6 +259,21 @@ def run_issue_on_host(
                              gate_reason="git clone failed",
                              logs_tail=tail or "(no output)")
 
+        # 1b. Materialize connected MCP connectors into the codebase: write the
+        # agent-correct MCP config into the clone from AGENTRAIL_MCP_<PROVIDER>_KEY
+        # env vars so the agent can call Linear/Figma/Context7 tools during the
+        # run — .mcp.json for claude, .codex/config.toml for codex (codex is NOT
+        # JSON). The keys arrive decrypted (the console encrypts them at rest). No
+        # MCP connector configured → nothing written. Best-effort: a bad config
+        # must never wedge the run.
+        try:
+            from agentrail.connectors.mcp_config import write_mcp_config_from_env
+
+            # child_env carries AGENTRAIL_AGENT, so the writer picks the format.
+            write_mcp_config_from_env(repo_dir, child_env)
+        except Exception:  # noqa: BLE001 - MCP config injection is best-effort
+            pass
+
         # 2. Run the spine on the host.
         run_cmd = _build_run_command(
             issue_ref=issue_ref, agent=agent, model=model,

@@ -94,6 +94,41 @@ def test_claim_next_returns_none_when_nothing_grabbable():
     assert _client(transport).claim_next() is None
 
 
+def test_claim_next_parses_mcp_keys_from_payload():
+    # The claim payload carries decrypted MCP keys; the runner exports them so
+    # native_runner writes the agent's MCP config into the clone.
+    transport = FakeTransport(
+        [
+            Response(
+                status=200,
+                body=(
+                    b'{"id":"wi-1","workspace_id":"ws1","source":"github",'
+                    b'"external_id":"42","repo_url":"https://github.com/o/r",'
+                    b'"mcp_keys":{"linear":"lin_api_x","context7":"ctx7sk-y","bad":1}}'
+                ),
+            )
+        ]
+    )
+    item = _client(transport).claim_next()
+    # Valid string→string pairs kept; the malformed (non-string) value dropped.
+    assert item.mcp_keys == {"linear": "lin_api_x", "context7": "ctx7sk-y"}
+
+
+def test_claim_next_defaults_mcp_keys_to_empty_when_absent():
+    transport = FakeTransport(
+        [
+            Response(
+                status=200,
+                body=(
+                    b'{"id":"wi-1","workspace_id":"ws1","source":"github",'
+                    b'"external_id":"42","repo_url":"https://github.com/o/r"}'
+                ),
+            )
+        ]
+    )
+    assert _client(transport).claim_next().mcp_keys == {}
+
+
 def test_workitem_issue_number_extracts_bare_number():
     # external_id is the GitHub identity (`repo#number`), but `agentrail run
     # issue` needs the bare number. issue_number bridges that.

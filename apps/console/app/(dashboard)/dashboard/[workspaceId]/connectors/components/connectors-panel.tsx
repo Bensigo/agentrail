@@ -1,28 +1,61 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Github, Layers, MessageSquare, Radio, AlertCircle } from "lucide-react";
+import { useCallback, useEffect, useState, type ComponentType } from "react";
+import {
+  Radio,
+  AlertCircle,
+  ChevronDown,
+  ExternalLink,
+  CheckCircle2,
+} from "lucide-react";
 import { ConnectorStatusBadge } from "./connector-status-badge";
+import {
+  GithubBrand,
+  LinearBrand,
+  FigmaBrand,
+  Context7Brand,
+  DiscordBrand,
+  SlackBrand,
+  TelegramBrand,
+  type BrandIconProps,
+} from "./brand-icons";
 import {
   activeHeartbeatConnectors,
   capabilitySummary,
+  CONNECTOR_TYPE_META,
+  validateConnectorCredential,
   type ConnectorKind,
+  type ConnectorType,
   type ConnectorView,
 } from "./connector-helpers";
 
-const KIND_ICON: Record<ConnectorKind, typeof Github> = {
-  github: Github,
-  linear: Layers,
-  discord: MessageSquare,
+/** Brand glyph per connector kind (lucide carries no logos — see brand-icons). */
+const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
+  github: GithubBrand,
+  linear: LinearBrand,
+  figma: FigmaBrand,
+  context7: Context7Brand,
+  discord: DiscordBrand,
+  slack: SlackBrand,
+  telegram: TelegramBrand,
 };
 
-/**
- * Heartbeat trigger controls, folded into each connector card (#816). The
- * standalone Heartbeat page is gone — a connector now self-configures the loop,
- * and owner/admins tune it here: enabled toggle, trigger label, poll interval.
- * Writes go to PUT /connectors with the provider; the daemon reads the same rows
- * via list_active_connectors.
- */
+/** A subtle brand tint per kind, used on the icon chip so cards stay scannable. */
+const KIND_TINT: Record<ConnectorKind, string> = {
+  github: "text-[var(--gray-12)]",
+  linear: "text-[#5e6ad2]",
+  figma: "text-[#f24e1e]",
+  context7: "text-[var(--gray-11)]",
+  discord: "text-[#5865f2]",
+  slack: "text-[#36c5f0]",
+  telegram: "text-[#26a5e4]",
+};
+
+const SECTION_ORDER: ConnectorType[] = ["https", "mcp", "gateway"];
+
+// --------------------------------------------------------------------------- //
+// Trigger controls (#816) — folded into each connected ingest connector card.
+// --------------------------------------------------------------------------- //
 function TriggerControls({
   connector,
   workspaceId,
@@ -75,14 +108,13 @@ function TriggerControls({
     [workspaceId, connector.kind, onChanged]
   );
 
-  // Only ingest connectors have a heartbeat trigger to manage.
   if (!connector.capabilities.ingest) return null;
 
   return (
-    <div className="mt-3 flex flex-col gap-3 border-t border-[var(--gray-04)] pt-3">
+    <div className="mt-3 flex flex-col gap-2.5 border-t border-[var(--gray-04)] pt-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
-          <Radio size={13} className="text-[var(--gray-09)]" />
+          <Radio size={12} className="text-[var(--gray-09)]" />
           <span className="text-xs font-medium text-[var(--gray-11)]">
             Heartbeat trigger
           </span>
@@ -99,8 +131,8 @@ function TriggerControls({
           }`}
         >
           <span
-            className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
-              connector.enabled ? "translate-x-[18px]" : "translate-x-0.5"
+            className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+              connector.enabled ? "translate-x-4" : "translate-x-0"
             }`}
           />
         </button>
@@ -116,57 +148,91 @@ function TriggerControls({
         }}
         className="flex flex-col gap-2"
       >
-        <div className="flex flex-col gap-1">
-          <label
-            htmlFor={`trigger-label-${connector.kind}`}
-            className="text-xs text-[var(--gray-09)]"
-          >
-            Trigger label
-          </label>
+        <div className="flex items-center gap-2">
           <input
-            id={`trigger-label-${connector.kind}`}
+            aria-label="Trigger label"
             type="text"
             maxLength={50}
             value={label}
             disabled={!canManage}
             placeholder="ready-for-agent"
             onChange={(e) => setLabel(e.target.value)}
-            className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+            className="h-7 flex-1 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
           />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label
-            htmlFor={`poll-interval-${connector.kind}`}
-            className="text-xs text-[var(--gray-09)]"
-          >
-            Poll interval (seconds, 10–86400)
-          </label>
           <input
-            id={`poll-interval-${connector.kind}`}
+            aria-label="Poll interval (seconds)"
             type="number"
             min={10}
             max={86400}
             step={1}
             value={interval}
             disabled={!canManage}
+            title="Poll interval (seconds, 10–86400)"
             onChange={(e) => setIntervalValue(e.target.value)}
-            className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+            className="h-7 w-20 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
           />
+          <button
+            type="submit"
+            disabled={!canManage || saving || !dirty || !label.trim()}
+            className="h-7 shrink-0 rounded border border-[var(--gray-06)] bg-[var(--gray-03)] px-3 text-xs font-medium text-[var(--gray-12)] transition-colors hover:border-[var(--gray-08)] disabled:opacity-50"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
         </div>
-        <button
-          type="submit"
-          disabled={!canManage || saving || !dirty || !label.trim()}
-          className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] transition-colors hover:border-[var(--gray-08)] disabled:opacity-50"
-        >
-          {saving ? "Saving…" : "Save trigger"}
-        </button>
         {err && <p className="text-xs text-[#ff9592]">{err}</p>}
       </form>
     </div>
   );
 }
 
-function ConnectorCard({
+// --------------------------------------------------------------------------- //
+// "How to set up" — collapsible per-provider steps + docs link.
+// --------------------------------------------------------------------------- //
+function SetupHelp({ connector }: { connector: ConnectorView }) {
+  const [open, setOpen] = useState(false);
+  if (!connector.connect) return null;
+  const { setupSteps, helpUrl } = connector.connect;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1 self-start text-xs text-[var(--gray-09)] hover:text-[var(--gray-11)]"
+      >
+        <ChevronDown
+          size={12}
+          className={`transition-transform ${open ? "rotate-180" : ""}`}
+        />
+        How to set up {connector.label}
+      </button>
+      {open && (
+        <div className="flex flex-col gap-1.5 rounded border border-[var(--gray-04)] bg-[var(--gray-02)] p-2.5">
+          <ol className="ml-3.5 list-decimal space-y-1 text-xs leading-relaxed text-[var(--gray-10)]">
+            {setupSteps.map((s, i) => (
+              <li key={i}>{s}</li>
+            ))}
+          </ol>
+          <a
+            href={helpUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 self-start text-xs text-[#5b9dff] hover:underline"
+          >
+            Open {connector.label} docs
+            <ExternalLink size={11} />
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Secret connector management — MCP keys (linear/figma/context7) + slack/telegram.
+// Posts the credential to the write-only /connectors/secret route; the value is
+// never read back. Telegram additionally needs a target chat id.
+// --------------------------------------------------------------------------- //
+function SecretManage({
   connector,
   workspaceId,
   canManage,
@@ -177,124 +243,136 @@ function ConnectorCard({
   canManage: boolean;
   onChanged: () => void;
 }) {
-  const Icon = KIND_ICON[connector.kind];
-  const isPlanned = connector.availability === "planned";
   const isConnected = connector.status === "connected";
+  const [secret, setSecret] = useState("");
+  const [chatId, setChatId] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const meta = connector.connect;
+  const needsChatId = Boolean(meta?.needsChatId);
+
+  const save = useCallback(
+    async (body: { secret: string | null; chatId?: string }) => {
+      setSaving(true);
+      setErr(null);
+      try {
+        const res = await fetch(
+          `/api/v1/workspaces/${workspaceId}/connectors/secret`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ provider: connector.kind, ...body }),
+          }
+        );
+        if (!res.ok) {
+          const b = await res.json().catch(() => ({}));
+          throw new Error((b as { error?: string }).error ?? `HTTP ${res.status}`);
+        }
+        setSecret("");
+        setChatId("");
+        onChanged();
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "Failed to save");
+      } finally {
+        setSaving(false);
+      }
+    },
+    [workspaceId, connector.kind, onChanged]
+  );
+
+  if (isConnected) {
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
+          <CheckCircle2 size={13} className="text-[#1fd8a4]" />
+          {meta?.credentialLabel ?? "Credential"} stored
+          {connector.target ? (
+            <code className="font-mono text-[var(--gray-11)]">
+              · {connector.target}
+            </code>
+          ) : null}
+        </p>
+        <button
+          onClick={() => save({ secret: null })}
+          disabled={!canManage || saving}
+          className="h-7 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-02)] text-xs font-medium text-[var(--gray-11)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+        >
+          {saving ? "Disconnecting…" : "Disconnect"}
+        </button>
+        {err && <p className="text-xs text-[#ff9592]">{err}</p>}
+      </div>
+    );
+  }
 
   return (
-    <div className="flex flex-col gap-3 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-4">
-      <div className="flex items-start gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded bg-[var(--gray-03)] border border-[var(--gray-05)]">
-          <Icon size={18} className="text-[var(--gray-11)]" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-[var(--gray-12)]">
-              {connector.label}
-            </span>
-            <ConnectorStatusBadge
-              status={connector.status}
-              availability={connector.availability}
-            />
-          </div>
-          <p className="mt-0.5 text-xs text-[var(--gray-09)] leading-relaxed">
-            {connector.description}
-          </p>
-        </div>
-      </div>
-
-      {/* Capabilities + binding details */}
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-        <dt className="text-[var(--gray-09)]">Capabilities</dt>
-        <dd className="font-mono text-[var(--gray-11)] text-right">
-          {capabilitySummary(connector.capabilities)}
-        </dd>
-        {isConnected && connector.ingestLabel && (
-          <>
-            <dt className="text-[var(--gray-09)]">Ingest label</dt>
-            <dd className="font-mono text-[var(--gray-11)] text-right truncate">
-              {connector.ingestLabel}
-            </dd>
-          </>
-        )}
-        {isConnected && connector.target && (
-          <>
-            <dt className="text-[var(--gray-09)]">Target</dt>
-            <dd className="font-mono text-[var(--gray-11)] text-right truncate">
-              {connector.target}
-            </dd>
-          </>
-        )}
-      </dl>
-
-      {/* Action / status footer */}
-      <div className="mt-auto border-t border-[var(--gray-04)] pt-3">
-        {connector.kind === "discord" ? (
-          <DiscordManage
-            connector={connector}
-            workspaceId={workspaceId}
-            onChanged={onChanged}
-          />
-        ) : isPlanned ? (
-          <button
-            disabled
-            className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-02)] text-xs font-medium text-[var(--gray-08)] cursor-not-allowed"
-            title="Adapter ships in a follow-up (M038)"
-          >
-            Coming soon
-          </button>
-        ) : isConnected ? (
-          <p className="text-xs text-[var(--gray-09)] leading-relaxed">
-            Connected via the workspace&apos;s linked repositories. Issues labeled{" "}
-            <code className="font-mono text-[var(--gray-11)]">
-              {connector.ingestLabel}
-            </code>{" "}
-            are ingested into the Issue Queue; run results post back on the issue.
-          </p>
-        ) : connector.kind === "linear" ? (
-          <p className="text-xs text-[var(--gray-09)] leading-relaxed">
-            Not connected. Add a Linear API key for this workspace to ingest issues
-            labeled{" "}
-            <code className="font-mono text-[var(--gray-11)]">
-              {connector.ingestLabel ?? "ready-for-agent"}
-            </code>{" "}
-            into the Issue Queue; run results post back on the Linear issue.
-          </p>
-        ) : (
-          <p className="text-xs text-[var(--gray-09)] leading-relaxed">
-            Not connected. Link a repository to this workspace (API Keys → Connect
-            CLI) to ingest its labeled issues into the Issue Queue.
-          </p>
-        )}
-      </div>
-
-      {/* Heartbeat trigger config — only for connected ingest connectors. */}
-      {isConnected && connector.capabilities.ingest && (
-        <TriggerControls
-          connector={connector}
-          workspaceId={workspaceId}
-          canManage={canManage}
-          onChanged={onChanged}
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const check = validateConnectorCredential(
+          connector.kind,
+          secret,
+          needsChatId ? chatId : undefined
+        );
+        if (!check.ok) {
+          setErr(check.error);
+          return;
+        }
+        save({
+          secret: secret.trim(),
+          ...(needsChatId ? { chatId: chatId.trim() } : {}),
+        });
+      }}
+      className="flex flex-col gap-2"
+    >
+      <input
+        aria-label={meta?.credentialLabel ?? "Credential"}
+        type="password"
+        autoComplete="off"
+        placeholder={meta?.credentialPlaceholder}
+        value={secret}
+        disabled={!canManage}
+        onChange={(e) => setSecret(e.target.value)}
+        className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
+      />
+      {needsChatId && (
+        <input
+          aria-label="Chat id"
+          type="text"
+          placeholder="chat id (e.g. -1001234567890 or @channel)"
+          value={chatId}
+          disabled={!canManage}
+          onChange={(e) => setChatId(e.target.value)}
+          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
         />
       )}
-    </div>
+      {meta?.credentialHint && (
+        <p className="text-xs text-[var(--gray-08)]">{meta.credentialHint}</p>
+      )}
+      <button
+        type="submit"
+        disabled={!canManage || saving || secret.trim().length === 0}
+        className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+      >
+        {saving ? "Connecting…" : "Connect"}
+      </button>
+      {err && <p className="text-xs text-[#ff9592]">{err}</p>}
+      <SetupHelp connector={connector} />
+    </form>
   );
 }
 
-/**
- * Discord notify-connector management (M038, AC3). Lets a team connect /
- * disconnect Discord by saving a channel webhook URL — the connector posts
- * completion and escalation-to-human notifications to it (the Python adapter is
- * agentrail/connectors/discord.py). The full webhook is write-only: the read
- * model returns only a masked target, so we never render the secret token.
- */
+// --------------------------------------------------------------------------- //
+// Discord notify connector — its dedicated webhook route (kept as-is).
+// --------------------------------------------------------------------------- //
 function DiscordManage({
   connector,
   workspaceId,
+  canManage,
   onChanged,
 }: {
   connector: ConnectorView;
   workspaceId: string;
+  canManage: boolean;
   onChanged: () => void;
 }) {
   const isConnected = connector.status === "connected";
@@ -335,18 +413,17 @@ function DiscordManage({
   if (isConnected) {
     return (
       <div className="flex flex-col gap-2">
-        <p className="text-xs text-[var(--gray-09)] leading-relaxed">
-          Connected. Run <strong>completion</strong> and{" "}
-          <strong>escalation-to-human</strong> notifications post to{" "}
+        <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
+          <CheckCircle2 size={13} className="text-[#1fd8a4]" />
+          Posting to{" "}
           <code className="font-mono text-[var(--gray-11)]">
             {connector.target ?? "the configured webhook"}
           </code>
-          .
         </p>
         <button
           onClick={() => save(null)}
-          disabled={saving}
-          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-02)] text-xs font-medium text-[var(--gray-11)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+          disabled={!canManage || saving}
+          className="h-7 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-02)] text-xs font-medium text-[var(--gray-11)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
         >
           {saving ? "Disconnecting…" : "Disconnect"}
         </button>
@@ -363,40 +440,162 @@ function DiscordManage({
       }}
       className="flex flex-col gap-2"
     >
-      <label className="text-xs text-[var(--gray-09)]" htmlFor="discord-webhook">
-        Channel webhook URL
-      </label>
       <input
-        id="discord-webhook"
+        aria-label="Channel webhook URL"
         type="url"
         inputMode="url"
-        placeholder="https://discord.com/api/webhooks/…"
+        placeholder={connector.connect?.credentialPlaceholder}
         value={webhookUrl}
+        disabled={!canManage}
         onChange={(e) => setWebhookUrl(e.target.value)}
-        className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 text-xs font-mono text-[var(--gray-12)] placeholder:text-[var(--gray-07)] focus:border-[var(--gray-08)] outline-none"
+        className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 text-xs font-mono text-[var(--gray-12)] placeholder:text-[var(--gray-07)] focus:border-[var(--gray-08)] outline-none disabled:opacity-50"
       />
       <button
         type="submit"
-        disabled={saving || !webhookUrl.trim()}
+        disabled={!canManage || saving || !webhookUrl.trim()}
         className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
       >
         {saving ? "Connecting…" : "Connect"}
       </button>
       {err && <p className="text-xs text-[#ff9592]">{err}</p>}
+      <SetupHelp connector={connector} />
     </form>
   );
 }
 
-/**
- * Heartbeat status header (#816 folded in). Summarizes how many connectors are
- * actively driving the autonomous loop and notes the prerequisite-capability
- * gate the daemon enforces at runtime — replaces the standalone Heartbeat page's
- * status card.
- */
+// --------------------------------------------------------------------------- //
+// GitHub (OAuth) — connects at login by linking a repo; nothing to paste here.
+// --------------------------------------------------------------------------- //
+function GithubManage({ connector }: { connector: ConnectorView }) {
+  if (connector.status === "connected") {
+    return (
+      <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+        Connected at login. Issues labeled{" "}
+        <code className="font-mono text-[var(--gray-11)]">
+          {connector.ingestLabel}
+        </code>{" "}
+        are ingested into the Issue Queue; run results post back on the issue.
+      </p>
+    );
+  }
+  return (
+    <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+      Not connected. Sign in with GitHub and link a repository (API Keys → Connect
+      CLI) to ingest its labeled issues into the Issue Queue.
+    </p>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// A compact connector card. Header is always visible; the manage body expands.
+// --------------------------------------------------------------------------- //
+function ConnectorCard({
+  connector,
+  workspaceId,
+  canManage,
+  onChanged,
+}: {
+  connector: ConnectorView;
+  workspaceId: string;
+  canManage: boolean;
+  onChanged: () => void;
+}) {
+  const Icon = KIND_ICON[connector.kind];
+  const isConnected = connector.status === "connected";
+  // Connected cards open by default (so the trigger/disconnect is one glance
+  // away); unconnected cards stay collapsed to keep the grid compact.
+  const [open, setOpen] = useState(isConnected);
+
+  return (
+    <div className="flex flex-col rounded-lg border border-[var(--gray-05)] bg-[var(--gray-01)]">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-2.5 p-3 text-left"
+      >
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[var(--gray-05)] bg-[var(--gray-03)]">
+          <Icon size={17} className={KIND_TINT[connector.kind]} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-sm font-semibold text-[var(--gray-12)]">
+              {connector.label}
+            </span>
+            <span
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                isConnected ? "bg-[#1fd8a4]" : "bg-[var(--gray-07)]"
+              }`}
+              aria-hidden="true"
+            />
+          </div>
+          <p className="truncate text-xs text-[var(--gray-09)]">
+            {capabilitySummary(connector.capabilities)}
+          </p>
+        </div>
+        <ChevronDown
+          size={15}
+          className={`shrink-0 text-[var(--gray-09)] transition-transform ${
+            open ? "rotate-180" : ""
+          }`}
+        />
+      </button>
+
+      {open && (
+        <div className="flex flex-col gap-3 border-t border-[var(--gray-04)] p-3">
+          <div className="flex items-center justify-between gap-2">
+            <ConnectorStatusBadge
+              status={connector.status}
+              availability={connector.availability}
+            />
+            {connector.target && connector.connectMethod === "oauth" && (
+              <code className="truncate font-mono text-xs text-[var(--gray-10)]">
+                {connector.target}
+              </code>
+            )}
+          </div>
+          <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+            {connector.description}
+          </p>
+
+          {connector.connectMethod === "oauth" ? (
+            <GithubManage connector={connector} />
+          ) : connector.kind === "discord" ? (
+            <DiscordManage
+              connector={connector}
+              workspaceId={workspaceId}
+              canManage={canManage}
+              onChanged={onChanged}
+            />
+          ) : (
+            <SecretManage
+              connector={connector}
+              workspaceId={workspaceId}
+              canManage={canManage}
+              onChanged={onChanged}
+            />
+          )}
+
+          {isConnected && connector.capabilities.ingest && (
+            <TriggerControls
+              connector={connector}
+              workspaceId={workspaceId}
+              canManage={canManage}
+              onChanged={onChanged}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Heartbeat status header (#816 folded in).
+// --------------------------------------------------------------------------- //
 function HeartbeatStatusHeader({ connectors }: { connectors: ConnectorView[] }) {
   const active = activeHeartbeatConnectors(connectors);
   return (
-    <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3">
+    <div className="rounded-lg border border-[var(--gray-05)] bg-[var(--gray-02)] p-3">
       <div className="flex items-center gap-1.5">
         <Radio size={14} className="text-[var(--gray-10)]" />
         <span className="text-xs font-semibold text-[var(--gray-12)]">
@@ -426,8 +625,7 @@ function HeartbeatStatusHeader({ connectors }: { connectors: ConnectorView[] }) 
             <span className="text-[var(--gray-11)]">
               {active.map((c) => c.label).join(", ")}
             </span>{" "}
-            for labeled issues and admits them into the Issue Queue. Tune each
-            connector&apos;s trigger below.
+            for labeled issues and admits them into the Issue Queue.
           </>
         ) : (
           <>
@@ -442,6 +640,56 @@ function HeartbeatStatusHeader({ connectors }: { connectors: ConnectorView[] }) 
         (agentrail/heartbeat/gate.py). Enabling here records operator intent.
       </p>
     </div>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// One catalog-type section (HTTPS / MCP / Gateway) of compact cards.
+// --------------------------------------------------------------------------- //
+function ConnectorSection({
+  type,
+  connectors,
+  workspaceId,
+  canManage,
+  onChanged,
+}: {
+  type: ConnectorType;
+  connectors: ConnectorView[];
+  workspaceId: string;
+  canManage: boolean;
+  onChanged: () => void;
+}) {
+  if (connectors.length === 0) return null;
+  const meta = CONNECTOR_TYPE_META[type];
+  const connectedCount = connectors.filter(
+    (c) => c.status === "connected"
+  ).length;
+  return (
+    <section className="flex flex-col gap-2.5">
+      <div className="flex items-baseline gap-2">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-[var(--gray-11)]">
+          {meta.label}
+        </h2>
+        <span className="text-xs text-[var(--gray-08)]">
+          {connectedCount}/{connectors.length} connected
+        </span>
+      </div>
+      <p className="-mt-1 text-xs leading-relaxed text-[var(--gray-09)]">
+        {meta.description}
+      </p>
+      {/* items-start so expanding one card never stretches its row-mates. */}
+      <div className="grid grid-cols-1 items-start gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+        {connectors.map((c) => (
+          <ConnectorCard
+            key={c.kind}
+            connector={c}
+            workspaceId={workspaceId}
+            canManage={canManage}
+            onChanged={onChanged}
+          />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -480,7 +728,7 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
   }, [fetchConnectors]);
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4">
       {!loading && !error && connectors.length > 0 && (
         <HeartbeatStatusHeader connectors={connectors} />
       )}
@@ -495,11 +743,11 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
       </div>
 
       {loading ? (
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {[0, 1, 2].map((i) => (
+        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+          {[0, 1, 2, 3, 4, 5].map((i) => (
             <div
               key={i}
-              className="h-44 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] animate-pulse"
+              className="h-14 rounded-lg border border-[var(--gray-05)] bg-[var(--gray-01)] animate-pulse"
             />
           ))}
         </div>
@@ -512,11 +760,12 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
           No connectors available.
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {connectors.map((c) => (
-            <ConnectorCard
-              key={c.kind}
-              connector={c}
+        <div className="flex flex-col gap-6">
+          {SECTION_ORDER.map((type) => (
+            <ConnectorSection
+              key={type}
+              type={type}
+              connectors={connectors.filter((c) => c.type === type)}
               workspaceId={workspaceId}
               canManage={canManage}
               onChanged={fetchConnectors}

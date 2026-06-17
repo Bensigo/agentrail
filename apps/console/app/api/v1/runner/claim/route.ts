@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { claimQueueEntry, touchApiKeyLastUsed } from "@agentrail/db-postgres";
+import {
+  claimQueueEntry,
+  touchApiKeyLastUsed,
+  getMcpConnectorKeys,
+} from "@agentrail/db-postgres";
 import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 
@@ -44,5 +48,16 @@ export async function GET(request: NextRequest) {
     `Claimed ${item.external_id} — running locally`
   );
 
-  return NextResponse.json(item);
+  // Hand the run its connected MCP keys (decrypted here, over the authenticated
+  // link) so the runner can write the agent's MCP config into the cloned repo —
+  // the codebase-level half of MCP connectors. Empty {} when none are connected.
+  // Best-effort: a key-fetch hiccup must not block dispatching the work.
+  let mcpKeys: Record<string, string> = {};
+  try {
+    mcpKeys = await getMcpConnectorKeys(workspaceId);
+  } catch (err) {
+    console.error("[runner/claim] failed to load MCP keys:", err);
+  }
+
+  return NextResponse.json({ ...item, mcp_keys: mcpKeys });
 }

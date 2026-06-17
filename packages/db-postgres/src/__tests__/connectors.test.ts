@@ -13,13 +13,20 @@ import {
   getConnectors,
   getConnector,
   upsertConnector,
+  setConnectorSecret,
+  getConnectorSecret,
+  getMcpConnectorKeys,
   validateConnectorUpdate,
   isConnectorProvider,
   MIN_POLL_INTERVAL_SECONDS,
   MAX_POLL_INTERVAL_SECONDS,
 } from "../queries/connectors.js";
+import { encryptSecret, isEncrypted } from "../crypto.js";
 
 const mockDb = vi.mocked(db);
+
+// Encryption key for the at-rest tests (no real AUTH_SECRET needed in CI).
+process.env["CONNECTOR_SECRET_KEY"] = "test-connector-secret-key-abc123456789";
 
 /** Chainable select mock whose terminal `orderBy` resolves the given rows. */
 function makeSelectOrderChain(rows: unknown) {
@@ -55,13 +62,17 @@ beforeEach(() => {
 });
 
 describe("isConnectorProvider", () => {
-  it("accepts known providers", () => {
+  it("accepts known providers (https + mcp + gateway catalog)", () => {
     expect(isConnectorProvider("github")).toBe(true);
     expect(isConnectorProvider("linear")).toBe(true);
+    expect(isConnectorProvider("figma")).toBe(true);
+    expect(isConnectorProvider("context7")).toBe(true);
     expect(isConnectorProvider("discord")).toBe(true);
+    expect(isConnectorProvider("slack")).toBe(true);
+    expect(isConnectorProvider("telegram")).toBe(true);
   });
   it("rejects unknown values", () => {
-    expect(isConnectorProvider("slack")).toBe(false);
+    expect(isConnectorProvider("jira")).toBe(false);
     expect(isConnectorProvider(42)).toBe(false);
     expect(isConnectorProvider(undefined)).toBe(false);
   });
@@ -99,12 +110,14 @@ describe("getConnectors", () => {
       provider: "github",
       enabled: true,
       config: { repos: ["o/r"], triggerLabel: "afk", pollIntervalSeconds: 120 },
+      hasSecret: false,
       updatedAt: "2026-06-16T12:00:00.000Z",
     });
     expect(rows[1]).toEqual({
       provider: "linear",
       enabled: false,
       config: { repos: [], triggerLabel: "ready-for-agent", pollIntervalSeconds: 60 },
+      hasSecret: false,
       updatedAt: null,
     });
   });
@@ -193,6 +206,66 @@ describe("upsertConnector", () => {
 
     const view = await upsertConnector("ws-1", "discord", { enabled: false });
     expect(view.enabled).toBe(false);
+  });
+});
+
+describe("connector secret encryption at rest", () => {
+  it("setConnectorSecret stores an ENCRYPTED value, never plaintext", async () => {
+    mockDb.select.mockReturnValue(makeSelectLimitChain([]) as never);
+    const insertChain = makeInsertChain();
+    mockDb.insert.mockReturnValue(insertChain as never);
+
+    await setConnectorSecret("ws-1", "context7", "ctx7sk-plaintext-key");
+
+    const values = insertChain.values as ReturnType<typeof vi.fn>;
+    const stored = (values.mock.calls[0][0] as { secret: string }).secret;
+    expect(stored).not.toBe("ctx7sk-plaintext-key");
+    expect(isEncrypted(stored)).toBe(true);
+  });
+
+  it("clearing the secret stores null (disconnect)", async () => {
+    mockDb.select.mockReturnValue(makeSelectLimitChain([]) as never);
+    const insertChain = makeInsertChain();
+    mockDb.insert.mockReturnValue(insertChain as never);
+
+    const view = await setConnectorSecret("ws-1", "context7", null);
+    const values = insertChain.values as ReturnType<typeof vi.fn>;
+    expect((values.mock.calls[0][0] as { secret: unknown }).secret).toBeNull();
+    expect(view.hasSecret).toBe(false);
+    expect(view.enabled).toBe(false);
+  });
+
+  it("getMcpConnectorKeys returns decrypted keys only for connected MCP providers", async () => {
+    // getMcpConnectorKeys reads linear, figma, context7 in order (one select
+    // each). linear + context7 are connected (ciphertext); figma is not (null).
+    mockDb.select
+      .mockReturnValueOnce(
+        makeSelectLimitChain([{ secret: encryptSecret("lin_api_v") }]) as never
+      )
+      .mockReturnValueOnce(makeSelectLimitChain([{ secret: null }]) as never)
+      .mockReturnValueOnce(
+        makeSelectLimitChain([{ secret: encryptSecret("ctx7sk-v") }]) as never
+      );
+
+    const keys = await getMcpConnectorKeys("ws-1");
+    // Only connected providers appear, decrypted; figma (no secret) is absent.
+    expect(keys).toEqual({ linear: "lin_api_v", context7: "ctx7sk-v" });
+  });
+
+  it("getConnectorSecret decrypts the stored ciphertext back to plaintext", async () => {
+    // First call: setConnectorSecret produces the ciphertext we then "store".
+    mockDb.select.mockReturnValueOnce(makeSelectLimitChain([]) as never);
+    const insertChain = makeInsertChain();
+    mockDb.insert.mockReturnValue(insertChain as never);
+    await setConnectorSecret("ws-1", "linear", "lin_api_secret_value");
+    const values = insertChain.values as ReturnType<typeof vi.fn>;
+    const ciphertext = (values.mock.calls[0][0] as { secret: string }).secret;
+
+    // Now getConnectorSecret reads that ciphertext and must decrypt it.
+    mockDb.select.mockReturnValue(
+      makeSelectLimitChain([{ secret: ciphertext }]) as never
+    );
+    expect(await getConnectorSecret("ws-1", "linear")).toBe("lin_api_secret_value");
   });
 });
 

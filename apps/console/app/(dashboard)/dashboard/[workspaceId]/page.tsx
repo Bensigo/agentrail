@@ -18,6 +18,7 @@ import {
 import { SkeletonCardGrid } from "../../../components/loading-skeleton";
 import { getMembership, getSession } from "../../../../lib/cached";
 import { PageHeader } from "../../../components/page-header";
+import { HealthRatesPanel } from "./components/health-rates-panel";
 
 const EMPTY_COUNTS: WorkspaceOverviewCounts = {
   runs: 0,
@@ -162,7 +163,9 @@ export default async function WorkspaceDashboardPage({
         }
       />
 
-      <div className="mt-2">
+      <div className="mt-2 flex flex-col gap-6">
+        <HealthRatesPanel workspaceId={workspaceId} />
+
         <Suspense fallback={<SkeletonCardGrid cards={8} />}>
           <SectionGrid workspaceId={workspaceId} />
         </Suspense>

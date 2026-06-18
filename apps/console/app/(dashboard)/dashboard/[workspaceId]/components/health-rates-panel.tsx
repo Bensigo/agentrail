@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Skeleton } from "../../../../../components/loading-skeleton";
+import { Skeleton } from "../../../../components/loading-skeleton";
 import {
   ACCEPT_RATE_HEALTH_LINE,
   formatRate,

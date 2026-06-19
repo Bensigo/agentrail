@@ -1,0 +1,30 @@
+---
+title: Introduction
+description: What AgentRail is and who it's for.
+---
+
+AgentRail is the control plane that runs your coding agents. You bring an agent
+— Claude Code, Codex, or Cursor — and AgentRail gives it durable repo context,
+bounded execution, independent review, and verification gates, so its work is
+cheaper, inspectable, and safe to leave unattended.
+
+AgentRail is **not** a coding agent. It does not write code itself. It runs the
+agent you already use, on rails: scoped context instead of whole files, a hard
+budget per issue, a second model reviewing the work, and gates that stop merges
+the agent can't justify.
+
+## Who it's for
+
+- **Engineers** who want to hand an issue to an agent and get a reviewed PR back
+  without babysitting a run or watching the token meter.
+- **Startups** clearing a backlog overnight under a predictable spend ceiling.
+
+## Two ways to run it
+
+- **Repo-native (primary):** install the CLI, point it at your repo, and run
+  issues locally with your own LLM keys. Covered in
+  [Installation](/docs/getting-started/installation) and
+  [Quickstart](/docs/getting-started/quickstart).
+- **Hosted runner (team layer):** sign in to a workspace, queue issues in the
+  console, and run a local worker that pulls and executes them. Covered in
+  [Dashboard & hosted runner](/docs/dashboard).

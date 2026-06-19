@@ -1,0 +1,28 @@
+---
+title: Installation
+description: Install the AgentRail CLI and its prerequisites.
+---
+
+## Requirements
+
+- **Node.js 18+**
+- **Python 3.9+** (the context engine runs in Python)
+- **`gh` CLI** (optional, for GitHub issue/PR integration)
+- Your own LLM provider keys for whichever agent you run (Claude, Codex, Cursor)
+
+## Install
+
+```bash
+npm install -g @useagentrail/cli
+```
+
+This installs the `agentrail` command (also available as `useagentrail`).
+
+## Verify
+
+```bash
+agentrail doctor
+```
+
+`doctor` checks your installation health and reports anything missing. Run
+`agentrail` with no arguments to see the full command list.

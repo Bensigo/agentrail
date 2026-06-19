@@ -1,0 +1,38 @@
+---
+title: AFK
+description: Run the unattended queue / worktree loop.
+---
+
+`afk` runs a queue of issues unattended, each isolated in its own git worktree
+and capped by a per-issue [budget leash](/docs/concepts/afk). It works grabbable
+issues in waves and stops when the queue is empty.
+
+## `afk`
+
+```
+afk [--concurrency 2] [--max-waves 20] [--base main] [--dry-run]
+```
+
+Run the AFK queue / worktree loop.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--concurrency N` | `2` | Number of issues worked in parallel. |
+| `--max-waves N` | `20` | Maximum scheduling waves before the loop ends. |
+| `--base BRANCH` | `main` | Base branch worktrees are created from. |
+| `--dry-run` | — | Show what would be grabbed and run, without executing. |
+
+Start with a dry run to preview the plan:
+
+```bash
+agentrail afk --dry-run
+```
+
+Then let it run, tuning concurrency to taste:
+
+```bash
+agentrail afk --concurrency 2 --max-waves 20 --base main
+```
+
+See [AFK Mode](/docs/concepts/afk) for how isolation, the budget leash, and the
+terminal states work.

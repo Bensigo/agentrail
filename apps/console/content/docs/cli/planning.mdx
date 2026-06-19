@@ -1,0 +1,85 @@
+---
+title: Planning
+description: Turn ideas into PRDs, milestones, and house-template issues; sharpen plans and prompts.
+---
+
+These commands shape work *before* it runs: an idea becomes a PRD, a PRD becomes
+milestones and issues, and a plan gets stress-tested. All accept `--target DIR`.
+The creation commands also accept `--agent codex|claude`, `--headless`, and
+`--dry-run` (preview without writing or publishing).
+
+## `prd create`
+
+```
+prd create <brief> [--agent codex|claude] [--target DIR] [--headless] [--dry-run]
+```
+
+Convert an idea or brief into a PRD published to the issue tracker.
+
+```bash
+agentrail prd create "Add per-workspace API key rotation"
+```
+
+## `milestone create`
+
+```
+milestone create <prd> [--agent codex|claude] [--target DIR] [--headless] [--dry-run]
+```
+
+Convert a PRD into `docs/milestones/` files — vertical, testable increments.
+
+```bash
+agentrail milestone create docs/prds/api-key-rotation.md
+```
+
+## `issue create`
+
+```
+issue create <milestone-or-prd> [--agent codex|claude] [--target DIR] [--headless] [--dry-run]
+```
+
+Create house-template GitHub issues from a milestone or PRD.
+
+```bash
+agentrail issue create docs/milestones/01-rotation.md --dry-run
+```
+
+## `grill-me`
+
+```
+grill-me [plan-or-path] [--agent codex|claude] [--target DIR] [--headless]
+```
+
+Stress-test a plan with the grill-with-docs skill — challenge it against your
+project's docs and domain language before any code is written.
+
+```bash
+agentrail grill-me docs/plans/rotation.md
+```
+
+## `prompt issue` / `prompt review`
+
+```
+prompt issue NUMBER [--target DIR]
+prompt review PR_NUMBER [--target DIR]
+```
+
+Print an agent-ready prompt for an issue or a PR review — the compiled context
+and instructions, ready to hand to an agent.
+
+```bash
+agentrail prompt issue 42
+agentrail prompt review 308
+```
+
+## `labels sync`
+
+```
+labels sync [--target DIR]
+```
+
+Manage labels — sync the project's label set with the issue tracker.
+
+```bash
+agentrail labels sync
+```

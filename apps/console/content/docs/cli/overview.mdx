@@ -1,0 +1,60 @@
+---
+title: CLI Overview
+description: The full AgentRail command surface, grouped by what you're doing.
+---
+
+`agentrail` is the command-line control plane. Run it with no arguments to see
+the live command list, or `agentrail doctor` to check your install. Every
+command is documented across the pages below.
+
+## The `--target DIR` flag
+
+Most commands operate on the current working directory. Pass `--target DIR` to
+point a command at a different project directory instead of `cd`-ing into it.
+It's accepted broadly; the pages below call out the other notable flags per
+command rather than repeating `--target` everywhere.
+
+## Command groups
+
+| Group | Command | What it does |
+|-------|---------|--------------|
+| [Project](/docs/cli/project) | `init` / `install` | Initialise or install a project (build the local index). |
+| [Project](/docs/cli/project) | `init claude\|cursor\|codex` | Initialise for a specific agent. |
+| [Project](/docs/cli/project) | `upgrade` | Upgrade agentrail in this project. |
+| [Project](/docs/cli/project) | `cleanup` | Clean up worktrees and sessions. |
+| [Project](/docs/cli/project) | `status` | Show worktree / session status. |
+| [Project](/docs/cli/project) | `doctor` | Check installation health. |
+| [Run](/docs/cli/run) | `run` | Run a workflow. |
+| [Run](/docs/cli/run) | `run issue NUMBER` | Run a workflow for a specific issue. |
+| [Run](/docs/cli/run) | `resume` | Resume a paused session. |
+| [Run](/docs/cli/run) | `link` | Link a worktree to a session. |
+| [AFK](/docs/cli/afk) | `afk` | Run the AFK queue / worktree loop. |
+| [Context](/docs/cli/context) | `context sources` | List what the index covers. |
+| [Context](/docs/cli/context) | `context index` | Build the context index. |
+| [Context](/docs/cli/context) | `context query` | Query the index for a task. |
+| [Context](/docs/cli/context) | `context def\|callers\|impact\|ast` | Structural code-graph navigation. |
+| [Memory & Skills](/docs/cli/memory-skills) | `memory recall` | Recall stored memory for a topic. |
+| [Memory & Skills](/docs/cli/memory-skills) | `memory capture` | Capture a new memory item. |
+| [Memory & Skills](/docs/cli/memory-skills) | `skills list` | List available skills. |
+| [Memory & Skills](/docs/cli/memory-skills) | `skills resolve` | Resolve skills for a task. |
+| [Planning](/docs/cli/planning) | `prd create` | Convert an idea into a published PRD. |
+| [Planning](/docs/cli/planning) | `milestone create` | Convert a PRD into milestone files. |
+| [Planning](/docs/cli/planning) | `issue create` | Create house-template issues. |
+| [Planning](/docs/cli/planning) | `grill-me` | Stress-test a plan with the grill-with-docs skill. |
+| [Planning](/docs/cli/planning) | `prompt issue` / `prompt review` | Print an agent-ready prompt. |
+| [Planning](/docs/cli/planning) | `labels sync` | Manage / sync labels. |
+| [Diagnostics](/docs/cli/diagnostics) | `doctor` | Check installation health. |
+| [Diagnostics](/docs/cli/diagnostics) | `status` | Show worktree / session status. |
+| [Diagnostics](/docs/cli/diagnostics) | `timeline` | Show session timeline. |
+| [Diagnostics](/docs/cli/diagnostics) | `heartbeat run` / `heartbeat serve` | Run the Heartbeat dispatcher loop. |
+| [Cost](/docs/cli/cost) | `cost` | Per-issue real-dollar cost from the AFK journal. |
+| [Cost](/docs/cli/cost) | `cost RUN_ID --recommend` | Cost-saving recommendations for a run. |
+| [Team & Runner](/docs/cli/team-runner) | `login` / `logout` / `whoami` | Sign this machine in and out of a workspace. |
+| [Team & Runner](/docs/cli/team-runner) | `runner` | Run the local worker for queued issues. |
+| [Team & Runner](/docs/cli/team-runner) | `console` | Open the interactive console. |
+
+## Internal plumbing
+
+`agentrail internal <subcommand>` exposes internal plumbing used by the
+workflow itself. It is not part of the day-to-day surface and is not documented
+here.

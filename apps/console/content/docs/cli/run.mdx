@@ -1,0 +1,60 @@
+---
+title: Run
+description: Run a workflow, target a specific issue, resume, and link sessions.
+---
+
+These commands run and manage individual workflow sessions. They follow the
+bounded [plan → execute → verify](/docs/concepts/bounded-execution) loop and
+stop at review.
+
+## `run`
+
+```
+run [--agent codex|claude] [--target DIR]
+```
+
+Run a workflow in the current project. Choose the agent with `--agent claude`
+(the default flow) or `--agent codex`.
+
+```bash
+agentrail run --agent claude
+```
+
+## `run issue NUMBER`
+
+```
+run issue NUMBER [--agent codex|claude] [--target DIR]
+```
+
+Run the workflow for a specific issue number — the engine compiles a context
+pack for that issue and runs the bounded loop, retrying on verification failure.
+
+```bash
+agentrail run issue 42 --agent claude
+```
+
+## `resume`
+
+```
+resume [--target DIR]
+```
+
+Resume a paused session — pick up a run that stopped at a gate or was
+interrupted, with its state intact.
+
+```bash
+agentrail resume
+```
+
+## `link`
+
+```
+link [--target DIR]
+```
+
+Link a worktree to a session, associating an existing checkout with a workflow
+session.
+
+```bash
+agentrail link
+```

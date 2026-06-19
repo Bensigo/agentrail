@@ -1,0 +1,59 @@
+---
+title: Memory & Skills
+description: Recall and capture project memory; list and resolve workflow skills.
+---
+
+These commands manage the advisory [memory](/docs/concepts/memory) and
+procedural [skills](/docs/concepts/skills) the engine pulls into context packs.
+All accept `--target DIR`.
+
+## `memory recall`
+
+```
+memory recall QUERY [--target DIR]
+```
+
+Recall stored lessons, decisions, and failure patterns related to a topic —
+the knowledge the agent checks before acting.
+
+```bash
+agentrail memory recall "migrations journal"
+```
+
+## `memory capture`
+
+```
+memory capture KIND TITLE [--target DIR]
+```
+
+Capture a new memory item under a kind (such as a lesson, decision, or failure
+pattern) so future runs can recall it.
+
+```bash
+agentrail memory capture lesson "Migrations not in _journal.json are skipped"
+```
+
+## `skills list`
+
+```
+skills list [--target DIR]
+```
+
+List the skills available in the current project.
+
+```bash
+agentrail skills list
+```
+
+## `skills resolve`
+
+```
+skills resolve "<task>" [--target DIR]
+```
+
+Resolve the skills that match a task description — the same selection the engine
+makes when it compiles a context pack.
+
+```bash
+agentrail skills resolve "convert a PRD into GitHub issues"
+```

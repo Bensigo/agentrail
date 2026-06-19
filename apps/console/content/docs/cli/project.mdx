@@ -1,0 +1,77 @@
+---
+title: Project
+description: Set up, upgrade, inspect, and clean up an AgentRail project.
+---
+
+These commands manage AgentRail within a single project. All of them accept
+`--target DIR` to operate on a directory other than the current one.
+
+## `init` / `install`
+
+```
+init [--target DIR] [--force]
+init <claude|cursor|codex> [--target DIR] [--force]
+install [--target DIR] [--force]              (alias of init)
+```
+
+Initialise or install a project: installs the workflow files and builds a local
+index of your codebase (BM25 + a code graph). `install` is an alias of `init`.
+
+Pass an agent name — `init claude`, `init cursor`, or `init codex` — to set the
+project up for a specific agent. Use `--force` to overwrite existing config.
+
+```bash
+agentrail init claude
+```
+
+## `upgrade`
+
+```
+upgrade [--target DIR] [--force]
+```
+
+Upgrade agentrail in this project, refreshing the installed workflow files.
+`--force` overwrites local changes to managed files.
+
+```bash
+agentrail upgrade
+```
+
+## `status`
+
+```
+status [--target DIR]
+```
+
+Show worktree and session status for the project — what's running, paused, or
+parked.
+
+```bash
+agentrail status
+```
+
+## `doctor`
+
+```
+doctor [--target DIR]
+```
+
+Check installation health and report anything missing or misconfigured. Run it
+after install and whenever something looks off.
+
+```bash
+agentrail doctor
+```
+
+## `cleanup`
+
+```
+cleanup [--target DIR] [--dry-run]
+```
+
+Clean up leftover worktrees and sessions. Use `--dry-run` to see what would be
+removed before removing it.
+
+```bash
+agentrail cleanup --dry-run
+```

@@ -1,0 +1,64 @@
+---
+title: Context
+description: Build the local index, query it for a task, and navigate the code graph.
+---
+
+The `context` commands build and query the local index that powers
+[context packs](/docs/concepts/context-engine). All accept `--target DIR`.
+
+## `context sources`
+
+```
+context sources [--target DIR]
+```
+
+List the sources the index covers — the files and units AgentRail has indexed.
+
+```bash
+agentrail context sources
+```
+
+## `context index`
+
+```
+context index [--target DIR]
+```
+
+Build (or rebuild) the context index for the project: the BM25 keyword index and
+the code graph. `agentrail init` does this for you on setup; run `context index`
+to refresh it.
+
+```bash
+agentrail context index
+```
+
+## `context query`
+
+```
+context query "<task>" [--target DIR]
+```
+
+Query the index for a task and return the compiled context — the bounded line
+ranges and the cited reason each was picked.
+
+```bash
+agentrail context query "where is the rate limiter applied to ingest?"
+```
+
+## Structural navigation
+
+These subcommands answer structural questions directly from the code graph,
+without an LLM:
+
+```
+context def <symbol>       # where a symbol is defined
+context callers <symbol>   # who calls it
+context impact <symbol>    # what a change would touch
+context ast <path>         # parsed structure of a file
+```
+
+```bash
+agentrail context callers RateLimiter
+agentrail context impact RateLimiter
+agentrail context ast packages/api/src/limiter.ts
+```

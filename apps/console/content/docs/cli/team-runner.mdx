@@ -1,0 +1,76 @@
+---
+title: Team & Runner
+description: Sign in to a workspace, run the local worker, and open the console.
+---
+
+These commands connect the CLI to the hosted team layer. They are the
+**secondary** path — the CLI works fully without an account. See
+[Dashboard & hosted runner](/docs/dashboard) for the bigger picture.
+
+## `login`
+
+```
+login [--url BASE_URL]
+```
+
+Sign this machine into an AgentRail workspace. Use `--url BASE_URL` to point at a
+self-hosted server instead of the default.
+
+```bash
+agentrail login
+```
+
+## `logout`
+
+```
+logout
+```
+
+Sign this machine out of its workspace.
+
+```bash
+agentrail logout
+```
+
+## `whoami`
+
+```
+whoami
+```
+
+Show the logged-in workspace for this machine.
+
+```bash
+agentrail whoami
+```
+
+## `runner`
+
+```
+runner [--idle SECONDS] [--once] [--concurrency N]
+```
+
+Run the local worker that executes queued issues — it pulls work from the
+workspace queue and runs it on your machine.
+
+| Flag | Description |
+|------|-------------|
+| `--idle SECONDS` | How long to wait for work before idling out. |
+| `--once` | Process one batch, then exit. |
+| `--concurrency N` | Number of issues to run in parallel. |
+
+```bash
+agentrail runner --concurrency 2
+```
+
+## `console`
+
+```
+console [--target DIR]
+```
+
+Open the interactive console.
+
+```bash
+agentrail console
+```

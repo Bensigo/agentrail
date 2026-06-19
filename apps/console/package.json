@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "fumadocs-mdx",
+    "predev": "fumadocs-mdx",
     "dev": "next dev --port 3000",
     "build": "next build",
     "start": "next start",

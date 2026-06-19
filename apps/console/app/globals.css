@@ -1,4 +1,10 @@
 @import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+/* Scan Fumadocs UI classes so Tailwind v4 emits them. Path is relative to this
+   file; verified to resolve to the installed fumadocs-ui dist. */
+@source "../node_modules/fumadocs-ui/dist/**/*.js";
 
 :root {
   --gray-00: #ffffff;

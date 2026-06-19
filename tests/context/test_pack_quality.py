@@ -32,13 +32,23 @@ class PrecisionAtBudgetTests(unittest.TestCase):
         out = compute_pack_quality(selected, [], selected_context_tokens=100)
         self.assertAlmostEqual(out["precision_at_budget"], 0.3)
 
-    def test_falls_back_to_authority_when_no_source_type(self) -> None:
+    def test_high_value_authority_counts_as_required(self) -> None:
+        # Both critical and high authority are high-value (not filler), so a
+        # code-only pack with high-authority items reports non-zero precision.
         selected = [
             _item(authority="critical", tokenEstimate=50),
             _item(authority="high", tokenEstimate=50),
         ]
         out = compute_pack_quality(selected, [], selected_context_tokens=100)
-        self.assertAlmostEqual(out["precision_at_budget"], 0.5)
+        self.assertAlmostEqual(out["precision_at_budget"], 1.0)
+
+    def test_low_authority_is_filler(self) -> None:
+        selected = [
+            _item(authority="high", tokenEstimate=40),
+            _item(authority="low", tokenEstimate=60),
+        ]
+        out = compute_pack_quality(selected, [], selected_context_tokens=100)
+        self.assertAlmostEqual(out["precision_at_budget"], 0.4)
 
     def test_zero_when_budget_zero(self) -> None:
         selected = [_item(sourceType="context_doc", tokenEstimate=60)]

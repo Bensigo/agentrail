@@ -14,10 +14,12 @@ from typing import Any, Dict, List
 
 __all__ = ["compute_pack_quality"]
 
-# Context-doc tier — the "required/anchor" tier when a sourceType/kind is present.
+# Context-doc tier — always counts as required/anchor.
 _REQUIRED_SOURCE_TYPES = {"context_doc", "taste_doc"}
-# Authority tier treated as required/anchor when no sourceType signal is present.
-_REQUIRED_AUTHORITY = "critical"
+# High-value authority tiers treated as required/anchor (vs low/unknown filler).
+# Broadened from {critical} so precision reflects "high-value vs filler" across
+# code-heavy packs, not just packs that include context docs.
+_REQUIRED_AUTHORITIES = {"critical", "high"}
 _STALE_STATUSES = {"stale", "expired"}
 _DENIED = "denied"
 
@@ -48,15 +50,17 @@ def _stable_hash(item: Dict[str, Any]) -> str:
 
 
 def _is_required(item: Dict[str, Any]) -> bool:
-    """Whether a selected item is required/anchor.
+    """Whether a selected item is required/anchor (high-value, not filler).
 
-    Prefer the sourceType/kind signal (context-doc tier) when present; otherwise
-    fall back to the top authority tier.
+    True when the item is a context-doc tier source OR carries a high-value
+    authority ({critical, high}). The token share of these items vs. the whole
+    budget is `precision_at_budget` — "how much budget went to high-value
+    context vs. filler".
     """
     source_type = item.get("sourceType") or item.get("kind")
-    if source_type is not None:
-        return str(source_type) in _REQUIRED_SOURCE_TYPES
-    return str(item.get("authority") or "") == _REQUIRED_AUTHORITY
+    if source_type is not None and str(source_type) in _REQUIRED_SOURCE_TYPES:
+        return True
+    return str(item.get("authority") or "").strip().lower() in _REQUIRED_AUTHORITIES
 
 
 def _token_estimate(item: Dict[str, Any]) -> float:

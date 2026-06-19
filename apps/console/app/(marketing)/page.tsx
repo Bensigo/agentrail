@@ -136,6 +136,12 @@ export default async function LandingPage() {
             >
               Platform
             </a>
+            <a
+              href="/docs"
+              className="rounded px-3 py-1.5 text-[13px] text-[var(--gray-10)] transition-colors hover:text-[var(--gray-12)]"
+            >
+              Docs
+            </a>
             <form
               action={async () => {
                 "use server";
@@ -641,7 +647,7 @@ const FOOTER_COLUMNS: { title: string; links: { label: string; href: string }[] 
   {
     title: "Resources",
     links: [
-      { label: "Documentation", href: "https://github.com/Bensigo/agentrail#readme" },
+      { label: "Documentation", href: "/docs" },
       { label: "GitHub", href: "https://github.com/Bensigo/agentrail" },
       { label: "CLI", href: "https://github.com/Bensigo/agentrail#cli" },
     ],

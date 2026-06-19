@@ -1,0 +1,71 @@
+---
+title: Diagnostics
+description: Check health, inspect status and timelines, and run the Heartbeat dispatcher.
+---
+
+These commands tell you what AgentRail is doing and whether it's healthy. All
+accept `--target DIR`.
+
+## `doctor`
+
+```
+doctor [--target DIR]
+```
+
+Check installation health and report anything missing or misconfigured.
+
+```bash
+agentrail doctor
+```
+
+## `status`
+
+```
+status [--target DIR]
+```
+
+Show worktree and session status — what's running, paused, or parked.
+
+```bash
+agentrail status
+```
+
+## `timeline`
+
+```
+timeline [--target DIR]
+```
+
+Show the session timeline — the ordered events of a run.
+
+```bash
+agentrail timeline
+```
+
+## `heartbeat run`
+
+```
+heartbeat run [--workspace ID] [--once] [--interval SECONDS]
+```
+
+Run the live Heartbeat dispatcher loop — the trigger layer that dispatches
+queued issues, stopping when the queue is empty. Use `--once` for a single pass
+or `--interval SECONDS` to set the scan cadence; `--workspace ID` scopes it to a
+workspace.
+
+```bash
+agentrail heartbeat run --once
+```
+
+## `heartbeat serve`
+
+```
+heartbeat serve [--workspace ID] [--port PORT]
+```
+
+Run the Heartbeat dispatcher as a long-lived service on a port, so external
+events can drive dispatch.
+
+```bash
+agentrail heartbeat serve --port 8787
+```

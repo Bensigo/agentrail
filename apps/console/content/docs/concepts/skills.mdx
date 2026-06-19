@@ -1,0 +1,34 @@
+---
+title: Skills
+description: Curated, procedural workflow guidance selected for the task at hand.
+---
+
+A **skill** is procedural guidance — a curated way of doing a particular kind of
+work, selected for a task, stack, phase, or review gate. Skills are *how-to*
+knowledge, not source evidence: they tell the agent how to approach a job, not
+what your code says.
+
+## Selected, not dumped
+
+AgentRail does not paste every skill into every prompt. It resolves the skills
+relevant to the task at hand and includes only those in the
+[context pack](/docs/concepts/context-engine). That keeps the pack small and the
+guidance on-target.
+
+## Listing skills
+
+```bash
+agentrail skills list
+```
+
+Shows the skills available in the current project.
+
+## Resolving skills for a task
+
+```bash
+agentrail skills resolve "convert a PRD into GitHub issues"
+```
+
+`skills resolve` returns the skills that match a task description — the same
+selection the engine makes when it compiles a context pack. Use it to see which
+procedural guidance a given piece of work would pull in.

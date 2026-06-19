@@ -11,3 +11,7 @@ node_modules/
 
 # git worktrees for isolated feature work
 .worktrees/
+
+# Fumadocs generated source
+apps/console/.source/
+.source/

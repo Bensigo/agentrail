@@ -1,0 +1,50 @@
+---
+title: Quickstart
+description: From a fresh repo to a reviewed PR.
+---
+
+This walks through the repo-native flow: index your repo, sharpen the work, and
+run an issue end to end.
+
+## 1. Point AgentRail at your repo
+
+```bash
+cd your-project
+agentrail init
+```
+
+`init` installs the workflow files and builds a local index of your codebase
+(BM25 + a code graph). Nothing leaves your machine to retrieve context. To set
+up for a specific agent, use `agentrail init claude` (or `codex` / `cursor`).
+
+## 2. Sharpen the plan
+
+```bash
+agentrail grill-me
+```
+
+`grill-me` stress-tests a plan against your project's docs and domain language
+before any code is written.
+
+## 3. Run an issue
+
+```bash
+agentrail run issue 42 --agent claude
+```
+
+This runs a bounded **plan → execute → verify** loop for issue 42, retrying on
+verification failure, and stops at review. Swap `--agent codex` to use Codex.
+
+## 4. Watch it
+
+```bash
+agentrail status     # worktree / session state
+agentrail cost       # real-dollar cost per issue from the run journal
+```
+
+## Next steps
+
+- Run many issues unattended with [AFK mode](/docs/concepts/afk).
+- Understand what's happening under the hood in
+  [Core Concepts](/docs/concepts/context-engine).
+- See the full command surface in the [CLI Reference](/docs/cli/overview).

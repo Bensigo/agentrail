@@ -1,0 +1,51 @@
+---
+title: Review & Gates
+description: Independent verification, policy gates, and the three Run Outcome terminals.
+---
+
+The agent never grades its own work, and nothing merges on its say-so. Two
+mechanisms enforce that: a second model verifies the change, and policy gates
+stop runs between phases to show evidence.
+
+## Independent verification
+
+Quality is not "the agent says it looks good." A run's change is checked by
+**Independent Verification** — a blocking, narrow check performed by a
+*different* model than the one that produced the change. It answers one
+falsifiable question: do the tests and the change genuinely satisfy the issue's
+acceptance criteria, or were they gamed or skipped? Using a different model
+defeats the maker grading its own homework.
+
+This pairs with the **Objective Gate** (tests, build, lint, acceptance criteria)
+from [Bounded Execution](/docs/concepts/bounded-execution). A change is good
+quality only when the Objective Gate passes *and* Independent Verification
+confirms the tests genuinely cover the criteria.
+
+Everything else — style, design taste — is **advisory Code Review**: findings
+AgentRail surfaces as suggestions you can convert into issues. Advisory review
+never decides whether a run is done and never blocks a merge.
+
+## Review gates
+
+A **review gate** is a policy checkpoint that decides whether a run or PR has
+enough evidence, verification, and context provenance to continue. Gates stop
+runs between phases and surface the evidence — context packs, the red-green test
+trail, verification result — so a human can see why the agent did what it did.
+
+## Run Outcome terminals
+
+Every issue leaves the queue in exactly one terminal state — there is no state
+that retries forever:
+
+- **Green** — Objective Gate and Independent Verification both pass; a PR is
+  ready (optionally awaiting a human merge for irreversible actions).
+- **Escalated-to-human** — a hard stop fired (per-issue budget exhausted even
+  after model escalation, max tier reached with the gate still red, repeated
+  verification failure, or a security block). State is preserved for inspection
+  or resume.
+- **Blocked** — an explicit `blocked-by` dependency is unmet, so the issue is
+  parked.
+
+```bash
+agentrail status     # see worktree / session state and outcomes
+```

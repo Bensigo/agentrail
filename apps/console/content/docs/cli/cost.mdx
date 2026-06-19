@@ -1,0 +1,39 @@
+---
+title: Cost
+description: Per-issue real-dollar cost from the AFK journal, plus cost-saving recommendations.
+---
+
+`cost` reports the real-dollar cost of runs from the AFK journal — measured per
+issue taken to a passing gate, not per prompt. It accepts `--target DIR`.
+
+## `cost`
+
+```
+cost [--target DIR] [--run ID] [--since REF] [--json]
+```
+
+Show per-issue real-dollar cost from the AFK journal.
+
+| Flag | Description |
+|------|-------------|
+| `--run ID` | Limit to a single run. |
+| `--since REF` | Only count activity since a reference point. |
+| `--json` | Emit machine-readable JSON. |
+
+```bash
+agentrail cost
+agentrail cost --run 316 --json
+```
+
+## `cost RUN_ID --recommend`
+
+```
+cost [RUN_ID] --recommend [--json]
+```
+
+Produce cost-saving recommendations for a run — where spend went and what would
+have reduced it. Add `--json` for machine-readable output.
+
+```bash
+agentrail cost 316 --recommend
+```

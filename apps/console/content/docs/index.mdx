@@ -1,0 +1,28 @@
+---
+title: AgentRail Docs
+description: Run your coding agents on rails.
+---
+
+AgentRail is the control plane that runs your coding agents — Claude Code,
+Codex, or Cursor. It is **not** a coding agent itself and never writes code. It
+gives the agent you already use durable repo context, bounded execution,
+independent review, and verification gates, so its work is cheaper, inspectable,
+and safe to leave unattended. It is repo-native: you install a CLI, point it at
+your repo, and run with your own LLM keys — an optional hosted console adds the
+team layer on top.
+
+## Start here
+
+- **[Getting Started](/docs/getting-started/introduction)** — what AgentRail is,
+  how to install it, and a quickstart from a fresh repo to a reviewed PR.
+- **[Core Concepts](/docs/concepts/context-engine)** — how the context engine,
+  bounded execution, review gates, AFK mode, memory, and skills actually work.
+- **[CLI Reference](/docs/cli/overview)** — every `agentrail` command, grouped
+  by what you're doing.
+
+## Going further
+
+- **[Configuration](/docs/configuration)** — the `.agentrail` config, choosing
+  an agent, and bringing your own LLM keys.
+- **[Dashboard & hosted runner](/docs/dashboard)** — the optional team layer for
+  shared runs, cross-repo cost, and governance.

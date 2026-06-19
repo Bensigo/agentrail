@@ -1,0 +1,70 @@
+---
+title: Configuration
+description: The .agentrail config, choosing an agent, environment, and BYO LLM keys.
+---
+
+AgentRail is repo-native and deterministic. Configuration lives in your project,
+and you bring your own LLM keys.
+
+## `.agentrail/config.json`
+
+Project configuration lives in `.agentrail/config.json` at the root of your
+repo. Settings under the `"context"` key control the
+[context engine](/docs/concepts/context-engine) — what gets indexed, how big
+files can be, and how secrets are handled.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `context.includeGlobs` | `string[]` | `["**/*"]` | Glob patterns for files to include in the index. |
+| `context.excludeGlobs` | `string[]` | sensible defaults | Patterns to exclude (`node_modules`, `dist`, `.git`, secrets, …). |
+| `context.maxFileSizeBytes` | `number` | `262144` | Files larger than this are skipped during indexing. |
+| `context.skipBinary` | `boolean` | `true` | Skip binary files during indexing. |
+| `context.respectGitIgnore` | `boolean` | `true` | Honour `.gitignore` when walking the tree. |
+| `context.daemonAutoSpawn` | `boolean` | `false` | When `true`, the first cold query silently spawns the warm-index daemon in the background; later queries use the fast warm path. |
+| `context.secretRedaction.enabled` | `boolean` | `true` | Enable secret redaction. |
+| `context.secretRedaction.action` | `string` | `"exclude"` | Action on matched secrets (`"exclude"` or `"redact"`). |
+| `context.secretRedaction.denyGlobs` | `string[]` | credential/key patterns | Files that contain secrets and must not be indexed. |
+| `context.embedding.mode` | `string` | `"disabled"` | Embedding provider mode (`"disabled"`, `"local"`, `"openai"`, `"custom"`). |
+| `context.summary.mode` | `string` | `"disabled"` | Summary provider mode. |
+
+### Example
+
+```json
+{
+  "context": {
+    "daemonAutoSpawn": true,
+    "maxFileSizeBytes": 131072,
+    "excludeGlobs": [".git/**", "node_modules/**", "dist/**"]
+  }
+}
+```
+
+## Choosing an agent
+
+AgentRail runs the coding agent you already use — it is not a coding agent
+itself. Pick one when you set up the project, or per run:
+
+```bash
+agentrail init claude           # set the project up for an agent
+agentrail run issue 42 --agent claude
+agentrail run issue 42 --agent codex
+```
+
+The `--agent` flag accepts `claude`, `codex`, or `cursor`. `agentrail init`
+takes the same agent names as a positional argument.
+
+## Bring your own LLM keys
+
+You supply the provider keys for whichever agent you run. AgentRail invokes your
+agent with your own credentials — it does not provision or proxy model access.
+Set the provider keys your chosen agent expects in your environment (for
+example, in your shell profile or a local `.env`), the same way you'd run that
+agent on its own. Secret-bearing files are kept out of the index by
+`context.secretRedaction` and the exclude globs above.
+
+## Secrets stay local
+
+Indexing runs on your machine. The `context.secretRedaction` settings exclude or
+redact credential files before anything is indexed, and `respectGitIgnore` keeps
+ignored paths out of the index. Nothing about your source leaves your machine to
+retrieve context.

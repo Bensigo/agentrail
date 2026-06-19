@@ -1,6 +1,7 @@
 import { auth, signIn } from "@agentrail/auth";
 import { listWorkspacesForUser, claimInvitesForUser } from "@agentrail/db-postgres";
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { Bricolage_Grotesque } from "next/font/google";
 import { Reveal, CountUp } from "./_motion";
 import { DashboardDemo } from "./_dashboard-demo";
@@ -136,12 +137,12 @@ export default async function LandingPage() {
             >
               Platform
             </a>
-            <a
+            <Link
               href="/docs"
               className="rounded px-3 py-1.5 text-[13px] text-[var(--gray-10)] transition-colors hover:text-[var(--gray-12)]"
             >
               Docs
-            </a>
+            </Link>
             <form
               action={async () => {
                 "use server";

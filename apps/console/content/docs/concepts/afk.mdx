@@ -1,0 +1,43 @@
+---
+title: AFK Mode
+description: Run a queue of issues unattended, each isolated in a worktree and capped by a budget.
+---
+
+AFK ("away from keyboard") mode runs a queue of human-defined issues without you
+watching. Point it at your backlog and it works grabbable issues in waves —
+each one isolated, each one capped — and stops when there's nothing left to do.
+
+## Isolated worktrees
+
+Every issue runs in its own **git worktree**, so concurrent runs never touch
+each other's working tree and your main checkout stays clean. Work happens off a
+base branch (default `main`) and lands as a separate branch per issue.
+
+## The budget leash
+
+Each issue carries a hard **budget leash**: a per-issue cost ceiling plus an
+escalation-attempt limit. The loop starts on a cheap model tier; if the
+Objective Gate stays red, it escalates to a stronger tier with a compacted
+failure handoff. If the strong model still can't reach green within the
+remaining budget, it stops and routes the issue to a human. This is what makes
+the loop safe to leave unattended — spend can't run away.
+
+## Terminal states
+
+AFK uses the same [Run Outcome terminals](/docs/concepts/review-and-gates) as a
+single run: **Green** (PR ready), **Escalated-to-human** (a hard stop fired,
+state preserved), or **Blocked** (a `blocked-by` dependency is unmet). The loop
+stops when the queue is empty — every issue is green, escalated, or blocked.
+
+## Running it
+
+```bash
+agentrail afk --concurrency 2 --max-waves 20 --base main
+```
+
+- `--concurrency 2` — number of issues worked in parallel.
+- `--max-waves 20` — cap on scheduling waves before the loop ends.
+- `--base main` — base branch worktrees are created from.
+- `--dry-run` — show what would be grabbed and run, without executing.
+
+Start with `--dry-run` to see the plan, then drop the flag to let it run.

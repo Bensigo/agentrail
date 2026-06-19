@@ -1,0 +1,38 @@
+---
+title: Bounded Execution
+description: The plan → execute → verify loop that keeps a run scoped and self-correcting.
+---
+
+AgentRail runs your agent through a bounded loop, not an open-ended chat. Each
+issue moves through three phases — **plan → execute → verify** — and the run is
+scoped to one human-defined issue. The agent decides *how* to complete it; it
+never invents its own goals.
+
+## The three phases
+
+- **Plan** — the agent reads its compiled [context pack](/docs/concepts/context-engine)
+  and lays out the change it intends to make.
+- **Execute** — it makes the smallest change that satisfies the issue's
+  acceptance criteria.
+- **Verify** — the work is checked against the **Objective Gate**: tests, build,
+  and lint pass, and the acceptance criteria are met. That gate — not the
+  agent's opinion — is the only signal that says the run is done.
+
+## Automatic retry on failure
+
+When verification comes back red, the loop doesn't stop dead and it doesn't
+retry forever. It re-attempts with a compacted handoff of what failed. If it
+still can't reach a passing gate within the issue's budget, it stops and routes
+to a human rather than burning tokens indefinitely. See
+[Review & Gates](/docs/concepts/review-and-gates) for the terminal states and
+[AFK](/docs/concepts/afk) for the per-issue budget leash.
+
+## Running an issue
+
+```bash
+agentrail run issue 42 --agent claude
+```
+
+This runs the full plan → execute → verify loop for issue 42, retrying on
+verification failure, and stops at review. Use `--agent codex` to run Codex
+instead, or `agentrail run` to run the workflow without a specific issue number.

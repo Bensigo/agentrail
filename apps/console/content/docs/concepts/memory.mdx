@@ -1,0 +1,36 @@
+---
+title: Memory
+description: Source-linked lessons, decisions, and failure patterns recalled before the agent acts.
+---
+
+AgentRail keeps **context memory**: advisory, source-linked knowledge from prior
+decisions, lessons, preferences, and failure patterns. Before acting on a task,
+the agent recalls the relevant memory so it doesn't repeat a mistake the team
+already learned from.
+
+## Advisory, not authoritative
+
+Memory is a hint, not a fact. It is always checked against the current code and
+docs — it must never outrank what the repository actually says today. A lesson
+captured last month is useful context; it does not override the current task
+instructions or the current state of the codebase.
+
+## Recall before acting
+
+```bash
+agentrail memory recall "migrations journal"
+```
+
+This surfaces stored lessons, decisions, and failure patterns related to a
+topic — the kind of "watch out, this bit us before" knowledge that would
+otherwise live only in someone's head.
+
+## Capturing a lesson
+
+```bash
+agentrail memory capture lesson "Migrations not in _journal.json are skipped"
+```
+
+`memory capture KIND TITLE` records a new memory item under a kind (such as a
+lesson, decision, or failure pattern) so the next run can recall it. Capture the
+things you'd otherwise have to re-explain on every run.

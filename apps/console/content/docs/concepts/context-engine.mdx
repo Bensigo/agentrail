@@ -1,0 +1,49 @@
+---
+title: Context Engine
+description: How AgentRail compiles bounded, cited context packs from a local index.
+---
+
+Coding agents waste tokens re-reading whole files to find the few lines that
+matter. AgentRail's context engine fixes that. It builds a **local index** of
+your repo and, for each task, compiles a **context pack**: a bounded set of
+line ranges, each with a cited reason it was picked.
+
+## A local index
+
+`agentrail init` (or `agentrail context index`) walks your repo and builds two
+things on your machine:
+
+- A **BM25 keyword index** over your source, for lexical retrieval.
+- A **code graph** — a deterministic relationship model over files, symbols,
+  imports, references, and tests.
+
+Indexing stays local. Nothing about your source leaves your machine to retrieve
+context — the engine runs repo-adjacent, not in a cloud crawler.
+
+## Context packs, not file dumps
+
+When an agent picks up a task, the engine compiles a context pack: instead of
+pasting whole files, it selects the **exact line ranges** the task needs and
+attaches a reason to each pick — a symbol definition, a graph expansion, a BM25
+keyword match. That bounded, cited selection is what the agent reads, and the
+source of the measured token win.
+
+```bash
+agentrail context query "where is the rate limiter applied to ingest?"
+```
+
+## Structural navigation
+
+The code graph also answers structural questions directly, without an LLM:
+
+```bash
+agentrail context def RateLimiter        # where a symbol is defined
+agentrail context callers RateLimiter    # who calls it
+agentrail context impact RateLimiter     # what a change would touch
+agentrail context ast path/to/file.ts    # parsed structure of a file
+```
+
+Use `agentrail context sources` to see what the index covers.
+
+Next: [Bounded Execution](/docs/concepts/bounded-execution) — how an agent
+turns a context pack into a reviewed change.

@@ -24,7 +24,8 @@ export function formatStaleness(days: number): string {
  * Map contributor type to the console resource path.
  * memory_item  → /dashboard/[wid]/memory
  * index_snapshot → /dashboard/[wid]/repos
- * hash_churn   → /dashboard/[wid]/context-packs
+ * hash_churn   → /dashboard/[wid]/repos  (source-file churn is a repo concern;
+ *               the standalone context-packs page was removed)
  */
 export function contributorHref(
   type: "memory_item" | "index_snapshot" | "hash_churn",
@@ -32,8 +33,7 @@ export function contributorHref(
 ): string {
   const base = `/dashboard/${workspaceId}`;
   if (type === "memory_item") return `${base}/memory`;
-  if (type === "index_snapshot") return `${base}/repos`;
-  return `${base}/context-packs`;
+  return `${base}/repos`;
 }
 
 /** Domain label for contributor type. */

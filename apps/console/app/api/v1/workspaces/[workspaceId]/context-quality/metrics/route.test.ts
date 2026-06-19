@@ -33,6 +33,7 @@ function params() {
 
 const sampleResult = {
   insufficient_data: false,
+  run_count: 8,
   series: [
     {
       date: "2026-06-01",
@@ -40,8 +41,16 @@ const sampleResult = {
       citation_coverage: 0.8,
       stale_count: 2,
       denied_count: 1,
+      run_count: 1,
     },
   ],
+  latest: {
+    precision_at_budget: 0.9,
+    citation_coverage: 0.8,
+    stale_count: 2,
+    denied_count: 1,
+  },
+  latest_date: "2026-06-01",
   baseline: {
     precision_at_budget: 0.85,
     citation_coverage: 0.75,
@@ -53,6 +62,31 @@ const sampleResult = {
     citation_coverage: false,
     stale_count: true,
     denied_count: true,
+  },
+};
+
+const insufficientResult = {
+  insufficient_data: true,
+  run_count: 2,
+  series: [],
+  latest: {
+    precision_at_budget: null,
+    citation_coverage: null,
+    stale_count: null,
+    denied_count: null,
+  },
+  latest_date: null,
+  baseline: {
+    precision_at_budget: null,
+    citation_coverage: null,
+    stale_count: null,
+    denied_count: null,
+  },
+  regression: {
+    precision_at_budget: false,
+    citation_coverage: false,
+    stale_count: false,
+    denied_count: false,
   },
 };
 
@@ -93,7 +127,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/context-quality/metrics", () => {
   });
 
   it("200 with insufficient_data: true when fewer than 5 runs", async () => {
-    vi.mocked(getQualityMetrics).mockResolvedValue({ insufficient_data: true });
+    vi.mocked(getQualityMetrics).mockResolvedValue(insufficientResult);
     const res = await GET(req(), { params: params() });
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -197,7 +231,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/context-quality/metrics", () => {
   });
 
   it("AC5: returns HTTP 200 with insufficient_data: true when aggregator reports < 5 runs", async () => {
-    vi.mocked(getQualityMetrics).mockResolvedValue({ insufficient_data: true });
+    vi.mocked(getQualityMetrics).mockResolvedValue(insufficientResult);
     const res = await GET(req(), { params: params() });
     expect(res.status).toBe(200);
     const json = await res.json();

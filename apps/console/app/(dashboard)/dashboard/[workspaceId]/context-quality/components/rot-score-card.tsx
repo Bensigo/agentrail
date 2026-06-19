@@ -6,7 +6,6 @@ import { Info } from "lucide-react";
 import { Skeleton, SkeletonTableRows } from "../../../../../components/loading-skeleton";
 import {
   severityColor,
-  truncateId,
   formatStaleness,
   contributorHref,
   contributorTypeLabel,
@@ -98,7 +97,7 @@ export function RotScoreCard({ workspaceId, repositoryId }: RotScoreCardProps) {
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="border-b border-[var(--gray-05)] bg-[var(--gray-01)]">
-                  {["Type", "ID", "Label", "Staleness", "Contribution"].map(
+                  {["Type", "Name", "Staleness", "Contribution"].map(
                     (h) => (
                       <th
                         key={h}
@@ -111,7 +110,7 @@ export function RotScoreCard({ workspaceId, repositoryId }: RotScoreCardProps) {
                 </tr>
               </thead>
               <tbody>
-                <SkeletonTableRows columns={5} rows={4} />
+                <SkeletonTableRows columns={4} rows={4} />
               </tbody>
             </table>
           </div>
@@ -151,7 +150,7 @@ export function RotScoreCard({ workspaceId, repositoryId }: RotScoreCardProps) {
               <table className="w-full border-collapse text-sm">
                 <thead>
                   <tr className="border-b border-[var(--gray-05)] bg-[var(--gray-01)]">
-                    {["Type", "ID", "Label", "Staleness", "Contribution"].map(
+                    {["Type", "Name", "Staleness", "Contribution"].map(
                       (h) => (
                         <th
                           key={h}
@@ -185,16 +184,8 @@ export function RotScoreCard({ workspaceId, repositoryId }: RotScoreCardProps) {
                             {contributorTypeLabel(row.type)}
                           </span>
                         </td>
-                        {/* ID — monospace, truncated, linked */}
-                        <td className="px-3 py-1">
-                          <Link
-                            href={href}
-                            className="font-mono text-xs text-[var(--blue-11,#70b8ff)] hover:underline"
-                          >
-                            {truncateId(row.id)}
-                          </Link>
-                        </td>
-                        {/* Label — linked */}
+                        {/* Name — the human-readable label, linked. The raw
+                            UUID is intentionally not shown (meaningless to users). */}
                         <td className="px-3 py-1 text-xs text-[var(--gray-11)]">
                           <Link
                             href={href}

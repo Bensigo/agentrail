@@ -73,9 +73,9 @@ describe("contributorHref", () => {
       `/dashboard/${wid}/repos`
     );
   });
-  it("routes hash_churn to /context-packs", () => {
+  it("routes hash_churn to /repos (context-packs page removed)", () => {
     expect(contributorHref("hash_churn", wid)).toBe(
-      `/dashboard/${wid}/context-packs`
+      `/dashboard/${wid}/repos`
     );
   });
 });

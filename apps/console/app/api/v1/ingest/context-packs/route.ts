@@ -4,7 +4,7 @@
  * Accepts a single context pack or an array of up to 100.
  * Authenticates via bearer API key (see lib/bearer-auth.ts).
  * workspace_id comes from the API key; repository_id is validated to belong
- * to that workspace (but is not stored — used for access control only).
+ * to that workspace and stored on the pack so Context Quality can filter by repo.
  *
  * Returns: 202 { accepted: N }
  */
@@ -129,6 +129,7 @@ export async function POST(req: NextRequest) {
 
   const inputs: ContextPackInput[] = valid.map((e) => ({
     workspace_id: workspaceId,
+    repository_id: e.repository_id,
     run_id: e.run_id,
     token_budget: e.token_budget,
     tokens_used: e.tokens_used,

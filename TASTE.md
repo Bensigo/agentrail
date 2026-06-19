@@ -265,7 +265,7 @@ apps/console/app/
   (auth)/              — login, signup, callback routes
 ```
 
-**Marketing pages** are reserved for launch. They use a different visual tone: lighter backgrounds, more whitespace, promotional copy, hero sections, social proof. Marketing layout does NOT use the dense observability style — it uses standard SaaS landing page patterns with the same font stack (Inter + Berkeley Mono) and lemon accent color for brand consistency.
+**Marketing pages** are reserved for launch. They use a different visual tone from the dense console: more whitespace, confident plain copy, hero sections, real social proof. But the mood is **dark and premium** — near-black backgrounds with subtle atmospheric depth, in the spirit of cursor.com, devin.ai, and agentmail.to — not flat-light minimalism and not a gimmicky themed "world." The real product (the console) is the hero: lead with large, literal product surfaces, not abstract diagrams or metaphors. Same font stack (Inter + Berkeley Mono); lemon `#ffe629` is a single surgical accent (primary CTA, one live indicator) — never decorative glow blobs, pulsing-dot pill badges, or an uppercase-mono eyebrow on every section (those read as AI-generated). Voice stays direct, concrete, no hype.
 
 **Console pages** use the dense operational observability style defined below.
 

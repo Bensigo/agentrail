@@ -1,44 +1,19 @@
-"""Cost-aware model routing: identify cheaper same-family models, and the
-escalate-on-failure model cascade (ADR 0011, M036).
+"""Cost-aware model routing: identify cheaper same-family models.
 
-Two concerns live here, both about *which model runs*:
-
-1. **Cost recommendation** (the original): given a Usage record and a phase name,
-   compute whether a cheaper same-family model could have run the same token
-   budget at lower cost, and by how much (overspend_usd). Ladders (expensive →
-   cheap): claude fable-5 → opus → sonnet → haiku; gpt gpt-5/o3 → gpt-4o →
-   gpt-4o-mini/o4-mini. Only same-family, next-tier-down recommendations; no
-   cross-family (Claude ↔ GPT).
-
-2. **Escalate-on-failure cascade** (M036, the ``escalate_on_failure`` section
-   below): difficulty is *revealed, not predicted* — execute first on the CHEAP
-   tier; on an **Objective Gate** failure WITH budget left, escalate to the
-   STRONGER tier carrying a compacted failure handoff. The decision is the
-   **Budget Leash** (``budget_leash.check``); the escalation itself is an **Issue
-   Queue** transition (``queue_state.transition``); the handoff is built by the
-   **Compaction / Failure-Handoff builder** (``compaction.build``). This module
-   composes those three rather than rolling its own retry loop.
+Given a Usage record and a phase name, compute whether a cheaper same-family
+model could have run the same token budget at lower cost, and by how much
+(overspend_usd). Ladders (expensive → cheap): claude fable-5 → opus → sonnet →
+haiku; gpt gpt-5/o3 → gpt-4o → gpt-4o-mini/o4-mini. Only same-family,
+next-tier-down recommendations; no cross-family (Claude ↔ GPT).
 """
 from __future__ import annotations
 
 import json
 import warnings
-from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional, Tuple
 
-from agentrail.afk.queue_state import (
-    Event,
-    MAX_TIER,
-    QueueEntry,
-    Terminal,
-    Tier,
-    is_terminal,
-    transition,
-)
-from agentrail.run import budget_leash, compaction
-from agentrail.run.budget_leash import Decision
-from agentrail.run.compaction import FailureHandoff, GateError
+from agentrail.afk.queue_state import MAX_TIER, Tier
 from agentrail.run.pricing import PRICES
 
 # ---------------------------------------------------------------------------
@@ -255,18 +230,6 @@ def _apply_routing(rec: dict, target: Path, agent: str) -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
-# Escalate-on-failure cascade (ADR 0011, M036).
-#
-# Cheap-first execution: the first attempt runs on the CHEAP tier (AC1). When the
-# Objective Gate comes back red WITH budget remaining, escalate to the STRONGER
-# tier (AC2) carrying a compacted failure handoff (AC2/AC3). The decision is the
-# Budget Leash; the escalation is a queue transition; the handoff is built by the
-# Compaction builder. Pure: no agent calls, no I/O — the caller supplies the
-# already-computed spend/attempts and the gate's failure reasons.
-# ---------------------------------------------------------------------------
-
-
 def next_tier(tier: Tier) -> Optional[Tier]:
     """Return the next stronger tier above ``tier``, or ``None`` at the max tier.
 
@@ -277,101 +240,3 @@ def next_tier(tier: Tier) -> Optional[Tier]:
     if tier >= MAX_TIER:
         return None
     return Tier(int(tier) + 1)
-
-
-@dataclass(frozen=True)
-class EscalationOutcome:
-    """The result of one escalate-on-failure routing step.
-
-    - ``decision`` — the Budget Leash verdict (CONTINUE / ESCALATE / STOP_TO_HUMAN).
-    - ``entry`` — the next **Issue Queue** entry: re-enqueued one tier up on an
-      escalation, moved to the ``ESCALATED_TO_HUMAN`` terminal on a hard stop, or
-      returned unchanged when continuing on the current tier.
-    - ``handoff`` — the compacted failure handoff the stronger model receives on an
-      escalation; ``None`` when no escalation happened (continue or stop-to-human),
-      since there is no next attempt to hand off to.
-    """
-
-    decision: Decision
-    entry: QueueEntry
-    handoff: Optional[FailureHandoff]
-
-
-def escalate_on_failure(
-    *,
-    entry: QueueEntry,
-    spent: float,
-    ceiling: float,
-    attempt_limit: int,
-    attempts: int,
-    gate_red: bool,
-    goal: str,
-    attempt_diff: str,
-    gate_error: GateError,
-    exploration: str = "",
-) -> EscalationOutcome:
-    """Route one attempt's outcome: continue, escalate cheap→strong, or stop.
-
-    Pure. Composes the three reused deep modules:
-
-    1. ``budget_leash.check`` decides CONTINUE / ESCALATE / STOP_TO_HUMAN from the
-       spend, attempts, ceiling, attempt limit, and whether the gate is red.
-    2. On ESCALATE, ``queue_state.transition(entry, GATE_RED)`` performs the
-       escalation as a queue transition — re-enqueue at the next tier with a
-       decremented budget. If the entry is already on the max tier (no tier
-       above), that same transition hard-stops to ``ESCALATED_TO_HUMAN`` instead
-       of fabricating a tier.
-    3. ``compaction.build`` builds the compacted failure handoff (goal + attempt
-       diff + exact gate error, dropping redundant exploration) that the stronger
-       model receives.
-
-    On CONTINUE the entry is returned unchanged with no handoff. On STOP_TO_HUMAN
-    the entry is moved to the ``ESCALATED_TO_HUMAN`` terminal (via the queue
-    transition) with no handoff — there is no further attempt to hand off to.
-
-    Args:
-        entry: the current **Issue Queue** entry (carries tier + remaining budget).
-        spent, ceiling, attempt_limit, attempts, gate_red: the Budget Leash inputs.
-        goal, attempt_diff, gate_error, exploration: the Compaction builder inputs;
-            only consulted when an escalation actually happens.
-
-    Returns:
-        An :class:`EscalationOutcome` carrying the decision, the next entry, and
-        the handoff (only on a real escalation).
-    """
-    decision = budget_leash.check(
-        spent=spent,
-        attempts=attempts,
-        ceiling=ceiling,
-        attempt_limit=attempt_limit,
-        gate_red=gate_red,
-    )
-
-    if decision is Decision.CONTINUE:
-        return EscalationOutcome(decision=decision, entry=entry, handoff=None)
-
-    if decision is Decision.STOP_TO_HUMAN:
-        # Hard stop: route to the ESCALATED_TO_HUMAN terminal with state
-        # preserved (AC5). The Budget Leash is the authority for this stop because
-        # it consulted the real per-issue dollar ceiling and the escalation-attempt
-        # limit; the queue entry's own integer budget is a coarser proxy, so we set
-        # the terminal directly rather than re-deriving it from the transition.
-        stopped = replace(entry, state=Terminal.ESCALATED_TO_HUMAN)
-        return EscalationOutcome(decision=decision, entry=stopped, handoff=None)
-
-    # decision is ESCALATE: re-enqueue one tier up via the queue transition. If
-    # there is no tier above (already on max), the transition itself hard-stops to
-    # ESCALATED_TO_HUMAN — we never fabricate a tier. The handoff is only built
-    # when an escalation actually re-enqueues a stronger attempt.
-    escalated = transition(entry, Event.GATE_RED)
-    if is_terminal(escalated.state) or escalated.tier == entry.tier:
-        # No real tier increase happened (max tier already): nothing to hand off.
-        return EscalationOutcome(decision=decision, entry=escalated, handoff=None)
-
-    handoff = compaction.build(
-        goal=goal,
-        attempt_diff=attempt_diff,
-        gate_error=gate_error,
-        exploration=exploration,
-    )
-    return EscalationOutcome(decision=decision, entry=escalated, handoff=handoff)

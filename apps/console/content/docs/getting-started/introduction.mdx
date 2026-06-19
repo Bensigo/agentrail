@@ -19,12 +19,21 @@ the agent can't justify.
   without babysitting a run or watching the token meter.
 - **Startups** clearing a backlog overnight under a predictable spend ceiling.
 
-## Two ways to run it
+## How it works
 
-- **Repo-native (primary):** install the CLI, point it at your repo, and run
-  issues locally with your own LLM keys. Covered in
-  [Installation](/docs/getting-started/installation) and
-  [Quickstart](/docs/getting-started/quickstart).
-- **Hosted runner (team layer):** sign in to a workspace, queue issues in the
-  console, and run a local worker that pulls and executes them. Covered in
-  [Dashboard & hosted runner](/docs/dashboard).
+The primary flow is the **hosted dashboard + self-hosted runner**:
+
+1. Sign up on the [dashboard](https://app.useagentrail.com) and connect your
+   GitHub repos on the Connectors page — pick the trigger label
+   (`ready-for-agent`) and poll interval.
+2. Install the CLI: `npm install -g @useagentrail/cli`
+3. `agentrail login` — links this machine to your workspace (OAuth device flow,
+   saves `~/.agentrail/credentials.json`). **Login is required** to use the CLI.
+   The only exempt commands are `login`, `logout`, `whoami`, and `--help`.
+4. `agentrail runner` — the local worker claims queued issues over HTTP, runs
+   them on your machine with your own LLM keys, opens PRs, and reports back.
+5. Label a GitHub issue `ready-for-agent` → the runner picks it up → a reviewed
+   PR comes back.
+
+See [Quickstart](/docs/getting-started/quickstart) for a step-by-step walkthrough
+and [Dashboard & hosted runner](/docs/dashboard) for a deeper look at the console.

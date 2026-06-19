@@ -3,9 +3,10 @@ title: Team & Runner
 description: Sign in to a workspace, run the local worker, and open the console.
 ---
 
-These commands connect the CLI to the hosted team layer. They are the
-**secondary** path — the CLI works fully without an account. See
-[Dashboard & hosted runner](/docs/dashboard) for the bigger picture.
+These commands are the core workflow: `login` links your machine to the
+AgentRail workspace, and `runner` is the local worker that claims and executes
+queued issues. See [Dashboard & hosted runner](/docs/dashboard) for the bigger
+picture and setup steps.
 
 ## `login`
 
@@ -13,8 +14,12 @@ These commands connect the CLI to the hosted team layer. They are the
 login [--url BASE_URL]
 ```
 
-Sign this machine into an AgentRail workspace. Use `--url BASE_URL` to point at a
-self-hosted server instead of the default.
+Sign this machine into an AgentRail workspace via an OAuth device flow.
+Credentials are saved to `~/.agentrail/credentials.json`. Use `--url BASE_URL`
+to point at a self-hosted server instead of the default.
+
+Login is required for all CLI commands — the only exempt commands are `login`,
+`logout`, `whoami`, and `--help`.
 
 ```bash
 agentrail login
@@ -50,8 +55,8 @@ agentrail whoami
 runner [--idle SECONDS] [--once] [--concurrency N]
 ```
 
-Run the local worker that executes queued issues — it pulls work from the
-workspace queue and runs it on your machine.
+Run the local worker that executes queued issues — it polls the workspace queue,
+claims available work, and runs it on your machine with your own LLM keys.
 
 | Flag | Description |
 |------|-------------|

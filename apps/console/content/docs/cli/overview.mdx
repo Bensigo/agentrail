@@ -7,6 +7,9 @@ description: The full AgentRail command surface, grouped by what you're doing.
 the live command list, or `agentrail doctor` to check your install. Every
 command is documented across the pages below.
 
+Login is required for all commands. The only exempt commands are `login`,
+`logout`, `whoami`, and `--help`.
+
 ## The `--target DIR` flag
 
 Most commands operate on the current working directory. Pass `--target DIR` to
@@ -18,6 +21,9 @@ command rather than repeating `--target` everywhere.
 
 | Group | Command | What it does |
 |-------|---------|--------------|
+| [Team & Runner](/docs/cli/team-runner) | `login` / `logout` / `whoami` | Sign this machine in and out of a workspace (login is required). |
+| [Team & Runner](/docs/cli/team-runner) | `runner` | Run the local worker that claims and executes queued issues. |
+| [Team & Runner](/docs/cli/team-runner) | `console` | Open the interactive console. |
 | [Project](/docs/cli/project) | `init` / `install` | Initialise or install a project (build the local index). |
 | [Project](/docs/cli/project) | `init claude\|cursor\|codex` | Initialise for a specific agent. |
 | [Project](/docs/cli/project) | `upgrade` | Upgrade agentrail in this project. |
@@ -49,9 +55,6 @@ command rather than repeating `--target` everywhere.
 | [Diagnostics](/docs/cli/diagnostics) | `heartbeat run` / `heartbeat serve` | Run the Heartbeat dispatcher loop. |
 | [Cost](/docs/cli/cost) | `cost` | Per-issue real-dollar cost from the AFK journal. |
 | [Cost](/docs/cli/cost) | `cost RUN_ID --recommend` | Cost-saving recommendations for a run. |
-| [Team & Runner](/docs/cli/team-runner) | `login` / `logout` / `whoami` | Sign this machine in and out of a workspace. |
-| [Team & Runner](/docs/cli/team-runner) | `runner` | Run the local worker for queued issues. |
-| [Team & Runner](/docs/cli/team-runner) | `console` | Open the interactive console. |
 
 ## Internal plumbing
 

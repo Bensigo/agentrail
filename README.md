@@ -1,8 +1,13 @@
 # AgentRail
 
-AgentRail is a repo-native harness for AI coding agents. It gives agents durable context, workflow state, bounded issue execution, review loops, and verification gates so agent work is easier to inspect, resume, and trust.
+AgentRail is the control plane for AI coding agents. It gives agents durable context, workflow state, bounded issue execution, review loops, and verification gates so agent work is easier to inspect, resume, and trust.
 
-AgentRail uses a state-first execution model. Start with `agentrail status` and `agentrail resume`, then let `agentrail run`, `agentrail run issue 123`, or `agentrail afk` decide the next safe execution step from `.agentrail/state.json` before any worker starts new work.
+**Primary flow: hosted dashboard + self-hosted runner.** Sign up at
+[app.useagentrail.com](https://app.useagentrail.com), connect your GitHub repos,
+install the CLI, run `agentrail login`, then `agentrail runner`. The runner
+claims queued issues over HTTP, executes them locally with your own LLM keys,
+opens PRs, and reports back. Login is required — only `login`, `logout`,
+`whoami`, and `--help` are exempt.
 
 AgentRail is the harness. The configured runner is the worker, such as Codex, Claude, Cursor, Hermes, or a custom command. Ralph is the internal one-issue executor AgentRail invokes during issue execution. AFK is the queue/worktree loop for unattended batches of eligible issues.
 
@@ -17,7 +22,7 @@ It installs:
 - durable AgentRail state under `.agentrail/state.json`
 - AgentRail config under `.agentrail/config.json`
 
-## Install
+## Install & Quick Start
 
 Install the CLI globally from npm:
 
@@ -25,7 +30,24 @@ Install the CLI globally from npm:
 npm install -g @useagentrail/cli
 ```
 
-Initialize in your project:
+Log in to your workspace (required):
+
+```bash
+agentrail login
+```
+
+Start the local runner to claim and execute queued issues:
+
+```bash
+agentrail runner
+```
+
+The runner polls the dashboard for issues labelled `ready-for-agent`, executes
+them locally, opens PRs, and reports back. See
+[Getting Started](https://app.useagentrail.com/docs/getting-started/quickstart)
+for the full sign-up → connect GitHub → runner flow.
+
+Initialize in a project (for local index and workflow files):
 
 ```bash
 cd your-project

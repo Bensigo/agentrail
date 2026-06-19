@@ -1,13 +1,13 @@
 ---
 title: Dashboard & Hosted Runner
-description: The optional team layer — sign in, queue issues, and run a local worker.
+description: The primary flow — sign in, connect GitHub, queue issues, and run a local worker.
 ---
 
-The CLI works fully without an account — everything in
-[Getting Started](/docs/getting-started/quickstart) runs on your machine alone.
-The hosted dashboard is the **optional team layer**: it adds a shared view,
-governance, and cross-repo cost on top of the same CLI. This page covers it as
-the secondary path.
+The **hosted dashboard + self-hosted runner** is the primary and required flow.
+Sign up at [app.useagentrail.com](https://app.useagentrail.com), connect your
+GitHub repos, then run `agentrail login` and `agentrail runner` on your machine.
+The runner claims queued issues over HTTP, executes them locally with your own
+LLM keys, opens PRs, and reports back to the dashboard.
 
 ## Sign in
 
@@ -15,7 +15,8 @@ the secondary path.
 agentrail login
 ```
 
-`login` signs this machine into an AgentRail workspace. Use `--url BASE_URL` to
+`login` signs this machine into an AgentRail workspace via an OAuth device flow,
+saving credentials to `~/.agentrail/credentials.json`. Use `--url BASE_URL` to
 point at a self-hosted server. Check who you're signed in as with `whoami`, and
 sign out with `logout`:
 
@@ -24,19 +25,30 @@ agentrail whoami
 agentrail logout
 ```
 
+Login is required for all CLI commands. The only exempt commands are `login`,
+`logout`, `whoami`, and `--help`.
+
+## Connect GitHub
+
+On the dashboard **Connectors** page, authorise GitHub and select the repos you
+want AgentRail to watch. Configure:
+
+- **Trigger label** — `ready-for-agent` (issues with this label are enqueued)
+- **Poll interval** — how often the dashboard checks for newly labelled issues
+
 ## Queue issues in the console
 
-Once signed in, queue work from the console — the team-facing dashboard. Open it
-with:
+Once a repo is connected, queue work by labelling a GitHub issue
+`ready-for-agent`. The issue enters the workspace **Issue Queue**, carrying its
+tier (which model), remaining budget, and state — and leaving in exactly one
+[Run Outcome terminal](/docs/concepts/review-and-gates): Green,
+Escalated-to-human, or Blocked.
+
+You can also open the interactive console directly:
 
 ```bash
 agentrail console
 ```
-
-Queued issues enter the workspace **Issue Queue**, each carrying its tier (which
-model), remaining budget, and state — and each leaving in exactly one
-[Run Outcome terminal](/docs/concepts/review-and-gates): Green,
-Escalated-to-human, or Blocked.
 
 ## Run the local worker
 
@@ -44,9 +56,9 @@ Escalated-to-human, or Blocked.
 agentrail runner --concurrency 2
 ```
 
-`runner` is the local worker that pulls queued issues from the workspace and
-executes them on your machine. The work happens locally — your keys, your
-sandbox — while the workspace coordinates the queue.
+`runner` is the local worker that polls the workspace queue, claims available
+issues, and executes them on your machine. The work happens locally — your keys,
+your sandbox — while the workspace coordinates the queue and stores run outcomes.
 
 | Flag | Description |
 |------|-------------|
@@ -54,18 +66,16 @@ sandbox — while the workspace coordinates the queue.
 | `--once` | Process one batch, then exit. |
 | `--concurrency N` | Number of issues to run in parallel. |
 
-## What the team layer adds
+## What the dashboard adds
 
-The CLI is one developer's terminal. The console is the team system:
-
-- **Every developer's runs in one workspace** — context packs, cost, gate
-  evidence, and outcomes from all your runs in one place.
+- **Shared run history** — context packs, cost, gate evidence, and outcomes from
+  all your runs in one place across the team.
 - **Cost across repos and teams** — real-dollar cost rolled up beyond a single
   laptop, so spend never surprises you.
 - **A source-linked audit trail** — who or what performed each sensitive action.
 - **Members and roles** — invite teammates and govern who can configure review
   gates and manage repositories.
 
-Indexing still stays local on each developer's machine; the console stores run
+Indexing still stays local on each developer's machine; the dashboard stores run
 metadata, context-pack citations, costs, and audit events — not your source by
 default.

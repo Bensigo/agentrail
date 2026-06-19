@@ -39,8 +39,19 @@ export const ALTER_CONTEXT_PACKS_ADD_SOURCE_HASH_LIST = `
 ALTER TABLE context_packs ADD COLUMN IF NOT EXISTS source_hash_list Array(String) DEFAULT []
 `;
 
+// Repository the pack belongs to. The producer already sends repository_id on
+// every pack; previously it was used only for ingest access-control and dropped.
+// Storing it lets Context Quality filter by repo directly (the old run_events
+// subquery returned nothing because run_events.repository_id is empty in prod).
+// Historical rows default to '' and won't match a specific-repo filter.
+export const ALTER_CONTEXT_PACKS_ADD_REPOSITORY_ID = `
+ALTER TABLE context_packs ADD COLUMN IF NOT EXISTS repository_id String DEFAULT ''
+`;
+
 export interface ContextPackRecord {
   workspace_id: string;
+  /** Repository this pack belongs to (enables per-repo Context Quality filtering). */
+  repository_id?: string;
   run_id: string;
   context_pack_id: string;
   token_budget: number;

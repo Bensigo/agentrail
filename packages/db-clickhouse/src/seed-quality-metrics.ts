@@ -228,6 +228,7 @@ async function main() {
     table: "context_packs",
     values: contextPacks.map((p) => ({
       ...p,
+      repository_id: repositoryId,
       occurred_at: fmtDate(p.occurred_at instanceof Date ? p.occurred_at : new Date(p.occurred_at)),
     })),
     format: "JSONEachRow",

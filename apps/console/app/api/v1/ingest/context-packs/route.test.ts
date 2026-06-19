@@ -69,6 +69,7 @@ describe("POST /api/v1/ingest/context-packs", () => {
     expect(insertContextPacks).toHaveBeenCalledWith([
       {
         workspace_id: WS,
+        repository_id: REPO,
         run_id: valid.run_id,
         token_budget: valid.token_budget,
         tokens_used: valid.tokens_used,

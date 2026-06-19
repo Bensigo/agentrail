@@ -782,6 +782,8 @@ export async function insertCostEvents(events: CostEventInput[]): Promise<number
 
 export interface ContextPackInput {
   workspace_id: string;
+  /** Repository this pack belongs to; enables per-repo Context Quality filtering. */
+  repository_id?: string;
   run_id: string;
   token_budget: number;
   tokens_used: number;
@@ -839,6 +841,7 @@ export async function insertContextPacks(packs: ContextPackInput[]): Promise<num
 
   const rows = toInsert.map(({ p, context_pack_id }) => ({
     workspace_id: p.workspace_id,
+    repository_id: p.repository_id ?? "",
     run_id: p.run_id,
     context_pack_id,
     token_budget: p.token_budget,

@@ -1,29 +1,47 @@
 import { client } from "./client";
 
-export type QualityMetricsResult =
-  | { insufficient_data: true }
-  | {
-      insufficient_data: false;
-      series: Array<{
-        date: string;
-        precision_at_budget: number;
-        citation_coverage: number;
-        stale_count: number;
-        denied_count: number;
-      }>;
-      baseline: {
-        precision_at_budget: number;
-        citation_coverage: number;
-        stale_count: number;
-        denied_count: number;
-      };
-      regression: {
-        precision_at_budget: boolean;
-        citation_coverage: boolean;
-        stale_count: boolean;
-        denied_count: boolean;
-      };
-    };
+export type MetricKey =
+  | "precision_at_budget"
+  | "citation_coverage"
+  | "stale_count"
+  | "denied_count";
+
+/**
+ * One point per calendar day in the window. Metric values are `null` on days
+ * with no runs — NEVER zero. Zero-filling a gap day made every percentage line
+ * crash to 0% between sparse runs ("always down"); `null` + `connectNulls` lets
+ * the chart bridge the gap so the line reflects actual run quality. `run_count`
+ * is how many runs landed on that day (0 on gap days), used for tooltips.
+ */
+export interface QualitySeriesPoint {
+  date: string;
+  precision_at_budget: number | null;
+  citation_coverage: number | null;
+  stale_count: number | null;
+  denied_count: number | null;
+  run_count: number;
+}
+
+/**
+ * Unified result — always returns whatever data exists so the UI can degrade
+ * gracefully instead of hitting a blank "insufficient data" wall.
+ *
+ * - `insufficient_data` means the rolling baseline is NOT trustworthy (fewer
+ *   than MIN_RUNS runs, or no runs before the latest run-day). The series and
+ *   `latest` values are still populated when any runs exist; only `baseline`
+ *   and `regression` are suppressed.
+ * - `latest` / `latest_date` describe the most recent run-day's average, which
+ *   drives the KPI tiles.
+ */
+export interface QualityMetricsResult {
+  insufficient_data: boolean;
+  run_count: number;
+  series: QualitySeriesPoint[];
+  latest: Record<MetricKey, number | null>;
+  latest_date: string | null;
+  baseline: Record<MetricKey, number | null>;
+  regression: Record<MetricKey, boolean>;
+}
 
 export interface QualityMetricsOpts {
   workspaceId: string;
@@ -31,9 +49,9 @@ export interface QualityMetricsOpts {
   from: Date;
   to: Date;
   /**
-   * Rolling baseline window in days. Default 30, clamped to [7, 90].
-   * Callers should set `from` to `to - windowDays days` when building the
-   * request; this parameter is used for clamping validation only.
+   * Rolling baseline window in days. Default 30, clamped to [7, 90]. Callers
+   * should set `from` to `to - windowDays days` when building the request; this
+   * parameter is used for clamping validation only.
    */
   windowDays?: number;
 }
@@ -47,14 +65,29 @@ export interface QualityPackRow {
   denied_count: number;
 }
 
-type MetricKey = "precision_at_budget" | "citation_coverage" | "stale_count" | "denied_count";
-
 const METRIC_KEYS: MetricKey[] = [
   "precision_at_budget",
   "citation_coverage",
   "stale_count",
   "denied_count",
 ];
+
+/** Minimum runs before a rolling baseline (and regression flags) is trustworthy. */
+export const MIN_RUNS = 5;
+
+const NULL_METRICS: Record<MetricKey, number | null> = {
+  precision_at_budget: null,
+  citation_coverage: null,
+  stale_count: null,
+  denied_count: null,
+};
+
+const NO_REGRESSION: Record<MetricKey, boolean> = {
+  precision_at_budget: false,
+  citation_coverage: false,
+  stale_count: false,
+  denied_count: false,
+};
 
 /** Median of a numeric array. Returns 0 for an empty array. */
 function median(values: number[]): number {
@@ -79,138 +112,164 @@ function toUTCDay(d: Date | string): Date {
 
 /**
  * Pure compute function for quality metrics. Accepts raw per-run rows from
- * context_packs and returns per-day series, rolling baseline, and regression
- * flags.
+ * context_packs and returns a per-day series (null on gap days), the most
+ * recent run-day's values, a rolling baseline, and regression flags.
  *
  * Design decisions:
+ * - Gap policy: series carries one entry per calendar day in [from, to]; days
+ *   with no runs carry `null` (NOT 0) for every metric, plus run_count 0. The
+ *   frontend bridges nulls with `connectNulls` so a sparse cadence reads as a
+ *   continuous quality line instead of a sawtooth crashing to zero.
  * - Baseline: median across individual run values strictly before the most
- *   recent run day (median is robust to single-run outliers).
- * - Series gap policy: zero-filled — one entry per calendar day in [from, to];
- *   days with no runs carry 0 for all four metrics. Baseline and regression are
- *   computed from actual run data only, never from zero-filled days.
- * - Regression thresholds:
- *     precision_at_budget / citation_coverage: regress when latest drops
- *       more than 5 percentage points below the baseline median.
+ *   recent run day (median is robust to single-run outliers). Suppressed
+ *   (null) until there are >= MIN_RUNS runs AND at least one run before the
+ *   latest day.
+ * - Regression thresholds (only evaluated when the baseline is ready):
+ *     precision_at_budget / citation_coverage: regress when latest drops more
+ *       than 5 percentage points below the baseline median.
  *     stale_count / denied_count: regress when latest exceeds the baseline
  *       median by more than 10%, or when baseline is 0 and latest > 0.
- * - Insufficient data: fewer than 5 runs in the supplied rows returns
- *   { insufficient_data: true }.
  */
 export function computeQualityMetrics(
   rows: QualityPackRow[],
   opts: { from: Date; to: Date }
 ): QualityMetricsResult {
-  const MIN_RUNS = 5;
+  const series = buildSeries(rows, opts);
 
-  if (rows.length < MIN_RUNS) {
-    return { insufficient_data: true };
+  if (rows.length === 0) {
+    return {
+      insufficient_data: true,
+      run_count: 0,
+      series,
+      latest: { ...NULL_METRICS },
+      latest_date: null,
+      baseline: { ...NULL_METRICS },
+      regression: { ...NO_REGRESSION },
+    };
   }
 
-  // Sort by occurred_at ascending
+  // Sort by occurred_at ascending.
   const sorted = [...rows].sort(
     (a, b) => toUTCDay(a.occurred_at).getTime() - toUTCDay(b.occurred_at).getTime()
   );
 
-  // Group run values by UTC day
-  const byDay = new Map<
-    string,
-    { precision_at_budget: number[]; citation_coverage: number[]; stale_count: number[]; denied_count: number[] }
-  >();
-  for (const row of sorted) {
+  // Most recent run day and its average per metric.
+  const latestRunDayStr = toDateStr(toUTCDay(sorted[sorted.length - 1]!.occurred_at));
+  const latestRows = sorted.filter(
+    (r) => toDateStr(toUTCDay(r.occurred_at)) === latestRunDayStr
+  );
+  const avg = (key: MetricKey, rs: QualityPackRow[]) =>
+    rs.reduce((s, r) => s + r[key], 0) / rs.length;
+  const latest: Record<MetricKey, number | null> = {
+    precision_at_budget: avg("precision_at_budget", latestRows),
+    citation_coverage: avg("citation_coverage", latestRows),
+    stale_count: avg("stale_count", latestRows),
+    denied_count: avg("denied_count", latestRows),
+  };
+
+  // Baseline: runs strictly before the latest run day.
+  const priorRows = sorted.filter(
+    (r) => toDateStr(toUTCDay(r.occurred_at)) !== latestRunDayStr
+  );
+  const baselineReady = rows.length >= MIN_RUNS && priorRows.length > 0;
+
+  if (!baselineReady) {
+    return {
+      insufficient_data: true,
+      run_count: rows.length,
+      series,
+      latest,
+      latest_date: latestRunDayStr,
+      baseline: { ...NULL_METRICS },
+      regression: { ...NO_REGRESSION },
+    };
+  }
+
+  const baseline: Record<MetricKey, number> = {
+    precision_at_budget: median(priorRows.map((r) => r.precision_at_budget)),
+    citation_coverage: median(priorRows.map((r) => r.citation_coverage)),
+    stale_count: median(priorRows.map((r) => r.stale_count)),
+    denied_count: median(priorRows.map((r) => r.denied_count)),
+  };
+
+  const regression: Record<MetricKey, boolean> = {
+    precision_at_budget: latest.precision_at_budget! < baseline.precision_at_budget - 0.05,
+    citation_coverage: latest.citation_coverage! < baseline.citation_coverage - 0.05,
+    stale_count:
+      baseline.stale_count === 0
+        ? latest.stale_count! > 0
+        : latest.stale_count! > baseline.stale_count * 1.1,
+    denied_count:
+      baseline.denied_count === 0
+        ? latest.denied_count! > 0
+        : latest.denied_count! > baseline.denied_count * 1.1,
+  };
+
+  return {
+    insufficient_data: false,
+    run_count: rows.length,
+    series,
+    latest,
+    latest_date: latestRunDayStr,
+    baseline,
+    regression,
+  };
+}
+
+/**
+ * Build the per-day series: one entry per calendar day in [from, to], with
+ * `null` metrics (and run_count 0) on days that had no runs. Days with runs
+ * carry that day's average per metric.
+ */
+function buildSeries(
+  rows: QualityPackRow[],
+  opts: { from: Date; to: Date }
+): QualitySeriesPoint[] {
+  const byDay = new Map<string, Record<MetricKey, number[]>>();
+  for (const row of rows) {
     const dayStr = toDateStr(toUTCDay(row.occurred_at));
-    if (!byDay.has(dayStr)) {
-      byDay.set(dayStr, {
+    let bucket = byDay.get(dayStr);
+    if (!bucket) {
+      bucket = {
         precision_at_budget: [],
         citation_coverage: [],
         stale_count: [],
         denied_count: [],
-      });
+      };
+      byDay.set(dayStr, bucket);
     }
-    const bucket = byDay.get(dayStr)!;
-    bucket.precision_at_budget.push(row.precision_at_budget);
-    bucket.citation_coverage.push(row.citation_coverage);
-    bucket.stale_count.push(row.stale_count);
-    bucket.denied_count.push(row.denied_count);
+    for (const key of METRIC_KEYS) bucket[key].push(row[key]);
   }
 
-  // Compute per-day averages (for series display and latest-day value)
-  const avg = (arr: number[]) => arr.reduce((s, v) => s + v, 0) / arr.length;
-  const dayAvgs = new Map<string, Record<MetricKey, number>>();
-  for (const [dayStr, bucket] of byDay.entries()) {
-    dayAvgs.set(dayStr, {
-      precision_at_budget: avg(bucket.precision_at_budget),
-      citation_coverage: avg(bucket.citation_coverage),
-      stale_count: avg(bucket.stale_count),
-      denied_count: avg(bucket.denied_count),
-    });
-  }
-
-  // Identify the most recent run day
-  const latestRunDayStr = toDateStr(toUTCDay(sorted[sorted.length - 1]!.occurred_at));
-  const latestDayAvg = dayAvgs.get(latestRunDayStr)!;
-
-  // Baseline: median of individual run values strictly before the latest run day
-  const baselineValues: Record<MetricKey, number[]> = {
-    precision_at_budget: [],
-    citation_coverage: [],
-    stale_count: [],
-    denied_count: [],
-  };
-  for (const row of sorted) {
-    if (toDateStr(toUTCDay(row.occurred_at)) !== latestRunDayStr) {
-      for (const key of METRIC_KEYS) {
-        baselineValues[key].push(row[key]);
-      }
-    }
-  }
-
-  const baseline: Record<MetricKey, number> = {
-    precision_at_budget: median(baselineValues.precision_at_budget),
-    citation_coverage: median(baselineValues.citation_coverage),
-    stale_count: median(baselineValues.stale_count),
-    denied_count: median(baselineValues.denied_count),
-  };
-
-  // Regression flags
-  const regression: Record<MetricKey, boolean> = {
-    precision_at_budget: latestDayAvg.precision_at_budget < baseline.precision_at_budget - 0.05,
-    citation_coverage: latestDayAvg.citation_coverage < baseline.citation_coverage - 0.05,
-    stale_count:
-      baseline.stale_count === 0
-        ? latestDayAvg.stale_count > 0
-        : latestDayAvg.stale_count > baseline.stale_count * 1.1,
-    denied_count:
-      baseline.denied_count === 0
-        ? latestDayAvg.denied_count > 0
-        : latestDayAvg.denied_count > baseline.denied_count * 1.1,
-  };
-
-  // Build zero-filled series for every calendar day in [from, to]
-  const series: Array<{
-    date: string;
-    precision_at_budget: number;
-    citation_coverage: number;
-    stale_count: number;
-    denied_count: number;
-  }> = [];
-
-  const fromDay = toUTCDay(opts.from);
+  const mean = (arr: number[]) => arr.reduce((s, v) => s + v, 0) / arr.length;
+  const series: QualitySeriesPoint[] = [];
+  const cur = new Date(toUTCDay(opts.from));
   const toDay = toUTCDay(opts.to);
-  const cur = new Date(fromDay);
   while (cur <= toDay) {
     const dayStr = toDateStr(cur);
-    const dayData = dayAvgs.get(dayStr);
-    series.push({
-      date: dayStr,
-      precision_at_budget: dayData?.precision_at_budget ?? 0,
-      citation_coverage: dayData?.citation_coverage ?? 0,
-      stale_count: dayData?.stale_count ?? 0,
-      denied_count: dayData?.denied_count ?? 0,
-    });
+    const bucket = byDay.get(dayStr);
+    if (bucket) {
+      series.push({
+        date: dayStr,
+        precision_at_budget: mean(bucket.precision_at_budget),
+        citation_coverage: mean(bucket.citation_coverage),
+        stale_count: mean(bucket.stale_count),
+        denied_count: mean(bucket.denied_count),
+        run_count: bucket.precision_at_budget.length,
+      });
+    } else {
+      series.push({
+        date: dayStr,
+        precision_at_budget: null,
+        citation_coverage: null,
+        stale_count: null,
+        denied_count: null,
+        run_count: 0,
+      });
+    }
     cur.setUTCDate(cur.getUTCDate() + 1);
   }
-
-  return { insufficient_data: false, series, baseline, regression };
+  return series;
 }
 
 /**
@@ -221,9 +280,10 @@ export function computeQualityMetrics(
  * `windowDays` is clamped to [7, 90]; callers are expected to set `from` to
  * `to - windowDays days` when constructing the request.
  *
- * Note: `context_packs` has no `repository_id` column. Repository filtering
- * uses a subquery on `run_events`, which is best-effort: run_events rows must
- * exist for the runs being queried.
+ * Repository filtering reads the `repository_id` column on `context_packs`
+ * directly. (It previously joined `run_events`, whose `repository_id` is empty
+ * in production, so every repo filter returned no rows.) Packs ingested before
+ * the column existed default to '' and won't match a specific-repo filter.
  */
 export async function getQualityMetrics(
   opts: QualityMetricsOpts
@@ -238,11 +298,7 @@ export async function getQualityMetrics(
   const params: Record<string, unknown> = { workspaceId, fromStr, toStr };
   let repoFilter = "";
   if (repositoryId) {
-    repoFilter = `AND run_id IN (
-      SELECT DISTINCT run_id FROM run_events
-      WHERE workspace_id = {workspaceId: String}
-        AND repository_id = {repositoryId: String}
-    )`;
+    repoFilter = `AND repository_id = {repositoryId: String}`;
     params.repositoryId = repositoryId;
   }
 

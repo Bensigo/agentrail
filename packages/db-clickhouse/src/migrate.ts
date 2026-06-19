@@ -19,6 +19,7 @@ import {
   ALTER_CONTEXT_PACKS_ADD_STALE_COUNT,
   ALTER_CONTEXT_PACKS_ADD_DENIED_COUNT,
   ALTER_CONTEXT_PACKS_ADD_SOURCE_HASH_LIST,
+  ALTER_CONTEXT_PACKS_ADD_REPOSITORY_ID,
   ALTER_FAILURE_EVENTS_ADD_NORMALIZED_ERROR,
   ALTER_FAILURE_EVENTS_ADD_FINGERPRINT,
   ALTER_COST_EVENTS_ADD_PHASE,
@@ -56,6 +57,7 @@ async function main() {
   await client.command({ query: ALTER_CONTEXT_PACKS_ADD_STALE_COUNT });
   await client.command({ query: ALTER_CONTEXT_PACKS_ADD_DENIED_COUNT });
   await client.command({ query: ALTER_CONTEXT_PACKS_ADD_SOURCE_HASH_LIST });
+  await client.command({ query: ALTER_CONTEXT_PACKS_ADD_REPOSITORY_ID });
   console.log("Applied context_packs ALTER TABLE migrations.");
   await client.command({ query: CREATE_CONTEXT_EVENTS_TABLE });
   console.log("Created context_events table.");

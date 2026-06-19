@@ -13,6 +13,7 @@ from agentrail.context.compiler import compiler_contract, extract_anchors
 from agentrail.context.config import read_context_config
 from agentrail.context.embeddings import embedding_config_hash, provider_name, configured_model, run_custom_command, run_openai_compatible
 from agentrail.context.index import append_audit, build_index, load_index
+from agentrail.context.pack_quality import compute_pack_quality
 from agentrail.shared.fs import sha256_text
 
 
@@ -1715,6 +1716,34 @@ def search_context(target_dir: Path, query: str, *, limit: int = 20, index: Opti
         "staleEmbeddingLeakage": integrity.get("staleEmbeddingLeakage", 0),
         "intentCompounding": raw.get("intentCompounding") or {"enabled": False, "lessonPaths": [], "targetPaths": []},
     }
+    # Live context-pack quality proxies. The compacted ``results`` above drop the
+    # policy/provenance fields, so compute from the richer pre-compaction items
+    # (``raw["results"]`` carry sourceType/authority/freshness/contentHash/textHash)
+    # while keeping the selected set aligned with ``selectedContextTokens`` via the
+    # shared ``tokenEstimate``. Failure-tolerant: defaults if anything goes wrong.
+    try:
+        selected_rich: List[Dict[str, Any]] = []
+        for compact, rich in zip(results, raw.get("results", [])):
+            merged = dict(rich) if isinstance(rich, dict) else {}
+            merged["tokenEstimate"] = compact.get("tokenEstimate")
+            selected_rich.append(merged)
+        run_metadata.update(
+            compute_pack_quality(
+                selected_rich,
+                raw.get("excluded") or [],
+                run_metadata["selectedContextTokens"],
+            )
+        )
+    except Exception:  # noqa: BLE001 — metrics are best-effort, never fatal
+        run_metadata.update(
+            {
+                "precision_at_budget": 0.0,
+                "citation_coverage": 0.0,
+                "stale_count": 0,
+                "denied_count": 0,
+                "source_hash_list": [],
+            }
+        )
     return {
         "schemaVersion": 1,
         "command": "context.search",

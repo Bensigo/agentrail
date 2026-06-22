@@ -42,7 +42,11 @@ export const queueEntries = pgTable("queue_entries", {
   body: text("body").notNull().default(""),
   // queue_state.Tier (0 = CHEAP, 1 = STRONG).
   tier: integer("tier").notNull().default(0),
-  remainingBudget: integer("remaining_budget").notNull().default(2),
+  // Seeds the bounded retry budget: one unit is spent per red/error attempt
+  // (see recordRunnerResult / nextQueueTransition), so this is the max number of
+  // attempts before an entry escalates to a human. 5 ⇒ "retry on error max 5
+  // times" (#890).
+  remainingBudget: integer("remaining_budget").notNull().default(5),
   // QueueState ('queued'|'parked'|'running') or Terminal
   // ('green'|'escalated-to-human'|'blocked').
   state: text("state").notNull().default("queued"),

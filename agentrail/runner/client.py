@@ -71,6 +71,11 @@ class WorkItem:
     # The backend repositories row id, used to link this run's ingested cost /
     # telemetry back to the dashboard. "" when the backend didn't resolve one.
     repository_id: str = ""
+    # The escalation tier the backend assigned this (re-)attempt. 0 = run at the
+    # config-default model; 1+ = escalate to a stronger model (see
+    # agentrail.runner.escalation.model_for_tier). Defaults to 0 so a payload
+    # that omits it (or sends garbage) always runs at the safe config default.
+    tier: int = 0
     # Decrypted MCP connector keys for this workspace, {provider: api_key}
     # (linear/figma/context7). The runner exports each as
     # AGENTRAIL_MCP_<PROVIDER>_KEY so native_runner writes the agent's MCP config
@@ -98,6 +103,14 @@ class WorkItem:
             for prov, key in raw_keys.items():
                 if isinstance(prov, str) and isinstance(key, str) and key:
                     mcp_keys[prov] = key
+        # Parse the escalation tier defensively: default to 0 when absent or
+        # non-int (e.g. null / a string) so a malformed payload never crashes the
+        # loop and never accidentally escalates to a costly model.
+        raw_tier = d.get("tier")
+        try:
+            tier = int(raw_tier)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            tier = 0
         return cls(
             id=str(d["id"]),
             workspace_id=str(d["workspace_id"]),
@@ -108,6 +121,7 @@ class WorkItem:
             title=str(d.get("title") or ""),
             body=str(d.get("body") or ""),
             repository_id=str(d.get("repository_id") or ""),
+            tier=tier,
             mcp_keys=mcp_keys,
         )
 

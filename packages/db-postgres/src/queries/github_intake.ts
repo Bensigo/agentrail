@@ -245,7 +245,9 @@ export async function enqueueGithubIssue(data: {
       title: data.title,
       body: data.body,
       tier: 0,
-      remainingBudget: 2,
+      // Bounded retry budget: one unit per red/error attempt before escalating
+      // to a human (#890 "retry on error max 5 times"). Matches the column default.
+      remainingBudget: 5,
       state,
       blockedBy,
     })

@@ -297,3 +297,44 @@ def test_report_telemetry_red_without_repository_id_skips_failure_event():
     _client(transport).report_telemetry(_work_item(), status="red")
     assert len(_posts_to(transport, "/api/v1/ingest/run-events")) == 1
     assert _posts_to(transport, "/api/v1/ingest/failure-events") == []
+
+
+# --- WorkItem.from_dict: escalation tier parsing (BUG 1) ----------------------
+
+
+def _claim_payload(**overrides) -> dict:
+    """A minimal valid claim payload; override individual fields per test."""
+    base = {
+        "id": "wi-9",
+        "workspace_id": "ws1",
+        "source": "github",
+        "external_id": "owner/repo#9",
+        "repo_url": "https://github.com/owner/repo",
+        "ref": "main",
+        "title": "t",
+        "body": "b",
+        "repository_id": "repo-1",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_from_dict_parses_tier():
+    item = WorkItem.from_dict(_claim_payload(tier=2))
+    assert item.tier == 2
+
+
+def test_from_dict_defaults_tier_to_zero_when_absent():
+    item = WorkItem.from_dict(_claim_payload())  # no `tier` key at all
+    assert item.tier == 0
+
+
+def test_from_dict_defaults_tier_to_zero_when_non_int():
+    # A null or string tier must never crash the loop nor accidentally escalate.
+    assert WorkItem.from_dict(_claim_payload(tier=None)).tier == 0
+    assert WorkItem.from_dict(_claim_payload(tier="garbage")).tier == 0
+
+
+def test_from_dict_coerces_numeric_string_tier():
+    # A JSON-stringified int is coerced rather than rejected.
+    assert WorkItem.from_dict(_claim_payload(tier="1")).tier == 1

@@ -21,6 +21,7 @@ from typing import List
 
 from agentrail.runner.client import RunnerClient, WorkItem
 from agentrail.runner.credentials import load_credentials
+from agentrail.runner.escalation import model_for_tier
 from agentrail.runner.worker import run_worker
 from agentrail.sandbox.docker_runner import RunResult
 from agentrail.sandbox.native_runner import select_sandbox_runner
@@ -37,6 +38,7 @@ def _make_execute(creds):
     _params = inspect.signature(runner).parameters
     accepts_run_id = "run_id" in _params
     accepts_pr_title = "pr_title" in _params
+    accepts_model = "model" in _params
 
     def execute(item: WorkItem) -> RunResult:
         run_env = dict(os.environ)
@@ -63,6 +65,14 @@ def _make_execute(creds):
             kwargs["run_id"] = item.id
         if accepts_pr_title and item.title:
             kwargs["pr_title"] = item.title
+        # Escalation: map this attempt's tier to a model override. Tier 0 ⇒ None
+        # ⇒ pass NO model so the local run uses the config default; tier 1+ ⇒ a
+        # stronger model so a re-queued (previously failed) attempt actually
+        # escalates instead of re-running at the same failing model (BUG 1).
+        if accepts_model:
+            model = model_for_tier(item.tier)
+            if model:
+                kwargs["model"] = model
         return runner(**kwargs)
 
     return execute

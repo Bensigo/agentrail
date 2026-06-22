@@ -491,6 +491,7 @@ export async function recordRunnerResult(data: {
   workspaceId: string;
   status: RunnerStatus;
   costUsd?: number;
+  prUrl?: string;
 }): Promise<boolean> {
   // Map the outcome onto the queue state machine. The critical case is `red`:
   // it must NOT re-queue unconditionally (that loops forever, burning money and
@@ -561,6 +562,10 @@ export async function recordRunnerResult(data: {
       finishedAt,
       updatedAt: new Date(),
       ...(data.costUsd !== undefined ? { costUsd: data.costUsd } : {}),
+      // Persist the PR the run opened (#891a) so the dashboard can surface it
+      // and (#891b) reconcile status against the PR's real CI. Only overwrite
+      // with a non-empty value — a later heartbeat with no PR must not clear it.
+      ...(data.prUrl ? { prUrl: data.prUrl } : {}),
     })
     .where(and(eq(runs.id, data.id), eq(runs.workspaceId, data.workspaceId)));
 

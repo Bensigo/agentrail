@@ -27,6 +27,7 @@ export interface RunRecord {
   failure_count: number;
   total_cost: number;
   tokens_saved: number;
+  pr_url: string | null;
 }
 
 interface RepoOption {
@@ -124,6 +125,26 @@ const columns = [
   columnHelper.accessor("status", {
     header: "Status",
     cell: (info) => <StatusBadge status={info.getValue()} />,
+  }),
+  columnHelper.accessor("pr_url", {
+    header: "PR",
+    cell: (info) => {
+      const url = info.getValue();
+      if (!url) return <span className="text-[var(--gray-08)]">—</span>;
+      const m = url.match(/\/pull\/(\d+)/);
+      const label = m ? `#${m[1]}` : "PR";
+      return (
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="text-[var(--blue-11,#4a9eff)] hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {label}
+        </a>
+      );
+    },
   }),
   columnHelper.accessor("agent", {
     header: "Agent",

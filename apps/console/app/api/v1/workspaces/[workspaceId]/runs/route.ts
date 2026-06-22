@@ -128,6 +128,7 @@ export async function GET(
       failure_count: summary.failure_count,
       total_cost: costByRun.get(run.id) ?? 0,
       tokens_saved: tokensSavedByRun.get(run.id) ?? 0,
+      pr_url: run.prUrl || null,
     };
   });
 

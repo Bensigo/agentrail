@@ -43,4 +43,8 @@ export const runs = pgTable("runs", {
   phase: text("phase"),
   costUsd: doublePrecision("cost_usd").default(0),
   updatedAt: timestamp("updated_at", { withTimezone: true }),
+  // The pull request this run opened (#891a). Lets the dashboard surface the PR
+  // and (in #891b) reconcile the displayed status against the PR's real CI,
+  // instead of showing a green-CI PR as "failed" from the local gate verdict.
+  prUrl: text("pr_url").default(""),
 });

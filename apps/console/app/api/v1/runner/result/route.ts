@@ -79,6 +79,7 @@ export async function POST(request: NextRequest) {
     workspaceId: workspace_id,
     status,
     costUsd: typeof body.cost_usd === "number" ? body.cost_usd : undefined,
+    prUrl: typeof body.pr_url === "string" ? body.pr_url : undefined,
   });
   if (!updated) {
     return NextResponse.json(

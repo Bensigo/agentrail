@@ -99,8 +99,11 @@ def _normalized_item(item: Dict[str, Any], kind: str, fallback_reason: str) -> D
 
 
 def _bounded_content(content: Any) -> Any:
-    if isinstance(content, str) and len(content) > 2000:
-        return f"{content[:2000]}\n[TRUNCATED]"
+    """Return content without truncation.
+
+    Budget is enforced by dropping entire low-relevance candidates via
+    _greedy_token_budget_fill, not by mutilating high-value item content.
+    """
     return content
 
 
@@ -436,6 +439,48 @@ def _trim_to_budget(
     return {"itemsDropped": items_dropped, "packCostUsd": result["dollars"], "budgetUsd": budget_usd}
 
 
+def _greedy_token_budget_fill(sections: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Enforce RETRIEVAL_MAX_TOKENS by dropping whole low-relevance candidates.
+
+    Rank all droppable retrieval items by score ascending (lowest first).
+    Drop items one by one until the included-item token total ≤
+    RETRIEVAL_MAX_TOKENS.  Returns a list of items that were dropped (each
+    to be recorded in excludedContext with a budget reason).
+
+    Protected sections (never dropped): requiredContext, availableTools,
+    availableSkills, goals, openQuestions.
+    Droppable: likelyFiles, likelyDocs, relevantMemory, priorMistakes,
+    activeState (in ascending score order).
+    """
+    # Compute total tokens over included (non-excluded) sections only.
+    included_sections = [k for k in PACK_SECTION_KEYS if k not in {"excludedContext", "openQuestions"}]
+
+    def _included_tokens() -> int:
+        return sum(_item_tokens(item) for key in included_sections for item in sections.get(key, []))
+
+    if _included_tokens() <= RETRIEVAL_MAX_TOKENS:
+        return []
+
+    # Build droppable list: retrieval sections only, sorted by score ascending.
+    candidates: List[Tuple[str, Dict[str, Any]]] = []
+    for key in _RETRIEVAL_SECTION_KEYS:
+        for item in list(sections.get(key, [])):
+            candidates.append((key, item))
+    candidates.sort(key=lambda pair: _score_final(pair[1]))
+
+    dropped: List[Dict[str, Any]] = []
+    for section_key, item in candidates:
+        if _included_tokens() <= RETRIEVAL_MAX_TOKENS:
+            break
+        try:
+            sections[section_key].remove(item)
+        except ValueError:
+            continue
+        dropped.append(item)
+
+    return dropped
+
+
 def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
     lines = [
         f"# Context Pack: {pack['target']['kind']} #{pack['target']['number']} {pack['target']['phase']}",
@@ -528,7 +573,19 @@ def build_context_pack(
     _ensure_required_sections(root, sections, index)
     sections["goals"] = _relevant_goals(root, target_kind, target_number, phase)
 
-    # Budget trimming (AC1-AC5)
+    # Greedy token budget fill: enforce RETRIEVAL_MAX_TOKENS by dropping
+    # entire low-relevance candidates (whole-item selection beats truncation).
+    budget_dropped = _greedy_token_budget_fill(sections)
+    for item in budget_dropped:
+        dropped_item = _normalized_item(
+            dict(item),
+            "excluded_context",
+            "dropped: over token budget",
+        )
+        dropped_item["reason"] = "dropped: over token budget"
+        sections["excludedContext"].append(dropped_item)
+
+    # USD budget trimming (AC1-AC5, optional --budget-usd flag)
     budget_meta: Dict[str, Any] = {}
     if budget_usd is not None:
         budget_meta = _trim_to_budget(sections, budget_usd, model)
@@ -596,7 +653,7 @@ def build_context_pack(
             "packExcludedMapTo": "compiler.candidates[kind=excluded_context]",
             "skillsMapTo": "compiler.candidates[kind=procedural_guidance]",
         },
-        token_pack_strategy="compat_pack_sections_until_token_estimator_exists",
+        token_pack_strategy="greedy_budget_fill",
     )
     write_json(json_path, pack)
     md_path.write_text(render_context_pack_markdown(pack), encoding="utf-8")

@@ -155,10 +155,12 @@ def build_reason(parts: Set[str]) -> str:
 
 
 def bounded_content(source: Dict[str, Any], chunk: Optional[Dict[str, Any]]) -> Any:
-    content = (chunk or {}).get("content") if chunk else source.get("content")
-    if isinstance(content, str) and len(content) > 2000:
-        return f"{content[:2000]}\n[TRUNCATED]"
-    return content
+    """Return full chunk/source content without truncation.
+
+    Token-budget enforcement happens in packs.py via greedy budget fill, which
+    drops entire low-relevance candidates instead of mutilating high-value ones.
+    """
+    return (chunk or {}).get("content") if chunk else source.get("content")
 
 
 def estimate_tokens(text: str) -> int:

@@ -45,6 +45,10 @@ class CheckResult:
     # ``occurred_at`` of the run's earliest event. ``None`` when the run has no
     # events at all (no anchor) or when the signal is present.
     missing_since: Optional[datetime]
+    # True when the signal is legitimately absent for this run (e.g. no
+    # failures on a green run, or no memory captured). A not_applicable signal
+    # is neither Present nor a red Missing — it just did not apply.
+    not_applicable: bool = False
 
 
 class ClickHouseClient(Protocol):
@@ -97,7 +101,10 @@ _SIGNAL_QUERIES: dict[str, _SignalQuery] = {
         "review_gate",
         "AND (submission_kind = 'review_gate' OR event_type LIKE 'review_gate%')\n",
     ),
-    "failure_event": _table_query("failure_event", "failure_events"),
+    "failure_event": _run_events_query(
+        "failure_event",
+        "AND submission_kind = 'failure_event'\n",
+    ),
     "memory_items": _run_events_query(
         "memory_items",
         "AND (submission_kind = 'memory' OR event_type LIKE 'memory_items%')\n",
@@ -151,6 +158,22 @@ def check_run_telemetry(
                 missing_since=None if present else anchor,
             )
         )
+
+    # Mark legitimately-absent signals as not_applicable so they don't show as
+    # red Missing on the dashboard. Rule: if review_gate is Present (the run
+    # reached a completion checkpoint), then absence of failure_event means "no
+    # failures occurred" (not a broken emission), and absence of memory_items
+    # means "no memory was captured this run" (not a broken emission).
+    by_signal = {r.signal: r for r in results}
+    if by_signal.get("review_gate", CheckResult("review_gate", False, None)).present:
+        from dataclasses import replace as _replace
+        results = [
+            _replace(r, not_applicable=True, missing_since=None)
+            if r.signal in ("failure_event", "memory_items") and not r.present
+            else r
+            for r in results
+        ]
+
     return results
 
 

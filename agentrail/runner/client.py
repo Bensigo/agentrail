@@ -22,7 +22,7 @@ import json
 import re
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class RunnerError(Exception):
@@ -167,6 +167,17 @@ class RunnerClient:
             return None
         return WorkItem.from_dict(json.loads(resp.body.decode("utf-8")))
 
+    def emit_run_events(
+        self,
+        run_id: str,
+        events: List[Dict[str, Any]],
+    ) -> bool:
+        """POST a batch of run events to the ingest endpoint. ``True`` on 2xx."""
+        url = f"{self._base}/api/v1/ingest/run-events"
+        payload = json.dumps(events).encode("utf-8")
+        resp = self._transport("POST", url, headers=self._headers(), body=payload)
+        return 200 <= resp.status < 300
+
     def report_result(
         self,
         item: WorkItem,
@@ -198,3 +209,71 @@ class RunnerClient:
         ).encode("utf-8")
         resp = self._transport("POST", url, headers=self._headers(), body=payload)
         return 200 <= resp.status < 300
+
+
+def emit_runner_post_run_telemetry(
+    result: Any,
+    *,
+    run_id: str,
+    workspace_id: str,
+    base_url: str,
+    token: str,
+    transport: Optional[Transport] = None,
+) -> bool:
+    """Emit the four telemetry signals that the runner path previously never pushed.
+
+    After a run completes, push ``review_gate``, ``outbox_flush``, and (when the
+    run failed) ``failure_event`` as run_events records so the Telemetry Health
+    panel shows them as Present.
+
+    Legitimately-absent rule (AC4): on a green run with no failures,
+    ``failure_event`` is NOT emitted — the checker marks it ``not_applicable``
+    when ``review_gate`` is Present (see ``check_run_telemetry``). This means
+    absence of failure_event on a green run is never a red Missing signal.
+
+    ``transport`` follows the same injectable seam the rest of the runner uses
+    (default: urllib). ``result`` must have a ``.status`` attribute (``'green'``,
+    ``'red'``, or ``'error'``) and optionally ``.gate_reason``.
+    """
+    _transport = transport or _urllib_transport
+    status = getattr(result, "status", "error")
+    gate_reason = getattr(result, "gate_reason", "") or ""
+
+    events: List[Dict[str, Any]] = [
+        # review_gate — always emitted; the run reached a verdict.
+        {
+            "run_id": run_id,
+            "workspace_id": workspace_id,
+            "submission_kind": "review_gate",
+            "event_type": f"review_gate_{status}",
+            "gate_reason": gate_reason,
+        },
+        # outbox_flush — always emitted; the run's outbox was flushed on finish.
+        {
+            "run_id": run_id,
+            "workspace_id": workspace_id,
+            "event_type": "outbox_flushed",
+        },
+    ]
+
+    # failure_event — only emitted for failed runs (red / error). On green runs
+    # the absence is legitimately not_applicable (checked in check_run_telemetry).
+    if status in ("red", "error"):
+        events.append(
+            {
+                "run_id": run_id,
+                "workspace_id": workspace_id,
+                "submission_kind": "failure_event",
+                "event_type": "run_failed",
+                "gate_reason": gate_reason,
+            }
+        )
+
+    url = f"{base_url.rstrip('/')}/api/v1/ingest/run-events"
+    payload = json.dumps(events).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    resp = _transport("POST", url, headers=headers, body=payload)
+    return 200 <= resp.status < 300

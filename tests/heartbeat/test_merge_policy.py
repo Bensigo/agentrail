@@ -83,9 +83,10 @@ class FakeStore:
         self.transitions.append((entry.number, event, nxt.state))
         return nxt
 
-    def register_run(self, *, entry, run_id, phase, status, cost_usd=0.0):
+    def register_run(self, *, entry, run_id, phase, status, cost_usd=0.0,
+                     model_used=None):
         self.runs.append({"number": entry.number, "status": status,
-                          "cost_usd": cost_usd})
+                          "cost_usd": cost_usd, "model_used": model_used})
 
     def record_event(self, *, kind: str, **payload) -> None:
         """AC5: the runtime must call this to record the merge decision."""

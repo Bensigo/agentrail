@@ -164,6 +164,84 @@ def notify_task_done(
     return None
 
 
+_HELP_TEXT = (
+    "I understand:\n"
+    "  /status — current run/queue snapshot (running, queued, escalated)\n\n"
+    "Send /status to see what AgentRail is working on."
+)
+
+
+def _render_snapshot(snap: dict) -> str:
+    """Format a workspace snapshot into a concise status reply."""
+    running = snap.get("running", 0)
+    queued = snap.get("queued", 0)
+    escalated = snap.get("escalated", 0)
+    lines = [
+        f"AgentRail status:",
+        f"  Running:   {running}",
+        f"  Queued:    {queued}",
+        f"  Escalated: {escalated}",
+    ]
+    issues = snap.get("issues") or []
+    running_issues = [i for i in issues if i.get("state") == "running"]
+    if running_issues:
+        nums = ", ".join(f"#{i['number']}" for i in running_issues)
+        lines.append(f"  Active: {nums}")
+    queued_issues = [i for i in issues if i.get("state") == "queued"]
+    if queued_issues:
+        nums = ", ".join(f"#{i['number']}" for i in queued_issues)
+        lines.append(f"  Queued: {nums}")
+    escalated_issues = [i for i in issues if i.get("state") == "escalated"]
+    if escalated_issues:
+        nums = ", ".join(f"#{i['number']}" for i in escalated_issues)
+        lines.append(f"  Escalated: {nums}")
+    return "\n".join(lines)
+
+
+def handle_inbound_update(
+    update: object,
+    *,
+    token: str,
+    chat_id: str,
+    get_snapshot: Callable[[], dict],
+    transport: Optional[Transport] = None,
+) -> None:
+    """Handle one Telegram Bot API update object (best-effort, isolated).
+
+    Authorizes the message to the workspace by matching ``chat_id``.  Replies
+    to ``/status`` with the run/queue snapshot; replies to anything else with
+    a short help message.  An unknown chat id, a malformed update, or any
+    exception is a safe no-op — never crashes the receiver.
+    """
+    _transport = transport or _urllib_transport
+    try:
+        if not isinstance(update, dict):
+            return None
+        message = update.get("message")
+        if not isinstance(message, dict):
+            return None
+        chat = message.get("chat")
+        if not isinstance(chat, dict):
+            return None
+        incoming_chat_id = chat.get("id")
+        if incoming_chat_id is None:
+            return None
+        # Normalize to string for comparison (test sends numeric id, config may be string).
+        if str(incoming_chat_id) != str(chat_id):
+            return None  # AC3: unknown chat — silence
+        text = message.get("text") or ""
+        text_stripped = text.strip()
+        if text_stripped.lower().startswith("/status"):
+            snap = get_snapshot()
+            reply = _render_snapshot(snap)
+        else:
+            reply = _HELP_TEXT
+        _post(token, chat_id, reply, _transport)
+    except Exception:  # noqa: BLE001 — best-effort, never propagate
+        return None
+    return None
+
+
 def notify_daily_digest(
     *,
     token: Optional[str],

@@ -102,6 +102,67 @@ class TelemetryCompletenessCheckerTests(unittest.TestCase):
             self.assertFalse(result.present)
             self.assertIsNone(result.missing_since)
 
+    # ── Acceptance test for issue #870 ────────────────────────────────────────
+    # RED until the Implementer:
+    #   (a) adds CheckResult.not_applicable: bool
+    #   (b) teaches check_run_telemetry to set not_applicable=True for
+    #       failure_event and memory_items when the run was green (review_gate
+    #       present, no failure rows)
+    #
+    # AC4: "Legitimately-absent ≠ broken: on a Green run with no failure,
+    # failure_event (and memory_items if no memory was captured) must not be
+    # presented as a red 'Missing' health problem."
+    def test_failure_event_and_memory_items_are_not_applicable_on_green_run(self) -> None:
+        """On a green run (review_gate present, no failure rows), failure_event
+        and memory_items must be marked not_applicable — not flagged as a red
+        'Missing' health signal (issue #870, AC4).
+
+        Currently FAILS with AttributeError because CheckResult has no
+        ``not_applicable`` field and check_run_telemetry has no concept of
+        'not applicable'.  After the fix both signals must have
+        ``not_applicable=True`` and ``missing_since=None`` on a green run.
+        """
+        rows: dict[str, list[dict[str, object]]] = {
+            "run_start":      [{"occurred_at": RUN_START}],
+            "context_pack":   [{"occurred_at": LATER}],
+            "cost_event":     [{"occurred_at": LATER}],
+            # review_gate IS present — the runner emitted it (AC1).
+            "review_gate":    [{"occurred_at": LATER}],
+            "index_snapshot": [{"occurred_at": LATER}],
+            "outbox_flush":   [{"occurred_at": LATER}],
+            # failure_event intentionally absent: no failure occurred.
+            # memory_items intentionally absent: no memory was captured.
+        }
+        client = FakeClickHouseClient(rows)
+
+        results = check_run_telemetry("workspace_1", "run_1", client=client)
+        by_signal = {r.signal: r for r in results}
+
+        # Baseline: review_gate is present (runner emitted it).
+        self.assertTrue(by_signal["review_gate"].present)
+
+        # --- AC4 assertions (currently FAILING) ---
+
+        failure = by_signal["failure_event"]
+        # CheckResult must have not_applicable; currently raises AttributeError.
+        self.assertTrue(
+            failure.not_applicable,
+            "failure_event must be not_applicable on a green run, "
+            "not a red 'Missing' signal",
+        )
+        self.assertIsNone(
+            failure.missing_since,
+            "not_applicable signals must have missing_since=None",
+        )
+
+        memory = by_signal["memory_items"]
+        self.assertTrue(
+            memory.not_applicable,
+            "memory_items must be not_applicable when no memory was captured "
+            "on a green run",
+        )
+        self.assertIsNone(memory.missing_since)
+
     def test_module_import_has_no_side_effects_and_no_fastapi_dependency(self) -> None:
         import importlib
         import sys

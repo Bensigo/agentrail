@@ -45,6 +45,11 @@ class CheckResult:
     # ``occurred_at`` of the run's earliest event. ``None`` when the run has no
     # events at all (no anchor) or when the signal is present.
     missing_since: Optional[datetime]
+    # True when the signal is legitimately absent for this run — e.g.
+    # ``failure_event`` and ``memory_items`` on a green run that had no
+    # failures or memory captures. A not_applicable signal must NOT be
+    # shown as a red "Missing" health problem on the dashboard.
+    not_applicable: bool = False
 
 
 class ClickHouseClient(Protocol):
@@ -133,22 +138,44 @@ def check_run_telemetry(
     )
     anchor = _earliest_occurred_at(run_rows)
 
+    # Pre-check review_gate to distinguish legitimately-absent signals (AC4).
+    review_gate_rows = client.query_rows(
+        _SIGNAL_QUERIES["review_gate"].sql, {"run_id": run_id}
+    )
+    is_green_run = bool(review_gate_rows)
+
+    # Signals that are not_applicable when the run is green and they are absent.
+    # Rule: on a green run (review_gate present) these signals are expected to
+    # be empty — failure_event because no failure occurred, memory_items because
+    # memory capture is optional. Absent ≠ broken in that case.
+    _OPTIONAL_ON_GREEN: frozenset[str] = frozenset({"failure_event", "memory_items"})
+
     results: list[CheckResult] = []
     for signal in SIGNALS:
         if signal == "run_start":
             present = bool(run_rows)
+            rows_for_signal: Sequence[Mapping[str, object]] = run_rows
+        elif signal == "review_gate":
+            present = bool(review_gate_rows)
+            rows_for_signal = review_gate_rows
         elif signal == "index_snapshot":
             present = _index_snapshot_present(workspace_id, anchor, client)
+            rows_for_signal = []
         else:
-            rows = client.query_rows(
+            rows_for_signal = client.query_rows(
                 _SIGNAL_QUERIES[signal].sql, {"run_id": run_id}
             )
-            present = bool(rows)
+            present = bool(rows_for_signal)
+
+        not_applicable = (
+            is_green_run and not present and signal in _OPTIONAL_ON_GREEN
+        )
         results.append(
             CheckResult(
                 signal=signal,
                 present=present,
-                missing_since=None if present else anchor,
+                missing_since=None if (present or not_applicable) else anchor,
+                not_applicable=not_applicable,
             )
         )
     return results

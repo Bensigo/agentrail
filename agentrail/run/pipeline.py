@@ -669,10 +669,26 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
     # is passed and the gate's behavior is unchanged.
     red_green_evidence: Optional[Dict[str, Any]] = None
     if require_red_green:
-        red_green_observations.extend(
-            Observation(test=c.name, passed=c.passed) for c in gate_checks
+        # Issue #907: a change that legitimately needs no new test — docs/config
+        # only, no Python source touched — has no fail→pass trail to produce, so
+        # requiring one would false-red it. Waive the trail for such changes,
+        # driven by the SAME changed-file classification the verify check uses
+        # (single source of truth, AC3). Anti-false-green is preserved (AC2): any
+        # change that touches Python source still requires the trail, and the
+        # verify check independently reds a source-without-test change.
+        from agentrail.run.verify_gate import (
+            collect_changed_files,
+            is_test_free_change,
         )
-        red_green_evidence = gate_evidence(verify_trail(red_green_observations))
+
+        changed_files = collect_changed_files(target_dir)
+        if not is_test_free_change(changed_files):
+            # Source changed (or the change set is empty/unknown) → require the
+            # trail. Only a NON-EMPTY docs/config-only change waives it.
+            red_green_observations.extend(
+                Observation(test=c.name, passed=c.passed) for c in gate_checks
+            )
+            red_green_evidence = gate_evidence(verify_trail(red_green_observations))
 
     gate_result = evaluate(
         checks=gate_checks,

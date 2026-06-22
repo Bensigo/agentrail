@@ -1,27 +1,16 @@
 #!/usr/bin/env bash
-# Objective-gate verify for AgentRail's own repo.
+# Objective-gate verify for AgentRail's own repo (issue #907, sub-issue of #891).
 #
-# Runs ONLY the test files this change touches — not the whole suite. The
-# red-green proof needs the authored acceptance test to fail (baseline) then
-# pass (after implementation); running the full suite drags in unrelated
-# environment-dependent tests (daemon lifecycle, MCP structural, …) that fail in
-# a fresh clone and would falsely make the gate red even when the work is correct.
+# Thin wrapper over agentrail.run.verify_gate — the SINGLE SOURCE OF TRUTH for
+# change-set classification, shared with the pipeline's Red-Green Proof decision
+# so the standalone check and the gate can never drift (AC3).
 #
-# Also unsets the runner's ingestion env so the `*_push` "not linked" tests don't
-# false-fail under it.
-set -uo pipefail
-
-unset AGENTRAIL_SERVER_BASE_URL AGENTRAIL_SERVER_API_KEY AGENTRAIL_SERVER_REPOSITORY_ID
-
-# Changed/added/untracked test files in the worktree (porcelain → last field is
-# the path; covers ??, M, A, and rename targets).
-files=$(git status --porcelain | awk '{print $NF}' | grep -E '(^|/)(test_.*|.*_test)\.py$' | sort -u || true)
-
-if [ -z "$files" ]; then
-  echo "verify: no changed test files — nothing to prove (red)" >&2
-  exit 1
-fi
-
-echo "verify: running changed tests:" >&2
-echo "$files" | sed 's/^/  /' >&2
-exec python3 -m pytest -q -p no:cacheprovider $files
+# The module classifies the change set (committed-on-branch ∪ uncommitted
+# working-tree) and:
+#   - runs the changed test files with pytest (the Red-Green Proof), or
+#   - greens a docs/config-only change (legitimately test-free), or
+#   - reds a Python-source change that added no test (anti-false-green, ADR 0008), or
+#   - reds a no-op run (nothing produced).
+#
+# Run from the repo root (cwd), where the `agentrail` package is importable.
+exec python3 -m agentrail.run.verify_gate

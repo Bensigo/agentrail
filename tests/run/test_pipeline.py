@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1887,6 +1888,106 @@ class RunIssueVerifierWiringTests(unittest.TestCase):
             execute_side_effect=lambda: sentinel.write_text("x"),
         )
         self.assertIn("verify", phase_calls)
+
+
+# ---------------------------------------------------------------------------
+# Red-Green Proof trail waiver for test-free changes (issue #907)
+# ---------------------------------------------------------------------------
+
+class RunIssueDocsConfigTrailWaiverTests(unittest.TestCase):
+    """The Red-Green Proof trail is WAIVED for a legitimately test-free change
+    (docs/config only) so the gate stops false-redding it — without weakening
+    anti-false-green: a change touching Python source still requires the trail.
+
+    These run against a REAL git repo as the target so the pipeline's
+    ``collect_changed_files`` sees an actual change set (the unit-level
+    classification is covered in test_verify_gate_classification.py).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+        # Make the target a real git repo with a clean baseline. Ignore the run
+        # artifacts the pipeline writes during the run so they don't pollute the
+        # change set the gate classifies.
+        (self.target / ".gitignore").write_text(".agentrail/runs/\n.agentrail/run/\n")
+        self._git("init", "-b", "main")
+        self._git("config", "user.email", "t@t.com")
+        self._git("config", "user.name", "t")
+        self._git("add", "-A")
+        self._git("commit", "-m", "baseline")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _git(self, *args):
+        subprocess.run(["git", *args], cwd=self.target, check=True, capture_output=True)
+
+    def _write_config(self, payload):
+        cfg = self.target / ".agentrail" / "config.json"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(json.dumps(payload))
+
+    def _run(self, execute_side_effect=None):
+        def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            if phase == "execute" and execute_side_effect is not None:
+                execute_side_effect()
+            return (0, "PLAN OUT") if phase == "plan" else (0, "")
+
+        # NOTE: unlike the other RunIssue fixtures, this class does NOT patch
+        # ``subprocess.run`` — the pipeline's #907 change-set classification
+        # shells out to real git (against the real repo this class sets up), and
+        # a global subprocess.run mock would clobber it. run_issue_phase is fully
+        # stubbed, so no other real subprocess.run call happens in this path.
+        with patch("agentrail.run.pipeline.ctx.issue_resolution_text", return_value="T"), \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline.run_issue_phase", side_effect=_phase_stub), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state"), \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"):
+            result = run_issue(self.target, 7, agent="claude", command="c", repo_dir=self.repo)
+        runs_dir = self.target / ".agentrail" / "runs"
+        run_dir = next(runs_dir.iterdir())
+        return result, _read_json(run_dir / "run.json")
+
+    def test_docs_only_change_reaches_green_despite_tautological_verify(self):
+        """AC1: a docs-only change whose verify always passes (no fail→pass
+        trail possible) STILL reaches green — the trail is waived for test-free
+        changes. Without the #907 fix this is red ("red-green proof trail
+        invalid")."""
+        self._write_config({"verify": "true", "redGreenProof": True})
+        # The execute phase produces a docs-only change in the working tree.
+        result, run_json = self._run(
+            execute_side_effect=lambda: (self.target / "docs").mkdir(exist_ok=True)
+            or (self.target / "docs" / "guide.md").write_text("# guide\n")
+        )
+        self.assertEqual(result, 0, run_json["objectiveGate"])
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
+
+    def test_source_change_without_trail_stays_red(self):
+        """AC2: a change that touches Python source still REQUIRES the trail —
+        an always-passing (tautological) verify keeps the gate red. The waiver
+        must not weaken anti-false-green."""
+        self._write_config({"verify": "true", "redGreenProof": True})
+        result, run_json = self._run(
+            execute_side_effect=lambda: (self.target / "pkg").mkdir(exist_ok=True)
+            or (self.target / "pkg" / "feature.py").write_text("x = 1\n")
+        )
+        self.assertNotEqual(result, 0)
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "red")
+        self.assertTrue(
+            any("red-green" in r.lower() for r in run_json["objectiveGate"]["failedReasons"])
+        )
 
 
 if __name__ == "__main__":

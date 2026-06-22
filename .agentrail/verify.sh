@@ -18,6 +18,21 @@ unset AGENTRAIL_SERVER_BASE_URL AGENTRAIL_SERVER_API_KEY AGENTRAIL_SERVER_REPOSI
 files=$(git status --porcelain | awk '{print $NF}' | grep -E '(^|/)(test_.*|.*_test)\.py$' | sort -u || true)
 
 if [ -z "$files" ]; then
+  # No test files changed — check whether any Python source code changed.
+  # If only docs/config/markdown changed, this is a legitimately test-free
+  # change (AC3 issue #891); exit 0 (green).  If Python source files changed
+  # but no test was written, Red-Green-Proof (ADR 0008) is violated; exit 1.
+  #
+  # Use git ls-files --others (untracked files, listed individually not as dirs)
+  # plus git diff for tracked modified/staged files.
+  code_files=$(
+    { git ls-files --others --exclude-standard; git diff --name-only HEAD 2>/dev/null || true; } \
+      | grep -E '\.py$' | sort -u || true
+  )
+  if [ -z "$code_files" ]; then
+    echo "verify: no code changes — legitimately test-free (docs/config only), green" >&2
+    exit 0
+  fi
   echo "verify: no changed test files — nothing to prove (red)" >&2
   exit 1
 fi

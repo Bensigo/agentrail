@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "description": "Version-controlled retrieval fixtures for the AgentRail Context Compiler. Each fixture maps a representative task/query to the source files that MUST appear in retrieval results. Used by evaluate_retrieval to compute precision_at_budget and required-source coverage per fixture. Keep queries keyword-focused for BM25 compatibility (no external model calls required).",
+  "fixtures": [
+    {
+      "name": "pack-quality-compute",
+      "task": "compute_pack_quality selected excluded precision budget token estimate required",
+      "requiredSources": ["agentrail/context/pack_quality.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.0,
+      "expectedFiles": ["agentrail/context/pack_quality.py"],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
+    },
+    {
+      "name": "retrieval-evaluation",
+      "task": "evaluate_retrieval load_fixtures precision_at_budget coverage required source inclusion",
+      "requiredSources": ["agentrail/context/evaluation.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.0,
+      "expectedFiles": ["agentrail/context/evaluation.py"],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
+    },
+    {
+      "name": "context-pack-build",
+      "task": "build_context_pack write_json packs_dir pack_id sections included excluded",
+      "requiredSources": ["agentrail/context/packs.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.0,
+      "expectedFiles": ["agentrail/context/packs.py"],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
+    },
+    {
+      "name": "context-index-build",
+      "task": "build_index source_record_for_file extracted_symbols chunks records walk_files",
+      "requiredSources": ["agentrail/context/index.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.0,
+      "expectedFiles": ["agentrail/context/index.py"],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
+    },
+    {
+      "name": "query-context-bm25-retrieval",
+      "task": "query_context BM25 bm25 hybrid retrieval results limit score candidates",
+      "requiredSources": ["agentrail/context/retrieval.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.0,
+      "expectedFiles": ["agentrail/context/retrieval.py"],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
+    }
+  ]
+}

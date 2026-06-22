@@ -335,6 +335,16 @@ def _parse_state(value: str) -> object:
 
 
 _SQL = {
+    # ON CONFLICT DO NOTHING — re-enqueuing an issue that already has a row is a
+    # NO-OP, never a resurrection. This is the money-burn fix: the poller re-polls
+    # every still-OPEN trigger-labeled issue every cycle, and an issue stays open
+    # (PR not yet merged / label not yet removed) AFTER its run reached a terminal
+    # state. The old `DO UPDATE SET ... state = EXCLUDED.state` reset that terminal
+    # row back to 'queued' (and refilled budget/reset tier), so next_grabbable
+    # re-grabbed it and the loop re-ran a done issue every cycle, burning money.
+    # Lifecycle columns (state/remaining_budget/tier) are owned by the dispatcher's
+    # transitions, never by re-enqueue. Mirrors the TS path's onConflictDoNothing
+    # (packages/db-postgres .../github_intake.ts).
     "insert_entry": (
         "INSERT INTO queue_entries "
         "(id, workspace_id, source, external_id, title, body, tier, "
@@ -342,10 +352,7 @@ _SQL = {
         "VALUES (%(id)s, %(workspace_id)s, %(source)s, %(external_id)s, "
         " %(title)s, %(body)s, %(tier)s, %(remaining_budget)s, %(state)s, "
         " %(blocked_by)s, %(created_at)s, %(updated_at)s) "
-        "ON CONFLICT (id) DO UPDATE SET "
-        " title = EXCLUDED.title, body = EXCLUDED.body, tier = EXCLUDED.tier, "
-        " remaining_budget = EXCLUDED.remaining_budget, state = EXCLUDED.state, "
-        " blocked_by = EXCLUDED.blocked_by, updated_at = EXCLUDED.updated_at"
+        "ON CONFLICT (id) DO NOTHING"
     ),
     "update_entry": (
         "UPDATE queue_entries SET tier = %(tier)s, "

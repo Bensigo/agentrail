@@ -173,8 +173,13 @@ export async function PUT(
       }
     } else {
       webhookSecret = undefined;
+      // No public base URL (typical on localhost): Telegram can't reach us, so we
+      // skip webhook registration. Inbound `/status` replies still work locally
+      // via the POLLING driver instead — run `pnpm --filter @agentrail/console
+      // telegram:poll` (apps/console/scripts/telegram-poll.ts). Webhook (deployed)
+      // and polling (local) are environment-exclusive; never both at once.
       console.warn(
-        "[connectors/secret] AGENTRAIL_SERVER_BASE_URL unset — skipping telegram inbound webhook registration (outbound still connected)."
+        "[connectors/secret] AGENTRAIL_SERVER_BASE_URL unset — skipping telegram inbound webhook registration (outbound still connected; use `telegram:poll` for local inbound)."
       );
     }
   }

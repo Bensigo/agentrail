@@ -11,7 +11,8 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "telegram:poll": "tsx --env-file=.env.local scripts/telegram-poll.ts"
   },
   "dependencies": {
     "@agentrail/auth": "workspace:*",
@@ -41,6 +42,7 @@
     "eslint": "^9.0.0",
     "eslint-config-next": "^15.3.0",
     "tailwindcss": "^4.0.0",
+    "tsx": "^4.0.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.8"
   }

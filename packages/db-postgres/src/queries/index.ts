@@ -1204,6 +1204,7 @@ export {
 export {
   getConnectors,
   getConnector,
+  listEnabledConnectors,
   upsertConnector,
   setConnectorSecret,
   getConnectorSecret,
@@ -1213,4 +1214,5 @@ export {
   MIN_POLL_INTERVAL_SECONDS,
   MAX_POLL_INTERVAL_SECONDS,
   type ConnectorUpdate,
+  type EnabledConnectorRow,
 } from "./connectors.js";

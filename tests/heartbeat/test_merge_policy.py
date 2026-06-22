@@ -333,3 +333,81 @@ def test_merge_policy_ac1_through_ac5():
     assert label_merge_events and label_merge_events[0]["outcome"] == "merged", (
         "AC5: merge_decision outcome must be 'merged' when label overrides repo OFF"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Merge-failure paths (AC5): a merge that raises or returns failure must be
+# best-effort — recorded as a merge_decision event, never crashing the cycle.
+# --------------------------------------------------------------------------- #
+
+
+def test_merge_pr_exception_is_best_effort_and_recorded():
+    """A merger that raises records outcome='merge-error' and does NOT crash dispatch."""
+    issue = IssueRef(
+        repo="acme/widgets",
+        number=11,
+        title="Merge blows up",
+        body=_VALID_BODY,
+        url="https://gh/11",
+    )
+    store = FakeStore()
+
+    def exploding_merge(pr_url: str, subject: str):
+        raise RuntimeError("github 403: branch protection")
+
+    rt = _runtime(
+        connector=FakeConnector([issue]),
+        store=store,
+        notifier=FakeNotifier(),
+        config=_config(auto_merge=True),
+        default_result=RunResult(
+            status="green", cost_usd=0.5, branch="afk/11",
+            pr_url="https://github.com/acme/widgets/pull/11",
+        ),
+        merge_pr=exploding_merge,
+    )
+
+    # Must not propagate — a merge failure cannot abandon the rest of the cycle.
+    rt.poll_and_dispatch("ws-1")
+
+    events = [e for e in store.events if e["kind"] == "merge_decision"]
+    assert events and events[0]["outcome"] == "merge-error", (
+        "AC5: a raising merger must record outcome='merge-error'"
+    )
+    assert "github 403" in (events[0].get("reason") or ""), (
+        "AC5: the merge-error event must preserve the failure reason"
+    )
+
+
+def test_merge_pr_returns_failure_is_recorded():
+    """A merger that returns (False, ...) records outcome='merge-failed', not 'merged'."""
+    issue = IssueRef(
+        repo="acme/widgets",
+        number=12,
+        title="Merge refused",
+        body=_VALID_BODY,
+        url="https://gh/12",
+    )
+    store = FakeStore()
+
+    def refusing_merge(pr_url: str, subject: str) -> Tuple[bool, str]:
+        return False, ""
+
+    rt = _runtime(
+        connector=FakeConnector([issue]),
+        store=store,
+        notifier=FakeNotifier(),
+        config=_config(auto_merge=True),
+        default_result=RunResult(
+            status="green", cost_usd=0.5, branch="afk/12",
+            pr_url="https://github.com/acme/widgets/pull/12",
+        ),
+        merge_pr=refusing_merge,
+    )
+
+    rt.poll_and_dispatch("ws-1")
+
+    events = [e for e in store.events if e["kind"] == "merge_decision"]
+    assert events and events[0]["outcome"] == "merge-failed", (
+        "AC5: a (False, ...) merge result must record outcome='merge-failed', never 'merged'"
+    )

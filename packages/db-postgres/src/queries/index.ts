@@ -313,6 +313,7 @@ export interface RunRow {
   startedAt: Date | null;
   finishedAt: Date | null;
   createdAt: Date;
+  prUrl: string | null;
 }
 
 export interface ListRunsResult {

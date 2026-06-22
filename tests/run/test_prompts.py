@@ -349,6 +349,24 @@ class IssueBasePromptTests(unittest.TestCase):
             result,
         )
 
+    def test_deterministic_branch_and_single_pr_for_both_agents(self):
+        """Issue #892: the prompt pins a deterministic per-issue branch and one PR.
+
+        Each retry runs a fresh clone with no memory of the prior attempt, so an
+        invented per-attempt branch name spawned a duplicate PR every time. The
+        prompt must steer the agent onto ``agentrail/issue-<n>`` (matching the
+        runner's _publish_green branch) and to update the existing PR, not open a
+        second one.
+        """
+        for agent in ("claude", "codex"):
+            result = self._make(agent, issue=7)
+            self.assertIn("agentrail/issue-7", result,
+                          f"{agent}: prompt must pin the deterministic branch")
+            self.assertIn("never a second", result,
+                          f"{agent}: prompt must forbid a second PR per issue")
+            self.assertNotIn("Open or update one PR linked", result,
+                             f"{agent}: stale non-deterministic instruction removed")
+
     def test_codex_handle_only(self):
         result = self._make("codex")
         self.assertIn("Handle only issue #7.", result)

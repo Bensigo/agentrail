@@ -156,7 +156,8 @@ Hard limits:
 - If starting or resuming execution yourself, use agentrail run issue {issue}; AgentRail invokes Ralph internally during the execute phase.
 - Implement the smallest coherent change that satisfies the issue acceptance criteria.
 - Run relevant verification.
-- Open or update one PR linked to #{issue}.
+- Use the branch `agentrail/issue-{issue}` for this work: create it if absent, otherwise check it out and push to it. Do NOT invent a new per-attempt branch name.
+- Before opening a PR, check for an existing open PR for #{issue} (e.g. `gh pr list --head agentrail/issue-{issue}`); if one exists, UPDATE it by pushing to that branch. Open exactly one PR per issue — never a second.
 - Include summary, acceptance criteria coverage, verification, visual evidence, memory updates, and risks in the PR body.
 - Stop when the PR is ready or when blocked.
 """
@@ -177,7 +178,8 @@ Hard limits:
 - If starting or resuming execution yourself, use agentrail run issue {issue}; AgentRail invokes Ralph internally during the execute phase.
 - Implement the smallest coherent change that satisfies the issue acceptance criteria.
 - Run relevant verification.
-- Open or update one PR linked to #{issue}.
+- Use the branch `agentrail/issue-{issue}` for this work: create it if absent, otherwise check it out and push to it. Do NOT invent a new per-attempt branch name.
+- Before opening a PR, check for an existing open PR for #{issue} (e.g. `gh pr list --head agentrail/issue-{issue}`); if one exists, UPDATE it by pushing to that branch. Open exactly one PR per issue — never a second.
 - Include summary, acceptance criteria coverage, verification, visual evidence, memory updates, and risks in the PR body.
 - Stop when the PR is ready or when blocked.
 """

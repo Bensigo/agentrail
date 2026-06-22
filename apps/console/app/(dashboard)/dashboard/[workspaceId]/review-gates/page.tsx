@@ -9,6 +9,11 @@ import { EmptyState } from "../../../components/empty-state";
 import { ErrorState } from "../../../components/error-state";
 import { LoadingState } from "../../../components/loading-state";
 import { CreateIssueButton } from "./components/create-issue-button";
+import {
+  blockingReasonLabel,
+  blockingReasonSeverity,
+  type BlockingReasonInput,
+} from "./blocking-reason";
 
 interface EvidenceRef {
   label: string;
@@ -27,7 +32,7 @@ interface ReviewGate {
   gateName: string;
   status: "passed" | "failed" | "pending";
   conditions: Record<string, unknown>[];
-  blockingReasons: string[];
+  blockingReasons: BlockingReasonInput[];
   evidenceRefs: EvidenceRef[];
   findings: ReviewGateFinding[] | null;
   evaluatedAt: string | null;
@@ -111,15 +116,24 @@ function GateSubRow({
             Why merge was blocked
           </p>
           <ul className="space-y-1">
-            {gate.blockingReasons.map((reason, i) => (
-              <li
-                key={i}
-                className="text-xs font-mono text-[var(--red-11)] flex items-start gap-1.5"
-              >
-                <span className="mt-0.5 shrink-0">✕</span>
-                <span>{reason}</span>
-              </li>
-            ))}
+            {gate.blockingReasons.map((reason, i) => {
+              const label = blockingReasonLabel(reason);
+              const severity = blockingReasonSeverity(reason);
+              return (
+                <li
+                  key={i}
+                  className="text-xs font-mono text-[var(--red-11)] flex items-start gap-1.5"
+                >
+                  <span className="mt-0.5 shrink-0">✕</span>
+                  <span className="flex-1">{label}</span>
+                  {severity && (
+                    <span className="shrink-0 px-1 py-0.5 rounded text-[10px] font-medium bg-[color-mix(in_srgb,var(--red-11)_12%,transparent)] text-[var(--red-11)]">
+                      {severity}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

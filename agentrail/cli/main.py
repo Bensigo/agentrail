@@ -119,8 +119,19 @@ def main(argv: List[str] | None = None) -> int:
         print(_usage(), end="")
         return 0
 
-    _EXEMPT = {"login", "logout", "whoami"}
-    if args[0] not in _EXEMPT:
+    # The auth gate attributes *usage* to a workspace, so it only fences the
+    # commands that consume workspace usage or talk to the server. Commands
+    # that run fully offline — project scaffolding, local health/index/state
+    # queries — must work before (and without) `agentrail login`.
+    _OFFLINE_COMMANDS = {
+        "login", "logout", "whoami",   # auth itself
+        "init", "install",             # project scaffolding (run before login)
+        "doctor", "cleanup",           # local health / worktree maintenance
+        "context",                     # local index build/query
+        "status", "timeline", "cost",  # local read-only state
+        "link", "console",             # local worktree↔session / TUI
+    }
+    if args[0] not in _OFFLINE_COMMANDS:
         if load_credentials() is None and not os.environ.get("AGENTRAIL_SERVER_API_KEY"):
             print("Not logged in. Run `agentrail login` first.", file=sys.stderr)
             return 1

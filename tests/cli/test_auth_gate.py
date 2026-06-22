@@ -41,17 +41,17 @@ class TestAuthGate(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_gated_command_blocked_when_not_authenticated(self):
-        """main(['status']) exits 1 + prints login message to stderr when unauthenticated."""
+        """main(['run']) exits 1 + prints login message to stderr when unauthenticated."""
         err = StringIO()
-        mock_status = MagicMock(return_value=0)
+        mock_run = MagicMock(return_value=0)
         with patch("agentrail.cli.main.load_credentials", return_value=None, create=True), \
              patch.dict(os.environ, {}, clear=True), \
-             patch("agentrail.cli.main.run_status", mock_status), \
+             patch("agentrail.cli.main.run_run", mock_run), \
              patch("sys.stderr", err):
-            rc = main(["status"])
+            rc = main(["run"])
 
-        # Gate must intercept before dispatch: run_status must NOT be called.
-        mock_status.assert_not_called()
+        # Gate must intercept before dispatch: run_run must NOT be called.
+        mock_run.assert_not_called()
         self.assertEqual(1, rc)
         self.assertIn(_NOT_LOGGED_IN_MSG, err.getvalue())
 
@@ -120,13 +120,13 @@ class TestAuthGate(unittest.TestCase):
 
     def test_gated_command_dispatches_when_credentials_present(self):
         """Gated commands dispatch normally when load_credentials() returns creds."""
-        mock_status = MagicMock(return_value=0)
+        mock_run = MagicMock(return_value=0)
         with patch("agentrail.cli.main.load_credentials", return_value=_FAKE_CREDS, create=True), \
              patch.dict(os.environ, {}, clear=True), \
-             patch("agentrail.cli.main.run_status", mock_status):
-            rc = main(["status"])
+             patch("agentrail.cli.main.run_run", mock_run):
+            rc = main(["run"])
         self.assertEqual(0, rc)
-        mock_status.assert_called_once()
+        mock_run.assert_called_once()
 
     # ------------------------------------------------------------------
     # State 4: gated command allowed when AGENTRAIL_SERVER_API_KEY is set
@@ -137,13 +137,45 @@ class TestAuthGate(unittest.TestCase):
 
     def test_gated_command_dispatches_when_env_key_present(self):
         """Gated commands dispatch when AGENTRAIL_SERVER_API_KEY is set, even without credentials."""
-        mock_status = MagicMock(return_value=0)
+        mock_run = MagicMock(return_value=0)
         with patch("agentrail.cli.main.load_credentials", return_value=None, create=True), \
              patch.dict(os.environ, {"AGENTRAIL_SERVER_API_KEY": "sk-runner-key"}, clear=True), \
-             patch("agentrail.cli.main.run_status", mock_status):
-            rc = main(["status"])
+             patch("agentrail.cli.main.run_run", mock_run):
+            rc = main(["run"])
         self.assertEqual(0, rc)
-        mock_status.assert_called_once()
+        mock_run.assert_called_once()
+
+    # ------------------------------------------------------------------
+    # State 5: offline commands are exempt from the gate
+    #
+    # The gate attributes *usage* to a workspace, so commands that run fully
+    # offline (project scaffolding, local health/index/state queries) must work
+    # WITHOUT credentials — gating them would block first-run setup.
+    # ------------------------------------------------------------------
+
+    def test_offline_commands_allowed_without_credentials(self):
+        """init/install/doctor/context/cleanup/status/timeline/cost/link/console are not gated."""
+        cases = {
+            "init": "run_install",  # bare `init` routes to install
+            "install": "run_install",
+            "doctor": "run_doctor",
+            "context": "run_context",
+            "cleanup": "run_cleanup",
+            "status": "run_status",
+            "timeline": "run_timeline",
+            "cost": "run_cost",
+            "link": "run_link",
+            "console": "run_console",
+        }
+        for command, target in cases.items():
+            with self.subTest(command=command):
+                mock_cmd = MagicMock(return_value=0)
+                with patch("agentrail.cli.main.load_credentials", return_value=None, create=True), \
+                     patch.dict(os.environ, {}, clear=True), \
+                     patch(f"agentrail.cli.main.{target}", mock_cmd):
+                    rc = main([command])
+                self.assertEqual(0, rc, f"{command} should be exempt from the auth gate")
+                mock_cmd.assert_called_once()
 
 
 if __name__ == "__main__":

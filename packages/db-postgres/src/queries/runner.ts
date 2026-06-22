@@ -207,6 +207,10 @@ export interface WorkItem {
   // The repositories row id, so the runner can link the local run's telemetry
   // (cost events, run lifecycle) back to the backend for this repo.
   repository_id: string;
+  // The escalation tier (0 = cheap/config-default, 1+ = stronger model). The
+  // runner maps this to a model override so a re-queued (previously red/error)
+  // attempt actually escalates instead of re-running at the same failing model.
+  tier: number;
 }
 
 /** Find (or create) the repositories row for a repo slug; returns its id. */
@@ -414,7 +418,7 @@ export async function claimQueueEntry(
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING id, workspace_id, source, external_id, title, body
+    RETURNING id, workspace_id, source, external_id, title, body, tier
   `);
 
   const claimed = Array.from(result) as Array<{
@@ -424,6 +428,7 @@ export async function claimQueueEntry(
     external_id: string;
     title: string;
     body: string;
+    tier: number;
   }>;
   const row = claimed[0];
   if (!row) return null;
@@ -470,19 +475,72 @@ export async function claimQueueEntry(
     title: row.title,
     body: row.body,
     repository_id: repositoryId,
+    // Coerce to a number; a malformed/absent column must never become NaN on
+    // the wire (the runner defaults to tier 0 = config model when it can't read it).
+    tier: Number(row.tier) || 0,
   };
 }
 
 export type RunnerStatus = "green" | "red" | "error" | "running";
 
+/** The maximum escalation tier. The runner's model map is bounded to this, so
+ * bumping tier past it is pointless — we cap so the map stays small/deterministic. */
+export const MAX_TIER = 2;
+
+/**
+ * The PURE result→queue-transition decision, extracted so it is unit-testable
+ * without a live Postgres. Given the current `remainingBudget`/`tier` and the
+ * runner `status`, returns the next durable `state` plus the new budget/tier.
+ *
+ * Semantics:
+ *   - green   → terminal 'green' (budget/tier unchanged).
+ *   - running → 'running' heartbeat (budget/tier unchanged).
+ *   - red OR error → a non-green outcome is retryable AND bounded:
+ *       spend one unit of budget and re-admit as 'queued'. When the budget would
+ *       be exhausted (<= 1 remaining before this attempt), transition to the
+ *       terminal 'escalated-to-human' instead of looping forever.
+ *       tier (the model-escalation level) is bumped ONLY for `red`: a gate
+ *       failure may be fixable by a stronger model. An `error` is an infra/
+ *       timeout failure that a bigger, slower model would not fix (and on a
+ *       timeout would make worse), so error retries at the SAME tier.
+ *
+ * The "max N attempts" bound is governed by the initial `remainingBudget` the
+ * enqueue path seeds (see github_intake.ts / the queue_entries default).
+ */
+export function nextQueueTransition(input: {
+  status: RunnerStatus;
+  remainingBudget: number;
+  tier: number;
+}): { state: string; remainingBudget: number; tier: number } {
+  const { status, remainingBudget, tier } = input;
+  if (status === "green") {
+    return { state: "green", remainingBudget, tier };
+  }
+  if (status === "running") {
+    return { state: "running", remainingBudget, tier };
+  }
+  // red OR error: retryable + bounded. Spend one unit of budget; escalate to a
+  // human when this attempt exhausts it.
+  const nextBudget = Math.max(remainingBudget - 1, 0);
+  // Model escalation (tier bump) is for gate failures only — a stronger model
+  // can't fix an infra/timeout error, so `error` retries at the same tier.
+  const nextTier = status === "red" ? Math.min(tier + 1, MAX_TIER) : tier;
+  const state = remainingBudget <= 1 ? "escalated-to-human" : "queued";
+  return { state, remainingBudget: nextBudget, tier: nextTier };
+}
+
 /**
  * Record a runner's result against a queue entry. Maps the runner status onto
- * the queue state-machine vocabulary (terminals: green / escalated-to-human /
- * blocked):
- *   - green  → 'green'   (terminal, done)
- *   - red    → 'queued'  (retryable: re-admit for another attempt)
- *   - error  → 'blocked' (terminal: needs intervention)
- *   - running→ 'running' (heartbeat / still in progress)
+ * the queue state-machine vocabulary via the pure {@link nextQueueTransition}
+ * (terminals: green / escalated-to-human):
+ *   - green   → 'green'              (terminal, done)
+ *   - red     → 'queued' (bounded)   (retryable: spend budget, bump tier, re-admit)
+ *   - error   → 'queued' (bounded)   (transient errors are retryable too, #890)
+ *   - running → 'running'            (heartbeat / still in progress)
+ *
+ * red/error both decrement remaining_budget and re-admit; once the budget is
+ * exhausted they transition to terminal 'escalated-to-human'. tier (the model
+ * escalation level) is bumped for `red` only — see {@link nextQueueTransition}.
  *
  * Returns false when no entry with that id exists in the workspace.
  */
@@ -493,33 +551,39 @@ export async function recordRunnerResult(data: {
   costUsd?: number;
   prUrl?: string;
 }): Promise<boolean> {
-  // Map the outcome onto the queue state machine. The critical case is `red`:
-  // it must NOT re-queue unconditionally (that loops forever, burning money and
-  // opening duplicate PRs). We spend one unit of remaining_budget per red
-  // attempt and, once it's exhausted, escalate to a human (terminal). green is
-  // terminal; error blocks; running is a heartbeat.
+  // Map the outcome onto the queue state machine. The critical cases are `red`
+  // AND `error` (#890): a non-green outcome must NOT re-queue unconditionally
+  // (that loops forever, burning money and opening duplicate PRs) and must NOT
+  // terminally block on a transient error. Both spend one unit of
+  // remaining_budget and re-admit; once the budget is exhausted they escalate to
+  // a human (terminal). tier (model escalation) is bumped for `red` only — a
+  // stronger model can't fix an infra/timeout error. green is terminal; running
+  // is a heartbeat. This SQL MUST stay in lockstep with nextQueueTransition
+  // (the unit-tested spec); the DB integration test guards their equivalence.
   let updated = false;
   let completedExternalId = "";
-  if (data.status === "red") {
-    // Decrement budget; terminal `escalated-to-human` when it would hit zero,
-    // else re-queue at the strong tier for another (bounded) attempt.
+  if (data.status === "red" || data.status === "error") {
+    // Single conditional UPDATE so two concurrent results never double-decrement.
+    // tier bumps only for red (mirrors nextQueueTransition's status==='red').
+    const tierExpr =
+      data.status === "red" ? sql`LEAST(tier + 1, ${MAX_TIER})` : sql`tier`;
     const rows = await db.execute(sql`
       UPDATE queue_entries
       SET state = CASE WHEN remaining_budget <= 1 THEN 'escalated-to-human' ELSE 'queued' END,
           remaining_budget = GREATEST(remaining_budget - 1, 0),
-          tier = 1,
+          tier = ${tierExpr},
           updated_at = now()
       WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
       RETURNING id
     `);
     updated = Array.from(rows).length > 0;
   } else {
-    const nextState =
-      data.status === "green"
-        ? "green"
-        : data.status === "error"
-          ? "blocked"
-          : "running";
+    const { state: nextState } = nextQueueTransition({
+      status: data.status,
+      // budget/tier are unchanged for green/running so any value is inert here.
+      remainingBudget: 0,
+      tier: 0,
+    });
     const rows = await db
       .update(queueEntries)
       .set({ state: nextState, updatedAt: new Date() })

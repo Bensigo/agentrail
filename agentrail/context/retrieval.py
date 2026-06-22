@@ -1652,16 +1652,67 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
     return output
 
 
-def _bounded_snippet(content: Any, *, max_lines: int = 10, max_chars: int = 600) -> str:
-    """Trim chunk content to a small snippet so search never echoes whole files."""
+def _bounded_snippet(
+    content: Any,
+    query_tokens: Optional[List[str]] = None,
+    *,
+    max_lines: int = 10,
+    max_chars: int = 600,
+) -> str:
+    """Trim chunk content to a bounded snippet anchored on the matched span.
+
+    When ``query_tokens`` are provided and the first match falls past the head
+    window, anchors on the enclosing symbol signature (first content line) plus
+    a window around the match so the snippet contains both the definition
+    boundary and the matched span (issue #903).  Falls back to head-biased
+    extraction when no deep match exists.
+    """
     if not isinstance(content, str):
         return ""
     lines = content.splitlines()
-    snippet = "\n".join(lines[:max_lines])
+    total = len(lines)
+    if not lines:
+        return ""
+
+    # Find the first line that contains a long query token (≥4 chars).
+    match_idx: Optional[int] = None
+    if query_tokens:
+        for i, line in enumerate(lines):
+            line_lower = line.lower()
+            if any(tok in line_lower for tok in query_tokens if len(tok) >= 4):
+                match_idx = i
+                break
+
+    # Head-biased path: match is within the first max_lines, or no match found.
+    if match_idx is None or match_idx < max_lines:
+        snippet = "\n".join(lines[:max_lines])
+        if len(snippet) > max_chars:
+            snippet = snippet[:max_chars].rstrip() + " …"
+        elif total > max_lines:
+            snippet += " …"
+        return snippet
+
+    # Deep-match path: sig (line 0) + window around the match.
+    # Budget: 1 sig line + up to (max_lines - 1) window lines.
+    window_budget = max_lines - 1
+    half = window_budget // 2
+    win_start = max(1, match_idx - half)
+    win_end = min(total, win_start + window_budget)
+    # Slide the window left if it hit the end of the content.
+    if win_end - win_start < window_budget:
+        win_start = max(1, win_end - window_budget)
+
+    sig_line = lines[0]
+    window_lines = lines[win_start:win_end]
+    # Insert an ellipsis between the sig and the window when there is a gap.
+    if win_start > 1:
+        parts = [sig_line, "    …", *window_lines]
+    else:
+        parts = [sig_line, *window_lines]
+
+    snippet = "\n".join(parts)
     if len(snippet) > max_chars:
         snippet = snippet[:max_chars].rstrip() + " …"
-    elif len(lines) > max_lines:
-        snippet = snippet + " …"
     return snippet
 
 
@@ -1675,12 +1726,13 @@ def search_context(target_dir: Path, query: str, *, limit: int = 20, index: Opti
     Pass ``index=`` to skip the disk read (daemon warm path).
     """
     raw = query_context(target_dir, query, limit=limit, index=index)
+    _snippet_query_tokens = unique(tokenize(query))
     results: List[Dict[str, Any]] = []
     for entry in raw.get("results", []):
         line_start = entry.get("startLine") or 1
         line_end = entry.get("endLine") or line_start
         symbol_hints = entry.get("symbolHints") or []
-        snippet = _bounded_snippet(entry.get("content"))
+        snippet = _bounded_snippet(entry.get("content"), _snippet_query_tokens)
         results.append({
             "rank": entry.get("rank"),
             "path": entry.get("path"),

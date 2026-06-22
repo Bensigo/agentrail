@@ -91,7 +91,8 @@ class FakeStore:
         self.transitions.append((entry.number, event, nxt.state))
         return nxt
 
-    def register_run(self, *, entry, run_id, phase, status, cost_usd=0.0):
+    def register_run(self, *, entry, run_id, phase, status, cost_usd=0.0,
+                     model_used=None):
         self.runs.append(
             {
                 "number": entry.number,
@@ -99,6 +100,7 @@ class FakeStore:
                 "phase": phase,
                 "status": status,
                 "cost_usd": cost_usd,
+                "model_used": model_used,
             }
         )
 
@@ -620,3 +622,98 @@ def test_dispatch_pending_idles_on_empty_queue():
 
     assert report.dispatched == 0
     assert notifier.tasks == []
+
+
+# --------------------------------------------------------------------------- #
+# Issue #879 — Acceptance test: escalation genuinely changes models
+#
+# RED before implementation; GREEN after.
+#
+# Encodes AC1, AC2, and AC4:
+#   AC1: RuntimeConfig() with no explicit cheap/strong model must default to
+#        cheap=claude-sonnet-4-6 and strong=claude-opus-4-8.
+#   AC2: A gate-red cheap attempt causes the NEXT attempt to run on the strong
+#        model — asserted on the model actually passed to the sandbox, NOT just
+#        the computed tier.
+#   AC4: Each attempt records the model it ran on (model_used) in the run
+#        record, visible for inspection.
+# --------------------------------------------------------------------------- #
+def test_ac879_escalation_changes_models_with_default_mapping_and_model_used():
+    """Acceptance test for issue #879.
+
+    When RuntimeConfig is constructed with no explicit cheap_model / strong_model
+    (i.e. the out-of-the-box defaults), a gate-red cheap attempt must escalate
+    to a genuinely different, stronger model.  Each attempt must also record the
+    model it ran on in the run store so escalation is observable.
+
+    This test MUST FAIL before the issue is implemented:
+    - cheap_model and strong_model currently default to None, so both attempts
+      run the same (unset) model and escalation changes nothing.
+    - register_run does not yet accept or forward model_used.
+    """
+    # AC1 — assert defaults BEFORE constructing the runtime, so the failure is
+    # immediately obvious and not buried in a sandbox-call assertion.
+    default_config = RuntimeConfig(
+        workspace_id="ws-879",
+        repo_url="https://github.com/acme/widgets.git",
+    )
+    assert default_config.cheap_model == "claude-sonnet-4-6", (
+        "AC1 FAIL: cheap_model default must be 'claude-sonnet-4-6', "
+        f"got {default_config.cheap_model!r}"
+    )
+    assert default_config.strong_model == "claude-opus-4-8", (
+        "AC1 FAIL: strong_model default must be 'claude-opus-4-8', "
+        f"got {default_config.strong_model!r}"
+    )
+
+    # AC2 — run with defaults; cheap fails, strong succeeds.
+    connector = FakeConnector(
+        [IssueRef(repo="acme/widgets", number=879, title="Make escalation real",
+                  body=_VALID_BODY, url="https://gh/879")]
+    )
+    store = FakeStore()
+    notifier = FakeNotifier()
+    rt = _runtime(
+        connector=connector,
+        store=store,
+        notifier=notifier,
+        config=default_config,
+        result_sequence=[
+            RunResult(status="red", cost_usd=0.1, branch="afk/879-cheap",
+                      gate_reason="tests did not pass"),
+            RunResult(status="green", cost_usd=0.4, branch="afk/879-strong"),
+        ],
+    )
+
+    report = rt.poll_and_dispatch("ws-879")
+
+    calls = rt._sandbox_calls
+    assert len(calls) == 2, f"expected 2 sandbox calls (cheap + strong), got {len(calls)}"
+
+    # AC2 — first attempt ran on cheap (Sonnet 4.6), not None.
+    assert calls[0]["model"] == "claude-sonnet-4-6", (
+        "AC2 FAIL: first (cheap) attempt must use claude-sonnet-4-6, "
+        f"got {calls[0]['model']!r}"
+    )
+    # AC2 — second attempt ran on strong (Opus 4.8), not the same model.
+    assert calls[1]["model"] == "claude-opus-4-8", (
+        "AC2 FAIL: second (strong) attempt must use claude-opus-4-8, "
+        f"got {calls[1]['model']!r}"
+    )
+
+    # AC4 — each attempt's run record carries model_used.
+    attempt_runs = [r for r in store.runs if r.get("status") in ("red", "green")]
+    assert len(attempt_runs) >= 2, (
+        f"expected at least 2 attempt run records, got {attempt_runs}"
+    )
+    assert attempt_runs[0].get("model_used") == "claude-sonnet-4-6", (
+        "AC4 FAIL: first attempt run record must carry "
+        f"model_used='claude-sonnet-4-6', got {attempt_runs[0].get('model_used')!r}"
+    )
+    assert attempt_runs[1].get("model_used") == "claude-opus-4-8", (
+        "AC4 FAIL: second attempt run record must carry "
+        f"model_used='claude-opus-4-8', got {attempt_runs[1].get('model_used')!r}"
+    )
+
+    # Sanity: escalation ended green.
+    assert report.green == 1

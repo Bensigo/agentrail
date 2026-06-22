@@ -95,7 +95,7 @@ class Store(Protocol):
     def transition(self, entry, event):  # pragma: no cover
         ...
 
-    def register_run(self, *, entry, run_id, phase, status, cost_usd=0.0):  # pragma: no cover
+    def register_run(self, *, entry, run_id, phase, status, cost_usd=0.0, model_used=None):  # pragma: no cover
         ...
 
     def list_queue(self, workspace_id):  # pragma: no cover
@@ -148,8 +148,8 @@ class RuntimeConfig:
     repo_url: str
     ref: str = "main"
     env: Dict[str, str] = field(default_factory=dict)
-    cheap_model: Optional[str] = None
-    strong_model: Optional[str] = None
+    cheap_model: Optional[str] = "claude-sonnet-4-6"
+    strong_model: Optional[str] = "claude-opus-4-8"
     ceiling: float = 0.0
     attempt_limit: int = 2
 
@@ -373,6 +373,7 @@ class HeartbeatRuntime:
                 phase="execute",
                 status=result.status,
                 cost_usd=result.cost_usd,
+                model_used=model,
             )
 
             if result.status == "green":

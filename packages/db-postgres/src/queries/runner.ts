@@ -542,15 +542,46 @@ export function nextQueueTransition(input: {
  * exhausted they transition to terminal 'escalated-to-human'. tier (the model
  * escalation level) is bumped for `red` only — see {@link nextQueueTransition}.
  *
- * Returns false when no entry with that id exists in the workspace.
+ * Returns `{ updated, terminalState, externalId }`:
+ *   - `updated`      — false when no entry with that id exists in the workspace.
+ *   - `terminalState`— the resulting state IFF it is a terminal (green /
+ *     escalated-to-human / blocked), else null. A red/error that merely re-queues
+ *     (budget not yet exhausted) and a running heartbeat both yield null. This is
+ *     what the result route keys notify on: notify ONLY fires on a terminal, so a
+ *     retry never spams the gateway (#888). Derived from the state the atomic
+ *     UPDATE actually committed (read back via RETURNING), so it can never
+ *     disagree with what was persisted.
+ *   - `externalId`   — the entry's external id (e.g. the issue URL/slug#n); the
+ *     route parses the issue number from it for the message. "" when not updated.
  */
+export type TerminalQueueState = "green" | "escalated-to-human" | "blocked";
+
+/** The terminal (queue-leaving) states.
+ *
+ * NOTE: `recordRunnerResult` itself only ever commits `green` or
+ * `escalated-to-human` (post-#910 an `error` re-queues; it no longer blocks), so
+ * a notify from THIS path fires for those two. `blocked` is included for
+ * forward-compatibility — it is a real queue terminal other paths may set — so a
+ * future blocked outcome notifies through the same hook without a code change. */
+const TERMINAL_QUEUE_STATES: readonly string[] = [
+  "green",
+  "escalated-to-human",
+  "blocked",
+];
+
+export interface RecordRunnerResult {
+  updated: boolean;
+  terminalState: TerminalQueueState | null;
+  externalId: string;
+}
+
 export async function recordRunnerResult(data: {
   id: string;
   workspaceId: string;
   status: RunnerStatus;
   costUsd?: number;
   prUrl?: string;
-}): Promise<boolean> {
+}): Promise<RecordRunnerResult> {
   // Map the outcome onto the queue state machine. The critical cases are `red`
   // AND `error` (#890): a non-green outcome must NOT re-queue unconditionally
   // (that loops forever, burning money and opening duplicate PRs) and must NOT
@@ -562,21 +593,32 @@ export async function recordRunnerResult(data: {
   // (the unit-tested spec); the DB integration test guards their equivalence.
   let updated = false;
   let completedExternalId = "";
+  // The state the UPDATE actually committed (RETURNING), so terminalState can
+  // never disagree with what was persisted. For red/error this is `queued` on a
+  // retry and `escalated-to-human` once budget is exhausted; for green/running it
+  // is the state we set directly.
+  let resultingState = "";
   if (data.status === "red" || data.status === "error") {
     // Single conditional UPDATE so two concurrent results never double-decrement.
     // tier bumps only for red (mirrors nextQueueTransition's status==='red').
     const tierExpr =
       data.status === "red" ? sql`LEAST(tier + 1, ${MAX_TIER})` : sql`tier`;
-    const rows = await db.execute(sql`
+    const rows = Array.from(
+      await db.execute(sql`
       UPDATE queue_entries
       SET state = CASE WHEN remaining_budget <= 1 THEN 'escalated-to-human' ELSE 'queued' END,
           remaining_budget = GREATEST(remaining_budget - 1, 0),
           tier = ${tierExpr},
           updated_at = now()
       WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
-      RETURNING id
-    `);
-    updated = Array.from(rows).length > 0;
+      RETURNING id, state, external_id
+    `)
+    ) as Array<{ id: string; state: string; external_id: string }>;
+    updated = rows.length > 0;
+    if (updated) {
+      resultingState = rows[0]!.state;
+      completedExternalId = rows[0]!.external_id;
+    }
   } else {
     const { state: nextState } = nextQueueTransition({
       status: data.status,
@@ -593,11 +635,30 @@ export async function recordRunnerResult(data: {
           eq(queueEntries.workspaceId, data.workspaceId)
         )
       )
-      .returning({ id: queueEntries.id, externalId: queueEntries.externalId });
+      .returning({
+        id: queueEntries.id,
+        state: queueEntries.state,
+        externalId: queueEntries.externalId,
+      });
     updated = rows.length > 0;
-    if (updated) completedExternalId = rows[0]!.externalId;
+    if (updated) {
+      resultingState = rows[0]!.state;
+      completedExternalId = rows[0]!.externalId;
+    }
   }
-  if (!updated) return false;
+  if (!updated) {
+    return { updated: false, terminalState: null, externalId: "" };
+  }
+
+  // Notify ONLY on a terminal: a red/error that re-queued committed `queued`
+  // (non-terminal) so terminalState stays null and the route never notifies on a
+  // retry; an exhausted-budget escalation committed `escalated-to-human`
+  // (terminal). green is terminal; running is a heartbeat (non-terminal). The
+  // value is read back from the actual committed state, not re-derived.
+  const terminalState: TerminalQueueState | null =
+    TERMINAL_QUEUE_STATES.includes(resultingState)
+      ? (resultingState as TerminalQueueState)
+      : null;
 
   // Dependency awareness: a green entry may release parked dependents that were
   // blocked on it. Best-effort — never fail the result on this.
@@ -633,5 +694,5 @@ export async function recordRunnerResult(data: {
     })
     .where(and(eq(runs.id, data.id), eq(runs.workspaceId, data.workspaceId)));
 
-  return true;
+  return { updated: true, terminalState, externalId: completedExternalId };
 }

@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resolveTelegramChatId, sendTelegramWelcome } from "./telegram";
+import {
+  resolveTelegramChatId,
+  sendTelegramWelcome,
+  sendTelegramMessage,
+  setTelegramWebhook,
+} from "./telegram";
 
 const TOKEN = "123456789:AAH" + "a".repeat(32);
 
@@ -68,5 +73,59 @@ describe("sendTelegramWelcome", () => {
     mockFetchOnce({ ok: false });
     const res = await sendTelegramWelcome(TOKEN, "-100123");
     expect(res.ok).toBe(false);
+  });
+});
+
+describe("sendTelegramMessage (shared sender)", () => {
+  it("posts the supplied text to the supplied chat and succeeds", async () => {
+    const fn = mockFetchOnce({ ok: true });
+    const res = await sendTelegramMessage(TOKEN, "999", "hello world");
+    expect(res).toEqual({ ok: true });
+    const [url, init] = fn.mock.calls[0];
+    expect(String(url)).toContain("/sendMessage");
+    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
+      chat_id: "999",
+      text: "hello world",
+    });
+  });
+
+  it("returns an error result (never throws) when Telegram rejects", async () => {
+    mockFetchOnce({ ok: false });
+    const res = await sendTelegramMessage(TOKEN, "999", "x");
+    expect(res.ok).toBe(false);
+  });
+
+  it("swallows a transport throw into an error result", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("network down"))
+    );
+    const res = await sendTelegramMessage(TOKEN, "999", "x");
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe("setTelegramWebhook", () => {
+  it("registers the webhook with url + secret_token and succeeds", async () => {
+    const fn = mockFetchOnce({ ok: true });
+    const res = await setTelegramWebhook(
+      TOKEN,
+      "https://app.example/api/v1/connectors/telegram/webhook/ws-1",
+      "sekret"
+    );
+    expect(res).toEqual({ ok: true });
+    const [url, init] = fn.mock.calls[0];
+    expect(String(url)).toContain("/setWebhook");
+    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
+      url: "https://app.example/api/v1/connectors/telegram/webhook/ws-1",
+      secret_token: "sekret",
+    });
+  });
+
+  it("surfaces a Telegram rejection (best-effort, never throws)", async () => {
+    mockFetchOnce({ ok: false, description: "Bad webhook: HTTPS required" });
+    const res = await setTelegramWebhook(TOKEN, "http://insecure", "s");
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/HTTPS/);
   });
 });

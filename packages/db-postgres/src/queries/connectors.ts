@@ -126,6 +126,9 @@ function completeConfig(stored: Partial<ConnectorConfig> | null | undefined): Co
       CONNECTOR_CONFIG_DEFAULTS.pollIntervalSeconds,
     // Optional telegram chat id — only present when stored.
     ...(stored?.chatId ? { chatId: stored.chatId } : {}),
+    // Optional telegram inbound webhook secret (#889) — preserved across merges
+    // so a later config patch (e.g. label edit) never strips the inbound auth.
+    ...(stored?.webhookSecret ? { webhookSecret: stored.webhookSecret } : {}),
   };
 }
 
@@ -241,7 +244,7 @@ export async function setConnectorSecret(
   workspaceId: string,
   provider: ConnectorProvider,
   secret: string | null,
-  opts: { chatId?: string | null } = {}
+  opts: { chatId?: string | null; webhookSecret?: string | null } = {}
 ): Promise<ConnectorRowView> {
   const now = new Date();
   const existing = await getConnector(workspaceId, provider);
@@ -255,7 +258,16 @@ export async function setConnectorSecret(
     if (opts.chatId) mergedConfig.chatId = opts.chatId;
     else delete mergedConfig.chatId;
   }
-  if (!connecting) delete mergedConfig.chatId;
+  // Telegram inbound webhook secret (#889): set when provided, cleared on
+  // disconnect (along with the chat id) so a stale secret never lingers.
+  if (opts.webhookSecret !== undefined) {
+    if (opts.webhookSecret) mergedConfig.webhookSecret = opts.webhookSecret;
+    else delete mergedConfig.webhookSecret;
+  }
+  if (!connecting) {
+    delete mergedConfig.chatId;
+    delete mergedConfig.webhookSecret;
+  }
 
   // Connecting enables the row; disconnecting disables it.
   const enabled = connecting ? true : false;

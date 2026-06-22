@@ -58,6 +58,15 @@ export interface ConnectorConfig {
    * providers.
    */
   chatId?: string;
+  /**
+   * Telegram inbound webhook secret (#889). Generated per workspace at connect
+   * time and passed to Telegram's `setWebhook` as `secret_token`; Telegram echoes
+   * it in the `X-Telegram-Bot-Api-Secret-Token` header on every delivery so the
+   * webhook route can authenticate the request. NOT the bot token (that stays in
+   * the write-only `secret`); this is a low-value shared HMAC-style nonce kept in
+   * config so the route can read it cheaply. Absent for other providers.
+   */
+  webhookSecret?: string;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */

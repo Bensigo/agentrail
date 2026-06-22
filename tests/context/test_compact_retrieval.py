@@ -161,6 +161,142 @@ class SearchContextTests(unittest.TestCase):
         self.assertNotIn("content", top, "compact search must not emit full-file content")
 
 
+class SnippetWindowingTests(unittest.TestCase):
+    """Acceptance test for issue #903: relevance-aware snippet windowing.
+
+    The bounded-snippet extraction must anchor on the matched span plus the
+    enclosing symbol's signature, not always the first N lines of the chunk.
+    A match deep in a long function body (past the 10-line default window)
+    must appear in the returned snippet alongside the function signature.
+
+    AC1: snippet contains both the matched span AND the enclosing symbol signature.
+    AC2: citation lineStart reflects the actual function start, not line 1.
+    AC3: snippet remains within the line/char budget (no unbounded growth).
+    """
+
+    def make_repo(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+        (root / ".agentrail").mkdir()
+        (root / ".agentrail" / "config.json").write_text(json.dumps({
+            "schemaVersion": 1,
+            "context": {
+                "includeGlobs": ["**/*"],
+                "excludeGlobs": [".git/**", ".agentrail/context/**"],
+                "maxFileSizeBytes": 262144,
+                "skipBinary": True,
+                "respectGitIgnore": True,
+                "secretRedaction": {"enabled": False, "action": "exclude", "denyGlobs": []},
+                "embedding": {"mode": "disabled", "provider": None, "model": None},
+                "summary": {"mode": "disabled", "provider": None, "model": None},
+            },
+        }, indent=2), encoding="utf-8")
+        (root / "src").mkdir(parents=True)
+        return root
+
+    def test_snippet_anchors_on_matched_span_and_enclosing_signature(self) -> None:
+        """AC1 + AC2 + AC3 for issue #903.
+
+        Fixture: a Python file with a 25-line preamble followed by a function
+        whose body has 30+ filler lines before a distinctive keyword.  The
+        keyword is placed well past the 10-line default window from the function
+        signature, so it cannot appear in a head-biased snippet.
+
+        Expected (after fix):
+        - top result snippet contains both the function signature AND the
+          distinctive keyword (AC1).
+        - top result lineStart >= function definition line, not 1 (AC2).
+        - snippet is bounded: ≤ 15 lines (AC3, generous to allow sig + context).
+        """
+        root = self.make_repo()
+
+        # 25-line preamble — imports and module constants (lines 1-25).
+        preamble = "\n".join(
+            ["import os", "import sys", "import json", "from pathlib import Path"]
+            + [f"_MODULE_CONST_{n} = {n}" for n in range(21)]
+        )
+
+        # Function starts at line 26.  30 filler assignments push the
+        # distinctive keyword to ~line 59 (33 lines into the function body),
+        # well past the 10-line snippet window.
+        filler = "\n".join(f"    _step_{n} = _compute_{n}()" for n in range(1, 31))
+        MATCHED_TERM = "unique_quorum_violation_xk9 = _audit_quorum_fence(items)"
+        after = "\n".join(f"    _post_{n} = True" for n in range(1, 6))
+
+        function_text = (
+            "def compute_quorum_audit(items, threshold):\n"
+            '    """Compute the audit quorum and validate fence conditions."""\n'
+            + filler + "\n"
+            "    " + MATCHED_TERM + "\n"
+            + after + "\n"
+            "    return True\n"
+        )
+        content = preamble + "\n" + function_text
+        (root / "src" / "quorum_audit.py").write_text(content, encoding="utf-8")
+
+        # Structural preconditions: confirm the fixture is set up correctly.
+        file_lines = content.splitlines()
+        func_line = next(
+            i + 1 for i, ln in enumerate(file_lines) if "def compute_quorum_audit" in ln
+        )
+        match_line = next(
+            i + 1 for i, ln in enumerate(file_lines) if MATCHED_TERM[:30] in ln
+        )
+        self.assertGreater(func_line, 1, "fixture: function must not be at file head")
+        self.assertGreater(
+            match_line - func_line, 10,
+            "fixture: matched term must be >10 lines past the function signature "
+            "so a head-biased snippet cannot contain it",
+        )
+
+        out = search_context(root, "unique_quorum_violation_xk9 audit_quorum_fence", limit=5)
+        results = out["results"]
+        self.assertTrue(results, "search must return at least one result")
+
+        # The top-ranked result must be the quorum_audit file.
+        top = results[0]
+        self.assertEqual(top["path"], "src/quorum_audit.py")
+
+        # AC1: snippet must include both the enclosing function signature and
+        # the matched term (currently fails — head-biased window misses the match).
+        self.assertIn(
+            "def compute_quorum_audit",
+            top["snippet"],
+            "AC1: snippet must contain the enclosing symbol signature",
+        )
+        self.assertIn(
+            "unique_quorum_violation_xk9",
+            top["snippet"],
+            "AC1: snippet must contain the matched span (deep in the function body); "
+            "head-biased extraction returns only the first 10 lines and misses it",
+        )
+
+        # AC2: citation lineStart must reflect the function start, not the file head.
+        self.assertGreaterEqual(
+            top["lineStart"],
+            func_line,
+            "AC2: lineStart must be at or after the enclosing function definition line",
+        )
+        self.assertGreater(
+            top["lineStart"],
+            1,
+            "AC2: lineStart must not be 1 (file head / preamble)",
+        )
+
+        # AC3: snippet must remain bounded — no unbounded growth.
+        snippet_lines = top["snippet"].splitlines()
+        self.assertLessEqual(
+            len(snippet_lines),
+            15,
+            "AC3: snippet must respect the line cap (≤15 lines including signature + context)",
+        )
+        self.assertLessEqual(
+            len(top["snippet"]),
+            900,
+            "AC3: snippet must respect the char cap",
+        )
+
+
 class ComputeTokensSavedTests(unittest.TestCase):
     def make_repo(self) -> Path:
         root = Path(tempfile.mkdtemp())

@@ -48,6 +48,10 @@ export const queueEntries = pgTable("queue_entries", {
   state: text("state").notNull().default("queued"),
   // Issue numbers this entry is blocked by (parked while any is unmet).
   blockedBy: jsonb("blocked_by").$type<number[]>().notNull().default([]),
+  // Number of consecutive execution errors. Incremented on each `error` result;
+  // reset is not needed — once `escalated-to-human` the entry is terminal.
+  // Hard cap of 5: at 5 errors the entry moves to `escalated-to-human`.
+  errorAttempts: integer("error_attempts").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

@@ -496,7 +496,7 @@ export async function recordRunnerResult(data: {
   // it must NOT re-queue unconditionally (that loops forever, burning money and
   // opening duplicate PRs). We spend one unit of remaining_budget per red
   // attempt and, once it's exhausted, escalate to a human (terminal). green is
-  // terminal; error blocks; running is a heartbeat.
+  // terminal; error retries up to 5 times then escalates; running is a heartbeat.
   let updated = false;
   let completedExternalId = "";
   if (data.status === "red") {
@@ -512,13 +512,23 @@ export async function recordRunnerResult(data: {
       RETURNING id
     `);
     updated = Array.from(rows).length > 0;
+  } else if (data.status === "error") {
+    // Increment error_attempts; re-queue while below the hard cap of 5,
+    // then escalate to a human (terminal). Never goes to `blocked`.
+    const rows = await db.execute(sql`
+      UPDATE queue_entries
+      SET error_attempts = error_attempts + 1,
+          state = CASE WHEN error_attempts + 1 >= 5 THEN 'escalated-to-human' ELSE 'queued' END,
+          updated_at = now()
+      WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
+      RETURNING id
+    `);
+    updated = Array.from(rows).length > 0;
   } else {
     const nextState =
       data.status === "green"
         ? "green"
-        : data.status === "error"
-          ? "blocked"
-          : "running";
+        : "running";
     const rows = await db
       .update(queueEntries)
       .set({ state: nextState, updatedAt: new Date() })

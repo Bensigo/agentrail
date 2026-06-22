@@ -98,6 +98,9 @@ class Store(Protocol):
     def register_run(self, *, entry, run_id, phase, status, cost_usd=0.0):  # pragma: no cover
         ...
 
+    def record_event(self, *, kind: str, **payload) -> None:  # pragma: no cover
+        ...
+
     def list_queue(self, workspace_id):  # pragma: no cover
         ...
 
@@ -105,6 +108,11 @@ class Store(Protocol):
 # The sandbox seam: run one issue and return a RunResult. Keyword-only to mirror
 # ``run_issue_in_sandbox`` so the CLI can pass it (partially bound) directly.
 SandboxRunner = Callable[..., RunResult]
+
+# AC2/AC3/AC4 (issue #876): injectable merge seam — ``(pr_url, subject) → (ok, mode)``
+# so the runtime stays fully hermetic (no real GitHub calls in tests). The real
+# adapter is ``agentrail.connectors.github.merge_pr_squash``; the CLI wires it in.
+MergePr = Callable[..., "tuple[bool, str]"]
 
 
 class Notifier(Protocol):
@@ -152,6 +160,11 @@ class RuntimeConfig:
     strong_model: Optional[str] = None
     ceiling: float = 0.0
     attempt_limit: int = 2
+    # AC1 (issue #876): Merge Policy — defaults OFF. When True, a green run
+    # squash-merges the PR. The per-issue ``auto-merge`` label overrides this
+    # for a single ticket (AC4). Persisted in the DB and editable from the
+    # dashboard; injected here so the runtime stays hermetically testable.
+    auto_merge: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -195,6 +208,7 @@ class HeartbeatRuntime:
         notifier: Notifier,
         config: RuntimeConfig,
         detect_capabilities: Callable[[], FrozenSet[Capability]] = detect_capabilities,
+        merge_pr: Optional[MergePr] = None,
     ) -> None:
         self._connector = connector
         self._store = store
@@ -202,6 +216,7 @@ class HeartbeatRuntime:
         self._notifier = notifier
         self._config = config
         self._detect = detect_capabilities
+        self._merge_pr = merge_pr
 
     # -- the loop ----------------------------------------------------------- #
     def poll_and_dispatch(self, workspace_id: str) -> CycleReport:
@@ -411,11 +426,15 @@ class HeartbeatRuntime:
             # it straight to RUNNING for the next attempt.
             current = self._with_running_tier(current, stronger)
 
+        # AC2/AC3/AC4/AC5 (issue #876): Merge Policy — consult policy only on Green.
+        assert final_result is not None
+        if final_result.status == "green":
+            self._maybe_merge(ref, final_result)
+
         # Post back to the source issue + notify the channel with the FINAL result.
         # Both are best-effort: a failed comment/notify (e.g. a token without
         # `repo` scope → HTTP 401, or an unreachable webhook) must NOT crash the
         # dispatcher — log and continue, like the cost/run-event pushes.
-        assert final_result is not None
         outcome = self._outcome_report(ref, final_result)
         try:
             self._connector.post_result(ref, outcome)
@@ -463,6 +482,84 @@ class HeartbeatRuntime:
         from agentrail.afk.queue_state import QueueState
 
         return replace(entry, tier=tier, state=QueueState.RUNNING)
+
+    # -- merge policy (issue #876) ----------------------------------------- #
+    def _maybe_merge(self, ref: IssueRef, result: RunResult) -> None:
+        """AC2/AC3/AC4/AC5: consult Merge Policy and merge or leave for human.
+
+        Called only when the run is Green (Objective Gate + Independent
+        Verification passed). Policy resolution order:
+          1. Per-issue ``auto-merge`` label → merge (overrides repo default).
+          2. Repo-level ``config.auto_merge=True`` → merge.
+          3. Otherwise (default OFF) → leave the PR open for a human.
+
+        The merge decision and outcome are recorded as a ``merge_decision``
+        Run Event via ``store.record_event`` (AC5). The merge itself is
+        best-effort: a failure is logged and recorded but does not crash the
+        dispatcher.
+        """
+        label_override = "auto-merge" in getattr(ref, "labels", frozenset())
+        should_merge = label_override or self._config.auto_merge
+
+        if not should_merge:
+            # Policy OFF — leave the PR open; record the decision (AC5).
+            self._store.record_event(
+                kind="merge_decision",
+                issue_number=ref.number,
+                pr_url=result.pr_url,
+                outcome="left-for-human",
+                reason="merge policy OFF and no auto-merge label",
+            )
+            return
+
+        # Policy ON (repo setting or label override) — attempt squash-merge.
+        pr_url = result.pr_url or ""
+        subject = f"#{ref.number} {ref.title or ''}".strip()
+        reason = "auto-merge label override" if label_override else "repo merge policy ON"
+
+        merge_fn = self._merge_pr
+        if merge_fn is None:
+            # No merge callable injected (e.g. CLI not yet wired up) — record
+            # and leave for human rather than silently skipping.
+            self._store.record_event(
+                kind="merge_decision",
+                issue_number=ref.number,
+                pr_url=pr_url,
+                outcome="left-for-human",
+                reason="merge_pr not configured",
+            )
+            return
+
+        try:
+            ok, mode = merge_fn(pr_url, subject)
+        except Exception as exc:  # noqa: BLE001 - best-effort merge
+            _log.warning("merge_pr failed for issue %s: %s", ref.number, exc)
+            self._store.record_event(
+                kind="merge_decision",
+                issue_number=ref.number,
+                pr_url=pr_url,
+                outcome="merge-error",
+                reason=str(exc),
+            )
+            return
+
+        if ok:
+            self._store.record_event(
+                kind="merge_decision",
+                issue_number=ref.number,
+                pr_url=pr_url,
+                outcome="merged",
+                reason=reason + (f" (mode={mode})" if mode else ""),
+            )
+        else:
+            _log.warning("merge_pr returned failure for issue %s", ref.number)
+            self._store.record_event(
+                kind="merge_decision",
+                issue_number=ref.number,
+                pr_url=pr_url,
+                outcome="merge-failed",
+                reason=reason,
+            )
 
     # -- daily digest ------------------------------------------------------- #
     def daily_digest(self, workspace_id: str) -> None:

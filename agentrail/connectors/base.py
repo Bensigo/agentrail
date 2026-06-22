@@ -23,8 +23,8 @@ plain frozen data so adapters and the orchestrator share one vocabulary.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import FrozenSet, List, Optional
 
 from agentrail.afk.queue_state import QueueEntry
 
@@ -66,6 +66,7 @@ class IssueRef:
     title: str = ""
     body: str = ""
     url: str = ""
+    labels: FrozenSet[str] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)

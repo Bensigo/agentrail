@@ -102,6 +102,9 @@ class FakeStore:
             }
         )
 
+    def record_event(self, *, kind: str, **payload) -> None:
+        pass  # not under test here; merge_policy tests cover this via FakeStore
+
     def list_queue(self, workspace_id):
         return []
 

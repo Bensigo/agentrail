@@ -67,6 +67,14 @@ export interface ConnectorConfig {
    * config so the route can read it cheaply. Absent for other providers.
    */
   webhookSecret?: string;
+  /**
+   * Telegram inbound POLLING offset (getUpdates `offset` cursor). The local-dev
+   * poller (`apps/console/scripts/telegram-poll.ts`) persists the last processed
+   * `update_id + 1` here so a restart resumes past already-handled updates rather
+   * than replaying them. Only the poller writes it; it is irrelevant to the
+   * webhook (deployed) path. Absent until the poller has run. Other providers: absent.
+   */
+  telegramOffset?: number;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */

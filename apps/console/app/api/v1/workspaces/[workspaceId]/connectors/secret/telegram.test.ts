@@ -4,6 +4,8 @@ import {
   sendTelegramWelcome,
   sendTelegramMessage,
   setTelegramWebhook,
+  getTelegramUpdates,
+  deleteTelegramWebhook,
 } from "./telegram";
 
 const TOKEN = "123456789:AAH" + "a".repeat(32);
@@ -127,5 +129,78 @@ describe("setTelegramWebhook", () => {
     const res = await setTelegramWebhook(TOKEN, "http://insecure", "s");
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/HTTPS/);
+  });
+});
+
+describe("getTelegramUpdates (polling driver)", () => {
+  it("returns well-formed updates and passes the offset", async () => {
+    const fn = mockFetchOnce({
+      ok: true,
+      result: [
+        { update_id: 10, message: { text: "/status", chat: { id: 1 } } },
+        { update_id: 11, message: { text: "hi", chat: { id: 1 } } },
+      ],
+    });
+    const res = await getTelegramUpdates(TOKEN, 10);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.updates).toHaveLength(2);
+      expect(res.updates[0].update_id).toBe(10);
+    }
+    const [url, init] = fn.mock.calls[0];
+    expect(String(url)).toContain("/getUpdates");
+    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
+      offset: 10,
+      allowed_updates: ["message"],
+    });
+  });
+
+  it("filters out updates with no numeric update_id", async () => {
+    mockFetchOnce({
+      ok: true,
+      result: [
+        { update_id: 1, message: { text: "ok", chat: { id: 1 } } },
+        { message: { text: "no id" } }, // dropped
+        { update_id: "x" }, // dropped
+      ],
+    });
+    const res = await getTelegramUpdates(TOKEN);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.updates).toHaveLength(1);
+  });
+
+  it("returns an error (never throws) when Telegram rejects (e.g. webhook set → 409)", async () => {
+    mockFetchOnce({ ok: false, description: "Conflict: can't use getUpdates" });
+    const res = await getTelegramUpdates(TOKEN);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/Conflict/);
+  });
+
+  it("swallows a transport throw into an error result", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("down")));
+    const res = await getTelegramUpdates(TOKEN);
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe("deleteTelegramWebhook (polling startup)", () => {
+  it("succeeds when Telegram clears the webhook", async () => {
+    const fn = mockFetchOnce({ ok: true });
+    const res = await deleteTelegramWebhook(TOKEN);
+    expect(res).toEqual({ ok: true });
+    const [url] = fn.mock.calls[0];
+    expect(String(url)).toContain("/deleteWebhook");
+  });
+
+  it("is harmless and reports best-effort on rejection (never throws)", async () => {
+    mockFetchOnce({ ok: false, description: "nope" });
+    const res = await deleteTelegramWebhook(TOKEN);
+    expect(res.ok).toBe(false);
+  });
+
+  it("swallows a transport throw into an error result", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("down")));
+    const res = await deleteTelegramWebhook(TOKEN);
+    expect(res.ok).toBe(false);
   });
 });

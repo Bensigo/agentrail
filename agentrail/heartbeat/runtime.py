@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Callable, Dict, FrozenSet, List, Optional, Protocol
+from typing import Callable, Dict, FrozenSet, List, Optional, Protocol, Tuple
 
 _log = logging.getLogger(__name__)
 
@@ -106,6 +106,11 @@ class Store(Protocol):
 # ``run_issue_in_sandbox`` so the CLI can pass it (partially bound) directly.
 SandboxRunner = Callable[..., RunResult]
 
+# The merge seam: squash-merge a PR given its URL and commit subject. Returns
+# (success, mode) where mode is "" for a direct merge or "auto" for GitHub's
+# auto-merge (used when required checks are still pending).
+Merger = Callable[..., Tuple[bool, str]]
+
 
 class Notifier(Protocol):
     """The channel-notification side (Discord): per-task + daily digest."""
@@ -152,6 +157,7 @@ class RuntimeConfig:
     strong_model: Optional[str] = None
     ceiling: float = 0.0
     attempt_limit: int = 2
+    merge_enabled: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -195,6 +201,7 @@ class HeartbeatRuntime:
         notifier: Notifier,
         config: RuntimeConfig,
         detect_capabilities: Callable[[], FrozenSet[Capability]] = detect_capabilities,
+        merger: Optional[Merger] = None,
     ) -> None:
         self._connector = connector
         self._store = store
@@ -202,6 +209,7 @@ class HeartbeatRuntime:
         self._notifier = notifier
         self._config = config
         self._detect = detect_capabilities
+        self._merger = merger
 
     # -- the loop ----------------------------------------------------------- #
     def poll_and_dispatch(self, workspace_id: str) -> CycleReport:
@@ -411,11 +419,35 @@ class HeartbeatRuntime:
             # it straight to RUNNING for the next attempt.
             current = self._with_running_tier(current, stronger)
 
+        assert final_result is not None
+
+        # Merge Policy (AC1–AC5): fire only on Green (Objective Gate passed) and
+        # only when a merger is configured (opt-in seam). Consult
+        # config.merge_enabled (repo-level toggle, default OFF) and the per-issue
+        # ``auto-merge`` label (AC4 override). Record the decision as an auditable
+        # run event regardless of which branch is taken (AC5).
+        if final_result.status == "green" and self._merger is not None:
+            should_merge = (
+                self._config.merge_enabled
+                or "auto-merge" in getattr(ref, "labels", frozenset())
+            )
+            if should_merge and final_result.pr_url:
+                self._merger(
+                    pr_url=final_result.pr_url,
+                    subject=ref.title or f"issue #{ref.number}",
+                )
+                self._store.register_run(
+                    entry=current, run_id=run_id, phase="merge", status="merged"
+                )
+            else:
+                self._store.register_run(
+                    entry=current, run_id=run_id, phase="merge", status="left-for-human"
+                )
+
         # Post back to the source issue + notify the channel with the FINAL result.
         # Both are best-effort: a failed comment/notify (e.g. a token without
         # `repo` scope → HTTP 401, or an unreachable webhook) must NOT crash the
         # dispatcher — log and continue, like the cost/run-event pushes.
-        assert final_result is not None
         outcome = self._outcome_report(ref, final_result)
         try:
             self._connector.post_result(ref, outcome)

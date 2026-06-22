@@ -353,7 +353,15 @@ def _publish_green(
 
     def _run(cmd: list) -> Optional[object]:
         try:
-            return runner.run(cmd, cwd=str(repo_dir), env=env, timeout=120)
+            # capture_output so we can READ stdout — `gh pr create` prints the PR
+            # URL there. Without this, subprocess.run leaves .stdout=None and the
+            # PR URL is lost (the PR is still opened, but pr_url comes back empty,
+            # so the dashboard + Telegram notify show no link). text=True yields a
+            # str rather than bytes for the splitlines() parse below.
+            return runner.run(
+                cmd, cwd=str(repo_dir), env=env, timeout=120,
+                capture_output=True, text=True,
+            )
         except Exception:  # noqa: BLE001 — publish is best-effort
             return None
 

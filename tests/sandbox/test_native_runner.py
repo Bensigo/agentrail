@@ -52,7 +52,8 @@ class FakeRunner:
 
     def run(self, cmd, *, cwd=None, env=None, timeout=None, **kwargs):
         self.calls.append(
-            {"cmd": list(cmd), "cwd": cwd, "env": dict(env or {}), "timeout": timeout}
+            {"cmd": list(cmd), "cwd": cwd, "env": dict(env or {}),
+             "timeout": timeout, "kwargs": dict(kwargs)}
         )
         if not self._results:
             raise AssertionError(f"unexpected extra call: {cmd}")
@@ -72,6 +73,21 @@ class FakeRunner:
             if token in c:
                 return c
         raise AssertionError(f"no command containing {token!r} in {self.commands}")
+
+
+class CaptureFaithfulRunner(FakeRunner):
+    """Like FakeRunner, but FAITHFUL to real subprocess: a command's stdout is
+    only readable when the caller passed ``capture_output=True`` — exactly how
+    ``subprocess.run`` behaves. This guards the regression where ``_publish_green``
+    read ``gh pr create``'s stdout without capturing it, so the PR URL came back
+    empty in production while the (stdout-supplying) fake hid the bug.
+    """
+
+    def run(self, cmd, *, cwd=None, env=None, timeout=None, **kwargs):
+        result = super().run(cmd, cwd=cwd, env=env, timeout=timeout, **kwargs)
+        if kwargs.get("capture_output") is not True and hasattr(result, "stdout"):
+            result.stdout = None  # subprocess leaves .stdout=None without capture
+        return result
 
 
 def _write_run_json(run_dir: Path, payload: dict) -> None:
@@ -272,6 +288,38 @@ class TestHappyPath:
         result, _ = self._run(tmp_path, runner, publish_pr=False)
         assert result.status == "green"
         assert result.pr_url == ""
+
+    def test_pr_url_captured_against_faithful_subprocess(self, tmp_path) -> None:
+        """Regression guard: the PR URL must survive against a runner that only
+        exposes stdout when ``capture_output=True`` was passed (real subprocess
+        behavior). Before the fix, ``_publish_green`` ran ``gh pr create`` without
+        capturing, so the PR opened but pr_url came back empty in production while
+        the stdout-supplying fake hid it."""
+        run_dir = tmp_path / "run-1"
+
+        def _do_run(cmd, cwd, env):
+            log_dir = _extract_log_dir(cmd, run_dir)
+            run_id = _extract_run_id(cmd) or "host-run"
+            _write_run_json(Path(log_dir) / run_id, _green_run_json())
+            return _Completed(0, stdout="ran")
+
+        runner = CaptureFaithfulRunner([
+            _Completed(0, stdout="cloned"),                 # git clone
+            _do_run,                                        # agentrail run issue
+            _Completed(0, stdout="main"),                   # rev-parse (branch)
+            _Completed(0),                                  # checkout -B
+            _Completed(0),                                  # add -A
+            _Completed(0),                                  # commit
+            _Completed(0),                                  # push
+            _Completed(0, stdout="https://github.com/acme/widgets/pull/42"),  # gh pr create
+        ])
+        result, _ = self._run(tmp_path, runner, pr_title="Add a thing")
+        assert result.status == "green"
+        # The fix makes _publish_green capture stdout, so the URL is read back.
+        assert result.pr_url == "https://github.com/acme/widgets/pull/42"
+        # And the gh pr create call WAS made with capture_output=True.
+        create_call = next(c for c in runner.calls if "create" in c["cmd"])
+        assert create_call["kwargs"].get("capture_output") is True
 
 
 # ---------------------------------------------------------------------------

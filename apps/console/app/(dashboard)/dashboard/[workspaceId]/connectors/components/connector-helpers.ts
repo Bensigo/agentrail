@@ -303,14 +303,15 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     connect: {
       credentialLabel: "Bot token",
       credentialPlaceholder: "123456789:ABCdef…",
-      credentialHint: "A BotFather token (digits:token) plus the target chat id.",
+      credentialHint:
+        "A BotFather token (digits:token). Chat id is optional — leave it blank for a direct chat with the bot; add one to post to a group/channel. On connect the bot sends a welcome message.",
       helpUrl: "https://core.telegram.org/bots#how-do-i-create-a-bot",
       needsChatId: true,
       setupSteps: [
         "In Telegram, message @BotFather → /newbot, set a name + username, copy the token.",
-        "Add the bot to your group/channel (or DM it), then send it any message.",
-        "Open https://api.telegram.org/bot<token>/getUpdates and copy chat.id.",
-        "Paste the token + chat id here and connect.",
+        "Direct chat: open your bot and send it any message (e.g. /start), then connect with the chat id left blank — we resolve your DM automatically.",
+        "Group/channel: add the bot there, then paste that chat id (numeric or @channel).",
+        "Connect — the bot replies with a welcome message confirming the channel.",
       ],
     },
   },
@@ -506,10 +507,14 @@ export function validateConnectorCredential(
     case "telegram": {
       if (!isTelegramToken(s))
         return { ok: false, error: "Provide a BotFather token (digits:token)." };
-      if (!chatId || !isTelegramChatId(chatId))
+      // Chat id is OPTIONAL: leave it blank for a direct chat — message your
+      // bot first and connect resolves your DM chat id automatically. When a
+      // value IS supplied (a group/channel), it must be well-formed.
+      if (chatId && chatId.trim() && !isTelegramChatId(chatId))
         return {
           ok: false,
-          error: "Provide a valid chat id (numeric or @channel).",
+          error:
+            "Chat id must be numeric or @channel — or leave it blank for a direct chat.",
         };
       return { ok: true };
     }

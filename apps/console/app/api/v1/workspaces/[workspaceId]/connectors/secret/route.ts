@@ -10,6 +10,7 @@ import {
   type ConnectorKind,
 } from "../../../../../../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
 import { verifyConnectorCredential } from "./verify";
+import { resolveTelegramChatId, sendTelegramWelcome } from "./telegram";
 
 /**
  * Credential-based connector management (M038 catalog expansion). A workspace
@@ -110,12 +111,33 @@ export async function PUT(
     return NextResponse.json({ error: verified.error }, { status: 400 });
   }
 
+  // Telegram connect-time flow: chat id is optional. With no chat id, resolve
+  // the user's direct-chat id from the bot's recent updates (they must have
+  // messaged the bot first). Then send a one-time welcome so the user gets
+  // immediate confirmation. A resolution/welcome failure is reported and the
+  // credential is NOT stored (don't save a half-connected channel).
+  let resolvedChatId = rawChatId;
+  if (kind === "telegram") {
+    const token = rawSecret.trim();
+    if (!resolvedChatId) {
+      const resolved = await resolveTelegramChatId(token);
+      if (!resolved.ok) {
+        return NextResponse.json({ error: resolved.error }, { status: 400 });
+      }
+      resolvedChatId = resolved.chatId;
+    }
+    const welcome = await sendTelegramWelcome(token, resolvedChatId);
+    if (!welcome.ok) {
+      return NextResponse.json({ error: welcome.error }, { status: 400 });
+    }
+  }
+
   try {
     await setConnectorSecret(
       workspaceId,
       provider as ConnectorProvider,
       rawSecret.trim(),
-      { chatId: kind === "telegram" ? rawChatId : undefined }
+      { chatId: kind === "telegram" ? resolvedChatId : undefined }
     );
     return NextResponse.json({ connected: true });
   } catch (err) {

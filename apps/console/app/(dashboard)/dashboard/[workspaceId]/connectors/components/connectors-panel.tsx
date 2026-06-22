@@ -336,9 +336,9 @@ function SecretManage({
       />
       {needsChatId && (
         <input
-          aria-label="Chat id"
+          aria-label="Chat id (optional)"
           type="text"
-          placeholder="chat id (e.g. -1001234567890 or @channel)"
+          placeholder="chat id — optional, blank for a direct chat"
           value={chatId}
           disabled={!canManage}
           onChange={(e) => setChatId(e.target.value)}

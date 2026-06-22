@@ -35,6 +35,43 @@ function apiUrl(token: string, method: string): string {
   return `https://api.telegram.org/bot${encodeURIComponent(token)}/${method}`;
 }
 
+export type SendResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Post an arbitrary chat message via the Bot API `sendMessage`. The single,
+ * shared sender both the welcome (connect-time) and the run-outcome notify
+ * (#888) + inbound reply (#889) routes call — the timeout/fetch logic lives in
+ * one place. Returns a typed result; a transport blip or a Telegram-side
+ * rejection is surfaced (never thrown) so callers can keep it best-effort.
+ */
+export async function sendTelegramMessage(
+  token: string,
+  chatId: string,
+  text: string
+): Promise<SendResult> {
+  try {
+    const res = await fetchWithTimeout(apiUrl(token, "sendMessage"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean };
+    if (!body?.ok) {
+      return {
+        ok: false,
+        error:
+          "The bot can't message that chat — make sure the bot is in the chat and you've messaged it, then retry.",
+      };
+    }
+    return { ok: true };
+  } catch {
+    return {
+      ok: false,
+      error: "Couldn't reach Telegram to send the message — try again.",
+    };
+  }
+}
+
 export type ChatIdResult =
   | { ok: true; chatId: string }
   | { ok: false; error: string };
@@ -78,35 +115,62 @@ export async function resolveTelegramChatId(
   }
 }
 
-export type WelcomeResult = { ok: true } | { ok: false; error: string };
+export type WelcomeResult = SendResult;
 
 /** Post a one-time welcome message confirming the connection. */
 export async function sendTelegramWelcome(
   token: string,
   chatId: string
 ): Promise<WelcomeResult> {
+  return sendTelegramMessage(
+    token,
+    chatId,
+    "✅ AgentRail is connected. I'll post run completions and escalation-to-human here. Send /status any time for the queue."
+  );
+}
+
+export type WebhookResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Register the inbound webhook with Telegram (#889). Telegram will POST updates
+ * to `url` and echo `secretToken` in the `X-Telegram-Bot-Api-Secret-Token`
+ * header of every delivery, which the webhook route validates per-workspace.
+ *
+ * Best-effort by contract: the caller (connect handler) treats a failure as a
+ * warning, never a connect blocker — a missing inbound path must not stop the
+ * outbound channel from being saved.
+ */
+export async function setTelegramWebhook(
+  token: string,
+  url: string,
+  secretToken: string
+): Promise<WebhookResult> {
   try {
-    const res = await fetchWithTimeout(apiUrl(token, "sendMessage"), {
+    const res = await fetchWithTimeout(apiUrl(token, "setWebhook"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        chat_id: chatId,
-        text: "✅ AgentRail is connected. I'll post run completions and escalation-to-human here.",
+        url,
+        secret_token: secretToken,
+        // Only the update types we act on; trims noise + keeps the bot scoped.
+        allowed_updates: ["message"],
       }),
     });
-    const body = (await res.json().catch(() => ({}))) as { ok?: boolean };
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      description?: string;
+    };
     if (!body?.ok) {
       return {
         ok: false,
-        error:
-          "The bot can't message that chat — make sure the bot is in the chat and you've messaged it, then retry.",
+        error: body?.description || "Telegram rejected the webhook registration.",
       };
     }
     return { ok: true };
   } catch {
     return {
       ok: false,
-      error: "Couldn't reach Telegram to send the welcome message — try again.",
+      error: "Couldn't reach Telegram to register the webhook.",
     };
   }
 }

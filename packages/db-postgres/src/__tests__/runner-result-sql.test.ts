@@ -12,13 +12,17 @@ import { PgDialect } from "drizzle-orm/pg-core";
  */
 
 const captured: unknown[] = [];
+// The state the captured UPDATE's RETURNING yields back — set per-test so we can
+// drive the red/error branch into either `queued` (retry) or `escalated-to-human`.
+let returnedState = "queued";
 
 vi.mock("../db.js", () => ({
   db: {
     // red/error path: capture the UPDATE; return one row so `updated` is true.
+    // The row carries the `state` the CASE committed (read back via RETURNING).
     execute: (q: unknown) => {
       captured.push(q);
-      return [{ id: "x" }];
+      return [{ id: "x", state: returnedState, external_id: "o/r#42" }];
     },
     // tail mirror onto the `runs` row — chainable no-op.
     update: () => ({ set: () => ({ where: () => Promise.resolve([]) }) }),
@@ -31,12 +35,13 @@ const render = (q: unknown) => new PgDialect().sqlToQuery(q as never).sql;
 
 beforeEach(() => {
   captured.length = 0;
+  returnedState = "queued";
 });
 
 describe("recordRunnerResult SQL (lockstep with nextQueueTransition)", () => {
   it("red spends budget, escalates at exhaustion, and BUMPS tier", async () => {
-    const ok = await recordRunnerResult({ id: "1", workspaceId: "w", status: "red" });
-    expect(ok).toBe(true);
+    const res = await recordRunnerResult({ id: "1", workspaceId: "w", status: "red" });
+    expect(res.updated).toBe(true);
     const sql = render(captured[0]);
     expect(sql).toContain("escalated-to-human");
     expect(sql).toContain("remaining_budget"); // GREATEST(remaining_budget - 1, 0)
@@ -46,12 +51,25 @@ describe("recordRunnerResult SQL (lockstep with nextQueueTransition)", () => {
   });
 
   it("error spends budget and escalates, but does NOT bump tier", async () => {
-    const ok = await recordRunnerResult({ id: "1", workspaceId: "w", status: "error" });
-    expect(ok).toBe(true);
+    const res = await recordRunnerResult({ id: "1", workspaceId: "w", status: "error" });
+    expect(res.updated).toBe(true);
     const sql = render(captured[0]);
     expect(sql).toContain("escalated-to-human");
     expect(sql).toContain("remaining_budget");
     // NO model escalation on an infra/timeout error — tier set to itself.
     expect(sql).not.toContain("tier + 1");
+  });
+
+  it("a red that RE-QUEUES (budget left) yields terminalState=null (no notify on retry)", async () => {
+    returnedState = "queued"; // the CASE committed `queued` → not terminal
+    const res = await recordRunnerResult({ id: "1", workspaceId: "w", status: "red" });
+    expect(res).toEqual({ updated: true, terminalState: null, externalId: "o/r#42" });
+  });
+
+  it("a red that EXHAUSTS budget yields terminalState='escalated-to-human'", async () => {
+    returnedState = "escalated-to-human"; // the CASE committed the terminal
+    const res = await recordRunnerResult({ id: "1", workspaceId: "w", status: "error" });
+    expect(res.terminalState).toBe("escalated-to-human");
+    expect(res.externalId).toBe("o/r#42");
   });
 });

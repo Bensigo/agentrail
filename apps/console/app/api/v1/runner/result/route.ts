@@ -6,6 +6,13 @@ import {
 } from "@agentrail/db-postgres";
 import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
+import { notifyRunOutcome } from "./notify";
+
+/** The issue number for a queue entry's external id (trailing digits, else ""). */
+function issueNumberOf(externalId: string): string {
+  const m = externalId.match(/(\d+)\s*$/);
+  return m ? m[1]! : "";
+}
 
 const RUNNER_STATUSES: readonly RunnerStatus[] = [
   "green",
@@ -74,18 +81,36 @@ export async function POST(request: NextRequest) {
 
   await touchApiKeyLastUsed(auth.apiKeyId);
 
-  const updated = await recordRunnerResult({
+  const result = await recordRunnerResult({
     id,
     workspaceId: workspace_id,
     status,
     costUsd: typeof body.cost_usd === "number" ? body.cost_usd : undefined,
     prUrl: typeof body.pr_url === "string" ? body.pr_url : undefined,
   });
-  if (!updated) {
+  if (!result.updated) {
     return NextResponse.json(
       { error: "Queue entry not found in this workspace" },
       { status: 404 }
     );
+  }
+
+  // Gateway notify (#888): fire ONLY on a TERMINAL outcome. A red/error that
+  // re-queues for retry (and a `running` heartbeat) yields terminalState=null,
+  // so we never spam a message on every attempt (the correctness trap). The
+  // issue number comes from the queue entry's external id; pr/cost from the body.
+  // BEST-EFFORT: any failure is swallowed and never changes the 202 below (AC3).
+  if (result.terminalState) {
+    try {
+      await notifyRunOutcome(workspace_id, {
+        issueNumber: issueNumberOf(result.externalId),
+        outcome: result.terminalState,
+        prUrl: typeof body.pr_url === "string" ? body.pr_url : undefined,
+        costUsd: typeof body.cost_usd === "number" ? body.cost_usd : undefined,
+      });
+    } catch {
+      // notify is best-effort; the runner result is already recorded.
+    }
   }
 
   // Timeline state markers: gate verdict, then the PR if one was opened.

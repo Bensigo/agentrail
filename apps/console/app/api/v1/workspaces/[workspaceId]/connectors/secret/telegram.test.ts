@@ -1,0 +1,72 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveTelegramChatId, sendTelegramWelcome } from "./telegram";
+
+const TOKEN = "123456789:AAH" + "a".repeat(32);
+
+function mockFetchOnce(body: unknown) {
+  const fn = vi.fn().mockResolvedValue({
+    json: async () => body,
+  } as Response);
+  vi.stubGlobal("fetch", fn);
+  return fn;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe("resolveTelegramChatId (direct-chat discovery)", () => {
+  it("returns the most recent chat id from getUpdates", async () => {
+    mockFetchOnce({
+      ok: true,
+      result: [
+        { message: { chat: { id: 111 } } },
+        { message: { chat: { id: 222 } } },
+      ],
+    });
+    const res = await resolveTelegramChatId(TOKEN);
+    expect(res).toEqual({ ok: true, chatId: "222" });
+  });
+
+  it("falls back to my_chat_member chat id", async () => {
+    mockFetchOnce({
+      ok: true,
+      result: [{ my_chat_member: { chat: { id: 555 } } }],
+    });
+    const res = await resolveTelegramChatId(TOKEN);
+    expect(res).toEqual({ ok: true, chatId: "555" });
+  });
+
+  it("errors with a helpful message when the bot has no updates", async () => {
+    mockFetchOnce({ ok: true, result: [] });
+    const res = await resolveTelegramChatId(TOKEN);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/send it a message/i);
+  });
+
+  it("errors when Telegram rejects the token", async () => {
+    mockFetchOnce({ ok: false });
+    const res = await resolveTelegramChatId(TOKEN);
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe("sendTelegramWelcome", () => {
+  it("posts a welcome message and succeeds when Telegram accepts it", async () => {
+    const fn = mockFetchOnce({ ok: true });
+    const res = await sendTelegramWelcome(TOKEN, "-100123");
+    expect(res).toEqual({ ok: true });
+    // The send targets the supplied chat id.
+    const [, init] = fn.mock.calls[0];
+    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
+      chat_id: "-100123",
+    });
+  });
+
+  it("errors when the bot can't message the chat", async () => {
+    mockFetchOnce({ ok: false });
+    const res = await sendTelegramWelcome(TOKEN, "-100123");
+    expect(res.ok).toBe(false);
+  });
+});

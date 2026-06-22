@@ -263,16 +263,28 @@ describe("validateConnectorCredential", () => {
     );
   });
 
-  it("requires a valid Telegram token AND chat id", () => {
+  it("requires a valid Telegram token and treats chat id as OPTIONAL", () => {
     const token = "123456789:AAH" + "a".repeat(32);
     expect(isTelegramToken(token)).toBe(true);
     expect(isTelegramChatId("-1001234567890")).toBe(true);
     expect(isTelegramChatId("@my_channel")).toBe(true);
+    // Token + explicit (group/channel) chat id is valid.
     expect(validateConnectorCredential("telegram", token, "-100123")).toEqual({
       ok: true,
     });
-    // Valid token but missing/blank chat id is rejected.
-    expect(validateConnectorCredential("telegram", token).ok).toBe(false);
+    // Valid token with NO chat id is now valid (direct-chat flow; the chat id
+    // is resolved at connect time from the bot's updates).
+    expect(validateConnectorCredential("telegram", token)).toEqual({ ok: true });
+    expect(validateConnectorCredential("telegram", token, "")).toEqual({
+      ok: true,
+    });
+    expect(validateConnectorCredential("telegram", token, "   ")).toEqual({
+      ok: true,
+    });
+    // A supplied-but-malformed chat id is still rejected.
+    expect(validateConnectorCredential("telegram", token, "not a chat").ok).toBe(
+      false
+    );
     // Bad token is rejected even with a chat id.
     expect(validateConnectorCredential("telegram", "nope", "-100123").ok).toBe(
       false

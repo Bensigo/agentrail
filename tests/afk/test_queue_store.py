@@ -44,7 +44,9 @@ class FakeExecutor:
     # The store calls this for writes (no return needed).
     def execute(self, op: str, params: Dict[str, Any]) -> None:
         if op == "insert_entry":
-            self.entries[params["id"]] = dict(params)
+            # Emulate `ON CONFLICT (id) DO NOTHING`: an existing row is preserved,
+            # never overwritten — so a re-enqueue can't resurrect a terminal entry.
+            self.entries.setdefault(params["id"], dict(params))
         elif op == "update_entry":
             self.entries[params["id"]].update(params)
         elif op == "upsert_run":
@@ -191,6 +193,55 @@ def test_next_grabbable_returns_none_when_only_parked_or_terminal():
         title="parked", body=_GOOD_BODY, blocked_by=frozenset({9}),
     )
     assert store.next_grabbable("ws1") is None
+
+
+def test_reenqueue_does_not_resurrect_a_terminal_entry():
+    """The money-burn regression guard: re-polling a still-open trigger-labeled
+    issue AFTER its run finished must NOT reset the terminal row back to queued.
+
+    The poller re-polls every OPEN labeled issue every cycle; an issue stays open
+    until its PR merges (or the label is stripped), so the same issue is enqueued
+    again after it already reached GREEN. The enqueue must be a no-op
+    (ON CONFLICT DO NOTHING) — otherwise the entry becomes grabbable again and the
+    loop re-runs a done issue every cycle, burning money.
+    """
+    store, fake = _store()
+    entry = store.enqueue(
+        workspace_id="ws1", source="github", external_id="42",
+        title="done issue", body=_GOOD_BODY,
+    )
+    # Run it to a GREEN terminal.
+    started = store.transition(entry, Event.START)
+    store.transition(started, Event.GATE_GREEN)
+    assert store.next_grabbable("ws1") is None  # terminal → not grabbable
+
+    # Re-enqueue the SAME issue (identical identity → same row id) — what the next
+    # poll cycle does while the issue is still open.
+    again = store.enqueue(
+        workspace_id="ws1", source="github", external_id="42",
+        title="done issue", body=_GOOD_BODY,
+    )
+    assert again.number == entry.number
+
+    # The persisted row must STILL be terminal, and nothing is grabbable: the
+    # re-enqueue did not resurrect it.
+    row = next(iter(fake.entries.values()))
+    assert row["state"] == Terminal.GREEN.value
+    assert store.next_grabbable("ws1") is None
+
+
+def test_insert_entry_sql_does_not_reset_state_on_conflict():
+    """Guard the raw SQL (the FakeExecutor can't prove the real ON CONFLICT
+    clause). insert_entry must DO NOTHING on conflict — never SET state /
+    remaining_budget / tier back from EXCLUDED, which is what resurrected
+    terminal entries and burned money."""
+    from agentrail.afk.queue_store import _SQL
+
+    sql = _SQL["insert_entry"]
+    assert "ON CONFLICT (id) DO NOTHING" in sql
+    assert "state = EXCLUDED.state" not in sql
+    assert "remaining_budget = EXCLUDED.remaining_budget" not in sql
+    assert "tier = EXCLUDED.tier" not in sql
 
 
 # --- transition persists ------------------------------------------------------

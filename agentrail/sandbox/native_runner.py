@@ -35,6 +35,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -177,6 +179,112 @@ def _build_run_command(
 
 
 # ---------------------------------------------------------------------------
+# Runner telemetry push
+# ---------------------------------------------------------------------------
+
+def _push_runner_telemetry(
+    env: Dict[str, str], run_id: str, result: "RunResult"
+) -> None:
+    """Emit review_gate / failure_event / outbox_flush to the linked server.
+
+    Best-effort: any exception is swallowed — telemetry never affects run outcome.
+
+    Rule for failure_event on green runs: a sentinel event with
+    ``failure_type="no_failure"`` and ``severity="info"`` is emitted so that
+    Telemetry Health shows Present (not red "Missing") for every runner-driven
+    green run.  Real failures carry ``failure_type="run_failure"`` +
+    ``severity="error"``.  This keeps the signal meaningful: operators can
+    distinguish "no failures" from "never wired" by checking whether the row
+    exists and whether ``failure_type != "no_failure"``.
+    """
+    base = (env.get("AGENTRAIL_SERVER_BASE_URL") or "").rstrip("/")
+    key = env.get("AGENTRAIL_SERVER_API_KEY") or ""
+    repo = env.get("AGENTRAIL_SERVER_REPOSITORY_ID") or ""
+    if not (base and key and repo):
+        return
+
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    now = (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
+    def _post(url: str, payload: dict) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=5):
+                pass
+        except Exception:  # noqa: BLE001 — telemetry is best-effort
+            pass
+
+    # 1. review_gate — always emit so Telemetry Health shows Present.
+    event_type = (
+        "review_gate_passed" if result.status == "green" else "review_gate_failed"
+    )
+    _post(
+        f"{base}/api/v1/ingest/run-events",
+        {
+            "run_id": run_id,
+            "repository_id": repo,
+            "event_type": event_type,
+            "submission_kind": "review_gate",
+            "occurred_at": now,
+            "payload": {
+                "verdict": result.status,
+                "gate_reason": result.gate_reason or "",
+            },
+        },
+    )
+
+    # 2. failure_event — real failure on red/error; sentinel "no_failure" on
+    #    green so Telemetry Health never shows failure_event as Missing for a
+    #    run that completed without errors.
+    if result.status in ("red", "error"):
+        failure_payload: Dict[str, object] = {
+            "run_id": run_id,
+            "repository_id": repo,
+            "failure_type": "run_failure",
+            "message": result.gate_reason or f"run ended with status {result.status!r}",
+            "normalized_error": result.gate_reason or "",
+            "fingerprint": "",
+            "phase": "run",
+            "severity": "error",
+            "occurred_at": now,
+        }
+    else:
+        failure_payload = {
+            "run_id": run_id,
+            "repository_id": repo,
+            "failure_type": "no_failure",
+            "message": "run completed without failures",
+            "normalized_error": "",
+            "fingerprint": "",
+            "phase": "run",
+            "severity": "info",
+            "occurred_at": now,
+        }
+    _post(f"{base}/api/v1/ingest/failure-events", failure_payload)
+
+    # 3. outbox_flush — emit on any run that reached a verdict (the outbox is
+    #    always flushed at end-of-run once agentrail run completes normally).
+    _post(
+        f"{base}/api/v1/ingest/run-events",
+        {
+            "run_id": run_id,
+            "repository_id": repo,
+            "event_type": "outbox_flushed",
+            "occurred_at": now,
+            "payload": {},
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # The seam
 # ---------------------------------------------------------------------------
 
@@ -302,7 +410,11 @@ def run_issue_on_host(
             logs_tail=logs_tail,
             runner=runner,
         )
-        # 4. Publish on GREEN — commit the agent's (uncommitted) work to a feature
+        # 4. Emit runner telemetry (review_gate / failure_event / outbox_flush).
+        #    Best-effort: failure here never changes the verdict.
+        _push_runner_telemetry(env, run_id, result)
+
+        # 5. Publish on GREEN — commit the agent's (uncommitted) work to a feature
         # branch, push it, and open a PR, BEFORE the clone is torn down. Without
         # this the gate goes green but the work vanishes with the temp dir (no
         # PR). Best-effort: a publish failure downgrades to a gate_reason, never

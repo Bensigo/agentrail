@@ -78,6 +78,12 @@ def _run_slot(
             _report(client, item, result)
         except Exception as exc:  # noqa: BLE001 — reporting is best-effort
             _log.warning("could not report result for %s: %s", item.id, exc)
+        try:
+            client.report_telemetry(
+                item, status=result.status, gate_reason=result.gate_reason
+            )
+        except Exception as exc:  # noqa: BLE001 — telemetry is best-effort
+            _log.warning("could not report telemetry for %s: %s", item.id, exc)
 
 
 def run_worker(

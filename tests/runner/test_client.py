@@ -211,3 +211,89 @@ def test_report_result_false_on_non_2xx():
     transport = FakeTransport([Response(status=401, body=b'{"error":"bad token"}')])
     ok = _client(transport).report_result(_work_item(), status="green")
     assert ok is False
+
+
+# --- report_telemetry: emit the signals Telemetry Health reads (issue #894) ---
+
+import json as _json
+
+
+def _work_item_with_repo(repository_id: str = "repo-1") -> WorkItem:
+    return WorkItem(
+        id="wi-1",
+        workspace_id="ws1",
+        source="github",
+        external_id="42",
+        repo_url="https://github.com/o/r",
+        ref="main",
+        title="t",
+        body="b",
+        repository_id=repository_id,
+    )
+
+
+def _posts_to(transport: FakeTransport, suffix: str):
+    return [c for c in transport.calls if c["url"].endswith(suffix)]
+
+
+def test_report_telemetry_green_emits_review_gate_passed_and_outbox_flush():
+    transport = FakeTransport([Response(status=202, body=b'{"accepted":2}')])
+    _client(transport).report_telemetry(
+        _work_item(), status="green", now="2026-06-22T00:00:00+00:00"
+    )
+
+    run_event_posts = _posts_to(transport, "/api/v1/ingest/run-events")
+    assert len(run_event_posts) == 1, "green run posts exactly one run-events batch"
+    events = _json.loads(run_event_posts[0]["body"])
+    types = {e["action"]["type"] for e in events}
+    # event_type (= action.type) must match the checker's LIKE/exact predicates.
+    assert "review_gate_passed" in types  # matches event_type LIKE 'review_gate%'
+    assert "outbox_flushed" in types       # matches event_type = 'outbox_flushed'
+    # A green run emits NO failure_event.
+    assert _posts_to(transport, "/api/v1/ingest/failure-events") == []
+
+
+def test_report_telemetry_red_emits_review_gate_failed_and_failure_event():
+    transport = FakeTransport(
+        [Response(status=202, body=b'{"accepted":2}'),
+         Response(status=202, body=b'{"accepted":1}')]
+    )
+    _client(transport).report_telemetry(
+        _work_item_with_repo("repo-1"),
+        status="red",
+        gate_reason="tests failed",
+        now="2026-06-22T00:00:00+00:00",
+    )
+
+    run_events = _json.loads(_posts_to(transport, "/api/v1/ingest/run-events")[0]["body"])
+    assert "review_gate_failed" in {e["action"]["type"] for e in run_events}
+
+    failure_posts = _posts_to(transport, "/api/v1/ingest/failure-events")
+    assert len(failure_posts) == 1, "a red run emits a failure_event"
+    fe = _json.loads(failure_posts[0]["body"])[0]
+    assert fe["repository_id"] == "repo-1"
+    assert fe["run_id"] == "wi-1"
+    assert fe["failure_type"] == "objective_gate"
+    assert fe["message"] == "tests failed"
+    assert fe["phase"] == "verify"
+    assert fe["occurred_at"] == "2026-06-22T00:00:00+00:00"
+
+
+def test_report_telemetry_error_uses_execution_error_failure_type():
+    transport = FakeTransport(
+        [Response(status=202, body=b"{}"), Response(status=202, body=b"{}")]
+    )
+    _client(transport).report_telemetry(
+        _work_item_with_repo("repo-1"), status="error", gate_reason="clone failed"
+    )
+    fe = _json.loads(_posts_to(transport, "/api/v1/ingest/failure-events")[0]["body"])[0]
+    assert fe["failure_type"] == "execution_error"
+    assert fe["phase"] == "execute"
+
+
+def test_report_telemetry_red_without_repository_id_skips_failure_event():
+    transport = FakeTransport([Response(status=202, body=b"{}")])
+    # _work_item() has repository_id="" — can't validate against a repo, so skip.
+    _client(transport).report_telemetry(_work_item(), status="red")
+    assert len(_posts_to(transport, "/api/v1/ingest/run-events")) == 1
+    assert _posts_to(transport, "/api/v1/ingest/failure-events") == []

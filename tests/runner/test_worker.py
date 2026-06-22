@@ -19,6 +19,7 @@ class FakeClient:
     def __init__(self, items: List[Optional[WorkItem]]) -> None:
         self._items = list(items)
         self.reported: List[Dict[str, Any]] = []
+        self.telemetry: List[Dict[str, Any]] = []
 
     def claim_next(self) -> Optional[WorkItem]:
         return self._items.pop(0) if self._items else None
@@ -26,6 +27,12 @@ class FakeClient:
     def report_result(self, item: WorkItem, **kw: Any) -> bool:
         self.reported.append({"id": item.id, **kw})
         return True
+
+    def report_telemetry(self, item: WorkItem, *, status: str,
+                         gate_reason: str = "", **kw: Any) -> None:
+        self.telemetry.append(
+            {"id": item.id, "status": status, "gate_reason": gate_reason}
+        )
 
 
 def _item(n: str) -> WorkItem:
@@ -72,6 +79,27 @@ def test_worker_claims_runs_and_reports_one_item():
             "logs_tail": "",
             "pr_url": "",
         }
+    ]
+
+
+def test_worker_reports_telemetry_after_each_run():
+    """The worker emits post-run telemetry (issue #894) for every executed item."""
+    client = FakeClient([_item("42")])
+
+    def execute(item: WorkItem) -> RunResult:
+        return RunResult(status="red", gate_reason="tests failed",
+                         branch="afk/github-42")
+
+    run_worker(
+        client,
+        execute=execute,
+        sleep=lambda _s: None,
+        idle_seconds=1,
+        should_continue=_stop_after(1),
+    )
+
+    assert client.telemetry == [
+        {"id": "wi-42", "status": "red", "gate_reason": "tests failed"}
     ]
 
 

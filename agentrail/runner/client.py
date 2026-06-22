@@ -22,7 +22,12 @@ import json
 import re
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Callable, Dict, Optional
+
+
+def _utc_now_iso() -> str:  # pragma: no cover - trivial clock read
+    return datetime.now(timezone.utc).isoformat()
 
 
 class RunnerError(Exception):
@@ -198,3 +203,68 @@ class RunnerClient:
         ).encode("utf-8")
         resp = self._transport("POST", url, headers=self._headers(), body=payload)
         return 200 <= resp.status < 300
+
+    def _post_json(self, url: str, payload: object) -> None:
+        """POST a JSON body, ignoring the response (best-effort emitters)."""
+        body = json.dumps(payload).encode("utf-8")
+        self._transport("POST", url, headers=self._headers(), body=body)
+
+    def report_telemetry(
+        self,
+        item: WorkItem,
+        *,
+        status: str,
+        gate_reason: str = "",
+        now: Optional[str] = None,
+    ) -> None:
+        """Emit the runner-owned post-run telemetry the dashboard reads.
+
+        Without this, Telemetry Health shows ``review_gate`` / ``failure_event`` /
+        ``outbox_flush`` as Missing (red) for every runner-driven run. We emit to
+        the SAME stores the completeness checker queries:
+
+          - ``review_gate`` + ``outbox_flush`` → ``/ingest/run-events``. The
+            checker matches on ``event_type`` (which the ingest derives from
+            ``action.type``), so the action types are ``review_gate_passed`` /
+            ``review_gate_failed`` and ``outbox_flushed``.
+          - ``failure_event`` → ``/ingest/failure-events`` (a different table),
+            on red/error runs only. It requires a ``repository_id``; when the
+            backend resolved none ("") we skip it rather than send a 404.
+
+        Best-effort: callers wrap this so a telemetry failure never affects the
+        run outcome. ``now`` is injectable for hermetic tests.
+        """
+        ts = now or _utc_now_iso()
+        verdict = "review_gate_passed" if status == "green" else "review_gate_failed"
+        run_events = [
+            {
+                "session_id": item.id,
+                "seq": 0,
+                "ts": ts,
+                "kind": "review_gate",
+                "action": {"type": verdict, "phase": "review_gate", "verdict": status},
+                "digest": f"{item.id}:review_gate",
+            },
+            {
+                "session_id": item.id,
+                "seq": 1,
+                "ts": ts,
+                "kind": "outbox_flush",
+                "action": {"type": "outbox_flushed", "phase": "outbox"},
+                "digest": f"{item.id}:outbox_flush",
+            },
+        ]
+        self._post_json(f"{self._base}/api/v1/ingest/run-events", run_events)
+
+        if status in ("red", "error") and item.repository_id:
+            failure = [
+                {
+                    "repository_id": item.repository_id,
+                    "run_id": item.id,
+                    "failure_type": "objective_gate" if status == "red" else "execution_error",
+                    "message": gate_reason or f"run {status}",
+                    "phase": "verify" if status == "red" else "execute",
+                    "occurred_at": ts,
+                }
+            ]
+            self._post_json(f"{self._base}/api/v1/ingest/failure-events", failure)

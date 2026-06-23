@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
@@ -515,6 +516,149 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
     }
 
 
+# ---------------------------------------------------------------------------
+# Plain-grep baseline arm (issue #935)
+#
+# A naive, pure-Python keyword retriever over the target repo, used so the
+# Context Compiler's recall/precision become COMPARATIVE rather than standalone.
+# It deliberately does NOT shell out to grep/rg/find: pure Python keeps it
+# deterministic (stable ordering) and portable, and the offline eval harness
+# blocks those binaries anyway.  It reuses the same recall/precision helpers as
+# the AgentRail arm so the two arms are measured on equal terms.
+# ---------------------------------------------------------------------------
+
+# Directories that a plain grep over a working tree would never usefully scan;
+# excluding them keeps the baseline fast and deterministic without privileging
+# AgentRail's own indexing.
+_GREP_EXCLUDED_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".agentrail",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".next",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+}
+
+# A plain grep matches text files; skip obviously binary / large blobs so the
+# baseline stays a keyword match rather than a binary scan.
+_GREP_MAX_FILE_BYTES = 262144
+_GREP_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
+
+
+def _grep_query_tokens(query_terms: Iterable[str]) -> List[str]:
+    """Lower-cased, de-duplicated alphanumeric tokens drawn from the fixture query."""
+    tokens: List[str] = []
+    seen: Set[str] = set()
+    for term in query_terms:
+        if not term:
+            continue
+        for match in _GREP_TOKEN_RE.findall(str(term)):
+            token = match.lower()
+            if token and token not in seen:
+                seen.add(token)
+                tokens.append(token)
+    return tokens
+
+
+def _grep_relpath(root: Path, path: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+def grep_baseline_paths(
+    target_dir: Path,
+    query_terms: Iterable[str],
+    limit: int = 10,
+    exclude: Optional[Set[Path]] = None,
+) -> List[str]:
+    """Return up to ``limit`` repo-relative paths a naive keyword grep would surface.
+
+    For every text file under ``target_dir`` (excluding VCS/build noise), count how
+    many distinct query tokens appear (case-insensitive substring match) in the
+    file's contents.  Files with at least one hit are ranked by hit-count desc,
+    then path asc, so the result is fully deterministic.
+
+    ``exclude`` is a set of absolute paths the baseline must NOT scan — used to keep
+    the eval's own fixture/answer-key file out of the searched corpus, so the
+    baseline is measured against the repo a real grep would see (not against the
+    answer key, which would unfairly depress grep's numbers and inflate AgentRail's
+    relative edge).
+    """
+    root = target_dir.resolve()
+    tokens = _grep_query_tokens(query_terms)
+    if not tokens:
+        return []
+    excluded = {path.resolve() for path in (exclude or set())}
+    scored: List[tuple[int, str]] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune excluded directories in place; sort for deterministic traversal.
+        dirnames[:] = sorted(name for name in dirnames if name not in _GREP_EXCLUDED_DIRS)
+        for filename in sorted(filenames):
+            file_path = Path(dirpath) / filename
+            if file_path.resolve() in excluded:
+                continue  # the eval's own fixture/answer key is not part of the repo under test
+            try:
+                if file_path.stat().st_size > _GREP_MAX_FILE_BYTES:
+                    continue
+                text = file_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue  # binary or unreadable: a plain text grep skips it
+            haystack = text.lower()
+            hits = sum(1 for token in tokens if token in haystack)
+            if hits:
+                scored.append((hits, _grep_relpath(root, file_path)))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [path for _, path in scored[:limit]]
+
+
+def _grep_baseline_fixture(
+    target_dir: Path, fixture: Dict[str, Any], exclude: Optional[Set[Path]] = None
+) -> Dict[str, Any]:
+    fixture_limit = int(fixture.get("limit") or 10)
+    expected = _expected_included(fixture)
+    required = _unique(list(fixture.get("requiredSources", [])) or expected)
+    paths = grep_baseline_paths(target_dir, [fixture["task"]], limit=fixture_limit, exclude=exclude)
+    top5 = set(paths[:5])
+    top10 = set(paths[:10])
+    top_results = [{"path": path, "rank": index} for index, path in enumerate(paths, 1)]
+    precision_at_budget = _precision_at_budget(top_results, _unique(expected + required), required, fixture_limit)
+    return {
+        "name": fixture["name"],
+        "task": fixture["task"],
+        "arm": "plain-grep",
+        "metrics": {
+            "recallAt5": round(_recall(expected, top5), 6),
+            "recallAt10": round(_recall(expected, top10), 6),
+            "precisionAtBudget": precision_at_budget,
+        },
+        "selectedPaths": paths,
+    }
+
+
+def evaluate_grep_baseline(
+    target_dir: Path, fixtures: List[Dict[str, Any]], exclude: Optional[Set[Path]] = None
+) -> Dict[str, Any]:
+    """Run the plain-grep baseline arm over the same (already-loaded) fixtures.
+
+    Computes recall@5/recall@10 and precision-at-budget with the SAME helpers the
+    AgentRail arm uses, so the two arms are directly comparable on identical
+    fixtures.  Deterministic by construction.  ``exclude`` keeps the eval's own
+    fixture/answer-key file out of the searched corpus.
+    """
+    root = target_dir.resolve()
+    return {
+        "arm": "plain-grep",
+        "fixtures": [_grep_baseline_fixture(root, fixture, exclude=exclude) for fixture in fixtures],
+    }
+
+
 def evaluate_retrieval(target_dir: Path, fixture_file: Path) -> Dict[str, Any]:
     root = target_dir.resolve()
     fixtures_path = fixture_file if fixture_file.is_absolute() else root / fixture_file
@@ -522,6 +666,10 @@ def evaluate_retrieval(target_dir: Path, fixture_file: Path) -> Dict[str, Any]:
     fixture_reports = [_evaluate_fixture(root, fixture) for fixture in fixtures]
     failed = [item for item in fixture_reports if item["status"] == "failed"]
     skipped = [item for item in fixture_reports if item["status"] == "skipped"]
+    # The eval's own fixture file is not part of the repo a real grep would search;
+    # exclude it so the baseline is honest (it would otherwise rank as the top hit
+    # on every query and unfairly depress grep's recall/precision).
+    grep_baseline = evaluate_grep_baseline(root, fixtures, exclude={fixtures_path.resolve()})
     return {
         "schemaVersion": 1,
         "command": "context.evaluate",
@@ -535,6 +683,7 @@ def evaluate_retrieval(target_dir: Path, fixture_file: Path) -> Dict[str, Any]:
             "skipped": len(skipped),
         },
         "fixtures": fixture_reports,
+        "grepBaseline": grep_baseline,
         "passed": not failed,
     }
 
@@ -544,6 +693,10 @@ def format_evaluation_report(report: Dict[str, Any]) -> str:
         "Retrieval Evaluation",
         f"fixtures={report['summary']['fixtures']} passed={report['summary']['passed']} failed={report['summary']['failed']} skipped={report['summary']['skipped']}",
     ]
+    grep_by_name = {
+        item["name"]: item
+        for item in (report.get("grepBaseline") or {}).get("fixtures", [])
+    }
     for fixture in report["fixtures"]:
         if fixture["status"] == "skipped":
             lines.append(f"- {fixture['name']}: skipped ({fixture['skipReason']})")
@@ -562,6 +715,18 @@ def format_evaluation_report(report: Dict[str, Any]) -> str:
             f"graphExpansion={metrics['graphExpansion']['passed']} "
             f"precisionAtBudget={metrics['precisionAtBudget']['precision']}"
         )
+        # Comparative arm: show AgentRail's recall/precision next to plain-grep's
+        # on the SAME fixture so the numbers are not standalone (issue #935).
+        grep = grep_by_name.get(fixture["name"])
+        if grep is not None:
+            grep_metrics = grep["metrics"]
+            lines.append(
+                f"  arms: "
+                f"agentrail[recall@5={metrics['recallAt5']} recall@10={metrics['recallAt10']} "
+                f"precisionAtBudget={metrics['precisionAtBudget']['precision']}] "
+                f"vs plain-grep[recall@5={grep_metrics['recallAt5']} recall@10={grep_metrics['recallAt10']} "
+                f"precisionAtBudget={grep_metrics['precisionAtBudget']['precision']}]"
+            )
         for failure in fixture["failures"]:
             lines.append(f"  failure: {failure}")
         for detail in fixture.get("failureDetails", []):

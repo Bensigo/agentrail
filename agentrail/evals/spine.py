@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date as _date
 from pathlib import Path
 from typing import Callable, List, Optional, Protocol, Sequence
@@ -83,6 +83,13 @@ from agentrail.evals.reporter import (
     write_markdown_report,
     write_reports,
 )
+from agentrail.evals.probes import (
+    ScoredRun,
+    guardrail_catch_rate,
+    retry_lift,
+    routing_cost_regret,
+)
+from agentrail.evals.reporter import render_probes_markdown
 from agentrail.evals.run_record import RunRecord
 from agentrail.evals.runner import AgentExecutor, SandboxAgentExecutor, run
 from agentrail.evals.scorer import Verdict, score
@@ -165,6 +172,14 @@ class SpineResult:
     report_path: Optional[Path] = None
     persist_ok: bool = False
     run_id: Optional[str] = None
+    # Per-rep join of the runner's ``RunRecord`` with the scorer's ``solved``
+    # verdict (issue #960). The intrinsic routing-regret / retry-lift probes need
+    # BOTH the recorded model/usage/retries AND ground-truth solved, and no
+    # single existing record carries both — so the spine threads this pure join
+    # out alongside the repetition records (the RunRecord was previously dropped,
+    # which is why those probes rendered "not available" in live reports).
+    # Defaulted so existing constructions/tests stay valid.
+    scored_runs: List[ScoredRun] = field(default_factory=list)
 
 
 def _select_tasks(tasks: Sequence[CorpusTask], task_filter: Optional[Sequence[str]]) -> List[CorpusTask]:
@@ -237,6 +252,10 @@ def run_spine(
 
     repetitions: List[RepetitionRecord] = []
     verdicts: List[Verdict] = []
+    # Issue #960: keep the RunRecord (which carries model + retries) joined with
+    # its solved verdict, instead of dropping it. This is the data the routing
+    # cost-regret and retry-lift probes need to surface in the live report.
+    scored_runs: List[ScoredRun] = []
 
     for task in tasks:
         for arm in config.arms:
@@ -272,6 +291,10 @@ def run_spine(
                 # Step 3 — scorer collapses to Verdict. Pure observation.
                 verdict = score(record, hidden_tests_passed=hidden_tests_passed)
                 verdicts.append(verdict)
+                # Issue #960: keep the RunRecord joined with its solved verdict
+                # (a pure ScoredRun join — no new truth) so the intrinsic probes
+                # can be driven from this real run instead of being dropped.
+                scored_runs.append(ScoredRun(run=record, solved=verdict.solved))
                 repetitions.append(
                     RepetitionRecord(
                         task=task.name,
@@ -298,6 +321,23 @@ def run_spine(
     base = Path(reports_dir) if reports_dir is not None else default_reports_dir()
     report_path = write_markdown_report(arm_reports, reports_dir=base, date=date_str)
 
+    # Issue #960 — the intrinsic probes (routing cost-regret + retry lift/wasted-
+    # retry cost) are now computed from the REAL RunRecords this run produced
+    # (joined as ScoredRuns above), no longer dropped. The probe MATH lives in
+    # ``agentrail.evals.probes``; we never re-derive it here. The guardrail
+    # catch-rate runs the real guardrails against the crafted injection corpus
+    # (no run records needed). The rendered section is appended to the SAME dated
+    # report so the live report shows real numbers instead of "not available".
+    routing = routing_cost_regret(scored_runs)
+    retry = retry_lift(scored_runs)
+    guardrail = guardrail_catch_rate()
+    probes_md = render_probes_markdown(
+        routing=routing, retry=retry, guardrail=guardrail
+    )
+    with report_path.open("a", encoding="utf-8") as fh:
+        fh.write("\n")
+        fh.write(probes_md)
+
     # AC4 — same per-arm numbers go via the injected MetricsWriter. Default:
     # the HttpMetricsWriter (honest no-op until #942).
     if metrics_writer is None:
@@ -312,6 +352,7 @@ def run_spine(
         report_path=report_path,
         persist_ok=persist_ok,
         run_id=resolved_run_id,
+        scored_runs=scored_runs,
     )
 
 

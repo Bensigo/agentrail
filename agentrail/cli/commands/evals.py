@@ -224,6 +224,27 @@ def _run_run(args: List[str]) -> int:
             f"failed={r.failed_count} solve-rate={r.solve_rate * 100:.1f}% "
             f"spread={r.spread:.4f} $/solved={dps}"
         )
+
+    # Intrinsic probes (#943/#960): routing cost-regret + retry lift are now
+    # computed from the real RunRecords this run produced. The probe MATH lives
+    # in agentrail.evals.probes — never re-derived here. The dated report carries
+    # the full section; the summary echoes the headline numbers.
+    from agentrail.evals.probes import retry_lift, routing_cost_regret
+
+    routing = routing_cost_regret(result.scored_runs)
+    retry = retry_lift(result.scored_runs)
+
+    def _pct(value):
+        return "n/a" if value is None else f"{value * 100:.1f}%"
+
+    print(f"Routing cost-regret: ${routing.total_regret_usd:.4f}")
+    print(
+        "Retry lift: "
+        f"{_pct(retry.lift)} (with-retry {_pct(retry.with_retry_solve_rate)}, "
+        f"first-attempt {_pct(retry.first_attempt_solve_rate)}); "
+        f"wasted-retry cost ${retry.wasted_retry_cost_usd:.4f}"
+    )
+
     print(
         "Postgres persist: "
         + ("ok" if result.persist_ok else "no (eval-metrics ingest pending #942)")
@@ -237,9 +258,10 @@ def _run_probes(args: List[str]) -> int:
     AC3 stands alone: the injection corpus drives the REAL guardrails directly,
     needing no agent run. The routing cost-regret (AC1) and retry lift (AC2)
     probes are computed from per-run RunRecord fields collected during a spine
-    run; they are surfaced via ``reporter.render_probes_markdown`` and exercised
-    by ``tests/evals/test_probes.py``. This subcommand renders the always-
-    available guardrail probe so the safety floor is one command to verify.
+    run, so they live in the dated report produced by ``agentrail evals run``
+    (issue #960 threads the RunRecords through; before that they rendered "not
+    available"). This standalone subcommand has no agent run, so it renders only
+    the always-available guardrail catch-rate — the safety floor in one command.
     """
     if args and args[0] in ("-h", "--help"):
         print(_usage())

@@ -22,8 +22,13 @@ import pytest
 
 from agentrail.evals.arms import Arm, baseline, full, full_minus
 from agentrail.evals.corpus.loader import CorpusTask, load_task
+from agentrail.evals.probes import (
+    ScoredRun,
+    retry_lift,
+    routing_cost_regret,
+)
 from agentrail.evals.reporter import MetricsWriter, RepetitionRecord
-from agentrail.evals.run_record import RunRecord
+from agentrail.evals.run_record import RetryEvent, RunRecord
 from agentrail.evals.runner import AgentExecution
 from agentrail.evals.scorer import Verdict
 from agentrail.evals.spine import (
@@ -708,3 +713,207 @@ def test_spine_threads_difficulty_into_repetition_records(
     # The reporter then has real strata to break out.
     strata = {s.difficulty for r in result.arm_reports for s in r.strata}
     assert strata == {"easy", "hard"}
+
+
+# ---------------------------------------------------------------------------
+# Issue #960 — thread per-rep RunRecords through the spine so the routing
+# cost-regret + retry-lift probes surface in the LIVE dated report (no longer
+# "not available"), computed from real RunRecords.
+# ---------------------------------------------------------------------------
+
+
+# Models present in the canonical price table with a clear cheap/expensive gap,
+# so routing cost-regret is a real, non-zero dollar figure.
+CHEAP_MODEL = "claude-haiku-4-5"
+EXPENSIVE_MODEL = "claude-opus-4-5"
+
+
+@dataclass
+class ModelRetryExecutor:
+    """Faithful executor producing a KNOWN model/retry mix per (task, arm).
+
+    Mirrors :class:`SandboxAgentExecutor`'s output contract EXACTLY: a real
+    ``Usage`` (model pinned per (task, arm)), a real ``bool`` gate decision, the
+    resolved model, an empty diff, and real :class:`RetryEvent`s. Nothing
+    invented beyond the contract.
+
+    Configured by ``plan``: ``(task, arm) -> (model, gate_passed, retries)``.
+    """
+
+    plan: Dict[tuple, tuple] = field(default_factory=dict)
+
+    def execute(self, *, task: CorpusTask, arm: Arm, workdir: Path) -> AgentExecution:
+        model, gate_passed, retries = self.plan[(task.name, arm.name)]
+        return AgentExecution(
+            diff="",
+            usage=Usage(
+                model=model,
+                input_tokens=1000,
+                output_tokens=500,
+                cache_tokens=0,
+                cache_creation_tokens=0,
+            ),
+            model=model,
+            gate_passed=bool(gate_passed),
+            retries=list(retries),
+        )
+
+
+def _drive_probe_spine(corpus_root: Path, reports_dir: Path):
+    """Drive one spine run with a known model/retry/solved mix.
+
+    Returns ``(result, scored_runs_expected)`` where ``scored_runs_expected`` is
+    the join built independently from the test's own plan, so the test can assert
+    the spine's threaded ``scored_runs`` and the rendered numbers against the
+    probe functions directly.
+    """
+    # alpha solved cheaply on first attempt (the floor); alpha solved expensively
+    # with a retry that DID flip it (retry lift); bravo retried but never solved
+    # (wasted-retry cost).
+    plan = {
+        ("alpha-task", "baseline"): (
+            CHEAP_MODEL,
+            True,
+            [],
+        ),
+        ("alpha-task", "full"): (
+            EXPENSIVE_MODEL,
+            True,
+            # first attempt's gate failed, the retry flipped it -> retry-attributed
+            [RetryEvent(attempt=1, model=EXPENSIVE_MODEL, gate_passed=False, reason="gate red")],
+        ),
+        ("bravo-task", "baseline"): (
+            CHEAP_MODEL,
+            False,
+            [RetryEvent(attempt=1, model=CHEAP_MODEL, gate_passed=False, reason="gate red")],
+        ),
+        ("bravo-task", "full"): (
+            EXPENSIVE_MODEL,
+            False,
+            [],
+        ),
+    }
+    # Hidden-test outcomes mirror the "solved" intent of the plan above.
+    hidden = HiddenTestSpy(
+        outcomes={
+            ("alpha-task", "baseline"): True,
+            ("alpha-task", "full"): True,
+            ("bravo-task", "baseline"): False,
+            ("bravo-task", "full"): False,
+        },
+        default=False,
+    )
+    executor = ModelRetryExecutor(plan=plan)
+    config = SpineConfig(arms=[baseline(), full()], reps=1, corpus_root=corpus_root)
+    result = run_spine(
+        config,
+        executor=executor,
+        hidden_test_runner=hidden,
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-06-24",
+    )
+    return result
+
+
+def test_issue960_spine_carries_scored_runs(corpus_root: Path, reports_dir: Path) -> None:
+    """The spine threads a ScoredRun (RunRecord + solved) per rep on the result."""
+    result = _drive_probe_spine(corpus_root, reports_dir)
+    assert hasattr(result, "scored_runs")
+    # 2 tasks * 2 arms * 1 rep = 4 scored runs.
+    assert len(result.scored_runs) == 4
+    for sr in result.scored_runs:
+        assert isinstance(sr, ScoredRun)
+        assert isinstance(sr.run, RunRecord)
+        assert isinstance(sr.solved, bool)
+    # solved must match the join (alpha solves, bravo fails).
+    by_key = {(sr.run.task, sr.run.arm): sr.solved for sr in result.scored_runs}
+    assert by_key == {
+        ("alpha-task", "baseline"): True,
+        ("alpha-task", "full"): True,
+        ("bravo-task", "baseline"): False,
+        ("bravo-task", "full"): False,
+    }
+    # Models recorded from the executor (routing input).
+    by_model = {(sr.run.task, sr.run.arm): sr.run.model for sr in result.scored_runs}
+    assert by_model[("alpha-task", "baseline")] == CHEAP_MODEL
+    assert by_model[("alpha-task", "full")] == EXPENSIVE_MODEL
+
+
+def test_issue960_ac1_dated_report_shows_routing_and_retry_probes(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """AC1: the dated report's probe section is populated, not 'not available'."""
+    result = _drive_probe_spine(corpus_root, reports_dir)
+    assert result.report_path is not None
+    text = result.report_path.read_text(encoding="utf-8")
+
+    # The probe section headers are present.
+    assert "Routing cost-regret" in text
+    assert "Retry lift" in text
+    # And they are NOT the "not available" placeholders.
+    assert "Not available: this report carries no per-run records" not in text
+    # Real figures surface.
+    assert "Total routing cost-regret:" in text
+    assert "With-retry solve-rate:" in text
+    assert "Wasted-retry cost:" in text
+
+
+def test_issue960_ac2_rendered_numbers_match_probe_functions(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """AC2: rendered numbers equal probes.routing_cost_regret / retry_lift."""
+    result = _drive_probe_spine(corpus_root, reports_dir)
+    scored = list(result.scored_runs)
+
+    expected_routing = routing_cost_regret(scored)
+    expected_retry = retry_lift(scored)
+
+    from agentrail.evals.reporter import _fmt_usd, _fmt_rate_pct
+
+    text = result.report_path.read_text(encoding="utf-8")
+
+    # Routing total regret string must appear verbatim.
+    assert (
+        f"Total routing cost-regret: {_fmt_usd(expected_routing.total_regret_usd)}"
+        in text
+    )
+    # Retry lift numbers must appear verbatim.
+    assert (
+        f"With-retry solve-rate: {_fmt_rate_pct(expected_retry.with_retry_solve_rate)}"
+        in text
+    )
+    assert (
+        f"First-attempt-only solve-rate: "
+        f"{_fmt_rate_pct(expected_retry.first_attempt_solve_rate)}" in text
+    )
+    assert f"Retry lift: {_fmt_rate_pct(expected_retry.lift)}" in text
+    assert (
+        f"Wasted-retry cost: {_fmt_usd(expected_retry.wasted_retry_cost_usd)}" in text
+    )
+
+    # Sanity: the fixture exercises real regret (expensive solved alpha vs cheap
+    # floor) and real wasted-retry (bravo baseline retried but never solved).
+    assert expected_routing.total_regret_usd > 0.0
+    assert expected_retry.wasted_retry_cost_usd > 0.0
+    assert expected_retry.lift is not None and expected_retry.lift > 0.0
+
+
+def test_issue960_ac3_no_regression_existing_sections_still_render(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """AC3: all existing report sections still present alongside the probes."""
+    result = _drive_probe_spine(corpus_root, reports_dir)
+    text = result.report_path.read_text(encoding="utf-8")
+
+    # Headline + honesty-rail sections (must not regress).
+    assert "Per-arm summary" in text
+    assert "Solve-rate" in text
+    assert "Spread" in text
+    assert "Dollars-per-solved-task" in text
+    assert "Per-layer ablation deltas" in text
+    assert "Difficulty-stratified breakdown" in text
+    assert "Failures, ties, and spread" in text
+    assert "Objective Gate false-green rate" in text
+    # Guardrail catch-rate (the probe that already rendered) still present.
+    assert "Guardrail injection-corpus catch-rate" in text

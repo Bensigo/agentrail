@@ -196,5 +196,36 @@ class ExistingArmUnchanged(unittest.TestCase):
         self.assertIn("passed", report)
 
 
+class BaselineExcludesEvalFixtureFile(unittest.TestCase):
+    """The baseline must not 'find' the eval's own fixture/answer-key file.
+
+    retrieval-fixtures.json quotes every required path, so an un-excluded grep
+    ranks it as the top hit on every query — stealing a top-k slot from the real
+    required files and unfairly depressing grep's recall/precision (which would
+    inflate AgentRail's relative edge). The eval excludes it.
+    """
+
+    def test_grep_baseline_paths_honours_exclude(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / "answer_key.json").write_text("alpha beta gamma\n", encoding="utf-8")
+        (root / "real.py").write_text("alpha\n", encoding="utf-8")
+        without = grep_baseline_paths(root, ["alpha", "beta", "gamma"], limit=10)
+        self.assertIn("answer_key.json", without)
+        with_exclude = grep_baseline_paths(
+            root, ["alpha", "beta", "gamma"], limit=10, exclude={root / "answer_key.json"}
+        )
+        self.assertNotIn("answer_key.json", with_exclude)
+        self.assertIn("real.py", with_exclude)
+
+    def test_evaluate_retrieval_baseline_never_lists_the_fixture_file(self) -> None:
+        report = evaluate_retrieval(REPO_ROOT, RETRIEVAL_FIXTURE_FILE)
+        for fixture_report in report["grepBaseline"]["fixtures"]:
+            self.assertNotIn(
+                "agentrail/context/retrieval-fixtures.json",
+                fixture_report["selectedPaths"],
+                "the eval's own answer-key file must be excluded from the grep corpus",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

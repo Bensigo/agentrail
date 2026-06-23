@@ -254,6 +254,7 @@ class PushGuardrail:
         "protected/production branch; records every block as an Audit Event."
     )
     blocking: bool = True
+    framework_neutral: bool = True  # pure policy; imports no agent framework
 
     def evaluate(self, **kwargs: object) -> Verdict:
         targets = kwargs.get("targets", ())

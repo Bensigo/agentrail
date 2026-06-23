@@ -40,9 +40,19 @@ def _policy_modules():
 
 def test_found_some_policy_modules():
     # Guard the scan: if discovery silently returns nothing the asserts below pass
-    # vacuously. There must be at least the output_enforcer + proof_required.
+    # vacuously. There must be at least the output_enforcer + proof_required, plus
+    # the six guardrails migrated in #921 (AC2 — the purity scan must cover them).
     names = {m.__name__.rsplit(".", 1)[-1] for m in _policy_modules()}
-    assert {"output_enforcer", "proof_required"} <= names
+    assert {
+        "output_enforcer",
+        "proof_required",
+        "push_guardrail",
+        "input_contract",
+        "red_green",
+        "approval_gate",
+        "sandbox_enforcement",
+        "check_runner",
+    } <= names
 
 
 def test_no_policy_imports_io_or_framework():

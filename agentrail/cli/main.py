@@ -9,6 +9,7 @@ from agentrail.cli.commands.afk import run_afk
 from agentrail.cli.commands.cleanup import run_cleanup
 from agentrail.cli.commands.doctor import run_doctor
 from agentrail.cli.commands.grill import run_grill
+from agentrail.cli.commands.evals import run_evals
 from agentrail.cli.commands.guardrails import run_guardrails
 from agentrail.cli.commands.heartbeat import run_heartbeat
 from agentrail.cli.commands.issue import run_issue
@@ -69,6 +70,7 @@ def _usage() -> str:
         "  agentrail skills resolve \"<task>\" [--target DIR]\n"
         "  agentrail guardrails list\n"
         "  agentrail guardrails docs [--write]\n"
+        "  agentrail evals run [--corpus DIR] [--task NAME] [--arm NAME] [--reps N]\n"
         "  agentrail resume [--target DIR]\n"
         "  agentrail labels sync [--target DIR]\n"
         "  agentrail cleanup [--target DIR] [--dry-run]\n"
@@ -101,6 +103,7 @@ def _usage() -> str:
         "  memory      Manage memory\n"
         "  skills      List / manage skills\n"
         "  guardrails  List active guardrails / regenerate docs/agents/guardrails.md\n"
+        "  evals       Run the eval harness spine (corpus -> runner -> scorer -> report)\n"
         "  resume      Resume a paused session\n"
         "  labels      Manage labels\n"
         "  cleanup     Clean up worktrees / sessions\n"
@@ -133,6 +136,7 @@ def main(argv: List[str] | None = None) -> int:
         "doctor", "cleanup",           # local health / worktree maintenance
         "context",                     # local index build/query
         "guardrails",                  # local registry read / doc regen
+        "evals",                        # local eval-harness spine (#938)
         "status", "timeline", "cost",  # local read-only state
         "link", "console",             # local worktree↔session / TUI
     }
@@ -202,6 +206,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_skills(args[1:])
     if args[0] == "guardrails":
         return run_guardrails(args[1:])
+    if args[0] == "evals":
+        return run_evals(args[1:])
 
     # Unknown command
     print(f"Unknown command: {args[0]}", file=sys.stderr)

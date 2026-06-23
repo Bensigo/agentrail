@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from evals.corpus import (
+from agentrail.evals.corpus import (
     DIFFICULTY_TAGS,
     CorpusError,
     CorpusTask,
@@ -256,5 +256,5 @@ def test_real_corpus_difficulty_spread() -> None:
 
 def test_corpus_root_points_at_committed_corpus() -> None:
     root = corpus_root()
-    assert root == REPO_ROOT / "evals" / "corpus"
+    assert root == REPO_ROOT / "agentrail" / "evals" / "corpus"
     assert root.is_dir()

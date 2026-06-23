@@ -1,8 +1,8 @@
 """Pure, deterministic loader + validator for frozen corpus tasks.
 
-Layout (one directory per task under ``evals/corpus/``):
+Layout (one directory per task under ``agentrail/evals/corpus/``):
 
-    evals/corpus/<task_id>/
+    agentrail/evals/corpus/<task_id>/
         task.json          # the task record (validated by this module)
         answer_key/        # hidden test suite (the answer key), stored
             test_*.py      #   SEPARATELY from the agent-visible working tree

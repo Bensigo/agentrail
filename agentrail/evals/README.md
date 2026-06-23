@@ -27,20 +27,20 @@ single ground truth that cannot be fooled by code that merely looks finished.
 ## Layout
 
 ```
-evals/
+agentrail/evals/
   corpus/        # frozen tasks + hidden answer keys (this slice)
   README.md      # you are here
   # later slices: arms/, runner/, scorer/, reports/
 ```
 
-## The corpus (`evals/corpus/`)
+## The corpus (`agentrail/evals/corpus/`)
 
 The corpus is the harness's irreplaceable asset. Each task lives in its own
 directory:
 
 ```
-evals/corpus/<task_id>/
-  task.json          # the task record (validated by evals.corpus.loader)
+agentrail/evals/corpus/<task_id>/
+  task.json          # the task record (validated by agentrail.evals.corpus.loader)
   answer_key/        # the HIDDEN test suite — never handed to the agent
     test_*.py
 ```
@@ -78,9 +78,9 @@ for task in load_corpus():
 ### Adding a task
 
 1. Pick an already-merged, test-bearing PR.
-2. Create `evals/corpus/<task_id>/answer_key/` and copy in the exact test
+2. Create `agentrail/evals/corpus/<task_id>/answer_key/` and copy in the exact test
    file(s) that PR shipped (extract them at the merge commit).
-3. Write `evals/corpus/<task_id>/task.json` (see an existing task for the shape).
+3. Write `agentrail/evals/corpus/<task_id>/task.json` (see an existing task for the shape).
 4. Run `python -m pytest -q tests/evals/` — the loader validates the new task.
 
 ## Running the corpus tests

@@ -16,12 +16,14 @@ from unittest.mock import patch
 from agentrail.context.index import build_index
 from agentrail.context.packs import (
     PACK_SECTION_KEYS,
+    RETRIEVAL_MAX_TOKENS,
     SECTION_TITLES,
     _DEFAULT_BUDGET_MODEL,
     _item_tokens,
     _pack_input_tokens,
     _trim_to_budget,
     build_context_pack,
+    estimate_tokens,
     render_context_pack_markdown,
 )
 from agentrail.context.pricing import cost_for
@@ -359,6 +361,200 @@ class BuildContextPackBudgetIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(output["itemsDropped"], 0)
         self.assertLessEqual(output["packCostUsd"], 999.0)
+
+
+# ---------------------------------------------------------------------------
+# Acceptance tests for issue #902: greedy per-candidate token budget fill
+# ---------------------------------------------------------------------------
+
+def _make_budget_repo() -> Path:
+    """Fixture repo for issue #902 greedy-budget-fill acceptance tests.
+
+    Designed to be definitively RED before implementation:
+
+    - One high-relevance anchor file whose 80-line chunks are ~8 000 chars each
+      (well above the current 2 000-char bounded_content cap, so they carry a
+      [TRUNCATED] marker in the current code).
+    - Eight lower-relevance filler files, each also producing ~8 000-char chunks.
+    - Total retrieved chunks * tokens >> RETRIEVAL_MAX_TOKENS = 6 000, so the
+      token budget is violated by the current placeholder packing strategy.
+
+    After the Implementer's greedy-budget-fill change the test must turn GREEN:
+    the pack's included-item token total must be ≤ RETRIEVAL_MAX_TOKENS, the
+    anchor must be present whole (no [TRUNCATED]), and the dropped fillers must
+    appear in excludedContext with a budget-related reason.
+    """
+    root = Path(tempfile.mkdtemp())
+    subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+    (root / ".agentrail").mkdir()
+    (root / ".agentrail" / "config.json").write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "context": {
+                "includeGlobs": ["**/*"],
+                "excludeGlobs": [
+                    ".git/**", ".agentrail/context/**", ".agentrail/source/**",
+                    ".env", ".env.*", "**/.env", "**/.env.*",
+                ],
+                "maxFileSizeBytes": 262144,
+                "skipBinary": True,
+                "respectGitIgnore": True,
+                "secretRedaction": {"enabled": False, "action": "exclude", "denyGlobs": []},
+                "embedding": {"mode": "disabled", "provider": None, "model": None},
+                "summary": {"mode": "disabled", "provider": None, "model": None},
+            },
+        }, indent=2),
+        encoding="utf-8",
+    )
+    (root / ".agentrail" / "state.json").write_text(
+        json.dumps({"workflow": {"activeIssue": 42, "activePhase": "plan", "goals": []}}),
+        encoding="utf-8",
+    )
+    (root / "CONTEXT.md").write_text(
+        "# Context\n\nIssue #42 greedy budget acceptance test.\n",
+        encoding="utf-8",
+    )
+    (root / "src").mkdir()
+
+    # High-value anchor: 400 lines × ~100 chars/line = ~40 000 chars.
+    # code_chunks windows are 80 lines, so each chunk is ~8 000 chars > 2 000.
+    # bounded_content currently truncates this to 2 000 chars + [TRUNCATED].
+    # The path contains "high_value_anchor" so the test can locate it in the pack.
+    anchor_line = "A" * 93 + "  # anchor\n"  # 98 chars
+    anchor_body = "# high_value_anchor module for issue #42\n" + anchor_line * 399
+    (root / "src" / "high_value_anchor_42.py").write_text(anchor_body, encoding="utf-8")
+
+    # Filler files: 200 lines × ~100 chars/line = ~20 000 chars each.
+    # Each file produces ~3 code_chunks of ~8 000 chars — also currently truncated.
+    for i in range(1, 9):
+        filler_line = "B" * 90 + f"  # filler {i:02d}\n"  # ~98 chars
+        filler_body = f"# filler_{i:02d} for issue #42\n" + filler_line * 199
+        (root / "src" / f"filler_{i:02d}.py").write_text(filler_body, encoding="utf-8")
+
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "t@t.com"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "T"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "init"], check=True)
+    build_index(root)
+    return root
+
+
+class GreedyBudgetFillAC902Tests(unittest.TestCase):
+    """Acceptance tests for issue #902: replace compat placeholder with greedy budget-fill.
+
+    These tests are RED until the Implementer:
+      1. Replaces ``compat_pack_sections_until_token_estimator_exists`` with a real
+         per-candidate token estimator and a greedy budget-fill (drop lowest-relevance
+         candidates until total tokens ≤ RETRIEVAL_MAX_TOKENS).
+      2. Stops truncating surviving items to a uniform 2 000-char cap — items that fit
+         the budget are included whole.
+      3. Records each dropped candidate in excludedContext with a budget-related reason.
+
+    AC1 (#902): pack included-item token total ≤ RETRIEVAL_MAX_TOKENS.
+    AC2 (#902): high-relevance candidate that fits is included whole, not truncated.
+    AC3 (#902): over-budget dropped candidates appear in excludedContext with a budget reason.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.root = _make_budget_repo()
+        result = build_context_pack(cls.root, "issue", 42, "plan")
+        pack_path = cls.root / result["jsonPath"]
+        cls.pack = json.loads(pack_path.read_text(encoding="utf-8"))
+
+    def _included_token_total(self) -> int:
+        return sum(
+            estimate_tokens(item["content"])
+            for item in self.pack.get("included", [])
+            if isinstance(item.get("content"), str) and item["content"]
+        )
+
+    def test_ac1_included_token_total_within_retrieval_budget(self) -> None:
+        """AC1: total token estimate across included items must be ≤ RETRIEVAL_MAX_TOKENS.
+
+        Currently FAILS because build_context_pack records retrievalBudget.maxTokens
+        but never enforces it — the compat placeholder strategy packs every retrieved
+        candidate regardless of the cumulative token count.
+        """
+        total = self._included_token_total()
+        self.assertLessEqual(
+            total,
+            RETRIEVAL_MAX_TOKENS,
+            f"Pack token total {total} exceeds RETRIEVAL_MAX_TOKENS={RETRIEVAL_MAX_TOKENS}. "
+            "The greedy budget-fill must enforce this limit by dropping low-relevance "
+            "candidates rather than including everything retrieved.",
+        )
+
+    def test_ac2_high_relevance_item_included_whole_not_truncated(self) -> None:
+        """AC2: a high-relevance item that fits within the budget must not be truncated.
+
+        Currently FAILS because bounded_content in retrieval.py caps every item's
+        content at 2 000 chars and appends [TRUNCATED], regardless of whether
+        the budget would allow including it in full.
+        """
+        anchor_items = [
+            item for item in self.pack.get("included", [])
+            if "high_value_anchor" in str(item.get("path", ""))
+        ]
+        self.assertTrue(
+            anchor_items,
+            "The high_value_anchor_42.py file must appear in pack included items — "
+            "check that the repo fixture built correctly and the file was indexed.",
+        )
+        for item in anchor_items:
+            content = item.get("content") or ""
+            self.assertNotIn(
+                "[TRUNCATED]",
+                content,
+                f"High-relevance item {item.get('path')} must be included with its full "
+                "content, not truncated to a fixed char cap. The budget is met by "
+                "excluding low-value candidates, not by mutilating high-value ones.",
+            )
+
+    def test_ac3_over_budget_candidates_dropped_to_excluded_with_reason(self) -> None:
+        """AC3: candidates dropped because of the token budget must appear in excludedContext
+        with a budget-related reason string.
+
+        Currently FAILS because no token-budget enforcement exists — nothing is ever
+        dropped due to the token budget, so no excludedContext entry carries a
+        budget/token reason.
+        """
+        excluded = self.pack.get("excludedContext", [])
+        budget_dropped = [
+            item for item in excluded
+            if "budget" in str(item.get("reason", "")).lower()
+            or "token" in str(item.get("reason", "")).lower()
+        ]
+        # The fixture has far more retrieved content than fits in RETRIEVAL_MAX_TOKENS,
+        # so after greedy fill at least some candidates must be budget-dropped.
+        self.assertTrue(
+            budget_dropped,
+            f"Expected at least one excludedContext item with a budget/token reason, "
+            f"but found none. excludedContext reasons: "
+            f"{[i.get('reason', '') for i in excluded]!r}. "
+            "The greedy budget-fill must record each dropped candidate in excludedContext "
+            "with a reason such as 'dropped: over token budget'.",
+        )
+
+    def test_ac3_compiler_strategy_replaced(self) -> None:
+        """AC3 (strategy name): the tokenPack strategy must not be the compat placeholder.
+
+        Currently FAILS because build_context_pack always passes
+        token_pack_strategy='compat_pack_sections_until_token_estimator_exists'
+        to compiler_contract.
+        """
+        strategy = (
+            self.pack.get("compiler", {})
+            .get("tokenPack", {})
+            .get("strategy", "")
+        )
+        self.assertNotEqual(
+            strategy,
+            "compat_pack_sections_until_token_estimator_exists",
+            "tokenPack.strategy must be updated to reflect the real greedy_budget_fill "
+            "implementation. The compat placeholder name is a known signal that the "
+            "budget is not enforced.",
+        )
 
 
 if __name__ == "__main__":

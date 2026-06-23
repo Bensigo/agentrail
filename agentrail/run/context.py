@@ -131,6 +131,18 @@ _MAX_SNIPPET_LINES = 40
 _MAX_TOTAL_CHARS = 8000  # ≈ 2 000 tokens at 4 chars/token
 
 
+def _indent_snippet(snippet: Any) -> List[str]:
+    """Indent a windowed snippet for the prompt block, preserving its full span.
+
+    The snippet from ``search_context`` is already bounded (line/char caps) and,
+    after issue #903, anchored on the matched span + enclosing signature.  We
+    keep every non-blank line — never truncating to the first few — so a deep
+    matched span survives into the loop prompt.
+    """
+    snippet_raw = str(snippet or "")
+    return [f"    {l}" for l in snippet_raw.split("\n") if l.strip()]
+
+
 def context_selected_snippets(target_dir: Path, query: str) -> str:
     """Context pointers with fenced content for top results.
 
@@ -173,41 +185,48 @@ def context_selected_snippets(target_dir: Path, query: str) -> str:
         )
 
         if i < _MAX_CONTENT_SNIPPETS:
-            # Attempt to inject fenced file content
+            # Attempt to inject fenced file content from the windowed line range.
+            # After issue #903, (line_start, line_end) is the *relevance window*
+            # (signature .. matched span), not the whole chunk — so re-reading
+            # that range gives the matched span, not the file head.  But when the
+            # window straddles a wider span than the line cap, a contiguous
+            # head-of-range slice would truncate the deep match back off; in that
+            # case fall back to the gap-compressed windowed snippet, which is
+            # guaranteed to contain both the signature and the matched span.
             injected = False
-            try:
-                file_path = Path(target_dir) / path
-                raw_lines = file_path.read_text(encoding="utf-8").splitlines()
-                start_idx = max(0, line_start - 1)
-                end_idx = line_end  # 1-based inclusive → slice end exclusive
-                content_lines = raw_lines[start_idx:end_idx][:_MAX_SNIPPET_LINES]
-                content = "\n".join(content_lines)
-                fence = f"```{path}:{line_start}-{line_end}\n{content}\n```"
-                if total_chars + len(fence) <= _MAX_TOTAL_CHARS:
-                    lines.append(fence)
-                    total_chars += len(fence)
-                    injected = True
-            except OSError:
-                pass
+            window_span = max(0, line_end - line_start + 1)
+            if window_span <= _MAX_SNIPPET_LINES:
+                try:
+                    file_path = Path(target_dir) / path
+                    raw_lines = file_path.read_text(encoding="utf-8").splitlines()
+                    start_idx = max(0, line_start - 1)
+                    end_idx = line_end  # 1-based inclusive → slice end exclusive
+                    content_lines = raw_lines[start_idx:end_idx][:_MAX_SNIPPET_LINES]
+                    content = "\n".join(content_lines)
+                    fence = f"```{path}:{line_start}-{line_end}\n{content}\n```"
+                    if total_chars + len(fence) <= _MAX_TOTAL_CHARS:
+                        lines.append(fence)
+                        total_chars += len(fence)
+                        injected = True
+                except OSError:
+                    pass
 
             if not injected:
-                # Fall back to indented snippet from search result
-                snippet_raw = str(r.get("snippet") or "")
-                snippet_lines = [
-                    f"    {l}"
-                    for l in snippet_raw.split("\n")[:4]
-                    if l.strip()
-                ]
+                # Fall back to the windowed snippet from the search result.  It is
+                # already bounded (≤ snippet line/char caps) AND carries the
+                # matched span, so do NOT truncate it to the first few lines —
+                # that would discard a deep match (the windowing payoff).
+                snippet_lines = _indent_snippet(r.get("snippet"))
                 if snippet_lines:
-                    lines.append("\n".join(snippet_lines))
+                    rendered = "\n".join(snippet_lines)
+                    if total_chars + len(rendered) <= _MAX_TOTAL_CHARS:
+                        lines.append(rendered)
+                        total_chars += len(rendered)
         else:
-            # Results beyond content limit: pointer only with short snippet
-            snippet_raw = str(r.get("snippet") or "")
-            snippet_lines = [
-                f"    {l}"
-                for l in snippet_raw.split("\n")[:4]
-                if l.strip()
-            ]
+            # Results beyond the content limit: pointer + the full windowed
+            # snippet (bounded, contains the matched span — not truncated to the
+            # first 4 lines, which used to cut off deep matches).
+            snippet_lines = _indent_snippet(r.get("snippet"))
             if snippet_lines:
                 lines.append("\n".join(snippet_lines))
 

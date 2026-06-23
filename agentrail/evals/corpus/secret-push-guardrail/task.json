@@ -1,0 +1,22 @@
+{
+  "name": "secret-push-guardrail",
+  "repo": "Bensigo/agentrail",
+  "commit": "64b161e87753",
+  "prompt": "Add a secret / prod-push guardrail (agentrail/run/push_guardrail.py) that blocks pushes containing secrets or targeting prod and emits audit events.",
+  "agentVisibleRoot": "workdir",
+  "hiddenTests": {
+    "root": "answer_key",
+    "files": [
+      "test_push_guardrail.py"
+    ]
+  },
+  "requiredContext": [
+    "agentrail/run/push_guardrail.py"
+  ],
+  "difficulty": "easy",
+  "source": {
+    "repo": "Bensigo/agentrail",
+    "pr": 795,
+    "mergeCommit": "64b161e87753"
+  }
+}

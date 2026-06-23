@@ -1,0 +1,25 @@
+{
+  "name": "context-rerank",
+  "repo": "Bensigo/agentrail",
+  "commit": "f41560cca18d",
+  "prompt": "Add a deterministic, code-aware RERANK stage to the Context Compiler (agentrail/context/rerank.py) that reorders retrieval candidates and lifts precision, wired into build_context_pack.",
+  "agentVisibleRoot": "workdir",
+  "hiddenTests": {
+    "root": "answer_key",
+    "files": [
+      "test_rerank.py"
+    ]
+  },
+  "requiredContext": [
+    "agentrail/context/rerank.py",
+    "agentrail/context/packs.py",
+    "agentrail/context/retrieval.py"
+  ],
+  "difficulty": "medium",
+  "source": {
+    "repo": "Bensigo/agentrail",
+    "pr": 923,
+    "issue": 904,
+    "mergeCommit": "f41560cca18d"
+  }
+}

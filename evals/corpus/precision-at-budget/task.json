@@ -1,0 +1,25 @@
+{
+  "name": "precision-at-budget",
+  "repo": "Bensigo/agentrail",
+  "commit": "17a1e6be48ce",
+  "prompt": "Compute precision_at_budget live on Context Packs using version-controlled retrieval fixtures, so the metric is real per pack instead of an always-zero placeholder.",
+  "agentVisibleRoot": "workdir",
+  "hiddenTests": {
+    "root": "answer_key",
+    "files": [
+      "test_retrieval_precision_fixtures.py"
+    ]
+  },
+  "requiredContext": [
+    "agentrail/context/evaluation.py",
+    "agentrail/context/packs.py",
+    "agentrail/context/retrieval-fixtures.json"
+  ],
+  "difficulty": "medium",
+  "source": {
+    "repo": "Bensigo/agentrail",
+    "pr": 913,
+    "issue": 901,
+    "mergeCommit": "17a1e6be48ce"
+  }
+}

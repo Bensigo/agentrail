@@ -1,0 +1,25 @@
+{
+  "name": "runner-escalation",
+  "repo": "Bensigo/agentrail",
+  "commit": "210b0263b079",
+  "prompt": "Implement real model escalation and bounded retry-on-error in the self-hosted runner (agentrail/runner/escalation.py): a red gate bumps the tier to a stronger model, and errors retry within a bound.",
+  "agentVisibleRoot": "workdir",
+  "hiddenTests": {
+    "root": "answer_key",
+    "files": [
+      "test_escalation.py",
+      "test_execute_escalation.py"
+    ]
+  },
+  "requiredContext": [
+    "agentrail/runner/escalation.py",
+    "agentrail/runner/client.py"
+  ],
+  "difficulty": "medium",
+  "source": {
+    "repo": "Bensigo/agentrail",
+    "pr": 910,
+    "issue": 890,
+    "mergeCommit": "210b0263b079"
+  }
+}

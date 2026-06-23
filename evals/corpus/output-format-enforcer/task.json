@@ -1,0 +1,23 @@
+{
+  "name": "output-format-enforcer",
+  "repo": "Bensigo/agentrail",
+  "commit": "8324ef38722f",
+  "prompt": "Add an output format enforcer (agentrail/run/output_enforcer.py) that rejects full-file rewrites in the execute phase and prefers diffs.",
+  "agentVisibleRoot": "workdir",
+  "hiddenTests": {
+    "root": "answer_key",
+    "files": [
+      "test_output_enforcer.py"
+    ]
+  },
+  "requiredContext": [
+    "agentrail/run/output_enforcer.py"
+  ],
+  "difficulty": "easy",
+  "source": {
+    "repo": "Bensigo/agentrail",
+    "pr": 789,
+    "issue": 768,
+    "mergeCommit": "8324ef38722f"
+  }
+}

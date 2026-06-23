@@ -1,0 +1,23 @@
+{
+  "name": "issue-queue-state-machine",
+  "repo": "Bensigo/agentrail",
+  "commit": "21b241a02afa",
+  "prompt": "Implement the Issue Queue state machine (agentrail/afk/queue_state.py) with the terminal states (green, escalated-to-human, blocked) and the escalation transition.",
+  "agentVisibleRoot": "workdir",
+  "hiddenTests": {
+    "root": "answer_key",
+    "files": [
+      "test_queue_state.py"
+    ]
+  },
+  "requiredContext": [
+    "agentrail/afk/queue_state.py"
+  ],
+  "difficulty": "easy",
+  "source": {
+    "repo": "Bensigo/agentrail",
+    "pr": 792,
+    "issue": 774,
+    "mergeCommit": "21b241a02afa"
+  }
+}

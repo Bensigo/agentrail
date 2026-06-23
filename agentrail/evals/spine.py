@@ -272,6 +272,12 @@ def run_spine(
                         arm=arm.name,
                         solved=verdict.solved,
                         usage=record.usage,
+                        # Objective Gate false-green probe (#940): carry the
+                        # scorer's flags VERBATIM. The reporter only COUNTS
+                        # these — the false-green definition is single-sourced
+                        # in scorer.score, never re-derived downstream.
+                        gate_passed=verdict.gate_passed,
+                        false_green=verdict.false_green,
                     )
                 )
 

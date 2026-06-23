@@ -407,6 +407,69 @@ def test_ac4_metrics_writer_rows_match_arm_reports(corpus_root: Path, reports_di
 
 
 # ---------------------------------------------------------------------------
+# Objective Gate false-green probe (issue #940): the scorer's per-run
+# false_green flag is carried onto the RepetitionRecord and into the report.
+# ---------------------------------------------------------------------------
+
+
+def test_false_green_flag_propagates_from_verdict_to_record(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """A gate-passed run whose hidden tests fail must surface as a false-green.
+
+    The executor passes the gate (gate_passed=True) but the hidden-test runner
+    returns False -> the scorer flags false_green=True. The spine must carry
+    that scorer flag onto the RepetitionRecord (not re-derive it) and the
+    reporter must count it.
+    """
+    executor = SpyExecutor(gate_passed=True)  # gate passes for every run
+    hidden = HiddenTestSpy(default=False)     # but hidden tests always fail
+
+    result = run_spine(
+        SpineConfig(arms=[baseline()], reps=1, task_filter=["alpha-task"], corpus_root=corpus_root),
+        executor=executor,
+        hidden_test_runner=hidden,
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-06-23",
+    )
+
+    # The verdict says false-green; the record must echo it verbatim.
+    (verdict,) = result.verdicts
+    (rep,) = result.repetitions
+    assert verdict.false_green is True
+    assert rep.false_green is verdict.false_green
+    assert rep.gate_passed is verdict.gate_passed
+
+    # And it lands in the aggregate: 1 gate-passed, 1 false-green -> rate 1.0.
+    (report,) = result.arm_reports
+    assert report.gate_passed_count == 1
+    assert report.false_green_count == 1
+    assert report.false_green_rate == pytest.approx(1.0)
+
+
+def test_false_green_rate_none_when_gate_never_passes(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """No gate-passed run in the spine -> defined None rate, never a crash."""
+    executor = SpyExecutor(gate_passed=False)  # gate fails every run
+    hidden = HiddenTestSpy(default=False)
+
+    result = run_spine(
+        SpineConfig(arms=[baseline()], reps=2, task_filter=["alpha-task"], corpus_root=corpus_root),
+        executor=executor,
+        hidden_test_runner=hidden,
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-06-23",
+    )
+    (report,) = result.arm_reports
+    assert report.gate_passed_count == 0
+    assert report.false_green_count == 0
+    assert report.false_green_rate is None
+
+
+# ---------------------------------------------------------------------------
 # AC5 — corpus + arm selection flags route through to the spine.
 # ---------------------------------------------------------------------------
 

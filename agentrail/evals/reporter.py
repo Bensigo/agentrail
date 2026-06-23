@@ -51,12 +51,21 @@ class RepetitionRecord:
     faked). ``usage`` is the token usage for the run, priced through the
     adapter. This is the contract the reporter depends on; the runner/scorer
     are responsible for producing it.
+
+    ``gate_passed`` and ``false_green`` are carried straight from the scorer's
+    ``Verdict`` (issue #940) so the Objective Gate false-green RATE can be
+    aggregated here WITHOUT re-deriving the per-run flag — the false-green
+    definition stays single-sourced in ``scorer.score``. They default to
+    ``False`` so callers that pre-date the probe (and tests) keep constructing
+    a record positionally; the spine always sets them from the ``Verdict``.
     """
 
     task: str
     arm: str
     solved: bool
     usage: Usage
+    gate_passed: bool = False
+    false_green: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +90,14 @@ class ArmReport:
     total_cost_usd: float
     # None when no repetition solved (undefined, never divide-by-zero).
     dollars_per_solved: Optional[float]
+    # Objective Gate false-green probe (issue #940). Of the runs whose gate
+    # passed, how many failed the hidden tests. The flags are the scorer's
+    # (carried on each RepetitionRecord), never re-derived here.
+    gate_passed_count: int = 0
+    false_green_count: int = 0
+    # None when NO run's gate passed (undefined denominator) — DISTINCT from a
+    # 0.0 rate (gate passed but never a false-green). Never divide-by-zero.
+    false_green_rate: Optional[float] = None
     # per-task solve fractions, kept for transparency in the report.
     per_task_solve_rate: Dict[str, float] = field(default_factory=dict)
 
@@ -121,6 +138,18 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
     # nothing solved — the AC3 no-divide-by-zero guard.
     dollars_per_solved = (total_cost / solved_count) if solved_count else None
 
+    # Objective Gate false-green probe (#940). Both flags come straight off the
+    # RepetitionRecord (which the spine fills from the scorer's Verdict) — we
+    # only COUNT them here, never recompute "gate passed and not solved".
+    gate_passed_count = sum(1 for r in records if r.gate_passed)
+    false_green_count = sum(1 for r in records if r.false_green)
+    # Undefined when the denominator is empty (no gate-passed run). None — NOT
+    # 0.0 — so "the gate never passed" reads differently from "the gate passed
+    # but never lied".
+    false_green_rate = (
+        (false_green_count / gate_passed_count) if gate_passed_count else None
+    )
+
     return ArmReport(
         arm=arm,
         repetitions=repetitions,
@@ -135,6 +164,9 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
         total_tokens=total_tokens,
         total_cost_usd=total_cost,
         dollars_per_solved=dollars_per_solved,
+        gate_passed_count=gate_passed_count,
+        false_green_count=false_green_count,
+        false_green_rate=false_green_rate,
         per_task_solve_rate=per_task_solve_rate,
     )
 
@@ -166,6 +198,17 @@ def _fmt_usd(value: Optional[float]) -> str:
 
 def _fmt_pct(value: float) -> str:
     return f"{value * 100:.1f}%"
+
+
+def _fmt_rate_pct(value: Optional[float]) -> str:
+    """Percentage formatter that preserves the None-vs-0.0 distinction.
+
+    ``None`` (undefined denominator) renders as ``n/a``; ``0.0`` renders as
+    ``0.0%`` — so a never-gate-passed arm never masquerades as a clean one.
+    """
+    if value is None:
+        return _UNDEFINED
+    return _fmt_pct(value)
 
 
 def _tie_tasks(report: ArmReport) -> List[str]:
@@ -211,15 +254,16 @@ def render_markdown(reports: Sequence[ArmReport], *, generated_at: str) -> str:
     lines.append("")
     lines.append(
         "| Arm | Reps | Solved | Failed | Solve-rate | Spread | "
-        "Total tokens | Total cost | Dollars-per-solved-task |"
+        "False-green rate | Total tokens | Total cost | Dollars-per-solved-task |"
     )
     lines.append(
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
     )
     for r in reports:
         lines.append(
             f"| {r.arm} | {r.repetitions} | {r.solved_count} | {r.failed_count} "
             f"| {_fmt_pct(r.solve_rate)} | {r.spread:.4f} "
+            f"| {_fmt_rate_pct(r.false_green_rate)} "
             f"| {r.total_tokens} | {_fmt_usd(r.total_cost_usd)} "
             f"| {_fmt_usd(r.dollars_per_solved)} |"
         )
@@ -243,6 +287,21 @@ def render_markdown(reports: Sequence[ArmReport], *, generated_at: str) -> str:
         lines.append(
             f"- Spread (population stddev of per-task solve-rate): {r.spread:.4f}"
         )
+        # Objective Gate false-green probe (#940): of the gate-passed runs, the
+        # fraction whose hidden tests failed (the gate said "done", the ground
+        # truth disagreed). The most operationally important number we report.
+        if r.false_green_rate is None:
+            lines.append(
+                "- Objective Gate false-green rate: n/a (undefined — no run's "
+                "gate passed, so the denominator is empty; NOT a 0% rate)"
+            )
+        else:
+            lines.append(
+                f"- Objective Gate false-green rate: "
+                f"{_fmt_rate_pct(r.false_green_rate)} "
+                f"({r.false_green_count} of {r.gate_passed_count} gate-passed "
+                "runs failed the hidden tests)"
+            )
         if r.dollars_per_solved is None:
             lines.append(
                 "- Dollars-per-solved-task: n/a (undefined — no repetition "
@@ -334,6 +393,11 @@ def arm_metric_rows(reports: Sequence[ArmReport], *, run_id: str) -> List[dict]:
             "total_tokens": r.total_tokens,
             "total_cost_usd": r.total_cost_usd,
             "dollars_per_solved": r.dollars_per_solved,
+            # Objective Gate false-green probe (#940). None (not 0.0) for the
+            # undefined-denominator case so the console can render it honestly.
+            "gate_passed_count": r.gate_passed_count,
+            "false_green_count": r.false_green_count,
+            "false_green_rate": r.false_green_rate,
         }
         for r in reports
     ]

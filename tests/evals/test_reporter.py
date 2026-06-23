@@ -48,8 +48,23 @@ def _usage(
     )
 
 
-def _rep(task: str, arm: str, solved: bool, usage: Usage) -> RepetitionRecord:
-    return RepetitionRecord(task=task, arm=arm, solved=solved, usage=usage)
+def _rep(
+    task: str,
+    arm: str,
+    solved: bool,
+    usage: Usage,
+    *,
+    gate_passed: bool = False,
+    false_green: bool = False,
+) -> RepetitionRecord:
+    return RepetitionRecord(
+        task=task,
+        arm=arm,
+        solved=solved,
+        usage=usage,
+        gate_passed=gate_passed,
+        false_green=false_green,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +195,156 @@ def test_all_failure_arm_no_divide_by_zero():
 
 def test_empty_records_returns_empty():
     assert aggregate([]) == []
+
+
+# ---------------------------------------------------------------------------
+# Objective Gate false-green probe (issue #940).
+#   false_green_rate = (gate_passed AND NOT solved) / (gate_passed)
+#   - sourced from the scorer's per-run false_green flag, carried on the record
+#   - None (not 0.0) when NO run's gate passed (undefined denominator)
+# ---------------------------------------------------------------------------
+
+
+def test_false_green_rate_known_counts_per_arm():
+    """AC1: (gate-passed AND hidden-failed) / (gate-passed), per arm."""
+    u = _usage(input_tokens=1000)
+    records = [
+        # full: 4 gate-passed runs; 1 of them is a false-green -> 1/4 = 0.25
+        _rep("task-a", "full", True, u, gate_passed=True, false_green=False),
+        _rep("task-a", "full", True, u, gate_passed=True, false_green=False),
+        _rep("task-b", "full", True, u, gate_passed=True, false_green=False),
+        _rep("task-b", "full", False, u, gate_passed=True, false_green=True),
+        # one run whose gate did NOT pass: excluded from BOTH numerator and
+        # denominator (it cannot be a false-green by the scorer's definition).
+        _rep("task-c", "full", False, u, gate_passed=False, false_green=False),
+    ]
+    r = aggregate(records)[0]
+    assert r.arm == "full"
+    assert r.gate_passed_count == 4
+    assert r.false_green_count == 1
+    assert r.false_green_rate == pytest.approx(0.25)
+
+
+def test_false_green_rate_per_arm_distinct():
+    """Per-arm: two arms with different false-green rates aggregate separately."""
+    u = _usage(input_tokens=1000)
+    records = [
+        # baseline: 2 gate-passed, both false-green -> 1.0
+        _rep("task-a", "baseline", False, u, gate_passed=True, false_green=True),
+        _rep("task-a", "baseline", False, u, gate_passed=True, false_green=True),
+        # full: 2 gate-passed, none false-green -> 0.0
+        _rep("task-a", "full", True, u, gate_passed=True, false_green=False),
+        _rep("task-a", "full", True, u, gate_passed=True, false_green=False),
+    ]
+    by_arm = {r.arm: r for r in aggregate(records)}
+    assert by_arm["baseline"].false_green_rate == pytest.approx(1.0)
+    assert by_arm["full"].false_green_rate == pytest.approx(0.0)
+
+
+def test_false_green_rate_zero_is_distinct_from_none():
+    """AC2: 0.0 (gate passed, never false-green) is NOT the same as None."""
+    u = _usage(input_tokens=1000)
+    records = [
+        _rep("task-a", "full", True, u, gate_passed=True, false_green=False),
+        _rep("task-b", "full", True, u, gate_passed=True, false_green=False),
+    ]
+    r = aggregate(records)[0]
+    assert r.gate_passed_count == 2
+    assert r.false_green_count == 0
+    # Defined and exactly 0.0 — the gate passed but never lied.
+    assert r.false_green_rate == 0.0
+    assert r.false_green_rate is not None
+
+
+def test_false_green_rate_none_when_no_gate_passed():
+    """AC2: no gate-passed runs -> rate is None (undefined denominator)."""
+    u = _usage(input_tokens=1000)
+    records = [
+        _rep("task-a", "full", False, u, gate_passed=False, false_green=False),
+        _rep("task-b", "full", True, u, gate_passed=False, false_green=False),
+    ]
+    r = aggregate(records)[0]
+    assert r.gate_passed_count == 0
+    assert r.false_green_count == 0
+    # Undefined denominator -> None, DISTINCT from a 0.0 rate.
+    assert r.false_green_rate is None
+
+
+def test_false_green_rate_sourced_from_scorer_verdict():
+    """AC3: the rate derives from the scorer's false_green flag carried through.
+
+    Build the RepetitionRecord the way the spine does — straight from a
+    ``Verdict`` produced by ``scorer.score`` — and assert the scorer's
+    ``false_green=True`` propagates into the reporter's count. This guards
+    against the reporter forking the false-green definition.
+    """
+    from agentrail.evals.run_record import RunRecord
+    from agentrail.evals.scorer import score
+
+    u = _usage(input_tokens=1000)
+    # A gate-passed run whose hidden tests FAILED -> scorer flags false_green.
+    run = RunRecord(
+        task="task-a",
+        arm="full",
+        diff="",
+        model=MODEL,
+        usage=u,
+        wall_time_s=0.0,
+        gate_passed=True,
+    )
+    verdict = score(run, hidden_tests_passed=False)
+    assert verdict.false_green is True  # the scorer's single-source truth
+
+    # Mirror spine.run_spine's record construction.
+    rep = RepetitionRecord(
+        task=verdict.task,
+        arm=verdict.arm,
+        solved=verdict.solved,
+        usage=u,
+        gate_passed=verdict.gate_passed,
+        false_green=verdict.false_green,
+    )
+    r = aggregate([rep])[0]
+    assert r.false_green_count == 1
+    assert r.gate_passed_count == 1
+    assert r.false_green_rate == pytest.approx(1.0)
+
+
+def test_false_green_rate_surfaced_in_markdown():
+    """The probe appears in the rendered report."""
+    u = _usage(input_tokens=1000)
+    records = [
+        _rep("task-a", "full", True, u, gate_passed=True, false_green=False),
+        _rep("task-b", "full", False, u, gate_passed=True, false_green=True),
+    ]
+    md = render_markdown(aggregate(records), generated_at="2026-06-23").lower()
+    assert "false-green" in md
+
+
+def test_false_green_rate_in_arm_metric_rows():
+    """The probe flows into the Postgres-ready rows (so the console can show it)."""
+    from agentrail.evals.reporter import arm_metric_rows
+
+    u = _usage(input_tokens=1000)
+    records = [
+        _rep("task-a", "full", True, u, gate_passed=True, false_green=False),
+        _rep("task-b", "full", False, u, gate_passed=True, false_green=True),
+    ]
+    rows = arm_metric_rows(aggregate(records), run_id="r1")
+    row = rows[0]
+    assert row["false_green_rate"] == pytest.approx(0.5)
+    assert row["false_green_count"] == 1
+    assert row["gate_passed_count"] == 2
+
+
+def test_false_green_rate_none_flows_to_rows():
+    """AC2 in rows: undefined-denominator case carries None, not 0.0."""
+    from agentrail.evals.reporter import arm_metric_rows
+
+    u = _usage(input_tokens=1000)
+    records = [_rep("task-a", "full", False, u, gate_passed=False, false_green=False)]
+    rows = arm_metric_rows(aggregate(records), run_id="r1")
+    assert rows[0]["false_green_rate"] is None
 
 
 # ---------------------------------------------------------------------------

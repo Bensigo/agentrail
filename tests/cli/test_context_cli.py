@@ -26,7 +26,18 @@ def assert_compiler_contract(testcase: unittest.TestCase, compiler: dict, *, exp
     testcase.assertEqual(compiler["tokenPack"]["budget"], expected_budget)
     testcase.assertIn(compiler["graphExpansion"]["status"], {"not_available", "no_strong_anchors", "expanded"})
     testcase.assertEqual(compiler["graphExpansion"]["maxHops"], 2)
-    testcase.assertEqual(compiler["rerank"]["status"], "score_sorted")
+    # Deterministic code-aware rerank (issue #904): the contract is populated
+    # (status reranked + method + ranked + rejected), or score_sorted only when
+    # the rerank is toggled off / not applicable (e.g. semantic mode).
+    rerank = compiler["rerank"]
+    testcase.assertIn(rerank["status"], {"reranked", "score_sorted"})
+    testcase.assertTrue(rerank.get("method"))
+    testcase.assertIsNone(rerank.get("model"), "deterministic rerank carries no LLM model")
+    testcase.assertIn("rankedCandidateIds", rerank)
+    if rerank["status"] == "reranked":
+        # Every rejected candidate must carry a reason (not a pass-through).
+        for item in rerank.get("rejected", []):
+            testcase.assertTrue(str(item.get("reason") or "").strip())
     testcase.assertTrue(compiler["compatibility"]["legacyFieldsPreserved"])
     testcase.assertFalse(compiler["policy"]["sourceCustody"]["fullSourceUploadAllowed"])
     testcase.assertFalse(compiler["policy"]["sourceCustody"]["snippetUploadAllowed"])

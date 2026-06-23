@@ -649,6 +649,13 @@ def build_context_pack(
     else:
         prior_items = []
     pack["retrieval_dedup"] = compute_retrieval_dedup(prior_items, pack["included"], _dedup_model)
+    # Thread the deterministic rerank metadata (issue #904) produced by the
+    # underlying query_context retrieval into the pack's own compiler contract so
+    # the live pack build records the populated rerank (method + ranked +
+    # rejected-with-reasons), not the inert model:None pass-through.
+    rerank_meta = (query.get("compiler") or {}).get("rerank") if isinstance(query.get("compiler"), dict) else None
+    if isinstance(rerank_meta, dict) and rerank_meta.get("status") == "score_sorted":
+        rerank_meta = None
     pack["compiler"] = compiler_contract(
         target_kind,
         query_text,
@@ -667,6 +674,7 @@ def build_context_pack(
             "skillsMapTo": "compiler.candidates[kind=procedural_guidance]",
         },
         token_pack_strategy="greedy_budget_fill",
+        rerank=rerank_meta,
     )
     write_json(json_path, pack)
     md_path.write_text(render_context_pack_markdown(pack), encoding="utf-8")

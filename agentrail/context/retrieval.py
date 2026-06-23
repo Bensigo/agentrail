@@ -14,7 +14,69 @@ from agentrail.context.config import read_context_config
 from agentrail.context.embeddings import embedding_config_hash, provider_name, configured_model, run_custom_command, run_openai_compatible
 from agentrail.context.index import append_audit, build_index, load_index
 from agentrail.context.pack_quality import compute_pack_quality
+from agentrail.context.rerank import rerank_candidates, rerank_enabled
 from agentrail.shared.fs import sha256_text
+
+
+# Retrieve-wide factors for the deterministic rerank stage (issue #904): the
+# reranker sees max(limit * FACTOR, limit + MIN_EXTRA) candidates so a
+# lower-retrieved-but-more-relevant source can be promoted into the kept top-K.
+_RERANK_WIDEN_FACTOR = 3
+_RERANK_WIDEN_MIN_EXTRA = 10
+
+
+def _graph_distance_by_path(index: Dict[str, Any], anchors: List[Dict[str, str]], *, max_hops: int = 2) -> Dict[str, int]:
+    """Map candidate path -> min BFS depth from the task's TRUE anchor nodes.
+
+    Distance is measured from deterministically-extracted *anchors* only (symbol
+    / test / path identifiers in the task), NOT from BM25 retrieval seeds — a
+    seed is just a keyword echo, so seed-distance would reward keyword-noise
+    rather than graph-proximity to the task's real anchor.  Deterministic only:
+    BFS depth over the deterministic Code Graph, never Graph Enrichment edges.
+    """
+    anchor_start_nodes, _started_from = _anchor_start_nodes(index, anchors)
+    if not anchor_start_nodes:
+        return {}
+    graph = index.get("graph") if isinstance(index.get("graph"), dict) else {}
+    neighbors = _graph_neighbors(graph)
+    nodes_by_id = {
+        str(node.get("id")): node
+        for node in graph.get("nodes", [])
+        if isinstance(node, dict) and node.get("id")
+    }
+    best_depth: Dict[str, int] = {str(n): 0 for n in anchor_start_nodes}
+    queue: List[Tuple[str, int]] = [(str(n), 0) for n in anchor_start_nodes]
+    while queue:
+        node_id, depth = queue.pop(0)
+        if depth >= max_hops:
+            continue
+        for edge in neighbors.get(node_id, []):
+            nxt = str(edge.get("to") or "")
+            if not nxt:
+                continue
+            nd = depth + 1
+            if nxt in best_depth and best_depth[nxt] <= nd:
+                continue
+            best_depth[nxt] = nd
+            queue.append((nxt, nd))
+    distance: Dict[str, int] = {}
+    for node_id, depth in best_depth.items():
+        node = nodes_by_id.get(node_id)
+        if not node or not node.get("path"):
+            continue
+        path = str(node["path"])
+        if path not in distance or depth < distance[path]:
+            distance[path] = depth
+    return distance
+
+
+def _candidate_id_for_result(item: Dict[str, Any]) -> str:
+    """Match the compiler's candidate-id derivation for a retrieval result."""
+    for field in ("chunkId", "sourceId", "citation", "path"):
+        value = item.get(field)
+        if value:
+            return str(value)
+    return "candidate:unknown"
 
 
 def tokenize(text: str) -> List[str]:
@@ -1599,12 +1661,94 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
     # Definitions of the queried symbol rank in a strictly higher tier than
     # reference-only files, so dense callers/tests cannot bury the definition.
     results.sort(key=lambda entry: (-entry.get("definitionTier", 0), -entry["score"]["final"], str((entry["chunk"] or {}).get("citation") or entry["source"].get("path"))))
+
+    # RETRIEVE WIDE (issue #904): before the deterministic rerank, take a wider
+    # candidate set than the caller's top-K so the reranker has lower-retrieved-
+    # but-more-relevant candidates available to promote.  The reranker then
+    # keeps the top-K under budget; the rest are recorded as rejected.
+    #
+    # The deterministic code-aware rerank applies to exact / keyword / symbol
+    # retrieval.  For a CONCEPTUAL query with active embeddings (semantic mode),
+    # embedding similarity is already the relevance reranker — overriding it with
+    # lexical code-aware signals would demote the true semantic match below a
+    # surface-word decoy, so the rerank stays a pass-through there.
+    rerank_active = rerank_enabled() and not (not exact_mode and semantic_active)
+    wide_limit = max(limit * _RERANK_WIDEN_FACTOR, limit + _RERANK_WIDEN_MIN_EXTRA) if rerank_active else limit
     formatted = []
-    for rank, entry in enumerate(results[:limit], 1):
+    for rank, entry in enumerate(results[:wide_limit], 1):
         source = entry["source"]
         chunk = entry["chunk"]
         score = {key: (None if value is None else round(float(value), 6)) for key, value in entry["score"].items()}
         formatted.append({"rank": rank, "kind": "indexed_context", "sourceType": source.get("sourceType"), "path": source.get("path"), "sourceId": source.get("id"), "chunkId": (chunk or {}).get("id"), "startLine": (chunk or {}).get("startLine"), "endLine": (chunk or {}).get("endLine"), "citation": (chunk or {}).get("citation") or source.get("path"), "reason": build_reason(entry["reasons"]), "contentHash": source.get("contentHash"), "textHash": (chunk or {}).get("textHash"), "headingPath": (chunk or {}).get("headingPath", []), "parentContext": (chunk or {}).get("parentContext") or source.get("path"), "matchContext": " > ".join([value for value in [source.get("path"), (chunk or {}).get("parentContext"), *((chunk or {}).get("headingPath", []))] if value]), "symbolHints": (chunk or {}).get("symbolHints", []), "importHints": (chunk or {}).get("importHints", []), "memory": (chunk or {}).get("memory") or source.get("memory"), "priorMistake": (chunk or {}).get("priorMistake") or source.get("priorMistake"), "authority": source.get("authority"), "visibility": source.get("visibility"), "freshness": source.get("freshness"), "redactions": source.get("redactions", []), "content": bounded_content(source, chunk), "score": score})
+
+    # RERANK (issue #904): deterministic code-aware re-scoring of the wide
+    # candidate set, then keep the top-K under budget.  Rejected candidates are
+    # appended to ``excluded`` with a rerank reason.  Toggleable via
+    # AGENTRAIL_CONTEXT_RERANK=0 so the pre-rerank baseline stays measurable.
+    rerank_meta: Optional[Dict[str, Any]] = None
+    if rerank_active and formatted:
+        rerank_anchors = extract_anchors(query, root=root)
+        distance_by_path = _graph_distance_by_path(index, rerank_anchors)
+        rerank_result = rerank_candidates(
+            formatted,
+            query=query,
+            top_k=limit,
+            anchors=rerank_anchors,
+            distance_by_path=distance_by_path,
+        )
+        formatted = rerank_result["ranked"]
+        for position, item in enumerate(formatted, 1):
+            item["rank"] = position
+        # Dedupe rerank-rejected entries against existing excluded ids using the
+        # SAME key the compiler derives its excluded-candidate id from
+        # (sourceId|chunkId|path|citation, first non-empty) so the contract's
+        # excluded-candidate ids stay unique.
+        def _excluded_key(entry: Dict[str, Any]) -> str:
+            for field in ("sourceId", "chunkId", "path", "citation"):
+                value = entry.get(field)
+                if value:
+                    return str(value)
+            return "candidate:unknown"
+
+        seen_excluded_keys = {_excluded_key(entry) for entry in excluded}
+        for dropped in rerank_result["rejected"]:
+            rerank_block = dropped.get("rerank") or {}
+            rejection = {
+                "sourceType": dropped.get("sourceType"),
+                "path": dropped.get("path"),
+                "sourceId": dropped.get("sourceId"),
+                "chunkId": dropped.get("chunkId"),
+                "reason": rerank_block.get("reason") or "rejected by deterministic rerank",
+                "citation": dropped.get("citation") or dropped.get("path"),
+                "authority": dropped.get("authority"),
+                "visibility": dropped.get("visibility"),
+                "freshness": dropped.get("freshness"),
+                "redactions": dropped.get("redactions", []),
+                "rerank": rerank_block,
+            }
+            key = _excluded_key(rejection)
+            if key in seen_excluded_keys:
+                continue
+            seen_excluded_keys.add(key)
+            excluded.append(rejection)
+        rerank_meta = {
+            "status": "reranked",
+            "method": rerank_result["method"],
+            "model": None,
+            "candidateCount": len(rerank_result["ranked"]) + len(rerank_result["rejected"]),
+            "keptCount": len(rerank_result["ranked"]),
+            "rejectedCount": len(rerank_result["rejected"]),
+            "orderChanged": rerank_result["changed"],
+            "rankedCandidateIds": [_candidate_id_for_result(item) for item in rerank_result["ranked"]],
+            "rejected": [
+                {
+                    "candidateId": _candidate_id_for_result(item),
+                    "path": item.get("path"),
+                    "reason": (item.get("rerank") or {}).get("reason") or "rejected by deterministic rerank",
+                }
+                for item in rerank_result["rejected"]
+            ],
+        }
     audit = {
         "event": "context_query",
         "citation": ".agentrail/context/audit/events.jsonl",
@@ -1646,6 +1790,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
                 "queryExcludedMapTo": "compiler.candidates[kind=excluded_context]",
             },
             graph_expansion=graph_expansion,
+            rerank=rerank_meta,
         ),
     }
     append_audit(root, audit)

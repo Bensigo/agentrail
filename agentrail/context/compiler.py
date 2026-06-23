@@ -468,6 +468,48 @@ def token_pack_metadata(
     }
 
 
+def _rerank_contract(
+    rerank: Optional[Dict[str, Any]],
+    selected_candidate_ids: List[str],
+    excluded_candidate_ids: List[str],
+) -> Dict[str, Any]:
+    """Build the rerank contract block.
+
+    When a real deterministic rerank ran (issue #904), populate ``method``, the
+    ranked candidate list, and the rejected list (each rejection carrying a
+    reason) — NOT ``model: None`` pass-through.  When rerank is disabled, fall
+    back to the legacy score-sorted descriptor so the baseline stays measurable.
+    """
+    if isinstance(rerank, dict):
+        return {
+            "status": rerank.get("status") or "reranked",
+            "method": rerank.get("method") or "deterministic_code_aware",
+            # Deterministic, code-aware: there is intentionally NO LLM model.
+            "model": rerank.get("model"),
+            "signals": ["symbolOverlap", "graphDistance", "freshness"],
+            "candidateCount": rerank.get("candidateCount"),
+            "keptCount": rerank.get("keptCount"),
+            "rejectedCount": rerank.get("rejectedCount"),
+            "orderChanged": rerank.get("orderChanged"),
+            "rankedCandidateIds": rerank.get("rankedCandidateIds") or selected_candidate_ids,
+            # Backward-compatible flat id list plus the rich reason-carrying list.
+            "rejectedCandidateIds": [
+                str(item.get("candidateId"))
+                for item in (rerank.get("rejected") or [])
+                if item.get("candidateId")
+            ] or excluded_candidate_ids,
+            "rejected": rerank.get("rejected") or [],
+        }
+    return {
+        "status": "score_sorted",
+        "method": "hybrid_lexical_rrf_authority_freshness",
+        "model": None,
+        "rankedCandidateIds": selected_candidate_ids,
+        "rejectedCandidateIds": excluded_candidate_ids,
+        "rejected": [],
+    }
+
+
 def compiler_contract(
     kind: str,
     text: str,
@@ -481,6 +523,7 @@ def compiler_contract(
     procedural_items: Optional[Iterable[Dict[str, Any]]] = None,
     excluded_items: Optional[Iterable[Dict[str, Any]]] = None,
     graph_expansion: Optional[Dict[str, Any]] = None,
+    rerank: Optional[Dict[str, Any]] = None,
     compatibility: Optional[Dict[str, Any]] = None,
     token_pack_strategy: str = "compat_max_items_until_token_estimator_exists",
 ) -> Dict[str, Any]:
@@ -520,13 +563,7 @@ def compiler_contract(
             "rejected": [],
         },
         "policy": policy,
-        "rerank": {
-            "status": "score_sorted",
-            "method": "hybrid_lexical_rrf_authority_freshness",
-            "model": None,
-            "rankedCandidateIds": selected_candidate_ids,
-            "rejectedCandidateIds": excluded_candidate_ids,
-        },
+        "rerank": _rerank_contract(rerank, selected_candidate_ids, excluded_candidate_ids),
         "tokenPack": token_pack_metadata(
             max_items=budget.get("maxItems"),
             max_tokens=budget.get("maxTokens"),

@@ -39,6 +39,11 @@ from agentrail.run.usage_capture import Usage
 from agentrail.evals.arms import LAYER_NAMES
 from agentrail.evals.corpus.loader import DIFFICULTY_TAGS
 from agentrail.evals.pricing_adapter import usage_cost
+from agentrail.evals.probes import (
+    GuardrailCatchReport,
+    RetryLiftReport,
+    RoutingRegretReport,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +553,127 @@ def render_markdown(reports: Sequence[ArmReport], *, generated_at: str) -> str:
             lines.append("- Per-task solve-rate:")
             for task, frac in r.per_task_solve_rate.items():
                 lines.append(f"  - {task}: {_fmt_pct(frac)}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Intrinsic-probe rendering (issue #943): routing cost-regret, retry lift,
+# guardrail injection-corpus catch-rate. Rendering only — the probe MATH lives
+# in ``agentrail.evals.probes`` (computed from recorded RunRecord/Verdict fields
+# and the real guardrails), so the reporter never re-derives a number.
+# ---------------------------------------------------------------------------
+
+
+def render_probes_markdown(
+    *,
+    routing: Optional["RoutingRegretReport"] = None,
+    retry: Optional["RetryLiftReport"] = None,
+    guardrail: Optional["GuardrailCatchReport"] = None,
+) -> str:
+    """Render the three intrinsic probes as a markdown section (issue #943).
+
+    Each probe is optional; a probe left ``None`` (e.g. no per-run records were
+    collected for routing/retry) renders an honest "not available" line rather
+    than a fabricated zero. Undefined ratios (empty denominators) render as
+    ``n/a`` — never a fake 0.0, matching the rest of the reporter's honesty rail.
+    """
+    lines: List[str] = []
+    lines.append("# AgentRail intrinsic probes")
+    lines.append("")
+    lines.append(
+        "Measurements hidden tests cannot see (PRD §Intrinsic probes). All "
+        "dollar figures route through the single-source pricing module; the "
+        "guardrail catch-rate runs the REAL guardrails against a crafted "
+        "injection corpus."
+    )
+    lines.append("")
+
+    # --- Routing cost-regret (AC1) ---------------------------------------
+    lines.append("## Routing cost-regret")
+    lines.append("")
+    lines.append(
+        "Dollar regret = a solved run's cost minus the cheapest model that "
+        "STILL SOLVED the same task across the run set. Unsolved runs and tasks "
+        "no run solved contribute no regret."
+    )
+    lines.append("")
+    if routing is None:
+        lines.append(
+            "_Not available: this report carries no per-run records (model/usage "
+            "needed for regret)._"
+        )
+        lines.append("")
+    else:
+        lines.append(f"- Total routing cost-regret: {_fmt_usd(routing.total_regret_usd)}")
+        if routing.per_arm:
+            lines.append("- Per arm:")
+            for a in routing.per_arm:
+                lines.append(
+                    f"  - {a.arm}: {_fmt_usd(a.regret_usd)} "
+                    f"({a.solved_runs} solved run(s))"
+                )
+        lines.append("")
+
+    # --- Retry lift (AC2) -------------------------------------------------
+    lines.append("## Retry lift")
+    lines.append("")
+    lines.append(
+        "Solve-rate lift attributable to retries = with-retry solve-rate minus "
+        "first-attempt-only solve-rate. Wasted-retry cost = dollars spent on "
+        "runs that retried but never solved."
+    )
+    lines.append("")
+    if retry is None:
+        lines.append(
+            "_Not available: this report carries no per-run records (retry events "
+            "needed for lift)._"
+        )
+        lines.append("")
+    else:
+        lines.append(
+            f"- With-retry solve-rate: {_fmt_rate_pct(retry.with_retry_solve_rate)}"
+        )
+        lines.append(
+            f"- First-attempt-only solve-rate: "
+            f"{_fmt_rate_pct(retry.first_attempt_solve_rate)}"
+        )
+        lines.append(f"- Retry lift: {_fmt_rate_pct(retry.lift)}")
+        lines.append(
+            f"- Wasted-retry cost: {_fmt_usd(retry.wasted_retry_cost_usd)}"
+        )
+        lines.append("")
+
+    # --- Guardrail catch-rate (AC3) --------------------------------------
+    lines.append("## Guardrail injection-corpus catch-rate")
+    lines.append("")
+    lines.append(
+        "Fraction of crafted VIOLATION cases (secret-in-diff, deleted-test) the "
+        "REAL guardrails flagged. A clean case is included as a falsifier: a "
+        "guardrail that flagged everything would surface it as a false positive."
+    )
+    lines.append("")
+    if guardrail is None:
+        lines.append("_Not available._")
+        lines.append("")
+    else:
+        if guardrail.catch_rate is None:
+            lines.append(
+                "- Catch-rate: n/a (undefined — the corpus has no violation case)"
+            )
+        else:
+            lines.append(
+                f"- Catch-rate: {_fmt_pct(guardrail.catch_rate)} "
+                f"({guardrail.caught} of {guardrail.violations} violations caught)"
+            )
+        lines.append("- Cases:")
+        for c in guardrail.cases:
+            if c.is_violation:
+                status = "CAUGHT" if c.caught else "MISSED"
+            else:
+                status = "false positive" if c.flagged else "clean (not flagged)"
+            lines.append(f"  - {c.kind} via {c.guardrail}: {status}")
         lines.append("")
 
     return "\n".join(lines)

@@ -820,27 +820,52 @@ class HttpMetricsWriter:
     (``agentrail.afk.run_register`` / ``agentrail.run.cost_push``): resolve the
     workspace link, POST, swallow every failure.
 
-    DEFERRED TO #942: the eval-metrics ingest route + drizzle schema do not
-    exist yet. Rather than POST to a non-existent endpoint and pretend it
-    persisted, this writer is currently a guarded no-op that returns ``False``
-    (not persisted). When #942 lands the ingest route and migration, fill in
-    the ``endpoint`` and flip ``_ENABLED``; the reporter contract above does
-    not change.
+    LIVE (#942): the eval-metrics ingest route
+    (``POST /api/v1/ingest/eval-arm-metrics``) and its drizzle schema exist, so
+    this writer now POSTs the reporter's rows to it. Failure is non-fatal — the
+    offline eval (markdown report) always stands on its own:
+
+    - not linked (no ``server.json`` / no ``AGENTRAIL_SERVER_*`` env) → ``False``,
+      no network call;
+    - no rows → ``False`` (nothing to persist, never a spurious success);
+    - any HTTP / network exception → ``False`` (swallowed), never raises;
+    - only a real HTTP 202 from the ingest route → ``True``.
+
+    The workspace is derived server-side from the bearer API key (exactly like
+    cost_push), so the rows themselves carry no workspace/repository id.
     """
 
-    _ENABLED = False
     _ENDPOINT = "/api/v1/ingest/eval-arm-metrics"  # owned by #942
 
     def __init__(self, target: Path) -> None:
         self._target = Path(target)
 
-    def write_arm_metrics(self, rows: Sequence[dict]) -> bool:  # pragma: no cover
-        if not self._ENABLED:
-            # Honest: the live surface is not built (#942). Do not claim success.
+    def write_arm_metrics(self, rows: Sequence[dict]) -> bool:
+        if not rows:
             return False
-        # When #942 lands, POST `rows` (+ repository_id from load_link) to
-        # self._ENDPOINT here, returning True only on HTTP 202 — exactly like
-        # run_register/cost_push. Left unimplemented on purpose: see class doc.
-        raise NotImplementedError(
-            "eval-metrics ingest route is owned by issue #942"
+        # Lazy imports keep the reporter's pure aggregation/rendering free of
+        # HTTP/link dependencies (matches the run_register/cost_push split).
+        import json
+        import urllib.request
+
+        from agentrail.context.snapshot_push import load_link
+
+        link = load_link(self._target)
+        if link is None:
+            # Honest: not linked to a server. Do not claim a persist.
+            return False
+        body = json.dumps(list(rows)).encode("utf-8")
+        req = urllib.request.Request(
+            f"{link['base_url']}{self._ENDPOINT}",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {link['api_key']}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
         )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return int(resp.status) == 202
+        except Exception:  # noqa: BLE001 — non-fatal by design
+            return False

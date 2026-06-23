@@ -17,7 +17,9 @@ import {
   workspaceInvites,
   users,
   accounts,
+  evalArmMetrics,
 } from "../schema/index.js";
+import type { EvalArmMetric } from "../schema/index.js";
 import type {
   ReviewGate,
   ReviewGateFindingCategory,
@@ -1233,3 +1235,135 @@ export {
   type ConnectorUpdate,
   type EnabledConnectorRow,
 } from "./connectors.js";
+
+// ---- Eval arm metrics (offline eval harness reporter, issue #942) ----
+
+/**
+ * One per-arm metric row as produced by the eval reporter's `arm_metric_rows`
+ * (agentrail/evals/reporter.py). NULL `dollarsPerSolved` / `falseGreenRate` mean
+ * an undefined denominator (no rep solved / no gate-passed run) — distinct from
+ * a real 0.0; callers must preserve the distinction.
+ */
+export interface EvalArmMetricInput {
+  runId: string;
+  arm: string;
+  repetitions: number;
+  solvedCount: number;
+  failedCount: number;
+  solveRate: number;
+  spread: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheTokens: number;
+  totalCacheCreationTokens: number;
+  totalTokens: number;
+  totalCostUsd: number;
+  dollarsPerSolved: number | null;
+  gatePassedCount: number;
+  falseGreenCount: number;
+  falseGreenRate: number | null;
+  strata: Array<Record<string, unknown>>;
+}
+
+/**
+ * Insert per-arm eval metric rows for a workspace. Idempotent per
+ * (workspace, run_id, arm): re-posting the same eval run overwrites the prior
+ * numbers rather than duplicating, so the console always reads the latest write.
+ */
+export async function insertEvalArmMetrics(data: {
+  workspaceId: string;
+  rows: EvalArmMetricInput[];
+}): Promise<number> {
+  if (data.rows.length === 0) return 0;
+  const values = data.rows.map((r) => ({
+    workspaceId: data.workspaceId,
+    runId: r.runId,
+    arm: r.arm,
+    repetitions: r.repetitions,
+    solvedCount: r.solvedCount,
+    failedCount: r.failedCount,
+    solveRate: r.solveRate,
+    spread: r.spread,
+    totalInputTokens: r.totalInputTokens,
+    totalOutputTokens: r.totalOutputTokens,
+    totalCacheTokens: r.totalCacheTokens,
+    totalCacheCreationTokens: r.totalCacheCreationTokens,
+    totalTokens: r.totalTokens,
+    totalCostUsd: r.totalCostUsd,
+    dollarsPerSolved: r.dollarsPerSolved,
+    gatePassedCount: r.gatePassedCount,
+    falseGreenCount: r.falseGreenCount,
+    falseGreenRate: r.falseGreenRate,
+    strata: r.strata,
+  }));
+  await db
+    .insert(evalArmMetrics)
+    .values(values)
+    .onConflictDoUpdate({
+      target: [
+        evalArmMetrics.workspaceId,
+        evalArmMetrics.runId,
+        evalArmMetrics.arm,
+      ],
+      set: {
+        repetitions: sql`excluded.repetitions`,
+        solvedCount: sql`excluded.solved_count`,
+        failedCount: sql`excluded.failed_count`,
+        solveRate: sql`excluded.solve_rate`,
+        spread: sql`excluded.spread`,
+        totalInputTokens: sql`excluded.total_input_tokens`,
+        totalOutputTokens: sql`excluded.total_output_tokens`,
+        totalCacheTokens: sql`excluded.total_cache_tokens`,
+        totalCacheCreationTokens: sql`excluded.total_cache_creation_tokens`,
+        totalTokens: sql`excluded.total_tokens`,
+        totalCostUsd: sql`excluded.total_cost_usd`,
+        dollarsPerSolved: sql`excluded.dollars_per_solved`,
+        gatePassedCount: sql`excluded.gate_passed_count`,
+        falseGreenCount: sql`excluded.false_green_count`,
+        falseGreenRate: sql`excluded.false_green_rate`,
+        strata: sql`excluded.strata`,
+        createdAt: sql`now()`,
+      },
+    });
+  return values.length;
+}
+
+export interface LatestEvalRun {
+  runId: string;
+  createdAt: Date;
+  arms: EvalArmMetric[];
+}
+
+/**
+ * Return every arm row for the most recent eval run in a workspace (by
+ * created_at), or null when no eval run has been recorded. Arms are sorted by
+ * name so the console renders deterministically. The latest run is the one whose
+ * newest row is newest; all its arm rows are returned together.
+ */
+export async function getLatestEvalArmMetrics(
+  workspaceId: string
+): Promise<LatestEvalRun | null> {
+  // Most-recent row tells us the latest run_id (a single eval run's rows are
+  // written together, so they share a created_at within the same write).
+  const newest = await db
+    .select({ runId: evalArmMetrics.runId, createdAt: evalArmMetrics.createdAt })
+    .from(evalArmMetrics)
+    .where(eq(evalArmMetrics.workspaceId, workspaceId))
+    .orderBy(desc(evalArmMetrics.createdAt))
+    .limit(1);
+  const top = newest[0];
+  if (!top) return null;
+
+  const arms = await db
+    .select()
+    .from(evalArmMetrics)
+    .where(
+      and(
+        eq(evalArmMetrics.workspaceId, workspaceId),
+        eq(evalArmMetrics.runId, top.runId)
+      )
+    )
+    .orderBy(evalArmMetrics.arm);
+
+  return { runId: top.runId, createdAt: top.createdAt, arms };
+}

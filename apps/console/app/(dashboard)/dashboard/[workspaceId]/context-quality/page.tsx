@@ -1,5 +1,6 @@
 import { getWorkspace } from "@agentrail/db-postgres";
 import { QualityChartsClient } from "./components/quality-charts";
+import { EvalMetricsPanel } from "./components/eval-metrics-panel";
 
 export default async function ContextQualityPage({
   params,
@@ -27,6 +28,15 @@ export default async function ContextQualityPage({
         Precision, citation coverage, staleness, and denied-source counts across
         runs for this workspace.
       </p>
+
+      {/* Eval results — the falsifiable signal (#942). Solve-rate,
+          dollars-per-solved-task, and Objective Gate false-green rate from the
+          latest eval run. These are the real, can-come-back-unfavorable numbers
+          that stand in for the always-zero context-quality percentages above. */}
+      <div className="mb-5">
+        <EvalMetricsPanel workspaceId={workspaceId} />
+      </div>
+
       <QualityChartsClient
         workspaceId={workspaceId}
         baselineWindowDays={baselineWindowDays}

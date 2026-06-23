@@ -3,7 +3,8 @@ Review policy (ADR 0007).
 
 LLM code review is advisory only. Every finding is a suggestion a human can
 convert into an issue on the dashboard — nothing here gates the merge. Merge is
-decided by the objective gate (agentrail/afk/objective_gate.py).
+decided by the single objective gate (agentrail/guardrails/policies/objective.py;
+reached via the agentrail/afk/objective_gate.py shim).
 """
 from __future__ import annotations
 

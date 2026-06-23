@@ -12,8 +12,14 @@ import therefore populates the registry with the full shipped set:
 * ``approval_gate``        (#921 — human merge-approval)
 * ``sandbox_enforcement``  (#921 — in-sandbox context enforcement)
 * ``check_runner``         (#921 — objective verification commands)
+* ``objective_gate``       (#920 — the single, unified definition of "done")
 """
 from __future__ import annotations
+
+# Imported first: the unified Objective Gate owns the canonical CheckResult /
+# AcCoverage types that check_runner (and the run/ shim) re-export, so it must
+# register/define them before those modules import from the run/objective_gate shim.
+from agentrail.guardrails.policies import objective  # noqa: F401  (registers on import)
 
 from agentrail.guardrails.policies import output_enforcer  # noqa: F401  (registers on import)
 from agentrail.guardrails.policies import proof_required  # noqa: F401  (registers on import)
@@ -28,6 +34,7 @@ from agentrail.guardrails.policies import sandbox_enforcement  # noqa: F401  (re
 from agentrail.guardrails.policies import check_runner  # noqa: F401  (registers on import)
 
 __all__ = [
+    "objective",
     "output_enforcer",
     "proof_required",
     "push_guardrail",

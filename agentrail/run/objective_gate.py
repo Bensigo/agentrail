@@ -1,107 +1,47 @@
-"""The Objective Gate — the falsifiable definition of "done" (ADR 0007).
+"""Re-export shim for the sync (``run``) harness's Objective Gate (issue #920).
 
-A run is "done" only when the **Objective Gate** is green: tests, build, and
-lint pass AND the issue's acceptance-criteria coverage is satisfied. An LLM
-reviewer's opinion ("looks good") never decides done — that signal is
-unfalsifiable, so it is demoted to advisory **Code Review** (ADR 0007). The
-gate is the only signal that says a run is complete and the signal that
-triggers model escalation when it comes back red.
+The Objective Gate — the falsifiable definition of "done" (ADR 0007) — used to
+live here as its own ~200-line module, drifted from a *second* copy in
+``agentrail/afk/objective_gate.py``. #920 consolidated BOTH into ONE policy at
+:mod:`agentrail.guardrails.policies.objective` (CONTEXT.md: there must be exactly
+one definition of done). This module is now a **thin re-export shim** carrying NO
+decision logic of its own — it forwards to the unified gate so existing imports
+(``from agentrail.run.objective_gate import CheckResult, GateResult, evaluate``)
+and the heartbeat presence-probe (``importlib.util.find_spec`` on this module's
+dotted path) keep working unchanged (AC4).
 
-This is a **deep, pure module** (verification-contract-architecture.md): it
-takes already-computed check *results* and acceptance-criteria coverage as plain
-inputs and returns a verdict. It runs no tools, touches no I/O, and imports
-neither the pipeline, the DB, nor the network. The actual command-running
-(pytest/build/lint) is thin orchestration in the pipeline; that keeps this
-module deterministic and unit-testable in isolation.
-
-It is distinct from the server-side ``agentrail/server/gates.py`` (the Review
-Gate policy read model) and must not be merged with it.
-
-Red-Green Proof seam (ADR 0008 / issue #772): the gate accepts an optional
-``red_green_evidence`` input describing whether a Red-Green Proof trail is
-required and whether it is valid. This PR does not build the recorder (#772);
-it leaves a clean seam so that, once the recorder exists, requiring a valid
-fail→pass trail is a matter of passing real evidence here. Until then the
-default (``None``, not required) keeps behavior unchanged.
+The unified gate is tri-state (pass/fail/pending); the sync harness never supplies
+CI checks, so for this harness it can only ever reach pass/fail — behaviour is
+identical to the pre-#920 binary gate. ``GateResult`` is preserved as the sync
+harness's binary-vocabulary view (``is_green`` / ``verdict`` / ``to_dict``).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, List, Mapping, Optional, Sequence
 
-# The objective checks that gate "done". Order is the canonical evidence order.
-REQUIRED_CHECKS = ("tests", "build", "lint")
+from agentrail.guardrails.policies.objective import (
+    REQUIRED_CHECKS,
+    AcCoverage,
+    CheckResult,
+    Evidence,
+    ObjectiveVerdict,
+    evaluate_objective,
+)
 
+__all__ = [
+    "REQUIRED_CHECKS",
+    "AcCoverage",
+    "CheckResult",
+    "Evidence",
+    "GateResult",
+    "evaluate",
+]
 
-@dataclass(frozen=True)
-class CheckResult:
-    """The outcome of one objective check (tests, build, or lint).
-
-    ``passed`` is the falsifiable bit; ``detail`` is human-readable evidence
-    (e.g. "42 passed", "compile error in foo.py").
-    """
-
-    name: str
-    passed: bool
-    detail: str = ""
-
-
-@dataclass(frozen=True)
-class AcCoverage:
-    """Acceptance-criteria coverage for the issue.
-
-    ``total`` is the number of declared, machine-checkable acceptance criteria;
-    ``covered`` is how many are satisfied/exercised. Coverage is satisfied only
-    when there is at least one criterion and every one is covered — an issue
-    with no declared criteria has nothing objective to satisfy and cannot reach
-    green (ADR 0007's input-contract spirit).
-    """
-
-    total: int
-    covered: int
-
-    @property
-    def is_satisfied(self) -> bool:
-        return self.total > 0 and self.covered >= self.total
-
-
-@dataclass(frozen=True)
-class Evidence:
-    """One line of evidence behind the verdict."""
-
-    name: str
-    passed: bool
-    detail: str = ""
-
-
-@dataclass(frozen=True)
-class GateResult:
-    """The Objective Gate verdict plus the evidence trail behind it.
-
-    ``is_green`` is the single done signal. ``failed_reasons`` names every
-    reason the gate is red (an empty list iff green). ``evidence`` is the full
-    trail (every check + AC coverage) so the run surface can show *why*.
-    """
-
-    is_green: bool
-    evidence: List[Evidence]
-    failed_reasons: List[str] = field(default_factory=list)
-
-    @property
-    def verdict(self) -> str:
-        return "green" if self.is_green else "red"
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Plain, JSON-serializable dict for persisting to the run surface."""
-        return {
-            "verdict": self.verdict,
-            "isGreen": self.is_green,
-            "failedReasons": list(self.failed_reasons),
-            "evidence": [
-                {"name": e.name, "passed": e.passed, "detail": e.detail}
-                for e in self.evidence
-            ],
-        }
+# Backward-compatible alias: the sync harness called the verdict ``GateResult``.
+# The unified verdict already exposes ``is_green`` / ``verdict`` / ``to_dict`` and
+# a binary state for this harness, so the legacy name is just an alias — no
+# duplicated decision logic, no second result shape (AC4).
+GateResult = ObjectiveVerdict
 
 
 def evaluate(
@@ -111,87 +51,17 @@ def evaluate(
     red_green_evidence: Optional[Mapping[str, Any]] = None,
     verification_evidence: Optional[Mapping[str, Any]] = None,
 ) -> GateResult:
-    """Evaluate the Objective Gate.
+    """Evaluate the Objective Gate for the sync (``run``) harness.
 
-    Green ONLY when every objective check (tests/build/lint) passed AND the
-    acceptance-criteria coverage is satisfied AND — when a Red-Green Proof trail
-    is required — that trail is valid AND — when Independent Verification ran —
-    the Verifier accepted the change. Otherwise red, with ``failed_reasons``
-    naming each failure.
-
-    Args:
-        checks: the already-computed results of the objective checks. Any check
-            with ``passed=False`` makes the gate red.
-        ac_coverage: declared-vs-covered acceptance criteria for the issue.
-        red_green_evidence: optional Red-Green Proof seam (#772). A mapping with
-            ``required`` and ``valid`` flags. When ``required`` is true and
-            ``valid`` is false the gate is red even on an all-pass run. ``None``
-            means no proof is required (this PR's default).
-        verification_evidence: optional **Independent Verification** seam (#782,
-            ADR 0008). A mapping with ``required`` and ``valid`` flags. When a
-            *different-model* Verifier ran and REJECTED the change
-            (``required=True, valid=False``) the gate is red even on an all-pass
-            run — a blocking Verifier rejection blocks done (AC3). ``None`` means
-            the verifier did not run (e.g. the proof is off), leaving prior
-            behavior unchanged.
+    Thin pass-through to :func:`agentrail.guardrails.policies.objective.evaluate_objective`
+    with exactly the sync harness's inputs (no CI checks, so the verdict is
+    binary pass/fail). Returns the unified :class:`ObjectiveVerdict`, aliased here
+    as ``GateResult``; ``is_green`` is the single done signal and ``failed_reasons``
+    names each failure — identical semantics to the pre-#920 gate.
     """
-    evidence: List[Evidence] = []
-    failed_reasons: List[str] = []
-
-    for check in checks:
-        evidence.append(Evidence(name=check.name, passed=check.passed, detail=check.detail))
-        if not check.passed:
-            failed_reasons.append(check.name)
-
-    if ac_coverage.is_satisfied:
-        evidence.append(
-            Evidence(
-                name="acceptance-criteria",
-                passed=True,
-                detail=f"{ac_coverage.covered}/{ac_coverage.total} covered",
-            )
-        )
-    else:
-        if ac_coverage.total == 0:
-            detail = "no acceptance criteria declared"
-        else:
-            detail = f"{ac_coverage.covered}/{ac_coverage.total} covered"
-        evidence.append(Evidence(name="acceptance-criteria", passed=False, detail=detail))
-        failed_reasons.append("acceptance-criteria not satisfied")
-
-    # Red-Green Proof seam (#772): only gates when a proof is explicitly
-    # required. The recorder that produces this evidence is built separately.
-    if red_green_evidence is not None and red_green_evidence.get("required"):
-        valid = bool(red_green_evidence.get("valid"))
-        evidence.append(
-            Evidence(
-                name="red-green-proof",
-                passed=valid,
-                detail="valid fail→pass trail" if valid else "no valid fail→pass trail",
-            )
-        )
-        if not valid:
-            failed_reasons.append("red-green proof trail invalid")
-
-    # Independent Verification seam (#782): a blocking, narrow check by a
-    # DIFFERENT model than the Implementer. Only gates when the verifier ran
-    # (``required``). A rejection (``valid=False``) blocks done even on an
-    # all-pass run — the maker cannot grade its own homework (AC3).
-    if verification_evidence is not None and verification_evidence.get("required"):
-        accepted = bool(verification_evidence.get("valid"))
-        detail = (
-            "verifier accepted"
-            if accepted
-            else str(verification_evidence.get("reason") or "verifier rejected")
-        )
-        evidence.append(
-            Evidence(name="independent-verification", passed=accepted, detail=detail)
-        )
-        if not accepted:
-            failed_reasons.append("independent verification rejected")
-
-    return GateResult(
-        is_green=not failed_reasons,
-        evidence=evidence,
-        failed_reasons=failed_reasons,
+    return evaluate_objective(
+        checks=checks,
+        ac_coverage=ac_coverage,
+        red_green_evidence=red_green_evidence,
+        verification_evidence=verification_evidence,
     )

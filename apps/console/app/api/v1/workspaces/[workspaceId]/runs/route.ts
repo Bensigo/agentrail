@@ -4,6 +4,7 @@ import {
   getWorkspaceMembership,
   listRunsWithCursor,
   listWorkspaceRepositories,
+  reconcileRunsCiStatus,
 } from "@agentrail/db-postgres";
 import type { RunStatus } from "@agentrail/db-postgres";
 import {
@@ -101,7 +102,23 @@ export async function GET(
     // Postgres unavailable; fall back to the id below
   }
 
+  // Reconcile the DISPLAYED status against the PR's real CI (#891b): a run whose
+  // local gate went red but whose PR's CI is green must not show `failed`. This
+  // is best-effort (never throws), reconciles the DISPLAY only (no write-back),
+  // and only fetches CI for `failed` runs that have a PR — so a normal page of
+  // green/running runs makes zero GitHub calls.
+  let ciStatusOverride = new Map<string, RunStatus>();
+  try {
+    ciStatusOverride = await reconcileRunsCiStatus(
+      workspaceId,
+      runs.map((r) => ({ id: r.id, status: r.status, prUrl: r.prUrl })),
+    );
+  } catch {
+    // Best-effort — a CI-reconcile failure must never crash the runs view.
+  }
+
   const enriched = runs.map((run) => {
+    const displayStatus = ciStatusOverride.get(run.id) ?? run.status;
     const summary = summaryMap.get(run.id) ?? {
       failure_count: 0,
       event_count: 0,
@@ -120,7 +137,7 @@ export async function GET(
       agent: run.agent,
       branch: run.branch,
       title: run.title ?? null,
-      status: run.status,
+      status: displayStatus,
       startedAt: run.startedAt?.toISOString() ?? null,
       finishedAt: run.finishedAt?.toISOString() ?? null,
       createdAt: run.createdAt.toISOString(),

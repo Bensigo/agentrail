@@ -1,5 +1,8 @@
 # AgentRail
 
+[![CI](https://github.com/Bensigo/agentrail/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Bensigo/agentrail/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+
 AgentRail is the control plane for AI coding agents. It gives agents durable context, workflow state, bounded issue execution, review loops, and verification gates so agent work is easier to inspect, resume, and trust.
 
 **Primary flow: hosted dashboard + self-hosted runner.** Sign up at
@@ -559,3 +562,17 @@ npm test
 ```
 
 from this workflow repo to verify the installer.
+
+## Contributing
+
+Contributions are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev
+setup and the exact commands CI runs (Python suite, shellcheck, installer
+test) — if they pass locally, they pass in CI. Please also read the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+To report a security vulnerability, do **not** open a public issue — follow the
+private disclosure path in [`SECURITY.md`](SECURITY.md).
+
+## License
+
+AgentRail is licensed under the [Apache License 2.0](LICENSE).

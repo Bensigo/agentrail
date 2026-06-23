@@ -163,6 +163,7 @@ class InputContractGuardrail:
         "acceptance criteria."
     )
     blocking: bool = True
+    framework_neutral: bool = True  # pure policy; imports no agent framework
 
     def evaluate(self, **kwargs: object) -> Verdict:
         issue_body = str(kwargs.get("issue_body", ""))

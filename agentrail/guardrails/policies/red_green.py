@@ -132,6 +132,7 @@ class RedGreenGuardrail:
         "is real, not tautological."
     )
     blocking: bool = True
+    framework_neutral: bool = True  # pure policy; imports no agent framework
 
     def evaluate(self, **kwargs: object) -> Verdict:
         observations = kwargs.get("observations", ())

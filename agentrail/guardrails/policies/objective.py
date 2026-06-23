@@ -413,6 +413,7 @@ class ObjectiveGate:
         "(async harness). No LLM opinion participates."
     )
     blocking: bool = True
+    framework_neutral: bool = True  # pure policy; imports no agent framework
 
     def evaluate(self, **kwargs: object) -> Verdict:
         verdict = evaluate_objective(

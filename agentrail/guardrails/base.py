@@ -111,6 +111,11 @@ class Guardrail(Protocol):
     #: ``True`` if a ``FAIL`` from this guardrail should block the run;
     #: ``False`` if the guardrail is advisory-only.
     blocking: bool
+    #: ``True`` if the policy is framework-neutral — pure, importing no agent
+    #: framework (no harness/SDK/CI client); ``False`` if it is coupled to a
+    #: specific framework.  Surfaced by ``agentrail guardrails list`` / the docs
+    #: generator (#922) so agents can see which rules are portable.
+    framework_neutral: bool
 
     def evaluate(self, **kwargs: object) -> Verdict:
         """Inspect ``kwargs`` and return a :class:`Verdict`.  Must be pure."""

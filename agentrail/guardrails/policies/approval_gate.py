@@ -167,6 +167,7 @@ class ApprovalGateGuardrail:
         "protected push) when the approval policy is enabled; disabled by default."
     )
     blocking: bool = True
+    framework_neutral: bool = True  # pure policy; imports no agent framework
 
     def evaluate(self, **kwargs: object) -> Verdict:
         policy = kwargs.get("policy")

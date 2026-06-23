@@ -130,6 +130,7 @@ class CheckRunnerGuardrail:
         "verification declared')."
     )
     blocking: bool = True
+    framework_neutral: bool = True  # pure policy; imports no agent framework
 
     def evaluate(self, **kwargs: object) -> Verdict:
         results = kwargs.get("results", ())

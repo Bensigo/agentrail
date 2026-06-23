@@ -65,6 +65,7 @@ class SandboxEnforcementGuardrail:
         "context-enforcement hook (any recorded bypass attempt) fails."
     )
     blocking: bool = True
+    framework_neutral: bool = True  # pure policy; imports no agent framework
 
     def evaluate(self, **kwargs: object) -> Verdict:
         bypass_count = int(kwargs.get("bypass_count", 0) or 0)

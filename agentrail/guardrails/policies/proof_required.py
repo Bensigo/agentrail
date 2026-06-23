@@ -134,6 +134,7 @@ class ProofRequiredGuardrail:
         "config-driven and framework-neutral."
     )
     blocking: bool = True
+    framework_neutral: bool = True  # pure policy; imports no agent framework
 
     def evaluate(self, **kwargs: object) -> Verdict:
         signals = kwargs.get("signals")

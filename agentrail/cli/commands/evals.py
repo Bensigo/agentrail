@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from agentrail.evals.arms import Arm
+from agentrail.evals.arms import Arm, all_arms
 from agentrail.evals.runner import SandboxAgentExecutor
 from agentrail.evals.hidden_tests import ProductionHiddenTestRunner
 from agentrail.evals.spine import (
@@ -50,6 +50,8 @@ def _usage() -> str:
         "  --task NAME      Restrict to NAME (repeatable; or comma-separated).\n"
         "  --arm NAME       Add an arm (repeatable). Default: baseline + full.\n"
         "                   Accepts 'baseline', 'full', or 'full-minus-<layer>'.\n"
+        "  --ablation       Run the full leave-one-out set: baseline, full, and\n"
+        "                   one full-minus-<layer> arm per layer (per-layer deltas).\n"
         "  --reps N         Repetitions per (task, arm) (default: 5; min: 1).\n"
         "  -h, --help       Show this help\n"
     )
@@ -78,6 +80,7 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
     corpus_root: Optional[Path] = None
     reports_dir: Optional[Path] = None
     smoke = False
+    ablation = False
 
     i = 0
     while i < len(args):
@@ -101,6 +104,13 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
         elif a == "--reports-dir":
             reports_dir = Path(_parse_flag_value(args, i, a))
             i += 2
+        elif a == "--ablation":
+            # Convenience: run the whole leave-one-out set (baseline + full +
+            # one full-minus-<layer> arm per layer) so per-layer deltas have
+            # every arm they need. Uses the enumerable arms registry, so a new
+            # layer is picked up automatically.
+            ablation = True
+            i += 1
         elif a == "--smoke":
             # Hidden flag: don't try to run a real agent. Wired so a CI smoke
             # run can prove the CLI plumbs through to the spine without
@@ -111,7 +121,13 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
         else:
             raise ValueError(f"unknown option: {a}")
 
-    if not arms:
+    if ablation:
+        # The full leave-one-out registry takes precedence; any explicit --arm
+        # is folded in (deduplicated by name, registry order preserved).
+        registry = all_arms()
+        seen = {a.name for a in registry}
+        arms = registry + [a for a in arms if a.name not in seen]
+    elif not arms:
         arms = [resolve_arm("baseline"), resolve_arm("full")]
     return (
         SpineConfig(

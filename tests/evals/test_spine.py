@@ -583,3 +583,36 @@ def test_cli_evals_run_smoke_drives_spine(corpus_root: Path, reports_dir: Path, 
     assert "arm=baseline" in out
     assert "arm=full" in out
     assert "Postgres persist:" in out
+
+
+def test_cli_evals_run_ablation_runs_full_leave_one_out_set(
+    corpus_root: Path, reports_dir: Path, capsys
+) -> None:
+    """``--ablation`` runs baseline, full, and one full-minus-<layer> per layer.
+
+    Proves the enumerable arms registry reaches the spine so per-layer deltas
+    have every arm they need (issue #939).
+    """
+    from agentrail.cli.commands.evals import run_evals
+    from agentrail.evals.arms import LAYER_NAMES
+
+    rc = run_evals([
+        "run",
+        "--corpus", str(corpus_root),
+        "--task", "alpha-task",
+        "--reps", "1",
+        "--reports-dir", str(reports_dir),
+        "--ablation",
+        "--smoke",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "arm=baseline" in out
+    assert "arm=full" in out
+    for layer in LAYER_NAMES:
+        assert f"arm=full-minus-{layer}" in out
+    # The dated markdown report carries the per-layer ablation delta section.
+    report = next(reports_dir.glob("eval-report-*.md"))
+    text = report.read_text(encoding="utf-8").lower()
+    assert "per-layer ablation deltas" in text
+    assert "delta" in text

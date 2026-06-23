@@ -24,7 +24,7 @@ from typing import FrozenSet
 class Capability(str, Enum):
     """A capstone prerequisite the **Heartbeat** depends on (CONTEXT.md, ADR 0010)."""
 
-    OBJECTIVE_GATE = "objective_gate"        # agentrail/run/objective_gate.py
+    OBJECTIVE_GATE = "objective_gate"        # agentrail/run/objective_gate.py (shim → guardrails/policies/objective.py, #920)
     BUDGET_LEASH = "budget_leash"            # agentrail/run/budget_leash.py (#779)
     SECURITY_GUARDRAIL = "security_guardrail"  # agentrail/run/push_guardrail.py (#795)
 

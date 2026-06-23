@@ -22,7 +22,8 @@ subprocess (``run_objective_checks`` / ``load_verify_checks`` /
 ``red_green_proof_required``) — lives in
 :mod:`agentrail.guardrails.adapters.check_runner` (AC2).  Importing this module
 pulls in no ``subprocess``/``gh``/``git``/``pytest``.  ``AcCoverage`` /
-``CheckResult`` come from the pure ``objective_gate`` types module.
+``CheckResult`` come from the unified Objective Gate policy
+(:mod:`agentrail.guardrails.policies.objective`), their canonical home after #920.
 """
 from __future__ import annotations
 
@@ -30,8 +31,8 @@ from dataclasses import dataclass
 from typing import Any, List, Mapping, Optional, Sequence
 
 from agentrail.guardrails.base import Verdict
+from agentrail.guardrails.policies.objective import AcCoverage, CheckResult
 from agentrail.guardrails.registry import register
-from agentrail.run.objective_gate import AcCoverage, CheckResult
 
 # Wall-clock ceiling for a single verify command. A hung check must fail the
 # gate (red), not stall the run forever; mirrors proc's 124 timeout convention.

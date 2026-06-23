@@ -66,6 +66,29 @@ def _git(*cmd: str, cwd: Path) -> subprocess.CompletedProcess:
     )
 
 
+def _commit_available(sha: str, repo_root: Path) -> bool:
+    """True iff ``sha`` is a resolvable commit object in this checkout.
+
+    CI does a shallow clone without full history, so the pre-fix pins and their
+    fix commits may be absent. These tests need real history to be meaningful;
+    when it isn't there we SKIP (honest — reported as skipped, not passed),
+    while a full-history checkout (local / nightly) verifies all 11 fully.
+    """
+    return _git("cat-file", "-e", f"{sha}^{{commit}}", cwd=repo_root).returncode == 0
+
+
+def _require_commits(task: CorpusTask, repo_root: Path) -> None:
+    fix = task.source.get("mergeCommit", "")
+    missing = [
+        sha for sha in (task.commit, fix) if not sha or not _commit_available(sha, repo_root)
+    ]
+    if missing:
+        pytest.skip(
+            f"{task.name}: required commit(s) not in this checkout "
+            f"(shallow clone) — run with full git history to verify the pin"
+        )
+
+
 def _run_record_for(task: CorpusTask, *, diff: str) -> RunRecord:
     """Build the spine's only handoff — a RunRecord carrying the agent's diff."""
     return RunRecord(
@@ -143,6 +166,7 @@ def test_empty_diff_fails_at_pinned_commit(
     If this fails, the pin is the fix commit (or later) and the solution is
     already on disk — the eval would measure nothing.
     """
+    _require_commits(task, _repo_root())
     record = _run_record_for(task, diff="")
     solved = runner.run_hidden_tests(task=task, run_record=record)
     assert solved is False, (
@@ -162,6 +186,7 @@ def test_solving_diff_passes_at_pinned_commit(
     parent-of-fix and the task is not falsifiable.
     """
     repo_root = _repo_root()
+    _require_commits(task, repo_root)
     diff = _solving_diff(task, repo_root)
     record = _run_record_for(task, diff=diff)
     solved = runner.run_hidden_tests(task=task, run_record=record)

@@ -8,5 +8,6 @@ approval_gate, sandbox, check_runner) so a single import populates the registry.
 from __future__ import annotations
 
 from agentrail.guardrails.policies import output_enforcer  # noqa: F401  (registers on import)
+from agentrail.guardrails.policies import proof_required  # noqa: F401  (registers on import)
 
-__all__ = ["output_enforcer"]
+__all__ = ["output_enforcer", "proof_required"]

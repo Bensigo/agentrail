@@ -1,37 +1,30 @@
-"""Change-set classification for the Objective Gate (issue #907, sub-issue of #891).
+"""Change-set classification for the Objective Gate — now a thin SHIM (issue #919).
 
-The Red-Green Proof (ADR 0008) requires a *failing-then-passing* acceptance test
-for any change that introduces new code behaviour. But a change that legitimately
-needs NO new test — docs, config, markdown — has no test to fail-then-pass, so
-the gate used to false-red it twice over:
+Issue #907 made this module the single source of truth for the Red-Green Proof
+classification, but it HARDCODED "Python source" (``path.endswith('.py')``) and
+"pytest" (``test_*.py``).  Issue #919 lifts that classification into a
+framework-neutral, config-driven guardrail and an adapters boundary:
 
-  1. ``.agentrail/verify.sh`` exited 1 with "no changed test files — nothing to
-     prove (red)", and
-  2. the pipeline's Red-Green Proof *trail* could never be valid (the check goes
-     green→green, never red), so :func:`objective_gate.evaluate` refused done.
+  * the git I/O that collected the change set moved to
+    :mod:`agentrail.guardrails.adapters.git`;
+  * the "does this change require a test/proof?" decision moved to the PURE policy
+    :mod:`agentrail.guardrails.policies.proof_required`, which reads a
+    :class:`~agentrail.guardrails.signals.Signals` plus a
+    :class:`~agentrail.guardrails.policies.proof_required.ProofConfig`
+    (``source_globs`` / ``test_globs``) — no ``.py``/``pytest`` literal in it.
 
-This module is the **single source of truth** (AC3) that BOTH consumers use, so
-they can never drift:
+This module keeps its #907 public API byte-for-byte (``is_test_file``,
+``is_proof_requiring_source``, ``changed_source_files``, ``changed_test_files``,
+``requires_red_green_proof``, ``is_test_free_change``, ``collect_changed_files``,
+``decide``, ``main``) and simply DELEGATES to the policy + git adapter, supplying
+:data:`PYTHON_PROOF_CONFIG` — the default Python config that reproduces #907's
+exact behaviour.  So:
 
-  * ``.agentrail/verify.sh`` execs :func:`main` — the standalone ``verify`` check.
+  * ``.agentrail/verify.sh`` execs :func:`main` (unchanged), and
   * ``agentrail/run/pipeline.py`` imports :func:`collect_changed_files` and
-    :func:`requires_red_green_proof` to decide whether the trail is required.
+    :func:`is_test_free_change` (unchanged),
 
-The classification is driven entirely by the changed-FILE SET — never by the
-agent's discretion (AC3). Anti-false-green is preserved (AC2): any change that
-touches Python source still requires a proof in BOTH places.
-
-The change set is the UNION of:
-  * committed-on-branch changes — ``git diff merge-base(HEAD, base)..HEAD`` (AFK
-    flow, where the agent's work is committed to a feature branch), and
-  * uncommitted working-tree changes — tracked diffs + individually-listed
-    untracked files (runner flow, where the agent leaves changes uncommitted so
-    the gate can see them — see native_runner.py).
-
-Looking at only one of those is the bug that sank the loop's own attempt (#899):
-it checked the working tree alone, so a code change COMMITTED to a branch with no
-test slipped through as green — a false-green hole in the very gate meant to
-prevent false-greens.
+both keep working IDENTICALLY, and the #907 tests pass unchanged (AC5).
 """
 from __future__ import annotations
 
@@ -41,110 +34,78 @@ import sys
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
-DEFAULT_BASE_REF = "origin/main"
+from agentrail.guardrails.adapters import git as _git_adapter
+from agentrail.guardrails.policies import proof_required as _proof
+from agentrail.guardrails.policies.proof_required import ProofConfig
+from agentrail.guardrails.signals import Signals
+
+# Re-exported for callers that imported it from here (#907).
+DEFAULT_BASE_REF = _git_adapter.DEFAULT_BASE_REF
+
+# The default Python config — reproduces #907's hardcoded behaviour exactly.
+# Source: any `.py` that is not a test.  Tests: `test_*.py` / `*_test.py`.
+# These globs are the ONLY place the Python literals live now; the policy and
+# adapters carry none.
+PYTHON_PROOF_CONFIG = ProofConfig(
+    source_globs=("*.py",),
+    test_globs=("test_*.py", "*_test.py"),
+)
 
 
 # ---------------------------------------------------------------------------
-# Pure classification — deterministic, unit-tested in isolation.
+# Pure classification — delegates to the config-driven policy with the Python
+# default config, preserving the #907 signatures and semantics.
 # ---------------------------------------------------------------------------
 
 def is_test_file(path: str) -> bool:
     """True iff *path* is a Python test file (``test_*.py`` or ``*_test.py``)."""
-    if not path.endswith(".py"):
-        return False
-    base = path.rsplit("/", 1)[-1]
-    return base.startswith("test_") or base.endswith("_test.py")
+    return _proof.is_test_path(path, PYTHON_PROOF_CONFIG)
 
 
 def is_proof_requiring_source(path: str) -> bool:
     """True iff a change to *path* needs a Red-Green Proof in THIS gate.
 
-    The gate proves behaviour via pytest, so the files that *require* a proof are
-    Python source files that are not themselves tests. Everything else — docs,
-    JSON/TOML/YAML config, markdown, shell, and TS/console code (which has its
-    own CI gate) — is outside this gate's pytest proof scope and is legitimately
-    test-free here.
+    Python source files that are not themselves tests (the default Python config);
+    docs/config/TS are outside this gate's pytest proof scope and test-free here.
     """
-    return path.endswith(".py") and not is_test_file(path)
+    return _proof.is_proof_requiring_source(path, PYTHON_PROOF_CONFIG)
 
 
 def changed_source_files(changed: Iterable[str]) -> List[str]:
-    return sorted({p for p in changed if is_proof_requiring_source(p)})
+    return _proof.changed_source_files(changed, PYTHON_PROOF_CONFIG)
 
 
 def changed_test_files(changed: Iterable[str]) -> List[str]:
-    return sorted({p for p in changed if is_test_file(p)})
+    return _proof.changed_test_files(changed, PYTHON_PROOF_CONFIG)
 
 
 def requires_red_green_proof(changed: Iterable[str]) -> bool:
-    """True iff the change touches Python source that must prove itself.
-
-    A docs/config-only change → False (legitimately test-free). Any Python
-    source change → True (Red-Green Proof required; ADR 0008 intact).
-    """
-    return bool(changed_source_files(changed))
+    """True iff the change touches Python source that must prove itself."""
+    return _proof.requires_proof(Signals(changed_files=tuple(changed)), PYTHON_PROOF_CONFIG)
 
 
 def is_test_free_change(changed: Iterable[str]) -> bool:
     """True iff the change is legitimately docs/config-only.
 
-    A change is test-free only when it is NON-EMPTY and touches no
-    proof-requiring source. An EMPTY change set is deliberately NOT test-free:
-    "nothing was produced" must not waive the Red-Green Proof (it should stay
-    red / require the trail), and an unknown change set (e.g. git unavailable)
-    falls into the same safe branch.
+    Non-empty and touches no proof-requiring source.  An EMPTY change set is
+    deliberately NOT test-free (#907).
     """
-    changed = list(changed)
-    return bool(changed) and not requires_red_green_proof(changed)
+    return _proof.is_test_free(Signals(changed_files=tuple(changed)), PYTHON_PROOF_CONFIG)
 
 
 # ---------------------------------------------------------------------------
-# Change-set collection — thin git I/O.
+# Change-set collection — delegates to the git adapter (where the I/O now lives).
 # ---------------------------------------------------------------------------
-
-def _git(args: Sequence[str], cwd: Path) -> str:
-    try:
-        proc = subprocess.run(
-            ["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=30
-        )
-    except Exception:
-        return ""
-    if proc.returncode != 0:
-        return ""
-    return proc.stdout or ""
-
 
 def collect_changed_files(
     repo_dir: Path | str = ".", *, base_ref: Optional[str] = None
 ) -> List[str]:
     """Return the full set of files this change touches, against the base branch.
 
-    Union of committed-on-branch changes (merge-base..HEAD) and uncommitted
-    working-tree changes (tracked diffs + individually-listed untracked files).
-    Best-effort: any git failure degrades to whatever could be collected (an
-    empty list at worst), never raises.
+    Delegates to :func:`agentrail.guardrails.adapters.git.collect_changed_files`
+    (the union of committed-on-branch and uncommitted working-tree changes).
     """
-    cwd = Path(repo_dir)
-    base = base_ref or os.environ.get("AGENTRAIL_BASE_REF") or DEFAULT_BASE_REF
-
-    files: set[str] = set()
-
-    # Committed-on-branch changes relative to the merge-base with the base branch.
-    merge_base = _git(["merge-base", "HEAD", base], cwd).strip()
-    if merge_base:
-        committed = _git(["diff", "--name-only", merge_base, "HEAD"], cwd)
-        files.update(p for p in committed.splitlines() if p.strip())
-
-    # Tracked working-tree changes (staged + unstaged) vs HEAD.
-    tracked = _git(["diff", "--name-only", "HEAD"], cwd)
-    files.update(p for p in tracked.splitlines() if p.strip())
-
-    # Untracked files, enumerated one-per-file (git status --porcelain collapses a
-    # wholly-new directory to "?? dir/", which would hide the source files inside).
-    untracked = _git(["ls-files", "--others", "--exclude-standard"], cwd)
-    files.update(p for p in untracked.splitlines() if p.strip())
-
-    return sorted(files)
+    return _git_adapter.collect_changed_files(repo_dir, base_ref=base_ref)
 
 
 # ---------------------------------------------------------------------------
@@ -155,14 +116,10 @@ def decide(changed: Sequence[str]) -> tuple[int, str]:
     """Decide the standalone verify verdict for a known change set (pure).
 
     Returns ``(exit_code, message)``:
-      * test files changed → ``(0, "")`` sentinel meaning "run the tests" (the
-        caller runs pytest and uses its exit code instead),
-      * no test, Python source changed → ``(1, red message)``,
+      * test files changed → ``(0, "")`` sentinel meaning "run the tests",
+      * no test, source changed → ``(1, red message)``,
       * no test, only docs/config changed → ``(0, green message)``,
       * nothing changed at all → ``(1, red message)``.
-
-    The "run the tests" case is signalled with an empty message so :func:`main`
-    knows to hand off to pytest rather than exit directly.
     """
     test_files = changed_test_files(changed)
     if test_files:

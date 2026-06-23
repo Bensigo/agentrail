@@ -16,6 +16,7 @@
     "agentrail/context/retrieval-fixtures.json"
   ],
   "difficulty": "medium",
+  "heldOut": true,
   "source": {
     "repo": "Bensigo/agentrail",
     "pr": 913,

@@ -59,6 +59,7 @@ def _rep(
     *,
     gate_passed: bool = False,
     false_green: bool = False,
+    difficulty: str | None = None,
 ) -> RepetitionRecord:
     return RepetitionRecord(
         task=task,
@@ -67,6 +68,7 @@ def _rep(
         usage=usage,
         gate_passed=gate_passed,
         false_green=false_green,
+        difficulty=difficulty,
     )
 
 
@@ -598,6 +600,118 @@ def test_write_reports_all_failure_row_has_none_dollars_per_solved():
 # ---------------------------------------------------------------------------
 # Integration: a sample dated report rendered to disk under reports/.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Issue #941: difficulty-stratified reporting.
+#   Per arm, break solve-rate / cost / $-per-solved out PER difficulty stratum
+#   (easy / medium / hard), IN ADDITION TO the aggregate. A single aggregate
+#   hides the real story (the edge is large on hard tasks, small on easy ones).
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_carries_per_difficulty_strata():
+    """AC2: exact per-stratum solve-rate from a mixed-difficulty fixture."""
+    u = _usage(input_tokens=1000, output_tokens=500)
+    records = [
+        # easy: 1 task, 2 reps, both solved -> 1.0
+        _rep("easy-a", "full", True, u, difficulty="easy"),
+        _rep("easy-a", "full", True, u, difficulty="easy"),
+        # hard: 2 tasks, 1 rep each, 1 solved 1 failed -> 0.5
+        _rep("hard-a", "full", True, u, difficulty="hard"),
+        _rep("hard-b", "full", False, u, difficulty="hard"),
+    ]
+    r = aggregate(records)[0]
+    # aggregate is unchanged: 3/4 solved overall
+    assert r.solve_rate == pytest.approx(0.75)
+
+    strata = {s.difficulty: s for s in r.strata}
+    assert set(strata) == {"easy", "hard"}
+
+    easy = strata["easy"]
+    assert easy.repetitions == 2
+    assert easy.solved_count == 2
+    assert easy.solve_rate == pytest.approx(1.0)
+    assert easy.total_cost_usd == pytest.approx(2 * cost_usd(u))
+    assert easy.dollars_per_solved == pytest.approx((2 * cost_usd(u)) / 2)
+
+    hard = strata["hard"]
+    assert hard.repetitions == 2
+    assert hard.solved_count == 1
+    assert hard.solve_rate == pytest.approx(0.5)
+    assert hard.dollars_per_solved == pytest.approx((2 * cost_usd(u)) / 1)
+
+
+def test_strata_dollars_per_solved_undefined_when_none_solved():
+    """A stratum where nothing solved reports None $/solved, never a crash."""
+    u = _usage(input_tokens=1000)
+    records = [
+        _rep("hard-a", "full", False, u, difficulty="hard"),
+        _rep("hard-b", "full", False, u, difficulty="hard"),
+        _rep("easy-a", "full", True, u, difficulty="easy"),
+    ]
+    strata = {s.difficulty: s for s in aggregate(records)[0].strata}
+    assert strata["hard"].solved_count == 0
+    assert strata["hard"].dollars_per_solved is None
+    assert strata["easy"].dollars_per_solved is not None
+
+
+def test_strata_sorted_easy_medium_hard():
+    """Strata are reported in canonical difficulty order (deterministic)."""
+    u = _usage(input_tokens=1000)
+    records = [
+        _rep("h", "full", True, u, difficulty="hard"),
+        _rep("e", "full", True, u, difficulty="easy"),
+        _rep("m", "full", True, u, difficulty="medium"),
+    ]
+    order = [s.difficulty for s in aggregate(records)[0].strata]
+    assert order == ["easy", "medium", "hard"]
+
+
+def test_records_without_difficulty_produce_no_strata():
+    """Back-compat: records with no difficulty (pre-#941) yield an empty strata
+    list and an unchanged aggregate."""
+    u = _usage(input_tokens=1000)
+    records = [_rep("task-a", "full", True, u), _rep("task-a", "full", False, u)]
+    r = aggregate(records)[0]
+    assert r.strata == []
+    assert r.solve_rate == pytest.approx(0.5)
+
+
+def test_strata_surfaced_in_markdown_with_exact_numbers():
+    """AC2: the per-stratum breakdown appears in the rendered report."""
+    u = _usage(input_tokens=1000, output_tokens=500)
+    records = [
+        _rep("easy-a", "full", True, u, difficulty="easy"),
+        _rep("easy-a", "full", True, u, difficulty="easy"),
+        _rep("hard-a", "full", True, u, difficulty="hard"),
+        _rep("hard-b", "full", False, u, difficulty="hard"),
+    ]
+    md = render_markdown(aggregate(records), generated_at="2026-06-23")
+    low = md.lower()
+    # a difficulty-stratified section exists, naming the strata
+    assert "difficulty" in low
+    assert "easy" in low
+    assert "hard" in low
+    # exact per-stratum solve-rates surface (easy 100.0%, hard 50.0%)
+    assert "100.0%" in md
+    assert "50.0%" in md
+
+
+def test_strata_in_arm_metric_rows():
+    """The per-stratum numbers flow into the persistence rows (console parity)."""
+    from agentrail.evals.reporter import arm_metric_rows
+
+    u = _usage(input_tokens=1000, output_tokens=500)
+    records = [
+        _rep("easy-a", "full", True, u, difficulty="easy"),
+        _rep("hard-a", "full", False, u, difficulty="hard"),
+    ]
+    rows = arm_metric_rows(aggregate(records), run_id="r1")
+    by_diff = {s["difficulty"]: s for s in rows[0]["strata"]}
+    assert by_diff["easy"]["solve_rate"] == pytest.approx(1.0)
+    assert by_diff["hard"]["solve_rate"] == pytest.approx(0.0)
+    assert by_diff["hard"]["dollars_per_solved"] is None
+
 
 def test_write_markdown_report_creates_dated_file(tmp_path):
     from agentrail.evals.reporter import write_markdown_report

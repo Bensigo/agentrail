@@ -53,6 +53,9 @@ def _usage() -> str:
         "  --ablation       Run the full leave-one-out set: baseline, full, and\n"
         "                   one full-minus-<layer> arm per layer (per-layer deltas).\n"
         "  --reps N         Repetitions per (task, arm) (default: 5; min: 1).\n"
+        "  --include-held-out\n"
+        "                   Include the held-out task split (excluded by default\n"
+        "                   so the harness is never developed against it).\n"
         "  -h, --help       Show this help\n"
     )
 
@@ -81,6 +84,7 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
     reports_dir: Optional[Path] = None
     smoke = False
     ablation = False
+    include_held_out = False
 
     i = 0
     while i < len(args):
@@ -118,6 +122,12 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
             # report that honestly says "unsolved" until #942.
             smoke = True
             i += 1
+        elif a == "--include-held-out":
+            # Honesty rail (#941): the held-out split is excluded by default so
+            # the harness is never developed against it. This flag is the only
+            # way to pull it in (the deliberate "score the held-out set" pass).
+            include_held_out = True
+            i += 1
         else:
             raise ValueError(f"unknown option: {a}")
 
@@ -135,6 +145,7 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
             reps=reps,
             task_filter=tasks or None,
             corpus_root=corpus_root,
+            include_held_out=include_held_out,
         ),
         smoke,
         reports_dir,

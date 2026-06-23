@@ -148,7 +148,11 @@ def _solving_diff(task: CorpusTask, repo_root: Path) -> str:
 # The corpus loop — one parametrized case per task so a failure names the task.
 # ---------------------------------------------------------------------------
 
-_CORPUS = load_corpus()
+# Include the held-out split (#941): the pin-falsifiability proof is about
+# corpus integrity, so it must cover EVERY task — held-out tasks need a clean
+# parent-of-fix pin just as much as dev-set tasks. The held-out *exclusion* is a
+# dev-run policy, not a corpus-validity policy.
+_CORPUS = load_corpus(include_held_out=True)
 _TASK_IDS = [t.name for t in _CORPUS]
 
 

@@ -44,7 +44,13 @@ MODEL = "claude-sonnet-4-5"
 # ---------------------------------------------------------------------------
 
 
-def _write_task(root: Path, name: str) -> CorpusTask:
+def _write_task(
+    root: Path,
+    name: str,
+    *,
+    difficulty: str = "easy",
+    held_out: bool = False,
+) -> CorpusTask:
     task_dir = root / name
     visible = task_dir / "workdir"
     answer = task_dir / "answer_key"
@@ -66,7 +72,8 @@ def _write_task(root: Path, name: str) -> CorpusTask:
         "agentVisibleRoot": "workdir",
         "hiddenTests": {"root": "answer_key", "files": ["test_hidden.py"]},
         "requiredContext": ["agentrail/evals/spine.py"],
-        "difficulty": "easy",
+        "difficulty": difficulty,
+        "heldOut": held_out,
     }
     (task_dir / "task.json").write_text(json.dumps(task_json), encoding="utf-8")
     return load_task(task_dir)
@@ -616,3 +623,88 @@ def test_cli_evals_run_ablation_runs_full_leave_one_out_set(
     text = report.read_text(encoding="utf-8").lower()
     assert "per-layer ablation deltas" in text
     assert "delta" in text
+
+
+# ---------------------------------------------------------------------------
+# Issue #941 — honesty rails at the spine boundary.
+#   (1) held-out tasks are excluded from the default run; an explicit flag
+#       includes them.
+#   (2) each rep's difficulty is threaded onto the RepetitionRecord from the
+#       CorpusTask, so the reporter can stratify.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def split_corpus_root(tmp_path: Path) -> Path:
+    """A corpus with one dev task and one held-out task, spanning difficulty."""
+    root = tmp_path / "split-corpus"
+    root.mkdir()
+    _write_task(root, "dev-task", difficulty="easy", held_out=False)
+    _write_task(root, "held-task", difficulty="hard", held_out=True)
+    return root
+
+
+def test_spine_excludes_held_out_tasks_by_default(
+    split_corpus_root: Path, reports_dir: Path
+) -> None:
+    """AC1/AC3: the default spine run never touches the held-out task."""
+    executor = SpyExecutor()
+    hidden = HiddenTestSpy()
+    result = run_spine(
+        SpineConfig(arms=[full()], reps=1, corpus_root=split_corpus_root),
+        executor=executor,
+        hidden_test_runner=hidden,
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-06-23",
+    )
+    seen = {task for task, _arm in executor.invocations}
+    assert seen == {"dev-task"}
+    assert all(rep.task == "dev-task" for rep in result.repetitions)
+
+
+def test_spine_includes_held_out_when_requested(
+    split_corpus_root: Path, reports_dir: Path
+) -> None:
+    """AC1: the explicit include flag adds the held-out task to the run set."""
+    executor = SpyExecutor()
+    hidden = HiddenTestSpy()
+    result = run_spine(
+        SpineConfig(
+            arms=[full()],
+            reps=1,
+            corpus_root=split_corpus_root,
+            include_held_out=True,
+        ),
+        executor=executor,
+        hidden_test_runner=hidden,
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-06-23",
+    )
+    seen = {task for task, _arm in executor.invocations}
+    assert seen == {"dev-task", "held-task"}
+
+
+def test_spine_threads_difficulty_into_repetition_records(
+    split_corpus_root: Path, reports_dir: Path
+) -> None:
+    """AC2: each RepetitionRecord carries its CorpusTask's difficulty."""
+    result = run_spine(
+        SpineConfig(
+            arms=[full()],
+            reps=1,
+            corpus_root=split_corpus_root,
+            include_held_out=True,
+        ),
+        executor=SpyExecutor(),
+        hidden_test_runner=HiddenTestSpy(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-06-23",
+    )
+    by_task = {rep.task: rep.difficulty for rep in result.repetitions}
+    assert by_task == {"dev-task": "easy", "held-task": "hard"}
+    # The reporter then has real strata to break out.
+    strata = {s.difficulty for r in result.arm_reports for s in r.strata}
+    assert strata == {"easy", "hard"}

@@ -37,6 +37,7 @@ from typing import Dict, List, Optional, Protocol, Sequence
 from agentrail.run.usage_capture import Usage
 
 from agentrail.evals.arms import LAYER_NAMES
+from agentrail.evals.corpus.loader import DIFFICULTY_TAGS
 from agentrail.evals.pricing_adapter import usage_cost
 
 
@@ -67,11 +68,38 @@ class RepetitionRecord:
     usage: Usage
     gate_passed: bool = False
     false_green: bool = False
+    # Difficulty stratum of the task this rep belongs to (issue #941), threaded
+    # from the ``CorpusTask`` by the spine so the reporter can break metrics out
+    # PER stratum — a single aggregate hides the harness's real story (the edge
+    # is large on hard scattered-context tasks, small on easy single-file ones).
+    # ``None`` for callers (and old tests) that pre-date the probe; such records
+    # simply contribute to no stratum (the aggregate is unaffected).
+    difficulty: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
 # Per-arm aggregate
 # ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class StratumReport:
+    """Per-difficulty-stratum metrics for one arm (issue #941).
+
+    Carries the same shape as the headline arm metrics, scoped to the reps of a
+    single difficulty (easy / medium / hard). Reported IN ADDITION TO the
+    aggregate so a single solve-rate never hides the per-stratum story.
+    ``dollars_per_solved`` is ``None`` when no rep in the stratum solved (same
+    undefined-denominator rule as the aggregate — never divide by zero).
+    """
+
+    difficulty: str
+    repetitions: int
+    solved_count: int
+    failed_count: int
+    solve_rate: float
+    total_cost_usd: float
+    dollars_per_solved: Optional[float]
+
 
 @dataclass(frozen=True)
 class ArmReport:
@@ -101,6 +129,9 @@ class ArmReport:
     false_green_rate: Optional[float] = None
     # per-task solve fractions, kept for transparency in the report.
     per_task_solve_rate: Dict[str, float] = field(default_factory=dict)
+    # Difficulty-stratified breakdown (issue #941), in canonical difficulty
+    # order (easy/medium/hard). Empty when no record carried a difficulty.
+    strata: List[StratumReport] = field(default_factory=list)
 
 
 def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
@@ -151,6 +182,8 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
         (false_green_count / gate_passed_count) if gate_passed_count else None
     )
 
+    strata = _strata(records)
+
     return ArmReport(
         arm=arm,
         repetitions=repetitions,
@@ -169,7 +202,47 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
         false_green_count=false_green_count,
         false_green_rate=false_green_rate,
         per_task_solve_rate=per_task_solve_rate,
+        strata=strata,
     )
+
+
+def _strata(records: Sequence[RepetitionRecord]) -> List[StratumReport]:
+    """Break an arm's records out per difficulty stratum (issue #941).
+
+    Records with no ``difficulty`` (pre-#941 callers/tests) contribute to no
+    stratum, so the aggregate is unaffected and back-compat is preserved.
+    Strata are returned in canonical difficulty order so reports are
+    deterministic.
+    """
+    by_diff: Dict[str, List[RepetitionRecord]] = defaultdict(list)
+    for r in records:
+        if r.difficulty is not None:
+            by_diff[r.difficulty].append(r)
+
+    # Canonical order first, then any unexpected tag (sorted) so a stray
+    # difficulty still surfaces rather than being silently dropped.
+    ordered = [d for d in DIFFICULTY_TAGS if d in by_diff]
+    ordered += sorted(d for d in by_diff if d not in DIFFICULTY_TAGS)
+
+    reports: List[StratumReport] = []
+    for difficulty in ordered:
+        recs = by_diff[difficulty]
+        reps = len(recs)
+        solved = sum(1 for r in recs if r.solved)
+        cost = sum(usage_cost(r.usage) for r in recs)
+        reports.append(
+            StratumReport(
+                difficulty=difficulty,
+                repetitions=reps,
+                solved_count=solved,
+                failed_count=reps - solved,
+                solve_rate=(solved / reps) if reps else 0.0,
+                total_cost_usd=cost,
+                # Same undefined-denominator rule as the aggregate.
+                dollars_per_solved=(cost / solved) if solved else None,
+            )
+        )
+    return reports
 
 
 def aggregate(records: Sequence[RepetitionRecord]) -> List[ArmReport]:
@@ -385,6 +458,48 @@ def render_markdown(reports: Sequence[ArmReport], *, generated_at: str) -> str:
         )
     lines.append("")
 
+    # --- Difficulty-stratified breakdown (issue #941) --------------------
+    # A single aggregate hides the real story: the harness's edge is large on
+    # hard, scattered-context tasks and small on easy single-file ones. Report
+    # solve-rate / cost / $-per-solved PER stratum, in addition to the headline.
+    any_strata = any(r.strata for r in reports)
+    lines.append("## Difficulty-stratified breakdown")
+    lines.append("")
+    if not any_strata:
+        lines.append(
+            "_No per-difficulty data in this run set (records carried no "
+            "difficulty tag)._"
+        )
+        lines.append("")
+    else:
+        lines.append(
+            "Solve-rate, cost, and dollars-per-solved-task broken out per "
+            "difficulty stratum (easy / medium / hard, proxied by "
+            "required-context scatter), IN ADDITION TO the aggregate above. A "
+            "single aggregate hides the harness's real edge, which is large on "
+            "hard scattered-context tasks and small on easy single-file ones."
+        )
+        lines.append("")
+        lines.append(
+            "| Arm | Difficulty | Reps | Solved | Failed | Solve-rate | "
+            "Total cost | Dollars-per-solved-task |"
+        )
+        lines.append("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+        for r in reports:
+            if not r.strata:
+                lines.append(
+                    f"| {r.arm} | _(no difficulty data)_ | | | | | | |"
+                )
+                continue
+            for s in r.strata:
+                lines.append(
+                    f"| {r.arm} | {s.difficulty} | {s.repetitions} | "
+                    f"{s.solved_count} | {s.failed_count} | "
+                    f"{_fmt_pct(s.solve_rate)} | {_fmt_usd(s.total_cost_usd)} | "
+                    f"{_fmt_usd(s.dollars_per_solved)} |"
+                )
+        lines.append("")
+
     # --- Honesty section: failures, ties, spread per arm -----------------
     lines.append("## Failures, ties, and spread")
     lines.append("")
@@ -514,6 +629,20 @@ def arm_metric_rows(reports: Sequence[ArmReport], *, run_id: str) -> List[dict]:
             "gate_passed_count": r.gate_passed_count,
             "false_green_count": r.false_green_count,
             "false_green_rate": r.false_green_rate,
+            # Difficulty-stratified breakdown (#941) so the console can show the
+            # same per-stratum numbers the markdown does (never disagree).
+            "strata": [
+                {
+                    "difficulty": s.difficulty,
+                    "repetitions": s.repetitions,
+                    "solved_count": s.solved_count,
+                    "failed_count": s.failed_count,
+                    "solve_rate": s.solve_rate,
+                    "total_cost_usd": s.total_cost_usd,
+                    "dollars_per_solved": s.dollars_per_solved,
+                }
+                for s in r.strata
+            ],
         }
         for r in reports
     ]

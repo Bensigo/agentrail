@@ -1188,6 +1188,23 @@ export {
   type RunnerStatus,
 } from "./runner.js";
 
+// CI reconciliation (#891b) — reconcile a run's DISPLAYED status against the
+// PR's real CI so a green-CI PR is not shown as `failed` from the local gate
+// verdict. Pure mapping + a best-effort GitHub fetch + a throttled read-path
+// enricher. `getGithubToken` is resolved lazily at call time, so the
+// index<->ci-reconcile import cycle is load-order-safe.
+export {
+  parsePrUrl,
+  reconcileRunDisplayStatus,
+  rollupCheckRuns,
+  fetchPrCiConclusion,
+  reconcileRunsCiStatus,
+  type RunDisplayStatus,
+  type CiConclusion,
+  type PrRef,
+  type ReconcilableRun,
+} from "./ci-reconcile.js";
+
 // GitHub issue intake — the webhook half of the queue: the AC gate + workspace
 // resolution + idempotent enqueue (deterministic id matches the Python store).
 export {

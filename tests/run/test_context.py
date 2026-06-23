@@ -366,6 +366,137 @@ class ContextSelectedSnippetsContentTests(unittest.TestCase):
         self.assertIn(f"{beyond_path}:1-", result)
 
 
+class ContextSelectedSnippetsDeepSpanTests(unittest.TestCase):
+    """Issue #903 FIX 3: the windowing payoff must reach the loop-prompt path.
+
+    The loop prompt block must surface a DEEP matched span — both for a top-3
+    result (where it re-reads the file by the windowed line range) and for a
+    rank-4+ result (where it uses the windowed snippet directly, no longer
+    truncated to the first 4 lines).
+    """
+
+    def _result(self, path: str, line_start: int, line_end: int, snippet: str) -> dict:
+        return {
+            "path": path,
+            "lineStart": line_start,
+            "lineEnd": line_end,
+            "symbol": "compute_quorum_audit",
+            "tokenEstimate": 30,
+            "reason": "matched quorum audit",
+            "snippet": snippet,
+        }
+
+    def test_top_result_reread_by_window_includes_deep_match(self) -> None:
+        """Top-3 path: re-reading by the windowed (line_start, line_end) range
+        — which after issue #903 is the signature..matched-span window, NOT the
+        whole chunk — surfaces the deep match.  A head-only window (1..10) would
+        not."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            (target / "src").mkdir()
+            # Function at line 26, distinctive match deep in the body (line 58).
+            preamble = "\n".join([f"_CONST_{n} = {n}" for n in range(25)])
+            sig = "def compute_quorum_audit(items):"
+            filler = "\n".join(f"    _step_{n} = work_{n}()" for n in range(30))
+            match = "    unique_quorum_violation_xk9 = audit(items)"
+            body = sig + "\n" + filler + "\n" + match + "\n    return True\n"
+            content = preamble + "\n" + body
+            (target / "src" / "quorum.py").write_text(content)
+
+            file_lines = content.splitlines()
+            func_line = next(i + 1 for i, l in enumerate(file_lines) if l.startswith("def compute_quorum_audit"))
+            match_line = next(i + 1 for i, l in enumerate(file_lines) if "unique_quorum_violation_xk9" in l)
+            # The windowed citation range (FIX 1): signature .. matched span.
+            results = [self._result("src/quorum.py", func_line, match_line, snippet="(unused)")]
+            fake = {"results": results, "runMetadata": {}}
+            with patch("agentrail.run.context.search_context", return_value=fake):
+                out = context_selected_snippets(target, "unique_quorum_violation_xk9")
+
+        # The fenced block re-read by the window must contain the deep match and
+        # the signature — proving the loop prompt benefits from the window.
+        self.assertIn("```src/quorum.py:", out)
+        self.assertIn("unique_quorum_violation_xk9", out)
+        self.assertIn("def compute_quorum_audit", out)
+        # A head-only window (lines 1..10) re-read would only show preamble
+        # constants; assert those are NOT what got injected as the match anchor.
+        self.assertNotIn("_CONST_0 = 0", out)
+
+    def test_rank4_plus_uses_full_windowed_snippet_not_truncated(self) -> None:
+        """Rank-4+ path: uses the windowed snippet directly.  The old code sliced
+        it to the first 4 lines (``[:4]``), which dropped a deep matched span.
+        The match must now survive into the prompt block."""
+        # The windowed snippet: signature, gap, then deep match past line 4.
+        windowed = (
+            "def compute_quorum_audit(items):\n"
+            "    \u2026\n"
+            "    _step_27 = work_27()\n"
+            "    _step_28 = work_28()\n"
+            "    _step_29 = work_29()\n"
+            "    unique_quorum_violation_xk9 = audit(items)\n"
+        )
+        results = []
+        # 3 top results (any path; unreadable → harmless) + 1 rank-4 result.
+        for i in range(_MAX_CONTENT_SNIPPETS):
+            results.append(self._result(f"top{i}.py", 1, 2, snippet="x"))
+        results.append(self._result("deep.py", 26, 58, snippet=windowed))
+        fake = {"results": results, "runMetadata": {}}
+        with patch("agentrail.run.context.search_context", return_value=fake):
+            out = context_selected_snippets(Path("/tmp/nonexistent_repo_deep"), "audit")
+
+        # The deep match (line 6 of the windowed snippet, well past [:4]) must
+        # appear — fails against the old [:4] truncation.
+        self.assertIn("unique_quorum_violation_xk9", out)
+        self.assertIn("def compute_quorum_audit", out)
+
+    def test_top_result_window_wider_than_cap_uses_windowed_snippet(self) -> None:
+        """Top-3 path, deep-deep case: when the windowed citation range spans more
+        lines than _MAX_SNIPPET_LINES, a contiguous head-of-range disk slice
+        (``raw_lines[start:end][:40]``) would truncate the deep match back off.
+        FIX 3 falls back to the gap-compressed windowed snippet, which keeps the
+        match.  This is the guard that fails against the old always-re-read-disk
+        behavior."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            (target / "src").mkdir()
+            # Function at line 1; matched span ~60 lines into the body — the
+            # window range (1..62) is wider than _MAX_SNIPPET_LINES (40), so a
+            # head-of-range slice [1:62][:40] would stop at line 40, before the
+            # match at line 61.
+            sig = "def huge_handler(req):"
+            filler = "\n".join(f"    _s_{n} = step_{n}()" for n in range(60))
+            match = "    unique_marker_qq = finalize(req)"
+            content = sig + "\n" + filler + "\n" + match + "\n    return req\n"
+            (target / "src" / "huge.py").write_text(content)
+
+            file_lines = content.splitlines()
+            match_line = next(i + 1 for i, l in enumerate(file_lines) if "unique_marker_qq" in l)
+            self.assertGreater(match_line, _MAX_SNIPPET_LINES,
+                               "fixture: match must be past the line cap from the signature")
+            # Gap-compressed windowed snippet (what search_context would return):
+            windowed = (
+                "def huge_handler(req):\n"
+                "    \u2026\n"
+                "    _s_57 = step_57()\n"
+                "    _s_58 = step_58()\n"
+                "    _s_59 = step_59()\n"
+                "    unique_marker_qq = finalize(req)\n"
+            )
+            # Window citation range spans 1..match_line (> 40 lines wide).
+            results = [self._result("src/huge.py", 1, match_line, snippet=windowed)]
+            results[0]["symbol"] = "huge_handler"
+            fake = {"results": results, "runMetadata": {}}
+            with patch("agentrail.run.context.search_context", return_value=fake):
+                out = context_selected_snippets(target, "unique_marker_qq")
+
+        # The deep match must survive into the prompt block.  The old code's
+        # contiguous head-of-range disk slice would have stopped at line 40 and
+        # dropped it; FIX 3's windowed-snippet fallback keeps it.
+        self.assertIn("unique_marker_qq", out)
+        self.assertIn("def huge_handler", out)
+        # Bounded: must not echo the entire 60-line filler body.
+        self.assertNotIn("_s_5 = step_5()", out)
+
+
 class BuildPackTests(unittest.TestCase):
     """Tests for build_pack() (the general context-pack builder)."""
 

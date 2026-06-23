@@ -11,7 +11,9 @@ from agentrail.context.retrieval import (
     compute_tokens_saved,
     estimate_tokens,
     get_file_lines,
+    _bounded_snippet,
     get_file_symbol,
+    query_context,
     search_context,
 )
 
@@ -249,6 +251,25 @@ class SnippetWindowingTests(unittest.TestCase):
             "so a head-biased snippet cannot contain it",
         )
 
+        # Discover the whole-chunk range the head-only/whole-chunk code would
+        # have cited, so the AC2 assertions below can prove the citation is the
+        # *window*, not the chunk.  query_context returns the pre-windowing chunk
+        # whose startLine/endLine span the entire enclosing function.
+        raw = query_context(root, "unique_quorum_violation_xk9 audit_quorum_fence", limit=5)
+        chunk = next(
+            r for r in raw["results"] if r.get("path") == "src/quorum_audit.py"
+            and "compute_quorum_audit" in (r.get("symbolHints") or [])
+        )
+        chunk_start = int(chunk["startLine"])
+        chunk_end = int(chunk["endLine"])
+        # Sanity: the unwindowed chunk spans the whole function (sig .. tail), so
+        # its range is much wider than any bounded window.
+        self.assertEqual(chunk_start, func_line)
+        self.assertGreater(
+            chunk_end - chunk_start, 15,
+            "fixture: enclosing chunk must be wider than the bounded window",
+        )
+
         out = search_context(root, "unique_quorum_violation_xk9 audit_quorum_fence", limit=5)
         results = out["results"]
         self.assertTrue(results, "search must return at least one result")
@@ -258,7 +279,7 @@ class SnippetWindowingTests(unittest.TestCase):
         self.assertEqual(top["path"], "src/quorum_audit.py")
 
         # AC1: snippet must include both the enclosing function signature and
-        # the matched term (currently fails — head-biased window misses the match).
+        # the matched term (fails against head-biased window which misses the match).
         self.assertIn(
             "def compute_quorum_audit",
             top["snippet"],
@@ -271,17 +292,31 @@ class SnippetWindowingTests(unittest.TestCase):
             "head-biased extraction returns only the first 10 lines and misses it",
         )
 
-        # AC2: citation lineStart must reflect the function start, not the file head.
-        self.assertGreaterEqual(
+        # AC2: the citation (lineStart, lineEnd) must reflect the RETURNED WINDOW,
+        # not the whole chunk and not line 1.  This is the real guard: it fails
+        # against both head-only behavior (lineEnd would stop ~chunk_start+9, well
+        # before the match) AND whole-chunk behavior (lineEnd would equal
+        # chunk_end, lying about what the snippet shows).
+        self.assertEqual(
             top["lineStart"],
             func_line,
-            "AC2: lineStart must be at or after the enclosing function definition line",
+            "AC2: lineStart must be the enclosing function signature line",
         )
-        self.assertGreater(
-            top["lineStart"],
-            1,
-            "AC2: lineStart must not be 1 (file head / preamble)",
+        self.assertGreaterEqual(
+            top["lineEnd"],
+            match_line,
+            "AC2: lineEnd must cover the matched span — fails for head-only "
+            "windowing whose range stops before the deep match",
         )
+        self.assertLess(
+            top["lineEnd"],
+            chunk_end,
+            "AC2: lineEnd must be strictly inside the chunk — fails for "
+            "whole-chunk citation that lies (claims 26-65 while showing a window)",
+        )
+        # Defensive: the cited range must be a real subset of the chunk.
+        self.assertGreaterEqual(top["lineStart"], chunk_start)
+        self.assertLessEqual(top["lineEnd"], chunk_end)
 
         # AC3: snippet must remain bounded — no unbounded growth.
         snippet_lines = top["snippet"].splitlines()
@@ -295,6 +330,69 @@ class SnippetWindowingTests(unittest.TestCase):
             900,
             "AC3: snippet must respect the char cap",
         )
+
+
+class SnippetWindowingSpanBenefitTests(unittest.TestCase):
+    """AC4 (span-level): prove the headline benefit directly.
+
+    Issue #903's verification asks to show "a fixture that previously missed
+    its required span now includes it."  The #901 evaluation only measures
+    SOURCE-level precision/coverage (which files were selected) — it never
+    inspects the snippet span, so it cannot demonstrate this.  This test
+    asserts at the span level that:
+
+      * the windowed snippet INCLUDES the deep matched span, AND
+      * the old head-only slice (first ``max_lines`` chunk lines) would NOT
+        have included it — i.e. the benefit is real, not vacuous.
+    """
+
+    def test_windowed_snippet_includes_deep_span_that_head_only_missed(self) -> None:
+        # A long function body with the required match buried far past the head.
+        sig = "def render_invoice(order, customer):"
+        head = "\n".join(f"    _setup_{n} = prepare_{n}(order)" for n in range(40))
+        MATCHED = "tax_breakdown_zz = compute_tax_breakdown(order, customer)"
+        tail = "\n".join(f"    _finalize_{n} = True" for n in range(5))
+        chunk = sig + "\n" + head + "\n    " + MATCHED + "\n" + tail + "\n    return True\n"
+
+        chunk_lines = chunk.splitlines()
+        match_idx = next(
+            i for i, ln in enumerate(chunk_lines) if "tax_breakdown_zz" in ln
+        )
+        # Precondition: the match must sit well past the head window so that a
+        # head-only slice provably cannot contain it.
+        self.assertGreater(
+            match_idx, 10,
+            "fixture: matched span must be past the default 10-line head window",
+        )
+
+        # The OLD head-only behavior: first 10 chunk lines. Prove it misses.
+        head_only_slice = "\n".join(chunk_lines[:10])
+        self.assertNotIn(
+            "tax_breakdown_zz", head_only_slice,
+            "precondition: head-only slice must NOT contain the required span "
+            "(otherwise this test proves nothing)",
+        )
+
+        # The NEW windowed behavior includes both the signature and the span.
+        snippet, span_start_off, span_end_off = _bounded_snippet(
+            chunk, ["tax_breakdown_zz", "compute_tax_breakdown"]
+        )
+        self.assertIn(
+            sig, snippet,
+            "AC4: windowed snippet must keep the enclosing signature",
+        )
+        self.assertIn(
+            "tax_breakdown_zz", snippet,
+            "AC4: windowed snippet must now INCLUDE the required deep span that "
+            "the head-only slice missed",
+        )
+        # The returned span offsets must straddle the matched line so the
+        # citation built from them is honest about covering the span.
+        self.assertLessEqual(span_start_off, match_idx)
+        self.assertGreaterEqual(span_end_off, match_idx)
+
+        # And it stays bounded (AC3 invariant preserved on this path too).
+        self.assertLessEqual(len(snippet.splitlines()), 11)
 
 
 class ComputeTokensSavedTests(unittest.TestCase):

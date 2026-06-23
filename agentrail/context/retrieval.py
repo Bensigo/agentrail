@@ -1658,7 +1658,7 @@ def _bounded_snippet(
     *,
     max_lines: int = 10,
     max_chars: int = 600,
-) -> str:
+) -> Tuple[str, int, int]:
     """Trim chunk content to a bounded snippet anchored on the matched span.
 
     When ``query_tokens`` are provided and the first match falls past the head
@@ -1666,13 +1666,19 @@ def _bounded_snippet(
     a window around the match so the snippet contains both the definition
     boundary and the matched span (issue #903).  Falls back to head-biased
     extraction when no deep match exists.
+
+    Returns ``(snippet, span_start_offset, span_end_offset)`` where the offsets
+    are 0-based line indices *within the chunk content* of the first and last
+    chunk lines the returned snippet actually covers.  Callers add the chunk's
+    absolute ``startLine`` to these offsets to produce an honest citation range
+    for the returned window — not the whole chunk (issue #903 AC2).
     """
     if not isinstance(content, str):
-        return ""
+        return "", 0, 0
     lines = content.splitlines()
     total = len(lines)
     if not lines:
-        return ""
+        return "", 0, 0
 
     # Find the first line that contains a long query token (≥4 chars).
     match_idx: Optional[int] = None
@@ -1685,12 +1691,14 @@ def _bounded_snippet(
 
     # Head-biased path: match is within the first max_lines, or no match found.
     if match_idx is None or match_idx < max_lines:
-        snippet = "\n".join(lines[:max_lines])
+        head_count = min(max_lines, total)
+        snippet = "\n".join(lines[:head_count])
         if len(snippet) > max_chars:
             snippet = snippet[:max_chars].rstrip() + " …"
         elif total > max_lines:
             snippet += " …"
-        return snippet
+        # The head window covers chunk lines 0 .. head_count - 1.
+        return snippet, 0, head_count - 1
 
     # Deep-match path: sig (line 0) + window around the match.
     # Budget: 1 sig line + up to (max_lines - 1) window lines.
@@ -1713,7 +1721,9 @@ def _bounded_snippet(
     snippet = "\n".join(parts)
     if len(snippet) > max_chars:
         snippet = snippet[:max_chars].rstrip() + " …"
-    return snippet
+    # The window covers the signature (chunk line 0) through win_end - 1; the
+    # citation range reflects this span, not the whole chunk.
+    return snippet, 0, win_end - 1
 
 
 def search_context(target_dir: Path, query: str, *, limit: int = 20, index: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1729,10 +1739,17 @@ def search_context(target_dir: Path, query: str, *, limit: int = 20, index: Opti
     _snippet_query_tokens = unique(tokenize(query))
     results: List[Dict[str, Any]] = []
     for entry in raw.get("results", []):
-        line_start = entry.get("startLine") or 1
-        line_end = entry.get("endLine") or line_start
+        chunk_start = int(entry.get("startLine") or 1)
+        chunk_end = int(entry.get("endLine") or chunk_start)
         symbol_hints = entry.get("symbolHints") or []
-        snippet = _bounded_snippet(entry.get("content"), _snippet_query_tokens)
+        snippet, span_start_off, span_end_off = _bounded_snippet(
+            entry.get("content"), _snippet_query_tokens
+        )
+        # The citation must reflect the *returned window*, not the whole chunk
+        # (issue #903 AC2): map the snippet's in-chunk line offsets back to
+        # absolute file lines, clamped to the chunk bounds.
+        line_start = min(chunk_end, chunk_start + max(0, span_start_off))
+        line_end = min(chunk_end, chunk_start + max(span_start_off, span_end_off))
         results.append({
             "rank": entry.get("rank"),
             "path": entry.get("path"),

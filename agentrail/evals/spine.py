@@ -181,7 +181,7 @@ def run_spine(
     config: SpineConfig,
     *,
     executor: AgentExecutor,
-    hidden_test_runner: HiddenTestRunner,
+    hidden_test_runner: Optional[HiddenTestRunner] = None,
     metrics_writer: Optional[MetricsWriter] = None,
     reports_dir: Optional[Path] = None,
     date: Optional[str] = None,
@@ -212,6 +212,17 @@ def run_spine(
         raise ValueError(f"reps must be >= 1; got {config.reps}")
     if not config.arms:
         raise ValueError("at least one arm is required")
+
+    # AC5 (#952): the default HiddenTestRunner is the PRODUCTION engine that
+    # apply-diffs the agent's output at the task's pinned commit and runs the
+    # answer key in an isolated workspace. ``UnimplementedHiddenTestRunner``
+    # remains importable (for tests that want an honest no-op) but is no
+    # longer the spine's default — every CLI eval run now produces real
+    # hidden-test verdicts. Tests inject a faithful spy via this kwarg.
+    if hidden_test_runner is None:
+        from agentrail.evals.hidden_tests import ProductionHiddenTestRunner
+
+        hidden_test_runner = ProductionHiddenTestRunner()
 
     tasks = load_corpus(config.corpus_root)
     tasks = _select_tasks(tasks, config.task_filter)

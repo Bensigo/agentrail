@@ -7,10 +7,11 @@ One CLI command runs:
 
 Defaults: ``baseline`` + ``full`` arms over the frozen corpus v0 with
 ``--reps 5``. Real agent execution uses ``SandboxAgentExecutor`` (the
-production sandbox seam). Hidden-test execution uses the seam protocol
-defined in :mod:`agentrail.evals.spine` — the default production runner is a
-deliberate honest no-op (returns False, "not solved") until the answer-key
-sandbox slice lands; this avoids fabricating a green.
+production sandbox seam). Hidden-test execution uses the production
+:class:`agentrail.evals.hidden_tests.ProductionHiddenTestRunner` — issue #952
+shipped the engine, so ``solved`` is now a real measurement (apply diff at
+pinned commit, run answer key, return bool). ``--smoke`` keeps the honest
+no-op for CI plumbing checks.
 
 The whole point of this command is the spine wiring; every contract it
 touches (``RunRecord``, ``Verdict``, ``Arm``, ``CorpusTask``,
@@ -24,6 +25,7 @@ from typing import List, Optional, Sequence
 
 from agentrail.evals.arms import Arm
 from agentrail.evals.runner import SandboxAgentExecutor
+from agentrail.evals.hidden_tests import ProductionHiddenTestRunner
 from agentrail.evals.spine import (
     HiddenTestRunner,
     SpineConfig,
@@ -168,7 +170,13 @@ def _run_run(args: List[str]) -> int:
         return 2
 
     executor = _smoke_executor() if smoke else SandboxAgentExecutor()
-    hidden_runner: HiddenTestRunner = UnimplementedHiddenTestRunner()
+    # AC5 (#952): the CLI uses the production hidden-test runner by default —
+    # the spine no longer reports "always unsolved". Under ``--smoke`` we
+    # keep the honest no-op so a CI smoke run never tries to clone the repo
+    # at a fake commit nor execute pytest in a subprocess.
+    hidden_runner: HiddenTestRunner = (
+        UnimplementedHiddenTestRunner() if smoke else ProductionHiddenTestRunner()
+    )
 
     result = run_spine(
         config,

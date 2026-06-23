@@ -81,6 +81,10 @@ class CorpusTask:
     hidden_tests: HiddenTestRef
     required_context: List[str]
     difficulty: str
+    # Honesty rail (#941): held-out tasks are reserved from the dev set so the
+    # harness is never tuned against them. Optional in task.json (defaults
+    # False); excluded from ``load_corpus`` unless ``include_held_out=True``.
+    held_out: bool = False
     source: Dict[str, Any] = field(default_factory=dict)
     task_dir: Optional[Path] = None
 
@@ -176,6 +180,17 @@ def _parse_task(record: Any, *, base_dir: Path, where: str) -> CorpusTask:
             f"{', '.join(DIFFICULTY_TAGS)} (got {difficulty!r})"
         )
 
+    # --- held-out split flag (honesty rail, #941) ------------------------
+    # Optional; defaults False. Must be a real bool when present (a string
+    # "true" is a configuration mistake that would silently keep a held-out
+    # task in the dev set).
+    held_out_raw = record.get("heldOut", False)
+    if not isinstance(held_out_raw, bool):
+        raise CorpusError(
+            f"corpus task {where}: field 'heldOut' must be a boolean when present "
+            f"(got {held_out_raw!r})"
+        )
+
     source = record.get("source") or {}
     if not isinstance(source, dict):
         raise CorpusError(f"corpus task {where}: field 'source' must be an object when present")
@@ -189,6 +204,7 @@ def _parse_task(record: Any, *, base_dir: Path, where: str) -> CorpusTask:
         hidden_tests=hidden_ref,
         required_context=required_context,
         difficulty=difficulty,
+        held_out=held_out_raw,
         source=source,
         task_dir=base_dir,
     )
@@ -232,16 +248,26 @@ def load_task(task_dir: Path) -> CorpusTask:
     return _parse_task(parsed, base_dir=task_dir, where=where)
 
 
-def load_corpus(root: Optional[Path] = None) -> List[CorpusTask]:
+def load_corpus(
+    root: Optional[Path] = None, *, include_held_out: bool = False
+) -> List[CorpusTask]:
     """Load every valid task under the corpus directory, sorted by name.
 
     Pure and deterministic: a task directory is any subdirectory containing a
     ``task.json``. Order is stable (sorted by directory name) so repeated loads
     return identical results.
+
+    Honesty rail (#941): tasks flagged ``heldOut`` in their ``task.json`` are
+    EXCLUDED by default so the harness is never developed against them. Pass
+    ``include_held_out=True`` to include the full corpus (the explicit,
+    deliberate "score the held-out split" path).
     """
     base = Path(root) if root is not None else corpus_root()
     task_dirs = sorted(
         (child for child in base.iterdir() if child.is_dir() and (child / TASK_FILE).is_file()),
         key=lambda path: path.name,
     )
-    return [load_task(task_dir) for task_dir in task_dirs]
+    tasks = [load_task(task_dir) for task_dir in task_dirs]
+    if include_held_out:
+        return tasks
+    return [task for task in tasks if not task.held_out]

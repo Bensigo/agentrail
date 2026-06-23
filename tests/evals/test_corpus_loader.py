@@ -233,7 +233,9 @@ def test_answer_key_path_is_not_under_agent_visible_path_for_real_corpus() -> No
 
 
 def test_real_corpus_loads_and_is_well_formed() -> None:
-    tasks = load_corpus()
+    # Validate the WHOLE corpus (dev + held-out): well-formedness is a
+    # corpus-integrity property, independent of the dev/held-out split (#941).
+    tasks = load_corpus(include_held_out=True)
     assert len(tasks) >= 10, f"corpus v0 should have ~10 tasks, found {len(tasks)}"
     for task in tasks:
         assert task.difficulty in DIFFICULTY_TAGS
@@ -258,3 +260,86 @@ def test_corpus_root_points_at_committed_corpus() -> None:
     root = corpus_root()
     assert root == REPO_ROOT / "agentrail" / "evals" / "corpus"
     assert root.is_dir()
+
+
+# ---------------------------------------------------------------------------
+# Issue #941 — held-out split (honesty rail).
+#   ``heldOut`` is an optional bool defaulting False. Held-out tasks are
+#   EXCLUDED from the default load and only present when explicitly requested.
+# ---------------------------------------------------------------------------
+
+
+def test_held_out_defaults_false_when_absent(tmp_path: Path) -> None:
+    """``heldOut`` is optional; a task without it is a normal (dev-set) task."""
+    task = load_task(_write_task(tmp_path, record=_valid_record()))
+    assert task.held_out is False
+
+
+def test_held_out_true_loads_onto_record(tmp_path: Path) -> None:
+    rec = _valid_record()
+    rec["heldOut"] = True
+    task = load_task(_write_task(tmp_path, record=rec))
+    assert task.held_out is True
+
+
+def test_held_out_non_bool_is_rejected(tmp_path: Path) -> None:
+    rec = _valid_record()
+    rec["heldOut"] = "yes"
+    task_dir = _write_task(tmp_path, record=rec)
+    with pytest.raises(CorpusError, match="heldOut"):
+        load_task(task_dir)
+
+
+def test_load_corpus_excludes_held_out_by_default(tmp_path: Path) -> None:
+    """The default dev run must NOT include held-out tasks (AC1/AC3)."""
+    dev = _valid_record()
+    dev["name"] = "dev-task"
+    _write_task(tmp_path, record=dev, name="dev-task")
+
+    held = _valid_record()
+    held["name"] = "held-task"
+    held["heldOut"] = True
+    _write_task(tmp_path, record=held, name="held-task")
+
+    names = [t.name for t in load_corpus(tmp_path)]
+    assert names == ["dev-task"], "held-out task must be excluded by default"
+
+
+def test_load_corpus_includes_held_out_only_when_requested(tmp_path: Path) -> None:
+    """An explicit flag includes held-out tasks alongside the dev set (AC1)."""
+    dev = _valid_record()
+    dev["name"] = "dev-task"
+    _write_task(tmp_path, record=dev, name="dev-task")
+
+    held = _valid_record()
+    held["name"] = "held-task"
+    held["heldOut"] = True
+    _write_task(tmp_path, record=held, name="held-task")
+
+    names = [t.name for t in load_corpus(tmp_path, include_held_out=True)]
+    assert names == ["dev-task", "held-task"]
+
+
+# ---------------------------------------------------------------------------
+# AC3 — held-out tasks are not in the REAL default-run set.
+# ---------------------------------------------------------------------------
+
+
+def test_real_corpus_has_a_held_out_split() -> None:
+    """The real v0 corpus reserves a non-empty held-out split (honesty rail)."""
+    everything = load_corpus(include_held_out=True)
+    held = [t for t in everything if t.held_out]
+    assert held, "real corpus must reserve at least one held-out task"
+
+
+def test_real_corpus_default_run_excludes_held_out_tasks() -> None:
+    """AC3: held-out tasks are NOT in the default-run set of the real corpus."""
+    default_names = {t.name for t in load_corpus()}
+    held_names = {t.name for t in load_corpus(include_held_out=True) if t.held_out}
+    assert held_names, "expected a non-empty held-out split to test against"
+    assert default_names.isdisjoint(held_names), (
+        f"held-out tasks leaked into the default run: {default_names & held_names}"
+    )
+    # And including them is strictly a superset.
+    all_names = {t.name for t in load_corpus(include_held_out=True)}
+    assert default_names | held_names == all_names

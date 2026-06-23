@@ -14,6 +14,7 @@
     "agentrail/run/push_guardrail.py"
   ],
   "difficulty": "easy",
+  "heldOut": true,
   "source": {
     "repo": "Bensigo/agentrail",
     "pr": 795,

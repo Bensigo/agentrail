@@ -145,6 +145,10 @@ class SpineConfig:
     reps: int
     task_filter: Optional[Sequence[str]] = None  # None == all tasks
     corpus_root: Optional[Path] = None
+    # Honesty rail (#941): held-out tasks are reserved from the default dev run
+    # so the harness is never developed against them. Off by default; flip it
+    # only for the deliberate "score the held-out split" pass.
+    include_held_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -224,7 +228,9 @@ def run_spine(
 
         hidden_test_runner = ProductionHiddenTestRunner()
 
-    tasks = load_corpus(config.corpus_root)
+    # Honesty rail (#941): held-out tasks are excluded by default; only the
+    # explicit ``include_held_out`` flag pulls them into the run set.
+    tasks = load_corpus(config.corpus_root, include_held_out=config.include_held_out)
     tasks = _select_tasks(tasks, config.task_filter)
     if not tasks:
         raise ValueError("no corpus tasks selected")
@@ -278,6 +284,10 @@ def run_spine(
                         # in scorer.score, never re-derived downstream.
                         gate_passed=verdict.gate_passed,
                         false_green=verdict.false_green,
+                        # Difficulty-stratified reporting (#941): thread the
+                        # CorpusTask's difficulty straight onto the record so
+                        # the reporter can break metrics out per stratum.
+                        difficulty=task.difficulty,
                     )
                 )
 

@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from agentrail.context.compiler import compiler_contract
 from agentrail.context.dedup import compute_retrieval_dedup
 from agentrail.context.index import append_audit, load_index
+from agentrail.context.pack_quality import compute_pack_quality
 from agentrail.context.pricing import cost_for
 from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_saved, estimate_tokens, query_context
 from agentrail.shared.json import write_json
@@ -624,6 +625,18 @@ def build_context_pack(
         pack["runId"] = run_id
     pack["included"] = _all_included(pack)
     pack["excluded"] = pack["excludedContext"]
+    # Compute live precision_at_budget and attach it to the pack so that
+    # Milestone 014 telemetry reads a real value instead of 0/absent.
+    # tokenEstimate is added from content for items that don't carry it yet,
+    # so the token-share calculation in compute_pack_quality is accurate.
+    # The fixed RETRIEVAL_MAX_TOKENS denominator measures "required token
+    # share of the available retrieval budget" — higher when more high-value
+    # sources (context_doc, taste_doc, critical/high authority) are packed.
+    for _item in pack["included"]:
+        if not isinstance(_item.get("tokenEstimate"), (int, float)) or isinstance(_item.get("tokenEstimate"), bool):
+            _item["tokenEstimate"] = _item_tokens(_item)
+    _quality = compute_pack_quality(pack["included"], pack["excludedContext"], RETRIEVAL_MAX_TOKENS)
+    pack["precision_at_budget"] = _quality["precision_at_budget"]
     # Estimated tokens the bounded snippets saved versus reading every selected
     # file in full (ceil(chars/4) per file, each distinct file counted once).
     pack["tokensSaved"] = compute_tokens_saved(root, pack["included"])

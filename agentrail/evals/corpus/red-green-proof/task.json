@@ -1,7 +1,7 @@
 {
   "name": "red-green-proof",
   "repo": "Bensigo/agentrail",
-  "commit": "c556b812d077",
+  "commit": "a7e3acd879bc6674c3dce3bb8b15985a5701d6a6",
   "prompt": "Build a Red-Green Proof recorder (agentrail/run/red_green.py) that records an acceptance test observed failing before implementation and passing after, and wire it into the Objective Gate.",
   "agentVisibleRoot": "workdir",
   "hiddenTests": {
@@ -19,6 +19,7 @@
     "repo": "Bensigo/agentrail",
     "pr": 793,
     "issue": 772,
-    "mergeCommit": "c556b812d077"
+    "mergeCommit": "c556b812d0771b336da33ee247877579d8fb6908",
+    "fixParent": "a7e3acd879bc6674c3dce3bb8b15985a5701d6a6"
   }
 }

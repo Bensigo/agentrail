@@ -57,8 +57,29 @@ error naming the offending field.
 Corpus v0 is seeded from AgentRail's **own already-merged, test-bearing PRs**:
 the human-accepted version already shipped with its proof, giving us honest
 ground truth at low cost. For every task, the hidden test suite under
-`answer_key/` is the *actual* test file(s) that merged PR shipped, and
-`commit` is that PR's merge commit (recorded in `source`).
+`answer_key/` is the *actual* test file(s) that merged PR shipped, and the fix
+PR's merge commit is recorded in `source.mergeCommit` for provenance.
+
+### Corpus commit pinning (the rule)
+
+**`task.commit` MUST be the PARENT of the fix, never the fix commit itself.**
+
+The hidden tests only measure something if the agent's work is *required*. If
+`commit` pinned the merge commit of the PR that shipped the fix, the solution
+source would already be on disk at that commit, an **empty diff would pass the
+hidden tests**, and the eval would measure nothing (#954). So we pin a *pre-fix*
+state instead:
+
+- **Fix adds a new file** (most v0 tasks) → pin the fix merge's first parent
+  (`<fix>^1`), i.e. the parent of the file's introduction commit. The file is
+  absent there, so an empty diff fails.
+- **Fix modifies existing files** → pin the parent of the fix merge (`<fix>^1`)
+  so the agent's diff has to reproduce the change.
+
+`tests/evals/test_corpus_pins.py` enforces this in a loop over every task: an
+empty diff at `commit` must return `False` (the agent's work is required) and
+the reconstructed merged-PR diff must return `True` (the change solves the
+hidden tests). `commit` is also asserted to never equal `source.mergeCommit`.
 
 > **Pre-registration.** Tasks are committed *before* any run, so results cannot
 > be cherry-picked. Do not edit a task to fit a run's output.

@@ -1,7 +1,7 @@
 {
   "name": "objective-gate-unified",
   "repo": "Bensigo/agentrail",
-  "commit": "5685438e874c",
+  "commit": "83b792d13d1a92b08f20943fcd9ad4d072db81d7",
   "prompt": "Consolidate the two drifted Objective Gates (agentrail/run and agentrail/afk) into a single shared policy in agentrail/guardrails/policies/objective.py, so both harnesses call one source of truth for the falsifiable definition of done.",
   "agentVisibleRoot": "workdir",
   "hiddenTests": {
@@ -20,8 +20,9 @@
   "difficulty": "hard",
   "source": {
     "repo": "Bensigo/agentrail",
-    "pr": 920,
-    "issue": 905,
-    "mergeCommit": "5685438e874c"
+    "pr": 929,
+    "issue": 920,
+    "mergeCommit": "5685438e874ce5100fbccbeae4d02a717e6dbf29",
+    "fixParent": "83b792d13d1a92b08f20943fcd9ad4d072db81d7"
   }
 }

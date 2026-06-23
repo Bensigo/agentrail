@@ -1,7 +1,7 @@
 {
   "name": "afk-objective-gate",
   "repo": "Bensigo/agentrail",
-  "commit": "9618d7d42994",
+  "commit": "8b605fbe37304be4ee1e42da9bf16a8e9b8505cc",
   "prompt": "Realign the review gate to ADR 0007 so the Objective Gate (agentrail/afk/objective_gate.py) decides merge and findings stay advisory.",
   "agentVisibleRoot": "workdir",
   "hiddenTests": {
@@ -17,6 +17,7 @@
   "source": {
     "repo": "Bensigo/agentrail",
     "pr": 857,
-    "mergeCommit": "9618d7d42994"
+    "mergeCommit": "9618d7d429944361ab9a55e48544fd1a9210843a",
+    "fixParent": "8b605fbe37304be4ee1e42da9bf16a8e9b8505cc"
   }
 }

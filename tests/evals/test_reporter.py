@@ -598,6 +598,129 @@ def test_write_reports_all_failure_row_has_none_dollars_per_solved():
 
 
 # ---------------------------------------------------------------------------
+# #942: HttpMetricsWriter POSTs the rows to the live eval-arm-metrics ingest
+# route (the write path moved from #934's deferred no-op). Failure is non-fatal.
+# A faithful fake transport asserts the exact request without any network.
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _rows():
+    u = _usage(input_tokens=1000, output_tokens=500)
+    records = [
+        _rep("task-a", "full", True, u, gate_passed=True, false_green=False),
+        _rep("task-b", "full", False, u, gate_passed=False, false_green=False),
+    ]
+    from agentrail.evals.reporter import arm_metric_rows
+
+    return arm_metric_rows(aggregate(records), run_id="eval-2026-06-23")
+
+
+def test_http_writer_posts_rows_to_ingest_route(monkeypatch, tmp_path):
+    """A linked writer POSTs the rows to the ingest route and reports True on 202."""
+    import json as _json
+
+    from agentrail.evals.reporter import HttpMetricsWriter
+
+    # Linked via env (the afk/CLI path): load_link reads AGENTRAIL_SERVER_*.
+    monkeypatch.setenv("AGENTRAIL_SERVER_BASE_URL", "https://console.example.com")
+    monkeypatch.setenv("AGENTRAIL_SERVER_API_KEY", "ar_test_key")
+    monkeypatch.setenv("AGENTRAIL_SERVER_REPOSITORY_ID", "repo-123")
+
+    captured: dict = {}
+
+    def _fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        captured["auth"] = req.get_header("Authorization")
+        captured["content_type"] = req.get_header("Content-type")
+        captured["body"] = _json.loads(req.data.decode("utf-8"))
+        return _FakeResponse(202)
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+
+    rows = _rows()
+    writer = HttpMetricsWriter(target=tmp_path)
+    ok = writer.write_arm_metrics(rows)
+
+    assert ok is True
+    assert captured["url"] == (
+        "https://console.example.com/api/v1/ingest/eval-arm-metrics"
+    )
+    assert captured["method"] == "POST"
+    assert captured["auth"] == "Bearer ar_test_key"
+    assert captured["content_type"] == "application/json"
+    # The exact reporter rows are posted, including the None false_green_rate.
+    assert captured["body"] == list(rows)
+    assert captured["body"][0]["false_green_rate"] == 0.0  # gate passed, no lie
+    assert captured["body"][0]["run_id"] == "eval-2026-06-23"
+
+
+def test_http_writer_not_linked_returns_false_no_request(monkeypatch, tmp_path):
+    """No link (no server.json / env) -> False and never a network call."""
+    from agentrail.evals.reporter import HttpMetricsWriter
+
+    for var in (
+        "AGENTRAIL_SERVER_BASE_URL",
+        "AGENTRAIL_SERVER_API_KEY",
+        "AGENTRAIL_SERVER_REPOSITORY_ID",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    called = {"n": 0}
+
+    def _boom(*a, **k):  # pragma: no cover - must not be reached
+        called["n"] += 1
+        raise AssertionError("must not POST when unlinked")
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+
+    writer = HttpMetricsWriter(target=tmp_path)
+    assert writer.write_arm_metrics(_rows()) is False
+    assert called["n"] == 0
+
+
+def test_http_writer_empty_rows_returns_false(tmp_path):
+    """No rows -> False (nothing to persist), never a spurious success."""
+    from agentrail.evals.reporter import HttpMetricsWriter
+
+    assert HttpMetricsWriter(target=tmp_path).write_arm_metrics([]) is False
+
+
+def test_http_writer_swallows_network_error(monkeypatch, tmp_path):
+    """A transport exception is non-fatal: returns False, never raises."""
+    from agentrail.evals.reporter import HttpMetricsWriter
+
+    monkeypatch.setenv("AGENTRAIL_SERVER_BASE_URL", "https://console.example.com")
+    monkeypatch.setenv("AGENTRAIL_SERVER_API_KEY", "ar_test_key")
+    monkeypatch.setenv("AGENTRAIL_SERVER_REPOSITORY_ID", "repo-123")
+
+    def _raise(*a, **k):
+        raise OSError("connection refused")
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _raise)
+
+    writer = HttpMetricsWriter(target=tmp_path)
+    assert writer.write_arm_metrics(_rows()) is False
+
+
+# ---------------------------------------------------------------------------
 # Integration: a sample dated report rendered to disk under reports/.
 # ---------------------------------------------------------------------------
 

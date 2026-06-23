@@ -42,8 +42,10 @@ def _usage() -> str:
         "[--arm NAME] [--reps N]\n"
         "\n"
         "Subcommands:\n"
-        "  run    Run the eval spine (corpus -> runner -> hidden-test scorer\n"
-        "         -> repetitions -> report).\n"
+        "  run     Run the eval spine (corpus -> runner -> hidden-test scorer\n"
+        "          -> repetitions -> report).\n"
+        "  probes  Run the intrinsic guardrail catch-rate probe against the\n"
+        "          built-in injection corpus and print the catch-rate (#943).\n"
         "\n"
         "Options:\n"
         "  --corpus DIR     Override the corpus root (default: bundled v0).\n"
@@ -229,6 +231,28 @@ def _run_run(args: List[str]) -> int:
     return 0
 
 
+def _run_probes(args: List[str]) -> int:
+    """Run the intrinsic guardrail catch-rate probe (#943).
+
+    AC3 stands alone: the injection corpus drives the REAL guardrails directly,
+    needing no agent run. The routing cost-regret (AC1) and retry lift (AC2)
+    probes are computed from per-run RunRecord fields collected during a spine
+    run; they are surfaced via ``reporter.render_probes_markdown`` and exercised
+    by ``tests/evals/test_probes.py``. This subcommand renders the always-
+    available guardrail probe so the safety floor is one command to verify.
+    """
+    if args and args[0] in ("-h", "--help"):
+        print(_usage())
+        return 0
+
+    from agentrail.evals.probes import guardrail_catch_rate
+    from agentrail.evals.reporter import render_probes_markdown
+
+    report = guardrail_catch_rate()
+    print(render_probes_markdown(guardrail=report))
+    return 0
+
+
 def run_evals(args: List[str]) -> int:
     """Dispatch ``agentrail evals <subcommand>``."""
     kind = args[0] if args else ""
@@ -239,6 +263,9 @@ def run_evals(args: List[str]) -> int:
 
     if kind == "run":
         return _run_run(args[1:])
+
+    if kind == "probes":
+        return _run_probes(args[1:])
 
     print(f"Unknown evals command: {kind}", file=sys.stderr)
     return 2

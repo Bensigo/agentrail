@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, replace
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 # The five AgentRail layers, in a fixed, documented order. Adding a new layer
 # to the harness is a one-line change here (plus a ``Layers`` field).
@@ -126,6 +126,31 @@ def full_minus(layer: str) -> Arm:
     )
 
 
+def ablation_arms() -> List[Arm]:
+    """The leave-one-out ablation arms — one ``full-minus-<layer>`` per layer.
+
+    A named, enumerable registry so the CLI and reporter can iterate every
+    layer's ablation arm without hard-coding the layer list. Order follows
+    :data:`LAYER_NAMES`, so a new layer is picked up automatically once its name
+    is added there (PRD §"a new layer is evaluable by adding one ablation arm").
+
+    Each arm differs from :func:`full` by exactly its one disabled layer and
+    holds the model, temperature, and every other layer fixed (guaranteed by
+    :func:`full_minus`).
+    """
+    return [full_minus(layer) for layer in LAYER_NAMES]
+
+
+def all_arms() -> List[Arm]:
+    """Every arm a complete leave-one-out eval runs: baseline, full, ablations.
+
+    Order is ``baseline``, ``full``, then the per-layer ablation arms in
+    :data:`LAYER_NAMES` order — the natural reading order of a report and the
+    arm set the CLI runs by default.
+    """
+    return [baseline(), full(), *ablation_arms()]
+
+
 __all__ = [
     "LAYER_NAMES",
     "PINNED_MODEL",
@@ -135,6 +160,8 @@ __all__ = [
     "baseline",
     "full",
     "full_minus",
+    "ablation_arms",
+    "all_arms",
 ]
 
 # Re-export for callers that prefer ``dataclasses.FrozenInstanceError`` checks

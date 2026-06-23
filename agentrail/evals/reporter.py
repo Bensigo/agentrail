@@ -36,6 +36,7 @@ from typing import Dict, List, Optional, Protocol, Sequence
 
 from agentrail.run.usage_capture import Usage
 
+from agentrail.evals.arms import LAYER_NAMES
 from agentrail.evals.pricing_adapter import usage_cost
 
 
@@ -184,6 +185,76 @@ def aggregate(records: Sequence[RepetitionRecord]) -> List[ArmReport]:
 
 
 # ---------------------------------------------------------------------------
+# Per-layer leave-one-out ablation deltas (issue #939)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class LayerDelta:
+    """One layer's leave-one-out contribution (CONTEXT.md / PRD §ablation).
+
+    The delta is ``full`` minus ``full-minus-<layer>`` on the SAME run set /
+    scorer — never a different baseline. A large positive delta means the layer
+    earns its place; a zero or negative delta means it should be fixed or
+    removed.
+
+    ``delta`` is ``None`` (undefined) when either the ``full`` arm or this
+    layer's ``full-minus-<layer>`` arm is absent from the run set — we report
+    the gap honestly rather than fabricating a number or crashing. An undefined
+    delta is neither flagged nor earning its place (both ``False``).
+    """
+
+    layer: str
+    full_solve_rate: Optional[float]
+    ablation_solve_rate: Optional[float]
+    delta: Optional[float]  # full - ablation; None when either arm is absent.
+
+    @property
+    def earns_place(self) -> bool:
+        """True iff the delta is defined and strictly positive."""
+        return self.delta is not None and self.delta > 0.0
+
+    @property
+    def flagged(self) -> bool:
+        """True iff the delta is defined and <= 0 (candidate to fix/remove)."""
+        return self.delta is not None and self.delta <= 0.0
+
+
+def layer_deltas(reports: Sequence[ArmReport]) -> List[LayerDelta]:
+    """Per-layer ablation deltas across the given arm reports.
+
+    For each layer (in :data:`LAYER_NAMES` order) compute::
+
+        delta = full.solve_rate - (full-minus-<layer>).solve_rate
+
+    over the SAME run set the reports were aggregated from. When either the
+    ``full`` arm or the layer's ``full-minus-<layer>`` arm is missing from
+    *reports*, the delta is ``None`` (undefined) — never a crash and never a
+    guessed baseline.
+    """
+    by_arm = {r.arm: r for r in reports}
+    full_report = by_arm.get("full")
+    full_rate = full_report.solve_rate if full_report is not None else None
+
+    deltas: List[LayerDelta] = []
+    for layer in LAYER_NAMES:
+        ablation = by_arm.get(f"full-minus-{layer}")
+        ablation_rate = ablation.solve_rate if ablation is not None else None
+        if full_rate is None or ablation_rate is None:
+            delta: Optional[float] = None
+        else:
+            delta = full_rate - ablation_rate
+        deltas.append(
+            LayerDelta(
+                layer=layer,
+                full_solve_rate=full_rate,
+                ablation_solve_rate=ablation_rate,
+                delta=delta,
+            )
+        )
+    return deltas
+
+
+# ---------------------------------------------------------------------------
 # Markdown rendering (honesty rails: failures, ties, spread — not only wins)
 # ---------------------------------------------------------------------------
 
@@ -266,6 +337,51 @@ def render_markdown(reports: Sequence[ArmReport], *, generated_at: str) -> str:
             f"| {_fmt_rate_pct(r.false_green_rate)} "
             f"| {r.total_tokens} | {_fmt_usd(r.total_cost_usd)} "
             f"| {_fmt_usd(r.dollars_per_solved)} |"
+        )
+    lines.append("")
+
+    # --- Per-layer ablation deltas (issue #939) --------------------------
+    # full - full-minus-<layer> on the same scorer/run set. A large positive
+    # delta means the layer earns its place; <= 0 means fix or remove it.
+    deltas = layer_deltas(reports)
+    lines.append("## Per-layer ablation deltas")
+    lines.append("")
+    lines.append(
+        "Each layer's worth is `full` solve-rate minus `full-minus-<layer>` "
+        "solve-rate on the SAME scorer and run set. A positive delta means the "
+        "layer **earns its place**; a zero or negative delta flags it as a "
+        "**candidate to fix or remove**. `n/a` means the `full` arm or that "
+        "layer's ablation arm was absent from this run set (delta undefined)."
+    )
+    lines.append("")
+    lines.append("| Layer | full solve-rate | full-minus-layer solve-rate | Delta | Verdict |")
+    lines.append("| --- | ---: | ---: | ---: | --- |")
+    for d in deltas:
+        full_cell = _fmt_rate_pct(d.full_solve_rate)
+        abl_cell = _fmt_rate_pct(d.ablation_solve_rate)
+        if d.delta is None:
+            delta_cell = _UNDEFINED
+            verdict_cell = "n/a (delta undefined — arm absent)"
+        else:
+            delta_cell = f"{d.delta * 100:+.1f}%"
+            verdict_cell = (
+                "earns its place"
+                if d.earns_place
+                else "FLAGGED: candidate to fix or remove (delta <= 0)"
+            )
+        lines.append(
+            f"| {d.layer} | {full_cell} | {abl_cell} | {delta_cell} | {verdict_cell} |"
+        )
+    lines.append("")
+    flagged = [d.layer for d in deltas if d.flagged]
+    if flagged:
+        lines.append(
+            f"**Flagged layers (zero or negative delta — fix or remove): "
+            f"{', '.join(flagged)}.**"
+        )
+    else:
+        lines.append(
+            "_No layer has a zero or negative delta in this run set._"
         )
     lines.append("")
 
@@ -400,6 +516,29 @@ def arm_metric_rows(reports: Sequence[ArmReport], *, run_id: str) -> List[dict]:
             "false_green_rate": r.false_green_rate,
         }
         for r in reports
+    ]
+
+
+def layer_delta_rows(deltas: Sequence[LayerDelta], *, run_id: str) -> List[dict]:
+    """Flatten per-layer ablation deltas into persistence-ready rows (#939).
+
+    Per-layer (cross-arm) shape, distinct from the per-arm ``arm_metric_rows``:
+    each row carries the layer, its source solve rates, the ``full - ablation``
+    delta (``None`` when undefined), and the flag the markdown surfaces — so the
+    console and the committed report can never disagree on which layers are
+    candidates to fix or remove.
+    """
+    return [
+        {
+            "run_id": run_id,
+            "layer": d.layer,
+            "full_solve_rate": d.full_solve_rate,
+            "ablation_solve_rate": d.ablation_solve_rate,
+            "delta": d.delta,
+            "earns_place": d.earns_place,
+            "flagged": d.flagged,
+        }
+        for d in deltas
     ]
 
 

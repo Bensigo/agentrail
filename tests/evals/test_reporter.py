@@ -19,8 +19,11 @@ from agentrail.run.usage_capture import Usage
 from agentrail.evals.pricing_adapter import usage_cost
 from agentrail.evals.reporter import (
     ArmReport,
+    LayerDelta,
     RepetitionRecord,
     aggregate,
+    layer_delta_rows,
+    layer_deltas,
     render_markdown,
     write_reports,
 )
@@ -382,6 +385,165 @@ def test_render_markdown_all_failure_arm_does_not_crash():
     md = render_markdown(aggregate(records), generated_at="2026-06-23")
     assert "broken" in md
     assert "2026-06-23" in md
+
+
+# ---------------------------------------------------------------------------
+# Issue #939: per-layer leave-one-out ablation deltas.
+#   delta(layer) = full.solve_rate - (full-minus-layer).solve_rate
+#   computed over the SAME run set / scorer; None when either arm is absent.
+#   delta <= 0 => flagged "candidate to fix/remove"; > 0 => "earns its place".
+# ---------------------------------------------------------------------------
+
+
+def _arm_report_with_solve_rate(arm: str, solve_rate: float, *, reps: int = 10) -> ArmReport:
+    """Build a minimal ArmReport fixture with an exact solve_rate.
+
+    Uses the real aggregator so the fixture exercises the production path: it
+    constructs ``reps`` repetitions of a single task, of which ``solve_rate *
+    reps`` are solved.
+    """
+    u = _usage(input_tokens=1000, output_tokens=500)
+    solved = round(solve_rate * reps)
+    records = [_rep("task-a", arm, i < solved, u) for i in range(reps)]
+    report = aggregate(records)[0]
+    assert report.solve_rate == pytest.approx(solve_rate), report.solve_rate
+    return report
+
+
+def test_layer_deltas_computed_as_full_minus_ablation():
+    """AC3: each layer's delta = full.solve_rate - full-minus-layer.solve_rate."""
+    reports = [
+        _arm_report_with_solve_rate("full", 0.8),
+        _arm_report_with_solve_rate("full-minus-context", 0.3),     # +0.5
+        _arm_report_with_solve_rate("full-minus-routing", 0.8),     #  0.0
+        _arm_report_with_solve_rate("full-minus-verify_gate", 0.9), # -0.1
+        _arm_report_with_solve_rate("full-minus-retry", 0.6),       # +0.2
+        _arm_report_with_solve_rate("full-minus-guardrails", 0.7),  # +0.1
+    ]
+    deltas = {d.layer: d for d in layer_deltas(reports)}
+
+    assert deltas["context"].delta == pytest.approx(0.5)
+    assert deltas["routing"].delta == pytest.approx(0.0)
+    assert deltas["verify_gate"].delta == pytest.approx(-0.1)
+    assert deltas["retry"].delta == pytest.approx(0.2)
+    assert deltas["guardrails"].delta == pytest.approx(0.1)
+
+    # Carries the source solve rates for transparency.
+    assert deltas["context"].full_solve_rate == pytest.approx(0.8)
+    assert deltas["context"].ablation_solve_rate == pytest.approx(0.3)
+
+
+def test_layer_deltas_returns_one_per_layer_in_order():
+    """One LayerDelta per documented layer, deterministic order."""
+    from agentrail.evals.arms import LAYER_NAMES
+
+    reports = [
+        _arm_report_with_solve_rate("full", 0.5),
+        *[
+            _arm_report_with_solve_rate(f"full-minus-{layer}", 0.5)
+            for layer in LAYER_NAMES
+        ],
+    ]
+    deltas = layer_deltas(reports)
+    assert [d.layer for d in deltas] == list(LAYER_NAMES)
+
+
+def test_layer_delta_flags_zero_or_negative_as_candidate():
+    """AC4: delta <= 0 is flagged (not earning its place); > 0 earns its place."""
+    reports = [
+        _arm_report_with_solve_rate("full", 0.8),
+        _arm_report_with_solve_rate("full-minus-context", 0.3),      # +0.5 positive
+        _arm_report_with_solve_rate("full-minus-routing", 0.8),      #  0.0 flagged
+        _arm_report_with_solve_rate("full-minus-verify_gate", 0.9),  # -0.1 flagged
+    ]
+    deltas = {d.layer: d for d in layer_deltas(reports)}
+
+    assert deltas["context"].earns_place is True
+    assert deltas["context"].flagged is False
+
+    # zero delta -> flagged candidate to fix/remove
+    assert deltas["routing"].earns_place is False
+    assert deltas["routing"].flagged is True
+
+    # negative delta -> flagged candidate to fix/remove
+    assert deltas["verify_gate"].earns_place is False
+    assert deltas["verify_gate"].flagged is True
+
+
+def test_layer_delta_undefined_when_full_arm_missing():
+    """A missing `full` arm yields delta=None for every layer (no crash)."""
+    reports = [
+        _arm_report_with_solve_rate("full-minus-context", 0.3),
+        _arm_report_with_solve_rate("full-minus-routing", 0.4),
+    ]
+    deltas = {d.layer: d for d in layer_deltas(reports)}
+    assert deltas["context"].delta is None
+    assert deltas["routing"].delta is None
+    # An undefined delta is neither flagged nor earning its place.
+    assert deltas["context"].flagged is False
+    assert deltas["context"].earns_place is False
+
+
+def test_layer_delta_undefined_when_ablation_arm_missing():
+    """A layer with no full-minus arm in the run set yields delta=None, no crash."""
+    reports = [
+        _arm_report_with_solve_rate("full", 0.8),
+        _arm_report_with_solve_rate("full-minus-context", 0.3),  # only context present
+    ]
+    deltas = {d.layer: d for d in layer_deltas(reports)}
+    assert deltas["context"].delta == pytest.approx(0.5)
+    # routing/retry/etc. have no ablation arm -> undefined, not a crash
+    assert deltas["routing"].delta is None
+    assert deltas["retry"].delta is None
+    assert deltas["routing"].full_solve_rate == pytest.approx(0.8)
+    assert deltas["routing"].ablation_solve_rate is None
+
+
+def test_layer_deltas_rendered_in_markdown_with_flags():
+    """AC3+AC4 surfaced in markdown: a delta table flagging the <=0 layer."""
+    # Build via real records so render goes through aggregate -> render.
+    u = _usage(input_tokens=1000, output_tokens=500)
+    records = []
+    # full: 8/10 solved
+    for i in range(10):
+        records.append(_rep("t", "full", i < 8, u))
+    # full-minus-context: 3/10 -> +0.5 (earns its place)
+    for i in range(10):
+        records.append(_rep("t", "full-minus-context", i < 3, u))
+    # full-minus-routing: 9/10 -> -0.1 (flagged)
+    for i in range(10):
+        records.append(_rep("t", "full-minus-routing", i < 9, u))
+    reports = aggregate(records)
+    md = render_markdown(reports, generated_at="2026-06-23")
+    low = md.lower()
+    # a per-layer delta section exists
+    assert "delta" in low
+    assert "per-layer" in low or "ablation" in low
+    # both layers are named
+    assert "context" in low
+    assert "routing" in low
+    # the negative-delta layer (routing) is flagged as a fix/remove candidate
+    assert "fix" in low or "remove" in low or "candidate" in low
+    # the positive-delta layer earns its place
+    assert "earns" in low
+
+
+def test_layer_delta_rows_for_persistence():
+    """The deltas flatten into Postgres-ready rows (so the console can show them)."""
+    reports = [
+        _arm_report_with_solve_rate("full", 0.8),
+        _arm_report_with_solve_rate("full-minus-context", 0.3),
+        _arm_report_with_solve_rate("full-minus-routing", 0.8),  # zero -> flagged
+    ]
+    rows = layer_delta_rows(layer_deltas(reports), run_id="r1")
+    by_layer = {row["layer"]: row for row in rows}
+    assert by_layer["context"]["run_id"] == "r1"
+    assert by_layer["context"]["delta"] == pytest.approx(0.5)
+    assert by_layer["context"]["flagged"] is False
+    assert by_layer["routing"]["delta"] == pytest.approx(0.0)
+    assert by_layer["routing"]["flagged"] is True
+    # missing ablation arm -> None delta carried, not 0.0 and not a crash
+    assert by_layer["retry"]["delta"] is None
 
 
 # ---------------------------------------------------------------------------

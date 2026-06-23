@@ -1,114 +1,53 @@
-"""Output Format Enforcer — deep, pure module (no file/network I/O in enforce()).
+"""Output Format Enforcer — back-compat shim (issue #918).
 
-Rejects full-file rewrites of existing files; accepts diff/patch edits and any
-content for new files or renames.
+The PURE policy moved to ``agentrail.guardrails.policies.output_enforcer`` (the
+framework-neutral guardrails package).  This module re-exports it so every
+existing caller keeps working unchanged::
 
-Design notes
-------------
-* ``enforce()`` is a pure predicate: callers pass the content to inspect and a
-  flag indicating whether the file is new or renamed.  No I/O.
-* Heuristic: the presence of a unified-diff hunk header (``@@ -N[,N] +N[,N] @@``)
-  is the canonical signal that the content is a diff/patch.  Conservative
-  direction: if ANY hunk header is present → Accepted; no hunk header in content
-  that targets an existing file → Rejected.  False negatives (missed full rewrites)
-  are safer than false positives that block legitimate edits.
-* ``push_format_rejection_event()`` is non-fatal by design — mirrors
-  ``push_agent_activity``.  Local runs always stand on their own.
+    from agentrail.run.output_enforcer import enforce, Accepted, Rejected, \
+        all_changes_new_or_rename, EnforceResult
+
+The decision semantics are identical — these names ARE the migrated policy's
+objects (re-exported, not re-implemented), so ``isinstance`` checks across the
+old and new import paths line up exactly.
+
+Only ``push_format_rejection_event`` (and its helpers) stays here, because it
+performs network I/O (a run-event POST) and is therefore NOT part of the pure
+guardrail (AC3).  It mirrors ``push_agent_activity`` — non-fatal by design; local
+runs always stand on their own.
 """
 from __future__ import annotations
 
 import json
-import re
 import time
 import urllib.request
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 from agentrail.context.snapshot_push import load_link
 
-# Matches the hunk header of a unified diff, e.g. "@@ -1,20 +1,21 @@"
-_HUNK_HEADER_RE = re.compile(r"^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@", re.MULTILINE)
+# Re-export the pure policy so legacy callers (and tests) are unchanged.
+from agentrail.guardrails.policies.output_enforcer import (  # noqa: F401
+    Accepted,
+    EnforceResult,
+    Rejected,
+    all_changes_new_or_rename,
+    enforce,
+)
+
+__all__ = [
+    "Accepted",
+    "Rejected",
+    "EnforceResult",
+    "enforce",
+    "all_changes_new_or_rename",
+    "push_format_rejection_event",
+]
 
 
 # ---------------------------------------------------------------------------
-# Result types
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class Accepted:
-    """The content passed enforcement (diff/patch, or new-file/rename)."""
-
-
-@dataclass(frozen=True)
-class Rejected:
-    """The content failed enforcement (full-file rewrite of an existing file)."""
-    reason: str
-
-
-EnforceResult = Union[Accepted, Rejected]
-
-
-# ---------------------------------------------------------------------------
-# Core enforcer (pure — no I/O)
-# ---------------------------------------------------------------------------
-
-def enforce(content: str, *, is_new_or_rename: bool = False) -> EnforceResult:
-    """Return ``Accepted`` or ``Rejected`` for *content*.
-
-    Parameters
-    ----------
-    content:
-        The text to inspect — typically the agent's output for a single edit
-        or the full phase output file.
-    is_new_or_rename:
-        ``True`` when the target file did not exist before (``git status A``) or
-        is a rename (``git status R``).  Full content is always allowed for these.
-    """
-    if is_new_or_rename:
-        return Accepted()
-
-    if _HUNK_HEADER_RE.search(content):
-        return Accepted()
-
-    return Rejected(
-        reason=(
-            "Full-file rewrite of an existing file detected: no unified-diff hunk "
-            "headers (@@ ... @@) found in the content.  Edit existing files with a "
-            "diff/patch instead.  Full content is only accepted for new files or renames."
-        )
-    )
-
-
-# ---------------------------------------------------------------------------
-# Change classification (pure — parses `git status --porcelain` text)
-# ---------------------------------------------------------------------------
-
-def all_changes_new_or_rename(porcelain: str) -> bool:
-    """Return ``True`` when *every* change in ``git status --porcelain`` output is a
-    newly-added, renamed, copied, or untracked file — i.e. there is no edit to a
-    pre-existing file for a diff to apply against.
-
-    Drives ``enforce(..., is_new_or_rename=...)`` from real worktree state instead
-    of a hardcoded flag, so AC3 (new files / renames accepted) actually fires and a
-    new-files-only phase is not a false-positive rejection.  Empty input
-    (no changes) → ``False``.
-    """
-    lines = [ln for ln in porcelain.splitlines() if ln.strip()]
-    if not lines:
-        return False
-    for ln in lines:
-        code = ln[:2]
-        # ?? untracked; A added; R renamed; C copied (either index or worktree column)
-        if code == "??" or code[0] in ("A", "R", "C") or code[1] in ("A", "R", "C"):
-            continue
-        return False  # an existing-file edit (M/D/T/U) is present → enforce diff
-    return True
-
-
-# ---------------------------------------------------------------------------
-# Run-event push (non-fatal)
+# Run-event push (non-fatal) — I/O, stays in run/ (not part of the pure policy)
 # ---------------------------------------------------------------------------
 
 _seq_state: dict[str, int] = {}

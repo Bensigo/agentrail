@@ -1,7 +1,7 @@
 {
   "name": "guardrails-signals-adapters",
   "repo": "Bensigo/agentrail",
-  "commit": "b95806102db5",
+  "commit": "406e549af33e2b1b50c721f9705196855c3d6900",
   "prompt": "Introduce a framework-neutral Signals boundary (CiCheck, Signals, TestResult) and adapters so guardrail policies depend on signals, not on run/afk internals; prove it on the proof-required policy and verify_gate.",
   "agentVisibleRoot": "workdir",
   "hiddenTests": {
@@ -22,6 +22,7 @@
     "repo": "Bensigo/agentrail",
     "pr": 927,
     "issue": 919,
-    "mergeCommit": "b95806102db5"
+    "mergeCommit": "b95806102db5465db77433cd99cd55c8c5532ba6",
+    "fixParent": "406e549af33e2b1b50c721f9705196855c3d6900"
   }
 }

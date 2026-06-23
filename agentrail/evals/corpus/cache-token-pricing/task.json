@@ -1,7 +1,7 @@
 {
   "name": "cache-token-pricing",
   "repo": "Bensigo/agentrail",
-  "commit": "a7e3acd879bc",
+  "commit": "75008a3481134b325d0afe632d40bdba1e546085",
   "prompt": "Capture and price cache_creation tokens through the single-source pricing module (agentrail/run/pricing.py): cost_usd accounts for cache-creation tokens and cache_savings is computed.",
   "agentVisibleRoot": "workdir",
   "hiddenTests": {
@@ -19,6 +19,7 @@
     "repo": "Bensigo/agentrail",
     "pr": 791,
     "issue": 770,
-    "mergeCommit": "a7e3acd879bc"
+    "mergeCommit": "6900668643441fada41c4c82c41f2ea880a1c1b6",
+    "fixParent": "75008a3481134b325d0afe632d40bdba1e546085"
   }
 }

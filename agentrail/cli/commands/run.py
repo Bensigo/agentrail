@@ -289,6 +289,34 @@ def resolve_verifier_command(
     return append_model_to_command(command, agent, chosen)
 
 
+def resolve_critic_command(
+    agent: str, command: str, model_flag: str, target: str
+) -> str:
+    """Build the critic-phase command on a CHEAP model (issue #977).
+
+    The Critic is the cheap-model independent reviewer that replaces the expensive
+    verify model (AC1). It runs ONLY when explicitly opted in via
+    ``runners.<agent>.models.critic`` — the real loop sets no such config, so this
+    returns ``""`` and no critic command is built (the verify path is unchanged).
+    When configured, the cheap model is resolved through
+    ``critic.resolve_critic_model`` (configured model, else the default Haiku) and,
+    like the verifier, must DIFFER from the Implementer's (execute) model so the
+    maker never grades its own homework (independence). Returns ``""`` when the
+    resolved critic model equals the implementer's model.
+    """
+    from agentrail.run.critic import resolve_critic_model
+
+    configured = resolve_model_from_config(agent, target, "critic")
+    if not configured:
+        # Not opted in: no critic command. The verify path stays in control.
+        return ""
+    critic_model = resolve_critic_model(model_flag or configured)
+    implementer_model = resolve_model_for_phase(agent, model_flag, target, "execute")
+    if critic_model == (implementer_model or "").strip():
+        return ""
+    return append_model_to_command(command, agent, critic_model)
+
+
 def append_model_to_command(command: str, agent: str, model: str) -> str:
     """Append model flag to command string; return command unchanged when model is empty.
 
@@ -429,6 +457,16 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
             )
             if verify_command:
                 phase_commands["verify"] = verify_command
+        # Critic (#977): the cheap-model independent reviewer that REPLACES the
+        # expensive verify model. Built only when opted in via models.critic AND
+        # the CRITIC layer is not explicitly off. The real loop sets neither, so
+        # no critic command is built and the verify path is unchanged (AC4).
+        if layer_enabled("CRITIC"):
+            critic_command = resolve_critic_command(
+                agent, command, opts.model, str(target)
+            )
+            if critic_command:
+                phase_commands["critic"] = critic_command
 
     return run_issue(target, issue, agent=agent, command=command,
                      repo_dir=_repo_dir(), log_dir=log_dir,
@@ -460,6 +498,13 @@ def _phase_commands_for(opts: "RunOptions", agent: str, command: str, target: Pa
         verify_command = resolve_verifier_command(agent, command, opts.model, str(target))
         if verify_command:
             phase_commands["verify"] = verify_command
+    # Critic (#977): cheap-model independent reviewer that replaces the expensive
+    # verify model. Built only when opted in via models.critic AND the CRITIC layer
+    # is on. The real loop sets neither, so the verify path is unchanged (AC4).
+    if layer_enabled("CRITIC"):
+        critic_command = resolve_critic_command(agent, command, opts.model, str(target))
+        if critic_command:
+            phase_commands["critic"] = critic_command
     return phase_commands
 
 

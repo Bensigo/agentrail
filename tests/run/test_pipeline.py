@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, call, patch
 import os
 
 from agentrail.run.pipeline import RunContext, run_issue, run_issue_phase
+from agentrail.run.check_runner import red_green_proof_required
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +553,86 @@ class ExecuteReusesOnDiskContextPackTests(unittest.TestCase):
             run_issue_phase(rc, "execute", 1)
 
         mock_build.assert_called_once_with(self.target, 42, "execute")
+
+
+class WarmCacheLayerTests(unittest.TestCase):
+    """Issue #978: the WARMCACHE layer reorders each phase prompt to LEAD with the
+    stable shared per-task prefix so later phases hit the prompt cache (AC1/AC4).
+
+    Layer ON (default / ABSENT / "1") → the stdin prompt starts with the shared
+    prefix. Layer OFF ("0") → byte-identical to today's cold per-phase prompt.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        target = _make_target(self._tmp.name)
+        run_dir = Path(self._tmp.name) / "run"
+        self.target = target
+        self.run_dir = run_dir
+        self.rc = _make_rc(target, run_dir)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _stdin_for(self, phase, env):
+        from agentrail.run import prompts
+        stub = _stub_run_with_timeout(0)
+        full_env = {k: v for k, v in os.environ.items()
+                    if not k.startswith("AGENTRAIL_EVAL_LAYER_WARMCACHE")}
+        full_env.update(env)
+        with patch.dict(os.environ, full_env, clear=True), \
+                patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+                patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value="ctx summary"), \
+                patch("agentrail.run.pipeline.run_with_timeout", stub):
+            run_issue_phase(self.rc, phase, 1)
+        return stub.calls[0]["stdin_text"]
+
+    def _expected_prefix(self):
+        from agentrail.run import prompts
+        return prompts.shared_task_prefix(
+            issue=self.rc.issue,
+            issue_context=self.rc.resolution_text,
+            base_prompt=self.rc.base_prompt,
+            context_summary="ctx summary",
+        )
+
+    def test_layer_on_by_default_prompt_leads_with_shared_prefix(self):
+        for phase in ("test-author", "execute", "verify"):
+            stdin = self._stdin_for(phase, env={})  # ABSENT → ON
+            self.assertTrue(
+                stdin.startswith(self._expected_prefix()),
+                f"{phase}: warmcache-on prompt must lead with the shared prefix",
+            )
+
+    def test_layer_explicit_on_leads_with_shared_prefix(self):
+        stdin = self._stdin_for("execute", env={"AGENTRAIL_EVAL_LAYER_WARMCACHE": "1"})
+        self.assertTrue(stdin.startswith(self._expected_prefix()))
+
+    def test_layer_off_is_byte_identical_to_cold_prompt(self):
+        from agentrail.run import prompts
+        for phase in ("test-author", "execute", "verify"):
+            stdin = self._stdin_for(
+                phase, env={"AGENTRAIL_EVAL_LAYER_WARMCACHE": "0"}
+            )
+            cold = prompts.issue_run_phase_prompt(
+                phase,
+                self.rc.issue,
+                issue_context=self.rc.resolution_text,
+                base_prompt=self.rc.base_prompt,
+                context_summary="ctx summary",
+                plan_output="",
+                verifier_findings_text="",
+                execution_attempt=1,
+                max_execution_attempts=self.rc.max_execution_attempts,
+                red_green=red_green_proof_required(self.target),
+            )
+            self.assertEqual(stdin, cold, f"{phase}: layer OFF must equal the cold prompt")
+
+    def test_all_phases_share_the_same_leading_prefix_when_on(self):
+        prefix = self._expected_prefix()
+        for phase in ("test-author", "execute", "verify"):
+            stdin = self._stdin_for(phase, env={})
+            self.assertEqual(stdin[: len(prefix)], prefix, f"{phase} prefix differs")
 
 
 class UpdateRunStateMetadataFileTests(unittest.TestCase):

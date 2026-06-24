@@ -172,6 +172,12 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     # 0008), the role split is active: the test-author phase authors the failing
     # acceptance test and the execute prompt carries the Implementer boundary so
     # the implementer never authors its own acceptance test (AC3).
+    # WARMCACHE layer (#978): when ON, hoist the shared per-task context (issue
+    # context + context pack + base instructions) to a stable, cacheable LEADING
+    # prefix so later phases (execute, verify) hit the agent's prompt-prefix
+    # cache instead of re-sending the same context cold (AC1/AC2). Roles stay
+    # separate — only the shared context prefix moves (AC3). ABSENT/"1" = ON =
+    # today's behavior; "0" = OFF = byte-identical cold per-phase prompt (AC4).
     phase_prompt = prompts.issue_run_phase_prompt(
         phase, rc.issue,
         issue_context=rc.resolution_text,
@@ -182,6 +188,7 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
         execution_attempt=execution_attempt,
         max_execution_attempts=rc.max_execution_attempts,
         red_green=red_green_proof_required(rc.target_dir),
+        warm_cache=layer_enabled("WARMCACHE"),
     )
 
     # 9. Write prompt file

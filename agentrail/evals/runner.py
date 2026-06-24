@@ -348,7 +348,18 @@ class SandboxAgentExecutor:
             publish_pr=False,
         )
 
-        usage = capture_usage("claude", workdir, since_ts) or Usage(
+        # #989: capture usage from where the agent ACTUALLY ran — the clone at
+        # ``workdir/repo`` — NOT the bare eval ``workdir``. ``run_issue_on_host``
+        # clones the pinned ref into ``workdir/repo`` and runs the agent there
+        # (``--target workdir/repo``), so the claude CLI keys its transcript to
+        # that path. This mirrors production, where ``pipeline.py`` passes
+        # ``rc.target_dir`` (the clone) to ``capture_usage``. Passing the bare
+        # ``workdir`` looked under the wrong encoded transcript path, found
+        # nothing, and fell back to a fabricated zero-token Usage — making every
+        # arm report ``$0`` / dollars-per-solved ``n/a``. Must match the ``repo``
+        # subdir ``native_runner.run_issue_on_host`` clones into.
+        run_path = workdir / "repo"
+        usage = capture_usage("claude", run_path, since_ts) or Usage(
             model=arm.model,
             input_tokens=0,
             output_tokens=0,

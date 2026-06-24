@@ -65,10 +65,11 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date as _date
 from pathlib import Path
-from typing import Callable, List, Optional, Protocol, Sequence
+from typing import Callable, List, Optional, Protocol, Sequence, Tuple
 
 # Canonical contracts — imported, never redefined here (anti-false-green rule).
 from agentrail.evals.arms import Arm, baseline, full, full_minus
@@ -156,6 +157,15 @@ class SpineConfig:
     # so the harness is never developed against them. Off by default; flip it
     # only for the deliberate "score the held-out split" pass.
     include_held_out: bool = False
+    # Wall-clock lever: every ``(task, arm, rep)`` unit is FULLY independent —
+    # the runner clones into its own random tempdir and the hidden-test runner
+    # uses its own isolated workspace, so units share no state. Running them
+    # sequentially makes total time = sum of all units (~19 min each → hours).
+    # ``concurrency`` caps how many units run at once. Default 1 preserves the
+    # old strictly-sequential, deterministic behavior; the CLI raises it so a
+    # full corpus run finishes in roughly the slowest single unit, bounded by
+    # the agent API's rate limits.
+    concurrency: int = 1
 
 
 @dataclass(frozen=True)
@@ -257,62 +267,87 @@ def run_spine(
     # cost-regret and retry-lift probes need to surface in the live report.
     scored_runs: List[ScoredRun] = []
 
-    for task in tasks:
-        for arm in config.arms:
-            for _rep in range(config.reps):
-                # Step 1 — runner runs to completion BEFORE any hidden-test
-                # code path is reached. The runner enforces AC3 spatially;
-                # this sequencing enforces AC2 temporally.
-                record: RunRecord = run(task, arm, executor=executor)
+    # The ordered work-list: one entry per (task, arm, rep). Order is fixed here
+    # so results re-assemble deterministically regardless of completion order —
+    # ``ThreadPoolExecutor.map`` yields in submission order, so a parallel run
+    # produces byte-identical repetition ordering to the sequential one.
+    units: List[Tuple[CorpusTask, Arm]] = [
+        (task, arm)
+        for task in tasks
+        for arm in config.arms
+        for _rep in range(config.reps)
+    ]
 
-                # AC1: arm pins model + temp; recorded on RunRecord via the
-                # runner. We additionally enforce that what was recorded
-                # matches the arm's pin (the runner already takes arm.model;
-                # this check makes "recorded on every run" observable).
-                # We do NOT mutate the record — just assert the contract.
-                if not record.model:
-                    raise RuntimeError(
-                        f"run for task={task.name} arm={arm.name} returned empty model "
-                        "— arm pin was not recorded on the RunRecord"
-                    )
+    def _run_unit(unit: Tuple[CorpusTask, Arm]):
+        task, arm = unit
+        # Step 1 — runner runs to completion BEFORE any hidden-test code path
+        # is reached. The runner enforces AC3 spatially (no answer key in the
+        # agent's workdir); this per-unit sequencing enforces AC2 temporally.
+        # Units are independent (each gets its own tempdir + isolated
+        # hidden-test workspace), which is exactly why running them in parallel
+        # is safe — the spatial/temporal guards hold WITHIN each unit.
+        record: RunRecord = run(task, arm, executor=executor)
 
-                # Step 2 — hidden-test execution, AFTER the runner returned.
-                hidden_tests_passed = hidden_test_runner.run_hidden_tests(
-                    task=task, run_record=record
-                )
-                if not isinstance(hidden_tests_passed, bool):
-                    # Scorer review nit, enforced at the spine boundary so the
-                    # contract violation surfaces here, not silently in the scorer.
-                    raise TypeError(
-                        "HiddenTestRunner.run_hidden_tests must return a real bool; "
-                        f"got {type(hidden_tests_passed).__name__}"
-                    )
+        # AC1: arm pins model + temp; recorded on RunRecord via the runner.
+        # Enforce that a model was recorded (the runner already takes arm.model;
+        # this makes "recorded on every run" observable). No mutation — just the
+        # contract assertion.
+        if not record.model:
+            raise RuntimeError(
+                f"run for task={task.name} arm={arm.name} returned empty model "
+                "— arm pin was not recorded on the RunRecord"
+            )
 
-                # Step 3 — scorer collapses to Verdict. Pure observation.
-                verdict = score(record, hidden_tests_passed=hidden_tests_passed)
-                verdicts.append(verdict)
-                # Issue #960: keep the RunRecord joined with its solved verdict
-                # (a pure ScoredRun join — no new truth) so the intrinsic probes
-                # can be driven from this real run instead of being dropped.
-                scored_runs.append(ScoredRun(run=record, solved=verdict.solved))
-                repetitions.append(
-                    RepetitionRecord(
-                        task=task.name,
-                        arm=arm.name,
-                        solved=verdict.solved,
-                        usage=record.usage,
-                        # Objective Gate false-green probe (#940): carry the
-                        # scorer's flags VERBATIM. The reporter only COUNTS
-                        # these — the false-green definition is single-sourced
-                        # in scorer.score, never re-derived downstream.
-                        gate_passed=verdict.gate_passed,
-                        false_green=verdict.false_green,
-                        # Difficulty-stratified reporting (#941): thread the
-                        # CorpusTask's difficulty straight onto the record so
-                        # the reporter can break metrics out per stratum.
-                        difficulty=task.difficulty,
-                    )
-                )
+        # Step 2 — hidden-test execution, AFTER the runner returned.
+        hidden_tests_passed = hidden_test_runner.run_hidden_tests(
+            task=task, run_record=record
+        )
+        if not isinstance(hidden_tests_passed, bool):
+            # Scorer review nit, enforced at the spine boundary so the contract
+            # violation surfaces here, not silently in the scorer.
+            raise TypeError(
+                "HiddenTestRunner.run_hidden_tests must return a real bool; "
+                f"got {type(hidden_tests_passed).__name__}"
+            )
+
+        # Step 3 — scorer collapses to Verdict. Pure observation.
+        verdict = score(record, hidden_tests_passed=hidden_tests_passed)
+        rep = RepetitionRecord(
+            task=task.name,
+            arm=arm.name,
+            solved=verdict.solved,
+            usage=record.usage,
+            # Objective Gate false-green probe (#940): carry the scorer's flags
+            # VERBATIM. The reporter only COUNTS these — the false-green
+            # definition is single-sourced in scorer.score, never re-derived.
+            gate_passed=verdict.gate_passed,
+            false_green=verdict.false_green,
+            # Difficulty-stratified reporting (#941): thread the CorpusTask's
+            # difficulty straight onto the record for per-stratum breakdowns.
+            difficulty=task.difficulty,
+        )
+        # Issue #960: keep the RunRecord joined with its solved verdict (a pure
+        # ScoredRun join — no new truth) so the intrinsic probes can be driven
+        # from this real run instead of being dropped.
+        return rep, verdict, ScoredRun(run=record, solved=verdict.solved)
+
+    concurrency = max(1, config.concurrency)
+    if concurrency == 1:
+        # Strictly sequential — identical to the original behavior. Kept as a
+        # distinct path so single-threaded runs never enter a worker thread
+        # (preserves the simplest possible stack for debugging + test spies).
+        results = [_run_unit(unit) for unit in units]
+    else:
+        # Units are independent, so fan them out. ``map`` preserves input order
+        # and re-raises the first worker exception on iteration — same
+        # fail-fast contract as the sequential path.
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            results = list(pool.map(_run_unit, units))
+
+    for rep, verdict, scored in results:
+        repetitions.append(rep)
+        verdicts.append(verdict)
+        scored_runs.append(scored)
 
     arm_reports = aggregate(repetitions)
 

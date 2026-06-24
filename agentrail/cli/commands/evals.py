@@ -55,6 +55,10 @@ def _usage() -> str:
         "  --ablation       Run the full leave-one-out set: baseline, full, and\n"
         "                   one full-minus-<layer> arm per layer (per-layer deltas).\n"
         "  --reps N         Repetitions per (task, arm) (default: 5; min: 1).\n"
+        "  --concurrency N  Run up to N (task, arm, rep) units in parallel\n"
+        "                   (default: 4; min: 1). Units are independent, so this\n"
+        "                   cuts a full corpus run from hours to ~the slowest\n"
+        "                   single unit, bounded by the agent API rate limit.\n"
         "  --include-held-out\n"
         "                   Include the held-out task split (excluded by default\n"
         "                   so the harness is never developed against it).\n"
@@ -79,9 +83,15 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
     smoke executor instead of the real sandbox), and the optional reports dir
     override.
     """
+    import os
+
     arms: List[Arm] = []
     tasks: List[str] = []
     reps = 5
+    # Default concurrency: units are independent, so parallelize by default. The
+    # env var lets a constrained environment (or a stricter API rate limit) dial
+    # it down without editing the command; an explicit --concurrency flag wins.
+    concurrency = int(os.environ.get("AGENTRAIL_EVAL_CONCURRENCY") or 4)
     corpus_root: Optional[Path] = None
     reports_dir: Optional[Path] = None
     smoke = False
@@ -106,6 +116,9 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
             i += 2
         elif a == "--reps":
             reps = int(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--concurrency":
+            concurrency = int(_parse_flag_value(args, i, a))
             i += 2
         elif a == "--reports-dir":
             reports_dir = Path(_parse_flag_value(args, i, a))
@@ -148,6 +161,7 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
             task_filter=tasks or None,
             corpus_root=corpus_root,
             include_held_out=include_held_out,
+            concurrency=concurrency,
         ),
         smoke,
         reports_dir,

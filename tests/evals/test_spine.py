@@ -536,6 +536,26 @@ def test_ac5_resolve_arm_rejects_unknown_spec() -> None:
         resolve_arm("garbage")
 
 
+def test_resolve_arm_accepts_new_flow() -> None:
+    """Issue #980 AC4: the new-flow arm name is CLI-selectable via --arm."""
+    arm = resolve_arm("new-flow")
+    assert arm.name == "new-flow"
+    # base layers on + the three new layers enabled + a critic model supplied.
+    assert all(arm.layers.as_dict().values())
+    assert arm.extra_layers["critic"] is True
+    assert arm.extra_layers["bestofn"] is True
+    assert arm.extra_layers["warmcache"] is True
+    assert arm.critic_model
+
+
+def test_resolve_arm_accepts_new_flow_minus_layer() -> None:
+    arm = resolve_arm("new-flow-minus-warmcache")
+    assert arm.name == "new-flow-minus-warmcache"
+    assert arm.extra_layers["warmcache"] is False
+    assert arm.extra_layers["critic"] is True
+    assert arm.extra_layers["bestofn"] is True
+
+
 # ---------------------------------------------------------------------------
 # Default production HiddenTestRunner returns a real ``bool`` (honest no-op).
 # ---------------------------------------------------------------------------

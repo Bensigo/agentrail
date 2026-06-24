@@ -44,7 +44,15 @@ import pytest
 
 from agentrail.run.usage_capture import Usage
 
-from agentrail.evals.arms import Arm, Layers, baseline, full, full_minus
+from agentrail.evals.arms import (
+    Arm,
+    Layers,
+    baseline,
+    full,
+    full_minus,
+    new_flow,
+    new_flow_minus,
+)
 from agentrail.evals.corpus.loader import CorpusTask, HiddenTestRef
 from agentrail.evals.run_record import RetryEvent, RunRecord
 from agentrail.evals.runner import (
@@ -287,6 +295,58 @@ def test_sandbox_executor_arm_env_translates_layers_and_pinned_model() -> None:
     env_baseline = _arm_env(baseline())
     for layer in ("CONTEXT", "ROUTING", "VERIFY_GATE", "RETRY", "GUARDRAILS"):
         assert env_baseline[f"AGENTRAIL_EVAL_LAYER_{layer}"] == "0"
+
+
+def test_arm_env_emits_new_flow_layer_toggles_and_critic_model() -> None:
+    """Issue #980: the new-flow arm's env must enable the three new layers and
+    supply a critic model so the pipeline builds a critic command.
+
+    The pipeline reads ``AGENTRAIL_EVAL_LAYER_{CRITIC,BESTOFN,WARMCACHE}`` via
+    ``layer_enabled`` and a critic-model env override (so the critic/best-of-N
+    layers, which are opt-in, actually activate during the eval run).
+    """
+    from agentrail.evals.runner import _arm_env, CRITIC_MODEL_ENV
+
+    env = _arm_env(new_flow())
+    # The five base layers stay ON (new-flow = full + new layers).
+    for layer in ("CONTEXT", "ROUTING", "VERIFY_GATE", "RETRY", "GUARDRAILS"):
+        assert env[f"AGENTRAIL_EVAL_LAYER_{layer}"] == "1"
+    # The three new layers are explicitly ON.
+    assert env["AGENTRAIL_EVAL_LAYER_CRITIC"] == "1"
+    assert env["AGENTRAIL_EVAL_LAYER_BESTOFN"] == "1"
+    assert env["AGENTRAIL_EVAL_LAYER_WARMCACHE"] == "1"
+    # A critic model is supplied so a critic command actually gets built.
+    assert env[CRITIC_MODEL_ENV] == new_flow().critic_model
+
+
+def test_arm_env_new_flow_minus_warmcache_turns_only_warmcache_off() -> None:
+    from agentrail.evals.runner import _arm_env
+
+    env = _arm_env(new_flow_minus("warmcache"))
+    assert env["AGENTRAIL_EVAL_LAYER_WARMCACHE"] == "0"
+    assert env["AGENTRAIL_EVAL_LAYER_CRITIC"] == "1"
+    assert env["AGENTRAIL_EVAL_LAYER_BESTOFN"] == "1"
+
+
+def test_arm_env_new_flow_minus_critic_turns_only_critic_off() -> None:
+    from agentrail.evals.runner import _arm_env
+
+    env = _arm_env(new_flow_minus("critic"))
+    assert env["AGENTRAIL_EVAL_LAYER_CRITIC"] == "0"
+    assert env["AGENTRAIL_EVAL_LAYER_BESTOFN"] == "1"
+    assert env["AGENTRAIL_EVAL_LAYER_WARMCACHE"] == "1"
+
+
+def test_arm_env_full_emits_no_new_layer_toggles_and_no_critic_model() -> None:
+    """``full`` keeps today's meaning: no explicit new-layer toggles (warm-cache
+    stays default-ON), and no critic model (so critic/best-of-N never activate)."""
+    from agentrail.evals.runner import _arm_env, CRITIC_MODEL_ENV
+
+    env = _arm_env(full())
+    assert "AGENTRAIL_EVAL_LAYER_CRITIC" not in env
+    assert "AGENTRAIL_EVAL_LAYER_BESTOFN" not in env
+    assert "AGENTRAIL_EVAL_LAYER_WARMCACHE" not in env
+    assert CRITIC_MODEL_ENV not in env
 
 
 # ---------------------------------------------------------------------------

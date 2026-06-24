@@ -60,6 +60,7 @@ def _rep(
     gate_passed: bool = False,
     false_green: bool = False,
     difficulty: str | None = None,
+    wall_time_s: float = 0.0,
 ) -> RepetitionRecord:
     return RepetitionRecord(
         task=task,
@@ -69,6 +70,7 @@ def _rep(
         gate_passed=gate_passed,
         false_green=false_green,
         difficulty=difficulty,
+        wall_time_s=wall_time_s,
     )
 
 
@@ -546,6 +548,185 @@ def test_layer_delta_rows_for_persistence():
     assert by_layer["routing"]["flagged"] is True
     # missing ablation arm -> None delta carried, not 0.0 and not a crash
     assert by_layer["retry"]["delta"] is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #980 AC3 — wall-time PER TASK in the report. ``RunRecord.wall_time_s``
+# is threaded onto the RepetitionRecord; the arm report surfaces the mean
+# wall-time per task. A falsifiable metric: a slower arm reads worse (it can
+# come back larger), never one-sided.
+# ---------------------------------------------------------------------------
+
+
+def test_arm_report_mean_wall_time_per_task():
+    u = _usage(input_tokens=1000)
+    records = [
+        _rep("task-a", "full", True, u, wall_time_s=10.0),
+        _rep("task-a", "full", True, u, wall_time_s=20.0),
+        _rep("task-b", "full", False, u, wall_time_s=30.0),
+    ]
+    r = aggregate(records)[0]
+    # mean wall-time per (task, arm) repetition = (10 + 20 + 30) / 3 = 20.0
+    assert r.mean_wall_time_s == pytest.approx(20.0)
+    assert r.total_wall_time_s == pytest.approx(60.0)
+
+
+def test_arm_report_mean_wall_time_zero_when_no_reps_recorded():
+    """No reps -> 0.0 mean wall-time, never a divide-by-zero crash."""
+    assert aggregate([]) == []
+    # A single all-zero record still aggregates to 0.0.
+    u = _usage(input_tokens=1)
+    r = aggregate([_rep("t", "full", False, u, wall_time_s=0.0)])[0]
+    assert r.mean_wall_time_s == pytest.approx(0.0)
+
+
+def test_wall_time_surfaced_in_markdown():
+    u = _usage(input_tokens=1000)
+    records = [
+        _rep("task-a", "full", True, u, wall_time_s=12.5),
+        _rep("task-a", "full", True, u, wall_time_s=12.5),
+    ]
+    md = render_markdown(aggregate(records), generated_at="2026-06-23").lower()
+    assert "wall-time" in md or "wall time" in md
+
+
+def test_wall_time_in_arm_metric_rows():
+    from agentrail.evals.reporter import arm_metric_rows
+
+    u = _usage(input_tokens=1000)
+    records = [
+        _rep("task-a", "full", True, u, wall_time_s=10.0),
+        _rep("task-a", "full", True, u, wall_time_s=30.0),
+    ]
+    rows = arm_metric_rows(aggregate(records), run_id="r1")
+    assert rows[0]["mean_wall_time_s"] == pytest.approx(20.0)
+
+
+# ---------------------------------------------------------------------------
+# Issue #980 AC3/AC4 — the new-flow arm vs ``full`` head-to-head delta on all
+# four metrics (dollars-per-solved, wall-time per task, solve-rate, false-green
+# rate), each falsifiable (able to come back WORSE), PLUS the per-layer
+# ablation deltas for the three new layers (critic/best-of-N/warm-cache).
+# ---------------------------------------------------------------------------
+
+
+def test_new_flow_vs_full_delta_on_all_four_metrics():
+    from agentrail.evals.reporter import new_flow_delta
+
+    u = _usage(input_tokens=1000, output_tokens=500)
+    per_rep = cost_usd(u)
+    records = [
+        # full: 1/2 solved, both gate-passed, one false-green, wall-time 10/10
+        _rep("t", "full", True, u, gate_passed=True, false_green=False, wall_time_s=10.0),
+        _rep("t", "full", False, u, gate_passed=True, false_green=True, wall_time_s=10.0),
+        # new-flow: 2/2 solved, both gate-passed, no false-green, wall-time 20/20
+        _rep("t", "new-flow", True, u, gate_passed=True, false_green=False, wall_time_s=20.0),
+        _rep("t", "new-flow", True, u, gate_passed=True, false_green=False, wall_time_s=20.0),
+    ]
+    reports = aggregate(records)
+    delta = new_flow_delta(reports)
+    assert delta is not None
+    # solve-rate: new-flow 1.0 vs full 0.5 -> +0.5 (better)
+    assert delta.solve_rate_delta == pytest.approx(0.5)
+    # false-green rate: new-flow 0.0 vs full 0.5 -> -0.5 (better; lower is good)
+    assert delta.false_green_rate_delta == pytest.approx(-0.5)
+    # wall-time per task: new-flow 20.0 vs full 10.0 -> +10.0 (WORSE: slower).
+    # This proves the metric is NOT one-sided — it came back worse here.
+    assert delta.wall_time_delta == pytest.approx(10.0)
+    # dollars-per-solved: full = 2*per_rep / 1 solved; new-flow = 2*per_rep / 2
+    assert delta.full_dollars_per_solved == pytest.approx(2 * per_rep)
+    assert delta.new_flow_dollars_per_solved == pytest.approx(per_rep)
+    # delta = new-flow - full = per_rep - 2*per_rep = -per_rep (cheaper -> better)
+    assert delta.dollars_per_solved_delta == pytest.approx(-per_rep)
+
+
+def test_new_flow_delta_none_when_either_arm_absent():
+    from agentrail.evals.reporter import new_flow_delta
+
+    u = _usage(input_tokens=1000)
+    # only full present, no new-flow
+    reports = aggregate([_rep("t", "full", True, u)])
+    assert new_flow_delta(reports) is None
+
+
+def test_new_flow_delta_dollars_undefined_when_arm_never_solved():
+    """No-divide-by-zero: an all-failure new-flow arm yields None $/solved delta."""
+    from agentrail.evals.reporter import new_flow_delta
+
+    u = _usage(input_tokens=1000)
+    records = [
+        _rep("t", "full", True, u),
+        _rep("t", "new-flow", False, u),  # never solved
+    ]
+    delta = new_flow_delta(aggregate(records))
+    assert delta is not None
+    assert delta.new_flow_dollars_per_solved is None
+    # the $/solved delta is undefined (None), never a crash
+    assert delta.dollars_per_solved_delta is None
+
+
+def test_new_flow_vs_full_delta_rendered_in_markdown():
+    from agentrail.evals.reporter import render_markdown as _render
+
+    u = _usage(input_tokens=1000, output_tokens=500)
+    records = [
+        _rep("t", "full", True, u, gate_passed=True, wall_time_s=10.0),
+        _rep("t", "full", False, u, gate_passed=True, false_green=True, wall_time_s=10.0),
+        _rep("t", "new-flow", True, u, gate_passed=True, wall_time_s=20.0),
+        _rep("t", "new-flow", True, u, gate_passed=True, wall_time_s=20.0),
+    ]
+    md = _render(aggregate(records), generated_at="2026-06-23").lower()
+    assert "new-flow" in md
+    # all four metric names present in the head-to-head section
+    assert "solve-rate" in md
+    assert "false-green" in md
+    assert "wall-time" in md or "wall time" in md
+    assert "dollars-per-solved" in md
+
+
+def test_new_flow_layer_deltas_for_the_three_new_layers():
+    """AC1: each new layer (critic/best-of-N/warm-cache) has a leave-one-out
+    delta = new-flow.solve_rate - new-flow-minus-<layer>.solve_rate."""
+    from agentrail.evals.arms import NEW_FLOW_LAYERS
+    from agentrail.evals.reporter import new_flow_layer_deltas
+
+    reports = [
+        _arm_report_with_solve_rate("new-flow", 0.9),
+        _arm_report_with_solve_rate("new-flow-minus-critic", 0.4),     # +0.5
+        _arm_report_with_solve_rate("new-flow-minus-bestofn", 0.9),    #  0.0 flagged
+        _arm_report_with_solve_rate("new-flow-minus-warmcache", 1.0),  # -0.1 flagged
+    ]
+    deltas = {d.layer: d for d in new_flow_layer_deltas(reports)}
+    assert [d for d in deltas] == list(NEW_FLOW_LAYERS) or set(deltas) == set(NEW_FLOW_LAYERS)
+    assert deltas["critic"].delta == pytest.approx(0.5)
+    assert deltas["critic"].earns_place is True
+    assert deltas["bestofn"].delta == pytest.approx(0.0)
+    assert deltas["bestofn"].flagged is True
+    assert deltas["warmcache"].delta == pytest.approx(-0.1)
+    assert deltas["warmcache"].flagged is True
+
+
+def test_new_flow_layer_delta_undefined_when_arm_absent():
+    from agentrail.evals.reporter import new_flow_layer_deltas
+
+    reports = [_arm_report_with_solve_rate("new-flow-minus-critic", 0.4)]  # no new-flow
+    deltas = {d.layer: d for d in new_flow_layer_deltas(reports)}
+    assert deltas["critic"].delta is None
+    assert deltas["critic"].flagged is False
+
+
+def test_new_flow_layer_deltas_rendered_in_markdown():
+    u = _usage(input_tokens=1000, output_tokens=500)
+    records = []
+    for i in range(10):
+        records.append(_rep("t", "new-flow", i < 9, u))
+    for i in range(10):
+        records.append(_rep("t", "new-flow-minus-critic", i < 4, u))  # +0.5 earns
+    for i in range(10):
+        records.append(_rep("t", "new-flow-minus-bestofn", i < 10, u))  # -0.1 flagged
+    md = render_markdown(aggregate(records), generated_at="2026-06-23").lower()
+    assert "critic" in md
+    assert "bestofn" in md or "best-of-n" in md
 
 
 # ---------------------------------------------------------------------------

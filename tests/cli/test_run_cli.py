@@ -18,7 +18,7 @@ from agentrail.cli.commands.run import (
     is_source_checkout, ensure_source_run_allowed,
     active_run_issue, ensure_no_conflicting_active_run,
     next_pickable_issue,
-    exec_issue, RunOptions,
+    exec_issue, exec_prompt, RunOptions,
     parse_batch_args, run_batch,
     ensure_command_available,
 )
@@ -278,6 +278,39 @@ class ExecIssueTests(unittest.TestCase):
         self.assertEqual(rc, 0)
 
 
+class ExecPromptTests(unittest.TestCase):
+    """#968: exec_prompt delegates to pipeline.run_prompt with the prompt text."""
+
+    def _patches(self):
+        return [
+            patch("agentrail.run.pipeline.run_prompt", return_value=0),
+            patch("agentrail.cli.commands.run._repo_dir", return_value=Path("/repo")),
+            patch("agentrail.cli.commands.run.resolve_agent_command", return_value="claude -p"),
+            patch("agentrail.cli.commands.run.resolve_agent_name", return_value="claude"),
+        ]
+
+    def test_calls_run_prompt_with_prompt_and_label(self) -> None:
+        opts = RunOptions(agent="claude", target="/tmp/x", command="claude -p",
+                          label="afk-objective-gate")
+        p = self._patches()
+        with p[0] as mock_run_prompt, p[1], p[2], p[3]:
+            rc = exec_prompt("Realign the gate to ADR 0007.", opts)
+        self.assertEqual(rc, 0)
+        mock_run_prompt.assert_called_once()
+        ca = mock_run_prompt.call_args
+        # prompt is the 2nd positional arg.
+        self.assertEqual(ca.args[1], "Realign the gate to ADR 0007.")
+        self.assertEqual(ca.kwargs["label"], "afk-objective-gate")
+        self.assertEqual(ca.kwargs["repo_dir"], Path("/repo"))
+
+    def test_default_label_is_prompt(self) -> None:
+        opts = RunOptions(agent="claude", target="/tmp/x", command="claude -p")
+        p = self._patches()
+        with p[0] as mock_run_prompt, p[1], p[2], p[3]:
+            exec_prompt("do the thing", opts)
+        self.assertEqual(mock_run_prompt.call_args.kwargs["label"], "prompt")
+
+
 class ParseBatchTests(unittest.TestCase):
     def test_positional_issues_and_defaults(self) -> None:
         cfg = parse_batch_args(["360", "361"])
@@ -342,6 +375,20 @@ class DispatchTests(unittest.TestCase):
 
     def test_issue_requires_number(self) -> None:
         rc = run_run(["issue", "--agent", "claude"])
+        self.assertEqual(rc, 2)
+
+    def test_prompt_subcommand_routes_to_exec_prompt(self) -> None:
+        with patch("agentrail.cli.commands.run.exec_prompt", return_value=0) as m, \
+             patch("agentrail.cli.commands.run.ensure_source_run_allowed"), \
+             patch("agentrail.cli.commands.run.resolve_agent_command", return_value="claude -p"), \
+             patch("agentrail.cli.commands.run.ensure_command_available"):
+            rc = run_run(["prompt", "Fix the gate", "--agent", "claude",
+                          "--target", "/tmp/x", "--label", "task-1"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(m.call_args.args[0], "Fix the gate")
+
+    def test_prompt_missing_text_returns_2(self) -> None:
+        rc = run_run(["prompt", "--agent", "claude"])
         self.assertEqual(rc, 2)
 
     def test_batch_subcommand_routes(self) -> None:

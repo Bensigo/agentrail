@@ -447,13 +447,102 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
     """Native port of legacy run_issue (scripts/agentrail-legacy:6376-6566).
     Assumes guards (source-run, active-run conflict, command availability) were
     already done by the caller (agentrail/cli/commands/run.py:_dispatch).
-    Returns the final exit status."""
+    Returns the final exit status.
+
+    Issue mode is the GitHub-issue fetch path: the ONLY thing it adds over the
+    shared pipeline (:func:`_run_pipeline`) is resolving the issue text via
+    ``ctx.issue_resolution_text``. Everything downstream — skills, base prompt,
+    context pack, the test-author→execute→verify phase loop, and the Objective
+    Gate / Red-Green / Independent Verification — is the SAME code path the
+    prompt mode (:func:`run_prompt`) runs, so the real autonomous loop's
+    behavior is unchanged."""
 
     # 1. Resolve target_dir
     target_dir = Path(target_dir).resolve()
 
-    # 2. Issue resolution text
+    # 2. Issue resolution text (the issue-mode-specific GitHub fetch).
     resolution_text = ctx.issue_resolution_text(target_dir, issue)
+
+    # 3. Run the shared pipeline off the fetched issue text. ``label`` is the
+    # numeric issue id, used for paths/prompts/run-id exactly as before so issue
+    # mode is byte-identical.
+    return _run_pipeline(
+        target_dir,
+        resolution_text=resolution_text,
+        label=issue,
+        agent=agent,
+        command=command,
+        repo_dir=repo_dir,
+        log_dir=log_dir,
+        run_id=run_id,
+        phase_commands=phase_commands,
+        budget_usd=budget_usd,
+        run_id_stem=f"issue-{issue}",
+        context_query=f"issue #{issue}",
+    )
+
+
+def run_prompt(target_dir: Path, prompt: str, *, label: str, agent: str,
+               command: str, repo_dir: Path, log_dir: Optional[Path] = None,
+               run_id: str = "",
+               phase_commands: Optional[Dict[str, str]] = None,
+               budget_usd: float = 0.0) -> int:
+    """Prompt-driven run mode (#968) — run the pipeline off a raw prompt.
+
+    Mirrors :func:`run_issue` but injects the supplied ``prompt`` as the
+    resolution text instead of fetching a GitHub issue, and uses ``label`` (a
+    non-numeric string such as a corpus task name) wherever issue mode used the
+    issue number as an id (run-id, prompt/path labels, metadata, state).
+
+    It calls the SAME :func:`_run_pipeline` body, so EVERY phase
+    (test-author → execute → verify) and the Objective Gate / Red-Green Proof /
+    Independent Verification run EXACTLY as for an issue — no phase is skipped
+    and no gate is weakened in prompt mode (the eval's whole value is measuring
+    the real gate). Returns the final exit status."""
+    target_dir = Path(target_dir).resolve()
+    # A non-empty prompt is the contract; an empty prompt has no work to define.
+    if not (prompt or "").strip():
+        print("error: run prompt requires a non-empty prompt", file=sys.stderr)
+        return 2
+    # Sanitize the label into a filesystem-safe run-id stem (paths use it).
+    safe_label = "".join(c if (c.isalnum() or c in "-_.") else "-" for c in str(label)) or "prompt"
+    return _run_pipeline(
+        target_dir,
+        resolution_text=prompt,
+        label=label,
+        agent=agent,
+        command=command,
+        repo_dir=repo_dir,
+        log_dir=log_dir,
+        run_id=run_id,
+        phase_commands=phase_commands,
+        budget_usd=budget_usd,
+        run_id_stem=f"prompt-{safe_label}",
+        context_query=f"prompt {label}",
+    )
+
+
+def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
+                  agent: str, command: str, repo_dir: Path,
+                  log_dir: Optional[Path] = None, run_id: str = "",
+                  phase_commands: Optional[Dict[str, str]] = None,
+                  budget_usd: float = 0.0,
+                  run_id_stem: str = "",
+                  context_query: str = "") -> int:
+    """Shared run body for issue mode and prompt mode (#968).
+
+    This is the single source of truth for the phase loop and the Objective
+    Gate; ``run_issue`` and ``run_prompt`` differ ONLY in how they produce
+    ``resolution_text`` and ``label`` (issue fetch vs. raw prompt). ``label`` is
+    used wherever the legacy ``issue`` id appeared (run-id, prompt ``#{label}``
+    framing, artifacts/state, context-pack target) and may be an ``int`` (issue
+    mode, byte-identical) or a ``str`` (prompt mode).
+
+    Assumes guards (source-run, active-run conflict, command availability) were
+    already done by the caller. Returns the final exit status."""
+    # 1. Resolve target_dir (idempotent — callers already resolved it).
+    target_dir = Path(target_dir).resolve()
+    issue = label  # kept as the local name the body below already used.
 
     # 3. Resolve skills (degrade gracefully on failure)
     _default_resolution = {
@@ -490,8 +579,11 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
         context_snippets=context_snippets,
     )
 
-    # 5. Context retrieval metadata
-    run_context_retrieval = ctx.context_retrieval_metadata(target_dir, f"issue #{issue}")
+    # 5. Context retrieval metadata. The query label is ``issue #{issue}`` in
+    # issue mode (byte-identical) and a prompt label in prompt mode.
+    run_context_retrieval = ctx.context_retrieval_metadata(
+        target_dir, context_query or f"issue #{issue}"
+    )
 
     # 6. Max execution attempts
     max_execution_attempts = int(
@@ -508,9 +600,12 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
     # 7. Run dir setup
     started_at = _utc_now_iso()
     log_dir = log_dir or (target_dir / ".agentrail" / "runs")
+    # The run-id stem encodes the target: ``issue-{issue}`` in issue mode
+    # (byte-identical) or ``prompt-{label}`` in prompt mode.
+    _stem = run_id_stem or f"issue-{issue}"
     run_id = run_id or (
         f"{_dt.datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
-        f"-issue-{issue}-{agent}-{os.getpid()}"
+        f"-{_stem}-{agent}-{os.getpid()}"
     )
     run_dir = Path(log_dir) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)

@@ -48,13 +48,18 @@ def _usage() -> str:
   agentrail run issue N [--agent NAME] [--target DIR] [--command CMD]
                         [--model MODEL] [--log-dir DIR] [--run-id ID]
                         [--budget-usd FLOAT]
+  agentrail run prompt "TEXT" [--label NAME] [--agent NAME] [--target DIR]
+                        [--command CMD] [--model MODEL] [--log-dir DIR]
+                        [--run-id ID] [--budget-usd FLOAT]
   agentrail run batch [--concurrency N] [--agent NAME] [--target DIR]
                       [--command CMD] [--model MODEL] [--base BRANCH]
                       [--] ISSUE [ISSUE ...]
 
 Bare `run` selects the next queued GitHub issue (labels: afk, ready-for-agent;
 excludes afk-in-progress) and runs it. `run issue N` runs a specific issue.
-`run batch` runs several issues in parallel, each in its own git worktree.
+`run prompt "TEXT"` runs the SAME pipeline (test-author → execute → verify +
+Objective Gate) on a raw prompt instead of a numbered issue. `run batch` runs
+several issues in parallel, each in its own git worktree.
 
 Budget: when --budget-usd is omitted, the default cap is read from
 `budgets.per_issue_usd` in .agentrail/config.json (0 or unset = uncapped).
@@ -85,6 +90,7 @@ class RunOptions:
     command_explicit: bool = False
     budget_usd: float = 0.0
     budget_explicit: bool = False
+    label: str = ""
 
 
 def _need_value(args: List[str], i: int, flag: str) -> str:
@@ -114,6 +120,8 @@ def parse_run_options(args: List[str]) -> RunOptions:
             opts.log_dir = _need_value(args, i, "--log-dir"); i += 2
         elif a == "--run-id":
             opts.run_id = _need_value(args, i, "--run-id"); i += 2
+        elif a == "--label":
+            opts.label = _need_value(args, i, "--label"); i += 2
         elif a == "--budget-usd":
             raw = _need_value(args, i, "--budget-usd")
             try:
@@ -423,6 +431,53 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
                      budget_usd=effective_budget(opts))
 
 
+def _phase_commands_for(opts: "RunOptions", agent: str, command: str, target: Path) -> Dict[str, str]:
+    """Per-phase command overrides (model split + Independent Verifier).
+
+    Single source of truth shared by ``exec_issue`` and ``exec_prompt`` so the
+    SAME model-routing / verifier-selection rules apply in both modes — prompt
+    mode never weakens the gate by silently dropping the distinct-model verify
+    phase. Returns ``{}`` when ``--command`` was explicit (the user owns the
+    command string and we never mutate it)."""
+    phase_commands: Dict[str, str] = {}
+    if opts.command_explicit:
+        return phase_commands
+    # MVP flow is test-author → execute (plan is gone); keep a "plan" override
+    # resolvable for any dormant caller, but the live phases are these two.
+    for phase in ("test-author", "execute"):
+        model = resolve_model_for_phase(agent, opts.model, str(target), phase)
+        if model:
+            phase_commands[phase] = append_model_to_command(command, agent, model)
+    # Independent Verifier (#782): only a DIFFERENT-model verify command.
+    verify_command = resolve_verifier_command(agent, command, opts.model, str(target))
+    if verify_command:
+        phase_commands["verify"] = verify_command
+    return phase_commands
+
+
+def exec_prompt(prompt: str, opts: RunOptions) -> int:
+    """Run the pipeline on a raw prompt (#968), not a numbered GitHub issue.
+
+    Mirrors :func:`exec_issue` exactly — same agent/command/model resolution and
+    the SAME per-phase command overrides — then delegates to
+    ``pipeline.run_prompt`` so every phase and the Objective Gate run identically
+    to issue mode. ``opts.label`` (default ``"prompt"``) is the non-numeric id
+    used for the run-id and prompt/path framing."""
+    from agentrail.run.pipeline import run_prompt
+    agent = resolve_agent_name(opts.target, opts.agent)
+    command = resolve_agent_command(agent, opts.command, opts.target)
+    target = Path(opts.target).resolve()
+    log_dir = Path(opts.log_dir) if opts.log_dir else None
+    label = opts.label or "prompt"
+
+    phase_commands = _phase_commands_for(opts, agent, command, target)
+
+    return run_prompt(target, prompt, label=label, agent=agent, command=command,
+                      repo_dir=_repo_dir(), log_dir=log_dir,
+                      run_id=opts.run_id, phase_commands=phase_commands,
+                      budget_usd=effective_budget(opts))
+
+
 @dataclass
 class BatchConfig:
     issues: List[int] = field(default_factory=list)
@@ -559,6 +614,20 @@ def _dispatch(args: List[str]) -> int:
         ensure_command_available(command)
         opts.command = command
         return exec_issue(int(issue_arg), opts)
+
+    if args and args[0] == "prompt":
+        rest = args[1:]
+        if not rest or rest[0].startswith("--"):
+            raise UsageError('run prompt requires a prompt: agentrail run prompt "TEXT"')
+        prompt_text = rest[0]
+        opts = parse_run_options(rest[1:])
+        opts.target = str(Path(opts.target).resolve())
+        opts.agent = resolve_agent_name(opts.target, opts.agent)
+        ensure_source_run_allowed(opts.target, "run prompt")
+        command = resolve_agent_command(opts.agent, opts.command, opts.target)
+        ensure_command_available(command)
+        opts.command = command
+        return exec_prompt(prompt_text, opts)
 
     if args and args[0] == "batch":
         return run_batch(args[1:])

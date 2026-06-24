@@ -364,7 +364,7 @@ class SandboxAgentExecutor:
         # ``workdir/repo`` and the agent works there with ``publish_pr=False``,
         # so the changes are sitting in that clone (committed AND/OR uncommitted
         # AND/OR newly-added files) when we get here.
-        diff = _capture_workdir_diff(workdir, base_ref=task.commit)
+        diff = _capture_workdir_diff(workdir, base_ref=task.commit, label=task.name)
 
         return AgentExecution(
             diff=diff,
@@ -481,16 +481,27 @@ def _resolve_git_repo(workdir: Path) -> Optional[Path]:
     return None
 
 
-def _capture_workdir_diff(workdir: Path, *, base_ref: str) -> str:
+def _capture_workdir_diff(
+    workdir: Path, *, base_ref: str, label: Optional[str] = None
+) -> str:
     """Return the agent's NET change vs ``base_ref`` as a unified-diff string.
 
     The net change is everything the agent did relative to the pinned base
     commit: committed changes, uncommitted edits, AND newly-created (untracked)
-    files. A plain ``git diff <base>`` omits untracked files — exactly the
-    corpus-v0 tasks that ADD A NEW FILE — so we first ``git add -A`` to stage
-    every change, then ``git diff --cached <base_ref>`` so the new files appear
-    in the patch. Staging is in-memory index bookkeeping in a disposable clone
-    that is about to be torn down; it never publishes anything.
+    files.
+
+    Crucially, the agent often COMMITS its work onto a run branch
+    (``agentrail/issue-<label>``) and leaves the clone's ``HEAD`` back at the
+    base commit. In that state ``git diff --cached <base>`` sees NOTHING (the
+    index matches base), which silently dropped the agent's solution and scored
+    a correct run ``solved=0`` (a false negative). So we look for the agent's
+    work in three places, in order:
+
+      1. the staged/uncommitted tree (``git add -A`` then ``--cached`` diff) —
+         catches edits + newly-added files the agent left uncommitted;
+      2. the run branch ``agentrail/issue-<label>`` — catches work the agent
+         committed onto its branch even when ``HEAD`` is left at base;
+      3. ``HEAD`` itself — catches work committed when ``HEAD`` is ahead of base.
 
     The produced patch is in standard ``git diff`` format (``a/`` / ``b/``
     prefixes), which is exactly what ``ProductionHiddenTestRunner._apply_diff``
@@ -513,29 +524,35 @@ def _capture_workdir_diff(workdir: Path, *, base_ref: str) -> str:
             text=True,
         )
 
+    def _diff(*rev: str) -> str:
+        # ``--no-color``/``--no-ext-diff`` keep the patch machine-applicable
+        # regardless of host git config; ``--binary`` lets binary changes
+        # round-trip through ``git apply``.
+        result = _git("diff", "--no-color", "--no-ext-diff", "--binary", *rev)
+        return result.stdout if result.returncode == 0 else ""
+
     try:
-        # Stage everything so newly-added (untracked) files land in the index
-        # and therefore in ``--cached`` diff output. ``-A`` also captures
-        # deletions and modifications.
+        # 1. Staged/uncommitted work. ``git add -A`` stages newly-added
+        #    (untracked) files so they appear in ``--cached`` diff output.
         _git("add", "-A")
-        # Diff the staged tree against the pinned base. ``--no-color`` and
-        # ``--no-ext-diff`` keep the output a clean, machine-applicable patch
-        # regardless of the host's git config; ``--binary`` lets binary file
-        # changes round-trip through ``git apply`` too.
-        result = _git(
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            "--binary",
-            "--cached",
-            base_ref,
-        )
+        staged = _diff("--cached", base_ref)
+        if staged.strip():
+            return staged
+
+        # 2. Work the agent COMMITTED to its run branch (HEAD may be left at
+        #    base, in which case the index diff above is empty). The prompt-run
+        #    convention names the branch ``agentrail/issue-<label>``.
+        if label:
+            branch = f"agentrail/issue-{label}"
+            if _git("rev-parse", "--verify", "--quiet", branch).returncode == 0:
+                committed = _diff(base_ref, branch)
+                if committed.strip():
+                    return committed
+
+        # 3. Work committed on the current HEAD (HEAD ahead of base).
+        return _diff(base_ref, "HEAD")
     except (OSError, ValueError):  # pragma: no cover - git missing / bad args
         return ""
-
-    if result.returncode != 0:
-        return ""
-    return result.stdout
 
 
 __all__ = [

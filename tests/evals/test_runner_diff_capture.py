@@ -259,3 +259,39 @@ def test_capture_is_a_patch_string_with_no_workdir_path_leak(tmp_path: Path) -> 
     assert str(repo) not in diff, "absolute repo path leaked into the patch"
     # It is a real unified diff, not a directory handle or object.
     assert diff.startswith("diff --git "), diff[:80]
+
+
+# ---------------------------------------------------------------------------
+# Regression — agent commits to its run branch and leaves HEAD at base.
+# This was the false-negative: ``git diff --cached <base>`` saw nothing, so a
+# CORRECT solution scored solved=0. Capture must find the work on the branch.
+# ---------------------------------------------------------------------------
+
+
+def test_capture_finds_work_committed_to_run_branch_with_head_at_base(tmp_path: Path) -> None:
+    """Agent commits to ``agentrail/issue-<label>`` then HEAD is left at base.
+
+    The real failure mode: the diff sat in a commit on the run branch, the
+    clone's HEAD was back at the base commit, and the old capture
+    (``git diff --cached <base>``) returned EMPTY → correct solution scored 0.
+    With the ``label`` the capture diffs base against the run branch.
+    """
+    repo = tmp_path / "repo"
+    base = _init_base_repo(repo)
+
+    # Agent: branch, commit the solution, then leave HEAD detached at base.
+    _git("checkout", "--quiet", "-b", "agentrail/issue-mytask", cwd=repo)
+    (repo / "solution.py").write_text("def solve():\n    return 'ok'\n", encoding="utf-8")
+    _git("add", "-A", cwd=repo)
+    _git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "agent solution", cwd=repo)
+    _git("checkout", "--quiet", base, cwd=repo)  # HEAD back at base
+
+    # Without the label, the work is invisible (this WAS the bug).
+    assert _capture_workdir_diff(tmp_path, base_ref=base).strip() == "", (
+        "control: with no label and HEAD at base, the committed work is not on the index"
+    )
+
+    # With the label, the capture finds the committed work on the run branch.
+    diff = _capture_workdir_diff(tmp_path, base_ref=base, label="mytask")
+    assert diff.strip(), "capture returned empty for work committed on the run branch"
+    assert "solution.py" in diff and "return 'ok'" in diff, f"committed work missing:\n{diff}"

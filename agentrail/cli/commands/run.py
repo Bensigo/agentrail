@@ -317,7 +317,14 @@ def resolve_critic_command(
     if not configured:
         # Not opted in: no critic command. The verify path stays in control.
         return ""
-    critic_model = resolve_critic_model(model_flag or configured)
+    # The critic model comes from ITS OWN configured source (``models.critic`` or
+    # the eval's ``AGENTRAIL_EVAL_CRITIC_MODEL``) — NEVER from ``model_flag``, which
+    # is the IMPLEMENTER's ``--model``. Passing ``model_flag`` here made the critic
+    # resolve to the implementer's model, trip the independence guard below, and
+    # silently return "" (no critic command → verify ran instead). The eval's
+    # new-flow arm pins the implementer to sonnet and the critic to haiku, so this
+    # is exactly the real path that the model_flag-precedence bug broke.
+    critic_model = resolve_critic_model(configured)
     implementer_model = resolve_model_for_phase(agent, model_flag, target, "execute")
     if critic_model == (implementer_model or "").strip():
         return ""

@@ -371,6 +371,33 @@ class CriticLayerCommandTests(unittest.TestCase):
         self.assertNotIn("critic", pc)
         self.assertIn("verify", pc)
 
+    def _capture_phase_commands_with_model(self, target, env, model):
+        # Same as _capture_phase_commands but with the IMPLEMENTER --model flag set
+        # (RunOptions.model), which is exactly what the eval's new-flow arm does.
+        opts = RunOptions(agent="claude", target=target, command="", log_dir="", model=model)
+        clean = {k: v for k, v in os.environ.items()
+                 if not k.startswith("AGENTRAIL_EVAL_LAYER_")}
+        clean.update(env)
+        with patch("agentrail.run.pipeline.run_issue", return_value=0) as mock_run_issue, \
+             patch("agentrail.cli.commands.run._repo_dir", return_value=Path("/repo")), \
+             patch.dict(os.environ, clean, clear=True):
+            exec_issue(7, opts)
+        return mock_run_issue.call_args.kwargs["phase_commands"]
+
+    def test_critic_built_when_implementer_model_flag_is_set(self) -> None:
+        # Regression: when the implementer --model flag is set (the eval new-flow
+        # arm pins the implementer model), the critic must STILL resolve to its OWN
+        # configured cheap model — NOT inherit the implementer's flag, trip the
+        # independence guard, and silently collapse to "" (which let verify run
+        # instead, so new-flow behaved identically to full in a live run).
+        pc = self._capture_phase_commands_with_model(
+            self._config(critic=True), env={}, model="claude-sonnet-4-5"
+        )
+        self.assertIn("critic", pc)
+        self.assertIn("haiku", pc["critic"])
+        # And the critic is on a DIFFERENT model than the implementer flag.
+        self.assertNotIn("claude-sonnet-4-5", pc["critic"])
+
 
 class ExecPromptTests(unittest.TestCase):
     """#968: exec_prompt delegates to pipeline.run_prompt with the prompt text."""

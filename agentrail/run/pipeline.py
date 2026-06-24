@@ -39,6 +39,22 @@ from agentrail.shared.json import read_json, write_json
 _log = logging.getLogger(__name__)
 
 
+def layer_enabled(name: str) -> bool:
+    """Is the named AgentRail layer ON for this run?
+
+    The eval harness (``agentrail.evals``) sets ``AGENTRAIL_EVAL_LAYER_<NAME>``
+    to ``"0"`` or ``"1"`` to toggle a layer for leave-one-out ablation arms
+    (CONTEXT, ROUTING, VERIFY_GATE, RETRY, GUARDRAILS). The real autonomous loop
+    (``run issue <N>``) sets NONE of these vars, so the flag is ABSENT and the
+    default is ON — behavior is byte-identical to before this seam existed.
+
+    Contract: ABSENT or ``"1"`` → ``True`` (layer ON, today's behavior). Only an
+    explicit ``"0"`` turns a layer OFF. Any other value is treated as ON (a
+    typo'd flag must never silently disable a layer in the real loop).
+    """
+    return os.environ.get(f"AGENTRAIL_EVAL_LAYER_{name.upper()}") != "0"
+
+
 def _utc_now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -125,16 +141,23 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     phase_started_at = _utc_now_iso()
 
     # 5. Context pack selection
-    if phase == "plan" and rc.run_context_pack_file:
-        phase_context_pack_file = rc.run_context_pack_file
-    elif (phase != "plan" and rc.run_context_pack_file
-          and (rc.target_dir / rc.run_context_pack_file).is_file()):
-        phase_context_pack_file = rc.run_context_pack_file
+    # CONTEXT layer (eval ablation): when OFF, do NOT build/inject a context pack
+    # — the agent gets the bare prompt (empty summary, no pack). ABSENT/"1" = ON =
+    # today's behavior (the real loop never sets the flag, so this is unchanged).
+    if not layer_enabled("CONTEXT"):
+        phase_context_pack_file = None
+        phase_context_summary = ""
     else:
-        phase_context_pack_file = ctx.build_issue_context_pack(rc.target_dir, rc.issue, phase)
+        if phase == "plan" and rc.run_context_pack_file:
+            phase_context_pack_file = rc.run_context_pack_file
+        elif (phase != "plan" and rc.run_context_pack_file
+              and (rc.target_dir / rc.run_context_pack_file).is_file()):
+            phase_context_pack_file = rc.run_context_pack_file
+        else:
+            phase_context_pack_file = ctx.build_issue_context_pack(rc.target_dir, rc.issue, phase)
 
-    # 6. Context summary
-    phase_context_summary = ctx.context_pack_summary(rc.target_dir, phase_context_pack_file)
+        # 6. Context summary
+        phase_context_summary = ctx.context_pack_summary(rc.target_dir, phase_context_pack_file)
 
     # 7. Verifier findings text
     if verifier_findings_file and Path(verifier_findings_file).is_file():
@@ -304,7 +327,11 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     # Inspect the execute-phase output file for diff/patch evidence.  A full-file
     # rewrite of an existing file is flagged as a run event so the dashboard can
     # surface format violations without blocking the pipeline exit status.
-    if phase == "execute" and phase_output_file.exists():
+    # GUARDRAILS layer (eval ablation): the output-format enforcer is the live
+    # guardrail that runs DURING the run. When the layer is OFF, skip enforcement
+    # entirely (no inspection, no rejection event). ABSENT/"1" = ON = today's
+    # behavior (the real loop never sets the flag, so this is unchanged).
+    if phase == "execute" and phase_output_file.exists() and layer_enabled("GUARDRAILS"):
         try:
             phase_output_text = phase_output_file.read_text(encoding="utf-8", errors="replace")
             # Drive is_new_or_rename from the real worktree state: a phase that only
@@ -565,10 +592,19 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         )
         resolution = _default_resolution
 
-    # 4. Build base prompt
-    run_context_pack_file = ctx.build_issue_context_pack(target_dir, issue, "plan")
-    context_summary = ctx.context_pack_summary(target_dir, run_context_pack_file)
-    context_snippets = ctx.context_selected_snippets(target_dir, resolution_text)
+    # 4. Build base prompt.
+    # CONTEXT layer (eval ablation): when OFF, do NOT build/inject the context
+    # pack — the agent gets the bare prompt (empty summary + empty snippets, no
+    # pack). ABSENT/"1" = ON = today's behavior (the real loop never sets the
+    # flag, so this is byte-identical).
+    if layer_enabled("CONTEXT"):
+        run_context_pack_file = ctx.build_issue_context_pack(target_dir, issue, "plan")
+        context_summary = ctx.context_pack_summary(target_dir, run_context_pack_file)
+        context_snippets = ctx.context_selected_snippets(target_dir, resolution_text)
+    else:
+        run_context_pack_file = None
+        context_summary = ""
+        context_snippets = ""
     header = prompts.common_header(agent, state_mod.render_state_summary(target_dir))
     skill_block = prompts.format_skill_resolution(resolution, mode="prompt", engine=agent)
     base_prompt = prompts.issue_base_prompt(
@@ -596,6 +632,11 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
             file=sys.stderr,
         )
         return 2
+    # RETRY layer (eval ablation): when OFF, force a SINGLE execution attempt — no
+    # retry budget. ABSENT/"1" = ON = today's behavior (the real loop never sets
+    # the flag, so max attempts is the configured value, unchanged).
+    if not layer_enabled("RETRY"):
+        max_execution_attempts = 1
 
     # 7. Run dir setup
     started_at = _utc_now_iso()
@@ -723,8 +764,14 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
     # (accept/reject) is parsed from the phase output and fed to the Objective
     # Gate below so a REJECT blocks done (AC3). When no distinct verifier model is
     # available, no verify phase runs and behavior is unchanged.
+    # VERIFY_GATE layer (eval ablation): when OFF, do NOT run the Independent
+    # Verifier phase (no distinct-model verify pass, no verification evidence fed
+    # to the gate). ABSENT/"1" = ON = today's behavior (the real loop never sets
+    # the flag). NOTE: this disables the agent's IN-RUN verifier phase only — the
+    # eval's separate hidden-test scorer is untouched.
     verification_evidence: Optional[Dict[str, Any]] = None
-    if status == 0 and require_red_green and "verify" in rc.phase_commands:
+    if (status == 0 and require_red_green and "verify" in rc.phase_commands
+            and layer_enabled("VERIFY_GATE")):
         status, _ = run_issue_phase(rc, "verify", 1, plan_output=plan_output)
         last_phase = "verify"
         if status == 0:

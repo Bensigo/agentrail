@@ -324,6 +324,43 @@ def review_prompt(
     )
 
 
+def shared_task_prefix(
+    *,
+    issue: int,
+    issue_context: str,
+    base_prompt: str,
+    context_summary: str,
+) -> str:
+    """The stable, cacheable per-task PREFIX reused across phases (issue #978).
+
+    This block carries the LARGE shared per-task context — the task/issue
+    description (``issue_context``), the retrieved context pack
+    (``context_summary``), and the base instructions (``base_prompt``) — and
+    NOTHING else. It is identical byte-for-byte across the test-author, execute,
+    and verify phases for the SAME task, so when it leads every phase prompt the
+    later phases hit the agent's automatic prompt-prefix cache instead of paying
+    for a cold re-read of the same context (cache-read tokens > 0 on later
+    phases, AC2).
+
+    Critically it carries task/repo context ONLY: no role verb (no merging the
+    test-author and executor into one conversation, AC3), no verifier verdict /
+    hidden answer key, and no other task's state. The role boundary and the
+    per-phase instructions live in the role SUFFIX appended after this prefix.
+    """
+    return (
+        "Shared task context (issue #" + str(issue) + "):\n"
+        "\n"
+        "Issue context:\n"
+        f"{issue_context}\n"
+        "\n"
+        "Phase context pack:\n"
+        f"{context_summary}\n"
+        "\n"
+        "Base instructions:\n"
+        f"{base_prompt}\n"
+    )
+
+
 def issue_run_phase_prompt(
     phase: str,
     issue: int,
@@ -336,6 +373,7 @@ def issue_run_phase_prompt(
     execution_attempt: int = 1,
     max_execution_attempts: int = 5,
     red_green: bool = False,
+    warm_cache: bool = False,
 ) -> str:
     """Plan / test-author / execute / verify phase prompt.
 
@@ -357,24 +395,41 @@ def issue_run_phase_prompt(
     ``red_green`` defaults to ``False`` so existing single-execute-phase callers
     are unchanged (the role split is behind the ``redGreenProof`` opt-in).
 
+    ``warm_cache`` (issue #978): when True, the shared per-task context (issue
+    context + context pack + base instructions) is hoisted to the FRONT of the
+    prompt as a stable, cacheable prefix (``shared_task_prefix``) and the
+    role-specific instructions follow it. Because that leading block is
+    byte-identical across the test-author, execute, and verify phases for the
+    same task, later phases hit the agent's prompt-prefix cache instead of
+    re-sending cold context (AC1/AC2). Roles stay SEPARATE — only the shared
+    context moves; each phase keeps its own distinct role boundary in the suffix
+    (AC3). When ``warm_cache`` is False (the default) the prompt is byte-for-byte
+    the legacy cold per-phase text (AC4), so the shared context is NOT hoisted.
+
     Raises ValueError for unknown phase.
     """
+    # The inline shared-context block legacy phases embed AFTER their role line.
+    # In warm-cache mode it is hoisted to the leading prefix instead (and so is
+    # NOT repeated inline), turning the leading region into a stable cache key.
+    _shared_inline = (
+        "Issue context:\n"
+        f"{issue_context}\n"
+        "\n"
+        "Phase context pack:\n"
+        f"{context_summary}\n"
+        "\n"
+        "Base instructions:\n"
+        f"{base_prompt}\n"
+    )
+
     if phase == "test-author":
-        return (
+        role_header = (
             "You are the TEST-AUTHOR. You are a DISTINCT role from the Implementer "
             "(ADR 0008, anti-false-green): you author the acceptance test, and a "
             "SEPARATE Implementer role will write the code that makes it pass. You "
             "do NOT implement the feature.\n"
-            "\n"
-            "Issue context:\n"
-            f"{issue_context}\n"
-            "\n"
-            "Phase context pack:\n"
-            f"{context_summary}\n"
-            "\n"
-            "Base instructions:\n"
-            f"{base_prompt}\n"
-            "\n"
+        )
+        role_task = (
             f"Your task — author the failing acceptance test for issue #{issue}:\n"
             "- Write exactly ONE acceptance test that encodes the issue's "
             "acceptance criteria.\n"
@@ -391,23 +446,32 @@ def issue_run_phase_prompt(
             "phase; the Implementer is a separate role and turns it green next.\n"
             "- Stop once the failing acceptance test is written."
         )
+        if warm_cache:
+            # Hoist the shared context to a stable leading prefix; the role line
+            # + role task follow it (no inline context repeat).
+            return (
+                shared_task_prefix(
+                    issue=issue,
+                    issue_context=issue_context,
+                    base_prompt=base_prompt,
+                    context_summary=context_summary,
+                )
+                + "\n"
+                + role_header
+                + "\n"
+                + role_task
+            )
+        # Cold (legacy byte-identical): role line, then inline shared context.
+        return role_header + "\n" + _shared_inline + "\n" + role_task
 
     if phase == "verify":
-        return (
+        role_header = (
             "You are the VERIFIER. This is **Independent Verification** (ADR 0008, "
             "CONTEXT.md): a blocking, narrow quality check run on a different model "
             "than the Implementer used, so the maker is not grading its own "
             "homework. You did NOT write this change or its tests.\n"
-            "\n"
-            "Issue context:\n"
-            f"{issue_context}\n"
-            "\n"
-            "Phase context pack:\n"
-            f"{context_summary}\n"
-            "\n"
-            "Base instructions:\n"
-            f"{base_prompt}\n"
-            "\n"
+        )
+        role_task = (
             f"Your task — independently verify the change for issue #{issue}:\n"
             "- Inspect the diff and the acceptance test(s). Confirm the SOLUTION "
             "and the TESTS genuinely satisfy the issue's acceptance criteria.\n"
@@ -431,6 +495,20 @@ def issue_run_phase_prompt(
             "Use \"accept\" only when the change and tests genuinely satisfy the AC "
             "and stay in scope; otherwise \"reject\". If you cannot verify, reject."
         )
+        if warm_cache:
+            return (
+                shared_task_prefix(
+                    issue=issue,
+                    issue_context=issue_context,
+                    base_prompt=base_prompt,
+                    context_summary=context_summary,
+                )
+                + "\n"
+                + role_header
+                + "\n"
+                + role_task
+            )
+        return role_header + "\n" + _shared_inline + "\n" + role_task
 
     if phase == "plan":
         return (
@@ -531,26 +609,52 @@ def issue_run_phase_prompt(
         else:
             implementer_boundary = ""
 
-        # Core body up through base_prompt
-        body = (
-            implementer_boundary
-            + ralph_preamble
-            + "This is phase 2 of 2: execute.\n"
-            f"Execution attempt: {execution_attempt} of {max_execution_attempts}.\n"
-            "\n"
-            "Issue context:\n"
-            f"{issue_context}\n"
-            "\n"
-            "Phase context pack:\n"
-            f"{context_summary}\n"
-            "\n"
-            "Approved plan from the plan phase:\n"
-            f"{bounded_plan}\n"
-            "\n"
-            "Base Ralph instructions:\n"
-            f"{base_prompt}\n"
-            "\n"
-        )
+        # Core body up through base_prompt.
+        #
+        # warm_cache (issue #978): hoist the shared per-task context (issue
+        # context + context pack + base instructions) to a stable LEADING prefix
+        # so it caches across phases. The per-attempt variable content (role
+        # boundary, attempt number, the approved plan) follows the prefix and is
+        # NOT part of the cache key. When warm_cache is off, the body is the
+        # legacy cold layout byte-for-byte (context inline, plan interleaved).
+        if warm_cache:
+            body = (
+                shared_task_prefix(
+                    issue=issue,
+                    issue_context=issue_context,
+                    base_prompt=base_prompt,
+                    context_summary=context_summary,
+                )
+                + "\n"
+                + implementer_boundary
+                + ralph_preamble
+                + "This is phase 2 of 2: execute.\n"
+                f"Execution attempt: {execution_attempt} of {max_execution_attempts}.\n"
+                "\n"
+                "Approved plan from the plan phase:\n"
+                f"{bounded_plan}\n"
+                "\n"
+            )
+        else:
+            body = (
+                implementer_boundary
+                + ralph_preamble
+                + "This is phase 2 of 2: execute.\n"
+                f"Execution attempt: {execution_attempt} of {max_execution_attempts}.\n"
+                "\n"
+                "Issue context:\n"
+                f"{issue_context}\n"
+                "\n"
+                "Phase context pack:\n"
+                f"{context_summary}\n"
+                "\n"
+                "Approved plan from the plan phase:\n"
+                f"{bounded_plan}\n"
+                "\n"
+                "Base Ralph instructions:\n"
+                f"{base_prompt}\n"
+                "\n"
+            )
 
         # The legacy heredoc has: blank line, then $(if ... fi), then blank line.
         # When findings is non-empty the $() expands to findings text (no surrounding

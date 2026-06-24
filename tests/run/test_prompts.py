@@ -1086,5 +1086,144 @@ class IssueRunPhasePromptUnknownPhaseTests(unittest.TestCase):
             )
 
 
+class SharedTaskPrefixTests(unittest.TestCase):
+    """Tests for shared_task_prefix() — the stable, cacheable per-task prefix
+    reused across phases (issue #978)."""
+
+    def _fn(self, *args, **kwargs):
+        from agentrail.run.prompts import shared_task_prefix
+        return shared_task_prefix(*args, **kwargs)
+
+    def test_carries_issue_and_repo_context(self):
+        prefix = self._fn(
+            issue=7,
+            issue_context="THE-TASK-DESCRIPTION",
+            base_prompt="THE-BASE-PROMPT",
+            context_summary="THE-CONTEXT-PACK",
+        )
+        self.assertIn("THE-TASK-DESCRIPTION", prefix)
+        self.assertIn("THE-BASE-PROMPT", prefix)
+        self.assertIn("THE-CONTEXT-PACK", prefix)
+        self.assertIn("#7", prefix)
+
+    def test_is_stable_across_calls_with_same_inputs(self):
+        """Same per-task inputs → byte-identical prefix (the cache key)."""
+        kwargs = dict(
+            issue=7,
+            issue_context="ctx",
+            base_prompt="base",
+            context_summary="pack",
+        )
+        self.assertEqual(self._fn(**kwargs), self._fn(**kwargs))
+
+    def test_does_not_carry_role_or_answer_key(self):
+        """The prefix is task/repo context ONLY — never a role verb or a
+        verifier verdict / answer key that would merge roles or leak (AC3)."""
+        prefix = self._fn(
+            issue=7,
+            issue_context="ctx",
+            base_prompt="base",
+            context_summary="pack",
+        )
+        self.assertNotIn("You are the TEST-AUTHOR", prefix)
+        self.assertNotIn("You are the IMPLEMENTER", prefix)
+        self.assertNotIn("You are the VERIFIER", prefix)
+        self.assertNotIn("VERDICT", prefix)
+
+
+class WarmCachePrefixTests(unittest.TestCase):
+    """When warm_cache is on, every phase prompt LEADS with the byte-identical
+    shared prefix so later phases hit the prompt cache (issue #978, AC1)."""
+
+    def _make(self, phase, **overrides):
+        from agentrail.run.prompts import issue_run_phase_prompt
+        kwargs = dict(
+            issue=7,
+            issue_context="SHARED-TASK-CONTEXT",
+            base_prompt="SHARED-BASE-PROMPT",
+            context_summary="SHARED-CONTEXT-PACK",
+            red_green=True,
+        )
+        kwargs.update(overrides)
+        return issue_run_phase_prompt(phase, **kwargs)
+
+    def _prefix(self):
+        from agentrail.run.prompts import shared_task_prefix
+        return shared_task_prefix(
+            issue=7,
+            issue_context="SHARED-TASK-CONTEXT",
+            base_prompt="SHARED-BASE-PROMPT",
+            context_summary="SHARED-CONTEXT-PACK",
+        )
+
+    def test_test_author_leads_with_shared_prefix(self):
+        out = self._make("test-author", warm_cache=True)
+        self.assertTrue(
+            out.startswith(self._prefix()),
+            "test-author prompt must lead with the stable shared prefix",
+        )
+
+    def test_execute_leads_with_shared_prefix(self):
+        out = self._make("execute", warm_cache=True)
+        self.assertTrue(out.startswith(self._prefix()))
+
+    def test_verify_leads_with_shared_prefix(self):
+        out = self._make("verify", warm_cache=True)
+        self.assertTrue(out.startswith(self._prefix()))
+
+    def test_all_phases_share_the_same_leading_prefix(self):
+        """The cacheable region is byte-identical across phases (AC1)."""
+        prefix = self._prefix()
+        for phase in ("test-author", "execute", "verify"):
+            out = self._make(phase, warm_cache=True)
+            self.assertEqual(out[: len(prefix)], prefix, f"{phase} prefix mismatch")
+
+    def test_roles_stay_distinct_after_the_shared_prefix(self):
+        """No role-merge (AC3): each phase still carries its own role boundary,
+        only it now follows the shared prefix instead of preceding it."""
+        ta = self._make("test-author", warm_cache=True)
+        ex = self._make("execute", warm_cache=True)
+        ve = self._make("verify", warm_cache=True)
+        self.assertIn("You are the TEST-AUTHOR", ta)
+        self.assertIn("You are the IMPLEMENTER", ex)
+        self.assertIn("You are the VERIFIER", ve)
+        # And the role verbs do NOT bleed into the wrong phase.
+        self.assertNotIn("You are the IMPLEMENTER", ta)
+        self.assertNotIn("You are the VERIFIER", ta)
+
+    def test_warm_cache_off_is_byte_identical_to_today(self):
+        """Layer OFF (default) must be byte-for-byte the legacy prompt (AC4)."""
+        from agentrail.run.prompts import issue_run_phase_prompt
+        for phase in ("test-author", "execute", "verify"):
+            legacy = issue_run_phase_prompt(
+                phase,
+                7,
+                issue_context="ctx",
+                base_prompt="base",
+                context_summary="pack",
+                red_green=True,
+            )
+            off = issue_run_phase_prompt(
+                phase,
+                7,
+                issue_context="ctx",
+                base_prompt="base",
+                context_summary="pack",
+                red_green=True,
+                warm_cache=False,
+            )
+            self.assertEqual(off, legacy, f"{phase}: warm_cache=False must equal legacy")
+
+    def test_warm_cache_prompt_preserves_all_legacy_content(self):
+        """Reordering must not DROP content — the role body still appears, just
+        after the prefix (no information loss vs. the cold path)."""
+        legacy = self._make("test-author", warm_cache=False)
+        warm = self._make("test-author", warm_cache=True)
+        # Every non-empty line of the legacy prompt survives in the warm prompt.
+        for line in legacy.splitlines():
+            if line.strip():
+                self.assertIn(line, warm, f"warm prompt dropped legacy line: {line!r}")
+
+
 if __name__ == "__main__":
     unittest.main()

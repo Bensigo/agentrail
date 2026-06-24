@@ -557,6 +557,76 @@ def test_execute_passes_resolved_source_not_slug_to_run_issue_on_host(
     assert captured["ref"] == corpus_task.commit
 
 
+def test_execute_captures_usage_from_the_clone_not_the_bare_workdir(
+    corpus_task: CorpusTask, tmp_path: Path, monkeypatch
+) -> None:
+    """AC3 (#989): the executor must read token usage from the path where the
+    agent ACTUALLY ran — the clone at ``workdir/repo`` — NOT the bare eval
+    ``workdir``.
+
+    The agent CLI keys its transcript to its cwd. ``run_issue_on_host`` clones
+    into ``workdir/repo`` and runs the agent there (``--target workdir/repo``),
+    exactly mirroring production where ``capture_usage`` is passed
+    ``rc.target_dir`` (the clone), not the run's parent dir. Passing the bare
+    ``workdir`` looks under the wrong encoded path, finds no transcript, and the
+    run falls back to a fabricated zero-token ``Usage`` — the #989 bug that made
+    every arm report ``$0`` / ``dollars-per-solved = n/a``.
+
+    This pins that ``capture_usage`` receives ``workdir/repo``. A real (non-zero)
+    transcript-derived ``Usage`` then flows into the ``RunRecord``.
+    """
+    captured = {}
+
+    def fake_run_issue_on_host(*, repo_url, ref, issue_ref, prompt=None, **kwargs):
+        from agentrail.sandbox.docker_runner import RunResult
+
+        return RunResult(status="green")
+
+    real_usage = Usage(
+        model=MODEL,
+        input_tokens=1234,
+        output_tokens=567,
+        cache_tokens=0,
+        cache_creation_tokens=0,
+    )
+
+    def spy_capture_usage(agent, target, since_ts):
+        captured["agent"] = agent
+        captured["target"] = Path(target)
+        captured["since_ts"] = since_ts
+        return real_usage
+
+    import agentrail.sandbox.native_runner as nr
+
+    monkeypatch.setattr(nr, "run_issue_on_host", fake_run_issue_on_host)
+    monkeypatch.setattr(
+        "agentrail.run.usage_capture.capture_usage", spy_capture_usage
+    )
+    # Diff capture reaches into the (non-existent) clone tree; stub it so the
+    # test stays focused on the usage-capture path.
+    monkeypatch.setattr(
+        "agentrail.evals.runner._capture_workdir_diff", lambda *a, **k: ""
+    )
+
+    workdir = tmp_path / "agent-wd"
+    workdir.mkdir()
+    execution = SandboxAgentExecutor().execute(
+        task=corpus_task, arm=full(), workdir=workdir
+    )
+
+    # The crux: usage is read from the clone/run path the agent used, NOT the
+    # bare eval workdir.
+    assert captured["target"] == workdir / "repo"
+    assert captured["target"] != workdir
+    assert captured["agent"] == "claude"
+
+    # The real transcript-derived usage flows into the RunRecord (non-zero
+    # tokens — not the fabricated zero fallback).
+    assert execution.usage == real_usage
+    assert execution.usage.input_tokens == 1234
+    assert execution.usage.output_tokens == 567
+
+
 def test_execute_passes_task_prompt_and_name_label_to_sandbox(
     corpus_task: CorpusTask, tmp_path: Path, monkeypatch
 ) -> None:

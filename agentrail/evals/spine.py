@@ -65,11 +65,14 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date as _date
 from pathlib import Path
-from typing import Callable, List, Optional, Protocol, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
+
+_log = logging.getLogger(__name__)
 
 # Canonical contracts — imported, never redefined here (anti-false-green rule).
 from agentrail.evals.arms import Arm, baseline, full, full_minus
@@ -94,6 +97,7 @@ from agentrail.evals.reporter import render_probes_markdown
 from agentrail.evals.run_record import RunRecord
 from agentrail.evals.runner import AgentExecutor, SandboxAgentExecutor, run
 from agentrail.evals.scorer import Verdict, score
+from agentrail.run.usage_capture import Usage
 
 
 # ---------------------------------------------------------------------------
@@ -286,22 +290,36 @@ def run_spine(
         # Units are independent (each gets its own tempdir + isolated
         # hidden-test workspace), which is exactly why running them in parallel
         # is safe — the spatial/temporal guards hold WITHIN each unit.
-        record: RunRecord = run(task, arm, executor=executor)
+        #
+        # Fail-soft boundary: a real CRASH in the agent run or the hidden-test
+        # execution (a hung subprocess, an OOM, a transient sandbox error on ONE
+        # task) is recorded as an unsolved failure so the rest of the corpus run
+        # survives — instead of one bad task aborting the whole scorecard. The
+        # CONTRACT assertions below (empty model, non-bool verdict) stay FATAL:
+        # those signal a defective executor/seam, a bug to surface loudly, not a
+        # task to silently score 0.
+        try:
+            record: RunRecord = run(task, arm, executor=executor)
+        except Exception as exc:  # noqa: BLE001 - survive a crashed agent run
+            return _failed_unit_result(unit, exc)
 
         # AC1: arm pins model + temp; recorded on RunRecord via the runner.
         # Enforce that a model was recorded (the runner already takes arm.model;
         # this makes "recorded on every run" observable). No mutation — just the
-        # contract assertion.
+        # contract assertion (FATAL — defective seam, not a task failure).
         if not record.model:
             raise RuntimeError(
                 f"run for task={task.name} arm={arm.name} returned empty model "
                 "— arm pin was not recorded on the RunRecord"
             )
 
-        # Step 2 — hidden-test execution, AFTER the runner returned.
-        hidden_tests_passed = hidden_test_runner.run_hidden_tests(
-            task=task, run_record=record
-        )
+        # Step 2 — hidden-test execution, AFTER the runner returned (fail-soft).
+        try:
+            hidden_tests_passed = hidden_test_runner.run_hidden_tests(
+                task=task, run_record=record
+            )
+        except Exception as exc:  # noqa: BLE001 - survive a crashed scorer run
+            return _failed_unit_result(unit, exc)
         if not isinstance(hidden_tests_passed, bool):
             # Scorer review nit, enforced at the spine boundary so the contract
             # violation surfaces here, not silently in the scorer.
@@ -331,29 +349,84 @@ def run_spine(
         # from this real run instead of being dropped.
         return rep, verdict, ScoredRun(run=record, solved=verdict.solved)
 
+    # AC3 report location is resolved UP FRONT so results can be checkpointed to
+    # the dated report AS units complete — not only at the very end. A long
+    # corpus run that is interrupted (killed, timed out, crashed) then still
+    # leaves a scorecard for every (task, arm) that finished, instead of the
+    # all-or-nothing zero output that made every prior killed run useless. The
+    # final write below re-renders the complete report and appends the probes.
+    date_str = date or _date.today().isoformat()
+    base = Path(reports_dir) if reports_dir is not None else default_reports_dir()
+
+    def _failed_unit_result(unit: Tuple[CorpusTask, Arm], exc: Exception):
+        # Fail-soft: a single unit raising (an unexpected crash, or a contract
+        # violation from a defective executor) must NOT zero out the whole
+        # corpus run. Record it as an unsolved repetition and keep going — an
+        # errored task is honestly a failure, scored 0, and the other units'
+        # numbers are preserved. There is no RunRecord to join, so the probe
+        # ScoredRun is omitted (the probes tolerate fewer rows than reps).
+        task, arm = unit
+        _log.warning("eval unit failed task=%s arm=%s: %s", task.name, arm.name, exc)
+        rep = RepetitionRecord(
+            task=task.name,
+            arm=arm.name,
+            solved=False,
+            usage=Usage(
+                model=arm.model,
+                input_tokens=0,
+                output_tokens=0,
+                cache_tokens=0,
+                cache_creation_tokens=0,
+            ),
+            gate_passed=False,
+            false_green=False,
+            difficulty=task.difficulty,
+        )
+        verdict = Verdict(
+            task=task.name, arm=arm.name, solved=False, gate_passed=False, false_green=False
+        )
+        return rep, verdict, None
+
+    # Results are keyed by the unit's stable index so the final order is
+    # deterministic regardless of completion order (parallel runs finish out of
+    # order). After EACH unit lands we re-aggregate everything completed so far
+    # and rewrite the dated report — the checkpoint that makes an interrupted
+    # run still produce a (partial) scorecard.
+    results_by_index: Dict[int, tuple] = {}
+
+    def _checkpoint() -> None:
+        done_reps = [results_by_index[i][0] for i in sorted(results_by_index)]
+        if done_reps:
+            write_markdown_report(aggregate(done_reps), reports_dir=base, date=date_str)
+
     concurrency = max(1, config.concurrency)
     if concurrency == 1:
-        # Strictly sequential — identical to the original behavior. Kept as a
-        # distinct path so single-threaded runs never enter a worker thread
-        # (preserves the simplest possible stack for debugging + test spies).
-        results = [_run_unit(unit) for unit in units]
+        # Strictly sequential — preserves the simplest stack for debugging and
+        # keeps single-threaded runs out of a worker thread.
+        for i, unit in enumerate(units):
+            results_by_index[i] = _run_unit(unit)
+            _checkpoint()
     else:
-        # Units are independent, so fan them out. ``map`` preserves input order
-        # and re-raises the first worker exception on iteration — same
-        # fail-fast contract as the sequential path.
+        # Units are independent, so fan them out. ``as_completed`` lets the
+        # checkpoint fire the instant each unit finishes (not after the whole
+        # batch), so the on-disk scorecard tracks progress in real time.
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            results = list(pool.map(_run_unit, units))
+            future_index = {pool.submit(_run_unit, unit): i for i, unit in enumerate(units)}
+            for fut in as_completed(future_index):
+                results_by_index[future_index[fut]] = fut.result()
+                _checkpoint()
 
+    results = [results_by_index[i] for i in sorted(results_by_index)]
     for rep, verdict, scored in results:
         repetitions.append(rep)
         verdicts.append(verdict)
-        scored_runs.append(scored)
+        if scored is not None:
+            scored_runs.append(scored)
 
     arm_reports = aggregate(repetitions)
 
-    # AC3 — dated markdown report under agentrail/evals/reports/.
-    date_str = date or _date.today().isoformat()
-    base = Path(reports_dir) if reports_dir is not None else default_reports_dir()
+    # Final report write — re-renders the COMPLETE scorecard (overwriting the
+    # last checkpoint) so the probes section below appends to a full report.
     report_path = write_markdown_report(arm_reports, reports_dir=base, date=date_str)
 
     # Issue #960 — the intrinsic probes (routing cost-regret + retry lift/wasted-

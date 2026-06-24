@@ -435,6 +435,76 @@ class TestSandboxRuntimeWrap:
 
 
 # ---------------------------------------------------------------------------
+# #968 — prompt mode: a corpus task is a PROMPT, not a numbered issue. When a
+# ``prompt`` is given, the in-clone command must drive ``agentrail run prompt``
+# carrying the prompt (NOT ``run issue``); when it is absent, the issue path is
+# byte-identical.
+# ---------------------------------------------------------------------------
+
+class TestPromptMode:
+    def _ok_runner(self, run_dir: Path) -> FakeRunner:
+        def _do_run(cmd, cwd, env):
+            log_dir = _extract_log_dir(cmd, run_dir)
+            run_id = _extract_run_id(cmd) or "host-run"
+            _write_run_json(Path(log_dir) / run_id, _green_run_json())
+            return _Completed(0, stdout="ran")
+
+        # ref is a branch NAME here (not a SHA) so there is no extra checkout
+        # step — clone (--branch) then the agentrail run command.
+        return FakeRunner([_Completed(0, stdout="cloned"), _do_run])
+
+    def _run(self, tmp_path, runner, **over):
+        dirs = _RunDirs(tmp_path)
+        kwargs = dict(
+            repo_url="https://github.com/acme/widgets.git",
+            ref="main",
+            issue_ref="afk-objective-gate",
+            workspace_id="eval",
+            env={},
+            run_dir_factory=dirs,
+            runner=runner,
+            publish_pr=False,
+        )
+        kwargs.update(over)
+        return run_issue_on_host(**kwargs), dirs
+
+    def test_prompt_drives_run_prompt_not_run_issue(self, tmp_path) -> None:
+        runner = self._ok_runner(tmp_path / "run-1")
+        prompt = "Realign the review gate to ADR 0007 and add a test."
+        self._run(tmp_path, runner, prompt=prompt)
+
+        run_cmd = runner.command_with("prompt")
+        assert "agentrail" in run_cmd
+        assert "run" in run_cmd
+        assert run_cmd[run_cmd.index("run") + 1] == "prompt"
+        # The actual prompt text is carried on argv (the agent works on it).
+        assert prompt in run_cmd
+        # The issue path is NOT taken in prompt mode.
+        assert "issue" not in run_cmd
+        # The task name is passed as the run label.
+        assert "--label" in run_cmd
+        assert run_cmd[run_cmd.index("--label") + 1] == "afk-objective-gate"
+
+    def test_no_prompt_keeps_byte_identical_issue_command(self, tmp_path) -> None:
+        runner = self._ok_runner(tmp_path / "run-1")
+        # No prompt → the existing issue path, unchanged.
+        self._run(tmp_path, runner, issue_ref="7")
+        run_cmd = runner.command_with("issue")
+        assert run_cmd[run_cmd.index("run") + 1] == "issue"
+        assert "7" in run_cmd
+        assert "prompt" not in run_cmd
+        assert "--label" not in run_cmd
+
+    def test_prompt_mode_carries_model_and_run_id(self, tmp_path) -> None:
+        runner = self._ok_runner(tmp_path / "run-1")
+        self._run(tmp_path, runner, prompt="do the thing",
+                  model="claude-opus-4-8", run_id="host-run")
+        run_cmd = runner.command_with("prompt")
+        assert run_cmd[run_cmd.index("--model") + 1] == "claude-opus-4-8"
+        assert run_cmd[run_cmd.index("--run-id") + 1] == "host-run"
+
+
+# ---------------------------------------------------------------------------
 # Helpers shared by the fakes: pull --log-dir / --run-id out of a run command.
 # ---------------------------------------------------------------------------
 

@@ -1990,5 +1990,129 @@ class RunIssueDocsConfigTrailWaiverTests(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# #968 — prompt mode: run_prompt runs the SAME pipeline (test-author → execute
+# → verify + Objective Gate) off a raw prompt instead of a fetched GitHub issue.
+# These mirror the run_issue happy-path / gate tests so we prove no phase is
+# skipped and the gate is NOT weakened in prompt mode.
+# ---------------------------------------------------------------------------
+
+from agentrail.run.pipeline import run_prompt  # noqa: E402
+
+
+class RunPromptTests(unittest.TestCase):
+    """run_prompt drives the identical phase loop + gate as run_issue."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = _make_target(self._tmp.name)
+        self.repo = Path(self._tmp.name) / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _run(self, *, phase_side_effect=None, label="afk-objective-gate"):
+        phase_calls = []
+
+        def _phase_stub(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            phase_calls.append({"phase": phase, "issue": rc.issue,
+                                "resolution_text": rc.resolution_text})
+            if phase == "execute":
+                _sentinel(self.target).write_text("x")
+            return (0, "")
+
+        side_effect = phase_side_effect or _phase_stub
+
+        # subprocess.run is patched so a stray gh/git call cannot fetch an issue:
+        # prompt mode must NEVER call issue_resolution_text.
+        gh_mock = MagicMock()
+        gh_mock.returncode = 1
+        gh_mock.stdout = ""
+
+        with patch("agentrail.run.pipeline.ctx.issue_resolution_text") as mock_resolution, \
+             patch("agentrail.run.pipeline.skills.resolve_skills",
+                   return_value={"resolved": [], "autoSkills": True}), \
+             patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None), \
+             patch("agentrail.run.pipeline.ctx.context_pack_summary", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_selected_snippets", return_value=""), \
+             patch("agentrail.run.pipeline.ctx.context_retrieval_metadata", return_value={}), \
+             patch("agentrail.run.pipeline.state_mod.render_state_summary", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.common_header", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.format_skill_resolution", return_value=""), \
+             patch("agentrail.run.pipeline.prompts.issue_base_prompt", return_value="BP"), \
+             patch("agentrail.run.pipeline.run_issue_phase", side_effect=side_effect), \
+             patch("agentrail.run.pipeline.state_mod.update_run_state"), \
+             patch("agentrail.run.pipeline.artifacts.update_run_metadata_attempts"), \
+             patch("agentrail.run.pipeline.subprocess.run", return_value=gh_mock):
+            result = run_prompt(
+                self.target,
+                "Realign the review gate to ADR 0007 and add a test.",
+                label=label,
+                agent="claude",
+                command="c",
+                repo_dir=self.repo,
+            )
+        return result, phase_calls, mock_resolution
+
+    def test_runs_full_phase_sequence_test_author_then_execute(self):
+        """AC1: prompt mode runs the SAME phases as an issue — test-author →
+        execute — with NO plan phase (MVP spine), proving no phase is skipped."""
+        _, phase_calls, _ = self._run()
+        phases = [c["phase"] for c in phase_calls]
+        self.assertEqual(phases, ["test-author", "execute"])
+        self.assertNotIn("plan", phases)
+
+    def test_does_not_fetch_a_github_issue(self):
+        """Prompt mode injects the prompt as the resolution text — it must NOT
+        call the GitHub-issue fetch (issue_resolution_text)."""
+        _, phase_calls, mock_resolution = self._run()
+        mock_resolution.assert_not_called()
+        # The prompt IS what the phases see as the resolution/issue context.
+        self.assertTrue(phase_calls)
+        self.assertIn("ADR 0007", phase_calls[0]["resolution_text"])
+
+    def test_uses_label_as_id_not_a_number(self):
+        """The non-numeric label flows where the issue id used to (rc.issue)."""
+        _, phase_calls, _ = self._run(label="my-task")
+        self.assertEqual(phase_calls[0]["issue"], "my-task")
+
+    def test_green_gate_returns_zero(self):
+        """AC1: the Objective Gate runs in prompt mode — a genuine red→green
+        trail (execute flips the sentinel) reaches GREEN → exit 0."""
+        result, _, _ = self._run()
+        self.assertEqual(result, 0)
+        runs_dir = self.target / ".agentrail" / "runs"
+        run_dir = next(runs_dir.iterdir())
+        run_json = _read_json(run_dir / "run.json")
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "green")
+
+    def test_gate_not_weakened_red_when_no_trail(self):
+        """The gate is NOT weakened in prompt mode: if the execute phase does
+        NOT produce the red→green trail (sentinel never flips), the gate stays
+        RED and the run is non-zero — identical to issue mode."""
+        def _no_flip(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            # execute runs but never creates the sentinel → verify check stays red.
+            return (0, "")
+
+        result, _, _ = self._run(phase_side_effect=_no_flip)
+        self.assertNotEqual(result, 0)
+        runs_dir = self.target / ".agentrail" / "runs"
+        run_dir = next(runs_dir.iterdir())
+        run_json = _read_json(run_dir / "run.json")
+        self.assertEqual(run_json["objectiveGate"]["verdict"], "red")
+
+    def test_empty_prompt_is_rejected(self):
+        result = run_prompt(self.target, "   ", label="x", agent="claude",
+                            command="c", repo_dir=self.repo)
+        self.assertEqual(result, 2)
+
+    def test_run_id_stem_uses_prompt_label(self):
+        self._run(label="afk-objective-gate")
+        runs_dir = self.target / ".agentrail" / "runs"
+        run_dir = next(runs_dir.iterdir())
+        self.assertIn("prompt-afk-objective-gate", run_dir.name)
+
+
 if __name__ == "__main__":
     unittest.main()

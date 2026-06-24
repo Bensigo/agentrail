@@ -497,6 +497,40 @@ def test_execute_passes_resolved_source_not_slug_to_run_issue_on_host(
     assert captured["ref"] == corpus_task.commit
 
 
+def test_execute_passes_task_prompt_and_name_label_to_sandbox(
+    corpus_task: CorpusTask, tmp_path: Path, monkeypatch
+) -> None:
+    """AC4 (#968): the production executor must hand the sandbox the corpus
+    task's PROMPT (so the agent actually works on the task, not on a numbered
+    GitHub issue) and the task NAME as the run label/issue_ref.
+    """
+    captured = {}
+
+    def fake_run_issue_on_host(*, repo_url, ref, issue_ref, prompt=None, **kwargs):
+        captured["issue_ref"] = issue_ref
+        captured["prompt"] = prompt
+        from agentrail.sandbox.docker_runner import RunResult
+
+        return RunResult(status="red")
+
+    import agentrail.sandbox.native_runner as nr
+
+    monkeypatch.setattr(nr, "run_issue_on_host", fake_run_issue_on_host)
+    monkeypatch.setattr(
+        "agentrail.run.usage_capture.capture_usage", lambda *a, **k: None
+    )
+
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    SandboxAgentExecutor().execute(task=corpus_task, arm=full(), workdir=workdir)
+
+    # The task's prompt is forwarded (drives ``agentrail run prompt``).
+    assert captured["prompt"] == corpus_task.prompt
+    assert captured["prompt"] == "Make X work."
+    # The task name is the run label.
+    assert captured["issue_ref"] == corpus_task.name
+
+
 def test_execute_real_clone_and_checkout_into_workdir_repo(
     corpus_task: CorpusTask, tmp_path: Path, monkeypatch
 ) -> None:

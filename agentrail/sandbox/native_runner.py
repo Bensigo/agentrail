@@ -181,14 +181,33 @@ def _checkout_command(ref: str) -> List[str]:
 
 def _build_run_command(
     *, issue_ref: str, agent: str, model: Optional[str], log_dir: str,
-    sandbox_runtime: bool, run_id: str,
+    sandbox_runtime: bool, run_id: str, prompt: Optional[str] = None,
 ) -> List[str]:
-    cmd: List[str] = [
-        "agentrail", "run", "issue", str(issue_ref),
-        "--agent", agent,
-        "--run-id", run_id,
-        "--log-dir", log_dir,
-    ]
+    """Build the in-clone ``agentrail run`` command.
+
+    Default (``prompt`` is ``None``): drive ``agentrail run issue <issue_ref>``
+    — the existing, byte-identical issue path the autonomous loop uses.
+
+    Prompt mode (#968): when ``prompt`` is given, drive
+    ``agentrail run prompt "<prompt>" --label <issue_ref>`` instead, so the eval
+    runs the agent on the corpus task's prompt through the SAME pipeline/gate.
+    ``issue_ref`` becomes the run label (a non-numeric task name).
+    """
+    if prompt is not None:
+        cmd: List[str] = [
+            "agentrail", "run", "prompt", prompt,
+            "--label", str(issue_ref),
+            "--agent", agent,
+            "--run-id", run_id,
+            "--log-dir", log_dir,
+        ]
+    else:
+        cmd = [
+            "agentrail", "run", "issue", str(issue_ref),
+            "--agent", agent,
+            "--run-id", run_id,
+            "--log-dir", log_dir,
+        ]
     if model:
         cmd += ["--model", model]
     if sandbox_runtime:
@@ -214,6 +233,7 @@ def run_issue_on_host(
     run_id: str = RUN_ID,
     pr_title: Optional[str] = None,
     publish_pr: bool = True,
+    prompt: Optional[str] = None,
     run_dir_factory: Optional[Callable[[], Path]] = None,
     runner=subprocess,
 ) -> RunResult:
@@ -224,6 +244,13 @@ def run_issue_on_host(
     agent CLI uses the host login + its own native sandbox), parses the run's
     ``run.json`` into a :class:`RunResult`, then ALWAYS removes the temp dir —
     even on error or timeout (AC1, AC2).
+
+    Prompt mode (#968): when ``prompt`` is given, the in-clone command becomes
+    ``agentrail run prompt "<prompt>" --label <issue_ref>`` instead of
+    ``run issue <issue_ref>``, so the eval drives the agent on a corpus task's
+    raw prompt through the SAME pipeline + Objective Gate. ``issue_ref`` is then
+    the run label. Everything else (clone into ``workdir/repo`` at ``ref``, the
+    #964 diff-capture contract, teardown) is unchanged.
 
     ``env`` is forwarded to the run; ``AGENTRAIL_FAILURE_HANDOFF`` is set from
     ``failure_handoff`` (a possibly large/multiline compacted handoff, kept off
@@ -321,7 +348,7 @@ def run_issue_on_host(
         run_cmd = _build_run_command(
             issue_ref=issue_ref, agent=agent, model=model,
             log_dir=str(log_dir), sandbox_runtime=sandbox_runtime,
-            run_id=run_id,
+            run_id=run_id, prompt=prompt,
         )
         try:
             proc = runner.run(

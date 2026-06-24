@@ -308,6 +308,10 @@ class SandboxAgentExecutor:
         # ``fatal: repository 'Bensigo/agentrail' does not exist``.
         clone_source = _resolve_clone_source(self, task)
 
+        # #968: a corpus task is a PROMPT, not a numbered GitHub issue. Pass the
+        # task's prompt so the sandbox drives ``agentrail run prompt`` (the agent
+        # actually works on the task) and the task name as the run label. The
+        # prompt runs the SAME pipeline + Objective Gate as a real issue.
         result = native_runner.run_issue_on_host(
             repo_url=clone_source,
             ref=task.commit,
@@ -315,6 +319,7 @@ class SandboxAgentExecutor:
             workspace_id="eval",
             env=env,
             model=arm.model,
+            prompt=task.prompt,
             run_dir_factory=lambda: workdir,
             publish_pr=False,
         )

@@ -152,10 +152,31 @@ def _logs_tail(stdout: str, stderr: str) -> str:
 # Command building
 # ---------------------------------------------------------------------------
 
+# A full 40-hex (or shortened ≥7-hex) git object name. ``git clone --branch``
+# only accepts a branch/tag NAME, never a bare commit SHA, so for a SHA ref we
+# clone the default branch then check the commit out explicitly (see
+# ``_checkout_command``). The eval harness (#966) pins tasks at bare commit SHAs.
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+def _ref_is_commit_sha(ref: str) -> bool:
+    """True when ``ref`` looks like a bare commit SHA (not a branch/tag name)."""
+    return bool(_SHA_RE.match(ref))
+
+
 def _clone_command(repo_url: str, ref: str, dest: str) -> List[str]:
-    # --branch checks out ref directly when it is a branch/tag; a bare commit ref
-    # is handled by the run pipeline (the host clone keeps shallow history).
+    # ``--branch`` checks out ref directly when it is a branch/tag NAME. A bare
+    # commit SHA is NOT a valid ``--branch`` argument (``fatal: Remote branch
+    # <sha> not found``), so for a SHA we clone without ``--branch`` and let
+    # ``_checkout_command`` detach onto the commit afterwards. (#966)
+    if _ref_is_commit_sha(ref):
+        return ["git", "clone", "--depth", "50", repo_url, dest]
     return ["git", "clone", "--depth", "50", "--branch", ref, repo_url, dest]
+
+
+def _checkout_command(ref: str) -> List[str]:
+    """Detached checkout of a bare commit SHA after a branchless clone (#966)."""
+    return ["git", "checkout", "--quiet", ref]
 
 
 def _build_run_command(
@@ -258,6 +279,28 @@ def run_issue_on_host(
             return RunResult(status="error",
                              gate_reason="git clone failed",
                              logs_tail=tail or "(no output)")
+
+        # 1a. Detached checkout of a bare commit SHA. ``_clone_command`` omits
+        # ``--branch`` for a SHA ref (git rejects a SHA there), so the clone
+        # landed on the default branch; check the pinned commit out now so the
+        # run sees the exact pinned tree. Branch/tag refs were already checked
+        # out by ``--branch`` and skip this step. (#966)
+        if _ref_is_commit_sha(ref):
+            try:
+                checkout = runner.run(
+                    _checkout_command(ref),
+                    cwd=str(repo_dir), env=child_env, timeout=timeout,
+                )
+            except (HostError, OSError, ValueError) as exc:
+                return RunResult(status="error",
+                                 gate_reason=f"checkout error: {exc}")
+            if getattr(checkout, "returncode", 0) != 0:
+                tail = _logs_tail(
+                    getattr(checkout, "stdout", ""), getattr(checkout, "stderr", "")
+                )
+                return RunResult(status="error",
+                                 gate_reason=f"git checkout {ref} failed",
+                                 logs_tail=tail or "(no output)")
 
         # 1b. Materialize connected MCP connectors into the codebase: write the
         # agent-correct MCP config into the clone from AGENTRAIL_MCP_<PROVIDER>_KEY

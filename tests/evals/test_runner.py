@@ -581,8 +581,13 @@ def test_execute_real_clone_and_checkout_into_workdir_repo(
                     capture_output=True, text=True,
                 )
             # The agent run command. By now the real clone+checkout finished,
-            # so capture the clone state (cwd is the repo_dir == workdir/repo).
-            repo_clone = Path(cwd)
+            # so capture the clone state. #970: the eval injects the SOURCE
+            # launcher, so the run command's cwd is the SOURCE tree and the
+            # clone is named via ``--target`` (the agent still edits the clone
+            # at workdir/repo). Read the clone path from --target.
+            assert "--target" in cmd, "injected launcher must name the clone via --target"
+            repo_clone = Path(cmd[cmd.index("--target") + 1])
+            captured["run_cwd"] = str(cwd)
             captured["repo_clone"] = str(repo_clone)
             captured["has_git"] = (repo_clone / ".git").exists()
             captured["marker"] = (
@@ -623,3 +628,6 @@ def test_execute_real_clone_and_checkout_into_workdir_repo(
     assert captured["has_git"], "clone must land in workdir/repo (#964)"
     assert captured["marker"] == "pinned\n"
     assert captured["head"] == pinned, "checkout must land at the pinned commit"
+    # #970: the run command runs from the SOURCE tree (so source agentrail is
+    # imported), NOT from the clone (which would shadow it).
+    assert captured["run_cwd"] != str(workdir / "repo")

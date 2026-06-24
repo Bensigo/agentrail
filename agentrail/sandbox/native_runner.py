@@ -182,8 +182,9 @@ def _checkout_command(ref: str) -> List[str]:
 def _build_run_command(
     *, issue_ref: str, agent: str, model: Optional[str], log_dir: str,
     sandbox_runtime: bool, run_id: str, prompt: Optional[str] = None,
+    agentrail_cmd: Optional[List[str]] = None, target: Optional[str] = None,
 ) -> List[str]:
-    """Build the in-clone ``agentrail run`` command.
+    """Build the ``agentrail run`` command driven on the host.
 
     Default (``prompt`` is ``None``): drive ``agentrail run issue <issue_ref>``
     — the existing, byte-identical issue path the autonomous loop uses.
@@ -192,10 +193,23 @@ def _build_run_command(
     ``agentrail run prompt "<prompt>" --label <issue_ref>`` instead, so the eval
     runs the agent on the corpus task's prompt through the SAME pipeline/gate.
     ``issue_ref`` becomes the run label (a non-numeric task name).
+
+    Launcher injection (#970): the program that provides ``agentrail run`` is
+    ``["agentrail"]`` by default — the npm-published binary on PATH the
+    autonomous loop relies on. When the run command is invoked with ``cwd`` set
+    to the CLONE, that PATH binary is the OLD published one (no ``run prompt``).
+    The eval therefore injects ``agentrail_cmd`` (e.g.
+    ``[sys.executable, "-m", "agentrail.cli.main"]``) so the run drives the
+    CURRENT source under test; the run is then invoked with ``cwd``/``env``
+    pointing at the source tree (see :func:`run_issue_on_host`) and ``target``
+    is set to the clone so the agent still edits the cloned task repo. When
+    ``agentrail_cmd`` is ``None`` (the real loop), the command is byte-identical
+    to before — bare ``["agentrail", ...]`` with no ``--target`` flag.
     """
+    launcher = list(agentrail_cmd) if agentrail_cmd is not None else ["agentrail"]
     if prompt is not None:
         cmd: List[str] = [
-            "agentrail", "run", "prompt", prompt,
+            *launcher, "run", "prompt", prompt,
             "--label", str(issue_ref),
             "--agent", agent,
             "--run-id", run_id,
@@ -203,13 +217,20 @@ def _build_run_command(
         ]
     else:
         cmd = [
-            "agentrail", "run", "issue", str(issue_ref),
+            *launcher, "run", "issue", str(issue_ref),
             "--agent", agent,
             "--run-id", run_id,
             "--log-dir", log_dir,
         ]
     if model:
         cmd += ["--model", model]
+    # Only the injected-launcher path passes ``--target``: the default loop runs
+    # the command with ``cwd`` == the clone, so ``run`` already targets the
+    # clone (its default target is the cwd) and adding ``--target`` would change
+    # the byte-identical issue command. The injected path runs with ``cwd`` ==
+    # the source tree, so it MUST name the clone explicitly via ``--target``.
+    if agentrail_cmd is not None and target is not None:
+        cmd += ["--target", target]
     if sandbox_runtime:
         # Wrap the whole run in Anthropic's Seatbelt/bubblewrap sandbox.
         cmd = ["npx", SANDBOX_RUNTIME_PKG, "--"] + cmd
@@ -234,6 +255,9 @@ def run_issue_on_host(
     pr_title: Optional[str] = None,
     publish_pr: bool = True,
     prompt: Optional[str] = None,
+    agentrail_cmd: Optional[List[str]] = None,
+    run_cwd: Optional[str] = None,
+    run_env: Optional[Dict[str, str]] = None,
     run_dir_factory: Optional[Callable[[], Path]] = None,
     runner=subprocess,
 ) -> RunResult:
@@ -261,6 +285,16 @@ def run_issue_on_host(
     When ``AGENTRAIL_SANDBOX_RUNTIME=1`` is in ``env``, the run command is wrapped
     with ``npx @anthropic-ai/sandbox-runtime`` for whole-process isolation
     (default OFF).
+
+    Launcher injection (#970, eval-only): by default the in-clone command is
+    ``agentrail run ...`` invoked with ``cwd`` == the clone, exactly as the
+    autonomous loop expects. The eval injects ``agentrail_cmd`` (e.g.
+    ``[sys.executable, "-m", "agentrail.cli.main"]``) plus ``run_cwd`` == the
+    source repo root and ``run_env`` (e.g. ``PYTHONPATH`` == source root and
+    ``AGENTRAIL_ALLOW_SOURCE_RUN=1``) so the run drives the CURRENT source under
+    test (which has ``run prompt``) while still pointing the agent at the clone
+    via ``--target <clone>``. When none of these are passed, behaviour is
+    byte-identical to before — the real loop's sandbox path is unchanged.
 
     Returns ``status='error'`` for any host-level failure — clone failure,
     timeout, missing ``run.json`` — i.e. whenever no trustworthy gate verdict was
@@ -345,14 +379,29 @@ def run_issue_on_host(
             pass
 
         # 2. Run the spine on the host.
+        #
+        # Default loop: command is bare ``agentrail run ...`` and runs with
+        # ``cwd`` == the clone, so ``run`` targets the clone implicitly. Eval
+        # injection (#970): the launcher is the SOURCE module, the command runs
+        # with ``cwd`` == the source tree (``run_cwd``) so ``import agentrail``
+        # resolves to source (not the clone, which would shadow it), and the
+        # clone is named explicitly via ``--target``. ``run_env`` (PYTHONPATH +
+        # source-run allow) layers on top of the child env so source import wins.
+        run_target = str(repo_dir) if agentrail_cmd is not None else None
         run_cmd = _build_run_command(
             issue_ref=issue_ref, agent=agent, model=model,
             log_dir=str(log_dir), sandbox_runtime=sandbox_runtime,
             run_id=run_id, prompt=prompt,
+            agentrail_cmd=agentrail_cmd, target=run_target,
         )
+        run_command_cwd = run_cwd if run_cwd is not None else str(repo_dir)
+        run_command_env = child_env
+        if run_env:
+            run_command_env = dict(child_env)
+            run_command_env.update(run_env)
         try:
             proc = runner.run(
-                run_cmd, cwd=str(repo_dir), env=child_env, timeout=timeout,
+                run_cmd, cwd=run_command_cwd, env=run_command_env, timeout=timeout,
             )
         except HostTimeout as exc:
             return RunResult(status="error",

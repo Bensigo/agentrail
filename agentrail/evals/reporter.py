@@ -36,7 +36,7 @@ from typing import Dict, List, Optional, Protocol, Sequence
 
 from agentrail.run.usage_capture import Usage
 
-from agentrail.evals.arms import LAYER_NAMES
+from agentrail.evals.arms import LAYER_NAMES, NEW_FLOW_LAYERS
 from agentrail.evals.corpus.loader import DIFFICULTY_TAGS
 from agentrail.evals.pricing_adapter import usage_cost
 from agentrail.evals.probes import (
@@ -80,6 +80,11 @@ class RepetitionRecord:
     # ``None`` for callers (and old tests) that pre-date the probe; such records
     # simply contribute to no stratum (the aggregate is unaffected).
     difficulty: Optional[str] = None
+    # Wall-clock duration of the run, in seconds (issue #980). Threaded straight
+    # from the runner's ``RunRecord.wall_time_s`` by the spine so the report can
+    # surface wall-time PER TASK per arm — a falsifiable metric (a slower arm
+    # reads worse). Defaults to ``0.0`` for callers/tests that pre-date it.
+    wall_time_s: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +129,12 @@ class ArmReport:
     total_cost_usd: float
     # None when no repetition solved (undefined, never divide-by-zero).
     dollars_per_solved: Optional[float]
+    # Wall-time per task (issue #980): mean over all repetitions (seconds), and
+    # the total across them. The MEAN is the headline "wall-time per task" AC3
+    # asks for; it is falsifiable — a slower arm comes back larger. ``0.0`` when
+    # no repetitions (never a divide-by-zero).
+    mean_wall_time_s: float = 0.0
+    total_wall_time_s: float = 0.0
     # Objective Gate false-green probe (issue #940). Of the runs whose gate
     # passed, how many failed the hidden tests. The flags are the scorer's
     # (carried on each RepetitionRecord), never re-derived here.
@@ -175,6 +186,12 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
     # nothing solved — the AC3 no-divide-by-zero guard.
     dollars_per_solved = (total_cost / solved_count) if solved_count else None
 
+    # Wall-time per task (#980): total + mean over all repetitions. ``0.0`` for
+    # an empty arm (never a divide-by-zero). Falsifiable — a slower arm reads
+    # worse because the mean comes back larger.
+    total_wall_time = sum(getattr(r, "wall_time_s", 0.0) for r in records)
+    mean_wall_time = (total_wall_time / repetitions) if repetitions else 0.0
+
     # Objective Gate false-green probe (#940). Both flags come straight off the
     # RepetitionRecord (which the spine fills from the scorer's Verdict) — we
     # only COUNT them here, never recompute "gate passed and not solved".
@@ -203,6 +220,8 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
         total_tokens=total_tokens,
         total_cost_usd=total_cost,
         dollars_per_solved=dollars_per_solved,
+        mean_wall_time_s=mean_wall_time,
+        total_wall_time_s=total_wall_time,
         gate_passed_count=gate_passed_count,
         false_green_count=false_green_count,
         false_green_rate=false_green_rate,
@@ -333,6 +352,136 @@ def layer_deltas(reports: Sequence[ArmReport]) -> List[LayerDelta]:
 
 
 # ---------------------------------------------------------------------------
+# New-flow per-layer ablation deltas (issue #980) — same shape as the base
+# layer deltas, but computed against the NEW-FLOW arm and its
+# ``new-flow-minus-<layer>`` ablations (critic / best-of-N / warm-cache).
+# ---------------------------------------------------------------------------
+
+
+def new_flow_layer_deltas(reports: Sequence[ArmReport]) -> List[LayerDelta]:
+    """Per-new-layer ablation deltas across the given arm reports (issue #980 AC1).
+
+    For each new-flow layer (in :data:`NEW_FLOW_LAYERS` order) compute::
+
+        delta = new-flow.solve_rate - (new-flow-minus-<layer>).solve_rate
+
+    over the SAME run set the reports were aggregated from. Mirrors
+    :func:`layer_deltas` exactly (same ``LayerDelta`` shape, same
+    ``earns_place`` / ``flagged`` semantics, same undefined-when-absent rule) —
+    only the anchor arm (``new-flow``) and the ablation-arm name prefix differ.
+    When either the ``new-flow`` arm or a layer's ``new-flow-minus-<layer>`` arm
+    is missing, that layer's delta is ``None`` (undefined) — never a crash.
+    """
+    by_arm = {r.arm: r for r in reports}
+    nf_report = by_arm.get("new-flow")
+    nf_rate = nf_report.solve_rate if nf_report is not None else None
+
+    deltas: List[LayerDelta] = []
+    for layer in NEW_FLOW_LAYERS:
+        ablation = by_arm.get(f"new-flow-minus-{layer}")
+        ablation_rate = ablation.solve_rate if ablation is not None else None
+        if nf_rate is None or ablation_rate is None:
+            delta: Optional[float] = None
+        else:
+            delta = nf_rate - ablation_rate
+        deltas.append(
+            LayerDelta(
+                layer=layer,
+                full_solve_rate=nf_rate,
+                ablation_solve_rate=ablation_rate,
+                delta=delta,
+            )
+        )
+    return deltas
+
+
+# ---------------------------------------------------------------------------
+# New-flow vs ``full`` head-to-head delta (issue #980 AC3) — the four headline
+# metrics, EACH able to come back worse (no one-sided metric).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NewFlowDelta:
+    """New-flow-vs-``full`` delta on the four headline metrics (issue #980 AC3).
+
+    Every delta is ``new-flow`` minus ``full`` on the SAME run set / scorer.
+    Each is falsifiable — it can come back WORSE:
+
+    - ``solve_rate_delta`` — higher is better, so a positive delta is good; a
+      negative one means the new flow solved fewer.
+    - ``dollars_per_solved_delta`` — lower is better, so a NEGATIVE delta is
+      good (cheaper); a positive one means the new flow cost more per solved
+      task. ``None`` when either arm never solved (undefined $/solved).
+    - ``wall_time_delta`` — lower is better, so a positive delta means the new
+      flow was SLOWER per task (worse). This is the metric most likely to come
+      back worse — the warm-cache / best-of-N layers trade wall-time for solves.
+    - ``false_green_rate_delta`` — lower is better, so a negative delta is good
+      (fewer false greens). ``None`` when either arm's denominator is empty.
+
+    The source rates are carried for transparency (and so the markdown / rows
+    never re-derive them).
+    """
+
+    full_solve_rate: float
+    new_flow_solve_rate: float
+    solve_rate_delta: float
+
+    full_dollars_per_solved: Optional[float]
+    new_flow_dollars_per_solved: Optional[float]
+    dollars_per_solved_delta: Optional[float]
+
+    full_mean_wall_time_s: float
+    new_flow_mean_wall_time_s: float
+    wall_time_delta: float
+
+    full_false_green_rate: Optional[float]
+    new_flow_false_green_rate: Optional[float]
+    false_green_rate_delta: Optional[float]
+
+
+def _opt_delta(new: Optional[float], base: Optional[float]) -> Optional[float]:
+    """``new - base`` when both are defined, else ``None`` (no fabricated number)."""
+    if new is None or base is None:
+        return None
+    return new - base
+
+
+def new_flow_delta(reports: Sequence[ArmReport]) -> Optional[NewFlowDelta]:
+    """The ``new-flow`` vs ``full`` head-to-head delta, or ``None`` when an arm is absent.
+
+    Returns ``None`` (undefined — never a fabricated row) unless BOTH the
+    ``full`` and ``new-flow`` arms are in *reports*. Each metric delta is
+    ``new-flow`` minus ``full``; the dollars-per-solved and false-green-rate
+    deltas are ``None`` when either side's metric is undefined (no
+    divide-by-zero, no one-sided number).
+    """
+    by_arm = {r.arm: r for r in reports}
+    full_r = by_arm.get("full")
+    nf_r = by_arm.get("new-flow")
+    if full_r is None or nf_r is None:
+        return None
+    return NewFlowDelta(
+        full_solve_rate=full_r.solve_rate,
+        new_flow_solve_rate=nf_r.solve_rate,
+        solve_rate_delta=nf_r.solve_rate - full_r.solve_rate,
+        full_dollars_per_solved=full_r.dollars_per_solved,
+        new_flow_dollars_per_solved=nf_r.dollars_per_solved,
+        dollars_per_solved_delta=_opt_delta(
+            nf_r.dollars_per_solved, full_r.dollars_per_solved
+        ),
+        full_mean_wall_time_s=full_r.mean_wall_time_s,
+        new_flow_mean_wall_time_s=nf_r.mean_wall_time_s,
+        wall_time_delta=nf_r.mean_wall_time_s - full_r.mean_wall_time_s,
+        full_false_green_rate=full_r.false_green_rate,
+        new_flow_false_green_rate=nf_r.false_green_rate,
+        false_green_rate_delta=_opt_delta(
+            nf_r.false_green_rate, full_r.false_green_rate
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Markdown rendering (honesty rails: failures, ties, spread — not only wins)
 # ---------------------------------------------------------------------------
 
@@ -347,6 +496,26 @@ def _fmt_usd(value: Optional[float]) -> str:
 
 def _fmt_pct(value: float) -> str:
     return f"{value * 100:.1f}%"
+
+
+def _fmt_seconds(value: float) -> str:
+    return f"{value:.1f}s"
+
+
+def _fmt_signed_seconds(value: float) -> str:
+    return f"{value:+.1f}s"
+
+
+def _fmt_signed_usd(value: Optional[float]) -> str:
+    if value is None:
+        return _UNDEFINED
+    return f"{'+' if value >= 0 else '-'}${abs(value):.4f}"
+
+
+def _fmt_signed_pct(value: Optional[float]) -> str:
+    if value is None:
+        return _UNDEFINED
+    return f"{value * 100:+.1f}%"
 
 
 def _fmt_rate_pct(value: Optional[float]) -> str:
@@ -403,20 +572,72 @@ def render_markdown(reports: Sequence[ArmReport], *, generated_at: str) -> str:
     lines.append("")
     lines.append(
         "| Arm | Reps | Solved | Failed | Solve-rate | Spread | "
-        "False-green rate | Total tokens | Total cost | Dollars-per-solved-task |"
+        "False-green rate | Wall-time per task | Total tokens | Total cost "
+        "| Dollars-per-solved-task |"
     )
     lines.append(
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
     )
     for r in reports:
         lines.append(
             f"| {r.arm} | {r.repetitions} | {r.solved_count} | {r.failed_count} "
             f"| {_fmt_pct(r.solve_rate)} | {r.spread:.4f} "
             f"| {_fmt_rate_pct(r.false_green_rate)} "
+            f"| {_fmt_seconds(r.mean_wall_time_s)} "
             f"| {r.total_tokens} | {_fmt_usd(r.total_cost_usd)} "
             f"| {_fmt_usd(r.dollars_per_solved)} |"
         )
     lines.append("")
+
+    # --- New-flow vs `full` head-to-head delta (issue #980 AC3) ----------
+    # All four headline metrics, EACH able to come back worse (no one-sided
+    # metric). Only rendered when BOTH arms are present in this run set.
+    nf_delta = new_flow_delta(reports)
+    lines.append("## New-flow vs full")
+    lines.append("")
+    if nf_delta is None:
+        lines.append(
+            "_Not available: this run set does not contain BOTH the `full` and "
+            "`new-flow` arms (run `--arm full --arm new-flow` to populate this)._"
+        )
+        lines.append("")
+    else:
+        lines.append(
+            "The new flow is `full` PLUS the critic (#977), best-of-N (#979), and "
+            "warm-cache (#978) layers. Each delta is `new-flow` minus `full` on the "
+            "SAME scorer and run set, and each can come back **worse** — solve-rate "
+            "and false-green can drop, wall-time and dollars-per-solved can rise. "
+            "Lower is better for dollars-per-solved, wall-time, and false-green; "
+            "higher is better for solve-rate. `n/a` marks an undefined delta "
+            "(an arm never solved, or its gate never passed)."
+        )
+        lines.append("")
+        lines.append("| Metric | full | new-flow | Delta (new-flow - full) |")
+        lines.append("| --- | ---: | ---: | ---: |")
+        lines.append(
+            f"| Solve-rate | {_fmt_pct(nf_delta.full_solve_rate)} | "
+            f"{_fmt_pct(nf_delta.new_flow_solve_rate)} | "
+            f"{_fmt_signed_pct(nf_delta.solve_rate_delta)} |"
+        )
+        lines.append(
+            f"| Dollars-per-solved-task | "
+            f"{_fmt_usd(nf_delta.full_dollars_per_solved)} | "
+            f"{_fmt_usd(nf_delta.new_flow_dollars_per_solved)} | "
+            f"{_fmt_signed_usd(nf_delta.dollars_per_solved_delta)} |"
+        )
+        lines.append(
+            f"| Wall-time per task | "
+            f"{_fmt_seconds(nf_delta.full_mean_wall_time_s)} | "
+            f"{_fmt_seconds(nf_delta.new_flow_mean_wall_time_s)} | "
+            f"{_fmt_signed_seconds(nf_delta.wall_time_delta)} |"
+        )
+        lines.append(
+            f"| False-green rate | "
+            f"{_fmt_rate_pct(nf_delta.full_false_green_rate)} | "
+            f"{_fmt_rate_pct(nf_delta.new_flow_false_green_rate)} | "
+            f"{_fmt_signed_pct(nf_delta.false_green_rate_delta)} |"
+        )
+        lines.append("")
 
     # --- Per-layer ablation deltas (issue #939) --------------------------
     # full - full-minus-<layer> on the same scorer/run set. A large positive
@@ -460,6 +681,57 @@ def render_markdown(reports: Sequence[ArmReport], *, generated_at: str) -> str:
     else:
         lines.append(
             "_No layer has a zero or negative delta in this run set._"
+        )
+    lines.append("")
+
+    # --- New-flow per-layer ablation deltas (issue #980 AC1) -------------
+    # new-flow - new-flow-minus-<layer> for each of the three NEW layers
+    # (critic / best-of-N / warm-cache). Same earns-its-place / flagged
+    # semantics as the base ablation table above.
+    nf_deltas = new_flow_layer_deltas(reports)
+    lines.append("## New-flow per-layer ablation deltas")
+    lines.append("")
+    lines.append(
+        "Each new layer's worth is `new-flow` solve-rate minus "
+        "`new-flow-minus-<layer>` solve-rate on the SAME scorer and run set "
+        "(critic #977 / bestofn #979 / warmcache #978). These layers are NOT in "
+        "`full` (critic and best-of-N are opt-in; warm-cache is default-on), so "
+        "they are ablated relative to the NEW flow, never minused from `full`. A "
+        "positive delta means the layer **earns its place**; a zero or negative "
+        "delta flags it as a **candidate to fix or remove**. `n/a` means the "
+        "`new-flow` arm or that layer's ablation arm was absent (delta undefined)."
+    )
+    lines.append("")
+    lines.append(
+        "| Layer | new-flow solve-rate | new-flow-minus-layer solve-rate | Delta | Verdict |"
+    )
+    lines.append("| --- | ---: | ---: | ---: | --- |")
+    for d in nf_deltas:
+        full_cell = _fmt_rate_pct(d.full_solve_rate)
+        abl_cell = _fmt_rate_pct(d.ablation_solve_rate)
+        if d.delta is None:
+            delta_cell = _UNDEFINED
+            verdict_cell = "n/a (delta undefined — arm absent)"
+        else:
+            delta_cell = f"{d.delta * 100:+.1f}%"
+            verdict_cell = (
+                "earns its place"
+                if d.earns_place
+                else "FLAGGED: candidate to fix or remove (delta <= 0)"
+            )
+        lines.append(
+            f"| {d.layer} | {full_cell} | {abl_cell} | {delta_cell} | {verdict_cell} |"
+        )
+    lines.append("")
+    nf_flagged = [d.layer for d in nf_deltas if d.flagged]
+    if nf_flagged:
+        lines.append(
+            f"**Flagged new-flow layers (zero or negative delta — fix or remove): "
+            f"{', '.join(nf_flagged)}.**"
+        )
+    else:
+        lines.append(
+            "_No new-flow layer has a zero or negative delta in this run set._"
         )
     lines.append("")
 
@@ -750,6 +1022,10 @@ def arm_metric_rows(reports: Sequence[ArmReport], *, run_id: str) -> List[dict]:
             "total_tokens": r.total_tokens,
             "total_cost_usd": r.total_cost_usd,
             "dollars_per_solved": r.dollars_per_solved,
+            # Wall-time per task (#980): mean + total seconds, so the console
+            # shows the same wall-time the markdown does (never disagree).
+            "mean_wall_time_s": r.mean_wall_time_s,
+            "total_wall_time_s": r.total_wall_time_s,
             # Objective Gate false-green probe (#940). None (not 0.0) for the
             # undefined-denominator case so the console can render it honestly.
             "gate_passed_count": r.gate_passed_count,

@@ -18,6 +18,7 @@ import pytest
 
 from agentrail.evals.arms import (
     LAYER_NAMES,
+    NEW_FLOW_LAYERS,
     Arm,
     Layers,
     ablation_arms,
@@ -25,6 +26,9 @@ from agentrail.evals.arms import (
     baseline,
     full,
     full_minus,
+    new_flow,
+    new_flow_arms,
+    new_flow_minus,
 )
 
 
@@ -234,3 +238,92 @@ def test_each_registered_ablation_arm_differs_from_full_by_one_layer(arm: Arm) -
     (layer,) = differing
     assert a_layers[layer] is False
     assert arm.name == f"full-minus-{layer}"
+
+
+# ---------------------------------------------------------------------------
+# Issue #980 — the new-flow arm (#977 critic + #978 warm-cache + #979 best-of-N)
+# and its three leave-one-out ablations.
+#
+# Design nuance (issue #980): the three new layers are NOT symmetric.
+#   - WARMCACHE is default-ON (part of ``full`` today) so it can only be turned
+#     OFF relative to the new flow.
+#   - CRITIC and BESTOFN are OPT-IN: they only activate when a critic model is
+#     configured AND their layer env is on. So they are NOT in ``full``; the
+#     new-flow arm ENABLES them, and we ablate by turning one off vs the new
+#     flow. Hence ``new_flow`` and ``new_flow_minus``, NOT ``full_minus``.
+# ---------------------------------------------------------------------------
+
+
+def test_new_flow_layer_names_are_critic_bestofn_warmcache() -> None:
+    assert NEW_FLOW_LAYERS == ("critic", "bestofn", "warmcache")
+
+
+def test_new_flow_enables_all_base_layers_and_all_three_new_layers() -> None:
+    arm = new_flow()
+    assert arm.name == "new-flow"
+    # Every base AgentRail layer is ON (new-flow = full + the new layers).
+    assert all(value is True for value in arm.layers.as_dict().values())
+    # Every new layer is explicitly ON.
+    extra = arm.extra_layers
+    assert set(extra) == set(NEW_FLOW_LAYERS)
+    assert all(extra[name] is True for name in NEW_FLOW_LAYERS)
+
+
+def test_new_flow_supplies_a_critic_model_so_a_critic_command_gets_built() -> None:
+    """AC2: the critic/best-of-N layers are opt-in — they only activate when a
+    critic model is configured. The new-flow arm must SUPPLY one so a critic
+    command exists during the eval run (else critic + best-of-N never run)."""
+    arm = new_flow()
+    assert isinstance(arm.critic_model, str)
+    assert arm.critic_model, "new-flow must pin a critic model so the critic runs"
+
+
+def test_new_flow_holds_model_and_temperature_fixed_to_full() -> None:
+    f, nf = full(), new_flow()
+    assert nf.model == f.model
+    assert nf.temperature == f.temperature
+
+
+def test_full_and_baseline_carry_no_extra_layers_or_critic_model() -> None:
+    """Do NOT change the meaning of ``full`` or ``baseline`` (issue #980)."""
+    for arm in (baseline(), full()):
+        assert arm.extra_layers == {}
+        assert arm.critic_model == ""
+
+
+@pytest.mark.parametrize("layer", NEW_FLOW_LAYERS)
+def test_new_flow_minus_disables_exactly_one_new_layer(layer: str) -> None:
+    nf = new_flow()
+    ablated = new_flow_minus(layer)
+
+    assert ablated.name == f"new-flow-minus-{layer}"
+    # Base layers, model, temperature, and the critic model are all held fixed.
+    assert ablated.layers.as_dict() == nf.layers.as_dict()
+    assert ablated.model == nf.model
+    assert ablated.temperature == nf.temperature
+    assert ablated.critic_model == nf.critic_model
+
+    # Exactly the named new layer is flipped OFF; every other new layer matches.
+    nf_extra = nf.extra_layers
+    ab_extra = ablated.extra_layers
+    assert ab_extra[layer] is False, f"{layer} must be off in new-flow-minus-{layer}"
+    differing = {k for k in NEW_FLOW_LAYERS if ab_extra[k] != nf_extra[k]}
+    assert differing == {layer}, f"only {layer} should differ from new-flow, got {differing}"
+
+
+def test_new_flow_minus_unknown_layer_is_rejected() -> None:
+    with pytest.raises(ValueError, match="unknown new-flow layer"):
+        new_flow_minus("not_a_new_layer")
+
+
+def test_new_flow_arms_is_new_flow_and_every_leave_one_out() -> None:
+    arms = new_flow_arms()
+    names = [a.name for a in arms]
+    assert names[0] == "new-flow"
+    assert names[1:] == [f"new-flow-minus-{layer}" for layer in NEW_FLOW_LAYERS]
+
+
+def test_new_flow_arms_each_disables_exactly_one_new_layer() -> None:
+    for arm in new_flow_arms()[1:]:
+        off = [name for name, on in arm.extra_layers.items() if not on]
+        assert len(off) == 1, f"{arm.name} must disable exactly one new layer, got {off}"

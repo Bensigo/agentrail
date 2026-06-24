@@ -298,15 +298,22 @@ def resolve_critic_command(
     verify model (AC1). It runs ONLY when explicitly opted in via
     ``runners.<agent>.models.critic`` — the real loop sets no such config, so this
     returns ``""`` and no critic command is built (the verify path is unchanged).
-    When configured, the cheap model is resolved through
-    ``critic.resolve_critic_model`` (configured model, else the default Haiku) and,
-    like the verifier, must DIFFER from the Implementer's (execute) model so the
-    maker never grades its own homework (independence). Returns ``""`` when the
-    resolved critic model equals the implementer's model.
+    The eval harness (issue #980) opts in WITHOUT writing config into the cloned
+    task repo by setting ``AGENTRAIL_EVAL_CRITIC_MODEL`` in the run env; that is
+    honoured here as a fallback after config. When configured, the cheap model is
+    resolved through ``critic.resolve_critic_model`` (configured model, else the
+    default Haiku) and, like the verifier, must DIFFER from the Implementer's
+    (execute) model so the maker never grades its own homework (independence).
+    Returns ``""`` when the resolved critic model equals the implementer's model.
     """
     from agentrail.run.critic import resolve_critic_model
 
     configured = resolve_model_from_config(agent, target, "critic")
+    if not configured:
+        # Eval opt-in (issue #980): a critic model supplied via env (the eval
+        # arm's ``AGENTRAIL_EVAL_CRITIC_MODEL``) opts the critic in without a
+        # config file. The real loop sets neither, so the verify path is unchanged.
+        configured = (os.environ.get("AGENTRAIL_EVAL_CRITIC_MODEL") or "").strip()
     if not configured:
         # Not opted in: no critic command. The verify path stays in control.
         return ""

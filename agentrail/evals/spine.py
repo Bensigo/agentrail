@@ -75,7 +75,14 @@ from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 _log = logging.getLogger(__name__)
 
 # Canonical contracts — imported, never redefined here (anti-false-green rule).
-from agentrail.evals.arms import Arm, baseline, full, full_minus
+from agentrail.evals.arms import (
+    Arm,
+    baseline,
+    full,
+    full_minus,
+    new_flow,
+    new_flow_minus,
+)
 from agentrail.evals.corpus.loader import CorpusTask, load_corpus
 from agentrail.evals.reporter import (
     ArmReport,
@@ -343,6 +350,9 @@ def run_spine(
             # Difficulty-stratified reporting (#941): thread the CorpusTask's
             # difficulty straight onto the record for per-stratum breakdowns.
             difficulty=task.difficulty,
+            # Wall-time per task (#980): carry the runner's measured wall-clock
+            # so the report can surface wall-time per task per arm.
+            wall_time_s=record.wall_time_s,
         )
         # Issue #960: keep the RunRecord joined with its solved verdict (a pure
         # ScoredRun join — no new truth) so the intrinsic probes can be driven
@@ -468,11 +478,12 @@ def run_spine(
 # Arm resolution (CLI surface): accepts arm spec strings, validates, returns Arm.
 # ---------------------------------------------------------------------------
 
-# Known top-level arm constructors. "full-minus-<layer>" is handled separately
-# so adding a layer (#arms.LAYER_NAMES) does not require touching this list.
+# Known top-level arm constructors. "full-minus-<layer>" / "new-flow-minus-
+# <layer>" are handled separately so adding a layer does not touch this list.
 _TOP_LEVEL_ARMS = {
     "baseline": baseline,
     "full": full,
+    "new-flow": new_flow,
 }
 
 
@@ -483,18 +494,26 @@ def resolve_arm(spec: str) -> Arm:
         - ``baseline``
         - ``full``
         - ``full-minus-<layer>`` (e.g. ``full-minus-context``)
+        - ``new-flow`` (full + critic + best-of-N + warm-cache, issue #980)
+        - ``new-flow-minus-<layer>`` (e.g. ``new-flow-minus-warmcache``)
 
-    Raises ``ValueError`` for any other spec; ``full_minus`` itself raises on
-    an unknown layer name, so a typo surfaces clearly.
+    Raises ``ValueError`` for any other spec; ``full_minus`` / ``new_flow_minus``
+    themselves raise on an unknown layer name, so a typo surfaces clearly. The
+    ``new-flow-`` prefix is checked BEFORE ``full-`` even though neither overlaps,
+    to keep the dispatch order explicit.
     """
     spec = spec.strip()
     if spec in _TOP_LEVEL_ARMS:
         return _TOP_LEVEL_ARMS[spec]()
+    new_flow_prefix = "new-flow-minus-"
+    if spec.startswith(new_flow_prefix):
+        return new_flow_minus(spec[len(new_flow_prefix):])
     prefix = "full-minus-"
     if spec.startswith(prefix):
         return full_minus(spec[len(prefix):])
     raise ValueError(
-        f"unknown arm {spec!r}; expected 'baseline', 'full', or 'full-minus-<layer>'"
+        f"unknown arm {spec!r}; expected 'baseline', 'full', 'full-minus-<layer>', "
+        "'new-flow', or 'new-flow-minus-<layer>'"
     )
 
 

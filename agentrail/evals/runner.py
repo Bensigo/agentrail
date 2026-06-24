@@ -444,6 +444,13 @@ def _prepend_pythonpath(source_root: str, env: dict) -> str:
     return os.pathsep.join(parts)
 
 
+# The env var the new-flow arm sets to supply the cheap critic model (issue
+# #980). ``resolve_critic_command`` reads it as a fallback when no
+# ``models.critic`` is configured, so the eval can opt the critic / best-of-N
+# layers in without writing config into the cloned task repo.
+CRITIC_MODEL_ENV = "AGENTRAIL_EVAL_CRITIC_MODEL"
+
+
 def _arm_env(arm: Arm) -> dict:
     """Translate an :class:`Arm` into the env vars the sandbox/run pipeline reads.
 
@@ -451,6 +458,14 @@ def _arm_env(arm: Arm) -> dict:
     pipeline can switch each layer at the same seam regardless of how it is
     wired internally. This keeps the eval coupling shallow: turning a layer off
     is a config switch, not a code branch.
+
+    The NEW-flow layers (issue #980) ride the SAME seam: each of
+    ``arm.extra_layers`` (critic / bestofn / warmcache) emits its own
+    ``AGENTRAIL_EVAL_LAYER_<NAME>`` toggle, and a pinned ``arm.critic_model`` is
+    forwarded via :data:`CRITIC_MODEL_ENV` so the pipeline builds a critic
+    command (the trigger the opt-in critic / best-of-N layers need). ``full`` /
+    ``baseline`` carry no extra layers and no critic model, so their env (and
+    behaviour) is byte-identical to before.
     """
     flags = arm.layers.as_dict()
     env = {
@@ -459,6 +474,12 @@ def _arm_env(arm: Arm) -> dict:
     }
     for name, on in flags.items():
         env[f"AGENTRAIL_EVAL_LAYER_{name.upper()}"] = "1" if on else "0"
+    # NEW-flow layer toggles (only present when the arm declares them, so ``full``
+    # leaves warm-cache at its default-ON and never opts critic/best-of-N in).
+    for name, on in arm.extra_layers.items():
+        env[f"AGENTRAIL_EVAL_LAYER_{name.upper()}"] = "1" if on else "0"
+    if arm.critic_model:
+        env[CRITIC_MODEL_ENV] = arm.critic_model
     return env
 
 
@@ -559,6 +580,7 @@ __all__ = [
     "AgentExecution",
     "AgentExecutor",
     "AnswerKeyLeak",
+    "CRITIC_MODEL_ENV",
     "SandboxAgentExecutor",
     "run",
 ]

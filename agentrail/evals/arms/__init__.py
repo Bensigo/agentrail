@@ -31,8 +31,9 @@ layer fixed. Adding a *new* layer to the harness means adding one name to
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass, replace
-from typing import Dict, List, Tuple
+from dataclasses import dataclass, field, replace
+from types import MappingProxyType
+from typing import Dict, List, Mapping, Tuple
 
 # The five AgentRail layers, in a fixed, documented order. Adding a new layer
 # to the harness is a one-line change here (plus a ``Layers`` field).
@@ -44,11 +45,39 @@ LAYER_NAMES: Tuple[str, ...] = (
     "guardrails",
 )
 
+# The three NEW-flow layers (issue #980), in a fixed, documented order. These
+# are the layers added by the warm-cache + cheap-critic flow:
+#
+#   critic     — the cheap-model independent reviewer (#977)
+#   bestofn    — critic-gated best-of-N execute with early stopping (#979)
+#   warmcache  — the warm shared-context cache prefix (#978)
+#
+# Unlike :data:`LAYER_NAMES`, these are NOT part of ``full`` today. ``critic``
+# and ``bestofn`` are OPT-IN (they only activate when a critic model is
+# configured), and ``warmcache`` is default-ON. So they are ablated relative to
+# the NEW-FLOW arm (``new-flow-minus-<layer>``), never minused from ``full``.
+NEW_FLOW_LAYERS: Tuple[str, ...] = (
+    "critic",
+    "bestofn",
+    "warmcache",
+)
+
 # Pinned execution model + temperature. Held fixed across every arm so that
 # leave-one-out ablation isolates a single layer and nothing else (PRD:
 # "Everything else is held fixed: same model, same temperature, same limits").
 PINNED_MODEL: str = "claude-sonnet-4-5"
 PINNED_TEMPERATURE: float = 0.0
+
+# The cheap CRITIC model the new-flow arm pins. Held fixed (and DIFFERENT from
+# ``PINNED_MODEL``) so a critic command is actually built during the eval run —
+# the critic/best-of-N layers are opt-in and only activate when a critic model
+# is configured. Mirrors ``critic.CRITIC_DEFAULT_MODEL`` (a fast, cheap tier).
+PINNED_CRITIC_MODEL: str = "claude-haiku-4-5-20251001"
+
+# An immutable empty mapping reused as the default for arms with no extra
+# (new-flow) layers, so ``full`` / ``baseline`` carry exactly ``{}`` and stay
+# byte-identical to today (issue #980: do NOT change their meaning).
+_NO_EXTRA_LAYERS: Mapping[str, bool] = MappingProxyType({})
 
 
 @dataclass(frozen=True)
@@ -80,16 +109,26 @@ class Arm:
 
     Attributes:
         name: human-readable arm id (e.g. ``"baseline"``, ``"full"``,
-            ``"full-minus-context"``).
+            ``"full-minus-context"``, ``"new-flow"``).
         layers: on/off state of each AgentRail layer.
         model: the pinned model id (a key in the pricing table).
         temperature: the pinned sampling temperature.
+        extra_layers: on/off state of the NEW-flow layers (issue #980): a
+            mapping over :data:`NEW_FLOW_LAYERS`. EMPTY (``{}``) for ``baseline``
+            and ``full`` so their meaning is unchanged. The new-flow arm sets
+            every one ON; a leave-one-out arm flips exactly one OFF.
+        critic_model: the cheap critic model the arm pins, or ``""`` when the
+            arm does not run the critic (``baseline``/``full``). When set, the
+            eval runner forwards it so a critic command is built — the trigger
+            the opt-in critic / best-of-N layers need to activate.
     """
 
     name: str
     layers: Layers
     model: str = PINNED_MODEL
     temperature: float = PINNED_TEMPERATURE
+    extra_layers: Mapping[str, bool] = field(default=_NO_EXTRA_LAYERS)
+    critic_model: str = ""
 
 
 def baseline() -> Arm:
@@ -151,10 +190,85 @@ def all_arms() -> List[Arm]:
     return [baseline(), full(), *ablation_arms()]
 
 
+# ---------------------------------------------------------------------------
+# The NEW-FLOW arm (issue #980): full + critic + best-of-N + warm-cache, plus
+# its three leave-one-out ablations.
+# ---------------------------------------------------------------------------
+
+
+def new_flow() -> Arm:
+    """The new-flow arm: ``full`` PLUS the critic, best-of-N, and warm-cache layers.
+
+    All five base AgentRail layers stay ON (so the new flow is a strict superset
+    of ``full``); every NEW-flow layer (:data:`NEW_FLOW_LAYERS`) is enabled; and a
+    cheap :data:`PINNED_CRITIC_MODEL` is pinned so the eval runner builds a critic
+    command — without it the opt-in critic / best-of-N layers never activate. The
+    model and temperature are held fixed to ``full`` so a new-flow-vs-``full``
+    comparison isolates exactly the three new layers.
+    """
+    return Arm(
+        name="new-flow",
+        layers=Layers.all_on(),
+        extra_layers=MappingProxyType({name: True for name in NEW_FLOW_LAYERS}),
+        critic_model=PINNED_CRITIC_MODEL,
+    )
+
+
+def new_flow_minus(layer: str) -> Arm:
+    """A leave-one-out arm: the new flow with exactly one NEW-flow layer disabled.
+
+    Differs from :func:`new_flow` by precisely the named new-flow layer; the base
+    layers, model, temperature, and critic model are all held fixed. This is the
+    only way to ablate the opt-in critic / best-of-N layers and the default-on
+    warm-cache layer — they cannot be "minused" from ``full`` (they are not in it,
+    issue #980 design nuance).
+
+    Raises:
+        ValueError: if *layer* is not one of :data:`NEW_FLOW_LAYERS`.
+    """
+    if layer not in NEW_FLOW_LAYERS:
+        raise ValueError(
+            f"unknown new-flow layer {layer!r}; expected one of "
+            f"{', '.join(NEW_FLOW_LAYERS)}"
+        )
+    base = new_flow()
+    ablated = {name: (name != layer) for name in NEW_FLOW_LAYERS}
+    return Arm(
+        name=f"new-flow-minus-{layer}",
+        layers=base.layers,
+        model=base.model,
+        temperature=base.temperature,
+        extra_layers=MappingProxyType(ablated),
+        critic_model=base.critic_model,
+    )
+
+
+def new_flow_ablation_arms() -> List[Arm]:
+    """The new-flow leave-one-out arms — one ``new-flow-minus-<layer>`` per new layer.
+
+    A named, enumerable registry (mirrors :func:`ablation_arms`) so the CLI and
+    reporter iterate every new layer's ablation arm without hard-coding the list.
+    Order follows :data:`NEW_FLOW_LAYERS`.
+    """
+    return [new_flow_minus(layer) for layer in NEW_FLOW_LAYERS]
+
+
+def new_flow_arms() -> List[Arm]:
+    """The new flow plus its per-layer ablations: ``new-flow`` then each minus arm.
+
+    Order is ``new-flow`` followed by the per-new-layer ablation arms in
+    :data:`NEW_FLOW_LAYERS` order — the arm set that gives the new-flow per-layer
+    deltas every arm they need (issue #980 AC1/AC2).
+    """
+    return [new_flow(), *new_flow_ablation_arms()]
+
+
 __all__ = [
     "LAYER_NAMES",
+    "NEW_FLOW_LAYERS",
     "PINNED_MODEL",
     "PINNED_TEMPERATURE",
+    "PINNED_CRITIC_MODEL",
     "Layers",
     "Arm",
     "baseline",
@@ -162,6 +276,10 @@ __all__ = [
     "full_minus",
     "ablation_arms",
     "all_arms",
+    "new_flow",
+    "new_flow_minus",
+    "new_flow_ablation_arms",
+    "new_flow_arms",
 ]
 
 # Re-export for callers that prefer ``dataclasses.FrozenInstanceError`` checks

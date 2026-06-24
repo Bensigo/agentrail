@@ -1025,3 +1025,76 @@ def test_concurrency_preserves_order_and_verdicts(corpus_root: Path, reports_dir
     serial_rates = {a.arm: a.solve_rate for a in serial.arm_reports}
     parallel_rates = {a.arm: a.solve_rate for a in parallel.arm_reports}
     assert parallel_rates == serial_rates
+
+
+# ---------------------------------------------------------------------------
+# Resilience — an interrupted or partially-failing run must STILL yield a
+# scorecard for whatever completed, instead of all-or-nothing zero output.
+# ---------------------------------------------------------------------------
+
+
+def test_report_is_checkpointed_after_each_unit(corpus_root: Path, reports_dir: Path) -> None:
+    """The dated report is rewritten as units complete, not only at the end.
+
+    A spy hidden-test runner asserts the report file already exists and holds
+    the first task's row WHILE the second task is still being scored — proving
+    the on-disk scorecard tracks progress (so a kill mid-run keeps partial data).
+    """
+    from agentrail.evals.reporter import default_reports_dir  # noqa: F401
+
+    seen_report_sizes: List[int] = []
+
+    class _CheckpointProbe:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run_hidden_tests(self, *, task: CorpusTask, run_record: RunRecord) -> bool:
+            self.calls += 1
+            # On the 2nd unit, the report from the 1st must already be on disk.
+            report = reports_dir / "eval-report-2026-06-23.md"
+            seen_report_sizes.append(report.stat().st_size if report.exists() else 0)
+            return True
+
+    config = SpineConfig(
+        arms=[baseline()], reps=1, corpus_root=corpus_root, concurrency=1
+    )
+    run_spine(
+        config,
+        executor=SpyExecutor(),
+        hidden_test_runner=_CheckpointProbe(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-06-23",
+    )
+
+    # Two tasks → two units. By the 2nd unit's scoring, a report already existed
+    # on disk with content (the 1st unit's checkpoint).
+    assert len(seen_report_sizes) == 2
+    assert seen_report_sizes[1] > 0
+
+
+def test_one_failing_unit_does_not_abort_the_run(corpus_root: Path, reports_dir: Path) -> None:
+    """A unit that raises is scored as an unsolved failure; the run continues."""
+
+    class _ExplodingExecutor(SpyExecutor):
+        def execute(self, *, task: CorpusTask, arm: Arm, workdir: Path) -> AgentExecution:
+            if task.name == "alpha-task":
+                raise RuntimeError("boom: simulated crash in alpha-task")
+            return super().execute(task=task, arm=arm, workdir=workdir)
+
+    hidden = HiddenTestSpy(default=True)
+    config = SpineConfig(
+        arms=[baseline()], reps=1, corpus_root=corpus_root, concurrency=2
+    )
+    result = run_spine(
+        config,
+        executor=_ExplodingExecutor(),
+        hidden_test_runner=hidden,
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-06-23",
+    )
+
+    # Both tasks are present: the crashed one as failed, the healthy one solved.
+    by_task = {r.task: r.solved for r in result.repetitions}
+    assert by_task == {"alpha-task": False, "bravo-task": True}

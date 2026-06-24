@@ -48,10 +48,123 @@ def test_cost_usd_known_model(model: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# AC2 — cache-creation (write) tokens priced at the cached_write rate
+# Dated model ids — the real ``claude`` agents report ids like
+# ``claude-sonnet-4-5-20250929`` that are NOT keyed directly in the price
+# table. They must resolve (via base-alias normalization) to a correct
+# non-zero cost, not silently price at $0.
 # ---------------------------------------------------------------------------
 
 from agentrail.context.pricing import PRICE_TABLE  # noqa: E402
+
+
+def _expected_cost(rates, *, input_tokens=0, output_tokens=0, cache_tokens=0):
+    return (
+        input_tokens * rates.input
+        + output_tokens * rates.output
+        + cache_tokens * rates.cache
+    ) / 1_000_000
+
+
+def test_cost_usd_base_sonnet_4_5_nonzero() -> None:
+    """The base ``claude-sonnet-4-5`` alias prices at the sonnet rate, not $0."""
+    rates = PRICES["claude-sonnet-4-5"]
+    usage = _Usage(
+        model="claude-sonnet-4-5",
+        input_tokens=1_000_000,
+        output_tokens=500_000,
+        cache_tokens=0,
+    )
+    expected = _expected_cost(rates, input_tokens=1_000_000, output_tokens=500_000)
+    assert expected > 0.0
+    assert cost_usd(usage) == pytest.approx(expected, rel=1e-9)
+    # Concrete sanity: 1M input @ $3 + 0.5M output @ $15 = $3 + $7.5 = $10.50
+    assert cost_usd(usage) == pytest.approx(10.50, rel=1e-9)
+
+
+def test_cost_usd_dated_sonnet_4_5_resolves_to_base_rate() -> None:
+    """The real agent id ``claude-sonnet-4-5-20250929`` prices at the base rate."""
+    base_rates = PRICES["claude-sonnet-4-5"]
+    dated = _Usage(
+        model="claude-sonnet-4-5-20250929",
+        input_tokens=1_000_000,
+        output_tokens=500_000,
+        cache_tokens=200_000,
+    )
+    expected = _expected_cost(
+        base_rates,
+        input_tokens=1_000_000,
+        output_tokens=500_000,
+        cache_tokens=200_000,
+    )
+    assert expected > 0.0
+    assert cost_usd(dated) == pytest.approx(expected, rel=1e-9)
+
+
+def test_cost_usd_dated_id_equals_base_id() -> None:
+    """A date-suffixed id costs exactly what its base alias costs."""
+    fields = dict(input_tokens=123_456, output_tokens=7_890, cache_tokens=42_000)
+    base = _Usage(model="claude-sonnet-4-5", **fields)
+    dated = _Usage(model="claude-sonnet-4-5-20250929", **fields)
+    assert cost_usd(dated) == pytest.approx(cost_usd(base), rel=1e-12)
+    assert cost_usd(dated) > 0.0
+
+
+def test_cost_usd_dated_sonnet_4_5_emits_no_warning() -> None:
+    """Resolving a dated id must NOT emit the unknown-model UserWarning."""
+    usage = _Usage(
+        model="claude-sonnet-4-5-20250929",
+        input_tokens=1_000,
+        output_tokens=1_000,
+        cache_tokens=0,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning becomes an exception
+        result = cost_usd(usage)
+    assert result > 0.0
+
+
+def test_cost_usd_dated_opus_resolves_to_base_rate() -> None:
+    """Dated opus snapshots resolve to the opus base alias."""
+    base_rates = PRICES["claude-opus-4"]
+    usage = _Usage(
+        model="claude-opus-4-20250514",
+        input_tokens=1_000_000,
+        output_tokens=0,
+        cache_tokens=0,
+    )
+    expected = _expected_cost(base_rates, input_tokens=1_000_000)
+    assert cost_usd(usage) == pytest.approx(expected, rel=1e-9)
+
+
+def test_cost_usd_unknown_base_with_date_still_returns_zero() -> None:
+    """A dated id whose base alias is unknown still returns 0.0 (conservative)."""
+    usage = _Usage(
+        model="claude-does-not-exist-20250101",
+        input_tokens=1_000,
+        output_tokens=1_000,
+        cache_tokens=0,
+    )
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        assert cost_usd(usage) == 0.0
+
+
+def test_cache_savings_dated_id_resolves() -> None:
+    """cache_savings on a dated id yields real dollar estimates, not 'unavailable'."""
+    usage = _Usage(
+        model="claude-sonnet-4-5-20250929",
+        input_tokens=800_000,
+        output_tokens=0,
+        cache_tokens=200_000,
+    )
+    result = cache_savings(usage)
+    assert isinstance(result["cached_usd_saved"], float)
+    assert isinstance(result["baseline_uncached_usd"], float)
+
+
+# ---------------------------------------------------------------------------
+# AC2 — cache-creation (write) tokens priced at the cached_write rate
+# ---------------------------------------------------------------------------
 
 
 def test_cost_usd_includes_cache_creation_at_write_rate() -> None:

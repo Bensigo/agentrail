@@ -7,8 +7,9 @@ Cache rate covers input-cache-read tokens uniformly (per PRD #451 §2).
 """
 from __future__ import annotations
 
+import re
 import warnings
-from typing import Any, Dict, NamedTuple, Union
+from typing import Any, Dict, NamedTuple, Optional, Union
 
 from agentrail.context.pricing import PRICE_TABLE as _PRICE_TABLE
 
@@ -37,6 +38,47 @@ PRICES: dict[str, _Rates] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Model-id resolution.
+#
+# The real ``claude`` agents report *dated* model ids (e.g.
+# ``claude-sonnet-4-5-20250929``) while the canonical price table keys on the
+# *base* alias (``claude-sonnet-4-5``). Without normalization those dated ids
+# fall through to the unknown-model path and price at $0.0, so every eval cost
+# silently reads as a fake $0.
+#
+# ``_resolve_rates`` tries an exact match first (so every existing known id —
+# including the dated ids that ARE in the table, like
+# ``claude-haiku-4-5-20251001`` — prices identically), then strips a single
+# trailing ``-YYYYMMDD`` date snapshot and retries against the base alias. This
+# tolerates future dated snapshots of already-priced models without inventing
+# any new rates: a dated id can only resolve if its base alias is in the
+# canonical table.
+# ---------------------------------------------------------------------------
+_DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
+
+
+def _resolve_rates(model: str) -> Optional[_Rates]:
+    """Return the ``_Rates`` for *model*, tolerating a trailing ``-YYYYMMDD``.
+
+    Resolution order:
+
+    1. Exact match against ``PRICES`` (keeps every known id, dated or not,
+       pricing identically to before).
+    2. If *model* ends in a ``-YYYYMMDD`` date snapshot, strip it and match the
+       base alias (e.g. ``claude-sonnet-4-5-20250929`` → ``claude-sonnet-4-5``).
+
+    Returns ``None`` when neither resolves — the caller then warns + returns 0.
+    """
+    rates = PRICES.get(model)
+    if rates is not None:
+        return rates
+    base = _DATE_SUFFIX_RE.sub("", model)
+    if base != model:
+        return PRICES.get(base)
+    return None
+
+
 def cost_usd(usage: object) -> float:
     """Return cost in USD for *usage*.
 
@@ -49,7 +91,7 @@ def cost_usd(usage: object) -> float:
     pipeline is never blocked.
     """
     model: str = usage.model  # type: ignore[attr-defined]
-    rates = PRICES.get(model)
+    rates = _resolve_rates(model)
     if rates is None:
         warnings.warn(
             f"pricing: unknown model {model!r} — cost_usd returning 0.0",
@@ -97,7 +139,7 @@ def cache_savings(usage: object) -> Dict[str, Any]:
     total_prompt_tokens = input_tokens + cache_tokens
     cache_hit_rate = cache_tokens / total_prompt_tokens if total_prompt_tokens > 0 else 0.0
 
-    rates = PRICES.get(model)
+    rates = _resolve_rates(model)
     if rates is None:
         return {
             "cache_hit_rate": cache_hit_rate,

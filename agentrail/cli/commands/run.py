@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
 
+from agentrail.run.pipeline import layer_enabled
+
 AGENTS = {"codex", "claude", "cursor", "hermes", "custom"}
 
 DEFAULT_COMMANDS = {
@@ -419,11 +421,14 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
         # Independent Verifier (#782): a DIFFERENT-model verify command. Only set
         # when a model distinct from the Implementer's is available — otherwise
         # the pipeline runs no verify phase (AC1: never a same-model verifier).
-        verify_command = resolve_verifier_command(
-            agent, command, opts.model, str(target)
-        )
-        if verify_command:
-            phase_commands["verify"] = verify_command
+        # VERIFY_GATE layer (eval ablation): when OFF, never build the verify
+        # command, so no verify phase runs. ABSENT/"1" = ON = today's behavior.
+        if layer_enabled("VERIFY_GATE"):
+            verify_command = resolve_verifier_command(
+                agent, command, opts.model, str(target)
+            )
+            if verify_command:
+                phase_commands["verify"] = verify_command
 
     return run_issue(target, issue, agent=agent, command=command,
                      repo_dir=_repo_dir(), log_dir=log_dir,
@@ -449,9 +454,12 @@ def _phase_commands_for(opts: "RunOptions", agent: str, command: str, target: Pa
         if model:
             phase_commands[phase] = append_model_to_command(command, agent, model)
     # Independent Verifier (#782): only a DIFFERENT-model verify command.
-    verify_command = resolve_verifier_command(agent, command, opts.model, str(target))
-    if verify_command:
-        phase_commands["verify"] = verify_command
+    # VERIFY_GATE layer (eval ablation): when OFF, never build the verify command
+    # so no verify phase runs. ABSENT/"1" = ON = today's behavior.
+    if layer_enabled("VERIFY_GATE"):
+        verify_command = resolve_verifier_command(agent, command, opts.model, str(target))
+        if verify_command:
+            phase_commands["verify"] = verify_command
     return phase_commands
 
 

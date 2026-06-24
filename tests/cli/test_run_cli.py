@@ -278,6 +278,51 @@ class ExecIssueTests(unittest.TestCase):
         self.assertEqual(rc, 0)
 
 
+class VerifyGateLayerCommandTests(unittest.TestCase):
+    """VERIFY_GATE eval toggle at the CLI seam: exec_issue builds a distinct-model
+    verify command by default, and OMITS it when the layer is OFF — so no verify
+    phase runs. Absent flag = ON = today's behavior (the real loop sets none of
+    these env vars)."""
+
+    def _config_with_distinct_models(self) -> str:
+        tmp = tempfile.mkdtemp()
+        target = Path(tmp) / "target"
+        (target / ".agentrail").mkdir(parents=True)
+        (target / ".agentrail" / "config.json").write_text(json.dumps({
+            "runners": {
+                "claude": {
+                    "command": "claude -p",
+                    "models": {"execute": "model-a", "verify": "model-b"},
+                }
+            }
+        }))
+        return str(target)
+
+    def _exec_issue_capture_phase_commands(self, env):
+        target = self._config_with_distinct_models()
+        opts = RunOptions(agent="claude", target=target, command="", log_dir="")
+        clean = {k: v for k, v in os.environ.items()
+                 if not k.startswith("AGENTRAIL_EVAL_LAYER_")}
+        clean.update(env)
+        with patch("agentrail.run.pipeline.run_issue", return_value=0) as mock_run_issue, \
+             patch("agentrail.cli.commands.run._repo_dir", return_value=Path("/repo")), \
+             patch.dict(os.environ, clean, clear=True):
+            exec_issue(7, opts)
+        return mock_run_issue.call_args.kwargs["phase_commands"]
+
+    def test_verify_gate_on_default_builds_verify_command(self) -> None:
+        pc = self._exec_issue_capture_phase_commands(env={})
+        self.assertIn("verify", pc)
+        self.assertIn("model-b", pc["verify"])
+
+    def test_verify_gate_off_omits_verify_command(self) -> None:
+        pc = self._exec_issue_capture_phase_commands(
+            env={"AGENTRAIL_EVAL_LAYER_VERIFY_GATE": "0"})
+        self.assertNotIn("verify", pc)
+        # The implementer model overrides are still built (only verify is gated).
+        self.assertIn("execute", pc)
+
+
 class ExecPromptTests(unittest.TestCase):
     """#968: exec_prompt delegates to pipeline.run_prompt with the prompt text."""
 

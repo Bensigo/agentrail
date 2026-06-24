@@ -51,6 +51,7 @@ production-only bugs are not hidden behind it.
 from __future__ import annotations
 
 import shutil
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -317,8 +318,18 @@ class SandboxAgentExecutor:
             cache_creation_tokens=0,
         )
 
+        # Capture the agent's net change as a unified-diff PATCH STRING, while
+        # the sandbox workdir still exists (``runner.run`` tears it down in its
+        # ``finally`` AFTER this method returns). We hand the scorer a patch, not
+        # the live workdir — the answer key is never co-located with the agent's
+        # tree (AC4). ``run_issue_on_host`` clones the pinned ref into
+        # ``workdir/repo`` and the agent works there with ``publish_pr=False``,
+        # so the changes are sitting in that clone (committed AND/OR uncommitted
+        # AND/OR newly-added files) when we get here.
+        diff = _capture_workdir_diff(workdir, base_ref=task.commit)
+
         return AgentExecution(
-            diff="",  # diff capture is a follow-up; sandbox publishes via PR.
+            diff=diff,
             usage=usage,
             model=usage.model or arm.model,
             gate_passed=(result.status == "green"),
@@ -342,6 +353,82 @@ def _arm_env(arm: Arm) -> dict:
     for name, on in flags.items():
         env[f"AGENTRAIL_EVAL_LAYER_{name.upper()}"] = "1" if on else "0"
     return env
+
+
+# ---------------------------------------------------------------------------
+# Diff capture — the agent's net change as a patch the hidden-test runner applies.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_git_repo(workdir: Path) -> Optional[Path]:
+    """Locate the git working tree the agent ran in, under ``workdir``.
+
+    ``run_issue_on_host`` clones the pinned ref into ``workdir/repo`` and the
+    agent works there, so that is the common case. We fall back to ``workdir``
+    itself (a caller may point the executor straight at a git repo, as the
+    round-trip test does). Returns ``None`` if neither is a git repo.
+    """
+    for candidate in (workdir / "repo", workdir):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _capture_workdir_diff(workdir: Path, *, base_ref: str) -> str:
+    """Return the agent's NET change vs ``base_ref`` as a unified-diff string.
+
+    The net change is everything the agent did relative to the pinned base
+    commit: committed changes, uncommitted edits, AND newly-created (untracked)
+    files. A plain ``git diff <base>`` omits untracked files — exactly the
+    corpus-v0 tasks that ADD A NEW FILE — so we first ``git add -A`` to stage
+    every change, then ``git diff --cached <base_ref>`` so the new files appear
+    in the patch. Staging is in-memory index bookkeeping in a disposable clone
+    that is about to be torn down; it never publishes anything.
+
+    The produced patch is in standard ``git diff`` format (``a/`` / ``b/``
+    prefixes), which is exactly what ``ProductionHiddenTestRunner._apply_diff``
+    feeds to ``git apply --whitespace=nowarn`` (default ``-p1``) — so it
+    round-trips cleanly, recreating added files included.
+
+    An empty change yields an empty string (the agent did nothing → the task
+    correctly scores ``solved=False``). Any git failure is swallowed and yields
+    ``""`` — capture must never crash the run; an absent diff just scores False.
+    """
+    repo = _resolve_git_repo(workdir)
+    if repo is None:
+        return ""
+
+    def _git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+        )
+
+    try:
+        # Stage everything so newly-added (untracked) files land in the index
+        # and therefore in ``--cached`` diff output. ``-A`` also captures
+        # deletions and modifications.
+        _git("add", "-A")
+        # Diff the staged tree against the pinned base. ``--no-color`` and
+        # ``--no-ext-diff`` keep the output a clean, machine-applicable patch
+        # regardless of the host's git config; ``--binary`` lets binary file
+        # changes round-trip through ``git apply`` too.
+        result = _git(
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--binary",
+            "--cached",
+            base_ref,
+        )
+    except (OSError, ValueError):  # pragma: no cover - git missing / bad args
+        return ""
+
+    if result.returncode != 0:
+        return ""
+    return result.stdout
 
 
 __all__ = [

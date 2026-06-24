@@ -917,3 +917,111 @@ def test_issue960_ac3_no_regression_existing_sections_still_render(
     assert "Objective Gate false-green rate" in text
     # Guardrail catch-rate (the probe that already rendered) still present.
     assert "Guardrail injection-corpus catch-rate" in text
+
+
+# ---------------------------------------------------------------------------
+# Concurrency — independent (task, arm, rep) units run in parallel so a full
+# corpus run finishes in ~the slowest single unit instead of the SUM of all
+# units. Correctness (same verdicts, deterministic order) must be preserved.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _BlockingExecutor:
+    """Executor that records how many calls are in-flight at once.
+
+    Each ``execute`` increments a shared counter, briefly blocks, then
+    decrements — so ``max_in_flight`` reveals the real parallelism the spine
+    achieved. Faithful to the production output contract (real Usage + bool).
+    """
+
+    _lock: "object"
+    in_flight: int = 0
+    max_in_flight: int = 0
+
+    def execute(self, *, task: CorpusTask, arm: Arm, workdir: Path) -> AgentExecution:
+        import time
+
+        with self._lock:
+            self.in_flight += 1
+            if self.in_flight > self.max_in_flight:
+                self.max_in_flight = self.in_flight
+        # Hold the slot long enough that genuinely-parallel units overlap.
+        time.sleep(0.05)
+        with self._lock:
+            self.in_flight -= 1
+        return AgentExecution(
+            diff="",
+            usage=Usage(
+                model=arm.model,
+                input_tokens=10,
+                output_tokens=5,
+                cache_tokens=0,
+                cache_creation_tokens=0,
+            ),
+            model=arm.model,
+            gate_passed=True,
+            retries=[],
+        )
+
+
+def test_concurrency_runs_units_in_parallel(corpus_root: Path, reports_dir: Path) -> None:
+    import threading
+
+    executor = _BlockingExecutor(_lock=threading.Lock())
+    hidden = HiddenTestSpy(default=True)
+    # 2 tasks * 2 arms * 2 reps = 8 units, 4 at a time.
+    config = SpineConfig(
+        arms=[baseline(), full()], reps=2, corpus_root=corpus_root, concurrency=4
+    )
+
+    result = run_spine(
+        config,
+        executor=executor,
+        hidden_test_runner=hidden,
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-06-23",
+    )
+
+    assert len(result.repetitions) == 8
+    # The whole point: more than one unit was actually in flight at once.
+    assert executor.max_in_flight > 1
+
+
+def test_concurrency_preserves_order_and_verdicts(corpus_root: Path, reports_dir: Path) -> None:
+    """A parallel run yields the SAME repetition order + verdicts as a serial one."""
+    arms = [baseline(), full()]
+    # Deterministic, mixed solved/failed distribution keyed by (task, arm).
+    outcomes = {
+        ("alpha-task", "baseline"): True,
+        ("alpha-task", "full"): True,
+        ("bravo-task", "baseline"): False,
+        ("bravo-task", "full"): True,
+    }
+
+    def _run(concurrency: int):
+        executor = SpyExecutor()
+        hidden = HiddenTestSpy(outcomes=outcomes, default=False)
+        config = SpineConfig(
+            arms=arms, reps=3, corpus_root=corpus_root, concurrency=concurrency
+        )
+        return run_spine(
+            executor=executor,
+            hidden_test_runner=hidden,
+            metrics_writer=FakeMetricsWriter(),
+            reports_dir=reports_dir,
+            date="2026-06-23",
+            config=config,
+        )
+
+    serial = _run(1)
+    parallel = _run(4)
+
+    serial_seq = [(r.task, r.arm, r.solved) for r in serial.repetitions]
+    parallel_seq = [(r.task, r.arm, r.solved) for r in parallel.repetitions]
+    assert parallel_seq == serial_seq
+    # And the aggregate numbers match exactly.
+    serial_rates = {a.arm: a.solve_rate for a in serial.arm_reports}
+    parallel_rates = {a.arm: a.solve_rate for a in parallel.arm_reports}
+    assert parallel_rates == serial_rates

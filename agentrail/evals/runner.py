@@ -293,14 +293,23 @@ class SandboxAgentExecutor:
         does not transitively pull in subprocess/docker code (the unit-test
         seam stays light).
         """
-        from agentrail.sandbox.native_runner import run_issue_on_host
+        # Import here (lazily) so the module stays cheap to import; native_runner
+        # is referenced via the module so a test ``monkeypatch`` of
+        # ``native_runner.run_issue_on_host`` is honoured at the call site.
+        from agentrail.sandbox import native_runner
         from agentrail.run.usage_capture import capture_usage
 
         env = _arm_env(arm)
         since_ts = time.time()
 
-        result = run_issue_on_host(
-            repo_url=self.repo_url or task.repo,
+        # #966: ``task.repo`` is a GitHub SLUG (``"Bensigo/agentrail"``), which
+        # git cannot clone. Resolve it to a real, cloneable source BEFORE handing
+        # it to the sandbox, or ``run_issue_on_host`` dies with
+        # ``fatal: repository 'Bensigo/agentrail' does not exist``.
+        clone_source = _resolve_clone_source(self, task)
+
+        result = native_runner.run_issue_on_host(
+            repo_url=clone_source,
             ref=task.commit,
             issue_ref=task.name,
             workspace_id="eval",
@@ -335,6 +344,61 @@ class SandboxAgentExecutor:
             gate_passed=(result.status == "green"),
             retries=[],
         )
+
+
+# ---------------------------------------------------------------------------
+# Clone-source resolution (#966) — turn a corpus task's repo SLUG into something
+# git can actually clone.
+# ---------------------------------------------------------------------------
+
+# The host repository this CLI ships in. The corpus is bundled inside it
+# (``agentrail/evals/corpus/...``) and every task's pinned ``commit`` is already
+# in this repo's local history, so the local repo is a network-free clone source.
+HOST_REPO_SLUG = "Bensigo/agentrail"
+
+
+def _resolve_clone_source(executor: "SandboxAgentExecutor", task: CorpusTask) -> str:
+    """Resolve a corpus task's repo to a git-cloneable URL or local path.
+
+    ``task.repo`` is a GitHub *slug* (``"owner/name"``), which git cannot clone.
+    ``run_issue_on_host`` runs ``git clone <repo_url> ...`` then checks out
+    ``task.commit``, so ``repo_url`` must be a real clone source. Resolution
+    order:
+
+    1. **Explicit override** — ``executor.repo_url`` wins when set. This is the
+       injectable seam (AC3): a non-host-repo task (or a test) points the
+       executor at its own clone source. Returned verbatim.
+    2. **Host repo** — when ``task.repo`` is the host slug
+       (:data:`HOST_REPO_SLUG`), resolve to the LOCAL repo path. git can clone a
+       local path, and every pinned ``commit`` is already in local history, so
+       the clone + checkout are network-free.
+    3. **Other slug** — fall back to a cloneable ``https://github.com/<slug>.git``
+       URL. (Corpus v0 is host-only; this keeps non-host tasks working without a
+       hard-coded token. A private repo would need an injected ``repo_url`` per
+       step 1.)
+
+    The returned value is NEVER the bare slug — that is exactly the #966 bug.
+    """
+    if executor.repo_url:
+        return executor.repo_url
+    if task.repo == HOST_REPO_SLUG:
+        return str(_host_repo_root())
+    return f"https://github.com/{task.repo}.git"
+
+
+def _host_repo_root() -> Path:
+    """Walk up from this module to the nearest dir containing ``.git``.
+
+    Mirrors ``agentrail.evals.hidden_tests._default_repo_root``: the corpus lives
+    inside this repo, so its own ``.git`` (a dir in a normal checkout, a *file*
+    in a git worktree — both satisfy ``.exists()``) is the local clone source.
+    Falls back to the current working directory if no ``.git`` is found above.
+    """
+    here = Path(__file__).resolve()
+    for parent in [here, *here.parents]:
+        if (parent / ".git").exists():
+            return parent
+    return Path.cwd()
 
 
 def _arm_env(arm: Arm) -> dict:

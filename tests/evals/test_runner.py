@@ -411,3 +411,181 @@ def test_sandbox_executor_exists_for_production_use() -> None:
     assert SandboxAgentExecutor is not None
     # Constructable without side effects (lazy sandbox import inside execute()).
     SandboxAgentExecutor()
+
+
+# ---------------------------------------------------------------------------
+# Clone-source resolution (#966) — a corpus task's repo SLUG must be turned
+# into something git can actually clone, never passed through as the bare slug.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_clone_source_turns_host_slug_into_local_path(
+    corpus_task: CorpusTask,
+) -> None:
+    """For the host-repo slug (``Bensigo/agentrail``) the resolver yields the
+    LOCAL repo path, not the bare slug — git can ``clone`` a local path and the
+    pinned commit is already in local history.
+    """
+    from agentrail.evals.runner import _resolve_clone_source
+
+    source = _resolve_clone_source(SandboxAgentExecutor(), corpus_task)
+
+    # Never the bare slug — that is exactly the #966 bug.
+    assert source != corpus_task.repo
+    assert source != "Bensigo/agentrail"
+    # A real, cloneable local path: it exists on disk and is a git repo.
+    src_path = Path(source)
+    assert src_path.exists(), source
+    assert (src_path / ".git").exists(), source
+
+
+def test_resolve_clone_source_repo_url_override_wins(corpus_task: CorpusTask) -> None:
+    """An injected ``repo_url`` overrides slug resolution (AC3) — the seam stays
+    open for non-host-repo tasks (or tests) to point at their own clone source.
+    """
+    from agentrail.evals.runner import _resolve_clone_source
+
+    override = "/some/explicit/clone/source"
+    source = _resolve_clone_source(SandboxAgentExecutor(repo_url=override), corpus_task)
+    assert source == override
+
+
+def test_resolve_clone_source_non_host_slug_falls_back_to_https(
+    corpus_task: CorpusTask,
+) -> None:
+    """A non-host-repo slug with no override resolves to a cloneable https URL,
+    never the bare slug.
+    """
+    from dataclasses import replace
+    from agentrail.evals.runner import _resolve_clone_source
+
+    other = replace(corpus_task, repo="acme/widget")
+    source = _resolve_clone_source(SandboxAgentExecutor(), other)
+    assert source != "acme/widget"
+    assert source.startswith("https://")
+    assert source.endswith("acme/widget.git")
+
+
+def test_execute_passes_resolved_source_not_slug_to_run_issue_on_host(
+    corpus_task: CorpusTask, tmp_path: Path, monkeypatch
+) -> None:
+    """``execute`` must hand ``run_issue_on_host`` a cloneable source, never the
+    slug — guards the exact #966 regression at the call site.
+    """
+    captured = {}
+
+    def fake_run_issue_on_host(*, repo_url, ref, **kwargs):
+        captured["repo_url"] = repo_url
+        captured["ref"] = ref
+        from agentrail.sandbox.docker_runner import RunResult
+
+        return RunResult(status="red")
+
+    import agentrail.sandbox.native_runner as nr
+
+    monkeypatch.setattr(nr, "run_issue_on_host", fake_run_issue_on_host)
+    monkeypatch.setattr(
+        "agentrail.run.usage_capture.capture_usage", lambda *a, **k: None
+    )
+
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    SandboxAgentExecutor().execute(task=corpus_task, arm=full(), workdir=workdir)
+
+    assert captured["repo_url"] != corpus_task.repo
+    assert captured["repo_url"] != "Bensigo/agentrail"
+    assert captured["ref"] == corpus_task.commit
+
+
+def test_execute_real_clone_and_checkout_into_workdir_repo(
+    corpus_task: CorpusTask, tmp_path: Path, monkeypatch
+) -> None:
+    """End-to-end-ish proof (AC2/AC1): drive the production executor against a
+    REAL tiny local git repo as the resolved clone source and assert
+    ``run_issue_on_host`` clones + checks out the pinned commit into
+    ``workdir/repo`` (the #964 diff-capture contract), with NO real agent.
+
+    We stub only the agent RUN command (``agentrail run issue ...``) so no agent
+    is invoked; the clone + checkout are REAL git against a REAL local repo.
+    """
+    import subprocess as real_subprocess
+    from dataclasses import replace
+
+    # 1. Build a real local git repo with a known commit.
+    origin = tmp_path / "origin"
+    origin.mkdir()
+
+    def git(*args):
+        real_subprocess.run(
+            ["git", *args], cwd=str(origin), check=True, capture_output=True, text=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@t.dev")
+    git("config", "user.name", "t")
+    (origin / "marker.txt").write_text("pinned\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-q", "-m", "pinned commit")
+    pinned = real_subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=str(origin), capture_output=True, text=True
+    ).stdout.strip()
+
+    # 2. A task pinned at that commit; inject the local repo as the clone source.
+    task = replace(corpus_task, commit=pinned)
+    executor = SandboxAgentExecutor(repo_url=str(origin))
+
+    captured = {}
+
+    # 3. Fake ONLY the agent run command; let git clone/checkout run for real.
+    #    The agent fake also SNAPSHOTS workdir/repo state (it runs AFTER the
+    #    real clone+checkout, BEFORE run_issue_on_host's teardown of workdir).
+    class _Runner:
+        def run(self, cmd, *, cwd=None, env=None, timeout=None, **kwargs):
+            if cmd[:1] == ["git"]:
+                return real_subprocess.run(
+                    cmd, cwd=cwd, env=env, timeout=timeout,
+                    capture_output=True, text=True,
+                )
+            # The agent run command. By now the real clone+checkout finished,
+            # so capture the clone state (cwd is the repo_dir == workdir/repo).
+            repo_clone = Path(cwd)
+            captured["repo_clone"] = str(repo_clone)
+            captured["has_git"] = (repo_clone / ".git").exists()
+            captured["marker"] = (
+                (repo_clone / "marker.txt").read_text()
+                if (repo_clone / "marker.txt").exists()
+                else None
+            )
+            head = real_subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=str(repo_clone),
+                capture_output=True, text=True,
+            )
+            captured["head"] = head.stdout.strip()
+            return real_subprocess.CompletedProcess(cmd, 0, "", "")
+
+    from agentrail.sandbox import native_runner as nr
+
+    real_run_issue_on_host = nr.run_issue_on_host
+
+    def run_issue_on_host_with_real_git(**kwargs):
+        captured["repo_url"] = kwargs["repo_url"]
+        kwargs["runner"] = _Runner()
+        return real_run_issue_on_host(**kwargs)
+
+    monkeypatch.setattr(nr, "run_issue_on_host", run_issue_on_host_with_real_git)
+    monkeypatch.setattr(
+        "agentrail.run.usage_capture.capture_usage", lambda *a, **k: None
+    )
+
+    workdir = tmp_path / "agent-wd"
+    workdir.mkdir()
+    executor.execute(task=task, arm=full(), workdir=workdir)
+
+    # The clone source was the injected local repo, NOT the slug.
+    assert captured["repo_url"] == str(origin)
+    # The real clone landed in workdir/repo at the pinned commit (the #964
+    # diff-capture contract — clone goes into workdir/repo).
+    assert captured["repo_clone"] == str(workdir / "repo")
+    assert captured["has_git"], "clone must land in workdir/repo (#964)"
+    assert captured["marker"] == "pinned\n"
+    assert captured["head"] == pinned, "checkout must land at the pinned commit"

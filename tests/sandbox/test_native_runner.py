@@ -20,6 +20,7 @@ import pytest
 from agentrail.sandbox.native_runner import (
     HostError,
     HostTimeout,
+    _build_run_command,
     run_issue_on_host,
 )
 from agentrail.sandbox.docker_runner import RunResult
@@ -502,6 +503,112 @@ class TestPromptMode:
         run_cmd = runner.command_with("prompt")
         assert run_cmd[run_cmd.index("--model") + 1] == "claude-opus-4-8"
         assert run_cmd[run_cmd.index("--run-id") + 1] == "host-run"
+
+
+# ---------------------------------------------------------------------------
+# #970 — injectable launcher: the eval must drive the CURRENT source under test
+# (which has ``run prompt``), not the npm-published ``agentrail`` on PATH. When
+# ``agentrail_cmd`` is injected, the command runs the source module + names the
+# clone via ``--target``, and the run is invoked with the eval's ``run_cwd`` /
+# ``run_env``. When NOT injected, the command is byte-identical to before — the
+# real autonomous loop's sandbox path is unchanged.
+# ---------------------------------------------------------------------------
+
+class TestInjectableLauncherCommand:
+    """Unit tests on ``_build_run_command`` directly (no clone, no agent)."""
+
+    def test_default_issue_command_is_byte_identical(self) -> None:
+        # No injected launcher → exactly the old loop command.
+        cmd = _build_run_command(
+            issue_ref="42", agent="claude", model=None,
+            log_dir="/logs", sandbox_runtime=False, run_id="host-run",
+        )
+        assert cmd == [
+            "agentrail", "run", "issue", "42",
+            "--agent", "claude",
+            "--run-id", "host-run",
+            "--log-dir", "/logs",
+        ]
+        # No --target leaks into the default loop command.
+        assert "--target" not in cmd
+
+    def test_injected_launcher_runs_source_module_with_target(self) -> None:
+        cmd = _build_run_command(
+            issue_ref="afk-objective-gate", agent="claude", model="claude-opus-4-8",
+            log_dir="/logs", sandbox_runtime=False, run_id="host-run",
+            prompt="do the task",
+            agentrail_cmd=["/usr/bin/python3", "-m", "agentrail.cli.main"],
+            target="/clone/repo",
+        )
+        # Launches the SOURCE module, NOT a bare ``agentrail`` binary.
+        assert cmd[:3] == ["/usr/bin/python3", "-m", "agentrail.cli.main"]
+        assert "agentrail" not in cmd  # the bare PATH binary is never invoked
+        assert cmd[3:5] == ["run", "prompt"]
+        assert "do the task" in cmd
+        # The clone is named explicitly so the agent edits it (not the source).
+        assert "--target" in cmd
+        assert cmd[cmd.index("--target") + 1] == "/clone/repo"
+
+
+class TestInjectableLauncherRun:
+    """End-to-end (faked subprocess) — verify cwd/env routing for injection."""
+
+    def _ok_runner(self, run_dir: Path) -> FakeRunner:
+        def _do_run(cmd, cwd, env):
+            log_dir = _extract_log_dir(cmd, run_dir)
+            run_id = _extract_run_id(cmd) or "host-run"
+            _write_run_json(Path(log_dir) / run_id, _green_run_json())
+            return _Completed(0, stdout="ran")
+
+        return FakeRunner([_Completed(0, stdout="cloned"), _do_run])
+
+    def test_injected_run_uses_source_cwd_and_env(self, tmp_path) -> None:
+        runner = self._ok_runner(tmp_path / "run-1")
+        dirs = _RunDirs(tmp_path)
+        run_issue_on_host(
+            repo_url="https://github.com/acme/widgets.git",
+            ref="main",
+            issue_ref="afk-objective-gate",
+            workspace_id="eval",
+            env={},
+            prompt="do the task",
+            agentrail_cmd=["py", "-m", "agentrail.cli.main"],
+            run_cwd="/src/root",
+            run_env={"PYTHONPATH": "/src/root", "AGENTRAIL_ALLOW_SOURCE_RUN": "1"},
+            run_dir_factory=dirs,
+            runner=runner,
+            publish_pr=False,
+        )
+        # The clone still happens in the per-run work dir (not the source).
+        clone_call = next(c for c in runner.calls if "clone" in c["cmd"])
+        assert clone_call["cwd"] != "/src/root"
+        # The agentrail run is invoked with cwd == the SOURCE tree (so import
+        # agentrail resolves to source, not the clone which would shadow it).
+        run_call = next(c for c in runner.calls if "prompt" in c["cmd"])
+        assert run_call["cwd"] == "/src/root"
+        assert run_call["env"].get("PYTHONPATH") == "/src/root"
+        assert run_call["env"].get("AGENTRAIL_ALLOW_SOURCE_RUN") == "1"
+        # The clone is named via --target so the agent edits it.
+        assert "--target" in run_call["cmd"]
+
+    def test_default_run_unchanged_cwd_is_clone(self, tmp_path) -> None:
+        # No injection → run command's cwd is the clone (the real loop path).
+        runner = self._ok_runner(tmp_path / "run-1")
+        dirs = _RunDirs(tmp_path)
+        run_issue_on_host(
+            repo_url="https://github.com/acme/widgets.git",
+            ref="main",
+            issue_ref="7",
+            workspace_id="ws",
+            env={},
+            run_dir_factory=dirs,
+            runner=runner,
+        )
+        run_call = next(c for c in runner.calls if "issue" in c["cmd"])
+        # cwd is the clone's repo dir, NOT a source tree; no --target injected.
+        assert run_call["cwd"].endswith("repo")
+        assert "--target" not in run_call["cmd"]
+        assert run_call["cmd"][0] == "agentrail"
 
 
 # ---------------------------------------------------------------------------

@@ -50,8 +50,10 @@ production-only bugs are not hidden behind it.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -312,6 +314,25 @@ class SandboxAgentExecutor:
         # task's prompt so the sandbox drives ``agentrail run prompt`` (the agent
         # actually works on the task) and the task name as the run label. The
         # prompt runs the SAME pipeline + Objective Gate as a real issue.
+        #
+        # #970: the autonomous loop's sandbox launches the npm-published
+        # ``agentrail`` binary on PATH, which has no ``run prompt`` — so the eval
+        # never reached the agent ("Unknown option: prompt"). Inject the CURRENT
+        # SOURCE under test as the launcher: run ``python -m agentrail.cli.main``
+        # with cwd == the source repo root (so ``import agentrail`` resolves to
+        # source, not the clone which would shadow it) and PYTHONPATH == source
+        # root as a belt-and-braces. The agent still edits the CLONE because the
+        # launcher passes ``--target <clone>`` (native_runner sets that when the
+        # launcher is injected), so #964 diff-capture + #966 clone/SHA-checkout
+        # are untouched. AGENTRAIL_ALLOW_SOURCE_RUN=1 lets ``run prompt`` proceed
+        # in the source checkout.
+        source_root = _host_repo_root()
+        agentrail_cmd = [sys.executable, "-m", "agentrail.cli.main"]
+        run_env = {
+            "PYTHONPATH": _prepend_pythonpath(str(source_root), env),
+            "AGENTRAIL_ALLOW_SOURCE_RUN": "1",
+        }
+
         result = native_runner.run_issue_on_host(
             repo_url=clone_source,
             ref=task.commit,
@@ -320,6 +341,9 @@ class SandboxAgentExecutor:
             env=env,
             model=arm.model,
             prompt=task.prompt,
+            agentrail_cmd=agentrail_cmd,
+            run_cwd=str(source_root),
+            run_env=run_env,
             run_dir_factory=lambda: workdir,
             publish_pr=False,
         )
@@ -404,6 +428,20 @@ def _host_repo_root() -> Path:
         if (parent / ".git").exists():
             return parent
     return Path.cwd()
+
+
+def _prepend_pythonpath(source_root: str, env: dict) -> str:
+    """Build a ``PYTHONPATH`` that puts the eval's SOURCE root first (#970).
+
+    The injected launcher runs ``python -m agentrail.cli.main`` with cwd == the
+    source root, so ``import agentrail`` already resolves to source. Prepending
+    the source root to PYTHONPATH is belt-and-braces so the source wins even if
+    the child's cwd were ever changed. Any existing PYTHONPATH (from the arm env
+    or the process) is preserved after the source root.
+    """
+    existing = env.get("PYTHONPATH") or os.environ.get("PYTHONPATH") or ""
+    parts = [source_root] + [p for p in existing.split(os.pathsep) if p]
+    return os.pathsep.join(parts)
 
 
 def _arm_env(arm: Arm) -> dict:

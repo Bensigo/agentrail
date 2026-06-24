@@ -106,10 +106,16 @@ Flags (`agentrail evals run --help`):
 | --- | --- |
 | `--corpus DIR` | Override the corpus root (default: bundled v0). |
 | `--task NAME` | Restrict to one task; repeatable, or comma-separated. |
-| `--arm NAME` | Add an arm; repeatable. Accepts `baseline`, `full`, or `full-minus-<layer>`. Default: `baseline` + `full`. |
+| `--arm NAME` | Add an arm; repeatable. Accepts `baseline`, `full`, `full-minus-<layer>`, `new-flow`, or `new-flow-minus-<layer>` (see [The new flow](#the-new-flow-warm-cache--cheap-critic--best-of-n)). Default: `baseline` + `full`. |
 | `--ablation` | Run the full leave-one-out set: `baseline`, `full`, and one `full-minus-<layer>` arm per layer (so per-layer deltas have every arm they need). |
 | `--reps N` | Repetitions per `(task, arm)` (default 5, min 1). |
+| `--concurrency N` | Run up to N `(task, arm, rep)` units in parallel (default 4, min 1; or `AGENTRAIL_EVAL_CONCURRENCY`). Units are independent, so this cuts a full run from the sum of all units to ~the slowest single unit, bounded by the agent API rate limit. |
 | `--include-held-out` | Include the held-out task split (excluded by default so the harness is never developed against it). |
+
+> A long run is resilient: the dated report is re-written after **each** unit
+> completes (a killed run still leaves a scorecard for everything that finished),
+> and a single unit that crashes is scored as an unsolved failure instead of
+> aborting the whole run.
 
 Examples:
 
@@ -306,6 +312,77 @@ all_arms()              # baseline, full, then every ablation arm
 
 `full_minus` raises `ValueError` for an unknown layer name, so a typo surfaces
 clearly rather than silently producing a wrong arm.
+
+## The new flow (warm-cache + cheap-critic + best-of-N)
+
+The pipeline historically ran every task through **three cold agent phases** —
+test-author → execute → verify — where each phase is a fresh agent process that
+re-loads the task context from scratch and the verify phase uses a *separate,
+expensive* model. Per-task that is ~15–19 min of real agent work, which is also
+why a full eval run is slow. The **new flow** cuts that cost/latency without
+weakening any anti-false-green guarantee. Design + evidence:
+[`docs/prd/warm-cache-cheap-critic-flow.md`](../../docs/prd/warm-cache-cheap-critic-flow.md).
+
+Three layers make up the new flow (each is independently toggleable, each is
+ablatable by the eval):
+
+- **`warmcache`** (`AGENTRAIL_EVAL_LAYER_WARMCACHE`, **default ON**) — hoists the
+  shared per-task context (issue + context pack + base instructions) to a stable
+  *leading* prompt prefix reused across phases, so later phases hit the agent's
+  prompt-prefix cache instead of re-sending cold context. Roles stay separate —
+  the test-author and executor are **not** merged into one conversation (that
+  would yield tautological tests); only the cache prefix is shared.
+- **`critic`** (`AGENTRAIL_EVAL_LAYER_CRITIC`, **opt-in**) — a cheap-model Critic
+  (default Haiku) replaces the *expensive* verify model as the **independent**
+  reviewer feeding the Objective Gate. The Critic is a separate step from the
+  executor (never grades its own work) and emits the **same** gate evidence
+  shape, so the gate's accept/reject contract is unchanged. Opt-in: it only runs
+  when a critic model is configured, so the live loop is unchanged until enabled.
+- **`bestofn`** (`AGENTRAIL_EVAL_LAYER_BESTOFN`, **opt-in**) — the execute phase
+  produces up to N candidate fixes (default 3, `AGENTRAIL_BESTOFN_N`), the Critic
+  ranks them, and the loop **stops early** the moment a candidate is accepted —
+  replacing the blind fixed retry loop. Reuses the same independent Critic.
+
+The hidden-test scorer and the Objective Gate's definition of "done" are **never**
+touched by any of these layers — they remain the un-foolable ground truth.
+
+### Measuring the new flow (the A/B)
+
+Two arms make the comparison (`agentrail/evals/arms/__init__.py`):
+
+- `full` — today's flow (unchanged).
+- `new-flow` — `full` PLUS critic + best-of-N + warm-cache, with a cheap critic
+  model pinned (distinct from the execute model). Ablations
+  `new-flow-minus-{critic,bestofn,warmcache}` turn exactly one layer off relative
+  to the new flow, so each layer's contribution is isolated.
+
+```
+# Head-to-head: today's flow vs the new flow over the whole corpus
+agentrail evals run --arm full --arm new-flow --reps 1 --concurrency 8
+
+# Per-layer contribution of the new flow
+agentrail evals run --arm new-flow \
+  --arm new-flow-minus-critic --arm new-flow-minus-bestofn --arm new-flow-minus-warmcache
+```
+
+The dated report adds a **New-flow vs full** table comparing the four decision
+metrics — dollars-per-solved, wall-time per task, solve-rate, and false-green
+rate — and a **New-flow per-layer ablation** table. Every number is falsifiable:
+solve-rate and false-green can drop, wall-time and dollars can rise.
+
+### Success gates (before the new flow becomes default)
+
+The new flow becomes the pipeline default **only** when a dated report on the real
+corpus shows it meets ALL of:
+
+1. **lower** dollars-per-solved than `full`,
+2. **lower** wall-time per task than `full`,
+3. solve-rate **≥** `full`, and
+4. false-green rate **≤** `full`.
+
+Until that report exists and a maintainer approves it, `critic` and `bestofn`
+stay opt-in (the live loop runs today's flow). That go/no-go is deliberately a
+human decision — the loop does not flip its own default.
 
 ## Running the eval tests
 

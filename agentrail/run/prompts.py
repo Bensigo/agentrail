@@ -392,6 +392,47 @@ def issue_run_phase_prompt(
             "- Stop once the failing acceptance test is written."
         )
 
+    if phase == "critic":
+        return (
+            "You are the CRITIC (issue #977). This is the cheap, INDEPENDENT review "
+            "that feeds the Objective Gate — you run on a FAST, CHEAP model and you "
+            "did NOT write this change or its tests, so the maker is not grading its "
+            "own homework. You answer the same falsifiable question the Independent "
+            "Verifier answers, just cheaply.\n"
+            "\n"
+            "Issue context:\n"
+            f"{issue_context}\n"
+            "\n"
+            "Phase context pack:\n"
+            f"{context_summary}\n"
+            "\n"
+            "Base instructions:\n"
+            f"{base_prompt}\n"
+            "\n"
+            f"Your task — independently review the candidate change for issue "
+            f"#{issue}:\n"
+            "- Inspect the diff and the acceptance test(s). Confirm the SOLUTION "
+            "and the TESTS genuinely satisfy the issue's acceptance criteria.\n"
+            "- Confirm the change stayed IN SCOPE for this one issue (no unrelated "
+            "edits, no scope creep).\n"
+            "- REJECT if the acceptance test is tautological or gamed (asserts "
+            "nothing, asserts a constant, is skipped/xfailed, tests the test, or "
+            "was weakened to fit the code instead of pinning the AC). REJECT if the "
+            "change does not actually satisfy an acceptance criterion.\n"
+            "- This is NARROW: review the falsifiable AC contract only. This is NOT "
+            "a style/design/taste review.\n"
+            "- Do not edit files, implement anything, rewrite tests, commit, push, "
+            "or merge. Review is read-only.\n"
+            "\n"
+            "Emit your verdict on its own line as STRICT JSON after the marker "
+            "(this is parsed by AgentRail):\n"
+            'VERDICT: {"verdict": "accept", "reason": "<one-line evidence>"}\n'
+            "or\n"
+            'VERDICT: {"verdict": "reject", "reason": "<one-line evidence>"}\n'
+            "Use \"accept\" only when the change and tests genuinely satisfy the AC "
+            "and stay in scope; otherwise \"reject\". If you cannot review, reject."
+        )
+
     if phase == "verify":
         return (
             "You are the VERIFIER. This is **Independent Verification** (ADR 0008, "

@@ -323,6 +323,55 @@ class VerifyGateLayerCommandTests(unittest.TestCase):
         self.assertIn("execute", pc)
 
 
+class CriticLayerCommandTests(unittest.TestCase):
+    """CRITIC eval toggle at the CLI seam (#977): exec_issue builds a CHEAP-model
+    ``critic`` command ONLY when explicitly opted in via ``models.critic`` config,
+    and OMITS it when the layer is OFF. The real loop (no ``models.critic``) builds
+    no critic command, so the verify path is unchanged."""
+
+    def _config(self, *, critic=True) -> str:
+        tmp = tempfile.mkdtemp()
+        target = Path(tmp) / "target"
+        (target / ".agentrail").mkdir(parents=True)
+        models = {"execute": "model-a", "verify": "model-b"}
+        if critic:
+            models["critic"] = "claude-haiku-4-5-20251001"
+        (target / ".agentrail" / "config.json").write_text(json.dumps({
+            "runners": {"claude": {"command": "claude -p", "models": models}}
+        }))
+        return str(target)
+
+    def _capture_phase_commands(self, target, env):
+        opts = RunOptions(agent="claude", target=target, command="", log_dir="")
+        clean = {k: v for k, v in os.environ.items()
+                 if not k.startswith("AGENTRAIL_EVAL_LAYER_")}
+        clean.update(env)
+        with patch("agentrail.run.pipeline.run_issue", return_value=0) as mock_run_issue, \
+             patch("agentrail.cli.commands.run._repo_dir", return_value=Path("/repo")), \
+             patch.dict(os.environ, clean, clear=True):
+            exec_issue(7, opts)
+        return mock_run_issue.call_args.kwargs["phase_commands"]
+
+    def test_critic_command_built_when_configured(self) -> None:
+        pc = self._capture_phase_commands(self._config(critic=True), env={})
+        self.assertIn("critic", pc)
+        self.assertIn("haiku", pc["critic"])
+
+    def test_critic_command_omitted_when_layer_off(self) -> None:
+        pc = self._capture_phase_commands(
+            self._config(critic=True),
+            env={"AGENTRAIL_EVAL_LAYER_CRITIC": "0"})
+        self.assertNotIn("critic", pc)
+        # verify is still built (only the critic is gated out).
+        self.assertIn("verify", pc)
+
+    def test_no_critic_command_without_config(self) -> None:
+        # Real loop: no models.critic -> no critic command -> verify path unchanged.
+        pc = self._capture_phase_commands(self._config(critic=False), env={})
+        self.assertNotIn("critic", pc)
+        self.assertIn("verify", pc)
+
+
 class ExecPromptTests(unittest.TestCase):
     """#968: exec_prompt delegates to pipeline.run_prompt with the prompt text."""
 

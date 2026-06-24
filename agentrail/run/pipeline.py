@@ -32,6 +32,7 @@ from agentrail.run.output_enforcer import (
 )
 from agentrail.run.pricing import cost_usd
 from agentrail.run.proc import run_with_timeout
+from agentrail.run import critic as critic_mod
 from agentrail.run import verifier as verifier_mod
 from agentrail.run.usage_capture import capture_usage
 from agentrail.shared.json import read_json, write_json
@@ -769,8 +770,35 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
     # to the gate). ABSENT/"1" = ON = today's behavior (the real loop never sets
     # the flag). NOTE: this disables the agent's IN-RUN verifier phase only — the
     # eval's separate hidden-test scorer is untouched.
+    # CRITIC layer (#977): the cheap-model Critic REPLACES the expensive verify
+    # model as the independent reviewer that feeds the gate. It runs as a SEPARATE
+    # phase from the executor (the executor never scores its own work, AC3) and a
+    # critic REJECT blocks done exactly as a verify reject does (AC2/AC3). It runs
+    # ONLY when a distinct ``critic`` command is configured AND the CRITIC layer is
+    # not explicitly off; the real loop builds no critic command, so the verify
+    # path below is unchanged (AC4). When the critic runs, the verify phase does
+    # NOT — there is exactly one independent reviewer feeding the gate. The Critic
+    # produces the SAME ``verification_evidence`` shape the verifier does, so the
+    # Objective Gate's accept/reject contract and false-green handling are
+    # byte-identical (AC2).
     verification_evidence: Optional[Dict[str, Any]] = None
-    if (status == 0 and require_red_green and "verify" in rc.phase_commands
+    use_critic = (
+        require_red_green and "critic" in rc.phase_commands
+        and layer_enabled("CRITIC")
+    )
+    if status == 0 and use_critic:
+        status, _ = run_issue_phase(rc, "critic", 1, plan_output=plan_output)
+        last_phase = "critic"
+        if status == 0:
+            critic_output_file = rc.run_dir / "critic" / "output.md"
+            critic_output = (
+                critic_output_file.read_text(encoding="utf-8", errors="replace")
+                if critic_output_file.exists()
+                else ""
+            )
+            critic_verdict = critic_mod.score_candidate(critic_output)
+            verification_evidence = critic_mod.gate_evidence(critic_verdict)
+    elif (status == 0 and require_red_green and "verify" in rc.phase_commands
             and layer_enabled("VERIFY_GATE")):
         status, _ = run_issue_phase(rc, "verify", 1, plan_output=plan_output)
         last_phase = "verify"

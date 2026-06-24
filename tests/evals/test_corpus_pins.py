@@ -200,6 +200,118 @@ def test_solving_diff_passes_at_pinned_commit(
     )
 
 
+def _first_easy_task() -> CorpusTask:
+    """The first ``easy`` corpus v0 task, by stable name order.
+
+    The end-to-end capture proof only needs ONE real task; ``easy`` keeps the
+    materialised solving change small and fast to apply.
+    """
+    for task in _CORPUS:
+        if task.difficulty == "easy":
+            return task
+    return _CORPUS[0]
+
+
+def test_captured_agent_diff_solves_a_real_corpus_task_end_to_end() -> None:
+    """AC3 (#964): route a REAL task's solving change through the CAPTURE path.
+
+    This is the end-to-end proof the live runner now measures something: rather
+    than feeding the pre-computed ``_solving_diff`` straight to the runner (which
+    only proves the pin), we materialise the agent's solving change as
+    working-tree edits in a sandbox-shaped workdir (``workdir/repo`` cloned at
+    the pinned commit, exactly as ``run_issue_on_host`` lays it out), then run
+    the PRODUCTION capture helper ``_capture_workdir_diff`` over it — the same
+    code path ``SandboxAgentExecutor.execute`` uses — and assert:
+
+    * the captured diff applied via the real ``ProductionHiddenTestRunner``
+      yields ``solved=True`` (the agent's work reaches the scorer), and
+    * an EMPTY agent change yields ``solved=False`` (no false green).
+
+    Most corpus tasks ADD A NEW FILE, so this also exercises the new-file gotcha
+    on real corpus data: a naive ``git diff <base>`` would drop the added source
+    file and the task would still report 0%.
+    """
+    import shutil
+    import tempfile
+
+    from agentrail.evals.runner import _capture_workdir_diff
+
+    repo_root = _repo_root()
+    task = _first_easy_task()
+    _require_commits(task, repo_root)
+
+    solving = _solving_diff(task, repo_root)
+
+    workdir = Path(tempfile.mkdtemp(prefix="agentrail-eval-run-"))
+    try:
+        # Lay the workdir out the way the real sandbox does: clone at the pinned
+        # commit into ``workdir/repo`` (run_issue_on_host's ``repo_dir``).
+        repo_dir = workdir / "repo"
+        clone = _git(
+            "clone", "--quiet", "--local", "--no-hardlinks",
+            str(repo_root), str(repo_dir), cwd=Path.cwd(),
+        )
+        assert clone.returncode == 0, clone.stderr
+        co = _git(
+            "-c", "advice.detachedHead=false", "checkout", "--quiet",
+            task.commit, cwd=repo_dir,
+        )
+        assert co.returncode == 0, co.stderr
+
+        # The "agent" performs the solving change: apply the merged-PR diff to
+        # the working tree, left UNCOMMITTED (mirrors how the real agent leaves
+        # its work for the objective gate to read).
+        apply = subprocess.run(
+            ["git", "apply", "--whitespace=nowarn"],
+            cwd=str(repo_dir),
+            input=solving,
+            capture_output=True,
+            text=True,
+        )
+        assert apply.returncode == 0, f"solving diff did not apply: {apply.stderr}"
+
+        # The fix under test: capture the agent's net change from the workdir.
+        captured = _capture_workdir_diff(workdir, base_ref=task.commit)
+        assert captured.strip(), "capture produced an EMPTY diff for a solved task"
+        # Most corpus fixes add a new source file — prove the capture kept it.
+        # (At least one of the solving source paths is a NEW file in the patch.)
+        # Not asserted strictly per-task, but the round-trip below proves it.
+
+        runner = ProductionHiddenTestRunner()
+        solved = runner.run_hidden_tests(
+            task=task, run_record=_run_record_for(task, diff=captured)
+        )
+        assert solved is True, (
+            f"{task.name}: the CAPTURED agent diff did not solve the task — the "
+            f"live runner would still report 0%."
+        )
+
+        # And the empty-change control: a no-op agent scores False.
+        empty_workdir = Path(tempfile.mkdtemp(prefix="agentrail-eval-run-"))
+        try:
+            empty_repo = empty_workdir / "repo"
+            _git(
+                "clone", "--quiet", "--local", "--no-hardlinks",
+                str(repo_root), str(empty_repo), cwd=Path.cwd(),
+            )
+            _git(
+                "-c", "advice.detachedHead=false", "checkout", "--quiet",
+                task.commit, cwd=empty_repo,
+            )
+            empty_captured = _capture_workdir_diff(empty_workdir, base_ref=task.commit)
+            assert empty_captured == "", "untouched workdir produced a non-empty diff"
+            solved_empty = runner.run_hidden_tests(
+                task=task, run_record=_run_record_for(task, diff=empty_captured)
+            )
+            assert solved_empty is False, (
+                f"{task.name}: an EMPTY agent change scored solved — false green."
+            )
+        finally:
+            shutil.rmtree(empty_workdir, ignore_errors=True)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def test_no_task_pins_its_own_fix_commit() -> None:
     """Guard the rule directly: ``commit`` must never equal ``source.mergeCommit``.
 

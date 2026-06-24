@@ -60,6 +60,28 @@ def _utc_now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# Best-of-N (issue #979): the default candidate ceiling N. Kept SMALL — a tractable
+# best-of-N is a critic-gated attempt loop with early stopping, not N parallel full
+# pipelines (CONTEXT.md: per-task fan-out is 3-10x tokens for no reliable gain).
+BESTOFN_DEFAULT_N = 3
+
+
+def resolve_bestofn_n() -> int:
+    """Resolve the best-of-N candidate ceiling N (issue #979).
+
+    Reads ``AGENTRAIL_BESTOFN_N`` (the eval harness / runner may override it),
+    falling back to :data:`BESTOFN_DEFAULT_N`. Pure and defensive: a missing,
+    blank, non-integer, or non-positive value yields the default, so a typo'd
+    config can never make N <= 0 (which would skip execute entirely).
+    """
+    raw = (os.environ.get("AGENTRAIL_BESTOFN_N") or "").strip()
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return BESTOFN_DEFAULT_N
+    return n if n >= 1 else BESTOFN_DEFAULT_N
+
+
 @dataclass
 class RunContext:
     target_dir: Path
@@ -474,6 +496,94 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     return (status, plan_output)
 
 
+def _capture_candidate_diff(rc: RunContext, attempt: int) -> None:
+    """Persist the working-tree diff of one best-of-N candidate (issue #979).
+
+    Best-effort and non-fatal: the Critic phase scores the live working tree
+    itself, so this snapshot is for the run record / dashboard only — a capture
+    failure must never break the loop. The diff is written under the per-attempt
+    execute phase dir so each candidate's change is recoverable.
+    """
+    try:
+        from agentrail.guardrails.adapters.git import collect_diff
+
+        diff = collect_diff(rc.target_dir)
+        phase_dir_name = "execute" if attempt <= 1 else f"execute-{attempt}"
+        diff_file = rc.run_dir / phase_dir_name / "candidate.diff"
+        diff_file.parent.mkdir(parents=True, exist_ok=True)
+        diff_file.write_text(diff, encoding="utf-8")
+    except Exception as _exc:  # pragma: no cover - defensive
+        _log.debug("best-of-n candidate diff capture skipped: %s", _exc)
+
+
+def _run_execute_best_of_n(
+    rc: RunContext, plan_output: str
+) -> tuple[int, Optional[Dict[str, Any]]]:
+    """Best-of-N execute with critic ranking and early stop (issue #979).
+
+    Runs the execute phase to produce a candidate, scores that candidate with the
+    independent Critic (#977), and:
+
+    - ACCEPT → STOP EARLY: carry this candidate forward (fewer than N generated).
+    - REJECT → try again, up to N total candidates, tracking the BEST-scoring one
+      and feeding its reject reason back to the next attempt as verifier findings.
+
+    The selected candidate's critic verdict is returned as the gate evidence
+    (``critic.gate_evidence``), so the Objective Gate's accept/reject contract is
+    byte-identical to the standalone critic path. Candidate generation is BOUNDED
+    by N (never exceeds it, AC3) and the Critic is a SEPARATE phase from the
+    executor every iteration (the maker never grades its own homework).
+
+    Returns ``(status, verification_evidence)``. ``status`` is non-zero if an
+    execute/critic phase itself failed; the gate (not this loop) decides done-ness
+    from the returned evidence.
+    """
+    n = resolve_bestofn_n()
+    best_verdict: Optional[critic_mod.CriticVerdict] = None
+    best_evidence: Optional[Dict[str, Any]] = None
+    findings_file = ""
+    status = 0
+
+    for attempt in range(1, n + 1):
+        # 1. Produce a candidate. Reject reasons from prior candidates are fed
+        # back as verifier findings so each attempt can improve on the last.
+        status, _ = run_issue_phase(
+            rc, "execute", attempt,
+            verifier_findings_file=findings_file, plan_output=plan_output,
+        )
+        if status != 0:
+            return status, best_evidence
+        _capture_candidate_diff(rc, attempt)
+
+        # 2. Score THIS candidate with the independent Critic (a separate phase).
+        status, _ = run_issue_phase(rc, "critic", attempt, plan_output=plan_output)
+        if status != 0:
+            return status, best_evidence
+        critic_dir = "critic" if attempt <= 1 else f"critic-{attempt}"
+        critic_output_file = rc.run_dir / critic_dir / "output.md"
+        critic_output = (
+            critic_output_file.read_text(encoding="utf-8", errors="replace")
+            if critic_output_file.exists()
+            else ""
+        )
+        verdict = critic_mod.score_candidate(critic_output)
+
+        # 3. Track the best-scoring candidate so far (AC2: highest score wins).
+        if best_verdict is None or verdict.score > best_verdict.score:
+            best_verdict = verdict
+            best_evidence = critic_mod.gate_evidence(verdict)
+
+        # 4. Early stop: a candidate that clears the confidence bar is carried
+        # forward immediately — no further candidates are generated (AC2).
+        if verdict.accepted:
+            break
+
+        # 5. Rejected: carry the critic's reason into the next candidate.
+        findings_file = str(critic_output_file)
+
+    return status, best_evidence
+
+
 def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
               repo_dir: Path, log_dir: Optional[Path] = None,
               run_id: str = "",
@@ -759,7 +869,29 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         except Exception as _exc:  # pragma: no cover - defensive
             _log.debug("red-green baseline skipped: %s", _exc)
 
-    if status == 0:
+    # Best-of-N execute with critic ranking and early stop (issue #979).
+    # BESTOFN layer: when ON *and* a distinct critic command is configured, the
+    # execute phase produces up to a small configurable N candidate fixes; the
+    # independent Critic (#977) scores each candidate, the highest-scoring one is
+    # carried to the Objective Gate, and generation STOPS EARLY the moment a
+    # candidate clears the critic's confidence bar (AC1/AC2/AC3). This replaces
+    # the blind single execute with a critic-gated attempt loop — it never spins
+    # up N parallel full pipelines (per-task fan-out is 3-10x tokens for no gain,
+    # CONTEXT.md). When the layer is OFF, or no critic is configured, the execute
+    # phase runs EXACTLY once and the existing critic/verify gate below runs
+    # unchanged (AC4 — byte-identical to today). The Critic is INDEPENDENT of the
+    # executor: it is a SEPARATE phase, never the maker grading its own homework.
+    bestofn_evidence: Optional[Dict[str, Any]] = None
+    bestofn_active = (
+        require_red_green
+        and "critic" in rc.phase_commands
+        and layer_enabled("CRITIC")
+        and layer_enabled("BESTOFN")
+    )
+    if status == 0 and bestofn_active:
+        status, bestofn_evidence = _run_execute_best_of_n(rc, plan_output)
+        last_phase = "execute"
+    elif status == 0:
         status, _ = run_issue_phase(rc, "execute", 1, verifier_findings_file="", plan_output=plan_output)
         last_phase = "execute"
 
@@ -788,9 +920,13 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
     # produces the SAME ``verification_evidence`` shape the verifier does, so the
     # Objective Gate's accept/reject contract and false-green handling are
     # byte-identical (AC2).
-    verification_evidence: Optional[Dict[str, Any]] = None
+    # When best-of-N ran (#979), it already produced the SELECTED candidate's
+    # critic verdict as the gate evidence; the standalone critic/verify pass below
+    # must not run again (the critic already scored every candidate in the loop).
+    verification_evidence: Optional[Dict[str, Any]] = bestofn_evidence
     use_critic = (
-        require_red_green and "critic" in rc.phase_commands
+        not bestofn_active
+        and require_red_green and "critic" in rc.phase_commands
         and layer_enabled("CRITIC")
     )
     if status == 0 and use_critic:
@@ -805,7 +941,8 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
             )
             critic_verdict = critic_mod.score_candidate(critic_output)
             verification_evidence = critic_mod.gate_evidence(critic_verdict)
-    elif (status == 0 and require_red_green and "verify" in rc.phase_commands
+    elif (status == 0 and not bestofn_active
+            and require_red_green and "verify" in rc.phase_commands
             and layer_enabled("VERIFY_GATE")):
         status, _ = run_issue_phase(rc, "verify", 1, plan_output=plan_output)
         last_phase = "verify"

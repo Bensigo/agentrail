@@ -345,6 +345,7 @@ class SandboxAgentExecutor:
             run_cwd=str(source_root),
             run_env=run_env,
             run_dir_factory=lambda: workdir,
+            post_checkout=_seed_agentrail_config,
             publish_pr=False,
         )
 
@@ -445,6 +446,80 @@ def _host_repo_root() -> Path:
         if (parent / ".git").exists():
             return parent
     return Path.cwd()
+
+
+# ---------------------------------------------------------------------------
+# Objective-Gate config seeding (#993 follow-up) — make every pinned commit
+# verifiable.
+# ---------------------------------------------------------------------------
+
+# The verify command the seeded ``.agentrail/config.json`` declares. It mirrors
+# AgentRail's own in-repo ``.agentrail/verify.sh`` design: run ONLY the test
+# file(s) this change touched (the acceptance test the agent authors during the
+# run), not the whole suite — the whole suite drags in environment-dependent
+# tests that false-red a fresh clone, and the Red-Green Proof only needs the
+# authored test to go fail→pass. Self-contained (no dependency on a verify.sh
+# existing at the pinned commit) and idempotent.
+_SEEDED_VERIFY_SH = """\
+#!/usr/bin/env bash
+# Seeded by the AgentRail eval harness for corpus tasks whose pinned commit
+# predates .agentrail/config.json. Runs only the changed/added test files so the
+# agent-authored acceptance test drives the Objective Gate's Red-Green Proof.
+set -uo pipefail
+
+unset AGENTRAIL_SERVER_BASE_URL AGENTRAIL_SERVER_API_KEY AGENTRAIL_SERVER_REPOSITORY_ID
+
+files=$(git status --porcelain | awk '{print $NF}' \\
+  | grep -E '(^|/)(test_.*|.*_test)\\.py$' | sort -u || true)
+
+if [ -z "$files" ]; then
+  echo "verify: no changed test files — nothing to prove (red)" >&2
+  exit 1
+fi
+
+echo "verify: running changed tests:" >&2
+echo "$files" | sed 's/^/  /' >&2
+exec python3 -m pytest -q -p no:cacheprovider $files
+"""
+
+_SEEDED_CONFIG_JSON = (
+    '{\n'
+    '  "schemaVersion": 1,\n'
+    '  "verify": "bash .agentrail/verify.sh"\n'
+    '}\n'
+)
+
+
+def _seed_agentrail_config(repo_dir: Path) -> None:
+    """Seed ``.agentrail/config.json`` (+ verify.sh) into a clone that lacks one.
+
+    The eval clones each corpus task's repo at its pinned ``fixParent`` commit and
+    runs the agent there; the Objective Gate then reads ``.agentrail/config.json``
+    from THAT clone to learn the verify command. Several pinned commits predate
+    that file (the corpus is seeded from historical merged PRs), so the gate sees
+    ZERO declared verify checks and is ALWAYS red — the task can never reach green
+    no matter what the agent writes. That is a direct cause of the 0% solve rate.
+
+    This is the eval harness making every pinned tree verifiable, matching the
+    config the repo carries at HEAD. It is invoked as ``run_issue_on_host``'s
+    ``post_checkout`` hook (after checkout, before the agent runs).
+
+    Idempotent and non-destructive: if the clone ALREADY ships a
+    ``.agentrail/config.json`` (the commit was after the file landed), we leave it
+    untouched so the task's own verify policy wins. We only seed when it is absent.
+    """
+    cfg = repo_dir / ".agentrail" / "config.json"
+    if cfg.exists():
+        return  # the pinned commit already declares its own verify policy.
+    agentrail_dir = repo_dir / ".agentrail"
+    agentrail_dir.mkdir(parents=True, exist_ok=True)
+    verify_sh = agentrail_dir / "verify.sh"
+    # Only seed verify.sh if the config we're writing points at it AND it's not
+    # already provided (e.g. a commit that shipped verify.sh but not config.json).
+    if not verify_sh.exists():
+        verify_sh.write_text(_SEEDED_VERIFY_SH, encoding="utf-8")
+        verify_sh.chmod(0o755)
+    cfg.write_text(_SEEDED_CONFIG_JSON, encoding="utf-8")
 
 
 def _prepend_pythonpath(source_root: str, env: dict) -> str:

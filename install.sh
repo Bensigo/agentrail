@@ -123,7 +123,7 @@ else
   # ── extract ──────────────────────────────────────────────────────────────────
 
   info "Installing to ${install_dir} ..."
-  tar -xzf "${tmpdir}/${tarball}" -C "${tmpdir}"
+  tar --no-same-owner -xzf "${tmpdir}/${tarball}" -C "${tmpdir}"
   mkdir -p "$(dirname "${install_dir}")"
   mv "${tmpdir}/agentrail-${version}" "${install_dir}"
   chmod +x "${install_dir}/scripts/agentrail"

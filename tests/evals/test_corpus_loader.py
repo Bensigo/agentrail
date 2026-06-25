@@ -14,6 +14,7 @@ import pytest
 
 from agentrail.evals.corpus import (
     DIFFICULTY_TAGS,
+    TASK_KIND_VALUES,
     CorpusError,
     CorpusTask,
     corpus_root,
@@ -343,3 +344,52 @@ def test_real_corpus_default_run_excludes_held_out_tasks() -> None:
     # And including them is strictly a superset.
     all_names = {t.name for t in load_corpus(include_held_out=True)}
     assert default_names | held_names == all_names
+
+
+# ---------------------------------------------------------------------------
+# taskKind field (issue #992)
+# ---------------------------------------------------------------------------
+
+
+def test_task_kind_defaults_to_implement(tmp_path: Path) -> None:
+    """taskKind is optional; absent means 'implement'."""
+    task = load_task(_write_task(tmp_path, record=_valid_record()))
+    assert task.task_kind == "implement"
+
+
+def test_task_kind_implement_loads_correctly(tmp_path: Path) -> None:
+    rec = _valid_record()
+    rec["taskKind"] = "implement"
+    task = load_task(_write_task(tmp_path, record=rec))
+    assert task.task_kind == "implement"
+
+
+def test_task_kind_abstain_loads_correctly(tmp_path: Path) -> None:
+    rec = _valid_record()
+    rec["taskKind"] = "abstain"
+    task = load_task(_write_task(tmp_path, record=rec))
+    assert task.task_kind == "abstain"
+
+
+def test_invalid_task_kind_is_rejected(tmp_path: Path) -> None:
+    rec = _valid_record()
+    rec["taskKind"] = "explore"
+    task_dir = _write_task(tmp_path, record=rec)
+    with pytest.raises(CorpusError, match="taskKind"):
+        load_task(task_dir)
+
+
+def test_real_corpus_task_kinds_are_valid() -> None:
+    """Every task in the real corpus has a valid task_kind value."""
+    tasks = load_corpus(include_held_out=True)
+    for task in tasks:
+        assert task.task_kind in TASK_KIND_VALUES, (
+            f"{task.name}: task_kind {task.task_kind!r} is not a valid TASK_KIND_VALUES entry"
+        )
+
+
+def test_real_corpus_has_at_least_one_abstain_task() -> None:
+    """The real corpus must include at least one abstain task (issue #992)."""
+    tasks = load_corpus(include_held_out=True)
+    abstain = [t for t in tasks if t.task_kind == "abstain"]
+    assert abstain, "corpus must have at least one abstain task"

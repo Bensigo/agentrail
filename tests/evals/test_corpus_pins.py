@@ -78,6 +78,14 @@ def _commit_available(sha: str, repo_root: Path) -> bool:
 
 
 def _require_commits(task: CorpusTask, repo_root: Path) -> None:
+    if task.task_kind == "abstain":
+        # Abstain tasks only need the pin commit — no solving diff / mergeCommit.
+        if not _commit_available(task.commit, repo_root):
+            pytest.skip(
+                f"{task.name}: pin commit {task.commit[:12]} not in this checkout "
+                f"(shallow clone) — run with full git history to verify the pin"
+            )
+        return
     fix = task.source.get("mergeCommit", "")
     missing = [
         sha for sha in (task.commit, fix) if not sha or not _commit_available(sha, repo_root)
@@ -173,10 +181,17 @@ def test_empty_diff_fails_at_pinned_commit(
     _require_commits(task, _repo_root())
     record = _run_record_for(task, diff="")
     solved = runner.run_hidden_tests(task=task, run_record=record)
-    assert solved is False, (
-        f"{task.name}: empty diff at {task.commit[:12]} already passes the hidden "
-        f"tests — the pin is not pre-fix (the agent's work is not required)."
-    )
+    if task.task_kind == "abstain":
+        assert solved is True, (
+            f"{task.name}: empty diff at {task.commit[:12]} did NOT pass the hidden "
+            f"tests — for an abstain task the code is already correct; empty diff "
+            f"must pass."
+        )
+    else:
+        assert solved is False, (
+            f"{task.name}: empty diff at {task.commit[:12]} already passes the hidden "
+            f"tests — the pin is not pre-fix (the agent's work is not required)."
+        )
 
 
 @pytest.mark.parametrize("task", _CORPUS, ids=_TASK_IDS)
@@ -189,6 +204,11 @@ def test_solving_diff_passes_at_pinned_commit(
     fix is entangled with unrelated changes — i.e. the pin is not a clean
     parent-of-fix and the task is not falsifiable.
     """
+    if task.task_kind == "abstain":
+        pytest.skip(
+            f"{task.name}: abstain task — correct answer is empty diff, "
+            f"no solving diff exists"
+        )
     repo_root = _repo_root()
     _require_commits(task, repo_root)
     diff = _solving_diff(task, repo_root)
@@ -317,11 +337,46 @@ def test_no_task_pins_its_own_fix_commit() -> None:
 
     A pure-data check (no clone) so a regression is caught instantly, before the
     slow loop above. The pin must be the PARENT of the fix, never the fix itself.
+    Abstain tasks have no fix commit and are skipped.
     """
     for task in _CORPUS:
+        if task.task_kind == "abstain":
+            continue
         fix = task.source.get("mergeCommit")
         assert fix, f"{task.name}: source.mergeCommit missing (needed for provenance)"
         assert task.commit != fix, (
             f"{task.name}: commit pins the fix merge {fix[:12]} itself — pin the "
             f"parent-of-fix so an empty diff fails."
         )
+
+
+# ---------------------------------------------------------------------------
+# AC4 (#992) — wrong change must FAIL for abstain tasks
+# ---------------------------------------------------------------------------
+
+_ABSTAIN_CORPUS = [t for t in _CORPUS if t.task_kind == "abstain"]
+_ABSTAIN_TASK_IDS = [t.name for t in _ABSTAIN_CORPUS]
+
+
+@pytest.mark.parametrize("task", _ABSTAIN_CORPUS, ids=_ABSTAIN_TASK_IDS)
+def test_wrong_change_fails_for_abstain_task(
+    task: CorpusTask, runner: ProductionHiddenTestRunner
+) -> None:
+    """AC4: a syntactically valid but semantically wrong diff must NOT pass.
+
+    Each abstain task may include a ``wrong_diff.patch`` in its directory. When
+    present, this test applies it at the pinned commit and asserts the hidden
+    tests fail — proving the answer key catches the incorrect change.
+    """
+    _require_commits(task, _repo_root())
+    assert task.task_dir is not None
+    wrong_patch = task.task_dir / "wrong_diff.patch"
+    if not wrong_patch.is_file():
+        pytest.skip(f"{task.name}: no wrong_diff.patch present — add one to verify AC4")
+    wrong_diff = wrong_patch.read_text(encoding="utf-8")
+    record = _run_record_for(task, diff=wrong_diff)
+    solved = runner.run_hidden_tests(task=task, run_record=record)
+    assert solved is False, (
+        f"{task.name}: wrong diff passed the hidden tests — the abstain task's "
+        f"answer key does not catch the incorrect change in wrong_diff.patch."
+    )

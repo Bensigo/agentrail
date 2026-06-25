@@ -23,6 +23,9 @@ Layout (one directory per task under ``agentrail/evals/corpus/``):
       },
       "requiredContext": ["path", ...],   # ground-truth required-context set
       "difficulty": "easy|medium|hard",   # difficulty tag (required-context scatter proxy)
+      "taskKind": "implement|abstain",    # optional; default "implement". "abstain"
+                                          #   tasks are already correct — empty diff
+                                          #   must pass, any agent change must fail.
       "source": {                         # provenance (optional but recommended)
         "pr": 791,
         "issue": 770,
@@ -43,6 +46,10 @@ from typing import Any, Dict, List, Optional
 
 # Difficulty is proxied by required-context scatter (PRD "Honesty rails").
 DIFFICULTY_TAGS = ("easy", "medium", "hard")
+
+# Task kind: "implement" tasks require an agent change; "abstain" tasks are
+# correct as-is (empty diff passes the hidden tests, any change breaks them).
+TASK_KIND_VALUES = ("implement", "abstain")
 
 TASK_FILE = "task.json"
 
@@ -85,6 +92,10 @@ class CorpusTask:
     # harness is never tuned against them. Optional in task.json (defaults
     # False); excluded from ``load_corpus`` unless ``include_held_out=True``.
     held_out: bool = False
+    # Task kind (#992): "implement" tasks require agent-produced changes;
+    # "abstain" tasks are already correct (empty diff must pass, any change
+    # must fail). Optional in task.json; defaults to "implement".
+    task_kind: str = "implement"
     source: Dict[str, Any] = field(default_factory=dict)
     task_dir: Optional[Path] = None
 
@@ -191,6 +202,14 @@ def _parse_task(record: Any, *, base_dir: Path, where: str) -> CorpusTask:
             f"(got {held_out_raw!r})"
         )
 
+    # --- task kind (optional, defaults "implement") -------------------------
+    task_kind_raw = record.get("taskKind", "implement")
+    if not isinstance(task_kind_raw, str) or task_kind_raw not in TASK_KIND_VALUES:
+        raise CorpusError(
+            f"corpus task {where}: field 'taskKind' must be one of "
+            f"{', '.join(TASK_KIND_VALUES)} when present (got {task_kind_raw!r})"
+        )
+
     source = record.get("source") or {}
     if not isinstance(source, dict):
         raise CorpusError(f"corpus task {where}: field 'source' must be an object when present")
@@ -205,6 +224,7 @@ def _parse_task(record: Any, *, base_dir: Path, where: str) -> CorpusTask:
         required_context=required_context,
         difficulty=difficulty,
         held_out=held_out_raw,
+        task_kind=task_kind_raw,
         source=source,
         task_dir=base_dir,
     )

@@ -1,0 +1,11 @@
+--- a/agentrail/evals/scorer.py
++++ b/agentrail/evals/scorer.py
+@@ -73,7 +73,7 @@ def score(run: RunRecord, *, hidden_tests_passed: bool) -> Verdict:
+     solved = bool(hidden_tests_passed)
+     # False-green: the run's Objective Gate passed but the hidden tests failed.
+     # By construction this can never be True for a solved run.
+-    false_green = bool(run.gate_passed) and not solved
++    false_green = bool(run.gate_passed)
+     return Verdict(
+         task=run.task,
+         arm=run.arm,

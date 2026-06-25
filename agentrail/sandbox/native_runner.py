@@ -259,6 +259,7 @@ def run_issue_on_host(
     run_cwd: Optional[str] = None,
     run_env: Optional[Dict[str, str]] = None,
     run_dir_factory: Optional[Callable[[], Path]] = None,
+    post_checkout: Optional[Callable[[Path], None]] = None,
     runner=subprocess,
 ) -> RunResult:
     """Run a single issue on the HOST (provider sandbox), not in Docker.
@@ -295,6 +296,13 @@ def run_issue_on_host(
     test (which has ``run prompt``) while still pointing the agent at the clone
     via ``--target <clone>``. When none of these are passed, behaviour is
     byte-identical to before — the real loop's sandbox path is unchanged.
+
+    Post-checkout seeding (eval-only): ``post_checkout`` is an optional callback
+    invoked with the clone root right AFTER the pinned ref is checked out and
+    BEFORE the agent runs. Defaults to ``None`` (no-op), so the production loop is
+    byte-identical. The eval uses it to seed a ``.agentrail/config.json`` into
+    clones whose pinned commit predates that file — without it the Objective Gate
+    declares no verify checks and is always red.
 
     Returns ``status='error'`` for any host-level failure — clone failure,
     timeout, missing ``run.json`` — i.e. whenever no trustworthy gate verdict was
@@ -362,6 +370,20 @@ def run_issue_on_host(
                 return RunResult(status="error",
                                  gate_reason=f"git checkout {ref} failed",
                                  logs_tail=tail or "(no output)")
+
+        # 1a-bis. Post-checkout hook (eval-only seam, default None → no-op so the
+        # autonomous-loop/production path is byte-identical). The clone now holds
+        # the pinned tree; the eval injects a callback here to SEED files into it
+        # before the agent runs — e.g. a ``.agentrail/config.json`` for corpus
+        # tasks whose pinned commit predates that file. Without a config the
+        # Objective Gate has zero declared verify checks and is ALWAYS red, so
+        # such tasks can never reach green regardless of the agent's work. Runs on
+        # the clone root (``repo_dir``); best-effort, never wedges the run.
+        if post_checkout is not None:
+            try:
+                post_checkout(repo_dir)
+            except Exception:  # noqa: BLE001 - seeding is best-effort
+                pass
 
         # 1b. Materialize connected MCP connectors into the codebase: write the
         # agent-correct MCP config into the clone from AGENTRAIL_MCP_<PROVIDER>_KEY

@@ -353,6 +353,13 @@ def run_spine(
             # Wall-time per task (#980): carry the runner's measured wall-clock
             # so the report can surface wall-time per task per arm.
             wall_time_s=record.wall_time_s,
+            # Diagnostic fields (#994): carry the RunRecord's observability data
+            # so the report can explain WHY a failed run failed (diff +
+            # gate-failure reason) and surface per-run context-pack quality.
+            diff=record.diff,
+            gate_failure_reason=record.gate_failure_reason,
+            precision_at_budget=record.precision_at_budget,
+            citation_coverage=record.citation_coverage,
         )
         # Issue #960: keep the RunRecord joined with its solved verdict (a pure
         # ScoredRun join — no new truth) so the intrinsic probes can be driven
@@ -407,7 +414,14 @@ def run_spine(
     def _checkpoint() -> None:
         done_reps = [results_by_index[i][0] for i in sorted(results_by_index)]
         if done_reps:
-            write_markdown_report(aggregate(done_reps), reports_dir=base, date=date_str)
+            # Pass the per-rep records (#994) so the checkpointed report surfaces
+            # each failed run's diff + gate-failure reason + context quality.
+            write_markdown_report(
+                aggregate(done_reps),
+                reports_dir=base,
+                date=date_str,
+                records=done_reps,
+            )
 
     concurrency = max(1, config.concurrency)
     if concurrency == 1:
@@ -437,7 +451,9 @@ def run_spine(
 
     # Final report write — re-renders the COMPLETE scorecard (overwriting the
     # last checkpoint) so the probes section below appends to a full report.
-    report_path = write_markdown_report(arm_reports, reports_dir=base, date=date_str)
+    report_path = write_markdown_report(
+        arm_reports, reports_dir=base, date=date_str, records=repetitions
+    )
 
     # Issue #960 — the intrinsic probes (routing cost-regret + retry lift/wasted-
     # retry cost) are now computed from the REAL RunRecords this run produced

@@ -89,6 +89,22 @@ class RunRecord:
     - ``retries`` — the retry/escalation events observed, oldest first. Empty
       when the run succeeded (or failed) on the first attempt.
 
+    Diagnostic fields (added in #994 so a failed run is *diagnosable* — before
+    this, a non-solved run carried no reason and no context-quality signal, so
+    every failure in the report was opaque). All are optional with ``None``
+    defaults so existing positional callers/tests construct records unchanged,
+    and ``None`` (undefined / not captured) stays distinct from a real ``0.0``:
+
+    - ``gate_failure_reason`` — a short, human-readable note on WHY the run's
+      Objective Gate did not pass (e.g. ``"tests didn't pass / gate red"``,
+      ``"run errored"``, ``"no diff"``). ``None`` when the gate passed or when
+      no reason was captured. Advisory only — never parsed for the verdict.
+    - ``precision_at_budget`` / ``citation_coverage`` — the context-pack quality
+      metrics (``agentrail.context.pack_quality.compute_pack_quality``) for the
+      run's retrieval. ``None`` when not captured by the executor (the live
+      sandbox executor does not yet surface them — see the TODO in
+      ``runner.SandboxAgentExecutor.execute``).
+
     Immutability is enforced (``frozen=True``) so a record handed to the scorer
     cannot be mutated into a different verdict after the fact.
     """
@@ -101,6 +117,11 @@ class RunRecord:
     wall_time_s: float
     gate_passed: bool
     retries: List[RetryEvent] = field(default_factory=list)
+    # Diagnostic fields (#994) — Optional/None defaults preserve positional
+    # back-compat; None stays distinct from 0.0 (undefined vs. measured-zero).
+    gate_failure_reason: Optional[str] = None
+    precision_at_budget: Optional[float] = None
+    citation_coverage: Optional[float] = None
 
     @property
     def attempts(self) -> int:

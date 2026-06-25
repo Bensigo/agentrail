@@ -85,6 +85,16 @@ class RepetitionRecord:
     # surface wall-time PER TASK per arm — a falsifiable metric (a slower arm
     # reads worse). Defaults to ``0.0`` for callers/tests that pre-date it.
     wall_time_s: float = 0.0
+    # Diagnostic fields (issue #994), threaded straight from the runner's
+    # ``RunRecord`` by the spine so a FAILED run is diagnosable in the report —
+    # before this, a non-solved run carried no reason and no context-quality
+    # signal, so every failure was opaque. All default to ``None`` (undefined)
+    # so pre-#994 callers/tests construct a record positionally unchanged, and
+    # ``None`` stays distinct from a measured ``0.0``.
+    diff: Optional[str] = None
+    gate_failure_reason: Optional[str] = None
+    precision_at_budget: Optional[float] = None
+    citation_coverage: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +158,13 @@ class ArmReport:
     # Difficulty-stratified breakdown (issue #941), in canonical difficulty
     # order (easy/medium/hard). Empty when no record carried a difficulty.
     strata: List[StratumReport] = field(default_factory=list)
+    # Context-pack quality (issue #994): mean precision_at_budget /
+    # citation_coverage over the reps THAT CARRIED them. ``None`` when no rep in
+    # this arm captured the metric (undefined) — DISTINCT from a measured 0.0.
+    # The live sandbox executor does not yet surface these, so they are commonly
+    # ``None`` today; the report renders that honestly as "n/a".
+    mean_precision_at_budget: Optional[float] = None
+    mean_citation_coverage: Optional[float] = None
 
 
 def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
@@ -206,6 +223,18 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
 
     strata = _strata(records)
 
+    # Context-pack quality (#994): mean over ONLY the reps that carried a metric
+    # (None defaults are skipped). ``None`` when no rep carried it — undefined,
+    # never a fabricated 0.0.
+    precisions = [
+        r.precision_at_budget for r in records if r.precision_at_budget is not None
+    ]
+    coverages = [
+        r.citation_coverage for r in records if r.citation_coverage is not None
+    ]
+    mean_precision = (sum(precisions) / len(precisions)) if precisions else None
+    mean_coverage = (sum(coverages) / len(coverages)) if coverages else None
+
     return ArmReport(
         arm=arm,
         repetitions=repetitions,
@@ -227,6 +256,8 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
         false_green_rate=false_green_rate,
         per_task_solve_rate=per_task_solve_rate,
         strata=strata,
+        mean_precision_at_budget=mean_precision,
+        mean_citation_coverage=mean_coverage,
     )
 
 
@@ -529,6 +560,42 @@ def _fmt_rate_pct(value: Optional[float]) -> str:
     return _fmt_pct(value)
 
 
+def _fmt_ratio(value: Optional[float]) -> str:
+    """Format a 0..1 quality ratio, preserving the None-vs-0.0 distinction (#994).
+
+    ``None`` (not captured / undefined) renders as ``n/a``; a measured ``0.0``
+    renders as ``0.000`` — so "we never measured it" never masquerades as a
+    measured-zero precision/coverage.
+    """
+    if value is None:
+        return _UNDEFINED
+    return f"{value:.3f}"
+
+
+# Per-failed-run diff is truncated so the report stays readable; the FULL diff
+# lives on the RunRecord / sandbox, this is a diagnostic excerpt (#994).
+_DIFF_PREVIEW_LINES = 50
+
+
+def _abbreviated_diff(diff: Optional[str]) -> List[str]:
+    """Render a failed run's diff as fenced markdown, truncated to a preview.
+
+    Returns the lines to append (a fenced code block), or a single honest line
+    when there is no diff to show. Truncation is explicit ("… N more lines")
+    so the reader knows the excerpt is partial — the full diff is on the record.
+    """
+    if not diff or not diff.strip():
+        return ["  - Diff: _(empty — agent produced no change)_"]
+    raw = diff.splitlines()
+    shown = raw[:_DIFF_PREVIEW_LINES]
+    out = ["  - Diff (first %d lines):" % min(len(raw), _DIFF_PREVIEW_LINES), "", "    ```diff"]
+    out.extend(f"    {line}" for line in shown)
+    if len(raw) > _DIFF_PREVIEW_LINES:
+        out.append(f"    … {len(raw) - _DIFF_PREVIEW_LINES} more lines")
+    out.append("    ```")
+    return out
+
+
 def _tie_tasks(report: ArmReport) -> List[str]:
     """Tasks whose solve fraction is a tie (strictly between 0 and 1).
 
@@ -543,12 +610,26 @@ def _tie_tasks(report: ArmReport) -> List[str]:
     ]
 
 
-def render_markdown(reports: Sequence[ArmReport], *, generated_at: str) -> str:
+def render_markdown(
+    reports: Sequence[ArmReport],
+    *,
+    generated_at: str,
+    records: Optional[Sequence[RepetitionRecord]] = None,
+) -> str:
     """Render the per-arm reports as a markdown document.
 
     Always reports failures, ties, and spread alongside wins (CONTEXT.md
     honesty rail). Uses the project's domain language: solve-rate,
     dollars-per-solved-task, spread.
+
+    ``records`` (issue #994) is the OPTIONAL flat list of per-rep records the
+    aggregates were built from. When supplied, the failure section additionally
+    surfaces each FAILED run's diagnostic detail (its gate-failure reason and an
+    abbreviated diff) and the per-run context-pack quality — so a failed run is
+    actually diagnosable instead of being just a count. When ``None`` (existing
+    callers that pre-date #994), the report renders exactly as before — the new
+    detail is simply omitted, never fabricated. The aggregate "## Context
+    quality" section is driven by the ``ArmReport`` fields and renders either way.
     """
     lines: List[str] = []
     lines.append("# AgentRail eval report")
@@ -825,7 +906,54 @@ def render_markdown(reports: Sequence[ArmReport], *, generated_at: str) -> str:
             lines.append("- Per-task solve-rate:")
             for task, frac in r.per_task_solve_rate.items():
                 lines.append(f"  - {task}: {_fmt_pct(frac)}")
+
+        # Per-failed-run diagnostics (#994): when the caller threaded the raw
+        # per-rep records, surface WHY each failed run failed — its gate-failure
+        # reason, an abbreviated diff, and per-run context-pack quality — so a
+        # failure is diagnosable, not just counted. Omitted (not fabricated)
+        # when records were not supplied.
+        if records is not None:
+            failed = [
+                rec for rec in records if rec.arm == r.arm and not rec.solved
+            ]
+            if failed:
+                lines.append("- Failed-run detail:")
+                for rec in failed:
+                    reason = rec.gate_failure_reason or "no reason captured"
+                    lines.append(f"  - **{rec.task}** — gate: {reason}")
+                    cq_parts = []
+                    if rec.precision_at_budget is not None or rec.citation_coverage is not None:
+                        cq_parts.append(
+                            f"precision@budget {_fmt_ratio(rec.precision_at_budget)}, "
+                            f"citation-coverage {_fmt_ratio(rec.citation_coverage)}"
+                        )
+                    if cq_parts:
+                        lines.append(f"    - Context quality: {'; '.join(cq_parts)}")
+                    lines.extend(_abbreviated_diff(rec.diff))
         lines.append("")
+
+    # --- Context quality (issue #994) ------------------------------------
+    # Aggregate per-arm context-pack precision/coverage. ``None`` (no rep in the
+    # arm carried the metric — the live sandbox executor does not yet surface
+    # them) renders as "n/a", DISTINCT from a measured 0.0. This section is the
+    # home for the retrieval-quality signal the live eval was previously blind to.
+    lines.append("## Context quality")
+    lines.append("")
+    lines.append(
+        "Context-pack retrieval quality per arm (issue #994). ``n/a`` means the "
+        "metric was not captured for this arm — the live sandbox executor does "
+        "not yet plumb context-pack metadata out of the run — and is DISTINCT "
+        "from a measured ``0.000``."
+    )
+    lines.append("")
+    lines.append("| Arm | Mean precision@budget | Mean citation-coverage |")
+    lines.append("| --- | ---: | ---: |")
+    for r in reports:
+        lines.append(
+            f"| {r.arm} | {_fmt_ratio(r.mean_precision_at_budget)} "
+            f"| {_fmt_ratio(r.mean_citation_coverage)} |"
+        )
+    lines.append("")
 
     return "\n".join(lines)
 
@@ -961,16 +1089,25 @@ def write_markdown_report(
     *,
     reports_dir: Optional[Path] = None,
     date: str,
+    records: Optional[Sequence[RepetitionRecord]] = None,
 ) -> Path:
     """Render and write a dated markdown report; return the written path.
 
     File name is ``eval-report-<date>.md`` so reports are auditable in git and
     ordered chronologically.
+
+    ``records`` (#994) is optional and forwarded to :func:`render_markdown`; when
+    supplied, each FAILED run's diff + gate-failure reason + context-quality
+    metrics are surfaced in the failure section. When ``None`` the report renders
+    exactly as before (back-compatible).
     """
     base = Path(reports_dir) if reports_dir is not None else default_reports_dir()
     base.mkdir(parents=True, exist_ok=True)
     path = base / f"eval-report-{date}.md"
-    path.write_text(render_markdown(reports, generated_at=date), encoding="utf-8")
+    path.write_text(
+        render_markdown(reports, generated_at=date, records=records),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -1031,6 +1168,11 @@ def arm_metric_rows(reports: Sequence[ArmReport], *, run_id: str) -> List[dict]:
             "gate_passed_count": r.gate_passed_count,
             "false_green_count": r.false_green_count,
             "false_green_rate": r.false_green_rate,
+            # Context-pack quality (#994). None (not 0.0) when no rep in the arm
+            # carried the metric, so the console renders "n/a" honestly and never
+            # disagrees with the markdown's Context quality section.
+            "mean_precision_at_budget": r.mean_precision_at_budget,
+            "mean_citation_coverage": r.mean_citation_coverage,
             # Difficulty-stratified breakdown (#941) so the console can show the
             # same per-stratum numbers the markdown does (never disagree).
             "strata": [

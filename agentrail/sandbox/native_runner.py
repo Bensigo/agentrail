@@ -323,7 +323,7 @@ def run_issue_on_host(
     # Fresh isolated working dir per run (injectable for hermetic tests).
     if run_dir_factory is not None:
         work_dir = Path(run_dir_factory())
-        _own_work_dir = True
+        _own_work_dir = False  # caller owns the workdir; must not delete it here
     else:
         work_dir = Path(tempfile.mkdtemp(prefix="agentrail-host-run-"))
         _own_work_dir = True

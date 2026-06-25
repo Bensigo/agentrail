@@ -295,3 +295,36 @@ def test_capture_finds_work_committed_to_run_branch_with_head_at_base(tmp_path: 
     diff = _capture_workdir_diff(tmp_path, base_ref=base, label="mytask")
     assert diff.strip(), "capture returned empty for work committed on the run branch"
     assert "solution.py" in diff and "return 'ok'" in diff, f"committed work missing:\n{diff}"
+
+
+def test_capture_finds_work_pushed_to_source_repo_branch(tmp_path: Path) -> None:
+    """Strategy 4: the agent PUSHES its run branch into the source repo (origin),
+    leaving the clone's local state empty. The capture must read the work from
+    ``source_repo``'s ``agentrail/issue-<label>`` branch — otherwise a correct
+    solution scores ``solved=0`` (the real-run false negative this guards)."""
+    # Source repo (= the clone's origin), at base.
+    source = tmp_path / "source"
+    base = _init_base_repo(source)
+
+    # The clone is taken BEFORE the agent's work exists, so it shares the base
+    # SHA but never has the run branch or the work locally — exactly the state
+    # the real eval clone is left in (the agent pushed its work to origin).
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    _git("clone", "--quiet", str(source), str(workdir / "repo"), cwd=tmp_path)
+
+    # The agent commits its solution onto the run branch and pushes it to origin
+    # (= the source repo), leaving the source's own HEAD back at base.
+    _git("checkout", "-b", "agentrail/issue-mytask", cwd=source)
+    (source / "solution.py").write_text("SOLVED = True\n", encoding="utf-8")
+    _git("add", "-A", cwd=source)
+    _git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "solve", cwd=source)
+    _git("checkout", "--quiet", base, cwd=source)
+
+    # Without source_repo, strategies 1-3 find nothing in the clone (the bug).
+    assert _capture_workdir_diff(workdir, base_ref=base, label="mytask") == ""
+    # With source_repo, strategy 4 recovers the pushed work.
+    diff = _capture_workdir_diff(
+        workdir, base_ref=base, label="mytask", source_repo=source
+    )
+    assert "solution.py" in diff and "SOLVED = True" in diff

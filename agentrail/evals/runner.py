@@ -91,6 +91,11 @@ class AgentExecution:
       ``True``; ``"red"`` or ``"error"`` collapses to ``False``).
     - ``retries`` — retry/escalation events observed during the run (the queue
       transitions in the production loop). Empty when none.
+    - ``gate_failure_reason`` (#994) — a short note on WHY the gate did not pass
+      (``None`` when it passed or no reason was captured). Diagnostic only.
+    - ``precision_at_budget`` / ``citation_coverage`` (#994) — context-pack
+      quality metrics for the run's retrieval, when the executor can surface
+      them (``None`` otherwise — the live sandbox executor does not yet).
     """
 
     diff: str
@@ -98,6 +103,11 @@ class AgentExecution:
     model: str
     gate_passed: bool
     retries: List[RetryEvent] = field(default_factory=list)
+    # Diagnostic fields (#994) — Optional/None defaults keep the fake faithful
+    # without forcing every test fake to supply them.
+    gate_failure_reason: Optional[str] = None
+    precision_at_budget: Optional[float] = None
+    citation_coverage: Optional[float] = None
 
 
 class AgentExecutor(Protocol):
@@ -258,6 +268,11 @@ def run(
             wall_time_s=elapsed,
             gate_passed=gate_passed,
             retries=list(execution.retries),
+            # Diagnostic fields (#994) — thread straight off the execution; they
+            # stay None when the executor did not surface them.
+            gate_failure_reason=execution.gate_failure_reason,
+            precision_at_budget=execution.precision_at_budget,
+            citation_coverage=execution.citation_coverage,
         )
     finally:
         if owns_workdir:
@@ -383,12 +398,36 @@ class SandboxAgentExecutor:
         # source repo with one branch per task.
         _cleanup_pushed_branch(source_root, task.name)
 
+        # #994: derive a human-readable gate-failure reason so a failed run is
+        # diagnosable in the report. ``result.status`` is the production
+        # RunResult status ∈ {"green","red","error"}; empty diff means the agent
+        # produced nothing to test. None when the gate passed (nothing to explain).
+        gate_failure_reason: Optional[str]
+        if result.status == "green":
+            gate_failure_reason = None
+        elif not diff.strip():
+            gate_failure_reason = "no diff (agent produced no change)"
+        elif result.status == "error":
+            gate_failure_reason = "run errored"
+        else:  # "red" (or any non-green, non-error status)
+            gate_failure_reason = "tests didn't pass / gate red"
+
+        # TODO(#994): surface context-pack quality (precision_at_budget /
+        # citation_coverage) here. They are computed live by
+        # ``agentrail.context.pack_quality.compute_pack_quality`` inside the
+        # retrieval path (``context/retrieval.py``), but ``run_issue_on_host``'s
+        # ``RunResult`` does not yet plumb the context-pack metadata back out of
+        # the sandbox. Until that seam exists, leave them None (undefined),
+        # which the reporter renders as "n/a" — distinct from a measured 0.0.
         return AgentExecution(
             diff=diff,
             usage=usage,
             model=usage.model or arm.model,
             gate_passed=(result.status == "green"),
             retries=[],
+            gate_failure_reason=gate_failure_reason,
+            precision_at_budget=None,
+            citation_coverage=None,
         )
 
 

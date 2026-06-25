@@ -127,7 +127,7 @@ class Arm:
     layers: Layers
     model: str = PINNED_MODEL
     temperature: float = PINNED_TEMPERATURE
-    extra_layers: Mapping[str, bool] = field(default=_NO_EXTRA_LAYERS)
+    extra_layers: Mapping[str, bool] = field(default_factory=lambda: _NO_EXTRA_LAYERS)
     critic_model: str = ""
 
 

@@ -1,4 +1,8 @@
 {
+  "env": {
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "40",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000"
+  },
   "hooks": {
     "PreToolUse": [
       {
@@ -7,6 +11,27 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.agentrail/hooks/context-first.sh"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/precompact_summary.py"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $CLAUDE_PROJECT_DIR/.claude/hooks/postcompact_notify.py"
           }
         ]
       }

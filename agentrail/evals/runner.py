@@ -375,7 +375,13 @@ class SandboxAgentExecutor:
         # ``workdir/repo`` and the agent works there with ``publish_pr=False``,
         # so the changes are sitting in that clone (committed AND/OR uncommitted
         # AND/OR newly-added files) when we get here.
-        diff = _capture_workdir_diff(workdir, base_ref=task.commit, label=task.name)
+        diff = _capture_workdir_diff(
+            workdir, base_ref=task.commit, label=task.name, source_repo=source_root,
+        )
+        # The agent pushes its run branch into the local source repo (origin);
+        # capture reads it above, then we delete it so eval runs don't litter the
+        # source repo with one branch per task.
+        _cleanup_pushed_branch(source_root, task.name)
 
         return AgentExecution(
             diff=diff,
@@ -513,8 +519,26 @@ def _resolve_git_repo(workdir: Path) -> Optional[Path]:
     return None
 
 
+def _cleanup_pushed_branch(source_repo: Path, label: str) -> None:
+    """Delete the run branch the agent pushed into the local source repo.
+
+    The prompt-run convention (``agentrail/run/prompts.py``) tells the agent to
+    push ``agentrail/issue-<label>`` to ``origin``. For an eval clone, ``origin``
+    IS the local source repo, so each run otherwise leaves a branch behind in it.
+    Best-effort: never raise into the run.
+    """
+    try:
+        subprocess.run(
+            ["git", "branch", "-D", f"agentrail/issue-{label}"],
+            cwd=str(source_repo), capture_output=True, text=True,
+        )
+    except OSError:  # pragma: no cover - git missing
+        pass
+
+
 def _capture_workdir_diff(
-    workdir: Path, *, base_ref: str, label: Optional[str] = None
+    workdir: Path, *, base_ref: str, label: Optional[str] = None,
+    source_repo: Optional[Path] = None,
 ) -> str:
     """Return the agent's NET change vs ``base_ref`` as a unified-diff string.
 
@@ -582,7 +606,27 @@ def _capture_workdir_diff(
                     return committed
 
         # 3. Work committed on the current HEAD (HEAD ahead of base).
-        return _diff(base_ref, "HEAD")
+        head_diff = _diff(base_ref, "HEAD")
+        if head_diff.strip():
+            return head_diff
+
+        # 4. Work the agent PUSHED to origin. The prompt-run convention pushes
+        #    the run branch to ``origin``, and an eval clone's ``origin`` IS the
+        #    local source repo — so the agent's work lands as
+        #    ``agentrail/issue-<label>`` THERE, not in the clone's local state
+        #    (which is exactly why strategies 1–3 came up empty and every real
+        #    eval run scored a correct solution as ``solved=0``).
+        if label and source_repo is not None:
+            branch = f"agentrail/issue-{label}"
+            src = subprocess.run(
+                ["git", "diff", "--no-color", "--no-ext-diff", "--binary",
+                 base_ref, branch],
+                cwd=str(source_repo), capture_output=True, text=True,
+            )
+            if src.returncode == 0 and src.stdout.strip():
+                return src.stdout
+
+        return ""
     except (OSError, ValueError):  # pragma: no cover - git missing / bad args
         return ""
 

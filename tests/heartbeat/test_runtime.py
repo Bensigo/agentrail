@@ -529,6 +529,94 @@ def test_register_run_records_each_attempt():
 
 
 # --------------------------------------------------------------------------- #
+# Crash-protect cost reporting — the sandbox call may RAISE (container crash,
+# timeout escalating to an exception, daemon error). The loop must still record
+# the run (as error/terminal) + call register_run with the best-known cost, and
+# must not crash or wedge. 1 of 3 cost-fault-tolerance changes.
+# --------------------------------------------------------------------------- #
+def _runtime_with_raising_sandbox(*, connector, store, notifier, exc, config=None):
+    """Build a runtime whose sandbox runner RAISES, with a faithful register_run
+    capture (FakeStore already matches the real Store.register_run signature)."""
+    calls: List[dict] = []
+
+    def sandbox_runner(*, repo_url, ref, issue_ref, workspace_id, env,
+                       model=None, failure_handoff=None):
+        calls.append({"issue_ref": issue_ref, "model": model})
+        raise exc
+
+    rt = HeartbeatRuntime(
+        connector=connector,
+        store=store,
+        sandbox_runner=sandbox_runner,
+        notifier=notifier,
+        config=config or _config(),
+        detect_capabilities=lambda: REQUIRED_CAPABILITIES,
+    )
+    rt._sandbox_calls = calls  # type: ignore[attr-defined]
+    return rt
+
+
+def test_sandbox_raising_still_records_run_and_does_not_crash():
+    """A sandbox call that RAISES must not crash the loop: the run is recorded as
+    error → ESCALATED_TO_HUMAN terminal, and register_run is still called with the
+    best-known cost (0.0 when the raise carries none)."""
+    connector = FakeConnector(
+        [IssueRef(repo="acme/widgets", number=7, title="Add widget",
+                  body=_VALID_BODY, url="https://gh/7")]
+    )
+    store = FakeStore()
+    notifier = FakeNotifier()
+    rt = _runtime_with_raising_sandbox(
+        connector=connector, store=store, notifier=notifier,
+        exc=RuntimeError("container OOM-killed"),
+    )
+
+    # (a) the loop does not crash / does not wedge.
+    report = rt.poll_and_dispatch("ws-1")
+
+    # (b) the run reached a terminal error state (escalated to human).
+    assert report.dispatched == 1
+    assert report.green == 0
+    assert report.red == 1
+    assert notifier.tasks and notifier.tasks[0].state == "escalated-to-human"
+    assert connector.posted and connector.posted[0][1].state == "escalated-to-human"
+
+    # GATE_RED per failed attempt (error maps to GATE_RED in the state machine).
+    dispatch_events = [t[1] for t in store.transitions if t[1] != Event.START]
+    assert dispatch_events and all(e == Event.GATE_RED for e in dispatch_events)
+
+    # (c) register_run was still called for the failed attempt(s) with cost 0.0
+    # (the raise here carries no cost), plus the initial running registration.
+    assert any(r["status"] == "running" for r in store.runs)
+    error_runs = [r for r in store.runs if r["status"] == "error"]
+    assert error_runs, "register_run must persist the crashed run's cost"
+    assert all(r["cost_usd"] == 0.0 for r in error_runs)
+
+
+def test_sandbox_raising_with_cost_on_exception_persists_that_cost():
+    """When the raised exception carries a recoverable cost (sandbox PR A surfaces
+    cost even on failure), register_run must persist that cost, not 0.0."""
+    connector = FakeConnector(
+        [IssueRef(repo="acme/widgets", number=7, body=_VALID_BODY)]
+    )
+    store = FakeStore()
+    notifier = FakeNotifier()
+
+    exc = RuntimeError("sandbox timed out")
+    exc.cost_usd = 0.42  # best-known spend attached to the failure
+
+    rt = _runtime_with_raising_sandbox(
+        connector=connector, store=store, notifier=notifier,
+        exc=exc, config=_config(attempt_limit=1),  # one attempt, then stop
+    )
+
+    rt.poll_and_dispatch("ws-1")
+
+    error_runs = [r for r in store.runs if r["status"] == "error"]
+    assert error_runs and error_runs[0]["cost_usd"] == 0.42
+
+
+# --------------------------------------------------------------------------- #
 # daily_digest
 # --------------------------------------------------------------------------- #
 def test_daily_digest_forwards_finished_terminals_to_notifier():

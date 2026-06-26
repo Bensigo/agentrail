@@ -31,6 +31,7 @@ from agentrail.afk.state import (
     EnqueueIssue,
     IssueState,
     IssueStatus,
+    RecordCost,
     RecordFailure,
     RequeueIssue,
     SetBlockedBy,
@@ -87,6 +88,30 @@ async def _sh(args: List[str], cwd: Optional[Path] = None,
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_bytes(b"".join(chunks))
     return rc
+
+
+def _read_run_cost(worktree: Path) -> float:
+    """Sum the pipeline's per-phase cost ledger in ``worktree``.
+
+    Mirrors the sandbox native_runner parser: the pipeline appends one JSON
+    line per phase with a ``cost_usd`` field to ``.agentrail/run/cost-events.jsonl``.
+    Best-effort — a missing or malformed ledger yields 0.0, never raises.
+    """
+    ledger = worktree / ".agentrail" / "run" / "cost-events.jsonl"
+    import json as _json
+    total = 0.0
+    try:
+        for line in ledger.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                total += float(_json.loads(line).get("cost_usd") or 0.0)
+            except (ValueError, TypeError):
+                pass
+    except (FileNotFoundError, OSError):
+        pass
+    return total
 
 
 class Runner:
@@ -233,6 +258,13 @@ class Runner:
             log=self.logs / f"issue-{issue}-implement.log",
             env=env,
         )
+
+        # Carry the run's real-dollar cost into the store so the finally-block in
+        # _process re-reads it from final_issue and reports it via ingest even
+        # when the run failed. The pipeline writes a per-phase cost ledger in the
+        # worktree; read it whatever rc is — a failed run still spent money (and
+        # PR A makes that cost nonzero on failures too).
+        self.store.dispatch(RecordCost(issue, _read_run_cost(wt)))
 
         # Compute diff savings and append to the AFK journal (non-fatal).
         try:
@@ -532,6 +564,10 @@ class Runner:
                 status=status,
                 started_at=started_at,
                 finished_at=now if finished else None,
+                # Last-known cost held in the issue state (set by _implement via
+                # RecordCost). Because the finally-block reads final_issue from
+                # the store before calling here, cost is reported even on failure.
+                cost_usd=getattr(issue_state, "cost_usd", 0.0) or 0.0,
             )
         except Exception:  # noqa: BLE001 — non-fatal
             pass

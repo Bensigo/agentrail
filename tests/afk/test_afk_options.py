@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agentrail.afk.runner import Runner
-from agentrail.afk.state import AfkState, Store
+from agentrail.afk.state import AfkState, EnqueueIssue, Store
 from agentrail.cli.commands.afk import _parse, run_afk
 
 
@@ -95,6 +95,10 @@ class RunnerForwardsBudgetTests(unittest.TestCase):
         (tmp / "main").mkdir()
         store = Store(AfkState(concurrency=1, max_retries=1,
                                max_review_rounds=1, slots={0: None}))
+        # _implement now dispatches RecordCost(number=1), which requires the
+        # issue to exist in state. In the real flow the issue is always enqueued
+        # before _implement runs; seed it here so this unit test mirrors that.
+        store.dispatch(EnqueueIssue(number=1, title="t", url="http://x/1"))
         runner = Runner(
             target=tmp / "main", engine="claude", base="main", concurrency=1,
             afk_label="afk", queue_labels=["ready"], run_dir=tmp / "run",

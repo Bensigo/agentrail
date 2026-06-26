@@ -28,6 +28,7 @@ def register_run(
     status: str,
     started_at: Optional[str] = None,
     finished_at: Optional[str] = None,
+    cost_usd: float = 0.0,
 ) -> bool:
     """Upsert a run record on the server. Returns True only on HTTP 202."""
     link = load_link(target)
@@ -40,6 +41,7 @@ def register_run(
         "branch": branch,
         "title": title,
         "status": status,
+        "cost_usd": cost_usd,
     }
     if started_at:
         payload["started_at"] = started_at

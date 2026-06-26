@@ -50,6 +50,12 @@ class IssueState:
     retries: int = 0
     review_rounds: int = 0
     error: Optional[str] = None
+    # Last-known real-dollar cost of this issue's run, as reported by the
+    # pipeline. Held in state so it is reported via ingest even when the run
+    # fails: the finally-block re-reads the issue from the store and the cost
+    # rides along. SET — not accumulated — because the pipeline's cost ledger is
+    # already the cumulative cost of one run, so SET is idempotent across retries.
+    cost_usd: float = 0.0
     # Issue numbers this issue is blocked by (parsed from its "## Blocked by"
     # section). An issue is not claimable while any of these is still OPEN.
     blocked_by: Tuple[int, ...] = ()
@@ -166,6 +172,18 @@ class RecordFailure:
 
 
 @dataclass(frozen=True)
+class RecordCost:
+    """Record the cumulative real-dollar cost the pipeline reported for a run.
+
+    SET (replace), not add: ``cost_usd`` is already the cumulative cost of a
+    single run, so re-dispatching with the same value is idempotent and a retry
+    overwrites the prior attempt's cost with the latest run's cost.
+    """
+    number: int
+    cost_usd: float
+
+
+@dataclass(frozen=True)
 class IncrementReviewRound:
     number: int
 
@@ -256,6 +274,11 @@ def reduce(state: AfkState, action: Action) -> AfkState:
     elif isinstance(action, SetPr):
         issue = _require(state, action.number)
         issues[action.number] = replace(issue, pr=action.pr)
+
+    elif isinstance(action, RecordCost):
+        issue = _require(state, action.number)
+        # SET, not accumulate: the value is already the run's cumulative cost.
+        issues[action.number] = replace(issue, cost_usd=float(action.cost_usd))
 
     elif isinstance(action, RecordFailure):
         issue = _require(state, action.number)

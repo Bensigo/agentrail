@@ -97,10 +97,15 @@ from agentrail.evals.reporter import (
 from agentrail.evals.probes import (
     ScoredRun,
     guardrail_catch_rate,
+    retry_attribution,
     retry_lift,
+    routing_attribution,
     routing_cost_regret,
 )
-from agentrail.evals.reporter import render_probes_markdown
+from agentrail.evals.reporter import (
+    render_probes_markdown,
+    render_routing_retry_audit_markdown,
+)
 from agentrail.evals.run_record import RunRecord
 from agentrail.evals.runner import AgentExecutor, SandboxAgentExecutor, run
 from agentrail.evals.scorer import Verdict, score
@@ -468,9 +473,20 @@ def run_spine(
     probes_md = render_probes_markdown(
         routing=routing, retry=retry, guardrail=guardrail
     )
+    # Finding 4 — routing/retry VALUE audit (measurement only). Computed from the
+    # SAME scored_runs (no extra runs, no behaviour change): routing $-delta vs
+    # the recorded baseline model with an explicit "had no chance to act" signal,
+    # and retry win/burn counts. Appended to the SAME dated report.
+    routing_audit = routing_attribution(scored_runs)
+    retry_audit = retry_attribution(scored_runs)
+    audit_md = render_routing_retry_audit_markdown(
+        routing=routing_audit, retry=retry_audit
+    )
     with report_path.open("a", encoding="utf-8") as fh:
         fh.write("\n")
         fh.write(probes_md)
+        fh.write("\n")
+        fh.write(audit_md)
 
     # AC4 — same per-arm numbers go via the injected MetricsWriter. Default:
     # the HttpMetricsWriter (honest no-op until #942).

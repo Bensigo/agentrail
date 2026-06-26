@@ -105,6 +105,19 @@ class RunRecord:
       sandbox executor does not yet surface them — see the TODO in
       ``runner.SandboxAgentExecutor.execute``).
 
+    Routing-audit field (Finding 4 — measurement only, no live-loop change):
+
+    - ``baseline_model`` — the DEFAULT/baseline model this run would have used had
+      the routing layer NOT acted: the arm's pinned model (``arm.model``). The
+      routing layer "diverged" on this run iff ``final_model != baseline_model``.
+      Recording the baseline explicitly (rather than re-deriving it from the arm
+      name in the report) lets the audit attribute the routing $-delta — what
+      routing's model choice cost or saved relative to the baseline model — and,
+      crucially, state explicitly when routing NEVER diverged ("had no chance to
+      act"). ``None`` when not captured (old records / executors that don't
+      surface it) — distinct from a captured baseline that happens to equal the
+      final model.
+
     Immutability is enforced (``frozen=True``) so a record handed to the scorer
     cannot be mutated into a different verdict after the fact.
     """
@@ -122,6 +135,9 @@ class RunRecord:
     gate_failure_reason: Optional[str] = None
     precision_at_budget: Optional[float] = None
     citation_coverage: Optional[float] = None
+    # Routing-audit field (Finding 4) — APPENDED last to preserve positional
+    # back-compat; None when not captured (distinct from "captured and equal").
+    baseline_model: Optional[str] = None
 
     @property
     def attempts(self) -> int:

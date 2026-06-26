@@ -41,7 +41,9 @@ from agentrail.evals.corpus.loader import DIFFICULTY_TAGS
 from agentrail.evals.pricing_adapter import usage_cost
 from agentrail.evals.probes import (
     GuardrailCatchReport,
+    RetryAttributionReport,
     RetryLiftReport,
+    RoutingAttributionReport,
     RoutingRegretReport,
 )
 
@@ -1074,6 +1076,129 @@ def render_probes_markdown(
             else:
                 status = "false positive" if c.flagged else "clean (not flagged)"
             lines.append(f"  - {c.kind} via {c.guardrail}: {status}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Routing/retry VALUE audit rendering (Finding 4 — measurement only).
+#
+# Distinct from the intrinsic probes above (efficiency: regret + lift). This
+# section answers the blunt value question: did routing ever change the model
+# from baseline (and if not, say so), and did retries flip failures into wins or
+# just burn money? Rendering only — the attribution MATH lives in
+# ``agentrail.evals.probes`` (routing_attribution / retry_attribution).
+# ---------------------------------------------------------------------------
+
+
+def render_routing_retry_audit_markdown(
+    *,
+    routing: Optional["RoutingAttributionReport"] = None,
+    retry: Optional["RetryAttributionReport"] = None,
+) -> str:
+    """Render the routing/retry value audit as a markdown section (Finding 4).
+
+    Each report is optional; ``None`` renders an honest "not available" line. The
+    routing section makes the "had no chance to act" case EXPLICIT: when routing
+    never diverged from the baseline model, the report says so rather than letting
+    a flat zero read as "routing is worthless". Measurement only — nothing here
+    changes a routing or retry decision.
+    """
+    lines: List[str] = []
+    lines.append("# Routing/retry value audit")
+    lines.append("")
+    lines.append(
+        "Measurement-only attribution (Finding 4): did the routing layer ever "
+        "change the model from the arm's baseline/default, and did retries flip "
+        "failures into wins or just burn cost? No live-loop behaviour is changed. "
+        "All dollars route through the single-source pricing module."
+    )
+    lines.append("")
+
+    # --- Routing $-delta vs baseline -------------------------------------
+    lines.append("## Routing attribution (vs baseline model)")
+    lines.append("")
+    lines.append(
+        "A run \"diverged\" when the resolved model differs from the run's "
+        "recorded baseline/default model (the arm's pinned model it would have "
+        "used had routing not acted)."
+    )
+    lines.append("")
+    if routing is None:
+        lines.append(
+            "_Not available: this report carries no per-run records (baseline "
+            "model needed for routing attribution)._"
+        )
+        lines.append("")
+    elif routing.runs_with_baseline == 0:
+        lines.append(
+            "_Not available: no run recorded a baseline model, so routing could "
+            "not be attributed._"
+        )
+        lines.append("")
+    elif not routing.had_chance_to_act:
+        # The explicit "had no chance to act" answer Finding 4 demands.
+        lines.append(
+            f"- Routing NEVER diverged from baseline across "
+            f"{routing.runs_with_baseline} run(s) with a recorded baseline: it "
+            f"had **no chance to act**, so it neither added nor destroyed value "
+            f"here. A flat result is NOT a measured zero-value verdict."
+        )
+        lines.append("")
+    else:
+        lines.append(
+            f"- Runs where routing changed the model: {routing.runs_diverged} "
+            f"of {routing.runs_with_baseline} (baseline recorded)"
+        )
+        lines.append(
+            f"- Runs that stayed on baseline (routing did nothing): "
+            f"{routing.runs_at_baseline}"
+        )
+        lines.append(
+            f"- Dollars spent on diverged runs: "
+            f"{_fmt_usd(routing.spent_when_diverged_usd)}"
+        )
+        if routing.net_delta_usd is None:
+            lines.append(
+                "- Net $-delta vs baseline: n/a (no per-run baseline token usage "
+                "exists to price a counterfactual — we never invent one)"
+            )
+        else:
+            lines.append(
+                f"- Net $-delta vs baseline: "
+                f"{_fmt_signed_usd(routing.net_delta_usd)} "
+                "(positive = routing spent more than baseline)"
+            )
+        lines.append("")
+
+    # --- Retry win / burn -------------------------------------------------
+    lines.append("## Retry attribution (wins vs burned cost)")
+    lines.append("")
+    lines.append(
+        "A retry **win** is a run that retried and ended solved while its first "
+        "attempt's gate did not pass (the retry flipped failure into success). A "
+        "**burn** is a run that retried and ended unsolved (cost spent, no win)."
+    )
+    lines.append("")
+    if retry is None:
+        lines.append(
+            "_Not available: this report carries no per-run records (retry events "
+            "needed for retry attribution)._"
+        )
+        lines.append("")
+    else:
+        lines.append(f"- Runs that retried: {retry.runs_with_retries}")
+        lines.append(
+            f"- Retries that flipped failure into success (wins): {retry.wins}"
+        )
+        lines.append(
+            f"- Retries that burned cost with no win (unsolved): {retry.burns}"
+        )
+        lines.append(
+            f"- Cost burned by retries with no win: "
+            f"{_fmt_usd(retry.cost_burned_usd)}"
+        )
         lines.append("")
 
     return "\n".join(lines)

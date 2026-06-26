@@ -273,6 +273,14 @@ def run(
             gate_failure_reason=execution.gate_failure_reason,
             precision_at_budget=execution.precision_at_budget,
             citation_coverage=execution.citation_coverage,
+            # Routing-audit field (Finding 4, measurement only): the baseline /
+            # default model this run WOULD have used had routing not acted is the
+            # arm's pinned model. ``execution.model`` (above) is the resolved
+            # model after any routing escalation; recording ``arm.model`` here
+            # lets the audit attribute the routing $-delta vs baseline and report
+            # explicitly when routing never diverged. INSTRUMENT only — this does
+            # not influence which model the run actually used.
+            baseline_model=arm.model,
         )
     finally:
         if owns_workdir:

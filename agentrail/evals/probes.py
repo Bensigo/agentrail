@@ -222,6 +222,165 @@ def retry_lift(scored_runs: Sequence[ScoredRun]) -> RetryLiftReport:
 
 
 # ---------------------------------------------------------------------------
+# Finding 4 — routing/retry VALUE audit (measurement only, no live-loop change)
+#
+# The two probes above (routing cost-regret, retry lift) measure *efficiency*:
+# how much money the realised model choice wasted vs the cheapest model that
+# still solved, and the aggregate solve-rate lift retries bought. They do NOT
+# answer the blunt value question Finding 4 poses:
+#
+#   - Did the routing layer ever ACT? When it changed the model from the arm's
+#     baseline/default, did that cost or save money — and if it NEVER diverged,
+#     say so explicitly ("had no chance to act"), so a flat report isn't read as
+#     "routing is worthless" when it simply never fired.
+#   - For retries: how many flipped a failure INTO a success (value added) vs how
+#     many just burned money with no flip (cost for nothing)?
+#
+# These two functions answer exactly that, from already-recorded fields. They
+# record/aggregate/report; they never change a routing or retry decision.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RoutingAttributionReport:
+    """Routing $-delta vs the baseline/default model (Finding 4).
+
+    For each run the routing layer "diverged" iff the resolved final model differs
+    from the run's recorded ``baseline_model`` (the arm's pinned/default model the
+    run would have used had routing not acted). This report attributes the dollar
+    consequence of those divergences relative to baseline.
+
+    Fields:
+
+    - ``runs_with_baseline`` — runs that recorded a ``baseline_model`` (the audit
+      can only attribute routing on these). Runs with ``None`` baseline (old
+      records / executors that don't surface it) are excluded from every count.
+    - ``runs_diverged`` — runs where routing changed the model from baseline.
+    - ``net_delta_usd`` — summed ``cost(run) - cost_at_baseline`` over diverged
+      runs. POSITIVE means routing spent MORE than baseline would have; NEGATIVE
+      means routing saved money. ``None`` when the per-run baseline cost cannot be
+      priced (we never have per-run baseline token usage, so this stays ``None``
+      and the *direction* is read from the realised-vs-baseline model identity and
+      the per-run realised cost instead — see ``spent_when_diverged_usd``).
+    - ``spent_when_diverged_usd`` — realised dollars actually spent on the runs
+      where routing diverged (the money that flowed through routing's choice).
+    - ``had_chance_to_act`` — ``True`` iff routing diverged on at least one run.
+      When ``False`` the report MUST be read as "routing never changed the model
+      from baseline — it had no chance to add or destroy value", NOT as a measured
+      zero-value verdict.
+
+    All dollars route through ``usage_cost`` (single-source pricer).
+    """
+
+    runs_with_baseline: int
+    runs_diverged: int
+    spent_when_diverged_usd: float
+    net_delta_usd: Optional[float]
+    had_chance_to_act: bool
+
+    @property
+    def runs_at_baseline(self) -> int:
+        """Runs that recorded a baseline AND stayed on it (routing did nothing)."""
+        return self.runs_with_baseline - self.runs_diverged
+
+
+def routing_attribution(scored_runs: Sequence[ScoredRun]) -> RoutingAttributionReport:
+    """Attribute the routing layer's $-delta vs the baseline/default model.
+
+    Measurement only: reads each run's recorded ``baseline_model`` (the default
+    the run would have used) and its resolved ``final_model``; a run "diverged"
+    iff they differ. We never have per-run *baseline* token usage (only the
+    realised usage), so we cannot synthesise a counterfactual baseline dollar cost
+    — ``net_delta_usd`` is therefore ``None`` and the audit reports the realised
+    dollars that flowed through routing's divergences (``spent_when_diverged_usd``)
+    plus the explicit "had no chance to act" signal. Honest by construction: it
+    never invents a counterfactual price it cannot derive.
+    """
+    runs_with_baseline = 0
+    runs_diverged = 0
+    spent_when_diverged = 0.0
+    for sr in scored_runs:
+        baseline = sr.run.baseline_model
+        if baseline is None:
+            # Not captured — cannot attribute routing for this run.
+            continue
+        runs_with_baseline += 1
+        if sr.run.final_model != baseline:
+            runs_diverged += 1
+            spent_when_diverged += usage_cost(sr.run.usage)
+
+    return RoutingAttributionReport(
+        runs_with_baseline=runs_with_baseline,
+        runs_diverged=runs_diverged,
+        spent_when_diverged_usd=spent_when_diverged,
+        # No per-run baseline token usage exists to price a counterfactual, so the
+        # signed delta is undefined (stays None, never a fake 0.0).
+        net_delta_usd=None,
+        had_chance_to_act=runs_diverged > 0,
+    )
+
+
+@dataclass(frozen=True)
+class RetryAttributionReport:
+    """Retry win/burn attribution (Finding 4).
+
+    Splits runs that retried (>= 1 retry event) into the two outcomes that decide
+    whether the retry layer earned its place:
+
+    - ``runs_with_retries`` — runs that retried at least once.
+    - ``wins`` — runs that retried AND ended SOLVED while their first attempt's
+      gate did NOT pass: the retry flipped a failure into a success (value added).
+    - ``burns`` — runs that retried AND ended UNSOLVED: money spent across
+      attempts that never produced a solve (cost burned, no win).
+    - ``cost_burned_usd`` — summed realised cost of the ``burns`` runs (the whole-
+      run usage; retries carry no separate per-attempt usage on the contract).
+
+    A run that retried but would have solved on the first attempt anyway (first
+    attempt's gate already passed) is neither a win nor a burn — the retry was
+    redundant but the solve isn't attributable to it.
+    """
+
+    runs_with_retries: int
+    wins: int
+    burns: int
+    cost_burned_usd: float
+
+
+def retry_attribution(scored_runs: Sequence[ScoredRun]) -> RetryAttributionReport:
+    """Count retries that flipped failure->success vs retries that just burned cost.
+
+    Measurement only, from recorded retries + the solved verdict. ``wins`` are
+    runs that retried, solved, and whose first attempt's gate did not pass (so the
+    solve is attributable to a later attempt). ``burns`` are runs that retried and
+    ended unsolved. All dollars route through ``usage_cost``.
+    """
+    runs_with_retries = 0
+    wins = 0
+    burns = 0
+    cost_burned = 0.0
+    for sr in scored_runs:
+        if not sr.run.retries:
+            continue
+        runs_with_retries += 1
+        if not sr.solved:
+            burns += 1
+            cost_burned += usage_cost(sr.run.usage)
+        elif not _solved_on_first_attempt(sr):
+            # Solved, and the solve was NOT available on attempt one -> the retry
+            # flipped a failure into a success.
+            wins += 1
+        # else: solved on the first attempt already -> retry was redundant, not a
+        # win and not a burn.
+
+    return RetryAttributionReport(
+        runs_with_retries=runs_with_retries,
+        wins=wins,
+        burns=burns,
+        cost_burned_usd=cost_burned,
+    )
+
+
+# ---------------------------------------------------------------------------
 # AC3 — guardrail injection-corpus catch-rate
 # ---------------------------------------------------------------------------
 

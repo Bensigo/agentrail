@@ -30,6 +30,8 @@ def _issue_to_dict(issue: IssueState) -> dict:
         "retries": issue.retries,
         "review_rounds": issue.review_rounds,
         "error": issue.error,
+        # JSON has no tuple type; serialize the dependency-wave info as a list.
+        "blocked_by": list(issue.blocked_by),
     }
 
 
@@ -44,6 +46,9 @@ def _issue_from_dict(d: dict) -> IssueState:
         retries=d.get("retries", 0),
         review_rounds=d.get("review_rounds", 0),
         error=d.get("error"),
+        # Convert the JSON list back to a tuple (IssueState is frozen/hashable);
+        # default () keeps OLD snapshots that predate this key loading cleanly.
+        blocked_by=tuple(d.get("blocked_by", ())),
     )
 
 

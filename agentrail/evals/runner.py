@@ -152,7 +152,25 @@ def _materialize_agent_visible_tree(task: CorpusTask, *, workdir: Path) -> None:
         shutil.copytree(source, workdir, dirs_exist_ok=True, symlinks=False)
 
 
-def _assert_no_answer_key_in_workdir(task: CorpusTask, *, workdir: Path) -> None:
+# The executor clones the FULL repo under test into this subdir of the workdir
+# and the agent works there (``SandboxAgentExecutor.execute`` →
+# ``run_dir_factory=lambda: workdir``, ``run_path = workdir / "repo"``). That
+# clone is a legitimate full checkout: it necessarily contains the repo's own
+# ``tests/`` tree — and the corpus itself — so files there will share BASENAMES
+# with the corpus hidden tests (the corpus tasks are reverse-engineered from
+# real merged PRs, keeping the test filenames). The leak guard's job is to
+# protect the AGENT-VISIBLE MATERIALISED TREE (the workdir root), NOT to police
+# the repo the agent legitimately works inside, so the post-execute gate skips
+# this subtree. Kept in sync with ``SandboxAgentExecutor``'s clone dir.
+_EXECUTOR_CLONE_SUBDIR = "repo"
+
+
+def _assert_no_answer_key_in_workdir(
+    task: CorpusTask,
+    *,
+    workdir: Path,
+    exclude_subdirs: frozenset = frozenset(),
+) -> None:
     """Hard guard: the task's hidden tests must not appear inside ``workdir``.
 
     This is the AC3 leak guard. It checks two things:
@@ -167,6 +185,13 @@ def _assert_no_answer_key_in_workdir(task: CorpusTask, *, workdir: Path) -> None
     *before* invoking the executor (so the agent never sees the answer key) and
     *after* the run (so an executor that wrote one into the workdir is
     detected too).
+
+    ``exclude_subdirs`` names top-level subdirectories of ``workdir`` to skip.
+    The post-execute gate passes the executor's clone dir here: a full repo
+    checkout legitimately contains the repo's own tests (and the corpus),
+    whose basenames collide with the hidden tests; matching by basename there
+    is a guaranteed false positive, not a real leak. See
+    :data:`_EXECUTOR_CLONE_SUBDIR`.
     """
     hidden_root_name = task.hidden_tests.root.strip("/").split("/")[-1]
     hidden_basenames = {Path(name).name for name in task.hidden_tests.files}
@@ -174,6 +199,8 @@ def _assert_no_answer_key_in_workdir(task: CorpusTask, *, workdir: Path) -> None
     workdir = workdir.resolve()
     for path in workdir.rglob("*"):
         rel = path.relative_to(workdir)
+        if rel.parts and rel.parts[0] in exclude_subdirs:
+            continue
         if path.is_dir() and path.name == hidden_root_name:
             raise AnswerKeyLeak(
                 f"answer key directory '{hidden_root_name}' found in sandbox workdir at {rel}"
@@ -246,8 +273,14 @@ def run(
         elapsed = max(0.0, float(clock() - start))
 
         # AC3, gate 2: assert the executor did not write the answer key into
-        # the workdir (e.g. by reaching outside its sandbox). Belt-and-braces.
-        _assert_no_answer_key_in_workdir(task, workdir=workdir)
+        # the AGENT-VISIBLE tree (e.g. by reaching outside its sandbox).
+        # Belt-and-braces. We exclude the executor's full-repo clone subtree:
+        # that checkout legitimately contains the repo's own tests (and the
+        # corpus), whose basenames collide with the hidden tests, so scanning
+        # it by basename always false-positives (see _EXECUTOR_CLONE_SUBDIR).
+        _assert_no_answer_key_in_workdir(
+            task, workdir=workdir, exclude_subdirs=frozenset({_EXECUTOR_CLONE_SUBDIR})
+        )
 
         # The locked contract — never redefined. ``gate_passed`` MUST be bool.
         gate_passed: bool = bool(execution.gate_passed)

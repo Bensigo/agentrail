@@ -32,6 +32,7 @@ from agentrail.run.output_enforcer import (
 )
 from agentrail.run.pricing import cost_usd
 from agentrail.run.proc import run_with_timeout
+from agentrail.run import best_of_n as bestofn
 from agentrail.run import critic as critic_mod
 from agentrail.run import verifier as verifier_mod
 from agentrail.run.usage_capture import capture_usage
@@ -80,6 +81,23 @@ def resolve_bestofn_n() -> int:
     except (TypeError, ValueError):
         return BESTOFN_DEFAULT_N
     return n if n >= 1 else BESTOFN_DEFAULT_N
+
+
+def bestofn_testfirst_enabled() -> bool:
+    """Is the TEST-PRIMARY best-of-N selector ON for this run? DEFAULT OFF (Finding 3).
+
+    Finding 3 (the SAFE best-of-N): keep the executable hidden test as the PRIMARY
+    candidate selector with early-stop on first pass, and demote the cheap critic
+    (#977) to a SECONDARY tie-breaker ONLY. The merged #979 loop instead selects by
+    the critic ALONE — the research-forbidden mode that gets worse as N grows. This
+    flag swaps in the corrected selector.
+
+    Unlike :func:`layer_enabled` (whose layers default ON when ABSENT), this flag
+    must DEFAULT OFF so merging Finding 3 does NOT change the live autonomous loop:
+    only an explicit ``AGENTRAIL_EVAL_LAYER_BESTOFN_TESTFIRST="1"`` turns it on.
+    Any other value (including ABSENT) keeps today's behavior.
+    """
+    return os.environ.get(f"AGENTRAIL_EVAL_LAYER_{bestofn.TESTFIRST_LAYER}") == "1"
 
 
 @dataclass
@@ -584,6 +602,131 @@ def _run_execute_best_of_n(
     return status, best_evidence
 
 
+def _candidate_test_passed(rc: RunContext) -> bool:
+    """Run the executable hidden test for the CURRENT candidate (Finding 3 PRIMARY).
+
+    The PRIMARY best-of-N signal: did EVERY declared objective check pass for the
+    candidate now in the working tree? This is the same gate
+    (:func:`run_objective_checks`) the Objective Gate runs — best-of-N just runs it
+    per candidate so the executable test, not the critic, decides which candidate
+    wins and when to stop. Defensive: any failure to run the checks is treated as a
+    NON-pass (fail-closed), so a flaky check harness can never falsely early-stop on
+    an unverified candidate.
+    """
+    try:
+        results = run_objective_checks(rc.target_dir)
+    except Exception as _exc:  # pragma: no cover - defensive
+        _log.debug("best-of-n per-candidate checks failed to run: %s", _exc)
+        return False
+    return bool(results) and all(c.passed for c in results)
+
+
+def _run_execute_best_of_n_testfirst(
+    rc: RunContext, plan_output: str
+) -> tuple[int, Optional[Dict[str, Any]]]:
+    """Best-of-N execute with TEST-PRIMARY selection + critic tiebreak (Finding 3).
+
+    The SAFE best-of-N. Unlike :func:`_run_execute_best_of_n` (which selects by the
+    critic ALONE — the research-forbidden mode that degrades as N grows), this
+    variant makes the executable hidden test the PRIMARY selector:
+
+    - PRIMARY: each candidate is executed, then the declared objective checks (the
+      hidden test) are run. The FIRST candidate whose checks all pass STOPS the loop
+      early — the critic's opinion is irrelevant to *whether to stop*.
+    - SECONDARY: the cheap critic (#977) scores each candidate only as a tie-break.
+      It can pick among several test-passing candidates, or pick the least-bad one
+      when the budget forces a stop before any candidate passed — but a candidate the
+      critic prefers and the TEST rejects is NEVER selected over a test-passing one.
+    - BUDGET: before spawning each additional candidate, the per-issue budget cap is
+      checked; the loop stops rather than blow the cap to chase one more candidate.
+
+    The ranking/selection itself lives in the pure :mod:`agentrail.run.best_of_n`
+    module (test-PRIMARY, critic-SECONDARY total order), keeping this function thin
+    I/O orchestration. The selected candidate's critic verdict is returned as the
+    gate evidence so the Objective Gate's accept/reject contract is unchanged; the
+    gate (not this loop) still decides done-ness from the executable checks.
+    """
+    n = resolve_bestofn_n()
+    candidates: list[bestofn.Candidate] = []
+    selected_evidence: Optional[Dict[str, Any]] = None
+    findings_file = ""
+    status = 0
+    attempts_run = 0
+    budget_hit = False
+
+    for attempt in range(1, n + 1):
+        # Budget guard: never spawn an additional candidate that would push the
+        # per-issue spend at/over the cap (the first attempt always runs).
+        if attempt > 1 and bestofn.would_exceed_budget(
+            rc.cumulative_cost_usd, rc.budget_usd
+        ):
+            budget_hit = True
+            break
+
+        # 1. Produce a candidate (reject reasons feed forward as verifier findings).
+        status, _ = run_issue_phase(
+            rc, "execute", attempt,
+            verifier_findings_file=findings_file, plan_output=plan_output,
+        )
+        if status != 0:
+            return status, selected_evidence
+        _capture_candidate_diff(rc, attempt)
+        attempts_run = attempt
+
+        # 2. PRIMARY signal: run the executable hidden test for THIS candidate.
+        test_passed = _candidate_test_passed(rc)
+
+        # 3. SECONDARY signal: the independent cheap critic (a SEPARATE phase).
+        status, _ = run_issue_phase(rc, "critic", attempt, plan_output=plan_output)
+        if status != 0:
+            return status, selected_evidence
+        critic_dir = "critic" if attempt <= 1 else f"critic-{attempt}"
+        critic_output_file = rc.run_dir / critic_dir / "output.md"
+        critic_output = (
+            critic_output_file.read_text(encoding="utf-8", errors="replace")
+            if critic_output_file.exists()
+            else ""
+        )
+        verdict = critic_mod.score_candidate(critic_output)
+        candidates.append(
+            bestofn.Candidate(attempt=attempt, test_passed=test_passed, critic=verdict)
+        )
+
+        # 4. Early stop on the PRIMARY signal: the FIRST test-passing candidate ends
+        # the loop — never the critic's accept (that would be critic-only selection).
+        if test_passed:
+            break
+
+        # 5. Test still failing: carry the critic's reason into the next candidate.
+        findings_file = str(critic_output_file)
+
+    # 6. SELECT: test-PRIMARY, critic-SECONDARY tiebreak (pure policy). A
+    # test-failing candidate is NEVER selected over a test-passing one.
+    selected = bestofn.select_best(candidates)
+
+    # 7. Gate evidence — the critic is a SELECTION tiebreak, NOT a veto. When the
+    # selected candidate PASSED the executable hidden test, the test (not the
+    # critic) is the authority: emit non-blocking evidence so a critic that merely
+    # disliked passing code can NOT red the gate (the research-forbidden critic-as-
+    # selector failure mode). Only when NO candidate passed do we surface the
+    # critic's verdict (its reject reason) as the gate evidence, as #979 does.
+    if selected is not None and selected.test_passed:
+        selected_evidence = critic_mod.gate_evidence(
+            critic_mod.CriticVerdict(
+                accepted=True,
+                score=selected.critic_score,
+                reason="best-of-n: executable test passed",
+            )
+        )
+    elif selected is not None and selected.critic is not None:
+        selected_evidence = critic_mod.gate_evidence(selected.critic)
+    _log.info(
+        "%s", bestofn.stop_reason(selected, attempts_run, n, budget_hit=budget_hit)
+    )
+
+    return status, selected_evidence
+
+
 def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
               repo_dir: Path, log_dir: Optional[Path] = None,
               run_id: str = "",
@@ -889,7 +1032,15 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         and layer_enabled("BESTOFN")
     )
     if status == 0 and bestofn_active:
-        status, bestofn_evidence = _run_execute_best_of_n(rc, plan_output)
+        # Finding 3 seam (DEFAULT OFF): the TESTFIRST flag swaps the merged #979
+        # critic-ONLY selector for the SAFE test-PRIMARY / critic-tiebreak selector.
+        # ABSENT/anything-but-"1" keeps today's behavior, so the live loop is unchanged.
+        _bestofn_execute = (
+            _run_execute_best_of_n_testfirst
+            if bestofn_testfirst_enabled()
+            else _run_execute_best_of_n
+        )
+        status, bestofn_evidence = _bestofn_execute(rc, plan_output)
         last_phase = "execute"
     elif status == 0:
         status, _ = run_issue_phase(rc, "execute", 1, verifier_findings_file="", plan_output=plan_output)

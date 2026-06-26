@@ -41,6 +41,7 @@ from typing import Callable, Dict, List, Optional
 from agentrail.sandbox.docker_runner import (
     ENV_FAILURE_HANDOFF,
     RunResult,
+    sum_cost_ledger,
 )
 
 DEFAULT_TIMEOUT = 3600  # seconds — hard ceiling on the whole host run.
@@ -54,6 +55,11 @@ SANDBOX_RUNTIME_PKG = "@anthropic-ai/sandbox-runtime"
 RUN_ID = "host-run"
 _LOG_SUBDIR = ".agentrail-runs"
 _LOGS_TAIL_LINES = 40
+
+
+def _ledger_path(repo_dir: Path) -> Path:
+    """Path to the per-phase cost ledger inside a cloned repo dir."""
+    return repo_dir / ".agentrail" / "run" / "cost-events.jsonl"
 
 
 class HostError(RuntimeError):
@@ -112,19 +118,8 @@ def _result_from_run_json(
         status = "error"
         reason = f"could not read run result: {exc}"
 
-    # Cost: sum the per-phase cost ledger written by the pipeline.
-    ledger = repo_dir / ".agentrail" / "run" / "cost-events.jsonl"
-    try:
-        for line in ledger.read_text().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                cost += float(json.loads(line).get("cost_usd") or 0.0)
-            except (ValueError, TypeError):
-                pass
-    except (FileNotFoundError, OSError):
-        pass
+    # Cost: sum the per-phase cost ledger written by the pipeline (best-effort).
+    cost += sum_cost_ledger(_ledger_path(repo_dir))
 
     # Current branch the run produced (best-effort; never fatal).
     try:
@@ -426,13 +421,20 @@ def run_issue_on_host(
                 run_cmd, cwd=run_command_cwd, env=run_command_env, timeout=timeout,
             )
         except HostTimeout as exc:
+            # The run started (clone+checkout already succeeded), so it may have
+            # written partial cost to the ledger before timing out. Recover it
+            # rather than reporting $0 for money already spent (best-effort).
             return RunResult(status="error",
+                             cost_usd=sum_cost_ledger(_ledger_path(repo_dir)),
                              gate_reason=f"host run timeout after {timeout}s: {exc}")
         except subprocess.TimeoutExpired as exc:  # pragma: no cover - real path
             return RunResult(status="error",
+                             cost_usd=sum_cost_ledger(_ledger_path(repo_dir)),
                              gate_reason=f"host run timeout after {timeout}s: {exc}")
         except (HostError, OSError, ValueError) as exc:
-            return RunResult(status="error", gate_reason=f"host run error: {exc}")
+            return RunResult(status="error",
+                             cost_usd=sum_cost_ledger(_ledger_path(repo_dir)),
+                             gate_reason=f"host run error: {exc}")
 
         # 3. Parse run.json → RunResult (mirrors the container parser).
         logs_tail = _logs_tail(getattr(proc, "stdout", ""), getattr(proc, "stderr", ""))

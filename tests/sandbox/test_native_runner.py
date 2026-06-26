@@ -4,9 +4,14 @@ These tests NEVER clone a real repo, run a real agent, or touch the network.
 The shell boundary (git clone + ``agentrail run issue``) is faked via the
 injectable ``runner`` seam — mirroring how ``test_docker_runner`` fakes
 ``run_container``. We assert on the exact commands/env the runner builds, that
-it parses a RunResult out of the run's ``run.json``, and — crucially — that the
-isolated temp working dir is ALWAYS cleaned up, even on error or timeout
-(AC1, AC2).
+it parses a RunResult out of the run's ``run.json``.
+
+Workdir cleanup follows the caller-owned-workdir contract (#997): a self-owned
+temp dir (no ``run_dir_factory``) is ALWAYS torn down, even on error or timeout;
+but a dir handed in via an injected ``run_dir_factory`` is CALLER-OWNED, so
+``run_issue_on_host`` PRESERVES it (the caller's own ``finally`` — e.g.
+``agentrail.evals.runner.run`` — cleans it up). Because these tests inject a
+``run_dir_factory``, they assert the injected dir is preserved (AC1, AC2).
 """
 from __future__ import annotations
 
@@ -244,12 +249,17 @@ class TestHappyPath:
         assert result.status == "red"
         assert "AC2 unverified" in result.gate_reason
 
-    def test_temp_dir_cleaned_up_on_success(self, tmp_path) -> None:
+    def test_caller_owned_dir_preserved_on_success(self, tmp_path) -> None:
+        # Caller-owned-workdir contract (#997): when a ``run_dir_factory`` is
+        # injected the CALLER owns the workdir, so ``run_issue_on_host`` must NOT
+        # delete it (it sets ``_own_work_dir=False`` and skips the rmtree). The
+        # real end-to-end teardown of an injected dir happens in the caller's own
+        # ``finally`` (``agentrail.evals.runner.run``), not here.
         runner = self._ok_runner(tmp_path / "run-1")
         _, dirs = self._run(tmp_path, runner)
         assert dirs.created, "expected a run dir to be created"
         for d in dirs.created:
-            assert not d.exists(), f"temp dir not cleaned: {d}"
+            assert d.exists(), f"caller-owned dir must be preserved by run_issue_on_host: {d}"
 
     def test_green_run_commits_pushes_and_opens_pr(self, tmp_path) -> None:
         # A green gate must PUBLISH before the clone is torn down: commit the
@@ -353,14 +363,17 @@ class TestErrorAndTimeout:
         assert result.status == "error"
         assert "timeout" in result.gate_reason.lower() or "10s" in result.gate_reason
 
-    def test_timeout_still_cleans_up(self, tmp_path) -> None:
+    def test_timeout_preserves_caller_owned_dir(self, tmp_path) -> None:
+        # Caller-owned-workdir contract (#997): even on timeout, an injected
+        # (caller-owned) run dir is PRESERVED by ``run_issue_on_host`` — the
+        # caller's ``finally`` cleans it up, not the runner.
         runner = FakeRunner([
             _Completed(0, stdout="cloned"),
             HostTimeout("boom"),
         ])
         _, dirs = self._run(tmp_path, runner)
         for d in dirs.created:
-            assert not d.exists()
+            assert d.exists()
 
     def test_clone_failure_is_error(self, tmp_path) -> None:
         runner = FakeRunner([
@@ -369,8 +382,9 @@ class TestErrorAndTimeout:
         result, dirs = self._run(tmp_path, runner)
         assert result.status == "error"
         assert result.gate_reason
+        # Caller-owned-workdir contract (#997): the injected dir is preserved.
         for d in dirs.created:
-            assert not d.exists()
+            assert d.exists()
 
     def test_missing_run_json_is_error(self, tmp_path) -> None:
         # clone ok, run "succeeds" but writes no run.json → no trustworthy verdict
@@ -380,18 +394,20 @@ class TestErrorAndTimeout:
         ])
         result, dirs = self._run(tmp_path, runner)
         assert result.status == "error"
+        # Caller-owned-workdir contract (#997): the injected dir is preserved.
         for d in dirs.created:
-            assert not d.exists()
+            assert d.exists()
 
-    def test_host_error_is_error_status_and_cleans_up(self, tmp_path) -> None:
+    def test_host_error_is_error_status_and_preserves_caller_dir(self, tmp_path) -> None:
         runner = FakeRunner([
             _Completed(0, stdout="cloned"),
             HostError("agent binary not found"),
         ])
         result, dirs = self._run(tmp_path, runner)
         assert result.status == "error"
+        # Caller-owned-workdir contract (#997): the injected dir is preserved.
         for d in dirs.created:
-            assert not d.exists()
+            assert d.exists()
 
 
 # ---------------------------------------------------------------------------

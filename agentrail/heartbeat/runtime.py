@@ -365,15 +365,36 @@ class HeartbeatRuntime:
         while True:
             attempted_tier = current.tier
             model = self._model_for_tier(attempted_tier)
-            result = self._sandbox(
-                repo_url=self._config.repo_url,
-                ref=self._config.ref,
-                issue_ref=str(ref.number),
-                workspace_id=workspace_id,
-                env=dict(self._config.env),
-                model=model,
-                failure_handoff=handoff_text,
-            )
+            try:
+                result = self._sandbox(
+                    repo_url=self._config.repo_url,
+                    ref=self._config.ref,
+                    issue_ref=str(ref.number),
+                    workspace_id=workspace_id,
+                    env=dict(self._config.env),
+                    model=model,
+                    failure_handoff=handoff_text,
+                )
+            except Exception as exc:  # noqa: BLE001 - any sandbox crash must still record cost
+                # The sandbox call raised (container crash, timeout escalating to
+                # an exception, daemon error, …). Synthesize an ERROR result so the
+                # single reporting path below still runs and persists whatever cost
+                # is recoverable — register_run stays the one place cost is written.
+                # A failing RunResult carries the spent cost (sandbox-side fault
+                # tolerance); when the raise surfaces a cost we honor it, otherwise
+                # it is 0.0 — we report 0.0, never crash, never wedge the loop.
+                cost = float(getattr(exc, "cost_usd", 0.0) or 0.0)
+                _log.warning(
+                    "sandbox raised for issue %s (tier=%s): %s",
+                    getattr(ref, "number", "?"),
+                    attempted_tier,
+                    exc,
+                )
+                result = RunResult(
+                    status="error",
+                    cost_usd=cost,
+                    gate_reason=f"sandbox crashed: {exc}",
+                )
             final_result = result
             spent += result.cost_usd
             attempts += 1

@@ -203,3 +203,52 @@ def test_register_run_includes_finished_at_when_set(tmp_path: Path, monkeypatch)
 
     assert captured["body"]["finished_at"] == "2026-06-12T11:00:00+00:00"
     assert "started_at" not in captured["body"]
+
+
+# ---------------------------------------------------------------------------
+# register_run — cost_usd in the payload (defaults to 0.0, forwards what's given)
+# ---------------------------------------------------------------------------
+
+
+def test_register_run_payload_cost_defaults_to_zero(tmp_path: Path, monkeypatch) -> None:
+    _write_server_json(tmp_path)
+    captured: dict = {}
+
+    class FakeResp:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data)
+        return FakeResp()
+
+    monkeypatch.setattr(run_register.urllib.request, "urlopen", fake_urlopen)
+    run_register.register_run(
+        tmp_path, run_id="x", agent="claude", branch="main",
+        title="t", status="running",
+    )
+    assert captured["body"]["cost_usd"] == 0.0
+
+
+def test_register_run_forwards_cost_usd(tmp_path: Path, monkeypatch) -> None:
+    """A nonzero cost (incl. on a failed run) is reported in the POST payload."""
+    _write_server_json(tmp_path)
+    captured: dict = {}
+
+    class FakeResp:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data)
+        return FakeResp()
+
+    monkeypatch.setattr(run_register.urllib.request, "urlopen", fake_urlopen)
+    run_register.register_run(
+        tmp_path, run_id="x", agent="claude", branch="main",
+        title="t", status="failed", finished_at="2026-06-12T11:00:00+00:00",
+        cost_usd=1.37,
+    )
+    assert captured["body"]["cost_usd"] == 1.37

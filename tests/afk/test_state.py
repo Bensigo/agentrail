@@ -8,6 +8,7 @@ from agentrail.afk.state import (
     EnqueueIssue,
     IncrementReviewRound,
     IssueStatus,
+    RecordCost,
     RecordFailure,
     RequeueIssue,
     SetPr,
@@ -179,3 +180,35 @@ def test_to_from_dict_identity():
     again = from_dict(to_dict(s.state))
     assert again.issues[5].title == "t"
     assert again.concurrency == s.state.concurrency
+
+
+def test_record_cost_sets_issue_cost():
+    s = _store()
+    s.dispatch(EnqueueIssue(1, "a", "u"))
+    assert s.state.issues[1].cost_usd == 0.0
+    s.dispatch(RecordCost(1, 0.42))
+    assert s.state.issues[1].cost_usd == 0.42
+
+
+def test_record_cost_is_set_not_accumulated():
+    # The pipeline reports the run's *cumulative* cost, so a retry/re-dispatch
+    # overwrites rather than adds — a second RecordCost replaces the first.
+    s = _store()
+    s.dispatch(EnqueueIssue(1, "a", "u"))
+    s.dispatch(RecordCost(1, 0.10))
+    s.dispatch(RecordCost(1, 0.25))
+    assert s.state.issues[1].cost_usd == 0.25
+
+
+def test_record_cost_coerces_to_float():
+    s = _store()
+    s.dispatch(EnqueueIssue(1, "a", "u"))
+    s.dispatch(RecordCost(1, 1))  # int in, float out
+    assert isinstance(s.state.issues[1].cost_usd, float)
+    assert s.state.issues[1].cost_usd == 1.0
+
+
+def test_record_cost_unknown_issue_raises():
+    s = _store()
+    with pytest.raises(KeyError):
+        s.dispatch(RecordCost(999, 0.1))

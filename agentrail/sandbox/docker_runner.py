@@ -29,8 +29,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
 # Sentinel fence the container's entrypoint prints around the result JSON. Using
@@ -56,6 +58,48 @@ _LOGS_TAIL_LINES = 40
 # large/multiline handoff never lands on the process command line.
 ENV_MODEL = "AGENTRAIL_MODEL"
 ENV_FAILURE_HANDOFF = "AGENTRAIL_FAILURE_HANDOFF"
+
+# Where the pipeline writes its incremental per-phase cost ledger, relative to
+# the repo it runs in. The host learns the run's cost AFTER the subprocess exits
+# by summing this file (each line carries a ``cost_usd``). On a sandbox-level
+# FAILURE we must recover the partial ledger too, or the money already spent is
+# reported as $0. Inside the container the repo is cloned at ``/workspace/repo``
+# (see ``docker/runner/entrypoint.sh``), so the ledger lives at the path below.
+_LEDGER_RELPATH = ".agentrail/run/cost-events.jsonl"
+_CONTAINER_LEDGER_PATH = "/workspace/repo/" + _LEDGER_RELPATH
+
+
+# ---------------------------------------------------------------------------
+# Cost recovery — sum a (possibly partial) per-phase cost ledger
+# ---------------------------------------------------------------------------
+
+def sum_cost_ledger(ledger_path) -> float:
+    """Sum ``cost_usd`` across the lines of a ``cost-events.jsonl`` ledger.
+
+    Best-effort and TOTALLY non-raising: this runs on the FAILURE path and must
+    never mask the original error. A missing file, a truncated/partial last
+    line, or a malformed JSON line is tolerated — bad lines are skipped, and any
+    unexpected error falls back to ``0.0``. Each ledger line is one phase's JSON
+    object carrying a ``cost_usd`` field.
+    """
+    total = 0.0
+    try:
+        text = Path(ledger_path).read_text()
+    except (FileNotFoundError, OSError, ValueError):
+        return 0.0
+    try:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                total += float(json.loads(line).get("cost_usd") or 0.0)
+            except (ValueError, TypeError, AttributeError):
+                # Truncated final line, non-dict JSON, or missing field — skip.
+                pass
+    except Exception:  # noqa: BLE001 - recovery must never raise on the failure path
+        return total
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +234,44 @@ def build_rm_command(name: str) -> List[str]:
     return ["docker", "rm", "-f", name]
 
 
+def build_cp_command(name: str, src: str, dest: str) -> List[str]:
+    """Build a ``docker cp`` argv to copy a path out of a (stopped) container.
+
+    Used on the FAILURE path to extract the partial cost ledger from the
+    container before the unconditional ``docker rm`` teardown destroys it.
+    Because the container is created with ``--rm=false`` and a fixed name, it
+    still exists (stopped) when a run fails, so ``docker cp`` can reach inside.
+    """
+    return ["docker", "cp", f"{name}:{src}", dest]
+
+
+def _recover_cost_from_container(
+    name: str,
+    run_container: RunContainer,
+) -> float:
+    """Best-effort: copy the partial cost ledger out of ``name`` and sum it.
+
+    Runs on the FAILURE path (timeout, daemon error, unparseable output) BEFORE
+    teardown, so spend already incurred isn't reported as $0. Any problem —
+    ``docker cp`` failing because the ledger was never written, a daemon error,
+    a teardown race — falls back to ``0.0`` and is swallowed: cost recovery must
+    never raise or mask the original run failure.
+    """
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "cost-events.jsonl"
+            res = run_container(
+                build_cp_command(name, _CONTAINER_LEDGER_PATH, str(dest)),
+                env=None,
+                timeout=60,
+            )
+            if getattr(res, "exit_code", 1) != 0:
+                return 0.0
+            return sum_cost_ledger(dest)
+    except Exception:  # noqa: BLE001 - recovery must never raise on the failure path
+        return 0.0
+
+
 # ---------------------------------------------------------------------------
 # Result parsing
 # ---------------------------------------------------------------------------
@@ -301,8 +383,12 @@ def run_issue_in_sandbox(
         payload = parse_result(container.stdout, container.stderr)
         logs_tail = _logs_tail(container.stdout, container.stderr)
         if payload is None:
+            # Output was unparseable, so we never saw a cost field. The run may
+            # still have spent money before it crashed — recover the partial
+            # ledger from the container before teardown destroys it.
             result = RunResult(
                 status="error",
+                cost_usd=_recover_cost_from_container(name, run_container),
                 gate_reason="could not parse run result from container output",
                 logs_tail=logs_tail or "(no output)",
             )
@@ -311,12 +397,14 @@ def run_issue_in_sandbox(
     except DockerTimeout as exc:
         result = RunResult(
             status="error",
+            cost_usd=_recover_cost_from_container(name, run_container),
             gate_reason=f"sandbox timeout after {timeout}s: {exc}",
             logs_tail="",
         )
     except DockerError as exc:
         result = RunResult(
             status="error",
+            cost_usd=_recover_cost_from_container(name, run_container),
             gate_reason=f"sandbox error: {exc}",
             logs_tail="",
         )

@@ -226,6 +226,7 @@ class TestErrorAndTimeoutTeardown:
     def test_timeout_returns_error_status(self) -> None:
         runner = FakeRunner([
             DockerTimeout("container exceeded 10s"),
+            ContainerResult(exit_code=1, stdout="", stderr="no such path"),  # cost cp
             ContainerResult(exit_code=0, stdout="", stderr=""),  # rm
         ])
         result = self._run(runner)
@@ -235,6 +236,7 @@ class TestErrorAndTimeoutTeardown:
     def test_timeout_still_tears_down(self) -> None:
         runner = FakeRunner([
             DockerTimeout("boom"),
+            ContainerResult(exit_code=1, stdout="", stderr=""),  # cost cp
             ContainerResult(exit_code=0, stdout="", stderr=""),
         ])
         self._run(runner)
@@ -243,6 +245,7 @@ class TestErrorAndTimeoutTeardown:
     def test_docker_error_returns_error_status_and_tears_down(self) -> None:
         runner = FakeRunner([
             DockerError("daemon not reachable"),
+            ContainerResult(exit_code=1, stdout="", stderr=""),  # cost cp
             ContainerResult(exit_code=0, stdout="", stderr=""),
         ])
         result = self._run(runner)
@@ -252,6 +255,7 @@ class TestErrorAndTimeoutTeardown:
     def test_unparseable_output_is_error_not_crash(self) -> None:
         runner = FakeRunner([
             ContainerResult(exit_code=0, stdout="garbage with no sentinel", stderr="oops"),
+            ContainerResult(exit_code=1, stdout="", stderr=""),  # cost cp
             ContainerResult(exit_code=0, stdout="", stderr=""),
         ])
         result = self._run(runner)
@@ -267,6 +271,116 @@ class TestErrorAndTimeoutTeardown:
         ])
         result = self._run(runner)
         assert result.status == "green"
+
+
+# ---------------------------------------------------------------------------
+# Cost fault-tolerance — a sandbox-level FAILURE (timeout / daemon error /
+# unparseable output) must NOT report $0 when the run already spent money. The
+# partial per-phase cost ledger is `docker cp`-ed out of the (still-present,
+# --rm=false) container BEFORE teardown and summed. Any problem extracting it
+# falls back to 0.0 and never masks the original failure.
+# ---------------------------------------------------------------------------
+
+class _CostRecoveringRunner(FakeRunner):
+    """Like FakeRunner, but a ``docker cp`` of the cost ledger materialises a
+    partial ledger at the requested host destination (mimicking a real cp out of
+    a container that had written partial cost before crashing)."""
+
+    def __init__(self, results, *, ledger_lines):
+        super().__init__(results)
+        self._ledger_lines = ledger_lines
+
+    def __call__(self, cmd, *, env=None, timeout=None, **kwargs):
+        cmd = list(cmd)
+        if cmd[:2] == ["docker", "cp"]:
+            # argv == ["docker", "cp", "<name>:<src>", "<dest>"]
+            dest = cmd[3]
+            with open(dest, "w") as fh:
+                fh.write("\n".join(self._ledger_lines))
+        return super().__call__(cmd, env=env, timeout=timeout, **kwargs)
+
+
+class TestCostRecoveryOnFailure:
+    def _run(self, runner):
+        return run_issue_in_sandbox(
+            repo_url="r", ref="main", issue_ref="7", workspace_id="w",
+            env={}, run_container=runner, image="img", timeout=10,
+        )
+
+    def test_successful_run_still_reports_summed_cost(self) -> None:
+        # (a) The happy path is unaffected — cost comes from the parsed payload.
+        runner = FakeRunner([
+            ContainerResult(exit_code=0, stdout=_wrap_result(_green_payload(cost_usd=1.23)), stderr=""),
+            ContainerResult(exit_code=0, stdout="", stderr=""),  # rm
+        ])
+        result = self._run(runner)
+        assert result.status == "green"
+        assert result.cost_usd == pytest.approx(1.23)
+
+    def test_timeout_recovers_partial_cost_from_ledger(self) -> None:
+        # (b) A timeout would report $0, but the partial ledger holds real spend.
+        runner = _CostRecoveringRunner(
+            [
+                DockerTimeout("container exceeded 10s"),
+                ContainerResult(exit_code=0, stdout="", stderr=""),  # cost cp succeeds
+                ContainerResult(exit_code=0, stdout="", stderr=""),  # rm
+            ],
+            ledger_lines=[
+                json.dumps({"phase": "plan", "cost_usd": 0.10}),
+                json.dumps({"phase": "execute", "cost_usd": 0.25}),
+            ],
+        )
+        result = self._run(runner)
+        assert result.status == "error"
+        assert result.cost_usd == pytest.approx(0.35)
+        # The ledger was pulled out BEFORE teardown removed the container.
+        cmds = runner.commands
+        cp_idx = next(i for i, c in enumerate(cmds) if c[:2] == ["docker", "cp"])
+        rm_idx = next(i for i, c in enumerate(cmds) if c[:2] == ["docker", "rm"])
+        assert cp_idx < rm_idx
+
+    def test_unparseable_output_recovers_partial_cost(self) -> None:
+        runner = _CostRecoveringRunner(
+            [
+                ContainerResult(exit_code=0, stdout="garbage, no sentinel", stderr=""),
+                ContainerResult(exit_code=0, stdout="", stderr=""),  # cost cp
+                ContainerResult(exit_code=0, stdout="", stderr=""),  # rm
+            ],
+            ledger_lines=[json.dumps({"cost_usd": 0.5})],
+        )
+        result = self._run(runner)
+        assert result.status == "error"
+        assert result.cost_usd == pytest.approx(0.5)
+
+    def test_garbled_ledger_on_failure_falls_back_to_zero(self) -> None:
+        # (c) A truncated/garbled ledger must not raise — bad lines are skipped,
+        # and the one good line still contributes.
+        runner = _CostRecoveringRunner(
+            [
+                DockerError("daemon error"),
+                ContainerResult(exit_code=0, stdout="", stderr=""),  # cost cp
+                ContainerResult(exit_code=0, stdout="", stderr=""),  # rm
+            ],
+            ledger_lines=[
+                "not json at all",
+                json.dumps({"cost_usd": 0.07}),
+                '{"cost_usd": 0.9',  # truncated final line
+            ],
+        )
+        result = self._run(runner)
+        assert result.status == "error"
+        assert result.cost_usd == pytest.approx(0.07)
+
+    def test_missing_ledger_on_failure_reports_zero_without_raising(self) -> None:
+        # cp fails (ledger never written) → cost stays 0.0, no crash.
+        runner = FakeRunner([
+            DockerTimeout("boom"),
+            ContainerResult(exit_code=1, stdout="", stderr="No such file"),  # cp fails
+            ContainerResult(exit_code=0, stdout="", stderr=""),  # rm
+        ])
+        result = self._run(runner)
+        assert result.status == "error"
+        assert result.cost_usd == 0.0
 
 
 # ---------------------------------------------------------------------------

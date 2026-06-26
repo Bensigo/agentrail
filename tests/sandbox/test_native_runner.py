@@ -411,6 +411,131 @@ class TestErrorAndTimeout:
 
 
 # ---------------------------------------------------------------------------
+# Cost fault-tolerance — the per-phase cost ledger is written INCREMENTALLY by
+# the pipeline into ``<clone>/.agentrail/run/cost-events.jsonl`` during the run.
+# On a SUCCESS the host sums it (already covered indirectly), but on a run-phase
+# FAILURE (timeout / HostError) the old code returned cost_usd=0.0, throwing away
+# money already spent. These tests prove the failure paths now recover the
+# partial ledger — and that a missing/garbled ledger falls back to 0.0 without
+# ever raising (it runs on the failure path; it must never mask the real error).
+# ---------------------------------------------------------------------------
+
+def _write_ledger(repo_dir: Path, lines: List[str]) -> None:
+    """Write raw ledger lines into the clone's cost-events.jsonl (as the pipeline
+    would, incrementally). ``lines`` are written verbatim so a test can include a
+    truncated/garbled last line."""
+    ledger = repo_dir / ".agentrail" / "run" / "cost-events.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text("\n".join(lines))
+
+
+def _cost_event(cost: float) -> str:
+    return json.dumps({"phase": "execute", "cost_usd": cost})
+
+
+class TestCostRecoveryOnFailure:
+    """The run-phase failure paths recover spent cost from the partial ledger."""
+
+    def _run(self, tmp_path, runner, **over):
+        dirs = _RunDirs(tmp_path)
+        kwargs = dict(
+            repo_url="r",
+            ref="main",
+            issue_ref="7",
+            workspace_id="w",
+            env={},
+            run_dir_factory=dirs,
+            runner=runner,
+            timeout=10,
+        )
+        kwargs.update(over)
+        return run_issue_on_host(**kwargs), dirs
+
+    def _ledger_writing_run(self, repo_dir: Path, lines: List[str], fail):
+        """A scripted 'agentrail run' step that writes a partial ledger to the
+        clone (as the pipeline would mid-run) and THEN fails — proving the host
+        reads what was already spent before the failure unwound the run."""
+
+        def _do_run(cmd, cwd, env):
+            _write_ledger(repo_dir, lines)
+            raise fail
+
+        return _do_run
+
+    def test_successful_run_still_reports_summed_cost(self, tmp_path) -> None:
+        # A green run sums the full ledger (regression guard for the happy path).
+        run_dir = tmp_path / "run-1"
+        repo_dir = run_dir / "repo"
+
+        def _do_run(cmd, cwd, env):
+            _write_ledger(repo_dir, [_cost_event(0.10), _cost_event(0.25)])
+            log_dir = _extract_log_dir(cmd, run_dir)
+            run_id = _extract_run_id(cmd) or "host-run"
+            _write_run_json(Path(log_dir) / run_id, _green_run_json())
+            return _Completed(0, stdout="ran")
+
+        runner = FakeRunner([_Completed(0, stdout="cloned"), _do_run])
+        result, _ = self._run(tmp_path, runner, publish_pr=False)
+        assert result.status == "green"
+        assert result.cost_usd == pytest.approx(0.35)
+
+    def test_timeout_recovers_partial_cost_from_ledger(self, tmp_path) -> None:
+        repo_dir = tmp_path / "run-1" / "repo"
+        runner = FakeRunner([
+            _Completed(0, stdout="cloned"),  # git clone
+            self._ledger_writing_run(
+                repo_dir,
+                [_cost_event(0.10), _cost_event(0.25)],
+                HostTimeout("run exceeded 10s"),
+            ),
+        ])
+        result, _ = self._run(tmp_path, runner)
+        assert result.status == "error"
+        # The run timed out AFTER spending $0.35 — that must be reported, not $0.
+        assert result.cost_usd == pytest.approx(0.35)
+
+    def test_host_error_recovers_partial_cost_from_ledger(self, tmp_path) -> None:
+        repo_dir = tmp_path / "run-1" / "repo"
+        runner = FakeRunner([
+            _Completed(0, stdout="cloned"),
+            self._ledger_writing_run(
+                repo_dir,
+                [_cost_event(0.5)],
+                HostError("agent crashed mid-run"),
+            ),
+        ])
+        result, _ = self._run(tmp_path, runner)
+        assert result.status == "error"
+        assert result.cost_usd == pytest.approx(0.5)
+
+    def test_garbled_ledger_on_failure_skips_bad_lines(self, tmp_path) -> None:
+        # A truncated/garbled last line (the pipeline was killed mid-write) must
+        # be skipped, not raise — the good lines' cost is still recovered.
+        repo_dir = tmp_path / "run-1" / "repo"
+        runner = FakeRunner([
+            _Completed(0, stdout="cloned"),
+            self._ledger_writing_run(
+                repo_dir,
+                [_cost_event(0.07), '{"phase": "execute", "cost_usd": 0.2'],  # truncated
+                HostTimeout("killed mid-write"),
+            ),
+        ])
+        result, _ = self._run(tmp_path, runner)
+        assert result.status == "error"
+        assert result.cost_usd == pytest.approx(0.07)
+
+    def test_missing_ledger_on_failure_reports_zero_without_raising(self, tmp_path) -> None:
+        # The run failed before writing any ledger → fall back to 0.0, no raise.
+        runner = FakeRunner([
+            _Completed(0, stdout="cloned"),
+            HostTimeout("died before first phase"),
+        ])
+        result, _ = self._run(tmp_path, runner)
+        assert result.status == "error"
+        assert result.cost_usd == 0.0
+
+
+# ---------------------------------------------------------------------------
 # Optional whole-process isolation via AGENTRAIL_SANDBOX_RUNTIME.
 # ---------------------------------------------------------------------------
 

@@ -22,6 +22,7 @@ from agentrail.run.objective_gate import CheckResult, GateResult, evaluate
 from agentrail.run.red_green import Observation, gate_evidence, verify_trail
 from agentrail.run.activity_push import push_agent_activity
 from agentrail.run.context_pack_push import push_context_pack
+from agentrail.run.context_inject import emit_forced_context, forced_context_enabled
 from agentrail.run.cost_push import build_cost_record, push_cost_event
 from agentrail.run.failure_push import push_failure_event
 from agentrail.run.output_enforcer import (
@@ -199,6 +200,15 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
 
         # 6. Context summary
         phase_context_summary = ctx.context_pack_summary(rc.target_dir, phase_context_pack_file)
+
+    # 6b. Forced-context injection (Finding 2, flag-gated DEFAULT OFF). Emit a
+    # per-engine artifact (claude UserPromptSubmit hook / codex AGENTS.md /
+    # cursor .mdc rule) that re-asserts the SAME retrieved context every turn,
+    # reusing phase_context_summary verbatim (no recompute). The stdin prompt
+    # injection below is unchanged and remains the universal fallback; this is
+    # strictly additive and only fires when runners.forcedContext is enabled.
+    if forced_context_enabled(rc.target_dir):
+        emit_forced_context(rc.agent, rc.target_dir, phase_context_summary)
 
     # 7. Verifier findings text
     if verifier_findings_file and Path(verifier_findings_file).is_file():

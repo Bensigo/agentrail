@@ -545,32 +545,56 @@ def _host_repo_root() -> Path:
 # ---------------------------------------------------------------------------
 
 # The verify command the seeded ``.agentrail/config.json`` declares. It mirrors
-# AgentRail's own in-repo ``.agentrail/verify.sh`` design: run ONLY the test
-# file(s) this change touched (the acceptance test the agent authors during the
-# run), not the whole suite — the whole suite drags in environment-dependent
-# tests that false-red a fresh clone, and the Red-Green Proof only needs the
-# authored test to go fail→pass. Self-contained (no dependency on a verify.sh
-# existing at the pinned commit) and idempotent.
+# AgentRail's own in-repo ``.agentrail/verify.sh`` design: drive the Red-Green
+# Proof from the test file(s) this change touched (the acceptance test the agent
+# authors during the run), not the whole suite — the whole suite drags in
+# environment-dependent tests that false-red a fresh clone.
+#
+# The classification (what counts as a proof, when a change may go green) is
+# DELEGATED to the single source of truth, ``agentrail.run.verify_gate.main`` —
+# the same gate AgentRail uses in production. That module reds a TEST-ONLY diff
+# (test files changed but no proof-requiring source): running an agent's own
+# self-confirming test in isolation, with no real source under it, is a
+# false-green vector (it greenlit the run while the hidden spec failed). Bash
+# can only see "a test file changed" and cannot make that distinction, so we no
+# longer re-implement the classifier in bash. The bash fallback (for a repo
+# under test that does not ship the agentrail package) carries the SAME
+# test-only-red guard. Self-contained and idempotent.
 _SEEDED_VERIFY_SH = """\
 #!/usr/bin/env bash
 # Seeded by the AgentRail eval harness for corpus tasks whose pinned commit
-# predates .agentrail/config.json. Runs only the changed/added test files so the
-# agent-authored acceptance test drives the Objective Gate's Red-Green Proof.
+# predates .agentrail/config.json. Delegates classification to the production
+# Objective Gate (agentrail.run.verify_gate) so a test-only diff cannot pass.
 set -uo pipefail
 
 unset AGENTRAIL_SERVER_BASE_URL AGENTRAIL_SERVER_API_KEY AGENTRAIL_SERVER_REPOSITORY_ID
 
-files=$(git status --porcelain | awk '{print $NF}' \\
-  | grep -E '(^|/)(test_.*|.*_test)\\.py$' | sort -u || true)
+# Single source of truth: the production verify gate. It collects the change set,
+# reds a test-only diff (no source under proof), reds source-without-test, greens
+# docs/config-only, and runs the changed tests only when source+test are present.
+if python3 -c 'import agentrail.run.verify_gate' >/dev/null 2>&1; then
+  exec python3 -m agentrail.run.verify_gate
+fi
 
-if [ -z "$files" ]; then
+# Fallback for a repo under test without the agentrail package — preserves the
+# same anti-false-green rule: a test-only change (no non-test .py source) reds.
+tests=$(git status --porcelain | awk '{print $NF}' \\
+  | grep -E '(^|/)(test_.*|.*_test)\\.py$' | sort -u || true)
+source=$(git status --porcelain | awk '{print $NF}' \\
+  | grep -E '\\.py$' | grep -Ev '(^|/)(test_.*|.*_test)\\.py$' | sort -u || true)
+
+if [ -z "$tests" ]; then
   echo "verify: no changed test files — nothing to prove (red)" >&2
+  exit 1
+fi
+if [ -z "$source" ]; then
+  echo "verify: only test files changed (no source under proof) — not a Red-Green Proof (red)" >&2
   exit 1
 fi
 
 echo "verify: running changed tests:" >&2
-echo "$files" | sed 's/^/  /' >&2
-exec python3 -m pytest -q -p no:cacheprovider $files
+echo "$tests" | sed 's/^/  /' >&2
+exec python3 -m pytest -q -p no:cacheprovider $tests
 """
 
 _SEEDED_CONFIG_JSON = (

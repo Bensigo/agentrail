@@ -140,6 +140,37 @@ class CommittedChangeGateTest(unittest.TestCase):
             msg=f"committed code+passing-test must be green.\nstderr: {result.stderr!r}\nstdout: {result.stdout!r}",
         )
 
+    def test_committed_test_only_passing_is_red(self) -> None:
+        """REGRESSION (objective-gate-unified false-green): a change that COMMITS
+        ONLY a (passing) test and NO product source must RED — even though the
+        test passes. This is the structural false-green from the 2026-06-27 eval:
+        the seeded gate ran the agent's own self-confirming test (which passed →
+        green → gate_passed=True) while the agent implemented no real source and
+        the hidden answer_key spec failed (solved=0). Running a test that proves
+        no source is not a Red-Green Proof. Was GREEN before the fix."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _init_repo(root)
+            _git(root, "checkout", "-b", "work")
+            test = root / "pkg" / "test_self_confirming.py"
+            test.parent.mkdir(parents=True)
+            # A test that passes on its own, importing/implementing no product
+            # source — exactly what a false-green-producing agent authors.
+            test.write_text("def test_trivially_true():\n    assert True\n")
+            _git(root, "add", "-A")
+            _git(root, "commit", "-m", "test: add self-confirming test (no source)")
+
+            result = _run_verify(root)
+
+        self.assertNotEqual(
+            result.returncode, 0,
+            msg=(
+                "a committed test-only change (no source under proof) MUST red — "
+                "running a self-confirming test in isolation is the false-green "
+                f"vector (ADR 0008).\nstderr: {result.stderr!r}\nstdout: {result.stdout!r}"
+            ),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Uncommitted flow (runner): the agent leaves changes in the working tree.

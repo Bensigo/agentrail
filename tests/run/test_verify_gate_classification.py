@@ -69,8 +69,27 @@ class ClassifierTest(unittest.TestCase):
 
 class DecideTest(unittest.TestCase):
     def test_test_files_signal_run_pytest(self) -> None:
+        # Source AND test present → the Red-Green Proof: run the authored test.
         code, msg = decide(["tests/test_a.py", "a.py"])
         self.assertEqual((code, msg), (0, ""))
+
+    def test_test_only_change_is_red_not_run(self) -> None:
+        """REGRESSION (objective-gate-unified false-green): a diff that changes
+        ONLY test files (no proof-requiring source) must RED, not signal
+        run-pytest. Running an agent's own self-confirming test in isolation, with
+        no real source under it, was the structural false-green — the gate went
+        green while the hidden spec failed. (ADR 0008 Red-Green Proof.)"""
+        code, msg = decide(["tests/test_a.py"])
+        self.assertEqual(code, 1, msg=f"test-only change must red, got green: {msg!r}")
+        self.assertNotEqual(msg, "", "a test-only red must carry a reason, not the run sentinel")
+        self.assertIn("no Python source under proof", msg)
+
+    def test_test_plus_docs_only_is_still_red(self) -> None:
+        """Test + docs/config (still no proof-requiring source) must also red —
+        docs do not supply the source the test claims to prove."""
+        code, msg = decide(["tests/test_a.py", "docs/x.md", ".agentrail/config.json"])
+        self.assertEqual(code, 1)
+        self.assertIn("no Python source under proof", msg)
 
     def test_source_without_test_is_red(self) -> None:
         code, msg = decide(["agentrail/a.py", "docs/x.md"])

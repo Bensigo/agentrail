@@ -116,15 +116,29 @@ def decide(changed: Sequence[str]) -> tuple[int, str]:
     """Decide the standalone verify verdict for a known change set (pure).
 
     Returns ``(exit_code, message)``:
-      * test files changed → ``(0, "")`` sentinel meaning "run the tests",
+      * source changed AND a test changed → ``(0, "")`` sentinel meaning "run the
+        tests" (the Red-Green Proof: the authored test must prove the source),
+      * test(s) changed but NO proof-requiring source changed → ``(1, red
+        message)`` (a test-only diff has no source under proof — running the
+        agent's own test in isolation is a false-green vector; ADR 0008),
       * no test, source changed → ``(1, red message)``,
       * no test, only docs/config changed → ``(0, green message)``,
       * nothing changed at all → ``(1, red message)``.
     """
     test_files = changed_test_files(changed)
-    if test_files:
-        return 0, ""  # caller runs pytest on these
     source_files = changed_source_files(changed)
+    if test_files:
+        if source_files:
+            return 0, ""  # caller runs pytest on these — source proves itself
+        # Test files but no proof-requiring source: the run produced only a test
+        # (or test + docs/config). There is nothing for the test to prove, so
+        # running it in isolation cannot establish a Red-Green Proof — it would
+        # greenlight a self-confirming test that implements no real code. Red.
+        return 1, (
+            "verify: only test files changed (no Python source under proof) — a "
+            "test that proves no source is not a Red-Green Proof (red):\n  "
+            + "\n  ".join(test_files)
+        )
     if source_files:
         return 1, (
             "verify: Python source changed but no acceptance test added — "
@@ -157,8 +171,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         os.environ.pop(var, None)
 
     changed = collect_changed_files(".")
-    test_files = changed_test_files(changed)
-    if test_files:
+    exit_code, message = decide(changed)
+    # decide() returns the (0, "") "run the tests" sentinel ONLY when a test
+    # file changed AND proof-requiring source changed (the Red-Green Proof). A
+    # test-only diff now reds in decide() and never reaches pytest — closing the
+    # false-green where running the agent's own self-confirming test went green.
+    if exit_code == 0 and not message:
+        test_files = changed_test_files(changed)
         print("verify: running changed tests:", file=sys.stderr)
         for t in test_files:
             print(f"  {t}", file=sys.stderr)
@@ -166,7 +185,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *test_files]
         )
 
-    exit_code, message = decide(changed)
     if message:
         print(message, file=sys.stderr)
     return exit_code

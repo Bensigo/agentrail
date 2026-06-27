@@ -69,7 +69,7 @@ def _usage() -> str:
         "  AGENTRAIL_CHEAP_MODEL     Model for the first (cheap) attempt (optional)\n"
         "  AGENTRAIL_STRONG_MODEL    Model the loop escalates to on a red gate\n"
         "  AGENTRAIL_PER_ISSUE_CEILING_USD  Per-issue $ cost ceiling, halts the run "
-        "when exceeded (default 3.00; 0 = uncapped)\n"
+        "when exceeded (default 0 = uncapped; opt in above your costliest legit run)\n"
         "  AGENTRAIL_ATTEMPT_LIMIT   Max attempts before stop-to-human (default 2)\n"
     )
 
@@ -222,9 +222,10 @@ def _build_runtime(
     # an unset model lets the runner image pick its default.
     cheap_model = os.environ.get("AGENTRAIL_CHEAP_MODEL") or None
     strong_model = os.environ.get("AGENTRAIL_STRONG_MODEL") or None
-    # Per-issue $ ceiling defaults to $3.00 (DEFAULT_PER_ISSUE_CEILING_USD) so an
-    # unattended run HALTS before burning unbounded dollars on one issue. Set
-    # AGENTRAIL_PER_ISSUE_CEILING_USD=0 to opt back into uncapped.
+    # Per-issue $ ceiling defaults to uncapped (DEFAULT_PER_ISSUE_CEILING_USD =
+    # 0.0): the leash is opt-in, since a flat ceiling can't separate a runaway
+    # from a costly-but-legit task. Set AGENTRAIL_PER_ISSUE_CEILING_USD above your
+    # most expensive legitimate run to arm it as a catastrophe backstop.
     ceiling = _float_env(
         "AGENTRAIL_PER_ISSUE_CEILING_USD", DEFAULT_PER_ISSUE_CEILING_USD
     )

@@ -129,13 +129,20 @@ class Notifier(Protocol):
 # Config — injectable now (args/env), Postgres-sourced later (3b)
 # --------------------------------------------------------------------------- #
 
-# Default per-issue dollar ceiling (Budget Leash). A real eval burned $4.65 on a
-# single hard task that solved nothing because the ceiling defaulted to uncapped
-# (``0.0``); this default makes the leash actually HALT a runaway run by default.
-# Override per-workspace with ``AGENTRAIL_PER_ISSUE_CEILING_USD`` (``0`` =
-# uncapped). The $ figure it bounds is the run's real-dollar ``RunResult.cost_usd``
-# computed via ``agentrail.run.pricing.cost_usd`` (single source of model rates).
-DEFAULT_PER_ISSUE_CEILING_USD: float = 3.00
+# Default per-issue dollar ceiling (Budget Leash). Ships **opt-in / uncapped**
+# (``0.0``), mirroring how the other cost levers (diff-only output, forced
+# context) landed flag-gated-OFF: turning the leash ON by default would silently
+# change the production loop AND tank solve-rate, because a *flat* per-issue
+# ceiling cannot separate a runaway from a legitimately expensive task. In the
+# real baseline eval a solved hard task cost $5.06 and a solved medium task cost
+# $9.66, while the unsolved "runaway" cost only $4.65 — so any ceiling low enough
+# to stop the $4.65 run would also kill the $5.06/$9.66 legit runs. The leash is
+# therefore a *catastrophe backstop*, not a tuning knob: opt in per-workspace via
+# ``AGENTRAIL_PER_ISSUE_CEILING_USD`` set well ABOVE your most expensive legit run
+# (e.g. ``20``–``25``). ``0`` = uncapped. The $ figure it bounds is the run's
+# real-dollar ``RunResult.cost_usd`` computed via ``agentrail.run.pricing.cost_usd``
+# (single source of model rates).
+DEFAULT_PER_ISSUE_CEILING_USD: float = 0.0
 
 
 @dataclass
@@ -152,14 +159,16 @@ class RuntimeConfig:
       sandbox on. The first attempt runs on ``cheap_model``; an escalation re-runs
       on ``strong_model``. ``None`` means "let the image pick its default model".
     - ``ceiling`` — the per-issue dollar cost ceiling (Budget Leash). Defaults to
-      :data:`DEFAULT_PER_ISSUE_CEILING_USD` ($3.00) so an unattended run can never
-      silently burn unbounded dollars on one issue (a real eval spent $4.65 on a
-      single unsolved hard task because the ceiling defaulted to uncapped). Set
-      ``0`` to opt back into *uncapped*, mirroring the run budget guardrail; the
-      attempt limit still bounds the loop either way. The spend compared against
-      the ceiling is the run's real-dollar ``RunResult.cost_usd``, which the
-      pipeline computes via ``agentrail.run.pricing.cost_usd`` (the single source
-      of per-model rates) — so the ceiling is enforced in true dollars.
+      :data:`DEFAULT_PER_ISSUE_CEILING_USD` (``0.0`` = *uncapped / opt-in*) so the
+      leash never silently halts a legitimately expensive run by default; the
+      attempt limit still bounds the loop. Opt in per-workspace via
+      ``AGENTRAIL_PER_ISSUE_CEILING_USD`` set well above your most expensive legit
+      run — it is a catastrophe backstop, not a per-task cost tuner (a flat
+      ceiling can't tell a runaway from a costly-but-legit task). The spend
+      compared against the ceiling is the run's real-dollar ``RunResult.cost_usd``,
+      which the pipeline computes via ``agentrail.run.pricing.cost_usd`` (the
+      single source of per-model rates) — so the ceiling is enforced in true
+      dollars.
     - ``attempt_limit`` — the maximum number of attempts (initial + escalations)
       before a hard stop to human. Defaults to ``2`` (cheap then strong). Must be
       >= 1.
@@ -448,10 +457,15 @@ class HeartbeatRuntime:
                 # silent break. ``spent`` is the sum of real-dollar
                 # ``RunResult.cost_usd`` values (pricing.cost_usd-derived).
                 if self._config.ceiling > 0 and spent >= self._config.ceiling:
+                    # Preserve the original gate reason (e.g. the sandbox/objective
+                    # gate verdict) rather than clobbering it — the leash is *why we
+                    # stopped escalating*, not *why the attempt failed*.
+                    original = final_result.gate_reason or f"run {final_result.status}"
                     final_result.gate_reason = (
                         f"budget leash: per-issue $ ceiling exceeded — "
                         f"spent ${spent:.2f} >= ceiling "
-                        f"${self._config.ceiling:.2f}; halting to human"
+                        f"${self._config.ceiling:.2f}; halting to human "
+                        f"| prior gate: {original}"
                     )
                     _log.warning(
                         "budget leash HALT for issue %s: spent $%.2f >= ceiling $%.2f",

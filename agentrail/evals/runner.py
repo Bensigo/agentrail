@@ -152,21 +152,52 @@ def _materialize_agent_visible_tree(task: CorpusTask, *, workdir: Path) -> None:
         shutil.copytree(source, workdir, dirs_exist_ok=True, symlinks=False)
 
 
-def _assert_no_answer_key_in_workdir(task: CorpusTask, *, workdir: Path) -> None:
+# The executor clones the FULL repo under test into this subdir of the workdir
+# and the agent works there (``SandboxAgentExecutor.execute`` →
+# ``run_dir_factory=lambda: workdir``, ``run_path = workdir / "repo"``). That
+# clone is a legitimate full checkout, so the agent may author its OWN test file
+# whose BASENAME matches a hidden test (the corpus tasks reverse-engineer real
+# merged PRs and keep the test filenames). So the post-execute *basename* check
+# excludes this subtree to avoid false-positiving on agent-authored tests. The
+# *directory* check still scans it: a dir named after the hidden-tests root is
+# never something the agent legitimately creates — it is the corpus's own
+# answer-key dir riding in on the clone, a TRUE leak (the answer is stripped out
+# in ``_strip_answer_keys_from_clone`` post_checkout; this check is the net
+# behind it). Kept in sync with ``SandboxAgentExecutor``'s clone dir.
+_EXECUTOR_CLONE_SUBDIR = "repo"
+
+
+def _assert_no_answer_key_in_workdir(
+    task: CorpusTask,
+    *,
+    workdir: Path,
+    basename_exclude_subdirs: frozenset = frozenset(),
+) -> None:
     """Hard guard: the task's hidden tests must not appear inside ``workdir``.
 
     This is the AC3 leak guard. It checks two things:
 
     1. No directory matching ``task.hidden_tests.root`` exists at any depth
-       under ``workdir`` (so a sloppy materialisation that copied the whole
-       task directory is detected).
+       under ``workdir``. This ALWAYS scans the whole workdir — including the
+       executor's clone subtree — because a directory named after the
+       hidden-tests root is an unambiguous leak signal that the agent never
+       legitimately produces (a sloppy materialisation that copied the whole
+       task dir, or the corpus's own ``answer_key/`` riding in on the clone).
     2. None of the hidden test files (by basename) appear anywhere under
-       ``workdir``.
+       ``workdir``, EXCEPT under ``basename_exclude_subdirs``.
 
     A violation raises :class:`AnswerKeyLeak`. The runner calls this both
     *before* invoking the executor (so the agent never sees the answer key) and
     *after* the run (so an executor that wrote one into the workdir is
     detected too).
+
+    ``basename_exclude_subdirs`` names top-level subdirectories of ``workdir``
+    to skip for the BASENAME check ONLY. The post-execute gate passes the
+    executor's clone dir here: a full repo checkout where the agent may
+    legitimately author a same-named test file, so matching by basename there
+    would false-positive. The directory check is NOT subject to this exclusion —
+    it is false-positive-free and must see the clone. See
+    :data:`_EXECUTOR_CLONE_SUBDIR`.
     """
     hidden_root_name = task.hidden_tests.root.strip("/").split("/")[-1]
     hidden_basenames = {Path(name).name for name in task.hidden_tests.files}
@@ -179,6 +210,8 @@ def _assert_no_answer_key_in_workdir(task: CorpusTask, *, workdir: Path) -> None
                 f"answer key directory '{hidden_root_name}' found in sandbox workdir at {rel}"
             )
         if path.is_file() and path.name in hidden_basenames:
+            if rel.parts and rel.parts[0] in basename_exclude_subdirs:
+                continue
             raise AnswerKeyLeak(
                 f"hidden test file '{path.name}' found in sandbox workdir at {rel}"
             )
@@ -246,8 +279,19 @@ def run(
         elapsed = max(0.0, float(clock() - start))
 
         # AC3, gate 2: assert the executor did not write the answer key into
-        # the workdir (e.g. by reaching outside its sandbox). Belt-and-braces.
-        _assert_no_answer_key_in_workdir(task, workdir=workdir)
+        # the AGENT-VISIBLE tree (e.g. by reaching outside its sandbox), and
+        # that the corpus answer keys really were stripped from the full-repo
+        # clone (the directory check scans the clone too — see below). We exclude
+        # the clone subtree from the BASENAME check only: that checkout is where
+        # the agent may legitimately author a same-named test file, so matching
+        # by basename there would false-positive. The directory check is NOT
+        # excluded — a dir named after the hidden-tests root is a true leak
+        # wherever it sits (see _EXECUTOR_CLONE_SUBDIR).
+        _assert_no_answer_key_in_workdir(
+            task,
+            workdir=workdir,
+            basename_exclude_subdirs=frozenset({_EXECUTOR_CLONE_SUBDIR}),
+        )
 
         # The locked contract — never redefined. ``gate_passed`` MUST be bool.
         gate_passed: bool = bool(execution.gate_passed)
@@ -368,7 +412,7 @@ class SandboxAgentExecutor:
             run_cwd=str(source_root),
             run_env=run_env,
             run_dir_factory=lambda: workdir,
-            post_checkout=_seed_agentrail_config,
+            post_checkout=_prepare_eval_clone,
             publish_pr=False,
         )
 
@@ -567,6 +611,49 @@ def _seed_agentrail_config(repo_dir: Path) -> None:
         verify_sh.write_text(_SEEDED_VERIFY_SH, encoding="utf-8")
         verify_sh.chmod(0o755)
     cfg.write_text(_SEEDED_CONFIG_JSON, encoding="utf-8")
+
+
+# The corpus lives inside the repo under test at this subpath, and each task
+# stores its hidden tests in an ``answer_key/`` directory. When the executor
+# clones the FULL agentrail repo into the workdir, that clone carries the entire
+# corpus — including EVERY task's ``answer_key/`` — into the agent-visible tree.
+# That is the ROOT CAUSE of the AC3 leak: the answer sheet rides in on the clone.
+# We strip those directories at clone-prep time so the answer never reaches the
+# agent in the first place (the gate-2 directory check is the net behind this).
+_CORPUS_SUBPATH = ("agentrail", "evals", "corpus")
+_ANSWER_KEY_DIRNAME = "answer_key"
+
+
+def _strip_answer_keys_from_clone(repo_dir: Path) -> None:
+    """Remove the corpus's ``answer_key/`` dirs from a freshly checked-out clone.
+
+    The executor clones the whole repo under test (which contains the eval
+    corpus) into the agent-visible workdir. Every corpus task keeps its hidden
+    tests under ``agentrail/evals/corpus/<task>/answer_key/``, so without this
+    the agent could read the answer sheet straight off the clone. We delete those
+    directories before the agent runs. Scoped to the corpus subtree so we never
+    touch a directory the repo legitimately named ``answer_key`` elsewhere.
+
+    No-op when the clone carries no corpus (a different repo under test).
+    """
+    corpus_root = repo_dir.joinpath(*_CORPUS_SUBPATH)
+    if not corpus_root.is_dir():
+        return
+    for answer_key in sorted(corpus_root.rglob(_ANSWER_KEY_DIRNAME)):
+        if answer_key.is_dir():
+            shutil.rmtree(answer_key, ignore_errors=True)
+
+
+def _prepare_eval_clone(repo_dir: Path) -> None:
+    """Post-checkout hook: make a clone safe + verifiable for the agent to work in.
+
+    Composes the two clone-prep steps run after checkout and before the agent:
+    seed a verify policy (:func:`_seed_agentrail_config`) and strip the corpus
+    answer keys that ride in on a full-repo clone
+    (:func:`_strip_answer_keys_from_clone`).
+    """
+    _seed_agentrail_config(repo_dir)
+    _strip_answer_keys_from_clone(repo_dir)
 
 
 def _prepend_pythonpath(source_root: str, env: dict) -> str:

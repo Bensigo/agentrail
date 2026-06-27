@@ -410,6 +410,92 @@ def test_leak_guard_raises_if_workdir_is_seeded_with_answer_key(
         )
 
 
+def test_leak_guard_raises_if_clone_subtree_contains_answer_key_dir(
+    corpus_task: CorpusTask,
+) -> None:
+    """An answer-key DIRECTORY inside the executor's clone is a TRUE leak.
+
+    The executor clones the full repo-under-test (which carries the eval corpus
+    itself) into ``workdir/repo``. If an ``answer_key/`` directory rides into
+    that clone, the agent can read the hidden tests it is graded on — the answer
+    sheet, inside the exam room. The post-execute gate MUST catch this even
+    though it lives under the clone subtree: a directory named after the
+    hidden-tests root is an unambiguous leak signal, never a false positive.
+
+    (Pre-fix, the gate excluded the whole ``repo`` subtree and was blind to it.)
+    """
+
+    class CloneCarryingAnswerKeyExecutor:
+        def execute(self, *, task: CorpusTask, arm: Arm, workdir: Path) -> AgentExecution:
+            leaked = (
+                workdir / "repo" / "agentrail" / "evals" / "corpus" / "other" / "answer_key"
+            )
+            leaked.mkdir(parents=True)
+            (leaked / "test_hidden.py").write_text("def test(): assert True")
+            return AgentExecution(
+                diff="",
+                usage=Usage(model=MODEL, input_tokens=0, output_tokens=0, cache_tokens=0),
+                model=MODEL,
+                gate_passed=True,
+            )
+
+    with pytest.raises(AnswerKeyLeak):
+        run(corpus_task, full(), executor=CloneCarryingAnswerKeyExecutor())
+
+
+def test_leak_guard_tolerates_agent_authored_test_basename_in_the_clone(
+    corpus_task: CorpusTask,
+) -> None:
+    """An agent-authored test whose basename matches a hidden test is NOT a leak.
+
+    Inside its clone the agent may legitimately author a test file named like
+    the hidden test (the corpus tasks reverse-engineer real PRs and keep the
+    test filenames). As long as the file is NOT inside an answer-key directory,
+    the post-execute basename check must not false-positive on the clone subtree.
+    """
+
+    class AgentWritesOwnTestExecutor:
+        def execute(self, *, task: CorpusTask, arm: Arm, workdir: Path) -> AgentExecution:
+            d = workdir / "repo" / "agentrail" / "context" / "tests"
+            d.mkdir(parents=True)
+            (d / "test_hidden.py").write_text("def test(): assert True")
+            return AgentExecution(
+                diff="",
+                usage=Usage(model=MODEL, input_tokens=0, output_tokens=0, cache_tokens=0),
+                model=MODEL,
+                gate_passed=True,
+            )
+
+    # Must NOT raise — the basename check excludes the clone subtree.
+    record = run(corpus_task, full(), executor=AgentWritesOwnTestExecutor())
+    assert record.task == "sample-task"
+
+
+def test_strip_answer_keys_removes_corpus_answer_keys_from_clone(tmp_path: Path) -> None:
+    """``post_checkout`` sanitisation deletes the corpus's answer-key dirs.
+
+    Root-cause fix: the answer never enters the clone. Stripping leaves the rest
+    of the corpus (task.json) and the repo's own code untouched.
+    """
+    from agentrail.evals.runner import _strip_answer_keys_from_clone
+
+    clone = tmp_path / "repo"
+    corpus_task_dir = clone / "agentrail" / "evals" / "corpus" / "some-task"
+    answer_key = corpus_task_dir / "answer_key"
+    answer_key.mkdir(parents=True)
+    (answer_key / "test_secret.py").write_text("hidden")
+    (corpus_task_dir / "task.json").write_text("{}")
+    repo_code = clone / "agentrail" / "context" / "rerank.py"
+    repo_code.parent.mkdir(parents=True)
+    repo_code.write_text("code")
+
+    _strip_answer_keys_from_clone(clone)
+
+    assert not answer_key.exists()
+    assert (corpus_task_dir / "task.json").exists()  # rest of corpus preserved
+    assert repo_code.exists()  # repo code untouched
+
+
 # ---------------------------------------------------------------------------
 # AC4 — the RunRecord shape matches what the scorer consumes.
 # ---------------------------------------------------------------------------

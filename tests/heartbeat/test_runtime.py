@@ -822,3 +822,121 @@ def test_ac879_escalation_changes_model_and_records_model_used():
     # Overall the escalation resolved green.
     assert report.green == 1
     assert report.red == 0
+
+
+# --------------------------------------------------------------------------- #
+# Per-issue $ ceiling (Budget Leash) — the real dollar leash that HALTS a run
+# before it burns unbounded $ on one issue. Regression for the eval where one
+# hard task spent $4.65 solving nothing because the ceiling defaulted to
+# uncapped (0.0). Fakes only: no network, no Docker, no real agent.
+# --------------------------------------------------------------------------- #
+def _ceiling_issue() -> IssueRef:
+    return IssueRef(repo="acme/widgets", number=42, title="Hard task",
+                    body=_VALID_BODY, url="https://gh/42")
+
+
+def test_under_dollar_ceiling_run_proceeds_no_halt_reason():
+    """(a) A red attempt whose accrued spend stays *below* the ceiling does NOT
+    halt on dollars — it escalates as normal and the final result carries no
+    ceiling-halt reason."""
+    connector = FakeConnector([_ceiling_issue()])
+    store = FakeStore()
+    notifier = FakeNotifier()
+    # ceiling well above what a single cheap attempt costs, and attempt_limit
+    # high enough that the $ leash (not the attempt leash) governs.
+    rt = _runtime(
+        connector=connector, store=store, notifier=notifier,
+        config=_config(ceiling=3.00, attempt_limit=5),
+        # cheap attempt is red at $0.10 (< $3.00), strong attempt turns green.
+        result_sequence=[
+            RunResult(status="red", cost_usd=0.10, branch="afk/42-cheap",
+                      gate_reason="AC unverified"),
+            RunResult(status="green", cost_usd=0.20, branch="afk/42-strong"),
+        ],
+    )
+
+    report = rt.poll_and_dispatch("ws-1")
+
+    # Escalation proceeded to green; the cheap red did not trip the $ ceiling.
+    assert report.green == 1
+    assert report.red == 0
+    # Two sandbox attempts happened (cheap then strong) — proof we did not halt
+    # on the first red.
+    assert len(rt._sandbox_calls) == 2
+    # No ceiling-halt reason anywhere in the back-channel.
+    assert "per-issue $ ceiling exceeded" not in connector.posted[0][1].summary
+
+
+def test_crossing_dollar_ceiling_halts_with_clear_reason():
+    """(b) When accrued spend crosses the ceiling, the loop HALTS to human and
+    stamps a clear, auditable reason — even though attempt_limit is not yet
+    reached (the *dollar* leash is what stopped it)."""
+    connector = FakeConnector([_ceiling_issue()])
+    store = FakeStore()
+    notifier = FakeNotifier()
+    # One red attempt costs $4.65 — exactly the runaway the leash must stop.
+    # ceiling $3.00, attempt_limit high so the $ leash trips first.
+    rt = _runtime(
+        connector=connector, store=store, notifier=notifier,
+        config=_config(ceiling=3.00, attempt_limit=5),
+        default_result=RunResult(status="red", cost_usd=4.65,
+                                 branch="afk/42", gate_reason="boom"),
+    )
+
+    report = rt.poll_and_dispatch("ws-1")
+
+    # The run halted (not green) and only ONE attempt ran — the $ leash stopped
+    # the loop before a second (more expensive) attempt, despite attempts left.
+    assert report.green == 0
+    assert report.red == 1
+    assert len(rt._sandbox_calls) == 1
+
+    # The clear halt reason is stamped and surfaced on the back-channel.
+    summary = connector.posted[0][1].summary
+    assert "per-issue $ ceiling exceeded" in summary
+    assert "spent $4.65" in summary
+    assert "ceiling $3.00" in summary
+    assert "halting to human" in summary
+
+
+def test_ceiling_trips_on_pricing_derived_dollar_figure():
+    """(c) The $ figure the leash bounds is the real-dollar ``RunResult.cost_usd``
+    computed via ``agentrail.run.pricing.cost_usd`` (single source of model
+    rates) — NOT a hardcoded number. We price a Usage through pricing.cost_usd,
+    feed exactly that as the run cost, set the ceiling just under it, and assert
+    the leash halts citing that same pricing-derived dollar amount."""
+    from agentrail.run.pricing import cost_usd
+    from agentrail.run.usage_capture import Usage
+
+    # A real, known model + token usage priced through the single source of truth.
+    usage = Usage(
+        model="claude-opus-4-8",
+        input_tokens=2_000_000,
+        output_tokens=500_000,
+        cache_tokens=0,
+    )
+    priced = cost_usd(usage)
+    # Sanity: a non-trivial, real dollar figure (not 0.0 / unknown-model path).
+    assert priced > 0.0
+
+    connector = FakeConnector([_ceiling_issue()])
+    store = FakeStore()
+    notifier = FakeNotifier()
+    # Ceiling a hair under the pricing-derived spend so that one attempt at
+    # exactly ``priced`` crosses it; attempt_limit high so $ is the trigger.
+    rt = _runtime(
+        connector=connector, store=store, notifier=notifier,
+        config=_config(ceiling=priced - 0.01, attempt_limit=5),
+        default_result=RunResult(status="red", cost_usd=priced,
+                                 branch="afk/42", gate_reason="boom"),
+    )
+
+    rt.poll_and_dispatch("ws-1")
+
+    summary = connector.posted[0][1].summary
+    assert "per-issue $ ceiling exceeded" in summary
+    # The reason cites the pricing-derived spend (formatted to 2 d.p.).
+    assert f"spent ${priced:.2f}" in summary
+    # And the cost recorded in the run ledger is exactly the pricing-derived $.
+    terminal = [r for r in store.runs if r["status"] == "red"]
+    assert terminal and terminal[-1]["cost_usd"] == priced

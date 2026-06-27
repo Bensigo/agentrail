@@ -128,6 +128,16 @@ class Notifier(Protocol):
 # --------------------------------------------------------------------------- #
 # Config — injectable now (args/env), Postgres-sourced later (3b)
 # --------------------------------------------------------------------------- #
+
+# Default per-issue dollar ceiling (Budget Leash). A real eval burned $4.65 on a
+# single hard task that solved nothing because the ceiling defaulted to uncapped
+# (``0.0``); this default makes the leash actually HALT a runaway run by default.
+# Override per-workspace with ``AGENTRAIL_PER_ISSUE_CEILING_USD`` (``0`` =
+# uncapped). The $ figure it bounds is the run's real-dollar ``RunResult.cost_usd``
+# computed via ``agentrail.run.pricing.cost_usd`` (single source of model rates).
+DEFAULT_PER_ISSUE_CEILING_USD: float = 3.00
+
+
 @dataclass
 class RuntimeConfig:
     """The per-workspace knobs the runtime needs to dispatch a run.
@@ -141,9 +151,15 @@ class RuntimeConfig:
     - ``cheap_model`` / ``strong_model`` — the two model names the loop runs the
       sandbox on. The first attempt runs on ``cheap_model``; an escalation re-runs
       on ``strong_model``. ``None`` means "let the image pick its default model".
-    - ``ceiling`` — the per-issue dollar cost ceiling (Budget Leash). ``0`` (the
-      default) is *uncapped*, mirroring the run budget guardrail; the attempt
-      limit still bounds the loop.
+    - ``ceiling`` — the per-issue dollar cost ceiling (Budget Leash). Defaults to
+      :data:`DEFAULT_PER_ISSUE_CEILING_USD` ($3.00) so an unattended run can never
+      silently burn unbounded dollars on one issue (a real eval spent $4.65 on a
+      single unsolved hard task because the ceiling defaulted to uncapped). Set
+      ``0`` to opt back into *uncapped*, mirroring the run budget guardrail; the
+      attempt limit still bounds the loop either way. The spend compared against
+      the ceiling is the run's real-dollar ``RunResult.cost_usd``, which the
+      pipeline computes via ``agentrail.run.pricing.cost_usd`` (the single source
+      of per-model rates) — so the ceiling is enforced in true dollars.
     - ``attempt_limit`` — the maximum number of attempts (initial + escalations)
       before a hard stop to human. Defaults to ``2`` (cheap then strong). Must be
       >= 1.
@@ -158,7 +174,7 @@ class RuntimeConfig:
     env: Dict[str, str] = field(default_factory=dict)
     cheap_model: Optional[str] = "claude-sonnet-4-6"
     strong_model: Optional[str] = "claude-opus-4-8"
-    ceiling: float = 0.0
+    ceiling: float = DEFAULT_PER_ISSUE_CEILING_USD
     attempt_limit: int = 2
     # AC1 (issue #876): Merge Policy — defaults OFF. When True, a green run
     # squash-merges the PR. The per-issue ``auto-merge`` label overrides this
@@ -425,7 +441,24 @@ class HeartbeatRuntime:
                 gate_red=True,
             )
             if decision is not Decision.ESCALATE:
-                # STOP_TO_HUMAN (budget/attempts exhausted) — the loop ends here.
+                # STOP_TO_HUMAN (budget/attempts exhausted) — the loop HALTS here.
+                # When it is the per-issue dollar ceiling that tripped (real $
+                # spend >= a positive ceiling), stamp a clear, auditable reason on
+                # the final result so the run records *why* it stopped — not just a
+                # silent break. ``spent`` is the sum of real-dollar
+                # ``RunResult.cost_usd`` values (pricing.cost_usd-derived).
+                if self._config.ceiling > 0 and spent >= self._config.ceiling:
+                    final_result.gate_reason = (
+                        f"budget leash: per-issue $ ceiling exceeded — "
+                        f"spent ${spent:.2f} >= ceiling "
+                        f"${self._config.ceiling:.2f}; halting to human"
+                    )
+                    _log.warning(
+                        "budget leash HALT for issue %s: spent $%.2f >= ceiling $%.2f",
+                        getattr(ref, "number", "?"),
+                        spent,
+                        self._config.ceiling,
+                    )
                 break
 
             # ``routing.next_tier`` is the pure cheap→strong step; if there is no

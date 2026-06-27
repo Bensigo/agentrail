@@ -68,7 +68,8 @@ def _usage() -> str:
         "  DISCORD_WEBHOOK_URL       Channel webhook for notifications (optional)\n"
         "  AGENTRAIL_CHEAP_MODEL     Model for the first (cheap) attempt (optional)\n"
         "  AGENTRAIL_STRONG_MODEL    Model the loop escalates to on a red gate\n"
-        "  AGENTRAIL_PER_ISSUE_CEILING_USD  Per-issue cost ceiling (0 = uncapped)\n"
+        "  AGENTRAIL_PER_ISSUE_CEILING_USD  Per-issue $ cost ceiling, halts the run "
+        "when exceeded (default 3.00; 0 = uncapped)\n"
         "  AGENTRAIL_ATTEMPT_LIMIT   Max attempts before stop-to-human (default 2)\n"
     )
 
@@ -161,7 +162,11 @@ def _build_runtime(
     from agentrail.afk.connectors_store import get_active_connector
     from agentrail.afk.queue_store import PostgresExecutor, QueueStore
     from agentrail.connectors.github import GitHubOAuthClient
-    from agentrail.heartbeat.runtime import HeartbeatRuntime, RuntimeConfig
+    from agentrail.heartbeat.runtime import (
+        DEFAULT_PER_ISSUE_CEILING_USD,
+        HeartbeatRuntime,
+        RuntimeConfig,
+    )
     from agentrail.heartbeat.token_provider import get_github_token
     from agentrail.sandbox.native_runner import select_sandbox_runner
 
@@ -217,7 +222,12 @@ def _build_runtime(
     # an unset model lets the runner image pick its default.
     cheap_model = os.environ.get("AGENTRAIL_CHEAP_MODEL") or None
     strong_model = os.environ.get("AGENTRAIL_STRONG_MODEL") or None
-    ceiling = _float_env("AGENTRAIL_PER_ISSUE_CEILING_USD", 0.0)
+    # Per-issue $ ceiling defaults to $3.00 (DEFAULT_PER_ISSUE_CEILING_USD) so an
+    # unattended run HALTS before burning unbounded dollars on one issue. Set
+    # AGENTRAIL_PER_ISSUE_CEILING_USD=0 to opt back into uncapped.
+    ceiling = _float_env(
+        "AGENTRAIL_PER_ISSUE_CEILING_USD", DEFAULT_PER_ISSUE_CEILING_USD
+    )
     attempt_limit = max(1, int(_float_env("AGENTRAIL_ATTEMPT_LIMIT", 2)))
 
     config = RuntimeConfig(

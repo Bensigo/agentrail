@@ -33,6 +33,7 @@ from agentrail.guardrails.policies.output_enforcer import (  # noqa: F401
     EnforceResult,
     Rejected,
     all_changes_new_or_rename,
+    diff_only_strict_enabled,
     enforce,
 )
 
@@ -42,6 +43,7 @@ __all__ = [
     "EnforceResult",
     "enforce",
     "all_changes_new_or_rename",
+    "diff_only_strict_enabled",
     "push_format_rejection_event",
 ]
 

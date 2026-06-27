@@ -402,6 +402,10 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
                 ).stdout
             except Exception:
                 porcelain = ""
+            # enforce() also consults its own DEFAULT-OFF strict flag
+            # (AGENTRAIL_EVAL_LAYER_DIFF_ONLY_STRICT): when on, a full-file
+            # rewrite disguised as a diff (token hunk + full body) is also
+            # Rejected and surfaced below. Off → today's loose behavior.
             enforce_result = enforce(
                 phase_output_text,
                 is_new_or_rename=all_changes_new_or_rename(porcelain),

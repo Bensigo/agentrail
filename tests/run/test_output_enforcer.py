@@ -19,6 +19,7 @@ from agentrail.run.output_enforcer import (
     Accepted,
     Rejected,
     all_changes_new_or_rename,
+    diff_only_strict_enabled,
     enforce,
     push_format_rejection_event,
 )
@@ -289,3 +290,107 @@ class TestDiffReducesOutputTokens:
         assert diff_tokens < rewrite_tokens
         # The diff is a small fraction of the full rewrite for the same change.
         assert diff_tokens <= rewrite_tokens // 3
+
+
+# ---------------------------------------------------------------------------
+# STRICT diff-dominance mode (default OFF) — closes the "token hunk stapled
+# onto a full-file rewrite" loophole. Fully pure: no subprocess/network/agent.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def strict_on(monkeypatch):
+    """Enable the opt-in strict diff-dominance check for the duration of a test."""
+    monkeypatch.setenv("AGENTRAIL_EVAL_LAYER_DIFF_ONLY_STRICT", "1")
+    assert diff_only_strict_enabled() is True
+
+
+def _full_file_rewrite(n: int = 60) -> str:
+    """A large full-file body (no diff structure at all)."""
+    return "\n".join(f"def fn_{i}():\n    return {i}" for i in range(n))
+
+
+def _token_hunk_plus_full_rewrite(n: int = 60) -> str:
+    """The loophole payload: one tiny real hunk glued onto a full-file dump.
+
+    Under loose mode this passes (a hunk header exists somewhere); under strict
+    mode it is rejected because the body is overwhelmingly non-diff content.
+    """
+    hunk = "@@ -1,1 +1,1 @@\n-old = 1\n+old = 2\n"
+    return hunk + "\n" + _full_file_rewrite(n)
+
+
+class TestStrictDefaultOff:
+    """The strict layer must be OFF by default so the live loop is unchanged."""
+
+    def test_flag_absent_means_off(self, monkeypatch):
+        monkeypatch.delenv("AGENTRAIL_EVAL_LAYER_DIFF_ONLY_STRICT", raising=False)
+        assert diff_only_strict_enabled() is False
+
+    def test_typo_value_means_off(self, monkeypatch):
+        # Any non-"1" value (a typo'd flag) must keep the layer OFF.
+        monkeypatch.setenv("AGENTRAIL_EVAL_LAYER_DIFF_ONLY_STRICT", "true")
+        assert diff_only_strict_enabled() is False
+
+    def test_token_hunk_plus_rewrite_passes_when_off(self, monkeypatch):
+        """Loophole payload still ACCEPTED when strict is off (behavior unchanged)."""
+        monkeypatch.delenv("AGENTRAIL_EVAL_LAYER_DIFF_ONLY_STRICT", raising=False)
+        result = enforce(_token_hunk_plus_full_rewrite(), is_new_or_rename=False)
+        assert isinstance(result, Accepted)
+
+
+class TestStrictRejectsDisguisedRewrite:
+    """(a) A full-file rewrite of an existing file is flagged under strict mode."""
+
+    def test_token_hunk_plus_full_rewrite_rejected(self, strict_on):
+        """The loophole closes: a token hunk on a full-file dump is Rejected."""
+        result = enforce(_token_hunk_plus_full_rewrite(), is_new_or_rename=False)
+        assert isinstance(result, Rejected)
+        assert result.reason
+        assert "@@" in result.reason
+
+    def test_plain_full_rewrite_still_rejected(self, strict_on):
+        """No hunk at all is rejected under strict too (unchanged path)."""
+        result = enforce(_full_file_rewrite(), is_new_or_rename=False)
+        assert isinstance(result, Rejected)
+
+
+class TestStrictAllowsLegitimateOutput:
+    """(b) new files still allowed; (c) diff-style edits still pass — strict mode
+    must NOT reduce the agent's ability to produce a correct solution."""
+
+    def test_new_file_full_content_accepted(self, strict_on):
+        """(b) A legitimate new file is still accepted under strict mode."""
+        result = enforce(_full_file_rewrite(), is_new_or_rename=True)
+        assert isinstance(result, Accepted)
+
+    def test_small_existing_file_with_hunk_accepted(self, strict_on):
+        """(c) A small diff-style edit passes (below the size floor)."""
+        diff = (
+            "--- a/foo.py\n"
+            "+++ b/foo.py\n"
+            "@@ -1,3 +1,3 @@\n"
+            " def foo():\n"
+            "-    return 1\n"
+            "+    return 2\n"
+        )
+        result = enforce(diff, is_new_or_rename=False)
+        assert isinstance(result, Accepted)
+
+    def test_large_genuine_multi_hunk_patch_accepted(self, strict_on):
+        """(c) A LARGE real patch (mostly +/-/context lines) is NOT a false positive."""
+        hunks = []
+        for h in range(12):
+            base = h * 10
+            hunks.append(
+                f"@@ -{base},4 +{base},5 @@\n"
+                f" context_{base}\n"
+                f"-old_{base}\n"
+                f"+new_{base}\n"
+                f"+added_{base}\n"
+                f" context_{base + 1}\n"
+            )
+        patch = "--- a/big.py\n+++ b/big.py\n" + "".join(hunks)
+        # Sanity: this patch is well over the strict line floor.
+        assert len([ln for ln in patch.splitlines() if ln.strip()]) >= 40
+        result = enforce(patch, is_new_or_rename=False)
+        assert isinstance(result, Accepted)

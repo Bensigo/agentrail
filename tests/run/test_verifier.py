@@ -182,11 +182,16 @@ class VetoOnlyGateTests(unittest.TestCase):
         verdict = evaluate_objective(
             verification_evidence=gate_evidence(Verdict(accepted=True, reason="lgtm")),
         )
-        # No failed reasons (it contributed nothing), and crucially no
-        # independent-verification evidence line was recorded.
+        # The accept contributed NOTHING: no independent-verification evidence
+        # line was recorded, and the gate's state is whatever the (absent) real
+        # checks decide — never driven to a pass *by* the accept. With no checks
+        # there is nothing to fail, so it stays "pass", but the accept added no
+        # positive signal of its own (the seam was skipped as advisory).
         self.assertNotIn(
             "independent-verification", {e.name for e in verdict.evidence}
         )
+        self.assertEqual(verdict.state, "pass")
+        self.assertEqual(verdict.failed_reasons, [])
 
     def test_reject_vetoes_an_otherwise_green_run(self) -> None:
         from agentrail.guardrails.policies.objective import (

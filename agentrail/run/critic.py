@@ -88,14 +88,14 @@ def score_candidate(output: str) -> CriticVerdict:
 def gate_evidence(verdict: CriticVerdict) -> Dict[str, Any]:
     """Bridge a ``CriticVerdict`` to the ``verification_evidence`` the gate consumes.
 
-    The independent review is always *required* once the critic ran (it is a
-    blocking check), so this always sets ``required=True`` and reports ``valid``
-    from the verdict's acceptance — the SAME shape ``verifier.gate_evidence``
-    produces, so the Objective Gate is byte-identical (AC2). A REJECT
-    (``valid=False``) makes the gate refuse GREEN exactly as a verify reject does.
+    **Veto-only**, mirroring :func:`agentrail.run.verifier.gate_evidence`: the
+    critic can only *veto*, never bless. A REJECT is a blocking
+    ``{"required": True, "valid": False}``; an ACCEPT is advisory
+    ``{"required": False, "valid": True}`` — the gate skips it (it consumes the
+    evidence only when ``required`` is truthy), so the critic's accept can never
+    by itself turn the gate GREEN. Producing the identical shape as the verifier
+    keeps the Objective Gate uniform (AC2).
     """
-    return {
-        "required": True,
-        "valid": bool(verdict.accepted),
-        "reason": verdict.reason,
-    }
+    if verdict.accepted:
+        return {"required": False, "valid": True, "reason": verdict.reason}
+    return {"required": True, "valid": False, "reason": verdict.reason}

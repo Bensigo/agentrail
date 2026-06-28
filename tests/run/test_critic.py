@@ -86,16 +86,19 @@ class ScoreCandidateTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# AC2: the verdict reaches the gate UNCHANGED (same evidence shape as verify)
+# AC2: the verdict reaches the gate as VETO-ONLY evidence (same shape as verify).
+# The critic, like the verifier, can only veto: a REJECT blocks done, but an
+# ACCEPT is advisory (``required=False``) and can never drive the gate green on
+# its own. Both bridges produce the identical shape so the gate stays uniform.
 # ---------------------------------------------------------------------------
 
 class GateEvidenceTests(unittest.TestCase):
-    def test_accept_evidence_required_and_valid(self) -> None:
+    def test_accept_evidence_is_advisory_not_required(self) -> None:
         ev = gate_evidence(score_candidate('{"verdict": "accept", "reason": "ok"}'))
-        self.assertTrue(ev["required"])
+        self.assertFalse(ev["required"])
         self.assertTrue(ev["valid"])
 
-    def test_reject_evidence_required_and_invalid(self) -> None:
+    def test_reject_evidence_is_required_and_invalid(self) -> None:
         ev = gate_evidence(score_candidate('{"verdict": "reject", "reason": "gamed"}'))
         self.assertTrue(ev["required"])
         self.assertFalse(ev["valid"])
@@ -106,13 +109,15 @@ class GateEvidenceTests(unittest.TestCase):
         Gate consumes from the verifier, so the gate is byte-identical (AC2)."""
         from agentrail.run import verifier as verifier_mod
 
-        critic_ev = gate_evidence(score_candidate('{"verdict": "reject", "reason": "x"}'))
-        verify_ev = verifier_mod.gate_evidence(
-            verifier_mod.parse_verdict('{"verdict": "reject", "reason": "x"}')
-        )
-        self.assertEqual(set(critic_ev.keys()), set(verify_ev.keys()))
-        self.assertEqual(critic_ev["required"], verify_ev["required"])
-        self.assertEqual(critic_ev["valid"], verify_ev["valid"])
+        for raw in (
+            '{"verdict": "reject", "reason": "x"}',
+            '{"verdict": "accept", "reason": "x"}',
+        ):
+            critic_ev = gate_evidence(score_candidate(raw))
+            verify_ev = verifier_mod.gate_evidence(verifier_mod.parse_verdict(raw))
+            self.assertEqual(set(critic_ev.keys()), set(verify_ev.keys()))
+            self.assertEqual(critic_ev["required"], verify_ev["required"])
+            self.assertEqual(critic_ev["valid"], verify_ev["valid"])
 
 
 if __name__ == "__main__":

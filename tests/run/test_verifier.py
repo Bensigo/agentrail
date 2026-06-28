@@ -126,20 +126,82 @@ class DecideTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# gate_evidence — bridge to the Objective Gate (so a rejection blocks done)
+# gate_evidence — VETO-ONLY bridge to the Objective Gate.
+#
+# The LLM verifier can only *veto* (reject → block done). Its *accept* is
+# advisory: it can never by itself turn the gate GREEN — green must come from
+# real executed checks. So:
+#   * REJECT  → required=True,  valid=False  (a blocking veto)
+#   * ACCEPT  → required=False, valid=True   (advisory; gate skips it entirely)
+# objective.evaluate_objective only consumes verification_evidence when
+# ``required`` is truthy, so an accept contributes neither pass nor fail.
 # ---------------------------------------------------------------------------
 
 class GateEvidenceTests(unittest.TestCase):
-    def test_accept_evidence_required_and_valid(self) -> None:
+    def test_accept_evidence_is_advisory_not_required(self) -> None:
+        """An ACCEPT is advisory only: ``required`` is False so the gate does not
+        treat the LLM's blessing as a verification signal — it cannot drive green."""
         ev = gate_evidence(Verdict(accepted=True, reason="ok"))
-        self.assertTrue(ev["required"])
+        self.assertFalse(ev["required"])
         self.assertTrue(ev["valid"])
 
-    def test_reject_evidence_required_and_invalid(self) -> None:
+    def test_reject_evidence_is_required_and_invalid(self) -> None:
+        """A REJECT is a blocking veto: ``required`` True, ``valid`` False."""
         ev = gate_evidence(Verdict(accepted=False, reason="gamed"))
         self.assertTrue(ev["required"])
         self.assertFalse(ev["valid"])
         self.assertIn("gamed", ev["reason"])
+
+
+# ---------------------------------------------------------------------------
+# Veto-only, end-to-end through the real Objective Gate. These prove the
+# contract the unit shape implies: an LLM accept cannot rescue a red, and an
+# LLM reject vetoes an otherwise-green run.
+# ---------------------------------------------------------------------------
+
+class VetoOnlyGateTests(unittest.TestCase):
+    def test_accept_cannot_turn_a_failing_check_green(self) -> None:
+        from agentrail.guardrails.policies.objective import (
+            CheckResult,
+            evaluate_objective,
+        )
+
+        verdict = evaluate_objective(
+            checks=[CheckResult(name="tests", passed=False, detail="3 failed")],
+            verification_evidence=gate_evidence(Verdict(accepted=True, reason="lgtm")),
+        )
+        self.assertEqual(verdict.state, "fail")
+        self.assertIn("tests", verdict.failed_reasons)
+
+    def test_accept_does_not_by_itself_make_a_run_green(self) -> None:
+        """With NO real checks, an LLM accept must not produce a pass on its own —
+        the verification seam is skipped (advisory), so green can only come from
+        executed evidence elsewhere, not the verifier."""
+        from agentrail.guardrails.policies.objective import evaluate_objective
+
+        verdict = evaluate_objective(
+            verification_evidence=gate_evidence(Verdict(accepted=True, reason="lgtm")),
+        )
+        # No failed reasons (it contributed nothing), and crucially no
+        # independent-verification evidence line was recorded.
+        self.assertNotIn(
+            "independent-verification", {e.name for e in verdict.evidence}
+        )
+
+    def test_reject_vetoes_an_otherwise_green_run(self) -> None:
+        from agentrail.guardrails.policies.objective import (
+            CheckResult,
+            evaluate_objective,
+        )
+
+        verdict = evaluate_objective(
+            checks=[CheckResult(name="tests", passed=True, detail="all passed")],
+            verification_evidence=gate_evidence(
+                Verdict(accepted=False, reason="tautological test")
+            ),
+        )
+        self.assertEqual(verdict.state, "fail")
+        self.assertIn("independent verification rejected", verdict.failed_reasons)
 
 
 if __name__ == "__main__":

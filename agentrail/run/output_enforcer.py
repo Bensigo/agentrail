@@ -31,17 +31,21 @@ from agentrail.context.snapshot_push import load_link
 from agentrail.guardrails.policies.output_enforcer import (  # noqa: F401
     Accepted,
     EnforceResult,
+    EnforcementStep,
     Rejected,
     all_changes_new_or_rename,
     diff_only_strict_enabled,
     enforce,
+    plan_enforcement_step,
 )
 
 __all__ = [
     "Accepted",
     "Rejected",
     "EnforceResult",
+    "EnforcementStep",
     "enforce",
+    "plan_enforcement_step",
     "all_changes_new_or_rename",
     "diff_only_strict_enabled",
     "push_format_rejection_event",

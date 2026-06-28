@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from agentrail.run.pricing import PRICES, cache_savings, cost_usd
+from agentrail.run.pricing import PRICES, cache_savings, cost_breakdown, cost_usd
 
 
 @dataclass
@@ -355,3 +355,74 @@ def test_cache_savings_unknown_model_does_not_raise() -> None:
     result = cache_savings(usage)  # must not raise
     assert isinstance(result, dict)
     assert "cache_hit_rate" in result
+
+
+# ---------------------------------------------------------------------------
+# cost_breakdown — the four-component split must (a) sum to cost_usd exactly
+# (parity invariant), (b) price each component at token×rate/1e6, and (c)
+# mirror cost_usd's unknown-model behaviour (warn + all-zeros).
+# ---------------------------------------------------------------------------
+
+def test_cost_breakdown_components_sum_to_total_and_match_cost_usd() -> None:
+    """The four components sum to total_usd, and total_usd == cost_usd(usage)."""
+    model = "claude-sonnet-4-5"
+    usage = _Usage(
+        model=model,
+        input_tokens=1_000_000,
+        output_tokens=500_000,
+        cache_tokens=200_000,
+        cache_creation_tokens=100_000,
+    )
+    bd = cost_breakdown(usage)
+    component_sum = (
+        bd["input_usd"]
+        + bd["output_usd"]
+        + bd["cache_read_usd"]
+        + bd["cache_write_usd"]
+    )
+    assert bd["total_usd"] == pytest.approx(component_sum, rel=1e-12)
+    # Parity with the single-source scalar pricer — the breakdown can never
+    # disagree with the total the rest of the system computes.
+    assert bd["total_usd"] == pytest.approx(cost_usd(usage), rel=1e-12)
+
+
+def test_cost_breakdown_per_component_math() -> None:
+    """Each component equals token_count × rate / 1_000_000."""
+    model = "claude-sonnet-4-5"
+    rates = PRICES[model]
+    usage = _Usage(
+        model=model,
+        input_tokens=1_000_000,
+        output_tokens=500_000,
+        cache_tokens=200_000,
+        cache_creation_tokens=100_000,
+    )
+    bd = cost_breakdown(usage)
+    assert bd["input_usd"] == pytest.approx(1_000_000 * rates.input / 1_000_000, rel=1e-12)
+    assert bd["output_usd"] == pytest.approx(500_000 * rates.output / 1_000_000, rel=1e-12)
+    assert bd["cache_read_usd"] == pytest.approx(200_000 * rates.cache / 1_000_000, rel=1e-12)
+    assert bd["cache_write_usd"] == pytest.approx(
+        100_000 * rates.cache_write / 1_000_000, rel=1e-12
+    )
+
+
+def test_cost_breakdown_unknown_model_returns_zeros() -> None:
+    """Unknown model → all-zeros dict (mirrors cost_usd's non-fatal $0)."""
+    usage = _Usage(model="gpt-99-turbo-ultra", input_tokens=100, output_tokens=50, cache_tokens=10)
+    with warnings.catch_warnings(record=True):
+        bd = cost_breakdown(usage)
+    assert bd == {
+        "input_usd": 0.0,
+        "output_usd": 0.0,
+        "cache_read_usd": 0.0,
+        "cache_write_usd": 0.0,
+        "total_usd": 0.0,
+    }
+
+
+def test_cost_breakdown_unknown_model_emits_warning() -> None:
+    """cost_breakdown emits a UserWarning naming the unknown model."""
+    model_name = "gpt-99-turbo-ultra"
+    usage = _Usage(model=model_name, input_tokens=100, output_tokens=50, cache_tokens=0)
+    with pytest.warns(UserWarning, match=model_name):
+        cost_breakdown(usage)

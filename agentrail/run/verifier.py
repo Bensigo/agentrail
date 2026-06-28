@@ -151,13 +151,20 @@ def decide(verdict: Verdict) -> VerificationResult:
 def gate_evidence(verdict: Verdict) -> Dict[str, Any]:
     """Bridge a ``Verdict`` to the ``verification_evidence`` the gate consumes.
 
-    Independent Verification is always *required* once the verifier ran (it is a
-    blocking check, unlike advisory review), so this always sets
-    ``required=True`` and reports ``valid`` from the verdict's acceptance. A
-    REJECT (``valid=False``) makes the Objective Gate refuse GREEN (AC3).
+    **Veto-only.** The LLM verifier can only *veto*, never bless: its accept is
+    advisory and must never by itself turn the Objective Gate GREEN — green must
+    come from real executed checks (CI / objective tests / Red-Green Proof). So:
+
+    * REJECT → ``{"required": True, "valid": False}`` — a blocking veto; the gate
+      refuses GREEN even on an otherwise all-pass run (AC3).
+    * ACCEPT → ``{"required": False, "valid": True}`` — advisory only. The gate
+      consumes ``verification_evidence`` only when ``required`` is truthy, so an
+      accept contributes neither pass nor fail: it cannot rescue a failing check.
+
+    This closes the false-green where an LLM's unbacked "accept" alone counted as
+    a verification signal. It does NOT give the gate access to the hidden
+    answer-key tests — green still rests entirely on the non-hidden checks.
     """
-    return {
-        "required": True,
-        "valid": bool(verdict.accepted),
-        "reason": verdict.reason,
-    }
+    if verdict.accepted:
+        return {"required": False, "valid": True, "reason": verdict.reason}
+    return {"required": True, "valid": False, "reason": verdict.reason}

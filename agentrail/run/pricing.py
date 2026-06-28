@@ -113,6 +113,59 @@ def cost_usd(usage: object) -> float:
     ) / 1_000_000
 
 
+def cost_breakdown(usage: object) -> Dict[str, float]:
+    """Return the per-component dollar decomposition of *usage*.
+
+    Splits the single ``cost_usd`` scalar into the four priced components so a
+    report can show WHERE the dollars go (input vs output vs cache-read vs
+    cache-write), not just the total:
+
+    - ``input_usd``       — ``input_tokens`` at the input rate
+    - ``output_usd``      — ``output_tokens`` at the output rate
+    - ``cache_read_usd``  — ``cache_tokens`` at the (cheaper) cache-read rate
+    - ``cache_write_usd`` — ``cache_creation_tokens`` at the cache-write rate
+    - ``total_usd``       — the sum of the four, equal to ``cost_usd(usage)``
+
+    Uses the SAME ``_resolve_rates`` + ``/1_000_000`` math as ``cost_usd`` so the
+    components sum to ``cost_usd`` exactly (parity invariant). Unknown model →
+    mirrors ``cost_usd``: emits ``UserWarning`` and returns all-zeros so the
+    calling pipeline is never blocked.
+    """
+    model: str = usage.model  # type: ignore[attr-defined]
+    rates = _resolve_rates(model)
+    if rates is None:
+        warnings.warn(
+            f"pricing: unknown model {model!r} — cost_breakdown returning zeros",
+            UserWarning,
+            stacklevel=2,
+        )
+        return {
+            "input_usd": 0.0,
+            "output_usd": 0.0,
+            "cache_read_usd": 0.0,
+            "cache_write_usd": 0.0,
+            "total_usd": 0.0,
+        }
+
+    input_tokens: int = usage.input_tokens    # type: ignore[attr-defined]
+    output_tokens: int = usage.output_tokens  # type: ignore[attr-defined]
+    cache_tokens: int = usage.cache_tokens    # type: ignore[attr-defined]
+    cache_creation_tokens: int = getattr(usage, "cache_creation_tokens", 0)
+
+    input_usd = input_tokens * rates.input / 1_000_000
+    output_usd = output_tokens * rates.output / 1_000_000
+    cache_read_usd = cache_tokens * rates.cache / 1_000_000
+    cache_write_usd = cache_creation_tokens * rates.cache_write / 1_000_000
+
+    return {
+        "input_usd": input_usd,
+        "output_usd": output_usd,
+        "cache_read_usd": cache_read_usd,
+        "cache_write_usd": cache_write_usd,
+        "total_usd": input_usd + output_usd + cache_read_usd + cache_write_usd,
+    }
+
+
 def cache_savings(usage: object) -> Dict[str, Any]:
     """Compute prompt-cache hit metrics for *usage*.
 

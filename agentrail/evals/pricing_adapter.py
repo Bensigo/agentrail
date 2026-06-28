@@ -13,7 +13,9 @@ to drift from production cost. The adapter is a pass-through by design.
 
 from __future__ import annotations
 
-from agentrail.run.pricing import cost_usd
+from typing import Dict
+
+from agentrail.run.pricing import cost_breakdown, cost_usd
 
 
 def usage_cost(usage: object) -> float:
@@ -25,3 +27,15 @@ def usage_cost(usage: object) -> float:
     ``agentrail.run.usage_capture``.
     """
     return cost_usd(usage)
+
+
+def usage_cost_breakdown(usage: object) -> Dict[str, float]:
+    """Return the per-component dollar split of *usage*, single-source delegated.
+
+    Same pass-through rail as ``usage_cost``: the eval never hard-codes prices,
+    so the breakdown (input/output/cache-read/cache-write + total) comes from
+    ``agentrail.run.pricing.cost_breakdown``. ``total_usd`` equals
+    ``usage_cost(usage)`` by construction (parity-tested), so the reporter's
+    breakdown section can never disagree with its total-cost column.
+    """
+    return cost_breakdown(usage)

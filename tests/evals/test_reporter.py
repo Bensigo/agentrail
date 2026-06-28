@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from agentrail.run.pricing import cost_usd
+from agentrail.run.pricing import cost_breakdown, cost_usd
 from agentrail.run.usage_capture import Usage
 
-from agentrail.evals.pricing_adapter import usage_cost
+from agentrail.evals.pricing_adapter import usage_cost, usage_cost_breakdown
 from agentrail.evals.reporter import (
     ArmReport,
     LayerDelta,
@@ -202,6 +202,101 @@ def test_all_failure_arm_no_divide_by_zero():
 
 def test_empty_records_returns_empty():
     assert aggregate([]) == []
+
+
+# ---------------------------------------------------------------------------
+# Cost breakdown — the per-arm Total cost split into its four priced
+# components. The adapter delegates to the single-source pricer (parity), the
+# aggregate sums per-record breakdowns (multi-model-safe), and the markdown
+# renders a "## Cost breakdown" section with n/a shares for a zero-spend arm.
+# ---------------------------------------------------------------------------
+
+def test_usage_cost_breakdown_adapter_parity():
+    """The adapter's total_usd equals usage_cost and cost_usd for the same usage."""
+    usage = _usage(
+        input_tokens=12_345,
+        output_tokens=6_789,
+        cache_tokens=2_000,
+        cache_creation_tokens=1_500,
+    )
+    bd = usage_cost_breakdown(usage)
+    assert bd == cost_breakdown(usage)
+    # cost_usd sums-then-divides; the breakdown divides-then-sums, so parity is
+    # exact to float tolerance (not bit-identical) — the displayed total is the
+    # sum of the displayed components, which is what the report needs.
+    assert bd["total_usd"] == pytest.approx(usage_cost(usage), rel=1e-12)
+    assert usage_cost(usage) == cost_usd(usage)
+
+
+def test_aggregate_cost_components_sum_to_total():
+    """Per-arm component fields sum to total_cost_usd (parity carried through aggregate)."""
+    u = _usage(
+        input_tokens=1_000_000,
+        output_tokens=500_000,
+        cache_tokens=200_000,
+        cache_creation_tokens=100_000,
+    )
+    records = [
+        _rep("task-a", "full", True, u),
+        _rep("task-b", "full", False, u),
+    ]
+    r = aggregate(records)[0]
+    component_sum = (
+        r.input_cost_usd
+        + r.output_cost_usd
+        + r.cache_read_cost_usd
+        + r.cache_write_cost_usd
+    )
+    assert component_sum == pytest.approx(r.total_cost_usd, rel=1e-12)
+    # Each component is the sum of the matching per-record breakdown component.
+    bd = cost_breakdown(u)
+    assert r.input_cost_usd == pytest.approx(2 * bd["input_usd"], rel=1e-12)
+    assert r.output_cost_usd == pytest.approx(2 * bd["output_usd"], rel=1e-12)
+    assert r.cache_read_cost_usd == pytest.approx(2 * bd["cache_read_usd"], rel=1e-12)
+    assert r.cache_write_cost_usd == pytest.approx(2 * bd["cache_write_usd"], rel=1e-12)
+
+
+def test_aggregate_cost_components_multi_model_arm():
+    """An arm whose records use different models sums per-record breakdowns, not arm totals × one rate."""
+    u_sonnet = _usage(input_tokens=1_000_000, output_tokens=500_000, model="claude-sonnet-4-5")
+    u_haiku = _usage(input_tokens=1_000_000, output_tokens=500_000, model="claude-haiku-4-5")
+    records = [
+        _rep("task-a", "full", True, u_sonnet),
+        _rep("task-a", "full", True, u_haiku),
+    ]
+    r = aggregate(records)[0]
+    expected_input = (
+        cost_breakdown(u_sonnet)["input_usd"] + cost_breakdown(u_haiku)["input_usd"]
+    )
+    expected_output = (
+        cost_breakdown(u_sonnet)["output_usd"] + cost_breakdown(u_haiku)["output_usd"]
+    )
+    assert r.input_cost_usd == pytest.approx(expected_input, rel=1e-12)
+    assert r.output_cost_usd == pytest.approx(expected_output, rel=1e-12)
+    # Sanity: the two models price differently, so this is a real multi-model sum.
+    assert cost_breakdown(u_sonnet)["input_usd"] != cost_breakdown(u_haiku)["input_usd"]
+
+
+def test_cost_breakdown_section_present_in_markdown():
+    """render_markdown emits a '## Cost breakdown' section with the component columns."""
+    u = _usage(input_tokens=1_000_000, output_tokens=500_000, cache_tokens=200_000)
+    records = [_rep("task-a", "full", True, u)]
+    md = render_markdown(aggregate(records), generated_at="2026-06-23")
+    assert "## Cost breakdown" in md
+    assert "Cache-read $" in md
+    assert "Cache-write $" in md
+
+
+def test_cost_breakdown_zero_spend_arm_shows_na_shares():
+    """A zero-spend arm reads as n/a shares (not 0%) — never a divide-by-zero."""
+    u = _usage()  # all-zero tokens → $0 spend
+    records = [_rep("task-a", "free", True, u)]
+    md = render_markdown(aggregate(records), generated_at="2026-06-23")
+    assert "## Cost breakdown" in md
+    # The zero-spend arm's share columns are "n/a", distinct from a measured 0%.
+    free_lines = [ln for ln in md.splitlines() if ln.startswith("| free ")]
+    assert free_lines, "expected a cost-breakdown row for the zero-spend arm"
+    assert "n/a" in free_lines[-1]
 
 
 # ---------------------------------------------------------------------------

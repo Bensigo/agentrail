@@ -38,7 +38,7 @@ from agentrail.run.usage_capture import Usage
 
 from agentrail.evals.arms import LAYER_NAMES, NEW_FLOW_LAYERS
 from agentrail.evals.corpus.loader import DIFFICULTY_TAGS
-from agentrail.evals.pricing_adapter import usage_cost
+from agentrail.evals.pricing_adapter import usage_cost, usage_cost_breakdown
 from agentrail.evals.probes import (
     GuardrailCatchReport,
     RetryAttributionReport,
@@ -167,6 +167,15 @@ class ArmReport:
     # ``None`` today; the report renders that honestly as "n/a".
     mean_precision_at_budget: Optional[float] = None
     mean_citation_coverage: Optional[float] = None
+    # Per-component dollar split of ``total_cost_usd`` (issue: cost breakdown).
+    # Summed per-record through the single-source breakdown, so the four
+    # components sum to ``total_cost_usd`` exactly even when records in the arm
+    # used different models. Defaulted to 0.0 so positional construction in
+    # existing tests stays valid. The four ALWAYS sum to ``total_cost_usd``.
+    input_cost_usd: float = 0.0
+    output_cost_usd: float = 0.0
+    cache_read_cost_usd: float = 0.0
+    cache_write_cost_usd: float = 0.0
 
 
 def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
@@ -200,6 +209,20 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
     total_tokens = total_input + total_output + total_cache + total_cache_creation
 
     total_cost = sum(usage_cost(r.usage) for r in records)
+
+    # Per-component dollar split, summed per-record through the single-source
+    # breakdown. Records in one arm can use different models (e.g. plan vs
+    # execute vs verify phases), so we cannot multiply the arm's token totals by
+    # a single rate — each record is priced at its own model's rates and the
+    # components accumulated. By the per-record parity invariant
+    # (breakdown total == usage_cost), these four sum to ``total_cost`` to within
+    # float epsilon; ``total_cost_usd`` stays the authoritative total. Compute
+    # each record's breakdown once, then accumulate (not four passes per record).
+    _breakdowns = [usage_cost_breakdown(r.usage) for r in records]
+    input_cost = sum(bd["input_usd"] for bd in _breakdowns)
+    output_cost = sum(bd["output_usd"] for bd in _breakdowns)
+    cache_read_cost = sum(bd["cache_read_usd"] for bd in _breakdowns)
+    cache_write_cost = sum(bd["cache_write_usd"] for bd in _breakdowns)
 
     # Headline cost metric: dollars per *solved* task. Undefined (None) when
     # nothing solved — the AC3 no-divide-by-zero guard.
@@ -260,6 +283,10 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
         strata=strata,
         mean_precision_at_budget=mean_precision,
         mean_citation_coverage=mean_coverage,
+        input_cost_usd=input_cost,
+        output_cost_usd=output_cost,
+        cache_read_cost_usd=cache_read_cost,
+        cache_write_cost_usd=cache_write_cost,
     )
 
 
@@ -562,6 +589,15 @@ def _fmt_rate_pct(value: Optional[float]) -> str:
     return _fmt_pct(value)
 
 
+def _cost_share(component: float, total: float) -> Optional[float]:
+    """Return *component*'s share of *total*, or ``None`` when *total* is zero.
+
+    ``None`` (→ ``n/a``) when the arm spent nothing, so a zero-spend arm reads
+    differently from a genuine 0%-share component — and never a divide-by-zero.
+    """
+    return (component / total) if total else None
+
+
 def _fmt_ratio(value: Optional[float]) -> str:
     """Format a 0..1 quality ratio, preserving the None-vs-0.0 distinction (#994).
 
@@ -669,6 +705,44 @@ def render_markdown(
             f"| {_fmt_seconds(r.mean_wall_time_s)} "
             f"| {r.total_tokens} | {_fmt_usd(r.total_cost_usd)} "
             f"| {_fmt_usd(r.dollars_per_solved)} |"
+        )
+    lines.append("")
+
+    # --- Cost breakdown: where the dollars go ----------------------------
+    # The per-arm summary shows ONLY the total; this splits it into the four
+    # priced components (input / output / cache-read / cache-write) so a cost
+    # change is attributable — e.g. a warm-cache win shows up as cache-read
+    # dollars rising while input dollars fall. The four components sum to the
+    # arm's Total cost (single-source breakdown, parity-tested). The % column
+    # is each component's share of that arm's total.
+    lines.append("## Cost breakdown")
+    lines.append("")
+    lines.append(
+        "Per-arm split of **Total cost** into its four priced components "
+        "(input, output, cache-read, cache-write). All figures route through "
+        "the single-source pricing module, and the four components sum to the "
+        "arm's total cost. The `%` columns are each component's share of that "
+        "arm's total cost (`n/a` when the arm spent nothing)."
+    )
+    lines.append("")
+    lines.append(
+        "| Arm | Input $ | Input % | Output $ | Output % | Cache-read $ "
+        "| Cache-read % | Cache-write $ | Cache-write % | Total $ |"
+    )
+    lines.append(
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+    )
+    for r in reports:
+        total = r.total_cost_usd
+        lines.append(
+            f"| {r.arm} "
+            f"| {_fmt_usd(r.input_cost_usd)} | {_fmt_rate_pct(_cost_share(r.input_cost_usd, total))} "
+            f"| {_fmt_usd(r.output_cost_usd)} | {_fmt_rate_pct(_cost_share(r.output_cost_usd, total))} "
+            f"| {_fmt_usd(r.cache_read_cost_usd)} "
+            f"| {_fmt_rate_pct(_cost_share(r.cache_read_cost_usd, total))} "
+            f"| {_fmt_usd(r.cache_write_cost_usd)} "
+            f"| {_fmt_rate_pct(_cost_share(r.cache_write_cost_usd, total))} "
+            f"| {_fmt_usd(r.total_cost_usd)} |"
         )
     lines.append("")
 

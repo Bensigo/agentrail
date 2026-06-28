@@ -51,6 +51,35 @@ PYTHON_PROOF_CONFIG = ProofConfig(
     test_globs=("test_*.py", "*_test.py"),
 )
 
+# --- Wider-tests scope (issue: broaden the Red-Green Proof's pytest target set) ---
+#
+# By DEFAULT the gate runs ONLY the test files the agent changed (#907/#1012
+# behaviour). That misses a change that *breaks an existing, unchanged test*: the
+# agent never touches that test, so it never runs, and the gate goes green on a
+# regression the hidden answer-key tests would catch.
+#
+# The "wider" scope additionally executes EXISTING repo tests so such a
+# regression reds the gate. This carries a higher risk of red-ing legitimate runs
+# (a pre-existing failing/flaky test now counts against the run), so it is
+# **flag-gated and default-OFF**: ``changed`` reproduces today's behaviour exactly
+# and is a no-op on merge.
+#
+#   AGENTRAIL_VERIFY_TEST_SCOPE = changed (default) | dirs | repo
+#     changed → only the agent's changed test files (current behaviour).
+#     dirs    → plus existing tests under the directories the change touched.
+#     repo    → plus every existing test in the repo.
+#   AGENTRAIL_VERIFY_PYTEST_PATHS = explicit space-separated paths (operator
+#     override; REPLACES the computed set entirely, highest precedence).
+TEST_SCOPE_ENV = "AGENTRAIL_VERIFY_TEST_SCOPE"
+TEST_PATHS_ENV = "AGENTRAIL_VERIFY_PYTEST_PATHS"
+DEFAULT_TEST_SCOPE = "changed"
+
+# The directory holding the SEALED hidden answer-key tests. The gate must NEVER
+# execute these — doing so leaks the exam. The eval runner already strips them
+# from the agent's clone (runner._strip_answer_keys_from_clone); excluding them
+# here too is defense-in-depth so no scope can ever reach them even if present.
+HIDDEN_TEST_DIRNAME = "answer_key"
+
 
 # ---------------------------------------------------------------------------
 # Pure classification — delegates to the config-driven policy with the Python
@@ -106,6 +135,86 @@ def collect_changed_files(
     (the union of committed-on-branch and uncommitted working-tree changes).
     """
     return _git_adapter.collect_changed_files(repo_dir, base_ref=base_ref)
+
+
+# ---------------------------------------------------------------------------
+# Wider-tests target selection — which pytest files the Red-Green Proof runs.
+# Pure selection (testable) is split from impure repo discovery (os.walk).
+# ---------------------------------------------------------------------------
+
+def is_hidden_test_path(path: str) -> bool:
+    """True iff *path* lives under a sealed answer-key dir (never run by the gate)."""
+    return HIDDEN_TEST_DIRNAME in Path(path).parts
+
+
+def _is_under_changed_dirs(test_path: str, changed: Sequence[str]) -> bool:
+    """True iff *test_path*'s dir is, or is nested under, a changed file's dir."""
+    test_dir = Path(test_path).parent
+    for f in changed:
+        changed_dir = Path(f).parent
+        if test_dir == changed_dir:
+            return True
+        try:
+            test_dir.relative_to(changed_dir)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def select_pytest_targets(
+    changed: Sequence[str],
+    *,
+    scope: str,
+    repo_test_files: Sequence[str],
+    explicit_paths: Sequence[str] = (),
+) -> List[str]:
+    """Choose the pytest target set for the Red-Green Proof run (pure).
+
+    Always runs the agent's *changed* test files. Beyond that, *scope* broadens to
+    existing repo tests so a change that breaks a pre-existing test reds the gate:
+
+      * ``"changed"`` (default) — only the changed test files (#907/#1012).
+      * ``"dirs"`` — plus existing tests under the directories the change touched.
+      * ``"repo"`` — plus every existing test in the repo.
+
+    ``explicit_paths`` (AGENTRAIL_VERIFY_PYTEST_PATHS), when given, REPLACES the
+    computed set entirely (operator override). Sealed answer-key tests are
+    excluded from every path in every mode — the gate never runs the hidden exam.
+    Returns a deduped, sorted list.
+    """
+    if explicit_paths:
+        chosen = [p for p in explicit_paths if p and not is_hidden_test_path(p)]
+        return sorted(dict.fromkeys(chosen))
+
+    targets = set(changed_test_files(changed))
+    norm = (scope or "").strip().lower()
+    if norm == "repo":
+        targets.update(repo_test_files)
+    elif norm == "dirs":
+        targets.update(
+            t for t in repo_test_files if _is_under_changed_dirs(t, changed)
+        )
+    # else "changed"/unknown → changed test files only (the default, no widening).
+
+    return sorted(t for t in targets if not is_hidden_test_path(t))
+
+
+def discover_repo_test_files(repo_dir: Path | str = ".") -> List[str]:
+    """Walk *repo_dir* for existing pytest files (impure), skipping VCS/sealed dirs.
+
+    Returns repo-relative POSIX paths of files matching the Python test globs,
+    pruning ``.git`` and any ``answer_key`` subtree (the sealed hidden exam) so a
+    wider scope can never discover the answer key.
+    """
+    root = Path(repo_dir)
+    found: List[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in {".git", HIDDEN_TEST_DIRNAME}]
+        for fn in filenames:
+            if is_test_file(fn):
+                found.append(Path(dirpath, fn).relative_to(root).as_posix())
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +286,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # test-only diff now reds in decide() and never reaches pytest — closing the
     # false-green where running the agent's own self-confirming test went green.
     if exit_code == 0 and not message:
-        test_files = changed_test_files(changed)
-        print("verify: running changed tests:", file=sys.stderr)
+        scope = os.environ.get(TEST_SCOPE_ENV, DEFAULT_TEST_SCOPE)
+        explicit_paths = os.environ.get(TEST_PATHS_ENV, "").split()
+        # Only walk the repo when a wider scope or an explicit override actually
+        # needs the existing-test set — the default ``changed`` scope does not.
+        norm = (scope or "").strip().lower()
+        repo_test_files = (
+            discover_repo_test_files(".")
+            if not explicit_paths and norm in {"dirs", "repo"}
+            else []
+        )
+        test_files = select_pytest_targets(
+            changed,
+            scope=scope,
+            repo_test_files=repo_test_files,
+            explicit_paths=explicit_paths,
+        )
+        if not test_files:
+            # Defensive: decide() only returns this sentinel when a changed test
+            # exists, so the set is non-empty in practice. If a filter ever empties
+            # it, red rather than pass an empty pytest invocation (which exits 0).
+            print(
+                "verify: no runnable test targets after scope selection (red)",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"verify: running tests (scope={norm or DEFAULT_TEST_SCOPE}):", file=sys.stderr)
         for t in test_files:
             print(f"  {t}", file=sys.stderr)
         return subprocess.call(

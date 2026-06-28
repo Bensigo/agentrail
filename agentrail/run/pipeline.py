@@ -29,6 +29,7 @@ from agentrail.run.output_enforcer import (
     Rejected,
     all_changes_new_or_rename,
     enforce,
+    plan_enforcement_step,
     push_format_rejection_event,
 )
 from agentrail.run.pricing import cost_usd
@@ -99,6 +100,32 @@ def bestofn_testfirst_enabled() -> bool:
     Any other value (including ABSENT) keeps today's behavior.
     """
     return os.environ.get(f"AGENTRAIL_EVAL_LAYER_{bestofn.TESTFIRST_LAYER}") == "1"
+
+
+def diff_only_enforce_enabled() -> bool:
+    """Is diff-only REJECT+LOOP enforcement ON for this run? DEFAULT OFF.
+
+    Like :func:`bestofn_testfirst_enabled` (NOT :func:`layer_enabled`): this is a
+    cost lever that must DEFAULT OFF so merging it does NOT change the live
+    autonomous loop. ON only on an explicit
+    ``AGENTRAIL_EVAL_LAYER_DIFF_ONLY_ENFORCE="1"``; ABSENT or any other value keeps
+    today's observe-only behavior, so a run is byte-identical to before this seam.
+    """
+    return os.environ.get("AGENTRAIL_EVAL_LAYER_DIFF_ONLY_ENFORCE") == "1"
+
+
+DIFF_ONLY_DEFAULT_MAX_ATTEMPTS = 2  # 1 initial + 1 redo-as-diff; kept small (cost lever)
+
+
+def resolve_diff_only_max_attempts() -> int:
+    """Resolve the diff-enforcement attempt ceiling. Defensive: missing/blank/
+    non-int/<1 -> default, so a typo can never make it skip execute entirely."""
+    raw = (os.environ.get("AGENTRAIL_DIFF_ONLY_MAX_ATTEMPTS") or "").strip()
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return DIFF_ONLY_DEFAULT_MAX_ATTEMPTS
+    return n if n >= 1 else DIFF_ONLY_DEFAULT_MAX_ATTEMPTS
 
 
 @dataclass
@@ -526,6 +553,64 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
 
     # 19. Return
     return (status, plan_output)
+
+
+def _run_execute_with_diff_enforcement(rc: "RunContext", plan_output: str) -> int:
+    """Run execute, re-running it as a diff when the output is a full-file rewrite.
+
+    DEFAULT-OFF seam (gated by :func:`diff_only_enforce_enabled` at the call site).
+    On a Rejected diff-format check it writes the reason to a findings file and
+    re-runs execute (bounded by :func:`resolve_diff_only_max_attempts`), feeding the
+    reason back via the existing ``verifier_findings_file`` channel so the agent
+    redoes the change as a unified diff. After the cap, it FALLS BACK to today's
+    behavior: it returns the last execute status and lets the Objective Gate decide
+    done-ness (never hard-fails a run that would pass today). Telemetry (section
+    17c inside run_issue_phase) still fires per attempt, unchanged.
+    """
+    max_attempts = resolve_diff_only_max_attempts()
+    findings_file = ""
+    status = 0
+    for attempt in range(1, max_attempts + 1):
+        status, _ = run_issue_phase(
+            rc, "execute", attempt,
+            verifier_findings_file=findings_file, plan_output=plan_output,
+        )
+        if status != 0:
+            return status  # execute itself failed; let the normal path handle it
+        phase_dir = rc.run_dir / ("execute" if attempt == 1 else f"execute-{attempt}")
+        phase_output_file = phase_dir / "output.md"
+        if not phase_output_file.exists():
+            return status
+        try:
+            content = phase_output_file.read_text(encoding="utf-8", errors="replace")
+            try:
+                porcelain = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=rc.target_dir, capture_output=True, text=True, timeout=10,
+                ).stdout
+            except Exception:
+                porcelain = ""
+            result = enforce(content, is_new_or_rename=all_changes_new_or_rename(porcelain))
+        except Exception as _exc:  # never let enforcement break a run
+            _log.debug("diff-only enforcement skipped: %s", _exc)
+            return status
+        step = plan_enforcement_step(result, attempt=attempt, max_attempts=max_attempts)
+        if not step.retry:
+            return status
+        findings_path = phase_dir / "diff_enforcement.md"
+        try:
+            findings_path.write_text(
+                "# Output format rejected — redo as a unified diff\n\n"
+                "Your previous output rewrote a whole existing file. Emit ONLY the "
+                "changed hunks as a unified diff/patch (@@ ... @@), not the full file.\n\n"
+                f"Reason: {step.findings}\n",
+                encoding="utf-8",
+            )
+            findings_file = str(findings_path)
+        except Exception as _exc:
+            _log.debug("diff-only findings write failed: %s", _exc)
+            return status
+    return status
 
 
 def _capture_candidate_diff(rc: RunContext, attempt: int) -> None:
@@ -1057,7 +1142,13 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         status, bestofn_evidence = _bestofn_execute(rc, plan_output)
         last_phase = "execute"
     elif status == 0:
-        status, _ = run_issue_phase(rc, "execute", 1, verifier_findings_file="", plan_output=plan_output)
+        # Diff-only REJECT+LOOP enforcement (DEFAULT OFF) applies to the PLAIN
+        # execute path ONLY — never the best-of-N branch above — so the two attempt
+        # loops are not compounded into a token blowup. Both paths stay default-OFF.
+        if diff_only_enforce_enabled():
+            status = _run_execute_with_diff_enforcement(rc, plan_output)
+        else:
+            status, _ = run_issue_phase(rc, "execute", 1, verifier_findings_file="", plan_output=plan_output)
         last_phase = "execute"
 
     # 12a. Independent Verification (ADR 0008, #782): a blocking, narrow check by

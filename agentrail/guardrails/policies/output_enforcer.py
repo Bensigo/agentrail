@@ -121,6 +121,37 @@ EnforceResult = Union[Accepted, Rejected]
 
 
 # ---------------------------------------------------------------------------
+# Reject+loop decision (pure — no I/O)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class EnforcementStep:
+    """Pure decision: after a diff-format check, should execute be re-run?"""
+    retry: bool
+    findings: str = ""  # rejection reason to feed back to the next execute attempt
+
+
+def plan_enforcement_step(
+    result: "EnforceResult", *, attempt: int, max_attempts: int
+) -> EnforcementStep:
+    """Decide whether to re-run execute after a diff-format enforcement check (pure).
+
+    * Accepted                      -> no retry (the output is already a diff).
+    * Rejected, attempts remain     -> retry, carrying the reason as findings so
+                                       the next execute attempt redoes it as a diff.
+    * Rejected, at/over the cap      -> NO retry; carry the reason as findings for
+                                       telemetry, but give up gracefully (the caller
+                                       falls back to today's observe-only behavior).
+    """
+    if isinstance(result, Accepted):
+        return EnforcementStep(retry=False)
+    reason = getattr(result, "reason", "")
+    if attempt >= max_attempts:
+        return EnforcementStep(retry=False, findings=reason)
+    return EnforcementStep(retry=True, findings=reason)
+
+
+# ---------------------------------------------------------------------------
 # Core enforcer (pure — no I/O)
 # ---------------------------------------------------------------------------
 

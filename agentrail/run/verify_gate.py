@@ -61,8 +61,11 @@ PYTHON_PROOF_CONFIG = ProofConfig(
 # The "wider" scope additionally executes EXISTING repo tests so such a
 # regression reds the gate. This carries a higher risk of red-ing legitimate runs
 # (a pre-existing failing/flaky test now counts against the run), so it is
-# **flag-gated and default-OFF**: ``changed`` reproduces today's behaviour exactly
-# and is a no-op on merge.
+# **flag-gated and default-OFF**: ``changed`` reproduces today's behaviour (only
+# the agent's changed test files run) and is a no-op on merge. The one added
+# safeguard in every mode — including ``changed`` — is that a sealed answer-key
+# path is filtered out, which is unreachable in practice (the clone is stripped of
+# answer keys before the agent runs) but keeps the seal defensive in depth.
 #
 #   AGENTRAIL_VERIFY_TEST_SCOPE = changed (default) | dirs | repo
 #     changed → only the agent's changed test files (current behaviour).
@@ -143,8 +146,13 @@ def collect_changed_files(
 # ---------------------------------------------------------------------------
 
 def is_hidden_test_path(path: str) -> bool:
-    """True iff *path* lives under a sealed answer-key dir (never run by the gate)."""
-    return HIDDEN_TEST_DIRNAME in Path(path).parts
+    """True iff *path* lives under a sealed answer-key dir (never run by the gate).
+
+    Component match is case-insensitive: on case-insensitive filesystems (macOS,
+    Windows) a dir named ``Answer_Key`` is the same sealed exam dir, so a casing
+    variant must not slip past the seal.
+    """
+    return HIDDEN_TEST_DIRNAME in {p.lower() for p in Path(path).parts}
 
 
 def _is_under_changed_dirs(test_path: str, changed: Sequence[str]) -> bool:
@@ -210,7 +218,9 @@ def discover_repo_test_files(repo_dir: Path | str = ".") -> List[str]:
     root = Path(repo_dir)
     found: List[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in {".git", HIDDEN_TEST_DIRNAME}]
+        dirnames[:] = [
+            d for d in dirnames if d.lower() not in {".git", HIDDEN_TEST_DIRNAME}
+        ]
         for fn in filenames:
             if is_test_file(fn):
                 found.append(Path(dirpath, fn).relative_to(root).as_posix())

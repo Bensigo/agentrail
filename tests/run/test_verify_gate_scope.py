@@ -112,6 +112,10 @@ class AnswerKeyNeverSelectedTest(unittest.TestCase):
         self.assertFalse(is_hidden_test_path("pkg/test_mod.py"))
         # A substring match must NOT trigger — only a full path component.
         self.assertFalse(is_hidden_test_path("pkg/answer_keys_helper/test_x.py"))
+        # Casing variants are the SAME sealed dir on case-insensitive filesystems
+        # (macOS/Windows): a variant spelling must not slip past the seal.
+        self.assertTrue(is_hidden_test_path("x/Answer_Key/test_h.py"))
+        self.assertTrue(is_hidden_test_path("x/ANSWER_KEY/test_h.py"))
 
     def test_answer_key_excluded_from_repo_scope(self) -> None:
         targets = select_pytest_targets(
@@ -149,9 +153,14 @@ class DiscoverRepoTestFilesTest(unittest.TestCase):
             # .git is pruned
             (root / ".git").mkdir()
             (root / ".git" / "test_fake.py").write_text("def test_z(): pass\n")
-            # answer_key subtree is pruned (sealed hidden exam)
+            # answer_key subtree is pruned (sealed hidden exam) — nested...
             (root / "task" / HIDDEN_TEST_DIRNAME).mkdir(parents=True)
             (root / "task" / HIDDEN_TEST_DIRNAME / "test_hidden.py").write_text(
+                "def test_h(): pass\n"
+            )
+            # ...and at the repo root, where pruning must also fire.
+            (root / HIDDEN_TEST_DIRNAME).mkdir()
+            (root / HIDDEN_TEST_DIRNAME / "test_root_hidden.py").write_text(
                 "def test_h(): pass\n"
             )
 
@@ -162,6 +171,24 @@ class DiscoverRepoTestFilesTest(unittest.TestCase):
             self.assertNotIn("pkg/mod.py", found)
             self.assertFalse(any(".git" in f for f in found))
             self.assertFalse(any(HIDDEN_TEST_DIRNAME in f for f in found))
+            self.assertNotIn("test_root_hidden.py", found)
+
+    def test_prunes_answer_key_casing_variant(self) -> None:
+        """A casing variant of the sealed dir is pruned too — on case-insensitive
+        filesystems it IS the same dir, so discovery must never descend into it."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "task" / "Answer_Key").mkdir(parents=True)
+            (root / "task" / "Answer_Key" / "test_hidden.py").write_text(
+                "def test_h(): pass\n"
+            )
+            (root / "pkg").mkdir()
+            (root / "pkg" / "test_mod.py").write_text("def test_x(): pass\n")
+
+            found = set(discover_repo_test_files(root))
+
+            self.assertIn("pkg/test_mod.py", found)
+            self.assertFalse(any("Answer_Key" in f for f in found))
 
 
 if __name__ == "__main__":

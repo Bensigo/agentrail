@@ -577,10 +577,15 @@ def run_cost(args: List[str]) -> int:
                 output_tokens = row["output_tokens"]
                 cache_tokens = row["cache_tokens"]
 
-            rec = routing_record(_RowUsage(), phase="execute")
-            if rec is not None:
-                row["model_routing"] = rec
-                routing_records.append(rec)
+            execute_rec = routing_record(_RowUsage(), phase="execute")
+            if execute_rec is not None:
+                row["model_routing"] = execute_rec
+                routing_records.append(execute_rec)
+                # Apply the same recommendation to test-author so both phases
+                # use the same model (preserving cache sharing, see PR 1).
+                testauthor_rec = routing_record(_RowUsage(), phase="test-author")
+                if testauthor_rec is not None:
+                    routing_records.append(testauthor_rec)
 
         if opts["apply"] and routing_records:
             for rec in routing_records:

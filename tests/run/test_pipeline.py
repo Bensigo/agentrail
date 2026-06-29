@@ -2195,5 +2195,67 @@ class RunPromptTests(unittest.TestCase):
         self.assertIn("prompt-afk-objective-gate", run_dir.name)
 
 
+# ---------------------------------------------------------------------------
+# _run_execute_with_diff_enforcement — early-stop when tests pass (issue #979)
+# ---------------------------------------------------------------------------
+
+class DiffEnforcementEarlyStopTests(unittest.TestCase):
+    """AC: when _candidate_test_passed returns True after attempt 1,
+    run_issue_phase is called only once (no redundant attempt 2)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        target = _make_target(self._tmp.name)
+        run_dir = Path(self._tmp.name) / "run"
+        self.target = target
+        self.run_dir = run_dir
+        self.rc = _make_rc(target, run_dir)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_early_stop_when_tests_pass_after_attempt_1(self):
+        """When _candidate_test_passed returns True on attempt 1,
+        run_issue_phase is called exactly once — not twice."""
+        from agentrail.run.pipeline import _run_execute_with_diff_enforcement
+
+        call_count = []
+
+        def _fake_run_issue_phase(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            call_count.append(attempt)
+            return (0, "")
+
+        with patch("agentrail.run.pipeline.run_issue_phase", side_effect=_fake_run_issue_phase), \
+             patch("agentrail.run.pipeline._candidate_test_passed", return_value=True), \
+             patch.dict(os.environ, {"AGENTRAIL_EVAL_LAYER_DIFF_ONLY_MAX_ATTEMPTS": "5"}):
+            status = _run_execute_with_diff_enforcement(self.rc, "plan output")
+
+        self.assertEqual(status, 0)
+        self.assertEqual(call_count, [1], "execute must run exactly once when tests pass on attempt 1")
+
+    def test_continues_to_attempt_2_when_tests_fail(self):
+        """When _candidate_test_passed returns False and the diff is rejected,
+        run_issue_phase runs a second time."""
+        from agentrail.run.pipeline import _run_execute_with_diff_enforcement
+
+        call_count = []
+
+        def _fake_run_issue_phase(rc, phase, attempt, verifier_findings_file="", plan_output=""):
+            call_count.append(attempt)
+            phase_dir = rc.run_dir / ("execute" if attempt == 1 else f"execute-{attempt}")
+            phase_dir.mkdir(parents=True, exist_ok=True)
+            (phase_dir / "output.md").write_text("full file rewrite without diff markers\n" * 5)
+            return (0, "")
+
+        with patch("agentrail.run.pipeline.run_issue_phase", side_effect=_fake_run_issue_phase), \
+             patch("agentrail.run.pipeline._candidate_test_passed", return_value=False), \
+             patch("agentrail.run.pipeline.subprocess.run") as mock_git, \
+             patch.dict(os.environ, {"AGENTRAIL_EVAL_LAYER_DIFF_ONLY_MAX_ATTEMPTS": "2"}):
+            mock_git.return_value = MagicMock(stdout=" M existing.py\n", returncode=0)
+            _run_execute_with_diff_enforcement(self.rc, "plan output")
+
+        self.assertGreater(len(call_count), 1, "execute must retry when tests fail and diff is rejected")
+
+
 if __name__ == "__main__":
     unittest.main()

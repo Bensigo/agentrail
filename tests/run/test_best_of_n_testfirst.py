@@ -289,11 +289,12 @@ class BestOfNTestFirstPipelineTests(unittest.TestCase):
         self.assertEqual(result, 0)
 
     def test_flag_off_uses_legacy_critic_selector(self):
-        # Flag OFF (testfirst absent) + BESTOFN on: the merged #979 critic-only
-        # loop runs instead — it early-stops on the critic's ACCEPT (candidate 1),
-        # NOT on the test. This proves the seam defaults to today's behavior.
+        # Flag explicitly OFF (TESTFIRST_FLAG=0) + BESTOFN on: the merged #979
+        # critic-only loop runs instead — it early-stops on the critic's ACCEPT
+        # (candidate 1), NOT on the test. This proves the seam can be disabled.
         h = _Harness(test_results=[False, False, False], critic_scores=[1.0, 1.0, 1.0])
-        env = {"AGENTRAIL_EVAL_LAYER_BESTOFN": "1",
+        env = {TESTFIRST_FLAG: "0",
+               "AGENTRAIL_EVAL_LAYER_BESTOFN": "1",
                "AGENTRAIL_EVAL_LAYER_CRITIC": "1"}
         result = h.run(self.target, self.repo, env)
         # Legacy loop stops on the critic's first ACCEPT → one candidate.

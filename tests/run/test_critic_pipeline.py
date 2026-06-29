@@ -38,8 +38,15 @@ def _sentinel(target: Path) -> Path:
 
 
 def _clean_env(**overrides):
+    # These tests prove the STANDALONE critic path (issue #977: critic replaces
+    # verify). Best-of-N (issue #979) is a separate layer that wraps critic in a
+    # multi-candidate loop; it is disabled here so the tests stay focused on the
+    # standalone critic seam and are not pulled into the testfirst best-of-N path
+    # (which requires additional patches for run_objective_checks). To test
+    # best-of-N behaviour see tests/run/test_best_of_n_pipeline.py.
     env = {k: v for k, v in os.environ.items()
            if not k.startswith("AGENTRAIL_EVAL_LAYER_")}
+    env["AGENTRAIL_EVAL_LAYER_BESTOFN"] = "0"
     env.update(overrides)
     return patch.dict(os.environ, env, clear=True)
 

@@ -75,7 +75,7 @@ PYTHON_PROOF_CONFIG = ProofConfig(
 #     override; REPLACES the computed set entirely, highest precedence).
 TEST_SCOPE_ENV = "AGENTRAIL_VERIFY_TEST_SCOPE"
 TEST_PATHS_ENV = "AGENTRAIL_VERIFY_PYTEST_PATHS"
-DEFAULT_TEST_SCOPE = "changed"
+DEFAULT_TEST_SCOPE = "dirs"
 
 # The directory holding the SEALED hidden answer-key tests. The gate must NEVER
 # execute these — doing so leaks the exam. The eval runner already strips them

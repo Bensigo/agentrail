@@ -19,15 +19,33 @@ CONTEXT = "RETRIEVED-CTX: the auth handler lives in src/auth.py::login (line 42)
 # --------------------------------------------------------------------------- #
 # Flag gate (DEFAULT OFF).
 # --------------------------------------------------------------------------- #
-def test_flag_off_by_default_emits_nothing(tmp_path, monkeypatch):
+def test_flag_on_by_default(tmp_path, monkeypatch):
+    # DEFAULT ON: no env var, no config → forced_context_enabled returns True.
     monkeypatch.delenv("AGENTRAIL_FORCED_CONTEXT", raising=False)
+    assert ci.forced_context_enabled(tmp_path) is True
+
+
+def test_flag_off_via_env_emits_nothing(tmp_path, monkeypatch):
+    # Explicitly setting AGENTRAIL_FORCED_CONTEXT=0 disables the flag.
+    monkeypatch.setenv("AGENTRAIL_FORCED_CONTEXT", "0")
     assert ci.forced_context_enabled(tmp_path) is False
-    # No config, no env → no artifacts for any engine.
+    # With flag off, no artifacts for any engine.
     for engine in ("claude", "codex", "cursor"):
         assert ci.emit_forced_context(engine, tmp_path, CONTEXT) == []
     assert not (tmp_path / ".claude").exists()
     assert not (tmp_path / "AGENTS.md").exists()
     assert not (tmp_path / ".cursor").exists()
+
+
+def test_flag_off_via_config_emits_nothing(tmp_path, monkeypatch):
+    # Setting runners.forcedContext=false in config overrides the default ON.
+    monkeypatch.delenv("AGENTRAIL_FORCED_CONTEXT", raising=False)
+    cfg_dir = tmp_path / ".agentrail"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.json").write_text(json.dumps({"runners": {"forcedContext": False}}))
+    assert ci.forced_context_enabled(tmp_path) is False
+    for engine in ("claude", "codex", "cursor"):
+        assert ci.emit_forced_context(engine, tmp_path, CONTEXT) == []
 
 
 def test_flag_on_via_config(tmp_path, monkeypatch):

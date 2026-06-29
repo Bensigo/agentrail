@@ -456,10 +456,12 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
         # The MVP flow is test-author → execute (the plan phase is gone); keep a
         # "plan" override resolvable for any dormant caller, but the live phases
         # are test-author and execute.
+        # Cache-thrash invariant: test-author always uses the execute model so
+        # both phases share a cache prefix (prompt-cache is model-scoped).
+        execute_model = resolve_model_for_phase(agent, opts.model, str(target), "execute")
         for phase in ("test-author", "execute"):
-            model = resolve_model_for_phase(agent, opts.model, str(target), phase)
-            if model:
-                phase_commands[phase] = append_model_to_command(command, agent, model)
+            if execute_model:
+                phase_commands[phase] = append_model_to_command(command, agent, execute_model)
         # Independent Verifier (#782): a DIFFERENT-model verify command. Only set
         # when a model distinct from the Implementer's is available — otherwise
         # the pipeline runs no verify phase (AC1: never a same-model verifier).
@@ -501,10 +503,12 @@ def _phase_commands_for(opts: "RunOptions", agent: str, command: str, target: Pa
         return phase_commands
     # MVP flow is test-author → execute (plan is gone); keep a "plan" override
     # resolvable for any dormant caller, but the live phases are these two.
+    # Cache-thrash invariant: test-author always uses the execute model so
+    # both phases share a cache prefix (prompt-cache is model-scoped).
+    execute_model = resolve_model_for_phase(agent, opts.model, str(target), "execute")
     for phase in ("test-author", "execute"):
-        model = resolve_model_for_phase(agent, opts.model, str(target), phase)
-        if model:
-            phase_commands[phase] = append_model_to_command(command, agent, model)
+        if execute_model:
+            phase_commands[phase] = append_model_to_command(command, agent, execute_model)
     # Independent Verifier (#782): only a DIFFERENT-model verify command.
     # VERIFY_GATE layer (eval ablation): when OFF, never build the verify command
     # so no verify phase runs. ABSENT/"1" = ON = today's behavior.

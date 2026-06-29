@@ -2,6 +2,7 @@
 .afk-workflow/
 .memory/
 __pycache__/
+*.egg-info/
 .env
 .env.local
 

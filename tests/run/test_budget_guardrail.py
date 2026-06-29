@@ -72,12 +72,23 @@ COMMON_PATCHES = [
 
 def _apply_common_patches(test_case, target: Path):
     """Start all common patches and return the mocks dict."""
+    import os
     mocks = {}
     for p in COMMON_PATCHES:
         m = patch(p)
         mock = m.start()
         test_case.addCleanup(m.stop)
         mocks[p] = mock
+
+    # Disable cost-reduction eval layers so budget tests stay focused on the
+    # budget guardrail and are not affected by diff enforcement retries or
+    # best-of-N loops (which change the expected run_with_timeout call count).
+    env_patch = patch.dict(os.environ, {
+        "AGENTRAIL_EVAL_LAYER_DIFF_ONLY_ENFORCE": "0",
+        "AGENTRAIL_EVAL_LAYER_BESTOFN": "0",
+    })
+    env_patch.start()
+    test_case.addCleanup(env_patch.stop)
 
     mocks["agentrail.run.pipeline.ctx.issue_resolution_text"].return_value = "Fix it."
     mocks["agentrail.run.pipeline.skills.resolve_skills"].return_value = {

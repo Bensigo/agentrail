@@ -145,11 +145,13 @@ class BestOfNTests(unittest.TestCase):
 
     def test_generates_up_to_n_when_all_rejected(self):
         # Every candidate is rejected → exactly N execute+critic pairs, no more.
+        # Explicitly disable testfirst (default ON) to exercise critic-only ranking.
         result, cap = _run_issue_with_phase_stub(
             self.target, self.repo,
             self._phase_with_verdicts(["reject", "reject", "reject"]),
             phase_commands={"critic": "claude --model cheap"},
-            env={"AGENTRAIL_EVAL_LAYER_BESTOFN": "1", "AGENTRAIL_BESTOFN_N": "3"},
+            env={"AGENTRAIL_EVAL_LAYER_BESTOFN": "1", "AGENTRAIL_BESTOFN_N": "3",
+                 "AGENTRAIL_EVAL_LAYER_BESTOFN_TESTFIRST": "0"},
         )
         # All rejected → the gate refuses GREEN (a reject blocks done).
         self.assertNotEqual(result, 0)
@@ -170,11 +172,13 @@ class BestOfNTests(unittest.TestCase):
 
     def test_later_accept_is_selected_and_stops(self):
         # reject, reject, accept → three candidates, the third (accept) wins.
+        # Explicitly disable testfirst (default ON) to exercise critic-only ranking.
         result, cap = _run_issue_with_phase_stub(
             self.target, self.repo,
             self._phase_with_verdicts(["reject", "reject", "accept"]),
             phase_commands={"critic": "claude --model cheap"},
-            env={"AGENTRAIL_EVAL_LAYER_BESTOFN": "1", "AGENTRAIL_BESTOFN_N": "3"},
+            env={"AGENTRAIL_EVAL_LAYER_BESTOFN": "1", "AGENTRAIL_BESTOFN_N": "3",
+                 "AGENTRAIL_EVAL_LAYER_BESTOFN_TESTFIRST": "0"},
         )
         self.assertEqual(result, 0)
         self.assertEqual(cap["execute_attempts"], [1, 2, 3])

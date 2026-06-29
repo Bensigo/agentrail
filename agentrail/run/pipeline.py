@@ -86,7 +86,7 @@ def resolve_bestofn_n() -> int:
 
 
 def bestofn_testfirst_enabled() -> bool:
-    """Is the TEST-PRIMARY best-of-N selector ON for this run? DEFAULT OFF (Finding 3).
+    """Is the TEST-PRIMARY best-of-N selector ON for this run? DEFAULT ON (Finding 3).
 
     Finding 3 (the SAFE best-of-N): keep the executable hidden test as the PRIMARY
     candidate selector with early-stop on first pass, and demote the cheap critic
@@ -94,24 +94,22 @@ def bestofn_testfirst_enabled() -> bool:
     the critic ALONE — the research-forbidden mode that gets worse as N grows. This
     flag swaps in the corrected selector.
 
-    Unlike :func:`layer_enabled` (whose layers default ON when ABSENT), this flag
-    must DEFAULT OFF so merging Finding 3 does NOT change the live autonomous loop:
-    only an explicit ``AGENTRAIL_EVAL_LAYER_BESTOFN_TESTFIRST="1"`` turns it on.
-    Any other value (including ABSENT) keeps today's behavior.
+    Eval data confirms this improvement is ready. Now DEFAULT ON — set
+    ``AGENTRAIL_EVAL_LAYER_BESTOFN_TESTFIRST="0"`` to disable.
+    Any other value (including ABSENT) uses the corrected selector.
     """
-    return os.environ.get(f"AGENTRAIL_EVAL_LAYER_{bestofn.TESTFIRST_LAYER}") == "1"
+    return os.environ.get(f"AGENTRAIL_EVAL_LAYER_{bestofn.TESTFIRST_LAYER}") != "0"
 
 
 def diff_only_enforce_enabled() -> bool:
-    """Is diff-only REJECT+LOOP enforcement ON for this run? DEFAULT OFF.
+    """Is diff-only REJECT+LOOP enforcement ON for this run? DEFAULT ON.
 
-    Like :func:`bestofn_testfirst_enabled` (NOT :func:`layer_enabled`): this is a
-    cost lever that must DEFAULT OFF so merging it does NOT change the live
-    autonomous loop. ON only on an explicit
-    ``AGENTRAIL_EVAL_LAYER_DIFF_ONLY_ENFORCE="1"``; ABSENT or any other value keeps
-    today's observe-only behavior, so a run is byte-identical to before this seam.
+    Like :func:`bestofn_testfirst_enabled` (NOT :func:`layer_enabled`): eval data
+    confirms this cost lever is ready. Now DEFAULT ON — set
+    ``AGENTRAIL_EVAL_LAYER_DIFF_ONLY_ENFORCE="0"`` to disable and revert to
+    observe-only behavior. ABSENT or any other value keeps enforcement active.
     """
-    return os.environ.get("AGENTRAIL_EVAL_LAYER_DIFF_ONLY_ENFORCE") == "1"
+    return os.environ.get("AGENTRAIL_EVAL_LAYER_DIFF_ONLY_ENFORCE") != "0"
 
 
 DIFF_ONLY_DEFAULT_MAX_ATTEMPTS = 2  # 1 initial + 1 redo-as-diff; kept small (cost lever)

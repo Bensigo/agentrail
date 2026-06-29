@@ -6,7 +6,7 @@ Covers the PURE pieces of the flag-gated, DEFAULT-OFF diff-only output enforcer:
   check (Accepted -> no retry; Rejected with attempts left -> retry with the
   reason as findings; Rejected at/over the cap -> give up gracefully).
 * :func:`resolve_diff_only_max_attempts` — defensive cap resolver.
-* :func:`diff_only_enforce_enabled` — the DEFAULT-OFF flag (ON only on "1").
+* :func:`diff_only_enforce_enabled` — the DEFAULT-ON flag (OFF only on "0").
 
 These are pure: no subprocess, no agent invocation. The Rejected/Accepted inputs
 are built via the real :func:`enforce`, so the tests also pin that a plain
@@ -113,18 +113,18 @@ class TestDiffOnlyEnforceEnabled(unittest.TestCase):
         else:
             os.environ[self._ENV] = self._saved
 
-    def test_false_when_absent(self):
-        self.assertFalse(diff_only_enforce_enabled())
+    def test_true_when_absent(self):
+        self.assertTrue(diff_only_enforce_enabled())
 
     def test_false_on_zero(self):
         os.environ[self._ENV] = "0"
         self.assertFalse(diff_only_enforce_enabled())
 
-    def test_false_on_true_string(self):
+    def test_true_on_non_zero_string(self):
         os.environ[self._ENV] = "true"
-        self.assertFalse(diff_only_enforce_enabled())
+        self.assertTrue(diff_only_enforce_enabled())
 
-    def test_true_only_on_one(self):
+    def test_true_on_one(self):
         os.environ[self._ENV] = "1"
         self.assertTrue(diff_only_enforce_enabled())
 

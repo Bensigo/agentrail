@@ -575,6 +575,8 @@ def _run_execute_with_diff_enforcement(rc: "RunContext", plan_output: str) -> in
         )
         if status != 0:
             return status  # execute itself failed; let the normal path handle it
+        if _candidate_test_passed(rc):
+            return status
         phase_dir = rc.run_dir / ("execute" if attempt == 1 else f"execute-{attempt}")
         phase_output_file = phase_dir / "output.md"
         if not phase_output_file.exists():

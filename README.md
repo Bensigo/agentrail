@@ -3,7 +3,11 @@
 [![CI](https://github.com/Bensigo/agentrail/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Bensigo/agentrail/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-AgentRail is the control plane for AI coding agents. It gives agents durable context, workflow state, bounded issue execution, review loops, and verification gates so agent work is easier to inspect, resume, and trust.
+AgentRail is your AI fractional engineer. Label a GitHub issue `ready-for-agent`, and it picks it up — writes the code, opens a reviewed PR, and pings you on Telegram when it's done or needs a decision. You stay in the loop without babysitting the run.
+
+Unlike a pure software factory (automated pipelines that churn out output), AgentRail is designed to feel like a team member: it works unattended, but it communicates. You can message it, get notified on progress, and step in when it escalates. The Telegram integration is first-class — not an afterthought.
+
+Under the hood, AgentRail is the control plane that runs coding agents — Claude Code, Codex, or Cursor. It gives them durable repo context, bounded execution, independent review, and verification gates so their work is cheaper, inspectable, and safe to leave overnight.
 
 **Primary flow: hosted dashboard + self-hosted runner.** Sign up at
 [app.useagentrail.com](https://app.useagentrail.com), connect your GitHub repos,

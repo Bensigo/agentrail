@@ -146,3 +146,59 @@ describe("telegram webhook route — valid delivery", () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 });
+
+// #1031: the secret-token compare is now constant-time (timingSafeEqual +
+// length guard) instead of a plain `!==`. These lock in the three cases that
+// matter for that compare: an exact match still processes the update, a
+// same-length mismatch is ignored, and a DIFFERENT-length header must not
+// throw (timingSafeEqual throws on unequal-length buffers unless guarded).
+describe("telegram webhook route — constant-time secret compare (#1031)", () => {
+  it("MATCH: an exact-secret delivery is authenticated and processed", async () => {
+    mockGetConnector.mockResolvedValue(connector());
+    const res = await POST(
+      req({ message: { text: "/status", chat: { id: 12345 } } }, SECRET),
+      { params }
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ replied: true });
+    // Authenticated → the handler did real work (read the queue, sent a reply).
+    expect(mockListQueue).toHaveBeenCalledTimes(1);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("MISMATCH (same length): a wrong secret of equal length is ignored", async () => {
+    mockGetConnector.mockResolvedValue(connector());
+    // Same byte length as SECRET, different content — exercises timingSafeEqual
+    // returning false rather than the length guard short-circuiting.
+    const sameLenWrong = "x".repeat(SECRET.length);
+    expect(sameLenWrong.length).toBe(SECRET.length);
+    const res = await POST(
+      req({ message: { text: "/status", chat: { id: 12345 } } }, sameLenWrong),
+      { params }
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ignored: "bad secret token" });
+    expect(mockSend).not.toHaveBeenCalled();
+    // Rejected at the auth gate — never reached the queue read.
+    expect(mockListQueue).not.toHaveBeenCalled();
+  });
+
+  it("LENGTH MISMATCH: a shorter/longer secret is ignored, not thrown (200)", async () => {
+    mockGetConnector.mockResolvedValue(connector());
+    // Different length would make an unguarded timingSafeEqual throw; the length
+    // guard must turn it into a plain non-match and still return 200.
+    for (const wrong of ["short", `${SECRET}-and-then-some-extra`]) {
+      vi.clearAllMocks();
+      mockSend.mockResolvedValue({ ok: true });
+      mockGetSecret.mockResolvedValue("bot-token");
+      mockGetConnector.mockResolvedValue(connector());
+      const res = await POST(
+        req({ message: { text: "/status", chat: { id: 12345 } } }, wrong),
+        { params }
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ ignored: "bad secret token" });
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  });
+});

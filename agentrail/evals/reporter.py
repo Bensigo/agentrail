@@ -1450,6 +1450,7 @@ def write_markdown_report(
     reports_dir: Optional[Path] = None,
     date: str,
     records: Optional[Sequence[RepetitionRecord]] = None,
+    pack_scores: Optional[Sequence[ArmPackScore]] = None,
 ) -> Path:
     """Render and write a dated markdown report; return the written path.
 
@@ -1460,12 +1461,21 @@ def write_markdown_report(
     supplied, each FAILED run's diff + gate-failure reason + context-quality
     metrics are surfaced in the failure section. When ``None`` the report renders
     exactly as before (back-compatible).
+
+    ``pack_scores`` (#1029 AC3) is optional and forwarded to
+    :func:`render_markdown`; when supplied, the Rerank-arm section shows the
+    full-vs-full-minus-rerank pack precision/recall deltas (the AC2
+    :func:`pack_scorer.aggregate_pack_scores` output) alongside solve-rate and
+    cost. When ``None`` those rows render ``n/a`` — the report is otherwise
+    byte-identical to before, so no caller that omits it changes.
     """
     base = Path(reports_dir) if reports_dir is not None else default_reports_dir()
     base.mkdir(parents=True, exist_ok=True)
     path = base / f"eval-report-{date}.md"
     path.write_text(
-        render_markdown(reports, generated_at=date, records=records),
+        render_markdown(
+            reports, generated_at=date, records=records, pack_scores=pack_scores
+        ),
         encoding="utf-8",
     )
     return path

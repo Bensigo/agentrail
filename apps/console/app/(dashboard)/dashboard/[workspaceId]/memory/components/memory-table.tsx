@@ -7,9 +7,13 @@ import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
 export interface MemoryItemRecord {
   id: string;
   source: string;
+  type?: "decision" | "preference" | "fact";
+  written_by?: string;
   repository_name: string | null;
   content_preview: string;
   content: string;
+  /** True when the caller's role only permits the bounded preview (#1032). */
+  content_masked?: boolean;
   tags: string[];
   created_at: string;
   last_used_at: string | null;

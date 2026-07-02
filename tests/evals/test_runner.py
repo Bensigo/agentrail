@@ -56,9 +56,11 @@ from agentrail.evals.arms import (
 from agentrail.evals.corpus.loader import CorpusTask, HiddenTestRef
 from agentrail.evals.run_record import RetryEvent, RunRecord
 from agentrail.evals.runner import (
+    SYNTHETIC_MODEL,
     AgentExecution,
     AnswerKeyLeak,
     SandboxAgentExecutor,
+    is_network_artifact,
     run,
 )
 
@@ -847,3 +849,36 @@ def test_execute_real_clone_and_checkout_into_workdir_repo(
     # #970: the run command runs from the SOURCE tree (so source agentrail is
     # imported), NOT from the clone (which would shadow it).
     assert captured["run_cwd"] != str(workdir / "repo")
+
+
+# ---------------------------------------------------------------------------
+# Network-artifact marker at capture (issue #1033).
+#
+# The <synthetic> model id is the ECONNRESET synthetic-fallback marker: a run
+# with no diff, $0 cost, and solved=0 that is a NETWORK artifact, not a real
+# 0% score. runner.py single-sources both the constant and the predicate so the
+# spine/reporter never re-spell the literal.
+# ---------------------------------------------------------------------------
+
+
+def test_synthetic_model_constant_is_the_marker():
+    """The single-sourced marker literal is exactly ``<synthetic>``."""
+    assert SYNTHETIC_MODEL == "<synthetic>"
+
+
+def test_is_network_artifact_true_only_for_synthetic_marker():
+    """Only the ``<synthetic>`` marker is a network artifact."""
+    assert is_network_artifact(SYNTHETIC_MODEL) is True
+    assert is_network_artifact("<synthetic>") is True
+
+
+def test_is_network_artifact_false_for_real_models_and_none():
+    """Real models — and an unset/None model — are NOT network artifacts.
+
+    A genuine failed run keeps its real model id and stays counted; only the
+    ECONNRESET fallback (which overwrites model with the marker) is excluded.
+    """
+    assert is_network_artifact(MODEL) is False
+    assert is_network_artifact("claude-opus-4-8") is False
+    assert is_network_artifact("") is False
+    assert is_network_artifact(None) is False

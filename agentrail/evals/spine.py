@@ -107,7 +107,12 @@ from agentrail.evals.reporter import (
     render_routing_retry_audit_markdown,
 )
 from agentrail.evals.run_record import RunRecord
-from agentrail.evals.runner import AgentExecutor, SandboxAgentExecutor, run
+from agentrail.evals.runner import (
+    AgentExecutor,
+    SandboxAgentExecutor,
+    is_network_artifact,
+    run,
+)
 from agentrail.evals.scorer import Verdict, score
 from agentrail.run.usage_capture import Usage
 
@@ -365,6 +370,12 @@ def run_spine(
             gate_failure_reason=record.gate_failure_reason,
             precision_at_budget=record.precision_at_budget,
             citation_coverage=record.citation_coverage,
+            # Network-artifact hygiene (#1033): recognise an ECONNRESET
+            # synthetic-fallback run (RunRecord.model == "<synthetic>") AT
+            # CAPTURE and mark the rep so the reporter EXCLUDES it from every
+            # aggregate (no diff, $0; solved=0 is a network artifact, not a real
+            # score). Single-sourced predicate — the spine never re-derives it.
+            network_artifact=is_network_artifact(record.model),
         )
         # Issue #960: keep the RunRecord joined with its solved verdict (a pure
         # ScoredRun join — no new truth) so the intrinsic probes can be driven

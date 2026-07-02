@@ -45,8 +45,38 @@ def test_arm_has_name_layers_model_and_temperature() -> None:
     assert isinstance(arm.temperature, float)
 
 
-def test_layers_names_are_the_five_documented_layers() -> None:
-    assert LAYER_NAMES == ("context", "routing", "verify_gate", "retry", "guardrails")
+def test_layers_names_are_the_six_documented_layers() -> None:
+    assert LAYER_NAMES == (
+        "context",
+        "routing",
+        "verify_gate",
+        "retry",
+        "guardrails",
+        "rerank",
+    )
+
+
+def test_rerank_is_an_ablatable_layer() -> None:
+    """Issue #1029 AC1: ``rerank`` is a first-class ablation layer.
+
+    Adding it to ``LAYER_NAMES`` makes ``full-minus-rerank`` fall out of the
+    existing leave-one-out machinery (``full_minus`` / ``ablation_arms`` /
+    ``all_arms``) with no further wiring.
+    """
+    assert "rerank" in LAYER_NAMES
+    # A bool flag exists on the Layers dataclass (else all_off/all_on TypeError).
+    assert isinstance(full().layers.rerank, bool)
+
+
+def test_full_minus_rerank_disables_only_rerank() -> None:
+    """Issue #1029 AC1: ``full-minus-rerank`` is full with just rerank off."""
+    arm = full_minus("rerank")
+    assert arm.name == "full-minus-rerank"
+    layers = arm.layers.as_dict()
+    assert layers["rerank"] is False
+    # Every other layer stays ON (it is *full* minus exactly rerank).
+    others = {name: on for name, on in layers.items() if name != "rerank"}
+    assert all(others.values()), f"only rerank should be off, got {others}"
 
 
 def test_layers_exposes_each_named_layer_as_a_bool_flag() -> None:

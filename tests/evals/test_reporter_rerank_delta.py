@@ -21,6 +21,7 @@ from agentrail.evals.pack_scorer import ArmPackScore
 from agentrail.evals.reporter import (
     ArmReport,
     RerankDelta,
+    render_markdown,
     rerank_delta,
 )
 
@@ -227,3 +228,67 @@ def test_rerank_delta_is_frozen():
     delta = rerank_delta(reports)
     with pytest.raises(Exception):
         delta.solve_rate_delta = 0.0  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Markdown render section (#1029 AC3): the report must SHOW the delta
+# ---------------------------------------------------------------------------
+
+
+def test_render_shows_rerank_section_with_delta_rows():
+    """The report renders a Rerank-arm section with the full vs full-minus-rerank delta."""
+    reports = [
+        _arm_report("full", solve_rate=0.6, dollars_per_solved=0.40),
+        _arm_report("full-minus-rerank", solve_rate=0.4, dollars_per_solved=0.55),
+    ]
+    pack_scores = [
+        _pack_score("full", mean_precision=0.80, mean_recall=0.90),
+        _pack_score("full-minus-rerank", mean_precision=0.50, mean_recall=0.60),
+    ]
+
+    md = render_markdown(
+        reports,
+        generated_at="2026-07-02",
+        pack_scores=pack_scores,
+    )
+
+    # A dedicated section header naming the head-to-head.
+    assert "## Rerank arm" in md
+    # Solve-rate delta is ablation minus full = -20.0%.
+    assert "-20.0%" in md
+    # Dollars-per-solved delta = +$0.15 (removing rerank cost more per solved).
+    assert "+$0.1500" in md
+    # Precision and recall deltas from the AC2 pack scorer, both -30.0%.
+    lower = md.lower()
+    assert "precision" in lower
+    assert "recall" in lower
+    # both precision and recall dropped 30 points when rerank was removed.
+    assert md.count("-30.0%") >= 2
+
+
+def test_render_rerank_section_not_available_when_arm_absent():
+    """With only `full`, the rerank section renders an honest not-available line."""
+    reports = [
+        _arm_report("full", solve_rate=0.6, dollars_per_solved=0.4),
+    ]
+
+    md = render_markdown(reports, generated_at="2026-07-02")
+
+    assert "## Rerank arm" in md
+    assert "not available" in md.lower()
+
+
+def test_render_rerank_precision_recall_na_without_pack_scores():
+    """Both arms present but no pack scores -> precision/recall render n/a, never fabricated."""
+    reports = [
+        _arm_report("full", solve_rate=0.6, dollars_per_solved=0.40),
+        _arm_report("full-minus-rerank", solve_rate=0.4, dollars_per_solved=0.55),
+    ]
+
+    md = render_markdown(reports, generated_at="2026-07-02")
+
+    assert "## Rerank arm" in md
+    # solve-rate/$ deltas still render (they come from the ArmReports)...
+    assert "-20.0%" in md
+    # ...but precision/recall have no ground truth, so they are n/a.
+    assert "n/a" in md

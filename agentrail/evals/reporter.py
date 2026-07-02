@@ -752,6 +752,7 @@ def render_markdown(
     *,
     generated_at: str,
     records: Optional[Sequence[RepetitionRecord]] = None,
+    pack_scores: Optional[Sequence[ArmPackScore]] = None,
 ) -> str:
     """Render the per-arm reports as a markdown document.
 
@@ -767,6 +768,12 @@ def render_markdown(
     callers that pre-date #994), the report renders exactly as before — the new
     detail is simply omitted, never fabricated. The aggregate "## Context
     quality" section is driven by the ``ArmReport`` fields and renders either way.
+
+    ``pack_scores`` (issue #1029 AC3) is the OPTIONAL per-arm ground-truth
+    context-pack precision/recall (the AC2 :func:`pack_scorer.aggregate_pack_scores`
+    output). When supplied, the "## Rerank arm" head-to-head section adds
+    precision/recall delta rows; when ``None``, those two rows render ``n/a``
+    (the answer-key ground truth was not scored) — never a fabricated ``0.0``.
     """
     lines: List[str] = []
     lines.append("# AgentRail eval report")
@@ -892,6 +899,61 @@ def render_markdown(
             f"{_fmt_rate_pct(nf_delta.full_false_green_rate)} | "
             f"{_fmt_rate_pct(nf_delta.new_flow_false_green_rate)} | "
             f"{_fmt_signed_pct(nf_delta.false_green_rate_delta)} |"
+        )
+        lines.append("")
+
+    # --- Rerank arm: `full` vs `full-minus-rerank` (issue #1029 AC3) -----
+    # The rerank layer's worth as a leave-one-out ablation, on the headline
+    # metrics AND the AC2 ground-truth pack precision/recall (threaded in via
+    # ``pack_scores``). Each delta is `full-minus-rerank` minus `full` on the
+    # SAME run set, so each is falsifiable. Only rendered as a table when BOTH
+    # arms are present; precision/recall rows are `n/a` when no pack scores were
+    # scored (the answer-key ground truth was not computed), never a fake 0.0.
+    rr_delta = rerank_delta(reports, pack_scores=pack_scores)
+    lines.append("## Rerank arm (full vs full-minus-rerank)")
+    lines.append("")
+    if rr_delta is None:
+        lines.append(
+            "_Not available: this run set does not contain BOTH the `full` and "
+            "`full-minus-rerank` arms (run `--arm full --arm full-minus-rerank` "
+            "to populate this)._"
+        )
+        lines.append("")
+    else:
+        lines.append(
+            "`full-minus-rerank` turns the rerank layer OFF; every delta is "
+            "`full-minus-rerank` minus `full` on the SAME scorer and run set, so "
+            "each can come back **better or worse** when rerank is removed. Higher "
+            "is better for solve-rate, precision, and recall; lower is better for "
+            "dollars-per-solved. Precision/recall are the offline pack-vs-answer-key "
+            "ground truth (#1029 AC2); `n/a` marks an undefined value (an arm never "
+            "solved, or the answer-key scorer was not run)."
+        )
+        lines.append("")
+        lines.append(
+            "| Metric | full | full-minus-rerank | Delta (full-minus-rerank - full) |"
+        )
+        lines.append("| --- | ---: | ---: | ---: |")
+        lines.append(
+            f"| Solve-rate | {_fmt_pct(rr_delta.full_solve_rate)} | "
+            f"{_fmt_pct(rr_delta.ablation_solve_rate)} | "
+            f"{_fmt_signed_pct(rr_delta.solve_rate_delta)} |"
+        )
+        lines.append(
+            f"| Dollars-per-solved-task | "
+            f"{_fmt_usd(rr_delta.full_dollars_per_solved)} | "
+            f"{_fmt_usd(rr_delta.ablation_dollars_per_solved)} | "
+            f"{_fmt_signed_usd(rr_delta.dollars_per_solved_delta)} |"
+        )
+        lines.append(
+            f"| Pack precision | {_fmt_ratio(rr_delta.full_mean_precision)} | "
+            f"{_fmt_ratio(rr_delta.ablation_mean_precision)} | "
+            f"{_fmt_signed_pct(rr_delta.precision_delta)} |"
+        )
+        lines.append(
+            f"| Pack recall | {_fmt_ratio(rr_delta.full_mean_recall)} | "
+            f"{_fmt_ratio(rr_delta.ablation_mean_recall)} | "
+            f"{_fmt_signed_pct(rr_delta.recall_delta)} |"
         )
         lines.append("")
 

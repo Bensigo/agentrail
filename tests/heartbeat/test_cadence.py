@@ -22,10 +22,18 @@ from agentrail.heartbeat.cadence import (
 from agentrail.heartbeat.dispatcher import Dispatcher
 
 
-# An issue body that passes the Input-Contract gate (has a checkbox AC).
-_VALID_BODY = """## Acceptance criteria
-- [ ] AC1: it does the thing
+# An issue body that passes the Input-Contract gate (has a checkbox AC). Templated
+# on the issue number so distinct issues carry distinct content — real issues do,
+# and the Input-Contract v2 content-dedup (#1026) parks byte-identical bodies as
+# duplicate content. Tests that want a specific body still override it via `bodies`.
+def _valid_body(number: int) -> str:
+    return f"""## Acceptance criteria
+- [ ] AC1: issue #{number} does the thing
 """
+
+
+# A single valid body, for callers/tests that don't care about the number.
+_VALID_BODY = _valid_body(0)
 
 # An issue body the Input-Contract gate rejects (no machine-checkable AC).
 _NO_AC_BODY = "Please just make it nicer, thanks."
@@ -53,7 +61,7 @@ def _dispatcher(bodies=None, launched=None):
     bodies = bodies if bodies is not None else {}
     launched = launched if launched is not None else []
     return Dispatcher(
-        fetch_body=lambda number: bodies.get(number, _VALID_BODY),
+        fetch_body=lambda number: bodies.get(number, _valid_body(number)),
         launch_run=lambda entry: launched.append(entry.number),
     )
 

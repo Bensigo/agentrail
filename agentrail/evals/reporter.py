@@ -38,6 +38,7 @@ from agentrail.run.usage_capture import Usage
 
 from agentrail.evals.arms import LAYER_NAMES, NEW_FLOW_LAYERS
 from agentrail.evals.corpus.loader import DIFFICULTY_TAGS
+from agentrail.evals.pack_scorer import ArmPackScore
 from agentrail.evals.pricing_adapter import usage_cost, usage_cost_breakdown
 from agentrail.evals.probes import (
     GuardrailCatchReport,
@@ -538,6 +539,104 @@ def new_flow_delta(reports: Sequence[ArmReport]) -> Optional[NewFlowDelta]:
         false_green_rate_delta=_opt_delta(
             nf_r.false_green_rate, full_r.false_green_rate
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rerank-arm head-to-head delta (issue #1029 AC3) — ``full`` vs
+# ``full-minus-rerank`` on solve-rate + $/solved (from the ArmReports) AND
+# context-pack precision/recall (the #1029 AC2 ground-truth scorer, threaded in
+# from ``pack_scorer.ArmPackScore`` — the ArmReport does NOT carry them).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RerankDelta:
+    """``full-minus-rerank`` vs ``full`` delta on the rerank layer's worth (#1029 AC3).
+
+    Every delta is ``full-minus-rerank`` minus ``full`` on the SAME run set /
+    scorer — the leave-one-out convention (turning the rerank layer OFF), so it
+    matches the sign convention of :func:`layer_deltas`' ablation column. Each is
+    falsifiable — removing rerank can make any metric come back better OR worse:
+
+    - ``solve_rate_delta`` — higher solve-rate is better, so a NEGATIVE delta
+      means removing rerank solved fewer (rerank earned its place).
+    - ``dollars_per_solved_delta`` — lower $/solved is better, so a POSITIVE delta
+      means removing rerank cost MORE per solved task. ``None`` when either arm
+      never solved (undefined $/solved).
+    - ``precision_delta`` / ``recall_delta`` — higher is better, so a NEGATIVE
+      delta means removing rerank surfaced a worse pack (rerank helped). ``None``
+      when either arm's pack precision/recall is undefined or not supplied — the
+      offline pack scorer (#1029 AC2) must be threaded in for these to be defined.
+
+    The source values are carried for transparency so the markdown never
+    re-derives them; each undefined value stays ``None``, distinct from a
+    measured ``0.0``.
+    """
+
+    full_solve_rate: float
+    ablation_solve_rate: float
+    solve_rate_delta: float
+
+    full_dollars_per_solved: Optional[float]
+    ablation_dollars_per_solved: Optional[float]
+    dollars_per_solved_delta: Optional[float]
+
+    full_mean_precision: Optional[float]
+    ablation_mean_precision: Optional[float]
+    precision_delta: Optional[float]
+
+    full_mean_recall: Optional[float]
+    ablation_mean_recall: Optional[float]
+    recall_delta: Optional[float]
+
+
+def rerank_delta(
+    reports: Sequence[ArmReport],
+    *,
+    pack_scores: Optional[Sequence[ArmPackScore]] = None,
+) -> Optional[RerankDelta]:
+    """The ``full-minus-rerank`` vs ``full`` head-to-head delta, or ``None`` when an arm is absent.
+
+    Returns ``None`` (undefined — never a fabricated row) unless BOTH the
+    ``full`` and ``full-minus-rerank`` arms are in *reports*. Solve-rate and
+    dollars-per-solved come from the per-arm :class:`ArmReport`; precision/recall
+    come from *pack_scores* (the #1029 AC2 :func:`pack_scorer.aggregate_pack_scores`
+    output) when supplied — they are ``None`` when *pack_scores* is omitted or
+    does not carry the arm, since the ``ArmReport`` never carries the ground-truth
+    pack scores. Each metric delta is ``full-minus-rerank`` minus ``full``; the
+    dollars-per-solved and precision/recall deltas are ``None`` when either side's
+    value is undefined (no divide-by-zero, no one-sided number).
+    """
+    by_arm = {r.arm: r for r in reports}
+    full_r = by_arm.get("full")
+    ablation_r = by_arm.get("full-minus-rerank")
+    if full_r is None or ablation_r is None:
+        return None
+
+    packs_by_arm = {p.arm: p for p in (pack_scores or ())}
+    full_pack = packs_by_arm.get("full")
+    ablation_pack = packs_by_arm.get("full-minus-rerank")
+    full_precision = full_pack.mean_precision if full_pack else None
+    ablation_precision = ablation_pack.mean_precision if ablation_pack else None
+    full_recall = full_pack.mean_recall if full_pack else None
+    ablation_recall = ablation_pack.mean_recall if ablation_pack else None
+
+    return RerankDelta(
+        full_solve_rate=full_r.solve_rate,
+        ablation_solve_rate=ablation_r.solve_rate,
+        solve_rate_delta=ablation_r.solve_rate - full_r.solve_rate,
+        full_dollars_per_solved=full_r.dollars_per_solved,
+        ablation_dollars_per_solved=ablation_r.dollars_per_solved,
+        dollars_per_solved_delta=_opt_delta(
+            ablation_r.dollars_per_solved, full_r.dollars_per_solved
+        ),
+        full_mean_precision=full_precision,
+        ablation_mean_precision=ablation_precision,
+        precision_delta=_opt_delta(ablation_precision, full_precision),
+        full_mean_recall=full_recall,
+        ablation_mean_recall=ablation_recall,
+        recall_delta=_opt_delta(ablation_recall, full_recall),
     )
 
 

@@ -14,7 +14,13 @@ from unittest.mock import patch
 
 import pytest
 
-from agentrail.run.usage_capture import Usage, capture_usage, _claude_projects_dir
+from agentrail.run.usage_capture import (
+    Usage,
+    capture_usage,
+    capture_reads,
+    record_reads_into_run_json,
+    _claude_projects_dir,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -344,3 +350,289 @@ class TestUnknownAgent:
         assert capture_usage("hermes", target, 0.0) is None
         assert capture_usage("cursor", target, 0.0) is None
         assert capture_usage("custom-bot", target, 0.0) is None
+
+
+# ===========================================================================
+# Read harvest (PRD2 Phase 0): capture_reads → run.json
+# ===========================================================================
+
+
+class TestClaudeReadHarvest:
+    """AC1: a claude run's harvested reads (path + size/tokens) are captured."""
+
+    def _make_projects_dir(self, tmp_path: Path, target: Path) -> Path:
+        encoded = re.sub(r"[^A-Za-z0-9-]", "-", str(target.resolve()))
+        projects_dir = tmp_path / "claude" / ".claude" / "projects" / encoded
+        projects_dir.mkdir(parents=True, exist_ok=True)
+        return projects_dir
+
+    def test_harvests_reads_with_size_and_tokens(self, tmp_path: Path) -> None:
+        target = tmp_path / "repo"
+        target.mkdir()
+        projects_dir = self._make_projects_dir(tmp_path, target)
+
+        since = time.time() - 60
+        body = "line\n" * 40  # 200 bytes → 50 tokens est
+        transcript = projects_dir / "session.jsonl"
+        _write_jsonl(transcript, [
+            {"message": {"content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "Read",
+                 "input": {"file_path": "/repo/src/app.py"}},
+            ]}},
+            {"toolUseResult": {"type": "text", "file": {
+                "filePath": "/repo/src/app.py", "content": body,
+                "numLines": 40, "startLine": 1, "totalLines": 40}}},
+        ])
+        _set_mtime(transcript, time.time())
+
+        fake_home = tmp_path / "claude"
+        with patch("agentrail.run.usage_capture.Path.home", return_value=fake_home):
+            cov = capture_reads("claude", target, since)
+
+        assert cov.status == "ok"
+        assert cov.engine == "claude"
+        d = cov.to_dict()
+        assert d["fileCount"] == 1
+        f = d["files"][0]
+        assert f["path"] == "/repo/src/app.py"
+        assert f["bytes"] == len(body.encode("utf-8"))
+        assert f["tokensEst"] == len(body.encode("utf-8")) // 4
+        assert f["engine"] == "claude"
+
+    def test_read_without_result_falls_back_to_disk_stat(self, tmp_path: Path) -> None:
+        target = tmp_path / "repo"
+        target.mkdir()
+        real_file = target / "on_disk.txt"
+        real_file.write_text("x" * 120)
+        projects_dir = self._make_projects_dir(tmp_path, target)
+
+        since = time.time() - 60
+        transcript = projects_dir / "session.jsonl"
+        _write_jsonl(transcript, [
+            {"message": {"content": [
+                {"type": "tool_use", "id": "toolu_2", "name": "Read",
+                 "input": {"file_path": str(real_file)}},
+            ]}},
+        ])
+        _set_mtime(transcript, time.time())
+
+        fake_home = tmp_path / "claude"
+        with patch("agentrail.run.usage_capture.Path.home", return_value=fake_home):
+            cov = capture_reads("claude", target, since)
+
+        assert cov.status == "ok"
+        f = cov.to_dict()["files"][0]
+        assert f["bytes"] == 120  # picked up from the on-disk stat
+
+    def test_no_reads_is_ok_empty_not_na(self, tmp_path: Path) -> None:
+        # An engine we CAN read, whose transcript genuinely has no reads, is
+        # status=ok with zero files — that is a MEASURED zero, distinct from n/a.
+        target = tmp_path / "repo"
+        target.mkdir()
+        projects_dir = self._make_projects_dir(tmp_path, target)
+        since = time.time() - 60
+        transcript = projects_dir / "session.jsonl"
+        _write_jsonl(transcript, [
+            {"message": {"usage": {"input_tokens": 1, "output_tokens": 1}}},
+        ])
+        _set_mtime(transcript, time.time())
+
+        fake_home = tmp_path / "claude"
+        with patch("agentrail.run.usage_capture.Path.home", return_value=fake_home):
+            cov = capture_reads("claude", target, since)
+
+        assert cov.status == "ok"
+        d = cov.to_dict()
+        assert d["fileCount"] == 0
+        assert d["files"] == []
+
+    def test_missing_transcript_dir_is_na_not_zero(self, tmp_path: Path) -> None:
+        # AC3 variant: claude engine but NO transcript directory → n/a, not zero.
+        target = tmp_path / "repo"
+        target.mkdir()
+        fake_home = tmp_path / "no_such_home"
+        with patch("agentrail.run.usage_capture.Path.home", return_value=fake_home):
+            cov = capture_reads("claude", target, time.time() - 60)
+
+        d = cov.to_dict()
+        assert d["status"] == "n/a"
+        assert d["format"] == "claude-transcript-missing"
+        assert "fileCount" not in d and "files" not in d
+
+
+class TestCodexReadHarvest:
+    """AC2: codex reads are harvested from the rollout format."""
+
+    def _make_session_dir(self, tmp_path: Path, session_id: str) -> Path:
+        session_dir = tmp_path / "codex" / ".codex" / "sessions" / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        return session_dir
+
+    def test_harvests_exec_command_reads(self, tmp_path: Path) -> None:
+        target = tmp_path / "myrepo"
+        target.mkdir()
+        session_dir = self._make_session_dir(tmp_path, "sess-r")
+        since = time.time() - 60
+        rollout = session_dir / "rollout-001.jsonl"
+        _write_jsonl(rollout, [
+            {"type": "session_meta", "cwd": str(target.resolve())},
+            {"type": "response_item", "payload": {
+                "type": "function_call", "name": "exec_command",
+                "call_id": "call_1",
+                "arguments": json.dumps({"cmd": "sed -n '1,240p' /myrepo/main.go",
+                                         "workdir": str(target.resolve())})}},
+            {"type": "response_item", "payload": {
+                "type": "function_call_output", "call_id": "call_1",
+                "output": "...\nOriginal token count: 1089\n..."}},
+            # a non-read command must be ignored
+            {"type": "response_item", "payload": {
+                "type": "function_call", "name": "exec_command",
+                "call_id": "call_2",
+                "arguments": json.dumps({"cmd": "go build ./...",
+                                         "workdir": str(target.resolve())})}},
+        ])
+        _set_mtime(rollout, time.time())
+
+        fake_home = tmp_path / "codex"
+        with patch("agentrail.run.usage_capture.Path.home", return_value=fake_home):
+            cov = capture_reads("codex", target, since)
+
+        assert cov.status == "ok"
+        assert cov.engine == "codex"
+        d = cov.to_dict()
+        assert d["fileCount"] == 1
+        f = d["files"][0]
+        assert f["path"] == "/myrepo/main.go"
+        assert f["tokensEst"] == 1089  # exact count from the tool output
+        assert f["engine"] == "codex"
+
+    def test_cat_and_head_are_reads(self, tmp_path: Path) -> None:
+        target = tmp_path / "myrepo"
+        target.mkdir()
+        real = target / "f.txt"
+        real.write_text("y" * 80)
+        session_dir = self._make_session_dir(tmp_path, "sess-cat")
+        since = time.time() - 60
+        rollout = session_dir / "rollout-001.jsonl"
+        _write_jsonl(rollout, [
+            {"type": "session_meta", "cwd": str(target.resolve())},
+            {"type": "response_item", "payload": {
+                "type": "function_call", "name": "exec_command",
+                "call_id": "c1",
+                "arguments": json.dumps({"cmd": f"cat {real}"})}},
+        ])
+        _set_mtime(rollout, time.time())
+
+        fake_home = tmp_path / "codex"
+        with patch("agentrail.run.usage_capture.Path.home", return_value=fake_home):
+            cov = capture_reads("codex", target, since)
+
+        assert cov.status == "ok"
+        f = cov.to_dict()["files"][0]
+        assert f["path"] == str(real)
+        assert f["bytes"] == 80  # on-disk fallback since no token count line
+
+    def test_no_matching_session_is_na(self, tmp_path: Path) -> None:
+        target = tmp_path / "myrepo"
+        target.mkdir()
+        other = tmp_path / "other"
+        session_dir = self._make_session_dir(tmp_path, "sess-x")
+        rollout = session_dir / "rollout-001.jsonl"
+        _write_jsonl(rollout, [
+            {"type": "session_meta", "cwd": str(other.resolve())},
+        ])
+        _set_mtime(rollout, time.time())
+
+        fake_home = tmp_path / "codex"
+        with patch("agentrail.run.usage_capture.Path.home", return_value=fake_home):
+            cov = capture_reads("codex", target, time.time() - 60)
+
+        d = cov.to_dict()
+        assert d["status"] == "n/a"
+        assert d["format"] == "codex-transcript-missing"
+        assert "fileCount" not in d
+
+
+class TestNaHygiene:
+    """AC3: cursor/hermes report n/a — never a zero anywhere in the record."""
+
+    @pytest.mark.parametrize("agent", ["cursor", "hermes", "custom-bot", ""])
+    def test_uncovered_engines_report_na_not_zero(self, tmp_path: Path, agent: str) -> None:
+        target = tmp_path / "repo"
+        target.mkdir()
+        cov = capture_reads(agent, target, 0.0)
+        d = cov.to_dict()
+        assert d["status"] == "n/a"
+        # The whole point: no count, no files array → cannot be read as zero.
+        assert "fileCount" not in d
+        assert "files" not in d
+        assert "format" not in d  # plain no-vehicle case, not a parse error
+
+
+class TestMalformedTranscript:
+    """AC4: an unparseable transcript → n/a + a format tag; run still completes."""
+
+    def _make_projects_dir(self, tmp_path: Path, target: Path) -> Path:
+        encoded = re.sub(r"[^A-Za-z0-9-]", "-", str(target.resolve()))
+        projects_dir = tmp_path / "claude" / ".claude" / "projects" / encoded
+        projects_dir.mkdir(parents=True, exist_ok=True)
+        return projects_dir
+
+    def test_unparseable_claude_transcript_is_na_with_tag(self, tmp_path: Path) -> None:
+        target = tmp_path / "repo"
+        target.mkdir()
+        projects_dir = self._make_projects_dir(tmp_path, target)
+        since = time.time() - 60
+        transcript = projects_dir / "session.jsonl"
+        # Non-JSON garbage: lines are present but none are JSON objects.
+        transcript.write_text("NOT JSON AT ALL\n<<< binary junk >>>\n")
+        _set_mtime(transcript, time.time())
+
+        fake_home = tmp_path / "claude"
+        with patch("agentrail.run.usage_capture.Path.home", return_value=fake_home):
+            cov = capture_reads("claude", target, since)
+
+        d = cov.to_dict()
+        assert d["status"] == "n/a"
+        assert d["format"] == "claude-unparseable"
+        assert "fileCount" not in d and "files" not in d
+
+    def test_capture_reads_never_raises(self, tmp_path: Path) -> None:
+        # Even if Path.home explodes, capture_reads downgrades to n/a, never raises.
+        target = tmp_path / "repo"
+        target.mkdir()
+        with patch("agentrail.run.usage_capture.Path.home",
+                   side_effect=RuntimeError("boom")):
+            cov = capture_reads("claude", target, 0.0)
+        d = cov.to_dict()
+        assert d["status"] == "n/a"
+        assert d["format"] == "harvest-error"
+
+
+class TestRecordReadsIntoRunJson:
+    """The run.json persistence helper (read-modify-write, never raises)."""
+
+    def test_writes_coverage_key(self, tmp_path: Path) -> None:
+        run_json = tmp_path / "run.json"
+        run_json.write_text(json.dumps({"runId": "r1", "objectiveGate": {"verdict": "pass"}}))
+        target = tmp_path / "repo"
+        target.mkdir()
+        cov = capture_reads("cursor", target, 0.0)  # n/a coverage
+
+        record_reads_into_run_json(run_json, cov)
+
+        data = json.loads(run_json.read_text())
+        # Existing keys are preserved (read-modify-write).
+        assert data["runId"] == "r1"
+        assert data["objectiveGate"] == {"verdict": "pass"}
+        assert data["readsCoverage"]["status"] == "n/a"
+        assert data["readsCoverage"]["engine"] == "cursor"
+
+    def test_creates_file_when_absent(self, tmp_path: Path) -> None:
+        run_json = tmp_path / "run.json"  # does not exist yet
+        target = tmp_path / "repo"
+        target.mkdir()
+        cov = capture_reads("hermes", target, 0.0)
+        record_reads_into_run_json(run_json, cov)
+        data = json.loads(run_json.read_text())
+        assert data["readsCoverage"]["status"] == "n/a"

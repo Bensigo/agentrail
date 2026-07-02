@@ -366,6 +366,9 @@ export async function listRunsWithCursor(
   return { runs: rows as RunRow[], nextCursor };
 }
 
+/** Typed classification of a memory entry (#1032). */
+export type MemoryType = "decision" | "preference" | "fact";
+
 export interface MemoryItemRow {
   id: string;
   workspaceId: string;
@@ -373,6 +376,10 @@ export interface MemoryItemRow {
   repositoryName: string | null;
   source: string;
   content: string;
+  /** Enum-constrained entry type (#1032); pre-v2 rows backfill to "fact". */
+  type: MemoryType;
+  /** Writer attribution (#1032); pre-v2 rows backfill from `source`. */
+  writtenBy: string;
   tags: string[];
   createdAt: Date;
   lastUsedAt: Date | null;
@@ -387,6 +394,8 @@ export async function listMemoryItems(workspaceId: string): Promise<MemoryItemRo
       repositoryName: repositories.name,
       source: memoryItems.source,
       content: memoryItems.content,
+      type: memoryItems.type,
+      writtenBy: memoryItems.writtenBy,
       tags: memoryItems.tags,
       createdAt: memoryItems.createdAt,
       lastUsedAt: memoryItems.lastUsedAt,
@@ -402,15 +411,28 @@ export async function insertMemoryItems(data: {
   workspaceId: string;
   repositoryId?: string | null;
   source: string;
-  items: Array<{ content: string; tags: string[] }>;
+  /**
+   * Batch-level writer attribution (#1032). Defaults to `source` when omitted so
+   * every insert path records who/what wrote the entry.
+   */
+  writtenBy?: string;
+  items: Array<{
+    content: string;
+    tags: string[];
+    /** Per-item entry type (#1032). Defaults to "fact" (lowest authority). */
+    type?: MemoryType;
+  }>;
 }): Promise<void> {
   if (data.items.length === 0) return;
+  const writtenBy = data.writtenBy ?? data.source;
   await db.insert(memoryItems).values(
     data.items.map((item) => ({
       workspaceId: data.workspaceId,
       repositoryId: data.repositoryId ?? null,
       source: data.source,
       content: item.content,
+      type: item.type ?? "fact",
+      writtenBy,
       tags: item.tags,
     }))
   );

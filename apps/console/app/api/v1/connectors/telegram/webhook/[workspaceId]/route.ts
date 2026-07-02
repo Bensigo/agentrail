@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import {
   getConnector,
@@ -31,6 +32,25 @@ import { sendTelegramMessage } from "../../../../workspaces/[workspaceId]/connec
 
 const SECRET_HEADER = "x-telegram-bot-api-secret-token";
 
+/**
+ * Constant-time equality of the delivery's secret-token header against the
+ * stored per-workspace secret. `crypto.timingSafeEqual` requires equal-length
+ * Buffers (it THROWS otherwise), so we length-guard first — a length mismatch is
+ * simply "not equal", never an exception. This mirrors the GitHub webhook route's
+ * signature check; it removes the timing side-channel a plain `!==` leaks. Any
+ * unexpected input (non-UTF8, etc.) is caught and treated as a non-match rather
+ * than surfacing out of the auth path.
+ */
+function secretMatches(provided: string, expected: string): boolean {
+  try {
+    const a = Buffer.from(provided);
+    const b = Buffer.from(expected);
+    return a.length === b.length && timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ workspaceId: string }> }
@@ -47,9 +67,10 @@ export async function POST(
       return NextResponse.json({ ignored: "telegram not connected" });
     }
 
-    // Authenticate the delivery against the stored per-workspace secret token.
+    // Authenticate the delivery against the stored per-workspace secret token
+    // using a constant-time compare (no plain-string `!==` on the auth path).
     const provided = request.headers.get(SECRET_HEADER);
-    if (!provided || provided !== expectedSecret) {
+    if (!provided || !secretMatches(provided, expectedSecret)) {
       return NextResponse.json({ ignored: "bad secret token" });
     }
 

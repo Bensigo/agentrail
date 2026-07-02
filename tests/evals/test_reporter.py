@@ -1126,3 +1126,188 @@ def test_write_markdown_report_creates_dated_file(tmp_path):
     assert "2026-06-23" in path.name
     text = path.read_text(encoding="utf-8")
     assert "solve-rate" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Network-artifact hygiene (issue #1033): <synthetic> ECONNRESET rows are
+# marked at capture and EXCLUDED from every aggregate (solve-rate, $/solved,
+# per-component cost, strata), with a per-stratum artifact count surfaced and
+# an all-artifact stratum rendered as "no data" rather than a real 0%.
+# ---------------------------------------------------------------------------
+
+from agentrail.evals.runner import SYNTHETIC_MODEL  # noqa: E402
+
+
+def _synthetic_rep(
+    task: str,
+    arm: str,
+    *,
+    difficulty: str | None = None,
+) -> RepetitionRecord:
+    """A network-artifact rep: the ECONNRESET synthetic fallback.
+
+    Mirrors what the spine builds for a run whose ``RunRecord.model`` was
+    ``<synthetic>`` — solved=0, $0 usage (no real tokens), no gate pass —
+    and marked ``network_artifact=True`` so the reporter excludes it.
+    """
+    return RepetitionRecord(
+        task=task,
+        arm=arm,
+        solved=False,
+        usage=_usage(model=SYNTHETIC_MODEL),  # $0 — no diff, no real tokens
+        gate_passed=False,
+        false_green=False,
+        difficulty=difficulty,
+        wall_time_s=0.0,
+        network_artifact=True,
+    )
+
+
+def test_ac1_synthetic_excluded_from_solve_rate_and_dollars_per_solved():
+    """AC1: mixed real/synthetic rows aggregate to the real-rows-only value.
+
+    Two real reps (one solved, one not) plus two synthetic ECONNRESET reps.
+    The arm's solve-rate and dollars-per-solved must equal what the REAL rows
+    alone produce — the synthetic $0/solved=0 rows contribute nothing.
+    """
+    u = _usage(input_tokens=1000, output_tokens=500)
+    real = [
+        _rep("task-a", "full", True, u, difficulty="easy"),
+        _rep("task-b", "full", False, u, difficulty="easy"),
+    ]
+    mixed = real + [
+        _synthetic_rep("task-c", "full", difficulty="easy"),
+        _synthetic_rep("task-d", "full", difficulty="easy"),
+    ]
+
+    real_only = aggregate(real)[0]
+    mixed_report = aggregate(mixed)[0]
+
+    # Aggregate over mixed == aggregate over real rows only.
+    assert mixed_report.solve_rate == real_only.solve_rate == pytest.approx(0.5)
+    assert mixed_report.repetitions == real_only.repetitions == 2
+    assert mixed_report.solved_count == real_only.solved_count == 1
+    assert mixed_report.total_cost_usd == pytest.approx(real_only.total_cost_usd)
+    assert mixed_report.dollars_per_solved == pytest.approx(
+        real_only.dollars_per_solved
+    )
+    # Per-component cost excludes the synthetic rows too.
+    assert mixed_report.input_cost_usd == pytest.approx(real_only.input_cost_usd)
+    assert mixed_report.output_cost_usd == pytest.approx(real_only.output_cost_usd)
+    # The excluded artifacts are counted, not silently dropped.
+    assert mixed_report.network_artifact_count == 2
+    assert real_only.network_artifact_count == 0
+
+
+def test_ac2_per_stratum_network_artifact_count_surfaced():
+    """AC2: the per-stratum artifact count appears in the report + rows."""
+    from agentrail.evals.reporter import arm_metric_rows
+
+    u = _usage(input_tokens=1000, output_tokens=500)
+    records = [
+        _rep("easy-a", "full", True, u, difficulty="easy"),
+        _rep("easy-b", "full", False, u, difficulty="easy"),
+        _synthetic_rep("easy-c", "full", difficulty="easy"),
+        _rep("hard-a", "full", True, u, difficulty="hard"),
+    ]
+    reports = aggregate(records)
+    strata = {s.difficulty: s for s in reports[0].strata}
+    # The easy stratum still has 2 real reps + 1 counted artifact.
+    assert strata["easy"].repetitions == 2
+    assert strata["easy"].network_artifact_count == 1
+    assert strata["hard"].network_artifact_count == 0
+
+    # Console parity: the count flows into the persistence rows.
+    rows = arm_metric_rows(reports, run_id="r1")
+    by_diff = {s["difficulty"]: s for s in rows[0]["strata"]}
+    assert by_diff["easy"]["network_artifact_count"] == 1
+    assert rows[0]["network_artifact_count"] == 1
+
+    # The markdown surfaces the artifact count (a "Network artifacts" column).
+    md = render_markdown(reports, generated_at="2026-06-23")
+    assert "network artifact" in md.lower()
+
+
+def test_ac3_all_synthetic_stratum_renders_no_data_not_zero():
+    """AC3: a 100%-artifact stratum reads as n/a, never 0% / $0."""
+    u = _usage(input_tokens=1000, output_tokens=500)
+    records = [
+        # Real reps in another stratum so the arm/report is non-empty.
+        _rep("easy-a", "full", True, u, difficulty="easy"),
+        # The hard stratum is ALL synthetic artifacts.
+        _synthetic_rep("hard-a", "full", difficulty="hard"),
+        _synthetic_rep("hard-b", "full", difficulty="hard"),
+        _synthetic_rep("hard-c", "full", difficulty="hard"),
+    ]
+    reports = aggregate(records)
+    strata = {s.difficulty: s for s in reports[0].strata}
+
+    hard = strata["hard"]
+    # No real rep -> solve-rate is UNDEFINED (None), NOT a fabricated 0.0.
+    assert hard.repetitions == 0
+    assert hard.solve_rate is None
+    assert hard.solved_count == 0
+    assert hard.total_cost_usd == pytest.approx(0.0)
+    assert hard.dollars_per_solved is None
+    assert hard.network_artifact_count == 3
+
+    # Rendered: the all-artifact row says "n/a" for solve-rate, and the report
+    # discloses the artifacts — it must NOT read as a real 0% solve rate.
+    md = render_markdown(reports, generated_at="2026-06-23")
+    assert "n/a" in md.lower()
+    # The synthetic $0/solved=0 rows never drag the arm solve-rate to a real 0%.
+    assert reports[0].solve_rate == pytest.approx(1.0)
+    assert reports[0].network_artifact_count == 3
+
+
+def test_ac4_report_byte_identical_when_no_synthetic_rows():
+    """AC4: a corpus with NO synthetic rows renders byte-for-byte unchanged.
+
+    We render the SAME record set twice: once as plain real reps, once with the
+    (defaulted-False) network_artifact field constructed explicitly. Both must
+    produce byte-identical markdown AND identical persistence rows — proving the
+    hygiene path is inert when there is nothing to exclude, so pre-#1033 reports
+    do not regress.
+    """
+    from agentrail.evals.reporter import arm_metric_rows
+
+    u = _usage(input_tokens=1000, output_tokens=500)
+    # A report exercising strata, solved/failed mix, ties, and cost.
+    base = [
+        _rep("easy-a", "full", True, u, difficulty="easy"),
+        _rep("easy-a", "full", False, u, difficulty="easy"),
+        _rep("hard-a", "full", True, u, difficulty="hard"),
+        _rep("hard-b", "full", False, u, difficulty="hard"),
+        _rep("mid-a", "baseline", True, u, difficulty="medium"),
+    ]
+    # Same records, but each explicitly carries network_artifact=False.
+    explicit_false = [
+        RepetitionRecord(
+            task=r.task,
+            arm=r.arm,
+            solved=r.solved,
+            usage=r.usage,
+            gate_passed=r.gate_passed,
+            false_green=r.false_green,
+            difficulty=r.difficulty,
+            wall_time_s=r.wall_time_s,
+            network_artifact=False,
+        )
+        for r in base
+    ]
+
+    md_base = render_markdown(aggregate(base), generated_at="2026-06-23")
+    md_explicit = render_markdown(
+        aggregate(explicit_false), generated_at="2026-06-23"
+    )
+    assert md_base == md_explicit
+
+    # No artifact means no extra column and no disclosure line in the markdown.
+    assert "network artifact" not in md_base.lower()
+
+    # Persistence rows are identical too (console parity holds with no artifacts).
+    rows_base = arm_metric_rows(aggregate(base), run_id="r1")
+    rows_explicit = arm_metric_rows(aggregate(explicit_false), run_id="r1")
+    assert rows_base == rows_explicit
+    # The count field is present and zero (honest, not absent).
+    assert all(row["network_artifact_count"] == 0 for row in rows_base)

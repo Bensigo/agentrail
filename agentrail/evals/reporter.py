@@ -97,6 +97,16 @@ class RepetitionRecord:
     gate_failure_reason: Optional[str] = None
     precision_at_budget: Optional[float] = None
     citation_coverage: Optional[float] = None
+    # Network-artifact flag (issue #1033). ``True`` when this rep's run was an
+    # ECONNRESET synthetic fallback (its RunRecord.model was ``<synthetic>``):
+    # no diff, $0 spent, solved=0. That 0 is a NETWORK ARTIFACT, not a real
+    # score, so every aggregate below EXCLUDES these reps (solve-rate,
+    # dollars-per-solved, per-component cost, and each stratum) and reports the
+    # artifact COUNT separately. Threaded from ``RunRecord.model`` by the spine
+    # via ``runner.is_network_artifact``. Defaults ``False`` (a real, counted
+    # run) so pre-#1033 callers/tests construct a record positionally unchanged
+    # and existing reports stay byte-identical when no rep is an artifact.
+    network_artifact: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -112,15 +122,29 @@ class StratumReport:
     aggregate so a single solve-rate never hides the per-stratum story.
     ``dollars_per_solved`` is ``None`` when no rep in the stratum solved (same
     undefined-denominator rule as the aggregate — never divide by zero).
+
+    ``repetitions`` / ``solved_count`` / ``failed_count`` and every derived
+    metric count ONLY real reps: ECONNRESET synthetic-fallback reps (issue
+    #1033) are excluded and surfaced separately as ``network_artifact_count``.
+    When a stratum is ALL artifacts (``repetitions == 0`` but
+    ``network_artifact_count > 0``), ``solve_rate`` is ``None`` (undefined — the
+    report renders "no data", not a real 0%) and ``dollars_per_solved`` is
+    ``None`` (no real spend to divide). A genuinely empty stratum never reaches
+    here (``_strata`` only builds a report for a difficulty that has reps).
     """
 
     difficulty: str
     repetitions: int
     solved_count: int
     failed_count: int
-    solve_rate: float
+    # None when the stratum is all network artifacts (no real rep to measure) —
+    # DISTINCT from a real 0.0 (real reps, none solved). Never a fabricated 0%.
+    solve_rate: Optional[float]
     total_cost_usd: float
     dollars_per_solved: Optional[float]
+    # Count of ECONNRESET synthetic-fallback reps EXCLUDED from this stratum's
+    # metrics (issue #1033 AC2). Defaulted 0 for positional back-compat.
+    network_artifact_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -176,9 +200,25 @@ class ArmReport:
     output_cost_usd: float = 0.0
     cache_read_cost_usd: float = 0.0
     cache_write_cost_usd: float = 0.0
+    # Count of ECONNRESET synthetic-fallback reps for this arm that were EXCLUDED
+    # from every metric above (issue #1033 AC2). ``repetitions`` and all derived
+    # aggregates count ONLY real reps; this is the count of the noise dropped, so
+    # the report can disclose it honestly rather than silently swallowing it.
+    # Defaulted 0 so positional construction in existing tests stays valid and a
+    # run with no artifacts renders byte-identically to before (AC4).
+    network_artifact_count: int = 0
 
 
 def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
+    # Network-artifact hygiene (issue #1033): partition ECONNRESET synthetic
+    # fallbacks OUT before any aggregate. Those reps produced no diff and spent
+    # $0; their solved=0 is a NETWORK ARTIFACT, not a real score, so every metric
+    # below is computed over ``records`` (real reps ONLY) and the artifacts are
+    # counted separately. ``all_records`` keeps the raw input only to count them.
+    all_records = records
+    network_artifact_count = sum(1 for r in all_records if r.network_artifact)
+    records = [r for r in all_records if not r.network_artifact]
+
     repetitions = len(records)
     solved_count = sum(1 for r in records if r.solved)
     failed_count = repetitions - solved_count
@@ -246,7 +286,10 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
         (false_green_count / gate_passed_count) if gate_passed_count else None
     )
 
-    strata = _strata(records)
+    # Pass ALL records (incl. artifacts) so ``_strata`` can (a) count artifacts
+    # per stratum and (b) render an ALL-artifact stratum as "no data" instead of
+    # dropping it. It excludes artifacts from each stratum's metrics itself.
+    strata = _strata(all_records)
 
     # Context-pack quality (#994): mean over ONLY the reps that carried a metric
     # (None defaults are skipped). ``None`` when no rep carried it — undefined,
@@ -287,6 +330,7 @@ def _arm_report(arm: str, records: Sequence[RepetitionRecord]) -> ArmReport:
         output_cost_usd=output_cost,
         cache_read_cost_usd=cache_read_cost,
         cache_write_cost_usd=cache_write_cost,
+        network_artifact_count=network_artifact_count,
     )
 
 
@@ -297,6 +341,14 @@ def _strata(records: Sequence[RepetitionRecord]) -> List[StratumReport]:
     stratum, so the aggregate is unaffected and back-compat is preserved.
     Strata are returned in canonical difficulty order so reports are
     deterministic.
+
+    Network-artifact hygiene (issue #1033): ECONNRESET synthetic-fallback reps
+    are EXCLUDED from each stratum's metrics (solve-rate, cost, $-per-solved) and
+    counted separately in ``network_artifact_count``. A stratum that is ALL
+    artifacts still surfaces (so the artifacts are not silently dropped), but as
+    "no data": ``repetitions == 0``, ``solve_rate is None`` (undefined — NOT a
+    real 0%), ``total_cost_usd == 0.0`` (the artifacts spent nothing), and
+    ``dollars_per_solved is None``.
     """
     by_diff: Dict[str, List[RepetitionRecord]] = defaultdict(list)
     for r in records:
@@ -310,7 +362,10 @@ def _strata(records: Sequence[RepetitionRecord]) -> List[StratumReport]:
 
     reports: List[StratumReport] = []
     for difficulty in ordered:
-        recs = by_diff[difficulty]
+        all_recs = by_diff[difficulty]
+        artifact_count = sum(1 for r in all_recs if r.network_artifact)
+        # Metrics count REAL reps only; artifacts are noise, not a 0% score.
+        recs = [r for r in all_recs if not r.network_artifact]
         reps = len(recs)
         solved = sum(1 for r in recs if r.solved)
         cost = sum(usage_cost(r.usage) for r in recs)
@@ -320,10 +375,13 @@ def _strata(records: Sequence[RepetitionRecord]) -> List[StratumReport]:
                 repetitions=reps,
                 solved_count=solved,
                 failed_count=reps - solved,
-                solve_rate=(solved / reps) if reps else 0.0,
+                # AC3: an all-artifact stratum (no real rep) has an UNDEFINED
+                # solve-rate — None renders "no data", never a fabricated 0%.
+                solve_rate=(solved / reps) if reps else None,
                 total_cost_usd=cost,
                 # Same undefined-denominator rule as the aggregate.
                 dollars_per_solved=(cost / solved) if solved else None,
+                network_artifact_count=artifact_count,
             )
         )
     return reports
@@ -914,24 +972,51 @@ def render_markdown(
             "hard scattered-context tasks and small on easy single-file ones."
         )
         lines.append("")
-        lines.append(
-            "| Arm | Difficulty | Reps | Solved | Failed | Solve-rate | "
-            "Total cost | Dollars-per-solved-task |"
+        # AC2 (issue #1033): surface the per-stratum network-artifact count, but
+        # ONLY when this run set actually has artifacts — otherwise the table
+        # (header + every row) must stay byte-identical to pre-#1033 output on a
+        # synthetic-free corpus (AC4). The extra column appears exactly when
+        # there is something to disclose, so an all-synthetic stratum reads as
+        # "3 network artifacts, no data" rather than a fabricated 0% regression.
+        any_artifacts = any(
+            s.network_artifact_count for r in reports for s in r.strata
         )
-        lines.append("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+        if any_artifacts:
+            lines.append(
+                "| Arm | Difficulty | Reps | Solved | Failed | Solve-rate | "
+                "Total cost | Dollars-per-solved-task | Network artifacts |"
+            )
+            lines.append(
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+            )
+        else:
+            lines.append(
+                "| Arm | Difficulty | Reps | Solved | Failed | Solve-rate | "
+                "Total cost | Dollars-per-solved-task |"
+            )
+            lines.append(
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"
+            )
         for r in reports:
             if not r.strata:
                 lines.append(
                     f"| {r.arm} | _(no difficulty data)_ | | | | | | |"
+                    + (" |" if any_artifacts else "")
                 )
                 continue
             for s in r.strata:
-                lines.append(
+                # solve_rate is Optional (None for an all-artifact stratum);
+                # _fmt_rate_pct renders None as "n/a" (AC3), never a fake 0%.
+                row = (
                     f"| {r.arm} | {s.difficulty} | {s.repetitions} | "
                     f"{s.solved_count} | {s.failed_count} | "
-                    f"{_fmt_pct(s.solve_rate)} | {_fmt_usd(s.total_cost_usd)} | "
+                    f"{_fmt_rate_pct(s.solve_rate)} | "
+                    f"{_fmt_usd(s.total_cost_usd)} | "
                     f"{_fmt_usd(s.dollars_per_solved)} |"
                 )
+                if any_artifacts:
+                    row += f" {s.network_artifact_count} |"
+                lines.append(row)
         lines.append("")
 
     # --- Honesty section: failures, ties, spread per arm -----------------
@@ -941,6 +1026,17 @@ def render_markdown(
         lines.append(f"### Arm: {r.arm}")
         lines.append("")
         lines.append(f"- Failed repetitions: {r.failed_count} of {r.repetitions}")
+        # AC2 (issue #1033): disclose ECONNRESET synthetic-fallback reps that
+        # were EXCLUDED from every metric above — no diff, $0, a network
+        # artifact, NOT a real failure. Emitted ONLY when there are artifacts so
+        # a synthetic-free run stays byte-identical to pre-#1033 output (AC4).
+        if r.network_artifact_count:
+            lines.append(
+                f"- Network artifacts (excluded from all metrics): "
+                f"{r.network_artifact_count} ECONNRESET synthetic-fallback "
+                "rep(s) — no diff, $0; solved=0 is a network artifact, not a "
+                "real score"
+            )
         ties = _tie_tasks(r)
         if ties:
             lines.append(
@@ -1372,6 +1468,10 @@ def arm_metric_rows(reports: Sequence[ArmReport], *, run_id: str) -> List[dict]:
             # disagrees with the markdown's Context quality section.
             "mean_precision_at_budget": r.mean_precision_at_budget,
             "mean_citation_coverage": r.mean_citation_coverage,
+            # Network-artifact count (#1033): ECONNRESET synthetic-fallback reps
+            # EXCLUDED from every metric above, surfaced so the console discloses
+            # the same dropped-noise count the markdown does (never disagree).
+            "network_artifact_count": r.network_artifact_count,
             # Difficulty-stratified breakdown (#941) so the console can show the
             # same per-stratum numbers the markdown does (never disagree).
             "strata": [
@@ -1383,6 +1483,8 @@ def arm_metric_rows(reports: Sequence[ArmReport], *, run_id: str) -> List[dict]:
                     "solve_rate": s.solve_rate,
                     "total_cost_usd": s.total_cost_usd,
                     "dollars_per_solved": s.dollars_per_solved,
+                    # Per-stratum artifact count (#1033 AC2) for console parity.
+                    "network_artifact_count": s.network_artifact_count,
                 }
                 for s in r.strata
             ],

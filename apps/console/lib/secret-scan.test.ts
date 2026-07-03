@@ -8,7 +8,7 @@ import {
 describe("scanForSecrets", () => {
   it("marks ordinary prose as clean", () => {
     const res = scanForSecrets(
-      "We decided to use Eve for the coordinator; prefer names over IDs in the UI."
+      "We decided to use Eve for Jace; prefer names over IDs in the UI."
     );
     expect(res.clean).toBe(true);
     expect(res.findings).toHaveLength(0);

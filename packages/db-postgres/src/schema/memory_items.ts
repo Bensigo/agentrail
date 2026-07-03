@@ -7,7 +7,7 @@ import { repositories } from "./repositories.js";
 // context compiler should weigh it. See CONTEXT.md: memory is advisory,
 // source-linked, and must never outrank current code — so entries are labelled,
 // not trusted blindly.
-//   decision   — a locked technical/product decision ("we use Eve for the coordinator")
+//   decision   — a locked technical/product decision ("we use Eve for Jace")
 //   preference — a soft style/tooling preference ("prefer names over IDs in the UI")
 //   fact       — an observed, falsifiable statement about the code/system
 // Existing rows predate this column and are backfilled to "fact" (the most

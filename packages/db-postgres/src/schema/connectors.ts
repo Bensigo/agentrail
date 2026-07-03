@@ -41,6 +41,12 @@ export const connectorProviderEnum = [
   "discord",
   "slack",
   "telegram",
+  // jace — the coordinator inbound gateway. A per-workspace `jace` row is the
+  // kill switch: `enabled=false` HALTS inbound Jace conversations without
+  // touching the factory. The factory (github intake / issue queue) is a
+  // SEPARATE `github` provider row, so disabling `jace` cannot affect it.
+  // (Free-text column, so this is a TS-union addition only — no migration.)
+  "jace",
 ] as const;
 export type ConnectorProvider = (typeof connectorProviderEnum)[number];
 

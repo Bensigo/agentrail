@@ -1,0 +1,26 @@
+{
+  "name": "@agentrail/jace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "//pins": "Pins are EXACT (no ^/~) on purpose: Eve is pre-1.0 and churns ~41 releases per 2 weeks; a floating range would silently move the app onto a breaking beta. This app is deliberately excluded from the root pnpm workspace and installs standalone via `npm ci`.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "eve dev",
+    "build": "eve build",
+    "start": "eve start",
+    "roundtrip": "node scripts/needs-approval-roundtrip.mjs",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "4.0.5",
+    "ai": "7.0.11",
+    "eve": "0.19.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@workflow/world-postgres": "5.0.0-beta.20"
+  }
+}

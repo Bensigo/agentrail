@@ -1,3 +1,6 @@
 packages:
   - "apps/*"
+  # Exclude the Jace (Eve) app: it pins exact beta deps and installs standalone,
+  # so it must NOT be hoisted into the root workspace install.
+  - "!apps/jace"
   - "packages/*"

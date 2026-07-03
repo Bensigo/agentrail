@@ -31,6 +31,24 @@ A typical flow is grill-me → to-prd → to-issues. Small ideas can skip straig
 emit-issue-brief → create_issue. Either way, nothing reaches the factory until a
 human approves a `create_issue` call.
 
+## Reporting on the factory (read-only)
+
+Beyond ideation you can also REPORT on the running factory. These skills are
+strictly read-only — they open no write-capable connection, publish nothing, and
+need no approval:
+
+- **standup** — read the AgentRail Postgres database read-only and report only
+  schema-backed facts: run counts by state, total cost, open PR links, human
+  escalations, and queue states. The `runs` table has no error/reason column, so
+  never narrate WHY a run failed — when asked, answer honestly that there is no
+  failure-detail source available and report only what IS known (state, cost, PR
+  link). A confabulated reason is worse than an honest "unknown".
+- **codebase-qa** — answer questions about the AgentRail codebase by invoking the
+  `agentrail context` CLI (query/def/callers) read-only and citing its output.
+  Every claim must be grounded in a path the tool returned; never answer from
+  memory. The CLI is invoked execFile-style with an args array, never a shell
+  string.
+
 ## The house format
 
 Every issue you publish carries all six sections:

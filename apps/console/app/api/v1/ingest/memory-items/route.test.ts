@@ -139,4 +139,51 @@ describe("POST /api/v1/ingest/memory-items", () => {
     const res = await POST(req(valid));
     expect(res.status).toBe(502);
   });
+
+  it("422 + recorded reason when an item contains a credential, and does not insert", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const body = {
+      ...valid,
+      items: [
+        {
+          content: "prod aws key is AKIAIOSFODNN7EXAMPLE, do not lose it",
+          tags: ["secops"],
+        },
+      ],
+    };
+    const res = await POST(req(body));
+    expect(res.status).toBe(422);
+    const json = await res.json();
+    expect(json.error).toMatch(/credential-shaped/i);
+    // Reason is recorded and names the kind, without echoing the secret value.
+    expect(json.reason).toContain("aws_access_key_id");
+    expect(json.reason).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(insertMemoryItems).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("rejects the whole batch if only one item is credential-shaped", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const body = {
+      ...valid,
+      items: [
+        { content: "a perfectly fine note", tags: [] },
+        { content: "token ghp_abcdef0123456789ABCDEFabcdef01234567", tags: [] },
+      ],
+    };
+    const res = await POST(req(body));
+    expect(res.status).toBe(422);
+    expect(insertMemoryItems).not.toHaveBeenCalled();
+  });
+
+  it("allows prose that merely mentions the word password", async () => {
+    const body = {
+      ...valid,
+      items: [{ content: "Reset your password on the settings page.", tags: [] }],
+    };
+    const res = await POST(req(body));
+    expect(res.status).toBe(202);
+    expect(insertMemoryItems).toHaveBeenCalled();
+  });
 });

@@ -11,6 +11,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRepository, insertMemoryItems } from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
+import { scanForSecrets, summarizeFindings } from "../../../../../lib/secret-scan";
 
 interface RawMemoryItem {
   content: string;
@@ -72,6 +73,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { error: `Repository ${body.repository_id} not found in this workspace` },
       { status: 404 }
+    );
+  }
+
+  // Write-side secret scan (#1032). Memory content is injected verbatim into
+  // agent prompts, so a credential persisted here can be exfiltrated to any run
+  // in the workspace. Reject the whole batch if ANY item is credential-shaped —
+  // fail closed — and record a non-sensitive reason (kinds only, never the
+  // matched value). This runs before insert so a secret never reaches storage.
+  const secretFindings = body.items.flatMap(
+    (item) => scanForSecrets(item.content).findings
+  );
+  if (secretFindings.length > 0) {
+    const reason = summarizeFindings(secretFindings);
+    console.warn(
+      `[ingest/memory-items] rejected batch for run ${body.run_id}: ${reason}`
+    );
+    return NextResponse.json(
+      {
+        error: "Memory content rejected: credential-shaped value detected",
+        reason,
+      },
+      { status: 422 }
     );
   }
 

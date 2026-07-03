@@ -1217,6 +1217,19 @@ export {
   type EnqueueResult,
 } from "./github_intake.js";
 
+// Jace inbound intake — the coordinator's kill switch: a pure allow/deny gate on
+// the `jace` connector row plus an enabled-connector lookup. The inbound Jace
+// webhook route calls these at the boundary before forwarding to the Eve
+// sidecar, so flipping the `jace` connector's `enabled=false` HALTS inbound Jace
+// while the factory (a separate `github` row) keeps running. Sibling of the
+// github_intake block above.
+export {
+  jaceInboundAllowed,
+  findEnabledJaceWorkspace,
+  type JaceConnectorRowish,
+  type JaceInboundDecision,
+} from "./jace_intake.js";
+
 // Connectors — per-provider control surface that also configures the Heartbeat.
 // Folds in the former standalone heartbeat_config (#816); the daemon reads
 // connectors via list_active_connectors (agentrail/afk/connectors_store.py).

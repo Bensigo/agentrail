@@ -37,3 +37,45 @@ jobs:
         run: shellcheck install.sh scripts/test-install.sh
       - name: install.sh hermetic test
         run: bash scripts/test-install.sh
+
+  # Node suite — covers what pytest/shellcheck can't see: the Jace (Eve) sidecar
+  # app and the TypeScript db-postgres package (incl. the Jace kill-switch gate)
+  # plus the console route that wires that gate at the inbound boundary. Without
+  # this job every line of apps/jace and packages/db-postgres was invisible to CI.
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # apps/jace is DELIBERATELY excluded from the root pnpm workspace and pins
+      # exact Eve betas, so it installs standalone with npm and runs Node's
+      # built-in test runner (test/*.test.mjs).
+      - name: apps/jace — install (standalone)
+        working-directory: apps/jace
+        run: npm ci
+      - name: apps/jace — unit tests
+        working-directory: apps/jace
+        run: npm test
+
+      # The rest of the monorepo is a pnpm workspace (lockfile v9). Install it,
+      # then run the TypeScript vitest suites that pytest cannot see.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: workspace — install
+        run: pnpm install --frozen-lockfile
+      # The console imports @agentrail/db-postgres via its built dist barrel, so
+      # build it before running any console test that touches the barrel.
+      - name: db-postgres — build
+        run: pnpm --filter @agentrail/db-postgres build
+      - name: db-postgres — vitest (incl. jace-intake kill switch)
+        run: pnpm --filter @agentrail/db-postgres test
+      # Prove the kill-switch gate is wired at the real inbound boundary: run the
+      # inbound Jace route's vitest, which asserts a disabled connector never
+      # forwards to the sidecar and an enabled one does.
+      - name: console — jace inbound route (kill-switch wiring)
+        working-directory: apps/console
+        run: pnpm exec vitest run app/api/v1/connectors/jace/inbound

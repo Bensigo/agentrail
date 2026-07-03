@@ -215,7 +215,7 @@ def _extract_codex(target: Path, since_ts: float) -> Optional[Usage]:
 
 
 # ---------------------------------------------------------------------------
-# Read harvest (PRD2 Phase 0): mid-run file reads → run.json
+# Read harvest (transcript-scrape): mid-run file reads → run.json
 # ---------------------------------------------------------------------------
 #
 # A *sibling* of ``capture_usage`` above. It scans the SAME on-disk transcripts

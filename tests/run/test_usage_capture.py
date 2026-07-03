@@ -353,7 +353,7 @@ class TestUnknownAgent:
 
 
 # ===========================================================================
-# Read harvest (PRD2 Phase 0): capture_reads → run.json
+# Read harvest (transcript-scrape): capture_reads → run.json
 # ===========================================================================
 
 

@@ -404,7 +404,7 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     except Exception as _exc:
         _log.debug("cost capture skipped: %s", _exc)
 
-    # 17a-reads. Read harvest (PRD2 Phase 0) — non-fatal.
+    # 17a-reads. Read harvest (transcript-scrape, no runner instrumentation) — non-fatal.
     # Harvest the executor's mid-run file reads from the on-disk transcript into
     # run.json BEFORE the workdir is torn down. capture_reads never raises and
     # reports n/a (never a silent zero) for engines with no transcript vehicle.

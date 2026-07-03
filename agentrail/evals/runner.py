@@ -67,6 +67,35 @@ from agentrail.evals.run_record import RetryEvent, RunRecord
 
 
 # ---------------------------------------------------------------------------
+# Network-artifact marker (issue #1033) — SINGLE SOURCE for the whole spine.
+# ---------------------------------------------------------------------------
+#
+# The executor emits ``<synthetic>`` as the run's ``model`` when the agent call
+# hit a network fault (ECONNRESET) and fell back to a synthetic no-op run: no
+# diff was produced, $0 was spent, and the run scores solved=0. That 0 is a
+# NETWORK ARTIFACT, not a real "the agent tried and failed" 0% — folding it into
+# solve-rate or dollars-per-solved would silently depress both with noise the
+# harness never actually measured. So the marker is RECOGNIZED here at capture
+# and the artifact is EXCLUDED from every aggregate downstream (reporter.py).
+#
+# It lives on ``RunRecord.model`` (the LOCKED contract already carries ``model``,
+# so nothing is added to that contract). The string and its predicate are
+# single-sourced here so the runner, spine, and reporter never drift on what
+# counts as a network artifact.
+SYNTHETIC_MODEL = "<synthetic>"
+
+
+def is_network_artifact(model: Optional[str]) -> bool:
+    """True iff ``model`` marks a run as an ECONNRESET synthetic-fallback.
+
+    Such a run produced no diff and spent $0; its solved=0 is a network
+    artifact, not a real score, so aggregates must EXCLUDE it (issue #1033).
+    ``None`` / any real model name returns ``False`` (a real, counted run).
+    """
+    return model == SYNTHETIC_MODEL
+
+
+# ---------------------------------------------------------------------------
 # The executor seam — the clean boundary between the runner and the sandbox.
 # ---------------------------------------------------------------------------
 

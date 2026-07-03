@@ -81,8 +81,14 @@ def _v2_enabled() -> bool:
 # Map the persisted ``source`` string to the writer class the rate limiter keys
 # on. Live GitHub intake (poll + webhook) is a human labelling an issue; the eval
 # harness and Jace are their own writer classes when they feed the same seam.
+# Linear intake (issue #1036) is *also* a human labelling an issue in another
+# tracker, so it shares the HUMAN_GITHUB writer class (and its rate-limit budget)
+# by design — it flows through the SAME entrance gate, not a second one. Listed
+# explicitly (rather than relying on the default) so the equivalence is an
+# intentional decision, not an accident of the fallback.
 _SOURCE_TO_WRITER: Dict[str, WriterClass] = {
     "github": WriterClass.HUMAN_GITHUB,
+    "linear": WriterClass.HUMAN_GITHUB,
     "eval": WriterClass.EVAL_AUTOTICKET,
     "jace": WriterClass.JACE,
 }

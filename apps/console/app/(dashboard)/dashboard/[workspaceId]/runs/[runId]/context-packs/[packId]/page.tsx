@@ -5,11 +5,17 @@ import {
   getContextPackItems,
 } from "@agentrail/db-clickhouse";
 import type { ContextEventRecord } from "@agentrail/db-clickhouse";
+import { getRun } from "@agentrail/db-postgres";
 
 function pct(used: number, budget: number): string {
   if (!budget) return "—";
   return `${Math.round((used / budget) * 100)}%`;
 }
+
+// Engines that have a transcript vehicle for read harvesting (issue #1028).
+// Anything else (cursor, hermes, …) can never produce read-grounded
+// waste/miss, so the dashboard shows an explicit n/a instead of a fake zero.
+const READ_GROUNDED_ENGINES = new Set(["claude"]);
 
 export default async function ContextPackDetailPage({
   params,
@@ -39,10 +45,32 @@ export default async function ContextPackDetailPage({
     notFound();
   }
 
+  // The engine tag lives on the run row (Postgres), not on the pack — the
+  // read-grounded scalar precision/recall have no ClickHouse column (that would
+  // need a schema migration; see PR notes). Fetch it so the read-grounded
+  // diagnostics can be honestly labelled n/a for engines without a transcript.
+  let engine = "";
+  try {
+    const run = await getRun(workspaceId, runId);
+    engine = (run?.agent ?? "").toLowerCase();
+  } catch {
+    // Postgres unavailable — leave engine blank; diagnostics fall back to n/a.
+  }
+  const readGrounded = engine !== "" && READ_GROUNDED_ENGINES.has(engine);
+
+  // Read-grounded diagnostics (issue #1037) ride the context_events channel
+  // tagged by reason, so they must be split out of the ordinary retrieval lists.
+  const isLive = (r: string) => r === "live_waste" || r === "live_miss";
   const included = items
-    .filter((i) => i.included === 1)
+    .filter((i) => i.included === 1 && !isLive(i.reason))
     .sort((a, b) => b.score - a.score);
-  const excluded = items.filter((i) => i.included === 0);
+  const excluded = items.filter(
+    (i) => i.included === 0 && !isLive(i.reason)
+  );
+  // Waste = pack files the executor never read (precision waste).
+  // Miss  = files the executor fetched itself, absent from the pack (recall miss).
+  const waste = items.filter((i) => i.reason === "live_waste");
+  const miss = items.filter((i) => i.reason === "live_miss");
 
   return (
     <div className="mx-auto max-w-[1440px]">
@@ -69,10 +97,18 @@ export default async function ContextPackDetailPage({
 
       {/* Pack metadata */}
       <div className="mb-6 rounded border border-[#6e56cf]/40 bg-[var(--gray-02)] p-4">
-        <h1 className="mb-3 text-sm font-semibold text-[var(--gray-12)]">
+        <h1 className="mb-3 flex flex-wrap items-center gap-2 text-sm font-semibold text-[var(--gray-12)]">
           Context Pack
-          <span className="ml-2 font-mono text-[var(--gray-09)] font-normal text-xs">
+          <span className="font-mono text-[var(--gray-09)] font-normal text-xs">
             {packId}
+          </span>
+          {/* Engine tag (issue #1037): read-grounded metrics are only
+              measurable for engines with a transcript vehicle. */}
+          <span
+            className="rounded-sm bg-[var(--gray-03)] px-1.5 py-0.5 font-mono text-[10px] font-normal uppercase tracking-wide text-[var(--gray-11)]"
+            title="Executor engine for this run"
+          >
+            {engine || "engine n/a"}
           </span>
         </h1>
         <dl className="grid grid-cols-2 gap-x-8 gap-y-2 text-xs sm:grid-cols-4">
@@ -104,6 +140,127 @@ export default async function ContextPackDetailPage({
             </dd>
           </div>
         </dl>
+      </div>
+
+      {/* Read-grounded diagnostics (issue #1037): what the executor actually
+          read vs what the pack shipped. For engines without a transcript
+          vehicle we show an explicit n/a — never a fabricated zero. */}
+      <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {/* Precision waste — pack files the executor never opened. */}
+        <section>
+          <h2 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--gray-09)]">
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ backgroundColor: "#ffb454" }}
+            />
+            Precision waste
+            <span className="rounded-sm bg-[#3a2e12] px-1.5 py-0.5 text-[10px] text-[#ffb454] font-mono">
+              {readGrounded ? waste.length : "n/a"}
+            </span>
+          </h2>
+          <div className="rounded border border-[var(--gray-05)] overflow-hidden">
+            {!readGrounded ? (
+              <p className="px-3 py-4 text-xs text-[var(--gray-09)]">
+                Read-grounded metrics are n/a for this engine
+                {engine ? ` (${engine})` : ""} — no transcript to measure reads.
+              </p>
+            ) : waste.length === 0 ? (
+              <p className="px-3 py-4 text-xs text-[var(--gray-09)]">
+                Every pack file was read — no precision waste.
+              </p>
+            ) : (
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-[var(--gray-05)] bg-[var(--gray-01)]">
+                    <th className="px-3 py-2 text-left font-medium uppercase tracking-wide text-[var(--gray-09)]">
+                      Pack file never read
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {waste.map((item, idx) => (
+                    <tr
+                      key={idx}
+                      className="border-b border-[var(--gray-04)] hover:bg-[var(--gray-03)] transition-colors"
+                      style={{ height: "34px" }}
+                    >
+                      <td className="px-3 py-1.5">
+                        <span
+                          className="font-mono text-[var(--gray-11)] block truncate"
+                          title={item.item_path}
+                          style={{
+                            fontFamily:
+                              '"Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                          }}
+                        >
+                          {item.item_path}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </section>
+
+        {/* Recall miss — files the executor fetched itself, absent from the pack. */}
+        <section>
+          <h2 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--gray-09)]">
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ backgroundColor: "#7aa2ff" }}
+            />
+            Recall miss
+            <span className="rounded-sm bg-[#12233a] px-1.5 py-0.5 text-[10px] text-[#7aa2ff] font-mono">
+              {readGrounded ? miss.length : "n/a"}
+            </span>
+          </h2>
+          <div className="rounded border border-[var(--gray-05)] overflow-hidden">
+            {!readGrounded ? (
+              <p className="px-3 py-4 text-xs text-[var(--gray-09)]">
+                Read-grounded metrics are n/a for this engine
+                {engine ? ` (${engine})` : ""} — no transcript to measure reads.
+              </p>
+            ) : miss.length === 0 ? (
+              <p className="px-3 py-4 text-xs text-[var(--gray-09)]">
+                The executor fetched nothing outside the pack — no recall miss.
+              </p>
+            ) : (
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-[var(--gray-05)] bg-[var(--gray-01)]">
+                    <th className="px-3 py-2 text-left font-medium uppercase tracking-wide text-[var(--gray-09)]">
+                      File fetched outside the pack
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {miss.map((item, idx) => (
+                    <tr
+                      key={idx}
+                      className="border-b border-[var(--gray-04)] hover:bg-[var(--gray-03)] transition-colors"
+                      style={{ height: "34px" }}
+                    >
+                      <td className="px-3 py-1.5">
+                        <span
+                          className="font-mono text-[var(--gray-11)] block truncate"
+                          title={item.item_path}
+                          style={{
+                            fontFamily:
+                              '"Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                          }}
+                        >
+                          {item.item_path}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </section>
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

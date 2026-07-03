@@ -90,6 +90,24 @@ def _read_pack(target: Path, pack_file: Optional[str]) -> Optional[Dict[str, Any
     return pack if isinstance(pack, dict) else None
 
 
+def read_pack_included(target: Path, pack_file: Optional[str]) -> List[Dict[str, Any]]:
+    """Return the persisted pack's ``included`` items (path/tokenEstimate), or [].
+
+    The read-grounded live-metric computation (#1037) needs the ACTUAL selected
+    pack items — the precision denominator is these items' tokens, not a fixed
+    budget. This reads them straight from the source-of-truth pack JSON and never
+    raises: an unavailable/malformed pack yields an empty list, which the metric
+    treats as an empty pack (precision n/a, not a crash).
+    """
+    pack = _read_pack(target, pack_file)
+    if pack is None:
+        return []
+    included = pack.get("included")
+    if not isinstance(included, list):
+        return []
+    return [entry for entry in included if isinstance(entry, dict)]
+
+
 def _items_from_pack(pack: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Derive context-pack items from a persisted pack's included list, capped."""
     included = pack.get("included")
@@ -199,6 +217,123 @@ def _emit_unlinked(target: Path, payload: Dict[str, Any]) -> bool:
         with sidecar.open("a", encoding="utf-8") as file:
             file.write(json.dumps({"delivery": "unlinked", **payload}) + "\n")
         return True
+    except Exception:  # noqa: BLE001 — non-fatal by design
+        return False
+
+
+def _live_metric_items(metrics: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Turn the waste/miss lists into context_events items (migration-free).
+
+    The two lists (#1037, AC4) ride the SAME items channel the pack already uses,
+    tagged with a distinguishing ``reason`` so the console can split them out:
+
+      * ``reason="live_waste"``  — a pack file the executor never read
+        (``included=True`` — it WAS in the pack; the waste is that it was unread).
+      * ``reason="live_miss"``   — a file the executor fetched itself, absent from
+        the pack (``included=False`` — it was NOT in the pack).
+
+    No new ClickHouse column is needed: these are ordinary context_events rows,
+    already drillable via ``getContextPackItems``. Bounded by ``_MAX_ITEMS``.
+    """
+    items: List[Dict[str, Any]] = []
+    waste = metrics.get("waste")
+    miss = metrics.get("miss")
+    if isinstance(waste, list):
+        for path in waste:
+            if len(items) >= _MAX_ITEMS:
+                return items
+            if isinstance(path, str) and path:
+                items.append(
+                    {"path": path, "reason": "live_waste", "score": 0.0, "included": True}
+                )
+    if isinstance(miss, list):
+        for path in miss:
+            if len(items) >= _MAX_ITEMS:
+                return items
+            if isinstance(path, str) and path:
+                items.append(
+                    {"path": path, "reason": "live_miss", "score": 0.0, "included": False}
+                )
+    return items
+
+
+def push_live_context_metrics(
+    target: Path,
+    run_id: str,
+    metrics: Dict[str, Any],
+    pack_file: Optional[str] = None,
+) -> bool:
+    """Re-emit the accepted pack carrying read-grounded live metrics (#1037).
+
+    Called ONCE at run finalization, after the final accepted diff is known —
+    the per-phase :func:`push_context_pack` fires before recall can be computed.
+    It re-pushes the same ``context_pack_id`` so the console row is updated in
+    place (ClickHouse ReplacingMergeTree semantics), now carrying:
+
+      * ``engine`` + read-grounded ``precision`` / ``recall`` — surfaced on the
+        pack payload as extra fields (the ingest route tolerates unknown keys);
+        the two scalar numerics have NO dedicated ClickHouse column, so they are
+        additionally encoded in the migration-free items channel below and
+        FLAGGED in the PR body per the STOP-and-flag rule.
+      * waste / miss lists as ``live_waste`` / ``live_miss`` context_events items.
+
+    Non-fatal: any exception → False, never raises. n/a-engine runs (no reads)
+    still push so the console can show the engine tag and an explicit n/a.
+    """
+    if not isinstance(metrics, dict):
+        return False
+    pack = _read_pack(target, pack_file)
+    link = load_link(target)
+
+    if pack is not None:
+        repository_id = link["repository_id"] if link else ""
+        payload = _payload_from_pack(pack, run_id, repository_id)
+    else:
+        # No persisted pack (e.g. a search-only run): still emit a minimal record
+        # so the engine tag + live metrics are not dark.
+        payload = {
+            "run_id": run_id,
+            "repository_id": link["repository_id"] if link else "",
+            "context_pack_id": str(uuid.uuid4()),
+            "token_budget": 0,
+            "tokens_used": int(metrics.get("packTokens") or 0),
+            "tokens_saved": 0,
+            "sources_considered": int(metrics.get("packFileCount") or 0),
+            "occurred_at": _now_iso(),
+            "items": [],
+            "precision_at_budget": 0.0,
+            "citation_coverage": 0.0,
+            "stale_count": 0,
+            "denied_count": 0,
+            "source_hash_list": [],
+        }
+
+    # Attach the live metrics. These extra top-level keys have no dedicated
+    # ClickHouse column (FLAGGED); the ingest route ignores unknown keys, and the
+    # waste/miss detail travels through the items channel which DOES persist.
+    payload["live_context_metrics"] = metrics
+    live_items = _live_metric_items(metrics)
+    if live_items:
+        existing = payload.get("items")
+        merged = (existing if isinstance(existing, list) else []) + live_items
+        payload["items"] = merged[:_MAX_ITEMS]
+
+    if link is None:
+        return _emit_unlinked(target, payload)
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{link['base_url']}/api/v1/ingest/context-packs",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {link['api_key']}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return int(resp.status) == 202
     except Exception:  # noqa: BLE001 — non-fatal by design
         return False
 

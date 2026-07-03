@@ -37,7 +37,11 @@ from agentrail.run.proc import run_with_timeout
 from agentrail.run import best_of_n as bestofn
 from agentrail.run import critic as critic_mod
 from agentrail.run import verifier as verifier_mod
-from agentrail.run.usage_capture import capture_usage
+from agentrail.run.usage_capture import (
+    capture_reads,
+    capture_usage,
+    record_reads_into_run_json,
+)
 from agentrail.shared.json import read_json, write_json
 
 _log = logging.getLogger(__name__)
@@ -399,6 +403,16 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
                 _log.debug("cost ledger write skipped: %s", _exc)
     except Exception as _exc:
         _log.debug("cost capture skipped: %s", _exc)
+
+    # 17a-reads. Read harvest (transcript-scrape, no runner instrumentation) — non-fatal.
+    # Harvest the executor's mid-run file reads from the on-disk transcript into
+    # run.json BEFORE the workdir is torn down. capture_reads never raises and
+    # reports n/a (never a silent zero) for engines with no transcript vehicle.
+    try:
+        coverage = capture_reads(rc.agent, rc.target_dir, phase_start_ts)
+        record_reads_into_run_json(rc.metadata_file, coverage)
+    except Exception as _exc:
+        _log.debug("read harvest skipped: %s", _exc)
 
     # 17b. Agent activity telemetry — non-fatal
     try:

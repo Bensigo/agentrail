@@ -176,6 +176,13 @@
       "when": 1780907365697,
       "tag": "0023_eval_arm_metrics",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1780907365698,
+      "tag": "0024_memory_items_v2",
+      "breakpoints": true
     }
   ]
 }

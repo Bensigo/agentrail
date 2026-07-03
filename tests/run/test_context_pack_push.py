@@ -396,3 +396,178 @@ def test_payload_includes_items(tmp_path: Path, monkeypatch) -> None:
     assert captured["body"]["items"] == [
         {"path": "src/a.py", "reason": "match", "score": 0.7, "included": True},
     ]
+
+
+# ---------------------------------------------------------------------------
+# Persisted-pack source of truth (issue #1027)
+# ---------------------------------------------------------------------------
+
+
+def _write_pack(tmp_path: Path, pack: dict, name: str = "pack-001.json") -> str:
+    """Persist a pack JSON under .agentrail/context/packs and return its rel path."""
+    packs_dir = tmp_path / ".agentrail" / "context" / "packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / name).write_text(json.dumps(pack), encoding="utf-8")
+    return f".agentrail/context/packs/{name}"
+
+
+def _sample_pack() -> dict:
+    """A persisted pack shaped like build_context_pack's output."""
+    return {
+        "packId": "issue-42-execute-abc",
+        "retrievalBudget": {"maxItems": 20, "maxTokens": 12000},
+        "included": [
+            {"path": "src/a.py", "tokenEstimate": 400, "reason": "anchor", "score": 0.9},
+            {"path": "src/b.py", "tokenEstimate": 350},
+        ],
+        "tokensSaved": 5400,
+        "runId": "run-persisted",
+        "precision_at_budget": 0.6125,
+        "citation_coverage": 0.8333,
+        "stale_count": 2,
+        "denied_count": 1,
+        "source_hash_list": ["sha-a", "sha-b"],
+    }
+
+
+# AC1 — a linked run pushes quality fields byte-equal to the persisted pack JSON.
+# The assertion reads the pack file back off disk and compares against the pushed
+# payload, so it proves the SOURCE is the persisted pack, not runMetadata.
+
+
+def test_linked_push_reads_quality_from_persisted_pack(tmp_path: Path, monkeypatch) -> None:
+    _write_server_json(tmp_path)
+    pack = _sample_pack()
+    pack_file = _write_pack(tmp_path, pack)
+    captured: dict = {}
+
+    class FakeResp:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data)
+        return FakeResp()
+
+    monkeypatch.setattr(context_pack_push.urllib.request, "urlopen", fake_urlopen)
+
+    # A deliberately DIVERGENT retrieval dict: if the push read runMetadata
+    # instead of the pack, these values would surface and the assert would fail.
+    divergent_retrieval = {
+        "selectedContextTokens": 99999,
+        "selectedSources": ["WRONG.py"] * 7,
+        "precision_at_budget": 0.111,
+        "citation_coverage": 0.111,
+        "stale_count": 99,
+        "denied_count": 99,
+        "source_hash_list": ["WRONG"],
+        "retrievalBudget": {"maxTokens": 1},
+    }
+    result = context_pack_push.push_context_pack(
+        tmp_path, "run-persisted", divergent_retrieval, pack_file=pack_file,
+    )
+    assert result is True
+
+    # Read the persisted pack back off disk — the payload must match IT, not the
+    # divergent retrieval dict.
+    on_disk = json.loads(
+        (tmp_path / pack_file).read_text(encoding="utf-8")
+    )
+    body = captured["body"]
+    assert body["precision_at_budget"] == on_disk["precision_at_budget"] == 0.6125
+    assert body["citation_coverage"] == on_disk["citation_coverage"] == 0.8333
+    assert body["stale_count"] == on_disk["stale_count"] == 2
+    assert body["denied_count"] == on_disk["denied_count"] == 1
+    assert body["source_hash_list"] == on_disk["source_hash_list"] == ["sha-a", "sha-b"]
+    # tokens + budget + sources are also read from the pack, not runMetadata
+    assert body["token_budget"] == on_disk["retrievalBudget"]["maxTokens"] == 12000
+    assert body["tokens_used"] == 750  # 400 + 350 from included tokenEstimate
+    assert body["tokens_saved"] == on_disk["tokensSaved"] == 5400
+    assert body["sources_considered"] == len(on_disk["included"]) == 2
+    assert body["context_pack_id"] == on_disk["packId"] == "issue-42-execute-abc"
+    assert body["items"] == [
+        {"path": "src/a.py", "reason": "anchor", "score": 0.9, "included": True},
+        {"path": "src/b.py", "reason": "", "score": 0.0, "included": True},
+    ]
+
+
+# AC2 — an unlinked (eval/canary) run produces a pack-metadata push whose payload
+# identifies the run. There is no server, so delivery is a local sidecar append.
+
+
+def test_unlinked_run_emits_run_identifying_pack_metadata(tmp_path: Path, monkeypatch) -> None:
+    # No server.json, no env link → unlinked.
+    monkeypatch.delenv("AGENTRAIL_SERVER_BASE_URL", raising=False)
+    monkeypatch.delenv("AGENTRAIL_SERVER_API_KEY", raising=False)
+    monkeypatch.delenv("AGENTRAIL_SERVER_REPOSITORY_ID", raising=False)
+
+    # If any network call is attempted, fail loudly — unlinked must not POST.
+    def no_network(req, timeout):
+        raise AssertionError("unlinked run must not make a network call")
+
+    monkeypatch.setattr(context_pack_push.urllib.request, "urlopen", no_network)
+
+    pack_file = _write_pack(tmp_path, _sample_pack())
+    result = context_pack_push.push_context_pack(
+        tmp_path, "eval-run-77", _sample_retrieval(), pack_file=pack_file,
+    )
+    assert result is True
+
+    sidecar = tmp_path / context_pack_push._UNLINKED_SIDECAR
+    assert sidecar.exists()
+    records = [json.loads(line) for line in sidecar.read_text().splitlines() if line.strip()]
+    assert len(records) == 1
+    rec = records[0]
+    # The record identifies the run so PRD4 canary reports can join it.
+    assert rec["run_id"] == "eval-run-77"
+    assert rec["context_pack_id"] == "issue-42-execute-abc"
+    assert rec["delivery"] == "unlinked"
+    # Quality proxies come from the persisted pack, same as the linked path.
+    assert rec["precision_at_budget"] == 0.6125
+    assert rec["source_hash_list"] == ["sha-a", "sha-b"]
+
+
+def test_unlinked_run_without_pack_returns_false(tmp_path: Path, monkeypatch) -> None:
+    # Legacy contract: unlinked AND no persisted pack → False, nothing emitted,
+    # no network call.
+    monkeypatch.delenv("AGENTRAIL_SERVER_BASE_URL", raising=False)
+    monkeypatch.delenv("AGENTRAIL_SERVER_API_KEY", raising=False)
+    monkeypatch.delenv("AGENTRAIL_SERVER_REPOSITORY_ID", raising=False)
+
+    result = context_pack_push.push_context_pack(
+        tmp_path, "eval-run-nopack", _sample_retrieval(),
+    )
+    assert result is False
+    assert not (tmp_path / context_pack_push._UNLINKED_SIDECAR).exists()
+
+
+def test_missing_pack_file_falls_back_to_retrieval(tmp_path: Path, monkeypatch) -> None:
+    # A pack_file that doesn't exist on disk must not crash: the linked push
+    # degrades to the legacy retrieval source.
+    _write_server_json(tmp_path)
+    captured: dict = {}
+
+    class FakeResp:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data)
+        return FakeResp()
+
+    monkeypatch.setattr(context_pack_push.urllib.request, "urlopen", fake_urlopen)
+    retrieval = {
+        "selectedContextTokens": 321,
+        "selectedSources": ["a.py"],
+        "precision_at_budget": 0.5,
+    }
+    result = context_pack_push.push_context_pack(
+        tmp_path, "run-fallback", retrieval,
+        pack_file=".agentrail/context/packs/does-not-exist.json",
+    )
+    assert result is True
+    body = captured["body"]
+    assert body["tokens_used"] == 321
+    assert body["precision_at_budget"] == 0.5

@@ -22,7 +22,11 @@ from agentrail.run.check_runner import (
 from agentrail.run.objective_gate import CheckResult, GateResult, evaluate
 from agentrail.run.red_green import Observation, gate_evidence, verify_trail
 from agentrail.run.activity_push import push_agent_activity
-from agentrail.run.context_pack_push import push_context_pack
+from agentrail.run.context_pack_push import (
+    push_context_pack,
+    push_live_context_metrics,
+    read_pack_included,
+)
 from agentrail.run.context_inject import emit_forced_context, forced_context_enabled
 from agentrail.run.cost_push import build_cost_record, push_cost_event
 from agentrail.run.failure_push import push_failure_event
@@ -185,6 +189,78 @@ def finalize_objective_gate(
     write_json(metadata_file, data)
 
     return {"done": gate_result.is_green, "objectiveGate": gate_payload}
+
+
+def _record_live_context_metrics(
+    *,
+    metadata_file: Path,
+    target_dir: Path,
+    run_id: str,
+    agent: str,
+    run_context_pack_file: Optional[str],
+) -> None:
+    """Compute + persist + push read-grounded live context metrics (#1037).
+
+    Wires the pure :func:`compute_live_context_metrics` into the run at
+    finalization:
+
+      1. ``included`` — the ACTUAL selected pack items (precision denominator is
+         these items' tokens, not a fixed budget).
+      2. ``reads_coverage`` — the per-phase read harvest (#1028) already written
+         to ``run.json`` under ``readsCoverage``; ``status="n/a"`` for engines
+         with no transcript vehicle (cursor/hermes) → precision/waste/miss n/a,
+         NEVER a measured zero (AC3).
+      3. classified diff — pre-existing modified files (recall denominator) vs
+         created files (excluded); a no-diff run yields a coverage count and NO
+         recall value, never recall=0 (AC2).
+
+    The result is written to ``run.json`` under ``liveContextMetrics`` (AC1) and
+    re-pushed on the #1027 pack channel with the engine tag + waste/miss items
+    (AC4). Callers wrap this in a non-fatal guard; it also degrades internally so
+    a partial failure still records what it can.
+    """
+    from agentrail.context.live_metrics import compute_live_context_metrics
+    from agentrail.guardrails.adapters.git import collect_classified_changes
+
+    included = read_pack_included(target_dir, run_context_pack_file)
+
+    reads_coverage = None
+    if metadata_file.exists():
+        existing = read_json(metadata_file)
+        if isinstance(existing, dict):
+            candidate = existing.get("readsCoverage")
+            if isinstance(candidate, dict):
+                reads_coverage = candidate
+
+    try:
+        modified_preexisting, created_files = collect_classified_changes(target_dir)
+    except Exception:  # noqa: BLE001 — recall degrades to a coverage count
+        modified_preexisting, created_files = [], []
+
+    metrics = compute_live_context_metrics(
+        included=included,
+        reads_coverage=reads_coverage,
+        modified_preexisting=modified_preexisting,
+        created_files=created_files,
+        engine_fallback=agent,
+    )
+
+    # Persist to run.json (AC1) — read-modify-write, mirroring
+    # record_reads_into_run_json; never clobbers other keys.
+    if metadata_file.exists():
+        data = read_json(metadata_file)
+        if not isinstance(data, dict):
+            data = {}
+    else:
+        data = {}
+    data["liveContextMetrics"] = metrics
+    write_json(metadata_file, data)
+
+    # Re-push on the #1027 channel so the dashboard shows the engine tag +
+    # read-grounded precision/recall + drillable waste/miss (AC4). Non-fatal.
+    push_live_context_metrics(
+        target_dir, run_id, metrics, pack_file=run_context_pack_file
+    )
 
 
 def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
@@ -1360,6 +1436,26 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         status = 0
     elif status == 0:
         status = 1
+
+    # Read-grounded live context metrics (#1037). Computed HERE, at run
+    # finalization, because recall needs the FINAL accepted diff — which the
+    # per-phase pack push (block 17d) fires too early to see. Never fatal: a
+    # failure here must not change the run's exit status, which the Objective
+    # Gate above already decided.
+    try:
+        _record_live_context_metrics(
+            metadata_file=metadata_file,
+            target_dir=target_dir,
+            run_id=run_id,
+            agent=agent,
+            run_context_pack_file=run_context_pack_file,
+        )
+    except Exception as e:  # noqa: BLE001 — non-fatal by design
+        print(
+            f"warning: live context metrics skipped "
+            f"({type(e).__name__}: {e})",
+            file=sys.stderr,
+        )
 
     # 13. Finalize
     finished_at = _utc_now_iso()

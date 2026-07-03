@@ -78,6 +78,32 @@ const sampleItems = [
     score: 0.12,
     occurred_at: new Date("2026-06-12T10:00:00.000Z"),
   },
+  // Read-grounded live diagnostics (issue #1037) ride the same context_events
+  // channel, tagged by reason. They must be split out of included/excluded.
+  {
+    workspace_id: WS,
+    run_id: RUN,
+    context_pack_id: PACK,
+    item_path: "src/unread.py",
+    item_hash: "",
+    included: 1,
+    citation: "",
+    reason: "live_waste",
+    score: 0,
+    occurred_at: new Date("2026-06-12T10:00:00.000Z"),
+  },
+  {
+    workspace_id: WS,
+    run_id: RUN,
+    context_pack_id: PACK,
+    item_path: "src/self_fetched.py",
+    item_hash: "",
+    included: 0,
+    citation: "",
+    reason: "live_miss",
+    score: 0,
+    occurred_at: new Date("2026-06-12T10:00:00.000Z"),
+  },
 ];
 
 beforeEach(() => {
@@ -101,7 +127,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/runs/[runId]/context-packs", () =
     expect(res.status).toBe(403);
   });
 
-  it("200 with packs and their items split into included/excluded", async () => {
+  it("200 with packs and their items split into included/excluded/waste/miss", async () => {
     const res = await GET(req(), { params: params() });
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -110,7 +136,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/runs/[runId]/context-packs", () =
         context_pack_id: PACK,
         token_budget: 8000,
         tokens_used: 4200,
-  tokens_saved: 1800,
+        tokens_saved: 1800,
         anchors_extracted: 0,
         sources_considered: 2,
         occurred_at: "2026-06-12T10:00:00.000Z",
@@ -123,10 +149,26 @@ describe("GET /api/v1/workspaces/[workspaceId]/runs/[runId]/context-packs", () =
           },
         ],
         excluded: [{ path: "src/b.py", reason: "over budget" }],
+        // live_waste / live_miss items are pulled out of the retrieval lists
+        // and surfaced as read-grounded diagnostics (issue #1037 AC4).
+        waste: [{ path: "src/unread.py" }],
+        miss: [{ path: "src/self_fetched.py" }],
       },
     ]);
     expect(getContextPacksForRun).toHaveBeenCalledWith(WS, RUN);
     expect(getContextPackItems).toHaveBeenCalledWith(WS, RUN, PACK);
+  });
+
+  it("does not leak live_waste/live_miss markers into included/excluded", async () => {
+    const res = await GET(req(), { params: params() });
+    const json = await res.json();
+    const pack = json.context_packs[0];
+    const includedReasons = pack.included.map((i: { reason: string }) => i.reason);
+    const excludedReasons = pack.excluded.map((i: { reason: string }) => i.reason);
+    expect(includedReasons).not.toContain("live_waste");
+    expect(excludedReasons).not.toContain("live_miss");
+    expect(pack.included).toHaveLength(1);
+    expect(pack.excluded).toHaveLength(1);
   });
 
   it("200 with empty list when no packs", async () => {

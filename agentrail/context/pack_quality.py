@@ -4,6 +4,17 @@ Computes ground-truth-free quality signals for a retrieved context pack so the
 dashboard's Context Quality surfaces (precision_at_budget, citation_coverage,
 stale_count, denied_count, source_hash_list) reflect real runs.
 
+``precision_at_budget`` is a DIAGNOSTIC-ONLY label-share proxy (source-type /
+authority membership over the fixed ``RETRIEVAL_MAX_TOKENS`` budget). It is
+gameable — a rerank that trims filler to a smaller, more relevant pack *lowers*
+it — so it MUST NEVER gate a run (issue #1037, AC5). The read-grounded live
+precision/recall in :mod:`agentrail.context.live_metrics` is what a run is
+judged on; this value survives only as a labeled diagnostic on the dashboard.
+The guardrails :class:`~agentrail.guardrails.signals.Signals` (the sole input
+every gating policy reads) deliberately has no precision field, so no gate can
+read this value even by accident; ``tests/guardrails/test_no_precision_gating``
+locks that invariant.
+
 This module is pure (no I/O) and total/defensive: it tolerates missing keys,
 non-dict items and ``None`` values and never raises.
 """

@@ -118,4 +118,59 @@ def collect_deleted_files(
     return sorted(deleted)
 
 
-__all__ = ["collect_changed_files", "collect_diff", "collect_deleted_files"]
+def collect_classified_changes(
+    repo_dir: Path | str = ".", *, base_ref: Optional[str] = None
+) -> tuple[List[str], List[str]]:
+    """Split the change into (modified_preexisting, created) file lists.
+
+    Live recall (#1037) uses the pre-existing-modified list as its denominator
+    and excludes created files entirely — a file the agent invented was never
+    something the pack could have retrieved. This is the diff-filter-classified
+    sibling of :func:`collect_changed_files`, kept here so ALL git I/O lives in
+    the one adapter (AC4 contract).
+
+    * ``modified_preexisting`` — files that existed at the base and were changed:
+      ``git diff --diff-filter=M`` over both the committed-on-branch range and
+      the working tree.
+    * ``created`` — files the change ADDED: ``--diff-filter=A`` plus untracked
+      files in the working tree (which git does not classify at all).
+
+    A path that shows up as both (e.g. deleted-then-recreated, or added on the
+    branch but shown modified in the working tree) is treated as created and
+    removed from the modified set, matching the "created files are excluded"
+    rule verbatim. Best-effort: any git failure degrades to what could be
+    collected, never raises.
+    """
+    cwd = Path(repo_dir)
+    base = _resolve_base(base_ref)
+
+    modified: set[str] = set()
+    created: set[str] = set()
+
+    merge_base = _git(["merge-base", "HEAD", base], cwd).strip()
+    if merge_base:
+        m = _git(["diff", "--name-only", "--diff-filter=M", merge_base, "HEAD"], cwd)
+        modified.update(p for p in m.splitlines() if p.strip())
+        a = _git(["diff", "--name-only", "--diff-filter=A", merge_base, "HEAD"], cwd)
+        created.update(p for p in a.splitlines() if p.strip())
+
+    m = _git(["diff", "--name-only", "--diff-filter=M", "HEAD"], cwd)
+    modified.update(p for p in m.splitlines() if p.strip())
+    a = _git(["diff", "--name-only", "--diff-filter=A", "HEAD"], cwd)
+    created.update(p for p in a.splitlines() if p.strip())
+
+    # Untracked working-tree files git does not classify — they are created.
+    untracked = _git(["ls-files", "--others", "--exclude-standard"], cwd)
+    created.update(p for p in untracked.splitlines() if p.strip())
+
+    # Created wins: never let an invented file inflate the recall denominator.
+    modified -= created
+    return sorted(modified), sorted(created)
+
+
+__all__ = [
+    "collect_changed_files",
+    "collect_diff",
+    "collect_deleted_files",
+    "collect_classified_changes",
+]

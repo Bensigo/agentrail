@@ -42,6 +42,21 @@ network hop between Jace and the write path it depends on.
 - **GitHub.** The `agentrail issue create` CLI's `github` connector needs
   `GITHUB_OAUTH_TOKEN` or `GITHUB_TOKEN` on the host.
 
+The Vercel AI Gateway string id is the production model path, but the endpoint is
+configurable. Setting `JACE_MODEL_BASE_URL` points Jace at any OpenAI-compatible
+server (a self-hosted Ollama, vLLM, LM Studio, or LiteLLM) via
+`@ai-sdk/openai-compatible`, with `JACE_MODEL_ID` selecting the model and
+`JACE_MODEL_API_KEY` an optional bearer token. This is how the app is exercised
+locally — against a local Ollama — without cloud model credentials.
+
+On this path Eve cannot resolve the model's context window from the AI Gateway
+catalog (a self-hosted model has no catalog entry), and it refuses to boot without
+one because it needs the window to compile its compaction trigger. Jace supplies
+the window itself via Eve's public `modelContextWindowTokens` escape hatch;
+`JACE_MODEL_CONTEXT_WINDOW_TOKENS` overrides it (default `8192`, set it to match
+your model / Ollama `num_ctx`). The var is ignored on the AI Gateway path, where
+Eve resolves the window from the catalog.
+
 ## Runtime and dependency policy
 
 - Node.js `>= 24` is required.

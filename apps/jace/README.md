@@ -36,6 +36,10 @@ or triggers builds.
 | Variable | Purpose |
 | --- | --- |
 | `VERCEL_OIDC_TOKEN` or `AI_GATEWAY_API_KEY` | Authenticates the model. `agent.ts` uses the string model id `anthropic/claude-sonnet-4.6`, which routes through the Vercel AI Gateway. A bare `ANTHROPIC_API_KEY` is IGNORED on that path. |
+| `JACE_MODEL_BASE_URL` | Optional. When set, Jace uses an OpenAI-compatible endpoint at this URL instead of the AI Gateway (e.g. a self-hosted Ollama at `http://localhost:11434/v1`). Unset = production AI Gateway path. |
+| `JACE_MODEL_ID` | Model id for the OpenAI-compatible endpoint. Defaults to `gemma4:latest`. Ignored on the AI Gateway path. |
+| `JACE_MODEL_API_KEY` | Optional bearer token for the OpenAI-compatible endpoint. Omitted when unset (a local Ollama needs none). |
+| `JACE_MODEL_CONTEXT_WINDOW_TOKENS` | Context-window size (tokens) for the OpenAI-compatible model, forwarded to Eve as `modelContextWindowTokens`. Defaults to `8192`. Used only on this path — a custom model has no AI Gateway catalog entry, and Eve refuses to boot without a window to compile its compaction trigger. Ignored on the AI Gateway path. Set it to match your model / Ollama `num_ctx`. |
 | `GITHUB_OAUTH_TOKEN` or `GITHUB_TOKEN` | Auth for the CLI's `github` connector when creating the issue. |
 | `JACE_TARGET_REPO` | Default `owner/repo` the created issue lands in (the `create_issue` tool falls back to this when `repo` isn't supplied). |
 | `JACE_AGENTRAIL_BIN` | Optional override for the `agentrail` binary. Defaults to `agentrail`. |
@@ -69,6 +73,27 @@ npm run roundtrip  # runs the approve + reject arms against the running sidecar
 The round-trip harness exercises both arms end to end: approving creates a real
 issue and returns its URL; rejecting creates no issue and the conversation
 continues.
+
+## Testing against a local OpenAI-compatible model (Ollama)
+
+Jace's model endpoint is configurable, so you can drive the full approval flow
+against a self-hosted model with no cloud model credentials. The operator's test
+target is a local [Ollama](https://ollama.com) serving `gemma4`:
+
+```bash
+# one shell — start the sidecar pointed at local Ollama
+JACE_MODEL_BASE_URL=http://localhost:11434/v1 \
+JACE_MODEL_ID=gemma4:latest \
+npm run dev
+
+# another shell — drive the approve + reject arms
+npm run roundtrip
+```
+
+The reject arm and the human-gated approval boundary itself need only the local
+model. The approve arm additionally shells out to `agentrail issue create`, so it
+still needs a GitHub connector token (`GITHUB_OAUTH_TOKEN`/`GITHUB_TOKEN`) and a
+reachable `agentrail` CLI to create the real issue.
 
 ## Unit tests
 

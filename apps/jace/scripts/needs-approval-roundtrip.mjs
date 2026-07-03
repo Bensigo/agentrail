@@ -11,6 +11,11 @@
 //
 // Environment:
 //   EVE_HOST            base URL of the running sidecar (default http://127.0.0.1:2000)
+//   JACE_MODEL_BASE_URL optional OpenAI-compatible endpoint (e.g. Ollama http://localhost:11434/v1);
+//                       when set, no AI Gateway creds are needed for the model
+//   JACE_MODEL_ID       model id for that endpoint (default gemma4:latest)
+//   JACE_MODEL_CONTEXT_WINDOW_TOKENS  context window for that model, forwarded to Eve
+//                       (default 8192); only used on the OpenAI-compatible path
 //   JACE_TARGET_REPO    owner/repo the created issue lands in (used by the create_issue tool)
 //   VERCEL_OIDC_TOKEN or AI_GATEWAY_API_KEY   AI Gateway auth for the string model id
 //   GITHUB_OAUTH_TOKEN or GITHUB_TOKEN        auth for the CLI's github connector

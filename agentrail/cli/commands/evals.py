@@ -40,10 +40,15 @@ def _usage() -> str:
         "Usage:\n"
         "  agentrail evals run [--corpus DIR] [--task NAME[,NAME...]] "
         "[--arm NAME] [--reps N]\n"
+        "  agentrail evals canary [--target DIR] [--reps N] [--date YYYY-MM-DD]\n"
         "\n"
         "Subcommands:\n"
         "  run     Run the eval spine (corpus -> runner -> hidden-test scorer\n"
         "          -> repetitions -> report).\n"
+        "  canary  Run the nightly canary: a bounded corpus subset (one task per\n"
+        "          difficulty stratum) that FAILS CLOSED on missing server auth,\n"
+        "          writes the dated report, and pushes telemetry (not dark) so\n"
+        "          the regression gate's live-metrics lane is populated (#1041).\n"
         "  probes  Run the intrinsic guardrail catch-rate probe against the\n"
         "          built-in injection corpus and print the catch-rate (#943).\n"
         "\n"
@@ -325,6 +330,101 @@ def _run_run(args: List[str]) -> int:
     return 0
 
 
+def _run_canary(args: List[str]) -> int:
+    """Run the nightly canary (#1041) — the scheduled-Action entrypoint.
+
+    Fails CLOSED on missing server auth (exit 2), writes the dated report
+    (strata + per-component cost + network-artifact counts — reused from the
+    spine), and pushes per-arm telemetry so the regression gate's live-metrics
+    lane is not dark. Bounded to one task per difficulty stratum at a documented
+    cost bound so the nightly job is cheap enough to never be turned off.
+    """
+    from agentrail.evals.canary import (
+        CANARY_COST_BOUND_USD,
+        CANARY_TASKS,
+        CanaryAuthError,
+        run_canary,
+    )
+
+    target: Optional[Path] = None
+    reports_dir: Optional[Path] = None
+    reps: Optional[int] = None
+    date: Optional[str] = None
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-h", "--help"):
+            print(_usage())
+            return 0
+        if a == "--target":
+            target = Path(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--reports-dir":
+            reports_dir = Path(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--reps":
+            try:
+                reps = int(_parse_flag_value(args, i, a))
+            except ValueError:
+                print("error: --reps requires an integer", file=sys.stderr)
+                return 2
+            i += 2
+        elif a == "--date":
+            date = _parse_flag_value(args, i, a)
+            i += 2
+        else:
+            print(f"error: unknown option: {a}", file=sys.stderr)
+            return 2
+
+    kwargs = {}
+    if reps is not None:
+        kwargs["reps"] = reps
+
+    try:
+        result = run_canary(
+            target=target,
+            reports_dir=reports_dir,
+            date=date,
+            **kwargs,
+        )
+    except CanaryAuthError as error:
+        # FAIL CLOSED (PRD §5): missing/invalid secret ⇒ the job fails. Exit
+        # non-zero so the GitHub Action turns red instead of silently green.
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+
+    print(f"Canary run id: {result.run_id}")
+    print(
+        "Canary corpus subset (one task per difficulty stratum): "
+        + ", ".join(CANARY_TASKS)
+    )
+    print(f"Documented cost bound: ${CANARY_COST_BOUND_USD:.2f}")
+    if result.report_path is not None:
+        print(f"Wrote markdown report: {result.report_path}")
+    for r in result.spine_result.arm_reports:
+        dps = "n/a" if r.dollars_per_solved is None else f"${r.dollars_per_solved:.4f}"
+        print(
+            f"- arm={r.arm} reps={r.repetitions} solved={r.solved_count} "
+            f"failed={r.failed_count} solve-rate={r.solve_rate * 100:.1f}% "
+            f"$/solved={dps}"
+        )
+    print(
+        "Telemetry push: "
+        + (
+            "ok (run/pack metrics linked — live lane populated)"
+            if result.persist_ok
+            else "FAILED — link resolved but ingest did not return 202"
+        )
+    )
+    # AC3: a validated link that then fails to persist is a real ingest failure,
+    # not a benign skip. Surface it as a non-zero exit so the scheduled job is
+    # red and the live-metrics lane is not silently left dark.
+    if not result.persist_ok:
+        return 1
+    return 0
+
+
 def _run_probes(args: List[str]) -> int:
     """Run the intrinsic guardrail catch-rate probe (#943).
 
@@ -358,6 +458,9 @@ def run_evals(args: List[str]) -> int:
 
     if kind == "run":
         return _run_run(args[1:])
+
+    if kind == "canary":
+        return _run_canary(args[1:])
 
     if kind == "probes":
         return _run_probes(args[1:])

@@ -227,7 +227,8 @@ class HeartbeatRuntime:
     def __init__(
         self,
         *,
-        connector: Connector,
+        connector: Optional[Connector] = None,
+        connectors: Optional[List[Connector]] = None,
         store: Store,
         sandbox_runner: SandboxRunner,
         notifier: Notifier,
@@ -235,7 +236,24 @@ class HeartbeatRuntime:
         detect_capabilities: Callable[[], FrozenSet[Capability]] = detect_capabilities,
         merge_pr: Optional[MergePr] = None,
     ) -> None:
-        self._connector = connector
+        # One loop can now poll SEVERAL intake sources (GitHub + Linear, issue
+        # #1036). ``connector=`` (single) stays for back-compat — every existing
+        # caller/test passes exactly one; ``connectors=`` (list) is the new
+        # multi-source form. Each connector self-declares its queue ``source`` via
+        # a ``source`` attribute (GitHubOAuthClient has none → defaults "github";
+        # LinearPollClient.source == "linear"), so enqueue stamps the right source
+        # and post_result routes back to the connector that sourced the entry.
+        if connectors is None:
+            connectors = [connector] if connector is not None else []
+        elif connector is not None:
+            connectors = [connector, *connectors]
+        if not connectors:
+            raise ValueError("HeartbeatRuntime needs at least one connector")
+        self._connectors: List[Connector] = connectors
+        # Back-compat alias: single-connector callers and the merge/back-channel
+        # helpers that predate multi-source still read ``self._connector`` (the
+        # first / primary connector).
+        self._connector = connectors[0]
         self._store = store
         self._sandbox = sandbox_runner
         self._notifier = notifier
@@ -243,19 +261,30 @@ class HeartbeatRuntime:
         self._detect = detect_capabilities
         self._merge_pr = merge_pr
 
+    @staticmethod
+    def _source_of(connector: Connector) -> str:
+        """The queue ``source`` string a connector's polled issues are stamped with.
+
+        A connector self-declares it via a ``source`` attribute; GitHub's client
+        omits it (the original, default intake), so it falls back to ``"github"``.
+        """
+        return str(getattr(connector, "source", "github"))
+
     # -- the loop ----------------------------------------------------------- #
     def poll_and_dispatch(self, workspace_id: str) -> CycleReport:
         """Run one sweep: poll → enqueue (dedupe) → dispatch → record → notify.
 
         (a) Refuse and return early if the prerequisite gate is OFF (AC3) — no
             poll, no enqueue, no run, no notify.
-        (b) Poll the connector and enqueue each issue, deduping on the stable
-            ``external_id`` (``repo#number``) so the same issue is not enqueued
-            twice within a cycle (AC1 dedupe).
+        (b) Poll EVERY configured connector (GitHub + Linear, issue #1036) and
+            enqueue each issue under *that connector's* ``source`` through the one
+            shared Input-Contract gate, deduping on the stable ``external_id``
+            (``repo#number``) so the same issue is not enqueued twice within a
+            cycle (AC1 dedupe).
         (c) Drain the grabbable queue: for each entry, START it, register the
             running run, execute it in the sandbox, map the status to a queue
             Event, transition + re-register with the cost, post the outcome back
-            and notify the channel.
+            (to the connector that sourced it) and notify the channel.
         (d) Stop when ``next_grabbable`` returns ``None`` — idle on empty (AC2).
         """
         if not heartbeat_enabled(self._detect()):
@@ -263,35 +292,41 @@ class HeartbeatRuntime:
 
         report = CycleReport()
 
-        # (b) poll + enqueue with dedupe on external_id. We key the polled
-        # IssueRef by the *minted entry's number* so the dispatch loop can
-        # recover the originating ref — ``QueueEntry.number`` is a stable
-        # function of the issue identity (``queue_store._entry_number``), so the
-        # entry handed back by ``next_grabbable`` carries the same number.
+        # (b) poll every connector + enqueue with dedupe on external_id. We key the
+        # polled IssueRef by the *minted entry's number* so the dispatch loop can
+        # recover the originating ref — ``QueueEntry.number`` is a stable function
+        # of the issue identity (``queue_store._entry_number``), so the entry
+        # handed back by ``next_grabbable`` carries the same number. We ALSO key the
+        # sourcing connector by that number so post_result routes back to the right
+        # tracker (a Linear entry comments back on Linear, a GitHub one on GitHub).
         refs_by_number: Dict[int, IssueRef] = {}
+        conn_by_number: Dict[int, Connector] = {}
         seen: set = set()
-        for ref in self._connector.poll(workspace_id):
-            report.polled += 1
-            external_id = self._external_id(ref)
-            if external_id in seen:
-                continue  # dedupe within this cycle
-            seen.add(external_id)
-            admitted = self._store.enqueue(
-                workspace_id=workspace_id,
-                source="github",
-                external_id=external_id,
-                title=ref.title,
-                body=ref.body,
-            )
-            if isinstance(admitted, Rejected):
-                # The input-contract gate kept it out (no machine-checkable AC):
-                # not enqueued, nothing to dispatch.
-                continue
-            report.enqueued += 1
-            refs_by_number[admitted.number] = ref
+        for connector in self._connectors:
+            source = self._source_of(connector)
+            for ref in connector.poll(workspace_id):
+                report.polled += 1
+                external_id = self._external_id(ref)
+                if external_id in seen:
+                    continue  # dedupe within this cycle (across all connectors)
+                seen.add(external_id)
+                admitted = self._store.enqueue(
+                    workspace_id=workspace_id,
+                    source=source,
+                    external_id=external_id,
+                    title=ref.title,
+                    body=ref.body,
+                )
+                if isinstance(admitted, Rejected):
+                    # The input-contract gate kept it out (no machine-checkable
+                    # AC): not enqueued, nothing to dispatch.
+                    continue
+                report.enqueued += 1
+                refs_by_number[admitted.number] = ref
+                conn_by_number[admitted.number] = connector
 
         # (c)/(d) drain the grabbable queue (no poll — that already happened).
-        self._drain(workspace_id, refs_by_number, report)
+        self._drain(workspace_id, refs_by_number, report, conn_by_number)
         return report
 
     def dispatch_pending(
@@ -327,17 +362,25 @@ class HeartbeatRuntime:
         workspace_id: str,
         refs_by_number: Dict[int, IssueRef],
         report: CycleReport,
+        conn_by_number: Optional[Dict[int, "Connector"]] = None,
     ) -> None:
         """Dispatch every grabbable entry until the queue has no grabbable work.
 
         The single dispatch loop shared by ``poll_and_dispatch`` (after its poll)
         and ``dispatch_pending`` (with no poll), so both paths run the identical
         cheap→strong escalation dispatch (AC4 — no duplicated loop).
+
+        ``conn_by_number`` maps a minted entry number to the connector that sourced
+        it (issue #1036), so the back-channel ``post_result`` comments on the right
+        tracker. Entries with no mapping (a resumed entry from a prior cycle, or the
+        webhook path) fall back to the primary connector — the original behaviour.
         """
+        conn_by_number = conn_by_number or {}
         entry = self._store.next_grabbable(workspace_id)
         while entry is not None:
             ref = self._ref_for(entry, refs_by_number)
-            self._dispatch_one(workspace_id, entry, ref, report)
+            connector = conn_by_number.get(entry.number, self._connector)
+            self._dispatch_one(workspace_id, entry, ref, report, connector)
             entry = self._store.next_grabbable(workspace_id)
 
     def _dispatch_one(
@@ -346,6 +389,7 @@ class HeartbeatRuntime:
         entry: QueueEntry,
         ref: IssueRef,
         report: CycleReport,
+        connector: Optional["Connector"] = None,
     ) -> None:
         """Run a grabbable entry through the cheap→strong escalation loop.
 
@@ -504,9 +548,15 @@ class HeartbeatRuntime:
         # Both are best-effort: a failed comment/notify (e.g. a token without
         # `repo` scope → HTTP 401, or an unreachable webhook) must NOT crash the
         # dispatcher — log and continue, like the cost/run-event pushes.
+        #
+        # The back-channel routes to the *sourcing* connector (issue #1036): a
+        # Linear-sourced entry comments back on Linear, a GitHub-sourced one on
+        # GitHub. ``connector`` defaults to the primary connector for resumed /
+        # webhook-path entries that carry no per-entry mapping.
+        post_to = connector or self._connector
         outcome = self._outcome_report(ref, final_result)
         try:
-            self._connector.post_result(ref, outcome)
+            post_to.post_result(ref, outcome)
         except Exception as exc:  # noqa: BLE001 - best-effort back-channel
             _log.warning("post_result failed for issue %s: %s", getattr(ref, "number", "?"), exc)
         try:

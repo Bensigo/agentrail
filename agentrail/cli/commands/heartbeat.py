@@ -6,6 +6,10 @@ otherwise-hermetic :class:`~agentrail.heartbeat.runtime.HeartbeatRuntime`:
 - the Issue Queue store on the production ``PostgresExecutor`` (DATABASE_URL);
 - the GitHub OAuth client, polling the workspace's linked repos with the
   owner's stored ``access_token`` (resolved via the Python token provider);
+- (optional, issue #1036) a symmetric Linear poll client, added when the
+  workspace has an enabled Linear connector AND ``AGENTRAIL_MCP_LINEAR_KEY`` is
+  set — trigger-labeled Linear issues then flow through the SAME shared
+  Input-Contract gate and land in the queue with ``source = "linear"``;
 - the Docker sandbox runner (``run_issue_in_sandbox``);
 - a thin Discord notifier built from the workspace's configured webhook.
 
@@ -66,11 +70,27 @@ def _usage() -> str:
         "  AGENTRAIL_WORKSPACE_ID    Default workspace id\n"
         "  AGENT_API_KEY / GIT_TOKEN Forwarded into the sandbox by name\n"
         "  DISCORD_WEBHOOK_URL       Channel webhook for notifications (optional)\n"
+        "  AGENTRAIL_MCP_LINEAR_KEY  Linear API key; with an enabled Linear "
+        "connector, admits trigger-labeled Linear issues (source=linear) (optional)\n"
         "  AGENTRAIL_CHEAP_MODEL     Model for the first (cheap) attempt (optional)\n"
         "  AGENTRAIL_STRONG_MODEL    Model the loop escalates to on a red gate\n"
         "  AGENTRAIL_PER_ISSUE_CEILING_USD  Per-issue $ cost ceiling, halts the run "
         "when exceeded (default 0 = uncapped; opt in above your costliest legit run)\n"
         "  AGENTRAIL_ATTEMPT_LIMIT   Max attempts before stop-to-human (default 2)\n"
+        "\n"
+        "Linear intake dry-run (manual, real workspace):\n"
+        "  1. Enable a Linear connector for the workspace on the Connectors page\n"
+        "     (set its trigger label, e.g. `ready-for-agent`).\n"
+        "  2. Create a Linear API key and export it:\n"
+        "       export AGENTRAIL_MCP_LINEAR_KEY=lin_api_...\n"
+        "  3. Add the trigger label to one Linear issue that has a machine-checkable\n"
+        "     acceptance criterion (a `- [ ]` checkbox under `## Acceptance criteria`).\n"
+        "  4. Run a single cycle:\n"
+        "       agentrail heartbeat run --workspace <ID> --once\n"
+        "     The one-line report shows `enqueued>=1`; the queue row carries\n"
+        "     source=linear, and the run's outcome is commented back on the Linear\n"
+        "     issue. An issue whose body trips the injection screen is parked (with\n"
+        "     the v2 gate ON) or rejected — identically to the GitHub path.\n"
     )
 
 
@@ -162,6 +182,7 @@ def _build_runtime(
     from agentrail.afk.connectors_store import get_active_connector
     from agentrail.afk.queue_store import PostgresExecutor, QueueStore
     from agentrail.connectors.github import GitHubOAuthClient
+    from agentrail.connectors.linear import LinearPollClient
     from agentrail.heartbeat.runtime import (
         DEFAULT_PER_ISSUE_CEILING_USD,
         HeartbeatRuntime,
@@ -200,6 +221,24 @@ def _build_runtime(
     connector = GitHubOAuthClient(
         token=token, repos=repo_list, trigger_label=effective_label
     )
+
+    # Linear intake (issue #1036): if the workspace has an ENABLED Linear connector
+    # AND a Linear API key is configured, add a symmetric Linear poll client so
+    # trigger-labeled Linear issues flow through the SAME shared Input-Contract gate
+    # and land in the queue with ``source = "linear"``. Absent either the connector
+    # or the key, the loop is GitHub-only exactly as before (no behaviour change).
+    # The key reuses the established Linear-secret env var (AGENTRAIL_MCP_LINEAR_KEY,
+    # the same one the MCP config reads) so a workspace configures it in one place.
+    connectors = [connector]
+    linear_cfg = get_active_connector(workspace_id, "linear", executor)
+    linear_key = os.environ.get("AGENTRAIL_MCP_LINEAR_KEY") or os.environ.get(
+        "LINEAR_API_KEY"
+    )
+    if linear_cfg is not None and linear_key:
+        linear_label = trigger_label or linear_cfg.trigger_label
+        connectors.append(
+            LinearPollClient(api_key=linear_key, trigger_label=linear_label)
+        )
 
     # Secrets forwarded into the sandbox by name (never on the command line).
     env = {}
@@ -242,7 +281,7 @@ def _build_runtime(
     # container). See agentrail/sandbox/native_runner.select_sandbox_runner.
     sandbox_runner = select_sandbox_runner(dict(os.environ))
     runtime = HeartbeatRuntime(
-        connector=connector,
+        connectors=connectors,
         store=store,
         sandbox_runner=sandbox_runner,
         notifier=notifier,

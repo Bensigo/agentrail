@@ -27,6 +27,7 @@ from agentrail.connectors.base import (
     Connector,
     ConnectorEvent,
     IngestedIssue,
+    IssueRef,
     OutcomeReport,
 )
 
@@ -168,3 +169,91 @@ class LinearConnector(Connector):
         interface contract holds without a misleading second comment.
         """
         return None
+
+
+# --------------------------------------------------------------------------- #
+# Heartbeat poll client (issue #1036): the runtime-Protocol Linear intake
+# --------------------------------------------------------------------------- #
+class LinearPollClient:
+    """Poll-and-post Linear intake for the **live heartbeat loop** (issue #1036).
+
+    The live dispatcher (``agentrail/heartbeat/runtime.py``) drives intake through
+    a different, minimal Protocol than the two-way ``connectors/base.Connector``:
+    ``poll(workspace_id) -> List[IssueRef]`` plus ``post_result(IssueRef, ...)``.
+    :class:`~agentrail.connectors.github.GitHubOAuthClient` is that Protocol for
+    GitHub; this is the exact-symmetric Linear client.
+
+    Crucially, admission is **not** done here. The runtime feeds every polled
+    ``IssueRef.body`` through ``QueueStore.enqueue`` — the single Input-Contract v2
+    gate both GitHub and Linear share (issue #1026) — so there is no second gate
+    and no bypass. This client only does the GraphQL I/O (list + comment-back)
+    through the injectable ``transport``; tests replay canned GraphQL payloads with
+    no network, exactly like :class:`LinearConnector`.
+
+    Linear addresses issues by an opaque stable ``id`` (not the human number), so
+    ``poll`` stashes that ``id`` in :attr:`IssueRef.repo`. That serves double duty:
+    it makes ``_external_id`` (``{id}#{number}``) a stable per-issue dedupe key AND
+    gives ``post_result`` the exact ``id`` the comment mutation needs — no extra
+    ``IssueRef`` field required. The human number/title/url ride along as usual.
+    """
+
+    #: The queue ``source`` string every entry this client feeds is stamped with,
+    #: so ``QueueStore.enqueue`` persists ``source = "linear"`` (AC3) and the
+    #: rate limiter keys it via ``_SOURCE_TO_WRITER["linear"]``.
+    source = "linear"
+
+    def __init__(
+        self,
+        *,
+        api_key: str = "",
+        trigger_label: str = "ready-for-agent",
+        transport: Optional[Transport] = None,
+    ) -> None:
+        self.api_key = api_key
+        # The label a Linear issue must carry to be picked up — symmetric with the
+        # GitHub trigger label. Defaults to the same ready label the rest of the
+        # loop uses so a workspace that sets nothing still works.
+        self.trigger_label = trigger_label
+        self._transport: Transport = transport or _default_transport(api_key)
+
+    def poll(self, workspace_id: str) -> List[IssueRef]:
+        """List trigger-labeled Linear issues as :class:`IssueRef`\\ s (no admission).
+
+        Runs the same GraphQL ``issues`` query (filtered by the trigger label) that
+        :meth:`LinearConnector.ingest` uses, but returns raw ``IssueRef``\\ s for the
+        runtime to gate — admission happens once, at ``QueueStore.enqueue``, so
+        Linear and GitHub share exactly one gate. ``workspace_id`` scopes which
+        api-key/label the caller resolved; carried for symmetry with the GitHub
+        client's workspace-scoped ``poll``.
+        """
+        payload = self._transport(_ISSUES_QUERY, {"label": self.trigger_label})
+        nodes = (
+            (payload or {}).get("data", {}).get("issues", {}).get("nodes", []) or []
+        )
+        refs: List[IssueRef] = []
+        for node in nodes:
+            refs.append(
+                IssueRef(
+                    # The Linear stable id rides in ``repo`` so it round-trips to
+                    # post_result and makes ``{id}#{number}`` a stable dedupe key.
+                    repo=str(node.get("id", "")),
+                    number=int(node.get("number", 0)),
+                    title=node.get("title") or "",
+                    body=node.get("description") or "",
+                    url=node.get("url") or "",
+                )
+            )
+        return refs
+
+    def post_result(self, issue_ref: IssueRef, result: OutcomeReport) -> None:
+        """Comment the run's terminal outcome back on the source Linear issue.
+
+        The runtime hands back the same :class:`IssueRef` ``poll`` returned, so the
+        Linear stable ``id`` is in ``issue_ref.repo`` — exactly what the Linear
+        comment mutation addresses by. Best-effort at the runtime boundary (a raise
+        is caught and logged there), matching the GitHub client's back channel.
+        """
+        self._transport(
+            _COMMENT_MUTATION,
+            {"issueId": issue_ref.repo, "body": result.to_comment()},
+        )

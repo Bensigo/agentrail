@@ -39,7 +39,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, FrozenSet, List, Optional, Protocol, Union
 
 from agentrail.afk import input_contract
-from agentrail.afk.input_contract import Rejected
+from agentrail.afk.input_contract import (
+    Admission,
+    AdmissionLedger,
+    Rejected,
+    WriterClass,
+)
 from agentrail.afk.queue_state import (
     Event,
     QueueEntry,
@@ -51,6 +56,41 @@ from agentrail.afk.queue_state import (
 
 # Sources an entry can come from (mirrors the schema CHECK / drizzle enum).
 Source = str  # 'cli' | 'github' | 'linear'
+
+# --- Input-Contract v2 feature flag (issue #1026, Blocker 3) -----------------
+# The v2 queue-entrance guardrails — prompt-injection screen, duplicate-content
+# dedup, and per-writer rate limit — are a NEW enforcement layer on the LIVE
+# intake path, so per the project rollout rule they merge behind a default-OFF
+# env-var flag. With the flag OFF (unset or anything other than "1"), ``enqueue``
+# behaves EXACTLY as it did before this PR: the legacy stateless gate (injection
+# screen + machine-checkable-AC) hard-REJECTs and no ledger is threaded, so dedup
+# and rate-limit never run. With the flag ON, ``enqueue`` threads the persistent
+# ledger and parks (never drops) an injection/dup/rate-limit hit for human review.
+_V2_FLAG = "AGENTRAIL_QUEUE_GUARDRAILS_V2"
+
+
+def _v2_enabled() -> bool:
+    """True when the Input-Contract v2 queue-entrance guardrails are enabled.
+
+    Default-OFF: only the exact value ``"1"`` turns the layer on, so an unset or
+    empty env var (production default) leaves live intake unchanged (Blocker 3).
+    """
+    return os.environ.get(_V2_FLAG) == "1"
+
+
+# Map the persisted ``source`` string to the writer class the rate limiter keys
+# on. Live GitHub intake (poll + webhook) is a human labelling an issue; the eval
+# harness and Jace are their own writer classes when they feed the same seam.
+_SOURCE_TO_WRITER: Dict[str, WriterClass] = {
+    "github": WriterClass.HUMAN_GITHUB,
+    "eval": WriterClass.EVAL_AUTOTICKET,
+    "jace": WriterClass.JACE,
+}
+
+
+def _writer_for_source(source: str) -> WriterClass:
+    """The rate-limit writer class for a queue source (defaults to human-github)."""
+    return _SOURCE_TO_WRITER.get(source, WriterClass.HUMAN_GITHUB)
 
 # The ``runs.status`` Postgres enum is {queued, running, success, failed}. The
 # dispatcher reports run outcomes in the Run-Outcome vocabulary (green / red /
@@ -130,6 +170,14 @@ class QueueStore:
         # The pure QueueEntry only carries ``number``; we remember the rest so
         # transitions/register_run can address the right row.
         self._identity: Dict[int, Dict[str, str]] = {}
+        # The Input-Contract v2 admission ledger (issue #1026, Blocker 1): the
+        # dedup hashes + per-writer counts, threaded forward across every enqueue.
+        # It lives on the store instance so it PERSISTS across poll/dispatch sweeps
+        # within a runtime process — the reason the live loop (which admits through
+        # this single seam) now actually runs dedup + rate-limit, not just the
+        # test-only dispatcher.py. Only used when the v2 flag is ON; every enqueue
+        # swaps in the next ledger the gate returns.
+        self._ledger: AdmissionLedger = AdmissionLedger()
 
     # -- identity helpers ------------------------------------------------------
 
@@ -164,15 +212,49 @@ class QueueStore:
         persisted. A validated issue is minted into a fresh ``QueueEntry`` on the
         pure state machine, parked via ``queue_state.admit`` if it has an unmet
         ``blocked_by`` dependency, and persisted with its tier/budget/state.
+
+        Input-Contract v2 (issue #1026, behind the default-OFF ``_V2_FLAG``): when
+        enabled, this ALSO threads the store's persistent :class:`AdmissionLedger`
+        through the gate so duplicate-content dedup (AC2) and per-writer rate
+        limiting (AC3) actually run on the live loop — this is the single seam both
+        the poller and the webhook admit through. A positive injection screen, a
+        duplicate, or a writer over its limit is PARKED (a durable, operator-visible
+        ``queue_entries`` row in the PARKED state carrying a human-readable reason),
+        never a silent drop. With the flag OFF, intake is byte-for-byte the legacy
+        behaviour: the stateless gate hard-REJECTs and no ledger is threaded.
         """
         number = _entry_number(workspace_id, source, external_id)
-        gated = input_contract.admit_to_queue(
-            number=number, issue_body=body, blocked_by=blocked_by
-        )
-        if isinstance(gated, Rejected):
-            return gated  # GATE: no row for an issue without machine-checkable AC
 
-        # Park if any blocked-by dependency is unmet (pure decision).
+        if _v2_enabled():
+            # v2 path: thread the persistent ledger (dedup + rate-limit) and PARK —
+            # never drop — an injection/dup/rate-limit hit for human review.
+            admission = input_contract.admit_to_queue(
+                number=number,
+                issue_body=body,
+                blocked_by=blocked_by,
+                writer=_writer_for_source(source),
+                ledger=self._ledger,
+                injection_park=True,
+            )
+            assert isinstance(admission, Admission)  # ledger supplied ⇒ Admission
+            self._ledger = admission.ledger  # thread the next ledger forward
+            if admission.is_rejected:
+                # Only a missing machine-checkable-AC reject reaches here now
+                # (injection parks under injection_park); keep the legacy contract:
+                # no row for an un-admittable issue.
+                return admission.rejected  # type: ignore[return-value]
+            gated: Union[QueueEntry, Rejected] = admission.entry  # type: ignore[assignment]
+        else:
+            # Legacy path (flag OFF): unchanged from before this PR.
+            gated = input_contract.admit_to_queue(  # type: ignore[assignment]
+                number=number, issue_body=body, blocked_by=blocked_by
+            )
+            if isinstance(gated, Rejected):
+                return gated  # GATE: no row for an issue without machine-checkable AC
+
+        # Park if any blocked-by dependency is unmet (pure decision). ``admit``
+        # preserves a gate park (dup/rate-limit/injection): it will not resurrect a
+        # PARKED entry that already carries a reason to QUEUED.
         entry = admit(gated, open_blockers=blocked_by)
 
         row_id = _entry_uuid(workspace_id, source, external_id)

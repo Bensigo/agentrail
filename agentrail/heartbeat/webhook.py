@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, Optional, Protocol
 
-from agentrail.afk.input_contract import Rejected
+from agentrail.afk.input_contract import Rejected, screen_injection
 from agentrail.connectors.base import IssueRef
 
 # GitHub ``issues`` event actions that should (re)admit work. Other actions
@@ -159,11 +159,22 @@ def handle_event(
     # Admission gate (reused): an issue without machine-checkable AC never enters
     # the queue. QueueStore.enqueue runs the same gate, but checking here lets us
     # report the rejection reason without a second (deduped) enqueue side effect.
+    #
+    # With the Input-Contract v2 layer ON (issue #1026, Blocker 2), a positive
+    # injection screen must PARK for human review at the store, not be dropped
+    # here. This stateless pre-check hard-REJECTs injection, so under v2 we skip
+    # the drop for an injection-only reject and let the store park it (a durable,
+    # operator-visible PARKED row). A missing-machine-checkable-AC reject is still
+    # a real reject in both modes, so it is reported here as before.
+    from agentrail.afk.queue_store import _v2_enabled
+
     admission = ingest(number=number, body=ref.body)
     if isinstance(admission, Rejected):
-        return EventResult(
-            matched=True, reason=f"rejected: {admission.missing_ac}"
-        )
+        if not (_v2_enabled() and screen_injection(ref.body) is not None):
+            return EventResult(
+                matched=True, reason=f"rejected: {admission.missing_ac}"
+            )
+        # else: v2 ON + injection → fall through so store.enqueue parks it.
 
     admitted = store.enqueue(
         workspace_id=workspace_id,

@@ -370,6 +370,7 @@ def admit_to_queue(
     blocked_by: FrozenSet[int] = frozenset(),
     writer: WriterClass = WriterClass.HUMAN_GITHUB,
     ledger: Optional[AdmissionLedger] = None,
+    injection_park: bool = False,
 ) -> Union[QueueEntry, Rejected, Admission]:
     """The GATE: run the queue-entrance checks over one issue.
 
@@ -378,8 +379,12 @@ def admit_to_queue(
     (issue #1026): injection screening, duplicate-content detection, and
     per-writer rate limiting. Order matters and is security-first:
 
-    1. **Injection screen** (:func:`screen_injection`) → :class:`Rejected`. A
-       prompt-injection probe is a hard REJECT: it never becomes a runnable entry.
+    1. **Injection screen** (:func:`screen_injection`) → by default a hard
+       :class:`Rejected` (a probe never becomes a runnable entry). When
+       ``injection_park=True`` (the live-loop intake sets this) a positive screen
+       instead PARKS the entry with the injection reason as its ``reason``, so a
+       legitimate house-format issue that trips the heuristic is surfaced for a
+       human to review rather than silently dropped (Blocker 2 / issue #1026).
     2. **Machine-checkable AC** (:func:`validate`) → :class:`Rejected` if missing.
     3. **Duplicate content** (:func:`content_hash` + ledger) → a PARKED entry with
        a duplicate-content ``reason``; the second admission of the same content
@@ -422,9 +427,27 @@ def admit_to_queue(
         )
 
     try:
-        # 1. Injection screen — a hard REJECT (never becomes a runnable entry).
+        # 1. Injection screen. By default a hard REJECT (never becomes a runnable
+        # entry). When ``injection_park`` is set — the live-loop intake does this —
+        # a positive screen instead PARKS the entry with the injection reason, so a
+        # legitimate house-format issue that trips the heuristic is surfaced for a
+        # human rather than silently dropped (Blocker 2). A parked injection did not
+        # take a fresh slot, so (like dup/rate-limit) it records no ledger budget.
         injection_reason = screen_injection(issue_body)
         if injection_reason is not None:
+            if injection_park:
+                parked = QueueEntry(
+                    number=number,
+                    tier=tier,
+                    remaining_budget=remaining_budget,
+                    blocked_by=blocked_by,
+                    state=QueueState.PARKED,
+                    reason=(
+                        f"prompt-injection screen tripped ({injection_reason}) — "
+                        "parked for human review instead of dropped"
+                    ),
+                )
+                return _result(entry=parked)
             return _result(rejected=Rejected(missing_ac=injection_reason))
 
         # 2. Machine-checkable acceptance criteria (the v1 gate).

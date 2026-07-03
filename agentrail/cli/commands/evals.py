@@ -64,6 +64,11 @@ def _usage() -> str:
         "  --include-held-out\n"
         "                   Include the held-out task split (excluded by default\n"
         "                   so the harness is never developed against it).\n"
+        "  --pack-index-root DIR\n"
+        "                   Checkout with a built context index to score context\n"
+        "                   packs against (precision/recall + rerank delta).\n"
+        "                   Default: the git checkout root if it has an index.\n"
+        "  --no-pack-scores Skip offline pack scoring (report shows n/a).\n"
         "  -h, --help       Show this help\n"
     )
 
@@ -72,6 +77,37 @@ def _parse_flag_value(args: List[str], i: int, flag: str) -> str:
     if i + 1 >= len(args):
         raise ValueError(f"flag {flag} requires a value")
     return args[i + 1]
+
+
+def _default_pack_index_root() -> Optional[Path]:
+    """The git checkout root, when it has a built context index; else ``None``.
+
+    The corpus tasks are pinned to this repo (``Bensigo/agentrail``) and their
+    ``required_context`` answer keys resolve against this checkout, so the git
+    root is the honest place to run the offline retrieval that scores pack
+    precision/recall (#1029 AC2/AC3). We only return it when an index is already
+    built there — pack scoring is a READ of an existing index, never a rebuild —
+    so an un-indexed checkout degrades to ``None`` and the report renders ``n/a``
+    honestly rather than silently doing nothing (or worse, triggering a heavy
+    build). Any failure to resolve the root also degrades to ``None``.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    root = Path(out.stdout.strip())
+    if not root:
+        return None
+    if not (root / ".agentrail" / "context" / "index" / "index.json").is_file():
+        return None
+    return root
 
 
 def _split_csv(value: str) -> List[str]:
@@ -99,6 +135,11 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
     smoke = False
     ablation = False
     include_held_out = False
+    # Offline pack scoring (#1029). Default: discover the git checkout root and
+    # use it iff it has a built index (else None → n/a, never fabricated).
+    # --pack-index-root overrides the root explicitly; --no-pack-scores opts out.
+    pack_index_root: Optional[Path] = _default_pack_index_root()
+    no_pack_scores = False
 
     i = 0
     while i < len(args):
@@ -145,6 +186,17 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
             # way to pull it in (the deliberate "score the held-out set" pass).
             include_held_out = True
             i += 1
+        elif a == "--pack-index-root":
+            # Explicit root for offline pack scoring (#1029). Overrides the
+            # git-root default; the report renders n/a if it has no built index.
+            pack_index_root = Path(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--no-pack-scores":
+            # Opt out of offline pack scoring (report renders n/a for
+            # precision/recall). Useful when the checkout has no index and the
+            # git-root default would otherwise be a slow no-op miss.
+            no_pack_scores = True
+            i += 1
         else:
             raise ValueError(f"unknown option: {a}")
 
@@ -156,6 +208,10 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
         arms = registry + [a for a in arms if a.name not in seen]
     elif not arms:
         arms = [resolve_arm("baseline"), resolve_arm("full")]
+    # --no-pack-scores is the single kill switch: it wins over both the git-root
+    # default and an explicit --pack-index-root.
+    if no_pack_scores:
+        pack_index_root = None
     return (
         SpineConfig(
             arms=arms,
@@ -164,6 +220,7 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
             corpus_root=corpus_root,
             include_held_out=include_held_out,
             concurrency=concurrency,
+            pack_index_root=pack_index_root,
         ),
         smoke,
         reports_dir,

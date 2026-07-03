@@ -66,7 +66,7 @@ class PackSectionOrderTests(unittest.TestCase):
     def test_all_expected_keys_present(self) -> None:
         expected = {
             "requiredContext", "availableSkills", "availableTools",
-            "likelyFiles", "likelyDocs", "relevantMemory",
+            "likelyFiles", "likelyDocs", "relevantMemory", "memoryLane",
             "priorMistakes", "activeState", "goals",
             "excludedContext", "openQuestions",
         }

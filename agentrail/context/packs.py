@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from agentrail.context.compiler import compiler_contract
 from agentrail.context.dedup import compute_retrieval_dedup
 from agentrail.context.index import append_audit, load_index
+from agentrail.context.memory_lane import build_memory_lane, frame_untrusted_memory
 from agentrail.context.pack_quality import compute_pack_quality
 from agentrail.context.pricing import cost_for
 from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_saved, estimate_tokens, query_context
@@ -25,6 +26,7 @@ PACK_SECTION_KEYS = [
     "likelyFiles",
     "likelyDocs",
     "relevantMemory",
+    "memoryLane",
     "priorMistakes",
     "activeState",
     "goals",
@@ -38,6 +40,9 @@ SECTION_TITLES = {
     "likelyFiles": "Likely Files",
     "likelyDocs": "Likely Docs",
     "relevantMemory": "Relevant Memory",
+    # Factory read half of shared memory (#1039): typed, attributed, untrusted
+    # advisory memory_items — distinct from relevantMemory (markdown files).
+    "memoryLane": "Memory Lane",
     "priorMistakes": "Prior Mistakes",
     "activeState": "Active State",
     "availableTools": "Available Tools",
@@ -495,7 +500,13 @@ def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
     for key in PACK_SECTION_KEYS:
         lines.append(f"## {SECTION_TITLES[key]}")
         values = pack.get(key, [])
-        if values:
+        if key == "memoryLane":
+            # Memory crosses the trust boundary from chat into the runner's
+            # prompt (#1039): always emit it framed as UNTRUSTED advisory DATA
+            # (reusing the #1035 read-side framing pattern), even when empty, so
+            # the delimiters/frame are a stable, auditable part of the pack.
+            lines.append(frame_untrusted_memory(values))
+        elif values:
             lines.extend(_render_item(item) for item in values)
         else:
             lines.append("None.")
@@ -555,6 +566,7 @@ def build_context_pack(
     budget_usd: float | None = None,
     model: str = _DEFAULT_BUDGET_MODEL,
     run_id: Optional[str] = None,
+    memory_items: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     root = target_dir.resolve()
     if target_kind not in {"issue", "pr"}:
@@ -573,6 +585,13 @@ def build_context_pack(
     sections["excludedContext"] = _excluded_context(query.get("excluded", []))
     _ensure_required_sections(root, sections, index)
     sections["goals"] = _relevant_goals(root, target_kind, target_number, phase)
+    # Factory read half of shared memory (#1039): a size-capped, deterministic,
+    # typed + attributed selection of memory_items, read-side secret-filtered and
+    # framed untrusted at render time. Injectable for tests; otherwise read from
+    # the local snapshot. This lane is NOT subject to the retrieval token budget
+    # trim below — it is independently byte-capped inside build_memory_lane so
+    # its bytes stay stable for cache identity regardless of retrieval pressure.
+    sections["memoryLane"] = build_memory_lane(root, items=memory_items)
 
     # Greedy token budget fill: enforce RETRIEVAL_MAX_TOKENS by dropping
     # entire low-relevance candidates (whole-item selection beats truncation).

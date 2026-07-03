@@ -30,6 +30,26 @@ The compiler is hermetic (no live Postgres). Memory is read from a local
 snapshot JSON at :data:`MEMORY_SNAPSHOT_REL` — the same on-disk-source pattern
 the pack builder already uses for the index and ``state.json``. A caller may
 also inject items directly (used by tests) via :func:`build_memory_lane`.
+
+.. important::
+    **Scope boundary — no producer ships in #1039.** This module is only the
+    read half: it consumes :data:`MEMORY_SNAPSHOT_REL` if present and is a
+    no-op (empty lane) otherwise. Nothing in this codebase writes that
+    snapshot file today. #1039's own acceptance criteria only require that an
+    injected/ingested item "appears... in a subsequently built pack's memory
+    lane" (see the AC1 test in ``tests/context/test_memory_lane.py``, which
+    exercises this via :func:`build_memory_lane`'s ``items=`` injection seam,
+    the same seam a future producer would use) — it does not ask for a live
+    Postgres -> local-snapshot pull path, and no such pull mechanism exists
+    anywhere else in the codebase to reuse (every existing HTTP integration in
+    ``agentrail/context/snapshot_push.py`` and ``agentrail/afk/review_push.py``
+    is push-only, local -> server).
+    Consequence in production TODAY: neither real caller of
+    ``build_context_pack`` (``agentrail/run/context.py`` and
+    ``agentrail/cli/commands/context.py``) passes ``memory_items``, so on a
+    live run the memory lane always renders empty until a producer exists.
+    Wiring a real Postgres -> snapshot producer (or an equivalent live-fetch
+    path) is tracked as a separate follow-up: issue #1071.
 """
 from __future__ import annotations
 
@@ -204,10 +224,41 @@ def build_memory_lane(
     return select_memory_items(raw, max_bytes=max_bytes)
 
 
+def _neutralize_fence_markers(text: str) -> str:
+    """Escape any literal fence-delimiter substring inside untrusted content.
+
+    ``frame_untrusted_memory`` relies on :data:`UNTRUSTED_MEMORY_BEGIN` /
+    :data:`UNTRUSTED_MEMORY_END` as a structural trust boundary: everything
+    between them is DATA, never instructions. If a memory item's own
+    ``content`` contains the literal end-fence string, an unescaped copy would
+    render inside the real fence and forge a premature close — content after it
+    (still physically inside the real fence) would then read, to a naive
+    downstream parser, as if it were OUTSIDE the untrusted block, i.e. trusted.
+    That is a structural prompt-injection bypass of the framing itself, not
+    just a content-level directive (which the frame's own instruction line
+    already tells the model to ignore).
+
+    Neutralize by inserting a zero-width space inside each fence marker
+    wherever it appears in untrusted text, so the literal delimiter string can
+    never occur verbatim inside the rendered body — only the real fences
+    (emitted by :func:`frame_untrusted_memory` itself, never through this
+    escaping path) are ever byte-exact matches of the delimiters.
+    """
+    if not text:
+        return text
+    zwsp = "​"
+    broken_begin = zwsp.join(UNTRUSTED_MEMORY_BEGIN)
+    broken_end = zwsp.join(UNTRUSTED_MEMORY_END)
+    text = text.replace(UNTRUSTED_MEMORY_BEGIN, broken_begin)
+    text = text.replace(UNTRUSTED_MEMORY_END, broken_end)
+    return text
+
+
 def _render_memory_item(item: Dict[str, Any]) -> str:
+    content = _neutralize_fence_markers(str(item.get("content") or ""))
     return (
         f"- [{item.get('type')}] (by {item.get('writtenBy')}) "
-        f"{item.get('content')} Citation: {item.get('citation')}."
+        f"{content} Citation: {item.get('citation')}."
     )
 
 

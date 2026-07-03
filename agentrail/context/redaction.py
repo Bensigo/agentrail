@@ -20,12 +20,54 @@ class Detector:
     token: str
 
 
+# NOTE on parity with the write-side ingest scanner
+# (apps/console/lib/secret-scan.ts's `RULES`), checked 2026-07-04 for #1039's
+# AC4 (memory-lane review, Defect #3):
+#
+# This list has been brought into parity with secret-scan.ts for every
+# *specific, credential-shaped* pattern — the ones with a low false-positive
+# rate because they match a distinctive token/key format (prefix + charset +
+# length), not just a nearby keyword. Added/broadened in this pass:
+#   - anthropic_key (new): sk-ant-... — previously only matched generically by
+#     `api_key`'s bare `sk-` prefix, so it's still caught, but now also
+#     reported/labeled distinctly like secret-scan.ts does.
+#   - aws_secret_access_key (new): 40-char secret next to an aws/secret hint.
+#   - token: broadened prefixes to ghp_/gho_/ghu_/ghs_/ghr_/github_pat_ (was
+#     ghp_/github_pat_ only).
+#   - aws_access_key: broadened to AKIA|ASIA (was AKIA only).
+#   - slack_token, google_api_key, jwt (new): distinctive formats with no
+#     analogue here previously.
+#   - database_url: broadened beyond the fixed postgres/mysql/redis/mongodb
+#     scheme list to any `scheme://...` shape (matches secret-scan.ts's
+#     scheme-agnostic connection_string_password rule), since the fixed-scheme
+#     version misses e.g. sqlserver://, amqp://.
+#
+# Intentionally NOT ported: secret-scan.ts's `generic_assigned_secret` rule
+# (`(?:api_key|secret|password|token|...)\s*[=:]\s*.{8,}`). That rule is a
+# broad keyword-adjacent-to-any-8-char-value catch-all — appropriate on the
+# write side, which REJECTS the whole batch and returns the reason to the
+# human author (a false positive just costs a re-submit). This read-side
+# filter instead SILENTLY DROPS the memory item from the lane with no
+# feedback to anyone (non-fatal, hermetic, no return channel to the author) —
+# the equivalent generic pattern here would silently and unpredictably vanish
+# ordinary advisory prose that merely mentions "password:" or "token:" in
+# passing, with no way for the author to learn why. `secret_assignment` below
+# (used only by `redact_text`, not by the memory-lane filter) already covers
+# the structured-code-literal form of that same case with a tighter grammar
+# (quoted assignment), so the coverage gap versus secret-scan.ts's fully
+# generic version is a deliberate precision/silent-failure tradeoff, not an
+# oversight.
 DETECTORS = [
     Detector("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"), "[REDACTED:private_key]"),
+    Detector("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"), "[REDACTED:anthropic_key]"),
     Detector("api_key", re.compile(r"\bsk-[A-Za-z0-9_-]{10,}\b"), "[REDACTED:api_key]"),
-    Detector("token", re.compile(r"\b(?:ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]+)\b"), "[REDACTED:token]"),
-    Detector("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[REDACTED:aws_access_key]"),
-    Detector("database_url", re.compile(r"\b(?:postgres|postgresql|mysql|redis|mongodb)://[^\s\"'`<>]+", re.IGNORECASE), "[REDACTED:database_url]"),
+    Detector("token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b"), "[REDACTED:token]"),
+    Detector("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "[REDACTED:aws_access_key]"),
+    Detector("aws_secret_access_key", re.compile(r"\baws.{0,20}(?:secret|access).{0,20}[=:]\s*['\"]?[A-Za-z0-9/+]{40}['\"]?", re.IGNORECASE), "[REDACTED:aws_secret_access_key]"),
+    Detector("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "[REDACTED:slack_token]"),
+    Detector("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "[REDACTED:google_api_key]"),
+    Detector("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b"), "[REDACTED:jwt]"),
+    Detector("database_url", re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s\"'`<>]+", re.IGNORECASE), "[REDACTED:database_url]"),
     Detector("bearer_token", re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE), "Bearer [REDACTED:bearer_token]"),
 ]
 

@@ -636,7 +636,15 @@ def build_context_pack(
         if not isinstance(_item.get("tokenEstimate"), (int, float)) or isinstance(_item.get("tokenEstimate"), bool):
             _item["tokenEstimate"] = _item_tokens(_item)
     _quality = compute_pack_quality(pack["included"], pack["excludedContext"], RETRIEVAL_MAX_TOKENS)
+    # Persist the full quality proxy set (not just precision_at_budget) so the
+    # context-pack telemetry push (agentrail/run/context_pack_push.py) can read
+    # every quality field directly from the persisted pack JSON — the actual
+    # pack the run produced — rather than re-deriving them from search runMetadata.
     pack["precision_at_budget"] = _quality["precision_at_budget"]
+    pack["citation_coverage"] = _quality["citation_coverage"]
+    pack["stale_count"] = _quality["stale_count"]
+    pack["denied_count"] = _quality["denied_count"]
+    pack["source_hash_list"] = _quality["source_hash_list"]
     # Estimated tokens the bounded snippets saved versus reading every selected
     # file in full (ceil(chars/4) per file, each distinct file counted once).
     pack["tokensSaved"] = compute_tokens_saved(root, pack["included"])

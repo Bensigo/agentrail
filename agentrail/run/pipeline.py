@@ -446,9 +446,18 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
         except Exception as _exc:
             _log.debug("output format enforcement skipped: %s", _exc)
 
-    # 17d. Context pack telemetry — non-fatal
+    # 17d. Context pack telemetry — non-fatal. The persisted pack JSON is the
+    # source of truth for tokens + all quality proxies; context_retrieval
+    # (search runMetadata) is only a fallback when no pack was persisted.
+    # Passing the pack path also lets unlinked (eval/canary) runs emit a
+    # run-identifying pack-metadata record locally.
     try:
-        push_context_pack(rc.target_dir, rc.run_id, rc.context_retrieval)
+        push_context_pack(
+            rc.target_dir,
+            rc.run_id,
+            rc.context_retrieval,
+            pack_file=rc.run_context_pack_file,
+        )
     except Exception as _exc:
         _log.debug("context pack push skipped: %s", _exc)
 

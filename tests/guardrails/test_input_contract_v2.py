@@ -219,45 +219,45 @@ def test_ac2_genuinely_different_content_still_admits():
 
 
 def test_ac3_writer_over_rate_limit_is_parked_others_unaffected():
-    # Give the coordinator a tiny explicit limit so the test is fast and exact; the
+    # Give Jace a tiny explicit limit so the test is fast and exact; the
     # other writers keep generous defaults. rate_limits is part of the ledger so we
     # do not depend on the production thresholds.
     limit = 2
     ledger = AdmissionLedger(
         rate_limits=(
-            (WriterClass.COORDINATOR, limit),
+            (WriterClass.JACE, limit),
             (WriterClass.HUMAN_GITHUB, 30),
             (WriterClass.EVAL_AUTOTICKET, 10),
         )
     )
 
-    # The coordinator's first ``limit`` submissions admit normally. Distinct
+    # Jace's first ``limit`` submissions admit normally. Distinct
     # content per submission so dedup never fires — we are isolating the rate limit.
     for i in range(limit):
         result = admit_to_queue(
             number=300 + i,
             issue_body=_distinct_body(f"coord-{i}"),
-            writer=WriterClass.COORDINATOR,
+            writer=WriterClass.JACE,
             ledger=ledger,
         )
         assert result.entry is not None
         assert result.entry.state is QueueState.QUEUED, (
-            f"coordinator submission {i} within limit should be QUEUED"
+            f"jace submission {i} within limit should be QUEUED"
         )
         ledger = result.ledger
 
-    # The next coordinator submission is over budget → PARKED with a reason.
+    # The next Jace submission is over budget → PARKED with a reason.
     over = admit_to_queue(
         number=399,
         issue_body=_distinct_body("coord-over"),
-        writer=WriterClass.COORDINATOR,
+        writer=WriterClass.JACE,
         ledger=ledger,
     )
-    assert over.is_parked, "coordinator over its limit must PARK its next entry"
+    assert over.is_parked, "jace over its limit must PARK its next entry"
     assert over.entry is not None and over.entry.state is QueueState.PARKED
     # AC4: the rate-limit park carries a human-readable reason mentioning the writer.
     assert "rate limit" in over.entry.reason.lower()
-    assert WriterClass.COORDINATOR.value in over.entry.reason
+    assert WriterClass.JACE.value in over.entry.reason
     ledger = over.ledger  # (unchanged, but thread it to prove isolation next)
 
     # AC3 isolation: a DIFFERENT writer is unaffected — it still admits.
@@ -268,30 +268,30 @@ def test_ac3_writer_over_rate_limit_is_parked_others_unaffected():
         ledger=ledger,
     )
     assert other.entry is not None and other.entry.state is QueueState.QUEUED, (
-        "a different writer must be unaffected by the coordinator's rate limit"
+        "a different writer must be unaffected by Jace's rate limit"
     )
 
 
 def test_ac3_rate_limit_park_does_not_consume_more_budget():
     # A parked (over-limit) entry must not itself count against the writer, or the
-    # ledger would drift. The coordinator count stays pinned at the limit.
+    # ledger would drift. The Jace count stays pinned at the limit.
     limit = 1
-    ledger = AdmissionLedger(rate_limits=((WriterClass.COORDINATOR, limit),))
+    ledger = AdmissionLedger(rate_limits=((WriterClass.JACE, limit),))
 
     first = admit_to_queue(
         number=1,
         issue_body=_distinct_body("c1"),
-        writer=WriterClass.COORDINATOR,
+        writer=WriterClass.JACE,
         ledger=ledger,
     )
     ledger = first.ledger
     counts_after_admit = dict(ledger.writer_counts)
-    assert counts_after_admit.get(WriterClass.COORDINATOR) == limit
+    assert counts_after_admit.get(WriterClass.JACE) == limit
 
     parked = admit_to_queue(
         number=2,
         issue_body=_distinct_body("c2"),
-        writer=WriterClass.COORDINATOR,
+        writer=WriterClass.JACE,
         ledger=ledger,
     )
     assert parked.is_parked
@@ -329,7 +329,7 @@ def test_ac4_missing_ac_rejection_exposes_reason_as_state():
 def test_ac4_every_park_reason_is_nonempty_and_readable():
     # Both park paths (duplicate content, rate limit) must populate reason on the
     # QueueEntry so a human reviewing the queue sees WHY it is withheld.
-    ledger = AdmissionLedger(rate_limits=((WriterClass.COORDINATOR, 1),))
+    ledger = AdmissionLedger(rate_limits=((WriterClass.JACE, 1),))
 
     # Duplicate-content park.
     a = admit_to_queue(number=1, issue_body=_HOUSE_BODY, ledger=ledger)
@@ -337,18 +337,18 @@ def test_ac4_every_park_reason_is_nonempty_and_readable():
     dup = admit_to_queue(number=2, issue_body=_HOUSE_BODY, ledger=ledger)
     assert dup.is_parked and dup.entry is not None and dup.entry.reason.strip()
 
-    # Rate-limit park (coordinator, limit 1, second submission).
-    ledger2 = AdmissionLedger(rate_limits=((WriterClass.COORDINATOR, 1),))
+    # Rate-limit park (jace, limit 1, second submission).
+    ledger2 = AdmissionLedger(rate_limits=((WriterClass.JACE, 1),))
     b = admit_to_queue(
         number=3,
         issue_body=_distinct_body("x"),
-        writer=WriterClass.COORDINATOR,
+        writer=WriterClass.JACE,
         ledger=ledger2,
     )
     rate = admit_to_queue(
         number=4,
         issue_body=_distinct_body("y"),
-        writer=WriterClass.COORDINATOR,
+        writer=WriterClass.JACE,
         ledger=b.ledger,
     )
     assert rate.is_parked and rate.entry is not None and rate.entry.reason.strip()

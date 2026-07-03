@@ -32,7 +32,7 @@ matters happens here, at admission, and nowhere downstream. v2 adds:
   same content submitted under two different issue numbers is caught as a
   duplicate even though the deterministic per-number entry id differs.
 * :class:`WriterClass` + :class:`AdmissionLedger` — per-writer rate limits.  Each
-  writer class (``human-github``, ``eval-autoticket``, ``coordinator``) has its own
+  writer class (``human-github``, ``eval-autoticket``, ``jace``) has its own
   admission budget per window; a writer over its limit has its *subsequent* entries
   PARKED for a human, and other writers are unaffected.
 
@@ -223,7 +223,7 @@ class WriterClass(str, Enum):
 
     HUMAN_GITHUB = "human-github"        # a person labelling an issue on GitHub
     EVAL_AUTOTICKET = "eval-autoticket"  # the eval harness auto-filing tickets
-    COORDINATOR = "coordinator"          # the upstream ideation→issues coordinator
+    JACE = "jace"                        # Jace, the upstream ideation→issues coordinator
 
 
 # Per-writer admissions allowed per ledger window before subsequent entries park.
@@ -232,7 +232,7 @@ class WriterClass(str, Enum):
 _DEFAULT_RATE_LIMITS: Dict[WriterClass, int] = {
     WriterClass.HUMAN_GITHUB: 30,
     WriterClass.EVAL_AUTOTICKET: 10,
-    WriterClass.COORDINATOR: 20,
+    WriterClass.JACE: 20,
 }
 
 

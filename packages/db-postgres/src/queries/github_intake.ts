@@ -58,6 +58,300 @@ export function validateAcceptanceCriteria(body: string): AcGateResult {
   return { ok: true, criteria };
 }
 
+// --- Input-Contract v2 (issue #1034) — TS mirror of input_contract.py ---------
+//
+// The TS queue entrance must enforce the SAME three v2 checks the Python gate got
+// in #1026/#1057 — injection screening, duplicate-content detection, per-writer
+// rate limits — with matching semantics. Divergence between the two gates silently
+// reopens a security bypass, so every pattern, reason string, threshold, and the
+// PARK-not-drop ordering below is a verbatim port of
+// `agentrail/guardrails/policies/input_contract.py`. Feature-gated on
+// `AGENTRAIL_QUEUE_GUARDRAILS_V2 === "1"` (default-OFF), mirroring
+// `agentrail/afk/queue_store.py`.
+
+// v2 check 1 — injection screening (heuristics + deny-list). Each entry is a
+// case-insensitive regex plus the human-readable reason recorded on a reject; the
+// FIRST match wins. Ported one-for-one from `_INJECTION_PATTERNS` in the Python
+// policy (the `(?i)`/`(?im)` inline flags become the `i`/`im` JS flags). Narrow by
+// design: it targets directives AIMED AT THE AGENT, not innocent mentions of
+// "agent"/"secret"/"print" — the shared corpus's negative controls guard breadth.
+const INJECTION_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [
+    /\bignore\s+(all\s+|any\s+)?(the\s+)?previous\s+instructions?\b/i,
+    "prompt-injection: 'ignore previous instructions' override directive",
+  ],
+  [
+    /\bdisregard\s+(your\s+|the\s+|all\s+)?(system\s+prompt|instructions?|objective\s+gate)\b/i,
+    "prompt-injection: 'disregard system prompt / gate' directive",
+  ],
+  [
+    /\byou\s+are\s+now\b.*\b(developer\s+mode|unrestricted|no\s+guardrails|dan)\b/i,
+    "prompt-injection: role-reassignment / jailbreak ('you are now …')",
+  ],
+  [
+    /\b(developer\s+mode|jailbreak|no\s+guardrails|without\s+(any\s+)?guardrails)\b/i,
+    "prompt-injection: jailbreak / disable-guardrails directive",
+  ],
+  [
+    /\bact\s+as\s+(an?\s+)?(unrestricted|uncensored|jailbroken)\b/i,
+    "prompt-injection: 'act as an unrestricted agent' role directive",
+  ],
+  [
+    /\bprint\b.*\b(AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|[A-Z0-9_]*SECRET[A-Z0-9_]*|[A-Z0-9_]*TOKEN[A-Z0-9_]*|[A-Z0-9_]*API_?KEY[A-Z0-9_]*)\b/i,
+    "prompt-injection: secret-exfiltration directive (print a credential / env secret)",
+  ],
+  [
+    /\b(exfiltrate|leak|dump|reveal)\b.*\b(secret|credential|token|api[_ ]?key|\.env)\b/i,
+    "prompt-injection: secret-exfiltration directive",
+  ],
+  [
+    /\bcurl\b[^\n|]*\|\s*(bash|sh|zsh)\b/i,
+    "prompt-injection: remote-code-execution pattern (curl … | bash)",
+  ],
+  [
+    /\bwget\b[^\n|]*\|\s*(bash|sh|zsh)\b/i,
+    "prompt-injection: remote-code-execution pattern (wget … | sh)",
+  ],
+  [
+    /^\s*(system|assistant|developer)\s*:\s*.*\b(override|auto[- ]?approve|approve|bypass)\b/im,
+    "prompt-injection: impersonated privileged role trying to override the approval gate",
+  ],
+  [
+    /\b(override|bypass|skip|disable)\b.*\b(human\s+)?(approval|review)\s+(gate|step|process)?\b.*\b(auto[- ]?approve|do\s+not\s+ask)\b/i,
+    "prompt-injection: directive to override the human approval / review gate",
+  ],
+  [
+    /\b(merge|approve|auto[- ]?approve)\b.*\b(without|no|skip(ping)?)\s+review\b/i,
+    "prompt-injection: directive to merge/approve without review",
+  ],
+];
+
+/**
+ * Screen an issue body for prompt-injection directives (pure). Port of
+ * `screen_injection`: returns the human-readable rejection reason for the FIRST
+ * matching pattern, or `null` when the body is clean. A positive screen is a hard
+ * REJECT at the entrance (or a PARK when `injectionPark` is set) — a probe must
+ * never become a runnable entry.
+ */
+export function screenInjection(issueBody: string): string | null {
+  const body = issueBody || "";
+  for (const [pattern, reason] of INJECTION_PATTERNS) {
+    // Patterns are declared with `g`-free flags and used read-only, so there is no
+    // shared lastIndex to reset (unlike CHECKBOX above).
+    if (pattern.test(body)) return reason;
+  }
+  return null;
+}
+
+// v2 check 2 — content-hash near-duplicate detection. Port of `content_hash`:
+// collapse whitespace runs + lowercase + trim, then sha256, so the SAME content
+// under a DIFFERENT issue number (whose deterministic per-number id differs) still
+// hashes identically and can be caught as a duplicate.
+const WS_RUN = /\s+/g;
+
+/** Deterministic sha256 of the normalised issue body (port of `content_hash`). */
+export function contentHash(issueBody: string): string {
+  const normalised = (issueBody || "").trim().toLowerCase().replace(WS_RUN, " ");
+  return createHash("sha256").update(normalised, "utf8").digest("hex");
+}
+
+// v2 check 3 — per-writer rate limits. Port of `WriterClass` + `_DEFAULT_RATE_LIMITS`.
+export const WriterClass = {
+  HUMAN_GITHUB: "human-github",
+  EVAL_AUTOTICKET: "eval-autoticket",
+  JACE: "jace",
+} as const;
+export type WriterClass = (typeof WriterClass)[keyof typeof WriterClass];
+
+// Per-writer admissions allowed per ledger window before subsequent entries park.
+// Verbatim thresholds from `_DEFAULT_RATE_LIMITS`.
+const DEFAULT_RATE_LIMITS: Readonly<Record<WriterClass, number>> = {
+  [WriterClass.HUMAN_GITHUB]: 30,
+  [WriterClass.EVAL_AUTOTICKET]: 10,
+  [WriterClass.JACE]: 20,
+};
+
+/**
+ * Immutable record of what the entrance has admitted (port of `AdmissionLedger`).
+ * Threaded through by the caller so this module keeps no mutable module state and
+ * stays deterministic. Every mutating method returns a NEW ledger.
+ */
+export class AdmissionLedger {
+  readonly seenHashes: ReadonlySet<string>;
+  readonly writerCounts: ReadonlyMap<WriterClass, number>;
+  readonly rateLimits: ReadonlyMap<WriterClass, number>;
+
+  constructor(opts?: {
+    seenHashes?: ReadonlySet<string>;
+    writerCounts?: ReadonlyMap<WriterClass, number>;
+    rateLimits?: ReadonlyMap<WriterClass, number>;
+  }) {
+    this.seenHashes = opts?.seenHashes ?? new Set<string>();
+    this.writerCounts = opts?.writerCounts ?? new Map<WriterClass, number>();
+    this.rateLimits = opts?.rateLimits ?? new Map<WriterClass, number>();
+  }
+
+  private limitFor(writer: WriterClass): number {
+    const explicit = this.rateLimits.get(writer);
+    return explicit !== undefined ? explicit : DEFAULT_RATE_LIMITS[writer];
+  }
+
+  /** True when this content hash has already been admitted (AC2). */
+  hasContent(bodyHash: string): boolean {
+    return this.seenHashes.has(bodyHash);
+  }
+
+  /**
+   * True when `writer` has already used its whole admission budget (AC3). Checked
+   * BEFORE recording this admission, so the (limit+1)-th entry is the first to park.
+   */
+  rateLimitExceeded(writer: WriterClass): boolean {
+    return (this.writerCounts.get(writer) ?? 0) >= this.limitFor(writer);
+  }
+
+  /**
+   * Return a NEW ledger noting one more admission by `writer` of this content.
+   * Recorded only for entries that actually take a slot; a dup/rate-limit PARK
+   * skips this so a parked writer never counts against itself twice.
+   */
+  recordAdmission(writer: WriterClass, bodyHash: string): AdmissionLedger {
+    const seenHashes = new Set(this.seenHashes);
+    seenHashes.add(bodyHash);
+    const writerCounts = new Map(this.writerCounts);
+    writerCounts.set(writer, (writerCounts.get(writer) ?? 0) + 1);
+    return new AdmissionLedger({
+      seenHashes,
+      writerCounts,
+      rateLimits: this.rateLimits,
+    });
+  }
+}
+
+// The default-OFF v2 feature flag. Mirrors `queue_store._v2_enabled`: only the
+// exact value "1" turns the layer on, so an unset/empty env var (the production
+// default) leaves TS intake byte-for-byte the legacy behaviour (rollout safety).
+export const V2_FLAG = "AGENTRAIL_QUEUE_GUARDRAILS_V2";
+
+function v2Enabled(): boolean {
+  return process.env[V2_FLAG] === "1";
+}
+
+// Map the persisted `source` string to the rate-limit writer class. Verbatim from
+// `queue_store._SOURCE_TO_WRITER` / `_writer_for_source` (defaults to human-github).
+const SOURCE_TO_WRITER: Readonly<Record<string, WriterClass>> = {
+  github: WriterClass.HUMAN_GITHUB,
+  eval: WriterClass.EVAL_AUTOTICKET,
+  jace: WriterClass.JACE,
+};
+
+export function writerForSource(source: string): WriterClass {
+  return SOURCE_TO_WRITER[source] ?? WriterClass.HUMAN_GITHUB;
+}
+
+/**
+ * The pure v2 verdict for one issue body — the TS analogue of
+ * `input_contract.admit_to_queue` restricted to the v2 checks (the base AC gate is
+ * still run by its own `validateAcceptanceCriteria`). Returns:
+ *
+ *  - `{ decision: "reject", reason }`  — kept OUT of the queue (an injection probe
+ *    with `injectionPark` off). Never becomes an entry.
+ *  - `{ decision: "park", reason }`    — a real entry, but PARKED for human review
+ *    with a human-readable reason (injection with `injectionPark` on, duplicate
+ *    content, or the writer over its rate limit). Never a silent drop.
+ *  - `{ decision: "admit", ledger }`   — clean; carries the NEXT ledger to thread
+ *    forward (content hash + writer count recorded).
+ *
+ * Order is security-first and matches the Python gate exactly: injection → dup →
+ * rate-limit. Never throws — any unexpected error is converted to a PARK.
+ */
+export type V2Verdict =
+  | { decision: "admit"; ledger: AdmissionLedger }
+  | { decision: "park"; reason: string; ledger: AdmissionLedger }
+  | { decision: "reject"; reason: string; ledger: AdmissionLedger };
+
+export function screenV2(opts: {
+  body: string;
+  writer: WriterClass;
+  ledger: AdmissionLedger;
+  injectionPark: boolean;
+}): V2Verdict {
+  const { body, writer, ledger, injectionPark } = opts;
+  try {
+    // 1. Injection screen. Hard REJECT by default; PARK (not drop) when
+    // `injectionPark` is set — the live entrance sets it so a legitimate
+    // house-format issue that trips the heuristic is surfaced for a human. A
+    // parked injection did not take a fresh slot, so it records no ledger budget.
+    const injectionReason = screenInjection(body);
+    if (injectionReason !== null) {
+      if (injectionPark) {
+        return {
+          decision: "park",
+          reason:
+            `prompt-injection screen tripped (${injectionReason}) — ` +
+            "parked for human review instead of dropped",
+          ledger,
+        };
+      }
+      return { decision: "reject", reason: injectionReason, ledger };
+    }
+
+    // (The base machine-checkable-AC gate — step 2 in Python — is run by the
+    // caller via validateAcceptanceCriteria before this, so it is not repeated.)
+
+    const bodyHash = contentHash(body);
+
+    // 3. Duplicate-content near-dup detection → PARK (do not run twice). No
+    // budget/hash recorded: a parked dup did not take a fresh slot.
+    if (ledger.hasContent(bodyHash)) {
+      return {
+        decision: "park",
+        reason:
+          "duplicate content: an issue with identical content is already " +
+          "in the queue — parked for human review instead of running twice",
+        ledger,
+      };
+    }
+
+    // 4. Per-writer rate limit → PARK subsequent entries for this writer.
+    if (ledger.rateLimitExceeded(writer)) {
+      return {
+        decision: "park",
+        reason:
+          `rate limit: writer '${writer}' exceeded its admission ` +
+          "limit for this window — parked for human review",
+        ledger,
+      };
+    }
+
+    // Clean: admit and record the admission in the ledger.
+    return { decision: "admit", ledger: ledger.recordAdmission(writer, bodyHash) };
+  } catch (exc) {
+    // Never let a check kill the entrance: convert any failure into a PARK.
+    return {
+      decision: "park",
+      reason: `input-contract check errored, parked for human review: ${String(exc)}`,
+      ledger,
+    };
+  }
+}
+
+/**
+ * The process-wide admission ledger for the TS queue entrance (AC2/AC3).
+ *
+ * The Python live loop holds one persistent ledger on its long-lived `QueueStore`
+ * and threads it forward across enqueues. The TS entrance is a set of stateless
+ * request handlers (the Next.js webhook route), so the equivalent persistent seam
+ * is a module-level ledger, swapped for the ledger `screenV2` returns after each
+ * admission. `enqueueGithubIssue` uses it by default; tests inject their own via
+ * the `ledger` option to stay deterministic and isolated.
+ */
+let processLedger = new AdmissionLedger();
+
+/** Reset the process ledger — test-only seam so suites don't leak state. */
+export function __resetProcessLedger(): void {
+  processLedger = new AdmissionLedger();
+}
+
 // --- dependency parsing -------------------------------------------------------
 
 // "blocked by #5", "blocked-by: #5, #6", "depends on #7 and #8" — case
@@ -129,7 +423,17 @@ export async function findWorkspaceByRepo(
 // --- enqueue ------------------------------------------------------------------
 
 export type EnqueueResult =
-  | { enqueued: true; id: string; state: "queued" | "parked"; blockedBy: number[] }
+  | {
+      enqueued: true;
+      id: string;
+      state: "queued" | "parked";
+      blockedBy: number[];
+      // Present only when a v2 check PARKED the entry (injection/dup/rate-limit):
+      // a human-readable reason for the park. Absent on a clean admit. The webhook
+      // response contract does not read it (it only reads `id`), so surfacing it
+      // here keeps that contract unchanged while making the park operator-visible.
+      reason?: string;
+    }
   | { enqueued: false; reason: string };
 
 /**
@@ -221,6 +525,9 @@ export async function enqueueGithubIssue(data: {
   number: number;
   title: string;
   body: string;
+  // Test-only: inject a ledger so a suite can exercise the stateful v2 checks
+  // (dup / rate-limit) deterministically. Production uses the process ledger.
+  ledger?: AdmissionLedger;
 }): Promise<EnqueueResult> {
   const gate = validateAcceptanceCriteria(data.body);
   if (!gate.ok) return { enqueued: false, reason: gate.reason };
@@ -233,7 +540,39 @@ export async function enqueueGithubIssue(data: {
   // last blocker goes green, recordRunnerResult unparks it.
   const blockedBy = parseBlockedBy(data.body);
   const unmet = await unmetBlockers(data.workspaceId, data.repoFullName, blockedBy);
-  const state = unmet.length > 0 ? "parked" : "queued";
+  let state: "queued" | "parked" = unmet.length > 0 ? "parked" : "queued";
+  let reason: string | undefined;
+
+  // Input-Contract v2 (issue #1034), default-OFF behind V2_FLAG so the legacy
+  // path is byte-for-byte unchanged until the flag is turned on. When enabled we
+  // thread the process ledger through the SAME three checks the Python gate runs
+  // (injection / duplicate content / per-writer rate limit) with matching
+  // semantics. `injectionPark` is on at this live entrance (mirrors the Python
+  // live loop): a positive check PARKS the entry for human review — it is never a
+  // silent drop — so a gated-out enqueue still returns `enqueued: true` with a
+  // reason, keeping the webhook response contract unchanged (AC3).
+  const usingV2 = v2Enabled();
+  if (usingV2) {
+    const ledgerIn = data.ledger ?? processLedger;
+    const verdict = screenV2({
+      body: data.body,
+      writer: writerForSource("github"),
+      ledger: ledgerIn,
+      injectionPark: true,
+    });
+    if (verdict.decision === "reject") {
+      // Injection with injectionPark off never reaches here (it is on at this
+      // entrance); keep the legacy contract of no row for an un-admittable issue.
+      return { enqueued: false, reason: verdict.reason };
+    }
+    if (verdict.decision === "park") {
+      state = "parked";
+      reason = verdict.reason;
+    }
+    // Only thread the ledger forward for the shared process ledger; a test-injected
+    // ledger is owned by the caller (mirrors Python threading `admission.ledger`).
+    if (data.ledger === undefined) processLedger = verdict.ledger;
+  }
 
   const inserted = await db
     .insert(queueEntries)
@@ -257,5 +596,10 @@ export async function enqueueGithubIssue(data: {
   if (inserted.length === 0) {
     return { enqueued: false, reason: "already queued (deduped)" };
   }
-  return { enqueued: true, id, state, blockedBy };
+  // A v2 park (dup/rate-limit/injection) still enqueues a durable row so a human
+  // can review it — the reason rides on the result, not a persisted column (the
+  // schema has none, matching the Python store), and the row records state='parked'.
+  return reason !== undefined
+    ? { enqueued: true, id, state, blockedBy, reason }
+    : { enqueued: true, id, state, blockedBy };
 }

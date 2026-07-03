@@ -14,6 +14,7 @@ ablation"):
     verify_gate  — the Objective Gate
     retry        — the retry loop
     guardrails   — the safety/existence guardrails
+    rerank       — the deterministic code-aware context rerank stage (#904/#1029)
 
 Two anchor arms are defined now:
 
@@ -35,14 +36,18 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Dict, List, Mapping, Tuple
 
-# The five AgentRail layers, in a fixed, documented order. Adding a new layer
-# to the harness is a one-line change here (plus a ``Layers`` field).
+# The AgentRail layers, in a fixed, documented order. Adding a new layer to the
+# harness is a one-line change here (plus a matching ``Layers`` field). Every
+# leave-one-out derivation (``full_minus`` / ``ablation_arms`` / ``all_arms``)
+# and the reporter's per-layer deltas iterate this tuple, so a new name here is
+# picked up end-to-end automatically.
 LAYER_NAMES: Tuple[str, ...] = (
     "context",
     "routing",
     "verify_gate",
     "retry",
     "guardrails",
+    "rerank",
 )
 
 # The three NEW-flow layers (issue #980), in a fixed, documented order. These
@@ -89,6 +94,7 @@ class Layers:
     verify_gate: bool
     retry: bool
     guardrails: bool
+    rerank: bool
 
     def as_dict(self) -> Dict[str, bool]:
         """Map each layer name to its on/off flag (stable ``LAYER_NAMES`` order)."""

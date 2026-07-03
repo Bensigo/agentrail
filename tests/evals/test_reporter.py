@@ -1128,6 +1128,71 @@ def test_write_markdown_report_creates_dated_file(tmp_path):
     assert "solve-rate" in text.lower()
 
 
+def test_write_markdown_report_forwards_pack_scores_to_rerank_section(tmp_path):
+    """#1029 AC3: pack_scores threaded through write_markdown_report surface the
+    rerank-arm precision/recall deltas in the written file (not dropped)."""
+    from agentrail.evals.pack_scorer import ArmPackScore
+    from agentrail.evals.reporter import write_markdown_report
+
+    u = _usage(input_tokens=1000, output_tokens=500)
+    # Both rerank arms present so the head-to-head section has a delta to render.
+    records = [
+        _rep("task-a", "full", True, u),
+        _rep("task-a", "full-minus-rerank", False, u),
+    ]
+    reports = aggregate(records)
+    pack_scores = [
+        ArmPackScore(
+            arm="full",
+            pack_count=3,
+            mean_precision=0.80,
+            mean_recall=0.90,
+            defined_precision_count=3,
+            defined_recall_count=3,
+        ),
+        ArmPackScore(
+            arm="full-minus-rerank",
+            pack_count=3,
+            mean_precision=0.50,
+            mean_recall=0.60,
+            defined_precision_count=3,
+            defined_recall_count=3,
+        ),
+    ]
+
+    path = write_markdown_report(
+        reports, reports_dir=tmp_path, date="2026-06-23", pack_scores=pack_scores
+    )
+    text = path.read_text(encoding="utf-8")
+
+    # The rerank section is present with the precision/recall deltas from the
+    # AC2 pack scorer (both dropped 30 points when rerank was removed) — proving
+    # pack_scores are forwarded rather than silently ignored.
+    assert "## Rerank arm" in text
+    assert text.count("-30.0%") >= 2
+
+
+def test_write_markdown_report_omitting_pack_scores_renders_na(tmp_path):
+    """Without pack_scores the rerank precision/recall rows render n/a, never a
+    fabricated number — the back-compatible default path."""
+    from agentrail.evals.reporter import write_markdown_report
+
+    u = _usage(input_tokens=1000, output_tokens=500)
+    records = [
+        _rep("task-a", "full", True, u),
+        _rep("task-a", "full-minus-rerank", False, u),
+    ]
+    reports = aggregate(records)
+
+    path = write_markdown_report(reports, reports_dir=tmp_path, date="2026-06-23")
+    text = path.read_text(encoding="utf-8")
+
+    assert "## Rerank arm" in text
+    # solve-rate delta still renders (from the ArmReports); precision/recall are
+    # undefined without ground truth, so they read n/a.
+    assert "n/a" in text
+
+
 # ---------------------------------------------------------------------------
 # Network-artifact hygiene (issue #1033): <synthetic> ECONNRESET rows are
 # marked at capture and EXCLUDED from every aggregate (solve-rate, $/solved,

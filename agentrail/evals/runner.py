@@ -759,6 +759,20 @@ def _arm_env(arm: Arm) -> dict:
         env[f"AGENTRAIL_EVAL_LAYER_{name.upper()}"] = "1" if on else "0"
     if arm.critic_model:
         env[CRITIC_MODEL_ENV] = arm.critic_model
+    # Rerank-layer bridge (#1029): the ``AGENTRAIL_EVAL_LAYER_RERANK`` toggle
+    # above is the arm-declaration seam, but NOTHING in the run pipeline reads
+    # it — the deterministic rerank stage is toggled by
+    # ``agentrail.context.rerank.rerank_enabled``, which keys ONLY on
+    # ``AGENTRAIL_CONTEXT_RERANK`` (default ON). Without this bridge ``full`` and
+    # ``full-minus-rerank`` execute IDENTICALLY and the reported rerank delta is
+    # always 0 (the ablation is a no-op). So translate the arm's rerank flag into
+    # the toggle the stage actually reads: OFF → ``AGENTRAIL_CONTEXT_RERANK=0``
+    # (so ``rerank_enabled()`` returns False); ON → leave it at its default (do
+    # not force ``=1``, so a caller's own override still composes). Only the
+    # base-layer rerank flag drives this — ``rerank`` is a base layer, never an
+    # extra_layer, so ``flags`` is the single source.
+    if "rerank" in flags and not flags["rerank"]:
+        env["AGENTRAIL_CONTEXT_RERANK"] = "0"
     return env
 
 

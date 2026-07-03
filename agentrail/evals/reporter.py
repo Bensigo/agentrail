@@ -38,6 +38,7 @@ from agentrail.run.usage_capture import Usage
 
 from agentrail.evals.arms import LAYER_NAMES, NEW_FLOW_LAYERS
 from agentrail.evals.corpus.loader import DIFFICULTY_TAGS
+from agentrail.evals.pack_scorer import ArmPackScore
 from agentrail.evals.pricing_adapter import usage_cost, usage_cost_breakdown
 from agentrail.evals.probes import (
     GuardrailCatchReport,
@@ -600,6 +601,104 @@ def new_flow_delta(reports: Sequence[ArmReport]) -> Optional[NewFlowDelta]:
 
 
 # ---------------------------------------------------------------------------
+# Rerank-arm head-to-head delta (issue #1029 AC3) — ``full`` vs
+# ``full-minus-rerank`` on solve-rate + $/solved (from the ArmReports) AND
+# context-pack precision/recall (the #1029 AC2 ground-truth scorer, threaded in
+# from ``pack_scorer.ArmPackScore`` — the ArmReport does NOT carry them).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RerankDelta:
+    """``full-minus-rerank`` vs ``full`` delta on the rerank layer's worth (#1029 AC3).
+
+    Every delta is ``full-minus-rerank`` minus ``full`` on the SAME run set /
+    scorer — the leave-one-out convention (turning the rerank layer OFF), so it
+    matches the sign convention of :func:`layer_deltas`' ablation column. Each is
+    falsifiable — removing rerank can make any metric come back better OR worse:
+
+    - ``solve_rate_delta`` — higher solve-rate is better, so a NEGATIVE delta
+      means removing rerank solved fewer (rerank earned its place).
+    - ``dollars_per_solved_delta`` — lower $/solved is better, so a POSITIVE delta
+      means removing rerank cost MORE per solved task. ``None`` when either arm
+      never solved (undefined $/solved).
+    - ``precision_delta`` / ``recall_delta`` — higher is better, so a NEGATIVE
+      delta means removing rerank surfaced a worse pack (rerank helped). ``None``
+      when either arm's pack precision/recall is undefined or not supplied — the
+      offline pack scorer (#1029 AC2) must be threaded in for these to be defined.
+
+    The source values are carried for transparency so the markdown never
+    re-derives them; each undefined value stays ``None``, distinct from a
+    measured ``0.0``.
+    """
+
+    full_solve_rate: float
+    ablation_solve_rate: float
+    solve_rate_delta: float
+
+    full_dollars_per_solved: Optional[float]
+    ablation_dollars_per_solved: Optional[float]
+    dollars_per_solved_delta: Optional[float]
+
+    full_mean_precision: Optional[float]
+    ablation_mean_precision: Optional[float]
+    precision_delta: Optional[float]
+
+    full_mean_recall: Optional[float]
+    ablation_mean_recall: Optional[float]
+    recall_delta: Optional[float]
+
+
+def rerank_delta(
+    reports: Sequence[ArmReport],
+    *,
+    pack_scores: Optional[Sequence[ArmPackScore]] = None,
+) -> Optional[RerankDelta]:
+    """The ``full-minus-rerank`` vs ``full`` head-to-head delta, or ``None`` when an arm is absent.
+
+    Returns ``None`` (undefined — never a fabricated row) unless BOTH the
+    ``full`` and ``full-minus-rerank`` arms are in *reports*. Solve-rate and
+    dollars-per-solved come from the per-arm :class:`ArmReport`; precision/recall
+    come from *pack_scores* (the #1029 AC2 :func:`pack_scorer.aggregate_pack_scores`
+    output) when supplied — they are ``None`` when *pack_scores* is omitted or
+    does not carry the arm, since the ``ArmReport`` never carries the ground-truth
+    pack scores. Each metric delta is ``full-minus-rerank`` minus ``full``; the
+    dollars-per-solved and precision/recall deltas are ``None`` when either side's
+    value is undefined (no divide-by-zero, no one-sided number).
+    """
+    by_arm = {r.arm: r for r in reports}
+    full_r = by_arm.get("full")
+    ablation_r = by_arm.get("full-minus-rerank")
+    if full_r is None or ablation_r is None:
+        return None
+
+    packs_by_arm = {p.arm: p for p in (pack_scores or ())}
+    full_pack = packs_by_arm.get("full")
+    ablation_pack = packs_by_arm.get("full-minus-rerank")
+    full_precision = full_pack.mean_precision if full_pack else None
+    ablation_precision = ablation_pack.mean_precision if ablation_pack else None
+    full_recall = full_pack.mean_recall if full_pack else None
+    ablation_recall = ablation_pack.mean_recall if ablation_pack else None
+
+    return RerankDelta(
+        full_solve_rate=full_r.solve_rate,
+        ablation_solve_rate=ablation_r.solve_rate,
+        solve_rate_delta=ablation_r.solve_rate - full_r.solve_rate,
+        full_dollars_per_solved=full_r.dollars_per_solved,
+        ablation_dollars_per_solved=ablation_r.dollars_per_solved,
+        dollars_per_solved_delta=_opt_delta(
+            ablation_r.dollars_per_solved, full_r.dollars_per_solved
+        ),
+        full_mean_precision=full_precision,
+        ablation_mean_precision=ablation_precision,
+        precision_delta=_opt_delta(ablation_precision, full_precision),
+        full_mean_recall=full_recall,
+        ablation_mean_recall=ablation_recall,
+        recall_delta=_opt_delta(ablation_recall, full_recall),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Markdown rendering (honesty rails: failures, ties, spread — not only wins)
 # ---------------------------------------------------------------------------
 
@@ -711,6 +810,7 @@ def render_markdown(
     *,
     generated_at: str,
     records: Optional[Sequence[RepetitionRecord]] = None,
+    pack_scores: Optional[Sequence[ArmPackScore]] = None,
 ) -> str:
     """Render the per-arm reports as a markdown document.
 
@@ -726,6 +826,12 @@ def render_markdown(
     callers that pre-date #994), the report renders exactly as before — the new
     detail is simply omitted, never fabricated. The aggregate "## Context
     quality" section is driven by the ``ArmReport`` fields and renders either way.
+
+    ``pack_scores`` (issue #1029 AC3) is the OPTIONAL per-arm ground-truth
+    context-pack precision/recall (the AC2 :func:`pack_scorer.aggregate_pack_scores`
+    output). When supplied, the "## Rerank arm" head-to-head section adds
+    precision/recall delta rows; when ``None``, those two rows render ``n/a``
+    (the answer-key ground truth was not scored) — never a fabricated ``0.0``.
     """
     lines: List[str] = []
     lines.append("# AgentRail eval report")
@@ -851,6 +957,61 @@ def render_markdown(
             f"{_fmt_rate_pct(nf_delta.full_false_green_rate)} | "
             f"{_fmt_rate_pct(nf_delta.new_flow_false_green_rate)} | "
             f"{_fmt_signed_pct(nf_delta.false_green_rate_delta)} |"
+        )
+        lines.append("")
+
+    # --- Rerank arm: `full` vs `full-minus-rerank` (issue #1029 AC3) -----
+    # The rerank layer's worth as a leave-one-out ablation, on the headline
+    # metrics AND the AC2 ground-truth pack precision/recall (threaded in via
+    # ``pack_scores``). Each delta is `full-minus-rerank` minus `full` on the
+    # SAME run set, so each is falsifiable. Only rendered as a table when BOTH
+    # arms are present; precision/recall rows are `n/a` when no pack scores were
+    # scored (the answer-key ground truth was not computed), never a fake 0.0.
+    rr_delta = rerank_delta(reports, pack_scores=pack_scores)
+    lines.append("## Rerank arm (full vs full-minus-rerank)")
+    lines.append("")
+    if rr_delta is None:
+        lines.append(
+            "_Not available: this run set does not contain BOTH the `full` and "
+            "`full-minus-rerank` arms (run `--arm full --arm full-minus-rerank` "
+            "to populate this)._"
+        )
+        lines.append("")
+    else:
+        lines.append(
+            "`full-minus-rerank` turns the rerank layer OFF; every delta is "
+            "`full-minus-rerank` minus `full` on the SAME scorer and run set, so "
+            "each can come back **better or worse** when rerank is removed. Higher "
+            "is better for solve-rate, precision, and recall; lower is better for "
+            "dollars-per-solved. Precision/recall are the offline pack-vs-answer-key "
+            "ground truth (#1029 AC2); `n/a` marks an undefined value (an arm never "
+            "solved, or the answer-key scorer was not run)."
+        )
+        lines.append("")
+        lines.append(
+            "| Metric | full | full-minus-rerank | Delta (full-minus-rerank - full) |"
+        )
+        lines.append("| --- | ---: | ---: | ---: |")
+        lines.append(
+            f"| Solve-rate | {_fmt_pct(rr_delta.full_solve_rate)} | "
+            f"{_fmt_pct(rr_delta.ablation_solve_rate)} | "
+            f"{_fmt_signed_pct(rr_delta.solve_rate_delta)} |"
+        )
+        lines.append(
+            f"| Dollars-per-solved-task | "
+            f"{_fmt_usd(rr_delta.full_dollars_per_solved)} | "
+            f"{_fmt_usd(rr_delta.ablation_dollars_per_solved)} | "
+            f"{_fmt_signed_usd(rr_delta.dollars_per_solved_delta)} |"
+        )
+        lines.append(
+            f"| Pack precision | {_fmt_ratio(rr_delta.full_mean_precision)} | "
+            f"{_fmt_ratio(rr_delta.ablation_mean_precision)} | "
+            f"{_fmt_signed_pct(rr_delta.precision_delta)} |"
+        )
+        lines.append(
+            f"| Pack recall | {_fmt_ratio(rr_delta.full_mean_recall)} | "
+            f"{_fmt_ratio(rr_delta.ablation_mean_recall)} | "
+            f"{_fmt_signed_pct(rr_delta.recall_delta)} |"
         )
         lines.append("")
 
@@ -1385,6 +1546,7 @@ def write_markdown_report(
     reports_dir: Optional[Path] = None,
     date: str,
     records: Optional[Sequence[RepetitionRecord]] = None,
+    pack_scores: Optional[Sequence[ArmPackScore]] = None,
 ) -> Path:
     """Render and write a dated markdown report; return the written path.
 
@@ -1395,12 +1557,21 @@ def write_markdown_report(
     supplied, each FAILED run's diff + gate-failure reason + context-quality
     metrics are surfaced in the failure section. When ``None`` the report renders
     exactly as before (back-compatible).
+
+    ``pack_scores`` (#1029 AC3) is optional and forwarded to
+    :func:`render_markdown`; when supplied, the Rerank-arm section shows the
+    full-vs-full-minus-rerank pack precision/recall deltas (the AC2
+    :func:`pack_scorer.aggregate_pack_scores` output) alongside solve-rate and
+    cost. When ``None`` those rows render ``n/a`` — the report is otherwise
+    byte-identical to before, so no caller that omits it changes.
     """
     base = Path(reports_dir) if reports_dir is not None else default_reports_dir()
     base.mkdir(parents=True, exist_ok=True)
     path = base / f"eval-report-{date}.md"
     path.write_text(
-        render_markdown(reports, generated_at=date, records=records),
+        render_markdown(
+            reports, generated_at=date, records=records, pack_scores=pack_scores
+        ),
         encoding="utf-8",
     )
     return path

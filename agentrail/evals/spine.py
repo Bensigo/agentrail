@@ -84,6 +84,8 @@ from agentrail.evals.arms import (
     new_flow_minus,
 )
 from agentrail.evals.corpus.loader import CorpusTask, load_corpus
+from agentrail.evals.pack_scorer import ArmPackScore
+from agentrail.evals.pack_scoring import compute_pack_scores
 from agentrail.evals.reporter import (
     ArmReport,
     HttpMetricsWriter,
@@ -187,6 +189,15 @@ class SpineConfig:
     # full corpus run finishes in roughly the slowest single unit, bounded by
     # the agent API's rate limits.
     concurrency: int = 1
+    # Offline context-pack scoring root (#1029 AC2/AC3). When set to a checkout
+    # that HAS a built context index, the spine runs the deterministic retrieval
+    # stage per (task, arm) — honoring each arm's rerank flag — and scores the
+    # cited paths against every task's required-context answer key, so the report
+    # shows REAL precision/recall (not ``n/a``) and a falsifiable rerank delta.
+    # ``None`` (default) or a root with no index → pack scores are omitted and the
+    # report renders ``n/a`` honestly (never a fabricated 0.0). The corpus tasks
+    # are pinned to this repo, so the CLI passes the agentrail checkout root here.
+    pack_index_root: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -280,6 +291,20 @@ def run_spine(
     tasks = _select_tasks(tasks, config.task_filter)
     if not tasks:
         raise ValueError("no corpus tasks selected")
+
+    # Offline context-pack precision/recall (#1029 AC2/AC3). Computed ONCE up
+    # front (it depends only on task prompts + the pinned repo's context index,
+    # not on any agent run), then threaded into EVERY report write below so a
+    # real eval populates precision/recall instead of rendering ``n/a``. The
+    # driver runs the deterministic retrieval per (task, arm) honoring each arm's
+    # rerank flag, so ``full`` vs ``full-minus-rerank`` yields a falsifiable pack
+    # delta. Returns ``None`` (→ ``n/a``, never a fake 0.0) when no index exists
+    # at ``pack_index_root`` (or it is unset) — so the default path is unchanged.
+    pack_scores: Optional[List[ArmPackScore]] = None
+    if config.pack_index_root is not None:
+        pack_scores = compute_pack_scores(
+            tasks, config.arms, root=config.pack_index_root
+        )
 
     repetitions: List[RepetitionRecord] = []
     verdicts: List[Verdict] = []
@@ -437,6 +462,10 @@ def run_spine(
                 reports_dir=base,
                 date=date_str,
                 records=done_reps,
+                # Real precision/recall (#1029) — computed once up front and
+                # rendered on every checkpoint, so an interrupted run's partial
+                # scorecard still carries the pack quality (None → n/a).
+                pack_scores=pack_scores,
             )
 
     concurrency = max(1, config.concurrency)
@@ -468,7 +497,13 @@ def run_spine(
     # Final report write — re-renders the COMPLETE scorecard (overwriting the
     # last checkpoint) so the probes section below appends to a full report.
     report_path = write_markdown_report(
-        arm_reports, reports_dir=base, date=date_str, records=repetitions
+        arm_reports,
+        reports_dir=base,
+        date=date_str,
+        records=repetitions,
+        # Real context-pack precision/recall + the full-vs-full-minus-rerank
+        # delta (#1029 AC2/AC3) — None → n/a, never a fabricated 0.0.
+        pack_scores=pack_scores,
     )
 
     # Issue #960 — the intrinsic probes (routing cost-regret + retry lift/wasted-

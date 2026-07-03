@@ -1118,3 +1118,149 @@ def test_one_failing_unit_does_not_abort_the_run(corpus_root: Path, reports_dir:
     # Both tasks are present: the crashed one as failed, the healthy one solved.
     by_task = {r.task: r.solved for r in result.repetitions}
     assert by_task == {"alpha-task": False, "bravo-task": True}
+
+
+# ---------------------------------------------------------------------------
+# #1029 END-TO-END: pack precision/recall are POPULATED on a real run, and the
+# rerank arm actually toggles retrieval.
+#
+# The prior tests drive the spine with a synthetic corpus_root whose
+# ``requiredContext`` points at a file that does not exist in any built index,
+# so they never exercise the offline pack scorer against real retrieval. These
+# two tests close the false-green hole flagged in review:
+#
+#   1. A real spine run with ``pack_index_root`` set to this checkout (which has
+#      a built context index) renders REAL "Pack precision"/"Pack recall" rows
+#      in the markdown report — not ``n/a``. This proves Blocker 1 is wired: the
+#      pack scores are computed in the run loop and threaded through BOTH
+#      write_markdown_report call sites.
+#
+#   2. The ``full`` (rerank ON) and ``full-minus-rerank`` (rerank OFF) arms
+#      produce a genuinely DIFFERENT cited set for the same task. This proves
+#      Blocker 2 is wired: the arm's rerank flag actually reaches the retrieval
+#      stage (via AGENTRAIL_CONTEXT_RERANK), so the ablation is not a no-op.
+#
+# Both need the real ~70MB index, so they SKIP (never silently pass) when the
+# checkout has no built index — e.g. a CI runner that did not build one.
+# ---------------------------------------------------------------------------
+
+
+def _repo_root_with_index() -> Optional[Path]:
+    """This git checkout's root, iff it carries a built context index.
+
+    Returns ``None`` when the root can't be resolved or has no index, so the
+    e2e tests below can ``skip`` honestly rather than pass without exercising
+    real retrieval.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    root = Path(out.stdout.strip())
+    if not root:
+        return None
+    if not (root / ".agentrail" / "context" / "index" / "index.json").is_file():
+        return None
+    return root
+
+
+def test_e2e_pack_precision_recall_populated_on_real_run(reports_dir: Path) -> None:
+    """A real spine run with ``pack_index_root`` renders numbers, not ``n/a``.
+
+    Drives the ACTUAL spine over one real bundled corpus task with the ``full``
+    and ``full-minus-rerank`` arms and ``pack_index_root`` set to this checkout.
+    The offline pack scorer runs real retrieval against the built index and the
+    report's rerank section shows measured Pack precision/recall — the exact
+    thing that rendered ``n/a`` on every real eval before this fix.
+    """
+    root = _repo_root_with_index()
+    if root is None:
+        pytest.skip("no built context index in this checkout; pack scoring is n/a")
+
+    config = SpineConfig(
+        arms=[full(), full_minus("rerank")],
+        reps=1,
+        # One real bundled task (its requiredContext resolves against this
+        # checkout, which is what the index covers). Keeps retrieval to a
+        # single query per arm.
+        task_filter=["context-rerank"],
+        corpus_root=None,  # bundled corpus v0
+        pack_index_root=root,
+        concurrency=1,
+    )
+
+    result = run_spine(
+        config,
+        executor=SpyExecutor(),
+        hidden_test_runner=HiddenTestSpy(default=True),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-03",
+    )
+
+    assert result.report_path is not None
+    text = result.report_path.read_text(encoding="utf-8")
+
+    # The rerank section exists and its precision/recall rows carry MEASURED
+    # values, not the undefined sentinel. _fmt_ratio renders a defined ratio as
+    # "0.xxx" and an undefined one as "n/a".
+    assert "## Rerank arm (full vs full-minus-rerank)" in text
+    pack_lines = [
+        ln for ln in text.splitlines() if ln.startswith("| Pack precision |")
+    ]
+    recall_lines = [
+        ln for ln in text.splitlines() if ln.startswith("| Pack recall |")
+    ]
+    assert pack_lines, f"no Pack precision row in report:\n{text}"
+    assert recall_lines, f"no Pack recall row in report:\n{text}"
+    # Both the `full` and `full-minus-rerank` cells must be measured numbers.
+    # (The row is "| Pack precision | <full> | <ablation> | <delta> |".)
+    full_p, ablation_p = pack_lines[0].split("|")[2:4]
+    full_r, ablation_r = recall_lines[0].split("|")[2:4]
+    for cell in (full_p, ablation_p, full_r, ablation_r):
+        assert cell.strip() != "n/a", (
+            "pack precision/recall rendered n/a on a real run with a built "
+            f"index — Blocker 1 not wired. Row cells: {pack_lines[0]!r} / "
+            f"{recall_lines[0]!r}"
+        )
+
+
+def test_e2e_rerank_flag_toggles_the_cited_set() -> None:
+    """`full` (rerank ON) and `full-minus-rerank` (OFF) cite a DIFFERENT set.
+
+    This is the falsifiability guarantee for the #1029 rerank arm: if the arm's
+    rerank flag did NOT reach the retrieval stage, both arms would retrieve the
+    identical pack and every precision/recall delta would be a hard zero (a
+    no-op ablation). Driving the real offline scorer for both arms and asserting
+    the cited sets differ proves the AGENTRAIL_CONTEXT_RERANK bridge is live.
+    """
+    root = _repo_root_with_index()
+    if root is None:
+        pytest.skip("no built context index in this checkout; retrieval unavailable")
+
+    from agentrail.context.index import load_index
+    from agentrail.evals.corpus.loader import load_corpus
+    from agentrail.evals.pack_scoring import _cited_paths
+
+    task = next(t for t in load_corpus() if t.name == "context-rerank")
+    index = load_index(root)
+
+    cited_on = _cited_paths(root, task.prompt, rerank=True, index=index)
+    cited_off = _cited_paths(root, task.prompt, rerank=False, index=index)
+
+    # Retrieval returned something for both (guard against an empty-index no-op
+    # that would make the sets trivially "equal" as two empty lists).
+    assert cited_on, "rerank-ON retrieval returned no cited paths"
+    assert cited_off, "rerank-OFF retrieval returned no cited paths"
+    # The whole point of the ablation: turning rerank off changes the pack.
+    assert cited_on != cited_off, (
+        "rerank ON and OFF produced an IDENTICAL cited set — the arm's rerank "
+        "flag is not reaching the retrieval stage (no-op ablation)"
+    )

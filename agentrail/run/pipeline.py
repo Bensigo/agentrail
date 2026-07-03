@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agentrail.run import artifacts, context as ctx, prompts, skills, state as state_mod
+from agentrail.guardrails.policies.input_contract import screen_injection
 from agentrail.run.check_runner import (
     ac_coverage_for,
     load_verify_checks,
@@ -1081,6 +1082,67 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         phase_commands=phase_commands or {},
         budget_usd=budget_usd,
     )
+
+    # 10b. Read-side injection re-screen (issue #1035).
+    #
+    # Defense-in-depth against prompt injection: the queue-entrance gate (#1026)
+    # sanitizes on WRITE, but it cannot cover rows admitted before the gate
+    # existed, bodies written straight through a webhook, or — most importantly —
+    # a body edited AFTER admission (clean at enqueue, malicious at run time).
+    # So at the READ boundary, right before the untrusted issue body is assembled
+    # into the runner's prompt and executed, we re-run the SAME injection screen
+    # (agentrail/guardrails/policies/input_contract.screen_injection) against the
+    # body as read from the queue at run time.
+    #
+    # A read-side hit PARKS this run for human inspection using the same parking
+    # shape as the write-side gate: we record blocked_reason in the run metadata
+    # and state (phase="blocked", not a terminal success), print the reason, and
+    # RETURN before any phase runs — the agent never sees the tainted prompt. This
+    # is a park, not a silent drop: the run dir + run.json survive with the reason
+    # for a human to inspect, and the blocked (non-retryable) state means the loop
+    # does not spin re-running it (AC3). The complementary framing in
+    # prompts.frame_untrusted_issue_context is the second layer for bodies that
+    # slip past the deny-list.
+    injection_reason = screen_injection(resolution_text)
+    if injection_reason:
+        park_reason = (
+            f"read-side prompt-injection screen tripped ({injection_reason}) — "
+            "parked for human review instead of run"
+        )
+        print(
+            f"blocked: issue #{issue} {park_reason}; inspect {metadata_file}",
+            file=sys.stderr,
+        )
+        finished_at = _utc_now_iso()
+        artifacts.update_run_metadata_attempts(
+            metadata_file,
+            execution_attempt=1,
+            max_execution_attempts=max_execution_attempts,
+            failed_verification_attempts=0,
+            verifier_findings_file="",
+            blocked_reason=park_reason,
+        )
+        state_mod.update_run_state(
+            target_dir, "finish",
+            run_id=run_id,
+            issue=issue,
+            agent=agent,
+            phase="blocked",
+            picked_at=started_at,
+            finished_at=finished_at,
+            exit_status=2,
+            prompt_file=str(prompt_file),
+            metadata_file=str(metadata_file),
+            run_dir=str(run_dir),
+            execution_attempt=1,
+            max_execution_attempts=max_execution_attempts,
+            failed_verification_attempts=0,
+            verifier_findings_file="",
+            blocked_reason=park_reason,
+            issue_context=resolution_text,
+            context_pack_file=run_context_pack_file or "",
+        )
+        return 2
 
     # 11. Phase execution
     #

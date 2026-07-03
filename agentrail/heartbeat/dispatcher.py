@@ -34,6 +34,7 @@ from enum import Enum
 from typing import Callable, FrozenSet, List, Optional, Union
 
 from agentrail.afk import input_contract
+from agentrail.afk.input_contract import AdmissionLedger, WriterClass
 from agentrail.afk.queue_state import (
     Event as QueueEvent,
     QueueEntry,
@@ -91,6 +92,11 @@ class Dispatcher:
     fetch_body: FetchBody
     launch_run: LaunchRun
     queue: List[QueueEntry] = field(default_factory=list)
+    # The v2 admission ledger (issue #1026): duplicate-content hashes + per-writer
+    # counts, threaded forward across admissions so the entrance can dedup content
+    # and rate-limit each writer. Held here (not in the pure policy) so the policy
+    # stays stateless; every enqueue swaps in the next ledger the gate returns.
+    ledger: AdmissionLedger = field(default_factory=AdmissionLedger)
 
     # --- admission (through the Input-Contract gate) -------------------------
 
@@ -100,13 +106,25 @@ class Dispatcher:
         number: int,
         blocked_by: FrozenSet[int] = frozenset(),
         open_blockers: FrozenSet[int] = frozenset(),
+        writer: WriterClass = WriterClass.HUMAN_GITHUB,
     ) -> Optional[QueueEntry]:
-        """Admit an issue into the queue via the Input-Contract gate.
+        """Admit an issue into the queue via the Input-Contract gate (v2).
 
-        Returns the new :class:`QueueEntry` (parked if a blocker is open), or
-        ``None`` if the Input-Contract gate rejected the issue (no
-        machine-checkable AC) — a rejected issue never becomes an entry. An issue
-        already in the queue is not duplicated.
+        Runs the queue-entrance checks (injection screen, machine-checkable AC,
+        duplicate content, per-writer rate limit) and threads the admission ledger
+        forward. Outcomes:
+
+        * **Rejected** (injection probe / missing machine-checkable AC) → returns
+          ``None``: the issue never becomes an entry (a hard REJECT).
+        * **Parked** (duplicate content / writer over its rate limit) → the entry
+          EXISTS in the PARKED state with a human-readable reason and is APPENDED
+          to the queue (never a silent drop), so a human can review it. It is not
+          grabbable, so it never runs.
+        * **Admitted** → a QUEUED entry (or parked by an open ``blocked_by``
+          dependency via ``queue_state.admit``) is appended.
+
+        An issue already in the queue is not duplicated. Never raises — the gate
+        converts any check failure into a reject or a park.
         """
         if any(e.number == number for e in self.queue):
             return next(e for e in self.queue if e.number == number)
@@ -114,12 +132,21 @@ class Dispatcher:
             number=number,
             issue_body=self.fetch_body(number),
             blocked_by=blocked_by,
+            writer=writer,
+            ledger=self.ledger,
         )
-        if isinstance(result, input_contract.Rejected):
-            return None
-        entry = admit(result, open_blockers)
-        self.queue.append(entry)
-        return entry
+        # With a ledger supplied, admit_to_queue returns an Admission carrying the
+        # next ledger to thread forward and either a rejection or a real entry.
+        self.ledger = result.ledger
+        if result.is_rejected:
+            return None  # hard REJECT — never becomes an entry
+        entry = result.entry
+        # A gate-parked entry (dup/rate-limit) already carries its reason and state;
+        # only run queue_state.admit for a would-be-QUEUED entry so an open blocker
+        # can still park it. admit() preserves a gate park (it does not resurrect).
+        admitted = admit(entry, open_blockers)
+        self.queue.append(admitted)
+        return admitted
 
     def readmit(self, *, open_blockers: FrozenSet[int]) -> None:
         """Re-run ``queue_state.admit`` over every non-terminal entry.

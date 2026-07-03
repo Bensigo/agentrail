@@ -80,6 +80,12 @@ class QueueEntry:
     state: object = QueueState.QUEUED
     # Issue numbers this entry is blocked by; parked while any is still open.
     blocked_by: FrozenSet[int] = frozenset()
+    # Human-readable reason the entry is parked/withheld, retrievable as STATE
+    # (not a log line): empty for an ordinary QUEUED/RUNNING entry, populated when
+    # the entry is PARKED (an unmet blocked-by dependency, a duplicate-content
+    # admission, or a writer over its rate limit). Surfaced to humans reviewing
+    # the queue so a parked entry always explains itself.
+    reason: str = ""
 
 
 class Event(str, Enum):
@@ -105,12 +111,26 @@ def admit(entry: QueueEntry, open_blockers: FrozenSet[int]) -> QueueEntry:
     Pure. An entry with any unmet ``blocked_by`` dependency is PARKED rather than
     attempted; once its blockers are resolved the same entry returns to QUEUED.
     Terminal entries are returned unchanged — admission never resurrects them.
+
+    An entry that arrives ALREADY parked with a reason (e.g. the Input-Contract
+    gate parked it for duplicate content or a writer rate limit) keeps that
+    parked state and reason here — blocker admission never overrides a gate park
+    nor silently promotes it to QUEUED. Only an entry whose sole reason to park
+    is an unmet blocker is returned to QUEUED once its blockers clear.
     """
     if is_terminal(entry.state):
         return entry
-    if open_blockers and (entry.blocked_by & open_blockers):
-        return replace(entry, state=QueueState.PARKED)
-    return replace(entry, state=QueueState.QUEUED)
+    unmet = bool(open_blockers and (entry.blocked_by & open_blockers))
+    if unmet:
+        blocked = sorted(entry.blocked_by & open_blockers)
+        reason = f"blocked-by unmet dependency: {', '.join(f'#{n}' for n in blocked)}"
+        return replace(entry, state=QueueState.PARKED, reason=reason)
+    # No unmet blocker. If the gate already parked this entry for a non-blocker
+    # reason (duplicate content / rate limit), preserve that park — do not
+    # resurrect it to QUEUED. Otherwise it is grabbable and carries no reason.
+    if entry.state is QueueState.PARKED and entry.reason and not entry.blocked_by:
+        return entry
+    return replace(entry, state=QueueState.QUEUED, reason="")
 
 
 def transition(entry: QueueEntry, event: Event) -> QueueEntry:

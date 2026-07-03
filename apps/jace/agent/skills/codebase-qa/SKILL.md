@@ -18,10 +18,12 @@ Do **not** answer from memory or guess. For each question:
    - **`query`** — a natural-language question ("where is the retry budget spent?").
    - **`def`** — the definition of a named symbol.
    - **`callers`** — who calls a named symbol.
-2. Run it through the `runContextLookup` helper in
-   `agent/lib/context_cli.core.mjs`, which invokes
+2. Call the registered **`codebase_query`** tool (`agent/tools/codebase_query.ts`)
+   with `{ sub, term }`. That is the runtime execution path: the tool invokes the
+   `runContextLookup` helper in `agent/lib/context_cli.core.mjs`, which runs
    `agentrail context <sub> <term> --json` and returns the parsed **citations**
-   (path + line range + symbol) alongside the raw JSON.
+   (path + line range + symbol) alongside the raw JSON. The tool restricts `sub`
+   to the read-only allowlist (`query`/`def`/`callers`) and rejects anything else.
 3. Answer using **only** the returned citations. Cite the source for every
    claim — name the file and, when present, the line range and symbol the CLI
    returned. If the tool returns nothing relevant, say so; do not fill the gap

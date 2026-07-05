@@ -32,24 +32,22 @@ the pack builder already uses for the index and ``state.json``. A caller may
 also inject items directly (used by tests) via :func:`build_memory_lane`.
 
 .. important::
-    **Scope boundary — no producer ships in #1039.** This module is only the
-    read half: it consumes :data:`MEMORY_SNAPSHOT_REL` if present and is a
-    no-op (empty lane) otherwise. Nothing in this codebase writes that
-    snapshot file today. #1039's own acceptance criteria only require that an
-    injected/ingested item "appears... in a subsequently built pack's memory
-    lane" (see the AC1 test in ``tests/context/test_memory_lane.py``, which
-    exercises this via :func:`build_memory_lane`'s ``items=`` injection seam,
-    the same seam a future producer would use) — it does not ask for a live
-    Postgres -> local-snapshot pull path, and no such pull mechanism exists
-    anywhere else in the codebase to reuse (every existing HTTP integration in
-    ``agentrail/context/snapshot_push.py`` and ``agentrail/afk/review_push.py``
-    is push-only, local -> server).
-    Consequence in production TODAY: neither real caller of
-    ``build_context_pack`` (``agentrail/run/context.py`` and
-    ``agentrail/cli/commands/context.py``) passes ``memory_items``, so on a
-    live run the memory lane always renders empty until a producer exists.
-    Wiring a real Postgres -> snapshot producer (or an equivalent live-fetch
-    path) is tracked as a separate follow-up: issue #1071.
+    **Read half only — the producer lives in** :mod:`agentrail.context.memory_fetch`.
+    This module consumes :data:`MEMORY_SNAPSHOT_REL` if present and is a no-op
+    (empty lane) otherwise. #1039 shipped it with no producer, so live-run
+    lanes were structurally empty; #1071 closed that gap:
+    :func:`agentrail.context.memory_fetch.fetch_memory_snapshot` pulls the
+    repository's rows from the linked server's bearer-authed
+    ``GET /api/v1/context/memory-items`` endpoint and writes this snapshot,
+    and BOTH real callers of ``build_context_pack``
+    (``agentrail/run/context.py::build_pack`` and the ``context build``
+    subcommand in ``agentrail/cli/commands/context.py``) invoke it before
+    building, non-fatally and TTL-cached (~once per run). Unlinked repos skip
+    the fetch and keep the empty-lane behaviour.
+    The trust boundary is unchanged: the producer only moves bytes, and this
+    module still treats every snapshot row as UNTRUSTED input — secret
+    filtering, byte capping, attribution, and fencing all happen here on read,
+    regardless of who wrote the file.
 """
 from __future__ import annotations
 

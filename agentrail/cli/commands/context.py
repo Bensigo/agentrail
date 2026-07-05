@@ -13,7 +13,9 @@ from agentrail.context.benchmark import format_benchmark_summary, run_benchmark
 from agentrail.context.evaluation import evaluate_retrieval, format_evaluation_report
 from agentrail.context.git_commands import git_blame, git_changed, git_history
 from agentrail.context.index import build_index
+from agentrail.context.memory_fetch import fetch_memory_snapshot
 from agentrail.context.packs import build_context_pack, explain_context_pack, show_context_pack
+from agentrail.context.snapshot_push import load_link
 from agentrail.context.retrieval import compute_tokens_saved, context_callers, context_callees, context_def, context_impact, get_file_lines, get_file_symbol, query_context, search_context
 from agentrail.context.sources import inventory_sources
 from agentrail.context import daemon as _daemon_mod
@@ -773,10 +775,11 @@ def run_context(args: List[str]) -> int:
                 raise SystemExit("context build requires --phase")
             if target_kind == "issue" and phase not in {"plan", "execute", "verify"} or target_kind == "pr" and phase != "review":
                 raise SystemExit("context build phase must be one of: issue plan|execute|verify, pr review")
+            resolved_target = _resolve_target(target)
             # Read contextBudgetUsd from config if not provided via flag
             if budget_usd is None:
                 try:
-                    config_path = _resolve_target(target) / ".agentrail" / "config.json"
+                    config_path = resolved_target / ".agentrail" / "config.json"
                     if config_path.exists():
                         cfg = json.loads(config_path.read_text(encoding="utf-8"))
                         cfg_budget = (cfg or {}).get("contextBudgetUsd")
@@ -784,13 +787,19 @@ def run_context(args: List[str]) -> int:
                             budget_usd = float(cfg_budget)
                 except Exception:
                     pass
-            # Does not pass memory_items — no producer writes the local memory
-            # snapshot yet, so the pack's memory lane is empty here today (see
-            # the scope-boundary note in agentrail/context/memory_lane.py and
-            # follow-up issue #1071, which wires a real Postgres -> snapshot
-            # producer).
+            # Refresh the local memory snapshot from the linked server (#1071)
+            # so build_context_pack's snapshot fallback (we don't pass
+            # memory_items) reads real Postgres rows. Non-fatal + TTL-cached:
+            # a failure just leaves the lane stale or empty. Only warn when the
+            # repo is actually linked — unlinked repos legitimately have no
+            # server to fetch from.
+            if not fetch_memory_snapshot(resolved_target) and load_link(resolved_target) is not None:
+                print(
+                    "warning: failed to refresh memory snapshot; memory lane may be stale or empty",
+                    file=sys.stderr,
+                )
             output = build_context_pack(
-                _resolve_target(target), target_kind, target_number, phase,
+                resolved_target, target_kind, target_number, phase,
                 budget_usd=budget_usd, model=build_model,
             )
             if json_output:

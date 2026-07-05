@@ -9,13 +9,13 @@ from agentrail.skillcmd.prompts import build_seed_prompt
 class BuildSeedPromptTests(unittest.TestCase):
     def test_skill_body_appears_verbatim(self):
         body = "<what-to-do>\nInterview me relentlessly.\n</what-to-do>"
-        out = build_seed_prompt("grill-with-docs", body, [], [])
+        out = build_seed_prompt("grill-me", body, [], [])
         self.assertIn(body, out)
-        self.assertIn("grill-with-docs", out)
+        self.assertIn("grill-me", out)
 
     def test_context_file_inlined_under_section(self):
         out = build_seed_prompt(
-            "grill-with-docs",
+            "grill-me",
             "SKILLBODY",
             [("CONTEXT.md", "Glossary: Order means X.")],
             [],
@@ -45,7 +45,7 @@ class BuildSeedPromptTests(unittest.TestCase):
         self.assertLess(out.index("CTX"), out.index("PLAN"))
 
     def test_framing_marks_skill_authoritative(self):
-        out = build_seed_prompt("grill-with-docs", "B", [], [])
+        out = build_seed_prompt("grill-me", "B", [], [])
         self.assertIn("authoritative", out.lower())
 
 

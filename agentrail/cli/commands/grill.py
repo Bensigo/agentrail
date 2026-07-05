@@ -1,6 +1,6 @@
 """``agentrail grill-me`` — interactive plan grilling backed by a skill.
 
-Binds the shipped ``grill-with-docs`` skill to the skill-backed agent-session
+Binds the shipped ``grill-me`` skill to the skill-backed agent-session
 primitive (``agentrail/skillcmd/session.py``). The agent is launched
 interactively by default (it owns the TTY and quizzes the user one question at
 a time per the skill); ``--headless``/``--yes`` runs it unattended.
@@ -23,7 +23,7 @@ from agentrail.cli.commands.run import (
 )
 from agentrail.skillcmd.session import run_skill_session
 
-SKILL_NAME = "grill-with-docs"
+SKILL_NAME = "grill-me"
 # House context the grilling procedure applies its questions against.
 EXTRA_CONTEXT = ["TASTE.md"]
 
@@ -32,7 +32,7 @@ Usage:
   agentrail grill-me [plan-or-path] [--agent codex|claude|cursor|hermes|custom]
                      [--target DIR] [--headless|--yes]
 
-Launches the configured agent seeded with the grill-with-docs skill + CONTEXT.md
+Launches the configured agent seeded with the grill-me skill + CONTEXT.md
 to stress-test a plan. Interactive by default (you own the TTY); --headless runs
 it unattended. Edits CONTEXT.md/ADRs inline only — no publish.
 """

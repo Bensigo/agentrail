@@ -717,9 +717,12 @@ class GrillPromptTests(unittest.TestCase):
         result = self._fn("codex", "my idea", header="HDR\n")
         self.assertIn("HDR", result)
 
-    def test_codex_skill_line(self):
+    def test_codex_no_moved_skill_reference(self):
+        # The grill-style planning skill moved to the Jace coordinator; the run
+        # prompt no longer names a repo-local factory skill to read.
         result = self._fn("codex", "my idea", header="HDR\n")
-        self.assertIn("Use the repo-local skill 'grill-with-docs'.", result)
+        self.assertNotIn("grill-with-docs", result)
+        self.assertNotIn("repo-local skill", result)
 
     def test_codex_idea_substituted(self):
         result = self._fn("codex", "my idea", header="HDR\n")
@@ -738,11 +741,12 @@ class GrillPromptTests(unittest.TestCase):
         self.assertIn("HDR", result)
 
     def test_claude_first_line(self):
+        # After the header, the claude block opens on the Goal line (the old
+        # "Use Claude Code to run a grill-with-docs style planning pass." lead-in
+        # was dropped when the skill moved to the Jace coordinator).
         result = self._fn("claude", "my idea", header="HDR\n")
-        self.assertIn(
-            "Use Claude Code to run a grill-with-docs style planning pass.",
-            result,
-        )
+        self.assertIn("Goal:\nStress-test this idea", result)
+        self.assertNotIn("grill-with-docs", result)
 
     def test_claude_idea_substituted(self):
         result = self._fn("claude", "my idea", header="HDR\n")
@@ -761,17 +765,21 @@ class GrillPromptTests(unittest.TestCase):
         self.assertTrue(result.startswith("HDR\n"))
 
     def test_unknown_agent_uses_claude_block(self):
+        # Any non-codex agent falls to the claude block; assert it produces the
+        # same grill task body (both blocks share content post-move).
         result = self._fn("gpt-4o", "idea", header="HDR\n")
-        self.assertIn("Use Claude Code to run a grill-with-docs style planning pass.", result)
+        self.assertEqual(result, self._fn("claude", "idea", header="HDR\n"))
 
     def test_codex_no_skill_md_reference(self):
         # codex block does not mention SKILL.md read instruction (claude block does)
         result = self._fn("codex", "idea", header="HDR\n")
         self.assertNotIn("SKILL.md exists", result)
 
-    def test_claude_skill_md_reference(self):
+    def test_claude_no_skill_md_reference(self):
+        # The claude block no longer points at a factory SKILL.md path — the
+        # grill-style skill now lives in the Jace coordinator, not the factory.
         result = self._fn("claude", "idea", header="HDR\n")
-        self.assertIn("skills/grill-with-docs/SKILL.md", result)
+        self.assertNotIn("SKILL.md", result)
 
 
 class ReviewPromptTests(unittest.TestCase):

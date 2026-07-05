@@ -30,7 +30,11 @@ conversation. Mirror the AgentRail PRD shape so `to-issues` can slice it cleanly
 
 ## Design
 <the approach: the vertical slices, the invariants they respect, the decisions
-(CONTEXT.md / TASTE.md) they must not break. Reference decisions, not file paths.>
+(CONTEXT.md / TASTE.md) they must not break. Reference decisions, not file paths.
+Actively look for deep modules to extract — a deep module encapsulates a lot of
+functionality behind a simple, testable interface that rarely changes; it is the
+opposite of a shallow module whose interface is nearly as complex as what it
+hides. Name the deep modules the slices build against.>
 
 ## Slices
 1. <one thin, end-to-end, independently shippable vertical slice — behavior, not files>
@@ -42,6 +46,12 @@ outcome is too big — split it.
 
 ## Measurement (definition of success)
 - <observable signal that proves the PRD's goal is met>
+
+## Testing
+- <what makes a good test here: assert external behavior, not implementation
+  details, so tests survive refactors>
+- <which deep modules get tests, and the prior art (a similar existing test in
+  the codebase) each should follow>
 
 ## Risks
 - <a real risk and how the design mitigates it>

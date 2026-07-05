@@ -138,7 +138,7 @@ def _run_create(args: List[str]) -> int:
     if dry_run:
         print("Would publish PRD with ready-for-agent label.")
         print("Seed prompt will include:")
-        print("  - skills/to-prd/SKILL.md")
+        print("  - apps/jace/agent/skills/to-prd/SKILL.md")
         print("  - CONTEXT.md")
         print("  - TASTE.md")
         print(f"  - Brief: {brief}")

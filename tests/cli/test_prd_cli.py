@@ -92,7 +92,7 @@ class PrdDryRunTests(unittest.TestCase):
         with patch("sys.stdout", out):
             run_prd(["create", "Add dark mode toggle", "--dry-run"])
         output = out.getvalue()
-        self.assertIn("skills/to-prd/SKILL.md", output)
+        self.assertIn("apps/jace/agent/skills/to-prd/SKILL.md", output)
         self.assertIn("CONTEXT.md", output)
         self.assertIn("TASTE.md", output)
         self.assertIn("Add dark mode toggle", output)

@@ -34,6 +34,20 @@ shape each brief into the house format before you call the tool.
 Never collapse multiple slices into one `create_issue` call, and never fan out
 several calls without waiting for each approval. One approved call, one issue.
 
+## What makes a slice
+
+Each slice is a tracer bullet: a thin, end-to-end path that cuts through every
+layer the behavior needs (schema, API, UI, tests), not a horizontal slice of one
+layer. Hold each proposed slice to this:
+
+- It delivers a narrow but complete path through every layer, demoable or
+  verifiable on its own.
+- Prefer many thin slices over few thick ones.
+- Do not propose setup-only slices — fold setup into the first slice whose
+  user-visible behavior needs it.
+
+A slice that can't be demoed by itself is too horizontal; split it the other way.
+
 ## Each issue must be house-format
 
 Every brief you pass to `create_issue` must carry all six house sections and
@@ -47,7 +61,10 @@ labeled acceptance criteria:
 - **Acceptance criteria** — numbered, observable, testable, each a checkbox
   (`- [ ] AC1:` …). At least one; the factory's `validateAcceptanceCriteria`
   gate rejects a body with no checkbox. Quality is bounded by these — pin exact
-  behavior, verifiable by someone who did not write the code.
+  behavior, verifiable by someone who did not write the code. Never write vague
+  criteria like "works correctly", "is polished", or "handles edge cases"
+  without naming the concrete behavior; the agent will satisfy the letter of a
+  loose criterion and miss the intent.
 - **Verification evidence** — the command, test, or observation that proves each
   acceptance criterion.
 - **Blocked by** — optional; include only for a real upstream dependency (for a

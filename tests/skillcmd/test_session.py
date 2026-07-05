@@ -75,7 +75,7 @@ class DeriveCommandTests(unittest.TestCase):
 
 class AssembleSeedTests(unittest.TestCase):
     def _make_repo(self, tmp: Path, body="SKILLBODY-VERBATIM"):
-        skdir = tmp / "skills" / "grill-with-docs"
+        skdir = tmp / "skills" / "tdd"
         skdir.mkdir(parents=True)
         (skdir / "SKILL.md").write_text(body, encoding="utf-8")
         return tmp
@@ -84,13 +84,45 @@ class AssembleSeedTests(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             repo = self._make_repo(Path(d), body="line1\nline2\n")
-            self.assertEqual(sess.load_skill_body(repo, "grill-with-docs"), "line1\nline2\n")
+            self.assertEqual(sess.load_skill_body(repo, "tdd"), "line1\nline2\n")
 
     def test_missing_skill_raises(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
-            with self.assertRaises(UsageError):
-                sess.load_skill_body(Path(d), "grill-with-docs")
+            with self.assertRaises(UsageError) as ctx:
+                sess.load_skill_body(Path(d), "tdd")
+            # The error names both shipped locations it searched (factory + Jace).
+            msg = str(ctx.exception)
+            self.assertIn("skills/tdd/SKILL.md", msg)
+            self.assertIn("apps/jace/agent/skills/tdd/SKILL.md", msg)
+
+    def test_load_skill_body_falls_back_to_jace(self):
+        # Coordinator-flavored skills (grill-me, to-prd, to-milestones,
+        # to-issues) ship under apps/jace/agent/skills/, not the factory
+        # skills/ dir; the resolver falls back to that second location.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d)
+            jdir = repo / "apps" / "jace" / "agent" / "skills" / "to-issues"
+            jdir.mkdir(parents=True)
+            (jdir / "SKILL.md").write_text("JACE-SKILL-BODY", encoding="utf-8")
+            self.assertEqual(
+                sess.load_skill_body(repo, "to-issues"), "JACE-SKILL-BODY"
+            )
+
+    def test_factory_wins_over_jace_when_both_exist(self):
+        # If a name resolves in both locations, the factory copy is preferred
+        # (first candidate), so no coordinator skill can shadow a factory one.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d)
+            fdir = repo / "skills" / "dup"
+            fdir.mkdir(parents=True)
+            (fdir / "SKILL.md").write_text("FACTORY", encoding="utf-8")
+            jdir = repo / "apps" / "jace" / "agent" / "skills" / "dup"
+            jdir.mkdir(parents=True)
+            (jdir / "SKILL.md").write_text("JACE", encoding="utf-8")
+            self.assertEqual(sess.load_skill_body(repo, "dup"), "FACTORY")
 
     def test_assemble_includes_skill_and_context(self):
         import tempfile
@@ -101,7 +133,7 @@ class AssembleSeedTests(unittest.TestCase):
             (target / "CONTEXT.md").write_text("DOMAIN-GLOSSARY", encoding="utf-8")
             (target / "TASTE.md").write_text("TASTE-RULES", encoding="utf-8")
             out = sess.assemble_seed_prompt(
-                repo, target, "grill-with-docs", [], ["TASTE.md"]
+                repo, target, "tdd", [], ["TASTE.md"]
             )
             self.assertIn("SKILLBODY-VERBATIM", out)
             self.assertIn("DOMAIN-GLOSSARY", out)
@@ -115,7 +147,7 @@ class AssembleSeedTests(unittest.TestCase):
             target.mkdir()
             (target / "plan.md").write_text("MY-PLAN-CONTENT", encoding="utf-8")
             out = sess.assemble_seed_prompt(
-                repo, target, "grill-with-docs", ["plan.md"], []
+                repo, target, "tdd", ["plan.md"], []
             )
             self.assertIn("MY-PLAN-CONTENT", out)
             self.assertIn("## Input: plan.md", out)
@@ -127,7 +159,7 @@ class AssembleSeedTests(unittest.TestCase):
             target = Path(d) / "proj"
             target.mkdir()
             out = sess.assemble_seed_prompt(
-                repo, target, "grill-with-docs", ["just an idea"], []
+                repo, target, "tdd", ["just an idea"], []
             )
             self.assertIn("just an idea", out)
 
@@ -139,7 +171,7 @@ class AssembleSeedTests(unittest.TestCase):
 class RunSkillSessionTests(unittest.TestCase):
     def _repo_and_target(self, d):
         repo = Path(d)
-        skdir = repo / "skills" / "grill-with-docs"
+        skdir = repo / "skills" / "tdd"
         skdir.mkdir(parents=True)
         (skdir / "SKILL.md").write_text("SKILLBODY", encoding="utf-8")
         target = repo / "proj"
@@ -154,7 +186,7 @@ class RunSkillSessionTests(unittest.TestCase):
             fake_sub = MagicMock()
             fake_sub.run.return_value = MagicMock(returncode=0)
             rc = sess.run_skill_session(
-                "grill-with-docs", str(target), [],
+                "tdd", str(target), [],
                 agent="claude", command="claude -p --dangerously-skip-permissions",
                 headless=False, repo_dir=repo, _subprocess=fake_sub,
             )
@@ -176,7 +208,7 @@ class RunSkillSessionTests(unittest.TestCase):
             fake_sub = MagicMock()
             fake_sub.run.return_value = MagicMock(returncode=7)
             rc = sess.run_skill_session(
-                "grill-with-docs", str(target), [],
+                "tdd", str(target), [],
                 agent="claude", command="claude -p --dangerously-skip-permissions",
                 headless=True, repo_dir=repo, _subprocess=fake_sub,
             )
@@ -198,7 +230,7 @@ class RunSkillSessionTests(unittest.TestCase):
             err = StringIO()
             with patch("sys.stderr", err):
                 sess.run_skill_session(
-                    "grill-with-docs", str(target), [],
+                    "tdd", str(target), [],
                     agent="custom", command="my-agent -",
                     headless=False, repo_dir=repo, _subprocess=fake_sub,
                 )
@@ -220,7 +252,7 @@ class RunSkillSessionTests(unittest.TestCase):
                 fake_sub.run.return_value = MagicMock(returncode=0)
                 with patch.dict(os.environ, {"CLAUDECODE": "1", "CODEX_SESSION": "x"}):
                     sess.run_skill_session(
-                        "grill-with-docs", str(target), [],
+                        "tdd", str(target), [],
                         agent="claude",
                         command="claude -p --dangerously-skip-permissions",
                         headless=headless, repo_dir=repo, _subprocess=fake_sub,

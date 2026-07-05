@@ -37,6 +37,42 @@ Cover, in roughly this order, and stop asking once an area is pinned:
 6. **Open questions** — what is still unresolved or assumed. Surface assumptions
    explicitly rather than silently resolving them.
 
+## Sharpen the domain model as you go
+
+Grilling is also where the project's language gets sharpened. Drafting a summary
+does not cross the factory boundary, and neither does editing local context docs
+— only `create_issue` does — so capture terms and decisions inline as they
+resolve rather than batching them to the end.
+
+- **Challenge against the glossary.** When a term conflicts with the existing
+  language in `CONTEXT.md`, call it out at once: "your glossary defines
+  'cancellation' as X, but you seem to mean Y — which is it?"
+- **Sharpen fuzzy language.** When a term is vague or overloaded, propose a
+  precise canonical one: "you're saying 'account' — do you mean the Customer or
+  the User? Those are different things."
+- **Cross-reference with code.** When the human states how something works, check
+  whether the code agrees, and surface any contradiction you find.
+- **Capture terms inline.** When a term is resolved, update `CONTEXT.md` right
+  then, in the format in [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md). Don't couple it
+  to implementation details — only terms meaningful to domain experts. Create the
+  file lazily, when the first term is resolved.
+
+Most repos have a single root `CONTEXT.md`. If a `CONTEXT-MAP.md` exists at the
+root, the repo has multiple contexts and the map points to where each one lives;
+infer which context the current topic belongs to, and ask if it is unclear.
+
+## Record decisions as ADRs (sparingly)
+
+Offer to write an ADR only when all three are true — otherwise skip it:
+
+1. **Hard to reverse** — the cost of changing your mind later is meaningful.
+2. **Surprising without context** — a future reader will wonder "why this way?"
+3. **The result of a real trade-off** — there were genuine alternatives and you
+   picked one for specific reasons.
+
+When all three hold, write it in the format in [ADR-FORMAT.md](./ADR-FORMAT.md),
+lazily creating `docs/adr/` when the first ADR is needed.
+
 ## Output: requirements summary
 
 When the interview has pinned enough to act on, emit a structured summary with

@@ -244,7 +244,7 @@ def run_context(args: List[str]) -> int:
             result = build_index(target)
             _print_json(result)
             if not no_push:
-                from agentrail.context.snapshot_push import load_link, push_index_snapshot
+                from agentrail.context.snapshot_push import push_index_snapshot
                 if push_index_snapshot(target, result):
                     print("pushed index snapshot to dashboard", file=sys.stderr)
                 elif load_link(target) is not None:

@@ -37,6 +37,7 @@ from agentrail.run.output_enforcer import (
     plan_enforcement_step,
     push_format_rejection_event,
 )
+from agentrail.run.layer_overrides import layer_override
 from agentrail.run.pricing import cost_usd
 from agentrail.run.proc import run_with_timeout
 from agentrail.run import best_of_n as bestofn
@@ -55,17 +56,31 @@ _log = logging.getLogger(__name__)
 def layer_enabled(name: str) -> bool:
     """Is the named AgentRail layer ON for this run?
 
-    The eval harness (``agentrail.evals``) sets ``AGENTRAIL_EVAL_LAYER_<NAME>``
-    to ``"0"`` or ``"1"`` to toggle a layer for leave-one-out ablation arms
-    (CONTEXT, ROUTING, VERIFY_GATE, RETRY, GUARDRAILS). The real autonomous loop
-    (``run issue <N>``) sets NONE of these vars, so the flag is ABSENT and the
-    default is ON — behavior is byte-identical to before this seam existed.
+    Resolution order, most specific first:
 
-    Contract: ABSENT or ``"1"`` → ``True`` (layer ON, today's behavior). Only an
-    explicit ``"0"`` turns a layer OFF. Any other value is treated as ON (a
-    typo'd flag must never silently disable a layer in the real loop).
+    1. ``AGENTRAIL_EVAL_LAYER_<NAME>`` env var — the eval harness
+       (``agentrail.evals``) sets it to ``"0"`` or ``"1"`` per leave-one-out
+       ablation arm. When SET it wins outright, so eval arms are never
+       contaminated by a checkout's overrides file.
+    2. ``.agentrail/layer-overrides.json`` in the working directory — written
+       by ``agentrail evals apply --apply`` (issue #1048), the recorded,
+       evidence-backed human decision. Only an explicit JSON boolean counts.
+    3. Default ON — the real autonomous loop (``run issue <N>``) with neither
+       env var nor file behaves byte-identically to before this seam existed.
+
+    Env contract: ABSENT falls through; ``"1"`` → ``True``; only an explicit
+    ``"0"`` turns a layer OFF. Any other set value is treated as ON (a typo'd
+    flag must never silently disable a layer in the real loop). The overrides
+    file inherits the same defensiveness (see
+    :mod:`agentrail.run.layer_overrides`).
     """
-    return os.environ.get(f"AGENTRAIL_EVAL_LAYER_{name.upper()}") != "0"
+    env_value = os.environ.get(f"AGENTRAIL_EVAL_LAYER_{name.upper()}")
+    if env_value is not None:
+        return env_value != "0"
+    override = layer_override(name)
+    if override is not None:
+        return override
+    return True
 
 
 def _utc_now_iso() -> str:
@@ -104,21 +119,26 @@ def bestofn_testfirst_enabled() -> bool:
     flag swaps in the corrected selector.
 
     Eval data confirms this improvement is ready. Now DEFAULT ON — set
-    ``AGENTRAIL_EVAL_LAYER_BESTOFN_TESTFIRST="0"`` to disable.
-    Any other value (including ABSENT) uses the corrected selector.
+    ``AGENTRAIL_EVAL_LAYER_BESTOFN_TESTFIRST="0"`` (or pin
+    ``bestofn_testfirst: false`` in ``.agentrail/layer-overrides.json``) to
+    disable. Any other value (including ABSENT) uses the corrected selector.
+    Resolution order (env > overrides file > default ON) is
+    :func:`layer_enabled`'s.
     """
-    return os.environ.get(f"AGENTRAIL_EVAL_LAYER_{bestofn.TESTFIRST_LAYER}") != "0"
+    return layer_enabled(bestofn.TESTFIRST_LAYER)
 
 
 def diff_only_enforce_enabled() -> bool:
     """Is diff-only REJECT+LOOP enforcement ON for this run? DEFAULT ON.
 
-    Like :func:`bestofn_testfirst_enabled` (NOT :func:`layer_enabled`): eval data
-    confirms this cost lever is ready. Now DEFAULT ON — set
-    ``AGENTRAIL_EVAL_LAYER_DIFF_ONLY_ENFORCE="0"`` to disable and revert to
-    observe-only behavior. ABSENT or any other value keeps enforcement active.
+    Eval data confirms this cost lever is ready. Now DEFAULT ON — set
+    ``AGENTRAIL_EVAL_LAYER_DIFF_ONLY_ENFORCE="0"`` (or pin
+    ``diff_only_enforce: false`` in ``.agentrail/layer-overrides.json``) to
+    disable and revert to observe-only behavior. ABSENT or any other value
+    keeps enforcement active. Resolution order (env > overrides file >
+    default ON) is :func:`layer_enabled`'s.
     """
-    return os.environ.get("AGENTRAIL_EVAL_LAYER_DIFF_ONLY_ENFORCE") != "0"
+    return layer_enabled("DIFF_ONLY_ENFORCE")
 
 
 DIFF_ONLY_DEFAULT_MAX_ATTEMPTS = 2  # 1 initial + 1 redo-as-diff; kept small (cost lever)

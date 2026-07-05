@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agentrail.context.memory_fetch import fetch_memory_snapshot
 from agentrail.context.packs import build_context_pack
 from agentrail.context.retrieval import search_context
 
@@ -38,11 +39,13 @@ def build_pack(target_dir: Path, kind: str, number: int, phase: str, *, run_id: 
     """Build a context pack for any target kind ('issue'|'pr'); return relative jsonPath
     or None on failure. Mirrors legacy build_context_pack_file.
 
-    Does not pass ``memory_items`` — no producer writes the local memory
-    snapshot on a live run yet, so the pack's memory lane is empty here today
-    (see the scope-boundary note in ``agentrail/context/memory_lane.py`` and
-    follow-up issue #1071, which wires a real Postgres -> snapshot producer).
+    Refreshes the local memory snapshot from the linked server first (#1071),
+    so ``build_context_pack``'s snapshot fallback — the path taken because we
+    don't pass ``memory_items`` — reads real Postgres rows on a live run. The
+    fetch is non-fatal and TTL-cached (~once per run); an unlinked repo or a
+    failed fetch just leaves the lane stale or empty, never fails the build.
     """
+    fetch_memory_snapshot(target_dir)
     try:
         pack = build_context_pack(target_dir, kind, number, phase, run_id=run_id)
     except Exception:

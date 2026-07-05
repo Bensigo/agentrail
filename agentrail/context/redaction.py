@@ -38,9 +38,13 @@ class Detector:
 #   - slack_token, google_api_key, jwt (new): distinctive formats with no
 #     analogue here previously.
 #   - database_url: broadened beyond the fixed postgres/mysql/redis/mongodb
-#     scheme list to any `scheme://...` shape (matches secret-scan.ts's
-#     scheme-agnostic connection_string_password rule), since the fixed-scheme
-#     version misses e.g. sqlserver://, amqp://.
+#     scheme list to any `scheme://user:password@host` shape (matches
+#     secret-scan.ts's scheme-agnostic connection_string_password rule),
+#     since the fixed-scheme version misses e.g. sqlserver://, amqp://.
+#     Requires the inline `user:password@` segment, same as the TS rule — a
+#     credential-free `scheme://identifier` (e.g. an external-source URI)
+#     must not match; an earlier pass here dropped that requirement and
+#     over-redacted such identifiers (#1069).
 #
 # Intentionally NOT ported: secret-scan.ts's `generic_assigned_secret` rule
 # (`(?:api_key|secret|password|token|...)\s*[=:]\s*.{8,}`). That rule is a
@@ -67,7 +71,7 @@ DETECTORS = [
     Detector("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "[REDACTED:slack_token]"),
     Detector("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "[REDACTED:google_api_key]"),
     Detector("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b"), "[REDACTED:jwt]"),
-    Detector("database_url", re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s\"'`<>]+", re.IGNORECASE), "[REDACTED:database_url]"),
+    Detector("database_url", re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s\"'`<>:/@]+:[^\s\"'`<>@]+@[^\s\"'`<>]+", re.IGNORECASE), "[REDACTED:database_url]"),
     Detector("bearer_token", re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE), "Bearer [REDACTED:bearer_token]"),
 ]
 

@@ -36,7 +36,13 @@ def issue_resolution_text(target_dir: Path, issue: int) -> str:
 
 def build_pack(target_dir: Path, kind: str, number: int, phase: str, *, run_id: Optional[str] = None) -> Optional[str]:
     """Build a context pack for any target kind ('issue'|'pr'); return relative jsonPath
-    or None on failure. Mirrors legacy build_context_pack_file."""
+    or None on failure. Mirrors legacy build_context_pack_file.
+
+    Does not pass ``memory_items`` — no producer writes the local memory
+    snapshot on a live run yet, so the pack's memory lane is empty here today
+    (see the scope-boundary note in ``agentrail/context/memory_lane.py`` and
+    follow-up issue #1071, which wires a real Postgres -> snapshot producer).
+    """
     try:
         pack = build_context_pack(target_dir, kind, number, phase, run_id=run_id)
     except Exception:

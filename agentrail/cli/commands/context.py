@@ -784,6 +784,11 @@ def run_context(args: List[str]) -> int:
                             budget_usd = float(cfg_budget)
                 except Exception:
                     pass
+            # Does not pass memory_items — no producer writes the local memory
+            # snapshot yet, so the pack's memory lane is empty here today (see
+            # the scope-boundary note in agentrail/context/memory_lane.py and
+            # follow-up issue #1071, which wires a real Postgres -> snapshot
+            # producer).
             output = build_context_pack(
                 _resolve_target(target), target_kind, target_number, phase,
                 budget_usd=budget_usd, model=build_model,

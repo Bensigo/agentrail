@@ -67,6 +67,18 @@ def _pack_slug(value: str) -> str:
     return value.replace("-", "").replace(":", "").replace(".", "")
 
 
+def _run_id_slug(value: str) -> str:
+    """Filesystem-safe slug of a run_id: lowercase alnum plus dashes.
+
+    Non-alnum characters collapse to single dashes so the slug is stable and
+    safe as a path component (mirrors the safety of _pack_slug output).
+    """
+    slug = "".join(ch if ch.isalnum() else "-" for ch in value.lower())
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug.strip("-")
+
+
 def _target_label(target_kind: str, target_number: int) -> str:
     return f"{'PR' if target_kind == 'pr' else 'issue'} #{target_number}"
 
@@ -374,7 +386,7 @@ def _load_workflow_goals(root: Path) -> List[Dict[str, Any]]:
 
 def _goal_relevant(goal: Dict[str, Any], target_kind: str, target_number: int, phase: str) -> bool:
     status = str(goal.get("status") or "").lower()
-    if phase in {"plan", "execute", "verify"} and status not in {"active", "blocked"}:
+    if phase in {"gather", "plan", "execute", "verify"} and status not in {"active", "blocked"}:
         return False
     if target_kind == "issue":
         return goal.get("activeIssue") == target_number
@@ -641,8 +653,8 @@ def build_context_pack(
     root = target_dir.resolve()
     if target_kind not in {"issue", "pr"}:
         raise RuntimeError("context build requires target kind: issue or pr")
-    if target_kind == "issue" and phase not in {"plan", "execute", "verify"} or target_kind == "pr" and phase != "review":
-        raise RuntimeError("context build phase must be one of: issue plan|execute|verify, pr review")
+    if target_kind == "issue" and phase not in {"gather", "plan", "execute", "verify"} or target_kind == "pr" and phase != "review":
+        raise RuntimeError("context build phase must be one of: issue gather|plan|execute|verify, pr review")
 
     retrieval_budget = {"maxItems": 20, "maxTokens": RETRIEVAL_MAX_TOKENS}
     query_text = _query_for(target_kind, target_number, phase)
@@ -681,7 +693,12 @@ def build_context_pack(
         budget_meta = _trim_to_budget(sections, budget_usd, model)
 
     generated_at = _now()
-    pack_id = f"{target_kind}-{target_number}-{phase}-{_pack_slug(generated_at)}"
+    # Run-pinned pack id (issue #1049 AC1 groundwork): when the caller threads a
+    # run_id, the pack id — and therefore the json/md artifact paths — is a pure
+    # function of (target, phase, run_id), stable across phases within one run.
+    # Without a run_id (all current callers), the timestamp slug is unchanged.
+    run_slug = _run_id_slug(run_id) if run_id is not None else ""
+    pack_id = f"{target_kind}-{target_number}-{phase}-{run_slug or _pack_slug(generated_at)}"
     packs_dir = root / ".agentrail" / "context" / "packs"
     json_path = packs_dir / f"{pack_id}.json"
     md_path = packs_dir / f"{pack_id}.md"

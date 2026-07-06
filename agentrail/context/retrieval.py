@@ -14,6 +14,7 @@ from agentrail.context.config import read_context_config
 from agentrail.context.embeddings import embedding_config_hash, provider_name, configured_model, run_custom_command, run_openai_compatible
 from agentrail.context.expansion import expand_query_tokens, query_expansion_enabled
 from agentrail.context.index import append_audit, build_index, load_index
+from agentrail.context.llm_rerank import LLM_RERANK_METHOD, llm_rerank, llm_rerank_enabled
 from agentrail.context.pack_quality import compute_pack_quality
 from agentrail.context.rerank import rerank_candidates, rerank_enabled
 from agentrail.shared.fs import sha256_text
@@ -1760,6 +1761,24 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
                 for item in rerank_result["rejected"]
             ],
         }
+        # LLM listwise rerank (issue #1044): default-OFF second stage that only
+        # REORDERS the deterministic rerank's kept list — membership (and thus
+        # recall) is untouched, and rejection stays deterministic-only.  Fail-open:
+        # on fallback the deterministic order and method string stand, with the
+        # fallback reason surfaced honestly in the metadata.
+        if llm_rerank_enabled():
+            llm_result = llm_rerank(formatted, query=query)
+            rerank_meta["llm"] = llm_result["llm"]
+            if llm_result["fallback"] is not None:
+                rerank_meta["llmFallback"] = llm_result["fallback"]
+            else:
+                formatted = llm_result["ordered"]
+                for position, item in enumerate(formatted, 1):
+                    item["rank"] = position
+                rerank_meta["method"] = f"{rerank_meta['method']}+{LLM_RERANK_METHOD}"
+                rerank_meta["model"] = llm_result["llm"]["model"]
+                rerank_meta["orderChanged"] = rerank_meta["orderChanged"] or llm_result["changed"]
+                rerank_meta["rankedCandidateIds"] = [_candidate_id_for_result(item) for item in formatted]
     audit = {
         "event": "context_query",
         "citation": ".agentrail/context/audit/events.jsonl",

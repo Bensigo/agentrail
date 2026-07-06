@@ -481,10 +481,11 @@ def _rerank_contract(
     back to the legacy score-sorted descriptor so the baseline stays measurable.
     """
     if isinstance(rerank, dict):
-        return {
+        contract = {
             "status": rerank.get("status") or "reranked",
             "method": rerank.get("method") or "deterministic_code_aware",
-            # Deterministic, code-aware: there is intentionally NO LLM model.
+            # Deterministic stage carries NO LLM model; the optional listwise
+            # stage (issue #1044) sets it only when it actually reordered.
             "model": rerank.get("model"),
             "signals": ["symbolOverlap", "graphDistance", "freshness"],
             "candidateCount": rerank.get("candidateCount"),
@@ -500,6 +501,14 @@ def _rerank_contract(
             ] or excluded_candidate_ids,
             "rejected": rerank.get("rejected") or [],
         }
+        # LLM listwise stage telemetry (issue #1044): the raw token-usage
+        # block is the PR 3 metering seam.  Threaded CONDITIONALLY so the
+        # flag-OFF contract gains no keys and stays byte-identical.
+        if "llm" in rerank:
+            contract["llm"] = rerank["llm"]
+        if "llmFallback" in rerank:
+            contract["llmFallback"] = rerank["llmFallback"]
+        return contract
     return {
         "status": "score_sorted",
         "method": "hybrid_lexical_rrf_authority_freshness",

@@ -50,6 +50,16 @@ from typing import Any, Dict, List
 _AGENTS_START = "<!-- agentrail:forced-context:start -->"
 _AGENTS_END = "<!-- agentrail:forced-context:end -->"
 
+# Managed-block markers for the repo-local git exclude file. The Claude path
+# writes ``.claude/settings.json`` — a path that is NOT git-ignored in every
+# target repo (agentrail's own ``.gitignore`` ignores ``.agentrail/`` but not
+# ``.claude/``). To keep an enabled run against a git-tracked checkout from
+# dirtying tracked/committable files (dogfood pollution), the emitter registers
+# the artifacts it writes in ``.git/info/exclude`` — a repo-local, inherently
+# non-committable ignore file — so ``git status`` never surfaces them.
+_EXCLUDE_START = "# >>> agentrail:forced-context (auto-generated) >>>"
+_EXCLUDE_END = "# <<< agentrail:forced-context (auto-generated) <<<"
+
 # Relative artifact paths (POSIX, relative to the run workdir).
 CONTEXT_MD = ".agentrail/context.md"
 CLAUDE_SETTINGS = ".claude/settings.json"
@@ -115,6 +125,96 @@ def _normalise_engine(engine: str) -> str:
         if name == known or name.startswith(known):
             return known
     return ""
+
+
+def _git_info_dir(workdir: Path) -> Path | None:
+    """Locate ``<repo>/.git/info`` for *workdir*, or ``None`` if not a git repo.
+
+    Walks up from *workdir* looking for a ``.git`` entry and resolves both the
+    ordinary case (``.git`` is a directory) and the linked-worktree case
+    (``.git`` is a *file* whose ``gitdir:`` line points at
+    ``…/.git/worktrees/<name>``). In the worktree case ``info/exclude`` is
+    shared via the common git dir (the parent of ``worktrees/``), which is where
+    per-repo excludes belong. Pure ``pathlib`` — never shells out to ``git`` (it
+    may be off PATH) and never raises.
+    """
+    try:
+        start = Path(workdir).resolve()
+    except OSError:
+        return None
+    for base in (start, *start.parents):
+        dot_git = base / ".git"
+        if dot_git.is_dir():
+            return dot_git / "info"
+        if dot_git.is_file():
+            try:
+                text = dot_git.read_text()
+            except OSError:
+                return None
+            for line in text.splitlines():
+                line = line.strip()
+                if line.startswith("gitdir:"):
+                    gitdir = Path(line[len("gitdir:"):].strip())
+                    if not gitdir.is_absolute():
+                        gitdir = (base / gitdir).resolve()
+                    # Linked worktrees live under <common>/worktrees/<name>;
+                    # the shared exclude file is <common>/info/exclude.
+                    if gitdir.parent.name == "worktrees":
+                        return gitdir.parent.parent / "info"
+                    return gitdir / "info"
+            return None
+    return None
+
+
+def _ensure_git_ignored(workdir: Path, rel_paths: List[str]) -> None:
+    """Register *rel_paths* in the repo-local ``.git/info/exclude`` for *workdir*.
+
+    Keeps runtime-emitted artifacts off ``git status`` even when the target repo
+    does not ignore them in its tracked ``.gitignore`` (the ``.claude/`` dogfood
+    pollution risk, #1006). ``.git/info/exclude`` lives under ``.git/`` so it is
+    never itself committable. Writes an idempotent managed block: a second call
+    with the same paths rewrites the block in place and does not duplicate
+    entries. A no-op when *workdir* is not inside a git repo, when there is
+    nothing to add, or on any I/O error — being unable to ignore must never
+    break context injection.
+    """
+    if not rel_paths:
+        return
+    info_dir = _git_info_dir(workdir)
+    if info_dir is None:
+        return
+    # De-dupe while preserving first-seen order.
+    wanted: List[str] = []
+    for p in rel_paths:
+        if p and p not in wanted:
+            wanted.append(p)
+    block = (
+        _EXCLUDE_START + "\n"
+        + "\n".join(wanted) + "\n"
+        + _EXCLUDE_END + "\n"
+    )
+    exclude_path = info_dir / "exclude"
+    try:
+        existing = exclude_path.read_text() if exclude_path.exists() else ""
+    except OSError:
+        return
+    if _EXCLUDE_START in existing and _EXCLUDE_END in existing:
+        head, _, rest = existing.partition(_EXCLUDE_START)
+        _, _, tail = rest.partition(_EXCLUDE_END)
+        tail = tail[1:] if tail.startswith("\n") else tail
+        new_text = head + block + tail
+        if new_text == existing:
+            return  # already up to date — do not rewrite
+    elif existing.strip():
+        sep = "" if existing.endswith("\n") else "\n"
+        new_text = existing + sep + "\n" + block
+    else:
+        new_text = block
+    try:
+        info_dir.mkdir(parents=True, exist_ok=True)
+        exclude_path.write_text(new_text)
+    except OSError:
+        return
 
 
 def _write_context_md(workdir: Path, context_text: str) -> Path:
@@ -206,6 +306,13 @@ def _emit_claude(workdir: Path, context_text: str) -> List[str]:
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
     written.append(CLAUDE_SETTINGS)
+
+    # Keep every artifact this path writes off `git status` in a git-tracked
+    # workdir. `.agentrail/*` is already ignored in agentrail's own repo, but
+    # `.claude/settings.json` is NOT — so a dogfood run would otherwise dirty a
+    # committable file (#1006). Registering all three in `.git/info/exclude`
+    # covers `.claude/settings.json` here and stays correct in any target repo.
+    _ensure_git_ignored(workdir, written)
     return written
 
 

@@ -1252,8 +1252,11 @@ def test_e2e_rerank_flag_toggles_the_cited_set() -> None:
     task = next(t for t in load_corpus() if t.name == "context-rerank")
     index = load_index(root)
 
-    cited_on = _cited_paths(root, task.prompt, rerank=True, index=index)
-    cited_off = _cited_paths(root, task.prompt, rerank=False, index=index)
+    # Hold expansion OFF for BOTH arms so this stays a clean rerank-only
+    # ablation — expansion is a separate retrieval seam, pinned on its own by
+    # test_cited_paths_scopes_expansion_env_per_arm below.
+    cited_on = _cited_paths(root, task.prompt, rerank=True, expansion=False, index=index)
+    cited_off = _cited_paths(root, task.prompt, rerank=False, expansion=False, index=index)
 
     # Retrieval returned something for both (guard against an empty-index no-op
     # that would make the sets trivially "equal" as two empty lists).
@@ -1264,3 +1267,71 @@ def test_e2e_rerank_flag_toggles_the_cited_set() -> None:
         "rerank ON and OFF produced an IDENTICAL cited set — the arm's rerank "
         "flag is not reaching the retrieval stage (no-op ablation)"
     )
+
+
+def test_cited_paths_scopes_expansion_env_per_arm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_cited_paths` writes the expansion env token per arm, then restores it.
+
+    The offline pack scorer mutates the CURRENT process env (unlike the runner's
+    fresh subprocess), so it must write BOTH directions explicitly — ``"1"`` for
+    the ``full`` arm, ``"0"`` for ``full-minus-expansion`` — never "set for on,
+    unset for off". Otherwise an inherited ``AGENTRAIL_CONTEXT_QUERY_EXPANSION=1``
+    (e.g. from an AFK env) would leak into the minus-expansion arm and silently
+    turn the recall ablation into a no-op. This pins the env token retrieval sees
+    at call time plus the restoration afterward. The retrieval call is faked, so
+    it needs no built index and runs everywhere — not just where a ~70MB index
+    exists (unlike the two e2e tests above, which skip without one).
+    """
+    import os
+
+    from agentrail.evals.pack_scoring import _cited_paths
+
+    captured: List[Dict[str, Optional[str]]] = []
+
+    def fake_query_context(root, query, **kwargs):  # noqa: ANN001, ANN202
+        # Record what retrieval would actually read at call time.
+        captured.append(
+            {
+                "expansion": os.environ.get("AGENTRAIL_CONTEXT_QUERY_EXPANSION"),
+                "rerank": os.environ.get("AGENTRAIL_CONTEXT_RERANK"),
+            }
+        )
+        # Mirror the real return shape so the path/citation dedup runs too.
+        return {"results": [{"path": "a.py"}, {"citation": "b.py"}, {"path": "a.py"}]}
+
+    # `_cited_paths` imports query_context lazily from this module, so patching
+    # the source attribute is what the late `from ... import` binds to.
+    monkeypatch.setattr(
+        "agentrail.context.retrieval.query_context", fake_query_context
+    )
+
+    # --- Scenario A: an ambient truthy value is present (the leak case). ---
+    monkeypatch.setenv("AGENTRAIL_CONTEXT_QUERY_EXPANSION", "1")
+
+    off = _cited_paths(Path("."), "q", rerank=True, expansion=False, index={})
+    on = _cited_paths(Path("."), "q", rerank=False, expansion=True, index={})
+
+    # The minus-expansion arm OVERRODE the inherited "1" to "0" at call time —
+    # this is the whole point: without it the ablation is a silent no-op.
+    assert captured[0]["expansion"] == "0"
+    assert captured[1]["expansion"] == "1"
+    # rerank moved in lockstep through the same overrides dict.
+    assert captured[0]["rerank"] == "1"
+    assert captured[1]["rerank"] == "0"
+    # Ambient value restored after each scoped call (never leaked a flag).
+    assert os.environ["AGENTRAIL_CONTEXT_QUERY_EXPANSION"] == "1"
+    # The cited list still parses path|citation and de-dups, preserving order.
+    assert off == ["a.py", "b.py"]
+    assert on == ["a.py", "b.py"]
+
+    # --- Scenario B: NO ambient value (proves restore = pop, not leave "1"). ---
+    captured.clear()
+    monkeypatch.delenv("AGENTRAIL_CONTEXT_QUERY_EXPANSION", raising=False)
+
+    _cited_paths(Path("."), "q", rerank=True, expansion=True, index={})
+
+    assert captured[0]["expansion"] == "1"
+    # Restored to ABSENT — scoping did not leak a global flag into the process.
+    assert "AGENTRAIL_CONTEXT_QUERY_EXPANSION" not in os.environ

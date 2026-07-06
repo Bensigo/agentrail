@@ -41,6 +41,8 @@ def _usage() -> str:
         "  agentrail evals run [--corpus DIR] [--task NAME[,NAME...]] "
         "[--arm NAME] [--reps N]\n"
         "  agentrail evals canary [--target DIR] [--reps N] [--date YYYY-MM-DD]\n"
+        "  agentrail evals apply (--report PATH | --date YYYY-MM-DD)\n"
+        "                        [--reports-dir DIR] [--target DIR] [--apply]\n"
         "\n"
         "Subcommands:\n"
         "  run     Run the eval spine (corpus -> runner -> hidden-test scorer\n"
@@ -51,6 +53,11 @@ def _usage() -> str:
         "          the regression gate's live-metrics lane is populated (#1041).\n"
         "  probes  Run the intrinsic guardrail catch-rate probe against the\n"
         "          built-in injection corpus and print the catch-rate (#943).\n"
+        "  apply   Read a dated eval report and print proposed layer-override\n"
+        "          and routing changes, each with the report evidence for it.\n"
+        "          Proposal-by-default: writes NOTHING without --apply; --apply\n"
+        "          writes exactly the printed proposal and FAILS CLOSED when\n"
+        "          the target has no configured server link (#1048).\n"
         "\n"
         "Options:\n"
         "  --corpus DIR     Override the corpus root (default: bundled v0).\n"
@@ -74,6 +81,16 @@ def _usage() -> str:
         "                   packs against (precision/recall + rerank delta).\n"
         "                   Default: the git checkout root if it has an index.\n"
         "  --no-pack-scores Skip offline pack scoring (report shows n/a).\n"
+        "  --report PATH    (apply) The eval report file to read.\n"
+        "  --date YYYY-MM-DD\n"
+        "                   (canary) Date the report as given. (apply) Resolve\n"
+        "                   the report as <reports-dir>/eval-report-<date>.md.\n"
+        "  --reports-dir DIR\n"
+        "                   Reports directory (default: agentrail/evals/reports).\n"
+        "  --target DIR     Target checkout to propose/apply against\n"
+        "                   (default: current directory).\n"
+        "  --apply          (apply) Perform the printed writes. Without it the\n"
+        "                   command is read-only.\n"
         "  -h, --help       Show this help\n"
     )
 
@@ -448,6 +465,101 @@ def _run_probes(args: List[str]) -> int:
     return 0
 
 
+def _run_apply(args: List[str]) -> int:
+    """Consumer/apply CLI (#1048): eval report → proposed flag/routing changes.
+
+    Proposal-by-default: without ``--apply`` this prints the proposal (each
+    change with the report lines that justify it) and writes NOTHING. With
+    ``--apply`` it performs exactly the printed writes —
+    ``.agentrail/layer-overrides.json`` pins and ``routing --apply`` model
+    steps — and is FAIL-CLOSED: a target with no configured server link is
+    rejected before any write. The GitHub webhook's fail-open signature skip
+    is the named anti-pattern this path must never copy.
+    """
+    from agentrail.evals.consumer import (
+        ApplyAuthError,
+        ReportParseError,
+        apply_proposal,
+        build_proposal,
+        parse_report,
+        render_proposal,
+    )
+    from agentrail.evals.reporter import default_reports_dir
+
+    report: Optional[Path] = None
+    date: Optional[str] = None
+    reports_dir: Optional[Path] = None
+    target: Optional[Path] = None
+    do_apply = False
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-h", "--help"):
+            print(_usage())
+            return 0
+        if a == "--report":
+            report = Path(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--date":
+            date = _parse_flag_value(args, i, a)
+            i += 2
+        elif a == "--reports-dir":
+            reports_dir = Path(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--target":
+            target = Path(_parse_flag_value(args, i, a))
+            i += 2
+        elif a == "--apply":
+            do_apply = True
+            i += 1
+        else:
+            print(f"error: unknown option: {a}", file=sys.stderr)
+            return 2
+
+    if (report is None) == (date is None):
+        print(
+            "error: exactly one of --report PATH or --date YYYY-MM-DD is "
+            "required",
+            file=sys.stderr,
+        )
+        return 2
+    if report is None:
+        base = reports_dir if reports_dir is not None else default_reports_dir()
+        report = base / f"eval-report-{date}.md"
+    if not report.is_file():
+        print(f"error: report not found: {report}", file=sys.stderr)
+        return 2
+
+    resolved_target = target if target is not None else Path.cwd()
+
+    try:
+        facts = parse_report(report)
+    except ReportParseError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+
+    proposal = build_proposal(facts, resolved_target)
+    print(render_proposal(proposal))
+
+    if not do_apply:
+        return 0
+
+    try:
+        result_lines = apply_proposal(proposal, resolved_target)
+    except ApplyAuthError as error:
+        # FAIL CLOSED (#1048 AC3): unconfigured auth rejects the apply — zero
+        # writes happen. Deliberate contrast with the GitHub webhook's
+        # fail-open `if (!secret) return true` signature skip.
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+
+    print()
+    for line in result_lines:
+        print(line)
+    return 0
+
+
 def run_evals(args: List[str]) -> int:
     """Dispatch ``agentrail evals <subcommand>``."""
     kind = args[0] if args else ""
@@ -464,6 +576,9 @@ def run_evals(args: List[str]) -> int:
 
     if kind == "probes":
         return _run_probes(args[1:])
+
+    if kind == "apply":
+        return _run_apply(args[1:])
 
     print(f"Unknown evals command: {kind}", file=sys.stderr)
     return 2

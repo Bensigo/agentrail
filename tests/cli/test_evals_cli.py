@@ -29,6 +29,95 @@ def _run(args):
     return rc, out.getvalue(), err.getvalue()
 
 
+_ONE_ARM_REPORT = """# Eval report 2026-07-01
+
+## New-flow vs full
+
+_Not available: the run had no new-flow arm to compare against full._
+
+## Routing cost-regret
+
+- Total routing cost-regret: $0.0000
+- Net $-delta vs baseline: n/a (no per-run baseline pairing)
+"""
+
+
+class EvalsApplyCliTests(unittest.TestCase):
+    """Observable CLI contract for ``agentrail evals apply`` (#1048).
+
+    These drive the real dispatch. They assert the argument-validation rungs
+    and that proposal-mode is read-only; the byte-level proposal==applied and
+    fail-closed guarantees live in ``tests/evals/test_consumer.py`` against the
+    functions this command calls.
+    """
+
+    def test_usage_mentions_apply(self) -> None:
+        rc, out, err = _run([])
+        self.assertEqual(rc, 0, msg=f"stderr={err}")
+        self.assertIn("apply", out)
+        self.assertIn("--apply", out)
+
+    def test_no_report_or_date_is_rc2_and_names_report(self) -> None:
+        rc, out, err = _run(["apply"])
+        self.assertEqual(rc, 2)
+        self.assertIn("--report", err)
+
+    def test_both_report_and_date_is_rc2(self) -> None:
+        rc, out, err = _run([
+            "apply", "--report", "x.md", "--date", "2026-07-01",
+        ])
+        self.assertEqual(rc, 2)
+        # The exactly-one-of rule fires before the file is opened.
+        self.assertIn("exactly one", err)
+
+    def test_missing_report_file_is_rc2(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "nope.md"
+            rc, out, err = _run(["apply", "--report", str(missing)])
+        self.assertEqual(rc, 2)
+        self.assertIn("not found", err)
+
+    def test_proposal_mode_is_read_only_and_prints_mode_banner(self) -> None:
+        """Default invocation prints the proposal and writes nothing (AC1)."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "eval-report-2026-07-01.md"
+            report.write_text(_ONE_ARM_REPORT, encoding="utf-8")
+            target = root / "checkout"
+            target.mkdir()
+
+            rc, out, err = _run([
+                "apply", "--report", str(report), "--target", str(target),
+            ])
+            self.assertEqual(rc, 0, msg=f"stderr={err}")
+            self.assertIn("proposal only", out)
+            # This report has only the full arm + $0 regret -> nothing to do.
+            self.assertIn("No changes proposed", out)
+            # Read-only: no .agentrail directory was created under the target.
+            self.assertFalse((target / ".agentrail").exists())
+
+    def test_date_resolves_report_under_reports_dir(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            reports_dir = Path(tmp) / "reports"
+            reports_dir.mkdir()
+            (reports_dir / "eval-report-2026-07-01.md").write_text(
+                _ONE_ARM_REPORT, encoding="utf-8"
+            )
+            rc, out, err = _run([
+                "apply",
+                "--date", "2026-07-01",
+                "--reports-dir", str(reports_dir),
+            ])
+        self.assertEqual(rc, 0, msg=f"stderr={err}")
+        self.assertIn("2026-07-01", out)
+
+
 class EvalsRunNewFlowCliTests(unittest.TestCase):
     def test_full_and_new_flow_both_run_with_deltas(self) -> None:
         """AC4: --arm full --arm new-flow -> both rows + per-layer deltas."""

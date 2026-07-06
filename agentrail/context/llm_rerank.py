@@ -28,7 +28,9 @@ network seam (monkeypatch it in tests).  The stage is fail-open: a missing
 
 Raw token usage per response is aggregated into the returned ``llm`` block
 (model/calls/inputTokens/outputTokens plus cache fields) as the metering seam
-for PR 3; no dollar math happens here (pricing lives in agentrail/run/pricing.py).
+for PR 3; :func:`llm_rerank_cost_usd` prices that block via the canonical
+``cost_for`` in agentrail/context/pricing.py (agentrail/run/pricing.py is a
+derived view, not the source of truth).
 """
 from __future__ import annotations
 
@@ -160,6 +162,27 @@ def parse_window_order(text: str, window_ids: Sequence[str]) -> List[str]:
             seen.add(candidate_id)
     ordered.extend(cid for cid in prior if cid not in seen)
     return ordered
+
+
+def llm_rerank_cost_usd(llm: Dict[str, Any]) -> float:
+    """Price an ``llm`` usage block (from :func:`llm_rerank`) in USD (pure).
+
+    Routes through the canonical ``cost_for`` (agentrail/context/pricing.py) so
+    the rerank layer's dollar math shares the single price table with every
+    other component.  Missing counters default to 0, so a fallback block with
+    partial (or zero) usage prices cleanly.  No network, no logging.
+    """
+    from agentrail.context.pricing import cost_for
+
+    return float(
+        cost_for(
+            str(llm.get("model", "")),
+            input_tokens=int(llm.get("inputTokens", 0) or 0),
+            output_tokens=int(llm.get("outputTokens", 0) or 0),
+            cached_read=int(llm.get("cacheReadInputTokens", 0) or 0),
+            cached_write=int(llm.get("cacheCreationInputTokens", 0) or 0),
+        )["dollars"]
+    )
 
 
 def _call_model(model: str, prompt: str) -> Tuple[str, Dict[str, int]]:

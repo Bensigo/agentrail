@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from agentrail.context.compiler import compiler_contract, extract_anchors
 from agentrail.context.config import read_context_config
 from agentrail.context.embeddings import embedding_config_hash, provider_name, configured_model, run_custom_command, run_openai_compatible
+from agentrail.context.expansion import expand_query_tokens, query_expansion_enabled
 from agentrail.context.index import append_audit, build_index, load_index
 from agentrail.context.pack_quality import compute_pack_quality
 from agentrail.context.rerank import rerank_candidates, rerank_enabled
@@ -1313,6 +1314,16 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
         build_index(root)
         index = load_index(root)
     query_tokens = unique(tokenize(query))
+    # Recall layer (#1043, default-OFF): widen the retrieval token set with
+    # identifier subtokens recovered from the RAW query (camelCase / snake_case /
+    # dotted / path boundaries) so BM25 doc-freq, pre-scoring and the candidate
+    # filter all see the extra terms. Recall-monotone: originals are never
+    # dropped, so the candidate set can only grow.
+    if query_expansion_enabled():
+        expanded, added_terms = expand_query_tokens(query, query_tokens)
+        query_tokens = unique(expanded)
+    else:
+        added_terms = []
     # Normalized symbol candidates: strip edge punctuation ("req.param" tokenizes
     # to "req"/".param") and take the member after a dot, so a symbol query matches
     # the chunk that *defines* the symbol, not just files that mention it.
@@ -1792,6 +1803,13 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
             graph_expansion=graph_expansion,
             rerank=rerank_meta,
         ),
+    }
+    # Recall-layer telemetry (#1043): report whether query expansion ran and the
+    # subtokens it added. Deterministic expansion has no model/token cost.
+    output["expansion"] = {
+        "enabled": query_expansion_enabled(),
+        "addedTerms": added_terms,
+        "cost": 0.0,
     }
     append_audit(root, audit)
     return output

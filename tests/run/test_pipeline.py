@@ -2382,6 +2382,101 @@ class ReadSideInjectionParkTests(unittest.TestCase):
         self.assertEqual(result, 0)
 
 
+# ---------------------------------------------------------------------------
+# Forced-context seam (issue #1007, follow-up to PR #1003).
+#
+# Isolated emitter tests live in tests/run/test_context_inject.py. These pin the
+# actual PIPELINE seam in run_issue_phase: it must dispatch to
+# ``emit_forced_context`` ONLY when ``forced_context_enabled(workdir)`` is true,
+# and it must REUSE the already-computed phase context summary (no recompute).
+#
+# Both collaborators are patched at the pipeline import names, so no artifacts
+# are written and no model/network is touched:
+#   - ``forced_context_enabled`` — flips the flag-gate branch on/off directly,
+#     independent of env vars or an .agentrail/config.json in the temp target.
+#   - ``emit_forced_context`` — a spy that records (engine, workdir, summary).
+# ``ctx.context_pack_summary`` returns a sentinel so the ENABLED case can assert
+# the seam forwards THE SAME value the phase computed (proving reuse).
+# ---------------------------------------------------------------------------
+
+_FORCED_CTX_SUMMARY = "SENTINEL-CTX-SUMMARY::the-phase-computed-this-reuse-it"
+
+
+class ForcedContextSeamTests(unittest.TestCase):
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        target = _make_target(self._tmp.name)
+        run_dir = Path(self._tmp.name) / "run"
+        self.target = target
+        self.run_dir = run_dir
+        self.rc = _make_rc(target, run_dir)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
+    @patch("agentrail.run.pipeline.ctx.context_pack_summary",
+           return_value=_FORCED_CTX_SUMMARY)
+    def test_disabled_does_not_emit_and_writes_no_artifacts(self, mock_summary, mock_build):
+        """AC1: flag OFF → seam does NOT call emit_forced_context, no artifacts."""
+        spy = MagicMock(return_value=[])
+        stub = _stub_run_with_timeout(0)
+        with patch("agentrail.run.pipeline.forced_context_enabled", return_value=False), \
+             patch("agentrail.run.pipeline.emit_forced_context", spy), \
+             patch("agentrail.run.pipeline.run_with_timeout", stub):
+            run_issue_phase(self.rc, "execute", 1)
+
+        spy.assert_not_called()
+        # No per-engine forced-context artifacts were created anywhere in target.
+        self.assertFalse((self.target / ".claude" / "hooks" / "forced-context.sh").exists())
+        self.assertFalse((self.target / ".agentrail" / "context.md").exists())
+        self.assertFalse((self.target / "AGENTS.md").exists())
+        self.assertFalse((self.target / ".cursor").exists())
+
+    @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
+    @patch("agentrail.run.pipeline.ctx.context_pack_summary",
+           return_value=_FORCED_CTX_SUMMARY)
+    def test_enabled_emits_once_with_engine_and_reused_summary(self, mock_summary, mock_build):
+        """AC2: flag ON → emit_forced_context called ONCE with the run's engine
+        and the SAME summary the phase computed (reuse, not a recompute)."""
+        spy = MagicMock(return_value=[])
+        stub = _stub_run_with_timeout(0)
+        with patch("agentrail.run.pipeline.forced_context_enabled", return_value=True), \
+             patch("agentrail.run.pipeline.emit_forced_context", spy), \
+             patch("agentrail.run.pipeline.run_with_timeout", stub):
+            run_issue_phase(self.rc, "execute", 1)
+
+        # Exact engine ("claude") + the exact reused summary value. This is what
+        # breaks if the flag-gate branch in pipeline.py is dropped: with the seam
+        # removed the spy is never called and assert_called_once_with fails.
+        spy.assert_called_once_with(self.rc.agent, self.rc.target_dir, _FORCED_CTX_SUMMARY)
+
+        # Prove it is the SAME value context_pack_summary returned (reuse), not a
+        # string that merely happens to match — decoupled from the sentinel text.
+        (_engine, _workdir, forwarded_summary) = spy.call_args.args
+        self.assertEqual(_engine, "claude")
+        self.assertIs(forwarded_summary, mock_summary.return_value)
+        # And the summary was computed exactly once — the seam did not recompute.
+        mock_summary.assert_called_once()
+
+    @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)
+    @patch("agentrail.run.pipeline.ctx.context_pack_summary",
+           return_value=_FORCED_CTX_SUMMARY)
+    def test_enabled_uses_the_run_engine_not_a_hardcoded_one(self, mock_summary, mock_build):
+        """AC2 (engine pinning): the seam forwards rc.agent, whatever it is."""
+        rc = _make_rc(self.target, self.run_dir)
+        rc.agent = "codex"
+        spy = MagicMock(return_value=[])
+        stub = _stub_run_with_timeout(0)
+        with patch("agentrail.run.pipeline.forced_context_enabled", return_value=True), \
+             patch("agentrail.run.pipeline.emit_forced_context", spy), \
+             patch("agentrail.run.pipeline.run_with_timeout", stub):
+            run_issue_phase(rc, "execute", 1)
+
+        spy.assert_called_once_with("codex", self.target, _FORCED_CTX_SUMMARY)
+
+
 def workflow_completed_runs(*, state) -> list:
     """Return the workflow.completedRuns list from a parsed state.json dict."""
     return state["workflow"].get("completedRuns", [])

@@ -33,7 +33,7 @@ from agentrail.evals.arms import (
 
 
 # ---------------------------------------------------------------------------
-# AC1 — Arm shape: name + all five layer flags + pinned model/temperature
+# AC1 — Arm shape: name + every layer flag + pinned model/temperature
 # ---------------------------------------------------------------------------
 
 
@@ -45,7 +45,7 @@ def test_arm_has_name_layers_model_and_temperature() -> None:
     assert isinstance(arm.temperature, float)
 
 
-def test_layers_names_are_the_six_documented_layers() -> None:
+def test_layers_names_are_the_seven_documented_layers() -> None:
     assert LAYER_NAMES == (
         "context",
         "routing",
@@ -53,6 +53,7 @@ def test_layers_names_are_the_six_documented_layers() -> None:
         "retry",
         "guardrails",
         "rerank",
+        "expansion",
     )
 
 
@@ -217,8 +218,8 @@ def test_full_minus_unknown_layer_is_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Issue #939 AC1 — an enumerable full-minus arm exists for each of the five
-# layers (a named registry the CLI and reporter can iterate).
+# Issue #939 AC1 — an enumerable full-minus arm exists for each base layer
+# (a named registry the CLI and reporter can iterate).
 # ---------------------------------------------------------------------------
 
 
@@ -250,7 +251,7 @@ def test_all_arms_is_baseline_full_and_every_ablation() -> None:
 
 # ---------------------------------------------------------------------------
 # Issue #939 AC2 — each ablation arm differs from full by ONLY its one layer
-# (same model, temperature, and every other layer), parametrized over all five.
+# (same model, temperature, and every other layer), parametrized over every layer.
 # ---------------------------------------------------------------------------
 
 

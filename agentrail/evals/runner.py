@@ -773,6 +773,17 @@ def _arm_env(arm: Arm) -> dict:
     # extra_layer, so ``flags`` is the single source.
     if "rerank" in flags and not flags["rerank"]:
         env["AGENTRAIL_CONTEXT_RERANK"] = "0"
+    # Expansion-layer bridge (#1043): mirror of the rerank bridge, INVERTED. The
+    # ``AGENTRAIL_EVAL_LAYER_EXPANSION`` toggle above is the arm seam, but the
+    # query-expansion stage keys ONLY on ``AGENTRAIL_CONTEXT_QUERY_EXPANSION`` via
+    # ``agentrail.context.expansion.query_expansion_enabled`` (default OFF).
+    # Because the default is OFF (opposite of rerank), the bridge forces the ON
+    # direction: ON -> ``AGENTRAIL_CONTEXT_QUERY_EXPANSION=1``; OFF -> leave unset
+    # (default OFF, and a caller's override still composes). Without this bridge
+    # ``full`` and ``full-minus-expansion`` execute IDENTICALLY and the reported
+    # expansion delta is always 0 (the ablation is a no-op).
+    if flags.get("expansion"):
+        env["AGENTRAIL_CONTEXT_QUERY_EXPANSION"] = "1"
     return env
 
 

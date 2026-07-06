@@ -273,6 +273,8 @@ routing      — model routing / escalation
 verify_gate  — the Objective Gate
 retry        — the retry loop
 guardrails   — the safety/existence guardrails
+rerank       — the deterministic code-aware context rerank stage (#904/#1029)
+expansion    — the recall-layer query-expansion stage (#1043)
 ```
 
 Two anchor arms are always present:

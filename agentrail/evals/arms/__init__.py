@@ -15,6 +15,7 @@ ablation"):
     retry        — the retry loop
     guardrails   — the safety/existence guardrails
     rerank       — the deterministic code-aware context rerank stage (#904/#1029)
+    expansion    — the recall-layer query-expansion stage (#1043)
 
 Two anchor arms are defined now:
 
@@ -48,6 +49,7 @@ LAYER_NAMES: Tuple[str, ...] = (
     "retry",
     "guardrails",
     "rerank",
+    "expansion",
 )
 
 # The three NEW-flow layers (issue #980), in a fixed, documented order. These
@@ -95,6 +97,7 @@ class Layers:
     retry: bool
     guardrails: bool
     rerank: bool
+    expansion: bool
 
     def as_dict(self) -> Dict[str, bool]:
         """Map each layer name to its on/off flag (stable ``LAYER_NAMES`` order)."""
@@ -205,7 +208,7 @@ def all_arms() -> List[Arm]:
 def new_flow() -> Arm:
     """The new-flow arm: ``full`` PLUS the critic, best-of-N, and warm-cache layers.
 
-    All five base AgentRail layers stay ON (so the new flow is a strict superset
+    Every base AgentRail layer stays ON (so the new flow is a strict superset
     of ``full``); every NEW-flow layer (:data:`NEW_FLOW_LAYERS`) is enabled; and a
     cheap :data:`PINNED_CRITIC_MODEL` is pinned so the eval runner builds a critic
     command — without it the opt-in critic / best-of-N layers never activate. The

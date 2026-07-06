@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import warnings
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from agentrail.context.index import append_audit, load_index
 from agentrail.context.memory_lane import build_memory_lane, frame_untrusted_memory
 from agentrail.context.pack_quality import compute_pack_quality
 from agentrail.context.pricing import cost_for
-from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_saved, estimate_tokens, query_context
+from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_saved, estimate_tokens, get_file_lines, query_context
 from agentrail.shared.json import write_json
 
 
@@ -76,6 +77,63 @@ def _query_for(target_kind: str, target_number: int, phase: str) -> str:
 
 def _citation_for(item: Dict[str, Any]) -> str:
     return str(item.get("citation") or item.get("path") or ".agentrail/context/index/index.json")
+
+
+_SYMBOL_PACKING_TRUTHY = {"1", "true", "on", "yes"}
+
+
+def symbol_packing_enabled() -> bool:
+    """Symbol-range packing (issue #1044 AC4) is default-OFF; opt in via env."""
+    raw = os.environ.get("AGENTRAIL_CONTEXT_SYMBOL_PACKING")
+    if raw is None:
+        return False
+    return raw.strip().lower() in _SYMBOL_PACKING_TRUTHY
+
+
+def _apply_symbol_packing(root: Path, index: Dict[str, Any], items: List[Dict[str, Any]]) -> int:
+    """Replace each symbol-bearing code candidate's content with the symbol's
+    exact line range from the index symbol table.
+
+    Never changes a candidate's path and never drops a candidate — item
+    selection stays identical to the flag-OFF pack, so precision/recall
+    semantics are untouched; packing only shrinks the tokens per candidate.
+    Returns the number of candidates packed.
+    """
+    symbol_table = index.get("symbolTable") or {}
+    packed = 0
+    for item in items:
+        if not isinstance(item, dict) or item.get("sourceType") != "code":
+            continue
+        symbol = item.get("symbol")
+        path = item.get("path")
+        if not isinstance(symbol, str) or not symbol or not isinstance(path, str) or not path:
+            continue
+        record = next(
+            (
+                rec
+                for rec in symbol_table.get(symbol, [])
+                if isinstance(rec, dict) and rec.get("path") == path and rec.get("authority") != "denied"
+            ),
+            None,
+        )
+        if record is None:
+            continue
+        try:
+            line_start = int(record.get("lineStart", 1))
+            line_end = int(record.get("lineEnd", line_start))
+            snippet = get_file_lines(root, path, line_start, line_end)
+        except (SystemExit, TypeError, ValueError):
+            continue
+        content = snippet["content"]
+        if not content:
+            continue
+        item["content"] = content
+        item["lineStart"] = snippet["lineStart"]
+        item["lineEnd"] = snippet["lineEnd"]
+        item["citation"] = f"{path}#{symbol}"
+        item["tokenEstimate"] = estimate_tokens(content)
+        packed += 1
+    return packed
 
 
 def _reason_for(item: Dict[str, Any], fallback: str) -> str:
@@ -644,6 +702,15 @@ def build_context_pack(
         pack["runId"] = run_id
     pack["included"] = _all_included(pack)
     pack["excluded"] = pack["excludedContext"]
+    # Symbol-range packing (issue #1044 AC4, default OFF): shrink symbol-bearing
+    # code candidates to the symbol's exact line range AFTER selection is final,
+    # so the flag never changes which candidates are included (precision/recall
+    # semantics untouched). Included items share dict references with the
+    # sections above, so the packed content flows through to the markdown too.
+    symbol_packing_on = symbol_packing_enabled()
+    symbol_packed_count = 0
+    if symbol_packing_on:
+        symbol_packed_count = _apply_symbol_packing(root, index, pack["included"])
     # Compute live precision_at_budget and attach it to the pack so that
     # Milestone 014 telemetry reads a real value instead of 0/absent.
     # tokenEstimate is added from content for items that don't carry it yet,
@@ -703,6 +770,14 @@ def build_context_pack(
         token_pack_strategy="greedy_budget_fill",
         rerank=rerank_meta,
     )
+    if symbol_packing_on:
+        # Mirror the rerank metadata threading: record that symbol packing ran
+        # and how many candidates it shrank. Only attached when the flag is ON
+        # so the flag-OFF pack stays byte-identical to today's output.
+        pack["compiler"]["tokenPack"]["symbolPacking"] = {
+            "enabled": True,
+            "packedCount": symbol_packed_count,
+        }
     write_json(json_path, pack)
     md_path.write_text(render_context_pack_markdown(pack), encoding="utf-8")
     append_audit(

@@ -351,6 +351,33 @@ def test_arm_env_full_emits_no_new_layer_toggles_and_no_critic_model() -> None:
     assert CRITIC_MODEL_ENV not in env
 
 
+def test_arm_env_expansion_bridge_forces_query_expansion_on_when_layer_on() -> None:
+    """Issue #1043: the expansion layer's arm flag must drive the env var the
+    query-expansion STAGE actually reads.
+
+    Unlike the other layers, the stage does NOT read the generic
+    ``AGENTRAIL_EVAL_LAYER_EXPANSION`` toggle — it keys ONLY on
+    ``AGENTRAIL_CONTEXT_QUERY_EXPANSION`` (via
+    ``agentrail.context.expansion.query_expansion_enabled``), which defaults OFF.
+    So the bridge is INVERTED versus the rerank bridge: when the layer is ON it
+    forces ``AGENTRAIL_CONTEXT_QUERY_EXPANSION=1``; when the layer is OFF it
+    leaves the var unset (default OFF). Without this bridge ``full`` and
+    ``full-minus-expansion`` execute identically and the reported expansion
+    delta is always 0.
+    """
+    from agentrail.evals.runner import _arm_env
+
+    # Layer ON (in ``full``, and still ON when a DIFFERENT layer is ablated)
+    # forces the stage's own env var to "1".
+    assert _arm_env(full())["AGENTRAIL_CONTEXT_QUERY_EXPANSION"] == "1"
+    assert _arm_env(full_minus("rerank"))["AGENTRAIL_CONTEXT_QUERY_EXPANSION"] == "1"
+
+    # Layer OFF (baseline has every layer off; full-minus-expansion ablates just
+    # this one) leaves the var unset so the stage falls back to its OFF default.
+    assert "AGENTRAIL_CONTEXT_QUERY_EXPANSION" not in _arm_env(baseline())
+    assert "AGENTRAIL_CONTEXT_QUERY_EXPANSION" not in _arm_env(full_minus("expansion"))
+
+
 # ---------------------------------------------------------------------------
 # AC3 — the answer key is NEVER inside the sandbox workdir during the run.
 # ---------------------------------------------------------------------------

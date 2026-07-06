@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
 
-from agentrail.run.pipeline import layer_enabled
+from agentrail.run.pipeline import jit_gather_enabled, layer_enabled
 
 AGENTS = {"codex", "claude", "cursor", "hermes", "custom"}
 
@@ -331,6 +331,49 @@ def resolve_critic_command(
     return append_model_to_command(command, agent, critic_model)
 
 
+def resolve_gather_command(
+    agent: str, command: str, model_flag: str, target: str
+) -> str:
+    """Build the gather-phase command on a CHEAP model (issue #1049).
+
+    The JIT context gatherer is a cheap-model, read-only phase that runs before
+    test-author. It runs ONLY when explicitly opted in via
+    ``runners.<agent>.models.gather`` — the real loop sets no such config, so
+    this returns ``""`` and no gather command is built (the phase is skipped
+    entirely; it NEVER falls back to the implementer command). The eval harness
+    opts in without writing config into the cloned task repo by setting
+    ``AGENTRAIL_EVAL_GATHER_MODEL`` in the run env; that is honoured here as a
+    fallback after config. When configured, the cheap model is resolved through
+    ``critic.resolve_gather_model`` (configured model, else the default Haiku)
+    and must DIFFER from the Implementer's (execute) model — a same-model
+    gatherer would both defeat the cost point and thrash the implementer's
+    prompt-cache prefix. Returns ``""`` when the resolved gather model equals
+    the implementer's model.
+    """
+    from agentrail.run.critic import resolve_gather_model
+
+    configured = resolve_model_from_config(agent, target, "gather")
+    if not configured:
+        # Eval opt-in: a gather model supplied via env opts the gatherer in
+        # without a config file. The real loop sets neither, so the phase
+        # sequence is unchanged.
+        configured = (os.environ.get("AGENTRAIL_EVAL_GATHER_MODEL") or "").strip()
+    if not configured:
+        # Not opted in: no gather command → no gather phase.
+        return ""
+    # The gather model comes from ITS OWN configured source (``models.gather``
+    # or the eval's ``AGENTRAIL_EVAL_GATHER_MODEL``) — NEVER from
+    # ``model_flag``, which is the IMPLEMENTER's ``--model``. (Passing
+    # model_flag into the critic resolver once made it resolve to the
+    # implementer's model, trip the independence guard, and silently return
+    # "" — the same bug shape applies here.)
+    gather_model = resolve_gather_model(configured)
+    implementer_model = resolve_model_for_phase(agent, model_flag, target, "execute")
+    if gather_model == (implementer_model or "").strip():
+        return ""
+    return append_model_to_command(command, agent, gather_model)
+
+
 def append_model_to_command(command: str, agent: str, model: str) -> str:
     """Append model flag to command string; return command unchanged when model is empty.
 
@@ -483,6 +526,19 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
             )
             if critic_command:
                 phase_commands["critic"] = critic_command
+        # JIT context gatherer (#1049, flag-gated DEFAULT OFF): a cheap-model
+        # read-only gather phase before test-author. Enumerated ONLY when
+        # AGENTRAIL_JIT_GATHER=1 AND a gather model is opted in via
+        # models.gather / AGENTRAIL_EVAL_GATHER_MODEL. The real loop sets
+        # neither, so no gather command is built and the phase sequence is
+        # unchanged. Absent from phase_commands = phase skipped entirely —
+        # gather never falls back to the implementer command.
+        if jit_gather_enabled():
+            gather_command = resolve_gather_command(
+                agent, command, opts.model, str(target)
+            )
+            if gather_command:
+                phase_commands["gather"] = gather_command
 
     return run_issue(target, issue, agent=agent, command=command,
                      repo_dir=_repo_dir(), log_dir=log_dir,
@@ -523,6 +579,15 @@ def _phase_commands_for(opts: "RunOptions", agent: str, command: str, target: Pa
         critic_command = resolve_critic_command(agent, command, opts.model, str(target))
         if critic_command:
             phase_commands["critic"] = critic_command
+    # JIT context gatherer (#1049, flag-gated DEFAULT OFF): enumerated ONLY when
+    # AGENTRAIL_JIT_GATHER=1 AND a gather model is opted in via models.gather /
+    # AGENTRAIL_EVAL_GATHER_MODEL. The real loop sets neither, so the phase
+    # sequence is unchanged. Absent = phase skipped entirely — gather never
+    # falls back to the implementer command.
+    if jit_gather_enabled():
+        gather_command = resolve_gather_command(agent, command, opts.model, str(target))
+        if gather_command:
+            phase_commands["gather"] = gather_command
     return phase_commands
 
 

@@ -177,3 +177,140 @@ def test_engine_accepts_command_prefix(tmp_path, on):
     # Engine strings may carry a full command; the leading token decides.
     written = ci.emit_forced_context("claude --print", tmp_path, CONTEXT)
     assert ci.CLAUDE_SETTINGS in written
+
+
+# --------------------------------------------------------------------------- #
+# #1006: emitting into a git-tracked workdir must not dirty committable files.
+# The Claude path writes .claude/settings.json, which agentrail's own .gitignore
+# does NOT cover; the emitter registers its artifacts in .git/info/exclude so a
+# dogfood run never surfaces new tracked files on `git status`.
+# --------------------------------------------------------------------------- #
+def _git_init(path):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    # Commit a baseline so the tree is clean and `git status --porcelain` only
+    # reflects what the emitter introduces.
+    (path / ".gitignore").write_text(".agentrail/\n")
+    subprocess.run(["git", "-C", str(path), "add", ".gitignore"], check=True)
+    subprocess.run(
+        ["git", "-C", str(path), "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-q", "-m", "base"],
+        check=True,
+    )
+
+
+def _porcelain(path):
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+
+
+def test_ac1_claude_emit_leaves_git_tracked_workdir_clean(tmp_path, on):
+    # AC1: with forced-context ON against a git-tracked checkout that ignores
+    # .agentrail/ but NOT .claude/ (agentrail's own layout), the emitter must
+    # not introduce any new tracked/modifiable files — every artifact lands on
+    # an ignored path.
+    _git_init(tmp_path)
+    written = ci.emit_forced_context("claude", tmp_path, CONTEXT)
+    # The vulnerable path is actually written to disk...
+    assert ci.CLAUDE_SETTINGS in written
+    assert (tmp_path / ci.CLAUDE_SETTINGS).is_file()
+    # ...yet git sees a clean tree.
+    assert _porcelain(tmp_path) == "", (
+        "emitter dirtied tracked files:\n" + _porcelain(tmp_path)
+    )
+    # And specifically .claude/settings.json is ignored (not merely untracked).
+    import subprocess
+    rc = subprocess.run(
+        ["git", "-C", str(tmp_path), "check-ignore", "-q", ci.CLAUDE_SETTINGS]
+    ).returncode
+    assert rc == 0, ".claude/settings.json must be git-ignored after emit"
+
+
+def test_ac2_hook_still_points_at_loadable_context_after_ignore(tmp_path, on):
+    # AC2: ignoring the artifacts must not change behavior — the settings file
+    # still exists, wires the UserPromptSubmit hook, and the hook reads a
+    # context.md that actually contains the injected context.
+    _git_init(tmp_path)
+    ci.emit_forced_context("claude", tmp_path, CONTEXT)
+
+    settings = json.loads((tmp_path / ci.CLAUDE_SETTINGS).read_text())
+    ups = settings["hooks"]["UserPromptSubmit"]
+    commands = [h.get("command") for entry in ups for h in entry.get("hooks", [])]
+    assert any("forced-context.sh" in (c or "") for c in commands)
+
+    # The context the hook cats is present and non-empty.
+    ctx_md = (tmp_path / ci.CONTEXT_MD).read_text()
+    assert CONTEXT in ctx_md
+    script = (tmp_path / ci.CLAUDE_HOOK_SCRIPT).read_text()
+    assert ".agentrail/context.md" in script and "additionalContext" in script
+
+
+def test_ac3_reemit_is_idempotent_and_does_not_redirty_or_duplicate(tmp_path, on):
+    # AC3: re-running the emitter neither re-dirties the tree nor duplicates the
+    # managed exclude block.
+    _git_init(tmp_path)
+    ci.emit_forced_context("claude", tmp_path, CONTEXT)
+    exclude_path = tmp_path / ".git" / "info" / "exclude"
+    first_exclude = exclude_path.read_text()
+
+    # Second run.
+    ci.emit_forced_context("claude", tmp_path, CONTEXT)
+    assert _porcelain(tmp_path) == "", "re-emit dirtied tracked files"
+
+    second_exclude = exclude_path.read_text()
+    # Managed block appears exactly once and content is unchanged.
+    assert second_exclude.count(ci._EXCLUDE_START) == 1
+    assert second_exclude.count(ci._EXCLUDE_END) == 1
+    assert second_exclude == first_exclude
+    # The vulnerable path is listed exactly once inside the block.
+    assert second_exclude.count(ci.CLAUDE_SETTINGS) == 1
+
+
+def test_ac1_preserves_preexisting_user_exclude_entries(tmp_path, on):
+    # The emitter must append its managed block without clobbering a user's own
+    # .git/info/exclude content.
+    _git_init(tmp_path)
+    exclude_path = tmp_path / ".git" / "info" / "exclude"
+    exclude_path.write_text("# user rule\n*.log\n")
+    ci.emit_forced_context("claude", tmp_path, CONTEXT)
+    text = exclude_path.read_text()
+    assert "*.log" in text  # user content preserved
+    assert ci._EXCLUDE_START in text
+    assert ci.CLAUDE_SETTINGS in text
+
+
+def test_emit_in_linked_worktree_writes_shared_exclude(tmp_path, on):
+    # The dogfood/afk path runs in a linked git worktree (.git is a *file*). The
+    # emitter must resolve the shared common-dir exclude and still leave the
+    # worktree clean.
+    import subprocess
+
+    main = tmp_path / "main"
+    main.mkdir()
+    _git_init(main)
+    wt = tmp_path / "wt"
+    subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", "-q", str(wt)], check=True
+    )
+    assert (wt / ".git").is_file(), "linked worktree should have a .git file"
+
+    written = ci.emit_forced_context("claude", wt, CONTEXT)
+    assert ci.CLAUDE_SETTINGS in written
+    assert _porcelain(wt) == "", "emit dirtied the linked worktree"
+    rc = subprocess.run(
+        ["git", "-C", str(wt), "check-ignore", "-q", ci.CLAUDE_SETTINGS]
+    ).returncode
+    assert rc == 0
+
+
+def test_git_info_dir_returns_none_outside_repo(tmp_path):
+    # Not a git repo → helper returns None and emit stays a safe no-op on the
+    # ignore step (no crash, artifacts still written).
+    assert ci._git_info_dir(tmp_path) is None
+    # _ensure_git_ignored must be a silent no-op here.
+    ci._ensure_git_ignored(tmp_path, [ci.CLAUDE_SETTINGS])  # does not raise

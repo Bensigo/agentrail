@@ -18,15 +18,28 @@ could never see a real pack from a live run — which is exactly why the reporte
 precision/recall rendered ``n/a`` on every real eval. The fix is to compute the
 pack score OFFLINE, deterministically, from the retrieval stage itself.
 
-The rerank seam (the whole point of the #1029 rerank arm):
+The retrieval seams (what makes the ablation arms falsifiable):
 
-Retrieval honors ``AGENTRAIL_CONTEXT_RERANK`` (see
-:func:`agentrail.context.rerank.rerank_enabled`). This driver sets that env var
-from the arm's ``rerank`` layer flag — the SAME bridge
-:func:`agentrail.evals.runner._arm_env` applies — so the ``full`` arm retrieves
-WITH rerank and the ``full-minus-rerank`` arm retrieves WITHOUT it. That is what
-makes the two arms produce a genuinely different cited set, and therefore a
-genuinely different (falsifiable) precision/recall delta.
+Retrieval honors two env seams this driver drives from the arm's layer flags:
+
+- ``AGENTRAIL_CONTEXT_RERANK`` (see
+  :func:`agentrail.context.rerank.rerank_enabled`, default ON) — the ``rerank``
+  layer. The ``full`` arm retrieves WITH rerank, ``full-minus-rerank`` WITHOUT.
+- ``AGENTRAIL_CONTEXT_QUERY_EXPANSION`` (see
+  :func:`agentrail.context.expansion.query_expansion_enabled`, default OFF) — the
+  ``expansion`` recall layer (#1043). The ``full`` arm retrieves WITH query
+  expansion, ``full-minus-expansion`` WITHOUT. Without this seam the offline
+  pack-vs-answer-key RECALL metric could not tell ``full`` from
+  ``full-minus-expansion`` — every expansion delta would be a silent hard 0.
+
+These are the SAME seams :func:`agentrail.evals.runner._arm_env` drives for the
+live sandbox leg, so offline and live measure the same toggle. One deliberate
+divergence: the runner writes into a FRESH subprocess env (so it can leave a
+default-valued flag unset), but this driver mutates the CURRENT process env, which
+may already carry an ambient value. So it writes BOTH directions explicitly
+(``1``/``0``) per arm — never "set for on, unset for off" — otherwise an inherited
+``AGENTRAIL_CONTEXT_QUERY_EXPANSION=1`` (e.g. from an AFK env) would leak into the
+``full-minus-expansion`` arm and turn the ablation into a no-op.
 
 Honesty rails:
 
@@ -35,9 +48,10 @@ Honesty rails:
   ``None`` — the reporter then renders ``n/a`` (undefined), never a fake ``0.0``.
   We NEVER trigger a heavy ``build_index`` rebuild here; scoring is a read of an
   index that already exists, or it honestly reports "not measured".
-- **Restores the env var.** The ``AGENTRAIL_CONTEXT_RERANK`` override is scoped to
-  each retrieval call and the prior value is restored, so scoring never leaks a
-  global flag into the rest of the run.
+- **Restores the env vars.** The ``AGENTRAIL_CONTEXT_RERANK`` and
+  ``AGENTRAIL_CONTEXT_QUERY_EXPANSION`` overrides are scoped to each retrieval
+  call and the prior values are restored, so scoring never leaks a global flag
+  into the rest of the run.
 - **Set-based, deterministic.** Cited paths are de-duplicated preserving first
   appearance; the pure scorer treats them as a set. No randomness, no network.
 """
@@ -64,6 +78,11 @@ _log = logging.getLogger(__name__)
 # ``agentrail.context.rerank.rerank_enabled`` and ``runner._arm_env``.
 _RERANK_ENV = "AGENTRAIL_CONTEXT_RERANK"
 
+# The retrieval env seam the query-expansion (recall) stage reads. Kept in
+# lockstep with ``agentrail.context.expansion.query_expansion_enabled`` (default
+# OFF) and ``runner._arm_env`` (#1043).
+_EXPANSION_ENV = "AGENTRAIL_CONTEXT_QUERY_EXPANSION"
+
 # How many retrieval results form the "pack" whose cited paths we score. Matches
 # the live pack builder's default retrieval width
 # (``agentrail.context.packs.build_context_pack`` calls ``query_context(...,
@@ -77,34 +96,45 @@ def _index_exists(root: Path) -> bool:
     return (root / ".agentrail" / "context" / "index" / "index.json").is_file()
 
 
-def _cited_paths(root: Path, query: str, *, rerank: bool, index: Dict) -> List[str]:
+def _cited_paths(
+    root: Path,
+    query: str,
+    *,
+    rerank: bool,
+    expansion: bool,
+    index: Dict,
+) -> List[str]:
     """Run real retrieval and return the DISTINCT paths it cited, in rank order.
 
-    Honors the arm's rerank flag by scoping ``AGENTRAIL_CONTEXT_RERANK`` for the
+    Honors the arm's ``rerank`` and ``expansion`` layer flags by scoping
+    ``AGENTRAIL_CONTEXT_RERANK`` and ``AGENTRAIL_CONTEXT_QUERY_EXPANSION`` for the
     duration of the single ``query_context`` call, then restoring the prior
-    value. The ``index`` is passed in (already loaded once per root) so we never
-    trigger a ``build_index`` rebuild.
+    values. Both directions are written explicitly (``1``/``0``) rather than
+    "set for on, unset for off": we mutate the CURRENT process env (not a fresh
+    subprocess like the runner), so an inherited value must be overridden in both
+    the on and off arms or the ablation would leak into a no-op. The ``index`` is
+    passed in (already loaded once per root) so we never trigger a
+    ``build_index`` rebuild.
     """
     # Import here so the pure-config import graph (arms/pack_scorer) never pulls
     # in the heavy retrieval module unless offline scoring is actually run.
     from agentrail.context.retrieval import query_context
 
-    prior = os.environ.get(_RERANK_ENV)
-    if rerank:
-        # Default is ON when unset; make the "on" arm explicit rather than
-        # depending on ambient env, so scoring is reproducible regardless of the
-        # process's inherited environment.
-        os.environ[_RERANK_ENV] = "1"
-    else:
-        # Same OFF token the runner._arm_env bridge writes.
-        os.environ[_RERANK_ENV] = "0"
+    # Same tokens the runner._arm_env bridge and the *_enabled() readers use.
+    overrides = {
+        _RERANK_ENV: "1" if rerank else "0",
+        _EXPANSION_ENV: "1" if expansion else "0",
+    }
+    prior = {name: os.environ.get(name) for name in overrides}
+    os.environ.update(overrides)
     try:
         result = query_context(root, query, limit=_PACK_LIMIT, index=index)
     finally:
-        if prior is None:
-            os.environ.pop(_RERANK_ENV, None)
-        else:
-            os.environ[_RERANK_ENV] = prior
+        for name, value in prior.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
     seen: List[str] = []
     for item in result.get("results", []):
@@ -124,12 +154,18 @@ def score_task_arm(
     """Score one (task, arm) pack against the task's required-context answer key.
 
     Runs the deterministic retrieval for *task.prompt* at *root* with the arm's
-    rerank flag applied, then scores the cited paths against
-    ``task.required_context``. Pure scoring is delegated to
+    ``rerank`` and ``expansion`` flags applied, then scores the cited paths
+    against ``task.required_context``. Pure scoring is delegated to
     :func:`agentrail.evals.pack_scorer.pack_precision_recall` — this function only
     provides the (real) cited paths.
     """
-    cited = _cited_paths(root, task.prompt, rerank=arm.layers.rerank, index=index)
+    cited = _cited_paths(
+        root,
+        task.prompt,
+        rerank=arm.layers.rerank,
+        expansion=arm.layers.expansion,
+        index=index,
+    )
     return pack_precision_recall(cited, task.required_context)
 
 
@@ -142,8 +178,8 @@ def compute_pack_scores(
     """Offline per-arm pack precision/recall, or ``None`` when unavailable.
 
     For every (task, arm) it runs the real retrieval stage at *root* (honoring the
-    arm's rerank flag) and scores the cited paths against the task's
-    required-context answer key, then aggregates per arm via
+    arm's rerank and expansion flags) and scores the cited paths against the
+    task's required-context answer key, then aggregates per arm via
     :func:`agentrail.evals.pack_scorer.aggregate_pack_scores`.
 
     Returns ``None`` — so the reporter renders ``n/a`` (undefined, never a fake

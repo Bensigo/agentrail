@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from agentrail.context.compiler import compiler_contract
 from agentrail.context.dedup import compute_retrieval_dedup
 from agentrail.context.index import append_audit, load_index
+from agentrail.context.llm_rerank import llm_rerank_cost_usd
 from agentrail.context.memory_lane import build_memory_lane, frame_untrusted_memory
 from agentrail.context.pack_quality import compute_pack_quality
 from agentrail.context.pricing import cost_for
@@ -576,12 +577,23 @@ def render_context_pack_markdown(pack: Dict[str, Any]) -> str:
             f"- Pack cost: ${pack['packCostUsd']:.6f} USD (model={pack.get('costModel', _DEFAULT_BUDGET_MODEL)})",
             f"- Items dropped to meet budget: {pack['itemsDropped']}",
         ]
+    # Rerank-layer cost line (issue #1044 AC3): rendered whenever the pack
+    # carries rerankCostUsd, independently of the budget lines above — the
+    # rerank LLM spends real dollars whether or not --budget-usd was passed.
+    rerank_lines = []
+    if pack.get("rerankCostUsd") is not None:
+        rerank_llm = ((pack.get("compiler") or {}).get("rerank") or {}).get("llm") or {}
+        rerank_lines = [
+            f"- Rerank cost: ${pack['rerankCostUsd']:.6f} USD"
+            f" (model={rerank_llm.get('model')}, calls={rerank_llm.get('calls')})",
+        ]
     lines.extend(
         [
             "## Metadata",
             f"- Retrieval budget: maxItems={pack['retrievalBudget']['maxItems']}, maxTokens={pack['retrievalBudget']['maxTokens']}",
             f"- Tokens saved vs reading full files: {pack.get('tokensSaved', 0)}",
             *budget_lines,
+            *rerank_lines,
             f"- Index: {pack['index'].get('version')} builtAt={pack['index'].get('builtAt')}",
             f"- Provider mode: {pack['provider'].get('mode')}",
             f"- Audit event: {pack['audit'].get('event')} citation={pack['audit'].get('citation')}",
@@ -778,6 +790,14 @@ def build_context_pack(
             "enabled": True,
             "packedCount": symbol_packed_count,
         }
+    # Rerank-layer cost telemetry (issue #1044 AC3): when the LLM rerank stage
+    # ran (flag ON — its usage block is always present then, including on
+    # fallback), price the metered usage through the canonical price table and
+    # surface it on the pack BEFORE the JSON write and markdown render below.
+    # Flag OFF leaves the pack byte-identical: no key, no markdown line.
+    rerank_llm_usage = (pack["compiler"].get("rerank") or {}).get("llm") if isinstance(pack["compiler"].get("rerank"), dict) else None
+    if isinstance(rerank_llm_usage, dict):
+        pack["rerankCostUsd"] = llm_rerank_cost_usd(rerank_llm_usage)
     write_json(json_path, pack)
     md_path.write_text(render_context_pack_markdown(pack), encoding="utf-8")
     append_audit(
@@ -814,6 +834,8 @@ def build_context_pack(
         result["packCostUsd"] = budget_meta["packCostUsd"]
         result["itemsDropped"] = budget_meta["itemsDropped"]
         result["costModel"] = model
+    if isinstance(rerank_llm_usage, dict):
+        result["rerankCostUsd"] = pack["rerankCostUsd"]
     if run_id is not None:
         result["runId"] = run_id
     return result

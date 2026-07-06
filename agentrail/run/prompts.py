@@ -261,8 +261,6 @@ def issue_base_prompt(
 
 
 _CODEX_GRILL_TASK_BLOCK = """\
-Use the repo-local skill 'grill-with-docs'.
-
 Goal:
 Stress-test this idea before any PRD or implementation work:
 
@@ -279,8 +277,6 @@ Instructions:
 """
 
 _CLAUDE_GRILL_TASK_BLOCK = """\
-Use Claude Code to run a grill-with-docs style planning pass. If skills/grill-with-docs/SKILL.md exists, read it and follow its workflow as local project instructions.
-
 Goal:
 Stress-test this idea before any PRD or implementation work:
 

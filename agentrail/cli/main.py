@@ -94,7 +94,7 @@ def _usage() -> str:
         "  upgrade     Upgrade agentrail in this project\n"
         "  init        Initialise a new project (alias: install)\n"
         "  install     Install agentrail into a project (alias: init)\n"
-        "  grill-me    Stress-test a plan with the grill-with-docs skill\n"
+        "  grill-me    Stress-test a plan with a grill-style planning pass\n"
         "  issue       Create house-template GitHub issues from a milestone or PRD\n"
         "  milestone   Convert a PRD into docs/milestones/ files\n"
         "  prd         Convert an idea into a PRD published to the issue tracker\n"

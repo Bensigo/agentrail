@@ -51,7 +51,7 @@ class GrillDispatchTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         sess.assert_called_once()
         pos, kw = sess.call_args[0], sess.call_args[1]
-        self.assertEqual(pos[0], "grill-with-docs")
+        self.assertEqual(pos[0], "grill-me")
         self.assertEqual(pos[2], ["docs/plan.md"])  # input_refs
         self.assertEqual(kw["extra_context"], ["TASTE.md"])
         self.assertFalse(kw["headless"])  # interactive by default (AC1)

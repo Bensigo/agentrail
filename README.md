@@ -118,12 +118,10 @@ skills/desktop-tauri/
 skills/devops-deploy/
 skills/docs-current/
 skills/frontend-web/
-skills/grill-with-docs/
-skills/to-prd/
-skills/to-milestones/
-skills/to-issues/
 skills/tdd/
 ```
+
+Upstream planning skills — `grill-me`, `to-prd`, `to-milestones`, `to-issues` — live in the Jace coordinator (`apps/jace/agent/skills/`), not in an installed project. They draft and publish house-template issues; execution here starts from those issues.
 
 AgentRail ships curated first-party skills, not arbitrary third-party hot installs. Upstream projects may be listed in `docs/agents/skill-registry.json` as provenance candidates, but those references are audit notes, not trusted install sources. The installed `skills/` files are the reviewed local copies that prompts point agents to read.
 
@@ -272,17 +270,14 @@ Retrieval evaluation fixtures define task text, expected files, expected docs, e
 Use the full workflow for product features, risky changes, or work that needs agent handoff:
 
 ```text
-grill-with-docs
--> to-prd
--> to-milestones
--> to-issues
+Jace: grill-me -> to-prd -> to-milestones -> to-issues
 -> tdd
 -> agentrail run issue
 -> agentrail prompt review
 -> review-fix
 ```
 
-For small edits, skip the heavy planning steps and implement directly with tests.
+The planning steps (idea to house-template issues) run in the Jace coordinator; the rest runs in this project against the issues Jace produces. For small edits, skip the heavy planning steps and implement directly with tests.
 
 ## Run Work
 
@@ -352,20 +347,20 @@ Recall project memory before non-trivial work in an installed project:
 agentrail memory recall "<feature, issue, PR, or keyword>"
 ```
 
-When you want to work on a new feature, ask the agent to grill the idea first:
+When you want to work on a new feature, ask the Jace coordinator to grill the idea first:
 
 ```text
-Use grill-with-docs. I want to build <feature idea>. Challenge the idea against this repo's CONTEXT.md and codebase before we write a PRD.
+Use grill-me. I want to build <feature idea>. Challenge the idea against this repo's CONTEXT.md and codebase before we write a PRD.
 ```
 
-Use `grill-with-docs` when:
+Use `grill-me` when:
 
 - the feature is vague
 - the user, outcome, or non-goals are unclear
 - the change touches important domain behavior
 - you are not sure what should be built first
 
-After the idea is clear, turn it into a PRD:
+After the idea is clear, turn it into a PRD (still in the Jace coordinator):
 
 ```text
 Use to-prd. Turn the clarified feature into a PRD under docs/prd/.
@@ -467,7 +462,7 @@ Run a bounded worker command when the prompt is already clear:
 agentrail run issue 123 --agent codex --target .
 ```
 
-AgentRail routes Codex prompts toward repo-local skills and docs. For example, a grill prompt points Codex at `grill-with-docs`; an issue prompt points it at AgentRail issue execution, which invokes Ralph internally during the execute phase; a review prompt points it at PR review instructions. Claude prompts use the same AgentRail intent but refer to local instruction files instead of Codex-specific skill mechanics.
+AgentRail routes Codex prompts toward repo-local skills and docs. For example, a grill prompt points Codex at `grill-me`; an issue prompt points it at AgentRail issue execution, which invokes Ralph internally during the execute phase; a review prompt points it at PR review instructions. Claude prompts use the same AgentRail intent but refer to local instruction files instead of Codex-specific skill mechanics.
 
 The main context files fit together like this:
 

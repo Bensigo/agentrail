@@ -47,20 +47,18 @@ When you learn something that should help future agents, propose a source-linked
 
 Use these repo-local skills when the task matches them:
 
-- `grill-with-docs`: stress-test a fuzzy idea against `CONTEXT.md`, current docs, and code before writing a PRD.
-- `to-prd`: turn clarified context into a buildable PRD under `docs/prd/`.
-- `to-milestones`: split a PRD into vertical, testable milestones under `docs/milestones/`.
-- `to-issues`: turn one milestone at a time into independently grabbable implementation issues.
 - `tdd`: design testable interfaces and drive implementation with tests.
 
 AgentRail also installs curated first-party skills for common implementation contexts, such as frontend web, Tauri desktop, backend APIs, devops/deploy work, and current-docs verification. These are reviewed local files under `skills/`, not arbitrary third-party hot installs.
+
+Upstream planning — turning a fuzzy idea into a stress-tested PRD, milestones, and house-template issues — lives in the Jace coordinator (`grill-me`, `to-prd`, `to-milestones`, `to-issues`), not in this project. The house issue format is the hand-off contract: implementation work here starts from the issues Jace produces.
 
 Skill supply-chain rule: borrow aggressively, vendor carefully, update intentionally, never auto-trust. Treat upstream skill repositories as provenance candidates until reviewed. When updating provenance, verify the upstream source still exists before editing docs/agents/skill-registry.json, record the source URL and observed commit or content SHA when available, check license/audit status, update the local vendored skill deliberately, and include verification evidence in the PR.
 
 Preferred sequence:
 
 ```text
-grill-with-docs -> to-prd -> to-milestones -> to-issues -> tdd -> agentrail run issue -> agentrail prompt review -> review-fix
+(Jace: grill-me -> to-prd -> to-milestones -> to-issues) -> tdd -> agentrail run issue -> agentrail prompt review -> review-fix
 ```
 
 Skip steps only when the work is genuinely small enough to implement directly.

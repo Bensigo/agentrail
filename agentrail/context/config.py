@@ -21,6 +21,7 @@ DEFAULT_EXCLUDE_GLOBS = [
     "**/coverage/**",
     ".cache/**",
     ".turbo/**",
+    "**/*.log",
     ".agentrail/context/**",
     ".agentrail/source/**",
     ".env",

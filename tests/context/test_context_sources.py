@@ -98,6 +98,10 @@ class ContextSourcesTests(unittest.TestCase):
         (root / "API_SECRET.txt").write_text("SECRET\n", encoding="utf-8")
         (root / "Private.KEY").write_text("SECRET\n", encoding="utf-8")
 
+        # Excluded: log files (root-level and nested)
+        (root / "debug.log").write_text("boot ok\n", encoding="utf-8")
+        (root / "apps/web/server.log").write_text("GET / 200\n", encoding="utf-8")
+
         # Excluded: binary file
         (root / "src/image.bin").write_bytes(b"binary\x00file")
 
@@ -264,6 +268,12 @@ class ContextSourcesTests(unittest.TestCase):
         paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
         self.assertNotIn("nested-secret.txt", paths, "*secret* files should be excluded")
         self.assertNotIn("API_SECRET.txt", paths, "case-varied *SECRET* files should be excluded")
+
+    def test_log_files_excluded(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertNotIn("debug.log", paths, "root-level *.log files should be excluded")
+        self.assertNotIn("apps/web/server.log", paths, "nested *.log files should be excluded")
 
     def test_context_index_artifacts_excluded(self) -> None:
         root = self._make_fixture()

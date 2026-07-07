@@ -35,7 +35,10 @@ This whole module is gated behind a feature flag that DEFAULTS ON
 (:func:`forced_context_enabled`). Eval data confirms the improvement is ready.
 To disable, set ``AGENTRAIL_FORCED_CONTEXT="0"`` (env override) or set
 ``runners.forcedContext`` to ``false`` in ``.agentrail/config.json``.
-When the flag is off, :func:`emit_forced_context` is a no-op and returns ``[]``.
+When the flag is off, :func:`emit_forced_context` is a no-op and returns ``[]``
+and the pipeline instead calls :func:`remove_forced_context`, which deletes any
+previously-emitted artifacts so a flag flip never leaves stale forced context
+behind.
 """
 from __future__ import annotations
 
@@ -66,6 +69,12 @@ CLAUDE_SETTINGS = ".claude/settings.json"
 CLAUDE_HOOK_SCRIPT = ".agentrail/hooks/forced-context.sh"
 AGENTS_MD = "AGENTS.md"
 CURSOR_RULE = ".cursor/rules/agentrail-context.mdc"
+
+# The hook command as registered in ``.claude/settings.json``. The bare
+# relative spelling is also recognised so wiring stays idempotent (and removal
+# stays complete) against artifacts written by older emitters.
+CLAUDE_HOOK_COMMAND = "$CLAUDE_PROJECT_DIR/.agentrail/hooks/forced-context.sh"
+_KNOWN_HOOK_COMMANDS = {CLAUDE_HOOK_COMMAND, ".agentrail/hooks/forced-context.sh"}
 
 
 def _read_run_config(workdir: Path) -> Dict[str, Any]:
@@ -235,6 +244,24 @@ def _context_body(context_text: str) -> str:
     )
 
 
+def _is_agentrail_hook_entry(entry: Any) -> bool:
+    """Is this ``UserPromptSubmit`` entry the agentrail forced-context hook?
+
+    Matched by command (:data:`_KNOWN_HOOK_COMMANDS`), so user-owned hook
+    entries never match. Shared by the emit path (idempotent wiring) and
+    :func:`remove_forced_context` (deregistration) so both agree on what
+    "ours" means.
+    """
+    return (
+        isinstance(entry, dict)
+        and isinstance(entry.get("hooks"), list)
+        and any(
+            isinstance(h, dict) and h.get("command") in _KNOWN_HOOK_COMMANDS
+            for h in entry["hooks"]
+        )
+    )
+
+
 def _emit_claude(workdir: Path, context_text: str) -> List[str]:
     """UserPromptSubmit hook → additionalContext, every turn (headless-valid)."""
     written: List[str] = []
@@ -280,7 +307,6 @@ def _emit_claude(workdir: Path, context_text: str) -> List[str]:
         except (OSError, ValueError):
             settings = {}
 
-    command = "$CLAUDE_PROJECT_DIR/.agentrail/hooks/forced-context.sh"
     hooks = settings.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         hooks = {}
@@ -290,18 +316,9 @@ def _emit_claude(workdir: Path, context_text: str) -> List[str]:
         ups = []
         hooks["UserPromptSubmit"] = ups
 
-    known_commands = {command, ".agentrail/hooks/forced-context.sh"}
-    already_wired = any(
-        isinstance(entry, dict)
-        and isinstance(entry.get("hooks"), list)
-        and any(
-            isinstance(h, dict) and h.get("command") in known_commands
-            for h in entry["hooks"]
-        )
-        for entry in ups
-    )
+    already_wired = any(_is_agentrail_hook_entry(entry) for entry in ups)
     if not already_wired:
-        ups.append({"hooks": [{"type": "command", "command": command}]})
+        ups.append({"hooks": [{"type": "command", "command": CLAUDE_HOOK_COMMAND}]})
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
@@ -384,3 +401,103 @@ def emit_forced_context(engine: str, workdir: Path, context_text: str) -> List[s
         return _emit_cursor(workdir, context_text)
     # Unknown engine → no-op; the stdin prompt injection remains the fallback.
     return []
+
+
+def remove_forced_context(workdir: Path) -> List[str]:
+    """Remove every per-engine forced-context artifact from *workdir*.
+
+    The inverse of :func:`emit_forced_context` for the flag-OFF seam: emit is
+    a no-op when :func:`forced_context_enabled` resolves off, but artifacts
+    written while it was ON persist in the workdir — the claude hook would
+    keep force-injecting a STALE gather-derived context every turn. The
+    pipeline calls this whenever the flag is off, so a flip actively cleans
+    the workdir on the next phase/run.
+
+    Cleans ALL engines unconditionally (the engine may have changed between
+    runs), and is idempotent:
+
+      * ``claude``  → deletes ``.agentrail/context.md`` and the hook shim, and
+        deregisters ONLY the agentrail hook entry from
+        ``.claude/settings.json`` (user-owned hook entries and every other
+        setting survive untouched).
+      * ``codex``   → strips the AGENTS.md managed block, preserving all
+        content outside the markers; the file is deleted only when nothing
+        but whitespace remains.
+      * ``cursor``  → deletes ``.cursor/rules/agentrail-context.mdc``.
+
+    Missing artifacts are silent no-ops. The ``.git/info/exclude`` managed
+    block is intentionally left alone — a stale ignore entry is harmless.
+    Returns the list of POSIX-relative paths actually removed or modified
+    (empty on a pristine workdir).
+    """
+    workdir = Path(workdir)
+    changed: List[str] = []
+
+    # claude: context body + hook shim.
+    for rel in (CONTEXT_MD, CLAUDE_HOOK_SCRIPT):
+        target = workdir / rel
+        if target.is_file():
+            try:
+                target.unlink()
+            except OSError:
+                continue
+            changed.append(rel)
+
+    # claude: deregister only OUR UserPromptSubmit entry from settings.json.
+    settings_path = workdir / CLAUDE_SETTINGS
+    if settings_path.is_file():
+        settings: Dict[str, Any] | None = None
+        try:
+            loaded = json.loads(settings_path.read_text())
+            if isinstance(loaded, dict):
+                settings = loaded
+        except (OSError, ValueError):
+            settings = None
+        if settings is not None:
+            hooks = settings.get("hooks")
+            ups = hooks.get("UserPromptSubmit") if isinstance(hooks, dict) else None
+            if isinstance(ups, list) and any(_is_agentrail_hook_entry(e) for e in ups):
+                kept = [e for e in ups if not _is_agentrail_hook_entry(e)]
+                if kept:
+                    hooks["UserPromptSubmit"] = kept
+                else:
+                    del hooks["UserPromptSubmit"]
+                try:
+                    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+                    changed.append(CLAUDE_SETTINGS)
+                except OSError:
+                    pass
+
+    # codex: strip the managed block; everything the user wrote survives.
+    agents_path = workdir / AGENTS_MD
+    if agents_path.is_file():
+        try:
+            existing = agents_path.read_text()
+        except OSError:
+            existing = ""
+        if _AGENTS_START in existing and _AGENTS_END in existing:
+            head, _, rest = existing.partition(_AGENTS_START)
+            _, _, tail = rest.partition(_AGENTS_END)
+            # Strip a single leading newline left on the tail after the end
+            # marker (mirrors _emit_codex).
+            tail = tail[1:] if tail.startswith("\n") else tail
+            new_text = head + tail
+            try:
+                if new_text.strip():
+                    agents_path.write_text(new_text)
+                else:
+                    agents_path.unlink()
+                changed.append(AGENTS_MD)
+            except OSError:
+                pass
+
+    # cursor: the always-apply rule file.
+    cursor_path = workdir / CURSOR_RULE
+    if cursor_path.is_file():
+        try:
+            cursor_path.unlink()
+            changed.append(CURSOR_RULE)
+        except OSError:
+            pass
+
+    return changed

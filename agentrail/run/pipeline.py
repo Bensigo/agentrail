@@ -191,6 +191,11 @@ class RunContext:
     phase_commands: Dict[str, str] = field(default_factory=dict)
     budget_usd: float = 0.0
     cumulative_cost_usd: float = 0.0
+    # #1049: deterministic context manifest captured ONCE from the gather
+    # phase's output artifact and injected VERBATIM into every later phase's
+    # shared task context (one set of bytes = one shared cache key). "" = no
+    # manifest → phase prompts stay byte-identical to pre-#1049 output.
+    gather_manifest: str = ""
 
 
 def finalize_objective_gate(
@@ -390,6 +395,9 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
         max_execution_attempts=rc.max_execution_attempts,
         red_green=red_green_proof_required(rc.target_dir),
         warm_cache=layer_enabled("WARMCACHE"),
+        # #1049: same captured manifest bytes for every phase of this run
+        # ("" until the gather phase succeeds → no prompt change).
+        gather_manifest=rc.gather_manifest,
     )
 
     # 9. Write prompt file
@@ -1300,6 +1308,25 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         if gather_status != 0:
             print("gather phase failed; continuing without gathered context",
                   file=sys.stderr)
+        else:
+            # Manifest handoff (#1049): capture the gather output artifact ONCE
+            # and pin it on the RunContext, so test-author/execute/verify all
+            # inject the SAME manifest bytes into their shared task context
+            # (byte-identical prefix = one warm-cache key, AC1).
+            # bounded_phase_text caps oversized manifests deterministically
+            # (env-stable within a run; the truncation note points back at this
+            # artifact). Missing/empty output → rc.gather_manifest stays "" and
+            # later prompts are byte-identical to a run without gather.
+            gather_output_file = rc.run_dir / "gather" / "output.md"
+            gather_output = (
+                gather_output_file.read_text(encoding="utf-8", errors="replace")
+                if gather_output_file.exists()
+                else ""
+            )
+            if gather_output.strip():
+                rc.gather_manifest = prompts.bounded_phase_text(
+                    gather_output.strip(), "gather context manifest"
+                )
 
     if status == 0 and require_red_green:
         status, _ = run_issue_phase(rc, "test-author", 1, plan_output=plan_output)

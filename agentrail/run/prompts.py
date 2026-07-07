@@ -372,6 +372,7 @@ def shared_task_prefix(
     issue_context: str,
     base_prompt: str,
     context_summary: str,
+    gather_manifest: str = "",
 ) -> str:
     """The stable, cacheable per-task PREFIX reused across phases (issue #978).
 
@@ -388,7 +389,27 @@ def shared_task_prefix(
     test-author and executor into one conversation, AC3), no verifier verdict /
     hidden answer key, and no other task's state. The role boundary and the
     per-phase instructions live in the role SUFFIX appended after this prefix.
+
+    ``gather_manifest`` (issue #1049): the deterministic context manifest
+    captured ONCE from the JIT gather phase. When non-empty it is injected
+    VERBATIM — the same bytes for every phase of the run — so the test-author,
+    execute, and verify prompts still share one byte-identical prefix (the
+    manifest joins the cache key instead of breaking it). When empty (flag
+    off, gather not enumerated, gather failed, or gather produced no output)
+    it contributes ZERO bytes — no section header, no separator — so the
+    prefix stays byte-for-byte what it was before #1049 (these bytes are live
+    cache identity).
     """
+    # #1049: additive, manifest-gated ONLY. A blank/whitespace manifest maps to
+    # the empty string so the no-manifest prefix keeps its exact legacy bytes.
+    if gather_manifest.strip():
+        manifest_block = (
+            "Gathered context manifest (JIT gather phase, advisory):\n"
+            f"{gather_manifest}\n"
+            "\n"
+        )
+    else:
+        manifest_block = ""
     return (
         "Shared task context (issue #" + str(issue) + "):\n"
         "\n"
@@ -400,7 +421,8 @@ def shared_task_prefix(
         "Phase context pack:\n"
         f"{context_summary}\n"
         "\n"
-        "Base instructions:\n"
+        + manifest_block
+        + "Base instructions:\n"
         f"{base_prompt}\n"
     )
 
@@ -418,6 +440,7 @@ def issue_run_phase_prompt(
     max_execution_attempts: int = 5,
     red_green: bool = False,
     warm_cache: bool = False,
+    gather_manifest: str = "",
 ) -> str:
     """Plan / test-author / execute / verify phase prompt.
 
@@ -450,8 +473,29 @@ def issue_run_phase_prompt(
     (AC3). When ``warm_cache`` is False (the default) the prompt is byte-for-byte
     the legacy cold per-phase text (AC4), so the shared context is NOT hoisted.
 
+    ``gather_manifest`` (issue #1049): the deterministic context manifest
+    captured ONCE from the JIT gather phase. When non-empty it is injected
+    VERBATIM into the shared task context — the warm ``shared_task_prefix`` and
+    the cold inline block alike — so every phase of the run embeds the same
+    manifest bytes. When empty (the default: flag off, gather not enumerated,
+    gather failed, or no output) every prompt is byte-identical to pre-#1049
+    output.
+
     Raises ValueError for unknown phase.
     """
+    # #1049: the gather manifest joins the shared context additively and
+    # manifest-gated ONLY — a blank/whitespace manifest contributes zero bytes,
+    # so both the warm prefix and the cold inline block keep their exact legacy
+    # bytes (they are live cache identity).
+    if gather_manifest.strip():
+        _manifest_inline = (
+            "Gathered context manifest (JIT gather phase, advisory):\n"
+            f"{gather_manifest}\n"
+            "\n"
+        )
+    else:
+        _manifest_inline = ""
+
     # The inline shared-context block legacy phases embed AFTER their role line.
     # In warm-cache mode it is hoisted to the leading prefix instead (and so is
     # NOT repeated inline), turning the leading region into a stable cache key.
@@ -464,7 +508,8 @@ def issue_run_phase_prompt(
         "Phase context pack:\n"
         f"{context_summary}\n"
         "\n"
-        "Base instructions:\n"
+        + _manifest_inline
+        + "Base instructions:\n"
         f"{base_prompt}\n"
     )
 
@@ -501,6 +546,7 @@ def issue_run_phase_prompt(
                     issue_context=issue_context,
                     base_prompt=base_prompt,
                     context_summary=context_summary,
+                    gather_manifest=gather_manifest,
                 )
                 + "\n"
                 + role_header
@@ -553,19 +599,19 @@ def issue_run_phase_prompt(
         )
 
     if phase == "gather":
-        # JIT context gatherer (#1049) — MINIMAL PLACEHOLDER prompt. The full
-        # deterministic-manifest gather prompt lands in PR C; this branch only
-        # gives the flag-gated phase a valid, standalone prompt so the pipeline
-        # seam can be wired and tested now. Like the critic, it runs on a
-        # SEPARATE cheap model, so it is deliberately NOT built on
-        # ``shared_task_prefix`` (prompt-prefix caches are model-scoped; sharing
-        # the implementer's prefix bytes here would buy nothing and risks
-        # perturbing the test-author/execute cache key).
+        # JIT context gatherer (#1049). Like the critic, it runs on a SEPARATE
+        # cheap model, so it is deliberately NOT built on ``shared_task_prefix``
+        # (prompt-prefix caches are model-scoped; sharing the implementer's
+        # prefix bytes here would buy nothing and risks perturbing the
+        # test-author/execute cache key). The pipeline captures this phase's
+        # output artifact and injects it VERBATIM into ``shared_task_prefix``
+        # for the later phases (the manifest handoff).
         return (
             "You are the CONTEXT GATHERER (issue #1049). You run BEFORE the "
             "Test-Author and Implementer on a fast, cheap model. Your job is "
-            "reconnaissance only: locate the code that matters for this issue so "
-            "later phases start oriented instead of searching cold.\n"
+            "reconnaissance only: locate the code that matters for this issue "
+            "and hand the later phases a deterministic CONTEXT MANIFEST so they "
+            "start oriented instead of searching cold.\n"
             "\n"
             "Issue context:\n"
             # Read-side defense (#1035): frame the untrusted issue body as data.
@@ -578,13 +624,37 @@ def issue_run_phase_prompt(
             f"{base_prompt}\n"
             "\n"
             f"Your task — gather context for issue #{issue}:\n"
-            "- Locate the files, symbols, and tests relevant to the issue's "
-            "acceptance criteria.\n"
-            "- Summarize each relevant path with the line ranges that matter and "
-            "one line on WHY it matters to the AC.\n"
-            "- You are READ-ONLY: do not edit, create, or delete any file, do not "
-            "implement anything, do not write tests, do not commit or push. "
-            "Locating and summarizing is the whole job for this phase."
+            "- Work SEQUENTIALLY: one search or file read at a time, letting "
+            "each result steer the next. Do NOT fan out parallel searches.\n"
+            "- Your ONLY tools are the `agentrail context` CLI for searching "
+            "(ranked repo search, e.g. `agentrail context query \"<terms>\"`) "
+            "and reading files. No grep/rg/find, no other shell commands, no "
+            "editors.\n"
+            "- You are READ-ONLY: do not edit, create, or delete any file, do "
+            "not implement anything, do not write tests, do not commit or push. "
+            "Producing the manifest is the whole job for this phase.\n"
+            "- Pin EXACT symbol names, signatures, and keys by READING the "
+            "code. Never guess or invent a name — if you did not read it, it "
+            "does not go in the manifest.\n"
+            "- Record what you ruled out: paths you checked that looked "
+            "relevant but are not, and why, so later phases do not re-check "
+            "them.\n"
+            "\n"
+            "End your reply with the manifest in EXACTLY the format below. It "
+            "is handed verbatim to the Test-Author, Implementer, and Verifier, "
+            "so it must be DETERMINISTIC: facts read from the code only — no "
+            "timestamps, no transcript chatter, no speculation — and within "
+            "each section entries are sorted by file path, so the same repo "
+            "state yields the same manifest.\n"
+            "CONTEXT MANIFEST\n"
+            "Relevant files:\n"
+            "- <path>:<start line>-<end line> — <why this range matters to the "
+            "acceptance criteria>\n"
+            "Pinned symbols:\n"
+            "- <path>:<line> — <exact symbol name / signature as written in "
+            "the code>\n"
+            "Checked, not relevant:\n"
+            "- checked <path or symbol> — not relevant because <reason>"
         )
 
     if phase == "verify":
@@ -625,6 +695,7 @@ def issue_run_phase_prompt(
                     issue_context=issue_context,
                     base_prompt=base_prompt,
                     context_summary=context_summary,
+                    gather_manifest=gather_manifest,
                 )
                 + "\n"
                 + role_header
@@ -748,6 +819,7 @@ def issue_run_phase_prompt(
                     issue_context=issue_context,
                     base_prompt=base_prompt,
                     context_summary=context_summary,
+                    gather_manifest=gather_manifest,
                 )
                 + "\n"
                 + implementer_boundary
@@ -773,7 +845,12 @@ def issue_run_phase_prompt(
                 "Phase context pack:\n"
                 f"{context_summary}\n"
                 "\n"
-                "Approved plan from the plan phase:\n"
+                # #1049 cold-path symmetry: the cold execute layout interleaves
+                # the plan, so it does not embed _shared_inline — inject the
+                # same gated manifest block here (empty manifest = zero bytes,
+                # keeping the legacy execute prompt byte-identical).
+                + _manifest_inline
+                + "Approved plan from the plan phase:\n"
                 f"{bounded_plan}\n"
                 "\n"
                 "Base Ralph instructions:\n"

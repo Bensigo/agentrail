@@ -552,6 +552,41 @@ def issue_run_phase_prompt(
             "and stay in scope; otherwise \"reject\". If you cannot review, reject."
         )
 
+    if phase == "gather":
+        # JIT context gatherer (#1049) — MINIMAL PLACEHOLDER prompt. The full
+        # deterministic-manifest gather prompt lands in PR C; this branch only
+        # gives the flag-gated phase a valid, standalone prompt so the pipeline
+        # seam can be wired and tested now. Like the critic, it runs on a
+        # SEPARATE cheap model, so it is deliberately NOT built on
+        # ``shared_task_prefix`` (prompt-prefix caches are model-scoped; sharing
+        # the implementer's prefix bytes here would buy nothing and risks
+        # perturbing the test-author/execute cache key).
+        return (
+            "You are the CONTEXT GATHERER (issue #1049). You run BEFORE the "
+            "Test-Author and Implementer on a fast, cheap model. Your job is "
+            "reconnaissance only: locate the code that matters for this issue so "
+            "later phases start oriented instead of searching cold.\n"
+            "\n"
+            "Issue context:\n"
+            # Read-side defense (#1035): frame the untrusted issue body as data.
+            f"{frame_untrusted_issue_context(issue_context)}\n"
+            "\n"
+            "Phase context pack:\n"
+            f"{context_summary}\n"
+            "\n"
+            "Base instructions:\n"
+            f"{base_prompt}\n"
+            "\n"
+            f"Your task — gather context for issue #{issue}:\n"
+            "- Locate the files, symbols, and tests relevant to the issue's "
+            "acceptance criteria.\n"
+            "- Summarize each relevant path with the line ranges that matter and "
+            "one line on WHY it matters to the AC.\n"
+            "- You are READ-ONLY: do not edit, create, or delete any file, do not "
+            "implement anything, do not write tests, do not commit or push. "
+            "Locating and summarizing is the whole job for this phase."
+        )
+
     if phase == "verify":
         role_header = (
             "You are the VERIFIER. This is **Independent Verification** (ADR 0008, "

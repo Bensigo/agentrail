@@ -141,6 +141,21 @@ def diff_only_enforce_enabled() -> bool:
     return layer_enabled("DIFF_ONLY_ENFORCE")
 
 
+def jit_gather_enabled() -> bool:
+    """Is the JIT context-gatherer phase ON for this run? DEFAULT OFF (#1049).
+
+    The gather phase (a cheap-model, read-only context gatherer that runs
+    BEFORE test-author) is experimental and ships flag-gated OFF. It turns on
+    ONLY when ``AGENTRAIL_JIT_GATHER`` is explicitly ``"1"`` — absent, blank,
+    ``"0"``, or any other value keeps today's phase sequence byte-identical.
+
+    Deliberately NOT routed through :func:`layer_enabled`: that helper defaults
+    ON (ablation layers are opt-out), while this is a rollout flag that must
+    default OFF until the gather flow is proven.
+    """
+    return (os.environ.get("AGENTRAIL_JIT_GATHER") or "").strip() == "1"
+
+
 DIFF_ONLY_DEFAULT_MAX_ATTEMPTS = 2  # 1 initial + 1 redo-as-diff; kept small (cost lever)
 
 
@@ -316,7 +331,17 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
         phase_context_pack_file = None
         phase_context_summary = ""
     else:
-        if phase == "plan" and rc.run_context_pack_file:
+        if phase == "gather":
+            # JIT gather (#1049): the gather phase always builds a FRESH,
+            # run-pinned pack — never reuses the run-level pack. Passing
+            # ``run_id`` pins the pack_id/artifact path to this run (#1084),
+            # which is what makes the gather handoff deterministic. This
+            # branch must stay ABOVE the generic non-plan reuse branch below,
+            # which would otherwise swallow gather and drop the run pin.
+            phase_context_pack_file = ctx.build_issue_context_pack(
+                rc.target_dir, rc.issue, phase, run_id=rc.run_id
+            )
+        elif phase == "plan" and rc.run_context_pack_file:
             phase_context_pack_file = rc.run_context_pack_file
         elif (phase != "plan" and rc.run_context_pack_file
               and (rc.target_dir / rc.run_context_pack_file).is_file()):
@@ -1262,6 +1287,20 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
     # *authored* acceptance test failing — that red observation is what proves the
     # test is real, and the Implementer (execute phase) is a separate role that
     # turns it green (AC2). It is the FIRST phase now that plan is gone.
+    # JIT context gatherer (#1049, flag-gated DEFAULT OFF): a cheap-model,
+    # read-only gather phase that runs BEFORE test-author. It runs ONLY when a
+    # distinct gather command was enumerated into ``phase_commands`` (the same
+    # presence pattern the critic uses) AND ``AGENTRAIL_JIT_GATHER=1``. With
+    # the flag off or no command enumerated, the phase is skipped entirely —
+    # gather NEVER falls back to the implementer's ``rc.agent_command``.
+    # Advisory phase: a gather failure is logged but does not fail the run —
+    # later phases proceed exactly as if gather had not run.
+    if status == 0 and "gather" in rc.phase_commands and jit_gather_enabled():
+        gather_status, _ = run_issue_phase(rc, "gather", 1, plan_output=plan_output)
+        if gather_status != 0:
+            print("gather phase failed; continuing without gathered context",
+                  file=sys.stderr)
+
     if status == 0 and require_red_green:
         status, _ = run_issue_phase(rc, "test-author", 1, plan_output=plan_output)
         last_phase = "test-author"

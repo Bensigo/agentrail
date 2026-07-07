@@ -40,6 +40,11 @@ from agentrail.run.verifier import parse_verdict
 # none is configured.
 CRITIC_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
+# JIT context gatherer (#1049): like the critic, the gather phase is a cheap
+# read-only pass and defaults to the same fast, cheap tier (Haiku) when a
+# gather model is opted in but left blank.
+GATHER_DEFAULT_MODEL = CRITIC_DEFAULT_MODEL
+
 
 @dataclass(frozen=True)
 class CriticVerdict:
@@ -66,6 +71,18 @@ def resolve_critic_model(configured: str | None) -> str:
     """
     model = (configured or "").strip()
     return model or CRITIC_DEFAULT_MODEL
+
+
+def resolve_gather_model(configured: str | None) -> str:
+    """Return the CHEAP gather model: the configured model, else the default (#1049).
+
+    Pure; mirrors :func:`resolve_critic_model`. A non-empty configured model
+    wins; a blank/``None`` value falls back to :data:`GATHER_DEFAULT_MODEL`
+    (a fast cheap tier), so the gatherer always runs on a cheap model rather
+    than silently inheriting an expensive one.
+    """
+    model = (configured or "").strip()
+    return model or GATHER_DEFAULT_MODEL
 
 
 def score_candidate(output: str) -> CriticVerdict:

@@ -5,7 +5,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from agentrail.context.config import read_context_config
 from agentrail.context.embeddings import embed_context
@@ -306,6 +306,100 @@ def _precision_at_budget(top_results: List[Dict[str, Any]], relevant_paths: List
     }
 
 
+def _dedupe_paths(items: Iterable[Dict[str, Any]]) -> List[str]:
+    """Distinct candidate paths in first-seen (rank) order, skipping blanks.
+
+    Collapses the many chunks a single file contributes down to one file entry,
+    so the file-level metrics below score FILES, not chunks.
+    """
+    seen: Set[str] = set()
+    ordered: List[str] = []
+    for item in items:
+        path = str(item.get("path") or "")
+        if path and path not in seen:
+            seen.add(path)
+            ordered.append(path)
+    return ordered
+
+
+def _file_level_precision(
+    ranked_results: List[Dict[str, Any]],
+    packed_results: List[Dict[str, Any]],
+    relevant_paths: List[str],
+    required_sources: List[str],
+) -> Dict[str, Any]:
+    """File-level companion to ``_precision_at_budget`` (issue #1044).
+
+    ``precision_at_budget`` is CHUNK-level: it scores the ~10 packed chunks, so a
+    single relevant file that only has 4 chunks caps the score at 0.40 even when
+    retrieval is perfect.  The 0.75-0.85 precision figures quoted for coding
+    agents are FILE-level, so this reports the file-level view the benchmark
+    actually uses, alongside (never replacing) the chunk-level number:
+
+      ``rPrecision``      standard IR R-precision — of the top-R DISTINCT files
+                          in the ranked retrieval (R = number of relevant
+                          files), how many are relevant.  Directly comparable to
+                          the 0.75-0.85 coding-agent benchmark.
+      ``precisionInPack`` of the distinct files the compiler actually packed,
+                          how many are relevant.  ``precisionInPack`` low while
+                          ``rPrecision`` is high means the ranker is fine but the
+                          pack over-fills with noise (a packing problem, not a
+                          ranking problem).
+      ``recall``          of the relevant files, how many appear anywhere in the
+                          pack.  Guard rail: precision gains are meaningless if
+                          this drops — never optimise precision alone.
+
+    Pure and deterministic: computed only from paths already in the result
+    lists, so it is unit-testable without an index.
+    """
+    relevant = set(relevant_paths or required_sources)
+    r = len(relevant)
+
+    ranked_files = _dedupe_paths(ranked_results)
+    considered = ranked_files[:r] if r else []
+    r_precision = (len([path for path in considered if path in relevant]) / r) if r else 1.0
+
+    pack_files = _dedupe_paths(packed_results)
+    if pack_files:
+        precision_in_pack = len([path for path in pack_files if path in relevant]) / len(pack_files)
+    else:
+        precision_in_pack = 1.0 if not relevant else 0.0
+
+    packed = set(pack_files)
+    recall = (len([path for path in relevant if path in packed]) / r) if r else 1.0
+
+    return {
+        "rPrecision": round(r_precision, 6),
+        "precisionInPack": round(precision_in_pack, 6),
+        "recall": round(recall, 6),
+        "relevantFileCount": r,
+        "rankedFilesConsidered": considered,
+        "packFiles": pack_files,
+        "noisyPackFiles": [path for path in pack_files if path not in relevant],
+    }
+
+
+def _mean_metric(fixtures: List[Dict[str, Any]], metric_path: Tuple[str, ...]) -> Optional[float]:
+    """Mean of a (possibly nested) numeric metric across fixtures, or ``None`` if empty.
+
+    ``metric_path`` walks into each fixture's ``metrics`` dict, e.g.
+    ``("fileLevelPrecision", "rPrecision")``.  Missing or non-numeric values are
+    skipped so one malformed fixture can't poison the corpus mean.  Booleans are
+    excluded on purpose (``True`` is an ``int`` in Python but not a score).
+    """
+    values: List[float] = []
+    for fixture in fixtures:
+        node: Any = fixture.get("metrics", {})
+        for key in metric_path:
+            if not isinstance(node, dict):
+                node = None
+                break
+            node = node.get(key)
+        if isinstance(node, (int, float)) and not isinstance(node, bool):
+            values.append(float(node))
+    return round(sum(values) / len(values), 6) if values else None
+
+
 def _graph_expansion_metrics(query: Dict[str, Any], expected_graph_sources: List[str]) -> Dict[str, Any]:
     compiler = _compiler(query)
     expansion = compiler.get("graphExpansion") if compiler else None
@@ -427,6 +521,7 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
     budget_metadata = _budget_metadata_presence(query)
     graph_expansion = _graph_expansion_metrics(query, fixture.get("expectedGraphExpandedSources", []))
     precision_at_budget = _precision_at_budget(top_results, _unique(expected + required), required, fixture_limit)
+    file_level_precision = _file_level_precision(results, top_results, _unique(expected + required), required)
     stale_or_denied_leakage = _stale_or_denied_leakage(query, selected_candidates, excluded, all_result_paths)
     failures: List[str] = []
     failure_details: List[Dict[str, Any]] = []
@@ -502,6 +597,7 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
         "budgetMetadataPresence": budget_metadata,
         "graphExpansion": graph_expansion,
         "precisionAtBudget": precision_at_budget,
+        "fileLevelPrecision": file_level_precision,
     }
     return {
         "name": fixture["name"],
@@ -629,6 +725,9 @@ def _grep_baseline_fixture(
     top10 = set(paths[:10])
     top_results = [{"path": path, "rank": index} for index, path in enumerate(paths, 1)]
     precision_at_budget = _precision_at_budget(top_results, _unique(expected + required), required, fixture_limit)
+    # Grep returns one flat ranked list of files (no compiler pack), so the ranked
+    # and packed lists are the same here.
+    file_level_precision = _file_level_precision(top_results, top_results, _unique(expected + required), required)
     return {
         "name": fixture["name"],
         "task": fixture["task"],
@@ -637,6 +736,7 @@ def _grep_baseline_fixture(
             "recallAt5": round(_recall(expected, top5), 6),
             "recallAt10": round(_recall(expected, top10), 6),
             "precisionAtBudget": precision_at_budget,
+            "fileLevelPrecision": file_level_precision,
         },
         "selectedPaths": paths,
     }
@@ -670,6 +770,7 @@ def evaluate_retrieval(target_dir: Path, fixture_file: Path) -> Dict[str, Any]:
     # exclude it so the baseline is honest (it would otherwise rank as the top hit
     # on every query and unfairly depress grep's recall/precision).
     grep_baseline = evaluate_grep_baseline(root, fixtures, exclude={fixtures_path.resolve()})
+    scored = [item for item in fixture_reports if item["status"] != "skipped"]
     return {
         "schemaVersion": 1,
         "command": "context.evaluate",
@@ -681,6 +782,17 @@ def evaluate_retrieval(target_dir: Path, fixture_file: Path) -> Dict[str, Any]:
             "passed": len([item for item in fixture_reports if item["status"] == "passed"]),
             "failed": len(failed),
             "skipped": len(skipped),
+            # Corpus-level means over scored (non-skipped) fixtures. chunkPrecisionAtBudget
+            # is the harsh pack-of-10 headline; fileRPrecision is the benchmark-comparable
+            # file-level ranking quality (compare to the 0.75-0.85 coding-agent band);
+            # fileRecall is the guard rail that must not drop when precision is tuned.
+            "means": {
+                "chunkPrecisionAtBudget": _mean_metric(scored, ("precisionAtBudget", "precision")),
+                "fileRPrecision": _mean_metric(scored, ("fileLevelPrecision", "rPrecision")),
+                "filePrecisionInPack": _mean_metric(scored, ("fileLevelPrecision", "precisionInPack")),
+                "fileRecall": _mean_metric(scored, ("fileLevelPrecision", "recall")),
+                "recallAt10": _mean_metric(scored, ("recallAt10",)),
+            },
         },
         "fixtures": fixture_reports,
         "grepBaseline": grep_baseline,
@@ -693,6 +805,16 @@ def format_evaluation_report(report: Dict[str, Any]) -> str:
         "Retrieval Evaluation",
         f"fixtures={report['summary']['fixtures']} passed={report['summary']['passed']} failed={report['summary']['failed']} skipped={report['summary']['skipped']}",
     ]
+    means = report["summary"].get("means")
+    if means:
+        lines.append(
+            "means: "
+            f"chunkPrecisionAtBudget={means.get('chunkPrecisionAtBudget')} "
+            f"fileRPrecision={means.get('fileRPrecision')} "
+            f"filePrecisionInPack={means.get('filePrecisionInPack')} "
+            f"fileRecall={means.get('fileRecall')} "
+            f"recall@10={means.get('recallAt10')}"
+        )
     grep_by_name = {
         item["name"]: item
         for item in (report.get("grepBaseline") or {}).get("fixtures", [])
@@ -713,7 +835,10 @@ def format_evaluation_report(report: Dict[str, Any]) -> str:
             f"reasonCoverage={metrics['reasonCoverage']} "
             f"budgetMetadataPresence={metrics['budgetMetadataPresence']['passed']} "
             f"graphExpansion={metrics['graphExpansion']['passed']} "
-            f"precisionAtBudget={metrics['precisionAtBudget']['precision']}"
+            f"precisionAtBudget={metrics['precisionAtBudget']['precision']} "
+            f"fileRPrecision={metrics.get('fileLevelPrecision', {}).get('rPrecision')} "
+            f"filePrecisionInPack={metrics.get('fileLevelPrecision', {}).get('precisionInPack')} "
+            f"fileRecall={metrics.get('fileLevelPrecision', {}).get('recall')}"
         )
         # Comparative arm: show AgentRail's recall/precision next to plain-grep's
         # on the SAME fixture so the numbers are not standalone (issue #935).
@@ -723,9 +848,11 @@ def format_evaluation_report(report: Dict[str, Any]) -> str:
             lines.append(
                 f"  arms: "
                 f"agentrail[recall@5={metrics['recallAt5']} recall@10={metrics['recallAt10']} "
-                f"precisionAtBudget={metrics['precisionAtBudget']['precision']}] "
+                f"precisionAtBudget={metrics['precisionAtBudget']['precision']} "
+                f"fileRPrecision={metrics.get('fileLevelPrecision', {}).get('rPrecision')}] "
                 f"vs plain-grep[recall@5={grep_metrics['recallAt5']} recall@10={grep_metrics['recallAt10']} "
-                f"precisionAtBudget={grep_metrics['precisionAtBudget']['precision']}]"
+                f"precisionAtBudget={grep_metrics['precisionAtBudget']['precision']} "
+                f"fileRPrecision={grep_metrics.get('fileLevelPrecision', {}).get('rPrecision')}]"
             )
         for failure in fixture["failures"]:
             lines.append(f"  failure: {failure}")

@@ -27,7 +27,11 @@ from agentrail.run.context_pack_push import (
     push_live_context_metrics,
     read_pack_included,
 )
-from agentrail.run.context_inject import emit_forced_context, forced_context_enabled
+from agentrail.run.context_inject import (
+    emit_forced_context,
+    forced_context_enabled,
+    remove_forced_context,
+)
 from agentrail.run.cost_push import build_cost_record, push_cost_event
 from agentrail.run.failure_push import push_failure_event
 from agentrail.run.output_enforcer import (
@@ -365,6 +369,11 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     # strictly additive and only fires when runners.forcedContext is enabled.
     if forced_context_enabled(rc.target_dir):
         emit_forced_context(rc.agent, rc.target_dir, phase_context_summary)
+    else:
+        # Flag flipped OFF after a prior emit: actively remove the per-engine
+        # artifacts, otherwise the claude hook keeps force-injecting a stale
+        # context every turn (emit alone is a no-op when disabled).
+        remove_forced_context(rc.target_dir)
 
     # 7. Verifier findings text
     if verifier_findings_file and Path(verifier_findings_file).is_file():

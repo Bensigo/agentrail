@@ -1648,9 +1648,9 @@ export async function sendTelegramMessageWithButtons(
 }
 ```
 
-- [ ] **Step 7: Delete the legacy `decideReply` handler**
+- [ ] **Step 7: Delete the legacy `decideReply` handler + true-up its tests**
 
-Find the handler file the route used to import (`../handler` from the route file = `apps/console/app/api/v1/connectors/telegram/webhook/handler.ts`) and its test(s); `git rm` them. Search for remaining `decideReply` references with the python-walk pattern from Task 3 Step 3 and remove them (the local-dev poller `apps/console/scripts/telegram-poll.ts` likely imports it — update the poller to POST the raw update to the local webhook route instead, or enqueue directly via `enqueueChannelMessage` with the same parse function; keep the poller compiling).
+The files that exist today (verified): `webhook/handler.ts` (decideReply), `webhook/handler.test.ts`, `webhook/poll-core.test.ts`, and `webhook/[workspaceId]/route.test.ts`. `git rm` `handler.ts` + `handler.test.ts`. REWRITE `[workspaceId]/route.test.ts` to the new contract (secret-header checks unchanged; on a valid message expect `{ ok: true, enqueued: true }` with `enqueueChannelMessage` mocked, and redelivery → `enqueued: false`) instead of deleting it — it's the route's regression net. Check `poll-core.test.ts`: if it exercises `decideReply`, rewrite it against `parseTelegramUpdate` + the poller's new enqueue path. Search for remaining `decideReply` references with the python-walk pattern from Task 3 Step 3 and remove them (the local-dev poller `apps/console/scripts/telegram-poll.ts` likely imports it — update the poller to POST the raw update to the local webhook route instead, or enqueue directly via `enqueueChannelMessage` with the same parse function; keep the poller compiling).
 
 - [ ] **Step 8: Run the console suite**
 

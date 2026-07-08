@@ -22,6 +22,17 @@ DEFAULT_EXCLUDE_GLOBS = [
     ".cache/**",
     ".turbo/**",
     "**/*.log",
+    # Non-product artifacts that pollute code retrieval and never belong in a
+    # coding agent's context: the eval corpus (incl. answer-key dirs and
+    # workdir clones that duplicate real modules like run/pricing.py),
+    # generated eval reports, and documentation templates.
+    "evals/**",
+    "**/evals/**",
+    "templates/**",
+    "**/templates/**",
+    # Generated .agentrail cache only — the index and source-cache dirs.
+    # Product state under .agentrail (state.json, config.json, runs/**,
+    # handoffs/**) MUST stay indexed, so do NOT blanket-exclude .agentrail/**.
     ".agentrail/context/**",
     ".agentrail/source/**",
     ".env",

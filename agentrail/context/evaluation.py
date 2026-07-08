@@ -695,7 +695,17 @@ def grep_baseline_paths(
     scored: List[tuple[int, str]] = []
     for dirpath, dirnames, filenames in os.walk(root):
         # Prune excluded directories in place; sort for deterministic traversal.
-        dirnames[:] = sorted(name for name in dirnames if name not in _GREP_EXCLUDED_DIRS)
+        # Also skip any hidden dot-dir (name starts with "."): on a dev machine
+        # these hold gitignored agent-scratch (`.claude/worktrees/agent-*`,
+        # `.codex-review/pr-*`, `.afk-workflow/`) — full-repo copies that duplicate
+        # every expected source and crowd the real files out of grep's top-k. The
+        # real AgentRail index never walks them, so pruning them keeps the
+        # grep-vs-AgentRail comparison honest on any machine.
+        dirnames[:] = sorted(
+            name
+            for name in dirnames
+            if name not in _GREP_EXCLUDED_DIRS and not name.startswith(".")
+        )
         for filename in sorted(filenames):
             file_path = Path(dirpath) / filename
             if file_path.resolve() in excluded:

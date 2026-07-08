@@ -88,6 +88,7 @@ from agentrail.evals.arms import (
     symbol_packing_arm,
 )
 from agentrail.evals.corpus.loader import CorpusTask, load_corpus
+from agentrail.evals.gather_report import render_gather_report_from_ledger
 from agentrail.evals.pack_scorer import ArmPackScore
 from agentrail.evals.pack_scoring import compute_pack_scores
 from agentrail.evals.reporter import (
@@ -202,6 +203,15 @@ class SpineConfig:
     # report renders ``n/a`` honestly (never a fabricated 0.0). The corpus tasks
     # are pinned to this repo, so the CLI passes the agentrail checkout root here.
     pack_index_root: Optional[Path] = None
+    # Gather token-reduction + cache-hit ledger (#1049 AC4). Path to a per-phase
+    # cost ledger (``.agentrail/run/cost-events.jsonl`` shape — one
+    # ``build_cost_record`` JSON line per phase, tagged with its ``arm``). When
+    # set and readable, the report gains a "Gather token-reduction + cache-hit"
+    # section pairing ``full`` against ``full-plus-gather`` on total tokens,
+    # execute-phase context, and warm-cache hits. ``None`` (default) → the section
+    # renders an honest "not available — needs a live run" note (never a fake 0),
+    # so existing runs are unchanged and the section is always discoverable.
+    cost_ledger_path: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -532,11 +542,21 @@ def run_spine(
     audit_md = render_routing_retry_audit_markdown(
         routing=routing_audit, retry=retry_audit
     )
+    # Gather token-reduction + cache-hit report (#1049 AC4). Read from the
+    # per-phase cost ledger (``config.cost_ledger_path``) and rendered as a
+    # ``full`` vs ``full-plus-gather`` section: total tokens (≈ flat with gather
+    # ON), execute-phase context (should DROP), and warm-cache hits (AC1 byte-
+    # stable-manifest evidence). The section ALWAYS renders — an unset/missing
+    # ledger yields an honest "not available — needs a live run" note (never a
+    # fake 0), so existing runs with no ledger are unchanged but discoverable.
+    gather_md = render_gather_report_from_ledger(config.cost_ledger_path)
     with report_path.open("a", encoding="utf-8") as fh:
         fh.write("\n")
         fh.write(probes_md)
         fh.write("\n")
         fh.write(audit_md)
+        fh.write("\n")
+        fh.write(gather_md)
 
     # AC4 — same per-arm numbers go via the injected MetricsWriter. Default:
     # the HttpMetricsWriter (honest no-op until #942).

@@ -1335,3 +1335,73 @@ def test_cited_paths_scopes_expansion_env_per_arm(
     assert captured[0]["expansion"] == "1"
     # Restored to ABSENT — scoping did not leak a global flag into the process.
     assert "AGENTRAIL_CONTEXT_QUERY_EXPANSION" not in os.environ
+
+
+# ---------------------------------------------------------------------------
+# Gather token-reduction + cache-hit report (#1049 AC4) — the spine appends the
+# section to the dated report. Without a ledger it renders the honest
+# "not available" note; with an arm-tagged ledger it renders real numbers.
+# ---------------------------------------------------------------------------
+
+
+def test_gather_report_section_renders_not_available_without_ledger(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    result = run_spine(
+        SpineConfig(arms=[baseline(), full()], reps=1, corpus_root=corpus_root),
+        executor=SpyExecutor(),
+        hidden_test_runner=HiddenTestSpy(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-09",
+    )
+    text = result.report_path.read_text(encoding="utf-8")
+    # The section always renders so it is discoverable...
+    assert "Gather token-reduction + cache-hit (#1049 AC4)" in text
+    # ...and honestly says it needs a live run (never a fabricated 0).
+    assert "Not available" in text and "need a live" in text
+
+
+def test_gather_report_section_populated_with_arm_tagged_ledger(
+    corpus_root: Path, reports_dir: Path, tmp_path: Path
+) -> None:
+    # A synthetic arm-tagged cost ledger: full (gather OFF) with a fat execute
+    # context, full-plus-gather (ON) with a shrunk execute context.
+    ledger = tmp_path / "cost-events.jsonl"
+    rows = [
+        {"run_id": "off", "phase": "execute", "input_tokens": 9000,
+         "output_tokens": 1000, "cache_tokens": 1000, "cache_creation_tokens": 0,
+         "arm": "full"},
+        {"run_id": "off", "phase": "verify", "input_tokens": 1000,
+         "output_tokens": 100, "cache_tokens": 500, "cache_creation_tokens": 0,
+         "arm": "full"},
+        {"run_id": "on", "phase": "gather", "input_tokens": 1500,
+         "output_tokens": 400, "cache_tokens": 0, "cache_creation_tokens": 600,
+         "arm": "full-plus-gather"},
+        {"run_id": "on", "phase": "execute", "input_tokens": 3000,
+         "output_tokens": 1000, "cache_tokens": 1200, "cache_creation_tokens": 0,
+         "arm": "full-plus-gather"},
+        {"run_id": "on", "phase": "verify", "input_tokens": 1000,
+         "output_tokens": 100, "cache_tokens": 500, "cache_creation_tokens": 0,
+         "arm": "full-plus-gather"},
+    ]
+    ledger.write_text(
+        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+    )
+
+    result = run_spine(
+        SpineConfig(
+            arms=[full()], reps=1, corpus_root=corpus_root, cost_ledger_path=ledger
+        ),
+        executor=SpyExecutor(),
+        hidden_test_runner=HiddenTestSpy(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-09",
+    )
+    text = result.report_path.read_text(encoding="utf-8")
+    assert "Gather token-reduction + cache-hit (#1049 AC4)" in text
+    assert "full-plus-gather" in text
+    # Execute-context: OFF 10000 (9000+1000) vs ON 4200 (3000+1200) → dropped.
+    assert "10000" in text and "4200" in text
+    assert "DROPPED with gather ON" in text

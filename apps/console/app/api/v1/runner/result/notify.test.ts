@@ -1,9 +1,17 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-vi.mock("@agentrail/db-postgres", () => ({
-  getConnector: vi.fn(),
-  getConnectorSecret: vi.fn(),
-}));
+// Keep `jaceOwnsTelegramNotify` as the REAL pure decision (it never touches the
+// db) so the routing tests exercise the true migration gate; only the
+// db-touching lookups are mocked. Mirrors the jace inbound route test.
+vi.mock("@agentrail/db-postgres", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@agentrail/db-postgres")>();
+  return {
+    ...actual,
+    getConnector: vi.fn(),
+    getConnectorSecret: vi.fn(),
+  };
+});
 vi.mock("../../workspaces/[workspaceId]/connectors/secret/telegram", () => ({
   sendTelegramMessage: vi.fn(),
 }));
@@ -122,6 +130,125 @@ describe("notifyRunOutcome", () => {
     await expect(
       notifyRunOutcome(WS, { issueNumber: "1", outcome: "green" })
     ).resolves.toBeUndefined();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Outbound Telegram routing through Jace (#1047, AC1). Exactly ONE path fires per
+ * workspace: the migrated route (Jace) OR the legacy sender — never both (no
+ * dark, no double). Migration is gated on the `jace` connector being enabled AND
+ * an explicit `telegramNotify` opt-in, so it is a safe no-op until per-workspace
+ * cutover. The Jace handoff is a best-effort POST to the sidecar; the tests stub
+ * `fetch` so no live sidecar is needed.
+ */
+describe("notifyRunOutcome — Jace outbound routing (#1047)", () => {
+  /** An enabled `jace` connector row view, opting Telegram notify into Jace. */
+  function jaceConnector(
+    opts: { enabled?: boolean; telegramNotify?: boolean } = {}
+  ) {
+    const { enabled = true, telegramNotify = true } = opts;
+    return {
+      provider: "jace" as const,
+      enabled,
+      config: {
+        repos: [],
+        triggerLabel: "x",
+        pollIntervalSeconds: 60,
+        telegramNotify,
+      },
+      hasSecret: false,
+      updatedAt: null,
+    };
+  }
+
+  /** Route getConnector by provider: a jace row + a connected telegram row. */
+  function routeConnectors(
+    jace: ReturnType<typeof jaceConnector> | null,
+    telegram = telegramConnected("999")
+  ) {
+    mockGetConnector.mockImplementation(async (_ws: string, provider: string) =>
+      provider === "jace" ? jace : telegram
+    );
+  }
+
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+    mockGetSecret.mockResolvedValue("bot-token");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("delivers via Jace EXACTLY ONCE and NEVER via the legacy sender when migrated", async () => {
+    routeConnectors(jaceConnector());
+
+    await notifyRunOutcome(WS, {
+      issueNumber: "42",
+      outcome: "green",
+      prUrl: "https://github.com/o/r/pull/9",
+      costUsd: 1.2,
+    });
+
+    // Exactly-once via the Jace sidecar handoff...
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // ...and the legacy Telegram sender is NOT invoked (no double-fire).
+    expect(mockSend).not.toHaveBeenCalled();
+
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(String(url)).toContain("/eve/v1/notify");
+    const body = JSON.parse(String((init as RequestInit).body));
+    expect(body).toMatchObject({
+      channel: "telegram",
+      chatId: "999",
+      issueNumber: "42",
+      outcome: "green",
+    });
+    expect(String(body.text)).toContain("PR ready");
+  });
+
+  it("stays on the legacy sender when the jace connector is DISABLED (kill switch)", async () => {
+    routeConnectors(jaceConnector({ enabled: false }));
+
+    await notifyRunOutcome(WS, { issueNumber: "1", outcome: "green" });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays on the legacy sender when the telegramNotify opt-in is OFF (default, pre-cutover)", async () => {
+    routeConnectors(jaceConnector({ telegramNotify: false }));
+
+    await notifyRunOutcome(WS, { issueNumber: "1", outcome: "green" });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays on the legacy sender when there is NO jace connector at all", async () => {
+    routeConnectors(null);
+
+    await notifyRunOutcome(WS, { issueNumber: "1", outcome: "green" });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("swallows a Jace sidecar failure and does NOT fall back to legacy (exactly-once, never double)", async () => {
+    routeConnectors(jaceConnector());
+    fetchSpy.mockRejectedValue(new Error("sidecar down"));
+
+    await expect(
+      notifyRunOutcome(WS, { issueNumber: "1", outcome: "green" })
+    ).resolves.toBeUndefined();
+
+    // Critical: a transient Jace blip must NOT trigger a legacy send — that would
+    // risk a double-fire if Jace had already delivered.
     expect(mockSend).not.toHaveBeenCalled();
   });
 });

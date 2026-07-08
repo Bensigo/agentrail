@@ -1247,8 +1247,10 @@ export {
 // github_intake block above.
 export {
   jaceInboundAllowed,
+  jaceOwnsTelegramNotify,
   findEnabledJaceWorkspace,
   type JaceConnectorRowish,
+  type JaceNotifyConnectorRowish,
   type JaceInboundDecision,
 } from "./jace_intake.js";
 

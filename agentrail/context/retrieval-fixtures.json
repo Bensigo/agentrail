@@ -66,6 +66,34 @@
       "expectedPriorMistakes": [],
       "expectedExcludedSources": [],
       "expectedGraphExpandedSources": []
+    },
+    {
+      "name": "context-index-build-hard",
+      "_comment": "NON-SATURATED (recall@5<1.0) fixture for #1088 AC3. index.py imports source_record_for_file from sources.py (index.py:13), so sources.py is a GENUINE dependency of build_index. The task names build_index/walk_files (surfacing index.py@1 and fs.py@3 -- both required and retrievable) but does NOT name the source-record helper, so the symbol-literal retriever leaves sources.py deep (~rank 17, outside the pack): a real cross-file recall miss of the kind #1043's recall layer targets. This gives the recall metric genuine headroom to move. Do not add sources.py to requiredSources.",
+      "task": "build_index walk_files extracted_symbols chunks records over the repository tree",
+      "requiredSources": ["agentrail/context/index.py", "agentrail/shared/fs.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.0,
+      "expectedFiles": ["agentrail/context/index.py", "agentrail/shared/fs.py", "agentrail/context/sources.py"],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
+    },
+    {
+      "name": "context-pack-build-hard",
+      "_comment": "NON-SATURATED (recall@5<1.0) fixture for #1088 AC3. build_context_pack (packs.py) genuinely imports compute_pack_quality from pack_quality.py (packs.py:16), but a task phrased around pack assembly does not name that symbol, so the symbol-literal retriever misses pack_quality.py entirely (a real recall weakness #1043 targets). packs.py stays retrievable (required). Do not add pack_quality.py to requiredSources.",
+      "task": "build_context_pack assemble sections included excluded budget candidates write pack",
+      "requiredSources": ["agentrail/context/packs.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.0,
+      "expectedFiles": ["agentrail/context/packs.py", "agentrail/context/pack_quality.py"],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
     }
   ]
 }

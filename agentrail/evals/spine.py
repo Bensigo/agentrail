@@ -78,10 +78,14 @@ _log = logging.getLogger(__name__)
 from agentrail.evals.arms import (
     Arm,
     baseline,
+    cutoff_arm,
     full,
     full_minus,
+    gather_arm,
+    llm_rerank_arm,
     new_flow,
     new_flow_minus,
+    symbol_packing_arm,
 )
 from agentrail.evals.corpus.loader import CorpusTask, load_corpus
 from agentrail.evals.pack_scorer import ArmPackScore
@@ -564,6 +568,18 @@ _TOP_LEVEL_ARMS = {
     "new-flow": new_flow,
 }
 
+# The opt-in PLUS arms, keyed by the layer name in ``full-plus-<layer>``. These
+# are default-OFF, model-dependent A/B arms that are NOT part of ``full`` (and
+# NOT in ``all_arms`` / ``--ablation``); they are reachable ONLY by an explicit
+# ``--arm full-plus-<layer>``. A new PLUS layer is one entry here (mirrors how a
+# ``full-minus-<layer>`` arm is picked up by the ``full-minus-`` prefix branch).
+_FULL_PLUS_ARMS = {
+    "llm_rerank": llm_rerank_arm,
+    "cutoff": cutoff_arm,
+    "symbol_packing": symbol_packing_arm,
+    "gather": gather_arm,
+}
+
 
 def resolve_arm(spec: str) -> Arm:
     """Resolve an arm spec string (CLI surface) into an :class:`Arm`.
@@ -572,6 +588,8 @@ def resolve_arm(spec: str) -> Arm:
         - ``baseline``
         - ``full``
         - ``full-minus-<layer>`` (e.g. ``full-minus-context``)
+        - ``full-plus-<layer>`` (opt-in PLUS arms: ``llm_rerank`` #1044,
+          ``cutoff`` #1096, ``symbol_packing`` #1044 AC4, ``gather`` #1049)
         - ``new-flow`` (full + critic + best-of-N + warm-cache, issue #980)
         - ``new-flow-minus-<layer>`` (e.g. ``new-flow-minus-warmcache``)
 
@@ -586,12 +604,22 @@ def resolve_arm(spec: str) -> Arm:
     new_flow_prefix = "new-flow-minus-"
     if spec.startswith(new_flow_prefix):
         return new_flow_minus(spec[len(new_flow_prefix):])
+    plus_prefix = "full-plus-"
+    if spec.startswith(plus_prefix):
+        layer = spec[len(plus_prefix):]
+        try:
+            return _FULL_PLUS_ARMS[layer]()
+        except KeyError:
+            raise ValueError(
+                f"unknown full-plus arm layer {layer!r}; expected one of "
+                f"{', '.join(_FULL_PLUS_ARMS)}"
+            )
     prefix = "full-minus-"
     if spec.startswith(prefix):
         return full_minus(spec[len(prefix):])
     raise ValueError(
         f"unknown arm {spec!r}; expected 'baseline', 'full', 'full-minus-<layer>', "
-        "'new-flow', or 'new-flow-minus-<layer>'"
+        "'full-plus-<layer>', 'new-flow', or 'new-flow-minus-<layer>'"
     )
 
 

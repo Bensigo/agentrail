@@ -79,6 +79,26 @@ NEW_FLOW_LAYERS: Tuple[str, ...] = (
 # ``baseline`` stay byte-identical to today.
 LLM_RERANK_LAYER: str = "llm_rerank"
 
+# Three more OPT-IN, flag-gated context/pipeline layers that — exactly like
+# :data:`LLM_RERANK_LAYER` — are default-OFF and NOT part of ``full``, so they
+# are A/B'd as PLUS arms (``full`` vs ``full-plus-<layer>``) and ride
+# ``extra_layers`` (never a base :data:`LAYER_NAMES` field). Each has a live
+# resolver that keys on one env var (the runner's ``_arm_env`` bridge sets it):
+#
+#   cutoff          — adaptive pack-tail confidence cutoff (#1096), toggled by
+#                     ``agentrail.context.retrieval.resolve_pack_cutoff`` reading
+#                     ``AGENTRAIL_CONTEXT_PACK_CUTOFF``.
+#   symbol_packing  — symbol-range pack windows (#1044 AC4), toggled by
+#                     ``agentrail.context.packs.symbol_packing_enabled`` reading
+#                     ``AGENTRAIL_CONTEXT_SYMBOL_PACKING``.
+#   gather          — the JIT read-only context-gatherer phase (#1049), toggled
+#                     by ``agentrail.run.pipeline.jit_gather_enabled`` reading
+#                     ``AGENTRAIL_JIT_GATHER`` AND requiring a cheap gather model
+#                     (``AGENTRAIL_EVAL_GATHER_MODEL``) so the phase actually fires.
+CUTOFF_LAYER: str = "cutoff"
+SYMBOL_PACKING_LAYER: str = "symbol_packing"
+GATHER_LAYER: str = "gather"
+
 # Pinned execution model + temperature. Held fixed across every arm so that
 # leave-one-out ablation isolates a single layer and nothing else (PRD:
 # "Everything else is held fixed: same model, same temperature, same limits").
@@ -96,6 +116,16 @@ PINNED_CRITIC_MODEL: str = "claude-haiku-4-5-20251001"
 # ``agentrail.context.llm_rerank.LLM_RERANK_DEFAULT_MODEL``) so the ``full`` vs
 # ``full-plus-llm_rerank`` A/B toggles ONLY the layer, never the reranker's model.
 PINNED_LLM_RERANK_MODEL: str = "claude-haiku-4-5-20251001"
+
+# The cheap model the GATHER arm pins for its read-only context-gatherer phase.
+# The gather phase runs ONLY when ``AGENTRAIL_JIT_GATHER=1`` AND a gather model
+# is opted in (``AGENTRAIL_EVAL_GATHER_MODEL``), and the model MUST differ from
+# the implementer's :data:`PINNED_MODEL` — a same-model gatherer trips the
+# independence guard in ``resolve_gather_command`` and silently returns "" (no
+# phase). Held fixed to the SAME cheap Haiku tier the live phase defaults to
+# (mirroring ``agentrail.run.critic.GATHER_DEFAULT_MODEL``) so ``full`` vs
+# ``full-plus-gather`` toggles ONLY the phase, never its model.
+PINNED_GATHER_MODEL: str = "claude-haiku-4-5-20251001"
 
 # An immutable empty mapping reused as the default for arms with no extra
 # (new-flow) layers, so ``full`` / ``baseline`` carry exactly ``{}`` and stay
@@ -149,6 +179,11 @@ class Arm:
             arm does not run the critic (``baseline``/``full``). When set, the
             eval runner forwards it so a critic command is built — the trigger
             the opt-in critic / best-of-N layers need to activate.
+        gather_model: the cheap gather model the arm pins, or ``""`` when the arm
+            does not run the JIT gatherer (everything but ``full-plus-gather``).
+            When set, the eval runner forwards it via ``AGENTRAIL_EVAL_GATHER_MODEL``
+            so a gather command is built — the trigger (alongside
+            ``AGENTRAIL_JIT_GATHER=1``) the opt-in gather phase needs to fire.
     """
 
     name: str
@@ -157,6 +192,7 @@ class Arm:
     temperature: float = PINNED_TEMPERATURE
     extra_layers: Mapping[str, bool] = field(default_factory=lambda: _NO_EXTRA_LAYERS)
     critic_model: str = ""
+    gather_model: str = ""
 
 
 def baseline() -> Arm:
@@ -332,14 +368,107 @@ def llm_rerank_arms() -> List[Arm]:
     return [full(), llm_rerank_arm()]
 
 
+# ---------------------------------------------------------------------------
+# Three more PLUS A/B arms — cutoff (#1096), symbol-packing (#1044 AC4), and
+# gather (#1049). Each mirrors :func:`llm_rerank_arm` exactly: ``full`` PLUS the
+# one opt-in layer switched ON via ``extra_layers``, paired against plain
+# ``full`` (layer OFF). Model/temperature are held fixed to ``full`` so a
+# ``full`` vs ``full-plus-<layer>`` comparison isolates exactly that layer.
+# ---------------------------------------------------------------------------
+
+
+def cutoff_arm() -> Arm:
+    """``full`` PLUS the adaptive pack-tail confidence cutoff (issue #1096).
+
+    Every base AgentRail layer stays ON (a strict superset of ``full``) and the
+    cutoff layer is switched ON via ``extra_layers`` (``{cutoff: True}``). The
+    runner's ``_arm_env`` bridges this to ``AGENTRAIL_CONTEXT_PACK_CUTOFF=1``,
+    the only flag ``agentrail.context.retrieval.resolve_pack_cutoff`` reads —
+    default-OFF, so ``full`` (which carries no cutoff extra layer) packs without
+    the tail trim and the A/B toggles ONLY the cutoff.
+    """
+    base = full()
+    return Arm(
+        name=f"full-plus-{CUTOFF_LAYER}",
+        layers=base.layers,
+        model=base.model,
+        temperature=base.temperature,
+        extra_layers=MappingProxyType({CUTOFF_LAYER: True}),
+    )
+
+
+def cutoff_arms() -> List[Arm]:
+    """The cutoff A/B pair: ``full`` (cutoff OFF) vs ``full-plus-cutoff`` (ON)."""
+    return [full(), cutoff_arm()]
+
+
+def symbol_packing_arm() -> Arm:
+    """``full`` PLUS the symbol-range pack windows (issue #1044 AC4).
+
+    Every base AgentRail layer stays ON (a strict superset of ``full``) and the
+    symbol-packing layer is switched ON via ``extra_layers``
+    (``{symbol_packing: True}``). The runner's ``_arm_env`` bridges this to
+    ``AGENTRAIL_CONTEXT_SYMBOL_PACKING=1``, the only flag
+    ``agentrail.context.packs.symbol_packing_enabled`` reads — default-OFF, so
+    ``full`` packs by line window and the A/B toggles ONLY symbol packing.
+    """
+    base = full()
+    return Arm(
+        name=f"full-plus-{SYMBOL_PACKING_LAYER}",
+        layers=base.layers,
+        model=base.model,
+        temperature=base.temperature,
+        extra_layers=MappingProxyType({SYMBOL_PACKING_LAYER: True}),
+    )
+
+
+def symbol_packing_arms() -> List[Arm]:
+    """The symbol-packing A/B pair: ``full`` (OFF) vs ``full-plus-symbol_packing`` (ON)."""
+    return [full(), symbol_packing_arm()]
+
+
+def gather_arm() -> Arm:
+    """``full`` PLUS the JIT read-only context-gatherer phase (issue #1049).
+
+    Every base AgentRail layer stays ON (a strict superset of ``full``) and the
+    gather layer is switched ON via ``extra_layers`` (``{gather: True}``). Unlike
+    the other PLUS arms, the gather phase needs TWO triggers, both bridged by the
+    runner's ``_arm_env``: ``AGENTRAIL_JIT_GATHER=1`` (read by
+    ``agentrail.run.pipeline.jit_gather_enabled``) AND a cheap gather model — a
+    pinned :data:`PINNED_GATHER_MODEL` forwarded as ``AGENTRAIL_EVAL_GATHER_MODEL``
+    (read by ``resolve_gather_command``). Without the model the phase resolves to
+    "" and never fires. The pinned model is a cheap Haiku tier that DIFFERS from
+    the implementer's :data:`PINNED_MODEL` so it clears the independence guard.
+    ``full`` carries neither trigger, so the A/B toggles ONLY the gather phase.
+    """
+    base = full()
+    return Arm(
+        name=f"full-plus-{GATHER_LAYER}",
+        layers=base.layers,
+        model=base.model,
+        temperature=base.temperature,
+        extra_layers=MappingProxyType({GATHER_LAYER: True}),
+        gather_model=PINNED_GATHER_MODEL,
+    )
+
+
+def gather_arms() -> List[Arm]:
+    """The gather A/B pair: ``full`` (gather OFF) vs ``full-plus-gather`` (ON)."""
+    return [full(), gather_arm()]
+
+
 __all__ = [
     "LAYER_NAMES",
     "NEW_FLOW_LAYERS",
     "LLM_RERANK_LAYER",
+    "CUTOFF_LAYER",
+    "SYMBOL_PACKING_LAYER",
+    "GATHER_LAYER",
     "PINNED_MODEL",
     "PINNED_TEMPERATURE",
     "PINNED_CRITIC_MODEL",
     "PINNED_LLM_RERANK_MODEL",
+    "PINNED_GATHER_MODEL",
     "Layers",
     "Arm",
     "baseline",
@@ -353,6 +482,12 @@ __all__ = [
     "new_flow_arms",
     "llm_rerank_arm",
     "llm_rerank_arms",
+    "cutoff_arm",
+    "cutoff_arms",
+    "symbol_packing_arm",
+    "symbol_packing_arms",
+    "gather_arm",
+    "gather_arms",
 ]
 
 # Re-export for callers that prefer ``dataclasses.FrozenInstanceError`` checks

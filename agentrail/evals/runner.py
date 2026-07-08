@@ -61,7 +61,13 @@ from typing import Callable, List, Optional, Protocol
 
 from agentrail.run.usage_capture import Usage
 
-from agentrail.evals.arms import Arm, LLM_RERANK_LAYER
+from agentrail.evals.arms import (
+    Arm,
+    CUTOFF_LAYER,
+    GATHER_LAYER,
+    LLM_RERANK_LAYER,
+    SYMBOL_PACKING_LAYER,
+)
 from agentrail.evals.corpus.loader import CorpusTask
 from agentrail.evals.run_record import RetryEvent, RunRecord
 
@@ -729,6 +735,12 @@ def _prepend_pythonpath(source_root: str, env: dict) -> str:
 # layers in without writing config into the cloned task repo.
 CRITIC_MODEL_ENV = "AGENTRAIL_EVAL_CRITIC_MODEL"
 
+# The env var the gather arm sets to supply the cheap gather model (issue #1049).
+# ``resolve_gather_command`` reads it as a fallback when no ``models.gather`` is
+# configured, so the eval can opt the JIT context-gatherer phase in without
+# writing config into the cloned task repo. Mirrors :data:`CRITIC_MODEL_ENV`.
+GATHER_MODEL_ENV = "AGENTRAIL_EVAL_GATHER_MODEL"
+
 
 def _arm_env(arm: Arm) -> dict:
     """Translate an :class:`Arm` into the env vars the sandbox/run pipeline reads.
@@ -797,6 +809,37 @@ def _arm_env(arm: Arm) -> dict:
     # layer, so their env stays byte-identical.
     if arm.extra_layers.get(LLM_RERANK_LAYER):
         env["AGENTRAIL_CONTEXT_LLM_RERANK"] = "1"
+    # Cutoff-layer bridge (#1096): mirror of the LLM-rerank bridge. The opt-in
+    # ``cutoff`` layer rides ``extra_layers`` (NOT a base layer — not part of
+    # ``full``), and the adaptive pack-tail cutoff keys ONLY on
+    # ``AGENTRAIL_CONTEXT_PACK_CUTOFF`` via
+    # ``agentrail.context.retrieval.resolve_pack_cutoff`` (default OFF). So the
+    # bridge forces the ON direction: ON -> ``AGENTRAIL_CONTEXT_PACK_CUTOFF=1``;
+    # absent/OFF -> leave unset (default OFF, a caller's override still composes).
+    # ``full`` / ``baseline`` carry no ``cutoff`` extra layer, so their env stays
+    # byte-identical.
+    if arm.extra_layers.get(CUTOFF_LAYER):
+        env["AGENTRAIL_CONTEXT_PACK_CUTOFF"] = "1"
+    # Symbol-packing bridge (#1044 AC4): mirror of the cutoff bridge. The opt-in
+    # ``symbol_packing`` layer rides ``extra_layers`` and the symbol-range pack
+    # stage keys ONLY on ``AGENTRAIL_CONTEXT_SYMBOL_PACKING`` via
+    # ``agentrail.context.packs.symbol_packing_enabled`` (default OFF). ON ->
+    # ``AGENTRAIL_CONTEXT_SYMBOL_PACKING=1``; absent/OFF -> leave unset.
+    if arm.extra_layers.get(SYMBOL_PACKING_LAYER):
+        env["AGENTRAIL_CONTEXT_SYMBOL_PACKING"] = "1"
+    # Gather-phase bridge (#1049): the opt-in ``gather`` layer needs TWO triggers
+    # (unlike the single-flag layers above). ``agentrail.run.pipeline.jit_gather_enabled``
+    # keys on ``AGENTRAIL_JIT_GATHER`` (must be exactly ``"1"``, default OFF), and
+    # ``resolve_gather_command`` builds the phase ONLY when a cheap gather model is
+    # opted in via :data:`GATHER_MODEL_ENV`. So set BOTH: the enable flag AND the
+    # pinned ``arm.gather_model`` (a cheap tier that DIFFERS from the implementer's
+    # model so it clears the independence guard). Without both, the phase resolves
+    # to "" and never fires — the ablation would be a silent no-op. ``full`` carries
+    # neither, so its env stays byte-identical.
+    if arm.extra_layers.get(GATHER_LAYER):
+        env["AGENTRAIL_JIT_GATHER"] = "1"
+    if arm.gather_model:
+        env[GATHER_MODEL_ENV] = arm.gather_model
     return env
 
 

@@ -529,3 +529,116 @@ describe("notifyRunOutcome — Slack Jace outbound routing (#1050, greenfield)",
     expect(mockSendDiscord).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Outbound iMessage routing through Jace (#1100) — GREENFIELD, exactly like Slack.
+ * iMessage has NO official bot/webhook API and no legacy console sender; it is
+ * driven only through a Jace-side Messages bridge. So it is delivered ONLY when
+ * the workspace has opted iMessage into Jace (`jace` enabled AND `imessageNotify`
+ * true). When not migrated, there is simply no iMessage notification — nothing to
+ * fall back to, and no legacy iMessage path is created in the console.
+ */
+describe("notifyRunOutcome — iMessage Jace outbound routing (#1100, greenfield)", () => {
+  /** An enabled `jace` connector row view, opting iMessage notify into Jace. */
+  function jaceConnector(
+    opts: { enabled?: boolean; imessageNotify?: boolean } = {}
+  ) {
+    const { enabled = true, imessageNotify = true } = opts;
+    return {
+      provider: "jace" as const,
+      enabled,
+      config: {
+        repos: [],
+        triggerLabel: "x",
+        pollIntervalSeconds: 60,
+        imessageNotify,
+      },
+      hasSecret: false,
+      updatedAt: null,
+    };
+  }
+
+  // Only a jace row; telegram + discord are absent so ONLY an iMessage Jace
+  // handoff can ever produce a fetch here.
+  function routeConnectors(jace: ReturnType<typeof jaceConnector> | null) {
+    mockGetConnector.mockImplementation(async (_ws: string, provider: string) =>
+      provider === "jace" ? jace : null
+    );
+  }
+
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 200 }));
+    mockGetSecret.mockResolvedValue("bot-token");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("delivers via Jace EXACTLY ONCE when migrated (iMessage is Jace-only)", async () => {
+    routeConnectors(jaceConnector());
+
+    await notifyRunOutcome(WS, {
+      issueNumber: "42",
+      outcome: "green",
+      prUrl: "https://github.com/o/r/pull/9",
+      costUsd: 1.2,
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // No legacy Telegram/Discord send fired.
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockSendDiscord).not.toHaveBeenCalled();
+
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(String(url)).toContain("/eve/v1/notify");
+    const body = JSON.parse(String((init as RequestInit).body));
+    expect(body).toMatchObject({
+      channel: "imessage",
+      issueNumber: "42",
+      outcome: "green",
+    });
+    expect(String(body.text)).toContain("PR ready");
+  });
+
+  it("produces NO iMessage notification when the jace connector is DISABLED (kill switch; no legacy fallback)", async () => {
+    routeConnectors(jaceConnector({ enabled: false }));
+
+    await notifyRunOutcome(WS, { issueNumber: "1", outcome: "green" });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("produces NO iMessage notification when the imessageNotify opt-in is OFF (default)", async () => {
+    routeConnectors(jaceConnector({ imessageNotify: false }));
+
+    await notifyRunOutcome(WS, { issueNumber: "1", outcome: "green" });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("produces NO iMessage notification when there is NO jace connector at all", async () => {
+    routeConnectors(null);
+
+    await notifyRunOutcome(WS, { issueNumber: "1", outcome: "green" });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("swallows a Jace sidecar failure without throwing and with no legacy fallback (greenfield)", async () => {
+    routeConnectors(jaceConnector());
+    fetchSpy.mockRejectedValue(new Error("sidecar down"));
+
+    await expect(
+      notifyRunOutcome(WS, { issueNumber: "1", outcome: "green" })
+    ).resolves.toBeUndefined();
+
+    // Greenfield: there is no legacy iMessage sender to fall back to.
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockSendDiscord).not.toHaveBeenCalled();
+  });
+});

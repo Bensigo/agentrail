@@ -124,12 +124,19 @@ def cost_breakdown(usage: object) -> Dict[str, float]:
     - ``output_usd``      — ``output_tokens`` at the output rate
     - ``cache_read_usd``  — ``cache_tokens`` at the (cheaper) cache-read rate
     - ``cache_write_usd`` — ``cache_creation_tokens`` at the cache-write rate
-    - ``total_usd``       — the sum of the four, equal to ``cost_usd(usage)``
+    - ``expansion_usd``   — the deterministic recall/expansion layer (#1043:
+                            query-token expansion + symbol-level candidates).
+                            It makes NO model call and consumes NO tokens, so its
+                            spend is auditably a fixed ``0.0`` — surfaced as its
+                            own line precisely so a report can SHOW the layer cost
+                            nothing rather than leave it invisible (AC3).
+    - ``total_usd``       — the sum of the components, equal to ``cost_usd(usage)``
 
     Uses the SAME ``_resolve_rates`` + ``/1_000_000`` math as ``cost_usd`` so the
-    components sum to ``cost_usd`` exactly (parity invariant). Unknown model →
-    mirrors ``cost_usd``: emits ``UserWarning`` and returns all-zeros so the
-    calling pipeline is never blocked.
+    components sum to ``cost_usd`` exactly (parity invariant — ``expansion_usd``
+    is 0.0 so it never perturbs the sum). Unknown model → mirrors ``cost_usd``:
+    emits ``UserWarning`` and returns all-zeros so the calling pipeline is never
+    blocked.
     """
     model: str = usage.model  # type: ignore[attr-defined]
     rates = _resolve_rates(model)
@@ -144,6 +151,7 @@ def cost_breakdown(usage: object) -> Dict[str, float]:
             "output_usd": 0.0,
             "cache_read_usd": 0.0,
             "cache_write_usd": 0.0,
+            "expansion_usd": 0.0,
             "total_usd": 0.0,
         }
 
@@ -156,13 +164,17 @@ def cost_breakdown(usage: object) -> Dict[str, float]:
     output_usd = output_tokens * rates.output / 1_000_000
     cache_read_usd = cache_tokens * rates.cache / 1_000_000
     cache_write_usd = cache_creation_tokens * rates.cache_write / 1_000_000
+    # Deterministic recall/expansion layer (#1043): no model call, no tokens →
+    # a fixed 0.0 that keeps the components-sum-to-total parity exact.
+    expansion_usd = 0.0
 
     return {
         "input_usd": input_usd,
         "output_usd": output_usd,
         "cache_read_usd": cache_read_usd,
         "cache_write_usd": cache_write_usd,
-        "total_usd": input_usd + output_usd + cache_read_usd + cache_write_usd,
+        "expansion_usd": expansion_usd,
+        "total_usd": input_usd + output_usd + cache_read_usd + cache_write_usd + expansion_usd,
     }
 
 

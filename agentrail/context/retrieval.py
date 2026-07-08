@@ -17,6 +17,7 @@ from agentrail.context.index import append_audit, build_index, load_index
 from agentrail.context.llm_rerank import LLM_RERANK_METHOD, llm_rerank, llm_rerank_enabled
 from agentrail.context.pack_quality import compute_pack_quality
 from agentrail.context.rerank import rerank_candidates, rerank_enabled
+from agentrail.context.symbol_candidates import cross_file_imported_symbols
 from agentrail.shared.fs import sha256_text
 
 
@@ -25,6 +26,14 @@ from agentrail.shared.fs import sha256_text
 # lower-retrieved-but-more-relevant source can be promoted into the kept top-K.
 _RERANK_WIDEN_FACTOR = 3
 _RERANK_WIDEN_MIN_EXTRA = 10
+
+# Symbol-level recall layer monotonicity guard (#1043 AC4): the fraction of the
+# flag-OFF baseline pack's top score a dropped baseline member must clear to be
+# re-inserted over the injected pack's weakest tail. High enough to protect a
+# genuinely relevant member the injection demoted (e.g. a top-scored spec doc)
+# while ignoring the low-score keyword noise the injection legitimately
+# out-ranked, so the recall win is kept and no relevant member is lost.
+_RECALL_GUARD_SCORE_RATIO = 0.5
 
 
 def _graph_distance_by_path(index: Dict[str, Any], anchors: List[Dict[str, str]], *, max_hops: int = 2) -> Dict[str, int]:
@@ -1350,9 +1359,13 @@ def _excluded_key(entry: Dict[str, Any]) -> str:
     return "candidate:unknown"
 
 
-def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optional[Dict[str, Any]] = None, inject_symbols: Optional[bool] = None) -> Dict[str, Any]:
     from agentrail.context.planner import classify_query
 
+    # Whether the symbol-level recall layer (#1043 AC4) runs. Defaults to the
+    # public flag; the recall layer's own monotonicity guard passes ``False`` to
+    # take a clean flag-OFF baseline pass without recursing forever.
+    do_inject = query_expansion_enabled() if inject_symbols is None else bool(inject_symbols)
     planner = classify_query(query)
     exact_mode = planner["retrievalMode"] in {"exact", "exact_bm25", "exact_graph"}
     root = target_dir.resolve()
@@ -1450,6 +1463,50 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
     graph_source_ids = set(graph_expansion.get("sourceIds") or [])
     graph_paths = set(graph_expansion.get("paths") or [])
     graph_chunk_ids = set(graph_expansion.get("chunkIds") or [])
+
+    # Symbol-level candidates (#1043 AC4, default-OFF via the SAME expansion flag).
+    # The token-split expansion above can only recall vocabulary the task NAMES;
+    # it cannot reach a genuine imported dependency the task never mentions (e.g.
+    # index.py imports source_record_for_file from sources.py, but the task only
+    # says "build_index"). Here we recover the seeds'+anchors' cross-file imported
+    # symbols and inject each as (a) a retrieval token — so the chunk that DEFINES
+    # it becomes a scored candidate — and (b) a definition pattern — so that chunk
+    # earns the existing +2.5 "symbol definition" tier. The FULL scoring pipeline
+    # then ranks the sharp missed dependency (a rare identifier -> high BM25 idf)
+    # into the pack. Recall-monotonicity is restored after the pack is built by a
+    # baseline-vs-injected guard (see below), so no member the flag-OFF pack held
+    # can be lost. Flag-OFF (do_inject False) leaves the whole block a no-op.
+    symbol_candidate_names: List[str] = []
+    if do_inject:
+        anchor_paths = [
+            str(anchor.get("value"))
+            for anchor in extract_anchors(query, root=root)
+            if anchor.get("kind") == "path" and anchor.get("value")
+        ]
+        seed_anchor_paths = unique(list(retrieval_seeds) + anchor_paths)
+        symbol_candidate_names = cross_file_imported_symbols(root, index, seed_anchor_paths)
+        for _name in symbol_candidate_names:
+            _tok = _name.lower()
+            # Token injection: the imported symbol's identifier is a term the
+            # candidate filter and BM25 can now see, so the chunk that DEFINES it
+            # is scored at all.
+            if _tok not in query_tokens:
+                query_tokens.append(_tok)
+                if precomputed_postings is not None:
+                    doc_freq[_tok] = len(precomputed_postings.get(_tok, []))
+                else:
+                    doc_freq[_tok] = sum(1 for _doc in corpus if _tok in _doc["termCounts"])
+            query_symbols.add(_tok)
+            # The imported symbol's DEFINITION site earns the existing +2.5
+            # "symbol definition" tier via the same pattern machinery as a queried
+            # symbol, so the file that spells `def NAME` / `class NAME` /
+            # `function NAME` is lifted toward the pack.
+            if len(_tok) >= 4 and _tok not in definition_symbols:
+                _esc = re.escape(_tok)
+                definition_patterns.append(re.compile(rf"\bfunction\s+{_esc}\b"))
+                definition_patterns.append(re.compile(rf"\b{_esc}\s*[:=]\s*(?:async\s*)?(?:function|\()"))
+                definition_patterns.append(re.compile(rf"\b(?:def|class)\s+{_esc}\b"))
+                definition_symbols.add(_tok)
 
     # Read embedding config once, before the scoring loop, so we can use it both
     # for candidate filtering and for the semantic scoring section below.
@@ -1585,7 +1642,9 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
         is_definition = defines_by_pattern or defines_by_hint
         if is_definition:
             # The queried symbol is defined in this chunk — prefer the definition
-            # site over files that merely call it.
+            # site over files that merely call it. Injected imported-symbol names
+            # (#1043 AC4) share this tier: the definition site of a cross-file
+            # dependency is lifted exactly like a queried symbol's definition.
             deterministic += 2.5; reasons.add("symbol definition")
         if bm25 > 0:
             reasons.add("BM25 keyword match")
@@ -1878,6 +1937,61 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
                 formatted = kept
                 for position, item in enumerate(formatted, 1):
                     item["rank"] = position
+
+    # Symbol-level recall layer monotonicity guard (#1043 AC4). The injection
+    # above lets the full scoring pipeline surface a genuinely-missed imported
+    # definition (its win), but the same re-scoring + rerank can also demote a
+    # member the flag-OFF pack held (e.g. a relevant spec doc pushed below a code
+    # definition). To keep the layer recall-MONOTONE, take a clean flag-OFF
+    # baseline pass and RE-INSERT any HIGH-CONFIDENCE baseline pack member the
+    # injection dropped, displacing the injected pack's weakest members (which are
+    # pushed down but stay in the pack). Low-score baseline members (keyword noise
+    # the injection legitimately out-ranked) are NOT re-inserted, so the recall
+    # win is preserved. Guarded by ``do_inject`` and the recursion sentinel so the
+    # baseline pass never recurses.
+    if do_inject and symbol_candidate_names:
+        baseline = query_context(target_dir, query, limit=limit, index=index, inject_symbols=False)
+        baseline_results = baseline.get("results", [])[:limit]
+        injected_paths = {item.get("path") for item in formatted}
+        # Confidence floor for a baseline member worth protecting: relative to the
+        # baseline pack's own top score, so it travels across queries.
+        baseline_finals = [
+            float(r["score"]["final"])
+            for r in baseline_results
+            if isinstance(r.get("score"), dict)
+            and isinstance(r["score"].get("final"), (int, float))
+            and not isinstance(r["score"].get("final"), bool)
+        ]
+        baseline_top = max(baseline_finals) if baseline_finals else 0.0
+        floor = _RECALL_GUARD_SCORE_RATIO * baseline_top
+        dropped = [
+            r for r in baseline_results
+            if r.get("path") and r.get("path") not in injected_paths
+            and isinstance(r.get("score"), dict)
+            and isinstance(r["score"].get("final"), (int, float))
+            and not isinstance(r["score"].get("final"), bool)
+            and float(r["score"]["final"]) >= floor
+        ]
+        if dropped:
+            # Re-insert the protected baseline members just below the injected
+            # members that out-score them, displacing the weakest injected tail
+            # (kept, at a lower rank). Nothing the baseline packed above the floor
+            # can leave the injected pack -> recall-monotone.
+            keep_n = max(0, min(len(formatted), limit) - len(dropped))
+            formatted = formatted[:keep_n] + dropped + formatted[keep_n:]
+            _seen_paths: Set[str] = set()
+            _deduped: List[Dict[str, Any]] = []
+            for _item in formatted:
+                _p = _item.get("path")
+                key = str(_item.get("chunkId") or _item.get("sourceId") or _item.get("citation") or _p)
+                if key in _seen_paths:
+                    continue
+                _seen_paths.add(key)
+                _deduped.append(_item)
+            formatted = _deduped
+            for _position, _item in enumerate(formatted, 1):
+                _item["rank"] = _position
+
     audit = {
         "event": "context_query",
         "citation": ".agentrail/context/audit/events.jsonl",
@@ -1922,11 +2036,14 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
             rerank=rerank_meta,
         ),
     }
-    # Recall-layer telemetry (#1043): report whether query expansion ran and the
-    # subtokens it added. Deterministic expansion has no model/token cost.
+    # Recall-layer telemetry (#1043): report whether query expansion ran, the
+    # subtokens the token-split arm added, and how many cross-file symbol
+    # candidates the symbol-level arm (AC4) injected. Both arms are fully
+    # deterministic — no model call, no tokens — so cost is auditably 0.0.
     output["expansion"] = {
         "enabled": query_expansion_enabled(),
         "addedTerms": added_terms,
+        "symbolCandidateCount": len(symbol_candidate_names),
         "cost": 0.0,
     }
     append_audit(root, audit)

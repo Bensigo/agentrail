@@ -342,4 +342,79 @@ describe("validateConnectorUpdate", () => {
       }).ok
     ).toBe(false);
   });
+
+  // Jace channel-migration opt-ins (#1050): the per-workspace cutover controls set
+  // on the `jace` connector. Validated as booleans and carried through to the
+  // persisted config so the connector PATCH route can flip them.
+  it("accepts boolean discordNotify / slackNotify opt-ins and preserves them", () => {
+    const r = validateConnectorUpdate({
+      config: { discordNotify: true, slackNotify: false },
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.config?.discordNotify).toBe(true);
+      expect(r.value.config?.slackNotify).toBe(false);
+    }
+  });
+
+  it("rejects a non-boolean discordNotify", () => {
+    expect(
+      validateConnectorUpdate({
+        config: { discordNotify: "yes" as unknown as boolean },
+      }).ok
+    ).toBe(false);
+  });
+
+  it("rejects a non-boolean slackNotify", () => {
+    expect(
+      validateConnectorUpdate({
+        config: { slackNotify: 1 as unknown as boolean },
+      }).ok
+    ).toBe(false);
+  });
+});
+
+// completeConfig is exercised through getConnectors (it runs on every projected
+// row). These assert the Discord + Slack opt-ins survive projection so a later
+// partial config patch never silently reverts a channel's cutover.
+describe("completeConfig preserves the Jace channel opt-ins (#1050)", () => {
+  it("carries discordNotify / slackNotify through the read projection", async () => {
+    mockDb.select.mockReturnValue(
+      makeSelectOrderChain([
+        {
+          provider: "jace",
+          enabled: true,
+          config: {
+            repos: [],
+            triggerLabel: "ready-for-agent",
+            pollIntervalSeconds: 60,
+            discordNotify: true,
+            slackNotify: true,
+          },
+          updatedAt: null,
+        },
+      ]) as never
+    );
+
+    const rows = await getConnectors("ws-1");
+    expect(rows[0].config.discordNotify).toBe(true);
+    expect(rows[0].config.slackNotify).toBe(true);
+  });
+
+  it("omits the opt-ins entirely when absent (default OFF, not false)", async () => {
+    mockDb.select.mockReturnValue(
+      makeSelectOrderChain([
+        {
+          provider: "jace",
+          enabled: true,
+          config: { repos: [], triggerLabel: "x", pollIntervalSeconds: 60 },
+          updatedAt: null,
+        },
+      ]) as never
+    );
+
+    const rows = await getConnectors("ws-1");
+    expect(rows[0].config).not.toHaveProperty("discordNotify");
+    expect(rows[0].config).not.toHaveProperty("slackNotify");
+  });
 });

@@ -7,6 +7,8 @@ vi.mock("../db.js", () => ({ db: {} }));
 import {
   jaceInboundAllowed,
   jaceOwnsTelegramNotify,
+  jaceOwnsDiscordNotify,
+  jaceOwnsSlackNotify,
 } from "../queries/jace_intake.js";
 
 /**
@@ -108,5 +110,144 @@ describe("jaceOwnsTelegramNotify (outbound route)", () => {
   it("does NOT own Telegram for a null / undefined connector", () => {
     expect(jaceOwnsTelegramNotify(null)).toBe(false);
     expect(jaceOwnsTelegramNotify(undefined)).toBe(false);
+  });
+});
+
+/**
+ * Outbound Discord routing (#1050). Same contract as Telegram, keyed on the
+ * Discord opt-in: Jace owns Discord outbound iff a `jace` connector is enabled AND
+ * `config.discordNotify` is explicitly true. Default OFF reverts to the legacy
+ * Discord webhook sender, so the migration never goes dark or double-fires.
+ */
+describe("jaceOwnsDiscordNotify (outbound route)", () => {
+  it("owns Discord when the jace connector is enabled AND opted in", () => {
+    expect(
+      jaceOwnsDiscordNotify({
+        provider: "jace",
+        enabled: true,
+        config: { discordNotify: true },
+      })
+    ).toBe(true);
+  });
+
+  it("does NOT own Discord when opted in but the connector is DISABLED (kill switch reverts to legacy)", () => {
+    expect(
+      jaceOwnsDiscordNotify({
+        provider: "jace",
+        enabled: false,
+        config: { discordNotify: true },
+      })
+    ).toBe(false);
+  });
+
+  it("does NOT own Discord when enabled but the opt-in is OFF (default, pre-cutover)", () => {
+    expect(
+      jaceOwnsDiscordNotify({
+        provider: "jace",
+        enabled: true,
+        config: { discordNotify: false },
+      })
+    ).toBe(false);
+  });
+
+  it("does NOT own Discord when enabled but the opt-in is ABSENT (default)", () => {
+    expect(
+      jaceOwnsDiscordNotify({ provider: "jace", enabled: true, config: {} })
+    ).toBe(false);
+    expect(
+      jaceOwnsDiscordNotify({ provider: "jace", enabled: true })
+    ).toBe(false);
+  });
+
+  it("does NOT own Discord when only the telegram opt-in is set (channels are independent)", () => {
+    expect(
+      jaceOwnsDiscordNotify({
+        provider: "jace",
+        enabled: true,
+        config: { telegramNotify: true },
+      })
+    ).toBe(false);
+  });
+
+  it("does NOT own Discord for a wrong-provider row even if it carries the flag", () => {
+    expect(
+      jaceOwnsDiscordNotify({
+        provider: "discord",
+        enabled: true,
+        config: { discordNotify: true },
+      })
+    ).toBe(false);
+  });
+
+  it("does NOT own Discord for a null / undefined connector", () => {
+    expect(jaceOwnsDiscordNotify(null)).toBe(false);
+    expect(jaceOwnsDiscordNotify(undefined)).toBe(false);
+  });
+});
+
+/**
+ * Outbound Slack routing (#1050). Slack is GREENFIELD — a `false` result means
+ * "no Slack notification", not "fall back to a legacy path". Jace owns Slack
+ * outbound iff a `jace` connector is enabled AND `config.slackNotify` is
+ * explicitly true. Default OFF.
+ */
+describe("jaceOwnsSlackNotify (outbound route)", () => {
+  it("owns Slack when the jace connector is enabled AND opted in", () => {
+    expect(
+      jaceOwnsSlackNotify({
+        provider: "jace",
+        enabled: true,
+        config: { slackNotify: true },
+      })
+    ).toBe(true);
+  });
+
+  it("does NOT own Slack when opted in but the connector is DISABLED (kill switch)", () => {
+    expect(
+      jaceOwnsSlackNotify({
+        provider: "jace",
+        enabled: false,
+        config: { slackNotify: true },
+      })
+    ).toBe(false);
+  });
+
+  it("does NOT own Slack when enabled but the opt-in is OFF / ABSENT (default)", () => {
+    expect(
+      jaceOwnsSlackNotify({
+        provider: "jace",
+        enabled: true,
+        config: { slackNotify: false },
+      })
+    ).toBe(false);
+    expect(
+      jaceOwnsSlackNotify({ provider: "jace", enabled: true, config: {} })
+    ).toBe(false);
+    expect(jaceOwnsSlackNotify({ provider: "jace", enabled: true })).toBe(false);
+  });
+
+  it("does NOT own Slack when only another channel's opt-in is set (channels are independent)", () => {
+    expect(
+      jaceOwnsSlackNotify({
+        provider: "jace",
+        enabled: true,
+        config: { discordNotify: true },
+      })
+    ).toBe(false);
+  });
+
+  it("does NOT own Slack for a wrong-provider row even if it carries the flag", () => {
+    expect(
+      jaceOwnsSlackNotify({
+        provider: "slack",
+        enabled: true,
+        config: { slackNotify: true },
+      })
+    ).toBe(false);
+  });
+
+  it("does NOT own Slack for a null / undefined connector", () => {
+    expect(jaceOwnsSlackNotify(null)).toBe(false);
+    expect(jaceOwnsSlackNotify(undefined)).toBe(false);
   });
 });

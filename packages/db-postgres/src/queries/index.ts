@@ -1248,9 +1248,12 @@ export {
 export {
   jaceInboundAllowed,
   jaceOwnsTelegramNotify,
+  jaceOwnsDiscordNotify,
+  jaceOwnsSlackNotify,
   findEnabledJaceWorkspace,
   type JaceConnectorRowish,
   type JaceNotifyConnectorRowish,
+  type JaceNotifyChannelFlag,
   type JaceInboundDecision,
 } from "./jace_intake.js";
 

@@ -132,6 +132,25 @@ export function validateConnectorUpdate(
       out.telegramNotify = cfg.telegramNotify;
     }
 
+    // Jace channel-migration opt-ins for Discord + Slack (#1050) — same shape as
+    // telegramNotify above: booleans on the `jace` row that flip each channel's
+    // OUTBOUND notify source to Jace. Validated here so the operator can flip them
+    // via the connector PATCH route; default OFF, so absence keeps the legacy path
+    // (Discord) / no notification (Slack, greenfield).
+    if (cfg.discordNotify !== undefined) {
+      if (typeof cfg.discordNotify !== "boolean") {
+        return { ok: false, error: "discordNotify must be a boolean" };
+      }
+      out.discordNotify = cfg.discordNotify;
+    }
+
+    if (cfg.slackNotify !== undefined) {
+      if (typeof cfg.slackNotify !== "boolean") {
+        return { ok: false, error: "slackNotify must be a boolean" };
+      }
+      out.slackNotify = cfg.slackNotify;
+    }
+
     value.config = out;
   }
 
@@ -161,6 +180,15 @@ function completeConfig(stored: Partial<ConnectorConfig> | null | undefined): Co
     // Telegram-notify cutover for the workspace.
     ...(typeof stored?.telegramNotify === "boolean"
       ? { telegramNotify: stored.telegramNotify }
+      : {}),
+    // Jace channel-migration opt-ins for Discord + Slack (#1050) — preserved
+    // across merges for the same reason: a later partial config patch must never
+    // silently revert a channel's cutover.
+    ...(typeof stored?.discordNotify === "boolean"
+      ? { discordNotify: stored.discordNotify }
+      : {}),
+    ...(typeof stored?.slackNotify === "boolean"
+      ? { slackNotify: stored.slackNotify }
       : {}),
   };
 }

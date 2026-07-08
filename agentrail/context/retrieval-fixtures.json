@@ -94,6 +94,34 @@
       "expectedPriorMistakes": [],
       "expectedExcludedSources": [],
       "expectedGraphExpandedSources": []
+    },
+    {
+      "name": "query-context-rerank-rank-hard",
+      "_comment": "RANK-NON-SATURATED (baseline fileNDCG<1.0) fixture for #1107, the rank analog of the #1088 recall traps above. retrieval.py imports rerank_candidates/rerank_enabled from rerank.py (retrieval.py:19), so rerank.py is a GENUINE dependency of query_context's ranking stage. The task names query_context/retrieval (surfacing retrieval.py at distinct-file rank 1 -- required and retrievable) plus rerank concepts, so rerank.py IS retrieved, but the deterministic_code_aware_v1 order buries it at distinct-file rank 3, BELOW the unrelated noise file scripts/benchmark-vs-grep.py at rank 2 -> baseline fileNDCG=0.919721 (<1.0). A good reorder (the #1044 LLM listwise rerank) can promote rerank.py above the noise and move the number, so the rerank's lift is finally measurable. Deliberately rank-non-saturated; do NOT add rerank.py to requiredSources -- it must stay a non-required expected file the ranker misplaces (a rank miss, not a hard failure).",
+      "task": "query_context hybrid retrieval BM25 candidates score rerank reorder listwise",
+      "requiredSources": ["agentrail/context/retrieval.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.0,
+      "expectedFiles": ["agentrail/context/retrieval.py", "agentrail/context/rerank.py"],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
+    },
+    {
+      "name": "context-pack-build-rank-hard",
+      "_comment": "RANK-NON-SATURATED (baseline fileNDCG<1.0) fixture for #1107. build_context_pack (packs.py) imports build_memory_lane/frame_untrusted_memory from memory_lane.py (packs.py:15), so memory_lane.py is a GENUINE dependency of pack assembly. The task names build_context_pack (surfacing packs.py at distinct-file rank 1 -- required and retrievable) and memory-lane assembly, so memory_lane.py IS retrieved, but the deterministic order buries it at distinct-file rank 4, BELOW higher-BM25 files (shared/json.py at rank 2, retrieval.py at rank 3) that fall outside the labeled relevant set for this task -> baseline fileNDCG=0.877215 (<1.0). A reranker keyed on the task's 'memory lane frame untrusted' terms can promote memory_lane.py and lift nDCG. Deliberately rank-non-saturated; do NOT add memory_lane.py to requiredSources.",
+      "task": "build_context_pack write_json packs_dir pack_id sections included excluded memory lane frame untrusted",
+      "requiredSources": ["agentrail/context/packs.py"],
+      "limit": 10,
+      "minPrecisionAtBudget": 0.0,
+      "expectedFiles": ["agentrail/context/packs.py", "agentrail/context/memory_lane.py"],
+      "expectedDocs": [],
+      "expectedMemory": [],
+      "expectedPriorMistakes": [],
+      "expectedExcludedSources": [],
+      "expectedGraphExpandedSources": []
     }
   ]
 }

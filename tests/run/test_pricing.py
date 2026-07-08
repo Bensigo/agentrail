@@ -416,6 +416,7 @@ def test_cost_breakdown_unknown_model_returns_zeros() -> None:
         "output_usd": 0.0,
         "cache_read_usd": 0.0,
         "cache_write_usd": 0.0,
+        "expansion_usd": 0.0,
         "total_usd": 0.0,
     }
 

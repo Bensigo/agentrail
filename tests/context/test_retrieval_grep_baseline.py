@@ -227,5 +227,99 @@ class BaselineExcludesEvalFixtureFile(unittest.TestCase):
             )
 
 
+class BaselineSkipsDotDirScratchCopies(unittest.TestCase):
+    """Issue #1097: the grep baseline must ignore gitignored dot-dir scratch.
+
+    On a dev machine, `.claude/worktrees/agent-*`, `.codex-review/pr-*` and
+    `.afk-workflow/` hold full-repo copies from past AFK/subagent runs. Those
+    copies duplicate every expected source; because `.claude`/`.codex-review`
+    sort lexically before `agentrail/`, they fill grep's top-k and push the real
+    (un-prefixed) files out — recall against the real path drops to 0 locally
+    while CI (a clean checkout with no scratch dirs) stays green. The real
+    AgentRail index never walks those dirs, so the baseline must skip them too.
+    """
+
+    def test_dot_dir_copy_is_pruned_real_file_still_recalled(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        # The real source the query should recall.
+        (root / "agentrail").mkdir()
+        (root / "agentrail" / "widget.py").write_text(
+            "def widget_factory():\n    return 'Widget'\n",
+            encoding="utf-8",
+        )
+        # A gitignored scratch copy under a dot-dir at the SAME relative path.
+        scratch = root / ".claude" / "worktrees" / "agent-x" / "agentrail"
+        scratch.mkdir(parents=True)
+        (scratch / "widget.py").write_text(
+            "def widget_factory():\n    return 'Widget'\n",
+            encoding="utf-8",
+        )
+
+        paths = grep_baseline_paths(root, ["widget_factory"], limit=10)
+
+        # The real file is recalled; the dot-dir copy is skipped entirely.
+        self.assertIn("agentrail/widget.py", paths)
+        self.assertNotIn(".claude/worktrees/agent-x/agentrail/widget.py", paths)
+        self.assertFalse(
+            any(p.startswith(".") for p in paths),
+            f"no dot-dir path should appear in the baseline: {paths}",
+        )
+
+    def test_dot_dir_copies_do_not_crowd_out_real_file(self) -> None:
+        """Many scratch copies must not push the single real file out of top-k."""
+        root = Path(tempfile.mkdtemp())
+        (root / "agentrail").mkdir()
+        (root / "agentrail" / "widget.py").write_text(
+            "widget_factory widget_factory\n", encoding="utf-8"
+        )
+        # A dozen dot-dir scratch copies, each a stronger textual match than the
+        # real file, all sorting lexically before `agentrail/`.
+        for i in range(12):
+            copy_dir = root / ".claude" / "worktrees" / f"agent-{i}" / "agentrail"
+            copy_dir.mkdir(parents=True)
+            (copy_dir / "widget.py").write_text(
+                "widget_factory widget_factory widget_factory\n", encoding="utf-8"
+            )
+
+        paths = grep_baseline_paths(root, ["widget_factory"], limit=10)
+
+        self.assertEqual(
+            paths,
+            ["agentrail/widget.py"],
+            "only the real file should survive; all dot-dir scratch is pruned",
+        )
+
+    def test_evaluate_grep_baseline_recalls_real_file_despite_pollution(self) -> None:
+        """End-to-end: recall stays 1.0 when a dot-dir scratch copy is present."""
+        root = Path(tempfile.mkdtemp())
+        (root / "agentrail").mkdir()
+        (root / "agentrail" / "widget.py").write_text(
+            "def widget_factory():\n    return 'Widget'\n", encoding="utf-8"
+        )
+        scratch = root / ".codex-review" / "pr-1" / "agentrail"
+        scratch.mkdir(parents=True)
+        (scratch / "widget.py").write_text(
+            "def widget_factory():\n    return 'Widget'\n", encoding="utf-8"
+        )
+        fixture = {
+            "name": "polluted-tree",
+            "task": "widget_factory",
+            "limit": 10,
+            "requiredSources": ["agentrail/widget.py"],
+            "expectedFiles": ["agentrail/widget.py"],
+            "expectedDocs": [],
+            "expectedMemory": [],
+            "expectedPriorMistakes": [],
+            "expectedExcludedSources": [],
+            "expectedGraphExpandedSources": [],
+            "optionalProviderEnv": [],
+            "minPrecisionAtBudget": 0.0,
+        }
+        baseline = evaluate_grep_baseline(root, [fixture])
+        report = baseline["fixtures"][0]
+        self.assertEqual(report["metrics"]["recallAt10"], 1.0)
+        self.assertEqual(report["selectedPaths"], ["agentrail/widget.py"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -232,11 +232,11 @@ class RenderMarkdownRerankCostLineTests(unittest.TestCase):
         )
 
     def test_zero_cost_fallback_renders_a_zero_dollar_line(self) -> None:
-        """missing_api_key fallback = zero usage, but the layer still ran —
+        """missing_model_path fallback = zero usage, but the layer still ran —
         an explicit $0.000000 is honest telemetry, not noise."""
         pack = self._minimal_pack()
         zero = {"model": LLM_RERANK_DEFAULT_MODEL, "calls": 0, **_usage(0, 0)}
-        pack["compiler"] = {"rerank": {"llm": zero, "llmFallback": "missing_api_key"}}
+        pack["compiler"] = {"rerank": {"llm": zero, "llmFallback": "missing_model_path"}}
         pack["rerankCostUsd"] = 0.0
         md = render_context_pack_markdown(pack)
         self.assertIn("- Rerank cost: $0.000000 USD", md)
@@ -358,8 +358,19 @@ class BuildContextPackRerankCostIntegrationTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.root = _make_repo()
 
-    def _build(self, **env: str | None) -> dict:
-        with _envs(AGENTRAIL_CONTEXT_RERANK="1", **env):
+    def _build(self, *, model_path: bool | None = None, **env: str | None) -> dict:
+        with ExitStack() as stack:
+            stack.enter_context(_envs(AGENTRAIL_CONTEXT_RERANK="1", **env))
+            if model_path is not None:
+                # The rerank gates on the headless ``claude -p`` path being
+                # resolvable (issue #1044), not on ANTHROPIC_API_KEY; drive that
+                # gate directly instead of depending on a real ``claude`` binary.
+                stack.enter_context(
+                    mock.patch(
+                        "agentrail.context.llm_rerank.llm_rerank_model_path_available",
+                        return_value=model_path,
+                    )
+                )
             return build_context_pack(self.root, "issue", 1, "plan")
 
     def _artifact(self, output: dict) -> dict:
@@ -395,7 +406,7 @@ class BuildContextPackRerankCostIntegrationTests(unittest.TestCase):
         with mock.patch(
             "agentrail.context.llm_rerank._call_model", side_effect=_reversing_call
         ) as seam:
-            output = self._build(**{_FLAG: "1", "ANTHROPIC_API_KEY": "test-key"})
+            output = self._build(model_path=True, **{_FLAG: "1"})
         self.assertTrue(seam.called, "flag ON must route through the single model seam")
 
         artifact = self._artifact(output)
@@ -422,17 +433,17 @@ class BuildContextPackRerankCostIntegrationTests(unittest.TestCase):
             "AC3: the rerank-layer cost must appear as its own markdown line",
         )
 
-    def test_flag_on_missing_api_key_fallback_still_reports_cost(self) -> None:
-        """Fail-open path: no key means zero usage, but the layer ran — the
-        pack must still carry rerankCostUsd (0.0) and render the line."""
+    def test_flag_on_missing_model_path_fallback_still_reports_cost(self) -> None:
+        """Fail-open path: no headless model path means zero usage, but the layer
+        ran — the pack must still carry rerankCostUsd (0.0) and render the line."""
         fake = mock.Mock(side_effect=AssertionError("must not hit the network seam"))
         with mock.patch("agentrail.context.llm_rerank._call_model", fake):
-            output = self._build(**{_FLAG: "1", "ANTHROPIC_API_KEY": None})
+            output = self._build(model_path=False, **{_FLAG: "1"})
         fake.assert_not_called()
 
         artifact = self._artifact(output)
         contract = (artifact.get("compiler") or {}).get("rerank") or {}
-        self.assertEqual(contract.get("llmFallback"), "missing_api_key")
+        self.assertEqual(contract.get("llmFallback"), "missing_model_path")
         self.assertEqual(artifact.get("rerankCostUsd"), 0.0)
         self.assertEqual(output.get("rerankCostUsd"), 0.0)
         self.assertIn("- Rerank cost: $0.000000 USD", self._markdown(output))

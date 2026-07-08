@@ -22,15 +22,24 @@ candidate can NEVER be dropped by this stage.
 
 This is a **deep, pure module** split: the window/prompt/parse/merge functions
 are pure and unit-testable offline; :func:`_call_model` is the ONE thin
-network seam (monkeypatch it in tests).  The stage is fail-open: a missing
-``ANTHROPIC_API_KEY`` or any API error returns the deterministic order plus a
-``fallback`` reason — the pipeline never crashes and never loses candidates.
+network seam (monkeypatch it in tests).  That seam rides the AUTHENTICATED
+Claude Code CLI harness — a headless ``claude -p`` call, the SAME agent path a
+run phase uses (agentrail/run/pipeline.py, agentrail/afk/review_engine.py) —
+NOT a raw ``anthropic.Anthropic()`` + ``ANTHROPIC_API_KEY``.  AgentRail *is* the
+CLI harness, so a utility LLM call must route through the agent, never hard-gate
+on a missing key (see the "harness model calls ride Claude Code" convention).
+The stage is fail-open: when the headless model path is unavailable (no
+``claude`` on PATH) or the call errors, it returns the deterministic order plus
+a ``fallback`` reason — the pipeline never crashes and never loses candidates.
 
 Raw token usage per response is aggregated into the returned ``llm`` block
 (model/calls/inputTokens/outputTokens plus cache fields) as the metering seam
 for PR 3; :func:`llm_rerank_cost_usd` prices that block via the canonical
 ``cost_for`` in agentrail/context/pricing.py (agentrail/run/pricing.py is a
-derived view, not the source of truth).
+derived view, not the source of truth).  The headless ``claude -p
+--output-format json`` envelope carries a real ``usage`` block, so metering is
+honest; a call whose envelope cannot be parsed records zero usage (never a
+fabricated number) while :func:`parse_window_order` still recovers the order.
 """
 from __future__ import annotations
 
@@ -48,6 +57,18 @@ LLM_RERANK_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 # actually reorders (retrieval.py emits "deterministic_code_aware_v1+haiku_listwise_v1").
 LLM_RERANK_METHOD = "haiku_listwise_v1"
 
+# The headless agent binary the rerank shells out to (the SAME CLI a run phase
+# invokes — DEFAULT_COMMANDS["claude"] is "claude -p …").  Overridable so a
+# non-default install / a stub can be pointed at, mirroring
+# ``resolve_llm_rerank_model``'s env override.
+LLM_RERANK_CLI_ENV = "AGENTRAIL_CONTEXT_LLM_RERANK_CLI"
+_LLM_RERANK_DEFAULT_CLI = "claude"
+
+# Per-call wall-clock cap (seconds): a hung headless agent must never stall
+# retrieval.  A timeout raises ``subprocess.TimeoutExpired``, which llm_rerank's
+# fail-open branch catches and records as ``api_error:TimeoutExpired``.
+_CALL_TIMEOUT_SECONDS = 60
+
 # Window geometry: 10-wide windows sliding back-to-front with 5 overlap.  The
 # overlap is what lets a candidate promoted to the top of window k re-compete
 # in window k-1; without it the merge would be a fixed partition.
@@ -57,7 +78,6 @@ _WINDOW_OVERLAP = 5
 # Prompt snippet bound: enough to identify a candidate, small enough that a
 # full window stays a cheap single call.
 _SNIPPET_MAX_CHARS = 240
-_MAX_COMPLETION_TOKENS = 512
 
 
 def llm_rerank_enabled() -> bool:
@@ -72,6 +92,25 @@ def resolve_llm_rerank_model() -> str:
     """The pinned cheap model, overridable via AGENTRAIL_CONTEXT_LLM_RERANK_MODEL."""
     raw = (os.environ.get("AGENTRAIL_CONTEXT_LLM_RERANK_MODEL") or "").strip()
     return raw or LLM_RERANK_DEFAULT_MODEL
+
+
+def resolve_llm_rerank_cli() -> str:
+    """The headless agent binary, overridable via AGENTRAIL_CONTEXT_LLM_RERANK_CLI."""
+    raw = (os.environ.get(LLM_RERANK_CLI_ENV) or "").strip()
+    return raw or _LLM_RERANK_DEFAULT_CLI
+
+
+def llm_rerank_model_path_available() -> bool:
+    """True when the headless ``claude -p`` path is resolvable (the gate condition).
+
+    Replaces the old ``ANTHROPIC_API_KEY`` gate: the rerank rides the
+    authenticated CLI harness, so "is the model path available" means the agent
+    binary is on ``PATH`` — not that a raw API key is exported.  When it is
+    missing the stage fails open to the deterministic order.
+    """
+    import shutil
+
+    return shutil.which(resolve_llm_rerank_cli()) is not None
 
 
 def window_spans(count: int, *, window_size: int = _WINDOW_SIZE, overlap: int = _WINDOW_OVERLAP) -> List[Tuple[int, int]]:
@@ -185,30 +224,81 @@ def llm_rerank_cost_usd(llm: Dict[str, Any]) -> float:
     )
 
 
-def _call_model(model: str, prompt: str) -> Tuple[str, Dict[str, int]]:
-    """The ONE network seam: a single Messages API call (monkeypatch in tests).
+def _parse_cli_response(stdout: str) -> Tuple[str, Dict[str, int]]:
+    """``claude -p --output-format json`` stdout -> ``(text, usage)`` (pure, defensive).
 
-    Returns ``(response_text, raw_usage)`` where ``raw_usage`` carries the
-    response's token counters verbatim (the PR 3 metering input). Never log the
-    prompt — candidate content may carry material the index redaction layer
-    (agentrail/context/redaction.py) exists to keep out of logs.
+    The CLI's JSON envelope carries the assistant text in ``result`` and the
+    token counters in ``usage``; those are mapped to the same keys the metering
+    seam already aggregates.  A body that is NOT the expected envelope (older
+    CLI, an error banner, a bare array) degrades to the raw stdout as the text
+    with ZERO usage — so :func:`parse_window_order` can still recover the
+    permutation and the cost stays honest (never fabricated).
     """
-    import anthropic
-
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model=model,
-        max_tokens=_MAX_COMPLETION_TOKENS,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    text = "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
-    usage = getattr(response, "usage", None)
+    zero = {"inputTokens": 0, "outputTokens": 0, "cacheCreationInputTokens": 0, "cacheReadInputTokens": 0}
+    try:
+        envelope = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return stdout, zero
+    if not isinstance(envelope, dict):
+        return stdout, zero
+    result = envelope.get("result")
+    text = result if isinstance(result, str) else stdout
+    raw_usage = envelope.get("usage")
+    if not isinstance(raw_usage, dict):
+        return text, zero
     return text, {
-        "inputTokens": int(getattr(usage, "input_tokens", 0) or 0),
-        "outputTokens": int(getattr(usage, "output_tokens", 0) or 0),
-        "cacheCreationInputTokens": int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
-        "cacheReadInputTokens": int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+        "inputTokens": int(raw_usage.get("input_tokens", 0) or 0),
+        "outputTokens": int(raw_usage.get("output_tokens", 0) or 0),
+        "cacheCreationInputTokens": int(raw_usage.get("cache_creation_input_tokens", 0) or 0),
+        "cacheReadInputTokens": int(raw_usage.get("cache_read_input_tokens", 0) or 0),
     }
+
+
+def _call_model(model: str, prompt: str) -> Tuple[str, Dict[str, int]]:
+    """The ONE network seam: one headless ``claude -p`` call (monkeypatch in tests).
+
+    Rides the authenticated Claude Code CLI harness — the SAME headless path a
+    run phase drives (``claude -p`` with the prompt on stdin and the agent-session
+    env stripped via :func:`agentrail.run.proc.sanitized_env`, mirroring
+    ``_run_headless`` in agentrail/cli/commands/issue.py).  There is NO
+    ``anthropic`` SDK import and NO ``ANTHROPIC_API_KEY`` dependency: the
+    installed agent owns authentication.  ``--output-format json`` makes stdout a
+    result envelope whose ``result`` is the assistant text and whose ``usage``
+    carries the token counters verbatim (the metering input).
+
+    Returns ``(response_text, raw_usage)``.  A non-zero exit raises so
+    llm_rerank's fail-open branch records it (``api_error:*``) and the
+    deterministic order stands.  Never log the prompt — candidate content may
+    carry material the index redaction layer (agentrail/context/redaction.py)
+    exists to keep out of logs.
+    """
+    import subprocess
+
+    from agentrail.run.proc import sanitized_env
+
+    argv = [
+        resolve_llm_rerank_cli(),
+        "-p",
+        "--dangerously-skip-permissions",
+        "--output-format",
+        "json",
+        "--model",
+        model,
+    ]
+    completed = subprocess.run(
+        argv,
+        input=prompt,
+        text=True,
+        capture_output=True,
+        timeout=_CALL_TIMEOUT_SECONDS,
+        env=sanitized_env(),
+    )
+    if completed.returncode != 0:
+        # A real failure (bad model, auth, CLI error). Raise so the fail-open
+        # branch surfaces it and the deterministic order is kept — never fabricate
+        # a reorder from a failed call.
+        raise RuntimeError(f"headless rerank call exited {completed.returncode}")
+    return _parse_cli_response(completed.stdout or "")
 
 
 def llm_rerank(
@@ -220,9 +310,10 @@ def llm_rerank(
     """Reorder the deterministic rerank's KEPT list with listwise model calls.
 
     Membership is untouched by contract: the result's ``ordered`` list is
-    always a permutation of ``candidates``.  Fail-open: no API key or any API
-    error returns the input order with a ``fallback`` reason (partial usage is
-    still reported so PR 3 can meter aborted attempts).
+    always a permutation of ``candidates``.  Fail-open: an unavailable headless
+    model path (no ``claude`` on ``PATH``) or any call error returns the input
+    order with a ``fallback`` reason (partial usage is still reported so PR 3 can
+    meter aborted attempts).
     """
     call = call_model or _call_model
     model = resolve_llm_rerank_model()
@@ -237,8 +328,8 @@ def llm_rerank(
     result: Dict[str, Any] = {"ordered": list(candidates), "changed": False, "fallback": None, "llm": llm_meta}
     if len(candidates) < 2:
         return result
-    if not (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
-        result["fallback"] = "missing_api_key"
+    if not llm_rerank_model_path_available():
+        result["fallback"] = "missing_model_path"
         return result
     # Ids are positional in the DETERMINISTIC order and stay attached to their
     # candidate across windows, so merges reorder references, never copies.

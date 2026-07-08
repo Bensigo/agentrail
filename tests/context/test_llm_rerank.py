@@ -30,6 +30,7 @@ from agentrail.context.llm_rerank import (
     build_window_prompt,
     llm_rerank,
     llm_rerank_enabled,
+    llm_rerank_model_path_available,
     parse_window_order,
     resolve_llm_rerank_model,
     window_spans,
@@ -38,6 +39,21 @@ from agentrail.context.retrieval import query_context
 
 _FLAG = "AGENTRAIL_CONTEXT_LLM_RERANK"
 _MODEL_ENV = "AGENTRAIL_CONTEXT_LLM_RERANK_MODEL"
+
+
+@contextmanager
+def _model_path(available: bool):
+    """Force the headless-model-path gate on/off (issue #1044).
+
+    The rerank now gates on the authenticated ``claude -p`` path being
+    resolvable, not on ``ANTHROPIC_API_KEY``; tests drive that gate directly
+    rather than depending on a real ``claude`` binary being installed.
+    """
+    with mock.patch(
+        "agentrail.context.llm_rerank.llm_rerank_model_path_available",
+        return_value=available,
+    ):
+        yield
 
 
 @contextmanager
@@ -315,7 +331,7 @@ class BuildWindowPromptTests(unittest.TestCase):
 class LlmRerankUnitTests(unittest.TestCase):
     def test_reorders_a_single_window_and_reports_usage(self) -> None:
         candidates = _candidates(3)
-        with _env("ANTHROPIC_API_KEY", "test-key"):
+        with _model_path(True):
             result = llm_rerank(candidates, query="q", call_model=_reversing_call)
         self.assertIsNone(result["fallback"])
         self.assertTrue(result["changed"])
@@ -334,7 +350,7 @@ class LlmRerankUnitTests(unittest.TestCase):
             calls.append(ids)
             return json.dumps(ids), _usage(7, 3)
 
-        with _env("ANTHROPIC_API_KEY", "test-key"):
+        with _model_path(True):
             result = llm_rerank(candidates, query="q", call_model=recording_call)
         self.assertIsNone(result["fallback"])
         self.assertEqual(result["llm"]["calls"], 4, "25 candidates = 4 sliding windows")
@@ -349,7 +365,7 @@ class LlmRerankUnitTests(unittest.TestCase):
 
     def test_membership_survives_garbage_responses(self) -> None:
         candidates = _candidates(25)
-        with _env("ANTHROPIC_API_KEY", "test-key"):
+        with _model_path(True):
             result = llm_rerank(candidates, query="q", call_model=_garbage_call)
         self.assertIsNone(result["fallback"])
         self.assertEqual(
@@ -361,7 +377,7 @@ class LlmRerankUnitTests(unittest.TestCase):
 
     def test_reversal_across_windows_is_still_a_permutation(self) -> None:
         candidates = _candidates(25)
-        with _env("ANTHROPIC_API_KEY", "test-key"):
+        with _model_path(True):
             result = llm_rerank(candidates, query="q", call_model=_reversing_call)
         self.assertIsNone(result["fallback"])
         self.assertTrue(result["changed"])
@@ -379,26 +395,26 @@ class LlmRerankUnitTests(unittest.TestCase):
                 raise RuntimeError("boom")
             return json.dumps(_prompt_ids(prompt)), _usage(50, 5)
 
-        with _env("ANTHROPIC_API_KEY", "test-key"):
+        with _model_path(True):
             result = llm_rerank(candidates, query="q", call_model=flaky_call)
         self.assertEqual(result["fallback"], "api_error:RuntimeError")
         self.assertEqual(result["ordered"], candidates, "fallback must keep the input order")
         self.assertEqual(result["llm"]["calls"], 1, "only the successful call is counted")
         self.assertEqual(result["llm"]["inputTokens"], 50, "aborted attempts still get metered")
 
-    def test_missing_api_key_falls_back_without_calling(self) -> None:
+    def test_missing_model_path_falls_back_without_calling(self) -> None:
         candidates = _candidates(5)
         fake = mock.Mock(side_effect=AssertionError("must not be called"))
-        with _env("ANTHROPIC_API_KEY", None):
+        with _model_path(False):
             result = llm_rerank(candidates, query="q", call_model=fake)
-        self.assertEqual(result["fallback"], "missing_api_key")
+        self.assertEqual(result["fallback"], "missing_model_path")
         self.assertEqual(result["ordered"], candidates)
         self.assertEqual(result["llm"]["calls"], 0)
         fake.assert_not_called()
 
     def test_fewer_than_two_candidates_is_a_no_op(self) -> None:
         fake = mock.Mock(side_effect=AssertionError("must not be called"))
-        with _env("ANTHROPIC_API_KEY", "test-key"):
+        with _model_path(True):
             for candidates in ([], _candidates(1)):
                 result = llm_rerank(candidates, query="q", call_model=fake)
                 self.assertIsNone(result["fallback"])
@@ -416,8 +432,16 @@ class LlmRerankRetrievalWiringTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.repo = _make_repo()
 
-    def _query(self, **env: str | None) -> dict:
-        with _envs(AGENTRAIL_CONTEXT_RERANK="1", **env):
+    def _query(self, *, model_path: bool | None = None, **env: str | None) -> dict:
+        with ExitStack() as stack:
+            stack.enter_context(_envs(AGENTRAIL_CONTEXT_RERANK="1", **env))
+            if model_path is not None:
+                stack.enter_context(
+                    mock.patch(
+                        "agentrail.context.llm_rerank.llm_rerank_model_path_available",
+                        return_value=model_path,
+                    )
+                )
             return query_context(self.repo, _QUERY)
 
     def test_fixture_retrieves_multiple_candidates(self) -> None:
@@ -433,7 +457,7 @@ class LlmRerankRetrievalWiringTests(unittest.TestCase):
     def test_flag_on_reorders_and_threads_telemetry(self) -> None:
         off_output = self._query(**{_FLAG: None})
         with mock.patch("agentrail.context.llm_rerank._call_model", side_effect=_reversing_call) as seam:
-            on_output = self._query(**{_FLAG: "1", "ANTHROPIC_API_KEY": "test-key"})
+            on_output = self._query(model_path=True, **{_FLAG: "1"})
         self.assertTrue(seam.called, "flag ON must route through the single model seam")
 
         contract = (on_output.get("compiler") or {}).get("rerank") or {}
@@ -476,7 +500,7 @@ class LlmRerankRetrievalWiringTests(unittest.TestCase):
     def test_garbage_model_output_preserves_deterministic_behavior(self) -> None:
         off_output = self._query(**{_FLAG: None})
         with mock.patch("agentrail.context.llm_rerank._call_model", side_effect=_garbage_call) as seam:
-            on_output = self._query(**{_FLAG: "1", "ANTHROPIC_API_KEY": "test-key"})
+            on_output = self._query(model_path=True, **{_FLAG: "1"})
         self.assertTrue(seam.called)
         self.assertEqual(
             [r.get("path") for r in (on_output.get("results") or [])],
@@ -484,13 +508,13 @@ class LlmRerankRetrievalWiringTests(unittest.TestCase):
             "unparseable model output must leave the deterministic order intact",
         )
 
-    def test_flag_on_without_api_key_falls_back_honestly(self) -> None:
+    def test_flag_on_without_model_path_falls_back_honestly(self) -> None:
         fake = mock.Mock(side_effect=AssertionError("must not hit the network seam"))
         with mock.patch("agentrail.context.llm_rerank._call_model", fake):
-            output = self._query(**{_FLAG: "1", "ANTHROPIC_API_KEY": None})
+            output = self._query(model_path=False, **{_FLAG: "1"})
         fake.assert_not_called()
         contract = (output.get("compiler") or {}).get("rerank") or {}
-        self.assertEqual(contract.get("llmFallback"), "missing_api_key")
+        self.assertEqual(contract.get("llmFallback"), "missing_model_path")
         self.assertNotIn(
             LLM_RERANK_METHOD,
             str(contract.get("method", "")),

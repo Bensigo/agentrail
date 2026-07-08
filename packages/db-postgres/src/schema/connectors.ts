@@ -65,6 +65,16 @@ export interface ConnectorConfig {
    */
   chatId?: string;
   /**
+   * Discord / Slack gateway: the channel id Jace's NATIVE Eve channel posts to
+   * (the `{ channelId }` proactive-`receive` target). Non-secret display field —
+   * the bot credentials live in Jace's env, never here. This is the destination
+   * the Jace-migrated outbound path needs (the legacy Discord path uses the
+   * workspace-level webhook secret instead). Absent until a workspace configures
+   * the Jace-native channel; the run-outcome route rejects a push without it.
+   * Absent for other providers. See `apps/jace/agent/channels/run-outcome.ts`.
+   */
+  channelId?: string;
+  /**
    * Telegram inbound webhook secret (#889). Generated per workspace at connect
    * time and passed to Telegram's `setWebhook` as `secret_token`; Telegram echoes
    * it in the `X-Telegram-Bot-Api-Secret-Token` header on every delivery so the

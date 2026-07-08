@@ -17,9 +17,14 @@
  *    greenfield (Jace-only). An unconnected / disabled channel is a silent no-op.
  *  - Channel migration (#1047 Telegram, #1050 Discord + Slack): when a workspace
  *    has migrated a channel to Jace (`jaceOwns<Channel>Notify`), the outbound ping
- *    is delivered THROUGH Jace instead of the legacy sender — exclusive, so
- *    exactly one notification fires (no dark, no double). Default OFF; each
- *    channel's legacy path is unchanged until its per-workspace cutover.
+ *    is delivered THROUGH Jace's NATIVE Eve channel instead of the legacy sender —
+ *    exclusive, so exactly one notification fires (no dark, no double). Default
+ *    OFF; each channel's legacy path is unchanged until its per-workspace cutover.
+ *    The console posts to Jace's real `/eve/v1/run-outcome` Eve channel route with
+ *    the built message + the NON-SECRET destination (`target`); Jace's channel
+ *    holds the shared bot credentials and does delivery + threading. (This
+ *    replaces an earlier bespoke `/eve/v1/notify` handoff — Eve has no such
+ *    endpoint; channels are its first-class primitive.)
  *  - BEST-EFFORT: every send is isolated and swallowed. A notify failure must
  *    NEVER change the route's response (AC3) — callers additionally wrap the
  *    whole thing in try/catch, but we also never throw from here.
@@ -116,30 +121,48 @@ async function notifyDiscord(
 const EVE_HOST = process.env["EVE_HOST"] || "http://127.0.0.1:2000";
 
 /**
- * The OUTBOUND notify boundary on the Jace sidecar. The console hands a terminal
- * run outcome to Jace here; Jace delivers it to the connected channel in a
- * repliable thread (the bidirectional round-trip). Overridable for tests /
- * non-default topologies.
+ * The REAL Eve custom-channel route Jace mounts for outbound run-outcome delivery
+ * (`apps/jace/agent/channels/run-outcome.ts` → `/eve/v1/run-outcome`). The console
+ * hands a terminal outcome here; Jace's route `args.receive`s it into the native
+ * platform channel, so the ping lands in a repliable thread. Overridable for
+ * tests / non-default topologies.
  *
- * DEPLOY-GATED: the Jace-side handler for this path (channel delivery + thread
- * mapping) is the cutover work and is NOT built here (blocked on the deployed
- * sidecar, #1038). Because a channel routes here only when the operator has
- * explicitly opted in (`jaceOwns<Channel>Notify`, default OFF) AND this call is
- * best-effort, an undeployed endpoint is a harmless no-op until BOTH the flag is
- * flipped and the sidecar handler ships.
+ * DEPLOY-GATED: running the route (live delivery, per-workspace cutover) needs the
+ * deployed sidecar (#1038/#1101). Because a channel routes here only when the
+ * operator has explicitly opted in (`jaceOwns<Channel>Notify`, default OFF) AND
+ * this call is best-effort, an unreachable sidecar is a harmless no-op until BOTH
+ * the flag is flipped and the sidecar is deployed.
  */
-const JACE_NOTIFY_URL =
-  process.env["JACE_NOTIFY_URL"] || `${EVE_HOST}/eve/v1/notify`;
+const JACE_RUN_OUTCOME_URL =
+  process.env["JACE_RUN_OUTCOME_URL"] || `${EVE_HOST}/eve/v1/run-outcome`;
 
 /**
- * Hand a terminal run outcome to the Jace sidecar for delivery on `channel`
- * (#1047 Telegram, #1050 Discord + Slack).
+ * The initiator identity Eve forwards to `session.auth.initiator` so Jace's
+ * channel handlers and tools can attribute the session to the originating
+ * workspace. Non-secret; a service principal, not an end user.
+ */
+function jaceInitiatorAuth(
+  workspaceId: string,
+  params: NotifyParams
+): Record<string, unknown> {
+  return {
+    authenticator: "agentrail",
+    principalType: "service",
+    principalId: workspaceId,
+    attributes: { issueNumber: params.issueNumber, outcome: params.outcome },
+  };
+}
+
+/**
+ * Hand a terminal run outcome to Jace's native run-outcome channel for delivery on
+ * `channel` (#1047 Telegram, #1050 Discord + Slack).
  *
  * This is the console half of the outbound migration: Jace holds the conversation
- * (and, post-migration, the per-channel allowlist), but has no DB, so the console
- * — the DB holder — passes the built message plus any NON-SECRET destination hint
- * (`extra`, e.g. Telegram's `chatId`). Secret destinations (a Discord webhook, a
- * Slack token) are resolved by the Jace-side handler, never sent over the wire.
+ * but has no DB, so the console — the DB holder — passes the built `message`, the
+ * channel-appropriate NON-SECRET `target` (`{ chatId }` / `{ channelId }`), and an
+ * initiator `auth`. Secret credentials (the bot token, a webhook) live in Jace's
+ * env and are NEVER sent over the wire. The payload is exactly what Jace's route
+ * normalizes for `args.receive(channel, { message, target, auth })`.
  *
  * BEST-EFFORT and — critically for exactly-once — NO FALLBACK: if the sidecar is
  * unreachable we swallow and return. We must NOT fall back to the legacy sender,
@@ -150,63 +173,71 @@ async function notifyViaJace(
   workspaceId: string,
   channel: "telegram" | "discord" | "slack",
   params: NotifyParams,
-  text: string,
-  extra: Record<string, unknown> = {}
+  message: string,
+  target: Record<string, string | undefined>
 ): Promise<void> {
-  await fetch(JACE_NOTIFY_URL, {
+  await fetch(JACE_RUN_OUTCOME_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       workspaceId,
       channel,
-      text,
+      message,
+      target,
+      auth: jaceInitiatorAuth(workspaceId, params),
       outcome: params.outcome,
       issueNumber: params.issueNumber,
       prUrl: params.prUrl,
       costUsd: params.costUsd,
-      ...extra,
     }),
   });
 }
 
 /**
- * Telegram → Jace handoff (#1047). Passes the destination `chatId` (a non-secret
- * display field) so Jace can address the thread; the bot token stays server-side.
+ * Telegram → Jace handoff (#1047). The non-secret `chatId` (a display field on the
+ * telegram connector) is the `receive` target; the bot token stays server-side.
  */
 async function notifyTelegramViaJace(
   workspaceId: string,
   params: NotifyParams,
-  text: string
+  message: string
 ): Promise<void> {
   const connector = await getConnector(workspaceId, "telegram");
-  const chatId = connector?.config.chatId;
-  await notifyViaJace(workspaceId, "telegram", params, text, { chatId });
+  await notifyViaJace(workspaceId, "telegram", params, message, {
+    chatId: connector?.config.chatId,
+  });
 }
 
 /**
- * Discord → Jace handoff (#1050). The destination (the channel webhook) is a
- * secret resolved by the DEFERRED Jace-side handler, so the console passes only
- * the outcome — never the webhook — over the wire.
+ * Discord → Jace handoff (#1050). Jace's native Discord channel posts to a
+ * `channelId` (non-secret), distinct from the legacy path's webhook secret. The
+ * console passes only that id; the bot credentials live in Jace's env.
  */
 async function notifyDiscordViaJace(
   workspaceId: string,
   params: NotifyParams,
-  text: string
+  message: string
 ): Promise<void> {
-  await notifyViaJace(workspaceId, "discord", params, text);
+  const connector = await getConnector(workspaceId, "discord");
+  await notifyViaJace(workspaceId, "discord", params, message, {
+    channelId: connector?.config.channelId,
+  });
 }
 
 /**
  * Slack → Jace handoff (#1050). Slack is greenfield (no legacy console path), so
  * this is the ONLY Slack delivery — it fires solely when the workspace has opted
- * Slack into Jace. Destination resolution is the DEFERRED Jace-side handler.
+ * Slack into Jace. The non-secret `channelId` on the slack connector is the target.
  */
 async function notifySlackViaJace(
   workspaceId: string,
   params: NotifyParams,
-  text: string
+  message: string
 ): Promise<void> {
-  await notifyViaJace(workspaceId, "slack", params, text);
+  const connector = await getConnector(workspaceId, "slack");
+  await notifyViaJace(workspaceId, "slack", params, message, {
+    channelId: connector?.config.channelId,
+  });
 }
 
 /** A per-channel sender: posts `text` to that gateway for the workspace. */

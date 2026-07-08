@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from datetime import datetime, timezone
@@ -95,6 +96,40 @@ def _paths(results: Iterable[Dict[str, Any]]) -> List[str]:
 def _compiler(query: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     compiler = query.get("compiler")
     return compiler if isinstance(compiler, dict) else None
+
+
+def _rerank_report(query: Dict[str, Any]) -> Dict[str, Any]:
+    """Surface the rerank stage's audit fields into the fixture report (issue #1088 AC4).
+
+    Today a live LLM listwise rerank (``AGENTRAIL_CONTEXT_LLM_RERANK=1``) and a
+    SILENT deterministic fallback produce indistinguishable reports — you cannot
+    tell from the eval output whether the LLM actually reordered anything or
+    quietly fell back.  This lifts the three auditable fields out of
+    ``query["compiler"]["rerank"]`` (the ``rerank_meta`` block assembled in
+    ``retrieval.py`` and shaped by ``compiler._rerank_contract``):
+
+      ``method``       the rerank pipeline that ran, e.g.
+                       ``deterministic_code_aware_v1`` alone vs
+                       ``deterministic_code_aware_v1+llm_listwise`` when the LLM
+                       stage actually applied its order.
+      ``llmFallback``  the fallback reason when the LLM stage bailed (present
+                       ONLY on a real fallback), so a silent fallback is now
+                       visible in the report.
+      ``orderChanged`` whether the rerank moved any candidate at all.
+
+    Null-safe by construction: when the rerank flag is OFF, the block is absent,
+    or the compiler is missing, every field is ``None`` and no report consumer
+    breaks.  Purely additive — reads existing query state, computes nothing new.
+    """
+    compiler = _compiler(query)
+    rerank = compiler.get("rerank") if isinstance(compiler, dict) else None
+    if not isinstance(rerank, dict):
+        return {"method": None, "llmFallback": None, "orderChanged": None}
+    return {
+        "method": rerank.get("method"),
+        "llmFallback": rerank.get("llmFallback"),
+        "orderChanged": rerank.get("orderChanged"),
+    }
 
 
 def _compiler_candidates(query: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -379,6 +414,80 @@ def _file_level_precision(
     }
 
 
+# Default reporting depth for nDCG@k. Matches the pack-of-10 budget the other
+# metrics report at, so nDCG reads as the rank-aware companion to the top-10
+# set-membership fractions. Any depth >= 2 is order-sensitive; 10 covers the
+# whole kept set on the current fixtures while staying a stable, standard depth.
+_NDCG_DEFAULT_K = 10
+
+
+def _dcg(gains: List[int]) -> float:
+    """Discounted cumulative gain of relevance ``gains`` in RANK order.
+
+    Standard log2 discount: the gain at rank ``i`` (1-based) contributes
+    ``gain / log2(i + 1)`` — rank 1 is undiscounted (``log2(2) == 1``), later
+    ranks are progressively discounted.  That per-position discount is exactly
+    what makes DCG — and the nDCG built on it — ORDER-SENSITIVE where a
+    set-membership fraction (``precisionAtBudget``, ``precisionInPack``) is not.
+    """
+    return sum(gain / math.log2(index + 1) for index, gain in enumerate(gains, 1))
+
+
+def _file_level_ndcg(
+    ranked_results: List[Dict[str, Any]],
+    relevant_paths: List[str],
+    required_sources: List[str],
+    k: int = _NDCG_DEFAULT_K,
+) -> Dict[str, Any]:
+    """Rank-aware companion to the set-membership metrics (issue #1088 AC1).
+
+    ``precisionAtBudget`` and ``fileLevelPrecision`` are set-membership fractions
+    — they count how many relevant files landed in the pack, so they DON'T change
+    when only the ORDER of the same candidate set changes.  The offline eval is
+    therefore rank-blind: with a real Haiku listwise rerank running, the reranked
+    order flows into the result list yet mean ``precisionAtBudget`` stays
+    byte-identical to baseline, because membership is fixed by the deterministic
+    ``top_k=limit`` cut BEFORE the LLM reorders.  The eval can neither show rerank
+    lift nor falsify it (measured 2026-07-07, identical 0.3250).
+
+    nDCG@k restores a rank-sensitive signal so #1044 (Haiku rerank) / #1104
+    (def-rerank) become measurable.  Over the ranked retrieval collapsed to
+    DISTINCT files in rank order (via ``_dedupe_paths``, the same collapse
+    ``_file_level_precision`` uses), each file scores gain 1 if it is in the
+    relevant set else 0.  DCG applies the log2 rank discount, so moving a relevant
+    file DOWN the ranking lowers the score; IDCG is the best achievable ordering
+    of the SAME labels (all relevant files first), so the ratio is 1.0 only when
+    every relevant retrieved file leads the ranking.  Pure and deterministic
+    (index-free), unit-testable without an index — exactly like
+    ``_file_level_precision``.
+
+    Vacuous case: no relevant files at all → 1.0 (nothing to order, nothing to
+    get wrong).  Guard: relevant files exist but none are retrieved within the
+    depth → IDCG == 0, reported as 0.0 (the ranking surfaced nothing relevant).
+    """
+    relevant = set(relevant_paths or required_sources)
+    ranked_files = _dedupe_paths(ranked_results)
+    depth = k if isinstance(k, int) and k > 0 else len(ranked_files)
+    gains = [1 if path in relevant else 0 for path in ranked_files]
+    dcg = _dcg(gains[:depth])
+    # IDCG@k: best arrangement of the SAME labels — all relevant files first.
+    # Drawn from the whole retrieved list (not the truncated prefix), so a
+    # relevant file sitting beyond ``depth`` still counts against the ranking.
+    idcg = _dcg(sorted(gains, reverse=True)[:depth])
+    if not relevant:
+        ndcg = 1.0
+    elif idcg == 0:
+        ndcg = 0.0
+    else:
+        ndcg = dcg / idcg
+    return {
+        "ndcg": round(ndcg, 6),
+        "k": depth,
+        "relevantFileCount": len(relevant),
+        "rankedFilesConsidered": ranked_files[:depth],
+    }
+
+
 def _mean_metric(fixtures: List[Dict[str, Any]], metric_path: Tuple[str, ...]) -> Optional[float]:
     """Mean of a (possibly nested) numeric metric across fixtures, or ``None`` if empty.
 
@@ -522,6 +631,11 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
     graph_expansion = _graph_expansion_metrics(query, fixture.get("expectedGraphExpandedSources", []))
     precision_at_budget = _precision_at_budget(top_results, _unique(expected + required), required, fixture_limit)
     file_level_precision = _file_level_precision(results, top_results, _unique(expected + required), required)
+    # Rank-aware companion (issue #1088 AC1): computed over the RANKED retrieval
+    # (query["results"]) so a reorder of the same candidate set moves it, unlike
+    # the set-membership fractions above.
+    file_level_ndcg = _file_level_ndcg(results, _unique(expected + required), required)
+    rerank_report = _rerank_report(query)
     stale_or_denied_leakage = _stale_or_denied_leakage(query, selected_candidates, excluded, all_result_paths)
     failures: List[str] = []
     failure_details: List[Dict[str, Any]] = []
@@ -598,6 +712,10 @@ def _evaluate_fixture(target_dir: Path, fixture: Dict[str, Any]) -> Dict[str, An
         "graphExpansion": graph_expansion,
         "precisionAtBudget": precision_at_budget,
         "fileLevelPrecision": file_level_precision,
+        # Rank-aware metric + rerank audit trail (issue #1088 AC1/AC4): additive,
+        # never replacing the set-membership numbers above.
+        "nDCG": file_level_ndcg,
+        "rerank": rerank_report,
     }
     return {
         "name": fixture["name"],
@@ -738,6 +856,10 @@ def _grep_baseline_fixture(
     # Grep returns one flat ranked list of files (no compiler pack), so the ranked
     # and packed lists are the same here.
     file_level_precision = _file_level_precision(top_results, top_results, _unique(expected + required), required)
+    # Rank-aware companion on the SAME ranked list, so the two arms report nDCG on
+    # equal terms (issue #1088). The grep arm has no compiler stage, so there is no
+    # rerank block to surface here.
+    file_level_ndcg = _file_level_ndcg(top_results, _unique(expected + required), required)
     return {
         "name": fixture["name"],
         "task": fixture["task"],
@@ -747,6 +869,7 @@ def _grep_baseline_fixture(
             "recallAt10": round(_recall(expected, top10), 6),
             "precisionAtBudget": precision_at_budget,
             "fileLevelPrecision": file_level_precision,
+            "nDCG": file_level_ndcg,
         },
         "selectedPaths": paths,
     }
@@ -801,6 +924,10 @@ def evaluate_retrieval(target_dir: Path, fixture_file: Path) -> Dict[str, Any]:
                 "fileRPrecision": _mean_metric(scored, ("fileLevelPrecision", "rPrecision")),
                 "filePrecisionInPack": _mean_metric(scored, ("fileLevelPrecision", "precisionInPack")),
                 "fileRecall": _mean_metric(scored, ("fileLevelPrecision", "recall")),
+                # Rank-aware corpus mean (issue #1088): the only mean here that a
+                # reranker can move without changing membership. Additive — the
+                # set-membership means above stay byte-identical.
+                "fileNDCG": _mean_metric(scored, ("nDCG", "ndcg")),
                 "recallAt10": _mean_metric(scored, ("recallAt10",)),
             },
         },
@@ -823,6 +950,7 @@ def format_evaluation_report(report: Dict[str, Any]) -> str:
             f"fileRPrecision={means.get('fileRPrecision')} "
             f"filePrecisionInPack={means.get('filePrecisionInPack')} "
             f"fileRecall={means.get('fileRecall')} "
+            f"fileNDCG={means.get('fileNDCG')} "
             f"recall@10={means.get('recallAt10')}"
         )
     grep_by_name = {
@@ -848,7 +976,11 @@ def format_evaluation_report(report: Dict[str, Any]) -> str:
             f"precisionAtBudget={metrics['precisionAtBudget']['precision']} "
             f"fileRPrecision={metrics.get('fileLevelPrecision', {}).get('rPrecision')} "
             f"filePrecisionInPack={metrics.get('fileLevelPrecision', {}).get('precisionInPack')} "
-            f"fileRecall={metrics.get('fileLevelPrecision', {}).get('recall')}"
+            f"fileRecall={metrics.get('fileLevelPrecision', {}).get('recall')} "
+            f"fileNDCG={metrics.get('nDCG', {}).get('ndcg')} "
+            f"rerankMethod={metrics.get('rerank', {}).get('method')} "
+            f"rerankOrderChanged={metrics.get('rerank', {}).get('orderChanged')} "
+            f"rerankLlmFallback={metrics.get('rerank', {}).get('llmFallback')}"
         )
         # Comparative arm: show AgentRail's recall/precision next to plain-grep's
         # on the SAME fixture so the numbers are not standalone (issue #935).

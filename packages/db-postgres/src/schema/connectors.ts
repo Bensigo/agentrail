@@ -81,6 +81,20 @@ export interface ConnectorConfig {
    * webhook (deployed) path. Absent until the poller has run. Other providers: absent.
    */
   telegramOffset?: number;
+  /**
+   * JACE CHANNEL-MIGRATION opt-in (#1047). Lives on the `jace` connector row and
+   * flips the OUTBOUND Telegram run-outcome notify source from the legacy console
+   * sender to Jace, so a "run failed" ping lands in a repliable thread. It is the
+   * per-workspace cutover control — an EXPLICIT opt-in, DEFAULT OFF (absent), and
+   * additional to the `jace` connector being enabled. Kept separate from the
+   * `enabled` kill switch on purpose: merely enabling inbound Jace must NOT steal
+   * Telegram notifications away from the legacy path (that would go dark before the
+   * Jace-side delivery is deployed). Flip it true ONLY after verifying the new path
+   * delivers exactly once, then retire the legacy sender (the cutover PR). Absent /
+   * false on every other provider and pre-migration. See `jaceOwnsTelegramNotify`
+   * and `apps/console/app/api/v1/runner/result/notify.ts`.
+   */
+  telegramNotify?: boolean;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */

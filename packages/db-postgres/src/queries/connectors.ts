@@ -121,6 +121,17 @@ export function validateConnectorUpdate(
       out.telegramOffset = n;
     }
 
+    // Jace channel-migration opt-in (#1047). The per-workspace cutover control:
+    // set true on the `jace` connector to route OUTBOUND Telegram notify through
+    // Jace. Validated here so the operator can flip it via the connector PATCH
+    // route; default OFF, so absence keeps the legacy notify path.
+    if (cfg.telegramNotify !== undefined) {
+      if (typeof cfg.telegramNotify !== "boolean") {
+        return { ok: false, error: "telegramNotify must be a boolean" };
+      }
+      out.telegramNotify = cfg.telegramNotify;
+    }
+
     value.config = out;
   }
 
@@ -144,6 +155,12 @@ function completeConfig(stored: Partial<ConnectorConfig> | null | undefined): Co
     // across merges so a later config patch never resets the poller's resume point.
     ...(typeof stored?.telegramOffset === "number"
       ? { telegramOffset: stored.telegramOffset }
+      : {}),
+    // Jace channel-migration opt-in (#1047) — preserved across merges so a later
+    // config patch (e.g. label edit on the jace row) never silently reverts the
+    // Telegram-notify cutover for the workspace.
+    ...(typeof stored?.telegramNotify === "boolean"
+      ? { telegramNotify: stored.telegramNotify }
       : {}),
   };
 }

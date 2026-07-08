@@ -65,6 +65,49 @@ export function jaceInboundAllowed(
   return { allowed: true };
 }
 
+// --- outbound channel-ownership gate (pure — NEVER touches the db) ------------
+
+/**
+ * A connector row-ish object as seen by the outbound channel-ownership decision.
+ * Narrow like {@link JaceConnectorRowish}, plus the migration opt-in on config so
+ * a test can hand-build the shape.
+ */
+export type JaceNotifyConnectorRowish =
+  | {
+      provider: string;
+      enabled: boolean;
+      config?: { telegramNotify?: boolean } | null;
+    }
+  | null
+  | undefined;
+
+/**
+ * Decide whether OUTBOUND Telegram run-outcome notifications for a workspace are
+ * delivered THROUGH Jace instead of the legacy console sender (#1047).
+ *
+ * PURE — the single unit-tested routing decision, mirroring
+ * {@link jaceInboundAllowed}. It must never import or touch `db`. Jace owns the
+ * Telegram outbound channel iff a `jace` connector row exists, is ENABLED (the
+ * kill switch — flipping it off reverts outbound to the safe legacy path, not
+ * dark), AND its `config.telegramNotify` opt-in is explicitly true.
+ *
+ * Why the opt-in is separate from `enabled`: the migration must never go dark or
+ * double-fire. Coupling outbound routing to `enabled` alone would mean enabling
+ * inbound Jace silently reroutes notifications to a Jace-side delivery that may
+ * not be deployed yet. The explicit, default-OFF flag makes cutover a deliberate,
+ * per-workspace step: verify the new path delivers exactly once, THEN retire the
+ * legacy sender. Returns `false` for a null / wrong-provider / disabled / opt-out
+ * connector, so the caller keeps the legacy path unchanged by default.
+ */
+export function jaceOwnsTelegramNotify(
+  connector: JaceNotifyConnectorRowish
+): boolean {
+  if (!connector) return false;
+  if (connector.provider !== "jace") return false;
+  if (!connector.enabled) return false;
+  return connector.config?.telegramNotify === true;
+}
+
 // --- enabled-connector lookup -------------------------------------------------
 
 /**

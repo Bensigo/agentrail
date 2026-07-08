@@ -36,6 +36,7 @@ import {
   enqueueGithubIssue,
   __resetProcessLedger,
   V2_FLAG,
+  RATE_LIMIT_WINDOW_ENV,
 } from "../queries/github_intake.js";
 
 // ---------------------------------------------------------------------------
@@ -420,5 +421,207 @@ describe("writerForSource mapping (parity with Python _SOURCE_TO_WRITER)", () =>
     expect(writerForSource("eval")).toBe(WriterClass.EVAL_AUTOTICKET);
     expect(writerForSource("jace")).toBe(WriterClass.JACE);
     expect(writerForSource("something-else")).toBe(WriterClass.HUMAN_GITHUB);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1113 — the rate-limit window is time-bucketed, so the long-lived module
+// `processLedger` resets its per-writer counts per window instead of accumulating
+// for the whole process uptime. Mirrors the Python policy tests exactly.
+// ---------------------------------------------------------------------------
+describe("#1113: rate-limit window is time-bucketed (counts reset per window)", () => {
+  const WINDOW = 100; // seconds — a tiny explicit window so the test is exact.
+
+  it("(a) still PARKS an over-limit writer WITHIN a window", () => {
+    const limit = 2;
+    let ledger = new AdmissionLedger({
+      rateLimits: new Map<WriterClass, number>([[WriterClass.JACE, limit]]),
+    });
+    // All admissions share one instant → one bucket → no roll, counts accumulate.
+    for (let i = 0; i < limit; i++) {
+      const v = screenV2({
+        body: distinctBody(`win-${i}`),
+        writer: WriterClass.JACE,
+        ledger,
+        injectionPark: true,
+        nowSeconds: 1000,
+        windowSeconds: WINDOW,
+      });
+      expect(v.decision, `jace ${i} within limit should admit`).toBe("admit");
+      if (v.decision !== "admit") throw new Error("unreachable");
+      ledger = v.ledger;
+    }
+    const over = screenV2({
+      body: distinctBody("win-over"),
+      writer: WriterClass.JACE,
+      ledger,
+      injectionPark: true,
+      nowSeconds: 1000, // same instant → same window → still over the limit
+      windowSeconds: WINDOW,
+    });
+    expect(over.decision).toBe("park");
+    if (over.decision === "park") {
+      expect(over.reason.toLowerCase()).toContain("rate limit");
+    }
+  });
+
+  it("(b) THE FIX: admits the same writer again AFTER the window rolls", () => {
+    const limit = 1;
+    let ledger = new AdmissionLedger({
+      rateLimits: new Map<WriterClass, number>([[WriterClass.JACE, limit]]),
+    });
+
+    // Window 0 (now=0): first admits, second is over-limit → parked.
+    const first = screenV2({
+      body: distinctBody("w0-a"),
+      writer: WriterClass.JACE,
+      ledger,
+      injectionPark: true,
+      nowSeconds: 0,
+      windowSeconds: WINDOW,
+    });
+    expect(first.decision).toBe("admit");
+    if (first.decision !== "admit") throw new Error("unreachable");
+    ledger = first.ledger;
+    expect(ledger.windowBucket).toBe(0);
+
+    const parked = screenV2({
+      body: distinctBody("w0-b"),
+      writer: WriterClass.JACE,
+      ledger,
+      injectionPark: true,
+      nowSeconds: 50, // still window 0
+      windowSeconds: WINDOW,
+    });
+    expect(parked.decision).toBe("park");
+
+    // Advance past the window boundary (now=150 → bucket 1). The window-0 count is
+    // dropped, so the same writer is admitted again — not parked for the whole uptime.
+    const rolled = screenV2({
+      body: distinctBody("w1-a"),
+      writer: WriterClass.JACE,
+      ledger: parked.ledger,
+      injectionPark: true,
+      nowSeconds: 150,
+      windowSeconds: WINDOW,
+    });
+    expect(rolled.decision, "after the window rolls the writer admits again").toBe(
+      "admit"
+    );
+    if (rolled.decision === "admit") {
+      expect(rolled.ledger.windowBucket).toBe(1);
+      // Only this window's single admission is counted, not the whole uptime's total.
+      expect(rolled.ledger.writerCounts.get(WriterClass.JACE)).toBe(1);
+    }
+  });
+
+  it("window roll resets counts but NOT dedup (content stays a duplicate)", () => {
+    let ledger = new AdmissionLedger();
+    const first = screenV2({
+      body: HOUSE_BODY,
+      writer: WriterClass.HUMAN_GITHUB,
+      ledger,
+      injectionPark: true,
+      nowSeconds: 0,
+      windowSeconds: WINDOW,
+    });
+    expect(first.decision).toBe("admit");
+    if (first.decision !== "admit") throw new Error("unreachable");
+    ledger = first.ledger;
+
+    const dup = screenV2({
+      body: HOUSE_BODY,
+      writer: WriterClass.HUMAN_GITHUB,
+      ledger,
+      injectionPark: true,
+      nowSeconds: 500, // a later window
+      windowSeconds: WINDOW,
+    });
+    expect(dup.decision).toBe("park");
+    if (dup.decision === "park") {
+      expect(dup.reason.toLowerCase()).toContain("duplicate content");
+    }
+  });
+
+  describe("live entrance (enqueueGithubIssue via processLedger)", () => {
+    const OLD = process.env[V2_FLAG];
+    beforeEach(() => __resetProcessLedger());
+    afterEach(() => {
+      if (OLD === undefined) delete process.env[V2_FLAG];
+      else process.env[V2_FLAG] = OLD;
+      __resetProcessLedger();
+    });
+
+    it("(b) flag ON: the process ledger's rate limit resets across a window boundary", async () => {
+      process.env[V2_FLAG] = "1";
+      __resetProcessLedger();
+      // Drive the github writer over its limit inside one window, then prove the
+      // next window admits. `enqueueGithubIssue` passes only `nowSeconds` to
+      // screenV2, so the window length comes from the env override read by
+      // defaultWindowSeconds(). Capture the prior value BEFORE overriding it.
+      const oldWin = process.env[RATE_LIMIT_WINDOW_ENV];
+      process.env[RATE_LIMIT_WINDOW_ENV] = String(WINDOW);
+      try {
+        // github → HUMAN_GITHUB, default limit 30. Drive 30 distinct admits in
+        // window 0, then the 31st parks (rate limit), then window 1 admits again.
+        for (let i = 0; i < 30; i++) {
+          const r = await enqueueGithubIssue({
+            workspaceId: "ws-1",
+            repoFullName: "owner/repo",
+            number: 1000 + i,
+            title: "t",
+            body: distinctBody(`live-${i}`),
+            nowSeconds: 0,
+          });
+          expect(r.enqueued && r.state).toBe("queued");
+        }
+        const over = await enqueueGithubIssue({
+          workspaceId: "ws-1",
+          repoFullName: "owner/repo",
+          number: 2000,
+          title: "t",
+          body: distinctBody("live-over"),
+          nowSeconds: 50, // still window 0
+        });
+        expect(over.enqueued).toBe(true);
+        if (over.enqueued) {
+          expect(over.state).toBe("parked");
+          expect(over.reason?.toLowerCase()).toContain("rate limit");
+        }
+        // Next window: the same writer is admitted again (counts reset).
+        const rolled = await enqueueGithubIssue({
+          workspaceId: "ws-1",
+          repoFullName: "owner/repo",
+          number: 3000,
+          title: "t",
+          body: distinctBody("live-next-window"),
+          nowSeconds: WINDOW + 50, // window 1
+        });
+        expect(rolled.enqueued).toBe(true);
+        if (rolled.enqueued) expect(rolled.state).toBe("queued");
+      } finally {
+        if (oldWin === undefined) delete process.env[RATE_LIMIT_WINDOW_ENV];
+        else process.env[RATE_LIMIT_WINDOW_ENV] = oldWin;
+      }
+    });
+
+    it("(c) flag OFF: windowing never runs — legacy path byte-for-byte unchanged", async () => {
+      delete process.env[V2_FLAG];
+      // Even a body that would trip a v2 rate-limit park enqueues cleanly with the
+      // flag off (the v2 gate — and its window — does not run at all).
+      const r = await enqueueGithubIssue({
+        workspaceId: "ws-1",
+        repoFullName: "owner/repo",
+        number: 4000,
+        title: "t",
+        body: distinctBody("flag-off"),
+        nowSeconds: 0,
+      });
+      expect(r.enqueued).toBe(true);
+      if (r.enqueued) {
+        expect(r.state).toBe("queued");
+        expect(r.reason).toBeUndefined();
+      }
+    });
   });
 });

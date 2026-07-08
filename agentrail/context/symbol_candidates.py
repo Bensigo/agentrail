@@ -51,6 +51,30 @@ from agentrail.context.index import _python_name_imports, _ts_named_imports
 _PYTHON_EXTS = {".py", ".pyi"}
 _TS_EXTS = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 
+# Tree-sitter symbol kinds that name a DEFINITION site (as opposed to a bare
+# reference / call).  A code chunk whose ``kind`` is one of these AND whose
+# ``symbol`` equals an imported name is the file that DEFINES that symbol — the
+# identity the definition-aware promotion keys on, independent of how many other
+# chunks merely mention the token.  Kept broad across the grammars the indexer
+# extracts (python / TS / go / rust / c-family) so a definition in any language
+# is recognised.
+_DEFINITION_KINDS = {
+    "function",
+    "class",
+    "method",
+    "interface",
+    "type",
+    "enum",
+    "struct",
+    "const",
+    "constant",
+    "var",
+    "module",
+    "namespace",
+    "trait",
+    "impl",
+}
+
 
 def _read_text(root: Path, rel_path: str) -> Optional[str]:
     """Best-effort read of a repo-relative file, or ``None`` when unreadable."""
@@ -165,3 +189,87 @@ def imported_symbol_candidates(
             enriched["symbol"] = name
             items.append(enriched)
     return names, items
+
+
+def definition_site_paths(
+    index: Dict[str, Any],
+    seed_paths: List[str],
+    names: List[str],
+) -> Dict[str, Set[str]]:
+    """Map each imported ``name`` to the file(s) that DEFINE it, from ``symbolTable``.
+
+    For every name, the global ``symbolTable`` resolves the identifier to its
+    definition-site record(s); we keep only definition PATHS that are (a) not the
+    seed itself (a genuine cross-file dependency) and (b) not authority-denied.
+    This is the definition-site IDENTITY the promotion keys on — a rarity-blind,
+    token-frequency-independent lookup: whether ``compute_pack_quality`` appears
+    in 1 chunk or 106, ``symbolTable`` still resolves it to exactly the file that
+    spells its ``def``.  Names with no surviving cross-file definition are
+    omitted, so the returned map only contains promotable symbols.
+
+    Pure and deterministic (index + seeds + names -> identical output).
+    """
+    seed_set = {p for p in seed_paths if p}
+    out: Dict[str, Set[str]] = {}
+    symbol_table = index.get("symbolTable") or {}
+    for name in names:
+        paths: Set[str] = set()
+        for rec in symbol_table.get(name) or []:
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("authority") == "denied":
+                continue
+            def_path = rec.get("path")
+            if def_path and def_path not in seed_set:
+                paths.add(str(def_path))
+        if paths:
+            out[name] = paths
+    return out
+
+
+def select_definition_promotions(
+    candidates: List[Dict[str, Any]],
+    def_site_map: Dict[str, Set[str]],
+    *,
+    exclude_files: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Pick the DEFINITION-SITE chunk for each imported symbol, by IDENTITY.
+
+    Walks ``candidates`` (result-shaped dicts carrying ``symbol`` / ``symbolKind``
+    / ``path`` — the per-chunk symbol identity #1103 plumbs through the retrieval
+    boundary) and keeps a candidate only when it is the definition site of an
+    imported symbol:
+
+      * ``candidate["symbol"]`` is a key of ``def_site_map`` (an imported name),
+      * ``candidate["path"]`` is one of that name's ``symbolTable`` definition
+        paths, and
+      * ``candidate["symbolKind"]`` is a definition kind (``_DEFINITION_KINDS``).
+
+    This is what separates the true defining file from same-token NOISE: a chunk
+    that merely *calls* ``compute_pack_quality`` carries the token but not the
+    ``symbol==compute_pack_quality`` + definition-kind identity, so it is never
+    selected however high BM25 scored it.  The first candidate matching a given
+    file wins (callers pass ``candidates`` in rank order, so the highest-ranked
+    definition chunk per file is chosen); one promotion per file, and files in
+    ``exclude_files`` (already in the pack) are skipped.
+
+    Pure and deterministic: depends only on the passed candidate dicts + map.
+    """
+    excluded = exclude_files or set()
+    picked: List[Dict[str, Any]] = []
+    seen_files: Set[str] = set()
+    for cand in candidates:
+        name = cand.get("symbol")
+        path = cand.get("path")
+        if not name or not path:
+            continue
+        if path in excluded or path in seen_files:
+            continue
+        def_paths = def_site_map.get(name)
+        if not def_paths or path not in def_paths:
+            continue
+        if cand.get("symbolKind") not in _DEFINITION_KINDS:
+            continue
+        seen_files.add(path)
+        picked.append(cand)
+    return picked

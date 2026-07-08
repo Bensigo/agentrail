@@ -335,10 +335,10 @@ class HardFixtureRecallCertification(unittest.TestCase):
     def test_no_hard_fixture_recall_regresses(self) -> None:
         """Recall-monotone: neither non-saturated fixture loses recall under ON.
 
-        context-pack-build-hard's imported symbol (compute_pack_quality) is a
-        common token that the BM25 injection cannot lift above the query's
-        keyword noise, so its recall does not rise — but the monotonicity guard
-        guarantees it never FALLS either.
+        context-index-build-hard's rare imported symbol (source_record_for_file)
+        is recalled by #1103's token/pattern injection; context-pack-build-hard's
+        COMMON imported symbol (compute_pack_quality, ~106 chunks) is recalled by
+        #1104's definition-aware tier. Both rise to 1.0; neither may fall.
         """
         for name in ("context-index-build-hard", "context-pack-build-hard"):
             with self.subTest(fixture=name):
@@ -348,6 +348,28 @@ class HardFixtureRecallCertification(unittest.TestCase):
                     on["recall"], off["recall"],
                     f"{name}: recall regressed {off['recall']} -> {on['recall']}",
                 )
+
+    def test_pack_build_hard_recall_rises_via_definition_tier(self) -> None:
+        """#1104 AC1: the COMMON-symbol dependency is recalled, precision head held.
+
+        context-pack-build-hard imports compute_pack_quality from pack_quality.py,
+        but that symbol is a common token BM25 cannot single out from ~106 chunks,
+        so #1103 alone leaves fileRecall at 0.5. The definition-aware tier keys on
+        symbolTable identity (not token frequency) and promotes pack_quality.py's
+        defining chunk, lifting recall to 1.0 while rPrecision is reported and does
+        not collapse (the promotion evicts only sub-floor keyword noise).
+        """
+        off = self._flp("context-pack-build-hard", False)
+        on = self._flp("context-pack-build-hard", True)
+        self.assertAlmostEqual(off["recall"], 0.5, places=5)
+        self.assertAlmostEqual(on["recall"], 1.0, places=5)
+        # Joint bar: rPrecision reported and NOT collapsing below the baseline.
+        self.assertIsInstance(on["rPrecision"], (int, float))
+        self.assertGreaterEqual(on["rPrecision"], off["rPrecision"])
+        # precisionInPack reported alongside and not collapsing (it improves here,
+        # the recalled definition displacing lower-ranked keyword noise).
+        self.assertIsInstance(on["precisionInPack"], (int, float))
+        self.assertGreaterEqual(on["precisionInPack"], off["precisionInPack"])
 
 
 if __name__ == "__main__":

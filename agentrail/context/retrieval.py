@@ -17,7 +17,11 @@ from agentrail.context.index import append_audit, build_index, load_index
 from agentrail.context.llm_rerank import LLM_RERANK_METHOD, llm_rerank, llm_rerank_enabled
 from agentrail.context.pack_quality import compute_pack_quality
 from agentrail.context.rerank import rerank_candidates, rerank_enabled
-from agentrail.context.symbol_candidates import cross_file_imported_symbols
+from agentrail.context.symbol_candidates import (
+    cross_file_imported_symbols,
+    definition_site_paths,
+    select_definition_promotions,
+)
 from agentrail.shared.fs import sha256_text
 
 
@@ -34,6 +38,15 @@ _RERANK_WIDEN_MIN_EXTRA = 10
 # while ignoring the low-score keyword noise the injection legitimately
 # out-ranked, so the recall win is kept and no relevant member is lost.
 _RECALL_GUARD_SCORE_RATIO = 0.5
+
+# Definition-aware rerank tier (#1104): how many of the pack's TOP-RANKED code
+# files anchor the promotion. The token-split arm injects the imported symbols of
+# every BM25 seed, including noisy ones (a fixtures.json / test file pulled in by
+# keyword overlap contributes its own generic imports like `run`/`_build`). The
+# promotion must instead key on the file the query actually retrieved -- the top
+# code definition in the pack -- so it promotes THAT file's genuine dependencies
+# and nothing else. 1 keeps it to the single strongest anchor.
+_DEF_AWARE_SEED_TOPK = 1
 
 
 def _graph_distance_by_path(index: Dict[str, Any], anchors: List[Dict[str, str]], *, max_hops: int = 2) -> Dict[str, int]:
@@ -1359,6 +1372,20 @@ def _excluded_key(entry: Dict[str, Any]) -> str:
     return "candidate:unknown"
 
 
+def _format_result_entry(rank: int, entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Format a scored candidate ``entry`` into the house result-item dict.
+
+    Extracted verbatim from the wide-candidate formatting loop so the same
+    projection can build result items OUTSIDE that loop — the definition-aware
+    promotion (#1104) formats a def-site chunk pulled from deeper in the scored
+    ranking, and it must be byte-for-byte the shape every other result carries.
+    """
+    source = entry["source"]
+    chunk = entry["chunk"]
+    score = {key: (None if value is None else round(float(value), 6)) for key, value in entry["score"].items()}
+    return {"rank": rank, "kind": "indexed_context", "sourceType": source.get("sourceType"), "path": source.get("path"), "sourceId": source.get("id"), "chunkId": (chunk or {}).get("id"), "startLine": (chunk or {}).get("startLine"), "endLine": (chunk or {}).get("endLine"), "citation": (chunk or {}).get("citation") or source.get("path"), "reason": build_reason(entry["reasons"]), "contentHash": source.get("contentHash"), "textHash": (chunk or {}).get("textHash"), "headingPath": (chunk or {}).get("headingPath", []), "parentContext": (chunk or {}).get("parentContext") or source.get("path"), "matchContext": " > ".join([value for value in [source.get("path"), (chunk or {}).get("parentContext"), *((chunk or {}).get("headingPath", []))] if value]), "symbol": (chunk or {}).get("symbol"), "symbolKind": (chunk or {}).get("kind"), "symbolHints": (chunk or {}).get("symbolHints", []), "importHints": (chunk or {}).get("importHints", []), "memory": (chunk or {}).get("memory") or source.get("memory"), "priorMistake": (chunk or {}).get("priorMistake") or source.get("priorMistake"), "authority": source.get("authority"), "visibility": source.get("visibility"), "freshness": source.get("freshness"), "redactions": source.get("redactions", []), "content": bounded_content(source, chunk), "score": score}
+
+
 def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optional[Dict[str, Any]] = None, inject_symbols: Optional[bool] = None) -> Dict[str, Any]:
     from agentrail.context.planner import classify_query
 
@@ -1477,6 +1504,8 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
     # baseline-vs-injected guard (see below), so no member the flag-OFF pack held
     # can be lost. Flag-OFF (do_inject False) leaves the whole block a no-op.
     symbol_candidate_names: List[str] = []
+    seed_anchor_paths: List[str] = []
+    definition_promotions_applied: List[str] = []
     if do_inject:
         anchor_paths = [
             str(anchor.get("value"))
@@ -1790,12 +1819,7 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
     # surface-word decoy, so the rerank stays a pass-through there.
     rerank_active = rerank_enabled() and not (not exact_mode and semantic_active)
     wide_limit = max(limit * _RERANK_WIDEN_FACTOR, limit + _RERANK_WIDEN_MIN_EXTRA) if rerank_active else limit
-    formatted = []
-    for rank, entry in enumerate(results[:wide_limit], 1):
-        source = entry["source"]
-        chunk = entry["chunk"]
-        score = {key: (None if value is None else round(float(value), 6)) for key, value in entry["score"].items()}
-        formatted.append({"rank": rank, "kind": "indexed_context", "sourceType": source.get("sourceType"), "path": source.get("path"), "sourceId": source.get("id"), "chunkId": (chunk or {}).get("id"), "startLine": (chunk or {}).get("startLine"), "endLine": (chunk or {}).get("endLine"), "citation": (chunk or {}).get("citation") or source.get("path"), "reason": build_reason(entry["reasons"]), "contentHash": source.get("contentHash"), "textHash": (chunk or {}).get("textHash"), "headingPath": (chunk or {}).get("headingPath", []), "parentContext": (chunk or {}).get("parentContext") or source.get("path"), "matchContext": " > ".join([value for value in [source.get("path"), (chunk or {}).get("parentContext"), *((chunk or {}).get("headingPath", []))] if value]), "symbol": (chunk or {}).get("symbol"), "symbolKind": (chunk or {}).get("kind"), "symbolHints": (chunk or {}).get("symbolHints", []), "importHints": (chunk or {}).get("importHints", []), "memory": (chunk or {}).get("memory") or source.get("memory"), "priorMistake": (chunk or {}).get("priorMistake") or source.get("priorMistake"), "authority": source.get("authority"), "visibility": source.get("visibility"), "freshness": source.get("freshness"), "redactions": source.get("redactions", []), "content": bounded_content(source, chunk), "score": score})
+    formatted = [_format_result_entry(rank, entry) for rank, entry in enumerate(results[:wide_limit], 1)]
 
     # RERANK (issue #904): deterministic code-aware re-scoring of the wide
     # candidate set, then keep the top-K under budget.  Rejected candidates are
@@ -1992,6 +2016,126 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
             for _position, _item in enumerate(formatted, 1):
                 _item["rank"] = _position
 
+        # Definition-aware rerank tier (#1104). The token+pattern injection above
+        # lifts a missed dependency only when its imported symbol is a RARE name
+        # (high BM25 idf). When the symbol is a COMMON token (compute_pack_quality
+        # appears in ~106 chunks), BM25 cannot separate the one file that DEFINES
+        # it from the ~105 that merely call it, so pack_quality.py stays out of the
+        # pack and fileRecall sticks at 0.5. This tier fixes that by keying on
+        # definition-site IDENTITY instead of token frequency: symbolTable resolves
+        # each imported name to the exact file that spells its `def`, and #1103
+        # already plumbs the per-chunk `symbol`/`symbolKind` through the result
+        # boundary, so the DEFINING chunk is identifiable (symbol == name, path ==
+        # its symbolTable def path, definition kind) however common the token is.
+        #
+        # Each such def-site chunk NOT already in the pack is promoted by evicting a
+        # NOISE slot -- a member that is neither a seed/anchor, nor an imported
+        # symbol's definition file (a recalled cross-file dependency, e.g. sources.py
+        # on index-build-hard), nor a high-confidence flag-OFF baseline member (the
+        # spec docs the guard above protects). Because every relevant file is one of
+        # those three protected classes, fileRecall cannot regress; and because each
+        # promotion evicts exactly one noise slot, the pack size (the precision
+        # denominator) is unchanged. It is self-limiting: on a SATURATED pack there
+        # are no noise slots to give up, so nothing is promoted and precision is
+        # untouched -- only a pack padded with keyword noise (the common-symbol case)
+        # makes room for the missed definition.
+        # Anchor the promotion on the file the query actually retrieved -- the
+        # top-ranked code definition(s) in the pack + any explicit path anchor --
+        # NOT every BM25 seed. A noisy seed (fixtures.json, a test pulled in on
+        # keyword overlap) would otherwise contribute generic imports (`run`,
+        # `_build`) whose "definition sites" are themselves noise files, both
+        # crowding out the real missed dependency and shielding noise from
+        # displacement. The strongest anchor's imports are the genuine deps.
+        promo_seed_paths: List[str] = list(anchor_paths)
+        for item in formatted:
+            if len(promo_seed_paths) >= _DEF_AWARE_SEED_TOPK + len(anchor_paths):
+                break
+            path = item.get("path")
+            if item.get("symbolKind") and path and path not in promo_seed_paths:
+                promo_seed_paths.append(path)
+        promo_names = cross_file_imported_symbols(root, index, promo_seed_paths)
+        def_site_map = definition_site_paths(index, promo_seed_paths, promo_names)
+        if def_site_map:
+            pack_files = {item.get("path") for item in formatted}
+            # Candidate def-site chunks pulled from the FULL scored ranking (kept
+            # in its (-definitionTier, -final) order), then narrowed to genuine
+            # definition sites by IDENTITY in select_definition_promotions.
+            def_candidates = [
+                _format_result_entry(0, entry)
+                for entry in results
+                if (entry["chunk"] or {}).get("symbol") in def_site_map
+                and entry["source"].get("path")
+                in def_site_map.get((entry["chunk"] or {}).get("symbol"), set())
+            ]
+            promotions = select_definition_promotions(
+                def_candidates, def_site_map, exclude_files=pack_files
+            )
+            if promotions:
+                def _final_of(item: Dict[str, Any]) -> float:
+                    sc = item.get("score")
+                    if (
+                        isinstance(sc, dict)
+                        and isinstance(sc.get("final"), (int, float))
+                        and not isinstance(sc.get("final"), bool)
+                    ):
+                        return float(sc["final"])
+                    return 0.0
+
+                # Never-evict set: seeds/anchors, every imported symbol's def file
+                # (a genuine dependency, whichever arm recalled it), and the
+                # high-confidence flag-OFF baseline members the guard just protected
+                # (score >= the same ``floor``). Everything else in the pack is
+                # keyword noise, displaceable weakest-first to seat a definition.
+                protected_files = set(seed_anchor_paths)
+                for _paths in def_site_map.values():
+                    protected_files |= set(_paths)
+                protected_files |= {
+                    r.get("path")
+                    for r in baseline_results
+                    if r.get("path")
+                    and isinstance(r.get("score"), dict)
+                    and isinstance(r["score"].get("final"), (int, float))
+                    and not isinstance(r["score"].get("final"), bool)
+                    and float(r["score"]["final"]) >= floor
+                }
+                displaceable = sorted(
+                    [item for item in formatted if item.get("path") not in protected_files],
+                    key=_final_of,
+                )
+                n = min(len(promotions), len(displaceable))
+                if n:
+                    def _key(item: Dict[str, Any]) -> str:
+                        return str(
+                            item.get("chunkId")
+                            or item.get("sourceId")
+                            or item.get("citation")
+                            or item.get("path")
+                        )
+
+                    evict = {_key(item) for item in displaceable[:n]}
+                    kept = [item for item in formatted if _key(item) not in evict]
+                    # Seat the promoted definitions in the vacated NOISE slots at
+                    # the tail, preserving the rank of every kept member. Placing
+                    # them higher would demote a genuinely-relevant member out of
+                    # the top-R window and cost file-level R-precision (e.g.
+                    # benchmark.py on retrieval-evaluation); recall only needs pack
+                    # MEMBERSHIP, so the tail is enough.
+                    formatted = kept + promotions[:n]
+                    definition_promotions_applied = [
+                        str(item.get("path")) for item in promotions[:n]
+                    ]
+                    _seen_p: Set[str] = set()
+                    _dedup_p: List[Dict[str, Any]] = []
+                    for _item in formatted:
+                        _k = _key(_item)
+                        if _k in _seen_p:
+                            continue
+                        _seen_p.add(_k)
+                        _dedup_p.append(_item)
+                    formatted = _dedup_p
+                    for _pos, _item in enumerate(formatted, 1):
+                        _item["rank"] = _pos
+
     audit = {
         "event": "context_query",
         "citation": ".agentrail/context/audit/events.jsonl",
@@ -2046,6 +2190,14 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
         "symbolCandidateCount": len(symbol_candidate_names),
         "cost": 0.0,
     }
+    # Definition-aware rerank tier telemetry (#1104): the cross-file definition
+    # files it promoted into the pack (common-symbol dependencies BM25 could not
+    # lift). Still a deterministic, $0 layer -- no model call. Added ONLY when the
+    # recall flag is on, so the flag-OFF ``expansion`` block stays byte-identical
+    # to the pre-#1104 baseline.
+    if query_expansion_enabled():
+        output["expansion"]["definitionPromotions"] = definition_promotions_applied
+        output["expansion"]["definitionPromotionCount"] = len(definition_promotions_applied)
     append_audit(root, audit)
     return output
 

@@ -69,6 +69,16 @@ NEW_FLOW_LAYERS: Tuple[str, ...] = (
     "warmcache",
 )
 
+# The LLM listwise rerank layer (issue #1044 AC2). Like :data:`NEW_FLOW_LAYERS`
+# this is an OPT-IN, model-dependent layer that is NOT part of ``full``: the
+# Haiku listwise rerank (``agentrail.context.llm_rerank``) is default-OFF and
+# only reorders when a headless ``claude`` binary is on PATH. It cannot be
+# "minused" from ``full`` (it is not in it), so — exactly like the new-flow
+# layers — it is A/B'd as a PLUS arm: ``full`` vs ``full-plus-llm_rerank``. It
+# rides ``extra_layers`` (never a base :data:`LAYER_NAMES` field), so ``full`` /
+# ``baseline`` stay byte-identical to today.
+LLM_RERANK_LAYER: str = "llm_rerank"
+
 # Pinned execution model + temperature. Held fixed across every arm so that
 # leave-one-out ablation isolates a single layer and nothing else (PRD:
 # "Everything else is held fixed: same model, same temperature, same limits").
@@ -80,6 +90,12 @@ PINNED_TEMPERATURE: float = 0.0
 # the critic/best-of-N layers are opt-in and only activate when a critic model
 # is configured. Mirrors ``critic.CRITIC_DEFAULT_MODEL`` (a fast, cheap tier).
 PINNED_CRITIC_MODEL: str = "claude-haiku-4-5-20251001"
+
+# The cheap model the LLM-rerank arm pins for its listwise reorder. Held fixed
+# (a fast, cheap tier — the SAME Haiku tier the live stage defaults to, mirroring
+# ``agentrail.context.llm_rerank.LLM_RERANK_DEFAULT_MODEL``) so the ``full`` vs
+# ``full-plus-llm_rerank`` A/B toggles ONLY the layer, never the reranker's model.
+PINNED_LLM_RERANK_MODEL: str = "claude-haiku-4-5-20251001"
 
 # An immutable empty mapping reused as the default for arms with no extra
 # (new-flow) layers, so ``full`` / ``baseline`` carry exactly ``{}`` and stay
@@ -122,10 +138,13 @@ class Arm:
         layers: on/off state of each AgentRail layer.
         model: the pinned model id (a key in the pricing table).
         temperature: the pinned sampling temperature.
-        extra_layers: on/off state of the NEW-flow layers (issue #980): a
-            mapping over :data:`NEW_FLOW_LAYERS`. EMPTY (``{}``) for ``baseline``
-            and ``full`` so their meaning is unchanged. The new-flow arm sets
-            every one ON; a leave-one-out arm flips exactly one OFF.
+        extra_layers: on/off state of the opt-in, model-dependent layers that
+            are NOT part of ``full``: the NEW-flow layers (issue #980,
+            :data:`NEW_FLOW_LAYERS`) and the LLM listwise rerank layer (issue
+            #1044, :data:`LLM_RERANK_LAYER`). EMPTY (``{}``) for ``baseline`` and
+            ``full`` so their meaning is unchanged. The new-flow arm sets every
+            new-flow layer ON (a leave-one-out arm flips exactly one OFF); the
+            ``full-plus-llm_rerank`` arm sets exactly ``{llm_rerank: True}``.
         critic_model: the cheap critic model the arm pins, or ``""`` when the
             arm does not run the critic (``baseline``/``full``). When set, the
             eval runner forwards it so a critic command is built — the trigger
@@ -272,12 +291,55 @@ def new_flow_arms() -> List[Arm]:
     return [new_flow(), *new_flow_ablation_arms()]
 
 
+# ---------------------------------------------------------------------------
+# The LLM-rerank A/B arm (issue #1044 AC2): ``full`` PLUS the opt-in Haiku
+# listwise rerank, paired against plain ``full`` (rerank OFF).
+# ---------------------------------------------------------------------------
+
+
+def llm_rerank_arm() -> Arm:
+    """``full`` PLUS the opt-in LLM listwise rerank layer (issue #1044 AC2).
+
+    Every base AgentRail layer stays ON (a strict superset of ``full``) and the
+    LLM-rerank layer is switched ON via ``extra_layers`` (``{llm_rerank: True}``).
+    Model and temperature are held fixed to ``full`` so a ``full`` vs this
+    comparison isolates exactly the LLM rerank. Like the new-flow layers this is
+    opt-in and model-dependent — it only reorders when a headless ``claude``
+    binary is available (:func:`agentrail.context.llm_rerank.llm_rerank_model_path_available`)
+    — so it is a PLUS arm, never a ``full-minus`` (it is not in ``full``).
+    """
+    base = full()
+    return Arm(
+        name=f"full-plus-{LLM_RERANK_LAYER}",
+        layers=base.layers,
+        model=base.model,
+        temperature=base.temperature,
+        extra_layers=MappingProxyType({LLM_RERANK_LAYER: True}),
+    )
+
+
+def llm_rerank_arms() -> List[Arm]:
+    """The LLM-rerank A/B pair: ``full`` (rerank OFF) vs ``full-plus-llm_rerank`` (ON).
+
+    The OFF arm is plain :func:`full` — the LLM rerank is default-OFF and ``full``
+    carries no ``llm_rerank`` extra layer, so it retrieves WITHOUT the listwise
+    reorder. The ON arm (:func:`llm_rerank_arm`) adds exactly the LLM-rerank
+    layer. Reporting the ``fileNDCG`` (issue #1088 rank-aware metric) of each is
+    the AC2 A/B: the LLM rerank is a membership-preserving ORDERING change, so
+    nDCG is the only metric it can move — precision/recall are set-based and
+    cannot see a reorder.
+    """
+    return [full(), llm_rerank_arm()]
+
+
 __all__ = [
     "LAYER_NAMES",
     "NEW_FLOW_LAYERS",
+    "LLM_RERANK_LAYER",
     "PINNED_MODEL",
     "PINNED_TEMPERATURE",
     "PINNED_CRITIC_MODEL",
+    "PINNED_LLM_RERANK_MODEL",
     "Layers",
     "Arm",
     "baseline",
@@ -289,6 +351,8 @@ __all__ = [
     "new_flow_minus",
     "new_flow_ablation_arms",
     "new_flow_arms",
+    "llm_rerank_arm",
+    "llm_rerank_arms",
 ]
 
 # Re-export for callers that prefer ``dataclasses.FrozenInstanceError`` checks

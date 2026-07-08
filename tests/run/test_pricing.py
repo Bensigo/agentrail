@@ -406,6 +406,82 @@ def test_cost_breakdown_per_component_math() -> None:
     )
 
 
+def test_cost_breakdown_rerank_usd_equals_pack_cost_and_preserves_parity() -> None:
+    """The ``rerank_usd`` line equals the pack's ``rerankCostUsd`` and the
+    components still sum to ``total_usd`` (parity), which is the agent's token
+    cost PLUS the rerank layer's spend (#1044 AC3)."""
+    from agentrail.context.llm_rerank import llm_rerank_cost_usd
+
+    model = "claude-sonnet-4-5"
+    usage = _Usage(
+        model=model,
+        input_tokens=1_000_000,
+        output_tokens=500_000,
+        cache_tokens=200_000,
+        cache_creation_tokens=100_000,
+    )
+    # A realistic rerank ``llm`` usage block (as agentrail/context/packs.py builds)
+    # priced by the canonical rerank pricer — this is exactly what the pack surfaces
+    # as ``rerankCostUsd`` and hands to cost_breakdown.
+    rerank_llm = {
+        "model": "claude-haiku-4-5-20251001",
+        "calls": 2,
+        "inputTokens": 4_000,
+        "outputTokens": 300,
+        "cacheCreationInputTokens": 0,
+        "cacheReadInputTokens": 0,
+    }
+    pack_rerank_cost = llm_rerank_cost_usd(rerank_llm)
+    assert pack_rerank_cost > 0.0  # a real, non-zero model-call cost
+
+    bd = cost_breakdown(usage, rerank_usd=pack_rerank_cost)
+
+    # The rerank line IS the pack's rerankCostUsd, verbatim.
+    assert bd["rerank_usd"] == pytest.approx(pack_rerank_cost, rel=1e-12)
+
+    # Components-sum-to-total parity holds WITH the rerank line included.
+    component_sum = (
+        bd["input_usd"]
+        + bd["output_usd"]
+        + bd["cache_read_usd"]
+        + bd["cache_write_usd"]
+        + bd["expansion_usd"]
+        + bd["rerank_usd"]
+    )
+    assert bd["total_usd"] == pytest.approx(component_sum, rel=1e-12)
+
+    # The total is the agent token cost PLUS the rerank spend (rerank tokens are
+    # NOT part of ``usage``), so it exceeds cost_usd(usage) by exactly the rerank.
+    assert bd["total_usd"] == pytest.approx(cost_usd(usage) + pack_rerank_cost, rel=1e-12)
+
+
+def test_cost_breakdown_default_rerank_usd_is_zero_and_matches_cost_usd() -> None:
+    """With no rerank cost supplied the ``rerank_usd`` line is 0.0 and total stays
+    byte-identical to ``cost_usd(usage)`` (additive, default-OFF)."""
+    model = "claude-sonnet-4-5"
+    usage = _Usage(
+        model=model,
+        input_tokens=1_000_000,
+        output_tokens=500_000,
+        cache_tokens=200_000,
+        cache_creation_tokens=100_000,
+    )
+    bd = cost_breakdown(usage)
+    assert bd["rerank_usd"] == 0.0
+    assert bd["total_usd"] == pytest.approx(cost_usd(usage), rel=1e-12)
+
+
+def test_cost_breakdown_unknown_model_still_surfaces_supplied_rerank_usd() -> None:
+    """Unknown agent model zeroes the token components but still reports the
+    independently-priced rerank cost (it needs no agent rate table)."""
+    usage = _Usage(model="gpt-99-turbo-ultra", input_tokens=100, output_tokens=50, cache_tokens=10)
+    with warnings.catch_warnings(record=True):
+        bd = cost_breakdown(usage, rerank_usd=0.001234)
+    assert bd["input_usd"] == 0.0
+    assert bd["rerank_usd"] == pytest.approx(0.001234, rel=1e-12)
+    assert bd["total_usd"] == pytest.approx(0.001234, rel=1e-12)
+
+
 def test_cost_breakdown_unknown_model_returns_zeros() -> None:
     """Unknown model → all-zeros dict (mirrors cost_usd's non-fatal $0)."""
     usage = _Usage(model="gpt-99-turbo-ultra", input_tokens=100, output_tokens=50, cache_tokens=10)
@@ -417,6 +493,7 @@ def test_cost_breakdown_unknown_model_returns_zeros() -> None:
         "cache_read_usd": 0.0,
         "cache_write_usd": 0.0,
         "expansion_usd": 0.0,
+        "rerank_usd": 0.0,
         "total_usd": 0.0,
     }
 

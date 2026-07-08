@@ -54,6 +54,15 @@ class SecretRedactionConfig:
 
 
 @dataclass
+class PackCutoffConfig:
+    # Adaptive confidence cutoff (#1096): trim the pack's low-confidence tail by a
+    # RELATIVE threshold on score.final. Default-OFF (like ``daemonAutoSpawn``) so
+    # flag-OFF behaviour is byte-identical to today; flip during the testing phase.
+    enabled: bool = False       # default-OFF, like daemonAutoSpawn
+    minScoreRatio: float = 0.4  # keep items with score.final >= ratio * top score
+
+
+@dataclass
 class ProviderConfig:
     mode: str = "disabled"
     provider: Optional[str] = None
@@ -90,6 +99,7 @@ class ContextConfig:
     externalSources: List[Dict[str, Any]] = field(default_factory=list)
     codebaseUnits: List[Dict[str, Any]] = field(default_factory=list)
     daemonAutoSpawn: bool = False
+    packCutoff: PackCutoffConfig = field(default_factory=PackCutoffConfig)
 
 
 def read_context_config(target_dir: Path) -> ContextConfig:
@@ -110,6 +120,11 @@ def read_context_config(target_dir: Path) -> ContextConfig:
         action=str(redaction_raw.get("action", "exclude")),
         denyGlobs=redaction_raw.get("denyGlobs") if isinstance(redaction_raw.get("denyGlobs"), list) else list(DEFAULT_DENY_GLOBS),
     )
+    cutoff_raw = context.get("packCutoff") if isinstance(context.get("packCutoff"), dict) else {}
+    pack_cutoff = PackCutoffConfig(
+        enabled=bool(cutoff_raw.get("enabled", False)),
+        minScoreRatio=float(cutoff_raw["minScoreRatio"]) if isinstance(cutoff_raw.get("minScoreRatio"), (int, float)) else 0.4,
+    )
     max_file_size = context.get("maxFileSizeBytes")
     return ContextConfig(
         includeGlobs=context.get("includeGlobs") if isinstance(context.get("includeGlobs"), list) else ["**/*"],
@@ -123,4 +138,5 @@ def read_context_config(target_dir: Path) -> ContextConfig:
         externalSources=context.get("externalSources") if isinstance(context.get("externalSources"), list) else [],
         codebaseUnits=context.get("codebaseUnits") if isinstance(context.get("codebaseUnits"), list) else [],
         daemonAutoSpawn=bool(context.get("daemonAutoSpawn", False)),
+        packCutoff=pack_cutoff,
     )

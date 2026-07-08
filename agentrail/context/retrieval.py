@@ -1305,6 +1305,32 @@ def _prepare_corpus(root: Path, index: Dict[str, Any]):
     return result
 
 
+_PACK_CUTOFF_TRUTHY = {"1", "true", "on", "yes"}
+
+
+def resolve_pack_cutoff(root: Path) -> Tuple[bool, float]:
+    """Resolve the adaptive pack-tail cutoff (#1096): ``(enabled, min_score_ratio)``.
+
+    Config is the product path (AC4): ``read_context_config(root).packCutoff``.  The
+    ``AGENTRAIL_CONTEXT_PACK_CUTOFF`` env flag (truthy) additionally enables it and
+    ``AGENTRAIL_CONTEXT_PACK_CUTOFF_RATIO`` overrides the ratio — this env toggle
+    exists ONLY so the offline eval can run OFF-vs-ON in one process; it mirrors the
+    LLM rerank layer's ``AGENTRAIL_CONTEXT_LLM_RERANK`` pattern.  Default-OFF.
+    """
+    cfg = read_context_config(root).packCutoff
+    raw = os.environ.get("AGENTRAIL_CONTEXT_PACK_CUTOFF")
+    env_enabled = raw is not None and raw.strip().lower() in _PACK_CUTOFF_TRUTHY
+    enabled = env_enabled or cfg.enabled
+    ratio = cfg.minScoreRatio
+    ratio_raw = (os.environ.get("AGENTRAIL_CONTEXT_PACK_CUTOFF_RATIO") or "").strip()
+    if ratio_raw:
+        try:
+            ratio = float(ratio_raw)
+        except ValueError:
+            ratio = cfg.minScoreRatio
+    return enabled, ratio
+
+
 def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     from agentrail.context.planner import classify_query
 
@@ -1779,6 +1805,58 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
                 rerank_meta["model"] = llm_result["llm"]["model"]
                 rerank_meta["orderChanged"] = rerank_meta["orderChanged"] or llm_result["changed"]
                 rerank_meta["rankedCandidateIds"] = [_candidate_id_for_result(item) for item in formatted]
+    # Adaptive confidence cutoff (#1096): default-OFF tail trim on ``formatted`` —
+    # keep candidates whose ``score.final`` is >= ratio * the top final score, move
+    # the rest into ``excluded``.  The threshold is RELATIVE (not absolute) so it
+    # travels across queries.  This is the single seam that feeds BOTH the returned
+    # ``results`` and ``compiler_contract(source_items=formatted, ...)``, so trimming
+    # here makes the eval's file-level pack metric and build_context_pack reflect the
+    # same trimmed tail.  Flag-OFF is a strict no-op: ``formatted``/``excluded`` are
+    # left untouched (byte-identical to today).  Items with a non-numeric final score
+    # are always kept — we never drop what we cannot confidently score.
+    cutoff_enabled, cutoff_ratio = resolve_pack_cutoff(root)
+    if cutoff_enabled and formatted:
+        finals = [
+            item["score"]["final"]
+            for item in formatted
+            if isinstance(item.get("score"), dict)
+            and isinstance(item["score"].get("final"), (int, float))
+            and not isinstance(item["score"].get("final"), bool)
+        ]
+        if finals:
+            top_final = max(finals)
+            threshold = cutoff_ratio * top_final
+            kept: List[Dict[str, Any]] = []
+            for item in formatted:
+                score = item.get("score") if isinstance(item.get("score"), dict) else {}
+                final = score.get("final")
+                if isinstance(final, (int, float)) and not isinstance(final, bool) and final < threshold:
+                    excluded.append(
+                        {
+                            "sourceType": item.get("sourceType"),
+                            "path": item.get("path"),
+                            "sourceId": item.get("sourceId"),
+                            "chunkId": item.get("chunkId"),
+                            "reason": f"below pack confidence cutoff (score {round(float(final), 6)} < ratio*top {round(threshold, 6)})",
+                            "citation": item.get("citation") or item.get("path"),
+                            "authority": item.get("authority"),
+                            "visibility": item.get("visibility"),
+                            "freshness": item.get("freshness"),
+                            "redactions": item.get("redactions", []),
+                            "packCutoff": {
+                                "scoreFinal": round(float(final), 6),
+                                "threshold": round(threshold, 6),
+                                "ratio": cutoff_ratio,
+                                "topScore": round(float(top_final), 6),
+                            },
+                        }
+                    )
+                else:
+                    kept.append(item)
+            if len(kept) != len(formatted):
+                formatted = kept
+                for position, item in enumerate(formatted, 1):
+                    item["rank"] = position
     audit = {
         "event": "context_query",
         "citation": ".agentrail/context/audit/events.jsonl",

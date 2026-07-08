@@ -113,12 +113,12 @@ def cost_usd(usage: object) -> float:
     ) / 1_000_000
 
 
-def cost_breakdown(usage: object) -> Dict[str, float]:
+def cost_breakdown(usage: object, *, rerank_usd: float = 0.0) -> Dict[str, float]:
     """Return the per-component dollar decomposition of *usage*.
 
-    Splits the single ``cost_usd`` scalar into the four priced components so a
-    report can show WHERE the dollars go (input vs output vs cache-read vs
-    cache-write), not just the total:
+    Splits the single ``cost_usd`` scalar into the priced components so a report
+    can show WHERE the dollars go (input vs output vs cache-read vs cache-write),
+    not just the total, plus the per-layer spend lines:
 
     - ``input_usd``       — ``input_tokens`` at the input rate
     - ``output_usd``      — ``output_tokens`` at the output rate
@@ -130,14 +130,30 @@ def cost_breakdown(usage: object) -> Dict[str, float]:
                             spend is auditably a fixed ``0.0`` — surfaced as its
                             own line precisely so a report can SHOW the layer cost
                             nothing rather than leave it invisible (AC3).
-    - ``total_usd``       — the sum of the components, equal to ``cost_usd(usage)``
+    - ``rerank_usd``      — the LLM listwise rerank layer (#1044 AC3). UNLIKE
+                            ``expansion_usd`` this is a REAL model-call cost: the
+                            Haiku rerank's own token spend, already priced by
+                            ``agentrail.context.llm_rerank.llm_rerank_cost_usd``
+                            and surfaced on the pack as ``rerankCostUsd``. The
+                            caller passes that pack value in via the *rerank_usd*
+                            keyword; it defaults to ``0.0`` so every existing
+                            caller (no rerank cost) is byte-identical to before.
+    - ``total_usd``       — the sum of all components. With the default
+                            ``rerank_usd=0.0`` this equals ``cost_usd(usage)``
+                            exactly; when a real rerank cost is supplied the total
+                            is the agent's token cost PLUS the rerank layer's
+                            spend (the rerank tokens are not part of ``usage``).
 
-    Uses the SAME ``_resolve_rates`` + ``/1_000_000`` math as ``cost_usd`` so the
-    components sum to ``cost_usd`` exactly (parity invariant — ``expansion_usd``
-    is 0.0 so it never perturbs the sum). Unknown model → mirrors ``cost_usd``:
-    emits ``UserWarning`` and returns all-zeros so the calling pipeline is never
-    blocked.
+    Uses the SAME ``_resolve_rates`` + ``/1_000_000`` math as ``cost_usd`` for the
+    token components, so with no rerank cost the components sum to ``cost_usd``
+    exactly (parity invariant). The components ALWAYS sum to ``total_usd``
+    (components-sum-to-total parity), rerank cost included. Unknown model →
+    mirrors ``cost_usd``: emits ``UserWarning`` and zeroes the token components,
+    but still surfaces the supplied ``rerank_usd`` (it is independently priced and
+    does not need the agent model's rate table) so the calling pipeline is never
+    blocked and the rerank line stays honest.
     """
+    rerank_component = float(rerank_usd)
     model: str = usage.model  # type: ignore[attr-defined]
     rates = _resolve_rates(model)
     if rates is None:
@@ -152,7 +168,8 @@ def cost_breakdown(usage: object) -> Dict[str, float]:
             "cache_read_usd": 0.0,
             "cache_write_usd": 0.0,
             "expansion_usd": 0.0,
-            "total_usd": 0.0,
+            "rerank_usd": rerank_component,
+            "total_usd": rerank_component,
         }
 
     input_tokens: int = usage.input_tokens    # type: ignore[attr-defined]
@@ -174,7 +191,15 @@ def cost_breakdown(usage: object) -> Dict[str, float]:
         "cache_read_usd": cache_read_usd,
         "cache_write_usd": cache_write_usd,
         "expansion_usd": expansion_usd,
-        "total_usd": input_usd + output_usd + cache_read_usd + cache_write_usd + expansion_usd,
+        "rerank_usd": rerank_component,
+        "total_usd": (
+            input_usd
+            + output_usd
+            + cache_read_usd
+            + cache_write_usd
+            + expansion_usd
+            + rerank_component
+        ),
     }
 
 

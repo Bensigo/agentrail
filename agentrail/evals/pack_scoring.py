@@ -83,6 +83,17 @@ _RERANK_ENV = "AGENTRAIL_CONTEXT_RERANK"
 # OFF) and ``runner._arm_env`` (#1043).
 _EXPANSION_ENV = "AGENTRAIL_CONTEXT_QUERY_EXPANSION"
 
+# The retrieval env seam the LLM listwise rerank stage reads. Kept in lockstep
+# with ``agentrail.context.llm_rerank.llm_rerank_enabled`` (default OFF) and
+# ``runner._arm_env``'s llm_rerank bridge (#1044 AC2).
+_LLM_RERANK_ENV = "AGENTRAIL_CONTEXT_LLM_RERANK"
+
+# The rank-aware corpus-mean key ``evaluate_retrieval`` surfaces (#1088). The LLM
+# rerank is a membership-preserving ORDERING change, so ``fileNDCG`` is the only
+# summary mean it can move — the set-membership precision/recall means cannot see
+# a reorder. Kept in lockstep with ``evaluation.py``'s ``summary.means`` key.
+_FILE_NDCG_MEAN_KEY = "fileNDCG"
+
 # How many retrieval results form the "pack" whose cited paths we score. Matches
 # the live pack builder's default retrieval width
 # (``agentrail.context.packs.build_context_pack`` calls ``query_context(...,
@@ -228,7 +239,103 @@ def compute_pack_scores(
     return aggregate_pack_scores(scores_by_arm)
 
 
+def score_llm_rerank_ndcg(
+    root: Path,
+    fixture_file: Path,
+    *,
+    arms: Optional[Sequence[Arm]] = None,
+    evaluate: Optional[object] = None,
+) -> Dict[str, object]:
+    """A/B the LLM listwise rerank OFF-vs-ON and report ``fileNDCG`` per arm (#1044 AC2).
+
+    Runs :func:`agentrail.context.evaluation.evaluate_retrieval` over *fixture_file*
+    once per arm, with the arm's env applied so the LLM rerank stage
+    (:func:`agentrail.context.llm_rerank.llm_rerank_enabled`) is OFF for ``full``
+    and ON for ``full-plus-llm_rerank``. It reports each arm's corpus-mean
+    ``fileNDCG`` (issue #1088) plus the ON-minus-OFF delta.
+
+    The LLM rerank is a membership-preserving ORDERING change, so ``fileNDCG`` is
+    the only metric that can move — precision/recall are set-based and blind to a
+    reorder. **Honest expectation:** on the current fixtures the delta is ~0
+    because (a) most fixtures are already rank-saturated (per-fixture nDCG 1.0,
+    no headroom — the harder-rank fixtures are tracked in #1107) and (b) the
+    rerank only fires when a headless ``claude`` binary is available
+    (:func:`agentrail.context.llm_rerank.llm_rerank_model_path_available`), which
+    is absent/mocked in CI. This helper's job is to EXIST, toggle the seam, and
+    report the metric honestly — never to fabricate a lift.
+
+    The env mapping is the SAME seam :func:`agentrail.evals.runner._arm_env`
+    drives for the live sandbox leg (single source of truth). Only the
+    ``AGENTRAIL_CONTEXT_*`` retrieval seams are scoped for the duration of each
+    ``evaluate`` call and the prior values are restored, both directions written
+    explicitly (as :func:`_cited_paths` does) so an inherited ambient value can
+    never leak the ON arm into the OFF arm.
+
+    ``evaluate`` is injectable for testing (defaults to the real
+    ``evaluate_retrieval``); it must accept ``(root, fixture_file)`` and return a
+    report whose ``summary.means`` carries ``fileNDCG``.
+
+    Returns ``{"arms": [{"arm", "llmRerank", "fileNDCG"}...], "fileNDCGDelta"}``.
+    ``fileNDCGDelta`` is ``None`` when either arm's ``fileNDCG`` is missing/``None``
+    (undefined, never a fake ``0.0``).
+    """
+    # Lazy imports: keep the pure-config import graph light and avoid a hard
+    # dependency on the heavy retrieval/runner modules unless this A/B is run.
+    if evaluate is None:
+        from agentrail.context.evaluation import evaluate_retrieval as evaluate
+    from agentrail.evals.runner import _arm_env
+
+    if arms is None:
+        from agentrail.evals.arms import llm_rerank_arms
+
+        arms = llm_rerank_arms()
+
+    root = Path(root).resolve()
+    per_arm: List[Dict[str, object]] = []
+    for arm in arms:
+        arm_env = _arm_env(arm)
+        # Scope only the retrieval seams; and always pin the LLM-rerank var in
+        # BOTH directions (ON→"1" via the runner bridge, else explicit "0") so an
+        # inherited ambient value never leaks the ON arm into the OFF arm.
+        overrides = {
+            name: value
+            for name, value in arm_env.items()
+            if name.startswith("AGENTRAIL_CONTEXT_")
+        }
+        overrides[_LLM_RERANK_ENV] = arm_env.get(_LLM_RERANK_ENV, "0")
+        prior = {name: os.environ.get(name) for name in overrides}
+        os.environ.update(overrides)
+        try:
+            report = evaluate(root, fixture_file)
+        finally:
+            for name, value in prior.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        means = (report or {}).get("summary", {}).get("means", {})
+        per_arm.append(
+            {
+                "arm": arm.name,
+                "llmRerank": overrides[_LLM_RERANK_ENV] == "1",
+                _FILE_NDCG_MEAN_KEY: means.get(_FILE_NDCG_MEAN_KEY),
+            }
+        )
+
+    off = next((a for a in per_arm if not a["llmRerank"]), None)
+    on = next((a for a in per_arm if a["llmRerank"]), None)
+    off_ndcg = off.get(_FILE_NDCG_MEAN_KEY) if off else None
+    on_ndcg = on.get(_FILE_NDCG_MEAN_KEY) if on else None
+    delta = (
+        on_ndcg - off_ndcg
+        if isinstance(off_ndcg, (int, float)) and isinstance(on_ndcg, (int, float))
+        else None
+    )
+    return {"arms": per_arm, "fileNDCGDelta": delta}
+
+
 __all__ = [
     "compute_pack_scores",
     "score_task_arm",
+    "score_llm_rerank_ndcg",
 ]

@@ -61,7 +61,7 @@ from typing import Callable, List, Optional, Protocol
 
 from agentrail.run.usage_capture import Usage
 
-from agentrail.evals.arms import Arm
+from agentrail.evals.arms import Arm, LLM_RERANK_LAYER
 from agentrail.evals.corpus.loader import CorpusTask
 from agentrail.evals.run_record import RetryEvent, RunRecord
 
@@ -784,6 +784,19 @@ def _arm_env(arm: Arm) -> dict:
     # expansion delta is always 0 (the ablation is a no-op).
     if flags.get("expansion"):
         env["AGENTRAIL_CONTEXT_QUERY_EXPANSION"] = "1"
+    # LLM-rerank layer bridge (#1044 AC2): mirror of the expansion bridge. The
+    # opt-in ``llm_rerank`` layer rides ``extra_layers`` (it is NOT a base layer —
+    # it is not part of ``full``), and the listwise rerank stage keys ONLY on
+    # ``AGENTRAIL_CONTEXT_LLM_RERANK`` via
+    # ``agentrail.context.llm_rerank.llm_rerank_enabled`` (default OFF). So the
+    # bridge forces the ON direction: ON -> ``AGENTRAIL_CONTEXT_LLM_RERANK=1``;
+    # absent/OFF -> leave unset (default OFF, and a caller's override still
+    # composes). Without it the ``full-plus-llm_rerank`` arm would execute
+    # IDENTICALLY to ``full`` and the reported LLM-rerank fileNDCG delta would
+    # always be a silent 0. ``full`` / ``baseline`` carry no ``llm_rerank`` extra
+    # layer, so their env stays byte-identical.
+    if arm.extra_layers.get(LLM_RERANK_LAYER):
+        env["AGENTRAIL_CONTEXT_LLM_RERANK"] = "1"
     return env
 
 

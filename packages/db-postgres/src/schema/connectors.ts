@@ -95,6 +95,27 @@ export interface ConnectorConfig {
    * and `apps/console/app/api/v1/runner/result/notify.ts`.
    */
   telegramNotify?: boolean;
+  /**
+   * JACE CHANNEL-MIGRATION opt-in for DISCORD (#1050). Lives on the `jace`
+   * connector row and flips the OUTBOUND Discord run-outcome notify source from
+   * the legacy console webhook sender (which posts to the workspace-level
+   * `discord_webhook_url`) to Jace. Same contract as {@link telegramNotify}: an
+   * EXPLICIT opt-in, DEFAULT OFF (absent), additional to the `jace` connector
+   * being enabled, and kept separate from the `enabled` kill switch so enabling
+   * inbound Jace never silently steals Discord notifications. Flip it true ONLY
+   * after verifying the Jace path delivers exactly once, then retire the legacy
+   * sender (the cutover PR). See `jaceOwnsDiscordNotify`.
+   */
+  discordNotify?: boolean;
+  /**
+   * JACE CHANNEL-MIGRATION opt-in for SLACK (#1050). Lives on the `jace`
+   * connector row and routes the OUTBOUND Slack run-outcome notify through Jace.
+   * Slack is GREENFIELD — there is NO legacy Slack console sender — so this opt-in
+   * simply turns Jace-side Slack delivery ON; absent/false means no Slack
+   * notification (not a legacy fallback). EXPLICIT opt-in, DEFAULT OFF, additional
+   * to the `jace` connector being enabled. See `jaceOwnsSlackNotify`.
+   */
+  slackNotify?: boolean;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */

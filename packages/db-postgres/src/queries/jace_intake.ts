@@ -68,28 +68,57 @@ export function jaceInboundAllowed(
 // --- outbound channel-ownership gate (pure — NEVER touches the db) ------------
 
 /**
- * A connector row-ish object as seen by the outbound channel-ownership decision.
- * Narrow like {@link JaceConnectorRowish}, plus the migration opt-in on config so
- * a test can hand-build the shape.
+ * The per-channel outbound-migration opt-in flags carried on a `jace` connector's
+ * `config`. Each flips ONE channel's OUTBOUND run-outcome notify from its legacy
+ * console path to Jace; default OFF (absent) keeps the legacy path.
+ */
+export type JaceNotifyChannelFlag =
+  | "telegramNotify"
+  | "discordNotify"
+  | "slackNotify";
+
+/**
+ * A connector row-ish object as seen by the outbound channel-ownership decisions.
+ * Narrow like {@link JaceConnectorRowish}, plus the per-channel migration opt-ins
+ * on config so a test can hand-build the shape.
  */
 export type JaceNotifyConnectorRowish =
   | {
       provider: string;
       enabled: boolean;
-      config?: { telegramNotify?: boolean } | null;
+      config?: Partial<Record<JaceNotifyChannelFlag, boolean>> | null;
     }
   | null
   | undefined;
 
 /**
+ * Shared core of the per-channel outbound-ownership decisions (#1047/#1050).
+ *
+ * PURE — mirrors {@link jaceInboundAllowed}; it must never import or touch `db`.
+ * Jace owns a channel's OUTBOUND notify iff a `jace` connector row exists, is
+ * ENABLED (the kill switch — flipping it off reverts outbound to the safe legacy
+ * path, not dark), AND the channel's `config.<channel>Notify` opt-in is
+ * explicitly true. Every public per-channel decision below is a one-liner over
+ * this guard, so the null / wrong-provider / disabled / opt-out reasoning lives
+ * in exactly one place and can never diverge between channels.
+ */
+function jaceOwnsChannelNotify(
+  connector: JaceNotifyConnectorRowish,
+  flag: JaceNotifyChannelFlag
+): boolean {
+  if (!connector) return false;
+  if (connector.provider !== "jace") return false;
+  if (!connector.enabled) return false;
+  return connector.config?.[flag] === true;
+}
+
+/**
  * Decide whether OUTBOUND Telegram run-outcome notifications for a workspace are
  * delivered THROUGH Jace instead of the legacy console sender (#1047).
  *
- * PURE — the single unit-tested routing decision, mirroring
- * {@link jaceInboundAllowed}. It must never import or touch `db`. Jace owns the
- * Telegram outbound channel iff a `jace` connector row exists, is ENABLED (the
- * kill switch — flipping it off reverts outbound to the safe legacy path, not
- * dark), AND its `config.telegramNotify` opt-in is explicitly true.
+ * PURE — the first unit-tested routing decision. Jace owns the Telegram outbound
+ * channel iff a `jace` connector row exists, is ENABLED, AND its
+ * `config.telegramNotify` opt-in is explicitly true.
  *
  * Why the opt-in is separate from `enabled`: the migration must never go dark or
  * double-fire. Coupling outbound routing to `enabled` alone would mean enabling
@@ -102,10 +131,40 @@ export type JaceNotifyConnectorRowish =
 export function jaceOwnsTelegramNotify(
   connector: JaceNotifyConnectorRowish
 ): boolean {
-  if (!connector) return false;
-  if (connector.provider !== "jace") return false;
-  if (!connector.enabled) return false;
-  return connector.config?.telegramNotify === true;
+  return jaceOwnsChannelNotify(connector, "telegramNotify");
+}
+
+/**
+ * Decide whether OUTBOUND Discord run-outcome notifications for a workspace are
+ * delivered THROUGH Jace instead of the legacy console webhook sender (#1050).
+ *
+ * PURE — mirrors {@link jaceOwnsTelegramNotify} exactly, keyed on the Discord
+ * opt-in. Jace owns Discord outbound iff a `jace` connector row exists, is
+ * ENABLED (the kill switch — off reverts to the legacy Discord webhook path, not
+ * dark), AND its `config.discordNotify` opt-in is explicitly true. Discord's
+ * legacy delivery reuses the workspace-level `discord_webhook_url` storage; this
+ * default-OFF opt-in is what makes cutover a deliberate, per-workspace step.
+ */
+export function jaceOwnsDiscordNotify(
+  connector: JaceNotifyConnectorRowish
+): boolean {
+  return jaceOwnsChannelNotify(connector, "discordNotify");
+}
+
+/**
+ * Decide whether OUTBOUND Slack run-outcome notifications for a workspace are
+ * delivered THROUGH Jace (#1050).
+ *
+ * PURE — mirrors {@link jaceOwnsTelegramNotify}, keyed on the Slack opt-in. Slack
+ * is GREENFIELD: there is NO legacy Slack console sender, so a `false` result
+ * means "no Slack notification at all", not "fall back to a legacy path". Jace
+ * owns Slack outbound iff a `jace` connector row exists, is ENABLED, AND its
+ * `config.slackNotify` opt-in is explicitly true. Default OFF.
+ */
+export function jaceOwnsSlackNotify(
+  connector: JaceNotifyConnectorRowish
+): boolean {
+  return jaceOwnsChannelNotify(connector, "slackNotify");
 }
 
 // --- enabled-connector lookup -------------------------------------------------

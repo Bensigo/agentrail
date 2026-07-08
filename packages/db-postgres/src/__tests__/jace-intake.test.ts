@@ -9,6 +9,7 @@ import {
   jaceOwnsTelegramNotify,
   jaceOwnsDiscordNotify,
   jaceOwnsSlackNotify,
+  jaceOwnsIMessageNotify,
 } from "../queries/jace_intake.js";
 
 /**
@@ -249,5 +250,75 @@ describe("jaceOwnsSlackNotify (outbound route)", () => {
   it("does NOT own Slack for a null / undefined connector", () => {
     expect(jaceOwnsSlackNotify(null)).toBe(false);
     expect(jaceOwnsSlackNotify(undefined)).toBe(false);
+  });
+});
+
+/**
+ * Outbound iMessage routing (#1100). iMessage is GREENFIELD like Slack — a
+ * `false` result means "no iMessage notification", not "fall back to a legacy
+ * path" (the channel has no bot/webhook API and is driven only through a
+ * Jace-side Messages bridge). Jace owns iMessage outbound iff a `jace` connector
+ * is enabled AND `config.imessageNotify` is explicitly true. Default OFF.
+ */
+describe("jaceOwnsIMessageNotify (outbound route)", () => {
+  it("owns iMessage when the jace connector is enabled AND opted in", () => {
+    expect(
+      jaceOwnsIMessageNotify({
+        provider: "jace",
+        enabled: true,
+        config: { imessageNotify: true },
+      })
+    ).toBe(true);
+  });
+
+  it("does NOT own iMessage when opted in but the connector is DISABLED (kill switch)", () => {
+    expect(
+      jaceOwnsIMessageNotify({
+        provider: "jace",
+        enabled: false,
+        config: { imessageNotify: true },
+      })
+    ).toBe(false);
+  });
+
+  it("does NOT own iMessage when enabled but the opt-in is OFF / ABSENT (default)", () => {
+    expect(
+      jaceOwnsIMessageNotify({
+        provider: "jace",
+        enabled: true,
+        config: { imessageNotify: false },
+      })
+    ).toBe(false);
+    expect(
+      jaceOwnsIMessageNotify({ provider: "jace", enabled: true, config: {} })
+    ).toBe(false);
+    expect(jaceOwnsIMessageNotify({ provider: "jace", enabled: true })).toBe(
+      false
+    );
+  });
+
+  it("does NOT own iMessage when only another channel's opt-in is set (channels are independent)", () => {
+    expect(
+      jaceOwnsIMessageNotify({
+        provider: "jace",
+        enabled: true,
+        config: { slackNotify: true },
+      })
+    ).toBe(false);
+  });
+
+  it("does NOT own iMessage for a wrong-provider row even if it carries the flag", () => {
+    expect(
+      jaceOwnsIMessageNotify({
+        provider: "imessage",
+        enabled: true,
+        config: { imessageNotify: true },
+      })
+    ).toBe(false);
+  });
+
+  it("does NOT own iMessage for a null / undefined connector", () => {
+    expect(jaceOwnsIMessageNotify(null)).toBe(false);
+    expect(jaceOwnsIMessageNotify(undefined)).toBe(false);
   });
 });

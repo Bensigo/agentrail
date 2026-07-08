@@ -13,13 +13,14 @@
  *    (re-queued red/error) and a `running` heartbeat never reach here → no spam.
  *  - Per-channel routing: each channel is delivered on EXACTLY ONE path, chosen
  *    independently per workspace — its legacy console sender XOR Jace. Telegram
- *    (#888) and Discord (workspace-webhook) have legacy console senders; Slack is
- *    greenfield (Jace-only). An unconnected / disabled channel is a silent no-op.
- *  - Channel migration (#1047 Telegram, #1050 Discord + Slack): when a workspace
- *    has migrated a channel to Jace (`jaceOwns<Channel>Notify`), the outbound ping
- *    is delivered THROUGH Jace instead of the legacy sender — exclusive, so
- *    exactly one notification fires (no dark, no double). Default OFF; each
- *    channel's legacy path is unchanged until its per-workspace cutover.
+ *    (#888) and Discord (workspace-webhook) have legacy console senders; Slack
+ *    (#1050) and iMessage (#1100) are greenfield (Jace-only). An unconnected /
+ *    disabled channel is a silent no-op.
+ *  - Channel migration (#1047 Telegram, #1050 Discord + Slack, #1100 iMessage):
+ *    when a workspace has migrated a channel to Jace (`jaceOwns<Channel>Notify`),
+ *    the outbound ping is delivered THROUGH Jace instead of the legacy sender —
+ *    exclusive, so exactly one notification fires (no dark, no double). Default
+ *    OFF; each channel's legacy path is unchanged until its per-workspace cutover.
  *  - BEST-EFFORT: every send is isolated and swallowed. A notify failure must
  *    NEVER change the route's response (AC3) — callers additionally wrap the
  *    whole thing in try/catch, but we also never throw from here.
@@ -31,6 +32,7 @@ import {
   jaceOwnsTelegramNotify,
   jaceOwnsDiscordNotify,
   jaceOwnsSlackNotify,
+  jaceOwnsIMessageNotify,
 } from "@agentrail/db-postgres";
 import { sendTelegramMessage } from "../../workspaces/[workspaceId]/connectors/secret/telegram";
 import { sendDiscordMessage } from "../../workspaces/[workspaceId]/connectors/secret/discord";
@@ -110,7 +112,7 @@ async function notifyDiscord(
   await sendDiscordMessage(webhookUrl, text);
 }
 
-// --- Jace outbound route (#1047 Telegram, #1050 Discord + Slack) --------------
+// --- Jace outbound route (#1047 Telegram, #1050 Discord + Slack, #1100 iMessage) --------------
 
 /** Where the Jace Eve sidecar listens (mirrors the jace inbound route). */
 const EVE_HOST = process.env["EVE_HOST"] || "http://127.0.0.1:2000";
@@ -133,7 +135,7 @@ const JACE_NOTIFY_URL =
 
 /**
  * Hand a terminal run outcome to the Jace sidecar for delivery on `channel`
- * (#1047 Telegram, #1050 Discord + Slack).
+ * (#1047 Telegram, #1050 Discord + Slack, #1100 iMessage).
  *
  * This is the console half of the outbound migration: Jace holds the conversation
  * (and, post-migration, the per-channel allowlist), but has no DB, so the console
@@ -148,7 +150,7 @@ const JACE_NOTIFY_URL =
  */
 async function notifyViaJace(
   workspaceId: string,
-  channel: "telegram" | "discord" | "slack",
+  channel: "telegram" | "discord" | "slack" | "imessage",
   params: NotifyParams,
   text: string,
   extra: Record<string, unknown> = {}
@@ -209,6 +211,22 @@ async function notifySlackViaJace(
   await notifyViaJace(workspaceId, "slack", params, text);
 }
 
+/**
+ * iMessage → Jace handoff (#1100). iMessage is greenfield (no legacy console
+ * path), so this is the ONLY iMessage delivery — it fires solely when the
+ * workspace has opted iMessage into Jace. The destination handle and the Messages
+ * BRIDGE (BlueBubbles / commercial API) it is delivered through are resolved by
+ * the DEFERRED Jace-side handler; the console passes only the outcome over the
+ * wire, never a bridge URL or secret.
+ */
+async function notifyIMessageViaJace(
+  workspaceId: string,
+  params: NotifyParams,
+  text: string
+): Promise<void> {
+  await notifyViaJace(workspaceId, "imessage", params, text);
+}
+
 /** A per-channel sender: posts `text` to that gateway for the workspace. */
 type GatewaySender = (workspaceId: string, text: string) => Promise<void>;
 
@@ -217,16 +235,17 @@ type GatewaySender = (workspaceId: string, text: string) => Promise<void>;
  * isolated: one channel failing (or throwing) never blocks the others, and this
  * function never throws — the route's response is unaffected (AC3).
  *
- * PER-CHANNEL ROUTING (#1047 Telegram, #1050 Discord + Slack). Every channel is
- * delivered on EXACTLY ONE path, chosen independently per workspace:
+ * PER-CHANNEL ROUTING (#1047 Telegram, #1050 Discord + Slack, #1100 iMessage).
+ * Every channel is delivered on EXACTLY ONE path, chosen independently per
+ * workspace:
  *  - MIGRATED (`jaceOwns<Channel>Notify` — the `jace` connector is enabled AND
  *    `config.<channel>Notify` is opted in) → deliver via Jace and SKIP the legacy
  *    sender for that channel. Exclusive by construction: no dark, no double.
  *  - DEFAULT (no jace row / disabled / opt-in off) → the legacy console sender for
  *    that channel, unchanged. Telegram (#888) + Discord (workspace-webhook) have
- *    one; Slack is greenfield, so un-migrated Slack simply produces NO
- *    notification (there is no legacy Slack path to fall back to, and none is
- *    created here).
+ *    one; Slack and iMessage are greenfield, so un-migrated they simply produce NO
+ *    notification (there is no legacy path to fall back to, and none is created
+ *    here).
  *
  * Exactly-once & retry-silence: the caller invokes this ONLY on a non-null
  * `terminalState`, so a retry / re-queue / heartbeat never reaches here — that
@@ -266,6 +285,14 @@ export async function notifyRunOutcome(
   // fallback) — do not create a legacy Slack path in the console.
   if (jaceOwnsSlackNotify(jaceConnector)) {
     senders.push((ws, t) => notifySlackViaJace(ws, params, t));
+  }
+
+  // iMessage (#1100) is greenfield too — it has no official bot/webhook API and
+  // is driven only through a Jace-side Messages bridge, so there is NO legacy
+  // console sender. Delivered ONLY when migrated to Jace; un-migrated iMessage
+  // adds no sender at all (not a fallback) — no legacy iMessage path exists here.
+  if (jaceOwnsIMessageNotify(jaceConnector)) {
+    senders.push((ws, t) => notifyIMessageViaJace(ws, params, t));
   }
 
   await Promise.all(

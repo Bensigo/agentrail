@@ -1250,6 +1250,7 @@ export {
   jaceOwnsTelegramNotify,
   jaceOwnsDiscordNotify,
   jaceOwnsSlackNotify,
+  jaceOwnsIMessageNotify,
   findEnabledJaceWorkspace,
   type JaceConnectorRowish,
   type JaceNotifyConnectorRowish,

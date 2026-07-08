@@ -100,6 +100,16 @@ class PackCutoffResolverTests(unittest.TestCase):
         self.assertTrue(enabled)
         self.assertEqual(ratio, 0.6)
 
+    def test_ratio_clamped_to_unit_interval(self) -> None:
+        # A ratio > 1.0 would set the threshold above the top score and empty the
+        # pack; a negative ratio is meaningless. Both are clamped to [0.0, 1.0].
+        with _cutoff_env(True, 1.5):
+            _, ratio_high = resolve_pack_cutoff(REPO_ROOT)
+        self.assertEqual(ratio_high, 1.0)
+        with _cutoff_env(True, -0.3):
+            _, ratio_low = resolve_pack_cutoff(REPO_ROOT)
+        self.assertEqual(ratio_low, 0.0)
+
     def test_config_drives_enable_and_ratio(self) -> None:
         import json
         import tempfile
@@ -156,6 +166,37 @@ class PackCutoffNoOpTests(unittest.TestCase):
         off = self._fingerprint(self._query(None, None))
         keep_all = self._fingerprint(self._query(True, 0.0))
         self.assertEqual(off, keep_all)
+
+    def test_ratio_above_one_does_not_empty_pack(self) -> None:
+        # An unclamped ratio > 1.0 would push the threshold above the top score and
+        # drop every candidate. The clamp to 1.0 keeps items tied at the max, so the
+        # top-scoring candidate always survives and the pack is never emptied.
+        query = self._query(True, 1.5)
+        results = query.get("results", [])
+        self.assertTrue(results, "clamped cutoff (ratio>1.0) must not empty the pack")
+        finals = [
+            (item.get("score") or {}).get("final")
+            for item in results
+            if isinstance((item.get("score") or {}).get("final"), (int, float))
+        ]
+        self.assertTrue(finals, "surviving results should carry numeric scores")
+        # The retained candidates are exactly those tied at the top score.
+        self.assertEqual(max(finals), min(finals))
+
+    def test_cutoff_excluded_ids_are_unique(self) -> None:
+        # Dropped items are deduped through the shared _excluded_key, so the excluded
+        # list holds no two entries with the same compiler candidate id (which would
+        # inflate compiler.metrics.excludedCount).
+        query = self._query(True, 0.4)
+        keys = [
+            next((str(item.get(f)) for f in ("sourceId", "chunkId", "path", "citation") if item.get(f)), "candidate:unknown")
+            for item in query.get("excluded", [])
+        ]
+        self.assertEqual(len(keys), len(set(keys)), "excluded-candidate ids must be unique")
+        compiler = query.get("compiler") or {}
+        excluded_count = ((compiler.get("metrics") or {}).get("excludedCount"))
+        if isinstance(excluded_count, int):
+            self.assertEqual(excluded_count, len(set(keys)))
 
 
 class PackCutoffCertificationTests(unittest.TestCase):

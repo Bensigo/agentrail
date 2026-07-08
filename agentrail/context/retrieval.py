@@ -1328,7 +1328,26 @@ def resolve_pack_cutoff(root: Path) -> Tuple[bool, float]:
             ratio = float(ratio_raw)
         except ValueError:
             ratio = cfg.minScoreRatio
+    # Clamp to [0.0, 1.0] (both config and env override): a ratio > 1.0 would set
+    # the threshold above the top score and drop even the top item, emptying the
+    # pack; a negative ratio would keep everything. ratio == 1.0 is safe — it keeps
+    # items tied at the top.
+    ratio = min(max(ratio, 0.0), 1.0)
     return enabled, ratio
+
+
+def _excluded_key(entry: Dict[str, Any]) -> str:
+    """Stable key matching the compiler's excluded-candidate id derivation
+    (``sourceId|chunkId|path|citation``, first non-empty; see compiler
+    ``_candidate_id``). Shared by the rerank-rejection and pack-cutoff drop paths
+    so excluded-candidate ids — and ``compiler.metrics.excludedCount`` — stay
+    unique across both.
+    """
+    for field in ("sourceId", "chunkId", "path", "citation"):
+        value = entry.get(field)
+        if value:
+            return str(value)
+    return "candidate:unknown"
 
 
 def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1739,15 +1758,8 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
             item["rank"] = position
         # Dedupe rerank-rejected entries against existing excluded ids using the
         # SAME key the compiler derives its excluded-candidate id from
-        # (sourceId|chunkId|path|citation, first non-empty) so the contract's
-        # excluded-candidate ids stay unique.
-        def _excluded_key(entry: Dict[str, Any]) -> str:
-            for field in ("sourceId", "chunkId", "path", "citation"):
-                value = entry.get(field)
-                if value:
-                    return str(value)
-            return "candidate:unknown"
-
+        # (sourceId|chunkId|path|citation, first non-empty; see module-level
+        # ``_excluded_key``) so the contract's excluded-candidate ids stay unique.
         seen_excluded_keys = {_excluded_key(entry) for entry in excluded}
         for dropped in rerank_result["rejected"]:
             rerank_block = dropped.get("rerank") or {}
@@ -1827,30 +1839,39 @@ def query_context(target_dir: Path, query: str, *, limit: int = 20, index: Optio
             top_final = max(finals)
             threshold = cutoff_ratio * top_final
             kept: List[Dict[str, Any]] = []
+            # Dedupe appended cutoff exclusions against ids already in ``excluded``
+            # (rerank rejections and other dropped chunks of the same source) using
+            # the SAME key the compiler derives its excluded-candidate id from, so
+            # ``compiler.metrics.excludedCount`` stays equal to the unique-id count.
+            seen_excluded_keys = {_excluded_key(entry) for entry in excluded}
             for item in formatted:
                 score = item.get("score") if isinstance(item.get("score"), dict) else {}
                 final = score.get("final")
                 if isinstance(final, (int, float)) and not isinstance(final, bool) and final < threshold:
-                    excluded.append(
-                        {
-                            "sourceType": item.get("sourceType"),
-                            "path": item.get("path"),
-                            "sourceId": item.get("sourceId"),
-                            "chunkId": item.get("chunkId"),
-                            "reason": f"below pack confidence cutoff (score {round(float(final), 6)} < ratio*top {round(threshold, 6)})",
-                            "citation": item.get("citation") or item.get("path"),
-                            "authority": item.get("authority"),
-                            "visibility": item.get("visibility"),
-                            "freshness": item.get("freshness"),
-                            "redactions": item.get("redactions", []),
-                            "packCutoff": {
-                                "scoreFinal": round(float(final), 6),
-                                "threshold": round(threshold, 6),
-                                "ratio": cutoff_ratio,
-                                "topScore": round(float(top_final), 6),
-                            },
-                        }
-                    )
+                    exclusion = {
+                        "sourceType": item.get("sourceType"),
+                        "path": item.get("path"),
+                        "sourceId": item.get("sourceId"),
+                        "chunkId": item.get("chunkId"),
+                        "reason": f"below pack confidence cutoff (score {round(float(final), 6)} < ratio*top {round(threshold, 6)})",
+                        "citation": item.get("citation") or item.get("path"),
+                        "authority": item.get("authority"),
+                        "visibility": item.get("visibility"),
+                        "freshness": item.get("freshness"),
+                        "redactions": item.get("redactions", []),
+                        "packCutoff": {
+                            "scoreFinal": round(float(final), 6),
+                            "threshold": round(threshold, 6),
+                            "ratio": cutoff_ratio,
+                            "topScore": round(float(top_final), 6),
+                        },
+                    }
+                    key = _excluded_key(exclusion)
+                    if key not in seen_excluded_keys:
+                        seen_excluded_keys.add(key)
+                        excluded.append(exclusion)
+                    # The item leaves the pack either way; dedupe only guards the
+                    # excluded list against a duplicate candidate id.
                 else:
                     kept.append(item)
             if len(kept) != len(formatted):

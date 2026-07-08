@@ -81,6 +81,10 @@ def _usage() -> str:
         "                   packs against (precision/recall + rerank delta).\n"
         "                   Default: the git checkout root if it has an index.\n"
         "  --no-pack-scores Skip offline pack scoring (report shows n/a).\n"
+        "  --cost-ledger PATH\n"
+        "                   Per-arm cost ledger (cost-events.jsonl) for the\n"
+        "                   gather token-reduction + cache-hit report (#1049 AC4).\n"
+        "                   Without it that section says it needs a live run.\n"
         "  --report PATH    (apply) The eval report file to read.\n"
         "  --date YYYY-MM-DD\n"
         "                   (canary) Date the report as given. (apply) Resolve\n"
@@ -162,6 +166,10 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
     # --pack-index-root overrides the root explicitly; --no-pack-scores opts out.
     pack_index_root: Optional[Path] = _default_pack_index_root()
     no_pack_scores = False
+    # Gather token-reduction + cache-hit ledger (#1049 AC4). Default None → the
+    # report's gather section renders "not available — needs a live run"; pass an
+    # explicit per-arm ``cost-events.jsonl`` (arm-tagged) to surface real numbers.
+    cost_ledger_path: Optional[Path] = None
 
     i = 0
     while i < len(args):
@@ -219,6 +227,12 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
             # git-root default would otherwise be a slow no-op miss.
             no_pack_scores = True
             i += 1
+        elif a == "--cost-ledger":
+            # Per-arm cost ledger for the gather token-reduction + cache-hit
+            # report (#1049 AC4). An arm-tagged ``cost-events.jsonl``; without it
+            # the gather section renders "not available — needs a live run".
+            cost_ledger_path = Path(_parse_flag_value(args, i, a))
+            i += 2
         else:
             raise ValueError(f"unknown option: {a}")
 
@@ -243,6 +257,7 @@ def _parse_run_args(args: List[str]) -> tuple[SpineConfig, bool, Optional[Path]]
             include_held_out=include_held_out,
             concurrency=concurrency,
             pack_index_root=pack_index_root,
+            cost_ledger_path=cost_ledger_path,
         ),
         smoke,
         reports_dir,
@@ -339,6 +354,34 @@ def _run_run(args: List[str]) -> int:
         f"first-attempt {_pct(retry.first_attempt_solve_rate)}); "
         f"wasted-retry cost ${retry.wasted_retry_cost_usd:.4f}"
     )
+
+    # Gather token-reduction + cache-hit (#1049 AC4): echo the full vs
+    # full-plus-gather headline when a per-arm cost ledger was supplied. The dated
+    # report always carries the full section (or an honest "needs a live run").
+    if config.cost_ledger_path is not None:
+        from agentrail.evals.gather_report import (
+            aggregate_gather_tokens,
+            gather_token_delta,
+            load_cost_events,
+        )
+
+        gather_delta = gather_token_delta(
+            aggregate_gather_tokens(load_cost_events(config.cost_ledger_path))
+        )
+        if gather_delta is None:
+            print(
+                "Gather token report: n/a (ledger has no full/full-plus-gather pair)"
+            )
+        else:
+            print(
+                "Gather token report: execute-context "
+                f"{gather_delta.off_execute_context_tokens} -> "
+                f"{gather_delta.on_execute_context_tokens} "
+                f"({gather_delta.execute_context_delta:+d}); total "
+                f"{gather_delta.total_tokens_delta:+d}; cache-hit "
+                f"full={'yes' if gather_delta.off_cache_hit else 'no'} "
+                f"full-plus-gather={'yes' if gather_delta.on_cache_hit else 'no'}"
+            )
 
     print(
         "Postgres persist: "

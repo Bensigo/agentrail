@@ -25,6 +25,33 @@ HTTP sidecar.
 There is no second write path. Jace never merges pull requests, runs the factory,
 or triggers builds.
 
+## Channels
+
+Jace's platform channels are native Eve channels — files under
+`agent/channels/`, auto-discovered by Eve (the filename is the channel id, and
+Eve mounts each inbound webhook at `/eve/v1/<id>`). We do NOT hand-roll platform
+HTTP or token handling; Eve owns inbound + outbound + threading + credentials.
+
+- `agent/channels/telegram.ts` — `telegramChannel({ botUsername })`. Inbound at
+  `/eve/v1/telegram`; register it once with Telegram's `setWebhook`:
+  ```bash
+  curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+    -H "Content-Type: application/json" \
+    -d '{"url":"https://<host>/eve/v1/telegram",
+         "secret_token":"'"$TELEGRAM_WEBHOOK_SECRET_TOKEN"'",
+         "allowed_updates":["message","callback_query"]}'
+  ```
+- `agent/channels/discord.ts` — `discordChannel()`. Inbound at `/eve/v1/discord`.
+- `agent/channels/run-outcome.ts` — a custom `defineChannel` route mounted at
+  `/eve/v1/run-outcome`. The AgentRail console POSTs a TERMINAL run outcome here
+  (`{ channel, message, target, auth }`); Jace hands it to the addressed platform
+  channel via `args.receive(...)`, so the notification lands in a repliable thread.
+  The console sends only the built message and the NON-SECRET destination
+  (`target`) — the bot credentials stay in Jace's env.
+
+These are gated per-workspace by `jaceOwns<Channel>Notify` (default OFF); a
+workspace's outbound stays on its legacy console sender until its cutover.
+
 ## Requirements
 
 - Node.js `>= 24` (the tests use Node's built-in `node --test`).
@@ -44,6 +71,12 @@ or triggers builds.
 | `JACE_TARGET_REPO` | Default `owner/repo` the created issue lands in (the `create_issue` tool falls back to this when `repo` isn't supplied). |
 | `JACE_AGENTRAIL_BIN` | Optional override for the `agentrail` binary. Defaults to `agentrail`. |
 | `EVE_HOST` | Base URL used by the round-trip harness. Defaults to `http://127.0.0.1:2000`. |
+| `TELEGRAM_BOT_USERNAME` | The Telegram bot's @username (without `@`) for the native `telegram` channel. |
+| `TELEGRAM_BOT_TOKEN` | BotFather token for proactive Telegram sends. |
+| `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Secret token Telegram signs inbound updates with (set on `setWebhook`). |
+| `DISCORD_PUBLIC_KEY` | Verifies inbound Discord `X-Signature-Ed25519` + timestamp. |
+| `DISCORD_APPLICATION_ID` | Edits Discord deferred responses / sends followups. |
+| `DISCORD_BOT_TOKEN` | Proactive Discord messages + typing indicators. |
 
 ## Install
 

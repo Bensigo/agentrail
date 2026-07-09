@@ -29,6 +29,31 @@ test("normalizeRunOutcome accepts a valid discord payload (channelId)", () => {
   assert.deepEqual(out.target, { channelId: "C0123" });
 });
 
+test("normalizeRunOutcome accepts a valid slack payload (channelId)", () => {
+  const out = normalizeRunOutcome({
+    channel: "slack",
+    message: "AgentRail: PR ready — issue #99",
+    target: { channelId: "C0SLACK" },
+  });
+  assert.equal(out.channel, "slack");
+  assert.deepEqual(out.target, { channelId: "C0SLACK" });
+});
+
+test("normalizeRunOutcome recognizes imessage and normalizes its handle target", () => {
+  // imessage is recognized by the core (valid channel + `handle` target key)
+  // even though the run-outcome wrapper leaves it UNWIRED (no native Eve module
+  // yet). At the wrapper this normalized payload draws a clean 400 "not wired";
+  // at the core it is a well-formed, normalizable outcome.
+  const out = normalizeRunOutcome({
+    channel: "imessage",
+    message: "AgentRail: Blocked — issue #12",
+    target: { handle: "+15551234567", channelId: "ignored" },
+  });
+  assert.equal(out.channel, "imessage");
+  // minimal target keeps only the `handle` key, dropping the stray channelId
+  assert.deepEqual(out.target, { handle: "+15551234567" });
+});
+
 test("normalizeRunOutcome passes auth through when it is an object", () => {
   const auth = {
     authenticator: "agentrail",

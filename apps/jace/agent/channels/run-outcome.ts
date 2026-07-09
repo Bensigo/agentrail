@@ -25,13 +25,15 @@ import { defineChannel, POST } from "eve/channels";
 import { normalizeRunOutcome } from "../lib/run_outcome.core.mjs";
 import telegram from "./telegram.js";
 import discord from "./discord.js";
+import slack from "./slack.js";
 
 /**
- * Channel id -> Eve channel module. The subset actually wired today; Slack
- * (greenfield) joins when `agent/channels/slack.ts` lands. A known-but-unwired
- * channel yields a clear 400 rather than a silent drop.
+ * Channel id -> Eve channel module. Telegram/Discord/Slack are wired to their
+ * native Eve channels. A channel that `normalizeRunOutcome` recognizes but that
+ * is absent here (e.g. `imessage`, which has no native Eve module yet — its
+ * bridge is pending) yields a clear 400 rather than a silent drop.
  */
-const CHANNELS: Record<string, unknown> = { telegram, discord };
+const CHANNELS: Record<string, unknown> = { telegram, discord, slack };
 
 /** Small JSON responder (the route contract is machine-to-machine, not a page). */
 function json(body: unknown, status = 200): Response {

@@ -15,23 +15,27 @@
 // .mjs modules here are NOT loaded as tools/channels.
 
 /**
- * Channels this route understands. Each is a native Eve channel module
- * (`eve/channels/<id>`); the wrapper wires the subset that is actually built.
- * `slack` is a known-but-may-be-unwired channel (greenfield, follow-up PR).
+ * Channels this route understands. `telegram`/`discord`/`slack` each map to a
+ * native Eve channel module (`eve/channels/<id>`) that the wrapper actually
+ * wires. `imessage` is RECOGNIZED here (valid channel + target key) but has NO
+ * native Eve module yet, so the wrapper deliberately leaves it unwired: a push
+ * for it validates and then gets a clear 400 ("not wired") rather than a
+ * confusing "unknown channel", until an iMessage bridge lands.
  */
-export const RUN_OUTCOME_CHANNELS = ["telegram", "discord", "slack"];
+export const RUN_OUTCOME_CHANNELS = ["telegram", "discord", "slack", "imessage"];
 
 /**
  * The NON-SECRET destination key each channel's `target` must carry. The console
- * supplies this from its per-workspace DB (a chat/channel id is a display value,
- * not a credential); the shared bot token lives in Jace's env, never on the wire.
- * Shapes follow Eve's proactive-`receive` target: Telegram `{ chatId }`, Slack /
- * Discord `{ channelId }`.
+ * supplies this from its per-workspace DB (a chat/channel id / handle is a display
+ * value, not a credential); the shared bot token lives in Jace's env, never on the
+ * wire. Shapes follow Eve's proactive-`receive` target: Telegram `{ chatId }`,
+ * Slack / Discord `{ channelId }`, iMessage `{ handle }` (phone/email address).
  */
 export const TARGET_KEY = Object.freeze({
   telegram: "chatId",
   discord: "channelId",
   slack: "channelId",
+  imessage: "handle",
 });
 
 /**

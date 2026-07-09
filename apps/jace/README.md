@@ -42,12 +42,23 @@ HTTP or token handling; Eve owns inbound + outbound + threading + credentials.
          "allowed_updates":["message","callback_query"]}'
   ```
 - `agent/channels/discord.ts` — `discordChannel()`. Inbound at `/eve/v1/discord`.
+- `agent/channels/slack.ts` — `slackChannel()`. Inbound (Events API +
+  Interactivity) at `/eve/v1/slack`; point Slack's request URLs there. Credentials
+  come from env (`SLACK_BOT_TOKEN` + `SLACK_SIGNING_SECRET`) — the same env-based
+  self-host shape as Telegram/Discord, no Vercel Connect required.
 - `agent/channels/run-outcome.ts` — a custom `defineChannel` route mounted at
   `/eve/v1/run-outcome`. The AgentRail console POSTs a TERMINAL run outcome here
   (`{ channel, message, target, auth }`); Jace hands it to the addressed platform
   channel via `args.receive(...)`, so the notification lands in a repliable thread.
   The console sends only the built message and the NON-SECRET destination
   (`target`) — the bot credentials stay in Jace's env.
+
+`imessage` is a RECOGNIZED run-outcome channel (its `target` key is `handle`, a
+phone/email address) but has NO native Eve module yet, so it is deliberately left
+unwired: a push for it validates and then draws a clean `400` ("channel 'imessage'
+is not wired") rather than a confusing "unknown channel". Wiring it needs an
+iMessage bridge (e.g. BlueBubbles / Sendblue / LoopMessage, or Eve's `twilio`
+channel for SMS fallback) — a follow-up PR.
 
 These are gated per-workspace by `jaceOwns<Channel>Notify` (default OFF); a
 workspace's outbound stays on its legacy console sender until its cutover.
@@ -77,6 +88,8 @@ workspace's outbound stays on its legacy console sender until its cutover.
 | `DISCORD_PUBLIC_KEY` | Verifies inbound Discord `X-Signature-Ed25519` + timestamp. |
 | `DISCORD_APPLICATION_ID` | Edits Discord deferred responses / sends followups. |
 | `DISCORD_BOT_TOKEN` | Proactive Discord messages + typing indicators. |
+| `SLACK_BOT_TOKEN` | Bot user OAuth token (`xoxb-…`) for the native `slack` channel — proactive posts + Web API calls. (`slackChannel()` reads it from env when no explicit credentials are passed.) |
+| `SLACK_SIGNING_SECRET` | Verifies inbound Slack request signatures (Events API + Interactivity). Read from env by `slackChannel()` unless a `webhookVerifier` is supplied. |
 
 ## Install
 

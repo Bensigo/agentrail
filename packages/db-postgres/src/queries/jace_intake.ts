@@ -75,7 +75,8 @@ export function jaceInboundAllowed(
 export type JaceNotifyChannelFlag =
   | "telegramNotify"
   | "discordNotify"
-  | "slackNotify";
+  | "slackNotify"
+  | "imessageNotify";
 
 /**
  * A connector row-ish object as seen by the outbound channel-ownership decisions.
@@ -165,6 +166,25 @@ export function jaceOwnsSlackNotify(
   connector: JaceNotifyConnectorRowish
 ): boolean {
   return jaceOwnsChannelNotify(connector, "slackNotify");
+}
+
+/**
+ * Decide whether OUTBOUND iMessage run-outcome notifications for a workspace are
+ * delivered THROUGH Jace (#1100).
+ *
+ * PURE — mirrors {@link jaceOwnsSlackNotify}, keyed on the iMessage opt-in.
+ * iMessage is GREENFIELD (like Slack): there is NO legacy iMessage console sender
+ * — the channel has no official bot/webhook API and can only be driven through a
+ * Messages BRIDGE running on a Mac, which lives entirely Jace-side. So a `false`
+ * result means "no iMessage notification at all", not "fall back to a legacy
+ * path". Jace owns iMessage outbound iff a `jace` connector row exists, is
+ * ENABLED (the kill switch), AND its `config.imessageNotify` opt-in is explicitly
+ * true. Default OFF.
+ */
+export function jaceOwnsIMessageNotify(
+  connector: JaceNotifyConnectorRowish
+): boolean {
+  return jaceOwnsChannelNotify(connector, "imessageNotify");
 }
 
 // --- enabled-connector lookup -------------------------------------------------

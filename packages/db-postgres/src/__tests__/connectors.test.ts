@@ -372,6 +372,24 @@ describe("validateConnectorUpdate", () => {
       }).ok
     ).toBe(false);
   });
+
+  // Jace channel-migration opt-in for iMessage (#1100) — greenfield channel,
+  // same boolean cutover control on the `jace` connector.
+  it("accepts a boolean imessageNotify opt-in and preserves it", () => {
+    const r = validateConnectorUpdate({ config: { imessageNotify: true } });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.config?.imessageNotify).toBe(true);
+    }
+  });
+
+  it("rejects a non-boolean imessageNotify", () => {
+    expect(
+      validateConnectorUpdate({
+        config: { imessageNotify: "yes" as unknown as boolean },
+      }).ok
+    ).toBe(false);
+  });
 });
 
 // completeConfig is exercised through getConnectors (it runs on every projected
@@ -390,6 +408,7 @@ describe("completeConfig preserves the Jace channel opt-ins (#1050)", () => {
             pollIntervalSeconds: 60,
             discordNotify: true,
             slackNotify: true,
+            imessageNotify: true,
           },
           updatedAt: null,
         },
@@ -399,6 +418,7 @@ describe("completeConfig preserves the Jace channel opt-ins (#1050)", () => {
     const rows = await getConnectors("ws-1");
     expect(rows[0].config.discordNotify).toBe(true);
     expect(rows[0].config.slackNotify).toBe(true);
+    expect(rows[0].config.imessageNotify).toBe(true);
   });
 
   it("omits the opt-ins entirely when absent (default OFF, not false)", async () => {
@@ -416,5 +436,6 @@ describe("completeConfig preserves the Jace channel opt-ins (#1050)", () => {
     const rows = await getConnectors("ws-1");
     expect(rows[0].config).not.toHaveProperty("discordNotify");
     expect(rows[0].config).not.toHaveProperty("slackNotify");
+    expect(rows[0].config).not.toHaveProperty("imessageNotify");
   });
 });

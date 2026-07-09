@@ -126,6 +126,20 @@ export interface ConnectorConfig {
    * to the `jace` connector being enabled. See `jaceOwnsSlackNotify`.
    */
   slackNotify?: boolean;
+  /**
+   * JACE CHANNEL-MIGRATION opt-in for iMESSAGE (#1100). Lives on the `jace`
+   * connector row and routes the OUTBOUND iMessage run-outcome notify through
+   * Jace. iMessage is GREENFIELD — there is NO legacy iMessage console sender —
+   * because the channel has no official bot/webhook API and can only be driven
+   * through a Messages BRIDGE running on a Mac (self-hosted BlueBubbles or a
+   * commercial API like Sendblue/LoopMessage), which lives entirely Jace-side. So
+   * this opt-in simply turns Jace-side iMessage delivery ON; absent/false means no
+   * iMessage notification (not a legacy fallback). EXPLICIT opt-in, DEFAULT OFF,
+   * additional to the `jace` connector being enabled. Flipping it true is a no-op
+   * until the bridge is chosen (AC0) and the Jace-side delivery handler ships
+   * (blocked on the deployed sidecar, #1038). See `jaceOwnsIMessageNotify`.
+   */
+  imessageNotify?: boolean;
 }
 
 /** Defaults applied when a connector is first created / for absent config keys. */

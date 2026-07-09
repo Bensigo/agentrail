@@ -151,6 +151,18 @@ export function validateConnectorUpdate(
       out.slackNotify = cfg.slackNotify;
     }
 
+    // Jace channel-migration opt-in for iMessage (#1100) — same shape as the
+    // channels above: a boolean on the `jace` row that turns ON Jace-side iMessage
+    // notify. iMessage is greenfield (bridge-only, no legacy path), so absence
+    // means no notification. Validated here so the operator can flip it via the
+    // connector PATCH route; default OFF.
+    if (cfg.imessageNotify !== undefined) {
+      if (typeof cfg.imessageNotify !== "boolean") {
+        return { ok: false, error: "imessageNotify must be a boolean" };
+      }
+      out.imessageNotify = cfg.imessageNotify;
+    }
+
     value.config = out;
   }
 
@@ -189,6 +201,12 @@ function completeConfig(stored: Partial<ConnectorConfig> | null | undefined): Co
       : {}),
     ...(typeof stored?.slackNotify === "boolean"
       ? { slackNotify: stored.slackNotify }
+      : {}),
+    // Jace channel-migration opt-in for iMessage (#1100) — preserved across merges
+    // for the same reason: a later partial config patch must never silently revert
+    // the channel's cutover.
+    ...(typeof stored?.imessageNotify === "boolean"
+      ? { imessageNotify: stored.imessageNotify }
       : {}),
   };
 }

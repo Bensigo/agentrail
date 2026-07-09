@@ -21,6 +21,12 @@
 //                                      carries no non-secret handle over the wire,
 //                                      so an outbound outcome resolves its
 //                                      recipient here, Jace-side.
+//   LOOPMESSAGE_ALLOWED_HANDLES      — optional. A comma-separated allowlist of
+//                                      iMessage senders (1:1 contact handles or
+//                                      group ids) permitted to drive a turn. Unset
+//                                      ⇒ open (the sandbox already caps to ≤5
+//                                      approved contacts); set ⇒ any unlisted
+//                                      sender is ACKed and ignored (#1100 AC4).
 //
 // Two directions, same as the telegram/discord/slack channels:
 //  1. INBOUND conversation — the `POST("/eve/v1/imessage")` route verifies the Authorization
@@ -52,7 +58,9 @@ import {
   buildSendBody,
   imessageContinuationToken,
   isActionableInbound,
+  isAllowedSender,
   loopMessageSendHeaders,
+  parseAllowedHandles,
   parseLoopInbound,
   verifyWebhookAuthorization,
 } from "../lib/loopmessage.core.mjs";
@@ -63,6 +71,8 @@ const apiKey = (process.env["LOOPMESSAGE_API_KEY"] ?? "").trim();
 const senderName = (process.env["LOOPMESSAGE_SENDER_NAME"] ?? "").trim();
 const webhookSecret = (process.env["LOOPMESSAGE_WEBHOOK_SECRET_TOKEN"] ?? "").trim();
 const defaultRecipient = (process.env["LOOPMESSAGE_DEFAULT_RECIPIENT"] ?? "").trim();
+// Jace-side sender allowlist (#1100 AC4). Empty ⇒ open (unrestricted inbound).
+const allowedHandles = parseAllowedHandles(process.env["LOOPMESSAGE_ALLOWED_HANDLES"] ?? "");
 
 /** Trim a possibly-undefined value to a string ("" when not a string). */
 function readString(value: unknown): string {
@@ -153,6 +163,13 @@ export default defineChannel<IMessageState>({
       // reaction events and any empty / addressless payload are ACKed + ignored,
       // well within LoopMessage's 15s window.
       if (!isActionableInbound(inbound)) {
+        return new Response("ok", { status: 200 });
+      }
+
+      // Enforce the Jace-side sender allowlist (#1100 AC4). A valid, authenticated
+      // webhook from a sender not on LOOPMESSAGE_ALLOWED_HANDLES is ACKed (so
+      // LoopMessage does not retry) but drives no turn. Unset allowlist ⇒ open.
+      if (!isAllowedSender(inbound, allowedHandles)) {
         return new Response("ok", { status: 200 });
       }
 

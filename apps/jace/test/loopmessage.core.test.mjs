@@ -5,7 +5,9 @@ import {
   buildSendBody,
   imessageContinuationToken,
   isActionableInbound,
+  isAllowedSender,
   loopMessageSendHeaders,
+  parseAllowedHandles,
   parseLoopInbound,
   verifyWebhookAuthorization,
 } from "../agent/lib/loopmessage.core.mjs";
@@ -148,6 +150,80 @@ test("isActionableInbound ignores non-inbound events and empty/addressless paylo
   );
   // null parse
   assert.equal(isActionableInbound(null), false);
+});
+
+test("parseAllowedHandles normalizes a comma list to a lowercased Set", () => {
+  const set = parseAllowedHandles("  +15551234567 , Foo@Bar.com ,, grp_ABC ");
+  assert.deepEqual([...set].sort(), ["+15551234567", "foo@bar.com", "grp_abc"]);
+});
+
+test("parseAllowedHandles yields an empty Set for unset/blank/non-string", () => {
+  assert.equal(parseAllowedHandles("").size, 0);
+  assert.equal(parseAllowedHandles("   ,  , ").size, 0);
+  assert.equal(parseAllowedHandles(undefined).size, 0);
+  assert.equal(parseAllowedHandles(null).size, 0);
+});
+
+test("isAllowedSender is OPEN when the allowlist is empty (unset env)", () => {
+  const parsed = parseLoopInbound({
+    event: "message_inbound",
+    contact: "+1555",
+    text: "hi",
+  });
+  assert.equal(isAllowedSender(parsed, parseAllowedHandles("")), true);
+  assert.equal(isAllowedSender(parsed, new Set()), true);
+});
+
+test("isAllowedSender matches a 1:1 contact case-insensitively when set", () => {
+  const allow = parseAllowedHandles("Foo@Bar.com, +15551234567");
+  assert.equal(
+    isAllowedSender(
+      parseLoopInbound({ event: "message_inbound", contact: "foo@bar.COM", text: "hi" }),
+      allow,
+    ),
+    true,
+  );
+  assert.equal(
+    isAllowedSender(
+      parseLoopInbound({ event: "message_inbound", contact: "+15559999999", text: "hi" }),
+      allow,
+    ),
+    false,
+  );
+});
+
+test("isAllowedSender gates a group message on the group id, not its members", () => {
+  const allow = parseAllowedHandles("grp_team");
+  // group on the list → allowed even though the contact is not listed
+  assert.equal(
+    isAllowedSender(
+      parseLoopInbound({
+        event: "message_inbound",
+        contact: "+1555",
+        group: "grp_TEAM",
+        text: "hi",
+      }),
+      allow,
+    ),
+    true,
+  );
+  // group not on the list → rejected
+  assert.equal(
+    isAllowedSender(
+      parseLoopInbound({
+        event: "message_inbound",
+        contact: "+1555",
+        group: "grp_other",
+        text: "hi",
+      }),
+      allow,
+    ),
+    false,
+  );
+});
+
+test("isAllowedSender rejects a null parse", () => {
+  assert.equal(isAllowedSender(null, parseAllowedHandles("+1555")), false);
 });
 
 test("imessageContinuationToken stringifies the conversation key", () => {

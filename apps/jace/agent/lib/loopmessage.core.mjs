@@ -97,6 +97,54 @@ export function isActionableInbound(parsed) {
 }
 
 /**
+ * Parse the LOOPMESSAGE_ALLOWED_HANDLES env into a normalized allowlist Set.
+ *
+ * A comma-separated list of iMessage senders permitted to drive a Jace turn —
+ * 1:1 contact handles (phone/email) and/or group ids. Each entry is trimmed and
+ * lowercased so the compare is case-insensitive (email casing, group id casing).
+ * An empty / unset / non-string value yields an empty Set, which
+ * {@link isAllowedSender} treats as "no allowlist configured" (open).
+ *
+ * @param {string|null|undefined} raw the LOOPMESSAGE_ALLOWED_HANDLES value
+ * @returns {Set<string>}
+ */
+export function parseAllowedHandles(raw) {
+  if (typeof raw !== "string") return new Set();
+  return new Set(
+    raw
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => s !== ""),
+  );
+}
+
+/**
+ * Whether a parsed inbound's sender is permitted to drive a Jace turn, given the
+ * configured allowlist (#1100 AC4).
+ *
+ * FAIL OPEN when the allowlist is empty (env unset ⇒ no restriction — the prior
+ * behavior; LoopMessage's sandbox already caps to ≤5 approved contacts) and
+ * CLOSED to any unlisted sender once it is set. A 1:1 message is matched on its
+ * `contact` handle; a group message on the group id (a group is addressed by its
+ * id — its individual members are not enumerated on the inbound event). The
+ * compare is case-insensitive, mirroring `parseAllowedHandles`.
+ *
+ * @param {ReturnType<typeof parseLoopInbound>} parsed
+ * @param {Set<string>} allowed the allowlist from {@link parseAllowedHandles}
+ * @returns {boolean}
+ */
+export function isAllowedSender(parsed, allowed) {
+  if (!parsed) return false;
+  if (!allowed || allowed.size === 0) return true;
+  const group = parsed.group ? String(parsed.group).trim().toLowerCase() : "";
+  if (group !== "") return allowed.has(group);
+  const contact = parsed.contact
+    ? String(parsed.contact).trim().toLowerCase()
+    : "";
+  return contact !== "" && allowed.has(contact);
+}
+
+/**
  * The channel-owned continuation token for an iMessage conversation. For a 1:1
  * chat the recipient handle IS the thread key; for a group it is the group id.
  * (Eve prepends the channel name itself, so this is just the conversation key.)

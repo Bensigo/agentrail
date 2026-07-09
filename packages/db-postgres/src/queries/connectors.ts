@@ -179,6 +179,10 @@ function completeConfig(stored: Partial<ConnectorConfig> | null | undefined): Co
       CONNECTOR_CONFIG_DEFAULTS.pollIntervalSeconds,
     // Optional telegram chat id — only present when stored.
     ...(stored?.chatId ? { chatId: stored.chatId } : {}),
+    // Optional discord/slack Jace-native channel target (#1050) — only present
+    // when stored; preserved across merges like chatId so a later config patch
+    // (e.g. re-saving the Discord webhook) never strips a resolved channelId.
+    ...(stored?.channelId ? { channelId: stored.channelId } : {}),
     // Optional telegram inbound webhook secret (#889) — preserved across merges
     // so a later config patch (e.g. label edit) never strips the inbound auth.
     ...(stored?.webhookSecret ? { webhookSecret: stored.webhookSecret } : {}),

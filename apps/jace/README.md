@@ -53,12 +53,25 @@ HTTP or token handling; Eve owns inbound + outbound + threading + credentials.
   The console sends only the built message and the NON-SECRET destination
   (`target`) — the bot credentials stay in Jace's env.
 
-`imessage` is a RECOGNIZED run-outcome channel (its `target` key is `handle`, a
-phone/email address) but has NO native Eve module yet, so it is deliberately left
-unwired: a push for it validates and then draws a clean `400` ("channel 'imessage'
-is not wired") rather than a confusing "unknown channel". Wiring it needs an
-iMessage bridge (e.g. BlueBubbles / Sendblue / LoopMessage, or Eve's `twilio`
-channel for SMS fallback) — a follow-up PR.
+- `agent/channels/imessage.ts` — a hand-rolled `defineChannel` (#1100). Eve ships
+  no iMessage/LoopMessage channel, so this is a first-party bridge over the
+  [LoopMessage](https://docs.loopmessage.com) Send + Inbound API. Inbound at
+  `/eve/v1/imessage` (register that URL as the LoopMessage webhook, and set its
+  dashboard `webhook_header` value to `LOOPMESSAGE_WEBHOOK_SECRET_TOKEN` — the
+  route verifies it constant-time and `401`s on mismatch, then ACKs `200` fast and
+  runs the turn under `waitUntil` because LoopMessage retries any non-2xx). It
+  replies by posting to the Send API, splitting long turns into bubbles with the
+  shared `chat-split` core. Bidirectional and group-aware. All pure logic
+  (send-body shaping, inbound parse, constant-time auth) lives in the unit-tested
+  `agent/lib/loopmessage.core.mjs`; the run-outcome recipient is resolved Jace-side
+  from `target.handle` else `LOOPMESSAGE_DEFAULT_RECIPIENT`.
+
+`imessage` is now a WIRED run-outcome channel: its `target` key is `handle`
+(phone/email), but unlike the other channels that key is OPTIONAL — the console
+has no non-secret channel id to send for iMessage, so `notifyIMessageViaJace`
+posts an empty target and the recipient is resolved Jace-side (above). With the
+free LoopMessage **Sandbox** account the sender cannot initiate: a contact must
+text the sandbox sender first (rolling 24h window, ≤5 contacts).
 
 These are gated per-workspace by `jaceOwns<Channel>Notify` (default OFF); a
 workspace's outbound stays on its legacy console sender until its cutover.
@@ -90,6 +103,10 @@ workspace's outbound stays on its legacy console sender until its cutover.
 | `DISCORD_BOT_TOKEN` | Proactive Discord messages + typing indicators. |
 | `SLACK_BOT_TOKEN` | Bot user OAuth token (`xoxb-…`) for the native `slack` channel — proactive posts + Web API calls. (`slackChannel()` reads it from env when no explicit credentials are passed.) |
 | `SLACK_SIGNING_SECRET` | Verifies inbound Slack request signatures (Events API + Interactivity). Read from env by `slackChannel()` unless a `webhookVerifier` is supplied. |
+| `LOOPMESSAGE_API_KEY` | LoopMessage Send-API key for the native `imessage` channel. Sent RAW as the `Authorization` header (no `Bearer` prefix). |
+| `LOOPMESSAGE_SENDER_NAME` | The LoopMessage sender name (`…@imsg.co` / your dedicated sender) used as `sender_name` on 1:1 sends. |
+| `LOOPMESSAGE_WEBHOOK_SECRET_TOKEN` | The dashboard `webhook_header` value; inbound LoopMessage webhooks must present it as `Authorization`. Verified constant-time — unset ⇒ fail-closed (every inbound `401`s). |
+| `LOOPMESSAGE_DEFAULT_RECIPIENT` | Fallback iMessage recipient (phone/email) for run-outcome pushes that carry no `target.handle`. |
 
 ## Install
 

@@ -15,21 +15,24 @@
 // .mjs modules here are NOT loaded as tools/channels.
 
 /**
- * Channels this route understands. `telegram`/`discord`/`slack` each map to a
- * native Eve channel module (`eve/channels/<id>`) that the wrapper actually
- * wires. `imessage` is RECOGNIZED here (valid channel + target key) but has NO
- * native Eve module yet, so the wrapper deliberately leaves it unwired: a push
- * for it validates and then gets a clear 400 ("not wired") rather than a
- * confusing "unknown channel", until an iMessage bridge lands.
+ * Channels this route understands. Each maps to an Eve channel module the wrapper
+ * wires: `telegram`/`discord`/`slack` to their native `eve/channels/<id>` and
+ * `imessage` to Jace's hand-rolled LoopMessage channel (#1100).
  */
 export const RUN_OUTCOME_CHANNELS = ["telegram", "discord", "slack", "imessage"];
 
 /**
- * The NON-SECRET destination key each channel's `target` must carry. The console
- * supplies this from its per-workspace DB (a chat/channel id / handle is a display
- * value, not a credential); the shared bot token lives in Jace's env, never on the
- * wire. Shapes follow Eve's proactive-`receive` target: Telegram `{ chatId }`,
- * Slack / Discord `{ channelId }`, iMessage `{ handle }` (phone/email address).
+ * The NON-SECRET destination key each channel's `target` may carry. The console
+ * supplies this from its per-workspace DB (a chat/channel id is a display value,
+ * not a credential); the shared bot token lives in Jace's env, never on the wire.
+ * Shapes follow Eve's proactive-`receive` target: Telegram `{ chatId }`,
+ * Slack / Discord `{ channelId }`, iMessage `{ handle }` (phone/email).
+ *
+ * iMessage is the one exception where the key is OPTIONAL: it has no non-secret
+ * "channel id" the console can send (see notifyIMessageViaJace, which posts an
+ * empty target), so its recipient handle is resolved Jace-side (from the channel's
+ * LOOPMESSAGE_DEFAULT_RECIPIENT env / the last inbound contact). Every other
+ * channel still requires its key present and non-blank.
  */
 export const TARGET_KEY = Object.freeze({
   telegram: "chatId",
@@ -37,6 +40,9 @@ export const TARGET_KEY = Object.freeze({
   slack: "channelId",
   imessage: "handle",
 });
+
+/** Channels whose destination is resolved Jace-side, so an empty target is OK. */
+const HANDLE_OPTIONAL_CHANNELS = Object.freeze(["imessage"]);
 
 /**
  * Validate + normalize a run-outcome push into the exact `{ message, target,
@@ -78,7 +84,8 @@ export function normalizeRunOutcome(raw) {
   }
   const key = TARGET_KEY[channel];
   const dest = target[key];
-  if (dest == null || String(dest).trim() === "") {
+  const destGiven = dest != null && String(dest).trim() !== "";
+  if (!destGiven && !HANDLE_OPTIONAL_CHANNELS.includes(channel)) {
     throw new Error(
       `run-outcome: ${channel} target requires a non-empty '${key}'.`,
     );
@@ -93,11 +100,13 @@ export function normalizeRunOutcome(raw) {
   }
 
   // Minimal, channel-correct target — drop any extra / secret fields the caller
-  // may have included so only the non-secret destination reaches the session.
+  // may have included so only the non-secret destination reaches the session. A
+  // handle-optional channel with no destination normalizes to an empty target
+  // (its recipient is resolved Jace-side).
   const normalized = {
     channel,
     message,
-    target: { [key]: String(dest).trim() },
+    target: destGiven ? { [key]: String(dest).trim() } : {},
   };
   if (auth) normalized.auth = auth;
   return normalized;

@@ -23,7 +23,7 @@
 //                                      recipient here, Jace-side.
 //
 // Two directions, same as the telegram/discord/slack channels:
-//  1. INBOUND conversation — the `POST("/")` route verifies the Authorization
+//  1. INBOUND conversation — the `POST("/eve/v1/imessage")` route verifies the Authorization
 //     header, then ACKs 200 within LoopMessage's 15s window and does the model
 //     turn under `waitUntil`. LoopMessage retries any non-2xx (up to 30×), so
 //     acking fast and deferring the work is what prevents duplicate replies.
@@ -127,7 +127,11 @@ export default defineChannel<IMessageState>({
     return { state, imessage: buildImessageHandle(state) };
   },
   routes: [
-    POST("/", async (req, args) => {
+    // Custom `defineChannel` routes mount at their literal path — Eve does NOT
+    // auto-prefix `/eve/v1/<name>` the way framework channels do — so we pass the
+    // full absolute webhook path, exactly as Eve's own Twilio channel does
+    // (`/eve/v1/twilio`). A bare "/" would mount this webhook at the server root.
+    POST("/eve/v1/imessage", async (req, args) => {
       // 1) Authorize. LoopMessage echoes the dashboard webhook_header value in
       //    the Authorization header on EVERY event; verify it constant-time.
       //    Unset secret ⇒ fail closed (verifyWebhookAuthorization returns false).

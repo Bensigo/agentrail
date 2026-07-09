@@ -37,7 +37,10 @@ test("imports the pure core + the shared chat splitter (no hand-rolled logic)", 
 });
 
 test("inbound route verifies the Authorization header and 401s on mismatch", () => {
-  assert.match(code, /POST\(\s*["']\/["']/);
+  // Custom defineChannel routes mount at their literal path (no /eve/v1/<name>
+  // auto-prefix), so the webhook must declare the FULL absolute path — a bare "/"
+  // would mount it at the server root, off the documented /eve/v1/imessage URL.
+  assert.match(code, /POST\(\s*["']\/eve\/v1\/imessage["']/);
   assert.match(code, /verifyWebhookAuthorization\(/);
   assert.match(code, /status:\s*401/);
 });

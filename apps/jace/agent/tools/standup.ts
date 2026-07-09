@@ -33,9 +33,8 @@ import {
 // with create_issue's execFile — the tool wires the genuine dependency, not a
 // fake. openReadOnlyDb constructs it with the read-only session guard.
 async function realSqlFactory(url: string, options: Record<string, unknown>) {
-  // `postgres` is a transitive dependency (via @workflow/world-postgres) and is
-  // not resolvable at typecheck time; the import is intentionally dynamic.
-  // @ts-ignore -- optional lazy driver import, resolved at runtime only
+  // `postgres` is a direct dependency (declared in package.json); the import
+  // stays dynamic to keep the tool module importable without a live database.
   const mod = await import("postgres");
   const postgres = (mod.default ?? mod) as (
     u: string,

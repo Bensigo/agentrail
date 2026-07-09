@@ -219,15 +219,18 @@ describe("notifyRunOutcome — Jace outbound routing (#1047)", () => {
     expect(mockSend).not.toHaveBeenCalled();
 
     const [url, init] = fetchSpy.mock.calls[0]!;
-    expect(String(url)).toContain("/eve/v1/notify");
+    // The REAL Eve run-outcome channel route (not the removed /eve/v1/notify).
+    expect(String(url)).toContain("/eve/v1/run-outcome");
     const body = JSON.parse(String((init as RequestInit).body));
     expect(body).toMatchObject({
       channel: "telegram",
-      chatId: "999",
+      target: { chatId: "999" },
       issueNumber: "42",
       outcome: "green",
     });
-    expect(String(body.text)).toContain("PR ready");
+    // Eve-shaped payload: `message` (not `text`) + an initiator `auth`.
+    expect(String(body.message)).toContain("PR ready");
+    expect(body.auth).toMatchObject({ principalId: WS });
   });
 
   it("stays on the legacy sender when the jace connector is DISABLED (kill switch)", async () => {
@@ -301,12 +304,17 @@ describe("notifyRunOutcome — Discord Jace outbound routing (#1050)", () => {
     };
   }
 
-  /** A connected, enabled discord connector row view. */
+  /** A connected, enabled discord connector row view (with a Jace-native channel id). */
   function discordConnected(enabled = true) {
     return {
       provider: "discord" as const,
       enabled,
-      config: { repos: [], triggerLabel: "x", pollIntervalSeconds: 60 },
+      config: {
+        repos: [],
+        triggerLabel: "x",
+        pollIntervalSeconds: 60,
+        channelId: "C-DISCORD",
+      },
       hasSecret: false,
       updatedAt: null,
     };
@@ -354,15 +362,17 @@ describe("notifyRunOutcome — Discord Jace outbound routing (#1050)", () => {
     expect(mockSendDiscord).not.toHaveBeenCalled();
 
     const [url, init] = fetchSpy.mock.calls[0]!;
-    expect(String(url)).toContain("/eve/v1/notify");
+    expect(String(url)).toContain("/eve/v1/run-outcome");
     const body = JSON.parse(String((init as RequestInit).body));
     expect(body).toMatchObject({
       channel: "discord",
+      target: { channelId: "C-DISCORD" },
       issueNumber: "42",
       outcome: "green",
     });
-    expect(String(body.text)).toContain("PR ready");
-    // The secret webhook URL is resolved Jace-side, never sent over the wire.
+    expect(String(body.message)).toContain("PR ready");
+    // The secret webhook URL is never sent over the wire — the non-secret
+    // channelId is the target; the bot credentials live in Jace's env.
     expect(JSON.stringify(body)).not.toContain("super-secret");
   });
 
@@ -447,11 +457,25 @@ describe("notifyRunOutcome — Slack Jace outbound routing (#1050, greenfield)",
     };
   }
 
-  // Only a jace row; telegram + discord are absent so ONLY a Slack Jace handoff
-  // can ever produce a fetch here.
-  function routeConnectors(jace: ReturnType<typeof jaceConnector> | null) {
+  /** A connected slack connector row view (with a Jace-native channel id). */
+  function slackConnected(channelId = "C-SLACK") {
+    return {
+      provider: "slack" as const,
+      enabled: true,
+      config: { repos: [], triggerLabel: "x", pollIntervalSeconds: 60, channelId },
+      hasSecret: true,
+      updatedAt: null,
+    };
+  }
+
+  // A jace row + a connected slack row; telegram + discord are absent so ONLY a
+  // Slack Jace handoff can ever produce a fetch here.
+  function routeConnectors(
+    jace: ReturnType<typeof jaceConnector> | null,
+    slack: ReturnType<typeof slackConnected> | null = slackConnected()
+  ) {
     mockGetConnector.mockImplementation(async (_ws: string, provider: string) =>
-      provider === "jace" ? jace : null
+      provider === "jace" ? jace : provider === "slack" ? slack : null
     );
   }
 
@@ -482,14 +506,15 @@ describe("notifyRunOutcome — Slack Jace outbound routing (#1050, greenfield)",
     expect(mockSendDiscord).not.toHaveBeenCalled();
 
     const [url, init] = fetchSpy.mock.calls[0]!;
-    expect(String(url)).toContain("/eve/v1/notify");
+    expect(String(url)).toContain("/eve/v1/run-outcome");
     const body = JSON.parse(String((init as RequestInit).body));
     expect(body).toMatchObject({
       channel: "slack",
+      target: { channelId: "C-SLACK" },
       issueNumber: "42",
       outcome: "escalated-to-human",
     });
-    expect(String(body.text)).toContain("Escalated to human");
+    expect(String(body.message)).toContain("Escalated to human");
   });
 
   it("produces NO Slack notification when the jace connector is DISABLED (kill switch; no legacy fallback)", async () => {
@@ -595,14 +620,20 @@ describe("notifyRunOutcome — iMessage Jace outbound routing (#1100, greenfield
     expect(mockSendDiscord).not.toHaveBeenCalled();
 
     const [url, init] = fetchSpy.mock.calls[0]!;
-    expect(String(url)).toContain("/eve/v1/notify");
+    // The REAL Eve run-outcome channel route (not the removed /eve/v1/notify).
+    expect(String(url)).toContain("/eve/v1/run-outcome");
     const body = JSON.parse(String((init as RequestInit).body));
     expect(body).toMatchObject({
       channel: "imessage",
+      // No non-secret destination field exists for iMessage yet — the handle is
+      // resolved by the deferred Jace-side handler.
+      target: {},
       issueNumber: "42",
       outcome: "green",
     });
-    expect(String(body.text)).toContain("PR ready");
+    // Eve-shaped payload: `message` (not `text`) + an initiator `auth`.
+    expect(String(body.message)).toContain("PR ready");
+    expect(body.auth).toMatchObject({ principalId: WS });
   });
 
   it("produces NO iMessage notification when the jace connector is DISABLED (kill switch; no legacy fallback)", async () => {

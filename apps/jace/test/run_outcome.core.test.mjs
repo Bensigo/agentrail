@@ -39,11 +39,9 @@ test("normalizeRunOutcome accepts a valid slack payload (channelId)", () => {
   assert.deepEqual(out.target, { channelId: "C0SLACK" });
 });
 
-test("normalizeRunOutcome recognizes imessage and normalizes its handle target", () => {
-  // imessage is recognized by the core (valid channel + `handle` target key)
-  // even though the run-outcome wrapper leaves it UNWIRED (no native Eve module
-  // yet). At the wrapper this normalized payload draws a clean 400 "not wired";
-  // at the core it is a well-formed, normalizable outcome.
+test("normalizeRunOutcome normalizes an imessage handle target", () => {
+  // imessage is a wired channel (Jace's LoopMessage channel, #1100). When the
+  // caller does supply a handle it is kept (minimal — stray keys dropped).
   const out = normalizeRunOutcome({
     channel: "imessage",
     message: "AgentRail: Blocked — issue #12",
@@ -52,6 +50,29 @@ test("normalizeRunOutcome recognizes imessage and normalizes its handle target",
   assert.equal(out.channel, "imessage");
   // minimal target keeps only the `handle` key, dropping the stray channelId
   assert.deepEqual(out.target, { handle: "+15551234567" });
+});
+
+test("normalizeRunOutcome allows an EMPTY imessage target (handle resolved Jace-side)", () => {
+  // imessage has no non-secret "channel id" the console can send — the recipient
+  // is resolved Jace-side (LOOPMESSAGE_DEFAULT_RECIPIENT / last inbound contact),
+  // so notifyIMessageViaJace posts an empty target. That must normalize cleanly
+  // (empty target), NOT 400 like the other channels' missing key does.
+  const out = normalizeRunOutcome({
+    channel: "imessage",
+    message: "AgentRail: PR ready — issue #12",
+    target: {},
+  });
+  assert.equal(out.channel, "imessage");
+  assert.deepEqual(out.target, {});
+});
+
+test("normalizeRunOutcome still requires target to be an object for imessage", () => {
+  // handle-optional does NOT mean target-optional: a non-object target is a
+  // wiring bug for every channel, imessage included.
+  assert.throws(
+    () => normalizeRunOutcome({ channel: "imessage", message: "hi" }),
+    /`target` must be an object/,
+  );
 });
 
 test("normalizeRunOutcome passes auth through when it is an object", () => {

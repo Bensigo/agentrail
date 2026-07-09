@@ -26,14 +26,16 @@ import { normalizeRunOutcome } from "../lib/run_outcome.core.mjs";
 import telegram from "./telegram.js";
 import discord from "./discord.js";
 import slack from "./slack.js";
+import imessage from "./imessage.js";
 
 /**
- * Channel id -> Eve channel module. Telegram/Discord/Slack are wired to their
- * native Eve channels. A channel that `normalizeRunOutcome` recognizes but that
- * is absent here (e.g. `imessage`, which has no native Eve module yet — its
- * bridge is pending) yields a clear 400 rather than a silent drop.
+ * Channel id -> Eve channel module. Every channel `normalizeRunOutcome`
+ * recognizes is wired: telegram/discord/slack to their native Eve channels and
+ * imessage to Jace's hand-rolled LoopMessage channel (#1100). A recognized
+ * channel that were ever absent here would yield a clear 400 rather than a silent
+ * drop.
  */
-const CHANNELS: Record<string, unknown> = { telegram, discord, slack };
+const CHANNELS: Record<string, unknown> = { telegram, discord, slack, imessage };
 
 /** Small JSON responder (the route contract is machine-to-machine, not a page). */
 function json(body: unknown, status = 200): Response {

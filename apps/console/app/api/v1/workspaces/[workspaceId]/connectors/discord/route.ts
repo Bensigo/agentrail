@@ -35,6 +35,36 @@ function isDiscordWebhook(url: string): boolean {
   }
 }
 
+const CHANNEL_PROBE_TIMEOUT_MS = 8000;
+
+/**
+ * Resolve the target channel id from a Discord incoming webhook URL (best-effort,
+ * unauthenticated `GET /webhooks/{id}/{token}`). A webhook URL alone carries no
+ * channel id, but Jace's native Discord channel needs one for proactive
+ * `receive` targets (#1050) — this is the only place that id can come from
+ * without a new form field. A probe failure returns undefined so the caller can
+ * still save the webhook (legacy notify keeps working; the Jace-native path just
+ * stays a documented no-op until a later reconnect resolves it).
+ */
+async function resolveDiscordChannelId(
+  webhookUrl: string
+): Promise<string | undefined> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CHANNEL_PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(webhookUrl, { signal: controller.signal });
+    if (!res.ok) return undefined;
+    const body = (await res.json().catch(() => ({}))) as {
+      channel_id?: unknown;
+    };
+    return typeof body.channel_id === "string" ? body.channel_id : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ workspaceId: string }> }
@@ -87,7 +117,12 @@ export async function PUT(
     // Self-configure on connect: upsert an enabled discord connector row with
     // default trigger config. Best-effort — never fail the webhook save on it.
     try {
-      await upsertConnector(workspaceId, "discord", { enabled: true });
+      const channelId = await resolveDiscordChannelId(raw);
+      await upsertConnector(
+        workspaceId,
+        "discord",
+        channelId ? { enabled: true, config: { channelId } } : { enabled: true }
+      );
     } catch (err) {
       console.error("[connectors/discord] failed to enable connector:", err);
     }

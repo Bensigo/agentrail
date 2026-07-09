@@ -128,6 +128,29 @@ describe("getConnector", () => {
     mockDb.select.mockReturnValue(makeSelectLimitChain([]) as never);
     expect(await getConnector("ws-1", "github")).toBeNull();
   });
+
+  it("round-trips a stored channelId (#1050 Jace-native discord/slack target)", async () => {
+    // notify.ts's notifyDiscordViaJace/notifySlackViaJace read
+    // connector.config.channelId straight off getConnector — completeConfig()
+    // must not silently strip it the way it used to.
+    mockDb.select.mockReturnValue(
+      makeSelectLimitChain([
+        {
+          provider: "discord",
+          enabled: true,
+          config: {
+            repos: [],
+            triggerLabel: "ready-for-agent",
+            pollIntervalSeconds: 60,
+            channelId: "C-DISCORD",
+          },
+          updatedAt: new Date("2026-06-16T00:00:00.000Z"),
+        },
+      ]) as never
+    );
+    const view = await getConnector("ws-1", "discord");
+    expect(view?.config.channelId).toBe("C-DISCORD");
+  });
 });
 
 describe("upsertConnector", () => {
@@ -189,6 +212,36 @@ describe("upsertConnector", () => {
     });
     // enabled preserved from the existing row when not provided.
     expect(view.enabled).toBe(true);
+  });
+
+  it("persists a channelId (#1050) and preserves it across a later unrelated merge", async () => {
+    // Existing row already has a resolved channelId (as if a prior connect-time
+    // probe succeeded); a later update that doesn't mention channelId must not
+    // drop it — this is the exact bug completeConfig() had before it recognized
+    // the key (it round-tripped chatId but silently stripped channelId).
+    mockDb.select.mockReturnValue(
+      makeSelectLimitChain([
+        {
+          provider: "discord",
+          enabled: true,
+          config: {
+            repos: [],
+            triggerLabel: "ready-for-agent",
+            pollIntervalSeconds: 60,
+            channelId: "C-DISCORD",
+          },
+          updatedAt: new Date("2026-06-16T00:00:00.000Z"),
+        },
+      ]) as never
+    );
+    mockDb.insert.mockReturnValue(makeInsertChain() as never);
+
+    const view = await upsertConnector("ws-1", "discord", {
+      config: { pollIntervalSeconds: 300 },
+    });
+
+    expect(view.config.channelId).toBe("C-DISCORD");
+    expect(view.config.pollIntervalSeconds).toBe(300);
   });
 
   it("can disable a connected connector without touching config", async () => {

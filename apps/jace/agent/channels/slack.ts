@@ -29,6 +29,28 @@
 // NOTE: shape follows the eve@0.19.0 docs; boot behavior when the env is unset and
 // live delivery are verified against the running sidecar (#1038/#1101), behind the
 // per-workspace `jaceOwnsSlackNotify` opt-in.
+//
+// `events["message.completed"]` overrides Eve's default handler (which posts
+// the full reply as one message to the thread) to instead split it into
+// several bubbles on the model's own paragraph breaks — see
+// agent/lib/chat-split.core.mjs for why, and instructions.md's "Voice and
+// reply length" section for the model contract this relies on. The
+// `finishReason`/`message` guard mirrors Eve's default exactly, so tool-call
+// and empty-message turns behave unchanged. Delivery goes through
+// `channel.thread` (not `channel.slack`), matching Eve's own docs example —
+// `thread` owns the thread-scoped post/startTyping operations.
 import { slackChannel } from "eve/channels/slack";
+import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
 
-export default slackChannel();
+export default slackChannel({
+  events: {
+    async "message.completed"(data, channel) {
+      if (data.finishReason === "tool-calls" || !data.message) return;
+      const messages = splitIntoChatMessages(data.message);
+      for (const [index, message] of messages.entries()) {
+        if (index > 0) await channel.thread.startTyping();
+        await channel.thread.post(message);
+      }
+    },
+  },
+});

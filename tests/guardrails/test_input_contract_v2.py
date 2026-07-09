@@ -300,6 +300,145 @@ def test_ac3_rate_limit_park_does_not_consume_more_budget():
 
 
 # ---------------------------------------------------------------------------
+# #1113 — the rate-limit window is time-bucketed, so a long-lived daemon's counts
+# reset per window instead of accumulating for the whole uptime.
+# ---------------------------------------------------------------------------
+
+
+def test_rate_limit_within_window_still_parks_over_limit():
+    # (a) The windowing must NOT weaken the limit WITHIN a window: with a fixed
+    # ``now`` (same bucket) a writer over its budget still PARKS. This is the same
+    # guarantee as AC3, asserted with an injected clock so it is deterministic.
+    limit = 2
+    window = 100
+    ledger = AdmissionLedger(rate_limits=((WriterClass.JACE, limit),))
+
+    # All three admissions share one instant → one window bucket, no roll.
+    for i in range(limit):
+        result = admit_to_queue(
+            number=500 + i,
+            issue_body=_distinct_body(f"win-{i}"),
+            writer=WriterClass.JACE,
+            ledger=ledger,
+            now=1000.0,
+            window_seconds=window,
+        )
+        assert result.entry is not None and result.entry.state is QueueState.QUEUED
+        ledger = result.ledger
+
+    over = admit_to_queue(
+        number=599,
+        issue_body=_distinct_body("win-over"),
+        writer=WriterClass.JACE,
+        ledger=ledger,
+        now=1000.0,  # same instant → same window → counts still accumulated
+        window_seconds=window,
+    )
+    assert over.is_parked, "over the limit WITHIN a window must still PARK"
+    assert "rate limit" in over.entry.reason.lower()
+
+
+def test_rate_limit_resets_after_window_rolls():
+    # (b) THE BUG FIX (#1113): after the wall-clock window rolls, the SAME writer is
+    # admitted again because its per-window count reset — it does not stay parked for
+    # the daemon's whole uptime. Drive the same writer over its limit in window 0,
+    # then advance ``now`` past the window boundary and prove the next admission is
+    # QUEUED, not parked.
+    limit = 1
+    window = 100
+    ledger = AdmissionLedger(rate_limits=((WriterClass.JACE, limit),))
+
+    # Window 0 (now=0): first admits, second is over-limit → parked.
+    a = admit_to_queue(
+        number=1,
+        issue_body=_distinct_body("w0-a"),
+        writer=WriterClass.JACE,
+        ledger=ledger,
+        now=0.0,
+        window_seconds=window,
+    )
+    assert a.entry.state is QueueState.QUEUED
+    assert a.ledger.window_bucket == 0
+    parked = admit_to_queue(
+        number=2,
+        issue_body=_distinct_body("w0-b"),
+        writer=WriterClass.JACE,
+        ledger=a.ledger,
+        now=50.0,  # still window 0
+        window_seconds=window,
+    )
+    assert parked.is_parked, "second in the same window is over-limit → parked"
+
+    # Advance past the window boundary (now=150 → bucket 1). The accumulated count
+    # from window 0 is dropped, so the same writer is admitted again.
+    rolled = admit_to_queue(
+        number=3,
+        issue_body=_distinct_body("w1-a"),
+        writer=WriterClass.JACE,
+        ledger=parked.ledger,
+        now=150.0,
+        window_seconds=window,
+    )
+    assert rolled.entry is not None
+    assert rolled.entry.state is QueueState.QUEUED, (
+        "after the window rolls the writer's count resets and it is admitted again"
+    )
+    assert rolled.ledger.window_bucket == 1
+    # Only this window's single admission is counted — not the whole uptime's total.
+    assert dict(rolled.ledger.writer_counts).get(WriterClass.JACE) == 1
+
+
+def test_window_roll_resets_counts_but_preserves_dedup():
+    # Windowing scopes the RATE (counts) but must not weaken dedup: content admitted
+    # in an earlier window is still caught as a duplicate after the window rolls, so
+    # the same issue never runs twice just because time passed.
+    window = 100
+    ledger = AdmissionLedger()
+    first = admit_to_queue(
+        number=1, issue_body=_HOUSE_BODY, ledger=ledger, now=0.0, window_seconds=window
+    )
+    assert first.entry.state is QueueState.QUEUED
+
+    # A later window: same content is STILL a duplicate (seen_hashes not reset).
+    dup = admit_to_queue(
+        number=2,
+        issue_body=_HOUSE_BODY,
+        ledger=first.ledger,
+        now=500.0,
+        window_seconds=window,
+    )
+    assert dup.is_parked and "duplicate content" in dup.entry.reason.lower()
+
+
+def test_default_window_seconds_env_override_and_fallback(monkeypatch):
+    # The window length is a config knob: a positive env value overrides the default,
+    # a malformed/non-positive value falls back safely (never raises at the entrance).
+    monkeypatch.delenv(policy._RATE_LIMIT_WINDOW_ENV, raising=False)
+    assert policy._default_window_seconds() == policy.RATE_LIMIT_WINDOW_SECONDS
+
+    monkeypatch.setenv(policy._RATE_LIMIT_WINDOW_ENV, "60")
+    assert policy._default_window_seconds() == 60
+
+    for bad in ("0", "-5", "not-an-int", ""):
+        monkeypatch.setenv(policy._RATE_LIMIT_WINDOW_ENV, bad)
+        assert policy._default_window_seconds() == policy.RATE_LIMIT_WINDOW_SECONDS
+
+
+def test_legacy_stateless_path_ignores_window(monkeypatch):
+    # (c) Flag-OFF proxy at the policy layer: the legacy stateless call (no ledger —
+    # the branch the queue_store takes when AGENTRAIL_QUEUE_GUARDRAILS_V2 is OFF) is
+    # byte-for-byte unchanged and never engages windowing, even with a tiny window
+    # env set and a clock passed. It always returns a bare QueueEntry / Rejected.
+    monkeypatch.setenv(policy._RATE_LIMIT_WINDOW_ENV, "1")
+    entry = admit_to_queue(number=1, issue_body=_HOUSE_BODY, now=0.0)
+    assert isinstance(entry, QueueEntry) and entry.state is QueueState.QUEUED
+    # A second, later "now" changes nothing on the stateless path (no ledger, no
+    # counts, no window) — the same clean body still admits as a bare entry.
+    again = admit_to_queue(number=2, issue_body=_distinct_body("z"), now=10_000.0)
+    assert isinstance(again, QueueEntry) and again.state is QueueState.QUEUED
+
+
+# ---------------------------------------------------------------------------
 # AC4 — every rejected/parked outcome exposes a retrievable, human-readable reason.
 # ---------------------------------------------------------------------------
 

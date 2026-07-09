@@ -171,6 +171,27 @@ const DEFAULT_RATE_LIMITS: Readonly<Record<WriterClass, number>> = {
   [WriterClass.JACE]: 20,
 };
 
+// The rate limit is per *window*, not per process-lifetime. The TS entrance holds
+// one long-lived module `processLedger` (below), so without windowing its per-writer
+// counts accumulate for the whole process uptime and a high-volume writer eventually
+// parks every subsequent entry until a restart (issue #1113, mirrors the Python
+// daemon's `QueueStore._ledger`). Time-bucketing fixes it: admissions are attributed
+// to `floor(now / RATE_LIMIT_WINDOW_SECONDS)`; when the window rolls the previous
+// window's counts are dropped so a writer within its per-window budget is always
+// admitted. Default one hour; env-overridable (verbatim port of the Python
+// `RATE_LIMIT_WINDOW_SECONDS` / `_default_window_seconds`).
+export const RATE_LIMIT_WINDOW_SECONDS = 3600; // 1 hour
+export const RATE_LIMIT_WINDOW_ENV = "AGENTRAIL_RATE_LIMIT_WINDOW_SECONDS";
+
+function defaultWindowSeconds(): number {
+  const raw = process.env[RATE_LIMIT_WINDOW_ENV];
+  if (raw) {
+    const val = Number.parseInt(raw, 10);
+    if (Number.isFinite(val) && val > 0) return val;
+  }
+  return RATE_LIMIT_WINDOW_SECONDS;
+}
+
 /**
  * Immutable record of what the entrance has admitted (port of `AdmissionLedger`).
  * Threaded through by the caller so this module keeps no mutable module state and
@@ -180,20 +201,47 @@ export class AdmissionLedger {
   readonly seenHashes: ReadonlySet<string>;
   readonly writerCounts: ReadonlyMap<WriterClass, number>;
   readonly rateLimits: ReadonlyMap<WriterClass, number>;
+  // The wall-clock rate-limit window the `writerCounts` belong to
+  // (`floor(now / windowSeconds)`); `null` on a fresh ledger. Rolled by
+  // `forWindow` so the counts never accumulate for the whole process uptime
+  // (issue #1113, port of the Python `AdmissionLedger.window_bucket`).
+  readonly windowBucket: number | null;
 
   constructor(opts?: {
     seenHashes?: ReadonlySet<string>;
     writerCounts?: ReadonlyMap<WriterClass, number>;
     rateLimits?: ReadonlyMap<WriterClass, number>;
+    windowBucket?: number | null;
   }) {
     this.seenHashes = opts?.seenHashes ?? new Set<string>();
     this.writerCounts = opts?.writerCounts ?? new Map<WriterClass, number>();
     this.rateLimits = opts?.rateLimits ?? new Map<WriterClass, number>();
+    this.windowBucket = opts?.windowBucket ?? null;
   }
 
   private limitFor(writer: WriterClass): number {
     const explicit = this.rateLimits.get(writer);
     return explicit !== undefined ? explicit : DEFAULT_RATE_LIMITS[writer];
+  }
+
+  /**
+   * Return a ledger whose per-writer counts belong to time-window `bucket`. When
+   * the window rolls (a newer bucket than the counts were recorded under) the
+   * previous window's `writerCounts` are dropped, so a writer within its per-window
+   * budget is admitted again — the fix for unbounded accumulation on the long-lived
+   * process ledger (issue #1113). Returns `this` unchanged when the bucket matches
+   * (a within-window call is a no-op, so identity-based assertions still hold).
+   * Only counts are windowed: `seenHashes` are NOT reset (dedup is content
+   * identity, not a rate). Port of the Python `AdmissionLedger.for_window`.
+   */
+  forWindow(bucket: number): AdmissionLedger {
+    if (this.windowBucket === bucket) return this;
+    return new AdmissionLedger({
+      seenHashes: this.seenHashes,
+      writerCounts: new Map<WriterClass, number>(), // reset counts on window roll
+      rateLimits: this.rateLimits,
+      windowBucket: bucket,
+    });
   }
 
   /** True when this content hash has already been admitted (AC2). */
@@ -223,6 +271,7 @@ export class AdmissionLedger {
       seenHashes,
       writerCounts,
       rateLimits: this.rateLimits,
+      windowBucket: this.windowBucket, // stay in the same window when recording
     });
   }
 }
@@ -274,8 +323,21 @@ export function screenV2(opts: {
   writer: WriterClass;
   ledger: AdmissionLedger;
   injectionPark: boolean;
+  // Injectable wall clock (epoch seconds) + window length for deterministic tests;
+  // both default to the live clock / env-configured window (issue #1113).
+  nowSeconds?: number;
+  windowSeconds?: number;
 }): V2Verdict {
-  const { body, writer, ledger, injectionPark } = opts;
+  const { body, writer, injectionPark } = opts;
+  // Roll the rate-limit window BEFORE the stateful checks so per-writer counts are
+  // scoped to the current wall-clock window, not the process's whole uptime (issue
+  // #1113). The rolled ledger (counts reset when the window changed) flows through
+  // the rate-limit check and `recordAdmission`, and is what a park/reject returns —
+  // so the reset persists even when the first entry in a new window parks. Declared
+  // outside the try so it is in scope for the never-throw catch below.
+  const windowSeconds = opts.windowSeconds ?? defaultWindowSeconds();
+  const nowSeconds = opts.nowSeconds ?? Date.now() / 1000;
+  const ledger = opts.ledger.forWindow(Math.floor(nowSeconds / windowSeconds));
   try {
     // 1. Injection screen. Hard REJECT by default; PARK (not drop) when
     // `injectionPark` is set — the live entrance sets it so a legitimate
@@ -528,6 +590,9 @@ export async function enqueueGithubIssue(data: {
   // Test-only: inject a ledger so a suite can exercise the stateful v2 checks
   // (dup / rate-limit) deterministically. Production uses the process ledger.
   ledger?: AdmissionLedger;
+  // Test-only: inject the wall clock (epoch seconds) so a suite can drive the
+  // rate-limit window across a boundary deterministically (issue #1113).
+  nowSeconds?: number;
 }): Promise<EnqueueResult> {
   const gate = validateAcceptanceCriteria(data.body);
   if (!gate.ok) return { enqueued: false, reason: gate.reason };
@@ -559,6 +624,7 @@ export async function enqueueGithubIssue(data: {
       writer: writerForSource("github"),
       ledger: ledgerIn,
       injectionPark: true,
+      nowSeconds: data.nowSeconds,
     });
     if (verdict.decision === "reject") {
       // Injection with injectionPark off never reaches here (it is on at this

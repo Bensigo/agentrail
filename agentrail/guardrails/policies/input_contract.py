@@ -50,12 +50,17 @@ No ``subprocess``/``git``/``gh``/``pytest`` import.  The orchestrator does the I
 ``agentrail.afk.queue_state`` is pure domain (the queue state machine), imported
 only so ``admit_to_queue`` can mint a ``QueueEntry`` — it performs no I/O.
 The :class:`AdmissionLedger` is a plain immutable value threaded in by the caller;
-this module holds no module-level mutable state, so it stays deterministic.
+this module holds no module-level mutable state.  The one non-determinism is the
+rate-limit window bucket, derived from an injectable ``now`` (issue #1113) that
+defaults to the wall clock only on the v2 stateful path — tests inject ``now`` to
+stay deterministic, and the legacy stateless path never reads it.
 """
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
@@ -236,6 +241,40 @@ _DEFAULT_RATE_LIMITS: Dict[WriterClass, int] = {
 }
 
 
+# The rate limit is per *window*, not per daemon-lifetime. Without this, the
+# per-writer counts on a long-lived ledger (the live loop's ``QueueStore._ledger``
+# and ``dispatcher.ledger`` both persist for the whole daemon uptime) accumulate
+# forever, so a high-volume writer eventually crosses its budget and every
+# subsequent entry parks until the process restarts (issue #1113). Time-bucketing
+# the counts fixes this: admissions are attributed to a fixed wall-clock window
+# ``floor(now / RATE_LIMIT_WINDOW_SECONDS)``; when the window rolls the previous
+# window's counts are dropped, so a writer within its per-window budget is always
+# admitted. Default one hour; overridable per-operator via the env var so the
+# window is a knob, not a recompile. Only the counts are windowed — dedup
+# ``seen_hashes`` are NOT reset (dedup is content identity, not a rate).
+RATE_LIMIT_WINDOW_SECONDS = 3600  # 1 hour
+_RATE_LIMIT_WINDOW_ENV = "AGENTRAIL_RATE_LIMIT_WINDOW_SECONDS"
+
+
+def _default_window_seconds() -> int:
+    """The rate-limit window length in seconds (env-overridable, sane fallback).
+
+    Reads ``AGENTRAIL_RATE_LIMIT_WINDOW_SECONDS`` if it is a positive integer,
+    otherwise returns :data:`RATE_LIMIT_WINDOW_SECONDS`. A malformed or non-positive
+    value falls back to the default rather than raising, so a typo in an operator's
+    env can never take the queue entrance down.
+    """
+    raw = os.environ.get(_RATE_LIMIT_WINDOW_ENV)
+    if raw:
+        try:
+            val = int(raw)
+        except ValueError:
+            return RATE_LIMIT_WINDOW_SECONDS
+        if val > 0:
+            return val
+    return RATE_LIMIT_WINDOW_SECONDS
+
+
 @dataclass(frozen=True)
 class AdmissionLedger:
     """Immutable record of what the entrance has admitted, for the v2 checks (AC2/AC3).
@@ -246,8 +285,12 @@ class AdmissionLedger:
 
     * ``seen_hashes`` — content hashes already admitted, for duplicate-content
       detection.
-    * ``writer_counts`` — how many entries each writer class has been admitted,
-      for per-writer rate limiting.
+    * ``writer_counts`` — how many entries each writer class has been admitted
+      *in the current window*, for per-writer rate limiting.
+    * ``window_bucket`` — the wall-clock rate-limit window the ``writer_counts``
+      belong to (``floor(now / window_seconds)``). When :meth:`for_window` is asked
+      for a newer bucket the counts reset, so they never accumulate for the whole
+      daemon uptime (issue #1113). ``None`` on a fresh ledger (no window adopted yet).
 
     Every mutating method returns a NEW ledger (never mutates in place), so callers
     can reason about admission decisions as pure transformations.
@@ -256,6 +299,25 @@ class AdmissionLedger:
     seen_hashes: FrozenSet[str] = frozenset()
     writer_counts: Tuple[Tuple[WriterClass, int], ...] = ()
     rate_limits: Tuple[Tuple[WriterClass, int], ...] = ()
+    window_bucket: Optional[int] = None
+
+    def for_window(self, bucket: int) -> "AdmissionLedger":
+        """Return a ledger whose per-writer counts belong to time-window ``bucket``.
+
+        The per-writer rate limit is per WINDOW, not per daemon-lifetime. When the
+        wall-clock window rolls (a ``bucket`` newer than the one the counts were
+        recorded under), the previous window's ``writer_counts`` are dropped so a
+        writer within its per-window budget is admitted again — the fix for the
+        unbounded accumulation on a long-lived daemon (issue #1113). Returns
+        ``self`` unchanged when the bucket is the same (a within-window call is a
+        no-op), so identity-based "ledger unchanged" assertions still hold.
+
+        Only the counts are windowed: ``seen_hashes`` are NOT reset, because dedup
+        is content identity (the same content stays a duplicate), not a rate.
+        """
+        if self.window_bucket == bucket:
+            return self
+        return replace(self, writer_counts=(), window_bucket=bucket)
 
     def _limits(self) -> Dict[WriterClass, int]:
         return dict(self.rate_limits) if self.rate_limits else dict(_DEFAULT_RATE_LIMITS)
@@ -371,6 +433,8 @@ def admit_to_queue(
     writer: WriterClass = WriterClass.HUMAN_GITHUB,
     ledger: Optional[AdmissionLedger] = None,
     injection_park: bool = False,
+    now: Optional[float] = None,
+    window_seconds: Optional[int] = None,
 ) -> Union[QueueEntry, Rejected, Admission]:
     """The GATE: run the queue-entrance checks over one issue.
 
@@ -390,8 +454,13 @@ def admit_to_queue(
        a duplicate-content ``reason``; the second admission of the same content
        (even under a different number) is parked, not run (AC2).
     4. **Per-writer rate limit** (ledger) → a PARKED entry with a rate-limit
-       ``reason`` once the writer is over its budget; other writers are unaffected
-       (AC3).
+       ``reason`` once the writer is over its budget *for the current window*;
+       other writers are unaffected (AC3). The budget is per time-window, not per
+       daemon-lifetime: the ledger's counts are rolled to ``floor(now /
+       window_seconds)`` first, so a writer within its per-window limit is always
+       admitted and counts never accumulate unboundedly on a long-lived daemon
+       (issue #1113). ``now`` is injectable (defaults to the wall clock) and
+       ``window_seconds`` defaults to :func:`_default_window_seconds`.
 
     Otherwise mints a QUEUED :class:`QueueEntry` on the queue_state machine (it
     never duplicates that machine; the orchestrator then calls ``queue_state.admit``
@@ -406,10 +475,26 @@ def admit_to_queue(
     rejection) AND the next ledger to thread forward.
 
     Never raises: a failed check is converted to a reject (injection/AC) or a park
-    (dup/rate-limit), so it can never kill the heartbeat loop. Pure: no I/O.
+    (dup/rate-limit), so it can never kill the heartbeat loop. Pure except for one
+    thing: the v2 stateful path reads the wall clock to bucket the rate-limit window
+    when ``now`` is not supplied — deterministic when ``now`` is injected (as the
+    tests do), and never touched on the legacy stateless (no-ledger) path.
     """
     stateless = ledger is None
     led = ledger if ledger is not None else AdmissionLedger()
+
+    if not stateless:
+        # Roll the rate-limit window BEFORE the stateful checks so per-writer counts
+        # are scoped to the current wall-clock window, not the daemon's whole uptime
+        # (issue #1113). A rolled ledger (counts reset) then flows through both the
+        # rate-limit check and ``record_admission``, and is what ``_result`` threads
+        # forward on a park — so the reset persists even when the first entry in a
+        # new window parks. ``now`` is injectable for deterministic tests; it
+        # defaults to the wall clock (read only on the v2 stateful path, so the
+        # legacy stateless contract stays byte-for-byte pure).
+        window = window_seconds if window_seconds is not None else _default_window_seconds()
+        current = now if now is not None else time.time()
+        led = led.for_window(int(current // window))
 
     def _result(
         *,

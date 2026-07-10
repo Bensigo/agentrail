@@ -13,7 +13,7 @@ Metrics, per symbol with a known definition file:
   - call-graph: whether `impact` returns transitive callers (v2-only capability)
 
 Run:
-  AGENTRAIL_ALLOW_SOURCE_RUN=1 PYTHONPATH=. python3 scripts/benchmark-v2.py \
+  AGENTRAIL_ALLOW_SOURCE_RUN=1 PYTHONPATH=. python3 agentrail/scripts/benchmark-v2.py \
       --repo agentrail=. --repo flask=/tmp/bench-flask \
       --out docs/benchmarks/results/v2-context-engine-latest.md
 """
@@ -144,7 +144,7 @@ def main() -> int:
     lines = [
         "# AgentRail Context Engine v2 — Benchmarks",
         "",
-        "_Measured 2026-06-15 by `scripts/benchmark-v2.py`. Exercises v2's symbol graph "
+        "_Measured 2026-06-15 by `agentrail/scripts/benchmark-v2.py`. Exercises v2's symbol graph "
         "(`context def`), call graph (`context impact`), and warm daemon — not v1 retrieval. "
         "Scoped to the repos below, not universal guarantees._",
         "",

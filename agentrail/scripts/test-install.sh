@@ -11,7 +11,7 @@
 # Requires: bash, tar, curl, python3, sha256sum or shasum
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 INSTALL_SH="${REPO_ROOT}/install.sh"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -29,19 +29,19 @@ VERSION="0.0.0-test"
 
 # ── build stub tarball ────────────────────────────────────────────────────────
 # Mirrors the layout produced by .github/workflows/release.yml:
-#   agentrail-<version>/scripts/agentrail   (launcher)
+#   agentrail-<version>/agentrail/scripts/agentrail   (launcher)
 #   agentrail-<version>/agentrail/cli/main.py
 #   agentrail-<version>/agentrail/skills/
 #   agentrail-<version>/agentrail/templates/
 
 stage="${stub_dir}/agentrail-${VERSION}"
-mkdir -p "${stage}/scripts"
+mkdir -p "${stage}/agentrail/scripts"
 mkdir -p "${stage}/agentrail/cli"
 mkdir -p "${stage}/agentrail/skills"
 mkdir -p "${stage}/agentrail/templates"
 
 # Stub launcher: resolves PYTHONPATH and calls main.py — matches the real launcher.
-cat > "${stage}/scripts/agentrail" << 'LAUNCHER'
+cat > "${stage}/agentrail/scripts/agentrail" << 'LAUNCHER'
 #!/usr/bin/env bash
 set -euo pipefail
 source_path="${BASH_SOURCE[0]}"
@@ -55,11 +55,11 @@ while [[ -L "$source_path" ]]; do
   fi
 done
 script_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
-repo_dir="$(cd "${script_dir}/.." && pwd)"
+repo_dir="$(cd "${script_dir}/../.." && pwd)"
 export PYTHONPATH="${repo_dir}${PYTHONPATH:+:${PYTHONPATH}}"
 exec python3 -m agentrail.cli.main "$@"
 LAUNCHER
-chmod +x "${stage}/scripts/agentrail"
+chmod +x "${stage}/agentrail/scripts/agentrail"
 
 # Stub CLI: always prints usage (sufficient for --help smoke test).
 cat > "${stage}/agentrail/cli/main.py" << 'MAIN'
@@ -101,7 +101,7 @@ symlink="${install_dir}/bin/agentrail"
 [[ -L "${symlink}" ]] || fail "symlink not created at ${symlink}"
 
 symlink_target=$(readlink "${symlink}")
-expected_target="${install_dir}/versions/${VERSION}/scripts/agentrail"
+expected_target="${install_dir}/versions/${VERSION}/agentrail/scripts/agentrail"
 [[ "${symlink_target}" == "${expected_target}" ]] \
   || fail "symlink points to '${symlink_target}', expected '${expected_target}'"
 
@@ -154,7 +154,7 @@ AGENTRAIL_VERSION="${VERSION2}" \
 
 symlink3="${install_dir}/bin/agentrail"
 symlink3_target=$(readlink "${symlink3}")
-[[ "${symlink3_target}" == "${install_dir}/versions/${VERSION2}/scripts/agentrail" ]] \
+[[ "${symlink3_target}" == "${install_dir}/versions/${VERSION2}/agentrail/scripts/agentrail" ]] \
   || fail "symlink not updated to pinned version ${VERSION2}; got: ${symlink3_target}"
 
 pass "AGENTRAIL_VERSION pin"
@@ -164,7 +164,7 @@ pass "AGENTRAIL_VERSION pin"
 install_dir_nopy="${tmp_root}/install-nopy"
 
 # Build a PATH with symlinks to tools install.sh needs but intentionally
-# omitting python3, mirroring the pattern in scripts/test-install.
+# omitting python3, mirroring the pattern in agentrail/scripts/test-install.
 no_python3_bin="${tmp_root}/no-python3-bin"
 mkdir -p "${no_python3_bin}"
 for bin in curl tar awk sed shasum sha256sum mktemp dirname; do

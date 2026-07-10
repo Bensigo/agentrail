@@ -6,7 +6,7 @@ Assembles every measured axis into one markdown doc:
   2. Semantic/conceptual retrieval (lexical-only vs embeddings on)
 
 Run:
-  PYTHONPATH=. python3 scripts/benchmark-all.py \
+  PYTHONPATH=. python3 agentrail/scripts/benchmark-all.py \
       --exact-target /path/to/express \
       --embed-model qwen3-embedding:latest \
       --out docs/benchmarks/results/context-retrieval-cli-latest.md
@@ -166,7 +166,7 @@ def build_markdown(repos: List[Dict[str, Any]], combined: Dict[str, Any], semant
     L: List[str] = [
         "# AgentRail Context Retrieval — Benchmarks",
         "",
-        "_All numbers are measured and reproducible (`scripts/benchmark-all.py`). They are"
+        "_All numbers are measured and reproducible (`agentrail/scripts/benchmark-all.py`). They are"
         " scoped to the runs described below, not universal guarantees — per the project's"
         " benchmark claim rules._",
         "",
@@ -288,7 +288,7 @@ def build_markdown(repos: List[Dict[str, Any]], combined: Dict[str, Any], semant
         "",
         "## Reproduce",
         "```bash",
-        "PYTHONPATH=. python3 scripts/benchmark-all.py \\",
+        "PYTHONPATH=. python3 agentrail/scripts/benchmark-all.py \\",
         "  --repo express=/path/to/express --repo flask=/path/to/flask \\",
         "  --embed-model qwen3-embedding:latest \\",
         "  --out docs/benchmarks/results/context-retrieval-cli-latest.md",

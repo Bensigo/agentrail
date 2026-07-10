@@ -7,8 +7,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-agentrail="${repo_dir}/scripts/agentrail"
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+agentrail="${repo_dir}/agentrail/scripts/agentrail"
 
 assert_grep() {
   local pattern="$1"

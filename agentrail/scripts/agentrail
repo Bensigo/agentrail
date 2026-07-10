@@ -13,7 +13,7 @@ while [[ -L "$source_path" ]]; do
 done
 
 script_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
-repo_dir="$(cd "${script_dir}/.." && pwd)"
+repo_dir="$(cd "${script_dir}/../.." && pwd)"
 # #404 Option B: in an installed project, the editable flow scripts are gone but
 # the native package is vendored under .agentrail/source. Resolve the package via
 # the vendored package.json redirect (kept working by the installer).

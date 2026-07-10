@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python3 -m compileall -q agentrail tests
+python3 -m compileall -q agentrail
 python3 - <<'PY'
 from __future__ import annotations
 
@@ -10,6 +10,10 @@ from pathlib import Path
 
 missing: list[str] = []
 for path in sorted(Path("agentrail").rglob("*.py")):
+    if "tests" in path.parts:
+        # agentrail/tests now nests under agentrail/ (repo-structure-v2 PR-3);
+        # test code was never subject to this gate before the move and stays exempt.
+        continue
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_"):

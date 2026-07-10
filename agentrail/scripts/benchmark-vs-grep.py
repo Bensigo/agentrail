@@ -8,7 +8,7 @@ precision); AgentRail returns a ranked top-K (better precision when its ranking
 puts the right file first).
 
 Usage:
-  PYTHONPATH=. python3 scripts/benchmark-vs-grep.py --target /path/to/repo [--fixtures fixtures.json] [--k 10]
+  PYTHONPATH=. python3 agentrail/scripts/benchmark-vs-grep.py --target /path/to/repo [--fixtures fixtures.json] [--k 10]
 
 All three tools search the same tree. grep/ripgrep are the real binaries
 (ripgrep via its bundled executable); paths are normalised to repo-relative.
@@ -169,7 +169,7 @@ def _markdown(rows, agg, tok, args, pct) -> str:
         "",
         f"Target: **{label}** (real codebase) · fixtures: {len(rows)} · K(agentrail)={args.k} · embeddings: disabled",
         "",
-        "_Measured by `scripts/benchmark-vs-grep.py`. Symbol-lookup queries with"
+        "_Measured by `agentrail/scripts/benchmark-vs-grep.py`. Symbol-lookup queries with"
         " ground-truth definition files. Numbers are real and reproducible, but"
         " scoped to this run — not a universal claim (PRD claim rules apply)._",
         "",

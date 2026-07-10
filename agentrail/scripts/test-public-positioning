@@ -36,13 +36,13 @@ if ! grep -q -- "agentrail prompt issue 123 --skill frontend-web --no-auto-skill
   exit 1
 fi
 
-if ! grep -q -- '"agentrail": "./scripts/agentrail"' package.json; then
+if ! grep -q -- '"agentrail": "./agentrail/scripts/agentrail"' package.json; then
   echo "package.json does not expose the agentrail CLI command" >&2
   exit 1
 fi
 
 legacy_product_name="Bensigo"" harness"
-if grep -R -q -- "$legacy_product_name" README.md package.json templates skills scripts; then
+if grep -R -q -- "$legacy_product_name" README.md package.json agentrail; then
   echo "public docs still use the legacy Bensigo product name" >&2
   exit 1
 fi

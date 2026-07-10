@@ -9,7 +9,7 @@ trap cleanup EXIT
 
 scripts_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 launcher="${scripts_dir}/agentrail"
-package_json="${scripts_dir}/../package.json"
+package_json="${scripts_dir}/../../package.json"
 
 # Native install is driven through the launcher: `agentrail install ...`.
 installer_args=(install)

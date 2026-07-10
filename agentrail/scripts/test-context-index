@@ -7,8 +7,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-agentrail="${repo_dir}/scripts/agentrail"
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+agentrail="${repo_dir}/agentrail/scripts/agentrail"
 
 assert_grep() {
   local pattern="$1"
@@ -867,7 +867,7 @@ mkdir -p \
   "${source_fixture}/.agentrail/runs/run-1"
 git -C "$source_fixture" init --quiet
 cp "${repo_dir}/package.json" "${source_fixture}/package.json"
-cp "${repo_dir}/scripts/agentrail" "${source_fixture}/scripts/agentrail"
+cp "${repo_dir}/agentrail/scripts/agentrail" "${source_fixture}/scripts/agentrail"
 chmod +x "${source_fixture}/scripts/agentrail"
 cat >"${source_fixture}/templates/CONTEXT.md" <<'DOC'
 # Source Context

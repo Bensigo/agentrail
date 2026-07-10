@@ -11,7 +11,7 @@ enablement promises, then proves the flag OFF is byte-for-byte the legacy path.
 
 Run it before turning ``AGENTRAIL_QUEUE_GUARDRAILS_V2=1`` on for a real workspace::
 
-    PYTHONPATH=$(pwd) python3 scripts/validate-input-contract-v2.py
+    PYTHONPATH=$(pwd) python3 agentrail/scripts/validate-input-contract-v2.py
 
 It exits 0 when every check passes, non-zero (naming the failure) otherwise. No
 DB, no network: it injects the same in-memory executor the store's unit tests use,

@@ -1,7 +1,8 @@
 name: Release tarball
 
-# Builds the versioned release tarball that Homebrew (Formula/agentrail.rb) and
-# the curl|sh installer consume. Triggered on a version tag (vX.Y.Z). The CLI is
+# Builds the versioned release tarball that Homebrew (bensigo/homebrew-agentrail
+# tap, maintained out-of-repo) and the curl|sh installer consume. Triggered on a
+# version tag (vX.Y.Z). The CLI is
 # stdlib-only Python, so the tarball bundles no Python dependencies — it ships the
 # agentrail/ package + scripts/agentrail launcher + the skills/ and templates/ the
 # CLI ships, and requires only python3 at runtime.

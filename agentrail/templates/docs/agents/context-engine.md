@@ -2,7 +2,7 @@
 
 AgentRail context packs are auditable artifacts that tell an agent what matters for a specific issue, PR, phase, or resume operation.
 
-Use context packs to reduce blind repo exploration, prevent repeated verifier mistakes, and make PR review easier. Do not treat context packs as hidden truth. Current code, GitHub issues, PRDs, milestones, `CONTEXT.md`, and explicit user instructions remain more authoritative when they conflict.
+Use context packs to reduce blind repo exploration, prevent repeated verifier mistakes, and make PR review easier. Do not treat context packs as hidden truth. Current code, GitHub issues, PRDs, milestones, `.agentrail/context.md`, and explicit user instructions remain more authoritative when they conflict.
 
 ## Vocabulary
 
@@ -160,7 +160,7 @@ The command lists source records in deterministic order. It excludes:
 - denied paths
 - secret-bearing files such as `.env`, private keys, and credentials
 
-The inventory includes optional docs only when present. Missing `docs/memory/`, `docs/prd/`, or `docs/milestones/` should not fail the command.
+The inventory includes optional docs only when present. Missing `.agentrail/memory/` (legacy: `docs/memory/`), `docs/prd/`, or `docs/milestones/` should not fail the command.
 
 ## Embeddings
 
@@ -203,8 +203,8 @@ Required context comes from:
 
 - GitHub issue `## Required context`
 - linked PRDs and milestones
-- `CONTEXT.md`
-- `TASTE.md` when it affects the workflow or quality bar
+- `.agentrail/context.md`
+- `.agentrail/taste.md` when it affects the workflow or quality bar
 - active run, issue, PR, milestone, or goal in `.agentrail/state.json`
 - verifier findings for the same issue when retrying
 
@@ -229,7 +229,7 @@ Prior mistakes may come from:
 - blocked run reasons
 - review-fix issues
 - memory-suggestion issues
-- `docs/memory/failure-patterns.md`
+- `.agentrail/memory/failure-patterns.md`
 
 Each prior mistake must include:
 
@@ -261,11 +261,11 @@ Every JSON response intended for provider consumption includes:
 - `audit`
 - cited result, section, or path fields
 
-Agents should treat this JSON as a context contract, not as hidden truth. Current source files, GitHub issues, PRDs, ADRs, `CONTEXT.md`, and explicit user instructions remain more authoritative when they conflict.
+Agents should treat this JSON as a context contract, not as hidden truth. Current source files, GitHub issues, PRDs, ADRs, `.agentrail/context.md`, and explicit user instructions remain more authoritative when they conflict.
 
 ## Context Compiler Contract
 
-The stable compiler contract is documented in `docs/agents/context-compiler-contract.md`.
+The stable compiler contract is documented in `.agentrail/agents/context-compiler-contract.md`.
 
 Compiler data appears under a `compiler` object on provider-facing JSON when available. Existing top-level fields remain the backward-compatible surface for older consumers. New consumers should prefer `compiler` and fall back to legacy fields when `compiler` is absent.
 
@@ -343,9 +343,9 @@ MCP roots are advisory scoping hints only. AgentRail access enforcement comes fr
   "included": [
     {
       "kind": "required_context",
-      "path": "CONTEXT.md",
+      "path": ".agentrail/context.md",
       "reason": "Defines visible state and inspectable workflow constraints.",
-      "citation": "CONTEXT.md#product-principles",
+      "citation": ".agentrail/context.md#product-principles",
       "score": {
         "deterministic": 1,
         "keyword": 0.72,
@@ -375,7 +375,7 @@ Goal: Define AgentRail context engine architecture and enterprise requirements.
 
 ## Included Context
 
-- `CONTEXT.md`: Defines visible state and inspectable workflow constraints.
+- `.agentrail/context.md`: Defines visible state and inspectable workflow constraints.
 
 ## Excluded Context
 
@@ -422,7 +422,7 @@ Existing fixture fields remain compatible. Compiler-aware evaluation adds metric
 Run fixture evaluation with:
 
 ```bash
-agentrail context evaluate docs/agents/context-retrieval-fixtures.json --target . --json
+agentrail context evaluate .agentrail/agents/context-retrieval-fixtures.json --target . --json
 ```
 
 A fixture file is JSON with a top-level `fixtures` array:

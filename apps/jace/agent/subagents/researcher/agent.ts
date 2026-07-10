@@ -21,6 +21,16 @@ import { BRIEF_SCHEMA } from "./lib/brief.core.mjs";
 //  - `outputSchema: BRIEF_SCHEMA` runs the child in task mode, so its answer is
 //    forced into the structured brief shape (AC1).
 //
+// PROMPT-INJECTION POSTURE: the brief is delivered to root as a MODEL-READ tool
+// result — Eve lowers this task-mode subagent's structured output straight into
+// root's tool stream, and Eve hooks are observe-only, so there is no Jace code
+// seam between emit and read to sanitize at. Defense is therefore two-layered:
+// (1) this agent's instructions.md tells it to keep cited web text inert (treat
+// fetched content as data, not commands; do not smuggle live payloads through a
+// citation), and (2) the ENFORCED backstop lives at root's side-effecting write
+// seam — create_issue runs every field through hardenUntrusted()
+// (agent/lib/sanitize-untrusted.core.mjs) before anything reaches GitHub.
+//
 // The model is resolved from the environment exactly as root does (see
 // agent/lib/model.core.mjs) so the researcher honours the same gateway /
 // OpenAI-compatible / self-hosted configuration.

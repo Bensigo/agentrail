@@ -207,3 +207,58 @@ test("runCreateIssue surfaces a clear error when the CLI fails", async () => {
     /issue create` failed[\s\S]*gh: not authenticated/,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Prompt-injection hardening at the write seam (issue #1124).
+//
+// The researcher's brief reaches Jace as a MODEL-READ tool result with no
+// Jace-authored code seam before the parent drafts. The create_issue write
+// path is the first place Jace code touches the blended text again, so it is
+// where untrusted content must be neutralized before it lands on GitHub.
+// ---------------------------------------------------------------------------
+
+test("buildIssueBody hardens untrusted content in every field", () => {
+  const body = buildIssueBody({
+    // bidi override (Trojan Source) in the parent
+    parent: "Runner‮ epic",
+    // zero-width char + a dangerous URL scheme in required context
+    requiredContext: "See​ [x](javascript:steal()) for details.",
+    // unicode-tag smuggling in what-to-build
+    whatToBuild: "Build it\u{E0041}\u{E0042}.",
+    // a mass-ping token riding in an acceptance criterion
+    acceptanceCriteria: ["ping @everyone when done"],
+    // another dangerous scheme in the verification evidence
+    verification: "open file:///etc/passwd",
+  });
+
+  // hidden channels are gone
+  assert.ok(!/[​‮]/u.test(body), "zero-width / bidi stripped");
+  assert.ok(!/[\u{E0000}-\u{E007F}]/u.test(body), "unicode tags stripped");
+  // dangerous schemes are defanged, http-family would have been left alone
+  assert.ok(body.includes("javascript[:]"), "javascript scheme defanged");
+  assert.ok(body.includes("file[:]"), "file scheme defanged");
+  // mass ping is defanged, not left live
+  assert.ok(body.includes("＠everyone"), "@everyone defanged to fullwidth");
+  assert.ok(!/@everyone/.test(body), "no live @everyone remains");
+});
+
+test("runCreateIssue hardens the title before it reaches argv", async () => {
+  let seenTitle = null;
+  const fakeExec = async (bin, argv) => {
+    seenTitle = argv[argv.indexOf("--title") + 1];
+    return {
+      stdout: "Created a/b#1 (label ready-for-agent): https://x/issues/1\n",
+      stderr: "",
+    };
+  };
+  await runCreateIssue({
+    execFileFn: fakeExec,
+    env: { JACE_TARGET_REPO: "a/b" },
+    // title bypasses buildIssueBody, so it must be hardened in runCreateIssue
+    title: "Fix​ bug, ping @everyone",
+    acceptanceCriteria: ["ac"],
+  });
+  assert.ok(!/​/u.test(seenTitle), "zero-width stripped from title");
+  assert.ok(seenTitle.includes("＠everyone"), "@everyone defanged in title");
+  assert.ok(!/@everyone/.test(seenTitle), "no live @everyone in title");
+});

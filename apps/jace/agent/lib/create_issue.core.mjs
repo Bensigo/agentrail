@@ -5,6 +5,18 @@
 //
 // This file lives under agent/lib/ which Eve treats as a recognized lib
 // directory: helper .mjs modules here are NOT loaded as tools.
+//
+// This is also the enforced anti-prompt-injection seam (issue #1124). The
+// researcher subagent's brief reaches Jace as a MODEL-READ tool result — Eve
+// lowers a task-mode subagent's structured output straight into the parent's
+// tool stream, and Eve hooks are observe-only, so there is NO Jace-authored
+// code between the child emitting the brief and the parent drafting from it.
+// The first place Jace code touches that (now untrusted-tainted) text again is
+// this write path, so every field is run through hardenUntrusted() before it is
+// rendered onto GitHub. See sanitize-untrusted.core.mjs for what that removes
+// and, honestly, what it cannot.
+
+import { hardenUntrusted, FIELD_CAPS } from "./sanitize-untrusted.core.mjs";
 
 /**
  * Build the AgentRail "house format" issue body.
@@ -36,25 +48,34 @@ export function buildIssueBody({
     );
   }
 
+  // hardenUntrusted subsumes the old `.trim()`, and additionally strips hidden
+  // channels, defangs dangerous URL schemes / mass-ping tokens, and caps each
+  // field's length — the enforced guardrail against injection carried in from
+  // researcher-derived web content.
   const criteriaLines = acceptanceCriteria
-    .map((criterion, i) => `- [ ] AC${i + 1}: ${String(criterion).trim()}`)
+    .map(
+      (criterion, i) =>
+        `- [ ] AC${i + 1}: ${hardenUntrusted(String(criterion), {
+          maxLen: FIELD_CAPS.acceptanceCriterion,
+        })}`,
+    )
     .join("\n");
 
   const sections = [
     "## Parent",
-    (parent ?? "").trim(),
+    hardenUntrusted(parent, { maxLen: FIELD_CAPS.parent }),
     "",
     "## Required context",
-    (requiredContext ?? "").trim(),
+    hardenUntrusted(requiredContext, { maxLen: FIELD_CAPS.requiredContext }),
     "",
     "## What to build",
-    (whatToBuild ?? "").trim(),
+    hardenUntrusted(whatToBuild, { maxLen: FIELD_CAPS.whatToBuild }),
     "",
     "## Acceptance criteria",
     criteriaLines,
     "",
     "## Verification evidence",
-    (verification ?? "").trim(),
+    hardenUntrusted(verification, { maxLen: FIELD_CAPS.verification }),
   ];
 
   return sections.join("\n");
@@ -162,7 +183,11 @@ export async function runCreateIssue({
     acceptanceCriteria,
     verification,
   });
-  const argv = buildCreateArgv({ repo: resolvedRepo, title, body });
+  // The title never passes through buildIssueBody, so it must be hardened here
+  // — otherwise a mass-ping token or hidden channel in a researcher-tainted
+  // title would reach GitHub unfiltered.
+  const safeTitle = hardenUntrusted(title, { maxLen: FIELD_CAPS.title });
+  const argv = buildCreateArgv({ repo: resolvedRepo, title: safeTitle, body });
 
   let result;
   try {

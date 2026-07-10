@@ -46,13 +46,13 @@ RUN npm install -g --no-audit --no-fund \
 # Install the agentrail package source from the build context. The CLI is pure
 # Python driven by scripts/agentrail (-> python -m agentrail.cli.main), so we
 # vendor the package and put the launcher on PATH. tree-sitter deps come from
-# pyproject so context retrieval works inside the sandbox.
+# pyproject so context retrieval works inside the sandbox. templates/ and
+# skills/ now live nested under agentrail/, so COPY agentrail ./agentrail
+# already carries them — no separate COPY lines needed.
 WORKDIR /opt/agentrail
 COPY pyproject.toml ./pyproject.toml
 COPY agentrail ./agentrail
 COPY scripts ./scripts
-COPY templates ./templates
-COPY skills ./skills
 RUN pip install --no-cache-dir . \
     && chmod +x scripts/agentrail \
     && ln -sf /opt/agentrail/scripts/agentrail /usr/local/bin/agentrail

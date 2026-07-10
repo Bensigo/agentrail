@@ -64,6 +64,17 @@ vague reassurance, no filler — the same tone the generated issues must carry
 (quality is bounded by the acceptance criteria, and the criteria inherit their
 clarity from here).
 
+## Verify external tech, don't assume it
+
+Where the design leans on an external library, SDK, framework, API, CLI, or cloud
+service, invoke the **researcher** subagent before you commit a fact about it to
+the PRD. The researcher is read-only — it verifies against current docs and the
+live web and hands back citations (claim → URL → version); drafting the PRD still
+creates nothing and crosses no boundary. Carry its recommended approach into
+**Design**, keep its citations so `to-issues` can paste them into each slice's
+Required context, and route any claim it could not verify into **Risks** marked
+"unverified". Never write an external-tech fact into the PRD from memory.
+
 ## What happens next
 
 The PRD is a draft artifact for the human to review; it is not yet in the

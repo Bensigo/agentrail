@@ -73,6 +73,18 @@ Offer to write an ADR only when all three are true — otherwise skip it:
 When all three hold, write it in the format in [ADR-FORMAT.md](./ADR-FORMAT.md),
 lazily creating `docs/adr/` when the first ADR is needed.
 
+## Verify external tech, don't assume it
+
+When the idea leans on an external library, SDK, framework, API, CLI, or cloud
+service, do not pin a "fact" about it from memory — invoke the **researcher**
+subagent to verify it against current docs and the live web. The researcher is
+read-only (it publishes nothing, and by construction cannot see `create_issue`),
+so grilling stays read-only too. Fold its citations (claim → URL → version) into
+the **Constraints** you capture, and route any claim it could not verify into
+**Open questions** marked "unverified" rather than asserting it. This keeps the
+requirements summary grounded in checked facts, so the acceptance criteria that
+grow out of it don't inherit a guess.
+
 ## Output: requirements summary
 
 When the interview has pinned enough to act on, emit a structured summary with

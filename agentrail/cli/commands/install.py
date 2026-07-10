@@ -136,25 +136,38 @@ def _install_claude_skills(repo_dir: Path, target_dir: Path) -> None:
         print(f"installed skill: .claude/skills/{skill_name}/SKILL.md")
 
 
-def _install_claude_hooks(repo_dir: Path, target_dir: Path) -> None:
-    """Install the context-first PreToolUse hook (claude-only enforcement, #519).
+def _write_claude_hook_script(repo_dir: Path, target_dir: Path, *, force: bool = True) -> bool:
+    """Write ``<target>/.agentrail/hooks/context-first.sh`` from the repo template.
 
-    Copies ``agentrail/templates/scripts/context-first.sh`` to
-    ``<target>/.agentrail/hooks/context-first.sh`` (chmod +x) and merges a
-    ``hooks.PreToolUse`` entry into ``<target>/.claude/settings.json`` without
-    clobbering existing user settings. Idempotent: re-running refreshes the
-    script and skips re-adding an already-wired hook entry.
+    ``force=True`` (install's behavior) always (re)writes the script — a fresh
+    install has no pre-existing customized hook to protect. ``force=False``
+    (upgrade's behavior) is the merge-not-recreate guard: an existing
+    ``.agentrail/hooks/context-first.sh`` is a load-bearing local file per the
+    House-2 design doc's known traps and must never be silently overwritten by
+    ``agentrail upgrade``. Returns True if the script was (re)written.
     """
     hook_src = repo_dir / "agentrail" / "templates" / "scripts" / "context-first.sh"
     if not hook_src.is_file():
-        return
+        return False
 
     hook_dest = target_dir / ".agentrail" / "hooks" / "context-first.sh"
+    if hook_dest.exists() and not force:
+        return False
+
     hook_dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(str(hook_src), str(hook_dest))
     hook_dest.chmod(0o755)
     print("installed hook: .agentrail/hooks/context-first.sh")
+    return True
 
+
+def _merge_claude_hook_settings(target_dir: Path) -> None:
+    """Merge a ``hooks.PreToolUse`` entry into ``<target>/.claude/settings.json``.
+
+    Always safe to call unconditionally (install or upgrade): it never
+    clobbers existing user settings, and skips re-adding an already-wired hook
+    entry, so re-running is a no-op once wired.
+    """
     settings_path = target_dir / ".claude" / "settings.json"
     settings: Dict[str, Any] = {}
     if settings_path.exists():
@@ -198,6 +211,18 @@ def _install_claude_hooks(repo_dir: Path, target_dir: Path) -> None:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(json.dumps(settings, indent=2) + "\n")
         print("updated: .claude/settings.json")
+
+
+def _install_claude_hooks(repo_dir: Path, target_dir: Path) -> None:
+    """Install the context-first PreToolUse hook (claude-only enforcement, #519).
+
+    Fresh-install composition of the two pieces above: always (re)writes the
+    hook script (``force=True`` — no pre-existing customized hook to protect
+    on a fresh install) and merges the settings.json wiring. Preserved as a
+    single call so ``run_install`` keeps its existing call site unchanged.
+    """
+    _write_claude_hook_script(repo_dir, target_dir, force=True)
+    _merge_claude_hook_settings(target_dir)
 
 
 def _create_github_labels(target_dir: Path) -> None:

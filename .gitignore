@@ -17,3 +17,8 @@ node_modules/
 # Fumadocs generated source
 apps/console/.source/
 .source/
+
+# Eval-report run noise: per-run logs under agentrail/evals/reports/ (and any
+# nested per-run directories); the eval-report-*.md summaries themselves stay
+# tracked.
+agentrail/evals/reports/**/*.log

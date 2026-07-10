@@ -103,6 +103,30 @@ def _should_skip(relative_to_root: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# House-2 destination mapping (repo-structure-v2, PR-5 / #1136)
+#
+# Only the subtrees that move under ``.agentrail/`` per the design doc are
+# remapped here; everything else installs unchanged at the same repo-relative
+# path it always has (``AGENTS.md`` stays a root file; ``docs/prd/`` and
+# ``docs/milestones/`` stay legacy/root — Jace owns ideation scaffolding and
+# dropping them from install is PR-8, out of scope here).
+# ---------------------------------------------------------------------------
+
+_DOCS_AGENTS_PREFIX = "docs/agents/"
+_HOUSE2_AGENTS_PREFIX = ".agentrail/agents/"
+
+
+def _map_template_destination(relative_to_root_posix: str) -> str:
+    """Map an ``agentrail/templates``-relative posix path to its House-2
+    managed install path."""
+    if relative_to_root_posix == "CONTEXT.md":
+        return ".agentrail/context.md"
+    if relative_to_root_posix.startswith(_DOCS_AGENTS_PREFIX):
+        return _HOUSE2_AGENTS_PREFIX + relative_to_root_posix[len(_DOCS_AGENTS_PREFIX):]
+    return relative_to_root_posix
+
+
+# ---------------------------------------------------------------------------
 # Default config / workflow literals (VERBATIM from legacy lines ~370-464)
 # ---------------------------------------------------------------------------
 
@@ -193,10 +217,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 def _build_inventory(repo_dir: Path) -> List[Dict[str, Any]]:
-    """Build the managed file inventory (templates + skills roots + extraFiles)."""
+    """Build the managed file inventory (templates + skills roots + extraFiles).
+
+    House-2 layout (repo-structure-v2, PR-5 / #1136): the templates root uses
+    per-subtree destination mapping (see ``_map_template_destination`` — most
+    docs/agents/* content and CONTEXT.md move under ``.agentrail/``, while
+    AGENTS.md, docs/prd/, and docs/milestones/ stay at their existing root
+    paths).
+
+    The skills root installs to BOTH the legacy top-level ``skills/`` copy and
+    the new ``.agentrail/skills`` copy this PR. Per the execution plan
+    (§6 of the design doc), dropping the legacy top-level ``skills/`` copy is
+    explicitly PR-8's job ("drop ... dup skills copy from install"), not
+    PR-5's — PR-5 only adds the new House-2 install targets.
+    """
     roots = [
         (repo_dir / "agentrail" / "templates", ""),
         (repo_dir / "agentrail" / "skills", "skills"),
+        (repo_dir / "agentrail" / "skills", ".agentrail/skills"),
     ]
     inventory: List[Dict[str, Any]] = []
 
@@ -219,7 +257,7 @@ def _build_inventory(repo_dir: Path) -> List[Dict[str, Any]]:
             if prefix:
                 managed_path = (Path(prefix) / relative_to_root).as_posix()
             else:
-                managed_path = relative_to_root.as_posix()
+                managed_path = _map_template_destination(relative_to_root.as_posix())
 
             source_posix = source_path.relative_to(repo_dir).as_posix()
 

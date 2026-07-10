@@ -54,6 +54,18 @@ class UsageError(Exception):
         self.code = code
 
 
+# House-2 layout (repo-structure-v2, PR-5 / #1136): `.agentrail/` ships its own
+# `.gitignore` so local caches, run logs, and secrets never get committed while
+# the content dirs (agents/, skills/, memory/, context.md, taste.md,
+# config.json, verify.sh, hooks/) stay tracked (design doc §5, D3).
+_AGENTRAIL_GITIGNORE_CONTENT = (
+    "context/\n"
+    "runs/\n"
+    "batch/\n"
+    "*.log\n"
+    "server.json\n"
+)
+
 _USAGE = """Usage: agentrail install [--target DIR] [--force] [--github-labels]
 
 Installs the AgentRail workflow templates into a project.
@@ -333,6 +345,13 @@ def run_install(args: List[str], *, _now: Optional[str] = None) -> int:
         config_path.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n")
         print("updated: .agentrail/config.json")
 
+    # Ship .agentrail/.gitignore if missing or forced (House-2, D3)
+    gitignore_path = target_dir / ".agentrail" / ".gitignore"
+    if not gitignore_path.exists() or force:
+        gitignore_path.parent.mkdir(parents=True, exist_ok=True)
+        gitignore_path.write_text(_AGENTRAIL_GITIGNORE_CONTENT)
+        print("updated: .agentrail/.gitignore")
+
     # Materialize trimmed .agentrail/source (#404 Option B)
     _materialize_source(repo_dir, target_dir)
 
@@ -354,7 +373,7 @@ def run_install(args: List[str], *, _now: Optional[str] = None) -> int:
     print("  1. Start with a grilling session to define your project context:")
     print(f"     cd {target_dir} && agentrail grill")
     print("     (or use /grill inside Claude Code or Codex)")
-    print("  2. The grill will create CONTEXT.md and sharpen your domain language.")
+    print("  2. The grill will create .agentrail/context.md and sharpen your domain language.")
     print("  3. Then create issues and run: agentrail run issue NUMBER --agent claude")
 
     return 0

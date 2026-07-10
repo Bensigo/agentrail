@@ -141,12 +141,12 @@ def load_skill_body(repo_dir: Path, skill_name: str) -> str:
     skills (not a project-mutable copy).
 
     Two shipped locations are searched, in order: the SDLC factory's
-    ``skills/<skill_name>/SKILL.md`` first, then the Jace coordinator's
+    ``agentrail/skills/<skill_name>/SKILL.md`` first, then the Jace coordinator's
     ``apps/jace/agent/skills/<skill_name>/SKILL.md``. The coordinator-flavored
     ideation skills (grill-me, to-prd, to-milestones, to-issues) live under the
     second path; everything else lives under the first."""
     candidates = [
-        repo_dir / "skills" / skill_name / "SKILL.md",
+        repo_dir / "agentrail" / "skills" / skill_name / "SKILL.md",
         repo_dir / "apps" / "jace" / "agent" / "skills" / skill_name / "SKILL.md",
     ]
     path = next((p for p in candidates if p.exists()), None)

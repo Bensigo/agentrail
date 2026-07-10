@@ -32,12 +32,15 @@ def _resolve_doc(repo_root: Path, rel: str) -> Optional[Path]:
     """Resolve a doc path relative to repo_root, with templates/ fallback.
 
     Mirrors the script's behavior: prefer ``docs/agents/...`` but fall back to
-    ``templates/docs/agents/...`` when the project hasn't installed the doc.
+    ``agentrail/templates/docs/agents/...`` when the project hasn't installed
+    the doc (only reachable when *repo_root* is the agentrail source repo
+    itself, e.g. dogfooding AFK on agentrail's own PRs — an arbitrary target
+    project without an installed doc has no agentrail/templates/ tree either).
     """
     primary = repo_root / rel
     if primary.is_file():
         return primary
-    fallback = repo_root / "templates" / rel
+    fallback = repo_root / "agentrail" / "templates" / rel
     if fallback.is_file():
         return fallback
     return None

@@ -8,7 +8,7 @@ This file is intended for manual inspection by agents and maintainers. It record
 
 AgentRail stores project runner configuration in `.agentrail/config.json`. The config is separate from state because it is a local execution preference, not workflow progress.
 
-AgentRail also installs `docs/agents/skill-registry.json`. The registry is a managed artifact that describes bundled skills, their local `SKILL.md` paths, activation triggers, provenance candidates, license status, audit status, and default bundling behavior.
+AgentRail also installs `.agentrail/agents/skill-registry.json`. The registry is a managed artifact that describes bundled skills, their local `SKILL.md` paths, activation triggers, provenance candidates, license status, audit status, and default bundling behavior.
 
 ## Top-Level Fields
 
@@ -113,7 +113,7 @@ The top-level `prompt.md`, `resolved-skills.json`, and `run.json` remain as comp
 
 On resume, treat an `activeRun` with no matching live process as stale but useful: inspect its prompt and metadata files, compare with GitHub issue or PR state, then decide whether to rerun, mark blocked, or continue manually. Do not trust chat memory over these files.
 
-The managed inventory includes the skill registry and bundled skill files under `skills/`. Local edits are preserved by `agentrail upgrade` unless `--force` is used.
+The managed inventory includes the skill registry and bundled skill files under `.agentrail/skills/`. Local edits are preserved by `agentrail upgrade` unless `--force` is used.
 
 ## Runner Config
 

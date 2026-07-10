@@ -51,11 +51,11 @@ Before reviewing, run:
 agentrail memory recall "<PR title, linked issue, feature, or key terms>"
 ```
 
-Use relevant memory to check whether the PR repeats known mistakes or violates source-linked project preferences. Memory is advisory: if it conflicts with current code, `CONTEXT.md`, ADRs, the issue, or the PRD, call out the conflict and prefer the current source of truth.
+Use relevant memory to check whether the PR repeats known mistakes or violates source-linked project preferences. Memory is advisory: if it conflicts with current code, `.agentrail/context.md`, ADRs, the issue, or the PRD, call out the conflict and prefer the current source of truth.
 
 Block memory changes when they are unsourced, too broad to be useful, duplicate canonical docs, or contain secrets, customer data, credentials, or private personal data.
 
-When a review reveals a recurring pattern that future agents would realistically repeat, propose a source-linked memory suggestion instead of editing memory directly. Use `docs/agents/github-pr-reviewer.md` for the machine-readable schema when an AFK workflow needs to create follow-up `memory-suggestion` issues.
+When a review reveals a recurring pattern that future agents would realistically repeat, propose a source-linked memory suggestion instead of editing memory directly. Use `.agentrail/agents/github-pr-reviewer.md` for the machine-readable schema when an AFK workflow needs to create follow-up `memory-suggestion` issues.
 
 ## Finding Format
 

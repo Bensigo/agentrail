@@ -40,7 +40,7 @@ payload), but the contract carries them now so #937/#938 have a stable target.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from agentrail.run.usage_capture import Usage
 
@@ -118,6 +118,19 @@ class RunRecord:
       surface it) — distinct from a captured baseline that happens to equal the
       final model.
 
+    Per-phase cost evidence (#1049 AC4 — measurement only):
+
+    - ``cost_events`` — the raw per-phase cost-ledger lines the run's pipeline
+      wrote inside its sandbox (``.agentrail/run/cost-events.jsonl``), harvested
+      by the runner BEFORE the sandbox tempdir is torn down. Each entry is one
+      ``build_cost_record`` dict (``run_id``, ``phase``, and the four token
+      buckets). This is the ONLY place the per-PHASE split survives the run —
+      ``usage`` above is the aggregated total, which cannot answer "did the
+      EXECUTE phase's context shrink?". The gather report aggregates these into
+      the AC4 token-reduction + cache-hit evidence. Empty list when the executor
+      wrote no ledger (e.g. a network-artifact ``<synthetic>`` fallback) or the
+      harvest was skipped — distinct from "captured and zero".
+
     Immutability is enforced (``frozen=True``) so a record handed to the scorer
     cannot be mutated into a different verdict after the fact.
     """
@@ -138,6 +151,10 @@ class RunRecord:
     # Routing-audit field (Finding 4) — APPENDED last to preserve positional
     # back-compat; None when not captured (distinct from "captured and equal").
     baseline_model: Optional[str] = None
+    # Per-phase cost evidence (#1049 AC4) — APPENDED last to preserve positional
+    # back-compat; empty list when no ledger was harvested. Not frozen-hostile:
+    # the list is built once by the runner and never mutated after construction.
+    cost_events: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def attempts(self) -> int:

@@ -160,6 +160,13 @@ class FakeExecutor:
     gate_passed: bool = True
     retries: List[RetryEvent] = field(default_factory=list)
 
+    # Optional per-phase cost ledger the executor leaves in its workdir, exactly
+    # where the live run pipeline writes it (``repo/.agentrail/run/cost-events.jsonl``).
+    # When set, ``execute`` drops it there so the runner's harvest reads a real
+    # on-disk file — faithful to production, where the pipeline authors this file
+    # and the runner must scrape it BEFORE the workdir is torn down.
+    cost_events_to_write: Optional[List[dict]] = None
+
     # Spy state — populated on every call so tests can introspect.
     invoked_with_arm: Optional[Arm] = None
     invoked_with_workdir: Optional[Path] = None
@@ -173,6 +180,13 @@ class FakeExecutor:
         self.workdir_contents_at_invocation = [
             str(p.relative_to(workdir)) for p in workdir.rglob("*")
         ]
+        if self.cost_events_to_write is not None:
+            ledger = workdir / "repo" / ".agentrail" / "run" / "cost-events.jsonl"
+            ledger.parent.mkdir(parents=True, exist_ok=True)
+            ledger.write_text(
+                "".join(json.dumps(ev) + "\n" for ev in self.cost_events_to_write),
+                encoding="utf-8",
+            )
         return AgentExecution(
             diff=self.diff,
             usage=self.usage,
@@ -876,6 +890,43 @@ def test_execute_real_clone_and_checkout_into_workdir_repo(
     # #970: the run command runs from the SOURCE tree (so source agentrail is
     # imported), NOT from the clone (which would shadow it).
     assert captured["run_cwd"] != str(workdir / "repo")
+
+
+# ---------------------------------------------------------------------------
+# Per-phase cost-ledger harvest (#1049 AC4).
+#
+# The live run pipeline writes per-phase token costs to
+# ``workdir/repo/.agentrail/run/cost-events.jsonl``. The runner must harvest that
+# file off the filesystem BEFORE the ``finally`` tears the workdir down — the
+# only place the per-phase split exists. These prove the harvest happens at the
+# right moment and degrades to an empty list when there is no ledger.
+# ---------------------------------------------------------------------------
+
+
+def test_run_harvests_cost_events_from_workdir_before_teardown(
+    corpus_task: CorpusTask,
+) -> None:
+    """The runner scrapes the pipeline's per-phase ledger onto the RunRecord."""
+    events = [
+        {"run_id": "r1", "phase": "gather", "input_tokens": 1500,
+         "output_tokens": 400, "cache_tokens": 0, "cache_creation_tokens": 600},
+        {"run_id": "r1", "phase": "execute", "input_tokens": 3000,
+         "output_tokens": 1000, "cache_tokens": 1200, "cache_creation_tokens": 0},
+    ]
+    executor = FakeExecutor(cost_events_to_write=events)
+
+    record = run(corpus_task, full(), executor=executor)
+
+    assert record.cost_events == events
+    # The workdir the ledger lived in is gone — harvest happened before teardown.
+    assert executor.invoked_with_workdir is not None
+    assert not executor.invoked_with_workdir.exists()
+
+
+def test_run_cost_events_empty_when_no_ledger(corpus_task: CorpusTask) -> None:
+    """No pipeline ledger (e.g. a synthetic run) → an empty list, never a crash."""
+    record = run(corpus_task, full(), executor=FakeExecutor())
+    assert record.cost_events == []
 
 
 # ---------------------------------------------------------------------------

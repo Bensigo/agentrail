@@ -50,6 +50,7 @@ production-only bugs are not hidden behind it.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -57,7 +58,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from agentrail.run.usage_capture import Usage
 
@@ -201,6 +202,68 @@ def _materialize_agent_visible_tree(task: CorpusTask, *, workdir: Path) -> None:
 # behind it). Kept in sync with ``SandboxAgentExecutor``'s clone dir.
 _EXECUTOR_CLONE_SUBDIR = "repo"
 
+# The live pipeline appends one JSON line per phase to this ledger, relative to
+# the run's working tree (``rc.target_dir / ".agentrail" / "run" /
+# "cost-events.jsonl"`` in ``agentrail/run/pipeline.py``). Inside an eval run the
+# working tree IS the executor's clone, so the ledger lands at
+# ``workdir / _EXECUTOR_CLONE_SUBDIR / _COST_LEDGER_RELPATH``. This is the ONLY
+# artifact that carries the per-PHASE token split (plan / gather / execute /
+# verify), and the workdir is torn down in ``run()``'s ``finally`` — so it must
+# be harvested in-band, before teardown. See #1049 AC4.
+_COST_LEDGER_RELPATH = Path(".agentrail") / "run" / "cost-events.jsonl"
+
+
+def _harvest_cost_events(workdir: Path) -> List[Dict[str, Any]]:
+    """Read the per-phase cost-ledger lines the run wrote inside ``workdir``.
+
+    Returns the raw ledger dicts (each a ``build_cost_record`` shape:
+    ``run_id`` / ``phase`` / the four token buckets) so the spine can tag them
+    with the arm and the gather report can aggregate the per-phase token split.
+
+    This is **best-effort and never fatal**: the ledger is diagnostic evidence,
+    not something the run's verdict depends on, so any IO/parse problem yields an
+    empty list rather than failing the run. A missing ledger (e.g. a
+    ``<synthetic>`` network-artifact fallback that never ran the pipeline) is the
+    normal empty case, distinct from "captured and zero".
+
+    Lookup order:
+
+    1. The canonical location — ``workdir/repo/.agentrail/run/cost-events.jsonl``
+       — which is where the pipeline writes when the working tree is the clone.
+    2. A bounded fallback: any ``.agentrail/run/cost-events.jsonl`` under the
+       workdir (guards against the clone dir being renamed), reading every match.
+    """
+    candidates: List[Path] = []
+    primary = workdir / _EXECUTOR_CLONE_SUBDIR / _COST_LEDGER_RELPATH
+    if primary.is_file():
+        candidates.append(primary)
+    else:
+        try:
+            for match in workdir.rglob("cost-events.jsonl"):
+                parent = match.parent
+                if parent.name == "run" and parent.parent.name == ".agentrail":
+                    candidates.append(match)
+        except OSError:
+            return []
+
+    events: List[Dict[str, Any]] = []
+    for path in candidates:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(obj, dict):
+                events.append(obj)
+    return events
+
 
 def _assert_no_answer_key_in_workdir(
     task: CorpusTask,
@@ -338,6 +401,12 @@ def run(
                 f"got {type(execution.gate_passed).__name__}"
             )
 
+        # Per-phase cost evidence (#1049 AC4) — harvest the pipeline's cost
+        # ledger from the workdir NOW, while it still exists: the ``finally``
+        # below tears the workdir down, taking the only per-phase token split
+        # with it. Best-effort; an empty list is the normal no-ledger case.
+        cost_events = _harvest_cost_events(workdir)
+
         return RunRecord(
             task=task.name,
             arm=arm.name,
@@ -360,6 +429,9 @@ def run(
             # explicitly when routing never diverged. INSTRUMENT only — this does
             # not influence which model the run actually used.
             baseline_model=arm.model,
+            # Per-phase cost ledger harvested above (#1049 AC4). Empty list when
+            # no ledger was written (e.g. a <synthetic> network-artifact run).
+            cost_events=cost_events,
         )
     finally:
         if owns_workdir:

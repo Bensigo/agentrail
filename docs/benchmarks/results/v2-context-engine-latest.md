@@ -1,6 +1,6 @@
 # AgentRail Context Engine v2 — Benchmarks
 
-_Measured 2026-06-15 by `scripts/benchmark-v2.py`. Exercises v2's symbol graph (`context def`), call graph (`context impact`), and warm daemon — not v1 retrieval. Scoped to the repos below, not universal guarantees._
+_Measured 2026-06-15 by `agentrail/scripts/benchmark-v2.py`. Exercises v2's symbol graph (`context def`), call graph (`context impact`), and warm daemon — not v1 retrieval. Scoped to the repos below, not universal guarantees._
 
 ## Headline (v2)
 

@@ -192,7 +192,7 @@ context.
 3. Write `agentrail/evals/corpus/<task_id>/task.json` with the required fields
    below. Copy an existing task (e.g. `corpus/precision-at-budget/task.json`) for
    the exact shape.
-4. Run `python -m pytest -q tests/evals/` — the loader validates the new task and
+4. Run `python -m pytest -q agentrail/tests/evals/` — the loader validates the new task and
    `test_corpus_pins.py` enforces the commit-pinning rule.
 
 ### Required `task.json` fields
@@ -234,7 +234,7 @@ instead:
 - **Fix modifies existing files** → pin the parent of the fix merge (`<fix>^1`)
   so the agent's diff has to reproduce the change.
 
-`tests/evals/test_corpus_pins.py` enforces this in a loop over every task: an
+`agentrail/tests/evals/test_corpus_pins.py` enforces this in a loop over every task: an
 empty diff at `commit` must return `False` (the agent's work is required) and the
 reconstructed merged-PR diff must return `True` (the change solves the hidden
 tests). `commit` is also asserted to never equal `source.mergeCommit`.
@@ -389,5 +389,5 @@ human decision — the loop does not flip its own default.
 ## Running the eval tests
 
 ```
-python -m pytest -q tests/evals/
+python -m pytest -q agentrail/tests/evals/
 ```

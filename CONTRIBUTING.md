@@ -53,13 +53,13 @@ built MCP `dist` skip cleanly when those are absent, exactly as they do in CI.
 ### 2. Shell lint
 
 ```bash
-shellcheck install.sh scripts/test-install.sh
+shellcheck install.sh agentrail/scripts/test-install.sh
 ```
 
 ### 3. Installer hermetic test
 
 ```bash
-bash scripts/test-install.sh
+bash agentrail/scripts/test-install.sh
 ```
 
 This exercises the public installer end to end (happy-path install,

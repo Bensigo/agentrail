@@ -17,7 +17,7 @@ Use these terms consistently in context-engine docs, code comments, PR evidence,
 
 ## Internal Architecture
 
-Context-engine implementation lives in the typed Python package under `agentrail/context/`. The public `agentrail context ...` CLI is routed through `agentrail/cli/commands/context.py`; `scripts/agentrail` is only the compatibility launcher.
+Context-engine implementation lives in the typed Python package under `agentrail/context/`. The public `agentrail context ...` CLI is routed through `agentrail/cli/commands/context.py`; `agentrail/scripts/agentrail` is only the compatibility launcher.
 
 Module boundaries:
 
@@ -35,15 +35,15 @@ Future context-engine work should add behavior to these modules and keep JSON se
 Verification for context-engine changes:
 
 ```bash
-bash scripts/test-python
+bash agentrail/scripts/test-python
 npm run typecheck
-bash scripts/test-context-sources
-bash scripts/test-context-index
-bash scripts/test-context-privacy
-bash scripts/test-context-embeddings
-bash scripts/test-context-query
-bash scripts/test-context-packs
-bash scripts/test-context-evaluation
+bash agentrail/scripts/test-context-sources
+bash agentrail/scripts/test-context-index
+bash agentrail/scripts/test-context-privacy
+bash agentrail/scripts/test-context-embeddings
+bash agentrail/scripts/test-context-query
+bash agentrail/scripts/test-context-packs
+bash agentrail/scripts/test-context-evaluation
 ```
 
 ## Core Objects

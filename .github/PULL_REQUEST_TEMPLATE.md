@@ -29,7 +29,7 @@ Heartbeat). No hype.
 <!--
 Paste the proof. Required:
 - Test/lint command tails (see CONTRIBUTING.md): `python -m pytest -q`,
-  `shellcheck install.sh scripts/test-install.sh`, `bash scripts/test-install.sh`.
+  `shellcheck install.sh agentrail/scripts/test-install.sh`, `bash agentrail/scripts/test-install.sh`.
 - For UI-visible surfaces: a screenshot or short video of the actual changed
   surface. Test output is not visual evidence.
 -->

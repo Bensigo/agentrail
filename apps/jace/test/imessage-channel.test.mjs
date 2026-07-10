@@ -45,6 +45,14 @@ test("inbound route verifies the Authorization header and 401s on mismatch", () 
   assert.match(code, /status:\s*401/);
 });
 
+test("enforces a Jace-side sender allowlist before driving a turn", () => {
+  // #1100 AC4: a valid, authenticated webhook from a sender not on
+  // LOOPMESSAGE_ALLOWED_HANDLES is ACKed but drives no turn (open when unset).
+  assert.match(code, /LOOPMESSAGE_ALLOWED_HANDLES/);
+  assert.match(code, /parseAllowedHandles\(/);
+  assert.match(code, /isAllowedSender\(inbound,/);
+});
+
 test("inbound route ACKs 200 and defers the model turn under waitUntil", () => {
   // LoopMessage retries any non-2xx (up to 30×), so we must return 200 fast and
   // do the model turn under waitUntil to avoid duplicate replies.

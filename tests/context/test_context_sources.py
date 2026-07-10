@@ -12,7 +12,7 @@ from agentrail.context.config import (
     DEFAULT_EXCLUDE_GLOBS,
     SecretRedactionConfig,
 )
-from agentrail.context.sources import inventory_sources
+from agentrail.context.sources import authority_for, inventory_sources, source_type_for
 
 # Config equivalent to what `agentrail install` writes (uses the same defaults).
 _DEFAULT_CFG = ContextConfig(
@@ -361,6 +361,48 @@ class ContextSourcesTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             _parse_target(["sources", "--target"])
         self.assertIn("--target requires a directory", str(ctx.exception))
+
+
+class House2DualPathSourceTypeTests(unittest.TestCase):
+    """New House 2 (.agentrail/-rooted) paths must be recognized additively
+    alongside the pre-v2 legacy locations (repo-structure v2 D4/D5)."""
+
+    def test_agentrail_context_md_is_context_doc(self) -> None:
+        self.assertEqual(source_type_for(".agentrail/context.md"), "context_doc")
+
+    def test_agentrail_taste_md_is_taste_doc(self) -> None:
+        self.assertEqual(source_type_for(".agentrail/taste.md"), "taste_doc")
+
+    def test_agentrail_agents_is_agent_doc(self) -> None:
+        self.assertEqual(source_type_for(".agentrail/agents/local.md"), "agent_doc")
+
+    def test_agentrail_memory_is_memory(self) -> None:
+        self.assertEqual(source_type_for(".agentrail/memory/lesson.md"), "memory")
+
+    def test_agentrail_skills_is_skill(self) -> None:
+        self.assertEqual(source_type_for(".agentrail/skills/backend-api/SKILL.md"), "skill")
+
+    def test_legacy_paths_still_recognized(self) -> None:
+        # Regression guard: adding .agentrail/ recognition must not disturb
+        # the pre-v2 legacy checks.
+        self.assertEqual(source_type_for("CONTEXT.md"), "context_doc")
+        self.assertEqual(source_type_for("TASTE.md"), "taste_doc")
+        self.assertEqual(source_type_for("docs/agents/local.md"), "agent_doc")
+        self.assertEqual(source_type_for("docs/memory/lesson.md"), "memory")
+        self.assertEqual(source_type_for("skills/backend-api/SKILL.md"), "skill")
+
+    def test_prd_and_milestones_have_no_agentrail_equivalent(self) -> None:
+        # D5: docs/prd/ and docs/milestones/ are never migrated into
+        # .agentrail/, in either the old or new layout.
+        self.assertEqual(source_type_for(".agentrail/prd/feature.md"), "code")
+        self.assertEqual(source_type_for(".agentrail/milestones/m1.md"), "code")
+
+    def test_agentrail_context_md_is_critical_authority(self) -> None:
+        self.assertEqual(authority_for("context_doc", ".agentrail/context.md"), "critical")
+
+    def test_agentrail_taste_and_agent_doc_are_high_authority(self) -> None:
+        self.assertEqual(authority_for("taste_doc", ".agentrail/taste.md"), "high")
+        self.assertEqual(authority_for("agent_doc", ".agentrail/agents/local.md"), "high")
 
 
 if __name__ == "__main__":

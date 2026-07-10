@@ -32,13 +32,13 @@ def source_type_for(relative_path: str) -> SourceType:
         return "taste_doc"
     if relative_path == ".agentrail/taste.md":
         return "taste_doc"
-    if relative_path.startswith(("docs/agents/", "templates/docs/agents/", ".agentrail/agents/")):
+    if relative_path.startswith(("docs/agents/", "agentrail/templates/docs/agents/", ".agentrail/agents/")):
         return "agent_doc"
-    if relative_path.startswith(("docs/memory/", "templates/docs/memory/", ".agentrail/memory/")):
+    if relative_path.startswith(("docs/memory/", "agentrail/templates/docs/memory/", ".agentrail/memory/")):
         return "memory"
-    if relative_path.startswith(("docs/prd/", "templates/docs/prd/")):
+    if relative_path.startswith(("docs/prd/", "agentrail/templates/docs/prd/")):
         return "prd"
-    if relative_path.startswith(("docs/milestones/", "templates/docs/milestones/")):
+    if relative_path.startswith(("docs/milestones/", "agentrail/templates/docs/milestones/")):
         return "milestone"
     if relative_path in {".agentrail/state.json", ".agentrail/config.json"}:
         return "agentrail_state"

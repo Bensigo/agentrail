@@ -11,8 +11,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "telegram:poll": "tsx --env-file=.env.local scripts/telegram-poll.ts"
+    "test": "vitest run"
   },
   "dependencies": {
     "@agentrail/auth": "workspace:*",

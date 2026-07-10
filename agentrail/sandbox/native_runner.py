@@ -76,7 +76,7 @@ Runner = object
 
 
 # ---------------------------------------------------------------------------
-# Result parsing — mirrors docker/runner/entrypoint.sh's run.json reader so the
+# Result parsing — mirrors agentrail/docker/runner/entrypoint.sh's run.json reader so the
 # host path and the container path produce identical verdicts.
 # ---------------------------------------------------------------------------
 

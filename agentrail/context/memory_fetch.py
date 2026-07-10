@@ -16,7 +16,7 @@ timeout is short, and EVERY failure is non-fatal. The only difference is
 direction: this is the first context *pull* (GET
 ``/api/v1/context/memory-items``), whereas snapshot_push is push-only.
 
-Design points, each tested in ``tests/context/test_memory_fetch.py``:
+Design points, each tested in ``agentrail/tests/context/test_memory_fetch.py``:
 
 * **Non-fatal, structurally (AC2).** The entire body runs inside one
   ``try/except Exception``: no network, auth, parse, or filesystem failure can

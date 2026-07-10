@@ -404,9 +404,9 @@ def is_source_checkout(target: str) -> bool:
     pkg = p / "package.json"
     if not pkg.exists():
         return False
-    if not (p / "templates" / "scripts").is_dir():
+    if not (p / "agentrail" / "templates" / "scripts").is_dir():
         return False
-    exe = p / "scripts" / "agentrail"
+    exe = p / "agentrail" / "scripts" / "agentrail"
     if not (exe.exists() and os.access(exe, os.X_OK)):
         return False
     try:

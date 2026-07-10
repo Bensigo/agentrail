@@ -11,9 +11,13 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 include = ["agentrail*"]
+exclude = ["agentrail.tests", "agentrail.tests.*"]
 
 [tool.setuptools.package-data]
 agentrail = ["templates/**", "skills/**"]
+
+[tool.pytest.ini_options]
+testpaths = ["agentrail/tests"]
 
 [build-system]
 requires = ["setuptools>=61"]

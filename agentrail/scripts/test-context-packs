@@ -1,0 +1,466 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+agentrail="${repo_dir}/agentrail/scripts/agentrail"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+fixture="${tmp_dir}/installed"
+mkdir -p "$fixture"
+git -C "$fixture" init --quiet
+"$agentrail" install --target "$fixture" >"${tmp_dir}/install.out"
+
+node - "${fixture}/.agentrail/state.json" <<'NODE'
+const fs = require("fs");
+const statePath = process.argv[2];
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+state.workflow = state.workflow && typeof state.workflow === "object" ? state.workflow : {};
+state.workflow.activeIssue = 79;
+state.workflow.activePhase = "execute";
+state.workflow.goals = [
+  {
+    id: "issue-79",
+    kind: "issue",
+    source: "github:issue/79",
+    status: "active",
+    summary: "Generate auditable context packs",
+    successCriteria: [
+      "Issue context packs write JSON and Markdown.",
+      "Every included and excluded item has a reason and citation."
+    ],
+    nonGoals: [
+      "Do not build a hosted context service."
+    ],
+    activeIssue: 79,
+    activePullRequest: 179,
+    activeMilestone: null,
+    createdAt: "2026-06-04T09:00:00Z",
+    updatedAt: "2026-06-04T09:10:00Z"
+  },
+  {
+    id: "issue-12",
+    kind: "issue",
+    source: "github:issue/12",
+    status: "active",
+    summary: "Unrelated deployment cleanup",
+    successCriteria: ["Deploy issue #12."],
+    nonGoals: [],
+    activeIssue: 12,
+    activePullRequest: null,
+    activeMilestone: null,
+    createdAt: "2026-06-04T08:00:00Z",
+    updatedAt: "2026-06-04T08:05:00Z"
+  }
+];
+fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+NODE
+
+mkdir -p \
+  "${fixture}/docs/agents" \
+  "${fixture}/docs/memory" \
+  "${fixture}/docs/prd" \
+  "${fixture}/.agentrail/runs/issue-79-retry" \
+  "${fixture}/.agentrail/runs/issue-79-blocked" \
+  "${fixture}/.agentrail/runs/issue-12-retry" \
+  "${fixture}/src"
+
+cat >"${fixture}/docs/agents/issue-79.md" <<'DOC'
+# Issue 79
+
+Issue #79 builds auditable context packs with required context, likely docs, likely files, memory, prior mistakes, active state, tools, skills, exclusions, and open questions.
+DOC
+
+cat >"${fixture}/docs/agents/pr-179.md" <<'DOC'
+# PR 179
+
+PR #179 at /pull/179 reviews issue #79 context pack generation and needs review-specific context.
+DOC
+
+cat >"${fixture}/docs/prd/context-engine.md" <<'DOC'
+# Context Engine PRD
+
+Context packs for issue #79 and PR #179 must be local-first, auditable, and source-cited.
+DOC
+
+cat >"${fixture}/docs/memory/context-pack-lesson.md" <<'DOC'
+---
+kind: lesson
+source: issue-79
+confidence: high
+created_at: 2026-06-04T09:00:00Z
+expires_at: 2026-12-31T00:00:00Z
+---
+# Context Pack Lesson
+
+Every included and excluded item for issue #79 needs a reason and citation.
+DOC
+
+cat >"${fixture}/.agentrail/runs/issue-79-retry/findings.json" <<'JSON'
+{
+  "issue": 79,
+  "findings": [
+    {
+      "severity": "high",
+      "message": "Prior mistake for issue #79: missing excluded-context reasons."
+    }
+  ]
+}
+JSON
+
+cat >"${fixture}/.agentrail/runs/issue-79-blocked/run.json" <<'JSON'
+{
+  "targetIssue": 79,
+  "status": "blocked",
+  "blockedReason": "Blocked run for issue #79: context pack output omitted verifier failure evidence."
+}
+JSON
+
+cat >"${fixture}/.agentrail/runs/issue-12-retry/findings.json" <<'JSON'
+{
+  "issue": 12,
+  "findings": [
+    {
+      "severity": "high",
+      "message": "Unrelated deployment verifier failure: missing production rollout check."
+    }
+  ]
+}
+JSON
+
+cat >"${fixture}/docs/agents/review-fix-context-pack.md" <<'DOC'
+# [review-fix] PR #179: Missing context-pack verification evidence
+
+Labels: review-fix, ready-for-agent
+Linked issue: #79
+State: OPEN
+
+Expected correction: include the fixture command output that proves context-pack acceptance criteria.
+DOC
+
+cat >"${fixture}/docs/agents/memory-suggestion-context-pack.md" <<'DOC'
+# [memory-suggestion] PR #179: Do not omit prior verifier failures
+
+Labels: memory-suggestion, ready-for-agent
+Linked issue: #79
+State: OPEN
+
+Proposed memory: Context-pack changes must include same-issue verifier failures on retry.
+DOC
+
+cat >"${fixture}/docs/memory/failure-patterns.md" <<'DOC'
+# Failure Patterns
+
+## Missing context-pack verifier evidence
+
+- kind: failure-pattern
+- source: issue-79
+- confidence: verified
+- created_at: 2026-06-04
+
+Agents may omit failed verifier findings when retrying context-pack work. Prevention: include the matching findings.json artifact in prior mistakes before retrying.
+
+## Stale deployment rollout note
+
+- kind: failure-pattern
+- source: issue-12
+- confidence: stale
+- created_at: 2024-01-01
+
+Old deployment review notes should be demoted for context-pack tasks.
+DOC
+
+cat >"${fixture}/src/context_pack.py" <<'PY'
+def issue_79_context_pack_subject():
+    return "issue #79 context pack generation"
+PY
+
+"$agentrail" context build issue 79 --phase execute --target "$fixture" --json >"${tmp_dir}/issue-pack.out"
+"$agentrail" context build pr 179 --phase review --target "$fixture" --json >"${tmp_dir}/pr-pack.out"
+
+node - "${tmp_dir}/issue-pack.out" "${tmp_dir}/pr-pack.out" <<'NODE'
+const fs = require("fs");
+for (const outputPath of process.argv.slice(2)) {
+  const output = JSON.parse(fs.readFileSync(outputPath, "utf8"));
+  if (!output.retrievalBudget || output.retrievalBudget.maxItems !== 20 || output.retrievalBudget.maxTokens !== 6000) {
+    console.error(`context build output retrieval budget is wrong: ${JSON.stringify(output.retrievalBudget)}`);
+    process.exit(1);
+  }
+  if (JSON.stringify(output.compiler?.tokenPack?.budget) !== JSON.stringify(output.retrievalBudget)) {
+    console.error(`context build compiler token budget does not match retrieval budget: ${JSON.stringify(output)}`);
+    process.exit(1);
+  }
+}
+NODE
+
+issue_json_path="$(node - "${tmp_dir}/issue-pack.out" <<'NODE'
+const fs = require("fs");
+const output = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(output.jsonPath);
+NODE
+)"
+issue_md_path="$(node - "${tmp_dir}/issue-pack.out" <<'NODE'
+const fs = require("fs");
+const output = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(output.markdownPath);
+NODE
+)"
+pr_json_path="$(node - "${tmp_dir}/pr-pack.out" <<'NODE'
+const fs = require("fs");
+const output = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(output.jsonPath);
+NODE
+)"
+pr_pack_id="$(node - "${tmp_dir}/pr-pack.out" <<'NODE'
+const fs = require("fs");
+const output = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(output.packId);
+NODE
+)"
+
+test -f "${fixture}/${issue_json_path}" || { echo "fixture issue JSON pack missing" >&2; exit 1; }
+test -f "${fixture}/${issue_md_path}" || { echo "fixture issue Markdown pack missing" >&2; exit 1; }
+test -f "${fixture}/${pr_json_path}" || { echo "fixture PR JSON pack missing" >&2; exit 1; }
+
+node - "${fixture}/${issue_json_path}" "${fixture}/${pr_json_path}" <<'NODE'
+const fs = require("fs");
+const issue = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const pr = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const sections = [
+  "requiredContext",
+  "likelyFiles",
+  "likelyDocs",
+  "relevantMemory",
+  "priorMistakes",
+  "activeState",
+  "availableTools",
+  "availableSkills",
+  "goals",
+  "excludedContext",
+  "openQuestions",
+];
+for (const pack of [issue, pr]) {
+  for (const section of sections) {
+    if (!Array.isArray(pack[section])) {
+      console.error(`${pack.packId} missing section ${section}`);
+      process.exit(1);
+    }
+    for (const item of pack[section]) {
+      if (!item.reason || !item.citation) {
+        console.error(`${pack.packId} ${section} item is not auditable: ${JSON.stringify(item)}`);
+        process.exit(1);
+      }
+    }
+  }
+  if (!pack.generatedAt || pack.index.version !== "context-index-v1" || !pack.retrievalBudget || !pack.provider || !pack.audit) {
+    console.error(`${pack.packId} missing metadata`);
+    process.exit(1);
+  }
+  const compiler = pack.compiler;
+  if (!compiler || compiler.contractVersion !== "context-compiler-v1") {
+    console.error(`${pack.packId} omitted context compiler contract`);
+    process.exit(1);
+  }
+  for (const section of ["input", "anchors", "candidates", "graphExpansion", "policy", "rerank", "tokenPack", "citations", "reasons", "metrics", "compatibility"]) {
+    if (!(section in compiler)) {
+      console.error(`${pack.packId} compiler missing ${section}`);
+      process.exit(1);
+    }
+  }
+  if (compiler.tokenPack.budget.maxItems !== 20 || compiler.tokenPack.budget.maxTokens !== 6000) {
+    console.error(`${pack.packId} compiler token budget is wrong: ${JSON.stringify(compiler.tokenPack.budget)}`);
+    process.exit(1);
+  }
+  if (JSON.stringify(compiler.tokenPack.budget) !== JSON.stringify(pack.retrievalBudget)) {
+    console.error(`${pack.packId} compiler token budget does not match pack retrieval budget: ${JSON.stringify({ compiler: compiler.tokenPack.budget, pack: pack.retrievalBudget })}`);
+    process.exit(1);
+  }
+  if (!Array.isArray(compiler.anchors) || compiler.anchors.length === 0) {
+    console.error(`${pack.packId} compiler anchors were not exposed in pack metadata`);
+    process.exit(1);
+  }
+  if (compiler.graphExpansion.status !== "not_available" || compiler.graphExpansion.maxHops !== 2) {
+    console.error(`${pack.packId} graph expansion metadata is wrong: ${JSON.stringify(compiler.graphExpansion)}`);
+    process.exit(1);
+  }
+  if (compiler.policy.sourceCustody.fullSourceUploadAllowed || compiler.policy.sourceCustody.snippetUploadAllowed) {
+    console.error(`${pack.packId} source custody policy allowed source upload by default`);
+    process.exit(1);
+  }
+  if (compiler.policy.deniedSourceHandling !== "excluded_context_only") {
+    console.error(`${pack.packId} denied source handling is wrong: ${compiler.policy.deniedSourceHandling}`);
+    process.exit(1);
+  }
+  if (compiler.metrics.citationCoverage !== 1 || compiler.metrics.reasonCoverage !== 1) {
+    console.error(`${pack.packId} compiler coverage metrics are wrong: ${JSON.stringify(compiler.metrics)}`);
+    process.exit(1);
+  }
+  if (compiler.tokenPack.selectedCandidateIds.length !== pack.included.length) {
+    console.error(`${pack.packId} token pack selected IDs do not map to included context`);
+    process.exit(1);
+  }
+  if (!compiler.candidates.some((candidate) => candidate.kind === "procedural_guidance" && candidate.sourceType === "skill")) {
+    console.error(`${pack.packId} compiler did not distinguish skills as procedural guidance`);
+    process.exit(1);
+  }
+  if (!compiler.candidates.some((candidate) => candidate.kind === "procedural_guidance" && candidate.sourceType === "tool")) {
+    console.error(`${pack.packId} compiler did not distinguish tools as procedural guidance`);
+    process.exit(1);
+  }
+  if (!compiler.candidates.some((candidate) => candidate.kind === "excluded_context")) {
+    console.error(`${pack.packId} compiler did not represent excluded context`);
+    process.exit(1);
+  }
+  const excludedCandidateIds = compiler.candidates
+    .filter((candidate) => candidate.kind === "excluded_context")
+    .map((candidate) => candidate.id);
+  if (new Set(excludedCandidateIds).size !== excludedCandidateIds.length) {
+    console.error(`${pack.packId} excluded compiler candidate IDs were not unique: ${JSON.stringify(excludedCandidateIds)}`);
+    process.exit(1);
+  }
+  for (const candidate of compiler.candidates) {
+    const policy = candidate.policy || {};
+    if (!policy.sourceCustody || policy.sourceCustody.mode !== "metadata_only" || policy.sourceCustody.snippetUploadAllowed !== false || policy.sourceCustody.snippetUploadEligible !== false) {
+      console.error(`${pack.packId} candidate missing source custody policy: ${JSON.stringify(candidate)}`);
+      process.exit(1);
+    }
+    if (!policy.redaction || !["none", "redacted", "excluded"].includes(policy.redaction.state)) {
+      console.error(`${pack.packId} candidate missing redaction state: ${JSON.stringify(candidate)}`);
+      process.exit(1);
+    }
+    if (!policy.authorityPolicy || !["boosted", "neutral", "demoted", "excluded"].includes(policy.authorityPolicy.effect)) {
+      console.error(`${pack.packId} candidate missing authority policy effect: ${JSON.stringify(candidate)}`);
+      process.exit(1);
+    }
+    if (!policy.freshnessPolicy || !["neutral", "demoted", "excluded"].includes(policy.freshnessPolicy.effect)) {
+      console.error(`${pack.packId} candidate missing freshness policy effect: ${JSON.stringify(candidate)}`);
+      process.exit(1);
+    }
+  }
+  if (compiler.compatibility.packIncludedMapTo !== "compiler.tokenPack.selectedCandidateIds" || compiler.compatibility.packExcludedMapTo !== "compiler.candidates[kind=excluded_context]") {
+    console.error(`${pack.packId} compiler compatibility mapping is wrong: ${JSON.stringify(compiler.compatibility)}`);
+    process.exit(1);
+  }
+}
+if (!issue.compiler.anchors.some((anchor) => anchor.kind === "issue" && anchor.source === "target" && anchor.normalized === "#79")) {
+  console.error(`issue pack compiler anchors did not include target issue #79: ${JSON.stringify(issue.compiler.anchors)}`);
+  process.exit(1);
+}
+if (!pr.compiler.anchors.some((anchor) => anchor.kind === "pull_request" && anchor.source === "target" && anchor.normalized === "PR #179")) {
+  console.error(`PR pack compiler anchors did not include target PR #179: ${JSON.stringify(pr.compiler.anchors)}`);
+  process.exit(1);
+}
+if (!issue.likelyFiles.some((item) => item.path === "src/context_pack.py")) {
+  console.error("issue pack did not include likely source file");
+  process.exit(1);
+}
+if (!issue.relevantMemory.some((item) => item.path === "docs/memory/context-pack-lesson.md")) {
+  console.error("issue pack did not include relevant memory");
+  process.exit(1);
+}
+if (!issue.priorMistakes.some((item) => item.path.endsWith("findings.json"))) {
+  console.error("issue pack did not include prior mistake artifact");
+  process.exit(1);
+}
+if (!issue.priorMistakes.some((item) => item.path.endsWith("run.json"))) {
+  console.error("issue pack did not include blocked run reason");
+  process.exit(1);
+}
+if (!issue.priorMistakes.some((item) => item.path === "docs/agents/review-fix-context-pack.md")) {
+  console.error("issue pack did not include related review-fix issue");
+  process.exit(1);
+}
+if (!issue.priorMistakes.some((item) => item.path === "docs/agents/memory-suggestion-context-pack.md")) {
+  console.error("issue pack did not include related memory-suggestion issue");
+  process.exit(1);
+}
+if (!issue.priorMistakes.some((item) => item.path === "docs/memory/failure-patterns.md")) {
+  console.error("issue pack did not include failure-pattern memory");
+  process.exit(1);
+}
+if (issue.priorMistakes.some((item) => item.path.includes("issue-12-retry"))) {
+  console.error("issue pack included unrelated verifier failure");
+  process.exit(1);
+}
+for (const item of issue.priorMistakes) {
+  for (const field of ["source", "whyItMatters", "preventionGuidance"]) {
+    if (!item[field]) {
+      console.error(`prior mistake missing ${field}: ${JSON.stringify(item)}`);
+      process.exit(1);
+    }
+  }
+}
+if (!issue.availableSkills.some((item) => item.path.endsWith("SKILL.md"))) {
+  console.error("issue pack did not include available skills");
+  process.exit(1);
+}
+if (!issue.goals.some((item) => item.id === "issue-79" && item.successCriteria.length === 2 && item.nonGoals.length === 1)) {
+  console.error("issue pack did not include relevant active goal");
+  process.exit(1);
+}
+if (issue.goals.some((item) => item.id === "issue-12")) {
+  console.error("issue pack included unrelated active goal");
+  process.exit(1);
+}
+if (!/Generate auditable context packs/.test(issue.goal.summary || "")) {
+  console.error("issue pack singular goal was not framed from the relevant active goal");
+  process.exit(1);
+}
+if (!pr.likelyDocs.some((item) => item.path === "docs/agents/pr-179.md")) {
+  console.error("PR review pack did not include review-specific doc");
+  process.exit(1);
+}
+if (!pr.goals.some((item) => item.id === "issue-79" && item.activePullRequest === 179)) {
+  console.error("PR review pack did not include PR-relevant goal");
+  process.exit(1);
+}
+if (pr.goals.some((item) => item.id === "issue-12")) {
+  console.error("PR review pack included unrelated active goal");
+  process.exit(1);
+}
+NODE
+
+"$agentrail" context show "$pr_pack_id" --target "$fixture" >"${tmp_dir}/show.out"
+"$agentrail" context explain "$pr_pack_id" --target "$fixture" --json >"${tmp_dir}/explain.json"
+
+assert_grep "Context Pack: pr #179 review" "${tmp_dir}/show.out" "context show did not render PR review pack"
+assert_grep "Required Context" "${tmp_dir}/show.out" "context show omitted required context section"
+assert_grep '"likelyDocs"' "${tmp_dir}/explain.json" "context explain omitted likelyDocs section"
+assert_grep '"excludedCount"' "${tmp_dir}/explain.json" "context explain omitted exclusion count"
+
+echo "context packs test passed"
+echo "sample issue JSON pack:"
+node - "${fixture}/${issue_json_path}" <<'NODE'
+const fs = require("fs");
+const pack = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(JSON.stringify({
+  packId: pack.packId,
+  target: pack.target,
+  requiredContext: pack.requiredContext.map((item) => ({ path: item.path, reason: item.reason, citation: item.citation })),
+  likelyFiles: pack.likelyFiles.map((item) => ({ path: item.path, reason: item.reason, citation: item.citation })),
+  priorMistakes: pack.priorMistakes.map((item) => ({ path: item.path, source: item.source, whyItMatters: item.whyItMatters, preventionGuidance: item.preventionGuidance, score: item.score?.final })),
+  goals: pack.goals.map((item) => ({ id: item.id, status: item.status, summary: item.summary, successCriteria: item.successCriteria, nonGoals: item.nonGoals })),
+  excludedContext: pack.excludedContext.slice(0, 3).map((item) => ({ path: item.path, reason: item.reason, citation: item.citation })),
+}, null, 2));
+NODE
+echo "sample issue Markdown pack:"
+sed -n '1,80p' "${fixture}/${issue_md_path}"
+echo "sample PR explain output:"
+cat "${tmp_dir}/explain.json"

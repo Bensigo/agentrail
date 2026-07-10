@@ -685,12 +685,12 @@ The saved context pack at `jsonPath` keeps the existing section arrays and also 
 
 These tests should protect the contract boundary:
 
-- `tests/cli/test_context_cli.py`: provider-facing CLI JSON shape for query, build, show, explain, and evaluate.
-- `tests/context/test_context_modules.py`: module-level context query, context pack, evaluation, redaction, and source inventory behavior.
-- `bash scripts/test-context-query`: public context query behavior, citations, reasons, exclusions, and score metadata.
-- `bash scripts/test-context-packs`: context pack JSON and Markdown behavior, included sections, excluded sections, goals, skills, and audit metadata.
-- `bash scripts/test-context-evaluation`: retrieval quality metrics and required-source inclusion.
-- `bash scripts/test-context-privacy`: denied source and redaction behavior.
-- `bash scripts/test-python`: broad Python unit test suite.
+- `agentrail/tests/cli/test_context_cli.py`: provider-facing CLI JSON shape for query, build, show, explain, and evaluate.
+- `agentrail/tests/context/test_context_modules.py`: module-level context query, context pack, evaluation, redaction, and source inventory behavior.
+- `bash agentrail/scripts/test-context-query`: public context query behavior, citations, reasons, exclusions, and score metadata.
+- `bash agentrail/scripts/test-context-packs`: context pack JSON and Markdown behavior, included sections, excluded sections, goals, skills, and audit metadata.
+- `bash agentrail/scripts/test-context-evaluation`: retrieval quality metrics and required-source inclusion.
+- `bash agentrail/scripts/test-context-privacy`: denied source and redaction behavior.
+- `bash agentrail/scripts/test-python`: broad Python unit test suite.
 
 Tests should assert observable output at CLI or module boundaries. They should not depend on private scoring details unless the field is part of this contract.

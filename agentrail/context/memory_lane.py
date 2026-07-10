@@ -6,7 +6,7 @@ Postgres. This module is the FACTORY read half: it selects a small, size-capped
 set of those items into a context pack's *memory lane*.
 
 Three properties are load-bearing and each is tested (see
-``tests/context/test_memory_lane.py``):
+``agentrail/tests/context/test_memory_lane.py``):
 
 * **Untrusted / advisory.** Memory text originates in chat and crosses the trust
   boundary into an unrestricted-shell runner's prompt — a prompt-injection

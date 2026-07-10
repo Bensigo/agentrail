@@ -1,0 +1,941 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+agentrail="${repo_dir}/agentrail/scripts/agentrail"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+coverage_file="${tmp_dir}/graph-coverage.txt"
+touch "$coverage_file"
+
+mark_coverage() {
+  printf '%s\n' "$1" >>"$coverage_file"
+}
+
+assert_graph_coverage() {
+  local missing=0
+  for item in \
+    "snapshot-metadata" \
+    "source-custody" \
+    "codebase-unit-monorepo" \
+    "codebase-unit-simple" \
+    "codebase-unit-weak-manifest" \
+    "codebase-unit-config-override" \
+    "file-nodes" \
+    "symbol-nodes" \
+    "import-edges" \
+    "test-nodes" \
+    "test-source-edges" \
+    "unresolved-relationships" \
+    "deterministic-repeat"; do
+    if ! grep -qx "$item" "$coverage_file"; then
+      echo "missing local Code Graph fixture coverage: $item" >&2
+      missing=1
+    fi
+  done
+  if [[ "$missing" -ne 0 ]]; then
+    echo "--- graph coverage ---" >&2
+    sort -u "$coverage_file" >&2
+    exit 1
+  fi
+}
+
+fixture="${tmp_dir}/installed"
+mkdir -p "$fixture"
+git -C "$fixture" init --quiet
+"$agentrail" install --target "$fixture" >"${tmp_dir}/install.out"
+
+mkdir -p \
+  "${fixture}/src" \
+  "${fixture}/lib" \
+  "${fixture}/tests" \
+  "${fixture}/docs/agents" \
+  "${fixture}/docs/memory" \
+  "${fixture}/docs/prd" \
+  "${fixture}/docs/milestones" \
+  "${fixture}/skills/backend-api" \
+  "${fixture}/.agentrail/runs/run-1" \
+  "${fixture}/ignored"
+
+cat >"${fixture}/src/app.js" <<'JS'
+const fs = require("fs");
+const stable = require("./stable");
+
+function loadAgentRailConfig() {
+  return fs.readFileSync(".agentrail/config.json", "utf8");
+}
+
+const message = "first";
+module.exports = { loadAgentRailConfig, message, stable };
+JS
+cat >"${fixture}/src/stable.js" <<'JS'
+module.exports = { stable: true };
+JS
+cat >"${fixture}/src/app.py" <<'PY'
+def loadAgentRailConfig():
+    return "python-target"
+PY
+cat >"${fixture}/src/stable.test.js" <<'JS'
+test("stable path convention", () => {});
+JS
+cat >"${fixture}/src/deleted.js" <<'JS'
+module.exports = { deleted: true };
+JS
+cat >"${fixture}/src/duplicate.py" <<'PY'
+def duplicate():
+    return "src"
+PY
+cat >"${fixture}/lib/duplicate.py" <<'PY'
+def duplicate():
+    return "lib"
+PY
+cat >"${fixture}/tests/test_app.py" <<'PY'
+from src.app import loadAgentRailConfig
+
+def test_load_agentrail_config_import_relationship():
+    assert loadAgentRailConfig
+PY
+cat >"${fixture}/tests/test_duplicate.py" <<'PY'
+def test_ambiguous_duplicate_name():
+    assert True
+PY
+cat >"${fixture}/docs/agents/guide.md" <<'DOC'
+---
+kind: agent-guide
+---
+Preamble requirement links #76 before the first heading and must remain retrievable.
+
+# Agent Guide
+
+This guide links #76 for retrieval.
+
+## Context Packs
+
+Context packs include source-citable chunks.
+
+### Chunk Evidence
+
+Chunk evidence explains why a retrieval result matched.
+
+## Overview
+
+First overview section.
+
+## Overview
+
+Second overview section with the same heading text.
+DOC
+cat >"${fixture}/docs/agents/source-wide-link.md" <<'DOC'
+# Source Wide Link
+
+This intro links #76, but the repeated noise headings below should not all inherit the issue link score.
+
+## Noise 01
+
+Unrelated operational notes.
+
+## Noise 02
+
+Unrelated operational notes.
+
+## Noise 03
+
+Unrelated operational notes.
+
+## Noise 04
+
+Unrelated operational notes.
+
+## Noise 05
+
+Unrelated operational notes.
+
+## Noise 06
+
+Unrelated operational notes.
+
+## Noise 07
+
+Unrelated operational notes.
+
+## Noise 08
+
+Unrelated operational notes.
+
+## Noise 09
+
+Unrelated operational notes.
+
+## Noise 10
+
+Unrelated operational notes.
+
+## Noise 11
+
+Unrelated operational notes.
+
+## Noise 12
+
+Unrelated operational notes.
+
+## Noise 13
+
+Unrelated operational notes.
+
+## Noise 14
+
+Unrelated operational notes.
+
+## Noise 15
+
+Unrelated operational notes.
+
+## Noise 16
+
+Unrelated operational notes.
+
+## Noise 17
+
+Unrelated operational notes.
+
+## Noise 18
+
+Unrelated operational notes.
+
+## Noise 19
+
+Unrelated operational notes.
+
+## Noise 20
+
+Unrelated operational notes.
+
+## Noise 21
+
+Unrelated operational notes.
+
+## Noise 22
+
+Unrelated operational notes.
+DOC
+cat >"${fixture}/docs/memory/lesson.md" <<'DOC'
+---
+kind: lesson
+source: issue-76
+confidence: high
+created_at: 2026-06-04T09:00:00Z
+expires_at: 2026-12-31T00:00:00Z
+---
+# Lesson
+
+Memory metadata must survive chunking for #76.
+DOC
+cat >"${fixture}/docs/prd/feature.md" <<'DOC'
+# Feature PRD
+DOC
+cat >"${fixture}/docs/milestones/m1.md" <<'DOC'
+# Milestone
+DOC
+cat >"${fixture}/skills/backend-api/SKILL.md" <<'DOC'
+# Backend API
+DOC
+cat >"${fixture}/.agentrail/runs/run-1/findings.json" <<'JSON'
+{"findings":[]}
+JSON
+printf 'binary\0file' >"${fixture}/src/image.bin"
+cat >"${fixture}/.gitignore" <<'GITIGNORE'
+ignored/
+GITIGNORE
+cat >"${fixture}/ignored/skip.md" <<'DOC'
+# Ignored
+DOC
+git -C "$fixture" config user.email "agentrail@example.com"
+git -C "$fixture" config user.name "AgentRail Test"
+git -C "$fixture" add .
+git -C "$fixture" commit --quiet -m "Initial fixture"
+
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/index-1.out"
+assert_grep '"providerMode": "disabled"' "${tmp_dir}/index-1.out" "context index did not report local-only provider mode"
+assert_grep '"indexed":' "${tmp_dir}/index-1.out" "context index did not report indexed count"
+assert_grep '"skipped":' "${tmp_dir}/index-1.out" "context index did not report skipped count"
+
+index_file="${fixture}/.agentrail/context/index/index.json"
+sources_file="${fixture}/.agentrail/context/index/sources.json"
+test -f "$index_file" || { echo "index file was not written" >&2; exit 1; }
+test -f "$sources_file" || { echo "sources file was not written" >&2; exit 1; }
+
+node - "$index_file" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const byPath = new Map(index.records.map((record) => [record.path, record]));
+const expectedTypes = new Map([
+  ["src/app.js", "code"],
+  ["CONTEXT.md", "context_doc"],
+  ["TASTE.md", "taste_doc"],
+  ["docs/agents/guide.md", "agent_doc"],
+  ["docs/memory/lesson.md", "memory"],
+  ["docs/prd/feature.md", "prd"],
+  ["docs/milestones/m1.md", "milestone"],
+  [".agentrail/state.json", "agentrail_state"],
+  [".agentrail/runs/run-1/findings.json", "run_artifact"],
+  ["skills/backend-api/SKILL.md", "skill"],
+]);
+for (const [path, sourceType] of expectedTypes) {
+  const record = byPath.get(path);
+  if (!record) {
+    console.error(`missing indexed record: ${path}`);
+    process.exit(1);
+  }
+  if (record.sourceType !== sourceType) {
+    console.error(`wrong sourceType for ${path}: ${record.sourceType}`);
+    process.exit(1);
+  }
+  for (const field of ["path", "sourceType", "contentHash", "modifiedAt", "authority", "freshness"]) {
+    if (!(field in record)) {
+      console.error(`missing ${field} for ${path}`);
+      process.exit(1);
+    }
+  }
+  if (!String(record.contentHash).startsWith("sha256:")) {
+    console.error(`content hash is not sha256 for ${path}`);
+    process.exit(1);
+  }
+  if (record.freshness.status !== "current") {
+    console.error(`freshness is not current for ${path}`);
+    process.exit(1);
+  }
+}
+const skippedPaths = new Set((index.skipped || []).map((record) => record.path));
+if (!skippedPaths.has("src/image.bin")) {
+  console.error("binary file was not recorded as skipped");
+  process.exit(1);
+}
+if (Array.from(byPath.keys()).some((path) => path.includes("ignored/skip.md"))) {
+  console.error("gitignored file was indexed");
+  process.exit(1);
+}
+if (!Array.isArray(index.chunks) || index.chunks.length === 0) {
+  console.error("index did not include chunks");
+  process.exit(1);
+}
+const guide = byPath.get("docs/agents/guide.md");
+if (!guide.chunkIds || guide.chunkIds.length < 3) {
+  console.error("markdown source did not list heading chunk IDs");
+  process.exit(1);
+}
+const preambleChunk = index.chunks.find((chunk) => chunk.path === "docs/agents/guide.md" && chunk.citation === "docs/agents/guide.md#preamble");
+if (!preambleChunk) {
+  console.error("markdown preamble chunk before first heading missing");
+  process.exit(1);
+}
+if (!preambleChunk.content.includes("Preamble requirement links #76")) {
+  console.error("markdown preamble content was not preserved");
+  process.exit(1);
+}
+const guideChunk = index.chunks.find((chunk) => chunk.path === "docs/agents/guide.md" && Array.isArray(chunk.headingPath) && chunk.headingPath.join(" > ") === "Agent Guide > Context Packs > Chunk Evidence");
+if (!guideChunk) {
+  console.error("markdown heading chunk with parent heading path missing");
+  process.exit(1);
+}
+if (guideChunk.citation !== "docs/agents/guide.md#chunk-evidence") {
+  console.error(`markdown chunk citation was not heading-based: ${guideChunk.citation}`);
+  process.exit(1);
+}
+if (guideChunk.parentContext !== "Agent Guide > Context Packs") {
+  console.error(`markdown chunk parent context missing: ${guideChunk.parentContext}`);
+  process.exit(1);
+}
+const overviewChunks = index.chunks.filter((chunk) => chunk.path === "docs/agents/guide.md" && chunk.headingPath.join(" > ") === "Agent Guide > Overview");
+if (overviewChunks.length !== 2) {
+  console.error(`expected two repeated overview chunks, found ${overviewChunks.length}`);
+  process.exit(1);
+}
+const overviewIds = new Set(overviewChunks.map((chunk) => chunk.id));
+if (overviewIds.size !== 2) {
+  console.error(`repeated heading chunk IDs were not unique: ${JSON.stringify(Array.from(overviewIds))}`);
+  process.exit(1);
+}
+const overviewCitations = overviewChunks.map((chunk) => chunk.citation).sort();
+if (!overviewCitations.includes("docs/agents/guide.md#overview") || !overviewCitations.includes("docs/agents/guide.md#overview-2")) {
+  console.error(`repeated heading citations were not unique: ${JSON.stringify(overviewCitations)}`);
+  process.exit(1);
+}
+// Symbol-aware chunking: src/app.js has a preamble (requires) + symbol chunk (loadAgentRailConfig)
+const codeChunks = index.chunks.filter((chunk) => chunk.path === "src/app.js");
+if (!codeChunks.length) {
+  console.error("code chunk missing for src/app.js");
+  process.exit(1);
+}
+// Check that every chunk has the symbol and kind fields (null for non-symbol chunks)
+for (const c of codeChunks) {
+  if (!("symbol" in c) || !("kind" in c)) {
+    console.error(`code chunk missing symbol/kind fields: ${JSON.stringify(c.citation)}`);
+    process.exit(1);
+  }
+}
+// Find the preamble chunk (lines before the first symbol) and verify import hints
+const codePreambleChunk = codeChunks.find((c) => c.citation === "src/app.js#preamble");
+if (!codePreambleChunk) {
+  console.error("preamble chunk missing for src/app.js (expected lines before first symbol)");
+  process.exit(1);
+}
+if (codePreambleChunk.language !== "javascript") {
+  console.error(`preamble chunk language missing: ${codePreambleChunk.language}`);
+  process.exit(1);
+}
+if (!codePreambleChunk.importHints.includes('require("fs")')) {
+  console.error(`preamble chunk import hint missing: ${JSON.stringify(codePreambleChunk.importHints)}`);
+  process.exit(1);
+}
+// Find the symbol-aware chunk for loadAgentRailConfig
+const symbolChunk = codeChunks.find((c) => c.symbol === "loadAgentRailConfig");
+if (!symbolChunk) {
+  console.error("symbol-aware chunk missing for loadAgentRailConfig in src/app.js");
+  process.exit(1);
+}
+if (!symbolChunk.symbolHints.includes("loadAgentRailConfig")) {
+  console.error(`symbol chunk symbolHints missing: ${JSON.stringify(symbolChunk.symbolHints)}`);
+  process.exit(1);
+}
+if (symbolChunk.kind !== "function") {
+  console.error(`symbol chunk kind wrong: expected "function", got "${symbolChunk.kind}"`);
+  process.exit(1);
+}
+if (!symbolChunk.citation.includes("loadAgentRailConfig")) {
+  console.error(`symbol chunk citation does not include symbol name: ${symbolChunk.citation}`);
+  process.exit(1);
+}
+const memoryChunk = index.chunks.find((chunk) => chunk.path === "docs/memory/lesson.md");
+if (!memoryChunk || !memoryChunk.memory) {
+  console.error("memory chunk metadata missing");
+  process.exit(1);
+}
+for (const [key, value] of Object.entries({
+  kind: "lesson",
+  source: "issue-76",
+  confidence: "high",
+  created_at: "2026-06-04T09:00:00Z",
+  expires_at: "2026-12-31T00:00:00Z",
+})) {
+  if (memoryChunk.memory[key] !== value) {
+    console.error(`memory metadata ${key} was not preserved: ${memoryChunk.memory[key]}`);
+    process.exit(1);
+  }
+}
+if (index.provider.summary.mode !== "disabled") {
+  console.error("summary generation should be disabled by default");
+  process.exit(1);
+}
+if (!index.snapshot || index.snapshot.version !== "index-snapshot-v1") {
+  console.error("index snapshot metadata missing or wrong version");
+  process.exit(1);
+}
+if (!index.snapshot.commitSha || !String(index.snapshot.commitSha).match(/^[0-9a-f]{40}$/)) {
+  console.error(`index snapshot commit SHA missing or invalid: ${index.snapshot.commitSha}`);
+  process.exit(1);
+}
+if (index.snapshot.sourceHashes["src/app.js"] !== byPath.get("src/app.js").contentHash) {
+  console.error("index snapshot source hash did not match indexed record");
+  process.exit(1);
+}
+if (index.snapshot.freshness["src/app.js"].status !== "current") {
+  console.error("index snapshot freshness metadata missing for src/app.js");
+  process.exit(1);
+}
+if (index.snapshot.ingestionHealth.status !== "healthy") {
+  console.error(`index snapshot ingestion health was not healthy: ${index.snapshot.ingestionHealth.status}`);
+  process.exit(1);
+}
+if (index.snapshot.ingestionHealth.indexedCount !== index.records.length) {
+  console.error("index snapshot indexed count did not match records");
+  process.exit(1);
+}
+if (index.snapshot.sourceCustody.fullSourceUploadAllowed !== false || index.snapshot.sourceCustody.snippetUploadAllowed !== false) {
+  console.error("index snapshot did not preserve metadata-only source custody defaults");
+  process.exit(1);
+}
+if (!index.graph || index.graph.version !== "code-graph-v1") {
+  console.error("local Code Graph missing or wrong version");
+  process.exit(1);
+}
+if (index.graph.authority !== "deterministic" || index.graph.llmGeneratedAuthoritative !== false) {
+  console.error("local Code Graph did not preserve deterministic authority");
+  process.exit(1);
+}
+if (index.graph.enrichment.llmGeneratedAuthoritative !== false) {
+  console.error("graph enrichment was marked authoritative");
+  process.exit(1);
+}
+const fileNode = index.graph.nodes.find((node) => node.kind === "file" && node.path === "src/app.js");
+if (!fileNode) {
+  console.error("file graph node missing for src/app.js");
+  process.exit(1);
+}
+const chunkNode = index.graph.nodes.find((node) => node.kind === "chunk" && node.path === "src/app.js");
+if (!chunkNode) {
+  console.error("chunk graph node missing for src/app.js");
+  process.exit(1);
+}
+const containsEdge = index.graph.edges.find((edge) => edge.kind === "contains_chunk" && edge.from === fileNode.id && edge.to === chunkNode.id);
+if (!containsEdge || containsEdge.authority !== "deterministic") {
+  console.error("deterministic file-to-chunk graph edge missing for src/app.js");
+  process.exit(1);
+}
+const symbolNode = index.graph.nodes.find((node) => node.kind === "symbol" && node.path === "src/app.js" && node.name === "loadAgentRailConfig");
+if (!symbolNode || symbolNode.citation !== "src/app.js#L4") {
+  console.error(`symbol graph node missing or uncited: ${JSON.stringify(symbolNode)}`);
+  process.exit(1);
+}
+if (!index.graph.edges.some((edge) => edge.kind === "declares_symbol" && edge.from === fileNode.id && edge.to === symbolNode.id && edge.authority === "deterministic")) {
+  console.error("deterministic declares_symbol edge missing for loadAgentRailConfig");
+  process.exit(1);
+}
+const stableFileNode = index.graph.nodes.find((node) => node.kind === "file" && node.path === "src/stable.js");
+if (!index.graph.edges.some((edge) => edge.kind === "imports_file" && edge.from === fileNode.id && edge.to === stableFileNode.id && edge.importSpecifier === "./stable")) {
+  console.error("deterministic resolvable import edge missing for ./stable");
+  process.exit(1);
+}
+const unresolved = index.graph.edges.find((edge) => edge.kind === "unresolved_import" && edge.from === fileNode.id && edge.importSpecifier === "fs");
+if (!unresolved || unresolved.to !== null || unresolved.targetPath !== null || unresolved.authority !== "deterministic") {
+  console.error(`unresolved import was not represented explicitly: ${JSON.stringify(unresolved)}`);
+  process.exit(1);
+}
+const importTestNode = index.graph.nodes.find((node) => node.kind === "test" && node.path === "tests/test_app.py");
+if (!importTestNode) {
+  console.error("import-based test graph node missing for tests/test_app.py");
+  process.exit(1);
+}
+if (!index.graph.edges.some((edge) => edge.kind === "tests_source" && edge.from === importTestNode.id && edge.targetPath === "src/app.py" && edge.evidence === "deterministic_test_import")) {
+  console.error("import-based test-to-source edge missing from tests/test_app.py to src/app.py");
+  process.exit(1);
+}
+const pathTestNode = index.graph.nodes.find((node) => node.kind === "test" && node.path === "src/stable.test.js");
+if (!pathTestNode) {
+  console.error("path-convention test graph node missing for src/stable.test.js");
+  process.exit(1);
+}
+if (!index.graph.edges.some((edge) => edge.kind === "tests_source" && edge.from === pathTestNode.id && edge.targetPath === "src/stable.js" && edge.evidence === "deterministic_test_path_convention")) {
+  console.error("path-convention test-to-source edge missing from src/stable.test.js to src/stable.js");
+  process.exit(1);
+}
+const ambiguousTestNode = index.graph.nodes.find((node) => node.kind === "test" && node.path === "tests/test_duplicate.py");
+const ambiguousEdge = index.graph.edges.find((edge) => edge.kind === "unresolved_test_relationship" && edge.from === ambiguousTestNode.id);
+if (!ambiguousEdge || !ambiguousEdge.candidateTargetPaths.includes("src/duplicate.py") || !ambiguousEdge.candidateTargetPaths.includes("lib/duplicate.py")) {
+  console.error(`ambiguous test relationship was not represented explicitly: ${JSON.stringify(ambiguousEdge)}`);
+  process.exit(1);
+}
+NODE
+mark_coverage "snapshot-metadata"
+mark_coverage "source-custody"
+mark_coverage "file-nodes"
+mark_coverage "symbol-nodes"
+mark_coverage "import-edges"
+mark_coverage "test-nodes"
+mark_coverage "test-source-edges"
+mark_coverage "unresolved-relationships"
+
+node - "$index_file" >"${tmp_dir}/graph-before-repeat.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(JSON.stringify({
+  nodeIds: index.graph.nodes.map((node) => node.id).sort(),
+  edgeIds: index.graph.edges.map((edge) => edge.id).sort(),
+}, null, 2));
+NODE
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/index-repeat.out"
+node - "$index_file" "${tmp_dir}/graph-before-repeat.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const before = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const after = {
+  nodeIds: index.graph.nodes.map((node) => node.id).sort(),
+  edgeIds: index.graph.edges.map((edge) => edge.id).sort(),
+};
+if (JSON.stringify(after) !== JSON.stringify(before)) {
+  console.error("graph node or edge IDs changed across repeated indexing");
+  process.exit(1);
+}
+NODE
+mark_coverage "deterministic-repeat"
+
+"$agentrail" context build issue 76 --phase execute --target "$fixture" --json >"${tmp_dir}/pack-76.out"
+pack_76_path="$(node - "${tmp_dir}/pack-76.out" <<'NODE'
+const fs = require("fs");
+const output = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(output.jsonPath);
+NODE
+)"
+node - "${fixture}/${pack_76_path}" <<'NODE'
+const fs = require("fs");
+const pack = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const included = pack.included.find((item) => item.path === "docs/agents/guide.md" && item.chunkId && item.citation === "docs/agents/guide.md#agent-guide");
+if (!included) {
+  console.error("context pack did not include a citable chunk for issue #76");
+  process.exit(1);
+}
+const preambleIncluded = pack.included.find((item) => item.path === "docs/agents/guide.md" && item.chunkId && item.citation === "docs/agents/guide.md#preamble");
+if (!preambleIncluded) {
+  console.error("context pack did not include matching markdown preamble chunk for issue #76");
+  process.exit(1);
+}
+if (!included.sourceId || !included.matchContext || !included.matchContext.includes("Agent Guide")) {
+  console.error("included chunk did not retain parent context for explaining the match");
+  process.exit(1);
+}
+const sourceWideNoise = pack.included.filter((item) => item.path === "docs/agents/source-wide-link.md" && item.citation.includes("#noise-"));
+if (sourceWideNoise.length > 0) {
+  console.error(`source-level issue links flooded context pack with unrelated chunks: ${sourceWideNoise.map((item) => item.citation).join(", ")}`);
+  process.exit(1);
+}
+NODE
+
+node - "$index_file" >"${tmp_dir}/before-refresh.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const byPath = Object.fromEntries(index.records.map((record) => [record.path, record]));
+console.log(JSON.stringify({
+  app: byPath["src/app.js"],
+  stable: byPath["src/stable.js"],
+  deleted: byPath["src/deleted.js"],
+}, null, 2));
+NODE
+
+sleep 1
+cat >"${fixture}/src/app.js" <<'JS'
+const message = "second";
+module.exports = { message };
+JS
+rm "${fixture}/src/deleted.js"
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/index-2.out"
+
+node - "$index_file" "${tmp_dir}/before-refresh.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const before = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const byPath = Object.fromEntries(index.records.map((record) => [record.path, record]));
+if (!byPath["src/app.js"]) {
+  console.error("changed file disappeared from index");
+  process.exit(1);
+}
+if (byPath["src/app.js"].contentHash === before.app.contentHash) {
+  console.error("changed file content hash did not update");
+  process.exit(1);
+}
+if (byPath["src/deleted.js"]) {
+  console.error("deleted file remained in refreshed index");
+  process.exit(1);
+}
+const stable = byPath["src/stable.js"];
+if (!stable) {
+  console.error("unchanged file disappeared from refreshed index");
+  process.exit(1);
+}
+for (const field of ["id", "sourceType", "path", "contentHash", "modifiedAt", "authority"]) {
+  if (stable[field] !== before.stable[field]) {
+    console.error(`unchanged record field changed: ${field}`);
+    process.exit(1);
+  }
+}
+if (JSON.stringify(stable.freshness) !== JSON.stringify(before.stable.freshness)) {
+  console.error("unchanged record freshness changed");
+  process.exit(1);
+}
+NODE
+
+# No-stale-chunk assertion: capture chunk IDs before and after a file change,
+# then verify old IDs are fully replaced (no duplicate stale chunks).
+node - "$index_file" >"${tmp_dir}/app-chunks-before.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const ids = index.chunks.filter((c) => c.path === "src/app.js").map((c) => c.id).sort();
+console.log(JSON.stringify(ids));
+NODE
+
+sleep 1
+cat >"${fixture}/src/app.js" <<'JS'
+function refreshedConfig() {
+  return "refreshed";
+}
+module.exports = { refreshedConfig };
+JS
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/index-3.out"
+
+node - "$index_file" "${tmp_dir}/app-chunks-before.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const beforeIds = new Set(JSON.parse(fs.readFileSync(process.argv[3], "utf8")));
+const afterIds = index.chunks.filter((c) => c.path === "src/app.js").map((c) => c.id);
+if (afterIds.length === 0) {
+  console.error("no chunks for src/app.js after reindex");
+  process.exit(1);
+}
+const stale = afterIds.filter((id) => beforeIds.has(id));
+if (stale.length > 0) {
+  console.error(`stale duplicate chunks remained after file change reindex: ${JSON.stringify(stale)}`);
+  process.exit(1);
+}
+NODE
+
+optional_missing="${tmp_dir}/optional-missing"
+mkdir -p "$optional_missing"
+git -C "$optional_missing" init --quiet
+"$agentrail" install --target "$optional_missing" >"${tmp_dir}/optional-install.out"
+rm -rf "${optional_missing}/docs/memory" "${optional_missing}/docs/prd" "${optional_missing}/docs/milestones"
+"$agentrail" context index --target "$optional_missing" >"${tmp_dir}/optional-index.out"
+assert_grep '"providerMode": "disabled"' "${tmp_dir}/optional-index.out" "missing optional context dirs should not fail indexing"
+
+monorepo_fixture="${tmp_dir}/monorepo"
+mkdir -p "${monorepo_fixture}/packages/api/src" "${monorepo_fixture}/packages/web/src"
+git -C "$monorepo_fixture" init --quiet
+"$agentrail" install --target "$monorepo_fixture" >"${tmp_dir}/monorepo-install.out"
+cat >"${monorepo_fixture}/package.json" <<'JSON'
+{
+  "private": true,
+  "workspaces": ["packages/*"]
+}
+JSON
+cat >"${monorepo_fixture}/packages/api/package.json" <<'JSON'
+{"name": "@agentrail/api"}
+JSON
+cat >"${monorepo_fixture}/packages/api/src/index.js" <<'JS'
+module.exports = { api: true };
+JS
+cat >"${monorepo_fixture}/packages/web/package.json" <<'JSON'
+{"name": "@agentrail/web"}
+JSON
+cat >"${monorepo_fixture}/packages/web/src/index.js" <<'JS'
+module.exports = { web: true };
+JS
+"$agentrail" context index --target "$monorepo_fixture" >"${tmp_dir}/monorepo-index.out"
+node - "${monorepo_fixture}/.agentrail/context/index/index.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const units = index.graph.nodes.filter((node) => node.kind === "codebase_unit");
+const paths = new Set(units.map((unit) => unit.path));
+if (!paths.has("packages/api") || !paths.has("packages/web")) {
+  console.error(`monorepo Codebase Units missing: ${JSON.stringify(Array.from(paths))}`);
+  process.exit(1);
+}
+for (const path of ["packages/api/src/index.js", "packages/web/src/index.js"]) {
+  const file = index.graph.nodes.find((node) => node.kind === "file" && node.path === path);
+  if (!file) {
+    console.error(`monorepo file node missing: ${path}`);
+    process.exit(1);
+  }
+  const unit = units.find((candidate) => path.startsWith(`${candidate.path}/`));
+  const edge = index.graph.edges.find((candidate) => candidate.kind === "contains_file" && candidate.from === unit.id && candidate.to === file.id);
+  if (!edge || edge.authority !== "deterministic") {
+    console.error(`monorepo contains_file edge missing for ${path}`);
+    process.exit(1);
+  }
+}
+NODE
+mark_coverage "codebase-unit-monorepo"
+
+simple_fixture="${tmp_dir}/simple-package"
+mkdir -p "${simple_fixture}/src"
+git -C "$simple_fixture" init --quiet
+"$agentrail" install --target "$simple_fixture" >"${tmp_dir}/simple-install.out"
+cat >"${simple_fixture}/pyproject.toml" <<'TOML'
+[project]
+name = "simple-agentrail-package"
+TOML
+cat >"${simple_fixture}/src/app.py" <<'PY'
+def main():
+    return "simple"
+PY
+"$agentrail" context index --target "$simple_fixture" >"${tmp_dir}/simple-index.out"
+node - "${simple_fixture}/.agentrail/context/index/index.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const units = index.graph.nodes.filter((node) => node.kind === "codebase_unit");
+if (units.length !== 1 || units[0].path !== "." || units[0].detection !== "root_manifest") {
+  console.error(`simple repo root Codebase Unit missing: ${JSON.stringify(units)}`);
+  process.exit(1);
+}
+const file = index.graph.nodes.find((node) => node.kind === "file" && node.path === "src/app.py");
+if (!index.graph.edges.some((edge) => edge.kind === "contains_file" && edge.from === units[0].id && edge.to === file.id)) {
+  console.error("simple repo root unit was not linked to src/app.py");
+  process.exit(1);
+}
+NODE
+mark_coverage "codebase-unit-simple"
+
+weak_fixture="${tmp_dir}/weak-manifest"
+mkdir -p "${weak_fixture}/legacy"
+git -C "$weak_fixture" init --quiet
+"$agentrail" install --target "$weak_fixture" >"${tmp_dir}/weak-install.out"
+cat >"${weak_fixture}/legacy/tool.py" <<'PY'
+def legacy_tool():
+    return "weak"
+PY
+"$agentrail" context index --target "$weak_fixture" >"${tmp_dir}/weak-index.out"
+node - "${weak_fixture}/.agentrail/context/index/index.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const unit = index.graph.nodes.find((node) => node.kind === "codebase_unit" && node.path === "." && node.detection === "fallback");
+if (!unit) {
+  console.error("weak-manifest fallback Codebase Unit missing");
+  process.exit(1);
+}
+const file = index.graph.nodes.find((node) => node.kind === "file" && node.path === "legacy/tool.py");
+if (!index.graph.edges.some((edge) => edge.kind === "contains_file" && edge.from === unit.id && edge.to === file.id)) {
+  console.error("weak-manifest fallback unit was not linked to legacy/tool.py");
+  process.exit(1);
+}
+NODE
+mark_coverage "codebase-unit-weak-manifest"
+
+override_fixture="${tmp_dir}/config-override"
+mkdir -p "${override_fixture}/apps/server" "${override_fixture}/packages/shared"
+git -C "$override_fixture" init --quiet
+"$agentrail" install --target "$override_fixture" >"${tmp_dir}/override-install.out"
+cat >"${override_fixture}/package.json" <<'JSON'
+{
+  "private": true,
+  "workspaces": ["packages/*"]
+}
+JSON
+cat >"${override_fixture}/packages/shared/package.json" <<'JSON'
+{"name": "@agentrail/shared"}
+JSON
+cat >"${override_fixture}/packages/shared/index.js" <<'JS'
+module.exports = { shared: true };
+JS
+cat >"${override_fixture}/apps/server/main.py" <<'PY'
+def server():
+    return "configured"
+PY
+node - "${override_fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const path = process.argv[2];
+const config = JSON.parse(fs.readFileSync(path, "utf8"));
+config.context.codebaseUnits = [
+  { id: "server", name: "Configured Server", path: "apps/server" }
+];
+fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+"$agentrail" context index --target "$override_fixture" >"${tmp_dir}/override-index.out"
+node - "${override_fixture}/.agentrail/context/index/index.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const units = index.graph.nodes.filter((node) => node.kind === "codebase_unit");
+if (units.length !== 1 || units[0].path !== "apps/server" || units[0].detection !== "config_override") {
+  console.error(`config override Codebase Unit not respected: ${JSON.stringify(units)}`);
+  process.exit(1);
+}
+const serverFile = index.graph.nodes.find((node) => node.kind === "file" && node.path === "apps/server/main.py");
+const sharedFile = index.graph.nodes.find((node) => node.kind === "file" && node.path === "packages/shared/index.js");
+if (!index.graph.edges.some((edge) => edge.kind === "contains_file" && edge.from === units[0].id && edge.to === serverFile.id)) {
+  console.error("config override unit was not linked to apps/server/main.py");
+  process.exit(1);
+}
+if (index.graph.edges.some((edge) => edge.kind === "contains_file" && edge.from === units[0].id && edge.to === sharedFile.id)) {
+  console.error("config override unit incorrectly included workspace-detected package file");
+  process.exit(1);
+}
+NODE
+mark_coverage "codebase-unit-config-override"
+
+source_fixture="${tmp_dir}/source-dogfood"
+mkdir -p \
+  "${source_fixture}/scripts" \
+  "${source_fixture}/templates/docs/agents" \
+  "${source_fixture}/templates/docs/memory" \
+  "${source_fixture}/templates/docs/prd" \
+  "${source_fixture}/templates/docs/milestones" \
+  "${source_fixture}/templates/scripts" \
+  "${source_fixture}/skills/backend-api" \
+  "${source_fixture}/.agentrail/runs/run-1"
+git -C "$source_fixture" init --quiet
+cp "${repo_dir}/package.json" "${source_fixture}/package.json"
+cp "${repo_dir}/agentrail/scripts/agentrail" "${source_fixture}/scripts/agentrail"
+chmod +x "${source_fixture}/scripts/agentrail"
+cat >"${source_fixture}/templates/CONTEXT.md" <<'DOC'
+# Source Context
+DOC
+cat >"${source_fixture}/templates/TASTE.md" <<'DOC'
+# Source Taste
+DOC
+cat >"${source_fixture}/templates/docs/agents/ralph-loop.md" <<'DOC'
+# Ralph Loop
+DOC
+cat >"${source_fixture}/templates/docs/memory/README.md" <<'DOC'
+# Memory
+DOC
+cat >"${source_fixture}/templates/docs/prd/README.md" <<'DOC'
+# PRD
+DOC
+cat >"${source_fixture}/templates/docs/milestones/README.md" <<'DOC'
+# Milestones
+DOC
+cat >"${source_fixture}/skills/backend-api/SKILL.md" <<'DOC'
+# Backend API
+DOC
+cat >"${source_fixture}/.agentrail/config.json" <<'JSON'
+{
+  "schemaVersion": 1
+}
+JSON
+cat >"${source_fixture}/.agentrail/state.json" <<'JSON'
+{
+  "schemaVersion": 1,
+  "workflow": {
+    "phase": "idle"
+  }
+}
+JSON
+cat >"${source_fixture}/.agentrail/runs/run-1/findings.json" <<'JSON'
+{"findings":[]}
+JSON
+
+"${source_fixture}/scripts/agentrail" context index --target "$source_fixture" >"${tmp_dir}/source-index.out"
+node - "${source_fixture}/.agentrail/context/index/index.json" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const byPath = new Map(index.records.map((record) => [record.path, record]));
+const expectedTypes = new Map([
+  ["templates/CONTEXT.md", "context_doc"],
+  ["templates/TASTE.md", "taste_doc"],
+  ["templates/docs/agents/ralph-loop.md", "agent_doc"],
+  ["templates/docs/memory/README.md", "memory"],
+  ["templates/docs/prd/README.md", "prd"],
+  ["templates/docs/milestones/README.md", "milestone"],
+  ["scripts/agentrail", "code"],
+  ["skills/backend-api/SKILL.md", "skill"],
+  [".agentrail/state.json", "agentrail_state"],
+  [".agentrail/runs/run-1/findings.json", "run_artifact"],
+]);
+for (const [path, sourceType] of expectedTypes) {
+  const record = byPath.get(path);
+  if (!record) {
+    console.error(`missing source dogfood record: ${path}`);
+    process.exit(1);
+  }
+  if (record.sourceType !== sourceType) {
+    console.error(`wrong source dogfood sourceType for ${path}: ${record.sourceType}`);
+    process.exit(1);
+  }
+}
+NODE
+
+assert_graph_coverage
+echo "context index test passed"

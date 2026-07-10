@@ -11,6 +11,11 @@ Covers:
 - missing state.json → error
 - parse_upgrade_args: --target, --force, unknown→rc2
 - main.py routes "upgrade" to run_upgrade
+- legacy-layout migration (repo-structure-v2 PR-6, #1137): moving
+  CONTEXT.md/TASTE.md/docs/agents/docs/memory/skills into .agentrail/,
+  merge-not-overwrite of pre-existing .agentrail/{config.json,
+  hooks/context-first.sh,verify.sh,server.json}, idempotent re-run, and
+  doctor's legacy-path warnings clearing after upgrade
 """
 from __future__ import annotations
 
@@ -130,9 +135,12 @@ class TestFreshUpgrade(TestCase):
         self.assertIn("AgentRail upgrade:", output)
         self.assertIn("updated: .agentrail/state.json", output)
 
-        # Managed files should exist in target
+        # Managed files should exist in target. House-2 dedupe (repo-structure-v2
+        # PR-6, #1137): skills/ is installed to .agentrail/skills/ only — the
+        # legacy top-level skills/ copy is no longer (re)created by upgrade.
         self.assertTrue((self.target / "some-template.md").exists())
-        self.assertTrue((self.target / "skills" / "my-skill" / "SKILL.md").exists())
+        self.assertTrue((self.target / ".agentrail" / "skills" / "my-skill" / "SKILL.md").exists())
+        self.assertFalse((self.target / "skills" / "my-skill" / "SKILL.md").exists())
         self.assertTrue((self.target / "scripts" / "agentrail").exists())
 
     def test_fresh_upgrade_writes_state_json(self):
@@ -269,10 +277,14 @@ class TestSkipPatterns(TestCase):
             self.assertFalse(p.startswith("docs/memory/"), f"docs/memory path leaked: {p}")
 
     def test_skills_included(self):
+        # House-2 dedupe (repo-structure-v2 PR-6, #1137): upgrade tracks
+        # skills only at the new .agentrail/skills/ location — the legacy
+        # top-level skills/ path is never (re)created or tracked.
         _run_upgrade(self.repo, self.target)
         state = json.loads((self.target / ".agentrail" / "state.json").read_text())
         paths = [mf["path"] for mf in state["managedFiles"]]
-        self.assertIn("skills/my-skill/SKILL.md", paths)
+        self.assertIn(".agentrail/skills/my-skill/SKILL.md", paths)
+        self.assertNotIn("skills/my-skill/SKILL.md", paths)
 
     def test_scripts_agentrail_extrafile_included(self):
         _run_upgrade(self.repo, self.target)
@@ -683,3 +695,286 @@ class TestAddedCategory(TestCase):
         state = json.loads((target / ".agentrail" / "state.json").read_text())
         mf = next(f for f in state["managedFiles"] if f["path"] == "some-template.md")
         self.assertEqual(mf["installStatus"], "legacy-adopted")
+
+
+# ---------------------------------------------------------------------------
+# Legacy-layout migration (repo-structure-v2, PR-6 / #1137)
+#
+# These tests build a fixture that mimics a real pre-House-2 install: a
+# top-level CONTEXT.md/TASTE.md, docs/agents/*, docs/memory/*, a dual
+# skills/ + .claude/skills copy, AND a pre-existing .agentrail/ directory
+# holding load-bearing local files (config.json, hooks/context-first.sh,
+# verify.sh, server.json with a "live" API key) that must survive the
+# migration byte-for-byte untouched. Covers AC1-AC4 of issue #1137.
+# ---------------------------------------------------------------------------
+
+_FAKE_SERVER_API_KEY = "sk-live-fakeButRealisticApiKey1234567890ABCDEF"
+
+
+def _make_fake_repo_with_agents(tmp_dir: str) -> Path:
+    """Like ``_make_fake_repo`` but also ships a ``docs/agents/*`` template
+    (maps to ``.agentrail/agents/*`` per ``_map_template_destination``),
+    needed to exercise the docs/agents/* -> .agentrail/agents/* migration."""
+    repo = _make_fake_repo(tmp_dir)
+    (repo / "agentrail" / "templates" / "docs" / "agents").mkdir(parents=True)
+    (repo / "agentrail" / "templates" / "docs" / "agents" / "some-agent.md").write_text(
+        "# Some Agent\nAgent doc content\n"
+    )
+    return repo
+
+
+def _make_legacy_layout_target(tmp_dir: str) -> Path:
+    """Build a legacy-layout target fixture: pre-House-2 install locations
+    (root CONTEXT.md/TASTE.md, docs/agents/*, docs/memory/*, dual skills/ +
+    .claude/skills copies) PLUS a pre-existing .agentrail/ directory holding
+    load-bearing local files that ``upgrade`` must never overwrite/regenerate
+    (config.json, hooks/context-first.sh, verify.sh, server.json with a fake
+    "live" API key), and a legacy state.json whose managedFiles paths are all
+    still at their pre-migration (legacy) locations.
+    """
+    target = Path(tmp_dir) / "legacy-target"
+    target.mkdir(parents=True)
+
+    # --- legacy root files ---
+    (target / "CONTEXT.md").write_text("# Context\nOld root context\n")
+    (target / "TASTE.md").write_text("# Taste\nOld root taste\n")
+
+    # --- docs/agents/* (legacy location for what now maps to .agentrail/agents/*) ---
+    (target / "docs" / "agents").mkdir(parents=True)
+    (target / "docs" / "agents" / "some-agent.md").write_text("# Some Agent\nAgent doc content\n")
+
+    # --- docs/memory/* (legacy location, never state-tracked) ---
+    (target / "docs" / "memory").mkdir(parents=True)
+    (target / "docs" / "memory" / "session-1.md").write_text("memory note from a real session\n")
+
+    # --- dual skills/ + .claude/skills copies (legacy dedupe target) ---
+    (target / "skills" / "my-skill").mkdir(parents=True)
+    (target / "skills" / "my-skill" / "SKILL.md").write_text("# Skill\nDo stuff\n")
+    (target / ".claude" / "skills" / "my-skill").mkdir(parents=True)
+    (target / ".claude" / "skills" / "my-skill" / "SKILL.md").write_text("# Skill\nDo stuff\n")
+
+    # --- pre-existing .agentrail/ dir with load-bearing local files ---
+    agentrail_dir = target / ".agentrail"
+    agentrail_dir.mkdir(parents=True, exist_ok=True)
+    (agentrail_dir / "config.json").write_text(
+        json.dumps({"custom": "hand-edited config, must survive untouched"}, indent=2) + "\n"
+    )
+    (agentrail_dir / "hooks").mkdir(parents=True, exist_ok=True)
+    (agentrail_dir / "hooks" / "context-first.sh").write_text(
+        "#!/bin/sh\n# custom hook, hand-edited, must survive untouched\necho custom-hook\n"
+    )
+    (agentrail_dir / "hooks" / "context-first.sh").chmod(0o755)
+    (agentrail_dir / "verify.sh").write_text(
+        "#!/bin/sh\n# custom verify script, hand-edited, must survive untouched\nexit 0\n"
+    )
+    (agentrail_dir / "verify.sh").chmod(0o755)
+    (agentrail_dir / "server.json").write_text(
+        json.dumps({"apiKey": _FAKE_SERVER_API_KEY}, indent=2) + "\n"
+    )
+
+    # --- legacy state.json: managedFiles at PRE-migration (legacy) paths ---
+    managed_files = [
+        {
+            "path": "CONTEXT.md",
+            "contentHash": _sha256(target / "CONTEXT.md"),
+            "installStatus": "installed",
+        },
+        {
+            "path": "docs/agents/some-agent.md",
+            "contentHash": _sha256(target / "docs" / "agents" / "some-agent.md"),
+            "installStatus": "installed",
+        },
+        {
+            "path": "skills/my-skill/SKILL.md",
+            "contentHash": _sha256(target / "skills" / "my-skill" / "SKILL.md"),
+            "installStatus": "installed",
+        },
+    ]
+    state = {
+        "schemaVersion": 1,
+        "agentrailVersion": "0.0.1",
+        "installedAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-01-01T00:00:00.000Z",
+        "legacyAdopted": False,
+        "managedFiles": managed_files,
+        "workflow": {"phase": "idle"},
+    }
+    (agentrail_dir / "state.json").write_text(json.dumps(state, indent=2) + "\n")
+
+    return target
+
+
+class TestLegacyLayoutMigration(TestCase):
+    """Repo-structure-v2 PR-6 (#1137): ``agentrail upgrade`` physically
+    migrates a legacy-layout install into ``.agentrail/``, merging into (never
+    overwriting/recreating) any pre-existing load-bearing local files."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.repo = _make_fake_repo_with_agents(self.tmp)
+        self.target = _make_legacy_layout_target(self.tmp)
+
+        # Snapshot pre-existing load-bearing local files BEFORE running
+        # upgrade, so we can assert byte-for-byte identity afterward.
+        self.config_before = (self.target / ".agentrail" / "config.json").read_bytes()
+        self.hook_before = (self.target / ".agentrail" / "hooks" / "context-first.sh").read_bytes()
+        self.verify_before = (self.target / ".agentrail" / "verify.sh").read_bytes()
+        self.server_json_before = (self.target / ".agentrail" / "server.json").read_bytes()
+
+    # --- AC1 ---
+
+    def test_ac1_migrates_to_exact_house2_tree_preserving_local_files(self):
+        rc = _run_upgrade(self.repo, self.target)
+        self.assertEqual(rc, 0)
+
+        # New House-2 locations exist with the migrated content.
+        self.assertEqual(
+            (self.target / ".agentrail" / "context.md").read_text(), "# Context\nOld root context\n"
+        )
+        self.assertEqual(
+            (self.target / ".agentrail" / "taste.md").read_text(), "# Taste\nOld root taste\n"
+        )
+        self.assertEqual(
+            (self.target / ".agentrail" / "agents" / "some-agent.md").read_text(),
+            "# Some Agent\nAgent doc content\n",
+        )
+        self.assertEqual(
+            (self.target / ".agentrail" / "memory" / "session-1.md").read_text(),
+            "memory note from a real session\n",
+        )
+        self.assertTrue((self.target / ".agentrail" / "skills" / "my-skill" / "SKILL.md").exists())
+
+        # Legacy locations are gone (fully migrated + pruned).
+        self.assertFalse((self.target / "CONTEXT.md").exists())
+        self.assertFalse((self.target / "TASTE.md").exists())
+        self.assertFalse((self.target / "docs" / "agents").exists())
+        self.assertFalse((self.target / "docs" / "memory").exists())
+        self.assertFalse((self.target / "skills").exists())
+
+        # skills/ is deduped: no longer tracked at its legacy path in state.json.
+        state = json.loads((self.target / ".agentrail" / "state.json").read_text())
+        paths = [mf["path"] for mf in state["managedFiles"]]
+        self.assertIn(".agentrail/skills/my-skill/SKILL.md", paths)
+        self.assertNotIn("skills/my-skill/SKILL.md", paths)
+
+        # Pre-existing load-bearing local files survive byte-for-byte untouched.
+        self.assertEqual((self.target / ".agentrail" / "config.json").read_bytes(), self.config_before)
+        self.assertEqual(
+            (self.target / ".agentrail" / "hooks" / "context-first.sh").read_bytes(), self.hook_before
+        )
+        self.assertEqual((self.target / ".agentrail" / "verify.sh").read_bytes(), self.verify_before)
+        self.assertEqual((self.target / ".agentrail" / "server.json").read_bytes(), self.server_json_before)
+
+    # --- AC2 ---
+
+    def test_ac2_idempotent_second_run_is_a_noop(self):
+        rc1 = _run_upgrade(self.repo, self.target)
+        self.assertEqual(rc1, 0)
+
+        tracked_relpaths = (
+            ".agentrail/context.md",
+            ".agentrail/taste.md",
+            ".agentrail/agents/some-agent.md",
+            ".agentrail/memory/session-1.md",
+            ".agentrail/skills/my-skill/SKILL.md",
+            ".agentrail/config.json",
+            ".agentrail/hooks/context-first.sh",
+            ".agentrail/verify.sh",
+            ".agentrail/server.json",
+        )
+        after_first = {rel: (self.target / rel).read_bytes() for rel in tracked_relpaths}
+        state_after_first = json.loads((self.target / ".agentrail" / "state.json").read_text())
+
+        rc2 = _run_upgrade(self.repo, self.target)
+        self.assertEqual(rc2, 0)
+
+        for rel, content in after_first.items():
+            self.assertEqual((self.target / rel).read_bytes(), content, f"{rel} changed on second run")
+
+        # No legacy paths resurrected by the second run.
+        self.assertFalse((self.target / "CONTEXT.md").exists())
+        self.assertFalse((self.target / "TASTE.md").exists())
+        self.assertFalse((self.target / "docs" / "agents").exists())
+        self.assertFalse((self.target / "docs" / "memory").exists())
+        self.assertFalse((self.target / "skills").exists())
+
+        state_after_second = json.loads((self.target / ".agentrail" / "state.json").read_text())
+        paths_first = sorted(mf["path"] for mf in state_after_first["managedFiles"])
+        paths_second = sorted(mf["path"] for mf in state_after_second["managedFiles"])
+        self.assertEqual(paths_first, paths_second)
+        self.assertFalse(any(p.startswith("skills/") for p in paths_second))
+
+    # --- AC3 ---
+
+    def test_ac3_doctor_warns_then_clean_after_upgrade(self):
+        from agentrail.cli.commands.doctor import run_doctor
+        import io
+
+        def _run_doctor_captured():
+            buf = io.StringIO()
+
+            def _fake_run(cmd, **kwargs):
+                from unittest.mock import MagicMock
+                m = MagicMock()
+                m.returncode = 1
+                m.stdout = ""
+                return m
+
+            with patch("agentrail.cli.commands.doctor._repo_dir", return_value=self.repo), \
+                 patch("agentrail.cli.commands.doctor.subprocess.run", side_effect=_fake_run), \
+                 patch("sys.stdout", buf):
+                run_doctor(["--target", str(self.target)])
+            return buf.getvalue()
+
+        pre_output = _run_doctor_captured()
+
+        # doctor warns with SPECIFIC legacy file paths (not a generic message)
+        # for every subtree this PR migrates.
+        self.assertIn(
+            "warn CONTEXT.md found at legacy path (CONTEXT.md); "
+            f"run `agentrail upgrade --target {self.target}` to migrate to .agentrail/context.md",
+            pre_output,
+        )
+        self.assertIn(
+            "warn TASTE.md found at legacy path (TASTE.md); "
+            f"run `agentrail upgrade --target {self.target}` to migrate to .agentrail/taste.md",
+            pre_output,
+        )
+        self.assertIn(
+            "warn docs/agents/ found at legacy path (docs/agents); "
+            f"run `agentrail upgrade --target {self.target}` to migrate to .agentrail/agents",
+            pre_output,
+        )
+        self.assertIn(
+            "warn skills/ found at legacy path (skills); "
+            f"run `agentrail upgrade --target {self.target}` to migrate to .agentrail/skills",
+            pre_output,
+        )
+        self.assertIn(
+            "warn docs/memory/ found at legacy path (docs/memory); "
+            f"run `agentrail upgrade --target {self.target}` to migrate to .agentrail/memory",
+            pre_output,
+        )
+
+        _run_upgrade(self.repo, self.target)
+
+        post_output = _run_doctor_captured()
+
+        # None of the legacy-path warnings remain after upgrade completes.
+        self.assertNotIn("found at legacy path", post_output)
+
+    # --- AC4 ---
+
+    def test_ac4_server_json_survives_byte_for_byte(self):
+        server_path = self.target / ".agentrail" / "server.json"
+        before = server_path.read_bytes()
+        self.assertIn(_FAKE_SERVER_API_KEY.encode(), before)
+
+        _run_upgrade(self.repo, self.target)
+        after_first = server_path.read_bytes()
+        self.assertEqual(after_first, before, "server.json (live API key) must never be regenerated")
+
+        # Cover the idempotent (second-run) path too.
+        _run_upgrade(self.repo, self.target)
+        after_second = server_path.read_bytes()
+        self.assertEqual(after_second, before, "server.json must remain untouched across repeat upgrades")

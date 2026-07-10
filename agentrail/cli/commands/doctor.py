@@ -275,7 +275,7 @@ def validate_skill_registry(target_dir: str, repo_dir: Path) -> SkillRegistryRes
     errors = result.errors
 
     installed_registry = Path(target_dir) / "docs" / "agents" / "skill-registry.json"
-    source_registry = repo_dir / "templates" / "docs" / "agents" / "skill-registry.json"
+    source_registry = repo_dir / "agentrail" / "templates" / "docs" / "agents" / "skill-registry.json"
 
     # Mirror legacy logic: if installed doesn't exist AND target==repo → use source
     validate_source = (
@@ -283,7 +283,11 @@ def validate_skill_registry(target_dir: str, repo_dir: Path) -> SkillRegistryRes
         and Path(target_dir).resolve() == repo_dir.resolve()
     )
     registry_path = source_registry if validate_source else installed_registry
-    skill_root = repo_dir if validate_source else Path(target_dir)
+    # Source-side localPath entries (e.g. "skills/frontend-web/SKILL.md") are
+    # relative to the agentrail/ package root now that templates/+skills/ live
+    # there; installed-side entries stay relative to the target project root
+    # (House 2's own top-level skills/, untouched by this move).
+    skill_root = (repo_dir / "agentrail") if validate_source else Path(target_dir)
 
     try:
         registry = json.loads(registry_path.read_text())

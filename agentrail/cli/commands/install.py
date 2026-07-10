@@ -113,7 +113,7 @@ def _install_claude_skills(repo_dir: Path, target_dir: Path) -> None:
     Idempotent: overwrites on reinstall. Each skill lands at:
       <target_dir>/.claude/skills/<skill_name>/SKILL.md
     """
-    skills_src = repo_dir / "skills"
+    skills_src = repo_dir / "agentrail" / "skills"
     if not skills_src.is_dir():
         return
     for skill_md in sorted(skills_src.glob("*/SKILL.md")):
@@ -127,13 +127,13 @@ def _install_claude_skills(repo_dir: Path, target_dir: Path) -> None:
 def _install_claude_hooks(repo_dir: Path, target_dir: Path) -> None:
     """Install the context-first PreToolUse hook (claude-only enforcement, #519).
 
-    Copies ``templates/scripts/context-first.sh`` to
+    Copies ``agentrail/templates/scripts/context-first.sh`` to
     ``<target>/.agentrail/hooks/context-first.sh`` (chmod +x) and merges a
     ``hooks.PreToolUse`` entry into ``<target>/.claude/settings.json`` without
     clobbering existing user settings. Idempotent: re-running refreshes the
     script and skips re-adding an already-wired hook entry.
     """
-    hook_src = repo_dir / "templates" / "scripts" / "context-first.sh"
+    hook_src = repo_dir / "agentrail" / "templates" / "scripts" / "context-first.sh"
     if not hook_src.is_file():
         return
 

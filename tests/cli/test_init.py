@@ -23,8 +23,8 @@ def _make_repo() -> Path:
     """Minimal AgentRail source repo for init tests."""
     repo = Path(tempfile.mkdtemp())
     (repo / "package.json").write_text(json.dumps({"name": "@useagentrail/cli", "version": "1.0.0"}))
-    (repo / "templates" / "scripts").mkdir(parents=True)
-    (repo / "templates" / "scripts" / "context-first.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+    (repo / "agentrail" / "templates" / "scripts").mkdir(parents=True)
+    (repo / "agentrail" / "templates" / "scripts" / "context-first.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
     (repo / "packages" / "mcp" / "dist").mkdir(parents=True)
     (repo / "packages" / "mcp" / "dist" / "index.js").write_text("// mcp server\n")
     (repo / "scripts").mkdir()

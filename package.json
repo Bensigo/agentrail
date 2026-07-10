@@ -13,9 +13,7 @@
   "files": [
     "README.md",
     "agentrail/",
-    "scripts/",
-    "templates/",
-    "skills/"
+    "scripts/"
   ],
   "workspaces": [
     "apps/*",

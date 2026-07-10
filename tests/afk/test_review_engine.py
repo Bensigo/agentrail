@@ -10,7 +10,7 @@ from agentrail.afk import review_engine
 
 
 def _seed_docs(root: Path, *, machine: bool = True) -> None:
-    d = root / "templates" / "docs" / "agents"
+    d = root / "agentrail" / "templates" / "docs" / "agents"
     d.mkdir(parents=True)
     (d / "pr-review.md").write_text("PR REVIEW INSTRUCTIONS BODY\n")
     if machine:
@@ -40,9 +40,9 @@ class TestBuildReviewPrompt(unittest.TestCase):
         self.assertIn("`memory_suggestions`", prompt)
         self.assertIn("even when both", prompt)
         self.assertIn("marked JSON block", prompt)
-        # Falls back to templates/ path for the contract source label
+        # Falls back to agentrail/templates/ path for the contract source label
         self.assertIn(
-            "Machine-readable contract source: templates/docs/agents/github-pr-reviewer.md",
+            "Machine-readable contract source: agentrail/templates/docs/agents/github-pr-reviewer.md",
             prompt,
         )
         # Repo-specific footer

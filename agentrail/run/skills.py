@@ -21,11 +21,11 @@ def load_registry(target_dir: Path, repo_dir: Path) -> tuple[str, dict]:
     """Return (registry_path_str, registry_dict).
 
     Prefer installed <target>/docs/agents/skill-registry.json,
-    else fall back to <repo>/templates/docs/agents/skill-registry.json.
+    else fall back to <repo>/agentrail/templates/docs/agents/skill-registry.json.
     Mirror legacy lines 778-781.
     """
     installed = target_dir / "docs" / "agents" / "skill-registry.json"
-    source = repo_dir / "templates" / "docs" / "agents" / "skill-registry.json"
+    source = repo_dir / "agentrail" / "templates" / "docs" / "agents" / "skill-registry.json"
     registry_path = installed if installed.exists() else source
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
     return (str(registry_path), registry)

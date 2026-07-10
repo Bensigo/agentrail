@@ -404,7 +404,7 @@ class TestRegistry:
         (installed_dir / "skill-registry.json").write_text(json.dumps(registry))
 
         # Also put one in repo (should NOT be chosen)
-        repo_dir = repo / "templates" / "docs" / "agents"
+        repo_dir = repo / "agentrail" / "templates" / "docs" / "agents"
         repo_dir.mkdir(parents=True)
         (repo_dir / "skill-registry.json").write_text(json.dumps({"skills": []}))
 
@@ -418,7 +418,7 @@ class TestRegistry:
         target.mkdir()
         repo.mkdir()
 
-        repo_dir = repo / "templates" / "docs" / "agents"
+        repo_dir = repo / "agentrail" / "templates" / "docs" / "agents"
         repo_dir.mkdir(parents=True)
         registry = self._make_registry(tmp_path)
         (repo_dir / "skill-registry.json").write_text(json.dumps(registry))

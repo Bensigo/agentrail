@@ -87,8 +87,8 @@ required=(
   "skills/frontend-web/SKILL.md"
   # NOTE: the coordinator-flavored skills (grill-me, to-prd, to-milestones,
   # to-issues) moved out of the factory into apps/jace/agent/skills/. The
-  # factory installer only vends templates/ + skills/, so those no longer land
-  # in an installed project — do NOT assert them here.
+  # factory installer only vends agentrail/templates/ + agentrail/skills/, so
+  # those no longer land in an installed project — do NOT assert them here.
   "skills/tdd/SKILL.md"
   "skills/tdd/deep-modules.md"
   "skills/tdd/interface-design.md"
@@ -99,7 +99,8 @@ required=(
   ".agentrail/config.json"
   "scripts/agentrail"
   # #404 Option B vendor contract: only the native package + package.json +
-  # the runtime data dirs (templates/, skills/). NO editable flow scripts.
+  # the runtime data dirs (agentrail/templates/, agentrail/skills/). NO
+  # editable flow scripts.
   ".agentrail/source/package.json"
   ".agentrail/source/agentrail/__init__.py"
   ".agentrail/source/agentrail/context/sources.py"
@@ -108,10 +109,10 @@ required=(
   ".agentrail/source/agentrail/context/embeddings.py"
   ".agentrail/source/agentrail/context/packs.py"
   ".agentrail/source/agentrail/context/retrieval.py"
-  ".agentrail/source/templates/AGENTS.md"
+  ".agentrail/source/agentrail/templates/AGENTS.md"
   # A representative bundled factory skill proves the vendored skills/ mirror.
   # (to-issues moved to apps/jace/agent/skills/, so it is no longer vended.)
-  ".agentrail/source/skills/tdd/SKILL.md"
+  ".agentrail/source/agentrail/skills/tdd/SKILL.md"
 )
 
 for file in "${required[@]}"; do
@@ -231,12 +232,12 @@ if ! grep -q -- "agentrail memory recall" "${tmp_dir}/docs/agents/ralph-loop.md"
   exit 1
 fi
 
-if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === 'docs/agents/skill-registry.json' && file.source === 'templates/docs/agents/skill-registry.json')")" != "true" ]]; then
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === 'docs/agents/skill-registry.json' && file.source === 'agentrail/templates/docs/agents/skill-registry.json')")" != "true" ]]; then
   echo "state file does not track the managed skill registry" >&2
   exit 1
 fi
 
-if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === 'skills/frontend-web/SKILL.md' && file.source === 'skills/frontend-web/SKILL.md')")" != "true" ]]; then
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === 'skills/frontend-web/SKILL.md' && file.source === 'agentrail/skills/frontend-web/SKILL.md')")" != "true" ]]; then
   echo "state file does not track bundled skill files" >&2
   exit 1
 fi

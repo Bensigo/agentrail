@@ -75,7 +75,7 @@ class DeriveCommandTests(unittest.TestCase):
 
 class AssembleSeedTests(unittest.TestCase):
     def _make_repo(self, tmp: Path, body="SKILLBODY-VERBATIM"):
-        skdir = tmp / "skills" / "tdd"
+        skdir = tmp / "agentrail" / "skills" / "tdd"
         skdir.mkdir(parents=True)
         (skdir / "SKILL.md").write_text(body, encoding="utf-8")
         return tmp
@@ -116,7 +116,7 @@ class AssembleSeedTests(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             repo = Path(d)
-            fdir = repo / "skills" / "dup"
+            fdir = repo / "agentrail" / "skills" / "dup"
             fdir.mkdir(parents=True)
             (fdir / "SKILL.md").write_text("FACTORY", encoding="utf-8")
             jdir = repo / "apps" / "jace" / "agent" / "skills" / "dup"
@@ -171,7 +171,7 @@ class AssembleSeedTests(unittest.TestCase):
 class RunSkillSessionTests(unittest.TestCase):
     def _repo_and_target(self, d):
         repo = Path(d)
-        skdir = repo / "skills" / "tdd"
+        skdir = repo / "agentrail" / "skills" / "tdd"
         skdir.mkdir(parents=True)
         (skdir / "SKILL.md").write_text("SKILLBODY", encoding="utf-8")
         target = repo / "proj"

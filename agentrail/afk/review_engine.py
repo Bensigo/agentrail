@@ -32,12 +32,15 @@ def _resolve_doc(repo_root: Path, rel: str) -> Optional[Path]:
     """Resolve a doc path relative to repo_root, with templates/ fallback.
 
     Mirrors the script's behavior: prefer ``docs/agents/...`` but fall back to
-    ``templates/docs/agents/...`` when the project hasn't installed the doc.
+    ``agentrail/templates/docs/agents/...`` when the project hasn't installed
+    the doc (only reachable when *repo_root* is the agentrail source repo
+    itself, e.g. dogfooding AFK on agentrail's own PRs — an arbitrary target
+    project without an installed doc has no agentrail/templates/ tree either).
     """
     primary = repo_root / rel
     if primary.is_file():
         return primary
-    fallback = repo_root / "templates" / rel
+    fallback = repo_root / "agentrail" / "templates" / rel
     if fallback.is_file():
         return fallback
     return None
@@ -53,16 +56,16 @@ def build_review_prompt(
     """Port of the script's ``review_prompt``.
 
     Inlines ``docs/agents/pr-review.md`` always, and
-    ``docs/agents/github-pr-reviewer.md`` when ``machine_readable`` — each with a
-    ``templates/docs/agents/`` fallback. Includes the machine-readable JSON
-    contract instruction verbatim from the script.
+    ``docs/agents/github-pr-reviewer.md`` when ``machine_readable`` — each with an
+    ``agentrail/templates/docs/agents/`` fallback. Includes the machine-readable
+    JSON contract instruction verbatim from the script.
     """
     repo_root = Path(repo_root)
     prompt_file = _resolve_doc(repo_root, "docs/agents/pr-review.md")
     if prompt_file is None:
         raise ReviewError(
             "missing PR review instructions: docs/agents/pr-review.md or "
-            "templates/docs/agents/pr-review.md"
+            "agentrail/templates/docs/agents/pr-review.md"
         )
 
     machine_prompt_file: Optional[Path] = None
@@ -71,7 +74,7 @@ def build_review_prompt(
         if machine_prompt_file is None:
             raise ReviewError(
                 "missing GitHub PR reviewer contract: docs/agents/github-pr-reviewer.md "
-                "or templates/docs/agents/github-pr-reviewer.md"
+                "or agentrail/templates/docs/agents/github-pr-reviewer.md"
             )
 
     # The path the script reports as the contract source is repo-root-relative.

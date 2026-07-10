@@ -3,20 +3,20 @@ Shared template-sync engine for ``agentrail install`` and ``agentrail upgrade``.
 
 This module is the single source of truth for:
 
-- The managed-file inventory (``templates/`` + ``skills/`` roots, the
-  ``scripts/agentrail`` extra file, the hidden ``scripts/`` prefix and the
-  skip-patterns).
+- The managed-file inventory (``agentrail/templates/`` + ``agentrail/skills/``
+  roots, the ``scripts/agentrail`` extra file, the hidden ``scripts/`` prefix
+  and the skip-patterns).
 - Content-hash helpers (``_sha256_file``, ``_walk_files_sorted``, ``_copy_file``).
 - The per-item categorize/copy logic (``_categorize_item`` / ``_process_item``)
   shared between a fresh install (``previous=None`` for every item) and an
   upgrade (``previous`` looked up from the prior state).
 - The default ``config.json`` / ``workflow`` literals.
 - ``.agentrail/source`` materialization — the #404 Option B vendor trim: only
-  the native package (``agentrail/``), the ``package.json`` the launcher's
-  redirect needs, and the ``templates/`` + ``skills/`` the CLI reads at runtime
-  are vendored. NO editable flow scripts (no ``scripts/agentrail`` /
-  ``scripts/install-workflow``) are copied into the vendor dir, so installed
-  projects cannot fork orchestration.
+  the native package (``agentrail/``, which nests the ``templates/`` +
+  ``skills/`` the CLI reads at runtime) and the ``package.json`` the launcher's
+  redirect needs are vendored. NO editable flow scripts (no
+  ``scripts/agentrail`` / ``scripts/install-workflow``) are copied into the
+  vendor dir, so installed projects cannot fork orchestration.
 
 ``upgrade.py`` and ``install.py`` both import from here; behavior is identical
 between the two except install drives every item with ``previous=None``.
@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional
 # the editable flow scripts.
 # ---------------------------------------------------------------------------
 
-VENDOR_DIRS = ("agentrail", "templates", "skills")
+VENDOR_DIRS = ("agentrail",)
 VENDOR_FILES = ("package.json",)
 
 # Editable flow scripts that must NEVER land on the project surface or in the
@@ -195,8 +195,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 def _build_inventory(repo_dir: Path) -> List[Dict[str, Any]]:
     """Build the managed file inventory (templates + skills roots + extraFiles)."""
     roots = [
-        (repo_dir / "templates", ""),
-        (repo_dir / "skills", "skills"),
+        (repo_dir / "agentrail" / "templates", ""),
+        (repo_dir / "agentrail" / "skills", "skills"),
     ]
     inventory: List[Dict[str, Any]] = []
 

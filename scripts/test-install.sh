@@ -31,14 +31,14 @@ VERSION="0.0.0-test"
 # Mirrors the layout produced by .github/workflows/release.yml:
 #   agentrail-<version>/scripts/agentrail   (launcher)
 #   agentrail-<version>/agentrail/cli/main.py
-#   agentrail-<version>/skills/
-#   agentrail-<version>/templates/
+#   agentrail-<version>/agentrail/skills/
+#   agentrail-<version>/agentrail/templates/
 
 stage="${stub_dir}/agentrail-${VERSION}"
 mkdir -p "${stage}/scripts"
 mkdir -p "${stage}/agentrail/cli"
-mkdir -p "${stage}/skills"
-mkdir -p "${stage}/templates"
+mkdir -p "${stage}/agentrail/skills"
+mkdir -p "${stage}/agentrail/templates"
 
 # Stub launcher: resolves PYTHONPATH and calls main.py — matches the real launcher.
 cat > "${stage}/scripts/agentrail" << 'LAUNCHER'
@@ -69,8 +69,8 @@ MAIN
 # Minimal package init so `python3 -m agentrail.cli.main` resolves.
 touch "${stage}/agentrail/__init__.py"
 touch "${stage}/agentrail/cli/__init__.py"
-touch "${stage}/skills/.gitkeep"
-touch "${stage}/templates/.gitkeep"
+touch "${stage}/agentrail/skills/.gitkeep"
+touch "${stage}/agentrail/templates/.gitkeep"
 
 # Build tarball (mirrors release.yml exactly).
 tarball="agentrail-${VERSION}.tar.gz"

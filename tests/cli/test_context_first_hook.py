@@ -1,10 +1,11 @@
 """Tests for the context-first PreToolUse hook (#519, hard mode).
 
-Drives ``templates/scripts/context-first.sh`` directly via ``subprocess`` with
-fixture stdin payloads shaped like Claude Code's PreToolUse hook JSON. Hard mode
-denies every broad search (``Grep``/``Glob`` tools and Bash ``grep``/``rg``/
-``find``) outright — there is no marker escape — while non-search tools, Read,
-non-matching Bash, and malformed input all pass.
+Drives ``agentrail/templates/scripts/context-first.sh`` directly via
+``subprocess`` with fixture stdin payloads shaped like Claude Code's
+PreToolUse hook JSON. Hard mode denies every broad search (``Grep``/``Glob``
+tools and Bash ``grep``/``rg``/``find``) outright — there is no marker escape
+— while non-search tools, Read, non-matching Bash, and malformed input all
+pass.
 """
 from __future__ import annotations
 
@@ -15,7 +16,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-HOOK = Path(__file__).resolve().parents[2] / "templates" / "scripts" / "context-first.sh"
+HOOK = (
+    Path(__file__).resolve().parents[2]
+    / "agentrail" / "templates" / "scripts" / "context-first.sh"
+)
 
 FEEDBACK = (
     "Repo-wide search is disabled (AgentRail hard mode). Use "

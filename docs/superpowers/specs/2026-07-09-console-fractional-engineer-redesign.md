@@ -1,9 +1,9 @@
 # Console redesign: fractional-engineer reframe — design
 
-**Date:** 2026-07-09
+**Date:** 2026-07-09 (updated 2026-07-10: light theme default, goal card)
 **Status:** Draft for review
 **Owner:** bensigo
-**Related:** `docs/superpowers/specs/2026-07-08-cloud-multitenant-jace-design.md` (cloud spec), plan PR #1102
+**Related:** `docs/superpowers/specs/2026-07-08-cloud-multitenant-jace-design.md` (cloud spec), plan PR #1102, `docs/prd/jace-goal-loop.md` (goal loop, PR #1144)
 
 ## 1. Problem
 
@@ -32,6 +32,8 @@ the evidence layer that makes a fractional engineer trustworthy.
 | In-console chat | Yes — minimal, riding the channel-inbox seam as `channel='console'` |
 | Visual scope | Reframe on the existing `@agentrail/ui` kit; no rebrand in this arc |
 | Approach | Two-zone IA reframe in place (no clean-slate shell, no URL breakage) |
+| Theme (2026-07-10) | **Light background is the default**; dark stays as the existing toggle opt-in. All new surfaces in this spec are designed light-first: `:root` ramp (#ffffff canvas, #fcfcfc/#f9f9f9 panels, #e8e8e8 borders, #202020 text), accent `--brand-accent` = #9e6c00 amber on light — yellow #ffe629 is fill-with-dark-text only, never text on white. The flip itself ships as its own two-PR arc outside ①–⑦: (a) convert ~223 hard-coded dark-ramp hex literals in 42 console files to `var(--*-11)` tokens (zero visual diff while dark is default), (b) flip `layout.tsx` default class + `color-scheme` |
+| Goal visibility (2026-07-10) | Home digest gains a flag-gated **goal card** — the console face of the Jace goal loop (`docs/prd/jace-goal-loop.md`, PR #1144). No new sidebar item in v1 |
 
 ## 3. Information architecture
 
@@ -85,6 +87,15 @@ One action: **"Give Jace a task"** → Chat with a fresh thread. Data: existing
 queries + one new aggregate endpoint (`GET /api/v1/workspaces/:id/digest`).
 No new tables. Known-broken metrics (always-zero live context-quality,
 one-sided savings) are excluded from Home.
+
+**Goal card (flag `jaceGoalLoop`, default OFF — ships with the goal-loop PRD,
+not this arc).** When a workspace goal is active, Home shows one card per goal:
+objective, machine-check progress (metric value vs threshold, or
+command-check pass state), issues filed/merged under the `goal:<slug>` label,
+spend vs leash, and Pause/Abandon actions. The weekly digest gains one line per
+active goal ("Coverage: 71% → 78%, 4 PRs merged, $11.30, leash 60%"). Data
+comes from the `goals`/`goal_events` tables defined in
+`docs/prd/jace-goal-loop.md` (PR #1144); this spec owns only the rendering.
 
 ### Approvals — the "waiting on you" inbox
 
@@ -149,8 +160,10 @@ user-facing status chips. No page rebuilds.
 
 ## 7. Non-goals
 
-No visual rebrand; no cross-tenant operator view; no billing; no marketing-site
-changes; no websockets; no changes to runner protocol or factory behavior.
+No visual rebrand (the light-default theme flip is a separate two-PR arc — see
+§2 — not part of this redesign's rollout); no cross-tenant operator view; no
+billing; no marketing-site changes; no websockets; no changes to runner
+protocol or factory behavior.
 
 ## 8. Dependencies & sequencing
 
@@ -158,6 +171,12 @@ changes; no websockets; no changes to runner protocol or factory behavior.
   tables — no dependency on the cloud plan.
 - Approvals, Chat, onboarding step 3: require cloud plan (PR #1102) Tasks 4–5
   (schema/queries) and 7–9 (worker) merged, plus the console sender addition.
+- Goal card on Home: requires the goal-loop schema + loop (PR #1144 PRD)
+  merged; hidden behind `jaceGoalLoop` until then.
+- Light-default flip: independent two-PR arc (token `var()` conversion →
+  default flip); can land before, during, or after ①–⑦ with no ordering
+  constraint — new surfaces use tokens from day one so they render correctly
+  under either default.
 
 **Rollout order (one PR each, no URL breakage):**
 ① nav shell (pure regroup) → ② Home digest → ③ Work + vocabulary →

@@ -17,7 +17,8 @@
 // SURGICAL, not scorched-earth. The rendered body is legitimate markdown that
 // Jace authored (links, code spans, emphasis, headings) with untrusted text
 // woven in — so we must remove only what is *never* legitimate:
-//   - invisible / bidi / control / unicode-tag smuggling (hidden channels),
+//   - invisible / bidi / control / unicode-tag / variation-selector smuggling
+//     (hidden channels — every documented invisible byte-carrier, not just one),
 //   - dangerous, non-navigable URL schemes (javascript:, data:, ...),
 //   - mass-ping tokens (@everyone / @here / @channel / @all),
 //   - runaway length (context flooding),
@@ -101,9 +102,11 @@ const INVISIBLES = classFromRanges([
   [0x200b, 0x200f], // zero-width space/joiners + LRM/RLM
   [0x202a, 0x202e], // bidi embeddings/overrides (Trojan Source)
   [0x2060, 0x206f], // word-joiner / invisible math / deprecated format
+  [0xfe00, 0xfe0e], // variation selectors VS-1..VS-15 (FE0F/VS-16 kept for emoji)
   [0xfeff, 0xfeff], // ZWNBSP / BOM
   [0xfff9, 0xfffb], // interlinear annotation anchors
   [0xe0000, 0xe007f], // Unicode Tags block (invisible ASCII)
+  [0xe0100, 0xe01ef], // variation selectors supplement VS-17..VS-256 (byte smuggling)
 ]);
 
 // URL schemes that either execute or reference local/opaque data and are never

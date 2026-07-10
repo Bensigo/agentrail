@@ -34,10 +34,13 @@ def _docker_available() -> bool:
         return False
 
 
-# Building an image is slow; gate it behind an explicit opt-in OR a reachable
-# daemon. Either way, skip cleanly so CI without Docker stays green.
+# Building an image is slow; gate it behind an explicit opt-in. Skipped by
+# default (even when Docker is available) so the full pytest run stays fast;
+# set AGENTRAIL_DOCKER_SMOKE=1 to opt in.
 _SKIP_REASON = None
-if not _DOCKERFILE.exists():
+if os.environ.get("AGENTRAIL_DOCKER_SMOKE") != "1":
+    _SKIP_REASON = "AGENTRAIL_DOCKER_SMOKE=1 not set (opt-in smoke test)"
+elif not _DOCKERFILE.exists():
     _SKIP_REASON = f"Dockerfile not found at {_DOCKERFILE}"
 elif not _docker_available():
     _SKIP_REASON = "Docker daemon not available"

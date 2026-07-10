@@ -2,7 +2,7 @@
 
 Project memory captures reusable context that should survive across agent runs without becoming hidden agent state.
 
-Use this folder for operational lessons, durable preferences, recurring failure patterns, and source-linked decisions that are useful to future agents. Keep canonical product truth in `CONTEXT.md`, and keep hard-to-reverse architectural decisions in ADRs.
+Use this folder for operational lessons, durable preferences, recurring failure patterns, and source-linked decisions that are useful to future agents. Keep canonical product truth in `.agentrail/context.md` (legacy: `CONTEXT.md`), and keep hard-to-reverse architectural decisions in ADRs.
 
 ## Rules
 

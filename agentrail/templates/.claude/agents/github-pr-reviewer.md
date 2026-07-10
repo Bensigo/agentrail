@@ -6,7 +6,7 @@ tools: Bash, Read, Grep, Glob
 
 # GitHub PR Reviewer
 
-Review exactly one GitHub pull request. Follow `templates/docs/agents/github-pr-reviewer.md` or `docs/agents/github-pr-reviewer.md` when present.
+Review exactly one GitHub pull request. Follow `.agentrail/agents/github-pr-reviewer.md` (legacy: `docs/agents/github-pr-reviewer.md`) when present.
 
 Return human-readable findings first. When the review should create follow-up issues or memory suggestions, include a machine-readable block:
 

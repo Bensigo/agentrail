@@ -7,6 +7,8 @@ docs/
 .github/
 .agentrail/
 .afk-workflow/
+agentrail/tests/
+agentrail/docker/
 node_modules/
 .env
 .env.*

@@ -110,17 +110,6 @@ export function validateConnectorUpdate(
       out.chatId = trimmed;
     }
 
-    if (cfg.telegramOffset !== undefined) {
-      const n = cfg.telegramOffset;
-      if (typeof n !== "number" || !Number.isInteger(n) || n < 0) {
-        return {
-          ok: false,
-          error: "telegramOffset must be a non-negative integer",
-        };
-      }
-      out.telegramOffset = n;
-    }
-
     // Jace channel-migration opt-in (#1047). The per-workspace cutover control:
     // set true on the `jace` connector to route OUTBOUND Telegram notify through
     // Jace. Validated here so the operator can flip it via the connector PATCH
@@ -186,11 +175,6 @@ function completeConfig(stored: Partial<ConnectorConfig> | null | undefined): Co
     // Optional telegram inbound webhook secret (#889) — preserved across merges
     // so a later config patch (e.g. label edit) never strips the inbound auth.
     ...(stored?.webhookSecret ? { webhookSecret: stored.webhookSecret } : {}),
-    // Optional telegram polling offset (local-dev getUpdates cursor) — preserved
-    // across merges so a later config patch never resets the poller's resume point.
-    ...(typeof stored?.telegramOffset === "number"
-      ? { telegramOffset: stored.telegramOffset }
-      : {}),
     // Jace channel-migration opt-in (#1047) — preserved across merges so a later
     // config patch (e.g. label edit on the jace row) never silently reverts the
     // Telegram-notify cutover for the workspace.
@@ -252,8 +236,8 @@ export async function getConnectors(
 
 /** A connected (enabled + has-secret) connector for a provider, across all
  * workspaces. The local-dev Telegram poller enumerates these to know which bots
- * to poll. `config` carries the non-secret companions (chatId, telegramOffset);
- * the bot token is read separately via {@link getConnectorSecret}. */
+ * to poll. `config` carries the non-secret companions (chatId); the bot token is
+ * read separately via {@link getConnectorSecret}. */
 export interface EnabledConnectorRow {
   workspaceId: string;
   config: ConnectorConfig;
@@ -385,9 +369,6 @@ export async function setConnectorSecret(
   if (!connecting) {
     delete mergedConfig.chatId;
     delete mergedConfig.webhookSecret;
-    // Disconnect clears the poller's resume cursor too, so a future reconnect
-    // (new bot/chat) starts clean rather than resuming a stale offset.
-    delete mergedConfig.telegramOffset;
   }
 
   // Connecting enables the row; disconnecting disables it.

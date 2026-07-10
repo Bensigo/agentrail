@@ -4,8 +4,8 @@ name: Release tarball
 # tap, maintained out-of-repo) and the curl|sh installer consume. Triggered on a
 # version tag (vX.Y.Z). The CLI is
 # stdlib-only Python, so the tarball bundles no Python dependencies — it ships the
-# agentrail/ package + scripts/agentrail launcher + the skills/ and templates/ the
-# CLI ships, and requires only python3 at runtime.
+# agentrail/ package (which nests the templates/ and skills/ the CLI ships) +
+# scripts/agentrail launcher, and requires only python3 at runtime.
 
 on:
   push:
@@ -66,8 +66,6 @@ jobs:
           mkdir -p "$stage"
           cp -R agentrail "$stage/agentrail"
           cp -R scripts "$stage/scripts"
-          cp -R skills "$stage/skills"
-          cp -R templates "$stage/templates"
           cp README.md "$stage/README.md"
 
           # Drop compiled artifacts that should never ship.
@@ -94,8 +92,8 @@ jobs:
           for required in \
             "agentrail-${version}/scripts/agentrail" \
             "agentrail-${version}/agentrail/cli/main.py" \
-            "agentrail-${version}/skills/" \
-            "agentrail-${version}/templates/"; do
+            "agentrail-${version}/agentrail/skills/" \
+            "agentrail-${version}/agentrail/templates/"; do
             if ! printf '%s\n' "$listing" | grep -q "^${required}"; then
               echo "ERROR: expected '${required}' missing from tarball" >&2
               exit 1

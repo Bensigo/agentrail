@@ -13,12 +13,42 @@ while [[ -L "$source_path" ]]; do
 done
 
 script_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
-repo_dir="$(cd "${script_dir}/../.." && pwd)"
+
 # #404 Option B: in an installed project, the editable flow scripts are gone but
 # the native package is vendored under .agentrail/source. Resolve the package via
 # the vendored package.json redirect (kept working by the installer).
-if [[ -f "${repo_dir}/.agentrail/source/package.json" && -f "${repo_dir}/.agentrail/source/agentrail/__init__.py" ]]; then
-  repo_dir="$(cd "${repo_dir}/.agentrail/source" && pwd)"
+#
+# This launcher lives at two different depths depending on where it runs from:
+#   - installed copy: <target_dir>/scripts/agentrail          (1 level below the target project root)
+#   - native in-repo:  <repo_root>/agentrail/scripts/agentrail (2 levels below the repo root)
+# Try the 1-level-up candidate first (the installed-copy contract), and only
+# fall back to the 2-level-up candidate (native in-repo layout) if the first
+# doesn't resolve to anything importable/vendored (#1136).
+resolve_repo_dir() {
+  local candidate="$1"
+  if [[ -f "${candidate}/.agentrail/source/package.json" && -f "${candidate}/.agentrail/source/agentrail/__init__.py" ]]; then
+    echo "${candidate}/.agentrail/source"
+    return 0
+  fi
+  if [[ -f "${candidate}/agentrail/__init__.py" ]]; then
+    echo "$candidate"
+    return 0
+  fi
+  return 1
+}
+
+one_up="$(cd "${script_dir}/.." && pwd)"
+two_up="$(cd "${script_dir}/../.." && pwd)"
+
+if resolved_dir="$(resolve_repo_dir "$one_up")"; then
+  repo_dir="$resolved_dir"
+elif resolved_dir="$(resolve_repo_dir "$two_up")"; then
+  repo_dir="$resolved_dir"
+else
+  # Neither candidate resolved to an importable/vendored package. Default to
+  # the native in-repo layout depth so the import-verification fallback chain
+  # below still has a sane candidate to test against.
+  repo_dir="$two_up"
 fi
 
 pick_python() {

@@ -48,10 +48,10 @@ def assert_compiler_contract(testcase: unittest.TestCase, compiler: dict, *, exp
 
 class ContextCliTests(unittest.TestCase):
     def test_context_help_preserves_legacy_usage_contract(self) -> None:
-        repo = Path(__file__).resolve().parents[2]
+        repo = Path(__file__).resolve().parents[3]
         for args in (["context"], ["context", "-h"], ["context", "--help"]):
             with self.subTest(args=args):
-                result = subprocess.run([str(repo / "scripts" / "agentrail"), *args], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                result = subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), *args], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 self.assertEqual(result.returncode, 0)
                 self.assertIn("Usage:", result.stdout)
                 self.assertIn("agentrail context sources [--target DIR]", result.stdout)
@@ -66,54 +66,54 @@ class ContextCliTests(unittest.TestCase):
                 self.assertEqual(result.stderr, "")
 
     def test_unknown_context_command_prints_usage_to_stderr(self) -> None:
-        repo = Path(__file__).resolve().parents[2]
-        result = subprocess.run([str(repo / "scripts" / "agentrail"), "context", "unknown"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        repo = Path(__file__).resolve().parents[3]
+        result = subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "context", "unknown"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stdout, "")
         self.assertIn("Unknown context command: unknown", result.stderr)
         self.assertIn("Usage:", result.stderr)
 
     def test_public_agentrail_context_command_uses_python_entrypoint(self) -> None:
-        repo = Path(__file__).resolve().parents[2]
+        repo = Path(__file__).resolve().parents[3]
         root = Path(tempfile.mkdtemp())
         subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
-        subprocess.run([str(repo / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
         (root / "docs" / "agents" / "issue-92.md").write_text("# Issue 92\n\nContext command boundary.\n", encoding="utf-8")
-        result = subprocess.run([str(repo / "scripts" / "agentrail"), "context", "sources", "--target", str(root)], check=True, stdout=subprocess.PIPE, text=True)
+        result = subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "context", "sources", "--target", str(root)], check=True, stdout=subprocess.PIPE, text=True)
         records = json.loads(result.stdout)
         self.assertTrue(any(record["path"] == "docs/agents/issue-92.md" for record in records))
 
     def test_context_build_show_and_explain_cli(self) -> None:
-        repo = Path(__file__).resolve().parents[2]
+        repo = Path(__file__).resolve().parents[3]
         root = Path(tempfile.mkdtemp())
         subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
-        subprocess.run([str(repo / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
         (root / "docs" / "agents" / "issue-92.md").write_text("# Issue 92\n\nContext pack generation for issue #92.\n", encoding="utf-8")
         (root / "docs" / "agents" / "pr-44.md").write_text("# PR 44\n\nPR #44 at /pull/44 reviews context packs.\n", encoding="utf-8")
         (root / "src").mkdir()
         (root / "src" / "pack.py").write_text("def issue_92_pack():\n    return 'issue #92'\n", encoding="utf-8")
 
-        issue_result = subprocess.run([str(repo / "scripts" / "agentrail"), "context", "build", "issue", "92", "--phase", "execute", "--target", str(root), "--json"], check=True, stdout=subprocess.PIPE, text=True)
+        issue_result = subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "context", "build", "issue", "92", "--phase", "execute", "--target", str(root), "--json"], check=True, stdout=subprocess.PIPE, text=True)
         issue_output = json.loads(issue_result.stdout)
         self.assertTrue((root / issue_output["jsonPath"]).exists())
         self.assertTrue((root / issue_output["markdownPath"]).exists())
 
-        pr_result = subprocess.run([str(repo / "scripts" / "agentrail"), "context", "build", "pr", "44", "--phase", "review", "--target", str(root), "--json"], check=True, stdout=subprocess.PIPE, text=True)
+        pr_result = subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "context", "build", "pr", "44", "--phase", "review", "--target", str(root), "--json"], check=True, stdout=subprocess.PIPE, text=True)
         pr_output = json.loads(pr_result.stdout)
         self.assertTrue((root / pr_output["jsonPath"]).exists())
 
-        shown = subprocess.run([str(repo / "scripts" / "agentrail"), "context", "show", pr_output["packId"], "--target", str(root)], check=True, stdout=subprocess.PIPE, text=True)
+        shown = subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "context", "show", pr_output["packId"], "--target", str(root)], check=True, stdout=subprocess.PIPE, text=True)
         self.assertIn("Context Pack: pr #44 review", shown.stdout)
-        explained = subprocess.run([str(repo / "scripts" / "agentrail"), "context", "explain", pr_output["packId"], "--target", str(root), "--json"], check=True, stdout=subprocess.PIPE, text=True)
+        explained = subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "context", "explain", pr_output["packId"], "--target", str(root), "--json"], check=True, stdout=subprocess.PIPE, text=True)
         explanation = json.loads(explained.stdout)
         self.assertEqual(explanation["packId"], pr_output["packId"])
         self.assertIn("likelyDocs", explanation["sections"])
 
     def test_provider_facing_json_shape_for_context_commands(self) -> None:
-        repo = Path(__file__).resolve().parents[2]
+        repo = Path(__file__).resolve().parents[3]
         root = Path(tempfile.mkdtemp())
         subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
-        subprocess.run([str(repo / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
         (root / "CONTEXT.md").write_text("# Context\n\nKeep integrations explicit and observable for issue #83.\n", encoding="utf-8")
         (root / "TASTE.md").write_text("# Taste\n\nCommon actions should be obvious without instructional text.\n", encoding="utf-8")
         (root / "docs" / "agents" / "issue-83.md").write_text("# Issue 83\n\nProvider interface for context query, build, show, and explain.\n", encoding="utf-8")
@@ -127,7 +127,7 @@ class ContextCliTests(unittest.TestCase):
             "tests/context/test_context_modules.py::ContextModuleTests::test_anchor_extraction"
         )
         query_result = subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "context", "query", query_text, "--target", str(root), "--json", "--limit", "3"],
+            [str(repo / "agentrail" / "scripts" / "agentrail"), "context", "query", query_text, "--target", str(root), "--json", "--limit", "3"],
             check=True,
             stdout=subprocess.PIPE,
             text=True,
@@ -164,7 +164,7 @@ class ContextCliTests(unittest.TestCase):
             self.assertIn("policy", candidate)
 
         build_result = subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "context", "build", "issue", "83", "--phase", "execute", "--target", str(root), "--json"],
+            [str(repo / "agentrail" / "scripts" / "agentrail"), "context", "build", "issue", "83", "--phase", "execute", "--target", str(root), "--json"],
             check=True,
             stdout=subprocess.PIPE,
             text=True,
@@ -183,7 +183,7 @@ class ContextCliTests(unittest.TestCase):
         self.assertEqual(saved_pack["compiler"]["anchors"], built["compiler"]["anchors"])
 
         show_result = subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "context", "show", built["packId"], "--target", str(root), "--json"],
+            [str(repo / "agentrail" / "scripts" / "agentrail"), "context", "show", built["packId"], "--target", str(root), "--json"],
             check=True,
             stdout=subprocess.PIPE,
             text=True,
@@ -201,7 +201,7 @@ class ContextCliTests(unittest.TestCase):
         self.assertEqual(len(shown["compiler"]["tokenPack"]["selectedCandidateIds"]), len(shown["included"]))
 
         explain_result = subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "context", "explain", built["packId"], "--target", str(root), "--json"],
+            [str(repo / "agentrail" / "scripts" / "agentrail"), "context", "explain", built["packId"], "--target", str(root), "--json"],
             check=True,
             stdout=subprocess.PIPE,
             text=True,
@@ -215,10 +215,10 @@ class ContextCliTests(unittest.TestCase):
             self.assertIn(section, explained["sections"])
 
     def test_compiler_policy_budget_and_denied_sources_from_cli(self) -> None:
-        repo = Path(__file__).resolve().parents[2]
+        repo = Path(__file__).resolve().parents[3]
         root = Path(tempfile.mkdtemp())
         subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
-        subprocess.run([str(repo / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
         (root / "docs" / "agents" / "issue-101.md").write_text("# Issue 101\n\nPolicy and token budget metadata for issue #101.\n", encoding="utf-8")
         (root / "src").mkdir()
         (root / "src" / "policy.py").write_text("def issue_101_policy_surface():\n    return 'issue #101 policy metadata'\n", encoding="utf-8")
@@ -250,7 +250,7 @@ class ContextCliTests(unittest.TestCase):
         config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
         query_result = subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "context", "query", "issue #101 policy budget metadata", "--target", str(root), "--json", "--limit", "5"],
+            [str(repo / "agentrail" / "scripts" / "agentrail"), "context", "query", "issue #101 policy budget metadata", "--target", str(root), "--json", "--limit", "5"],
             check=True,
             stdout=subprocess.PIPE,
             text=True,
@@ -285,7 +285,7 @@ class ContextCliTests(unittest.TestCase):
             self.assertIn(policy["freshnessPolicy"]["effect"], {"neutral", "demoted", "excluded"})
 
         build_result = subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "context", "build", "issue", "101", "--phase", "execute", "--target", str(root), "--json"],
+            [str(repo / "agentrail" / "scripts" / "agentrail"), "context", "build", "issue", "101", "--phase", "execute", "--target", str(root), "--json"],
             check=True,
             stdout=subprocess.PIPE,
             text=True,
@@ -302,10 +302,10 @@ class ContextCliTests(unittest.TestCase):
         self.assertTrue(all(item.get("citation") and item.get("reason") for item in saved_pack["included"] + saved_pack["excluded"]))
 
     def test_context_evaluate_cli_reports_fixture_metrics(self) -> None:
-        repo = Path(__file__).resolve().parents[2]
+        repo = Path(__file__).resolve().parents[3]
         root = Path(tempfile.mkdtemp())
         subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
-        subprocess.run([str(repo / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
         (root / "docs" / "agents" / "issue-84.md").write_text("# Issue 84\n\nRetrieval evaluation for issue #84.\n", encoding="utf-8")
         (root / "src").mkdir()
         (root / "src" / "retrieval_eval.py").write_text("def issue_84_eval():\n    return 'issue #84 retrieval evaluation'\n", encoding="utf-8")
@@ -325,7 +325,7 @@ class ContextCliTests(unittest.TestCase):
             ],
         }), encoding="utf-8")
         result = subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "context", "evaluate", str(fixture), "--target", str(root), "--json"],
+            [str(repo / "agentrail" / "scripts" / "agentrail"), "context", "evaluate", str(fixture), "--target", str(root), "--json"],
             check=True,
             stdout=subprocess.PIPE,
             text=True,
@@ -346,11 +346,11 @@ class ContextMarkerTests(unittest.TestCase):
     """#519: context query/search touch the context-first marker file."""
 
     def _install(self) -> Path:
-        repo = Path(__file__).resolve().parents[2]
+        repo = Path(__file__).resolve().parents[3]
         root = Path(tempfile.mkdtemp())
         subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
         subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "install", "--target", str(root)],
+            [str(repo / "agentrail" / "scripts" / "agentrail"), "install", "--target", str(root)],
             check=True, stdout=subprocess.DEVNULL,
         )
         (root / "src").mkdir(exist_ok=True)
@@ -358,34 +358,34 @@ class ContextMarkerTests(unittest.TestCase):
         return root
 
     def test_query_writes_marker(self):
-        repo = Path(__file__).resolve().parents[2]
+        repo = Path(__file__).resolve().parents[3]
         root = self._install()
         marker = root / ".agentrail" / "tmp" / "context-queried"
         self.assertFalse(marker.exists())
         subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "context", "query", "thing", "--target", str(root), "--json"],
+            [str(repo / "agentrail" / "scripts" / "agentrail"), "context", "query", "thing", "--target", str(root), "--json"],
             check=True, stdout=subprocess.DEVNULL,
         )
         self.assertTrue(marker.exists())
 
     def test_search_writes_marker(self):
-        repo = Path(__file__).resolve().parents[2]
+        repo = Path(__file__).resolve().parents[3]
         root = self._install()
         marker = root / ".agentrail" / "tmp" / "context-queried"
         self.assertFalse(marker.exists())
         subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "context", "search", "thing", "--target", str(root), "--json"],
+            [str(repo / "agentrail" / "scripts" / "agentrail"), "context", "search", "thing", "--target", str(root), "--json"],
             check=True, stdout=subprocess.DEVNULL,
         )
         self.assertTrue(marker.exists())
 
     def test_ast_writes_marker(self):
-        repo = Path(__file__).resolve().parents[2]
+        repo = Path(__file__).resolve().parents[3]
         root = self._install()
         marker = root / ".agentrail" / "tmp" / "context-queried"
         self.assertFalse(marker.exists())
         subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "context", "ast", "(function_definition)", "--target", str(root), "--json"],
+            [str(repo / "agentrail" / "scripts" / "agentrail"), "context", "ast", "(function_definition)", "--target", str(root), "--json"],
             check=True, stdout=subprocess.DEVNULL,
         )
         self.assertTrue(marker.exists())

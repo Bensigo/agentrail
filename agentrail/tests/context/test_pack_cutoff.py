@@ -31,7 +31,7 @@ from agentrail.context import evaluation as ev
 from agentrail.context.config import read_context_config
 from agentrail.context.retrieval import query_context, resolve_pack_cutoff
 
-REPO_ROOT = Path(__file__).parent.parent.parent
+REPO_ROOT = Path(__file__).parent.parent.parent.parent
 RETRIEVAL_FIXTURE_FILE = REPO_ROOT / "agentrail" / "context" / "retrieval-fixtures.json"
 
 CUTOFF_ENV = "AGENTRAIL_CONTEXT_PACK_CUTOFF"

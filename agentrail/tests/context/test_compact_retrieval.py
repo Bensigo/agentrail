@@ -68,13 +68,13 @@ class GetFileSymbolTests(unittest.TestCase):
 
 class ContextGetCliTests(unittest.TestCase):
     def test_cli_get_returns_only_requested_lines(self) -> None:
-        repo = Path(__file__).resolve().parents[2]
+        repo = Path(__file__).resolve().parents[3]
         root = Path(tempfile.mkdtemp())
         (root / "src").mkdir(parents=True)
         (root / "src" / "foo.py").write_text(
             "\n".join(f"line {n}" for n in range(1, 11)) + "\n", encoding="utf-8")
         result = subprocess.run(
-            [str(repo / "scripts" / "agentrail"), "context", "get", "src/foo.py",
+            [str(repo / "agentrail" / "scripts" / "agentrail"), "context", "get", "src/foo.py",
              "--lines", "2-4", "--target", str(root), "--json"],
             check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

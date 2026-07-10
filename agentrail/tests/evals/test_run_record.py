@@ -139,7 +139,7 @@ def test_default_retries_list_is_not_shared_between_instances() -> None:
 
 def test_run_record_module_imports_no_execution_or_network_modules() -> None:
     module_path = (
-        Path(__file__).resolve().parents[2]
+        Path(__file__).resolve().parents[3]
         / "agentrail"
         / "evals"
         / "run_record.py"

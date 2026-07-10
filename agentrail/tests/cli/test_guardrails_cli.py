@@ -101,9 +101,9 @@ def test_dummy_guardrail_surfaces_in_list_output(dummy_guardrail, capsys):
 # ---------------------------------------------------------------------------
 
 def test_public_entrypoint_guardrails_list_exits_zero():
-    repo = Path(__file__).resolve().parents[2]
+    repo = Path(__file__).resolve().parents[3]
     result = subprocess.run(
-        [str(repo / "scripts" / "agentrail"), "guardrails", "list"],
+        [str(repo / "agentrail" / "scripts" / "agentrail"), "guardrails", "list"],
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

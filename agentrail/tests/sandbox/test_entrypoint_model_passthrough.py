@@ -1,7 +1,7 @@
 """Hermetic test (AC4) — the runner entrypoint forwards the escalation model +
 failure handoff into the in-container ``agentrail run issue``.
 
-This NEVER builds or runs the real image. It drives ``docker/runner/entrypoint.sh``
+This NEVER builds or runs the real image. It drives ``agentrail/docker/runner/entrypoint.sh``
 directly under bash with stub ``git`` / ``agentrail`` binaries on PATH that record
 the exact argv + environment they were invoked with. We then assert:
 
@@ -20,8 +20,8 @@ import subprocess
 import unittest
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_ENTRYPOINT = _REPO_ROOT / "docker" / "runner" / "entrypoint.sh"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_ENTRYPOINT = _REPO_ROOT / "agentrail" / "docker" / "runner" / "entrypoint.sh"
 
 _SKIP = None
 if shutil.which("bash") is None:

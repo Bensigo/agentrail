@@ -27,8 +27,8 @@ def _make_repo() -> Path:
     (repo / "agentrail" / "templates" / "scripts" / "context-first.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
     (repo / "packages" / "mcp" / "dist").mkdir(parents=True)
     (repo / "packages" / "mcp" / "dist" / "index.js").write_text("// mcp server\n")
-    (repo / "scripts").mkdir()
-    launcher = repo / "scripts" / "agentrail"
+    (repo / "agentrail" / "scripts").mkdir(parents=True)
+    launcher = repo / "agentrail" / "scripts" / "agentrail"
     launcher.write_text("#!/usr/bin/env bash\necho ok\n")
     launcher.chmod(0o755)
     return repo

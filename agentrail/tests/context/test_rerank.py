@@ -32,7 +32,7 @@ from agentrail.context.packs import build_context_pack, load_context_pack
 from agentrail.context.rerank import rerank_candidates
 from agentrail.context.retrieval import query_context
 
-REPO_ROOT = Path(__file__).parent.parent.parent
+REPO_ROOT = Path(__file__).parent.parent.parent.parent
 RETRIEVAL_FIXTURE_FILE = REPO_ROOT / "agentrail" / "context" / "retrieval-fixtures.json"
 
 

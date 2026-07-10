@@ -128,7 +128,7 @@ def test_arm_module_imports_no_execution_or_network_modules() -> None:
     Constructing or inspecting an arm is pure data; it must never reach for an
     execution, sandbox, or network primitive.
     """
-    module_path = Path(__file__).resolve().parents[2] / "agentrail" / "evals" / "arms" / "__init__.py"
+    module_path = Path(__file__).resolve().parents[3] / "agentrail" / "evals" / "arms" / "__init__.py"
     source = module_path.read_text(encoding="utf-8")
     tree = ast.parse(source)
 

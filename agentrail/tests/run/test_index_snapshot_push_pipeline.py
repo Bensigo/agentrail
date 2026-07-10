@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 from agentrail.run.pipeline import run_issue
 
-from tests.run.test_budget_guardrail import (
+from agentrail.tests.run.test_budget_guardrail import (
     _apply_common_patches,
     _make_target,
     _stub_run_with_timeout,

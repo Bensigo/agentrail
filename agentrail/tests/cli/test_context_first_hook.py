@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 
 HOOK = (
-    Path(__file__).resolve().parents[2]
+    Path(__file__).resolve().parents[3]
     / "agentrail" / "templates" / "scripts" / "context-first.sh"
 )
 

@@ -47,7 +47,7 @@ from agentrail.context.packs import build_context_pack, load_context_pack
 # Canonical documented path for the repo's version-controlled fixture set.
 # The Implementer creates this file; AC1 verifies its existence and shape.
 # ---------------------------------------------------------------------------
-REPO_ROOT = Path(__file__).parent.parent.parent
+REPO_ROOT = Path(__file__).parent.parent.parent.parent
 RETRIEVAL_FIXTURE_FILE = REPO_ROOT / "agentrail" / "context" / "retrieval-fixtures.json"
 
 

@@ -19,7 +19,7 @@ from typing import Dict, List
 
 from agentrail.context import evaluation as ev
 
-REPO_ROOT = Path(__file__).parent.parent.parent
+REPO_ROOT = Path(__file__).parent.parent.parent.parent
 RETRIEVAL_FIXTURE_FILE = REPO_ROOT / "agentrail" / "context" / "retrieval-fixtures.json"
 
 # The two fixtures added for AC3, and the genuine dependency each one deliberately

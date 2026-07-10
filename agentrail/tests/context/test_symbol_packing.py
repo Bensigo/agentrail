@@ -31,7 +31,7 @@ from agentrail.context.packs import (
 )
 from agentrail.context.retrieval import estimate_tokens
 
-REPO_ROOT = Path(__file__).parent.parent.parent
+REPO_ROOT = Path(__file__).parent.parent.parent.parent
 RETRIEVAL_FIXTURE_FILE = REPO_ROOT / "agentrail" / "context" / "retrieval-fixtures.json"
 
 _FLAG = "AGENTRAIL_CONTEXT_SYMBOL_PACKING"

@@ -412,9 +412,9 @@ def test_canary_restricts_to_the_bounded_subset(
 
 
 def _workflow_path() -> Path:
-    # tests/evals/test_canary.py -> repo root -> .github/workflows/eval-canary.yml
+    # agentrail/tests/evals/test_canary.py -> repo root -> .github/workflows/eval-canary.yml
     return (
-        Path(__file__).resolve().parents[2]
+        Path(__file__).resolve().parents[3]
         / ".github"
         / "workflows"
         / "eval-canary.yml"

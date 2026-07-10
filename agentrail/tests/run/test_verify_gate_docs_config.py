@@ -28,7 +28,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).parents[2]
+_REPO_ROOT = Path(__file__).parents[3]
 _VERIFY_SH = _REPO_ROOT / ".agentrail" / "verify.sh"
 
 

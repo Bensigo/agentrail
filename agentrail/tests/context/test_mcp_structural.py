@@ -80,7 +80,7 @@ _IMPACT_CLI_AVAILABLE = _impact_cli_available()
 # MCP stdio JSON-RPC helpers
 # ---------------------------------------------------------------------------
 
-_MCP_DIST = Path(__file__).resolve().parents[2] / "packages" / "mcp" / "dist" / "index.js"
+_MCP_DIST = Path(__file__).resolve().parents[3] / "packages" / "mcp" / "dist" / "index.js"
 
 
 def _node_available() -> bool:

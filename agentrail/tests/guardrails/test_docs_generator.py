@@ -19,7 +19,7 @@ from agentrail.guardrails.registry import _REGISTRY, register
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[3]
 
 
 @dataclasses.dataclass(frozen=True)

@@ -30,7 +30,7 @@ from agentrail.context.memory_fetch import (
 )
 from agentrail.context.memory_lane import MEMORY_SNAPSHOT_REL
 from agentrail.run.context import build_pack
-from tests.context.test_memory_lane import _make_repo, _mem
+from agentrail.tests.context.test_memory_lane import _make_repo, _mem
 
 _LINK_ENV_KEYS = (
     "AGENTRAIL_SERVER_BASE_URL",

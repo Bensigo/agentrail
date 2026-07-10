@@ -1064,7 +1064,7 @@ class ShippedSkillRegistryRegressionTest(unittest.TestCase):
     The repo skills live at <repo>/agentrail/skills/<name>/SKILL.md.
     """
 
-    REPO_ROOT = Path(__file__).resolve().parents[2]
+    REPO_ROOT = Path(__file__).resolve().parents[3]
     REGISTRY = REPO_ROOT / "agentrail" / "templates" / "docs" / "agents" / "skill-registry.json"
     REQUIRED = [
         "## Activation Guidance",

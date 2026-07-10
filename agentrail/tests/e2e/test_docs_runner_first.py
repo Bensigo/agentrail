@@ -32,7 +32,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
-_REPO = Path(__file__).resolve().parents[2]
+_REPO = Path(__file__).resolve().parents[3]
 _DOCS = _REPO / "apps" / "console" / "content" / "docs"
 
 

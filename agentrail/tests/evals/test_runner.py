@@ -564,7 +564,7 @@ def test_runner_imports_locked_run_record_and_does_not_redefine_it() -> None:
     """The runner imports :class:`RunRecord` from the locked module and does not
     declare its own dataclass with that name. Guards against drift from #936.
     """
-    module_path = Path(__file__).resolve().parents[2] / "agentrail" / "evals" / "runner.py"
+    module_path = Path(__file__).resolve().parents[3] / "agentrail" / "evals" / "runner.py"
     tree = ast.parse(module_path.read_text(encoding="utf-8"))
 
     imports_run_record = False

@@ -145,7 +145,7 @@ def test_score_is_pure_function_referentially_transparent() -> None:
 def test_scorer_module_imports_no_execution_or_network_modules() -> None:
     """Static guard (mirrors #933): the scorer imports no IO primitives."""
     module_path = (
-        Path(__file__).resolve().parents[2] / "agentrail" / "evals" / "scorer.py"
+        Path(__file__).resolve().parents[3] / "agentrail" / "evals" / "scorer.py"
     )
     tree = ast.parse(module_path.read_text(encoding="utf-8"))
     forbidden = {

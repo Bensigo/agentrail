@@ -7,7 +7,7 @@ proves the image builds and that git/python/node and the agentrail CLI are
 present and runnable inside it.
 
 Run explicitly with:  AGENTRAIL_DOCKER_SMOKE=1 python -m unittest \
-    tests.sandbox.test_docker_image_smoke
+    agentrail.tests.sandbox.test_docker_image_smoke
 """
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ import subprocess
 import unittest
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_DOCKERFILE = _REPO_ROOT / "docker" / "runner" / "Dockerfile"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_DOCKERFILE = _REPO_ROOT / "agentrail" / "docker" / "runner" / "Dockerfile"
 _IMAGE_TAG = "agentrail/runner:smoke"
 
 

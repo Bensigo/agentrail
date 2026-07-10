@@ -301,7 +301,7 @@ class ExpansionFlagGate(unittest.TestCase):
 # source_record_for_file -> sources.py) into the pack, while the monotonicity
 # guard keeps recall from regressing anywhere and holds the precision head.
 # ---------------------------------------------------------------------------
-_REPO_ROOT = Path(__file__).parent.parent.parent
+_REPO_ROOT = Path(__file__).parent.parent.parent.parent
 
 
 class HardFixtureRecallCertification(unittest.TestCase):

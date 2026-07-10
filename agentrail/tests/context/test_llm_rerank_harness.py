@@ -38,7 +38,7 @@ from agentrail.context.retrieval import query_context
 
 # Reuse the sibling module's repo fixture + helpers so the end-to-end flag-OFF
 # assertion runs against the SAME retrieval path the wiring tests use.
-from tests.context.test_llm_rerank import (
+from agentrail.tests.context.test_llm_rerank import (
     _FLAG,
     _QUERY,
     _candidates,

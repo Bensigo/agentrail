@@ -152,9 +152,9 @@ class SourceGuardTests(unittest.TestCase):
         d = tempfile.mkdtemp()
         p = Path(d)
         (p / "package.json").write_text(json.dumps({"name": "@bensigo/agentrail"}))
-        (p / "templates" / "scripts").mkdir(parents=True)
-        (p / "scripts").mkdir()
-        exe = p / "scripts" / "agentrail"
+        (p / "agentrail" / "templates" / "scripts").mkdir(parents=True)
+        (p / "agentrail" / "scripts").mkdir()
+        exe = p / "agentrail" / "scripts" / "agentrail"
         exe.write_text("#!/bin/sh\n"); exe.chmod(0o755)
         return d
 

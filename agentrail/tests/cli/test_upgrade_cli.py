@@ -44,8 +44,8 @@ def _make_fake_repo(tmp_dir: str) -> Path:
           docs/memory/note.md      <- MUST be skipped (skipPattern)
       - agentrail/skills/
           skills/my-skill/SKILL.md <- managed under "skills/" prefix
-      - scripts/agentrail          <- extraFiles
-      - scripts/install-workflow   <- for source materialization
+      - agentrail/scripts/agentrail          <- extraFiles
+      - agentrail/scripts/install-workflow   <- for source materialization
       - agentrail/                 <- for source materialization
     """
     repo = Path(tmp_dir) / "fake-repo"
@@ -67,10 +67,10 @@ def _make_fake_repo(tmp_dir: str) -> Path:
     (repo / "agentrail" / "skills" / "my-skill").mkdir(parents=True)
     (repo / "agentrail" / "skills" / "my-skill" / "SKILL.md").write_text("# Skill\nDo stuff\n")
 
-    # scripts/ (extraFiles + source materialization scripts)
-    (repo / "scripts").mkdir(parents=True)
+    # agentrail/scripts/ (extraFiles + source materialization scripts)
+    (repo / "agentrail" / "scripts").mkdir(parents=True)
     for script in ("agentrail", "install-workflow"):
-        s = repo / "scripts" / script
+        s = repo / "agentrail" / "scripts" / script
         s.write_text(f"#!/bin/sh\necho {script}\n")
         s.chmod(0o755)
 

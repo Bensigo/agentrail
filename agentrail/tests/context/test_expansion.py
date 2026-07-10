@@ -31,7 +31,7 @@ from pathlib import Path
 
 from agentrail.context.expansion import expand_query_tokens, query_expansion_enabled
 
-REPO_ROOT = Path(__file__).parent.parent.parent
+REPO_ROOT = Path(__file__).parent.parent.parent.parent
 
 
 @contextmanager

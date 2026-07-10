@@ -36,7 +36,7 @@ from agentrail.sandbox.docker_runner import RunResult
 # Reuse the runtime-test fakes so the loop edges (store/sandbox/notify) are the
 # exact same faithful stand-ins the GitHub cycle is proven against — the ONLY
 # thing that differs here is the connector.
-from tests.heartbeat.test_runtime import (
+from agentrail.tests.heartbeat.test_runtime import (
     FakeNotifier,
     FakeStore,
     _config,

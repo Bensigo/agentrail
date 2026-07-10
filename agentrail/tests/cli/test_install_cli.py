@@ -35,8 +35,8 @@ def _make_repo() -> Path:
     (repo / "agentrail" / "templates" / "scripts").mkdir(exist_ok=True)
     (repo / "agentrail" / "templates" / "scripts" / "context-first.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
 
-    scripts = repo / "scripts"
-    scripts.mkdir()
+    scripts = repo / "agentrail" / "scripts"
+    scripts.mkdir(parents=True)
     launcher = scripts / "agentrail"
     launcher.write_text("#!/usr/bin/env bash\necho launcher\n")
     launcher.chmod(0o755)
@@ -390,12 +390,13 @@ class TestParityWithBash(TestCase):
         return files
 
     def _stage_legacy_installer(self) -> Optional[Path]:
-        """Materialize the legacy bash installer inside the real repo's scripts/
-        dir (it derives repo_dir from its own location, so it must live there).
-        Prefer the working tree; else reconstruct from git history. Returns the
-        path, or None if unavailable. Caller is responsible for cleanup of a
-        reconstructed copy (it is removed in the finally of test_parity)."""
-        wt = self.repo / "scripts" / "install-workflow"
+        """Materialize the legacy bash installer inside the real repo's
+        agentrail/scripts/ dir (it derives repo_dir from its own location, so
+        it must live there). Prefer the working tree; else reconstruct from
+        git history. Returns the path, or None if unavailable. Caller is
+        responsible for cleanup of a reconstructed copy (it is removed in the
+        finally of test_parity)."""
+        wt = self.repo / "agentrail" / "scripts" / "install-workflow"
         if wt.exists():
             return wt
         import subprocess as sp
@@ -406,8 +407,8 @@ class TestParityWithBash(TestCase):
             if r.returncode == 0 and r.stdout:
                 # Restore at the canonical path: the legacy installer's vendor
                 # step does `cp scripts/install-workflow`, a self-reference that
-                # only resolves when it lives at scripts/install-workflow.
-                dest = self.repo / "scripts" / "install-workflow"
+                # only resolves when it lives at agentrail/scripts/install-workflow.
+                dest = self.repo / "agentrail" / "scripts" / "install-workflow"
                 dest.write_text(r.stdout)
                 dest.chmod(0o755)
                 return dest
@@ -418,7 +419,7 @@ class TestParityWithBash(TestCase):
         if _sh.which("node") is None:
             self.skipTest("node required by legacy bash installer is not on PATH")
 
-        wt = self.repo / "scripts" / "install-workflow"
+        wt = self.repo / "agentrail" / "scripts" / "install-workflow"
         existed_in_tree = wt.exists()
         bash_installer = self._stage_legacy_installer()
         if bash_installer is None:

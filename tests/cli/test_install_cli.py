@@ -12,27 +12,28 @@ from unittest.mock import patch
 
 
 def _make_repo() -> Path:
-    """Build a minimal AgentRail source repo (templates/skills/agentrail/scripts/package.json)."""
+    """Build a minimal AgentRail source repo (agentrail/{templates,skills}, scripts/, package.json)."""
     repo = Path(tempfile.mkdtemp())
 
     (repo / "package.json").write_text(json.dumps({"name": "@useagentrail/cli", "version": "9.9.9"}))
 
-    (repo / "templates").mkdir()
-    (repo / "templates" / "AGENTS.md").write_text("# Agents\nHello\n")
-    (repo / "templates" / "some-template.md").write_text("# Template\nWorld\n")
+    (repo / "agentrail" / "templates").mkdir(parents=True)
+    (repo / "agentrail" / "templates" / "AGENTS.md").write_text("# Agents\nHello\n")
+    (repo / "agentrail" / "templates" / "some-template.md").write_text("# Template\nWorld\n")
     # hidden under scripts/ — excluded from inventory
-    (repo / "templates" / "scripts").mkdir()
-    (repo / "templates" / "scripts" / "hidden.sh").write_text("#!/bin/sh\n")
+    (repo / "agentrail" / "templates" / "scripts").mkdir()
+    (repo / "agentrail" / "templates" / "scripts" / "hidden.sh").write_text("#!/bin/sh\n")
     # skip-pattern: TASTE.md excluded
-    (repo / "templates" / "TASTE.md").write_text("# Taste\n")
+    (repo / "agentrail" / "templates" / "TASTE.md").write_text("# Taste\n")
 
-    (repo / "skills" / "my-skill").mkdir(parents=True)
-    (repo / "skills" / "my-skill" / "SKILL.md").write_text("# Skill\n")
+    (repo / "agentrail" / "skills" / "my-skill").mkdir(parents=True)
+    (repo / "agentrail" / "skills" / "my-skill" / "SKILL.md").write_text("# Skill\n")
 
-    # context-first hook source (#519) — lives under templates/scripts (hidden
-    # prefix, not installed to the surface) and is placed by _install_claude_hooks.
-    (repo / "templates" / "scripts").mkdir(exist_ok=True)
-    (repo / "templates" / "scripts" / "context-first.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+    # context-first hook source (#519) — lives under agentrail/templates/scripts
+    # (hidden prefix, not installed to the surface) and is placed by
+    # _install_claude_hooks.
+    (repo / "agentrail" / "templates" / "scripts").mkdir(exist_ok=True)
+    (repo / "agentrail" / "templates" / "scripts" / "context-first.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
 
     scripts = repo / "scripts"
     scripts.mkdir()
@@ -40,7 +41,6 @@ def _make_repo() -> Path:
     launcher.write_text("#!/usr/bin/env bash\necho launcher\n")
     launcher.chmod(0o755)
 
-    (repo / "agentrail").mkdir()
     (repo / "agentrail" / "__init__.py").write_text("")
     (repo / "agentrail" / "cli").mkdir()
     (repo / "agentrail" / "cli" / "__init__.py").write_text("")
@@ -73,7 +73,7 @@ class TestFreshInstall(TestCase):
     def test_skip_patterns_not_installed(self):
         _run_install(self.repo, self.target)
         self.assertFalse((self.target / "TASTE.md").exists())
-        # hidden templates/scripts/* never land on surface
+        # hidden agentrail/templates/scripts/* never land on surface
         self.assertFalse((self.target / "scripts" / "hidden.sh").exists())
 
     def test_state_records_version(self):
@@ -110,7 +110,7 @@ class TestFreshInstall(TestCase):
         _run_install(self.repo, self.target)
         state = json.loads((self.target / ".agentrail" / "state.json").read_text())
         skill = next(f for f in state["managedFiles"] if f["path"] == "skills/my-skill/SKILL.md")
-        self.assertEqual(skill["source"], "skills/my-skill/SKILL.md")
+        self.assertEqual(skill["source"], "agentrail/skills/my-skill/SKILL.md")
 
 
 class TestClaudeSkillsInstall(TestCase):
@@ -142,8 +142,8 @@ class TestClaudeSkillsInstall(TestCase):
 
     def test_multiple_skills_all_installed(self):
         # Add a second skill to the repo
-        (self.repo / "skills" / "other-skill").mkdir(parents=True, exist_ok=True)
-        (self.repo / "skills" / "other-skill" / "SKILL.md").write_text("# Other\n")
+        (self.repo / "agentrail" / "skills" / "other-skill").mkdir(parents=True, exist_ok=True)
+        (self.repo / "agentrail" / "skills" / "other-skill" / "SKILL.md").write_text("# Other\n")
         _run_install(self.repo, self.target)
         self.assertTrue(
             (self.target / ".claude" / "skills" / "my-skill" / "SKILL.md").exists()
@@ -155,7 +155,7 @@ class TestClaudeSkillsInstall(TestCase):
     def test_no_skills_dir_does_not_error(self):
         # Remove skills dir from repo
         import shutil as _sh
-        _sh.rmtree(str(self.repo / "skills"))
+        _sh.rmtree(str(self.repo / "agentrail" / "skills"))
         rc = _run_install(self.repo, self.target)
         self.assertEqual(rc, 0)
 
@@ -174,7 +174,7 @@ class TestClaudeHooksInstall(TestCase):
         self.assertTrue(os.access(hook, os.X_OK))
 
     def test_hook_not_placed_on_project_surface(self):
-        # templates/scripts/* is the hidden prefix — never installed as a managed file.
+        # agentrail/templates/scripts/* is the hidden prefix — never installed as a managed file.
         _run_install(self.repo, self.target)
         self.assertFalse((self.target / "scripts" / "context-first.sh").exists())
         self.assertFalse((self.target / "hooks" / "context-first.sh").exists())
@@ -221,7 +221,7 @@ class TestClaudeHooksInstall(TestCase):
         self.assertEqual(len(settings["hooks"]["PreToolUse"]), 1)
 
     def test_no_hook_source_does_not_error(self):
-        (self.repo / "templates" / "scripts" / "context-first.sh").unlink()
+        (self.repo / "agentrail" / "templates" / "scripts" / "context-first.sh").unlink()
         rc = _run_install(self.repo, self.target)
         self.assertEqual(rc, 0)
         self.assertFalse((self.target / ".agentrail" / "hooks" / "context-first.sh").exists())
@@ -239,8 +239,8 @@ class TestVendorTrim(TestCase):
         source = self.target / ".agentrail" / "source"
         self.assertTrue((source / "package.json").exists())
         self.assertTrue((source / "agentrail").is_dir())
-        self.assertTrue((source / "templates").is_dir())
-        self.assertTrue((source / "skills").is_dir())
+        self.assertTrue((source / "agentrail" / "templates").is_dir())
+        self.assertTrue((source / "agentrail" / "skills").is_dir())
 
     def test_no_editable_flow_scripts_vendored(self):
         _run_install(self.repo, self.target)

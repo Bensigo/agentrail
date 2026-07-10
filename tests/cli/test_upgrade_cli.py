@@ -37,12 +37,12 @@ def _make_fake_repo(tmp_dir: str) -> Path:
     """
     Create a fake agentrail repo with:
       - package.json (version 9.9.9)
-      - templates/
+      - agentrail/templates/
           some-template.md         <- regular managed file
           scripts/hidden.sh        <- MUST be skipped (hidden prefix)
           TASTE.md                 <- MUST be skipped (skipPattern)
           docs/memory/note.md      <- MUST be skipped (skipPattern)
-      - skills/
+      - agentrail/skills/
           skills/my-skill/SKILL.md <- managed under "skills/" prefix
       - scripts/agentrail          <- extraFiles
       - scripts/install-workflow   <- for source materialization
@@ -54,18 +54,18 @@ def _make_fake_repo(tmp_dir: str) -> Path:
     repo.mkdir(parents=True)
     (repo / "package.json").write_text(json.dumps({"name": "@bensigo/agentrail", "version": "9.9.9"}))
 
-    # templates/
-    (repo / "templates").mkdir()
-    (repo / "templates" / "some-template.md").write_text("# Template\nHello World\n")
-    (repo / "templates" / "scripts").mkdir()
-    (repo / "templates" / "scripts" / "hidden.sh").write_text("#!/bin/sh\necho hidden\n")
-    (repo / "templates" / "TASTE.md").write_text("# Taste\nSkip me\n")
-    (repo / "templates" / "docs" / "memory").mkdir(parents=True)
-    (repo / "templates" / "docs" / "memory" / "note.md").write_text("memory note\n")
+    # agentrail/templates/
+    (repo / "agentrail" / "templates").mkdir(parents=True)
+    (repo / "agentrail" / "templates" / "some-template.md").write_text("# Template\nHello World\n")
+    (repo / "agentrail" / "templates" / "scripts").mkdir()
+    (repo / "agentrail" / "templates" / "scripts" / "hidden.sh").write_text("#!/bin/sh\necho hidden\n")
+    (repo / "agentrail" / "templates" / "TASTE.md").write_text("# Taste\nSkip me\n")
+    (repo / "agentrail" / "templates" / "docs" / "memory").mkdir(parents=True)
+    (repo / "agentrail" / "templates" / "docs" / "memory" / "note.md").write_text("memory note\n")
 
-    # skills/
-    (repo / "skills" / "my-skill").mkdir(parents=True)
-    (repo / "skills" / "my-skill" / "SKILL.md").write_text("# Skill\nDo stuff\n")
+    # agentrail/skills/
+    (repo / "agentrail" / "skills" / "my-skill").mkdir(parents=True)
+    (repo / "agentrail" / "skills" / "my-skill" / "SKILL.md").write_text("# Skill\nDo stuff\n")
 
     # scripts/ (extraFiles + source materialization scripts)
     (repo / "scripts").mkdir(parents=True)
@@ -75,7 +75,6 @@ def _make_fake_repo(tmp_dir: str) -> Path:
         s.chmod(0o755)
 
     # agentrail/ package directory (for source materialization)
-    (repo / "agentrail").mkdir()
     (repo / "agentrail" / "__init__.py").write_text("")
 
     return repo
@@ -191,8 +190,8 @@ class TestFreshUpgrade(TestCase):
         # vendored so the launcher can resolve it.
         self.assertTrue((source_dir / "package.json").exists())
         self.assertTrue((source_dir / "agentrail").is_dir())
-        self.assertTrue((source_dir / "templates").is_dir())
-        self.assertTrue((source_dir / "skills").is_dir())
+        self.assertTrue((source_dir / "agentrail" / "templates").is_dir())
+        self.assertTrue((source_dir / "agentrail" / "skills").is_dir())
         # No editable flow scripts are vendored — projects can't fork orchestration.
         self.assertFalse((source_dir / "scripts").exists(),
                          ".agentrail/source/scripts must not be vendored (#404 Option B)")
@@ -319,7 +318,7 @@ class TestLocallyModified(TestCase):
     def test_locally_modified_overwritten_with_force(self):
         """Editing a managed file then upgrading WITH --force overwrites it."""
         (self.target / "some-template.md").write_text("# LOCAL EDIT\nI changed this\n")
-        original_repo_content = (self.repo / "templates" / "some-template.md").read_text()
+        original_repo_content = (self.repo / "agentrail" / "templates" / "some-template.md").read_text()
 
         import io
         buf = io.StringIO()
@@ -625,8 +624,8 @@ class TestChangedUpdated(TestCase):
 
         # Step 2: mutate the SOURCE file in the fake repo (sourceHash changes)
         new_source_content = "# Template\nHello Updated World\n"
-        (self.repo / "templates" / "some-template.md").write_text(new_source_content)
-        new_source_hash = _sha256(self.repo / "templates" / "some-template.md")
+        (self.repo / "agentrail" / "templates" / "some-template.md").write_text(new_source_content)
+        new_source_hash = _sha256(self.repo / "agentrail" / "templates" / "some-template.md")
         self.assertNotEqual(new_source_hash, first_hash, "source hash must differ after mutation")
 
         # Target file is still the freshly-installed version (currentHash == previous.contentHash)

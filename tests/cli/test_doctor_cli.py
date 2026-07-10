@@ -1061,11 +1061,11 @@ class ShippedSkillRegistryRegressionTest(unittest.TestCase):
     install solely because of frontend-web.
 
     This test pins that finding so it is visible and so a fix flips it green.
-    The repo skills live at <repo>/skills/<name>/SKILL.md.
+    The repo skills live at <repo>/agentrail/skills/<name>/SKILL.md.
     """
 
     REPO_ROOT = Path(__file__).resolve().parents[2]
-    REGISTRY = REPO_ROOT / "templates" / "docs" / "agents" / "skill-registry.json"
+    REGISTRY = REPO_ROOT / "agentrail" / "templates" / "docs" / "agents" / "skill-registry.json"
     REQUIRED = [
         "## Activation Guidance",
         "## Context To Inspect",
@@ -1080,7 +1080,7 @@ class ShippedSkillRegistryRegressionTest(unittest.TestCase):
         registry = json.loads(self.REGISTRY.read_text(encoding="utf-8"))
         missing_by_skill = {}
         for skill in registry["skills"]:
-            body_path = self.REPO_ROOT / skill["localPath"]
+            body_path = self.REPO_ROOT / "agentrail" / skill["localPath"]
             if not body_path.exists():
                 missing_by_skill[skill["name"]] = ["<localPath missing>"]
                 continue

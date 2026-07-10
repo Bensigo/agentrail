@@ -93,10 +93,10 @@ def _make_target_with_registry(tmp: Path) -> Path:
 
 
 def _make_repo(tmp: Path) -> Path:
-    """Create a minimal repo with templates/docs/agents/skill-registry.json."""
+    """Create a minimal repo with agentrail/templates/docs/agents/skill-registry.json."""
     repo = tmp / "repo"
     repo.mkdir()
-    tmpl_dir = repo / "templates" / "docs" / "agents"
+    tmpl_dir = repo / "agentrail" / "templates" / "docs" / "agents"
     tmpl_dir.mkdir(parents=True)
     (tmpl_dir / "skill-registry.json").write_text(
         json.dumps(SKILL_REGISTRY_TEMPLATE), encoding="utf-8"

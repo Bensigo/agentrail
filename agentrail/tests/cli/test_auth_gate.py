@@ -154,12 +154,14 @@ class TestAuthGate(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_offline_commands_allowed_without_credentials(self):
-        """init/install/doctor/context/cleanup/status/timeline/cost/link/console are not gated."""
+        """init/install/upgrade/doctor/context/memory/cleanup/status/timeline/cost/link/console are not gated."""
         cases = {
             "init": "run_install",  # bare `init` routes to install
             "install": "run_install",
+            "upgrade": "run_upgrade",
             "doctor": "run_doctor",
             "context": "run_context",
+            "memory": "run_memory",
             "cleanup": "run_cleanup",
             "status": "run_status",
             "timeline": "run_timeline",

@@ -132,9 +132,10 @@ def main(argv: List[str] | None = None) -> int:
     # queries — must work before (and without) `agentrail login`.
     _OFFLINE_COMMANDS = {
         "login", "logout", "whoami",   # auth itself
-        "init", "install",             # project scaffolding (run before login)
+        "init", "install", "upgrade",  # project scaffolding (run before login)
         "doctor", "cleanup",           # local health / worktree maintenance
         "context",                     # local index build/query
+        "memory",                      # local recall/capture (docs/memory read-write)
         "guardrails",                  # local registry read / doc regen
         "evals",                        # local eval-harness spine (#938)
         "status", "timeline", "cost",  # local read-only state

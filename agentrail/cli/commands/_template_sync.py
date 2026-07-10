@@ -466,9 +466,12 @@ def _materialize_source(repo_dir: Path, target_dir: Path) -> None:
 
     #404 Option B: vendor ONLY the native package + the runtime data dirs +
     ``package.json`` (so the launcher's redirect resolves the package). Do NOT
-    copy editable flow scripts (``scripts/agentrail``/``install-workflow``) — the
-    flow is native inside the vendored ``agentrail/`` package and projects cannot
-    fork orchestration.
+    copy editable flow scripts (top-level ``scripts/`` / ``install-workflow``) —
+    the flow is native inside the vendored ``agentrail/`` package and projects
+    cannot fork orchestration. The one script that IS vendored is the surface
+    launcher ``agentrail/scripts/agentrail`` (a resolver stub, not orchestration),
+    which the dev-subdir trim would otherwise drop — a self-upgrade reads it back
+    from this vendor to rebuild its managed inventory (#1162 x #1163).
 
     Skips entirely when ``target/.agentrail/source`` IS ``repo_dir`` (dogfooding
     guard).
@@ -509,5 +512,15 @@ def _materialize_source(repo_dir: Path, target_dir: Path) -> None:
         src = repo_dir / dir_name
         if src.exists():
             shutil.copytree(src, dst, ignore=_ignore_vendor_dev_subdirs(src))
+
+    # Restore the ONE runtime file the dev-subdir trim above dropped: the
+    # surface launcher (``agentrail/scripts/agentrail``). It is a managed
+    # extraFile (see ``_build_inventory``), so a self-upgrade — which reads its
+    # source from this very vendor dir — needs it present to rebuild inventory
+    # (#1162 x #1163). This is the launcher stub only; the rest of
+    # ``agentrail/scripts/`` (dev benchmark/typecheck/test scripts) stays trimmed.
+    launcher_src = repo_dir / "agentrail" / "scripts" / "agentrail"
+    if launcher_src.exists():
+        _copy_file(launcher_src, source_support_dir / "agentrail" / "scripts" / "agentrail")
 
     print("updated: .agentrail/source")

@@ -61,7 +61,11 @@ new entity is a **workspace goal** and never touches that file.
 
 - **No factory changes.** The Heartbeat stays a queue drainer whose
   termination is "queue empty"; `agentrail/` gains zero goal awareness beyond
-  the existing per-issue `workflow.goals`, which is unchanged.
+  the existing per-issue `workflow.goals`, which is unchanged. All new code is
+  TypeScript at the Jace layer — Eve agent skills/tools/channels in
+  `apps/jace/agent`, Drizzle schema in `packages/db-postgres`, Next.js goal
+  card in `apps/console`. Nothing is ported from Python; the loop never
+  existed in the factory.
 - **No merge-policy change.** Goal-filed issues obey the same merge policy
   and the same verify gate as any other issue.
 - **No vibes checks.** v1 success checks are machine-checkable only (see

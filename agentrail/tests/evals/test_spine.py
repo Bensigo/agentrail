@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Sequence
 
 import pytest
 
-from agentrail.evals.arms import Arm, baseline, full, full_minus
+from agentrail.evals.arms import Arm, baseline, full, full_minus, gather_arm, gather_arms
 from agentrail.evals.corpus.loader import CorpusTask, load_task
 from agentrail.evals.probes import (
     ScoredRun,
@@ -29,7 +29,7 @@ from agentrail.evals.probes import (
 )
 from agentrail.evals.reporter import MetricsWriter, RepetitionRecord
 from agentrail.evals.run_record import RetryEvent, RunRecord
-from agentrail.evals.runner import AgentExecution
+from agentrail.evals.runner import SYNTHETIC_MODEL, AgentExecution
 from agentrail.evals.scorer import Verdict
 from agentrail.evals.spine import (
     HiddenTestRunner,
@@ -128,25 +128,45 @@ class SpyExecutor:
     # Strictly-ordered call log shared with hidden-test spy. Filled by tests.
     call_log: Optional[List[str]] = None
 
+    # Caller can pre-program per-arm cost events (arm name -> list of per-phase
+    # event dicts, WITHOUT the ``arm`` field). ``execute`` writes them into the
+    # workdir exactly where the live run pipeline leaves them, so the runner
+    # harvests them off the filesystem before teardown — the real cost seam.
+    cost_events_for: Dict[str, List[dict]] = field(default_factory=dict)
+
+    # Caller can force a resolved model per arm (arm name -> model id). Used to
+    # simulate a <synthetic> network-artifact run — the model the real capture
+    # overwrites on ECONNRESET fallback. Defaults to the arm's pinned model.
+    model_for: Dict[str, str] = field(default_factory=dict)
+
     def execute(self, *, task: CorpusTask, arm: Arm, workdir: Path) -> AgentExecution:
         self.invocations.append((task.name, arm.name))
         snapshot = [p.name for p in workdir.rglob("*") if p.is_file()]
         self.workdir_snapshots.append(snapshot)
         if self.call_log is not None:
             self.call_log.append(f"exec:{task.name}:{arm.name}")
+        events = self.cost_events_for.get(arm.name)
+        if events:
+            ledger = workdir / "repo" / ".agentrail" / "run" / "cost-events.jsonl"
+            ledger.parent.mkdir(parents=True, exist_ok=True)
+            ledger.write_text(
+                "".join(json.dumps(ev) + "\n" for ev in events),
+                encoding="utf-8",
+            )
         # Real bool — never int/None. Faithful to SandboxAgentExecutor's
         # ``RunResult.status == 'green'`` collapse.
         gate = bool(self.verdicts_for.get((task.name, arm.name), self.gate_passed))
+        model = self.model_for.get(arm.name, arm.model)
         return AgentExecution(
             diff=self.diff,
             usage=Usage(
-                model=arm.model,
+                model=model,
                 input_tokens=100,
                 output_tokens=50,
                 cache_tokens=0,
                 cache_creation_tokens=0,
             ),
-            model=arm.model,
+            model=model,
             gate_passed=gate,
             retries=[],
         )
@@ -1365,35 +1385,42 @@ def test_gather_report_section_renders_not_available_without_ledger(
 def test_gather_report_section_populated_with_arm_tagged_ledger(
     corpus_root: Path, reports_dir: Path, tmp_path: Path
 ) -> None:
-    # A synthetic arm-tagged cost ledger: full (gather OFF) with a fat execute
-    # context, full-plus-gather (ON) with a shrunk execute context.
+    # Drive real cost events through the whole seam — the executor leaves a
+    # per-phase ledger in its workdir (exactly where the live pipeline does),
+    # the runner harvests it before teardown, the spine tags each row with the
+    # arm and appends to the aggregate ledger, and the report reads that.
+    #
+    # full (gather OFF): fat execute context. full-plus-gather (ON): a small
+    # gather phase, then a shrunk execute context.
     ledger = tmp_path / "cost-events.jsonl"
-    rows = [
-        {"run_id": "off", "phase": "execute", "input_tokens": 9000,
-         "output_tokens": 1000, "cache_tokens": 1000, "cache_creation_tokens": 0,
-         "arm": "full"},
-        {"run_id": "off", "phase": "verify", "input_tokens": 1000,
-         "output_tokens": 100, "cache_tokens": 500, "cache_creation_tokens": 0,
-         "arm": "full"},
-        {"run_id": "on", "phase": "gather", "input_tokens": 1500,
-         "output_tokens": 400, "cache_tokens": 0, "cache_creation_tokens": 600,
-         "arm": "full-plus-gather"},
-        {"run_id": "on", "phase": "execute", "input_tokens": 3000,
-         "output_tokens": 1000, "cache_tokens": 1200, "cache_creation_tokens": 0,
-         "arm": "full-plus-gather"},
-        {"run_id": "on", "phase": "verify", "input_tokens": 1000,
-         "output_tokens": 100, "cache_tokens": 500, "cache_creation_tokens": 0,
-         "arm": "full-plus-gather"},
-    ]
-    ledger.write_text(
-        "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
-    )
+    cost_events_for = {
+        "full": [
+            {"run_id": "off", "phase": "execute", "input_tokens": 9000,
+             "output_tokens": 1000, "cache_tokens": 1000, "cache_creation_tokens": 0},
+            {"run_id": "off", "phase": "verify", "input_tokens": 1000,
+             "output_tokens": 100, "cache_tokens": 500, "cache_creation_tokens": 0},
+        ],
+        "full-plus-gather": [
+            {"run_id": "on", "phase": "gather", "input_tokens": 1500,
+             "output_tokens": 400, "cache_tokens": 0, "cache_creation_tokens": 600},
+            {"run_id": "on", "phase": "execute", "input_tokens": 3000,
+             "output_tokens": 1000, "cache_tokens": 1200, "cache_creation_tokens": 0},
+            {"run_id": "on", "phase": "verify", "input_tokens": 1000,
+             "output_tokens": 100, "cache_tokens": 500, "cache_creation_tokens": 0},
+        ],
+    }
 
     result = run_spine(
         SpineConfig(
-            arms=[full()], reps=1, corpus_root=corpus_root, cost_ledger_path=ledger
+            arms=gather_arms(),
+            reps=1,
+            # One task per arm so execute-context sums stay 10000 / 4200 rather
+            # than doubling across the two-task corpus.
+            task_filter=["alpha-task"],
+            corpus_root=corpus_root,
+            cost_ledger_path=ledger,
         ),
-        executor=SpyExecutor(),
+        executor=SpyExecutor(cost_events_for=cost_events_for),
         hidden_test_runner=HiddenTestSpy(),
         metrics_writer=FakeMetricsWriter(),
         reports_dir=reports_dir,
@@ -1405,3 +1432,105 @@ def test_gather_report_section_populated_with_arm_tagged_ledger(
     # Execute-context: OFF 10000 (9000+1000) vs ON 4200 (3000+1200) → dropped.
     assert "10000" in text and "4200" in text
     assert "DROPPED with gather ON" in text
+
+    # The spine truncated the caller's path then re-filled it from harvested
+    # per-run events, each stamped with its arm — 2 full rows, 3 gather rows.
+    ledger_rows = [
+        json.loads(line)
+        for line in ledger.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(ledger_rows) == 5
+    assert sum(1 for r in ledger_rows if r["arm"] == "full") == 2
+    assert sum(1 for r in ledger_rows if r["arm"] == "full-plus-gather") == 3
+
+
+def test_gather_ledger_skips_network_artifact_runs(
+    corpus_root: Path, reports_dir: Path, tmp_path: Path
+) -> None:
+    """A <synthetic> (ECONNRESET) run must NOT pollute the cost ledger.
+
+    Its token counts are a network artifact, not a real measurement — letting
+    them into the aggregate would fake a token delta. The spine gates the append
+    on ``not network_artifact``; here the gather arm falls back to synthetic, so
+    only the real ``full`` arm's rows survive.
+    """
+    ledger = tmp_path / "cost-events.jsonl"
+    cost_events_for = {
+        "full": [
+            {"run_id": "off", "phase": "execute", "input_tokens": 9000,
+             "output_tokens": 1000, "cache_tokens": 1000, "cache_creation_tokens": 0},
+        ],
+        "full-plus-gather": [
+            {"run_id": "on", "phase": "execute", "input_tokens": 3000,
+             "output_tokens": 1000, "cache_tokens": 1200, "cache_creation_tokens": 0},
+        ],
+    }
+
+    run_spine(
+        SpineConfig(
+            arms=gather_arms(),
+            reps=1,
+            task_filter=["alpha-task"],
+            corpus_root=corpus_root,
+            cost_ledger_path=ledger,
+        ),
+        # The gather arm's run degraded to the synthetic network-artifact marker.
+        executor=SpyExecutor(
+            cost_events_for=cost_events_for,
+            model_for={"full-plus-gather": SYNTHETIC_MODEL},
+        ),
+        hidden_test_runner=HiddenTestSpy(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-09",
+    )
+
+    ledger_rows = [
+        json.loads(line)
+        for line in ledger.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    # Only the real (full) arm's row survives; the synthetic run was skipped.
+    assert [r["arm"] for r in ledger_rows] == ["full"]
+
+
+def test_gather_ledger_append_is_thread_safe_under_concurrency(
+    corpus_root: Path, reports_dir: Path, tmp_path: Path
+) -> None:
+    """Concurrent runs append to the shared ledger without losing rows.
+
+    The two-task corpus × two arms at concurrency 2 drives overlapping appends;
+    the spine's lock must serialize them so every harvested row lands exactly
+    once (2 tasks × 2 arms × 1 row = 4 rows).
+    """
+    ledger = tmp_path / "cost-events.jsonl"
+    one_row = [
+        {"run_id": "x", "phase": "execute", "input_tokens": 100,
+         "output_tokens": 10, "cache_tokens": 0, "cache_creation_tokens": 0},
+    ]
+    cost_events_for = {"full": one_row, "full-plus-gather": one_row}
+
+    run_spine(
+        SpineConfig(
+            arms=gather_arms(),
+            reps=1,
+            corpus_root=corpus_root,  # both alpha-task and bravo-task
+            cost_ledger_path=ledger,
+            concurrency=2,
+        ),
+        executor=SpyExecutor(cost_events_for=cost_events_for),
+        hidden_test_runner=HiddenTestSpy(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-09",
+    )
+
+    ledger_rows = [
+        line for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+    # 2 tasks × 2 arms × 1 row each — none lost, none torn by interleaved writes.
+    assert len(ledger_rows) == 4
+    parsed = [json.loads(line) for line in ledger_rows]
+    assert sum(1 for r in parsed if r["arm"] == "full") == 2
+    assert sum(1 for r in parsed if r["arm"] == "full-plus-gather") == 2

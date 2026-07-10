@@ -63,14 +63,16 @@ strictly AFTER the runner returned.
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
+import threading
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date as _date
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 
 _log = logging.getLogger(__name__)
 
@@ -252,6 +254,49 @@ def _select_tasks(tasks: Sequence[CorpusTask], task_filter: Optional[Sequence[st
     return selected
 
 
+def _append_cost_ledger_events(
+    ledger_path: Path,
+    events: Sequence[Dict[str, Any]],
+    *,
+    arm_name: str,
+    lock: "threading.Lock",
+) -> None:
+    """Append a run's per-phase cost events to the aggregate ledger, arm-tagged.
+
+    This is the write half of the #1049 AC4 evidence rail. The runner harvested
+    ``events`` (raw ``.agentrail/run/cost-events.jsonl`` lines) out of the run's
+    sandbox before teardown; here we stamp each with the run's ``arm`` and append
+    it to the single aggregate ledger the report reads. Tagging every line with
+    ``arm`` is exactly what ``aggregate_gather_tokens`` needs to attribute tokens
+    to ``full`` vs ``full-plus-gather`` WITHOUT a separate ``run_id → arm`` map.
+
+    Best-effort and never fatal — the ledger is diagnostic evidence, not part of
+    any verdict, so an IO or serialization problem is swallowed (a warning, no
+    raise) rather than sinking the eval unit. Thread-safe via ``lock`` so units
+    running under ``concurrency > 1`` never interleave partial JSON lines.
+    """
+    if not events:
+        return
+    lines: List[str] = []
+    for ev in events:
+        rec = dict(ev)
+        rec["arm"] = arm_name
+        try:
+            lines.append(json.dumps(rec))
+        except (TypeError, ValueError):
+            # A single unserializable event should not drop the rest.
+            continue
+    if not lines:
+        return
+    payload = "\n".join(lines) + "\n"
+    try:
+        with lock:
+            with ledger_path.open("a", encoding="utf-8") as fh:
+                fh.write(payload)
+    except OSError as exc:
+        _log.warning("could not append cost ledger events to %s: %s", ledger_path, exc)
+
+
 def run_spine(
     config: SpineConfig,
     *,
@@ -319,6 +364,25 @@ def run_spine(
         pack_scores = compute_pack_scores(
             tasks, config.arms, root=config.pack_index_root
         )
+
+    # Gather per-phase cost ledger (#1049 AC4). When a ledger path is configured,
+    # START IT FRESH so the report reflects EXACTLY this run — a stale file from a
+    # prior run would silently mix arms/runs into the token aggregates. Both arms
+    # of one command (``--arm full --arm full-plus-gather``) append here, and the
+    # final ``render_gather_report_from_ledger`` reads it back. The append inside
+    # each unit is guarded by this lock so parallel units never interleave lines.
+    cost_ledger_lock = threading.Lock()
+    if config.cost_ledger_path is not None:
+        try:
+            config.cost_ledger_path.parent.mkdir(parents=True, exist_ok=True)
+            config.cost_ledger_path.write_text("", encoding="utf-8")
+        except OSError as exc:
+            _log.warning(
+                "could not initialise cost ledger at %s (gather AC4 evidence "
+                "may be stale/absent): %s",
+                config.cost_ledger_path,
+                exc,
+            )
 
     repetitions: List[RepetitionRecord] = []
     verdicts: List[Verdict] = []
@@ -416,6 +480,19 @@ def run_spine(
             # score). Single-sourced predicate — the spine never re-derives it.
             network_artifact=is_network_artifact(record.model),
         )
+        # Gather per-phase cost evidence (#1049 AC4). Persist the run's harvested
+        # cost-ledger lines (arm-tagged) to the aggregate ledger the report reads
+        # — but ONLY for real runs. A ``<synthetic>`` network-artifact run spent
+        # nothing and is EXCLUDED from every other aggregate; its (empty/absent)
+        # ledger must not muddy the token report either, so we skip it here too,
+        # single-sourcing the exclusion on the same ``network_artifact`` predicate.
+        if config.cost_ledger_path is not None and not rep.network_artifact:
+            _append_cost_ledger_events(
+                config.cost_ledger_path,
+                record.cost_events,
+                arm_name=arm.name,
+                lock=cost_ledger_lock,
+            )
         # Issue #960: keep the RunRecord joined with its solved verdict (a pure
         # ScoredRun join — no new truth) so the intrinsic probes can be driven
         # from this real run instead of being dropped.

@@ -206,7 +206,7 @@ _CODEX_TASK_BLOCK = """\
 Run one bounded AgentRail issue execution for exactly one GitHub issue: #{issue}.
 
 Use these local instructions:
-- templates/docs/agents/ralph-loop.md when running from the AgentRail source repo
+- agentrail/templates/docs/agents/ralph-loop.md when running from the AgentRail source repo
 - .agentrail/agents/ralph-loop.md when running from an installed target repo (or legacy docs/agents/ralph-loop.md if not yet migrated)
 - repo-local implementation skills such as tdd when they match the work
 
@@ -229,7 +229,7 @@ _CLAUDE_TASK_BLOCK = """\
 Use Claude Code through AgentRail to run one bounded implementation loop for exactly one GitHub issue: #{issue}.
 
 Use these local instructions when present:
-- templates/docs/agents/ralph-loop.md (AgentRail source repo) or .agentrail/agents/ralph-loop.md (installed target repo; or legacy docs/agents/ralph-loop.md if not yet migrated)
+- agentrail/templates/docs/agents/ralph-loop.md (AgentRail source repo) or .agentrail/agents/ralph-loop.md (installed target repo; or legacy docs/agents/ralph-loop.md if not yet migrated)
 - repo-local TDD and workflow docs under .agentrail/skills/ and .agentrail/agents/ (or legacy skills/ and docs/agents/ if not yet migrated)
 
 Hard limits:
@@ -332,7 +332,7 @@ _CODEX_REVIEW_TASK_BLOCK = """\
 Review exactly one pull request: #{pr}.
 
 Use these local instructions:
-- templates/docs/agents/pr-review.md when running from the AgentRail source repo
+- agentrail/templates/docs/agents/pr-review.md when running from the AgentRail source repo
 - .agentrail/agents/pr-review.md when running from an installed target repo (or legacy docs/agents/pr-review.md if not yet migrated)
 
 Hard limits:
@@ -351,7 +351,7 @@ _CLAUDE_REVIEW_TASK_BLOCK = """\
 Use Claude Code to review exactly one pull request: #{pr}.
 
 Use these local instructions when present:
-- templates/docs/agents/pr-review.md (AgentRail source repo) or .agentrail/agents/pr-review.md (installed target repo; or legacy docs/agents/pr-review.md if not yet migrated)
+- agentrail/templates/docs/agents/pr-review.md (AgentRail source repo) or .agentrail/agents/pr-review.md (installed target repo; or legacy docs/agents/pr-review.md if not yet migrated)
 - repo-local review and visual evidence docs under {agents_docs_ref}
 
 Hard limits:

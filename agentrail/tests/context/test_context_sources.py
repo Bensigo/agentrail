@@ -406,6 +406,42 @@ class House2DualPathSourceTypeTests(unittest.TestCase):
         self.assertEqual(authority_for("agent_doc", ".agentrail/agents/local.md"), "high")
 
 
+class AgentrailTemplatesDocsSourceTypeTests(unittest.TestCase):
+    """Regression guard for the repo-structure v2 follow-up fix (epic #1131):
+    the AgentRail source repo's own templates docs live under
+    agentrail/templates/docs/..., not the pre-v2 un-nested templates/docs/...
+    (which no longer exists on disk). source_type_for() must classify the
+    nested path, not silently fall through to generic "code"."""
+
+    def test_agentrail_templates_docs_agents_is_agent_doc(self) -> None:
+        self.assertEqual(
+            source_type_for("agentrail/templates/docs/agents/ralph-loop.md"), "agent_doc"
+        )
+
+    def test_agentrail_templates_docs_memory_is_memory(self) -> None:
+        self.assertEqual(
+            source_type_for("agentrail/templates/docs/memory/lesson.md"), "memory"
+        )
+
+    def test_agentrail_templates_docs_prd_is_prd(self) -> None:
+        self.assertEqual(
+            source_type_for("agentrail/templates/docs/prd/feature.md"), "prd"
+        )
+
+    def test_agentrail_templates_docs_milestones_is_milestone(self) -> None:
+        self.assertEqual(
+            source_type_for("agentrail/templates/docs/milestones/m1.md"), "milestone"
+        )
+
+    def test_old_unnested_templates_docs_no_longer_recognized(self) -> None:
+        # The pre-v2 top-level templates/docs/... path was removed from disk
+        # by the repo-structure v2 arc; it must not falsely classify as
+        # agent_doc anymore and should fall through to generic "code".
+        self.assertEqual(
+            source_type_for("templates/docs/agents/ralph-loop.md"), "code"
+        )
+
+
 class IndexGlobRescopeTests(unittest.TestCase):
     """Repo-structure v2 PR-7 (#1138): default index globs must include the
     House-2 .agentrail/ content dirs, keep the legacy dual-path fallbacks

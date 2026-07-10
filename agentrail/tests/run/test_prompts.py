@@ -344,6 +344,31 @@ class IssueBasePromptTests(unittest.TestCase):
             result,
         )
 
+    def test_codex_task_block_references_nested_templates_docs_path(self):
+        """Regression guard (epic #1131 follow-up): the AgentRail source repo's
+        ralph-loop.md now lives under agentrail/templates/docs/agents/, not the
+        pre-v2 un-nested templates/docs/agents/ path (which no longer exists)."""
+        result = self._make("codex")
+        self.assertIn(
+            "- agentrail/templates/docs/agents/ralph-loop.md when running from the AgentRail source repo",
+            result,
+        )
+        self.assertNotIn(
+            "- templates/docs/agents/ralph-loop.md when running from the AgentRail source repo",
+            result,
+        )
+
+    def test_claude_task_block_references_nested_templates_docs_path(self):
+        result = self._make("claude")
+        self.assertIn(
+            "- agentrail/templates/docs/agents/ralph-loop.md (AgentRail source repo)",
+            result,
+        )
+        self.assertNotIn(
+            "- templates/docs/agents/ralph-loop.md (AgentRail source repo)",
+            result,
+        )
+
     def test_claude_first_line(self):
         result = self._fn(
             "claude", 7,
@@ -826,6 +851,31 @@ class ReviewPromptTests(unittest.TestCase):
     def test_codex_review_only_limit(self):
         result = self._make("codex", 7)
         self.assertIn("Review only PR #7.", result)
+
+    def test_codex_task_block_references_nested_templates_docs_path(self):
+        """Regression guard (epic #1131 follow-up): pr-review.md now lives
+        under agentrail/templates/docs/agents/, not the pre-v2 un-nested
+        templates/docs/agents/ path (which no longer exists)."""
+        result = self._make("codex", 7)
+        self.assertIn(
+            "- agentrail/templates/docs/agents/pr-review.md when running from the AgentRail source repo",
+            result,
+        )
+        self.assertNotIn(
+            "- templates/docs/agents/pr-review.md when running from the AgentRail source repo",
+            result,
+        )
+
+    def test_claude_task_block_references_nested_templates_docs_path(self):
+        result = self._make("claude", 7)
+        self.assertIn(
+            "- agentrail/templates/docs/agents/pr-review.md (AgentRail source repo)",
+            result,
+        )
+        self.assertNotIn(
+            "- templates/docs/agents/pr-review.md (AgentRail source repo)",
+            result,
+        )
 
     def test_codex_do_not_edit(self):
         result = self._make("codex", 7)

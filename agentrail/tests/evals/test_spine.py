@@ -134,6 +134,12 @@ class SpyExecutor:
     # harvests them off the filesystem before teardown — the real cost seam.
     cost_events_for: Dict[str, List[dict]] = field(default_factory=dict)
 
+    # Caller can pre-program a per-arm gather CONTEXT MANIFEST (arm name ->
+    # manifest text). ``execute`` writes it where the live gather phase leaves it
+    # (``workdir/.agentrail-runs/host-run/gather/output.md``), so the runner
+    # harvests+scores it before teardown — the real file-picking seam (#1049 AC4).
+    gather_manifest_for: Dict[str, str] = field(default_factory=dict)
+
     # Caller can force a resolved model per arm (arm name -> model id). Used to
     # simulate a <synthetic> network-artifact run — the model the real capture
     # overwrites on ECONNRESET fallback. Defaults to the arm's pinned model.
@@ -153,6 +159,11 @@ class SpyExecutor:
                 "".join(json.dumps(ev) + "\n" for ev in events),
                 encoding="utf-8",
             )
+        manifest = self.gather_manifest_for.get(arm.name)
+        if manifest is not None:
+            out = workdir / ".agentrail-runs" / "host-run" / "gather" / "output.md"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(manifest, encoding="utf-8")
         # Real bool — never int/None. Faithful to SandboxAgentExecutor's
         # ``RunResult.status == 'green'`` collapse.
         gate = bool(self.verdicts_for.get((task.name, arm.name), self.gate_passed))
@@ -1534,3 +1545,100 @@ def test_gather_ledger_append_is_thread_safe_under_concurrency(
     parsed = [json.loads(line) for line in ledger_rows]
     assert sum(1 for r in parsed if r["arm"] == "full") == 2
     assert sum(1 for r in parsed if r["arm"] == "full-plus-gather") == 2
+
+
+# ---------------------------------------------------------------------------
+# Gather file-picking PRECISION section (#1049 AC4, precision half) — the spine
+# appends it right after the token section, rendered from the in-memory
+# RunRecords' ``gather_score`` (no file plumbing). Without a scored run it renders
+# the honest "not available" note; with a manifest it renders the AC4 verdict.
+# ---------------------------------------------------------------------------
+
+
+def test_gather_precision_section_not_available_without_a_scored_run(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """No gather phase ran → the precision section says it needs a live run."""
+    result = run_spine(
+        SpineConfig(arms=[baseline(), full()], reps=1, corpus_root=corpus_root),
+        executor=SpyExecutor(),
+        hidden_test_runner=HiddenTestSpy(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-09",
+    )
+    text = result.report_path.read_text(encoding="utf-8")
+    # The precision section always renders so it is discoverable...
+    assert "Gather file-picking precision (#1049 AC4)" in text
+    # ...and honestly says it needs a live run (never a fabricated 0 or verdict).
+    assert "Not available: no run carried a gather score" in text
+    assert "CLEARS AC4" not in text
+    assert "MISSES AC4" not in text
+
+
+def test_gather_precision_section_renders_ac4_verdict_from_manifest(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """A gather manifest picking the required file → the precision section PASSES.
+
+    The gather arm's executor leaves a CONTEXT MANIFEST naming the task's single
+    required file (``agentrail/evals/spine.py``); the runner scores it (precision
+    1.0, recall 1.0) onto the RunRecord, and the spine pools it into the section.
+    """
+    manifest = (
+        "CONTEXT MANIFEST\n"
+        "Relevant files:\n"
+        "- agentrail/evals/spine.py:1-40 — the answer-key file\n"
+        "Checked, not relevant:\n"
+        "- checked agentrail/evals/runner.py — the runner, not the change\n"
+    )
+    result = run_spine(
+        SpineConfig(
+            arms=gather_arms(),
+            reps=1,
+            task_filter=["alpha-task"],
+            corpus_root=corpus_root,
+        ),
+        executor=SpyExecutor(gather_manifest_for={"full-plus-gather": manifest}),
+        hidden_test_runner=HiddenTestSpy(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-09",
+    )
+    text = result.report_path.read_text(encoding="utf-8")
+    assert "Gather file-picking precision (#1049 AC4)" in text
+    # The gather arm picked exactly the required file → pooled 1.00 / 1.00 → PASS.
+    assert "full-plus-gather" in text
+    assert "CLEARS AC4" in text
+    assert "MISSES AC4" not in text
+
+
+def test_gather_precision_section_flags_a_wrong_manifest(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """A manifest picking the WRONG file → the precision section is FLAGGED.
+
+    Guards the false-green the user forbids: the gatherer running is not enough —
+    it must point at the RIGHT files, or the section must say do NOT turn it on.
+    """
+    manifest = (
+        "CONTEXT MANIFEST\n"
+        "Relevant files:\n"
+        "- agentrail/evals/runner.py:1-10 — wrong pick, not the answer key\n"
+    )
+    result = run_spine(
+        SpineConfig(
+            arms=gather_arms(),
+            reps=1,
+            task_filter=["alpha-task"],
+            corpus_root=corpus_root,
+        ),
+        executor=SpyExecutor(gather_manifest_for={"full-plus-gather": manifest}),
+        hidden_test_runner=HiddenTestSpy(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-09",
+    )
+    text = result.report_path.read_text(encoding="utf-8")
+    assert "MISSES AC4" in text and "FLAGGED" in text
+    assert "Do NOT turn the gather flag on" in text

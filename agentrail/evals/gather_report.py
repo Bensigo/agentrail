@@ -48,7 +48,10 @@ import json
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Sequence, Set
+from typing import TYPE_CHECKING, Dict, List, Mapping, Optional, Sequence, Set
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime import cycle
+    from agentrail.evals.run_record import RunRecord
 
 
 # The executor phase whose *context* tokens the gatherer is meant to shrink. The
@@ -67,6 +70,12 @@ WARM_CACHE_PHASES = ("execute", "verify")
 # The A/B pair this report exists to compare (issue #1110 arm names).
 GATHER_OFF_ARM = "full"
 GATHER_ON_ARM = "full-plus-gather"
+
+# The AC4 precision-half bar (#1023 AC4, verbatim): the gatherer must point at
+# the RIGHT files — "precision >= 0.7 AT recall >= 0.85". Both floors must hold on
+# the gather arm's POOLED score for the precision half to pass.
+AC4_PRECISION_FLOOR = 0.7
+AC4_RECALL_FLOOR = 0.85
 
 
 @dataclass(frozen=True)
@@ -445,6 +454,192 @@ def render_gather_report_from_ledger(
     return render_gather_token_markdown(reports)
 
 
+# ---------------------------------------------------------------------------
+# Precision half (#1049 AC4) — "did the gatherer point at the RIGHT files?"
+#
+# The token half above answers "did gather shrink the executor's context?". This
+# half answers the OTHER half of AC4: precision/recall of the gatherer's picks
+# against each task's ``requiredContext`` answer key. Unlike the token half (which
+# round-trips a cost ledger file), these scores are already computed per-run and
+# attached to ``RunRecord.gather_score`` by the runner — so this reads them
+# straight from the in-memory records the spine collected. Pure arithmetic; the
+# only "IO" is iterating records.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ArmPrecisionReport:
+    """Per-arm POOLED gather file-picking accuracy over a run of the eval.
+
+    Pooled (micro-averaged), NOT a mean of per-run ratios: a mean would weight a
+    task with 1 required file the same as one with 20. So we sum the raw counts
+    across every scored run in the arm and divide ONCE — the honest aggregate.
+
+    - ``run_count`` — scored runs in this arm (records whose gatherer produced a
+      manifest; runs where gather did not run are absent, never counted as 0).
+    - ``total_intersection`` / ``total_selected`` / ``total_required`` — summed
+      correct picks / total picks / total answer-key files across those runs.
+    - ``precision`` — ``total_intersection / total_selected``; ``None`` when the
+      arm's gatherers selected nothing at all (0/0 undefined, never a fake 0.0).
+    - ``recall`` — ``total_intersection / total_required``; a real value (incl.
+      ``0.0``) whenever the arm has ≥1 scored run (answer keys are non-empty).
+    """
+
+    arm: str
+    run_count: int
+    total_intersection: int
+    total_selected: int
+    total_required: int
+    precision: Optional[float]
+    recall: Optional[float]
+
+    @property
+    def meets_ac4(self) -> bool:
+        """True iff this arm's pooled score clears BOTH AC4 floors."""
+        return (
+            self.precision is not None
+            and self.recall is not None
+            and self.precision >= AC4_PRECISION_FLOOR
+            and self.recall >= AC4_RECALL_FLOOR
+        )
+
+
+def aggregate_gather_precision(
+    records: Sequence["RunRecord"],
+) -> List[ArmPrecisionReport]:
+    """Pool per-run gather scores into one :class:`ArmPrecisionReport` per arm.
+
+    Only records whose ``gather_score`` is set contribute — a ``None`` score means
+    the gatherer did not run that arm, which is EXCLUDED (never folded in as a
+    zero). Arms are returned sorted by name for a deterministic report.
+    """
+    inter: Dict[str, int] = defaultdict(int)
+    selected: Dict[str, int] = defaultdict(int)
+    required: Dict[str, int] = defaultdict(int)
+    runs: Dict[str, int] = defaultdict(int)
+
+    for rec in records:
+        score = getattr(rec, "gather_score", None)
+        if score is None:
+            continue
+        arm = rec.arm
+        runs[arm] += 1
+        inter[arm] += score.intersection
+        selected[arm] += len(score.selected_paths)
+        required[arm] += len(score.required_paths)
+
+    reports: List[ArmPrecisionReport] = []
+    for arm in sorted(runs):
+        tot_sel = selected[arm]
+        tot_req = required[arm]
+        reports.append(
+            ArmPrecisionReport(
+                arm=arm,
+                run_count=runs[arm],
+                total_intersection=inter[arm],
+                total_selected=tot_sel,
+                total_required=tot_req,
+                precision=(inter[arm] / tot_sel) if tot_sel > 0 else None,
+                recall=(inter[arm] / tot_req) if tot_req > 0 else None,
+            )
+        )
+    return reports
+
+
+_PRECISION_SECTION_TITLE = "# Gather file-picking precision (#1049 AC4)"
+
+
+def _fmt_ratio(value: Optional[float]) -> str:
+    """Two-decimal ratio, or ``n/a`` for an undefined (``None``) score."""
+    return "n/a" if value is None else f"{value:.2f}"
+
+
+def render_gather_precision_markdown(
+    reports: Sequence[ArmPrecisionReport],
+) -> str:
+    """Render the per-arm precision/recall table + the AC4 pass/fail verdict.
+
+    The verdict reads the gather arm (``full-plus-gather``): it PASSES when that
+    arm's pooled precision ≥ 0.7 AND recall ≥ 0.85. With no scored gather runs the
+    section renders an explicit "not available — needs a live run" note (never a
+    fabricated 0), so the section is ALWAYS present and self-explains its state.
+    """
+    lines: List[str] = []
+    lines.append(_PRECISION_SECTION_TITLE)
+    lines.append("")
+    lines.append(
+        "Did the JIT gatherer point at the RIGHT files? Each gather run's CONTEXT "
+        "MANIFEST picks (the union of its \"Relevant files:\" and \"Pinned "
+        "symbols:\" sections) are scored against the task's `requiredContext` "
+        "answer key, then POOLED per arm. AC4 (#1023) requires the gather arm to "
+        f"reach **precision ≥ {AC4_PRECISION_FLOOR:.2f} at recall ≥ "
+        f"{AC4_RECALL_FLOOR:.2f}**."
+    )
+    lines.append("")
+
+    if not reports:
+        lines.append(
+            "_Not available: no run carried a gather score. Real numbers need a "
+            "live `agentrail evals run --arm full-plus-gather` (the gather arm "
+            "writes a CONTEXT MANIFEST the runner scores); the scoring logic is "
+            "fixture-verified._"
+        )
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append(
+        "| Arm | Gather runs | Precision | Recall | Correct picks | Selected "
+        "| Required |"
+    )
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for r in reports:
+        lines.append(
+            f"| {r.arm} | {r.run_count} | {_fmt_ratio(r.precision)} "
+            f"| {_fmt_ratio(r.recall)} | {r.total_intersection} "
+            f"| {r.total_selected} | {r.total_required} |"
+        )
+    lines.append("")
+
+    on = next((r for r in reports if r.arm == GATHER_ON_ARM), None)
+    if on is None:
+        lines.append(
+            f"_AC4 verdict not available: this run has no `{GATHER_ON_ARM}` arm "
+            f"(run `--arm {GATHER_ON_ARM}` to populate it)._"
+        )
+        lines.append("")
+        return "\n".join(lines)
+
+    if on.meets_ac4:
+        verdict = (
+            f"Gatherer CLEARS AC4: pooled precision {_fmt_ratio(on.precision)} "
+            f"(≥ {AC4_PRECISION_FLOOR:.2f}) at recall {_fmt_ratio(on.recall)} "
+            f"(≥ {AC4_RECALL_FLOOR:.2f}) on `{on.arm}` — it points at the right files."
+        )
+    else:
+        verdict = (
+            f"Gatherer MISSES AC4 — FLAGGED: pooled precision "
+            f"{_fmt_ratio(on.precision)} / recall {_fmt_ratio(on.recall)} on "
+            f"`{on.arm}` does not clear precision ≥ {AC4_PRECISION_FLOOR:.2f} at "
+            f"recall ≥ {AC4_RECALL_FLOOR:.2f}. Do NOT turn the gather flag on."
+        )
+    lines.append(f"**{verdict}**")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_gather_precision_from_records(
+    records: Sequence["RunRecord"],
+) -> str:
+    """End-to-end: pool the records' gather scores and render the markdown section.
+
+    The convenience the spine wires in, paired with
+    :func:`render_gather_report_from_ledger` for the token half. Records without a
+    gather score contribute nothing; an all-empty input renders the honest "not
+    available — needs a live run" note (never a fake 0).
+    """
+    return render_gather_precision_markdown(aggregate_gather_precision(records))
+
+
 __all__ = [
     "EXECUTE_PHASE",
     "WARM_CACHE_PHASES",
@@ -458,4 +653,11 @@ __all__ = [
     "gather_token_delta",
     "render_gather_token_markdown",
     "render_gather_report_from_ledger",
+    # Precision half (#1049 AC4) — "did the gatherer pick the RIGHT files?"
+    "AC4_PRECISION_FLOOR",
+    "AC4_RECALL_FLOOR",
+    "ArmPrecisionReport",
+    "aggregate_gather_precision",
+    "render_gather_precision_markdown",
+    "render_gather_precision_from_records",
 ]

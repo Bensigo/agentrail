@@ -90,7 +90,10 @@ from agentrail.evals.arms import (
     symbol_packing_arm,
 )
 from agentrail.evals.corpus.loader import CorpusTask, load_corpus
-from agentrail.evals.gather_report import render_gather_report_from_ledger
+from agentrail.evals.gather_report import (
+    render_gather_precision_from_records,
+    render_gather_report_from_ledger,
+)
 from agentrail.evals.pack_scorer import ArmPackScore
 from agentrail.evals.pack_scoring import compute_pack_scores
 from agentrail.evals.reporter import (
@@ -627,6 +630,16 @@ def run_spine(
     # ledger yields an honest "not available — needs a live run" note (never a
     # fake 0), so existing runs with no ledger are unchanged but discoverable.
     gather_md = render_gather_report_from_ledger(config.cost_ledger_path)
+    # Gather file-picking precision (#1049 AC4, precision half). The OTHER half of
+    # AC4: did the gatherer point at the RIGHT files? Scored per run by the runner
+    # (``RunRecord.gather_score``) against each task's ``requiredContext`` answer
+    # key, then pooled per arm here from the SAME RunRecords this run produced (no
+    # extra runs, no file plumbing). Renders the honest "not available — needs a
+    # live run" note when no run carried a gather score. Appended right after the
+    # token half so both AC4 numbers sit together in the SAME dated report.
+    gather_precision_md = render_gather_precision_from_records(
+        [sr.run for sr in scored_runs]
+    )
     with report_path.open("a", encoding="utf-8") as fh:
         fh.write("\n")
         fh.write(probes_md)
@@ -634,6 +647,8 @@ def run_spine(
         fh.write(audit_md)
         fh.write("\n")
         fh.write(gather_md)
+        fh.write("\n")
+        fh.write(gather_precision_md)
 
     # AC4 — same per-arm numbers go via the injected MetricsWriter. Default:
     # the HttpMetricsWriter (honest no-op until #942).

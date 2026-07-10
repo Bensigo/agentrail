@@ -167,6 +167,14 @@ class FakeExecutor:
     # and the runner must scrape it BEFORE the workdir is torn down.
     cost_events_to_write: Optional[List[dict]] = None
 
+    # Optional gather CONTEXT MANIFEST the executor leaves in its workdir, exactly
+    # where the live pipeline writes it when the gather phase runs
+    # (``workdir/.agentrail-runs/host-run/gather/output.md`` — the native runner's
+    # RUN_ID/log-subdir layout). When set, ``execute`` drops it there so the
+    # runner's manifest harvest+score reads a real on-disk file BEFORE teardown,
+    # faithful to production where the gather subagent authors this file.
+    gather_manifest_to_write: Optional[str] = None
+
     # Spy state — populated on every call so tests can introspect.
     invoked_with_arm: Optional[Arm] = None
     invoked_with_workdir: Optional[Path] = None
@@ -187,6 +195,12 @@ class FakeExecutor:
                 "".join(json.dumps(ev) + "\n" for ev in self.cost_events_to_write),
                 encoding="utf-8",
             )
+        if self.gather_manifest_to_write is not None:
+            manifest = (
+                workdir / ".agentrail-runs" / "host-run" / "gather" / "output.md"
+            )
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text(self.gather_manifest_to_write, encoding="utf-8")
         return AgentExecution(
             diff=self.diff,
             usage=self.usage,
@@ -927,6 +941,77 @@ def test_run_cost_events_empty_when_no_ledger(corpus_task: CorpusTask) -> None:
     """No pipeline ledger (e.g. a synthetic run) → an empty list, never a crash."""
     record = run(corpus_task, full(), executor=FakeExecutor())
     assert record.cost_events == []
+
+
+# ---------------------------------------------------------------------------
+# Gather manifest harvest + file-picking score (#1049 AC4, precision half).
+#
+# When the gather phase runs it writes a CONTEXT MANIFEST at
+# ``workdir/.agentrail-runs/host-run/gather/output.md``. The runner must harvest
+# that file BEFORE teardown and score its picks against the task's
+# ``requiredContext`` answer key. These prove the score is attached correctly and
+# that a missing manifest reads as ``None`` (undefined), never a fabricated 0.
+# The corpus fixture's answer key is ``["agentrail/evals/runner.py"]``.
+# ---------------------------------------------------------------------------
+
+
+def test_run_scores_the_gather_manifest_against_the_answer_key(
+    corpus_task: CorpusTask,
+) -> None:
+    """A manifest picking the required file scores precision 1.0, recall 1.0."""
+    manifest = (
+        "CONTEXT MANIFEST\n"
+        "Relevant files:\n"
+        "- agentrail/evals/runner.py:1-40 — the answer-key file\n"
+        "Checked, not relevant:\n"
+        "- checked agentrail/evals/spine.py — orchestration, not the change\n"
+    )
+    executor = FakeExecutor(gather_manifest_to_write=manifest)
+
+    record = run(corpus_task, full(), executor=executor)
+
+    assert record.gather_score is not None
+    assert record.gather_score.selected_paths == ["agentrail/evals/runner.py"]
+    assert record.gather_score.required_paths == ["agentrail/evals/runner.py"]
+    assert record.gather_score.intersection == 1
+    assert record.gather_score.precision == 1.0
+    assert record.gather_score.recall == 1.0
+    # The workdir the manifest lived in is gone — harvest happened before teardown.
+    assert executor.invoked_with_workdir is not None
+    assert not executor.invoked_with_workdir.exists()
+
+
+def test_run_gather_score_captures_a_wrong_pick(corpus_task: CorpusTask) -> None:
+    """A manifest picking the WRONG file scores precision 0.0, recall 0.0 (a real miss)."""
+    manifest = (
+        "CONTEXT MANIFEST\n"
+        "Relevant files:\n"
+        "- agentrail/evals/spine.py:1-10 — wrong pick, not the answer key\n"
+    )
+    record = run(corpus_task, full(), executor=FakeExecutor(gather_manifest_to_write=manifest))
+
+    assert record.gather_score is not None
+    assert record.gather_score.intersection == 0
+    assert record.gather_score.precision == 0.0  # 1 pick, 0 correct
+    assert record.gather_score.recall == 0.0  # real answer key, 0 hits
+
+
+def test_run_gather_score_none_when_no_manifest(corpus_task: CorpusTask) -> None:
+    """No gather phase (no manifest) → ``gather_score`` is None, never a fake 0."""
+    record = run(corpus_task, full(), executor=FakeExecutor())
+    assert record.gather_score is None
+
+
+def test_run_gather_score_none_when_manifest_empty(corpus_task: CorpusTask) -> None:
+    """A header-only manifest (gatherer found nothing) is undefined, not a run.
+
+    An all-whitespace/empty manifest text yields no picks; the runner treats that
+    as 'the gatherer did not produce a usable manifest' → None, matching the
+    None-vs-0.0 discipline (this is distinct from a manifest that names a file the
+    answer key rejects, which is a real 0.0 above).
+    """
+    record = run(corpus_task, full(), executor=FakeExecutor(gather_manifest_to_write="   \n\n"))
+    assert record.gather_score is None
 
 
 # ---------------------------------------------------------------------------

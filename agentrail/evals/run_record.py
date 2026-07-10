@@ -69,6 +69,48 @@ class RetryEvent:
 
 
 @dataclass(frozen=True)
+class GatherScore:
+    """The JIT gather phase's file-picking accuracy for ONE run (#1049 AC4).
+
+    The gather phase (when the arm enables it) runs a cheap read-only subagent
+    that reconnoiters the repo and emits a CONTEXT MANIFEST naming the files it
+    judged relevant. This dataclass scores those picks against the corpus task's
+    ``requiredContext`` answer key — the precision half of AC4 ("precision >= 0.7
+    at recall >= 0.85"): did the gatherer point at the RIGHT files?
+
+    - ``selected_paths`` — the repo-relative paths the gatherer picked (the union
+      of the manifest's "Relevant files:" and "Pinned symbols:" sections, sorted
+      and de-duplicated). May be empty when the gatherer ran but ruled everything
+      out.
+    - ``required_paths`` — the task's ``requiredContext`` answer key (sorted),
+      captured alongside so the report can pool per-run scores WITHOUT re-reading
+      the corpus.
+    - ``intersection`` — ``|selected ∩ required|``, the count of correct picks.
+      Carried explicitly so the report can compute a POOLED precision/recall
+      (``sum(intersection) / sum(len(selected))`` etc.) rather than averaging
+      per-run ratios, which would over-weight tasks with few required files.
+    - ``precision`` — ``intersection / len(selected)``; ``None`` when the gatherer
+      selected nothing (0/0 is undefined — never a fabricated ``0.0``).
+    - ``recall`` — ``intersection / len(required)``; a REAL ``0.0`` when the
+      gatherer ran and found none of the required files (the answer key is always
+      non-empty, so recall is never 0/0-undefined here).
+
+    Note the None-vs-0.0 discipline the whole harness keeps: this object exists
+    ONLY when the gatherer actually produced a manifest. A ``full`` arm with no
+    gather phase carries ``RunRecord.gather_score = None`` — "the gatherer did not
+    run", categorically different from "it ran and picked nothing" (which is a
+    real ``recall == 0.0`` recorded here). Immutable so a scored run cannot be
+    mutated into different picks after the fact.
+    """
+
+    precision: Optional[float]
+    recall: Optional[float]
+    selected_paths: List[str]
+    required_paths: List[str]
+    intersection: int
+
+
+@dataclass(frozen=True)
 class RunRecord:
     """The raw result of one ``(task, arm)`` run — the runner's output contract.
 
@@ -131,6 +173,19 @@ class RunRecord:
       wrote no ledger (e.g. a network-artifact ``<synthetic>`` fallback) or the
       harvest was skipped — distinct from "captured and zero".
 
+    Gather file-picking accuracy (#1049 AC4 — the precision half, measurement
+    only):
+
+    - ``gather_score`` — a :class:`GatherScore` scoring the gather phase's
+      CONTEXT MANIFEST (the files it judged relevant) against the task's
+      ``requiredContext`` answer key: precision/recall of the picks, harvested by
+      the runner from the sandbox BEFORE teardown. ``None`` when the gatherer did
+      not run this arm (no manifest was produced) — categorically different from
+      a manifest that selected nothing, which is recorded as a real
+      ``recall == 0.0`` inside the score. This is the ONLY signal that answers
+      "did the JIT gatherer point at the RIGHT files?"; the cost half above
+      answers "did it shrink the executor's context?" — AC4 needs both.
+
     Immutability is enforced (``frozen=True``) so a record handed to the scorer
     cannot be mutated into a different verdict after the fact.
     """
@@ -155,6 +210,11 @@ class RunRecord:
     # back-compat; empty list when no ledger was harvested. Not frozen-hostile:
     # the list is built once by the runner and never mutated after construction.
     cost_events: List[Dict[str, Any]] = field(default_factory=list)
+    # Gather file-picking accuracy (#1049 AC4, precision half) — APPENDED last to
+    # preserve positional back-compat. ``None`` when the gatherer did not run this
+    # arm (no manifest); a real 0.0-recall score when it ran and missed. Built
+    # once by the runner from the harvested manifest and never mutated after.
+    gather_score: Optional[GatherScore] = None
 
     @property
     def attempts(self) -> int:

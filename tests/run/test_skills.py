@@ -450,6 +450,72 @@ class TestRegistry:
         skill = {"localPath": ".claude/skills/frontend-web.md"}
         assert is_skill_available(target, skill) is False
 
+    def test_load_registry_prefers_new_house2_layout(self, tmp_path):
+        target = tmp_path / "target"
+        repo = tmp_path / "repo"
+        target.mkdir()
+        repo.mkdir()
+
+        new_dir = target / ".agentrail" / "agents"
+        new_dir.mkdir(parents=True)
+        registry = self._make_registry(tmp_path)
+        (new_dir / "skill-registry.json").write_text(json.dumps(registry))
+
+        # Also put a legacy registry (should NOT be chosen when new layout is present)
+        legacy_dir = target / "docs" / "agents"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "skill-registry.json").write_text(json.dumps({"skills": []}))
+
+        path_str, loaded = load_registry(target, repo)
+        assert ".agentrail" in path_str
+        assert len(loaded["skills"]) == 3
+
+    def test_load_registry_falls_back_to_legacy_when_no_new_layout(self, tmp_path):
+        target = tmp_path / "target"
+        repo = tmp_path / "repo"
+        target.mkdir()
+        repo.mkdir()
+
+        legacy_dir = target / "docs" / "agents"
+        legacy_dir.mkdir(parents=True)
+        registry = self._make_registry(tmp_path)
+        (legacy_dir / "skill-registry.json").write_text(json.dumps(registry))
+
+        path_str, loaded = load_registry(target, repo)
+        assert str(Path("docs") / "agents" / "skill-registry.json") in path_str
+        assert len(loaded["skills"]) == 3
+
+    def test_is_skill_available_true_when_only_new_layout_file_exists(self, tmp_path):
+        target = tmp_path / "target"
+        skill_dir = target / ".agentrail" / ".claude" / "skills"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "frontend-web.md").write_text("# skill")
+
+        skill = {"localPath": ".claude/skills/frontend-web.md"}
+        assert is_skill_available(target, skill) is True
+
+    def test_is_skill_available_prefers_new_layout_over_legacy(self, tmp_path):
+        target = tmp_path / "target"
+        new_dir = target / ".agentrail" / ".claude" / "skills"
+        new_dir.mkdir(parents=True)
+        (new_dir / "frontend-web.md").write_text("# new skill")
+
+        legacy_dir = target / ".claude" / "skills"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "frontend-web.md").write_text("# legacy skill")
+
+        skill = {"localPath": ".claude/skills/frontend-web.md"}
+        assert is_skill_available(target, skill) is True
+
+    def test_is_skill_available_falls_back_to_legacy_layout(self, tmp_path):
+        target = tmp_path / "target"
+        legacy_dir = target / ".claude" / "skills"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "frontend-web.md").write_text("# legacy skill")
+
+        skill = {"localPath": ".claude/skills/frontend-web.md"}
+        assert is_skill_available(target, skill) is True
+
 
 # ---------------------------------------------------------------------------
 # constants

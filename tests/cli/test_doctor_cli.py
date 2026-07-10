@@ -450,6 +450,114 @@ class DoctorFullyHealthyInstallTests(RunDoctorSetup, unittest.TestCase):
             if in_core:
                 self.assertNotIn("  missing", line, f"Unexpected missing in core: {line}")
 
+    def test_legacy_layout_warns_but_does_not_block(self):
+        """D4: an all-legacy-but-otherwise-healthy install still reports 'ok'
+        for the migrated paths, plus a non-blocking 'warn' pointing at
+        `agentrail upgrade`, without flipping the recommendation."""
+        _, out = self._run()
+        self.assertIn("  ok CONTEXT.md", out)
+        self.assertIn(
+            "  warn CONTEXT.md found at legacy path (CONTEXT.md); run `agentrail upgrade",
+            out,
+        )
+        self.assertIn("  ok docs/agents/", out)
+        self.assertIn("  ok skills/", out)
+        self.assertIn("  ok docs/agents/skill-registry.json", out)
+        self.assertIn("  - no blocking action", out)
+
+
+class DoctorFullyHealthyNewLayoutInstallTests(RunDoctorSetup, unittest.TestCase):
+    """Same as DoctorFullyHealthyInstallTests but using the House 2
+    (.agentrail/-rooted) layout for every migrated path (D4 new-path-first)."""
+
+    def setUp(self):
+        super().setUp()
+        t = self.target
+        (t / "AGENTS.md").write_text("agents")
+        (t / ".agentrail" / "context.md").parent.mkdir(parents=True, exist_ok=True)
+        (t / ".agentrail" / "context.md").write_text("context")
+        (t / ".agentrail" / "agents").mkdir(parents=True, exist_ok=True)
+        (t / "docs" / "prd").mkdir(parents=True)
+        (t / "docs" / "milestones").mkdir(parents=True)
+        (t / ".agentrail" / "skills").mkdir(parents=True, exist_ok=True)
+        agentrail_dir = t / ".agentrail"
+        (agentrail_dir / "config.json").write_text("{}")
+        source_dir = agentrail_dir / "source"
+        source_dir.mkdir(exist_ok=True)
+        (source_dir / "package.json").write_text(json.dumps({"version": "1.0.0"}))
+        agentrail_pkg = source_dir / "agentrail"
+        agentrail_pkg.mkdir(exist_ok=True)
+        (agentrail_pkg / "__init__.py").write_text("")
+
+        state = {"agentrailVersion": "1.0.0", "managedFiles": []}
+        (agentrail_dir / "state.json").write_text(json.dumps(state))
+
+        skill_md_dir = agentrail_dir / "skills" / "my-skill"
+        skill_md_dir.mkdir(parents=True)
+        skill_body = "\n".join([
+            "# My Skill",
+            "## Activation Guidance",
+            "## Context To Inspect",
+            "## Constraints",
+            "## Verification Requirements",
+            "## Expected PR Evidence",
+            "## Provenance / Audit",
+        ])
+        (skill_md_dir / "SKILL.md").write_text(skill_body)
+        registry = {
+            "schemaVersion": 1,
+            "skills": [{
+                "name": "my-skill",
+                "localPath": "skills/my-skill/SKILL.md",
+                "description": "A test skill",
+                "licenseStatus": "ok",
+                "auditStatus": "ok",
+                "bundledByDefault": True,
+                "triggers": {
+                    "keywords": ["test"],
+                    "fileGlobs": [],
+                    "projectSignals": [],
+                },
+                "provenance": {
+                    "candidates": [{
+                        "sourceName": "Test",
+                        "url": "https://example.com",
+                        "relationship": "derived",
+                        "verifiedStatus": "verified",
+                        "auditNotes": "ok",
+                    }],
+                },
+            }],
+        }
+        (agentrail_dir / "agents" / "skill-registry.json").write_text(json.dumps(registry))
+
+    def test_status_installed(self):
+        rc, out = self._run()
+        self.assertIn("status: installed", out)
+
+    def test_recommendation_no_blocking(self):
+        _, out = self._run()
+        self.assertIn("  - no blocking action", out)
+
+    def test_all_core_ok_no_legacy_warning(self):
+        """New layout fully present: 'ok' everywhere, no legacy warn noise."""
+        _, out = self._run()
+        lines = out.split("\n")
+        in_core = False
+        for line in lines:
+            if line == "core:":
+                in_core = True
+                continue
+            if in_core and line.endswith(":") and not line.startswith(" "):
+                break
+            if in_core:
+                self.assertNotIn("  missing", line, f"Unexpected missing in core: {line}")
+                self.assertNotIn("legacy path", line, f"Unexpected legacy warning in core: {line}")
+
+    def test_skill_registry_ok(self):
+        _, out = self._run()
+        self.assertIn("  ok skill registry", out)
+
 
 class DoctorHashMismatchTests(RunDoctorSetup, unittest.TestCase):
     def setUp(self):
@@ -1047,6 +1155,93 @@ class ValidateSkillRegistryDetailTests(unittest.TestCase):
         # Native message is "triggers.keywords must be an array of non-empty strings";
         # the bash test matched the substring "triggers.keywords must be an array".
         self._assert_invalid(target, "triggers.keywords must be an array")
+
+
+def _make_valid_registry_target_new_layout(tmp: Path):
+    """Same as ``_make_valid_registry_target`` but under the House 2 layout:
+    ``.agentrail/agents/skill-registry.json`` + ``.agentrail/skills/<name>/SKILL.md``.
+    """
+    target = tmp / "target"
+    target.mkdir()
+    agentrail_agents = target / ".agentrail" / "agents"
+    agentrail_agents.mkdir(parents=True)
+
+    def _skill(name: str) -> dict:
+        skill_dir = target / ".agentrail" / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(_VALID_SKILL_BODY, encoding="utf-8")
+        return {
+            "name": name,
+            "localPath": f"skills/{name}/SKILL.md",
+            "description": f"{name} skill",
+            "licenseStatus": "agentrail-authored",
+            "auditStatus": "approved",
+            "bundledByDefault": True,
+            "triggers": {
+                "keywords": [name],
+                "fileGlobs": [],
+                "projectSignals": [],
+            },
+            "provenance": {
+                "candidates": [
+                    {
+                        "sourceName": f"AgentRail {name} skill",
+                        "url": "https://example.com",
+                        "relationship": "candidate-reference-only",
+                        "verifiedStatus": "verified",
+                        "auditNotes": "First-party.",
+                        "autoInstall": False,
+                    }
+                ]
+            },
+        }
+
+    registry = {"schemaVersion": 1, "skills": [_skill("frontend-web"), _skill("backend-api")]}
+    (agentrail_agents / "skill-registry.json").write_text(
+        json.dumps(registry, indent=2) + "\n", encoding="utf-8"
+    )
+    return target, registry
+
+
+class ValidateSkillRegistryDualPathTests(unittest.TestCase):
+    """D4 dual-path coverage: new House 2 layout, legacy-only, and new-preferred."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp_path = Path(self._tmp.name)
+        self._repo = self._tmp_path / "repo"
+        self._repo.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _validate(self, target: Path) -> SkillRegistryResult:
+        return validate_skill_registry(str(target), self._repo)
+
+    def test_new_layout_only_ok(self):
+        target, _ = _make_valid_registry_target_new_layout(self._tmp_path)
+        result = self._validate(target)
+        self.assertTrue(result.ok, f"valid new-layout registry rejected: {result.errors}")
+        self.assertIn(".agentrail", result.registry_path)
+
+    def test_legacy_layout_only_ok(self):
+        # Same fixture used elsewhere in this file for the pre-v2 layout;
+        # kept here too so both cases sit side by side for this reader.
+        target, _ = _make_valid_registry_target(self._tmp_path)
+        result = self._validate(target)
+        self.assertTrue(result.ok, f"valid legacy-layout registry rejected: {result.errors}")
+        self.assertIn(str(Path("docs") / "agents"), result.registry_path)
+
+    def test_new_layout_preferred_when_both_present(self):
+        target, _ = _make_valid_registry_target_new_layout(self._tmp_path)
+        # Also drop a legacy registry alongside it, deliberately invalid, to
+        # prove it is never consulted once the new layout resolves.
+        legacy_docs_agents = target / "docs" / "agents"
+        legacy_docs_agents.mkdir(parents=True)
+        (legacy_docs_agents / "skill-registry.json").write_text("not json", encoding="utf-8")
+        result = self._validate(target)
+        self.assertTrue(result.ok, f"new-layout registry should win over broken legacy: {result.errors}")
+        self.assertIn(".agentrail", result.registry_path)
 
 
 class ShippedSkillRegistryRegressionTest(unittest.TestCase):

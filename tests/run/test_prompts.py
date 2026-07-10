@@ -75,16 +75,22 @@ class CommonHeaderTests(unittest.TestCase):
         self.assertIn("Agent target: claude", result)
 
     def test_contains_context_md_line(self):
+        # Repo-structure v2 (D4, issue #1135): the new .agentrail/ path leads,
+        # with the legacy path named as an explicit fallback until every
+        # installed repo runs `agentrail upgrade`.
         result = self._fn("claude", "- state: ok")
-        self.assertIn("- CONTEXT.md", result)
+        self.assertIn("- .agentrail/context.md", result)
+        self.assertIn("legacy CONTEXT.md", result)
 
     def test_contains_taste_md_line(self):
         result = self._fn("claude", "- state: ok")
-        self.assertIn("- TASTE.md when present", result)
+        self.assertIn("- .agentrail/taste.md when present", result)
+        self.assertIn("legacy TASTE.md", result)
 
     def test_contains_docs_agents_line(self):
         result = self._fn("claude", "- state: ok")
-        self.assertIn("- relevant docs under docs/agents/", result)
+        self.assertIn("- relevant docs under .agentrail/agents/", result)
+        self.assertIn("legacy docs/agents/", result)
 
     def test_contains_memory_recall_line(self):
         result = self._fn("claude", "- state: ok")
@@ -610,12 +616,16 @@ class IssueRunPhasePromptTests(unittest.TestCase):
         self.assertIn("Handle exactly one issue: #7.", result)
 
     def test_execute_reads_context_and_ralph_docs(self):
+        # Repo-structure v2 (D4, issue #1135): new .agentrail/ paths lead, with
+        # the legacy paths named as an explicit fallback.
         result = self._fn(
             "execute", 7,
             issue_context="IC", base_prompt="BP", context_summary="CS",
         )
         self.assertIn(
-            "Read CONTEXT.md and docs/agents/ralph-loop.md before editing",
+            "Read .agentrail/context.md (or legacy CONTEXT.md if not yet migrated) "
+            "and .agentrail/agents/ralph-loop.md "
+            "(or legacy docs/agents/ralph-loop.md if not yet migrated) before editing",
             result,
         )
 

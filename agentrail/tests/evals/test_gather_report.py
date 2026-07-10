@@ -13,17 +13,27 @@ import json
 from pathlib import Path
 from typing import Dict, List
 
+import pytest
+
 from agentrail.evals.gather_report import (
+    AC4_PRECISION_FLOOR,
+    AC4_RECALL_FLOOR,
+    ArmPrecisionReport,
     ArmTokenReport,
     CostEvent,
     GATHER_OFF_ARM,
     GATHER_ON_ARM,
+    aggregate_gather_precision,
     aggregate_gather_tokens,
     gather_token_delta,
     load_cost_events,
+    render_gather_precision_from_records,
+    render_gather_precision_markdown,
     render_gather_report_from_ledger,
     render_gather_token_markdown,
 )
+from agentrail.evals.run_record import GatherScore, RunRecord
+from agentrail.run.usage_capture import Usage
 
 
 # ---------------------------------------------------------------------------
@@ -315,3 +325,180 @@ def test_render_from_ledger_none_path_is_not_available() -> None:
     md = render_gather_report_from_ledger(None)
     assert "Not available" in md
     assert "need a live" in md
+
+
+# ===========================================================================
+# Precision half (#1049 AC4) — "did the gatherer pick the RIGHT files?"
+#
+# Also fixture-driven: hand-built RunRecords carrying a GatherScore, pooled per
+# arm and rendered. The runner produces these from a real manifest + answer key
+# (covered in test_runner.py); here we pin the POOLED micro-average and the AC4
+# verdict, which is the truth-critical arithmetic.
+# ===========================================================================
+
+
+def _gscore(*, selected: List[str], required: List[str]) -> GatherScore:
+    """A GatherScore with intersection/precision/recall derived from the sets.
+
+    Mirrors what the runner builds via ``pack_precision_recall`` so the fixture
+    can never disagree with the real scorer: precision ``None`` on 0 picks (0/0
+    undefined), recall a real value against the always-non-empty answer key.
+    """
+    inter = len(set(selected) & set(required))
+    precision = (inter / len(selected)) if selected else None
+    recall = (inter / len(required)) if required else None
+    return GatherScore(
+        precision=precision,
+        recall=recall,
+        selected_paths=sorted(set(selected)),
+        required_paths=sorted(set(required)),
+        intersection=inter,
+    )
+
+
+def _run(arm: str, gather_score) -> RunRecord:
+    """A minimal RunRecord in ``arm`` carrying (or not) a gather score."""
+    return RunRecord(
+        task="t",
+        arm=arm,
+        diff="",
+        model="m",
+        usage=Usage("m", 1, 1, 0, 0),
+        wall_time_s=1.0,
+        gate_passed=True,
+        gather_score=gather_score,
+    )
+
+
+def test_aggregate_pools_micro_average_not_mean_of_ratios() -> None:
+    """Pooled precision/recall sum raw counts, not average per-run ratios.
+
+    run1 picks {a,b,c} against {a,b,c} → 3/3 each.
+    run2 picks {a,b,c,d} against {a,b,c,e} → 3/4 each.
+    Pooled: inter 6, selected 7, required 7 → 6/7 each. A naive mean of ratios
+    would give (1.0 + 0.75)/2 = 0.875 ≠ 6/7 ≈ 0.857 — this pins the micro-average.
+    """
+    records = [
+        _run(GATHER_ON_ARM, _gscore(selected=["a", "b", "c"], required=["a", "b", "c"])),
+        _run(GATHER_ON_ARM, _gscore(selected=["a", "b", "c", "d"], required=["a", "b", "c", "e"])),
+    ]
+    reports = aggregate_gather_precision(records)
+
+    assert len(reports) == 1
+    rep = reports[0]
+    assert rep.arm == GATHER_ON_ARM
+    assert rep.run_count == 2
+    assert rep.total_intersection == 6
+    assert rep.total_selected == 7
+    assert rep.total_required == 7
+    assert rep.precision == 6 / 7
+    assert rep.recall == 6 / 7
+    # 6/7 ≈ 0.857 clears both floors → passes AC4.
+    assert rep.meets_ac4 is True
+
+
+def test_aggregate_excludes_runs_without_a_gather_score() -> None:
+    """A ``None`` gather score (gatherer did not run) contributes nothing.
+
+    NOT counted as a zero-precision run — it is simply absent from the pool, so a
+    ``full`` arm with no gather phase never appears in the precision report.
+    """
+    records = [
+        _run(GATHER_ON_ARM, _gscore(selected=["a"], required=["a"])),
+        _run("full", None),
+        _run("full", None),
+    ]
+    reports = aggregate_gather_precision(records)
+
+    assert [r.arm for r in reports] == [GATHER_ON_ARM]
+    assert reports[0].run_count == 1
+
+
+def test_aggregate_arms_sorted_for_deterministic_report() -> None:
+    """Multiple scored arms come back sorted by name."""
+    records = [
+        _run("zeta-arm", _gscore(selected=["a"], required=["a"])),
+        _run("alpha-arm", _gscore(selected=["a"], required=["a"])),
+    ]
+    assert [r.arm for r in aggregate_gather_precision(records)] == [
+        "alpha-arm",
+        "zeta-arm",
+    ]
+
+
+def test_precision_is_none_when_gatherer_selected_nothing() -> None:
+    """Picked-nothing pools to precision None (0/0), recall a real 0.0."""
+    records = [_run(GATHER_ON_ARM, _gscore(selected=[], required=["a", "b"]))]
+    rep = aggregate_gather_precision(records)[0]
+
+    assert rep.total_selected == 0
+    assert rep.precision is None  # 0/0 undefined — never a fabricated 0.0
+    assert rep.recall == 0.0  # real answer key, zero hits
+    assert rep.meets_ac4 is False
+
+
+def test_render_precision_pass_verdict() -> None:
+    """A gather arm clearing both floors renders the CLEARS-AC4 verdict."""
+    records = [
+        _run(GATHER_ON_ARM, _gscore(selected=["a", "b", "c"], required=["a", "b", "c"])),
+        _run(GATHER_ON_ARM, _gscore(selected=["a", "b", "c", "d"], required=["a", "b", "c", "e"])),
+    ]
+    md = render_gather_precision_from_records(records)
+
+    assert "CLEARS AC4" in md
+    assert GATHER_ON_ARM in md
+    assert f"{AC4_PRECISION_FLOOR:.2f}" in md
+    assert f"{AC4_RECALL_FLOOR:.2f}" in md
+
+
+def test_render_precision_flagged_when_recall_below_floor() -> None:
+    """Precision high but recall below floor → FLAGGED, and the 'do NOT turn on'."""
+    # pooled inter 8, selected 10, required 10 → p 0.8 (ok), r 0.8 (< 0.85).
+    records = [
+        _run(GATHER_ON_ARM, _gscore(selected=["a", "b", "c", "d", "e"], required=["a", "b", "c", "d"])),
+        _run(GATHER_ON_ARM, _gscore(selected=["a", "b", "c", "d", "e"], required=["a", "b", "c", "d", "f", "g"])),
+    ]
+    md = render_gather_precision_from_records(records)
+
+    assert "MISSES AC4" in md and "FLAGGED" in md
+    assert "Do NOT turn the gather flag on" in md
+
+
+def test_render_precision_no_records_is_not_available() -> None:
+    """No scored run → honest 'not available — needs a live run' (never a fake 0)."""
+    md = render_gather_precision_from_records([_run("full", None)])
+
+    assert "Not available" in md
+    assert "live" in md
+    # No table header, no fabricated verdict.
+    assert "| Arm | Gather runs |" not in md
+    assert "CLEARS AC4" not in md
+    assert "MISSES AC4" not in md
+
+
+def test_render_precision_verdict_absent_when_no_gather_arm() -> None:
+    """Scored runs exist but none is the gather arm → verdict is explicitly n/a."""
+    records = [_run("some-other-arm", _gscore(selected=["a"], required=["a"]))]
+    md = render_gather_precision_from_records(records)
+
+    # The arm's row still renders...
+    assert "some-other-arm" in md
+    # ...but the AC4 verdict cannot be pronounced without the gather arm.
+    assert "verdict not available" in md
+    assert "CLEARS AC4" not in md
+    assert "MISSES AC4" not in md
+
+
+def test_arm_precision_report_is_frozen() -> None:
+    """The report row is immutable — a scored arm can't be mutated after the fact."""
+    rep = ArmPrecisionReport(
+        arm=GATHER_ON_ARM,
+        run_count=1,
+        total_intersection=1,
+        total_selected=1,
+        total_required=1,
+        precision=1.0,
+        recall=1.0,
+    )
+    with pytest.raises(Exception):
+        rep.precision = 0.0  # type: ignore[misc]

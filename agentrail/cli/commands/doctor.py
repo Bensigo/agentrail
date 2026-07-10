@@ -560,6 +560,18 @@ DUAL_PATH_REQUIRED = [
     ),
 ]
 
+# docs/memory/ (House 2: .agentrail/memory/) is user-generated working-memory
+# content, never populated by a fresh install (it's skip-patterned in
+# _template_sync, unlike docs/agents/ which ships real content) — so unlike
+# DUAL_PATH_REQUIRED above, its absence on both sides is normal and must NOT
+# flip doctor's overall status. It still needs its own dual-path entry so a
+# repo that DOES have legacy docs/memory/ content gets a specific,
+# path-naming migration warning (AC3) rather than silence. Modeled on the
+# TASTE.md optional check below.
+DUAL_PATH_OPTIONAL = [
+    ("docs/memory/", ".agentrail/memory", "docs/memory", "dir"),
+]
+
 LEGACY_SCRIPT_PATHS = [
     "scripts/memory",
     "scripts/afk-workflow",
@@ -643,6 +655,21 @@ def run_doctor(args: List[str]) -> int:
                 "  warn TASTE.md found at legacy path (TASTE.md); "
                 f"run `agentrail upgrade --target {target_dir}` to migrate to .agentrail/taste.md"
             )
+
+    # Optional dual-path items (e.g. docs/memory/): absence on both sides is
+    # normal (never required_missing) — but a legacy-only hit still gets a
+    # specific, path-naming migration warning (AC3), same as required items.
+    for label, new_rel, legacy_rel, kind in DUAL_PATH_OPTIONAL:
+        opt_resolved, opt_used_legacy = resolve_dual_path(target_dir, new_rel, legacy_rel, kind)
+        if opt_resolved is None:
+            print(f"  optional-missing {label}")
+        else:
+            print(f"  ok {label}")
+            if opt_used_legacy:
+                print(
+                    f"  warn {label} found at legacy path ({legacy_rel}); "
+                    f"run `agentrail upgrade --target {target_dir}` to migrate to {new_rel}"
+                )
 
     # state: section
     print("state:")

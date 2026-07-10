@@ -83,6 +83,23 @@ def frame_untrusted_issue_context(issue_context: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# House-2 dual-path doc references (repo-structure v2, D4 / issue #1135).
+#
+# `agentrail upgrade` (a separate command, not this module) physically moves
+# installed docs from the legacy layout (root CONTEXT.md/TASTE.md, docs/agents/,
+# top-level skills/) into `.agentrail/` (context.md, taste.md, agents/, skills/).
+# Until every installed repo has run it, prompt text sent to the executing
+# agent must name the NEW path first and the legacy path as an explicit
+# fallback (D4 precedence), so the agent finds the docs either way. These
+# constants centralize the wording so it changes in exactly one place; drop
+# the "or legacy ..." clause the release after `agentrail upgrade` ships.
+# ---------------------------------------------------------------------------
+_CONTEXT_MD_REF = ".agentrail/context.md (or legacy CONTEXT.md if not yet migrated)"
+_TASTE_MD_REF = ".agentrail/taste.md when present (or legacy TASTE.md if not yet migrated)"
+_AGENTS_DOCS_REF = ".agentrail/agents/ (or legacy docs/agents/ if not yet migrated)"
+
+
 def common_header(agent: str, state_summary: str) -> str:
     """Reproduce legacy prompt_common_header text.
 
@@ -106,9 +123,9 @@ def common_header(agent: str, state_summary: str) -> str:
         f"Agent target: {agent}\n"
         "\n"
         "Read these before acting:\n"
-        "- CONTEXT.md\n"
-        "- TASTE.md when present\n"
-        "- relevant docs under docs/agents/\n"
+        f"- {_CONTEXT_MD_REF}\n"
+        f"- {_TASTE_MD_REF}\n"
+        f"- relevant docs under {_AGENTS_DOCS_REF}\n"
         "- relevant project memory from agentrail memory recall\n"
         "\n"
         "Start with AgentRail CLI state:\n"
@@ -190,13 +207,13 @@ Run one bounded AgentRail issue execution for exactly one GitHub issue: #{issue}
 
 Use these local instructions:
 - templates/docs/agents/ralph-loop.md when running from the AgentRail source repo
-- docs/agents/ralph-loop.md when running from an installed target repo
+- .agentrail/agents/ralph-loop.md when running from an installed target repo (or legacy docs/agents/ralph-loop.md if not yet migrated)
 - repo-local implementation skills such as tdd when they match the work
 
 Hard limits:
 - Handle only issue #{issue}.
 - Read the issue body, comments, labels, and linked PRD or milestone before editing.
-- Read CONTEXT.md, TASTE.md if present, and relevant project memory.
+- Read {context_md_ref}, {taste_md_ref}, and relevant project memory.
 - Run agentrail memory recall for the issue title and key terms when available.
 - When you need code you don't see, FIRST run `agentrail context query "<term>" --json --limit 6` (ranked, cheap) before grep/glob.
 - If starting or resuming execution yourself, use agentrail run issue {issue}; AgentRail invokes Ralph internally during the execute phase.
@@ -212,13 +229,13 @@ _CLAUDE_TASK_BLOCK = """\
 Use Claude Code through AgentRail to run one bounded implementation loop for exactly one GitHub issue: #{issue}.
 
 Use these local instructions when present:
-- templates/docs/agents/ralph-loop.md or docs/agents/ralph-loop.md
-- repo-local TDD and workflow docs under skills/ and docs/agents/
+- templates/docs/agents/ralph-loop.md (AgentRail source repo) or .agentrail/agents/ralph-loop.md (installed target repo; or legacy docs/agents/ralph-loop.md if not yet migrated)
+- repo-local TDD and workflow docs under .agentrail/skills/ and .agentrail/agents/ (or legacy skills/ and docs/agents/ if not yet migrated)
 
 Hard limits:
 - Handle only issue #{issue}.
 - Read the issue body, comments, labels, and linked PRD or milestone before editing.
-- Read CONTEXT.md, TASTE.md if present, and relevant project memory.
+- Read {context_md_ref}, {taste_md_ref}, and relevant project memory.
 - Run agentrail memory recall for the issue title and key terms when available.
 - When you need code you don't see, FIRST run `agentrail context query "<term>" --json --limit 6` (ranked, cheap) before grep/glob.
 - If starting or resuming execution yourself, use agentrail run issue {issue}; AgentRail invokes Ralph internally during the execute phase.
@@ -245,9 +262,13 @@ def issue_base_prompt(
     header = common_header(...), skill_block = format_skill_resolution(...).
     """
     if agent == "codex":
-        task_block = _CODEX_TASK_BLOCK.format(issue=issue)
+        task_block = _CODEX_TASK_BLOCK.format(
+            issue=issue, context_md_ref=_CONTEXT_MD_REF, taste_md_ref=_TASTE_MD_REF
+        )
     else:
-        task_block = _CLAUDE_TASK_BLOCK.format(issue=issue)
+        task_block = _CLAUDE_TASK_BLOCK.format(
+            issue=issue, context_md_ref=_CONTEXT_MD_REF, taste_md_ref=_TASTE_MD_REF
+        )
 
     return (
         header
@@ -267,8 +288,8 @@ Stress-test this idea before any PRD or implementation work:
 {idea}
 
 Instructions:
-- Read CONTEXT.md first.
-- Read TASTE.md if present.
+- Read {context_md_ref} first.
+- Read {taste_md_ref}.
 - Run agentrail memory recall for the idea and key terms when available.
 - Challenge vague users, outcomes, non-goals, constraints, domain terms, and risky assumptions.
 - If a question can be answered from the repo, inspect the repo instead of asking.
@@ -283,8 +304,8 @@ Stress-test this idea before any PRD or implementation work:
 {idea}
 
 Instructions:
-- Read CONTEXT.md first.
-- Read TASTE.md if present.
+- Read {context_md_ref} first.
+- Read {taste_md_ref}.
 - Run agentrail memory recall for the idea and key terms when available.
 - Challenge vague users, outcomes, non-goals, constraints, domain terms, and risky assumptions.
 - If a question can be answered from the repo, inspect the repo instead of asking.
@@ -297,9 +318,13 @@ def grill_prompt(agent: str, idea: str, *, header: str) -> str:
     """Port of legacy prompt_grill. header = common_header(...). Agent-specific
     grill task block (codex vs claude)."""
     if agent == "codex":
-        task_block = _CODEX_GRILL_TASK_BLOCK.format(idea=idea)
+        task_block = _CODEX_GRILL_TASK_BLOCK.format(
+            idea=idea, context_md_ref=_CONTEXT_MD_REF, taste_md_ref=_TASTE_MD_REF
+        )
     else:
-        task_block = _CLAUDE_GRILL_TASK_BLOCK.format(idea=idea)
+        task_block = _CLAUDE_GRILL_TASK_BLOCK.format(
+            idea=idea, context_md_ref=_CONTEXT_MD_REF, taste_md_ref=_TASTE_MD_REF
+        )
     return header + task_block
 
 
@@ -308,12 +333,12 @@ Review exactly one pull request: #{pr}.
 
 Use these local instructions:
 - templates/docs/agents/pr-review.md when running from the AgentRail source repo
-- docs/agents/pr-review.md when running from an installed target repo
+- .agentrail/agents/pr-review.md when running from an installed target repo (or legacy docs/agents/pr-review.md if not yet migrated)
 
 Hard limits:
 - Review only PR #{pr}.
 - Compare the PR head branch against its base branch.
-- Read the PR body, linked issue, milestone, PRD, CONTEXT.md, TASTE.md if present, and relevant project memory.
+- Read the PR body, linked issue, milestone, PRD, {context_md_ref}, {taste_md_ref}, and relevant project memory.
 - Run agentrail memory recall for the PR title, linked issue, and key terms when available.
 - If generating this review prompt outside the current session, use agentrail prompt review {pr}.
 - Inspect resolved skill evidence when available in the PR body or AgentRail run logs, including resolved-skills metadata; absence of this evidence does not mean the implementation is invalid.
@@ -326,13 +351,13 @@ _CLAUDE_REVIEW_TASK_BLOCK = """\
 Use Claude Code to review exactly one pull request: #{pr}.
 
 Use these local instructions when present:
-- templates/docs/agents/pr-review.md or docs/agents/pr-review.md
-- repo-local review and visual evidence docs under docs/agents/
+- templates/docs/agents/pr-review.md (AgentRail source repo) or .agentrail/agents/pr-review.md (installed target repo; or legacy docs/agents/pr-review.md if not yet migrated)
+- repo-local review and visual evidence docs under {agents_docs_ref}
 
 Hard limits:
 - Review only PR #{pr}.
 - Compare the PR head branch against its base branch.
-- Read the PR body, linked issue, milestone, PRD, CONTEXT.md, TASTE.md if present, and relevant project memory.
+- Read the PR body, linked issue, milestone, PRD, {context_md_ref}, {taste_md_ref}, and relevant project memory.
 - Run agentrail memory recall for the PR title, linked issue, and key terms when available.
 - If generating this review prompt outside the current session, use agentrail prompt review {pr}.
 - Inspect resolved skill evidence when available in the PR body or AgentRail run logs, including resolved-skills metadata; absence of this evidence does not mean the implementation is invalid.
@@ -353,9 +378,16 @@ def review_prompt(
     """Port of legacy prompt_review. Assembles header + context_summary + '\\n\\n' +
     context_snippets + '\\n\\n' + agent-specific review task block (codex vs claude)."""
     if agent == "codex":
-        task_block = _CODEX_REVIEW_TASK_BLOCK.format(pr=pr)
+        task_block = _CODEX_REVIEW_TASK_BLOCK.format(
+            pr=pr, context_md_ref=_CONTEXT_MD_REF, taste_md_ref=_TASTE_MD_REF
+        )
     else:
-        task_block = _CLAUDE_REVIEW_TASK_BLOCK.format(pr=pr)
+        task_block = _CLAUDE_REVIEW_TASK_BLOCK.format(
+            pr=pr,
+            context_md_ref=_CONTEXT_MD_REF,
+            taste_md_ref=_TASTE_MD_REF,
+            agents_docs_ref=_AGENTS_DOCS_REF,
+        )
     return (
         header
         + context_summary
@@ -773,7 +805,8 @@ def issue_run_phase_prompt(
         ralph_preamble = (
             "Ralph one-issue execution limits:\n"
             f"- Handle exactly one issue: #{issue}. Do not continue into unrelated issues.\n"
-            "- Read CONTEXT.md and docs/agents/ralph-loop.md before editing.\n"
+            f"- Read {_CONTEXT_MD_REF} and .agentrail/agents/ralph-loop.md "
+            "(or legacy docs/agents/ralph-loop.md if not yet migrated) before editing.\n"
             "- Run memory recall for the issue title and key terms before editing when available.\n"
             "- Treat project memory as advisory; verify it against current code, docs, issue, PRD, and ADRs.\n"
             "- Preserve existing user changes.\n"

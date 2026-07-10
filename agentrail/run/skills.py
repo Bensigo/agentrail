@@ -12,6 +12,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agentrail.shared.house2 import resolve_dual_path
+
 IGNORED_DIRS = {".git", "node_modules", ".agentrail", "dist", "build", ".next", "target"}
 MAX_FILES = 1000
 MAX_AUTO_SKILLS = 4
@@ -20,13 +22,19 @@ MAX_AUTO_SKILLS = 4
 def load_registry(target_dir: Path, repo_dir: Path) -> tuple[str, dict]:
     """Return (registry_path_str, registry_dict).
 
-    Prefer installed <target>/docs/agents/skill-registry.json,
+    Prefer the new House 2 layout <target>/.agentrail/agents/skill-registry.json,
+    then the legacy installed <target>/docs/agents/skill-registry.json,
     else fall back to <repo>/agentrail/templates/docs/agents/skill-registry.json.
-    Mirror legacy lines 778-781.
+    Mirror legacy lines 778-781 (with an added new-layout tier per repo-structure v2 D4:
+    new path first, legacy path as fallback for one release).
     """
-    installed = target_dir / "docs" / "agents" / "skill-registry.json"
+    installed, _used_legacy = resolve_dual_path(
+        target_dir,
+        ".agentrail/agents/skill-registry.json",
+        "docs/agents/skill-registry.json",
+    )
     source = repo_dir / "agentrail" / "templates" / "docs" / "agents" / "skill-registry.json"
-    registry_path = installed if installed.exists() else source
+    registry_path = installed if installed is not None else source
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
     return (str(registry_path), registry)
 
@@ -40,11 +48,20 @@ def bundled_skills(registry: dict) -> List[dict]:
 
 
 def is_skill_available(target_dir: Path, skill: dict) -> bool:
-    """Return True if <target_dir>/<skill['localPath']> exists on disk.
+    """Return True if the skill's localPath exists under target_dir.
 
+    Checks the new House 2 layout <target_dir>/.agentrail/<localPath> first,
+    then falls back to the legacy <target_dir>/<localPath> (repo-structure v2 D4:
+    new path first, legacy path as fallback for one release).
     Mirror legacy lines 791-793.
     """
-    return (target_dir / skill["localPath"]).exists()
+    local_path = skill["localPath"]
+    resolved, _used_legacy = resolve_dual_path(
+        target_dir,
+        f".agentrail/{local_path}",
+        local_path,
+    )
+    return resolved is not None
 
 
 def walk_files(root: Path) -> List[str]:

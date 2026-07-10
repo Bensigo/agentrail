@@ -94,6 +94,43 @@ class TestBuildReviewPrompt(unittest.TestCase):
                     "1", "T", "U", machine_readable=True, repo_root=root,
                 )
 
+    def test_uses_new_house2_layout_when_only_layout_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            new_dir = root / ".agentrail" / "agents"
+            new_dir.mkdir(parents=True)
+            (new_dir / "pr-review.md").write_text("NEW LAYOUT PR REVIEW\n")
+            (new_dir / "github-pr-reviewer.md").write_text("NEW LAYOUT CONTRACT\n")
+            prompt = review_engine.build_review_prompt(
+                "1", "T", "U", machine_readable=True, repo_root=root,
+            )
+        self.assertIn("NEW LAYOUT PR REVIEW", prompt)
+        self.assertIn("NEW LAYOUT CONTRACT", prompt)
+        self.assertIn(
+            "Machine-readable contract source: .agentrail/agents/github-pr-reviewer.md",
+            prompt,
+        )
+
+    def test_prefers_new_house2_layout_over_legacy_and_templates(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _seed_docs(root)
+            legacy = root / "docs" / "agents"
+            legacy.mkdir(parents=True)
+            (legacy / "pr-review.md").write_text("LEGACY PR REVIEW\n")
+            (legacy / "github-pr-reviewer.md").write_text("LEGACY CONTRACT\n")
+            new_dir = root / ".agentrail" / "agents"
+            new_dir.mkdir(parents=True)
+            (new_dir / "pr-review.md").write_text("NEW LAYOUT PR REVIEW\n")
+            (new_dir / "github-pr-reviewer.md").write_text("NEW LAYOUT CONTRACT\n")
+            prompt = review_engine.build_review_prompt(
+                "1", "T", "U", machine_readable=True, repo_root=root,
+            )
+        self.assertIn("NEW LAYOUT PR REVIEW", prompt)
+        self.assertIn("NEW LAYOUT CONTRACT", prompt)
+        self.assertNotIn("LEGACY PR REVIEW", prompt)
+        self.assertNotIn("LEGACY CONTRACT", prompt)
+
 
 class TestValidateMachineReadableOutput(unittest.TestCase):
     def _write(self, root: Path, text: str) -> Path:

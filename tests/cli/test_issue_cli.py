@@ -274,8 +274,8 @@ class IssueInteractiveTests(unittest.TestCase):
 def _make_minimal_repo(tmp: Path, skill_body: str = "SKILL-BODY") -> Path:
     """Create a minimal repo+target structure for headless tests."""
     repo = tmp / "repo"
-    (repo / "skills" / "to-issues").mkdir(parents=True)
-    (repo / "skills" / "to-issues" / "SKILL.md").write_text(skill_body, encoding="utf-8")
+    (repo / "agentrail" / "skills" / "to-issues").mkdir(parents=True)
+    (repo / "agentrail" / "skills" / "to-issues" / "SKILL.md").write_text(skill_body, encoding="utf-8")
     target = tmp / "target"
     target.mkdir()
     (target / "CONTEXT.md").write_text("# Context\n", encoding="utf-8")

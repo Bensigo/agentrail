@@ -10,7 +10,7 @@ Required:
 
 - One GitHub issue labeled `ready-for-agent`.
 - Acceptance criteria.
-- Repository context from `CONTEXT.md`.
+- Repository context from `.agentrail/context.md`.
 - Relevant project memory from `agentrail memory recall`.
 
 Optional:
@@ -54,7 +54,7 @@ Do not guess through missing product decisions. A blocked issue is better than a
 
 Project memory lives in `docs/memory/` and is searched through `agentrail memory recall`.
 
-Use it to avoid repeated mistakes and preserve durable project preferences across agent runs. Treat it as advisory unless backed by current source links. If memory conflicts with code, `CONTEXT.md`, ADRs, the issue, or the PRD, stop and surface the conflict instead of guessing.
+Use it to avoid repeated mistakes and preserve durable project preferences across agent runs. Treat it as advisory unless backed by current source links. If memory conflicts with code, `.agentrail/context.md`, ADRs, the issue, or the PRD, stop and surface the conflict instead of guessing.
 
 If implementation reveals a reusable lesson or decision, propose a source-linked memory entry in the PR. Do not silently add broad advice or unsourced assumptions.
 

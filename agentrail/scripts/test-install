@@ -66,20 +66,25 @@ fi
 
 required=(
   "AGENTS.md"
-  "CONTEXT.md"
-  "docs/agents/issue-tracker.md"
-  "docs/agents/agentrail-state.md"
-  "docs/agents/github-pr-reviewer.md"
-  "docs/agents/context-engine.md"
-  "docs/agents/context-compiler-contract.md"
-  "docs/agents/milestones.md"
-  "docs/agents/ralph-loop.md"
-  "docs/agents/pr-review.md"
-  "docs/agents/skill-registry.json"
-  "docs/agents/visual-evidence.md"
-  "docs/agents/triage-labels.md"
+  ".agentrail/context.md"
+  ".agentrail/agents/agent-instructions.md"
+  ".agentrail/agents/issue-tracker.md"
+  ".agentrail/agents/agentrail-state.md"
+  ".agentrail/agents/github-pr-reviewer.md"
+  ".agentrail/agents/context-engine.md"
+  ".agentrail/agents/context-compiler-contract.md"
+  ".agentrail/agents/milestones.md"
+  ".agentrail/agents/ralph-loop.md"
+  ".agentrail/agents/pr-review.md"
+  ".agentrail/agents/skill-registry.json"
+  ".agentrail/agents/visual-evidence.md"
+  ".agentrail/agents/triage-labels.md"
   "docs/prd/.gitkeep"
   "docs/milestones/.gitkeep"
+  # House-2 (repo-structure-v2, PR-5 / #1136): the skills root installs to
+  # BOTH the legacy top-level skills/ copy and the new .agentrail/skills/
+  # copy this PR. Dropping the legacy top-level copy is explicitly PR-8's
+  # job (design doc §6), not PR-5's, so both sets are asserted here.
   "skills/backend-api/SKILL.md"
   "skills/desktop-tauri/SKILL.md"
   "skills/devops-deploy/SKILL.md"
@@ -95,8 +100,20 @@ required=(
   "skills/tdd/mocking.md"
   "skills/tdd/refactoring.md"
   "skills/tdd/tests.md"
+  ".agentrail/skills/backend-api/SKILL.md"
+  ".agentrail/skills/desktop-tauri/SKILL.md"
+  ".agentrail/skills/devops-deploy/SKILL.md"
+  ".agentrail/skills/docs-current/SKILL.md"
+  ".agentrail/skills/frontend-web/SKILL.md"
+  ".agentrail/skills/tdd/SKILL.md"
+  ".agentrail/skills/tdd/deep-modules.md"
+  ".agentrail/skills/tdd/interface-design.md"
+  ".agentrail/skills/tdd/mocking.md"
+  ".agentrail/skills/tdd/refactoring.md"
+  ".agentrail/skills/tdd/tests.md"
   ".agentrail/state.json"
   ".agentrail/config.json"
+  ".agentrail/.gitignore"
   "scripts/agentrail"
   # #404 Option B vendor contract: only the native package + package.json +
   # the runtime data dirs (agentrail/templates/, agentrail/skills/). NO
@@ -169,23 +186,23 @@ if ! grep -q -- "AgentRail upgrade:" "${tmp_dir}/installed-agentrail-upgrade.out
 fi
 
 for skill in tdd; do
-  if ! grep -q -- "$skill" "${tmp_dir}/AGENTS.md"; then
-    echo "AGENTS.md does not mention required skill: ${skill}" >&2
+  if ! grep -q -- "$skill" "${tmp_dir}/.agentrail/agents/agent-instructions.md"; then
+    echo "agent-instructions.md does not mention required skill: ${skill}" >&2
     exit 1
   fi
 done
 
-if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/docs/agents/ralph-loop.md"; then
+if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/.agentrail/agents/ralph-loop.md"; then
   echo "ralph-loop docs do not require acceptance criteria coverage" >&2
   exit 1
 fi
 
-if ! grep -q -- "memory_suggestions" "${tmp_dir}/docs/agents/github-pr-reviewer.md"; then
+if ! grep -q -- "memory_suggestions" "${tmp_dir}/.agentrail/agents/github-pr-reviewer.md"; then
   echo "github-pr-reviewer docs do not describe memory suggestions" >&2
   exit 1
 fi
 
-if ! grep -q -- ".agentrail/state.json" "${tmp_dir}/docs/agents/agentrail-state.md"; then
+if ! grep -q -- ".agentrail/state.json" "${tmp_dir}/.agentrail/agents/agentrail-state.md"; then
   echo "agentrail state docs do not describe the state file path" >&2
   exit 1
 fi
@@ -210,7 +227,7 @@ if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.legacyAdopted")" !=
   exit 1
 fi
 
-if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/docs/agents/pr-review.md"; then
+if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/.agentrail/agents/pr-review.md"; then
   echo "pr-review docs do not require acceptance criteria coverage checks" >&2
   exit 1
 fi
@@ -222,17 +239,17 @@ fi
 # sections, docs/milestones path convention) are now covered by Jace's own
 # tests, not by this factory install harness.
 
-if ! grep -q -- "agentrail memory recall" "${tmp_dir}/AGENTS.md"; then
-  echo "AGENTS.md does not tell agents to recall project memory" >&2
+if ! grep -q -- "agentrail memory recall" "${tmp_dir}/.agentrail/agents/agent-instructions.md"; then
+  echo "agent-instructions.md does not tell agents to recall project memory" >&2
   exit 1
 fi
 
-if ! grep -q -- "agentrail memory recall" "${tmp_dir}/docs/agents/ralph-loop.md"; then
+if ! grep -q -- "agentrail memory recall" "${tmp_dir}/.agentrail/agents/ralph-loop.md"; then
   echo "ralph-loop docs do not require project memory recall" >&2
   exit 1
 fi
 
-if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === 'docs/agents/skill-registry.json' && file.source === 'agentrail/templates/docs/agents/skill-registry.json')")" != "true" ]]; then
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === '.agentrail/agents/skill-registry.json' && file.source === 'agentrail/templates/docs/agents/skill-registry.json')")" != "true" ]]; then
   echo "state file does not track the managed skill registry" >&2
   exit 1
 fi
@@ -242,8 +259,18 @@ if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((
   exit 1
 fi
 
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === '.agentrail/skills/frontend-web/SKILL.md' && file.source === 'agentrail/skills/frontend-web/SKILL.md')")" != "true" ]]; then
+  echo "state file does not track the House-2 .agentrail/skills copy" >&2
+  exit 1
+fi
+
 if [[ -f "${tmp_dir}/TASTE.md" ]]; then
   echo "TASTE.md should not be installed (created lazily during grill)" >&2
+  exit 1
+fi
+
+if [[ -f "${tmp_dir}/.agentrail/taste.md" ]]; then
+  echo ".agentrail/taste.md should not be installed (created lazily during grill)" >&2
   exit 1
 fi
 
@@ -254,18 +281,18 @@ for excluded_file in ".claude/agents/github-pr-reviewer.md" ".codex/agents/githu
   fi
 done
 
-if ! grep -q -- "TASTE.md" "${tmp_dir}/AGENTS.md"; then
-  echo "AGENTS.md does not tell agents to read TASTE.md when present" >&2
+if ! grep -q -- ".agentrail/taste.md" "${tmp_dir}/AGENTS.md"; then
+  echo "AGENTS.md does not tell agents to read .agentrail/taste.md when present" >&2
   exit 1
 fi
 
-if ! grep -q -- "borrow aggressively, vendor carefully, update intentionally, never auto-trust" "${tmp_dir}/AGENTS.md"; then
-  echo "AGENTS.md does not document the skill supply-chain rule" >&2
+if ! grep -q -- "borrow aggressively, vendor carefully, update intentionally, never auto-trust" "${tmp_dir}/.agentrail/agents/agent-instructions.md"; then
+  echo "agent-instructions.md does not document the skill supply-chain rule" >&2
   exit 1
 fi
 
-if ! grep -q -- "verify the upstream source still exists before editing docs/agents/skill-registry.json" "${tmp_dir}/AGENTS.md"; then
-  echo "AGENTS.md does not document safe provenance update expectations" >&2
+if ! grep -q -- "verify the upstream source still exists before editing \`.agentrail/agents/skill-registry.json\`" "${tmp_dir}/.agentrail/agents/agent-instructions.md"; then
+  echo "agent-instructions.md does not document safe provenance update expectations" >&2
   exit 1
 fi
 
@@ -331,13 +358,13 @@ MEMORY
 
 legacy_dir="$(mktemp -d "${tmp_dir}/legacy.XXXXXX")"
 git -C "$legacy_dir" init --quiet
-mkdir -p "${legacy_dir}/docs/agents"
+mkdir -p "${legacy_dir}/.agentrail/agents"
 cat > "${legacy_dir}/AGENTS.md" <<'LEGACY'
 # Local agent instructions
 
 Do not delete this local edit.
 LEGACY
-cat > "${legacy_dir}/docs/agents/ralph-loop.md" <<'LEGACY'
+cat > "${legacy_dir}/.agentrail/agents/ralph-loop.md" <<'LEGACY'
 # Local Ralph Loop
 
 Keep this local workflow edit.
@@ -355,7 +382,7 @@ if ! grep -q -- "Do not delete this local edit." "${legacy_dir}/AGENTS.md"; then
   exit 1
 fi
 
-if ! grep -q -- "Keep this local workflow edit." "${legacy_dir}/docs/agents/ralph-loop.md"; then
+if ! grep -q -- "Keep this local workflow edit." "${legacy_dir}/.agentrail/agents/ralph-loop.md"; then
   echo "legacy adoption deleted local ralph-loop edits" >&2
   exit 1
 fi

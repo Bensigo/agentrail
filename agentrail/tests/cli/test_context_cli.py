@@ -78,18 +78,18 @@ class ContextCliTests(unittest.TestCase):
         root = Path(tempfile.mkdtemp())
         subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
         subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
-        (root / "docs" / "agents" / "issue-92.md").write_text("# Issue 92\n\nContext command boundary.\n", encoding="utf-8")
+        (root / ".agentrail" / "agents" / "issue-92.md").write_text("# Issue 92\n\nContext command boundary.\n", encoding="utf-8")
         result = subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "context", "sources", "--target", str(root)], check=True, stdout=subprocess.PIPE, text=True)
         records = json.loads(result.stdout)
-        self.assertTrue(any(record["path"] == "docs/agents/issue-92.md" for record in records))
+        self.assertTrue(any(record["path"] == ".agentrail/agents/issue-92.md" for record in records))
 
     def test_context_build_show_and_explain_cli(self) -> None:
         repo = Path(__file__).resolve().parents[3]
         root = Path(tempfile.mkdtemp())
         subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
         subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
-        (root / "docs" / "agents" / "issue-92.md").write_text("# Issue 92\n\nContext pack generation for issue #92.\n", encoding="utf-8")
-        (root / "docs" / "agents" / "pr-44.md").write_text("# PR 44\n\nPR #44 at /pull/44 reviews context packs.\n", encoding="utf-8")
+        (root / ".agentrail" / "agents" / "issue-92.md").write_text("# Issue 92\n\nContext pack generation for issue #92.\n", encoding="utf-8")
+        (root / ".agentrail" / "agents" / "pr-44.md").write_text("# PR 44\n\nPR #44 at /pull/44 reviews context packs.\n", encoding="utf-8")
         (root / "src").mkdir()
         (root / "src" / "pack.py").write_text("def issue_92_pack():\n    return 'issue #92'\n", encoding="utf-8")
 
@@ -116,7 +116,7 @@ class ContextCliTests(unittest.TestCase):
         subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
         (root / "CONTEXT.md").write_text("# Context\n\nKeep integrations explicit and observable for issue #83.\n", encoding="utf-8")
         (root / "TASTE.md").write_text("# Taste\n\nCommon actions should be obvious without instructional text.\n", encoding="utf-8")
-        (root / "docs" / "agents" / "issue-83.md").write_text("# Issue 83\n\nProvider interface for context query, build, show, and explain.\n", encoding="utf-8")
+        (root / ".agentrail" / "agents" / "issue-83.md").write_text("# Issue 83\n\nProvider interface for context query, build, show, and explain.\n", encoding="utf-8")
         (root / "src").mkdir()
         (root / "src" / "provider.py").write_text("def context_provider_surface():\n    return 'issue #83 provider interface'\n", encoding="utf-8")
 
@@ -219,7 +219,7 @@ class ContextCliTests(unittest.TestCase):
         root = Path(tempfile.mkdtemp())
         subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
         subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
-        (root / "docs" / "agents" / "issue-101.md").write_text("# Issue 101\n\nPolicy and token budget metadata for issue #101.\n", encoding="utf-8")
+        (root / ".agentrail" / "agents" / "issue-101.md").write_text("# Issue 101\n\nPolicy and token budget metadata for issue #101.\n", encoding="utf-8")
         (root / "src").mkdir()
         (root / "src" / "policy.py").write_text("def issue_101_policy_surface():\n    return 'issue #101 policy metadata'\n", encoding="utf-8")
         (root / "denied").mkdir()
@@ -306,7 +306,7 @@ class ContextCliTests(unittest.TestCase):
         root = Path(tempfile.mkdtemp())
         subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
         subprocess.run([str(repo / "agentrail" / "scripts" / "agentrail"), "install", "--target", str(root)], check=True, stdout=subprocess.DEVNULL)
-        (root / "docs" / "agents" / "issue-84.md").write_text("# Issue 84\n\nRetrieval evaluation for issue #84.\n", encoding="utf-8")
+        (root / ".agentrail" / "agents" / "issue-84.md").write_text("# Issue 84\n\nRetrieval evaluation for issue #84.\n", encoding="utf-8")
         (root / "src").mkdir()
         (root / "src" / "retrieval_eval.py").write_text("def issue_84_eval():\n    return 'issue #84 retrieval evaluation'\n", encoding="utf-8")
         fixture = root / "fixtures.json"
@@ -315,9 +315,9 @@ class ContextCliTests(unittest.TestCase):
                 {
                     "name": "issue-84-cli",
                     "task": "issue #84 retrieval evaluation src/retrieval_eval.py",
-                    "requiredSources": ["docs/agents/issue-84.md", "src/retrieval_eval.py"],
+                    "requiredSources": [".agentrail/agents/issue-84.md", "src/retrieval_eval.py"],
                     "expectedFiles": ["src/retrieval_eval.py"],
-                    "expectedDocs": ["docs/agents/issue-84.md"],
+                    "expectedDocs": [".agentrail/agents/issue-84.md"],
                     "expectedMemory": [],
                     "expectedPriorMistakes": [],
                     "expectedExcludedSources": [".env"],

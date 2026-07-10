@@ -13,7 +13,7 @@ disposable container instead:
     )
     # result: RunResult(status, cost_usd, branch, gate_reason, logs_tail)
 
-The container is launched from the runner image (see ``docker/runner/Dockerfile``),
+The container is launched from the runner image (see ``agentrail/docker/runner/Dockerfile``),
 which clones ``repo_url`` at ``ref``, runs ``agentrail run issue <issue_ref>``
 (the spine — ``agentrail/run/pipeline.py:run_issue``), and prints a sentinel-fenced
 result JSON to stdout. We parse that into a :class:`RunResult`, then ALWAYS remove
@@ -64,7 +64,7 @@ ENV_FAILURE_HANDOFF = "AGENTRAIL_FAILURE_HANDOFF"
 # by summing this file (each line carries a ``cost_usd``). On a sandbox-level
 # FAILURE we must recover the partial ledger too, or the money already spent is
 # reported as $0. Inside the container the repo is cloned at ``/workspace/repo``
-# (see ``docker/runner/entrypoint.sh``), so the ledger lives at the path below.
+# (see ``agentrail/docker/runner/entrypoint.sh``), so the ledger lives at the path below.
 _LEDGER_RELPATH = ".agentrail/run/cost-events.jsonl"
 _CONTAINER_LEDGER_PATH = "/workspace/repo/" + _LEDGER_RELPATH
 

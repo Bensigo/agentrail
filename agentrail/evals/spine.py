@@ -54,7 +54,7 @@ The result is two non-overlapping windows on the timeline:
                                               returns bool ]
 
 The agent and the answer key are never co-located in space (AC3) and never
-co-resident in time (AC2). Unit tests in ``tests/evals/test_spine.py`` assert
+co-resident in time (AC2). Unit tests in ``agentrail/tests/evals/test_spine.py`` assert
 both halves: a spy on the runner's executor records the workdir+contents at
 ``execute``-time and proves the answer key was absent; the
 ``HiddenTestRunner`` fake records its own invocation order and proves it ran

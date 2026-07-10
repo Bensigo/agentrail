@@ -70,7 +70,9 @@ def language_for(relative_path: str) -> str:
         return _LANGUAGE_TABLE[ext]["language"]  # type: ignore[return-value]
     if name == "dockerfile":
         return "dockerfile"
-    if not ext and relative_path.startswith(("scripts/", "templates/scripts/")):
+    if not ext and relative_path.startswith(
+        ("scripts/", "templates/scripts/", "agentrail/scripts/", "agentrail/templates/scripts/")
+    ):
         return "shell"
     return ext[1:] if ext else "text"
 

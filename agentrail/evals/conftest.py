@@ -6,7 +6,7 @@ repo's own test suite, and the eval harness mounts them only at scoring time.
 Collecting them as ordinary tests would (a) run answer keys against the wrong
 tree and (b) leak the answer key into a normal ``pytest`` run. Ignore them.
 
-The corpus loader's *own* tests live under ``tests/evals/`` and are unaffected.
+The corpus loader's *own* tests live under ``agentrail/tests/evals/`` and are unaffected.
 """
 
 from __future__ import annotations

@@ -62,9 +62,24 @@ def _agent_command(engine: str, model: str = "") -> str:
 
 
 def _agentrail_runner(target: Path) -> str:
-    candidate = target / "scripts" / "agentrail"
-    if candidate.exists():
-        return str(candidate)
+    """Resolve the local ``agentrail`` launcher for *target*, if one exists.
+
+    Two conventions can apply here:
+      - an installed CONSUMER project (ran ``agentrail install``) vendors the
+        launcher at the top-level ``<target>/scripts/agentrail``;
+      - the AgentRail SOURCE repo itself (dogfooding AFK on its own issues,
+        ``AGENTRAIL_ALLOW_SOURCE_RUN=1`` — see dogfood-afk-run skill) carries
+        its own launcher at ``<target>/agentrail/scripts/agentrail`` since the
+        repo-structure-v2 move nested ``scripts/`` under the package.
+    Check the source-repo path first, then the installed-target path, else
+    fall back to whatever ``agentrail`` is on PATH.
+    """
+    for candidate in (
+        target / "agentrail" / "scripts" / "agentrail",
+        target / "scripts" / "agentrail",
+    ):
+        if candidate.exists():
+            return str(candidate)
     return "agentrail"
 
 

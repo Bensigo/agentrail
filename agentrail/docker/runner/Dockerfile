@@ -5,7 +5,7 @@
 # after each run (see agentrail/sandbox/docker_runner.py).
 #
 # Build (from repo root, so the build context includes the agentrail source):
-#   docker build -f docker/runner/Dockerfile -t agentrail/runner:latest .
+#   docker build -f agentrail/docker/runner/Dockerfile -t agentrail/runner:latest .
 #
 # Required RUNTIME env (passed by the dispatcher via `docker run -e KEY`):
 #   ANTHROPIC_API_KEY   agent API key for the Claude CLI (or the key your
@@ -44,23 +44,24 @@ RUN npm install -g --no-audit --no-fund \
 
 # ---- agentrail CLI -----------------------------------------------------------
 # Install the agentrail package source from the build context. The CLI is pure
-# Python driven by scripts/agentrail (-> python -m agentrail.cli.main), so we
-# vendor the package and put the launcher on PATH. tree-sitter deps come from
-# pyproject so context retrieval works inside the sandbox. templates/ and
-# skills/ now live nested under agentrail/, so COPY agentrail ./agentrail
-# already carries them — no separate COPY lines needed.
+# Python driven by agentrail/scripts/agentrail (-> python -m agentrail.cli.main),
+# so we vendor the package and put the launcher on PATH. tree-sitter deps come
+# from pyproject so context retrieval works inside the sandbox. templates/,
+# skills/, and scripts/ all live nested under agentrail/, so COPY agentrail
+# ./agentrail already carries them — no separate COPY lines needed. tests/ and
+# docker/ are dev-only and stripped after the copy to keep the image lean.
 WORKDIR /opt/agentrail
 COPY pyproject.toml ./pyproject.toml
 COPY agentrail ./agentrail
-COPY scripts ./scripts
-RUN pip install --no-cache-dir . \
-    && chmod +x scripts/agentrail \
-    && ln -sf /opt/agentrail/scripts/agentrail /usr/local/bin/agentrail
+RUN rm -rf ./agentrail/tests ./agentrail/docker \
+    && pip install --no-cache-dir . \
+    && chmod +x agentrail/scripts/agentrail \
+    && ln -sf /opt/agentrail/agentrail/scripts/agentrail /usr/local/bin/agentrail
 
 # ---- run entrypoint ----------------------------------------------------------
 # clone -> agentrail run issue N -> emit result JSON. Lives in the image so the
 # sandbox seam only has to pass repo/ref/issue.
-COPY docker/runner/entrypoint.sh /usr/local/bin/agentrail-sandbox-entry
+COPY agentrail/docker/runner/entrypoint.sh /usr/local/bin/agentrail-sandbox-entry
 RUN chmod +x /usr/local/bin/agentrail-sandbox-entry
 
 # Disposable workspace; cloned fresh on every run.

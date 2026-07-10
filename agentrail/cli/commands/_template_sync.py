@@ -231,7 +231,7 @@ def _build_inventory(repo_dir: Path) -> List[Dict[str, Any]]:
             })
 
     # extraFiles
-    extra_source = repo_dir / "scripts" / "agentrail"
+    extra_source = repo_dir / "agentrail" / "scripts" / "agentrail"
     inventory.append({
         "path": "scripts/agentrail",
         "source": extra_source.relative_to(repo_dir).as_posix(),

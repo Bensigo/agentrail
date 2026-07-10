@@ -53,6 +53,13 @@ def _make_repo() -> Path:
     (repo / "agentrail" / "cli").mkdir()
     (repo / "agentrail" / "cli" / "__init__.py").write_text("")
 
+    # Dev-only content nested under agentrail/ by repo-structure-v2 — must
+    # never leak into a consumer project's vendor copy (#1131 follow-up).
+    (repo / "agentrail" / "tests" / "cli").mkdir(parents=True)
+    (repo / "agentrail" / "tests" / "cli" / "test_something.py").write_text("# dev test\n")
+    (repo / "agentrail" / "docker" / "runner").mkdir(parents=True)
+    (repo / "agentrail" / "docker" / "runner" / "Dockerfile").write_text("FROM python:3.11\n")
+
     return repo
 
 
@@ -349,6 +356,36 @@ class TestVendorTrim(TestCase):
         source = self.target / ".agentrail" / "source"
         pkg = json.loads((source / "package.json").read_text())
         self.assertEqual(pkg["name"], "@useagentrail/cli")
+
+    def test_dev_only_subdirs_excluded_from_vendor(self):
+        """repo-structure-v2 nested agentrail/{tests,scripts,docker} directly
+        under the vendored ``agentrail/`` package root (epic #1131
+        follow-up). ``_materialize_source`` copies that whole package tree,
+        so without an explicit exclusion the 282-file pytest suite and the
+        Docker build context would ship into every installed project.
+        """
+        _run_install(self.repo, self.target)
+        vendored_package = self.target / ".agentrail" / "source" / "agentrail"
+        self.assertFalse((vendored_package / "tests").exists(),
+                         ".agentrail/source/agentrail/tests must not be vendored")
+        self.assertFalse((vendored_package / "scripts").exists(),
+                         ".agentrail/source/agentrail/scripts must not be vendored")
+        self.assertFalse((vendored_package / "docker").exists(),
+                         ".agentrail/source/agentrail/docker must not be vendored")
+
+    def test_nested_templates_scripts_survives_dev_subdir_exclusion(self):
+        """Regression guard for the fix above: excluding agentrail/scripts
+        (dev benchmark/typecheck scripts) must NOT also strip the same-named
+        but unrelated agentrail/templates/scripts/ directory, which holds the
+        context-first.sh hook template install.py's _install_claude_hooks
+        reads from the vendored copy on a self-upgrade run.
+        """
+        _run_install(self.repo, self.target)
+        vendored_package = self.target / ".agentrail" / "source" / "agentrail"
+        self.assertTrue(
+            (vendored_package / "templates" / "scripts" / "context-first.sh").exists(),
+            "nested templates/scripts/context-first.sh must survive the vendor dev-subdir trim",
+        )
 
 
 class TestLegacyAdoption(TestCase):

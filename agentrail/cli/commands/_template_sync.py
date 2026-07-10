@@ -16,7 +16,10 @@ This module is the single source of truth for:
   ``skills/`` the CLI reads at runtime) and the ``package.json`` the launcher's
   redirect needs are vendored. NO editable flow scripts (no
   ``scripts/agentrail`` / ``scripts/install-workflow``) are copied into the
-  vendor dir, so installed projects cannot fork orchestration.
+  vendor dir, so installed projects cannot fork orchestration. The dev-only
+  ``agentrail/{tests,scripts,docker}`` subdirs introduced by repo-structure-v2
+  are also excluded (see ``_ignore_vendor_dev_subdirs``, #1131 follow-up), so
+  the pytest suite and Docker build assets don't leak into consumer projects.
 
 ``upgrade.py`` and ``install.py`` both import from here; behavior is identical
 between the two except install drives every item with ``previous=None``.
@@ -41,6 +44,41 @@ from typing import Any, Dict, List, Optional
 
 VENDOR_DIRS = ("agentrail",)
 VENDOR_FILES = ("package.json",)
+
+# Dev-only subdirectories nested directly under the vendored ``agentrail/``
+# package root that must NOT ship into a consumer project's
+# ``.agentrail/source`` (repo-structure-v2 nested these under ``agentrail/``
+# — install-footprint follow-up to epic #1131): the 282-file pytest suite,
+# the maintainer-only benchmark/typecheck scripts, and the runner image's
+# Docker build context. None of them are imported or read by the CLI at
+# runtime from an installed project.
+#
+# NOTE: this must only match DIRECT CHILDREN of the vendored ``agentrail/``
+# root, not any same-named directory nested deeper in the tree — e.g.
+# ``agentrail/templates/scripts/`` holds ``context-first.sh``, a genuine
+# runtime template that ``install.py``'s ``_install_claude_hooks`` reads via
+# ``repo_dir / "agentrail" / "templates" / "scripts" / "context-first.sh"``
+# (including from the vendored copy on a self-upgrade run inside an
+# installed project). A plain ``shutil.ignore_patterns(...)`` matches by
+# basename at every depth of the copytree walk and would wrongly strip that
+# nested ``scripts/`` dir too, so we use a custom depth-aware ignore
+# callback instead (see ``_ignore_vendor_dev_subdirs`` below).
+_VENDOR_DEV_SUBDIRS = frozenset({"tests", "scripts", "docker"})
+
+
+def _ignore_vendor_dev_subdirs(vendor_root: Path):
+    """Build a :func:`shutil.copytree` ``ignore=`` callback that excludes
+    :data:`_VENDOR_DEV_SUBDIRS` only when they are direct children of
+    ``vendor_root`` (the vendored ``agentrail/`` package root)."""
+    vendor_root = Path(vendor_root)
+
+    def _ignore(directory: str, names: List[str]) -> set:
+        if Path(directory) == vendor_root:
+            return set(names) & _VENDOR_DEV_SUBDIRS
+        return set()
+
+    return _ignore
+
 
 # Editable flow scripts that must NEVER land on the project surface or in the
 # vendor dir (asserted by scripts/test-install and tests).
@@ -461,12 +499,15 @@ def _materialize_source(repo_dir: Path, target_dir: Path) -> None:
             shutil.copy2(src, source_support_dir / file_name)
 
     # Vendor dirs (rm -rf then cp -R) — the native package + runtime data dirs.
+    # Excludes the dev-only tests/scripts/docker subdirs (see
+    # ``_ignore_vendor_dev_subdirs``) so the 282-file pytest suite and Docker
+    # build assets don't leak into every installed project.
     for dir_name in VENDOR_DIRS:
         dst = source_support_dir / dir_name
         if dst.exists():
             shutil.rmtree(dst)
         src = repo_dir / dir_name
         if src.exists():
-            shutil.copytree(src, dst)
+            shutil.copytree(src, dst, ignore=_ignore_vendor_dev_subdirs(src))
 
     print("updated: .agentrail/source")

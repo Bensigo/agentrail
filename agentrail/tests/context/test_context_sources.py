@@ -13,6 +13,7 @@ from agentrail.context.config import (
     SecretRedactionConfig,
 )
 from agentrail.context.sources import authority_for, inventory_sources, source_type_for
+from agentrail.shared.fs import matches_any
 
 # Config equivalent to what `agentrail install` writes (uses the same defaults).
 _DEFAULT_CFG = ContextConfig(
@@ -403,6 +404,164 @@ class House2DualPathSourceTypeTests(unittest.TestCase):
     def test_agentrail_taste_and_agent_doc_are_high_authority(self) -> None:
         self.assertEqual(authority_for("taste_doc", ".agentrail/taste.md"), "high")
         self.assertEqual(authority_for("agent_doc", ".agentrail/agents/local.md"), "high")
+
+
+class IndexGlobRescopeTests(unittest.TestCase):
+    """Repo-structure v2 PR-7 (#1138): default index globs must include the
+    House-2 .agentrail/ content dirs, keep the legacy dual-path fallbacks
+    indexed, and exclude only generated caches / secrets under .agentrail/.
+    """
+
+    def _make_fixture(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        _init_git(root)
+
+        for d in [
+            ".agentrail/agents",
+            ".agentrail/skills/backend-api",
+            ".agentrail/memory",
+            ".agentrail/runs/run-1",
+            ".agentrail/handoffs/handoff-1",
+            ".agentrail/context/index",
+            ".agentrail/source/agentrail",
+            ".agentrail/batch/job-1",
+            "docs/agents",
+            "docs/memory",
+        ]:
+            (root / d).mkdir(parents=True, exist_ok=True)
+
+        # New House-2 content dirs — must be included.
+        (root / ".agentrail/agents/local.md").write_text("# Local Agent\n", encoding="utf-8")
+        (root / ".agentrail/skills/backend-api/SKILL.md").write_text("# Backend API\n", encoding="utf-8")
+        (root / ".agentrail/memory/lesson.md").write_text("# Lesson\n", encoding="utf-8")
+        (root / ".agentrail/context.md").write_text("# Context\n", encoding="utf-8")
+        (root / ".agentrail/taste.md").write_text("# Taste\n", encoding="utf-8")
+        (root / ".agentrail/config.json").write_text('{"context":{}}\n', encoding="utf-8")
+
+        # Run/handoff artifacts — must stay included (prior-mistake surfacing
+        # in context/index.py reads these).
+        (root / ".agentrail/runs/run-1/findings.json").write_text('{"findings":[]}\n', encoding="utf-8")
+        (root / ".agentrail/handoffs/handoff-1/notes.md").write_text("# Handoff\n", encoding="utf-8")
+
+        # Legacy dual-path fallbacks — must stay included.
+        (root / "docs/agents/local.md").write_text("# Legacy Agent Doc\n", encoding="utf-8")
+        (root / "docs/memory/lesson.md").write_text("# Legacy Lesson\n", encoding="utf-8")
+        (root / "CONTEXT.md").write_text("# Context\n", encoding="utf-8")
+        (root / "TASTE.md").write_text("# Taste\n", encoding="utf-8")
+
+        # Generated cache / vendor / secret paths — must be excluded.
+        (root / ".agentrail/context/index/sources.json").write_text("[]\n", encoding="utf-8")
+        (root / ".agentrail/source/agentrail/cli.py").write_text("# vendored copy\n", encoding="utf-8")
+        (root / ".agentrail/batch/job-1/output.json").write_text("{}\n", encoding="utf-8")
+        (root / ".agentrail/server.json").write_text('{"apiKey":"live-secret"}\n', encoding="utf-8")
+
+        _commit_all(root, "PR-7 index-glob fixture")
+        return root
+
+    # ------------------------------------------------------------------
+    # New House-2 content dirs must be indexed.
+    # ------------------------------------------------------------------
+
+    def test_agentrail_agents_included(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertIn(".agentrail/agents/local.md", paths)
+
+    def test_agentrail_skills_included(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertIn(".agentrail/skills/backend-api/SKILL.md", paths)
+
+    def test_agentrail_memory_included(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertIn(".agentrail/memory/lesson.md", paths)
+
+    def test_agentrail_context_md_included(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertIn(".agentrail/context.md", paths)
+
+    def test_agentrail_taste_md_included(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertIn(".agentrail/taste.md", paths)
+
+    def test_agentrail_config_json_included(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertIn(".agentrail/config.json", paths)
+
+    # ------------------------------------------------------------------
+    # Run/handoff artifacts must stay indexed (prior-mistake surfacing).
+    # ------------------------------------------------------------------
+
+    def test_agentrail_runs_included(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertIn(".agentrail/runs/run-1/findings.json", paths)
+
+    def test_agentrail_handoffs_included(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertIn(".agentrail/handoffs/handoff-1/notes.md", paths)
+
+    # ------------------------------------------------------------------
+    # Legacy dual-path fallbacks must stay indexed.
+    # ------------------------------------------------------------------
+
+    def test_legacy_docs_agents_still_included(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertIn("docs/agents/local.md", paths)
+
+    def test_legacy_docs_memory_still_included(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertIn("docs/memory/lesson.md", paths)
+
+    def test_legacy_root_context_md_still_included(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertIn("CONTEXT.md", paths)
+
+    def test_legacy_root_taste_md_still_included(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertIn("TASTE.md", paths)
+
+    # ------------------------------------------------------------------
+    # Generated caches / vendor copy / secrets must be excluded.
+    # ------------------------------------------------------------------
+
+    def test_agentrail_context_cache_excluded(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertNotIn(".agentrail/context/index/sources.json", paths)
+
+    def test_agentrail_source_vendor_copy_excluded(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertNotIn(".agentrail/source/agentrail/cli.py", paths)
+
+    def test_agentrail_batch_excluded(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertNotIn(".agentrail/batch/job-1/output.json", paths)
+
+    def test_agentrail_server_json_excluded(self) -> None:
+        root = self._make_fixture()
+        paths = [r.path for r in inventory_sources(root, _DEFAULT_CFG)]
+        self.assertNotIn(".agentrail/server.json", paths, ".agentrail/server.json holds a live API key and must never be indexed")
+
+    def test_agentrail_server_json_denied_for_redaction_too(self) -> None:
+        # Defense in depth: even if a deployment's excludeGlobs is
+        # customized away from the default, server.json must still be
+        # caught by the secret-redaction deny list.
+        self.assertTrue(
+            matches_any(DEFAULT_DENY_GLOBS, ".agentrail/server.json"),
+            "server.json should also be covered by DEFAULT_DENY_GLOBS as defense in depth",
+        )
 
 
 if __name__ == "__main__":

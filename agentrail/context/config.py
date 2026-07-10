@@ -30,11 +30,31 @@ DEFAULT_EXCLUDE_GLOBS = [
     "**/evals/**",
     "templates/**",
     "**/templates/**",
-    # Generated .agentrail cache only — the index and source-cache dirs.
-    # Product state under .agentrail (state.json, config.json, runs/**,
-    # handoffs/**) MUST stay indexed, so do NOT blanket-exclude .agentrail/**.
+    # Repo-structure v2 / House 2 (spec 2026-07-08, PR-7 #1138): .agentrail/
+    # is the single install dir and most of its content is load-bearing
+    # operating docs the factory must be able to see, so do NOT
+    # blanket-exclude .agentrail/**. Only generated caches, the trimmed
+    # vendor copy, and secret-bearing files are excluded below:
+    #   - .agentrail/context/**  — generated index/audit/embeddings cache.
+    #   - .agentrail/source/**   — trimmed vendor copy for the legacy bash
+    #     installer (#404 Option B); would otherwise duplicate the whole
+    #     codebase in the index.
+    #   - .agentrail/batch/**    — generated batch-run scratch space.
+    #   - .agentrail/server.json — live API key/secrets; must never be
+    #     indexed even if secretRedaction is reconfigured (also denied
+    #     below for defense in depth).
+    # .agentrail/runs/** and .agentrail/handoffs/** are deliberately NOT
+    # excluded: they hold run/handoff artifacts (findings.json,
+    # blockedReason, review-fix notes, …) that context/index.py's
+    # prior-mistake surfacing (parsed_json_prior_mistake /
+    # markdown_prior_mistake) depends on to warn agents away from repeating
+    # past mistakes. Note this is orthogonal to whether the installed
+    # .agentrail/.gitignore tracks these paths in git (D3) — un-tracked
+    # files can and must still be indexed for retrieval.
     ".agentrail/context/**",
     ".agentrail/source/**",
+    ".agentrail/batch/**",
+    ".agentrail/server.json",
     ".env",
     ".env.*",
     "**/.env",
@@ -54,6 +74,7 @@ DEFAULT_DENY_GLOBS = [
     "**/*.key",
     "**/*credentials*",
     "**/*secret*",
+    ".agentrail/server.json",
 ]
 
 

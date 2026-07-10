@@ -26,6 +26,14 @@ def _make_repo() -> Path:
     # skip-pattern: TASTE.md excluded
     (repo / "agentrail" / "templates" / "TASTE.md").write_text("# Taste\n")
 
+    # House-2 (repo-structure-v2, PR-5 / #1136): CONTEXT.md and docs/agents/*
+    # are clean one-time moves under .agentrail/ — see _map_template_destination.
+    (repo / "agentrail" / "templates" / "CONTEXT.md").write_text("# Context\nProject context.\n")
+    (repo / "agentrail" / "templates" / "docs" / "agents").mkdir(parents=True)
+    (repo / "agentrail" / "templates" / "docs" / "agents" / "agent-instructions.md").write_text(
+        "# Agent Instructions\nFollow the rules.\n"
+    )
+
     (repo / "agentrail" / "skills" / "my-skill").mkdir(parents=True)
     (repo / "agentrail" / "skills" / "my-skill" / "SKILL.md").write_text("# Skill\n")
 
@@ -111,6 +119,89 @@ class TestFreshInstall(TestCase):
         state = json.loads((self.target / ".agentrail" / "state.json").read_text())
         skill = next(f for f in state["managedFiles"] if f["path"] == "skills/my-skill/SKILL.md")
         self.assertEqual(skill["source"], "agentrail/skills/my-skill/SKILL.md")
+
+
+class TestHouse2Layout(TestCase):
+    """PR-5 / #1136: fresh installs write the House-2 .agentrail/-rooted layout.
+
+    CONTEXT.md and docs/agents/* are clean one-time moves (no transitional
+    duplicate at the old path). skills/ installs to BOTH the legacy top-level
+    copy and the new .agentrail/skills copy — dropping the legacy dup is
+    explicitly PR-8's job per the execution plan, not this PR's."""
+
+    def setUp(self):
+        self.repo = _make_repo()
+        self.target = Path(tempfile.mkdtemp())
+
+    def test_context_md_moved_to_agentrail_context(self):
+        _run_install(self.repo, self.target)
+        moved = self.target / ".agentrail" / "context.md"
+        self.assertTrue(moved.exists())
+        self.assertEqual(moved.read_text(), "# Context\nProject context.\n")
+
+    def test_root_context_md_not_installed(self):
+        _run_install(self.repo, self.target)
+        self.assertFalse((self.target / "CONTEXT.md").exists())
+
+    def test_docs_agents_moved_to_agentrail_agents(self):
+        _run_install(self.repo, self.target)
+        moved = self.target / ".agentrail" / "agents" / "agent-instructions.md"
+        self.assertTrue(moved.exists())
+        self.assertEqual(moved.read_text(), "# Agent Instructions\nFollow the rules.\n")
+
+    def test_root_docs_agents_not_installed(self):
+        _run_install(self.repo, self.target)
+        self.assertFalse((self.target / "docs" / "agents" / "agent-instructions.md").exists())
+
+    def test_state_records_house2_destinations(self):
+        _run_install(self.repo, self.target)
+        state = json.loads((self.target / ".agentrail" / "state.json").read_text())
+        paths = {f["path"] for f in state["managedFiles"]}
+        self.assertIn(".agentrail/context.md", paths)
+        self.assertIn(".agentrail/agents/agent-instructions.md", paths)
+        self.assertNotIn("CONTEXT.md", paths)
+        self.assertNotIn("docs/agents/agent-instructions.md", paths)
+
+    def test_dual_skills_root_both_installed(self):
+        _run_install(self.repo, self.target)
+        self.assertTrue((self.target / "skills" / "my-skill" / "SKILL.md").exists())
+        self.assertTrue((self.target / ".agentrail" / "skills" / "my-skill" / "SKILL.md").exists())
+
+    def test_dual_skills_root_share_source_in_state(self):
+        _run_install(self.repo, self.target)
+        state = json.loads((self.target / ".agentrail" / "state.json").read_text())
+        legacy_skill = next(f for f in state["managedFiles"] if f["path"] == "skills/my-skill/SKILL.md")
+        house2_skill = next(
+            f for f in state["managedFiles"] if f["path"] == ".agentrail/skills/my-skill/SKILL.md"
+        )
+        self.assertEqual(legacy_skill["source"], "agentrail/skills/my-skill/SKILL.md")
+        self.assertEqual(house2_skill["source"], "agentrail/skills/my-skill/SKILL.md")
+
+    def test_agentrail_gitignore_written(self):
+        _run_install(self.repo, self.target)
+        gitignore = self.target / ".agentrail" / ".gitignore"
+        self.assertTrue(gitignore.exists())
+        self.assertEqual(
+            gitignore.read_text(),
+            "context/\nruns/\nbatch/\n*.log\nserver.json\n",
+        )
+
+    def test_agentrail_gitignore_preserved_without_force(self):
+        _run_install(self.repo, self.target)
+        gitignore = self.target / ".agentrail" / ".gitignore"
+        gitignore.write_text("# local edit\ncustom/\n")
+        _run_install(self.repo, self.target)
+        self.assertEqual(gitignore.read_text(), "# local edit\ncustom/\n")
+
+    def test_agentrail_gitignore_rewritten_with_force(self):
+        _run_install(self.repo, self.target)
+        gitignore = self.target / ".agentrail" / ".gitignore"
+        gitignore.write_text("# local edit\ncustom/\n")
+        _run_install(self.repo, self.target, extra_args=["--force"])
+        self.assertEqual(
+            gitignore.read_text(),
+            "context/\nruns/\nbatch/\n*.log\nserver.json\n",
+        )
 
 
 class TestClaudeSkillsInstall(TestCase):

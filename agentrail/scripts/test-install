@@ -178,7 +178,18 @@ if [[ ! -x "${tmp_dir}/scripts/agentrail" ]]; then
   exit 1
 fi
 
-"${tmp_dir}/scripts/agentrail" upgrade --target "$tmp_dir" >"${tmp_dir}/installed-agentrail-upgrade.out"
+# Run from inside the installed target (not the agentrail source checkout) so
+# this exercises the real installed-copy launcher-resolution path (#1136): if
+# the invoking shell's CWD happens to already contain an importable
+# `agentrail` package (e.g. the agentrail source checkout itself), Python's
+# implicit CWD-on-sys.path fallback can mask a broken PYTHONPATH resolution
+# in the launcher. $tmp_dir has no top-level agentrail/ package of its own, so
+# `cd`ing into it before invoking the installed launcher reproduces what a
+# real end user hits after `cd`ing into their project.
+(
+  cd "$tmp_dir"
+  "${tmp_dir}/scripts/agentrail" upgrade --target "$tmp_dir"
+) >"${tmp_dir}/installed-agentrail-upgrade.out"
 if ! grep -q -- "AgentRail upgrade:" "${tmp_dir}/installed-agentrail-upgrade.out"; then
   echo "installed agentrail CLI could not run upgrade" >&2
   cat "${tmp_dir}/installed-agentrail-upgrade.out" >&2
@@ -254,12 +265,21 @@ if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((
   exit 1
 fi
 
-if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === 'skills/frontend-web/SKILL.md' && file.source === 'agentrail/skills/frontend-web/SKILL.md')")" != "true" ]]; then
+# NOTE: these two dual-mirror checks read $symlink_target's state.json, not
+# $tmp_dir's. `agentrail upgrade` (exercised against $tmp_dir at line ~181,
+# below) intentionally migrates the legacy top-level skills/ mirror into
+# .agentrail/skills/ and prunes the now-removed skills/-prefixed entries from
+# managedFiles (see _migrate_legacy_layout in agentrail/cli/commands/upgrade.py).
+# By the time this script reaches these assertions, $tmp_dir has already been
+# upgraded, so its state.json no longer carries the fresh-install dual-mirror
+# invariant being asserted here. $symlink_target was only ever `install`ed
+# (never upgraded), so it still reflects that invariant.
+if [[ "$(json_value "${symlink_target}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === 'skills/frontend-web/SKILL.md' && file.source === 'agentrail/skills/frontend-web/SKILL.md')")" != "true" ]]; then
   echo "state file does not track bundled skill files" >&2
   exit 1
 fi
 
-if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === '.agentrail/skills/frontend-web/SKILL.md' && file.source === 'agentrail/skills/frontend-web/SKILL.md')")" != "true" ]]; then
+if [[ "$(json_value "${symlink_target}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === '.agentrail/skills/frontend-web/SKILL.md' && file.source === 'agentrail/skills/frontend-web/SKILL.md')")" != "true" ]]; then
   echo "state file does not track the House-2 .agentrail/skills copy" >&2
   exit 1
 fi

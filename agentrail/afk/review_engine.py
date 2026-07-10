@@ -56,16 +56,16 @@ def build_review_prompt(
     """Port of the script's ``review_prompt``.
 
     Inlines ``docs/agents/pr-review.md`` always, and
-    ``docs/agents/github-pr-reviewer.md`` when ``machine_readable`` — each with a
-    ``templates/docs/agents/`` fallback. Includes the machine-readable JSON
-    contract instruction verbatim from the script.
+    ``docs/agents/github-pr-reviewer.md`` when ``machine_readable`` — each with an
+    ``agentrail/templates/docs/agents/`` fallback. Includes the machine-readable
+    JSON contract instruction verbatim from the script.
     """
     repo_root = Path(repo_root)
     prompt_file = _resolve_doc(repo_root, "docs/agents/pr-review.md")
     if prompt_file is None:
         raise ReviewError(
             "missing PR review instructions: docs/agents/pr-review.md or "
-            "templates/docs/agents/pr-review.md"
+            "agentrail/templates/docs/agents/pr-review.md"
         )
 
     machine_prompt_file: Optional[Path] = None
@@ -74,7 +74,7 @@ def build_review_prompt(
         if machine_prompt_file is None:
             raise ReviewError(
                 "missing GitHub PR reviewer contract: docs/agents/github-pr-reviewer.md "
-                "or templates/docs/agents/github-pr-reviewer.md"
+                "or agentrail/templates/docs/agents/github-pr-reviewer.md"
             )
 
     # The path the script reports as the contract source is repo-root-relative.

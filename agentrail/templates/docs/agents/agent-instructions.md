@@ -22,7 +22,7 @@ This repo uses a GitHub-first agent workflow.
 - Milestones live in `docs/milestones/`.
 - Repo-local workflow skills live in `.agentrail/skills/`.
 - Agent workflow docs live in `.agentrail/agents/`.
-- Project memory lives in `docs/memory/`.
+- Project memory lives in `.agentrail/memory/` (legacy: `docs/memory/`).
 - Durable AgentRail state lives in `.agentrail/state.json`.
 - GitHub issues are the source of truth for implementation tasks.
 - Pull requests are the source of truth for review and merge readiness.
@@ -41,7 +41,7 @@ agentrail memory recall "<task, issue, PR, feature, or keyword>"
 
 Use relevant memory as advisory context only. Verify it against the current code, `.agentrail/context.md`, ADRs, issues, and PRs before relying on it.
 
-When you learn something that should help future agents, propose a source-linked entry under `docs/memory/` as a normal diff. Do not store secrets, credentials, customer data, or unsourced guesses.
+When you learn something that should help future agents, propose a source-linked entry under `.agentrail/memory/` (legacy: `docs/memory/`) as a normal diff. Do not store secrets, credentials, customer data, or unsourced guesses.
 
 ## Workflow Skills
 
@@ -133,7 +133,7 @@ See:
 - `.agentrail/agents/pr-review.md`
 - `.agentrail/agents/visual-evidence.md`
 - `.agentrail/agents/triage-labels.md`
-- `docs/memory/README.md`
+- `.agentrail/memory/README.md`
 
 AgentRail CLI:
 

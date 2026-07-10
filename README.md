@@ -20,14 +20,17 @@ AgentRail is the harness. The configured runner is the worker, such as Codex, Cl
 
 It installs:
 
-- `AGENTS.md` and `CONTEXT.md`
-- optional product quality guidance in `TASTE.md`
-- agent docs under `docs/agents/`
-- project memory under `docs/memory/`
-- PRD and milestone folders under `docs/`
-- project-local skills under `skills/`
+- `AGENTS.md` — a thin root pointer other agent harnesses read automatically
+- `.agentrail/context.md` — the project context file agents should read first
+- `.agentrail/agents/` — agent operating docs, state format, and the skill registry
+- `docs/prd/` and `docs/milestones/` scaffold folders (still installed today; scheduled for removal now that Jace owns ideation — see "What Gets Installed")
+- project-local skills under `.agentrail/skills/` (also duplicated at top-level `skills/` today — a known gap, see "What Gets Installed")
 - durable AgentRail state under `.agentrail/state.json`
 - AgentRail config under `.agentrail/config.json`
+
+It does **not** create `.agentrail/taste.md` or `.agentrail/memory/` — add
+those yourself when you want product-taste guidance or durable project
+memory; AgentRail reads them when present.
 
 ## Install & Quick Start
 
@@ -93,37 +96,68 @@ After install, go to the target project:
 cd /path/to/project
 ```
 
-Then edit `CONTEXT.md`. Do this before asking agents to plan or implement non-trivial work.
+Then edit `.agentrail/context.md`. Do this before asking agents to plan or implement non-trivial work.
 
 ## What Gets Installed
 
 Project docs:
 
 ```text
-AGENTS.md
-CONTEXT.md
-TASTE.md
-docs/agents/
-docs/memory/
+AGENTS.md                (root pointer, managed file)
+.agentrail/context.md
+.agentrail/agents/
 docs/prd/
 docs/milestones/
 ```
 
+`AGENTS.md` is a thin root-level pointer — Claude Code, Codex, and other agent
+harnesses read `AGENTS.md` at the repo root automatically, and it directs
+agents to `.agentrail/context.md`, `.agentrail/taste.md` (when present), and
+`.agentrail/agents/agent-instructions.md` rather than duplicating that content
+at the root. `agentrail install`/`agentrail init` write this file's content in
+full (tracked in `.agentrail/state.json`, not a marker-delimited block); the
+separate `agentrail init <claude|cursor|codex>` subcommand wires per-agent MCP
+config and, for `cursor`/`codex` only, additionally appends its own
+`<!-- agentrail-mcp:start/end -->`-marked steering block to `AGENTS.md` for
+context-retrieval tool guidance — an additive mechanism distinct from the
+pointer content described here.
+
+`.agentrail/taste.md` and `.agentrail/memory/` are **not** created by a fresh
+install today. Add `.agentrail/taste.md` yourself for product-taste guidance,
+or `.agentrail/memory/` for durable project memory — AgentRail's dual-path
+readers pick both up as soon as they exist (falling back to legacy
+`TASTE.md` / `docs/memory/` for installs that predate the `.agentrail/`
+layout and have not yet run `agentrail upgrade`).
+
+`docs/prd/` and `docs/milestones/` scaffold folders are still installed at
+the project root today. Dropping them from a fresh install (Jace owns
+ideation end to end) is planned but not yet implemented — treat their
+presence as current behavior, not something you should build around going
+away.
+
 Project-local skills:
 
 ```text
-skills/useagentrail/
-skills/backend-api/
-skills/desktop-tauri/
-skills/devops-deploy/
-skills/docs-current/
-skills/frontend-web/
-skills/tdd/
+.agentrail/skills/useagentrail/
+.agentrail/skills/backend-api/
+.agentrail/skills/desktop-tauri/
+.agentrail/skills/devops-deploy/
+.agentrail/skills/docs-current/
+.agentrail/skills/frontend-web/
+.agentrail/skills/tdd/
 ```
+
+The CLI reads skills from `.agentrail/skills/`. `.claude/skills/` carries the
+same files so Claude Code's own skill discovery finds them — that copy is
+intentional harness wiring, not a duplicate. A fresh install **also** still
+writes a third copy at top-level `skills/`, predating the `.agentrail/`
+layout: that one is a known duplicate, not yet removed. Do not treat
+top-level `skills/` as canonical, and expect it to disappear in a future
+release without notice.
 
 Upstream planning skills — `grill-me`, `to-prd`, `to-milestones`, `to-issues` — live in the Jace coordinator (`apps/jace/agent/skills/`), not in an installed project. They draft and publish house-template issues; execution here starts from those issues.
 
-AgentRail ships curated first-party skills, not arbitrary third-party hot installs. Upstream projects may be listed in `docs/agents/skill-registry.json` as provenance candidates, but those references are audit notes, not trusted install sources. The installed `skills/` files are the reviewed local copies that prompts point agents to read.
+AgentRail ships curated first-party skills, not arbitrary third-party hot installs. Upstream projects may be listed in `.agentrail/agents/skill-registry.json` as provenance candidates, but those references are audit notes, not trusted install sources. The installed skills files are the reviewed local copies that prompts point agents to read.
 
 Internal compatibility copy:
 
@@ -163,7 +197,7 @@ Durable project state:
 .agentrail/config.json
 ```
 
-The state file records the AgentRail version, install timestamps, managed file inventory, file hashes, and the current workflow pointer. Its format is documented in `docs/agents/agentrail-state.md`.
+The state file records the AgentRail version, install timestamps, managed file inventory, file hashes, and the current workflow pointer. Its format is documented in `.agentrail/agents/agentrail-state.md`.
 
 The config file stores the single active project runner. New installs default to Codex:
 
@@ -185,7 +219,7 @@ Check an installed or partially installed project:
 agentrail doctor --target /path/to/project
 ```
 
-`agentrail doctor` reports missing core files, optional `TASTE.md`, state health, managed file hash drift, old script-first installs, and GitHub label gaps when `gh` is available in a connected GitHub repo. Missing recommendations are warnings; invalid usage and corrupt state fail non-zero.
+`agentrail doctor` reports missing core files, optional `.agentrail/taste.md` (or legacy `TASTE.md`), state health, managed file hash drift, old script-first installs, and GitHub label gaps when `gh` is available in a connected GitHub repo. Missing recommendations are warnings; invalid usage and corrupt state fail non-zero.
 
 It also validates the managed skill registry for installed targets. Missing registry files are reported under `core:`; invalid registry data or broken `localPath` entries are reported under `skills:` and make `doctor` fail.
 
@@ -231,7 +265,7 @@ Use both flags to include only explicit skills:
 agentrail prompt issue 123 --skill frontend-web --no-auto-skills --target .
 ```
 
-Maintainers should treat upstream skill material as supply-chain input: borrow aggressively, vendor carefully, update intentionally, never auto-trust. Before changing `docs/agents/skill-registry.json`, verify the upstream source still exists, record the current URL or observed commit/SHA when available, check the license and audit status, then update the local skill file and tests in the same PR.
+Maintainers should treat upstream skill material as supply-chain input: borrow aggressively, vendor carefully, update intentionally, never auto-trust. Before changing `agentrail/templates/docs/agents/skill-registry.json`, verify the upstream source still exists, record the current URL or observed commit/SHA when available, check the license and audit status, then update the local skill file and tests in the same PR.
 
 ## Context Packs
 
@@ -239,7 +273,7 @@ AgentRail can build local, auditable context packs for issue execution and PR re
 
 ```bash
 agentrail context query "issue 123 payment retry tests" --target . --json
-agentrail context evaluate docs/agents/context-retrieval-fixtures.json --target . --json
+agentrail context evaluate .agentrail/agents/context-retrieval-fixtures.json --target . --json
 agentrail context build issue 123 --phase execute --target . --json
 agentrail context build pr 45 --phase review --target . --json
 agentrail context show issue-123-execute-20260604T120000000Z --target . --json
@@ -261,7 +295,7 @@ Generated packs include cited required context, likely files and docs, memory, p
 
 Provider-facing JSON includes command, target, retrieval budget, provider, and audit metadata so agents can request context without parsing Markdown. The `compiler` object is an additive `context-compiler-v1` contract with anchors, candidates, graph expansion status, source custody and snippet policy, redaction state, authority/freshness policy effects, rerank metadata, token pack metadata, citations, reasons, metrics, and compatibility mappings. Existing `results`, `excluded`, pack sections, `jsonPath`, and `markdownPath` remain stable for older consumers.
 
-The installed contract reference is `docs/agents/context-compiler-contract.md`. The MCP surface is shipped in `packages/mcp` (`@agentrail/mcp`): an stdio MCP server exposing `context_search`, `context_get`, `context_build_pack`, and `context_explain_pack` so coding agents (Claude, Cursor, Codex) prefer compact AgentRail retrieval over raw filesystem search/read. Each tool maps to the `agentrail context` CLI and respects AgentRail allow/deny and redaction controls. See `packages/mcp/README.md` for wiring a client; `agentrail/tests/context/test_mcp_structural.py` verifies the server end-to-end.
+The installed contract reference is `.agentrail/agents/context-compiler-contract.md`. The MCP surface is shipped in `packages/mcp` (`@agentrail/mcp`): an stdio MCP server exposing `context_search`, `context_get`, `context_build_pack`, and `context_explain_pack` so coding agents (Claude, Cursor, Codex) prefer compact AgentRail retrieval over raw filesystem search/read. Each tool maps to the `agentrail context` CLI and respects AgentRail allow/deny and redaction controls. See `packages/mcp/README.md` for wiring a client; `agentrail/tests/context/test_mcp_structural.py` verifies the server end-to-end.
 
 Retrieval evaluation fixtures define task text, expected files, expected docs, expected memory, expected prior mistakes, and expected excluded sources. Reports include required-source inclusion, recall@5, recall@10, stale-source exclusion, and citation coverage. CI should run these fixtures for business-critical context paths so missed required context and denied-source leaks fail before review.
 
@@ -331,15 +365,15 @@ After a PR passes verification, AFK runs a machine-readable review. The review o
 
 When a review finds no fix issues, AFK merges the PR (squash merge with commit SHA validation). If `rg` is unavailable, the `afk_direct_merge()` fallback uses `gh pr merge --squash` directly. If branch protection blocks immediate merge, AFK attempts `--auto` merge enablement.
 
-Memory-suggestion issues feed back into the AFK queue. Subsequent waves pick them up, implement the docs/memory change, open a PR, review it, and merge — creating a self-improving loop where each batch of work refines the project's failure-pattern documentation.
+Memory-suggestion issues feed back into the AFK queue. Subsequent waves pick them up, implement the `.agentrail/memory/` change (or `docs/memory/` on installs that have not migrated), open a PR, review it, and merge — creating a self-improving loop where each batch of work refines the project's failure-pattern documentation.
 
 ## How To Use It With An Agent
 
-Start with `CONTEXT.md`. Keep the product, domain language, constraints, and repo-specific decisions there. The workflow works poorly if `CONTEXT.md` is empty or stale.
+Start with `.agentrail/context.md`. Keep the product, domain language, constraints, and repo-specific decisions there. The workflow works poorly if `.agentrail/context.md` is empty or stale.
 
-Customize `TASTE.md` when the project has product quality expectations that should guide agents: UI standards, copy tone, interaction preferences, visual evidence expectations, and anti-patterns. If the project is backend-only or has no useful taste guidance yet, missing `TASTE.md` is only a recommendation, not a blocker.
+Customize `.agentrail/taste.md` when the project has product quality expectations that should guide agents: UI standards, copy tone, interaction preferences, visual evidence expectations, and anti-patterns. A fresh install does not create this file — add it yourself when it's useful. If the project is backend-only or has no useful taste guidance yet, a missing `.agentrail/taste.md` is only a recommendation, not a blocker.
 
-Use `docs/memory/` for source-linked lessons, preferences, and recurring failure patterns that should survive across agent runs. Memory is advisory; agents still need to verify it against current code and canonical docs.
+Use `.agentrail/memory/` for source-linked lessons, preferences, and recurring failure patterns that should survive across agent runs. A fresh install does not create this directory either — add it yourself when you want durable project memory. Memory is advisory; agents still need to verify it against current code and canonical docs.
 
 Recall project memory before non-trivial work in an installed project:
 
@@ -350,7 +384,7 @@ agentrail memory recall "<feature, issue, PR, or keyword>"
 When you want to work on a new feature, ask the Jace coordinator to grill the idea first:
 
 ```text
-Use grill-me. I want to build <feature idea>. Challenge the idea against this repo's CONTEXT.md and codebase before we write a PRD.
+Use grill-me. I want to build <feature idea>. Challenge the idea against this repo's `.agentrail/context.md` and codebase before we write a PRD.
 ```
 
 Use `grill-me` when:
@@ -466,10 +500,10 @@ AgentRail routes Codex prompts toward repo-local skills and docs. For example, a
 
 The main context files fit together like this:
 
-- `AGENTS.md`: operating rules agents should follow in this repo.
-- `CONTEXT.md`: product, domain, architecture, and repository facts.
-- `TASTE.md`: optional product quality, UI, copy, interaction, and visual evidence guidance.
-- `docs/memory/`: source-linked lessons, decisions, preferences, and failure patterns to recall before non-trivial work.
+- `AGENTS.md`: thin root pointer with operating rules agents should follow in this repo.
+- `.agentrail/context.md`: product, domain, architecture, and repository facts.
+- `.agentrail/taste.md`: optional product quality, UI, copy, interaction, and visual evidence guidance — not created by a fresh install; add it yourself when useful.
+- `.agentrail/memory/`: source-linked lessons, decisions, preferences, and failure patterns to recall before non-trivial work — not created by a fresh install; add it yourself when useful.
 - GitHub issues: implementation source of truth, acceptance criteria, blockers, and AFK eligibility.
 - `.agentrail/state.json`: durable workflow pointer for compaction recovery, handoffs, active issue/PR state, active run state, AgentRail-owned worktree lifecycle, retry attempts, recent completed/failed runs, and next suggested action.
 
@@ -561,6 +595,37 @@ npm test
 ```
 
 from this workflow repo to verify the installer.
+
+## Repository Layout
+
+AgentRail's own code — the factory that runs coding agents — lives entirely
+under `agentrail/`:
+
+```text
+agentrail/
+  cli/          # command implementations (init, run, afk, doctor, ...)
+  run/          # execute/verify pipeline, prompts, skills resolution
+  context/      # Context Compiler: retrieval, ranking, packs
+  guardrails/   # policy gate (safety floor: secrets, tests, green CI)
+  afk/          # unattended queue/worktree loop
+  heartbeat/    # event/cadence dispatcher
+  runner/       # runner protocol + built-in engines
+  sandbox/      # sandboxed execution
+  server/       # ingestion + telemetry backend
+  evals/        # eval harness
+  connectors/   # inbound issue sources
+  shared/       # shared utilities
+  templates/    # shipped payload copied into installed projects
+  skills/       # shipped payload copied into installed projects
+  tests/        # pytest suite (excluded from the wheel and npm package)
+  scripts/      # CLI launcher + dev/benchmark/test scripts
+  docker/       # sandbox runner image
+```
+
+`apps/console` (hosted dashboard), `apps/jace` (the Eve-based coordinator),
+and `packages/` (shared TypeScript packages) live alongside `agentrail/` at
+the repo root. `docs/` holds product PRDs, ADRs, audits, and design specs —
+human-facing project history, not installed-project content.
 
 ## Contributing
 

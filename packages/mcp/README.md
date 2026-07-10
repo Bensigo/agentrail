@@ -64,5 +64,7 @@ tools), not for the lowest token cost. Each MCP call carries protocol overhead
 in a pilot agent run the same task cost noticeably more tokens via MCP than via
 the `agentrail context` **CLI** (which returns compact plain text through the
 shell the agent already has). When token budget is the priority, point agents at
-the CLI (see `templates/AGENTS.md`); use the MCP when you want a native,
-enforceable tool surface. See `docs/benchmarks/agent-ab-protocol.md`.
+the CLI (see `.agentrail/agents/agent-instructions.md` in an installed project,
+or `agentrail/templates/docs/agents/agent-instructions.md` for the source);
+use the MCP when you want a native, enforceable tool surface. See
+`docs/benchmarks/agent-ab-protocol.md`.

@@ -53,10 +53,10 @@ Suggest memory only for recurring failure patterns, project preference violation
 
 Memory suggestions must be specific, source-linked, and suitable for one of:
 
-- `docs/memory/failure-patterns.md`
-- `docs/memory/project-preferences.md`
-- `docs/memory/lessons.md`
-- `docs/memory/decisions.md`
+- `.agentrail/memory/failure-patterns.md` (legacy: `docs/memory/failure-patterns.md`)
+- `.agentrail/memory/project-preferences.md` (legacy: `docs/memory/project-preferences.md`)
+- `.agentrail/memory/lessons.md` (legacy: `docs/memory/lessons.md`)
+- `.agentrail/memory/decisions.md` (legacy: `docs/memory/decisions.md`)
 
 Example:
 
@@ -64,7 +64,7 @@ Example:
 {
   "kind": "failure-pattern",
   "title": "Do not claim acceptance criteria without verification evidence",
-  "target_file": "docs/memory/failure-patterns.md",
+  "target_file": ".agentrail/memory/failure-patterns.md",
   "source": "PR #123 review finding: Missing verification for AC2",
   "body": "When implementing GitHub issues, do not mark an acceptance criterion complete unless the PR maps it to implementation evidence and verification evidence."
 }

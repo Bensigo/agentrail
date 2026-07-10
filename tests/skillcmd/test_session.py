@@ -163,6 +163,76 @@ class AssembleSeedTests(unittest.TestCase):
             )
             self.assertIn("just an idea", out)
 
+    def test_assemble_uses_new_house2_layout_when_only_layout_present(self):
+        # Repo-structure v2: CONTEXT.md/TASTE.md live under .agentrail/ as
+        # context.md/taste.md. With no legacy files present at all, the new
+        # layout alone must satisfy both.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._make_repo(Path(d))
+            target = Path(d) / "proj"
+            new_dir = target / ".agentrail"
+            new_dir.mkdir(parents=True)
+            (new_dir / "context.md").write_text("NEW-DOMAIN-GLOSSARY", encoding="utf-8")
+            (new_dir / "taste.md").write_text("NEW-TASTE-RULES", encoding="utf-8")
+            out = sess.assemble_seed_prompt(
+                repo, target, "tdd", [], ["TASTE.md"]
+            )
+            self.assertIn("SKILLBODY-VERBATIM", out)
+            self.assertIn("NEW-DOMAIN-GLOSSARY", out)
+            self.assertIn("NEW-TASTE-RULES", out)
+
+    def test_assemble_prefers_new_house2_layout_over_legacy(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._make_repo(Path(d))
+            target = Path(d) / "proj"
+            target.mkdir()
+            (target / "CONTEXT.md").write_text("LEGACY-DOMAIN-GLOSSARY", encoding="utf-8")
+            (target / "TASTE.md").write_text("LEGACY-TASTE-RULES", encoding="utf-8")
+            new_dir = target / ".agentrail"
+            new_dir.mkdir(parents=True)
+            (new_dir / "context.md").write_text("NEW-DOMAIN-GLOSSARY", encoding="utf-8")
+            (new_dir / "taste.md").write_text("NEW-TASTE-RULES", encoding="utf-8")
+            out = sess.assemble_seed_prompt(
+                repo, target, "tdd", [], ["TASTE.md"]
+            )
+            self.assertIn("NEW-DOMAIN-GLOSSARY", out)
+            self.assertIn("NEW-TASTE-RULES", out)
+            self.assertNotIn("LEGACY-DOMAIN-GLOSSARY", out)
+            self.assertNotIn("LEGACY-TASTE-RULES", out)
+
+    def test_assemble_falls_back_to_legacy_layout(self):
+        # No .agentrail/ present at all: unchanged pre-v2 behavior.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._make_repo(Path(d))
+            target = Path(d) / "proj"
+            target.mkdir()
+            (target / "CONTEXT.md").write_text("LEGACY-DOMAIN-GLOSSARY", encoding="utf-8")
+            (target / "TASTE.md").write_text("LEGACY-TASTE-RULES", encoding="utf-8")
+            out = sess.assemble_seed_prompt(
+                repo, target, "tdd", [], ["TASTE.md"]
+            )
+            self.assertIn("LEGACY-DOMAIN-GLOSSARY", out)
+            self.assertIn("LEGACY-TASTE-RULES", out)
+
+    def test_assemble_maps_docs_agents_extra_context_to_new_layout(self):
+        # issue.py's EXTRA_CONTEXT includes "docs/agents/triage-labels.md",
+        # which must resolve to .agentrail/agents/triage-labels.md in the new
+        # layout (docs/ prefix stripped).
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._make_repo(Path(d))
+            target = Path(d) / "proj"
+            new_dir = target / ".agentrail" / "agents"
+            new_dir.mkdir(parents=True)
+            (new_dir / "triage-labels.md").write_text("NEW-TRIAGE-LABELS", encoding="utf-8")
+            out = sess.assemble_seed_prompt(
+                repo, target, "tdd", [], ["docs/agents/triage-labels.md"]
+            )
+            self.assertIn("NEW-TRIAGE-LABELS", out)
+
 
 # ---------------------------------------------------------------------------
 # Invocation (AC1/AC2) — mocked subprocess

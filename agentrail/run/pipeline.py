@@ -634,8 +634,18 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     if status != 0:
         try:
             failure_type = "timeout" if status == 124 else "phase_failure"
+            # Attach the phase's captured output as evidence. push_failure_event
+            # tails, secret-scrubs and byte-caps it before send, so passing the
+            # whole file is safe.
+            evidence = ""
+            try:
+                if phase_output_file.exists():
+                    evidence = phase_output_file.read_text(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001 — evidence is best-effort
+                evidence = ""
             push_failure_event(rc.target_dir, rc.run_id, failure_type, phase,
-                               f"{phase} phase exited with status {status}")
+                               f"{phase} phase exited with status {status}",
+                               evidence=evidence)
         except Exception as _exc:
             _log.debug("failure push skipped: %s", _exc)
 

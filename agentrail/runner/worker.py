@@ -80,7 +80,12 @@ def _run_slot(
             _log.warning("could not report result for %s: %s", item.id, exc)
         try:
             client.report_telemetry(
-                item, status=result.status, gate_reason=result.gate_reason
+                item,
+                status=result.status,
+                gate_reason=result.gate_reason,
+                # The failing run's logs tail becomes the failure_event evidence
+                # (bounded + secret-scrubbed client-side). #1146.
+                evidence=result.logs_tail,
             )
         except Exception as exc:  # noqa: BLE001 — telemetry is best-effort
             _log.warning("could not report telemetry for %s: %s", item.id, exc)

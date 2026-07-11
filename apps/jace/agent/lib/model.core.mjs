@@ -11,6 +11,16 @@
 /** Production default: a string model id that routes through the Vercel AI Gateway. */
 export const GATEWAY_MODEL_ID = "anthropic/claude-sonnet-4.6";
 
+/**
+ * A cheaper, haiku-class gateway model id. Subagents whose job is small,
+ * bounded, and mechanical (e.g. the `triage` diagnostician, which only reads a
+ * failure bundle and shapes it into a fixed schema) pass this as the
+ * `gatewayModelId` override so they run on the cheap tier in production while
+ * root Jace stays on the stronger default. It only affects the gateway path;
+ * in self-hosted openai-compatible mode the operator's `JACE_MODEL_ID` governs.
+ */
+export const HAIKU_GATEWAY_MODEL_ID = "anthropic/claude-haiku-4.5";
+
 /** Default model id used when an OpenAI-compatible endpoint is configured without one. */
 export const DEFAULT_COMPATIBLE_MODEL_ID = "gemma4:latest";
 
@@ -55,14 +65,23 @@ function parseContextWindowTokens(raw) {
  *   default `DEFAULT_COMPATIBLE_CONTEXT_WINDOW_TOKENS`) that `agent.ts` forwards
  *   to Eve as `modelContextWindowTokens` so Eve can boot without a catalog entry.
  *
+ * An optional `gatewayModelId` override lets a subagent pick a different gateway
+ * model (e.g. a haiku-class tier) WITHOUT changing the self-hosted path: the
+ * override applies only to the gateway branch, so an operator who points Jace at
+ * an OpenAI-compatible endpoint still gets exactly the model they configured for
+ * every agent. Omitting `opts` (the root/existing callers) is unchanged.
+ *
  * @param {Record<string, string|undefined>} [env]
+ * @param {{ gatewayModelId?: string }} [opts]
  * @returns {{ kind: "gateway", modelId: string }
  *          | { kind: "openai-compatible", baseURL: string, modelId: string, contextWindowTokens: number, apiKey?: string, name: string }}
  */
-export function chooseModel(env = {}) {
+export function chooseModel(env = {}, opts = {}) {
+  const gatewayModelId =
+    String(opts.gatewayModelId ?? "").trim() || GATEWAY_MODEL_ID;
   const baseURL = String(env.JACE_MODEL_BASE_URL ?? "").trim();
   if (!baseURL) {
-    return { kind: "gateway", modelId: GATEWAY_MODEL_ID };
+    return { kind: "gateway", modelId: gatewayModelId };
   }
   const modelId =
     String(env.JACE_MODEL_ID ?? "").trim() || DEFAULT_COMPATIBLE_MODEL_ID;

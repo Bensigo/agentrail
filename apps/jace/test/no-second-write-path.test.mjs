@@ -26,11 +26,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const appRoot = fileURLToPath(new URL("..", import.meta.url));
 const toolsDir = fileURLToPath(new URL("../agent/tools", import.meta.url));
+const subagentsDir = fileURLToPath(new URL("../agent/subagents", import.meta.url));
 
 const SOURCE_RE = /\.(ts|mjs|js)$/;
 const CHILD_PROCESS_IMPORT_RE =
@@ -112,6 +113,33 @@ test("the create_issue tool is human-gated (defineTool + approval: always())", (
     APPROVAL_ALWAYS_RE,
     "create_issue must gate every invocation behind approval: always()",
   );
+});
+
+test("no subagent authors a mutating tool or a second write path", () => {
+  // Declared subagents (agent/subagents/<id>/) are isolated from root and must
+  // stay read-only: none may author its own human-gated mutating tool
+  // (approval: always()/once()) or reference the factory's write path. A
+  // subagent MAY author read-only tools with defineTool (e.g. triage's
+  // fetch_run_evidence), so defineTool itself is not banned here — only actual
+  // mutation is. This is the complementary guarantee to each subagent's own
+  // read-only test (researcher-read-only, triage-read-only).
+  if (!existsSync(subagentsDir)) return; // no subagents yet → nothing to check
+  const WRITE_PATH_RE = /create_issue|gh issue create|octokit|linear/i;
+  const APPROVAL_GATE_RE = /approval:\s*(?:always|once)\(/;
+  for (const file of sourceFiles(subagentsDir)) {
+    const src = stripComments(readFileSync(file, "utf8"));
+    const rel = file.replace(appRoot, "");
+    assert.doesNotMatch(
+      src,
+      APPROVAL_GATE_RE,
+      `${rel} — a subagent must not author a human-gated mutating tool (that is a second write path)`,
+    );
+    assert.doesNotMatch(
+      src,
+      WRITE_PATH_RE,
+      `${rel} — a subagent must not reference the factory's write path (create_issue / issue-create)`,
+    );
+  }
 });
 
 test("child_process is shelled out from ONLY the expected, reviewed sites", () => {

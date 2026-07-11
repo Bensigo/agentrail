@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import {
   chooseModel,
   GATEWAY_MODEL_ID,
+  HAIKU_GATEWAY_MODEL_ID,
   DEFAULT_COMPATIBLE_MODEL_ID,
   DEFAULT_COMPATIBLE_CONTEXT_WINDOW_TOKENS,
 } from "../agent/lib/model.core.mjs";
@@ -68,6 +69,35 @@ test("explicit JACE_MODEL_CONTEXT_WINDOW_TOKENS is honored verbatim", () => {
     JACE_MODEL_CONTEXT_WINDOW_TOKENS: "32768",
   });
   assert.equal(c.contextWindowTokens, 32768);
+});
+
+test("gatewayModelId override picks a different gateway model (haiku-class subagent)", () => {
+  assert.deepEqual(chooseModel({}, { gatewayModelId: HAIKU_GATEWAY_MODEL_ID }), {
+    kind: "gateway",
+    modelId: HAIKU_GATEWAY_MODEL_ID,
+  });
+});
+
+test("blank/whitespace gatewayModelId override falls back to the default gateway id", () => {
+  for (const bad of ["", "   ", undefined]) {
+    assert.deepEqual(chooseModel({}, { gatewayModelId: bad }), {
+      kind: "gateway",
+      modelId: GATEWAY_MODEL_ID,
+    });
+  }
+});
+
+test("gatewayModelId override is IGNORED in openai-compatible mode (operator's model wins)", () => {
+  const c = chooseModel(
+    { JACE_MODEL_BASE_URL: "http://localhost:11434/v1", JACE_MODEL_ID: "gemma4:latest" },
+    { gatewayModelId: HAIKU_GATEWAY_MODEL_ID },
+  );
+  assert.equal(c.kind, "openai-compatible");
+  assert.equal(c.modelId, "gemma4:latest");
+});
+
+test("omitting opts entirely (existing callers) is unchanged → default gateway id", () => {
+  assert.deepEqual(chooseModel({}), { kind: "gateway", modelId: GATEWAY_MODEL_ID });
 });
 
 test("invalid context window (non-numeric / zero / negative / blank) falls back to default", () => {

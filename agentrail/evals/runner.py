@@ -324,6 +324,40 @@ def _harvest_gather_manifest(workdir: Path) -> str:
     return ""
 
 
+def _paths_at_checkout(tree: Path, commit: str) -> Optional[frozenset]:
+    """The repo-relative file paths present at the PINNED checkout, via git.
+
+    This is the timing-correct source for the oracle-fairness existence filter.
+    :func:`_score_gather_manifest` runs AFTER ``executor.execute()`` returns,
+    and by then the working tree under ``tree`` carries the AGENT'S FIX (the
+    executor even runs ``git add -A`` while capturing the diff) — so a
+    filesystem ``exists()`` there samples post-fix state, not the checkout the
+    gatherer saw. Reading the tree of ``commit`` out of the clone's git object
+    database instead is immune to anything the agent did to the working tree:
+    a file the fix CREATED is absent at the pinned ref; a file the fix DELETED
+    or renamed is still present there.
+
+    Returns ``None`` when git cannot answer — ``tree`` is not a git repo, git
+    is unavailable, or ``commit`` does not resolve in the clone — so the caller
+    can fall back to a best-effort filesystem check (the only option for a
+    non-git tree).
+    """
+    if not (tree / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", "-z", commit],
+            cwd=str(tree),
+            capture_output=True,
+            text=True,
+        )
+    except OSError:  # pragma: no cover - git missing
+        return None
+    if result.returncode != 0:
+        return None
+    return frozenset(path for path in result.stdout.split("\0") if path)
+
+
 def _score_gather_manifest(workdir: Path, task: CorpusTask) -> Optional[GatherScore]:
     """Score the gather phase's file picks against the task's FAIR oracle.
 
@@ -339,10 +373,16 @@ def _score_gather_manifest(workdir: Path, task: CorpusTask) -> Optional[GatherSc
        the FIX touches, some of which do not exist yet at the pre-fix checkout
        the gatherer sees — grading picks against those is a structural zero, a
        measurement artifact, not a gatherer miss.
-    2. **Existence filter** — only oracle entries that actually EXIST in the
-       sandbox working tree at harvest time (the executor's clone under
-       ``workdir/repo`` — the same tree the gatherer reconnoitered — falling
-       back to ``workdir`` itself when no clone subtree exists) are gradeable.
+    2. **Existence filter** — only oracle entries that exist AT THE PINNED
+       CHECKOUT (``task.commit``) are gradeable. Existence is resolved from the
+       clone's git object database (:func:`_paths_at_checkout` on the executor's
+       clone under ``workdir/repo``, falling back to ``workdir`` itself when no
+       clone subtree exists), NOT from the post-run working tree: this scorer
+       runs after the agent, so the working tree carries the fix — a
+       fix-created oracle file would wrongly look "present at checkout" exactly
+       when the agent succeeded, and a file the fix deleted/renamed would
+       wrongly look absent. Only when git cannot answer (a non-git tree, e.g. a
+       bare test workdir) does the filter fall back to a filesystem check.
        Entries the filter drops are recorded on the score
        (``dropped_oracle_paths``) so any past run can be re-graded offline.
 
@@ -365,14 +405,22 @@ def _score_gather_manifest(workdir: Path, task: CorpusTask) -> Optional[GatherSc
     # Fair oracle: prefer the read-time answer key when the task declares one.
     oracle = sorted(set(task.read_context or task.required_context))
 
-    # Existence filter: grade only against files present in the tree the
-    # gatherer saw. The executor clones the repo under ``workdir/repo``
-    # (``_EXECUTOR_CLONE_SUBDIR``); when that subtree is absent (e.g. an
-    # executor that works in the bare workdir) fall back to the workdir itself.
+    # Existence filter: grade only against files present at the PINNED
+    # checkout the gatherer saw. The executor clones the repo under
+    # ``workdir/repo`` (``_EXECUTOR_CLONE_SUBDIR``); when that subtree is
+    # absent (e.g. an executor that works in the bare workdir) fall back to the
+    # workdir itself. Existence comes from the pinned ref's git tree — never
+    # the post-run working tree, which carries the agent's fix by the time this
+    # runs (see :func:`_paths_at_checkout`). Filesystem check only when git
+    # cannot answer (non-git tree).
     tree = workdir / _EXECUTOR_CLONE_SUBDIR
     if not tree.is_dir():
         tree = workdir
-    gradeable = [path for path in oracle if (tree / path).exists()]
+    at_checkout = _paths_at_checkout(tree, task.commit)
+    if at_checkout is not None:
+        gradeable = [path for path in oracle if path in at_checkout]
+    else:
+        gradeable = [path for path in oracle if (tree / path).exists()]
     dropped = [path for path in oracle if path not in set(gradeable)]
 
     if not gradeable:
@@ -544,12 +592,17 @@ def run(
         # Gather file-picking accuracy (#1049 AC4, precision half) — score the
         # gatherer's CONTEXT MANIFEST against this task's FAIR oracle
         # (``readContext`` else ``requiredContext``, existence-filtered to what
-        # exists at the checkout the gatherer saw) from the SAME
+        # exists at the PINNED checkout the gatherer saw) from the SAME
         # soon-to-be-torn-down workdir. This is the one place that has ALL
         # THREE in hand: the manifest (filesystem), the answer key (on
-        # ``task``), and the checkout tree the existence filter needs. ``None``
-        # when the gather phase did not run this arm — not a fabricated zero.
-        # See :func:`_score_gather_manifest`.
+        # ``task``), and the clone whose git history resolves checkout-time
+        # existence. NOTE the timing: we run AFTER ``executor.execute()``, so
+        # the clone's WORKING TREE already carries the agent's fix — which is
+        # why the existence filter reads ``task.commit``'s tree from the git
+        # object database, never the working tree (see
+        # :func:`_paths_at_checkout`). ``None`` when the gather phase did not
+        # run this arm — not a fabricated zero. See
+        # :func:`_score_gather_manifest`.
         gather_score = _score_gather_manifest(workdir, task)
 
         return RunRecord(

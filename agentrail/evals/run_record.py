@@ -48,8 +48,12 @@ from agentrail.run.usage_capture import Usage
 # The explicit reason recorded on a GatherScore when NONE of the task's oracle
 # entries exist at the pre-fix checkout the gatherer saw (oracle fairness): the
 # run is UNGRADEABLE, so precision/recall are None — never a fabricated 0.
-# Single-sourced here so the runner (which stamps it) and the report/tests
-# (which recognize it) can never drift on the literal.
+# "At checkout" is meant literally: the runner resolves existence from the
+# clone's git tree at the task's PINNED commit (``task.commit``), not from the
+# post-run working tree (which carries the agent's fix by scoring time); a
+# filesystem check is only the fallback for a non-git tree. Single-sourced here
+# so the runner (which stamps it) and the report/tests (which recognize it) can
+# never drift on the literal.
 NO_GRADEABLE_ORACLE_REASON = "no gradeable oracle at checkout"
 
 
@@ -91,9 +95,14 @@ class GatherScore:
     exist yet at that checkout, making them structurally unpickable. So the
     runner grades against a FAIR oracle: ``readContext`` (the read-time answer
     key) when the task declares one, else ``requiredContext``, and then keeps
-    only the entries that actually EXIST in the sandbox tree the gatherer saw.
-    The entries filtered away are recorded (``dropped_oracle_paths``) so any
-    past run can be re-graded offline without re-running anything.
+    only the entries that actually EXIST at the task's pinned checkout.
+    Existence is resolved from the clone's git tree at ``task.commit`` — NOT
+    from the post-run working tree, which by scoring time carries the agent's
+    fix (so a fix-created file would look present and a fix-deleted file would
+    look absent, both wrong); a filesystem check is only the fallback for a
+    non-git tree. The entries filtered away are recorded
+    (``dropped_oracle_paths``) so any past run can be re-graded offline without
+    re-running anything.
 
     - ``selected_paths`` — the repo-relative paths the gatherer picked (the union
       of the manifest's "Relevant files:" and "Pinned symbols:" sections, sorted
@@ -105,8 +114,9 @@ class GatherScore:
       report can pool per-run scores WITHOUT re-reading the corpus. Empty iff
       the run is ungradeable (see ``ungraded_reason``).
     - ``dropped_oracle_paths`` — the oracle entries dropped by the existence
-      filter (sorted): files the FIX produces, which no gatherer could have
-      picked at checkout. Persisted per run so past runs re-grade for free.
+      filter (sorted): files absent from the pinned checkout's git tree
+      (typically files the FIX produces), which no gatherer could have picked.
+      Persisted per run so past runs re-grade for free.
     - ``ungraded_reason`` — ``None`` for a graded run; the explicit
       :data:`NO_GRADEABLE_ORACLE_REASON` when the existence filter emptied the
       oracle entirely. Such a score carries ``precision is None`` AND

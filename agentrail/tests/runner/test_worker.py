@@ -29,9 +29,10 @@ class FakeClient:
         return True
 
     def report_telemetry(self, item: WorkItem, *, status: str,
-                         gate_reason: str = "", **kw: Any) -> None:
+                         gate_reason: str = "", evidence: str = "", **kw: Any) -> None:
         self.telemetry.append(
-            {"id": item.id, "status": status, "gate_reason": gate_reason}
+            {"id": item.id, "status": status, "gate_reason": gate_reason,
+             "evidence": evidence}
         )
 
 
@@ -99,8 +100,29 @@ def test_worker_reports_telemetry_after_each_run():
     )
 
     assert client.telemetry == [
-        {"id": "wi-42", "status": "red", "gate_reason": "tests failed"}
+        {"id": "wi-42", "status": "red", "gate_reason": "tests failed",
+         "evidence": ""}
     ]
+
+
+def test_worker_forwards_logs_tail_as_telemetry_evidence():
+    """#1146 — the failing run's logs_tail rides into telemetry as evidence so
+    the failure_event carries a real excerpt (the client bounds/scrubs it)."""
+    client = FakeClient([_item("42")])
+
+    def execute(item: WorkItem) -> RunResult:
+        return RunResult(status="red", gate_reason="tests failed",
+                         logs_tail="E   AssertionError: expected 3 got 4")
+
+    run_worker(
+        client,
+        execute=execute,
+        sleep=lambda _s: None,
+        idle_seconds=1,
+        should_continue=_stop_after(1),
+    )
+
+    assert client.telemetry[0]["evidence"] == "E   AssertionError: expected 3 got 4"
 
 
 def test_worker_sleeps_when_idle_and_does_not_execute():

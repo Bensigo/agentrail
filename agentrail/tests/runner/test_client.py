@@ -213,6 +213,25 @@ def test_report_result_false_on_non_2xx():
     assert ok is False
 
 
+def test_report_result_carries_repository_id():
+    # #1146 AC2 — the result route persists logs_tail as a failure_event, which
+    # needs a repository_id; queue_entries has none, so the runner sources it
+    # from the claim payload and forwards it in the result body.
+    transport = FakeTransport([Response(status=202, body=b"")])
+    _client(transport).report_result(
+        _work_item_with_repo("repo-7"), status="red", logs_tail="boom"
+    )
+    sent = _json.loads(transport.calls[0]["body"].decode())
+    assert sent["repository_id"] == "repo-7"
+
+
+def test_report_result_repository_id_defaults_empty():
+    transport = FakeTransport([Response(status=202, body=b"")])
+    _client(transport).report_result(_work_item(), status="green")  # repository_id=""
+    sent = _json.loads(transport.calls[0]["body"].decode())
+    assert sent["repository_id"] == ""
+
+
 # --- report_telemetry: emit the signals Telemetry Health reads (issue #894) ---
 
 import json as _json
@@ -297,6 +316,54 @@ def test_report_telemetry_red_without_repository_id_skips_failure_event():
     _client(transport).report_telemetry(_work_item(), status="red")
     assert len(_posts_to(transport, "/api/v1/ingest/run-events")) == 1
     assert _posts_to(transport, "/api/v1/ingest/failure-events") == []
+
+
+# --- report_telemetry: failure evidence (#1146 AC1/AC5) ----------------------
+
+
+def test_report_telemetry_red_attaches_evidence_to_failure_event():
+    transport = FakeTransport(
+        [Response(status=202, body=b"{}"), Response(status=202, body=b"{}")]
+    )
+    _client(transport).report_telemetry(
+        _work_item_with_repo("repo-1"),
+        status="red",
+        gate_reason="tests failed",
+        evidence="E   AssertionError: expected 3 got 4\n",
+        now="2026-06-22T00:00:00+00:00",
+    )
+    fe = _json.loads(_posts_to(transport, "/api/v1/ingest/failure-events")[0]["body"])[0]
+    assert "AssertionError: expected 3 got 4" in fe["evidence"]
+
+
+def test_report_telemetry_scrubs_credentials_in_evidence():
+    # AC5 — a planted key in the logs must be redacted before it leaves the host.
+    transport = FakeTransport(
+        [Response(status=202, body=b"{}"), Response(status=202, body=b"{}")]
+    )
+    secret = "sk-ant-api03-PLANTEDplantedPLANTED0123456789abcdef"
+    _client(transport).report_telemetry(
+        _work_item_with_repo("repo-1"),
+        status="error",
+        gate_reason="clone failed",
+        evidence=f"ANTHROPIC_API_KEY={secret}\nclone failed\n",
+        now="2026-06-22T00:00:00+00:00",
+    )
+    fe = _json.loads(_posts_to(transport, "/api/v1/ingest/failure-events")[0]["body"])[0]
+    assert secret not in fe["evidence"]
+    assert "[REDACTED" in fe["evidence"]
+    assert "clone failed" in fe["evidence"]
+
+
+def test_report_telemetry_evidence_defaults_empty():
+    transport = FakeTransport(
+        [Response(status=202, body=b"{}"), Response(status=202, body=b"{}")]
+    )
+    _client(transport).report_telemetry(
+        _work_item_with_repo("repo-1"), status="red", gate_reason="x"
+    )
+    fe = _json.loads(_posts_to(transport, "/api/v1/ingest/failure-events")[0]["body"])[0]
+    assert fe["evidence"] == ""
 
 
 # --- WorkItem.from_dict: escalation tier parsing (BUG 1) ----------------------

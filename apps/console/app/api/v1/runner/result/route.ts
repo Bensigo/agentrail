@@ -4,8 +4,13 @@ import {
   touchApiKeyLastUsed,
   type RunnerStatus,
 } from "@agentrail/db-postgres";
-import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
+import {
+  insertFailureEvents,
+  recordRunLifecycleEvent,
+  type FailureEventInput,
+} from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
+import { boundEvidence } from "../../../../../lib/evidence";
 import { notifyRunOutcome } from "./notify";
 
 /** The issue number for a queue entry's external id (trailing digits, else ""). */
@@ -49,6 +54,7 @@ export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as {
     id?: string;
     workspace_id?: string;
+    repository_id?: string;
     status?: string;
     cost_usd?: number;
     branch?: string;
@@ -134,6 +140,40 @@ export async function POST(request: NextRequest) {
       `Pull request opened: ${body.pr_url}`,
       now + 1
     );
+  }
+
+  // Failure evidence (#1146 AC2): a red/error result carrying a logs_tail is the
+  // runner's second, dormant evidence channel — the durable outcome report, as
+  // opposed to `report_telemetry`'s ingest push. Persist it as a failure_event
+  // so the tail survives even when a client only reports results. The tail
+  // arrives raw (report_result does not scrub), so bound+scrub it at this write
+  // boundary. Fingerprint/failure_type mirror report_telemetry so both channels
+  // cluster on the failures UI. BEST-EFFORT: any failure here is swallowed and
+  // never changes the 202 — console storage trouble must not break a run (AC4).
+  if (
+    (status === "red" || status === "error") &&
+    typeof body.logs_tail === "string" &&
+    body.logs_tail
+  ) {
+    try {
+      const failure: FailureEventInput = {
+        workspace_id,
+        run_id: id,
+        repository_id:
+          typeof body.repository_id === "string" ? body.repository_id : "",
+        failure_type: status === "red" ? "objective_gate" : "execution_error",
+        message: body.gate_reason || `run ${status}`,
+        normalized_error: "",
+        fingerprint: "",
+        evidence: boundEvidence(body.logs_tail),
+        phase: status === "red" ? "verify" : "execute",
+        severity: "error",
+        occurred_at: new Date(now).toISOString(),
+      };
+      await insertFailureEvents([failure]);
+    } catch (err) {
+      console.error("[runner/result] failure evidence persist failed:", err);
+    }
   }
 
   return NextResponse.json({ ok: true }, { status: 202 });

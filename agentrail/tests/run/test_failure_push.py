@@ -127,6 +127,128 @@ def test_push_failure_event_payload_and_headers(tmp_path: Path, monkeypatch) -> 
 
 
 # ---------------------------------------------------------------------------
+# AC1 — evidence flows into the payload (bounded)
+# ---------------------------------------------------------------------------
+
+
+def _capture_urlopen(captured: dict):
+    class FakeResp:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = json.loads(req.data)
+        return FakeResp()
+
+    return fake_urlopen
+
+
+def test_push_failure_event_includes_evidence_in_payload(tmp_path: Path, monkeypatch) -> None:
+    _write_server_json(tmp_path)
+    captured: dict = {}
+    monkeypatch.setattr(failure_push.urllib.request, "urlopen", _capture_urlopen(captured))
+
+    evidence = "verify.sh failed\nE   AssertionError: expected 3 got 4\n"
+    failure_push.push_failure_event(
+        tmp_path,
+        run_id="run-ev",
+        failure_type="phase_failure",
+        phase="verify",
+        message="verify phase exited with status 1",
+        evidence=evidence,
+    )
+
+    body = captured["body"]
+    assert "evidence" in body
+    assert "AssertionError: expected 3 got 4" in body["evidence"]
+
+
+def test_push_failure_event_empty_evidence_default(tmp_path: Path, monkeypatch) -> None:
+    """Callers that omit evidence still send the key as an empty string."""
+    _write_server_json(tmp_path)
+    captured: dict = {}
+    monkeypatch.setattr(failure_push.urllib.request, "urlopen", _capture_urlopen(captured))
+
+    failure_push.push_failure_event(
+        tmp_path,
+        run_id="run-noev",
+        failure_type="budget_exceeded",
+        phase="plan",
+        message="budget exceeded",
+    )
+    assert captured["body"]["evidence"] == ""
+
+
+def test_push_failure_event_caps_evidence_lines(tmp_path: Path, monkeypatch) -> None:
+    """Evidence is tailed to the last ~200 lines so it can't balloon the row."""
+    _write_server_json(tmp_path)
+    captured: dict = {}
+    monkeypatch.setattr(failure_push.urllib.request, "urlopen", _capture_urlopen(captured))
+
+    lines = [f"log line {i}" for i in range(1000)]
+    failure_push.push_failure_event(
+        tmp_path,
+        run_id="run-big",
+        failure_type="phase_failure",
+        phase="execute",
+        message="boom",
+        evidence="\n".join(lines),
+    )
+    ev = captured["body"]["evidence"]
+    assert ev.count("\n") + 1 <= failure_push._EVIDENCE_MAX_LINES
+    # The TAIL is what survives (most recent output), not the head.
+    assert "log line 999" in ev
+    assert "log line 0\n" not in ev
+
+
+def test_push_failure_event_caps_evidence_bytes(tmp_path: Path, monkeypatch) -> None:
+    """Even within the line budget, evidence is byte-capped (UI-facing column)."""
+    _write_server_json(tmp_path)
+    captured: dict = {}
+    monkeypatch.setattr(failure_push.urllib.request, "urlopen", _capture_urlopen(captured))
+
+    # 50 very long lines (well under the line cap, well over the byte cap).
+    fat = "\n".join("x" * 4000 for _ in range(50))
+    failure_push.push_failure_event(
+        tmp_path,
+        run_id="run-fat",
+        failure_type="phase_failure",
+        phase="execute",
+        message="boom",
+        evidence=fat,
+    )
+    assert len(captured["body"]["evidence"].encode("utf-8")) <= failure_push._EVIDENCE_MAX_BYTES
+
+
+# ---------------------------------------------------------------------------
+# AC5 — planted credentials are scrubbed before send
+# ---------------------------------------------------------------------------
+
+
+def test_push_failure_event_scrubs_credentials_in_evidence(tmp_path: Path, monkeypatch) -> None:
+    _write_server_json(tmp_path)
+    captured: dict = {}
+    monkeypatch.setattr(failure_push.urllib.request, "urlopen", _capture_urlopen(captured))
+
+    secret = "sk-ant-api03-PLANTEDplantedPLANTED0123456789abcdef"
+    evidence = f"env dump:\nANTHROPIC_API_KEY={secret}\nverify failed\n"
+    failure_push.push_failure_event(
+        tmp_path,
+        run_id="run-secret",
+        failure_type="phase_failure",
+        phase="verify",
+        message="verify failed",
+        evidence=evidence,
+    )
+    ev = captured["body"]["evidence"]
+    assert secret not in ev
+    assert "[REDACTED" in ev
+    # Non-secret context around it survives.
+    assert "verify failed" in ev
+
+
+# ---------------------------------------------------------------------------
 # urlopen raises → False (never raises)
 # ---------------------------------------------------------------------------
 

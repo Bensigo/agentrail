@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Dict, Optional
 
+from agentrail.run.evidence import bound_evidence
+
 
 def _utc_now_iso() -> str:  # pragma: no cover - trivial clock read
     return datetime.now(timezone.utc).isoformat()
@@ -207,6 +209,10 @@ class RunnerClient:
             {
                 "id": item.id,
                 "workspace_id": item.workspace_id,
+                # queue_entries has no repository_id, so the result route can't
+                # resolve one to persist logs_tail as a failure_event. Forward
+                # the claim-time repo id (may be "") so the route can (#1146 AC2).
+                "repository_id": item.repository_id,
                 "status": status,
                 "cost_usd": cost_usd,
                 "branch": branch,
@@ -229,6 +235,7 @@ class RunnerClient:
         *,
         status: str,
         gate_reason: str = "",
+        evidence: str = "",
         now: Optional[str] = None,
     ) -> None:
         """Emit the runner-owned post-run telemetry the dashboard reads.
@@ -243,7 +250,10 @@ class RunnerClient:
             ``review_gate_failed`` and ``outbox_flushed``.
           - ``failure_event`` → ``/ingest/failure-events`` (a different table),
             on red/error runs only. It requires a ``repository_id``; when the
-            backend resolved none ("") we skip it rather than send a 404.
+            backend resolved none ("") we skip it rather than send a 404. The
+            failing run's ``evidence`` (logs tail) rides along here, bounded and
+            secret-scrubbed by ``bound_evidence`` before it leaves the host
+            (#1146 AC1/AC5).
 
         Best-effort: callers wrap this so a telemetry failure never affects the
         run outcome. ``now`` is injectable for hermetic tests.
@@ -277,6 +287,7 @@ class RunnerClient:
                     "run_id": item.id,
                     "failure_type": "objective_gate" if status == "red" else "execution_error",
                     "message": gate_reason or f"run {status}",
+                    "evidence": bound_evidence(evidence),
                     "phase": "verify" if status == "red" else "execute",
                     "occurred_at": ts,
                 }

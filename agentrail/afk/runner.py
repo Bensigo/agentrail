@@ -595,12 +595,22 @@ class Runner:
             from agentrail.afk.run_register import run_uuid
             sid = getattr(self, "session_id", None)
             if sid:
+                # Attach the implement-log tail as evidence. push_failure_event
+                # tails, secret-scrubs and byte-caps it before send.
+                evidence = ""
+                try:
+                    log_file = self.logs / f"issue-{issue}-implement.log"
+                    if log_file.exists():
+                        evidence = log_file.read_text(encoding="utf-8", errors="replace")
+                except Exception:  # noqa: BLE001 — evidence is best-effort
+                    evidence = ""
                 push_failure_event(
                     self.target,
                     run_id=run_uuid(sid, issue),
                     failure_type="afk_failure",
                     phase="afk",
                     message=reason,
+                    evidence=evidence,
                 )
         except Exception:  # noqa: BLE001 — non-fatal
             pass

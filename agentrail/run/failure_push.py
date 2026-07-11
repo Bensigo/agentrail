@@ -11,7 +11,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agentrail.context.snapshot_push import load_link
+from agentrail.run.evidence import EVIDENCE_MAX_BYTES, EVIDENCE_MAX_LINES, bound_evidence
 from agentrail.run.fingerprinter import FailureFingerprinter
+
+# Re-exported under the historical private names for the existing test-suite and
+# any in-tree callers; the canonical home is agentrail.run.evidence.
+_bound_evidence = bound_evidence
+_EVIDENCE_MAX_LINES = EVIDENCE_MAX_LINES
+_EVIDENCE_MAX_BYTES = EVIDENCE_MAX_BYTES
 
 
 def _now_iso() -> str:
@@ -24,8 +31,13 @@ def push_failure_event(
     failure_type: str,
     phase: str,
     message: str,
+    evidence: str = "",
 ) -> bool:
     """POST one failure event to the linked server. Returns True only on HTTP 202.
+
+    ``evidence`` is an optional raw log/error excerpt (verify-gate output,
+    failing-test tail, TRAIL excerpt). It is tailed, secret-scrubbed and
+    byte-capped here before it ever leaves the machine (see ``_bound_evidence``).
 
     Non-fatal: any exception → False, never raises.
     Not linked → False (no network call).
@@ -42,6 +54,7 @@ def push_failure_event(
         "message": message,
         "normalized_error": normalized_error,
         "fingerprint": fingerprinter.fingerprint(message),
+        "evidence": _bound_evidence(evidence),
         "phase": phase,
         "severity": "error",
         "occurred_at": _now_iso(),

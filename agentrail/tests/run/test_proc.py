@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -107,6 +108,40 @@ class RunWithTimeoutTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertTrue(out.exists())
             self.assertIn("nested-output", out.read_text())
+
+    @unittest.skipUnless(
+        hasattr(os, "killpg") and hasattr(os, "setsid"),
+        "process-group semantics are POSIX-only",
+    )
+    def test_timeout_reaps_grandchildren_promptly(self) -> None:
+        # The child spawns a GRANDCHILD that inherits the stdout pipe and
+        # sleeps ~8s, then the child itself hangs. Killing only the direct
+        # child leaves the grandchild holding the pipe's write end, so the
+        # reader thread never sees EOF and join() blocks for the grandchild's
+        # full lifetime — the 1s timeout silently becomes ~8s. Group-kill
+        # must reap the whole tree: rc 124 AND a prompt return.
+        child_src = (
+            "import subprocess, sys, time; "
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)']); "
+            "print('spawned', flush=True); "
+            "time.sleep(30)"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out = tmp_path / "out.log"
+            start = time.monotonic()
+            rc = run_with_timeout(
+                [sys.executable, "-c", child_src],
+                cwd=tmp_path,
+                timeout=1,
+                output_file=out,
+            )
+            elapsed = time.monotonic() - start
+            self.assertEqual(rc, 124)
+            self.assertLess(
+                elapsed, 6.0,
+                f"timeout took {elapsed:.1f}s — a surviving grandchild wedged the reader thread",
+            )
 
 
 if __name__ == "__main__":

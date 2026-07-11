@@ -22,6 +22,12 @@ Layout (one directory per task under ``agentrail/evals/corpus/``):
         "files": ["test_x.py", ...]      #   the hidden test file(s)
       },
       "requiredContext": ["path", ...],   # ground-truth required-context set
+      "readContext": ["path", ...],       # optional READ-time answer key: the
+                                          #   files a solver must READ at the
+                                          #   pinned (pre-fix) checkout. Used to
+                                          #   grade the JIT gatherer fairly when
+                                          #   requiredContext names files the
+                                          #   FIX produces (absent at checkout).
       "difficulty": "easy|medium|hard",   # difficulty tag (required-context scatter proxy)
       "taskKind": "implement|abstain",    # optional; default "implement". "abstain"
                                           #   tasks are already correct — empty diff
@@ -96,6 +102,13 @@ class CorpusTask:
     # "abstain" tasks are already correct (empty diff must pass, any change
     # must fail). Optional in task.json; defaults to "implement".
     task_kind: str = "implement"
+    # READ-time answer key (oracle fairness): the files a solver must READ at
+    # the task's pinned (pre-fix) checkout — the tree the JIT gatherer actually
+    # sees. ``required_context`` may name files the FIX produces, which cannot
+    # be picked at checkout; when ``read_context`` is non-empty the gather
+    # scorer grades against it instead. Optional in task.json (``readContext``);
+    # defaults to an empty list ("fall back to requiredContext").
+    read_context: List[str] = field(default_factory=list)
     source: Dict[str, Any] = field(default_factory=dict)
     task_dir: Optional[Path] = None
 
@@ -183,6 +196,13 @@ def _parse_task(record: Any, *, base_dir: Path, where: str) -> CorpusTask:
             f"at least one ground-truth required-context source"
         )
 
+    # --- read-time answer key (optional, oracle fairness) ------------------
+    # Unlike requiredContext this MAY be absent/empty: an empty list means
+    # "grade the gatherer against requiredContext". When present it must still
+    # be a well-formed array of non-empty strings (a malformed value is a
+    # configuration mistake, not a fallback).
+    read_context = _string_list(record.get("readContext"), "readContext", where=where)
+
     # --- difficulty tag --------------------------------------------------
     difficulty = record.get("difficulty")
     if not isinstance(difficulty, str) or difficulty not in DIFFICULTY_TAGS:
@@ -225,6 +245,7 @@ def _parse_task(record: Any, *, base_dir: Path, where: str) -> CorpusTask:
         difficulty=difficulty,
         held_out=held_out_raw,
         task_kind=task_kind_raw,
+        read_context=read_context,
         source=source,
         task_dir=base_dir,
     )

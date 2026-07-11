@@ -17,6 +17,13 @@
     "agentrail/guardrails/adapters.py",
     "agentrail/guardrails/policies/proof_required.py"
   ],
+  "readContext": [
+    "agentrail/run/verify_gate.py",
+    "agentrail/guardrails/base.py",
+    "agentrail/guardrails/registry.py",
+    "agentrail/guardrails/policies/__init__.py",
+    "agentrail/guardrails/policies/output_enforcer.py"
+  ],
   "difficulty": "medium",
   "source": {
     "repo": "Bensigo/agentrail",

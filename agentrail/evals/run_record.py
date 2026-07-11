@@ -45,6 +45,18 @@ from typing import Any, Dict, List, Optional
 from agentrail.run.usage_capture import Usage
 
 
+# The explicit reason recorded on a GatherScore when NONE of the task's oracle
+# entries exist at the pre-fix checkout the gatherer saw (oracle fairness): the
+# run is UNGRADEABLE, so precision/recall are None — never a fabricated 0.
+# "At checkout" is meant literally: the runner resolves existence from the
+# clone's git tree at the task's PINNED commit (``task.commit``), not from the
+# post-run working tree (which carries the agent's fix by scoring time); a
+# filesystem check is only the fallback for a non-git tree. Single-sourced here
+# so the runner (which stamps it) and the report/tests (which recognize it) can
+# never drift on the literal.
+NO_GRADEABLE_ORACLE_REASON = "no gradeable oracle at checkout"
+
+
 @dataclass(frozen=True)
 class RetryEvent:
     """One retry/escalation event observed during a run.
@@ -78,22 +90,49 @@ class GatherScore:
     ``requiredContext`` answer key — the precision half of AC4 ("precision >= 0.7
     at recall >= 0.85"): did the gatherer point at the RIGHT files?
 
+    **Oracle fairness.** The gatherer sees the task's PRE-FIX checkout, but
+    ``requiredContext`` names the files the FIX touches — some of which may not
+    exist yet at that checkout, making them structurally unpickable. So the
+    runner grades against a FAIR oracle: ``readContext`` (the read-time answer
+    key) when the task declares one, else ``requiredContext``, and then keeps
+    only the entries that actually EXIST at the task's pinned checkout.
+    Existence is resolved from the clone's git tree at ``task.commit`` — NOT
+    from the post-run working tree, which by scoring time carries the agent's
+    fix (so a fix-created file would look present and a fix-deleted file would
+    look absent, both wrong); a filesystem check is only the fallback for a
+    non-git tree. The entries filtered away are recorded
+    (``dropped_oracle_paths``) so any past run can be re-graded offline without
+    re-running anything.
+
     - ``selected_paths`` — the repo-relative paths the gatherer picked (the union
       of the manifest's "Relevant files:" and "Pinned symbols:" sections, sorted
-      and de-duplicated). May be empty when the gatherer ran but ruled everything
-      out.
-    - ``required_paths`` — the task's ``requiredContext`` answer key (sorted),
-      captured alongside so the report can pool per-run scores WITHOUT re-reading
-      the corpus.
+      and de-duplicated). The RAW picks, never filtered. May be empty when the
+      gatherer ran but ruled everything out.
+    - ``required_paths`` — the FILTERED oracle the run was actually graded
+      against (sorted): the task's ``readContext``-else-``requiredContext``
+      answer key, existence-filtered at checkout. Captured alongside so the
+      report can pool per-run scores WITHOUT re-reading the corpus. Empty iff
+      the run is ungradeable (see ``ungraded_reason``).
+    - ``dropped_oracle_paths`` — the oracle entries dropped by the existence
+      filter (sorted): files absent from the pinned checkout's git tree
+      (typically files the FIX produces), which no gatherer could have picked.
+      Persisted per run so past runs re-grade for free.
+    - ``ungraded_reason`` — ``None`` for a graded run; the explicit
+      :data:`NO_GRADEABLE_ORACLE_REASON` when the existence filter emptied the
+      oracle entirely. Such a score carries ``precision is None`` AND
+      ``recall is None`` — clearly distinguishable from BOTH "gatherer did not
+      run" (``RunRecord.gather_score is None``) and "gatherer picked nothing"
+      (``precision is None`` but ``recall`` is a real ``0.0``).
     - ``intersection`` — ``|selected ∩ required|``, the count of correct picks.
       Carried explicitly so the report can compute a POOLED precision/recall
       (``sum(intersection) / sum(len(selected))`` etc.) rather than averaging
       per-run ratios, which would over-weight tasks with few required files.
     - ``precision`` — ``intersection / len(selected)``; ``None`` when the gatherer
-      selected nothing (0/0 is undefined — never a fabricated ``0.0``).
+      selected nothing (0/0 is undefined — never a fabricated ``0.0``), or when
+      the run is ungradeable.
     - ``recall`` — ``intersection / len(required)``; a REAL ``0.0`` when the
-      gatherer ran and found none of the required files (the answer key is always
-      non-empty, so recall is never 0/0-undefined here).
+      gatherer ran and found none of the (gradeable) oracle files; ``None`` only
+      when the run is ungradeable (the filtered oracle is empty — 0/0).
 
     Note the None-vs-0.0 discipline the whole harness keeps: this object exists
     ONLY when the gatherer actually produced a manifest. A ``full`` arm with no
@@ -108,6 +147,22 @@ class GatherScore:
     selected_paths: List[str]
     required_paths: List[str]
     intersection: int
+    # Oracle-fairness fields — APPENDED last to preserve positional back-compat.
+    # ``dropped_oracle_paths`` records what the existence filter removed (files
+    # the fix produces); ``ungraded_reason`` marks a run whose filtered oracle
+    # came up empty (see :data:`NO_GRADEABLE_ORACLE_REASON`).
+    dropped_oracle_paths: List[str] = field(default_factory=list)
+    ungraded_reason: Optional[str] = None
+
+    @property
+    def gradeable(self) -> bool:
+        """True iff this run's picks were graded against a non-empty oracle.
+
+        Ungradeable scores (``ungraded_reason`` set / empty ``required_paths``)
+        must be EXCLUDED from pooled aggregates — folding them in as zeros would
+        recreate exactly the measurement artifact the existence filter removes.
+        """
+        return self.ungraded_reason is None and bool(self.required_paths)
 
 
 @dataclass(frozen=True)
@@ -177,9 +232,11 @@ class RunRecord:
     only):
 
     - ``gather_score`` — a :class:`GatherScore` scoring the gather phase's
-      CONTEXT MANIFEST (the files it judged relevant) against the task's
-      ``requiredContext`` answer key: precision/recall of the picks, harvested by
-      the runner from the sandbox BEFORE teardown. ``None`` when the gatherer did
+      CONTEXT MANIFEST (the files it judged relevant) against the task's FAIR
+      oracle (``readContext`` when declared, else ``requiredContext``,
+      existence-filtered to what exists at the checkout the gatherer saw):
+      precision/recall of the picks, harvested by the runner from the sandbox
+      BEFORE teardown. ``None`` when the gatherer did
       not run this arm (no manifest was produced) — categorically different from
       a manifest that selected nothing, which is recorded as a real
       ``recall == 0.0`` inside the score. This is the ONLY signal that answers

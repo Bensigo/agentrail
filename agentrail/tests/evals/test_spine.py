@@ -62,6 +62,13 @@ def _write_task(
     visible.mkdir(parents=True)
     answer.mkdir(parents=True)
     (visible / "README.md").write_text(f"# {name}\n", encoding="utf-8")
+    # Materialize the requiredContext file inside the agent-visible tree so the
+    # oracle-fairness existence filter (grade only against files present at the
+    # checkout the gatherer saw) keeps it gradeable — mirrors a real task whose
+    # answer key names pre-existing files.
+    oracle = visible / "agentrail" / "evals" / "spine.py"
+    oracle.parent.mkdir(parents=True)
+    oracle.write_text("# oracle stub — exists at checkout\n", encoding="utf-8")
     # The "answer key" content — must never appear inside ``visible/`` and must
     # never be touched during the agent run.
     (answer / "test_hidden.py").write_text(

@@ -14,6 +14,10 @@
     "agentrail/run/pricing.py",
     "agentrail/context/pricing.py"
   ],
+  "readContext": [
+    "agentrail/run/pricing.py",
+    "agentrail/context/pricing.py"
+  ],
   "difficulty": "medium",
   "source": {
     "repo": "Bensigo/agentrail",

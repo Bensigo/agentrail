@@ -13,6 +13,11 @@
   "requiredContext": [
     "agentrail/run/output_enforcer.py"
   ],
+  "readContext": [
+    "agentrail/run/activity_push.py",
+    "agentrail/context/snapshot_push.py",
+    "agentrail/run/pipeline.py"
+  ],
   "difficulty": "easy",
   "source": {
     "repo": "Bensigo/agentrail",

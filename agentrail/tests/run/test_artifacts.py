@@ -16,7 +16,9 @@ from agentrail.run.artifacts import (
     update_run_metadata_attempts,
     write_phase_status,
     write_phase_metadata,
+    write_phase_verdict,
 )
+from agentrail.run.verifier import parse_verdict
 
 
 def _read(path: Path) -> dict:
@@ -308,6 +310,106 @@ class WritePhaseMetadataTests(unittest.TestCase):
         self._write(verifier_findings_file="/tmp/findings.json")
         data = _read(self.path)
         self.assertEqual(data["verifierFindingsFile"], "/tmp/findings.json")
+
+
+class WritePhaseVerdictTests(unittest.TestCase):
+    """write_phase_verdict (issue #1181): best-effort merge of a parsed verify
+    verdict onto <phase>/status.json, keyed only off the phase's exit code
+    everywhere else. Must never raise into the pipeline."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.run_dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _seed_status(self, phase: str, **overrides) -> Path:
+        path = self.run_dir / phase / "status.json"
+        defaults = dict(
+            phase=phase,
+            status="completed",
+            started_at="2026-06-10T12:00:00Z",
+            finished_at="2026-06-10T12:30:00Z",
+            exit_status=0,
+            metadata_file="/tmp/meta.json",
+            output_file="/tmp/out.txt",
+            execution_attempt=1,
+            max_execution_attempts=5,
+        )
+        defaults.update(overrides)
+        write_phase_status(path, **defaults)
+        return path
+
+    def test_merges_verdict_onto_existing_status_preserving_prior_fields(self) -> None:
+        path = self._seed_status("verify")
+        write_phase_verdict(self.run_dir, "verify", {"accepted": True, "reason": "ok"})
+        data = _read(path)
+        self.assertEqual(data["verdict"], {"accepted": True, "reason": "ok"})
+        # Everything the exit-code path already wrote survives untouched.
+        self.assertEqual(data["status"], "completed")
+        self.assertEqual(data["exitStatus"], 0)
+        self.assertEqual(data["startedAt"], "2026-06-10T12:00:00Z")
+        self.assertEqual(data["finishedAt"], "2026-06-10T12:30:00Z")
+
+    def test_reject_payload_recorded_even_though_exit_status_is_zero(self) -> None:
+        """AC3 shape: a verifier that exits 0 but rejects in prose. The
+        structured verdict field is the only thing that distinguishes this
+        from an approval — exitStatus/status alone do not."""
+        path = self._seed_status("verify", status="completed", exit_status=0)
+        write_phase_verdict(
+            self.run_dir, "verify",
+            {"accepted": False, "reason": "tautological test, never observed red"},
+        )
+        data = _read(path)
+        self.assertEqual(data["status"], "completed")
+        self.assertEqual(data["exitStatus"], 0)
+        self.assertEqual(data["verdict"]["accepted"], False)
+        self.assertEqual(
+            data["verdict"]["reason"], "tautological test, never observed red"
+        )
+
+    def test_fail_closed_parse_verdict_payload_round_trips(self) -> None:
+        """AC1 missing-marker case: verify output with no VERDICT marker is
+        fail-closed to a reject by parse_verdict; the exact payload the gate
+        consumed is what lands on status.json."""
+        path = self._seed_status("verify")
+        verdict = parse_verdict("")  # no marker anywhere in the output
+        write_phase_verdict(
+            self.run_dir, "verify",
+            {"accepted": verdict.accepted, "reason": verdict.reason},
+        )
+        data = _read(path)
+        self.assertEqual(
+            data["verdict"],
+            {"accepted": False, "reason": "verifier produced no verdict"},
+        )
+
+    def test_second_call_overwrites_the_first(self) -> None:
+        path = self._seed_status("verify")
+        write_phase_verdict(self.run_dir, "verify", {"accepted": False, "reason": "first"})
+        write_phase_verdict(self.run_dir, "verify", {"accepted": True, "reason": "second"})
+        data = _read(path)
+        self.assertEqual(data["verdict"], {"accepted": True, "reason": "second"})
+
+    def test_missing_status_json_is_a_silent_no_op(self) -> None:
+        # No status.json ever written for this phase (e.g. verify never ran).
+        write_phase_verdict(self.run_dir, "verify", {"accepted": True, "reason": "ok"})
+        self.assertFalse((self.run_dir / "verify" / "status.json").exists())
+
+    def test_missing_run_dir_entirely_is_a_silent_no_op(self) -> None:
+        ghost = self.run_dir / "does-not-exist"
+        # Must not raise even when the run dir itself was never created.
+        write_phase_verdict(ghost, "verify", {"accepted": True, "reason": "ok"})
+        self.assertFalse(ghost.exists())
+
+    def test_corrupt_status_json_is_a_silent_no_op(self) -> None:
+        path = self.run_dir / "verify" / "status.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not valid json{")
+        write_phase_verdict(self.run_dir, "verify", {"accepted": True, "reason": "ok"})
+        # Untouched — still the original corrupt content, no exception raised.
+        self.assertEqual(path.read_text(), "not valid json{")
 
 
 if __name__ == "__main__":

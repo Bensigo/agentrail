@@ -3,20 +3,23 @@ Shared template-sync engine for ``agentrail install`` and ``agentrail upgrade``.
 
 This module is the single source of truth for:
 
-- The managed-file inventory (``templates/`` + ``skills/`` roots, the
-  ``scripts/agentrail`` extra file, the hidden ``scripts/`` prefix and the
-  skip-patterns).
+- The managed-file inventory (``agentrail/templates/`` + ``agentrail/skills/``
+  roots, the ``scripts/agentrail`` extra file, the hidden ``scripts/`` prefix
+  and the skip-patterns).
 - Content-hash helpers (``_sha256_file``, ``_walk_files_sorted``, ``_copy_file``).
 - The per-item categorize/copy logic (``_categorize_item`` / ``_process_item``)
   shared between a fresh install (``previous=None`` for every item) and an
   upgrade (``previous`` looked up from the prior state).
 - The default ``config.json`` / ``workflow`` literals.
 - ``.agentrail/source`` materialization — the #404 Option B vendor trim: only
-  the native package (``agentrail/``), the ``package.json`` the launcher's
-  redirect needs, and the ``templates/`` + ``skills/`` the CLI reads at runtime
-  are vendored. NO editable flow scripts (no ``scripts/agentrail`` /
-  ``scripts/install-workflow``) are copied into the vendor dir, so installed
-  projects cannot fork orchestration.
+  the native package (``agentrail/``, which nests the ``templates/`` +
+  ``skills/`` the CLI reads at runtime) and the ``package.json`` the launcher's
+  redirect needs are vendored. NO editable flow scripts (no
+  ``scripts/agentrail`` / ``scripts/install-workflow``) are copied into the
+  vendor dir, so installed projects cannot fork orchestration. The dev-only
+  ``agentrail/{tests,scripts,docker}`` subdirs introduced by repo-structure-v2
+  are also excluded (see ``_ignore_vendor_dev_subdirs``, #1131 follow-up), so
+  the pytest suite and Docker build assets don't leak into consumer projects.
 
 ``upgrade.py`` and ``install.py`` both import from here; behavior is identical
 between the two except install drives every item with ``previous=None``.
@@ -39,8 +42,43 @@ from typing import Any, Dict, List, Optional
 # the editable flow scripts.
 # ---------------------------------------------------------------------------
 
-VENDOR_DIRS = ("agentrail", "templates", "skills")
+VENDOR_DIRS = ("agentrail",)
 VENDOR_FILES = ("package.json",)
+
+# Dev-only subdirectories nested directly under the vendored ``agentrail/``
+# package root that must NOT ship into a consumer project's
+# ``.agentrail/source`` (repo-structure-v2 nested these under ``agentrail/``
+# — install-footprint follow-up to epic #1131): the 282-file pytest suite,
+# the maintainer-only benchmark/typecheck scripts, and the runner image's
+# Docker build context. None of them are imported or read by the CLI at
+# runtime from an installed project.
+#
+# NOTE: this must only match DIRECT CHILDREN of the vendored ``agentrail/``
+# root, not any same-named directory nested deeper in the tree — e.g.
+# ``agentrail/templates/scripts/`` holds ``context-first.sh``, a genuine
+# runtime template that ``install.py``'s ``_install_claude_hooks`` reads via
+# ``repo_dir / "agentrail" / "templates" / "scripts" / "context-first.sh"``
+# (including from the vendored copy on a self-upgrade run inside an
+# installed project). A plain ``shutil.ignore_patterns(...)`` matches by
+# basename at every depth of the copytree walk and would wrongly strip that
+# nested ``scripts/`` dir too, so we use a custom depth-aware ignore
+# callback instead (see ``_ignore_vendor_dev_subdirs`` below).
+_VENDOR_DEV_SUBDIRS = frozenset({"tests", "scripts", "docker"})
+
+
+def _ignore_vendor_dev_subdirs(vendor_root: Path):
+    """Build a :func:`shutil.copytree` ``ignore=`` callback that excludes
+    :data:`_VENDOR_DEV_SUBDIRS` only when they are direct children of
+    ``vendor_root`` (the vendored ``agentrail/`` package root)."""
+    vendor_root = Path(vendor_root)
+
+    def _ignore(directory: str, names: List[str]) -> set:
+        if Path(directory) == vendor_root:
+            return set(names) & _VENDOR_DEV_SUBDIRS
+        return set()
+
+    return _ignore
+
 
 # Editable flow scripts that must NEVER land on the project surface or in the
 # vendor dir (asserted by scripts/test-install and tests).
@@ -100,6 +138,30 @@ _HIDDEN_TEMPLATE_PREFIX = "scripts" + os.sep  # "scripts/" on unix
 
 def _should_skip(relative_to_root: str) -> bool:
     return any(pat.search(relative_to_root) for pat in _SKIP_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# House-2 destination mapping (repo-structure-v2, PR-5 / #1136)
+#
+# Only the subtrees that move under ``.agentrail/`` per the design doc are
+# remapped here; everything else installs unchanged at the same repo-relative
+# path it always has (``AGENTS.md`` stays a root file; ``docs/prd/`` and
+# ``docs/milestones/`` stay legacy/root — Jace owns ideation scaffolding and
+# dropping them from install is PR-8, out of scope here).
+# ---------------------------------------------------------------------------
+
+_DOCS_AGENTS_PREFIX = "docs/agents/"
+_HOUSE2_AGENTS_PREFIX = ".agentrail/agents/"
+
+
+def _map_template_destination(relative_to_root_posix: str) -> str:
+    """Map an ``agentrail/templates``-relative posix path to its House-2
+    managed install path."""
+    if relative_to_root_posix == "CONTEXT.md":
+        return ".agentrail/context.md"
+    if relative_to_root_posix.startswith(_DOCS_AGENTS_PREFIX):
+        return _HOUSE2_AGENTS_PREFIX + relative_to_root_posix[len(_DOCS_AGENTS_PREFIX):]
+    return relative_to_root_posix
 
 
 # ---------------------------------------------------------------------------
@@ -193,10 +255,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 def _build_inventory(repo_dir: Path) -> List[Dict[str, Any]]:
-    """Build the managed file inventory (templates + skills roots + extraFiles)."""
+    """Build the managed file inventory (templates + skills roots + extraFiles).
+
+    House-2 layout (repo-structure-v2, PR-5 / #1136): the templates root uses
+    per-subtree destination mapping (see ``_map_template_destination`` — most
+    docs/agents/* content and CONTEXT.md move under ``.agentrail/``, while
+    AGENTS.md, docs/prd/, and docs/milestones/ stay at their existing root
+    paths).
+
+    The skills root installs to BOTH the legacy top-level ``skills/`` copy and
+    the new ``.agentrail/skills`` copy this PR. Per the execution plan
+    (§6 of the design doc), dropping the legacy top-level ``skills/`` copy is
+    explicitly PR-8's job ("drop ... dup skills copy from install"), not
+    PR-5's — PR-5 only adds the new House-2 install targets.
+    """
     roots = [
-        (repo_dir / "templates", ""),
-        (repo_dir / "skills", "skills"),
+        (repo_dir / "agentrail" / "templates", ""),
+        (repo_dir / "agentrail" / "skills", "skills"),
+        (repo_dir / "agentrail" / "skills", ".agentrail/skills"),
     ]
     inventory: List[Dict[str, Any]] = []
 
@@ -219,7 +295,7 @@ def _build_inventory(repo_dir: Path) -> List[Dict[str, Any]]:
             if prefix:
                 managed_path = (Path(prefix) / relative_to_root).as_posix()
             else:
-                managed_path = relative_to_root.as_posix()
+                managed_path = _map_template_destination(relative_to_root.as_posix())
 
             source_posix = source_path.relative_to(repo_dir).as_posix()
 
@@ -231,7 +307,7 @@ def _build_inventory(repo_dir: Path) -> List[Dict[str, Any]]:
             })
 
     # extraFiles
-    extra_source = repo_dir / "scripts" / "agentrail"
+    extra_source = repo_dir / "agentrail" / "scripts" / "agentrail"
     inventory.append({
         "path": "scripts/agentrail",
         "source": extra_source.relative_to(repo_dir).as_posix(),
@@ -390,9 +466,12 @@ def _materialize_source(repo_dir: Path, target_dir: Path) -> None:
 
     #404 Option B: vendor ONLY the native package + the runtime data dirs +
     ``package.json`` (so the launcher's redirect resolves the package). Do NOT
-    copy editable flow scripts (``scripts/agentrail``/``install-workflow``) — the
-    flow is native inside the vendored ``agentrail/`` package and projects cannot
-    fork orchestration.
+    copy editable flow scripts (top-level ``scripts/`` / ``install-workflow``) —
+    the flow is native inside the vendored ``agentrail/`` package and projects
+    cannot fork orchestration. The one script that IS vendored is the surface
+    launcher ``agentrail/scripts/agentrail`` (a resolver stub, not orchestration),
+    which the dev-subdir trim would otherwise drop — a self-upgrade reads it back
+    from this vendor to rebuild its managed inventory (#1162 x #1163).
 
     Skips entirely when ``target/.agentrail/source`` IS ``repo_dir`` (dogfooding
     guard).
@@ -423,12 +502,25 @@ def _materialize_source(repo_dir: Path, target_dir: Path) -> None:
             shutil.copy2(src, source_support_dir / file_name)
 
     # Vendor dirs (rm -rf then cp -R) — the native package + runtime data dirs.
+    # Excludes the dev-only tests/scripts/docker subdirs (see
+    # ``_ignore_vendor_dev_subdirs``) so the 282-file pytest suite and Docker
+    # build assets don't leak into every installed project.
     for dir_name in VENDOR_DIRS:
         dst = source_support_dir / dir_name
         if dst.exists():
             shutil.rmtree(dst)
         src = repo_dir / dir_name
         if src.exists():
-            shutil.copytree(src, dst)
+            shutil.copytree(src, dst, ignore=_ignore_vendor_dev_subdirs(src))
+
+    # Restore the ONE runtime file the dev-subdir trim above dropped: the
+    # surface launcher (``agentrail/scripts/agentrail``). It is a managed
+    # extraFile (see ``_build_inventory``), so a self-upgrade — which reads its
+    # source from this very vendor dir — needs it present to rebuild inventory
+    # (#1162 x #1163). This is the launcher stub only; the rest of
+    # ``agentrail/scripts/`` (dev benchmark/typecheck/test scripts) stays trimmed.
+    launcher_src = repo_dir / "agentrail" / "scripts" / "agentrail"
+    if launcher_src.exists():
+        _copy_file(launcher_src, source_support_dir / "agentrail" / "scripts" / "agentrail")
 
     print("updated: .agentrail/source")

@@ -22,22 +22,34 @@ from typing import Optional
 
 from agentrail.afk.review import extract_json_block
 from agentrail.run.proc import run_with_timeout, sanitized_env
+from agentrail.shared.house2 import resolve_dual_path
 
 
 class ReviewError(Exception):
     """Raised for review setup / validation failures (mirrors the script's die())."""
 
 
-def _resolve_doc(repo_root: Path, rel: str) -> Optional[Path]:
-    """Resolve a doc path relative to repo_root, with templates/ fallback.
+def _resolve_doc(repo_root: Path, new_rel: str, legacy_rel: str) -> Optional[Path]:
+    """Resolve a doc path relative to repo_root, new House 2 layout first.
 
-    Mirrors the script's behavior: prefer ``docs/agents/...`` but fall back to
-    ``templates/docs/agents/...`` when the project hasn't installed the doc.
+    Checks, in order:
+    1. The new House 2 layout: ``<repo_root>/.agentrail/<new_rel>`` (per
+       repo-structure v2 D4: new path first, legacy path as fallback for one
+       release).
+    2. The legacy installed layout: ``<repo_root>/<legacy_rel>`` (e.g.
+       ``docs/agents/...``).
+    3. The source-repo dogfood fallback: ``<repo_root>/agentrail/templates/<legacy_rel>``,
+       reachable only when *repo_root* is the agentrail source repo itself
+       (e.g. dogfooding AFK on agentrail's own PRs) — an arbitrary target
+       project without an installed doc has no ``agentrail/templates/`` tree
+       either.
     """
-    primary = repo_root / rel
-    if primary.is_file():
-        return primary
-    fallback = repo_root / "templates" / rel
+    resolved, _used_legacy = resolve_dual_path(
+        repo_root, f".agentrail/{new_rel}", legacy_rel
+    )
+    if resolved is not None:
+        return resolved
+    fallback = repo_root / "agentrail" / "templates" / legacy_rel
     if fallback.is_file():
         return fallback
     return None
@@ -52,26 +64,30 @@ def build_review_prompt(
 ) -> str:
     """Port of the script's ``review_prompt``.
 
-    Inlines ``docs/agents/pr-review.md`` always, and
-    ``docs/agents/github-pr-reviewer.md`` when ``machine_readable`` — each with a
-    ``templates/docs/agents/`` fallback. Includes the machine-readable JSON
-    contract instruction verbatim from the script.
+    Inlines ``pr-review.md`` always, and ``github-pr-reviewer.md`` when
+    ``machine_readable`` — each resolved via ``.agentrail/agents/...`` (new House
+    2 layout) first, then ``docs/agents/...`` (legacy installed layout), then an
+    ``agentrail/templates/docs/agents/`` source-repo dogfood fallback. Includes
+    the machine-readable JSON contract instruction verbatim from the script.
     """
     repo_root = Path(repo_root)
-    prompt_file = _resolve_doc(repo_root, "docs/agents/pr-review.md")
+    prompt_file = _resolve_doc(repo_root, "agents/pr-review.md", "docs/agents/pr-review.md")
     if prompt_file is None:
         raise ReviewError(
-            "missing PR review instructions: docs/agents/pr-review.md or "
-            "templates/docs/agents/pr-review.md"
+            "missing PR review instructions: .agentrail/agents/pr-review.md, "
+            "docs/agents/pr-review.md, or agentrail/templates/docs/agents/pr-review.md"
         )
 
     machine_prompt_file: Optional[Path] = None
     if machine_readable:
-        machine_prompt_file = _resolve_doc(repo_root, "docs/agents/github-pr-reviewer.md")
+        machine_prompt_file = _resolve_doc(
+            repo_root, "agents/github-pr-reviewer.md", "docs/agents/github-pr-reviewer.md"
+        )
         if machine_prompt_file is None:
             raise ReviewError(
-                "missing GitHub PR reviewer contract: docs/agents/github-pr-reviewer.md "
-                "or templates/docs/agents/github-pr-reviewer.md"
+                "missing GitHub PR reviewer contract: .agentrail/agents/github-pr-reviewer.md, "
+                "docs/agents/github-pr-reviewer.md, or "
+                "agentrail/templates/docs/agents/github-pr-reviewer.md"
             )
 
     # The path the script reports as the contract source is repo-root-relative.

@@ -12,7 +12,7 @@ precision/recall in :mod:`agentrail.context.live_metrics` is what a run is
 judged on; this value survives only as a labeled diagnostic on the dashboard.
 The guardrails :class:`~agentrail.guardrails.signals.Signals` (the sole input
 every gating policy reads) deliberately has no precision field, so no gate can
-read this value even by accident; ``tests/guardrails/test_no_precision_gating``
+read this value even by accident; ``agentrail/tests/guardrails/test_no_precision_gating``
 locks that invariant.
 
 This module is pure (no I/O) and total/defensive: it tolerates missing keys,

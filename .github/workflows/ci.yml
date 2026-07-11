@@ -34,9 +34,15 @@ jobs:
           python-version: "3.11"
       # shellcheck is preinstalled on GitHub's ubuntu runners.
       - name: shellcheck
-        run: shellcheck install.sh scripts/test-install.sh
+        run: shellcheck install.sh agentrail/scripts/test-install.sh
       - name: install.sh hermetic test
-        run: bash scripts/test-install.sh
+        run: bash agentrail/scripts/test-install.sh
+      # Exercises the installed-copy launcher (scripts/agentrail) end to end,
+      # incl. its repo_dir resolution (#1136). Already wired into package.json's
+      # root `test` script but was missing from CI, which let the launcher's
+      # depth-resolution bug ship undetected.
+      - name: installed launcher + managedFiles state test
+        run: bash agentrail/scripts/test-install
 
   # Node suite — covers what pytest/shellcheck can't see: the Jace (Eve) sidecar
   # app and the TypeScript db-postgres package (incl. the Jace kill-switch gate)

@@ -32,6 +32,7 @@ from agentrail.cli.commands.run import (
     resolve_agent_name,
 )
 from agentrail.run.proc import sanitized_env
+from agentrail.shared.house2 import resolve_dual_path
 from agentrail.skillcmd.prompts import build_seed_prompt
 
 # Interactive forms of each agent CLI, mirroring DEFAULT_COMMANDS. The headless
@@ -141,12 +142,12 @@ def load_skill_body(repo_dir: Path, skill_name: str) -> str:
     skills (not a project-mutable copy).
 
     Two shipped locations are searched, in order: the SDLC factory's
-    ``skills/<skill_name>/SKILL.md`` first, then the Jace coordinator's
+    ``agentrail/skills/<skill_name>/SKILL.md`` first, then the Jace coordinator's
     ``apps/jace/agent/skills/<skill_name>/SKILL.md``. The coordinator-flavored
     ideation skills (grill-me, to-prd, to-milestones, to-issues) live under the
     second path; everything else lives under the first."""
     candidates = [
-        repo_dir / "skills" / skill_name / "SKILL.md",
+        repo_dir / "agentrail" / "skills" / skill_name / "SKILL.md",
         repo_dir / "apps" / "jace" / "agent" / "skills" / skill_name / "SKILL.md",
     ]
     path = next((p for p in candidates if p.exists()), None)
@@ -179,6 +180,25 @@ def _resolve_input_refs(target: Path, input_refs: List[str]) -> List[Tuple[str, 
     return resolved
 
 
+def _house2_relpath(name: str) -> Optional[str]:
+    """Map a legacy house-file name to its new House 2 relative path.
+
+    House 2 (repo-structure v2, ``.agentrail/``) renames/relocates a handful
+    of house files (per D4/spec §5): ``CONTEXT.md`` -> ``context.md``,
+    ``TASTE.md`` -> ``taste.md``, and ``docs/agents/<x>`` -> ``agents/<x>``
+    (all rooted under ``.agentrail/``). Returns ``None`` when *name* has no
+    known House 2 equivalent, so the caller reads only the legacy path
+    (unchanged pre-v2 behavior).
+    """
+    if name == "CONTEXT.md":
+        return "context.md"
+    if name == "TASTE.md":
+        return "taste.md"
+    if name.startswith("docs/agents/"):
+        return "agents/" + name[len("docs/agents/") :]
+    return None
+
+
 def assemble_seed_prompt(
     repo_dir: Path,
     target: Path,
@@ -189,15 +209,25 @@ def assemble_seed_prompt(
     """Load the skill + house context off disk and frame the seed prompt.
 
     ``CONTEXT.md`` is always inlined (when present); *extra_context* names
-    additional house files relative to *target* (e.g. ``TASTE.md``). Missing
-    optional files are skipped silently.
+    additional house files relative to *target* (e.g. ``TASTE.md``). Each
+    name is resolved new-House-2-layout first (``.agentrail/<mapped>``),
+    falling back to the legacy path (*name*, relative to *target*) per D4 —
+    names with no known House 2 equivalent are read only from the legacy
+    path. Missing optional files are skipped silently in both tiers.
     """
     skill_body = load_skill_body(repo_dir, skill_name)
 
     context_files: List[Tuple[str, str]] = []
     # CONTEXT.md is mandated by the house procedure — always inline it.
     for name in ["CONTEXT.md"] + list(extra_context):
-        body = _read_text(target / name)
+        new_rel = _house2_relpath(name)
+        if new_rel is not None:
+            resolved, _used_legacy = resolve_dual_path(
+                target, f".agentrail/{new_rel}", name
+            )
+            body = _read_text(resolved) if resolved is not None else ""
+        else:
+            body = _read_text(target / name)
         if body.strip():
             context_files.append((name, body))
 

@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+agentrail="${repo_dir}/agentrail/scripts/agentrail"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+target="${tmp_dir}/target"
+mkdir -p "$target"
+git -C "$target" init --initial-branch=main --quiet
+git -C "$target" config user.email agentrail@example.com
+git -C "$target" config user.name "AgentRail Test"
+printf 'seed\n' >"${target}/README.md"
+git -C "$target" add README.md
+git -C "$target" commit --quiet -m "seed"
+
+"$agentrail" install --target "$target" >/dev/null
+
+merged_worktree="${tmp_dir}/slot-1-issue-12"
+failed_worktree="${tmp_dir}/slot-2-issue-13"
+git -C "$target" worktree add --detach "$merged_worktree" HEAD >/dev/null
+git -C "$target" worktree add --detach "$failed_worktree" HEAD >/dev/null
+
+"$agentrail" internal worktree mark --target "$target" --path "$merged_worktree" --status running --issue 12 --run-dir "${tmp_dir}/run" --base main --slot 1
+"$agentrail" internal worktree mark --target "$target" --path "$merged_worktree" --status completed --issue 12 --pr 34 --run-dir "${tmp_dir}/run" --base main --slot 1
+"$agentrail" internal worktree mark --target "$target" --path "$merged_worktree" --status merged --issue 12 --pr 34 --run-dir "${tmp_dir}/run" --base main --slot 1
+"$agentrail" internal worktree mark --target "$target" --path "$failed_worktree" --status failed --issue 13 --run-dir "${tmp_dir}/run" --base main --slot 2
+
+printf 'dirty\n' >"${merged_worktree}/dirty.txt"
+"$agentrail" cleanup --target "$target" --dry-run --merged >"${tmp_dir}/dry-run.out"
+assert_grep "issue #12" "${tmp_dir}/dry-run.out" "cleanup dry-run did not include merged worktree"
+assert_grep "dirty: would skip without --force" "${tmp_dir}/dry-run.out" "cleanup dry-run did not report dirty merged worktree"
+
+"$agentrail" cleanup --target "$target" --merged >"${tmp_dir}/no-force.out"
+assert_grep "skip: uncommitted changes" "${tmp_dir}/no-force.out" "cleanup without --force removed or ignored dirty worktree"
+[[ -d "$merged_worktree" ]] || { echo "dirty merged worktree was removed without --force" >&2; exit 1; }
+git -C "$target" worktree list --porcelain | grep -q -- "$merged_worktree" || { echo "dirty merged worktree registration disappeared without --force" >&2; exit 1; }
+
+"$agentrail" cleanup --target "$target" --merged --force >"${tmp_dir}/force.out"
+assert_grep "removed" "${tmp_dir}/force.out" "cleanup --force did not remove merged worktree"
+[[ ! -d "$merged_worktree" ]] || { echo "merged worktree still exists after forced cleanup" >&2; exit 1; }
+if git -C "$target" worktree list --porcelain | grep -q -- "$merged_worktree"; then
+  echo "merged worktree registration still exists after forced cleanup" >&2
+  git -C "$target" worktree list --porcelain >&2
+  exit 1
+fi
+[[ -d "$failed_worktree" ]] || { echo "failed worktree was removed by --merged cleanup" >&2; exit 1; }
+
+if [[ "$(node - "${target}/.agentrail/state.json" <<'NODE'
+const fs = require("fs");
+const state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const worktrees = state.workflow?.worktrees || [];
+const merged = worktrees.find((worktree) => worktree.issue === 12);
+const failed = worktrees.find((worktree) => worktree.issue === 13);
+console.log(Boolean(
+  merged &&
+  merged.status === "merged" &&
+  merged.removedAt &&
+  merged.cleanupStatus === "removed" &&
+  failed &&
+  failed.status === "failed" &&
+  !failed.removedAt
+));
+NODE
+)" != "true" ]]; then
+  echo "AgentRail worktree state was not updated correctly" >&2
+  cat "${target}/.agentrail/state.json" >&2
+  exit 1
+fi
+
+echo "AgentRail worktree cleanup test passed"

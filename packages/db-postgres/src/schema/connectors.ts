@@ -84,14 +84,6 @@ export interface ConnectorConfig {
    */
   webhookSecret?: string;
   /**
-   * Telegram inbound POLLING offset (getUpdates `offset` cursor). The local-dev
-   * poller (`apps/console/scripts/telegram-poll.ts`) persists the last processed
-   * `update_id + 1` here so a restart resumes past already-handled updates rather
-   * than replaying them. Only the poller writes it; it is irrelevant to the
-   * webhook (deployed) path. Absent until the poller has run. Other providers: absent.
-   */
-  telegramOffset?: number;
-  /**
    * JACE CHANNEL-MIGRATION opt-in (#1047). Lives on the `jace` connector row and
    * flips the OUTBOUND Telegram run-outcome notify source from the legacy console
    * sender to Jace, so a "run failed" ping lands in a repliable thread. It is the

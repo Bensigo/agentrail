@@ -1,6 +1,6 @@
 # AgentRail Context Retrieval — Benchmarks
 
-_All numbers are measured and reproducible (`scripts/benchmark-all.py`). They are scoped to the runs described below, not universal guarantees — per the project's benchmark claim rules._
+_All numbers are measured and reproducible (`agentrail/scripts/benchmark-all.py`). They are scoped to the runs described below, not universal guarantees — per the project's benchmark claim rules._
 
 _Regenerated 2026-06-15 against Context Engine v2 (tree-sitter symbol graph + call edges)._
 
@@ -86,7 +86,7 @@ The savings mechanism is agent-agnostic, so a similar cut is expected on Claude/
 
 ## Reproduce
 ```bash
-PYTHONPATH=. python3 scripts/benchmark-all.py \
+PYTHONPATH=. python3 agentrail/scripts/benchmark-all.py \
   --repo express=/path/to/express --repo flask=/path/to/flask \
   --embed-model qwen3-embedding:latest \
   --out docs/benchmarks/results/context-retrieval-cli-latest.md

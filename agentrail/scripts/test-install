@@ -1,0 +1,420 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+scripts_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+launcher="${scripts_dir}/agentrail"
+package_json="${scripts_dir}/../../package.json"
+
+# Native install is driven through the launcher: `agentrail install ...`.
+installer_args=(install)
+installer() {
+  "$launcher" "${installer_args[@]}" "$@"
+}
+
+json_value() {
+  local file="$1"
+  local expression="$2"
+
+  node - "$file" "$expression" <<'NODE'
+const fs = require("fs");
+const file = process.argv[2];
+const expression = process.argv[3];
+const data = JSON.parse(fs.readFileSync(file, "utf8"));
+const fn = new Function("data", `"use strict"; return (${expression});`);
+const value = fn(data);
+if (typeof value === "boolean") {
+  console.log(value ? "true" : "false");
+} else if (value === null || value === undefined) {
+  console.log("");
+} else {
+  console.log(String(value));
+}
+NODE
+}
+
+git -C "$tmp_dir" init --quiet
+installer --target "$tmp_dir"
+
+# The launcher must resolve the vendored package through a package-bin symlink
+# (node_modules/.bin/agentrail -> scripts/agentrail), just like an npm install.
+symlink_bin="${tmp_dir}/node_modules/.bin"
+mkdir -p "$symlink_bin"
+ln -s "$launcher" "${symlink_bin}/agentrail"
+symlink_target="${tmp_dir}/symlink-install"
+"${symlink_bin}/agentrail" install --target "$symlink_target"
+
+if [[ ! -e "${symlink_target}/AGENTS.md" ]]; then
+  echo "installer did not work through a package bin symlink" >&2
+  exit 1
+fi
+
+if installer --target --force >"${tmp_dir}/missing-target.out" 2>&1; then
+  echo "--target accepted another option as its directory argument" >&2
+  exit 1
+fi
+
+if ! grep -q -- "--target requires a directory" "${tmp_dir}/missing-target.out"; then
+  echo "--target missing-argument error was not reported" >&2
+  exit 1
+fi
+
+required=(
+  "AGENTS.md"
+  ".agentrail/context.md"
+  ".agentrail/agents/agent-instructions.md"
+  ".agentrail/agents/issue-tracker.md"
+  ".agentrail/agents/agentrail-state.md"
+  ".agentrail/agents/github-pr-reviewer.md"
+  ".agentrail/agents/context-engine.md"
+  ".agentrail/agents/context-compiler-contract.md"
+  ".agentrail/agents/milestones.md"
+  ".agentrail/agents/ralph-loop.md"
+  ".agentrail/agents/pr-review.md"
+  ".agentrail/agents/skill-registry.json"
+  ".agentrail/agents/visual-evidence.md"
+  ".agentrail/agents/triage-labels.md"
+  "docs/prd/.gitkeep"
+  "docs/milestones/.gitkeep"
+  # House-2 (repo-structure-v2, PR-5 / #1136): the skills root installs to
+  # BOTH the legacy top-level skills/ copy and the new .agentrail/skills/
+  # copy this PR. Dropping the legacy top-level copy is explicitly PR-8's
+  # job (design doc §6), not PR-5's, so both sets are asserted here.
+  "skills/backend-api/SKILL.md"
+  "skills/desktop-tauri/SKILL.md"
+  "skills/devops-deploy/SKILL.md"
+  "skills/docs-current/SKILL.md"
+  "skills/frontend-web/SKILL.md"
+  # NOTE: the coordinator-flavored skills (grill-me, to-prd, to-milestones,
+  # to-issues) moved out of the factory into apps/jace/agent/skills/. The
+  # factory installer only vends agentrail/templates/ + agentrail/skills/, so
+  # those no longer land in an installed project — do NOT assert them here.
+  "skills/tdd/SKILL.md"
+  "skills/tdd/deep-modules.md"
+  "skills/tdd/interface-design.md"
+  "skills/tdd/mocking.md"
+  "skills/tdd/refactoring.md"
+  "skills/tdd/tests.md"
+  ".agentrail/skills/backend-api/SKILL.md"
+  ".agentrail/skills/desktop-tauri/SKILL.md"
+  ".agentrail/skills/devops-deploy/SKILL.md"
+  ".agentrail/skills/docs-current/SKILL.md"
+  ".agentrail/skills/frontend-web/SKILL.md"
+  ".agentrail/skills/tdd/SKILL.md"
+  ".agentrail/skills/tdd/deep-modules.md"
+  ".agentrail/skills/tdd/interface-design.md"
+  ".agentrail/skills/tdd/mocking.md"
+  ".agentrail/skills/tdd/refactoring.md"
+  ".agentrail/skills/tdd/tests.md"
+  ".agentrail/state.json"
+  ".agentrail/config.json"
+  ".agentrail/.gitignore"
+  "scripts/agentrail"
+  # #404 Option B vendor contract: only the native package + package.json +
+  # the runtime data dirs (agentrail/templates/, agentrail/skills/). NO
+  # editable flow scripts.
+  ".agentrail/source/package.json"
+  ".agentrail/source/agentrail/__init__.py"
+  ".agentrail/source/agentrail/context/sources.py"
+  ".agentrail/source/agentrail/context/index.py"
+  ".agentrail/source/agentrail/context/redaction.py"
+  ".agentrail/source/agentrail/context/embeddings.py"
+  ".agentrail/source/agentrail/context/packs.py"
+  ".agentrail/source/agentrail/context/retrieval.py"
+  ".agentrail/source/agentrail/templates/AGENTS.md"
+  # A representative bundled factory skill proves the vendored skills/ mirror.
+  # (to-issues moved to apps/jace/agent/skills/, so it is no longer vended.)
+  ".agentrail/source/agentrail/skills/tdd/SKILL.md"
+)
+
+for file in "${required[@]}"; do
+  if [[ ! -e "${tmp_dir}/${file}" ]]; then
+    echo "missing installed file: ${file}" >&2
+    exit 1
+  fi
+done
+
+# #404 Option B: NO editable flow scripts may land anywhere under the project,
+# neither on the project surface nor in the vendored .agentrail/source dir. The
+# flow is native inside the vendored agentrail/ package so projects cannot fork
+# orchestration.
+# These are editable flow scripts. None may appear as a regular file anywhere
+# under the project tree (ignoring .git and docs/memory, which are unrelated).
+forbidden_flow_scripts=(
+  "ralph-loop"
+  "review-pr"
+  "afk-workflow"
+  "install-workflow"
+  "timeout.sh"
+)
+for fname in "${forbidden_flow_scripts[@]}"; do
+  hits="$(find "$tmp_dir" \( -path "*/.git" -o -path "*/docs/memory" \) -prune -o -type f -name "$fname" -print 2>/dev/null)"
+  if [[ -n "$hits" ]]; then
+    echo "editable flow script leaked into project: ${fname}" >&2
+    echo "$hits" >&2
+    exit 1
+  fi
+done
+# No scripts/ tree may be vendored (this is where the flow launchers/helpers
+# would otherwise live, including pr/memory).
+if [[ -e "${tmp_dir}/.agentrail/source/scripts" ]]; then
+  echo ".agentrail/source/scripts must not be vendored (#404 Option B)" >&2
+  exit 1
+fi
+# The only scripts/ on the project surface is the launcher itself.
+surface_scripts="$(find "${tmp_dir}/scripts" -type f 2>/dev/null | sed "s#${tmp_dir}/scripts/##" | sort)"
+if [[ "$surface_scripts" != "agentrail" ]]; then
+  echo "unexpected files under project scripts/: ${surface_scripts}" >&2
+  exit 1
+fi
+
+if [[ ! -x "${tmp_dir}/scripts/agentrail" ]]; then
+  echo "agentrail CLI shim was not installed into normal project surface" >&2
+  exit 1
+fi
+
+# Run from inside the installed target (not the agentrail source checkout) so
+# this exercises the real installed-copy launcher-resolution path (#1136): if
+# the invoking shell's CWD happens to already contain an importable
+# `agentrail` package (e.g. the agentrail source checkout itself), Python's
+# implicit CWD-on-sys.path fallback can mask a broken PYTHONPATH resolution
+# in the launcher. $tmp_dir has no top-level agentrail/ package of its own, so
+# `cd`ing into it before invoking the installed launcher reproduces what a
+# real end user hits after `cd`ing into their project.
+(
+  cd "$tmp_dir"
+  "${tmp_dir}/scripts/agentrail" upgrade --target "$tmp_dir"
+) >"${tmp_dir}/installed-agentrail-upgrade.out"
+if ! grep -q -- "AgentRail upgrade:" "${tmp_dir}/installed-agentrail-upgrade.out"; then
+  echo "installed agentrail CLI could not run upgrade" >&2
+  cat "${tmp_dir}/installed-agentrail-upgrade.out" >&2
+  exit 1
+fi
+
+for skill in tdd; do
+  if ! grep -q -- "$skill" "${tmp_dir}/.agentrail/agents/agent-instructions.md"; then
+    echo "agent-instructions.md does not mention required skill: ${skill}" >&2
+    exit 1
+  fi
+done
+
+if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/.agentrail/agents/ralph-loop.md"; then
+  echo "ralph-loop docs do not require acceptance criteria coverage" >&2
+  exit 1
+fi
+
+if ! grep -q -- "memory_suggestions" "${tmp_dir}/.agentrail/agents/github-pr-reviewer.md"; then
+  echo "github-pr-reviewer docs do not describe memory suggestions" >&2
+  exit 1
+fi
+
+if ! grep -q -- ".agentrail/state.json" "${tmp_dir}/.agentrail/agents/agentrail-state.md"; then
+  echo "agentrail state docs do not describe the state file path" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.agentrailVersion")" != "$(json_value "$package_json" "data.version")" ]]; then
+  echo "state file does not record the AgentRail version" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.find((file) => file.path === 'AGENTS.md')?.contentHash")" != sha256:* ]]; then
+  echo "state file does not record content hashes for managed files" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "['phase', 'activeIssue', 'activePullRequest', 'activePrd', 'activeMilestone', 'activeRun', 'completedRuns', 'goals', 'lastCompletedStep', 'nextSuggestedAction'].every((field) => Object.prototype.hasOwnProperty.call(data.workflow, field))")" != "true" ]]; then
+  echo "state file does not include resumable workflow fields" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.legacyAdopted")" != "false" ]]; then
+  echo "fresh install was incorrectly marked as legacy-adopted" >&2
+  exit 1
+fi
+
+if ! grep -q -- "Acceptance Criteria Coverage" "${tmp_dir}/.agentrail/agents/pr-review.md"; then
+  echo "pr-review docs do not require acceptance criteria coverage checks" >&2
+  exit 1
+fi
+
+# NOTE: the coordinator-flavored skills (to-issues, to-milestones, to-prd,
+# grill-me) moved to apps/jace/agent/skills/ and are no longer vended into an
+# installed project by `agentrail install`. Their content invariants (labeled
+# ACs, CONTEXT.md/TASTE.md ingestion, required-context / verification-evidence
+# sections, docs/milestones path convention) are now covered by Jace's own
+# tests, not by this factory install harness.
+
+if ! grep -q -- "agentrail memory recall" "${tmp_dir}/.agentrail/agents/agent-instructions.md"; then
+  echo "agent-instructions.md does not tell agents to recall project memory" >&2
+  exit 1
+fi
+
+if ! grep -q -- "agentrail memory recall" "${tmp_dir}/.agentrail/agents/ralph-loop.md"; then
+  echo "ralph-loop docs do not require project memory recall" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === '.agentrail/agents/skill-registry.json' && file.source === 'agentrail/templates/docs/agents/skill-registry.json')")" != "true" ]]; then
+  echo "state file does not track the managed skill registry" >&2
+  exit 1
+fi
+
+# NOTE: these two dual-mirror checks read $symlink_target's state.json, not
+# $tmp_dir's. `agentrail upgrade` (exercised against $tmp_dir at line ~181,
+# below) intentionally migrates the legacy top-level skills/ mirror into
+# .agentrail/skills/ and prunes the now-removed skills/-prefixed entries from
+# managedFiles (see _migrate_legacy_layout in agentrail/cli/commands/upgrade.py).
+# By the time this script reaches these assertions, $tmp_dir has already been
+# upgraded, so its state.json no longer carries the fresh-install dual-mirror
+# invariant being asserted here. $symlink_target was only ever `install`ed
+# (never upgraded), so it still reflects that invariant.
+if [[ "$(json_value "${symlink_target}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === 'skills/frontend-web/SKILL.md' && file.source === 'agentrail/skills/frontend-web/SKILL.md')")" != "true" ]]; then
+  echo "state file does not track bundled skill files" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${symlink_target}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === '.agentrail/skills/frontend-web/SKILL.md' && file.source === 'agentrail/skills/frontend-web/SKILL.md')")" != "true" ]]; then
+  echo "state file does not track the House-2 .agentrail/skills copy" >&2
+  exit 1
+fi
+
+if [[ -f "${tmp_dir}/TASTE.md" ]]; then
+  echo "TASTE.md should not be installed (created lazily during grill)" >&2
+  exit 1
+fi
+
+if [[ -f "${tmp_dir}/.agentrail/taste.md" ]]; then
+  echo ".agentrail/taste.md should not be installed (created lazily during grill)" >&2
+  exit 1
+fi
+
+for excluded_file in ".claude/agents/github-pr-reviewer.md" ".codex/agents/github-pr-reviewer.md" "docs/memory/README.md" "docs/prd/context-engine.md"; do
+  if [[ -f "${tmp_dir}/${excluded_file}" ]]; then
+    echo "${excluded_file} should not be installed by init" >&2
+    exit 1
+  fi
+done
+
+if ! grep -q -- ".agentrail/taste.md" "${tmp_dir}/AGENTS.md"; then
+  echo "AGENTS.md does not tell agents to read .agentrail/taste.md when present" >&2
+  exit 1
+fi
+
+if ! grep -q -- "borrow aggressively, vendor carefully, update intentionally, never auto-trust" "${tmp_dir}/.agentrail/agents/agent-instructions.md"; then
+  echo "agent-instructions.md does not document the skill supply-chain rule" >&2
+  exit 1
+fi
+
+if ! grep -q -- "verify the upstream source still exists before editing \`.agentrail/agents/skill-registry.json\`" "${tmp_dir}/.agentrail/agents/agent-instructions.md"; then
+  echo "agent-instructions.md does not document safe provenance update expectations" >&2
+  exit 1
+fi
+
+(
+  cd "$tmp_dir"
+  mkdir -p docs/memory
+  cat > docs/memory/decisions.md <<'MEMORY'
+# Decisions
+MEMORY
+  cat >> docs/memory/decisions.md <<'MEMORY'
+
+## Prefer server-side validation
+
+- kind: decision
+- source: docs/adr/0001-validation.md
+- confidence: verified
+
+Keep validation rules server-side when they affect persisted business state.
+MEMORY
+
+  if ! "${tmp_dir}/scripts/agentrail" memory recall "validation" | grep -q -- "Prefer server-side validation"; then
+    echo "memory recall did not find relevant installed memory" >&2
+    exit 1
+  fi
+
+  if ! "${tmp_dir}/scripts/agentrail" memory recall "persisted validation" | grep -q -- "Prefer server-side validation"; then
+    echo "memory recall did not handle multiple non-adjacent query terms" >&2
+    exit 1
+  fi
+
+  cat > docs/memory/lessons.md <<'MEMORY'
+# Lessons
+MEMORY
+  cat >> docs/memory/lessons.md <<'MEMORY'
+
+## [codex] Bracketed PR titles stay literal
+
+- kind: lesson
+- source: PR #4
+- confidence: verified
+
+Recall queries should treat bracketed PR title prefixes as literal text.
+MEMORY
+
+  no_rg_bin="${tmp_dir}/no-rg-bin"
+  mkdir -p "$no_rg_bin"
+  for binary in bash dirname git grep node pwd readlink; do
+    ln -s "$(command -v "$binary")" "${no_rg_bin}/${binary}"
+  done
+
+  PATH="$no_rg_bin" "${tmp_dir}/scripts/agentrail" memory recall "[codex]" > "${tmp_dir}/bracketed-recall.out"
+
+  if ! grep -q -- "Bracketed PR titles stay literal" "${tmp_dir}/bracketed-recall.out"; then
+    echo "memory recall grep fallback did not find a bracketed literal query" >&2
+    exit 1
+  fi
+
+  if grep -q -- "# Project Memory" "${tmp_dir}/bracketed-recall.out"; then
+    echo "memory recall grep fallback treated bracketed query as a regex" >&2
+    exit 1
+  fi
+)
+
+legacy_dir="$(mktemp -d "${tmp_dir}/legacy.XXXXXX")"
+git -C "$legacy_dir" init --quiet
+mkdir -p "${legacy_dir}/.agentrail/agents"
+cat > "${legacy_dir}/AGENTS.md" <<'LEGACY'
+# Local agent instructions
+
+Do not delete this local edit.
+LEGACY
+cat > "${legacy_dir}/.agentrail/agents/ralph-loop.md" <<'LEGACY'
+# Local Ralph Loop
+
+Keep this local workflow edit.
+LEGACY
+
+installer --target "$legacy_dir" >"${tmp_dir}/legacy-install.out"
+
+if [[ ! -e "${legacy_dir}/.agentrail/state.json" ]]; then
+  echo "legacy adoption did not create .agentrail/state.json" >&2
+  exit 1
+fi
+
+if ! grep -q -- "Do not delete this local edit." "${legacy_dir}/AGENTS.md"; then
+  echo "legacy adoption deleted local AGENTS.md edits" >&2
+  exit 1
+fi
+
+if ! grep -q -- "Keep this local workflow edit." "${legacy_dir}/.agentrail/agents/ralph-loop.md"; then
+  echo "legacy adoption deleted local ralph-loop edits" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${legacy_dir}/.agentrail/state.json" "data.legacyAdopted")" != "true" ]]; then
+  echo "legacy install without prior state was not marked as adopted" >&2
+  exit 1
+fi
+
+if [[ "$(json_value "${legacy_dir}/.agentrail/state.json" "data.managedFiles.find((file) => file.path === 'AGENTS.md')?.installStatus")" != "legacy-adopted" ]]; then
+  echo "legacy AGENTS.md was not recorded as adopted" >&2
+  exit 1
+fi
+
+echo "install test passed"

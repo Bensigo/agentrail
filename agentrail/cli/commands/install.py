@@ -54,6 +54,18 @@ class UsageError(Exception):
         self.code = code
 
 
+# House-2 layout (repo-structure-v2, PR-5 / #1136): `.agentrail/` ships its own
+# `.gitignore` so local caches, run logs, and secrets never get committed while
+# the content dirs (agents/, skills/, memory/, context.md, taste.md,
+# config.json, verify.sh, hooks/) stay tracked (design doc §5, D3).
+_AGENTRAIL_GITIGNORE_CONTENT = (
+    "context/\n"
+    "runs/\n"
+    "batch/\n"
+    "*.log\n"
+    "server.json\n"
+)
+
 _USAGE = """Usage: agentrail install [--target DIR] [--force] [--github-labels]
 
 Installs the AgentRail workflow templates into a project.
@@ -113,7 +125,7 @@ def _install_claude_skills(repo_dir: Path, target_dir: Path) -> None:
     Idempotent: overwrites on reinstall. Each skill lands at:
       <target_dir>/.claude/skills/<skill_name>/SKILL.md
     """
-    skills_src = repo_dir / "skills"
+    skills_src = repo_dir / "agentrail" / "skills"
     if not skills_src.is_dir():
         return
     for skill_md in sorted(skills_src.glob("*/SKILL.md")):
@@ -124,25 +136,38 @@ def _install_claude_skills(repo_dir: Path, target_dir: Path) -> None:
         print(f"installed skill: .claude/skills/{skill_name}/SKILL.md")
 
 
-def _install_claude_hooks(repo_dir: Path, target_dir: Path) -> None:
-    """Install the context-first PreToolUse hook (claude-only enforcement, #519).
+def _write_claude_hook_script(repo_dir: Path, target_dir: Path, *, force: bool = True) -> bool:
+    """Write ``<target>/.agentrail/hooks/context-first.sh`` from the repo template.
 
-    Copies ``templates/scripts/context-first.sh`` to
-    ``<target>/.agentrail/hooks/context-first.sh`` (chmod +x) and merges a
-    ``hooks.PreToolUse`` entry into ``<target>/.claude/settings.json`` without
-    clobbering existing user settings. Idempotent: re-running refreshes the
-    script and skips re-adding an already-wired hook entry.
+    ``force=True`` (install's behavior) always (re)writes the script — a fresh
+    install has no pre-existing customized hook to protect. ``force=False``
+    (upgrade's behavior) is the merge-not-recreate guard: an existing
+    ``.agentrail/hooks/context-first.sh`` is a load-bearing local file per the
+    House-2 design doc's known traps and must never be silently overwritten by
+    ``agentrail upgrade``. Returns True if the script was (re)written.
     """
-    hook_src = repo_dir / "templates" / "scripts" / "context-first.sh"
+    hook_src = repo_dir / "agentrail" / "templates" / "scripts" / "context-first.sh"
     if not hook_src.is_file():
-        return
+        return False
 
     hook_dest = target_dir / ".agentrail" / "hooks" / "context-first.sh"
+    if hook_dest.exists() and not force:
+        return False
+
     hook_dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(str(hook_src), str(hook_dest))
     hook_dest.chmod(0o755)
     print("installed hook: .agentrail/hooks/context-first.sh")
+    return True
 
+
+def _merge_claude_hook_settings(target_dir: Path) -> None:
+    """Merge a ``hooks.PreToolUse`` entry into ``<target>/.claude/settings.json``.
+
+    Always safe to call unconditionally (install or upgrade): it never
+    clobbers existing user settings, and skips re-adding an already-wired hook
+    entry, so re-running is a no-op once wired.
+    """
     settings_path = target_dir / ".claude" / "settings.json"
     settings: Dict[str, Any] = {}
     if settings_path.exists():
@@ -186,6 +211,18 @@ def _install_claude_hooks(repo_dir: Path, target_dir: Path) -> None:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(json.dumps(settings, indent=2) + "\n")
         print("updated: .claude/settings.json")
+
+
+def _install_claude_hooks(repo_dir: Path, target_dir: Path) -> None:
+    """Install the context-first PreToolUse hook (claude-only enforcement, #519).
+
+    Fresh-install composition of the two pieces above: always (re)writes the
+    hook script (``force=True`` — no pre-existing customized hook to protect
+    on a fresh install) and merges the settings.json wiring. Preserved as a
+    single call so ``run_install`` keeps its existing call site unchanged.
+    """
+    _write_claude_hook_script(repo_dir, target_dir, force=True)
+    _merge_claude_hook_settings(target_dir)
 
 
 def _create_github_labels(target_dir: Path) -> None:
@@ -333,6 +370,13 @@ def run_install(args: List[str], *, _now: Optional[str] = None) -> int:
         config_path.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n")
         print("updated: .agentrail/config.json")
 
+    # Ship .agentrail/.gitignore if missing or forced (House-2, D3)
+    gitignore_path = target_dir / ".agentrail" / ".gitignore"
+    if not gitignore_path.exists() or force:
+        gitignore_path.parent.mkdir(parents=True, exist_ok=True)
+        gitignore_path.write_text(_AGENTRAIL_GITIGNORE_CONTENT)
+        print("updated: .agentrail/.gitignore")
+
     # Materialize trimmed .agentrail/source (#404 Option B)
     _materialize_source(repo_dir, target_dir)
 
@@ -354,7 +398,7 @@ def run_install(args: List[str], *, _now: Optional[str] = None) -> int:
     print("  1. Start with a grilling session to define your project context:")
     print(f"     cd {target_dir} && agentrail grill")
     print("     (or use /grill inside Claude Code or Codex)")
-    print("  2. The grill will create CONTEXT.md and sharpen your domain language.")
+    print("  2. The grill will create .agentrail/context.md and sharpen your domain language.")
     print("  3. Then create issues and run: agentrail run issue NUMBER --agent claude")
 
     return 0

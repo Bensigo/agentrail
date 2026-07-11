@@ -1,10 +1,12 @@
 name: Release tarball
 
-# Builds the versioned release tarball that Homebrew (Formula/agentrail.rb) and
-# the curl|sh installer consume. Triggered on a version tag (vX.Y.Z). The CLI is
+# Builds the versioned release tarball that Homebrew (bensigo/homebrew-agentrail
+# tap, maintained out-of-repo) and the curl|sh installer consume. Triggered on a
+# version tag (vX.Y.Z). The CLI is
 # stdlib-only Python, so the tarball bundles no Python dependencies — it ships the
-# agentrail/ package + scripts/agentrail launcher + the skills/ and templates/ the
-# CLI ships, and requires only python3 at runtime.
+# agentrail/ package (which nests the templates/, skills/, and scripts/ the CLI
+# ships, incl. the agentrail/scripts/agentrail launcher), and requires only
+# python3 at runtime.
 
 on:
   push:
@@ -59,21 +61,20 @@ jobs:
           stage="agentrail-${version}"
 
           # Stage exactly the files the installed CLI needs. Layout mirrors the
-          # repo root so scripts/agentrail resolves PYTHONPATH to the package via
-          # its own "$script_dir/.." logic. Stdlib-only: no Python deps bundled.
+          # repo root so agentrail/scripts/agentrail resolves PYTHONPATH to the
+          # package via its own "$script_dir/../.." logic. Stdlib-only: no Python
+          # deps bundled.
           rm -rf "$stage"
           mkdir -p "$stage"
           cp -R agentrail "$stage/agentrail"
-          cp -R scripts "$stage/scripts"
-          cp -R skills "$stage/skills"
-          cp -R templates "$stage/templates"
           cp README.md "$stage/README.md"
 
-          # Drop compiled artifacts that should never ship.
+          # Drop dev-only trees and compiled artifacts that should never ship.
+          rm -rf "$stage/agentrail/tests" "$stage/agentrail/docker"
           find "$stage" -name '__pycache__' -type d -prune -exec rm -rf {} +
           find "$stage" -name '*.pyc' -delete
 
-          chmod +x "$stage/scripts/agentrail"
+          chmod +x "$stage/agentrail/scripts/agentrail"
 
           tar --numeric-owner --owner=0 --group=0 -czf "$tarball" "$stage"
           rm -rf "$stage"
@@ -91,10 +92,10 @@ jobs:
           version="$VERSION"
           listing="$(tar -tzf "$tarball")"
           for required in \
-            "agentrail-${version}/scripts/agentrail" \
+            "agentrail-${version}/agentrail/scripts/agentrail" \
             "agentrail-${version}/agentrail/cli/main.py" \
-            "agentrail-${version}/skills/" \
-            "agentrail-${version}/templates/"; do
+            "agentrail-${version}/agentrail/skills/" \
+            "agentrail-${version}/agentrail/templates/"; do
             if ! printf '%s\n' "$listing" | grep -q "^${required}"; then
               echo "ERROR: expected '${required}' missing from tarball" >&2
               exit 1
@@ -102,6 +103,10 @@ jobs:
           done
           if printf '%s\n' "$listing" | grep -q '__pycache__'; then
             echo "ERROR: __pycache__ leaked into tarball" >&2
+            exit 1
+          fi
+          if printf '%s\n' "$listing" | grep -qE "^agentrail-${version}/agentrail/(tests|docker)/"; then
+            echo "ERROR: dev-only agentrail/tests or agentrail/docker leaked into tarball" >&2
             exit 1
           fi
           echo "Tarball layout verified."
@@ -116,7 +121,7 @@ jobs:
           workdir="$(mktemp -d)"
           tar -xzf "$tarball" -C "$workdir"
           # Run the launcher exactly as brew/curl will: invoke the bundled script.
-          out="$("${workdir}/agentrail-${version}/scripts/agentrail" --help)"
+          out="$("${workdir}/agentrail-${version}/agentrail/scripts/agentrail" --help)"
           printf '%s\n' "$out" | head -1
           printf '%s\n' "$out" | grep -qi "usage" || {
             echo "ERROR: 'agentrail --help' did not print usage" >&2

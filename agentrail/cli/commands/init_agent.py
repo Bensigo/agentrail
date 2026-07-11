@@ -94,7 +94,7 @@ def _resolve_api_key(target_dir: Path) -> tuple[Optional[str], Optional[str]]:
 def _mcp_server_entry(repo_dir: Path, target_dir: Path, api_key: Optional[str]) -> Dict:
     """Build the ``mcpServers.agentrail-context`` dict."""
     mcp_dist = repo_dir / "packages" / "mcp" / "dist" / "index.js"
-    agentrail_bin = repo_dir / "scripts" / "agentrail"
+    agentrail_bin = repo_dir / "agentrail" / "scripts" / "agentrail"
     env: Dict[str, str] = {
         "AGENTRAIL_BIN": str(agentrail_bin),
         "AGENTRAIL_TARGET": str(target_dir),

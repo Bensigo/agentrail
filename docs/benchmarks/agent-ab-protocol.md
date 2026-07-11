@@ -1,6 +1,6 @@
 # Agent A/B Benchmark — AgentRail vs plain agent (end-to-end tokens)
 
-The context-cost benchmark (`scripts/benchmark-all.py`) measures the tokens to
+The context-cost benchmark (`agentrail/scripts/benchmark-all.py`) measures the tokens to
 *gather context*. This protocol measures the **whole agent run**: the same coding
 tasks through a real agent (Claude / Codex) **with** vs **without** AgentRail's
 MCP context tools, counting total tokens and whether the right context was used.
@@ -9,7 +9,7 @@ It is the only experiment that honestly supports a "fewer tokens than
 Claude/Codex" claim — so it must be run carefully and reported with its caveats.
 
 > Status: harness + protocol. It needs **your** agent CLI and API key to run;
-> `scripts/benchmark-agent-ab.py` produces the results file. Do not publish
+> `agentrail/scripts/benchmark-agent-ab.py` produces the results file. Do not publish
 > numbers until you have run it.
 
 ## Setup
@@ -20,7 +20,7 @@ Claude/Codex" claim — so it must be run carefully and reported with its caveat
   AgentRail. No retrieval-first instruction.
 - Arm **B** is the same agent told to use the **AgentRail CLI**
   (`agentrail context search` / `context get`) — the token-efficient path
-  (`scripts/benchmark-agent-ab.py` adds this instruction by default).
+  (`agentrail/scripts/benchmark-agent-ab.py` adds this instruction by default).
 - Optional arm **B-mcp**: the agent uses the AgentRail MCP tools instead. The MCP
   is more convenient/enforceable but costs more tokens per call — measure it as a
   variant, don't assume it matches the CLI.
@@ -68,10 +68,10 @@ Aggregate: mean `totalTokens` A vs B and the % difference; `contextFound` and
 
 ```bash
 # Example with cursor-agent (claude/codex: swap the command + tokens-path).
-PYTHONPATH=. python3 scripts/benchmark-agent-ab.py \
+PYTHONPATH=. python3 agentrail/scripts/benchmark-agent-ab.py \
   --tasks docs/benchmarks/agent-ab-tasks.json \
   --agent-cmd 'cursor-agent -p {prompt} --output-format json --trust -f --model auto' \
-  --agentrail-bin /abs/path/to/scripts/agentrail \
+  --agentrail-bin /abs/path/to/agentrail/scripts/agentrail \
   --tokens-path 'usage.inputTokens+usage.outputTokens' \
   --repetitions 3 \
   --out docs/benchmarks/results/agent-ab-latest.md

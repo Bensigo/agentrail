@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+from agentrail.shared.house2 import resolve_dual_path
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -102,7 +104,7 @@ def has_api_key(target_dir: str) -> bool:
 # inspect_state — pure-Python port of the Node.js logic
 # ---------------------------------------------------------------------------
 
-OPTIONAL_MANAGED_PATHS: frozenset = frozenset(["TASTE.md"])
+OPTIONAL_MANAGED_PATHS: frozenset = frozenset(["TASTE.md", ".agentrail/taste.md"])
 
 
 @dataclass
@@ -230,6 +232,31 @@ def _print_path_status(target_dir: str, label: str, path: str, kind: str) -> boo
     return present
 
 
+def _print_dual_path_status(
+    target_dir: str, label: str, new_rel: str, legacy_rel: str, kind: str
+) -> bool:
+    """Print status for a House-2-migrated path.
+
+    Checks the new ``.agentrail/``-rooted path first, falling back to the
+    pre-v2 legacy path (D4). Prints "  ok <label>" if either is present, or
+    "  missing <label>" if neither is. When only the legacy path resolves,
+    also prints an additional non-blocking "  warn" line pointing at
+    ``agentrail upgrade`` — this is informational only and never changes
+    ``required_missing``/blocking-recommendation status by itself.
+    """
+    resolved, used_legacy = resolve_dual_path(target_dir, new_rel, legacy_rel, kind)
+    if resolved is None:
+        print(f"  missing {label}")
+        return False
+    print(f"  ok {label}")
+    if used_legacy:
+        print(
+            f"  warn {label} found at legacy path ({legacy_rel}); "
+            f"run `agentrail upgrade --target {target_dir}` to migrate to {new_rel}"
+        )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # validate_skill_registry — pure-Python port
 # ---------------------------------------------------------------------------
@@ -274,16 +301,34 @@ def validate_skill_registry(target_dir: str, repo_dir: Path) -> SkillRegistryRes
     result = SkillRegistryResult()
     errors = result.errors
 
-    installed_registry = Path(target_dir) / "docs" / "agents" / "skill-registry.json"
-    source_registry = repo_dir / "templates" / "docs" / "agents" / "skill-registry.json"
+    # D4 dual-path: the registry may live at the new House 2 location
+    # (.agentrail/agents/skill-registry.json) or the pre-v2 legacy location
+    # (docs/agents/skill-registry.json). Check new-first, legacy-fallback.
+    installed_registry_new = Path(target_dir) / ".agentrail" / "agents" / "skill-registry.json"
+    installed_registry_legacy = Path(target_dir) / "docs" / "agents" / "skill-registry.json"
+    source_registry = repo_dir / "agentrail" / "templates" / "docs" / "agents" / "skill-registry.json"
+
+    using_new_layout = installed_registry_new.exists()
+    installed_registry = installed_registry_new if using_new_layout else installed_registry_legacy
 
     # Mirror legacy logic: if installed doesn't exist AND target==repo → use source
     validate_source = (
-        not installed_registry.exists()
+        not installed_registry_new.exists()
+        and not installed_registry_legacy.exists()
         and Path(target_dir).resolve() == repo_dir.resolve()
     )
     registry_path = source_registry if validate_source else installed_registry
-    skill_root = repo_dir if validate_source else Path(target_dir)
+    # Source-side localPath entries (e.g. "skills/frontend-web/SKILL.md") are
+    # relative to the agentrail/ package root now that templates/+skills/ live
+    # there. Installed-side entries are relative to wherever the registry
+    # itself resolved: the new House 2 layout roots skills/ under .agentrail/,
+    # while a legacy install keeps skills/ at the target project root.
+    if validate_source:
+        skill_root = repo_dir / "agentrail"
+    elif using_new_layout:
+        skill_root = Path(target_dir) / ".agentrail"
+    else:
+        skill_root = Path(target_dir)
 
     try:
         registry = json.loads(registry_path.read_text())
@@ -486,20 +531,45 @@ def check_github_labels(target_dir: str) -> None:
 # run_doctor
 # ---------------------------------------------------------------------------
 
-# Required paths: (label, path, kind)
+# Required paths that are NOT part of the House 2 migration (single layout,
+# checked as-is): (label, path, kind)
 REQUIRED_PATHS = [
     ("AGENTS.md", "AGENTS.md", "file"),
-    ("CONTEXT.md", "CONTEXT.md", "file"),
-    ("docs/agents/", "docs/agents", "dir"),
+    # docs/prd/ and docs/milestones/ are never migrated into .agentrail/ —
+    # they stay legacy-root-only in both the old and new install layouts.
     ("docs/prd/", "docs/prd", "dir"),
     ("docs/milestones/", "docs/milestones", "dir"),
-    ("skills/", "skills", "dir"),
     (".agentrail/config.json", ".agentrail/config.json", "file"),
     # #404 Option B: the vendor dir carries only the native package + package.json
     # (the launcher's redirect target). No editable flow scripts are vendored.
     (".agentrail/source/package.json", ".agentrail/source/package.json", "file"),
     (".agentrail/source/agentrail/__init__.py", ".agentrail/source/agentrail/__init__.py", "file"),
-    ("docs/agents/skill-registry.json", "docs/agents/skill-registry.json", "file"),
+]
+
+# Required paths that DID move under House 2 (spec §5): checked new-first,
+# with a legacy fallback per D4. (label, new_rel, legacy_rel, kind)
+DUAL_PATH_REQUIRED = [
+    ("CONTEXT.md", ".agentrail/context.md", "CONTEXT.md", "file"),
+    ("docs/agents/", ".agentrail/agents", "docs/agents", "dir"),
+    ("skills/", ".agentrail/skills", "skills", "dir"),
+    (
+        "docs/agents/skill-registry.json",
+        ".agentrail/agents/skill-registry.json",
+        "docs/agents/skill-registry.json",
+        "file",
+    ),
+]
+
+# docs/memory/ (House 2: .agentrail/memory/) is user-generated working-memory
+# content, never populated by a fresh install (it's skip-patterned in
+# _template_sync, unlike docs/agents/ which ships real content) — so unlike
+# DUAL_PATH_REQUIRED above, its absence on both sides is normal and must NOT
+# flip doctor's overall status. It still needs its own dual-path entry so a
+# repo that DOES have legacy docs/memory/ content gets a specific,
+# path-naming migration warning (AC3) rather than silence. Modeled on the
+# TASTE.md optional check below.
+DUAL_PATH_OPTIONAL = [
+    ("docs/memory/", ".agentrail/memory", "docs/memory", "dir"),
 ]
 
 LEGACY_SCRIPT_PATHS = [
@@ -568,13 +638,38 @@ def run_doctor(args: List[str]) -> int:
     for label, path, kind in REQUIRED_PATHS:
         if not _print_path_status(target_dir, label, path, kind):
             required_missing = True
+    for label, new_rel, legacy_rel, kind in DUAL_PATH_REQUIRED:
+        if not _print_dual_path_status(target_dir, label, new_rel, legacy_rel, kind):
+            required_missing = True
 
-    # TASTE.md — optional
-    taste_path = Path(target_dir) / "TASTE.md"
-    if taste_path.is_file():
-        print("  ok TASTE.md")
-    else:
+    # TASTE.md — optional (House 2: .agentrail/taste.md; legacy: TASTE.md)
+    taste_resolved, taste_used_legacy = resolve_dual_path(
+        target_dir, ".agentrail/taste.md", "TASTE.md", "file"
+    )
+    if taste_resolved is None:
         print("  optional-missing TASTE.md")
+    else:
+        print("  ok TASTE.md")
+        if taste_used_legacy:
+            print(
+                "  warn TASTE.md found at legacy path (TASTE.md); "
+                f"run `agentrail upgrade --target {target_dir}` to migrate to .agentrail/taste.md"
+            )
+
+    # Optional dual-path items (e.g. docs/memory/): absence on both sides is
+    # normal (never required_missing) — but a legacy-only hit still gets a
+    # specific, path-naming migration warning (AC3), same as required items.
+    for label, new_rel, legacy_rel, kind in DUAL_PATH_OPTIONAL:
+        opt_resolved, opt_used_legacy = resolve_dual_path(target_dir, new_rel, legacy_rel, kind)
+        if opt_resolved is None:
+            print(f"  optional-missing {label}")
+        else:
+            print(f"  ok {label}")
+            if opt_used_legacy:
+                print(
+                    f"  warn {label} found at legacy path ({legacy_rel}); "
+                    f"run `agentrail upgrade --target {target_dir}` to migrate to {new_rel}"
+                )
 
     # state: section
     print("state:")

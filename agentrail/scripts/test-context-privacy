@@ -1,0 +1,363 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+agentrail="${repo_dir}/agentrail/scripts/agentrail"
+
+assert_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if ! grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+assert_not_grep() {
+  local pattern="$1"
+  local file="$2"
+  local message="$3"
+
+  if grep -q -- "$pattern" "$file"; then
+    echo "$message" >&2
+    echo "--- output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+fixture="${tmp_dir}/fixture"
+mkdir -p "$fixture/src" "$fixture/docs/agents" "$fixture/docs/noise" "$fixture/denied" "$fixture/stale"
+git -C "$fixture" init --quiet
+"$agentrail" install --target "$fixture" >"${tmp_dir}/install.out"
+
+cat >"${fixture}/src/app.js" <<'JS'
+const publicMessage = "hello";
+const apiKey = "sk-test-1234567890abcdef";
+const token = "ghp_1234567890abcdefghijklmnopqrstuv";
+module.exports = { publicMessage };
+JS
+cat >"${fixture}/src/settings.json" <<'JSON'
+{
+  "password": "json-password-secret",
+  "apiKey": "json-api-key-secret",
+  "token": "json-token-secret",
+  "Authorization": "Bearer very-secret-token"
+}
+JSON
+cat >"${fixture}/src/config.js" <<'JS'
+const API_SECRET = "plain-secret-value";
+const DATABASE_URL = "postgres://user:pass@localhost/db";
+const AWS_ACCESS_KEY_ID = "AKIAABCDEFGHIJKLMNOP";
+const AWS_SECRET_ACCESS_KEY = "aws-secret-value";
+module.exports = { API_SECRET, DATABASE_URL, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY };
+JS
+cat >"${fixture}/src/passwords.js" <<'JS'
+const password = "correct horse battery";
+module.exports = { password };
+JS
+cat >"${fixture}/docs/agents/guide.md" <<'DOC'
+# Guide
+
+Use public context.
+password: should-redact-before-index
+DOC
+cat >"${fixture}/docs/agents/issue-74-plan.md" <<'DOC'
+# Issue 74 Plan
+
+This clean task-specific source links #74 and must outrank unrelated redacted files.
+DOC
+cat >"${fixture}/docs/agents/ghp_1234567890abcdefghijklmnopqrstuv-issue-74.md" <<'DOC'
+# Issue 74 Secret Filename
+
+This allowed task-specific source links #74, but its filename token must be redacted.
+DOC
+for number in $(seq -w 1 25); do
+  cat >"${fixture}/docs/noise/redacted-${number}.md" <<'DOC'
+# Noise
+
+api key: sk-test-1234567890abcdef
+DOC
+done
+cat >"${fixture}/denied/notes.md" <<'DOC'
+this denied file must never appear
+DOC
+cat >"${fixture}/denied/ghp_1234567890abcdefghijklmnopqrstuv-secret.md" <<'DOC'
+this denied filename contains a token
+DOC
+cat >"${fixture}/stale/old.md" <<'DOC'
+# Previously Excluded
+
+This file should not remain in pack exclusions after a new index includes it.
+DOC
+cat >"${fixture}/.env" <<'ENV'
+DATABASE_URL=postgres://hidden
+ENV
+cat >"${fixture}/private.key" <<'KEY'
+-----BEGIN PRIVATE KEY-----
+hidden
+-----END PRIVATE KEY-----
+KEY
+cat >"${fixture}/.env.production" <<'ENV'
+TOKEN=production-secret
+ENV
+cat >"${fixture}/prod-credentials.json" <<'JSON'
+{"token":"credential-secret"}
+JSON
+
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.includeGlobs = ["src/**", "docs/**", "stale/**", ".agentrail/state.json", ".agentrail/config.json", "denied/**", ".env.*", "*.key", "**/*credentials*"];
+config.context.excludeGlobs = [...config.context.excludeGlobs, "denied/**", "stale/**"];
+config.context.externalSources = [
+  {
+    id: "external:issue-74-spec",
+    uri: "https://example.invalid/context/issue-74",
+    authority: "high",
+    visibility: "metadata-only",
+    linkedIssues: [74],
+    password: "external-password-secret",
+    token: "ghp_1234567890abcdefghijklmnopqrstuv",
+    authorization: "Bearer external-secret-token"
+  },
+  {
+    id: "external:ghp_1234567890abcdefghijklmnopqrstuv",
+    uri: "https://example.invalid/context/issue-74?token=ghp_1234567890abcdefghijklmnopqrstuv",
+    authority: "high",
+    visibility: "metadata-only",
+    linkedIssues: [74],
+    auditRef: "audit:ghp_1234567890abcdefghijklmnopqrstuv"
+  }
+];
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+"$agentrail" context sources --target "$fixture" >"${tmp_dir}/sources.out"
+assert_grep '"path": "src/app.js"' "${tmp_dir}/sources.out" "allowed source was not listed"
+assert_not_grep 'denied/notes.md' "${tmp_dir}/sources.out" "denied path leaked into sources"
+assert_not_grep '".env"' "${tmp_dir}/sources.out" ".env leaked into sources"
+assert_not_grep 'private.key' "${tmp_dir}/sources.out" "private key path leaked into sources"
+assert_not_grep 'ghp_1234567890abcdefghijklmnopqrstuv' "${tmp_dir}/sources.out" "raw token leaked into sources"
+
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/stale-index.out"
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.excludeGlobs = config.context.excludeGlobs.filter((glob) => glob !== "stale/**");
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/index.out"
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding.mode = "openai-compatible";
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/enabled-embedding.out"
+assert_grep '"providerMode": "openai-compatible"' "${tmp_dir}/enabled-embedding.out" "context index did not preserve configured embedding mode"
+assert_grep '"reason":"deferred_to_context_embed"' "${fixture}/.agentrail/context/index/embedding-payloads.jsonl" "embedding payload records did not defer provider calls to context embed"
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.embedding.mode = "disabled";
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.summary = { mode: "contextual" };
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+if "$agentrail" context index --target "$fixture" >"${tmp_dir}/enabled-summary.out" 2>"${tmp_dir}/enabled-summary.err"; then
+  echo "context index accepted summary mode without provider" >&2
+  exit 1
+fi
+assert_grep "context summary mode 'contextual' requires context.summary.provider" "${tmp_dir}/enabled-summary.err" "summary provider requirement error missing"
+node - "${fixture}/.agentrail/config.json" <<'NODE'
+const fs = require("fs");
+const configPath = process.argv[2];
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+config.context.summary = { mode: "disabled", provider: null, model: null };
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+"$agentrail" context index --target "$fixture" >"${tmp_dir}/summary-disabled-index.out"
+assert_grep '"providerMode": "disabled"' "${tmp_dir}/index.out" "index did not report local-only provider mode"
+assert_grep '"indexed":' "${tmp_dir}/index.out" "index did not report indexed count"
+assert_grep '"skipped":' "${tmp_dir}/index.out" "index did not report skipped count"
+
+index_file="${fixture}/.agentrail/context/index/index.json"
+audit_file="${fixture}/.agentrail/context/audit/events.jsonl"
+embedding_file="${fixture}/.agentrail/context/index/embedding-payloads.jsonl"
+
+test -f "$index_file" || { echo "index file was not written" >&2; exit 1; }
+test -f "$audit_file" || { echo "audit log was not written" >&2; exit 1; }
+test -f "$embedding_file" || { echo "embedding payload record file was not written" >&2; exit 1; }
+
+assert_grep '\[REDACTED:api_key\]' "$index_file" "API key was not redacted in index"
+assert_grep '\[REDACTED:token\]' "$index_file" "token was not redacted in index"
+assert_grep '\[REDACTED:password\]' "$index_file" "password was not redacted in index"
+assert_grep '\[REDACTED:authorization\]' "$index_file" "authorization header was not redacted in index"
+assert_grep '"path": "https://example.invalid/context/issue-74"' "$index_file" "external source descriptor missing from index"
+assert_not_grep 'sk-test-1234567890abcdef' "$index_file" "raw API key leaked into index"
+assert_not_grep 'ghp_1234567890abcdefghijklmnopqrstuv' "$index_file" "raw token leaked into index"
+assert_not_grep 'should-redact-before-index' "$index_file" "raw password leaked into index"
+assert_not_grep 'json-password-secret' "$index_file" "raw JSON password leaked into index"
+assert_not_grep 'json-api-key-secret' "$index_file" "raw JSON API key leaked into index"
+assert_not_grep 'json-token-secret' "$index_file" "raw JSON token leaked into index"
+assert_not_grep 'correct horse battery' "$index_file" "raw spaced password leaked into index"
+assert_not_grep 'very-secret-token' "$index_file" "raw bearer token leaked into index"
+assert_not_grep 'external-password-secret' "$index_file" "raw external descriptor password leaked into index"
+assert_not_grep 'external-secret-token' "$index_file" "raw external bearer token leaked into index"
+assert_not_grep 'plain-secret-value' "$index_file" "raw secret assignment leaked into index"
+assert_not_grep 'postgres://user:pass@localhost/db' "$index_file" "raw database URL leaked into index"
+assert_not_grep 'AKIAABCDEFGHIJKLMNOP' "$index_file" "raw AWS access key leaked into index"
+assert_not_grep 'aws-secret-value' "$index_file" "raw AWS secret leaked into index"
+assert_not_grep 'ghp_1234567890abcdefghijklmnopqrstuv-secret' "$index_file" "raw skipped filename token leaked into index"
+assert_not_grep 'ghp_1234567890abcdefghijklmnopqrstuv-issue-74' "$index_file" "raw indexed filename token leaked into index"
+assert_not_grep 'this denied file must never appear' "$index_file" "denied content leaked into index"
+assert_not_grep 'postgres://hidden' "$index_file" ".env content leaked into index"
+assert_not_grep 'BEGIN PRIVATE KEY' "$index_file" "private key leaked into index"
+assert_not_grep 'production-secret' "$index_file" "secret env content leaked into index"
+assert_not_grep 'credential-secret' "$index_file" "credential content leaked into index"
+node - "$index_file" <<'NODE'
+const fs = require("fs");
+const index = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const leaked = (index.skipped || []).filter((item) => [".env.production", "private.key", "prod-credentials.json"].includes(item.path));
+if (leaked.length > 0) {
+  console.error(`raw secret skipped path leaked into index: ${leaked.map((item) => item.path).join(", ")}`);
+  process.exit(1);
+}
+NODE
+
+assert_grep '"event":"indexed_file"' "$audit_file" "indexed file audit event missing"
+assert_grep '"event":"skipped_file"' "$audit_file" "skipped file audit event missing"
+assert_grep '"event":"redaction"' "$audit_file" "redaction audit event missing"
+assert_grep '"event":"indexed_external_descriptor"' "$audit_file" "external descriptor audit event missing"
+assert_grep '"event":"external_provider_call"' "$audit_file" "provider audit event missing"
+assert_grep '"event":"contextual_summary"' "$audit_file" "summary audit event missing"
+assert_grep '"mode":"disabled"' "$audit_file" "provider audit did not record disabled mode"
+assert_not_grep 'sk-test-1234567890abcdef' "$audit_file" "raw secret leaked into audit"
+assert_not_grep 'should-redact-before-index' "$audit_file" "raw password leaked into audit"
+assert_not_grep 'very-secret-token' "$audit_file" "raw bearer token leaked into audit"
+assert_not_grep 'external-password-secret' "$audit_file" "raw external descriptor password leaked into audit"
+assert_not_grep 'external-secret-token' "$audit_file" "raw external bearer token leaked into audit"
+assert_not_grep 'ghp_1234567890abcdefghijklmnopqrstuv-secret' "$audit_file" "raw skipped filename token leaked into audit"
+assert_not_grep 'ghp_1234567890abcdefghijklmnopqrstuv-issue-74' "$audit_file" "raw indexed filename token leaked into audit"
+node - "$audit_file" <<'NODE'
+const fs = require("fs");
+const leaked = fs.readFileSync(process.argv[2], "utf8")
+  .trim()
+  .split(/\r?\n/)
+  .filter(Boolean)
+  .map((line) => JSON.parse(line))
+  .filter((event) => event.event === "skipped_file" && [".env.production", "private.key", "prod-credentials.json"].includes(event.path));
+if (leaked.length > 0) {
+  console.error(`raw secret skipped path leaked into audit: ${leaked.map((event) => event.path).join(", ")}`);
+  process.exit(1);
+}
+NODE
+
+assert_grep '"mode":"disabled"' "$embedding_file" "embedding payload record did not show disabled mode"
+assert_not_grep 'sk-test-1234567890abcdef' "$embedding_file" "raw API key leaked into embedding payload records"
+assert_not_grep 'ghp_1234567890abcdefghijklmnopqrstuv' "$embedding_file" "raw token leaked into embedding payload records"
+assert_not_grep 'very-secret-token' "$embedding_file" "raw bearer token leaked into embedding payload records"
+assert_not_grep 'external-secret-token' "$embedding_file" "raw external bearer token leaked into embedding payload records"
+assert_not_grep 'ghp_1234567890abcdefghijklmnopqrstuv-issue-74' "$embedding_file" "raw indexed filename token leaked into embedding payload records"
+node - "$embedding_file" <<'NODE'
+const fs = require("fs");
+const leaked = fs.readFileSync(process.argv[2], "utf8")
+  .trim()
+  .split(/\r?\n/)
+  .filter(Boolean)
+  .map((line) => JSON.parse(line))
+  .filter((event) => [".env.production", "private.key", "prod-credentials.json"].includes(event.path));
+if (leaked.length > 0) {
+  console.error(`raw secret path leaked into embedding payload records: ${leaked.map((event) => event.path).join(", ")}`);
+  process.exit(1);
+}
+NODE
+
+"$agentrail" context build issue 74 --phase execute --target "$fixture" --json >"${tmp_dir}/pack.out"
+if "$agentrail" context build issue 74 --phase '../../../tmp/leak' --target "$fixture" --json >"${tmp_dir}/bad-pack.out" 2>"${tmp_dir}/bad-pack.err"; then
+  echo "context build accepted unsafe phase" >&2
+  exit 1
+fi
+assert_grep 'context build phase must be one of' "${tmp_dir}/bad-pack.err" "unsafe phase error was not reported"
+test ! -e "${tmp_dir}/leak.json" || { echo "unsafe phase wrote outside context packs" >&2; exit 1; }
+pack_path="$(node - "${tmp_dir}/pack.out" <<'NODE'
+const fs = require("fs");
+const output = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(output.jsonPath);
+NODE
+)"
+sleep 1
+"$agentrail" context build issue 74 --phase execute --target "$fixture" --json >"${tmp_dir}/pack-second.out"
+second_pack_path="$(node - "${tmp_dir}/pack-second.out" <<'NODE'
+const fs = require("fs");
+const output = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+console.log(output.jsonPath);
+NODE
+)"
+if [[ "$pack_path" == "$second_pack_path" ]]; then
+  echo "repeated context pack build reused the same path" >&2
+  exit 1
+fi
+test -f "${fixture}/${second_pack_path}" || { echo "second context pack was not preserved" >&2; exit 1; }
+pack_file="${fixture}/${pack_path}"
+test -f "$pack_file" || { echo "context pack was not written" >&2; exit 1; }
+assert_grep '"mode": "disabled"' "$pack_file" "context pack did not record disabled provider mode"
+assert_grep '"path": "docs/agents/issue-74-plan.md"' "$pack_file" "task-linked source was omitted from context pack"
+assert_grep '"path": "https://example.invalid/context/issue-74"' "$pack_file" "task-linked external descriptor was omitted from context pack"
+assert_grep '\[REDACTED:token\]' "$pack_file" "context pack did not include redacted external descriptor evidence"
+assert_grep '\[REDACTED:authorization\]' "$pack_file" "context pack did not include redacted authorization evidence"
+assert_not_grep 'docs/noise/redacted-01.md' "$pack_file" "zero-relevance noise leaked into context pack"
+node - "$pack_file" <<'NODE'
+const fs = require("fs");
+const pack = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (pack.excluded.some((item) => item.path === "stale/old.md")) {
+  console.error("stale exclusion leaked into context pack");
+  process.exit(1);
+}
+NODE
+assert_not_grep 'sk-test-1234567890abcdef' "$pack_file" "raw API key leaked into context pack"
+assert_not_grep 'ghp_1234567890abcdefghijklmnopqrstuv' "$pack_file" "raw token leaked into context pack"
+assert_not_grep 'ghp_1234567890abcdefghijklmnopqrstuv-secret' "$pack_file" "raw skipped filename token leaked into context pack"
+assert_not_grep 'ghp_1234567890abcdefghijklmnopqrstuv-issue-74' "$pack_file" "raw indexed filename token leaked into context pack"
+assert_not_grep 'json-password-secret' "$pack_file" "raw JSON password leaked into context pack"
+assert_not_grep 'json-api-key-secret' "$pack_file" "raw JSON API key leaked into context pack"
+assert_not_grep 'json-token-secret' "$pack_file" "raw JSON token leaked into context pack"
+assert_not_grep 'correct horse battery' "$pack_file" "raw spaced password leaked into context pack"
+assert_not_grep 'external-password-secret' "$pack_file" "raw external descriptor password leaked into context pack"
+assert_not_grep 'plain-secret-value' "$pack_file" "raw secret assignment leaked into context pack"
+assert_not_grep 'postgres://user:pass@localhost/db' "$pack_file" "raw database URL leaked into context pack"
+assert_not_grep 'AKIAABCDEFGHIJKLMNOP' "$pack_file" "raw AWS access key leaked into context pack"
+assert_not_grep 'aws-secret-value' "$pack_file" "raw AWS secret leaked into context pack"
+assert_not_grep 'this denied file must never appear' "$pack_file" "denied content leaked into context pack"
+node - "$pack_file" <<'NODE'
+const fs = require("fs");
+const pack = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const leaked = (pack.excluded || []).filter((item) => [".env.production", "private.key", "prod-credentials.json"].includes(item.path));
+if (leaked.length > 0) {
+  console.error(`raw secret skipped path leaked into context pack exclusions: ${leaked.map((item) => item.path).join(", ")}`);
+  process.exit(1);
+}
+NODE
+assert_grep '"event":"generated_context_pack"' "$audit_file" "context pack audit event missing"
+
+echo "context privacy test passed"

@@ -18,29 +18,39 @@ def utc_iso_from_timestamp(timestamp: float) -> str:
 
 
 def source_type_for(relative_path: str) -> SourceType:
+    # Repo-structure v2 (House 2) moves these under .agentrail/; recognized
+    # additively alongside the pre-v2 root/docs/templates locations per D4
+    # (new path first is moot here since these checks are non-overlapping,
+    # but both must be recognized for one release). docs/prd/ and
+    # docs/milestones/ are explicitly NOT migrated into .agentrail/ (D5) and
+    # so have no .agentrail/ equivalent below.
     if relative_path == "CONTEXT.md" or relative_path.endswith("/CONTEXT.md"):
+        return "context_doc"
+    if relative_path == ".agentrail/context.md":
         return "context_doc"
     if relative_path == "TASTE.md" or relative_path.endswith("/TASTE.md"):
         return "taste_doc"
-    if relative_path.startswith(("docs/agents/", "templates/docs/agents/")):
+    if relative_path == ".agentrail/taste.md":
+        return "taste_doc"
+    if relative_path.startswith(("docs/agents/", "agentrail/templates/docs/agents/", ".agentrail/agents/")):
         return "agent_doc"
-    if relative_path.startswith(("docs/memory/", "templates/docs/memory/")):
+    if relative_path.startswith(("docs/memory/", "agentrail/templates/docs/memory/", ".agentrail/memory/")):
         return "memory"
-    if relative_path.startswith(("docs/prd/", "templates/docs/prd/")):
+    if relative_path.startswith(("docs/prd/", "agentrail/templates/docs/prd/")):
         return "prd"
-    if relative_path.startswith(("docs/milestones/", "templates/docs/milestones/")):
+    if relative_path.startswith(("docs/milestones/", "agentrail/templates/docs/milestones/")):
         return "milestone"
     if relative_path in {".agentrail/state.json", ".agentrail/config.json"}:
         return "agentrail_state"
     if relative_path.startswith((".agentrail/runs/", ".agentrail/handoffs/")):
         return "run_artifact"
-    if relative_path.startswith("skills/"):
+    if relative_path.startswith(("skills/", ".agentrail/skills/")):
         return "skill"
     return "code"
 
 
 def authority_for(source_type: SourceType, relative_path: str) -> str:
-    if relative_path in {"CONTEXT.md", ".agentrail/state.json"}:
+    if relative_path in {"CONTEXT.md", ".agentrail/context.md", ".agentrail/state.json"}:
         return "critical"
     if source_type in {"taste_doc", "agent_doc", "prd", "milestone"}:
         return "high"

@@ -50,6 +50,7 @@ production-only bugs are not hidden behind it.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -57,7 +58,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from agentrail.run.usage_capture import Usage
 
@@ -69,7 +70,9 @@ from agentrail.evals.arms import (
     SYMBOL_PACKING_LAYER,
 )
 from agentrail.evals.corpus.loader import CorpusTask
-from agentrail.evals.run_record import RetryEvent, RunRecord
+from agentrail.evals.gather_manifest import parse_manifest_paths
+from agentrail.evals.pack_scorer import pack_precision_recall
+from agentrail.evals.run_record import GatherScore, RetryEvent, RunRecord
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +203,151 @@ def _materialize_agent_visible_tree(task: CorpusTask, *, workdir: Path) -> None:
 # in ``_strip_answer_keys_from_clone`` post_checkout; this check is the net
 # behind it). Kept in sync with ``SandboxAgentExecutor``'s clone dir.
 _EXECUTOR_CLONE_SUBDIR = "repo"
+
+# The live pipeline appends one JSON line per phase to this ledger, relative to
+# the run's working tree (``rc.target_dir / ".agentrail" / "run" /
+# "cost-events.jsonl"`` in ``agentrail/run/pipeline.py``). Inside an eval run the
+# working tree IS the executor's clone, so the ledger lands at
+# ``workdir / _EXECUTOR_CLONE_SUBDIR / _COST_LEDGER_RELPATH``. This is the ONLY
+# artifact that carries the per-PHASE token split (plan / gather / execute /
+# verify), and the workdir is torn down in ``run()``'s ``finally`` — so it must
+# be harvested in-band, before teardown. See #1049 AC4.
+_COST_LEDGER_RELPATH = Path(".agentrail") / "run" / "cost-events.jsonl"
+
+
+def _harvest_cost_events(workdir: Path) -> List[Dict[str, Any]]:
+    """Read the per-phase cost-ledger lines the run wrote inside ``workdir``.
+
+    Returns the raw ledger dicts (each a ``build_cost_record`` shape:
+    ``run_id`` / ``phase`` / the four token buckets) so the spine can tag them
+    with the arm and the gather report can aggregate the per-phase token split.
+
+    This is **best-effort and never fatal**: the ledger is diagnostic evidence,
+    not something the run's verdict depends on, so any IO/parse problem yields an
+    empty list rather than failing the run. A missing ledger (e.g. a
+    ``<synthetic>`` network-artifact fallback that never ran the pipeline) is the
+    normal empty case, distinct from "captured and zero".
+
+    Lookup order:
+
+    1. The canonical location — ``workdir/repo/.agentrail/run/cost-events.jsonl``
+       — which is where the pipeline writes when the working tree is the clone.
+    2. A bounded fallback: any ``.agentrail/run/cost-events.jsonl`` under the
+       workdir (guards against the clone dir being renamed), reading every match.
+    """
+    candidates: List[Path] = []
+    primary = workdir / _EXECUTOR_CLONE_SUBDIR / _COST_LEDGER_RELPATH
+    if primary.is_file():
+        candidates.append(primary)
+    else:
+        try:
+            for match in workdir.rglob("cost-events.jsonl"):
+                parent = match.parent
+                if parent.name == "run" and parent.parent.name == ".agentrail":
+                    candidates.append(match)
+        except OSError:
+            return []
+
+    events: List[Dict[str, Any]] = []
+    for path in candidates:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(obj, dict):
+                events.append(obj)
+    return events
+
+
+# The JIT gather phase writes its free-text CONTEXT MANIFEST here, relative to
+# the run's LOG dir — ``rc.run_dir / "gather" / "output.md"`` in
+# ``agentrail/run/pipeline.py``, where ``rc.run_dir == log_dir / run_id``. Inside
+# an eval run the sandbox's log dir is ``workdir/.agentrail-runs`` and the run id
+# is ``host-run`` (``native_runner._LOG_SUBDIR`` / ``native_runner.RUN_ID``,
+# because ``SandboxAgentExecutor`` passes ``run_dir_factory=lambda: workdir``), so
+# the manifest lands at ``workdir/.agentrail-runs/host-run/gather/output.md``.
+# This is a DIFFERENT subtree than the cost ledger above (which rides under the
+# executor's ``repo`` clone), and the workdir is torn down in ``run()``'s
+# ``finally`` — so it too must be harvested in-band, before teardown. Hardcoded
+# (not imported) so this module stays cheap to import; native_runner is heavy and
+# is only imported lazily inside the executor. See #1049 AC4 (precision half).
+_GATHER_MANIFEST_RELPATH = Path(".agentrail-runs") / "host-run" / "gather" / "output.md"
+
+
+def _harvest_gather_manifest(workdir: Path) -> str:
+    """Read the gather phase's raw CONTEXT MANIFEST text from ``workdir``.
+
+    Returns the gatherer's free-text reply (the manifest is at its end) so the
+    caller can parse the paths it selected. Returns ``""`` when no manifest was
+    written — the normal case for an arm with the gather phase OFF, or a run that
+    never reached the gather phase.
+
+    **Best-effort and never fatal**, exactly like :func:`_harvest_cost_events`:
+    the manifest is diagnostic evidence, not something the verdict depends on, so
+    any IO problem yields ``""`` rather than failing the run.
+
+    Lookup order:
+
+    1. The canonical location —
+       ``workdir/.agentrail-runs/host-run/gather/output.md``.
+    2. A bounded fallback: the first ``gather/output.md`` anywhere under the
+       workdir (guards against the run-id / log-subdir constants drifting).
+    """
+    primary = workdir / _GATHER_MANIFEST_RELPATH
+    if primary.is_file():
+        try:
+            return primary.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+    try:
+        for match in workdir.rglob("output.md"):
+            if match.parent.name == "gather":
+                try:
+                    return match.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    return ""
+    except OSError:
+        return ""
+    return ""
+
+
+def _score_gather_manifest(workdir: Path, task: CorpusTask) -> Optional[GatherScore]:
+    """Score the gather phase's file picks against the task's answer key.
+
+    Harvests the CONTEXT MANIFEST from ``workdir``, parses the paths the gatherer
+    SELECTED (union of "Relevant files:" and "Pinned symbols:", excluding the
+    "Checked, not relevant:" negatives), and scores them against
+    ``task.required_context`` with the shared
+    :func:`agentrail.evals.pack_scorer.pack_precision_recall`.
+
+    Returns ``None`` when the gatherer produced no manifest (gather phase OFF, or
+    the run never reached it) — the honest "gather did not run" signal, distinct
+    from a manifest that selected nothing (which is scored as a real
+    ``recall == 0.0``). This is the None-vs-0.0 discipline the harness keeps
+    everywhere: undefined is never fabricated as measured-zero.
+    """
+    manifest_text = _harvest_gather_manifest(workdir)
+    if not manifest_text.strip():
+        return None
+
+    selected = sorted(parse_manifest_paths(manifest_text))
+    required = sorted(set(task.required_context))
+    score = pack_precision_recall(selected, required)
+    return GatherScore(
+        precision=score.precision,
+        recall=score.recall,
+        selected_paths=selected,
+        required_paths=required,
+        intersection=score.intersection,
+    )
 
 
 def _assert_no_answer_key_in_workdir(
@@ -338,6 +486,20 @@ def run(
                 f"got {type(execution.gate_passed).__name__}"
             )
 
+        # Per-phase cost evidence (#1049 AC4) — harvest the pipeline's cost
+        # ledger from the workdir NOW, while it still exists: the ``finally``
+        # below tears the workdir down, taking the only per-phase token split
+        # with it. Best-effort; an empty list is the normal no-ledger case.
+        cost_events = _harvest_cost_events(workdir)
+
+        # Gather file-picking accuracy (#1049 AC4, precision half) — score the
+        # gatherer's CONTEXT MANIFEST against this task's ``requiredContext``
+        # answer key from the SAME soon-to-be-torn-down workdir. This is the one
+        # place that has BOTH the manifest (in the workdir) and the answer key (on
+        # ``task``) in hand. ``None`` when the gather phase did not run this arm —
+        # not a fabricated zero. See :func:`_score_gather_manifest`.
+        gather_score = _score_gather_manifest(workdir, task)
+
         return RunRecord(
             task=task.name,
             arm=arm.name,
@@ -360,6 +522,12 @@ def run(
             # explicitly when routing never diverged. INSTRUMENT only — this does
             # not influence which model the run actually used.
             baseline_model=arm.model,
+            # Per-phase cost ledger harvested above (#1049 AC4). Empty list when
+            # no ledger was written (e.g. a <synthetic> network-artifact run).
+            cost_events=cost_events,
+            # Gather file-picking accuracy scored above (#1049 AC4, precision
+            # half). None when the gather phase did not run this arm.
+            gather_score=gather_score,
         )
     finally:
         if owns_workdir:

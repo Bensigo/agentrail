@@ -77,7 +77,7 @@ bin_dir="${INSTALL_BASE}/bin"
 
 # ── idempotency check ─────────────────────────────────────────────────────────
 
-if [ -d "${install_dir}" ] && [ -x "${install_dir}/scripts/agentrail" ]; then
+if [ -d "${install_dir}" ] && [ -x "${install_dir}/agentrail/scripts/agentrail" ]; then
   info "Version ${version} is already installed at ${install_dir}."
 else
 
@@ -126,15 +126,15 @@ else
   tar --no-same-owner -xzf "${tmpdir}/${tarball}" -C "${tmpdir}"
   mkdir -p "$(dirname "${install_dir}")"
   mv "${tmpdir}/agentrail-${version}" "${install_dir}"
-  chmod +x "${install_dir}/scripts/agentrail"
+  chmod +x "${install_dir}/agentrail/scripts/agentrail"
 
 fi
 
 # ── symlink ───────────────────────────────────────────────────────────────────
 
 mkdir -p "${bin_dir}"
-ln -sf "${install_dir}/scripts/agentrail" "${bin_dir}/agentrail"
-info "Linked: ${bin_dir}/agentrail -> ${install_dir}/scripts/agentrail"
+ln -sf "${install_dir}/agentrail/scripts/agentrail" "${bin_dir}/agentrail"
+info "Linked: ${bin_dir}/agentrail -> ${install_dir}/agentrail/scripts/agentrail"
 
 # ── PATH guidance ─────────────────────────────────────────────────────────────
 

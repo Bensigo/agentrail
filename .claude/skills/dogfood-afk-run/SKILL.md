@@ -15,8 +15,8 @@ description: Safely launch, monitor, and stop an `agentrail afk` dogfood run aga
 
 ## Launch
 
-1. **Dry-run first, always:** `cd <clone> && AGENTRAIL_ALLOW_SOURCE_RUN=1 ./scripts/agentrail afk --dry-run` — prints exactly which issues it will pick. Verify the list before spending tokens.
-2. Real run: `cd <clone> && AGENTRAIL_ALLOW_SOURCE_RUN=1 ./scripts/agentrail afk --base main --concurrency 2`. Engine defaults to `claude` (must be on PATH + authed). State: `<clone>/.agentrail/afk/state.json`.
+1. **Dry-run first, always:** `cd <clone> && AGENTRAIL_ALLOW_SOURCE_RUN=1 ./agentrail/scripts/agentrail afk --dry-run` — prints exactly which issues it will pick. Verify the list before spending tokens.
+2. Real run: `cd <clone> && AGENTRAIL_ALLOW_SOURCE_RUN=1 ./agentrail/scripts/agentrail afk --base main --concurrency 2`. Engine defaults to `claude` (must be on PATH + authed). State: `<clone>/.agentrail/afk/state.json`.
 
 ## While it runs
 - **Do NOT manually `gh pr merge`** an issue's PR while the run is alive — AFK's idempotency only sees its own view, so it re-implements and opens a conflicting duplicate. Let the run own merges (it auto-merges clean PRs). See `dont-manual-merge-during-afk-run`.

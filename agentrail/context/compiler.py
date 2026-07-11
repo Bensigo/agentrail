@@ -136,7 +136,7 @@ def _command_matches(text: str) -> Iterable[str]:
     command_pattern = re.compile(
         r"\b("
         r"agentrail\s+(?:context\s+(?:query|build|show|explain|evaluate|sources|index|embed)|memory\s+recall|status|resume|doctor|run\s+issue\s+\d+)"
-        r"|bash\s+scripts/[A-Za-z0-9_.-]+"
+        r"|bash\s+(?:agentrail/)?scripts/[A-Za-z0-9_.-]+"
         r"|python3?\s+-m\s+unittest(?:\s+[A-Za-z0-9_./:-]+)?"
         r"|pytest(?:\s+[A-Za-z0-9_./:-]+)?"
         r"|npm\s+(?:test|run\s+[A-Za-z0-9_.-]+)"

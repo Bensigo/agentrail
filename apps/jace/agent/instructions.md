@@ -96,6 +96,34 @@ A typical flow is grill-me → to-prd → to-issues. Small ideas can skip straig
 emit-issue-brief → create_issue. Either way, nothing reaches the factory until a
 human approves a `create_issue` call.
 
+## Verify external tech before you draft (the researcher)
+
+Never state a fact about an external library, SDK, framework, API, CLI, or cloud
+service from memory. Your training is stale and these churn fast; a confident
+guess that ships into an issue becomes a builder's wrong turn. Before any drafting
+skill produces a summary, PRD, or issue brief that leans on external tech,
+delegate to the **researcher** subagent and cite what it returns.
+
+- **researcher** — a read-only specialist you invoke as a tool. Hand it the tech
+  question and the constraints that bound the work; it verifies against current
+  docs (Context7) and the live web (a headless browser), then returns a
+  structured brief: recommended approach, alternatives with why-not, citations
+  (claim → URL → version), open questions, and a confidence level. It has NO
+  write capability and cannot publish — by construction it cannot even see the
+  `create_issue` tool; it only researches.
+- **Cite, don't recall.** Every external-tech claim you carry into a draft must
+  trace to a researcher citation. Thread those citations into each issue's
+  **Required context** so the builder inherits verified facts, not your memory.
+- **If research is unavailable, say "unverified".** When the researcher reports a
+  degraded run (it couldn't reach its sources) or you haven't run it yet, do NOT
+  paper over the gap with a guess — mark the claim "unverified", surface it as an
+  open question, and lower your confidence. An honest "unverified" beats a
+  confident wrong fact every time.
+
+Plain chat can invoke the researcher on demand: when a human asks a "does X
+support Y?" question about external tech, research it rather than answering from
+memory.
+
 ## Reporting on the factory (read-only)
 
 Beyond ideation you can also REPORT on the running factory. These skills are
@@ -120,7 +148,9 @@ Every issue you publish carries all six sections:
 
 - **Parent** — the epic or milestone this belongs to.
 - **Required context** — the CONTEXT.md / TASTE.md constraints and prior
-  decisions that bound the work. Name decisions, not file paths.
+  decisions that bound the work. Name decisions, not file paths. When the slice
+  depends on external tech, include the researcher's citations (claim → URL →
+  version) here so the builder inherits verified facts, not a guess.
 - **What to build** — an end-to-end vertical slice, described by behavior, not by
   file paths.
 - **Acceptance criteria** — numbered, observable, testable criteria, each a

@@ -107,6 +107,35 @@ workspace's outbound stays on its legacy console sender until its cutover.
 | `LOOPMESSAGE_SENDER_NAME` | The LoopMessage sender name (`…@imsg.co` / your dedicated sender) used as `sender_name` on 1:1 sends. |
 | `LOOPMESSAGE_WEBHOOK_SECRET_TOKEN` | The dashboard `webhook_header` value; inbound LoopMessage webhooks must present it as `Authorization`. Verified constant-time — unset ⇒ fail-closed (every inbound `401`s). |
 | `LOOPMESSAGE_DEFAULT_RECIPIENT` | Fallback iMessage recipient (phone/email) for run-outcome pushes that carry no `target.handle`. |
+| `JACE_PLAYWRIGHT_MCP_URL` | Streamable-HTTP URL of the headless Playwright MCP sidecar the `researcher` subagent drives read-only. Defaults to `http://localhost:8931/mcp` (the compose service / `npx @playwright/mcp` local dev). If unreachable, the researcher degrades gracefully to Context7-only. |
+| `CONTEXT7_API_KEY` | Optional. Raises Context7 hosted-MCP rate limits for the `researcher`; sent as the `CONTEXT7_API_KEY` request header. Unset = the keyless public tier. |
+
+## The researcher subagent
+
+Jace declares one read-only subagent, [`agent/subagents/researcher`](agent/subagents/researcher/agent.ts).
+Root Jace delegates to it BEFORE drafting anything that touches external tech (a
+library, SDK, API, CLI, or cloud service): it verifies claims against current
+docs ([Context7](https://context7.com) hosted MCP) and the live web (the headless
+Playwright sidecar), then returns a structured brief — recommended approach,
+alternatives, citations (claim → URL → version), open questions, confidence.
+
+The researcher has ZERO write capability by construction, from two independent
+mechanisms (either alone is insufficient):
+
+- **Isolation.** Eve's subagent boundary means it inherits nothing from root, so
+  it cannot see or call `create_issue`.
+- **Harness lock-down.** Eve injects a default harness — `bash`, `write_file`,
+  `read_file`, `web_fetch`, … — into *every* agent at runtime, independent of the
+  authored tools list, and `bash`/`write_file` are real write capabilities. The
+  researcher's [`tools/`](agent/subagents/researcher/tools/) directory holds a
+  `disableTool()` sentinel per harness tool, stripping the whole harness down to
+  the one dynamic `connection_search` — its only means of reaching the two
+  read-only MCP connections.
+
+The Playwright connection is further restricted to a navigate/observe allow-list,
+and fetched web content is treated as untrusted data (a prompt-injection
+surface), never as instructions. See
+[`docs/HOSTING.md`](docs/HOSTING.md#researcher-mcp-sidecars) for the sidecar setup.
 
 ## Install
 

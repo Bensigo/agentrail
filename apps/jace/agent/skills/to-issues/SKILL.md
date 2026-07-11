@@ -55,7 +55,11 @@ labeled acceptance criteria:
 
 - **Parent** — the epic from step 1 (or the named milestone). One line.
 - **Required context** — the CONTEXT.md / TASTE.md decisions and invariants that
-  bound this slice. Decisions, not file paths.
+  bound this slice. Decisions, not file paths. For any external tech the slice
+  depends on, invoke the **researcher** subagent first and paste its citations
+  (claim → URL → version) here, so the builder inherits verified facts instead of
+  a guess. The researcher is read-only and never publishes — only your gated
+  `create_issue` call does.
 - **What to build** — the thin, end-to-end vertical slice, described by behavior
   and observable outcome, not by file paths or internal structure.
 - **Acceptance criteria** — numbered, observable, testable, each a checkbox

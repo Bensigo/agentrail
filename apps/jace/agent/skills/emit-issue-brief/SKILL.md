@@ -18,7 +18,10 @@ one, ask, or state the most plausible parent and confirm.
 
 The constraints that bound the work: relevant CONTEXT.md / TASTE.md decisions,
 prior art, invariants, and anything the builder must not break. Reference
-decisions, not file paths.
+decisions, not file paths. When the slice depends on external tech, invoke the
+**researcher** subagent first and include its citations (claim → URL → version)
+here — verified facts, not a guess. The researcher is read-only; only the gated
+`create_issue` call downstream publishes anything.
 
 ## What to build
 

@@ -57,6 +57,64 @@ the window itself via Eve's public `modelContextWindowTokens` escape hatch;
 your model / Ollama `num_ctx`). The var is ignored on the AI Gateway path, where
 Eve resolves the window from the catalog.
 
+## Researcher MCP sidecars
+
+Jace's `researcher` subagent reads from two external MCP sources to verify
+external-tech facts before Jace drafts. Both are read-only and both fail soft —
+Eve discovers connection tools lazily at runtime, so a source that is unreachable
+just never resolves its tools and the researcher degrades rather than failing to
+boot.
+
+- **Context7** (hosted, no setup). The `context7` connection points at the hosted
+  MCP endpoint `https://mcp.context7.com/mcp` for current, version-accurate
+  library docs. It works keyless on the public tier. Set `CONTEXT7_API_KEY` to
+  raise rate limits — Jace forwards it as the `CONTEXT7_API_KEY` request header;
+  unset means the keyless tier.
+
+- **Playwright** (headless browser sidecar, you run it). The `playwright`
+  connection drives a headless-Chromium [Playwright MCP][pw] server to read live
+  web pages (release notes, changelogs, GitHub issues) that Context7 may not
+  index. The researcher uses only navigation/observation tools — it cannot click,
+  type, or run code. Jace reaches the sidecar over Streamable HTTP; point it with
+  `JACE_PLAYWRIGHT_MCP_URL` (default `http://localhost:8931/mcp`).
+
+  - **Production (compose).** The root `docker-compose.yml` ships a `playwright`
+    service on the official image `mcr.microsoft.com/playwright/mcp`, launched
+    `--headless --no-sandbox` and bound `--host 0.0.0.0` so sibling containers can
+    reach it. Co-located services use `JACE_PLAYWRIGHT_MCP_URL=http://playwright:8931/mcp`;
+    a Jace process outside the compose network uses the published port,
+    `http://localhost:8931/mcp`.
+
+  - **Local dev (npx).** No Docker needed — run the server directly:
+
+    ```bash
+    npx @playwright/mcp@latest --headless --port 8931
+    ```
+
+    Jace then uses the default `http://localhost:8931/mcp`, so no env var is
+    required locally.
+
+- **Degraded mode.** If the Playwright sidecar is unreachable, the researcher
+  continues on Context7 alone and marks the brief `degraded: true` with
+  `sourcesUsed: ["context7"]`, noting the reduced web coverage and lowering its
+  confidence. If Context7 is *also* unreachable it returns an honest,
+  low-confidence brief that verifies nothing (`sourcesUsed: []`) rather than
+  guessing. Jace then surfaces the affected claims as "unverified" instead of
+  stating them as fact.
+
+The researcher has no write capability and never needs approval. That holds from
+two mechanisms: Eve's subagent boundary isolates it from Jace's single
+`create_issue` write path, AND a `tools/` directory of `disableTool()` sentinels
+strips Eve's default agent harness (`bash`, `write_file`, `read_file`,
+`web_fetch`, …, which Eve injects into every agent regardless of the authored
+tool list) down to the one read-only `connection_search`. Isolation alone would
+not remove `bash`/`write_file`; the sentinels do. All web access is therefore
+funnelled through the two allow-listed, read-only MCP connections. Web content it
+reads is untrusted data (a prompt-injection surface): the researcher cites what a
+page says, it never acts on what a page tells it to do.
+
+[pw]: https://github.com/microsoft/playwright-mcp
+
 ## Runtime and dependency policy
 
 - Node.js `>= 24` is required.

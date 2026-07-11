@@ -34,6 +34,8 @@ from agentrail.run.context_inject import (
 )
 from agentrail.run.cost_push import build_cost_record, push_cost_event
 from agentrail.run.failure_push import push_failure_event
+from agentrail.run.qa_phase import qa_enabled, run_qa_phase
+from agentrail.run.qa_push import push_qa_gate
 from agentrail.run.output_enforcer import (
     Rejected,
     all_changes_new_or_rename,
@@ -305,6 +307,79 @@ def _record_live_context_metrics(
     push_live_context_metrics(
         target_dir, run_id, metrics, pack_file=run_context_pack_file
     )
+
+
+def _run_qa_gate(
+    *,
+    metadata_file: Path,
+    target_dir: Path,
+    run_dir: Path,
+    run_id: str,
+    status: int,
+    last_phase: str,
+) -> tuple[int, str]:
+    """Run the opt-in QA phase after a green objective gate (#1148).
+
+    Returns the possibly-updated ``(status, last_phase)``. Extracted from
+    ``_run_pipeline`` so the seam is unit-testable in isolation (mirrors
+    :func:`_record_live_context_metrics`) — it cannot be exercised through the
+    full pipeline without a live agent engine.
+
+    Contract:
+      * Flag OFF (:func:`qa_enabled` false) → returns the inputs unchanged and
+        NEVER touches ``run.json``, so a run is byte-identical to today (AC3).
+      * A QA **red** reds the run on the SAME footing as a failed verify gate
+        (``status`` → non-zero, ``last_phase`` → ``"qa"``) and posts a ``qa``
+        review gate + a ``qa_failed`` failure event (AC2).
+      * A QA **pass** records the verdict, posts the gate, sets ``last_phase``.
+      * A **skip** is recorded in ``run.json`` but never gates
+        (``status``/``last_phase`` untouched) (AC3).
+      * NON-FATAL: any failure in the QA machinery is swallowed with a warning —
+        an already-decided run must never be corrupted by QA plumbing (AC4).
+
+    Callers invoke this ONLY after a green objective gate; QA proves the change
+    actually *runs* once the gate has proven it is objectively correct.
+    """
+    if not qa_enabled():
+        return status, last_phase
+    try:
+        from agentrail.run.verify_gate import collect_changed_files
+
+        qa_result = run_qa_phase(
+            target_dir,
+            run_dir,
+            changed_files=collect_changed_files(target_dir),
+        )
+        qa_data = read_json(metadata_file) if metadata_file.exists() else {}
+        if not isinstance(qa_data, dict):
+            qa_data = {}
+        qa_data["qa"] = qa_result.to_json()
+        write_json(metadata_file, qa_data)
+
+        if qa_result.is_red:
+            # Red the run exactly like a failed verify gate would.
+            last_phase = "qa"
+            if status == 0:
+                status = 1
+            push_qa_gate(target_dir, run_id, qa_result)
+            push_failure_event(
+                target_dir,
+                run_id,
+                "qa_failed",
+                "qa",
+                qa_result.reason,
+                evidence=qa_result.log_tail,
+            )
+        elif qa_result.is_pass:
+            last_phase = "qa"
+            push_qa_gate(target_dir, run_id, qa_result)
+        # is_skip → recorded in run.json above; no gate, status untouched.
+    except Exception as e:  # noqa: BLE001 — QA machinery failure is non-fatal
+        print(
+            f"warning: qa phase skipped ({type(e).__name__}: {e})",
+            file=sys.stderr,
+        )
+    return status, last_phase
 
 
 def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
@@ -1541,6 +1616,22 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         status = 0
     elif status == 0:
         status = 1
+
+    # QA phase (#1148) — opt-in runtime check, default OFF. Runs ONLY after a
+    # green objective gate (outcome["done"]): the gate proved the change is
+    # objectively correct; QA proves it actually *runs*. The seam lives in
+    # :func:`_run_qa_gate` (extracted so it is unit-testable without a live agent
+    # engine); when the flag is OFF it returns immediately without touching
+    # run.json, so a run is byte-identical to today (AC3).
+    if outcome["done"]:
+        status, last_phase = _run_qa_gate(
+            metadata_file=metadata_file,
+            target_dir=target_dir,
+            run_dir=run_dir,
+            run_id=run_id,
+            status=status,
+            last_phase=last_phase,
+        )
 
     # Read-grounded live context metrics (#1037). Computed HERE, at run
     # finalization, because recall needs the FINAL accepted diff — which the

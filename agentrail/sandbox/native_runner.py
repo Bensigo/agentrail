@@ -111,6 +111,18 @@ def _result_from_run_json(
             status = "green" if run_status == 0 else "red"
             if status == "red":
                 reason = f"agentrail run exited {run_status}"
+
+        # QA phase (#1148): an opt-in runtime check runs AFTER the objective gate,
+        # so a green gate can still ship a broken build. Because this parser trusts
+        # the gate verdict over the process exit code, a QA red would otherwise
+        # publish a PR. Consult run.json["qa"] here — the one place run.json
+        # becomes the publish/no-publish decision — and red the run on a failed QA
+        # verdict. A skipped/absent QA leaves the gate verdict untouched.
+        qa = data.get("qa")
+        if isinstance(qa, dict) and qa.get("verdict") == "failed":
+            status = "red"
+            qa_reason = str(qa.get("reason") or "qa phase failed")
+            reason = f"{reason}; qa: {qa_reason}" if reason else f"qa: {qa_reason}"
     except FileNotFoundError:
         status = "error"
         reason = "run.json not found; agentrail run did not complete"
@@ -457,6 +469,12 @@ def run_issue_on_host(
             from dataclasses import replace
 
             result = replace(result, pr_url=pr_url, branch=branch or result.branch)
+            # QA phase (#1148): if QA ran and passed, attach its verdict to the PR
+            # as a comment. Best-effort and green-path only — a QA red never
+            # reaches here (it reds the result above, so publish_pr is skipped).
+            _comment_qa_on_pr(
+                runner, repo_dir, pr_url, log_dir / run_id, env=child_env
+            )
         return result
     finally:
         # Teardown is unconditional; a failure to clean up is swallowed (a leftover
@@ -533,6 +551,73 @@ def _publish_green(
         return branch, url
     url = (getattr(pr, "stdout", "") or "").strip().splitlines()[-1:] or [""]
     return branch, url[0]
+
+
+# ---------------------------------------------------------------------------
+# QA phase PR comment (#1148)
+# ---------------------------------------------------------------------------
+
+
+def _comment_qa_on_pr(
+    runner, repo_dir: Path, pr_url: str, run_dir: Path, *, env: Dict[str, str],
+) -> None:
+    """Post the QA verdict as a PR comment (best-effort, green + QA-passed only).
+
+    Reads ``run_dir/run.json``'s ``qa`` block; comments ONLY when QA actually ran
+    and PASSED. A skip, an absent QA block, or a missing pr_url is silent (a QA
+    red never reaches the publish path). The log tail is already tail-bounded and
+    secret-scrubbed by the QA phase, so it is safe to attach. Never raises.
+    """
+    if not pr_url:
+        return
+    try:
+        data = json.loads((run_dir / "run.json").read_text())
+    except (OSError, ValueError):
+        return
+    qa = data.get("qa")
+    if not isinstance(qa, dict) or qa.get("verdict") != "passed":
+        return
+    body = _format_qa_comment(qa)
+    try:
+        runner.run(
+            ["gh", "pr", "comment", pr_url, "--body", body],
+            cwd=str(repo_dir), env=env, timeout=60,
+            capture_output=True, text=True,
+        )
+    except Exception:  # noqa: BLE001 — PR comment is best-effort
+        pass
+
+
+def _format_qa_comment(qa: Dict[str, object]) -> str:
+    """Render the QA verdict as a PR comment body (verdict + artifacts + log tail)."""
+    reason = str(qa.get("reason") or "passed")
+    names = qa.get("artifactNames") or []
+    artifacts = (
+        ", ".join(str(n) for n in names)
+        if isinstance(names, list) and names
+        else "none"
+    )
+    tail = str(qa.get("logTail") or "").strip()
+    lines = [
+        "## QA phase — ✅ passed",
+        "",
+        "Ran `.agentrail/qa.sh` against a live build after the objective gate.",
+        "",
+        f"- **Verdict:** passed ({reason})",
+        f"- **Artifacts captured:** {artifacts}",
+    ]
+    if tail:
+        lines += [
+            "",
+            "<details><summary>QA log tail</summary>",
+            "",
+            "```",
+            tail,
+            "```",
+            "",
+            "</details>",
+        ]
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

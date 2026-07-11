@@ -5,6 +5,7 @@ the canonical implementation).
 """
 from __future__ import annotations
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -34,10 +35,20 @@ def run_with_timeout(argv: List[str], *, cwd: Path, timeout: int, output_file: P
     """
     env = env if env is not None else sanitized_env()
     output_file.parent.mkdir(parents=True, exist_ok=True)
+    # Run the child in its own process group so a timeout can reap the WHOLE
+    # tree, not just the direct child. qa.sh (and other wrapped commands) spawn
+    # long-lived grandchildren — e.g. a dev server — that inherit the stdout
+    # pipe; killing only the direct child leaves the grandchild holding the
+    # pipe's write end open, so the reader thread never sees EOF and join()
+    # blocks for the grandchild's full lifetime, silently defeating the timeout.
+    popen_kwargs: dict = {}
+    if hasattr(os, "setsid"):
+        popen_kwargs["start_new_session"] = True
     proc = subprocess.Popen(
         argv, cwd=str(cwd), env=env,
         stdin=subprocess.PIPE if stdin_text is not None else None,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        **popen_kwargs,
     )
     if stdin_text is not None and proc.stdin is not None:
         try:
@@ -62,11 +73,30 @@ def run_with_timeout(argv: List[str], *, cwd: Path, timeout: int, output_file: P
         reader.join()
         rc = proc.returncode
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _kill_tree(proc)
         proc.wait()
-        reader.join()
+        # The reader may still be blocked on a grandchild that survived the
+        # group kill (rare); never let it wedge the caller past the timeout.
+        reader.join(timeout=5)
         rc = 124
     finally:
         output_file.write_text("".join(chunks))
 
     return rc
+
+
+def _kill_tree(proc: "subprocess.Popen") -> None:
+    """SIGKILL the child's whole process group when possible, so surviving
+    grandchildren (a booted dev server, a detached tail) are reaped too. Falls
+    back to killing just the direct child on platforms/states where the group
+    kill is unavailable. Best-effort: a dead child is already success."""
+    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except (ProcessLookupError, OSError):
+        pass

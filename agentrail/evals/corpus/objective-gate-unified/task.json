@@ -17,6 +17,13 @@
     "agentrail/afk/objective_gate.py",
     "agentrail/run/objective_gate.py"
   ],
+  "readContext": [
+    "agentrail/run/objective_gate.py",
+    "agentrail/afk/objective_gate.py",
+    "agentrail/guardrails/base.py",
+    "agentrail/guardrails/policies/__init__.py",
+    "agentrail/guardrails/policies/check_runner.py"
+  ],
   "difficulty": "hard",
   "source": {
     "repo": "Bensigo/agentrail",

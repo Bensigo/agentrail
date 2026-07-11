@@ -14,6 +14,14 @@
     "agentrail/run/red_green.py",
     "agentrail/run/objective_gate.py"
   ],
+  "readContext": [
+    "agentrail/run/objective_gate.py",
+    "agentrail/run/pipeline.py",
+    "agentrail/run/check_runner.py",
+    "docs/adr/0008-anti-false-green-test-author-redgreen-verifier.md",
+    "tests/run/test_objective_gate.py",
+    "tests/run/test_pipeline.py"
+  ],
   "difficulty": "medium",
   "source": {
     "repo": "Bensigo/agentrail",

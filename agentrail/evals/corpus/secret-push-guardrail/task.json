@@ -13,6 +13,13 @@
   "requiredContext": [
     "agentrail/run/push_guardrail.py"
   ],
+  "readContext": [
+    "agentrail/run/failure_push.py",
+    "agentrail/run/activity_push.py",
+    "agentrail/context/snapshot_push.py",
+    "CONTEXT.md",
+    "docs/design/verification-contract-architecture.md"
+  ],
   "difficulty": "easy",
   "heldOut": true,
   "source": {

@@ -13,6 +13,12 @@
   "requiredContext": [
     "agentrail/afk/objective_gate.py"
   ],
+  "readContext": [
+    "docs/adr/0007-objective-gate-is-done-review-advisory.md",
+    "agentrail/run/objective_gate.py",
+    "agentrail/afk/runner.py",
+    "agentrail/afk/review.py"
+  ],
   "difficulty": "easy",
   "source": {
     "repo": "Bensigo/agentrail",

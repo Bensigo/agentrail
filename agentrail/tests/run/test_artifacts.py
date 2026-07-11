@@ -18,6 +18,7 @@ from agentrail.run.artifacts import (
     write_phase_metadata,
     write_phase_verdict,
 )
+from agentrail.run.verifier import parse_verdict
 
 
 def _read(path: Path) -> dict:
@@ -366,6 +367,22 @@ class WritePhaseVerdictTests(unittest.TestCase):
         self.assertEqual(data["verdict"]["accepted"], False)
         self.assertEqual(
             data["verdict"]["reason"], "tautological test, never observed red"
+        )
+
+    def test_fail_closed_parse_verdict_payload_round_trips(self) -> None:
+        """AC1 missing-marker case: verify output with no VERDICT marker is
+        fail-closed to a reject by parse_verdict; the exact payload the gate
+        consumed is what lands on status.json."""
+        path = self._seed_status("verify")
+        verdict = parse_verdict("")  # no marker anywhere in the output
+        write_phase_verdict(
+            self.run_dir, "verify",
+            {"accepted": verdict.accepted, "reason": verdict.reason},
+        )
+        data = _read(path)
+        self.assertEqual(
+            data["verdict"],
+            {"accepted": False, "reason": "verifier produced no verdict"},
         )
 
     def test_second_call_overwrites_the_first(self) -> None:

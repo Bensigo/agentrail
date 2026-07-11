@@ -92,7 +92,7 @@ test("qa sources carry no process/fs/DB capability and author no tools", () => {
 
 test("exactly two connections, allowlisted, with no approval gate", () => {
   const files = readdirSync(CONNECTIONS_DIR).filter((f) => f.endsWith(".ts")).sort();
-  assert.deepEqual(files, ["agent_browser.ts", "browser_use.ts"]);
+  assert.deepEqual(files, ["agent-browser.ts", "browser-use.ts"]);
   for (const f of files) {
     const src = readFileSync(path.join(CONNECTIONS_DIR, f), "utf8");
     assert.match(src, /defineMcpClientConnection\(/, `${f} must be an MCP client connection`);

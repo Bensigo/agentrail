@@ -23,16 +23,23 @@ from agentrail.evals.gather_report import (
     CostEvent,
     GATHER_OFF_ARM,
     GATHER_ON_ARM,
+    GatherCoverage,
     aggregate_gather_precision,
     aggregate_gather_tokens,
+    gather_precision_coverage,
     gather_token_delta,
     load_cost_events,
     render_gather_precision_from_records,
     render_gather_precision_markdown,
     render_gather_report_from_ledger,
     render_gather_token_markdown,
+    render_per_run_gather_details,
 )
-from agentrail.evals.run_record import GatherScore, RunRecord
+from agentrail.evals.run_record import (
+    NO_GRADEABLE_ORACLE_REASON,
+    GatherScore,
+    RunRecord,
+)
 from agentrail.run.usage_capture import Usage
 
 
@@ -356,10 +363,28 @@ def _gscore(*, selected: List[str], required: List[str]) -> GatherScore:
     )
 
 
-def _run(arm: str, gather_score) -> RunRecord:
+def _ungraded(*, selected: List[str], dropped: List[str]) -> GatherScore:
+    """An UNGRADEABLE GatherScore — no oracle file existed at the checkout.
+
+    Mirrors what the runner builds when the existence filter empties the oracle:
+    raw picks preserved, filtered oracle empty, every oracle entry dropped, and
+    precision/recall both ``None`` behind an explicit reason.
+    """
+    return GatherScore(
+        precision=None,
+        recall=None,
+        selected_paths=sorted(set(selected)),
+        required_paths=[],
+        intersection=0,
+        dropped_oracle_paths=sorted(set(dropped)),
+        ungraded_reason=NO_GRADEABLE_ORACLE_REASON,
+    )
+
+
+def _run(arm: str, gather_score, task: str = "t") -> RunRecord:
     """A minimal RunRecord in ``arm`` carrying (or not) a gather score."""
     return RunRecord(
-        task="t",
+        task=task,
         arm=arm,
         diff="",
         model="m",
@@ -502,3 +527,134 @@ def test_arm_precision_report_is_frozen() -> None:
     )
     with pytest.raises(Exception):
         rep.precision = 0.0  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Oracle-fairness coverage: ungradeable runs are EXCLUDED from the pool but
+# made VISIBLE — a coverage line next to the AC4 verdict and a per-run detail
+# section, so a pooled number over a subset of runs can never masquerade as
+# full-corpus coverage (and past runs stay auditable from their raw picks).
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_excludes_ungradeable_scores_from_pooling() -> None:
+    """A run with no gradeable oracle contributes NOTHING to the pooled numbers.
+
+    Folding it in as a zero would recreate the structural-zero measurement
+    artifact the existence filter exists to remove — it is simply absent, just
+    like a run where the gatherer never ran.
+    """
+    records = [
+        _run(GATHER_ON_ARM, _gscore(selected=["a", "b"], required=["a", "b"])),
+        _run(GATHER_ON_ARM, _ungraded(selected=["x", "y", "z"], dropped=["fix-made.py"])),
+    ]
+    reports = aggregate_gather_precision(records)
+
+    assert len(reports) == 1
+    rep = reports[0]
+    assert rep.run_count == 1  # the ungradeable run is not counted
+    assert rep.total_selected == 2  # its 3 picks never entered the pool
+    assert rep.precision == 1.0
+    assert rep.recall == 1.0
+
+
+def test_gather_precision_coverage_counts_and_names_ungradeable_tasks() -> None:
+    """Coverage = scored vs gradeable runs + sorted unique ungradeable task names.
+
+    Records without any gather score (the gatherer did not run) are outside
+    both counts.
+    """
+    records = [
+        _run(GATHER_ON_ARM, _gscore(selected=["a"], required=["a"]), task="good-task"),
+        _run(GATHER_ON_ARM, _ungraded(selected=["x"], dropped=["gone.py"]), task="zeta-task"),
+        _run(GATHER_ON_ARM, _ungraded(selected=[], dropped=["gone.py"]), task="alpha-task"),
+        _run("full", None, task="no-gather-task"),
+    ]
+    cov = gather_precision_coverage(records)
+
+    assert cov.scored_runs == 3
+    assert cov.gradeable_runs == 1
+    assert cov.ungradeable_tasks == ["alpha-task", "zeta-task"]
+
+
+def test_render_coverage_line_near_the_verdict() -> None:
+    """The rendered section carries 'gradeable runs X/Y' + the ungradeable tasks."""
+    records = [
+        _run(GATHER_ON_ARM, _gscore(selected=["a"], required=["a"])),
+        _run(GATHER_ON_ARM, _gscore(selected=["b"], required=["b"])),
+        _run(GATHER_ON_ARM, _ungraded(selected=["x"], dropped=["gone.py"]), task="unfair-task"),
+    ]
+    md = render_gather_precision_from_records(records)
+
+    assert "gradeable runs 2/3" in md
+    assert "tasks with no gradeable oracle: `unfair-task`" in md
+    # And the verdict is still pronounced from the 2 gradeable runs.
+    assert "CLEARS AC4" in md
+
+
+def test_render_coverage_line_reads_none_when_all_gradeable() -> None:
+    records = [_run(GATHER_ON_ARM, _gscore(selected=["a"], required=["a"]))]
+    md = render_gather_precision_from_records(records)
+
+    assert "gradeable runs 1/1" in md
+    assert "tasks with no gradeable oracle: none" in md
+
+
+def test_render_all_ungradeable_shows_coverage_not_a_fake_zero() -> None:
+    """Every scored run ungradeable → no pooled table, no verdict, coverage shown."""
+    records = [
+        _run(GATHER_ON_ARM, _ungraded(selected=["x"], dropped=["gone.py"]), task="unfair-task"),
+    ]
+    md = render_gather_precision_from_records(records)
+
+    assert "Not available" in md
+    assert "no scored run had a gradeable oracle" in md
+    assert "gradeable runs 0/1" in md
+    assert "`unfair-task`" in md
+    assert "| Arm | Gather runs |" not in md
+    assert "CLEARS AC4" not in md and "MISSES AC4" not in md
+
+
+def test_per_run_details_render_picks_oracle_and_dropped() -> None:
+    """The per-run section shows raw picks, the filtered oracle, and dropped entries."""
+    records = [
+        _run(
+            GATHER_ON_ARM,
+            _gscore(selected=["a.py", "b.py"], required=["a.py"]),
+            task="graded-task",
+        ),
+        _run(
+            GATHER_ON_ARM,
+            _ungraded(selected=["x.py"], dropped=["fix-made.py"]),
+            task="unfair-task",
+        ),
+        _run("full", None, task="no-gather-task"),
+    ]
+    md = render_gather_precision_from_records(records)
+
+    assert "## Per-run gather picks" in md
+    # Graded run: precision 1/2, recall 1/1, picks + oracle listed.
+    assert "`graded-task`" in md
+    assert "precision 0.50, recall 1.00" in md
+    assert "picked: `a.py`, `b.py`" in md
+    assert "oracle: `a.py`" in md
+    # Ungraded run: explicit reason + the dropped oracle entry.
+    assert "`unfair-task`" in md
+    assert f"UNGRADED ({NO_GRADEABLE_ORACLE_REASON})" in md
+    assert "dropped (absent at checkout): `fix-made.py`" in md
+    # A record whose gatherer never ran renders no bullet.
+    assert "no-gather-task" not in md
+
+
+def test_per_run_details_empty_when_nothing_scored() -> None:
+    """No scored run → no per-run section at all (not an empty header)."""
+    assert render_per_run_gather_details([_run("full", None)]) == ""
+    md = render_gather_precision_from_records([_run("full", None)])
+    assert "## Per-run gather picks" not in md
+
+
+def test_gather_coverage_is_frozen() -> None:
+    """Coverage is immutable once computed."""
+    cov = GatherCoverage(scored_runs=2, gradeable_runs=1, ungradeable_tasks=["t"])
+    with pytest.raises(Exception):
+        cov.scored_runs = 3  # type: ignore[misc]

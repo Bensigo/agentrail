@@ -509,9 +509,13 @@ def aggregate_gather_precision(
 ) -> List[ArmPrecisionReport]:
     """Pool per-run gather scores into one :class:`ArmPrecisionReport` per arm.
 
-    Only records whose ``gather_score`` is set contribute — a ``None`` score means
-    the gatherer did not run that arm, which is EXCLUDED (never folded in as a
-    zero). Arms are returned sorted by name for a deterministic report.
+    Only GRADEABLE records contribute. A ``None`` gather score means the gatherer
+    did not run that arm; an ungradeable score (``GatherScore.gradeable`` False —
+    the existence filter found NONE of the task's oracle files at the checkout
+    the gatherer saw) means there was nothing fair to grade against. Both are
+    EXCLUDED (never folded in as a zero — that would recreate the structural-zero
+    measurement artifact the oracle-fairness filter exists to remove). Arms are
+    returned sorted by name for a deterministic report.
     """
     inter: Dict[str, int] = defaultdict(int)
     selected: Dict[str, int] = defaultdict(int)
@@ -520,7 +524,7 @@ def aggregate_gather_precision(
 
     for rec in records:
         score = getattr(rec, "gather_score", None)
-        if score is None:
+        if score is None or not score.gradeable:
             continue
         arm = rec.arm
         runs[arm] += 1
@@ -546,6 +550,55 @@ def aggregate_gather_precision(
     return reports
 
 
+@dataclass(frozen=True)
+class GatherCoverage:
+    """How much of the eval the pooled gather numbers actually cover.
+
+    The oracle-fairness filter EXCLUDES runs with no gradeable oracle (none of
+    the task's answer-key files exist at the checkout the gatherer saw) from
+    the pooled micro-average. That exclusion must be VISIBLE — a precision
+    number pooled over 8/12 runs reads very differently from one over 12/12 —
+    so the report carries this alongside the AC4 verdict.
+
+    - ``scored_runs`` — records that carry a gather score at all (the gatherer
+      ran and produced a manifest).
+    - ``gradeable_runs`` — the subset whose filtered oracle was non-empty; only
+      these feed :func:`aggregate_gather_precision`.
+    - ``ungradeable_tasks`` — sorted unique task names of scored-but-ungradeable
+      runs (candidates for a `readContext` entry in their task.json).
+    """
+
+    scored_runs: int
+    gradeable_runs: int
+    ungradeable_tasks: List[str]
+
+
+def gather_precision_coverage(records: Sequence["RunRecord"]) -> GatherCoverage:
+    """Compute :class:`GatherCoverage` over the records the spine collected.
+
+    Records with no gather score at all (the gatherer did not run) are outside
+    both counts — coverage is about how many SCORED runs were fair to grade,
+    not about which arms ran the gatherer.
+    """
+    scored = 0
+    gradeable = 0
+    ungradeable_tasks: Set[str] = set()
+    for rec in records:
+        score = getattr(rec, "gather_score", None)
+        if score is None:
+            continue
+        scored += 1
+        if score.gradeable:
+            gradeable += 1
+        else:
+            ungradeable_tasks.add(rec.task)
+    return GatherCoverage(
+        scored_runs=scored,
+        gradeable_runs=gradeable,
+        ungradeable_tasks=sorted(ungradeable_tasks),
+    )
+
+
 _PRECISION_SECTION_TITLE = "# Gather file-picking precision (#1049 AC4)"
 
 
@@ -554,8 +607,22 @@ def _fmt_ratio(value: Optional[float]) -> str:
     return "n/a" if value is None else f"{value:.2f}"
 
 
+def _fmt_coverage_line(coverage: GatherCoverage) -> str:
+    """The visible coverage line rendered next to the AC4 verdict."""
+    if coverage.ungradeable_tasks:
+        tasks = ", ".join(f"`{name}`" for name in coverage.ungradeable_tasks)
+    else:
+        tasks = "none"
+    return (
+        f"Coverage: gradeable runs {coverage.gradeable_runs}/"
+        f"{coverage.scored_runs}; tasks with no gradeable oracle: {tasks}."
+    )
+
+
 def render_gather_precision_markdown(
     reports: Sequence[ArmPrecisionReport],
+    *,
+    coverage: Optional[GatherCoverage] = None,
 ) -> str:
     """Render the per-arm precision/recall table + the AC4 pass/fail verdict.
 
@@ -563,6 +630,11 @@ def render_gather_precision_markdown(
     arm's pooled precision ≥ 0.7 AND recall ≥ 0.85. With no scored gather runs the
     section renders an explicit "not available — needs a live run" note (never a
     fabricated 0), so the section is ALWAYS present and self-explains its state.
+
+    ``coverage`` (when given, with ≥1 scored run) renders a visible line next to
+    the verdict saying how many scored runs were actually gradeable and which
+    tasks had no gradeable oracle at checkout — so a pooled number over a subset
+    of runs can never masquerade as full-corpus coverage.
     """
     lines: List[str] = []
     lines.append(_PRECISION_SECTION_TITLE)
@@ -570,20 +642,32 @@ def render_gather_precision_markdown(
     lines.append(
         "Did the JIT gatherer point at the RIGHT files? Each gather run's CONTEXT "
         "MANIFEST picks (the union of its \"Relevant files:\" and \"Pinned "
-        "symbols:\" sections) are scored against the task's `requiredContext` "
-        "answer key, then POOLED per arm. AC4 (#1023) requires the gather arm to "
-        f"reach **precision ≥ {AC4_PRECISION_FLOOR:.2f} at recall ≥ "
-        f"{AC4_RECALL_FLOOR:.2f}**."
+        "symbols:\" sections) are scored against the task's oracle "
+        "(`readContext` when declared, else `requiredContext`) filtered to the "
+        "files that EXIST at the checkout the gatherer saw, then POOLED per arm. "
+        "AC4 (#1023) requires the gather arm to reach **precision ≥ "
+        f"{AC4_PRECISION_FLOOR:.2f} at recall ≥ {AC4_RECALL_FLOOR:.2f}**."
     )
     lines.append("")
 
+    show_coverage = coverage is not None and coverage.scored_runs > 0
+
     if not reports:
-        lines.append(
-            "_Not available: no run carried a gather score. Real numbers need a "
-            "live `agentrail evals run --arm full-plus-gather` (the gather arm "
-            "writes a CONTEXT MANIFEST the runner scores); the scoring logic is "
-            "fixture-verified._"
-        )
+        if show_coverage:
+            assert coverage is not None
+            lines.append(
+                "_Not available: no scored run had a gradeable oracle at its "
+                "checkout (nothing fair to pool — not a fabricated 0)._"
+            )
+            lines.append("")
+            lines.append(f"**{_fmt_coverage_line(coverage)}**")
+        else:
+            lines.append(
+                "_Not available: no run carried a gather score. Real numbers need a "
+                "live `agentrail evals run --arm full-plus-gather` (the gather arm "
+                "writes a CONTEXT MANIFEST the runner scores); the scoring logic is "
+                "fixture-verified._"
+            )
         lines.append("")
         return "\n".join(lines)
 
@@ -606,6 +690,10 @@ def render_gather_precision_markdown(
             f"_AC4 verdict not available: this run has no `{GATHER_ON_ARM}` arm "
             f"(run `--arm {GATHER_ON_ARM}` to populate it)._"
         )
+        if show_coverage:
+            assert coverage is not None
+            lines.append("")
+            lines.append(f"**{_fmt_coverage_line(coverage)}**")
         lines.append("")
         return "\n".join(lines)
 
@@ -623,6 +711,54 @@ def render_gather_precision_markdown(
             f"recall ≥ {AC4_RECALL_FLOOR:.2f}. Do NOT turn the gather flag on."
         )
     lines.append(f"**{verdict}**")
+    if show_coverage:
+        assert coverage is not None
+        lines.append("")
+        lines.append(f"**{_fmt_coverage_line(coverage)}**")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _fmt_path_list(paths: Sequence[str]) -> str:
+    """Backticked comma list, or ``(none)`` for an empty list."""
+    if not paths:
+        return "(none)"
+    return ", ".join(f"`{path}`" for path in paths)
+
+
+def render_per_run_gather_details(records: Sequence["RunRecord"]) -> str:
+    """Render the per-run gather pick detail — raw picks, oracle, dropped.
+
+    One bullet per scored run so every pooled number can be audited back to the
+    picks it came from, and ungradeable runs show WHY they were excluded.
+    Records without a gather score render nothing (the gatherer did not run);
+    an all-empty input returns an empty string so the section only appears when
+    there is something to show.
+    """
+    entries: List[str] = []
+    for rec in records:
+        score = getattr(rec, "gather_score", None)
+        if score is None:
+            continue
+        if score.gradeable:
+            grade = (
+                f"precision {_fmt_ratio(score.precision)}, "
+                f"recall {_fmt_ratio(score.recall)}"
+            )
+        else:
+            reason = score.ungraded_reason or "no gradeable oracle"
+            grade = f"UNGRADED ({reason})"
+        entries.append(
+            f"- `{rec.task}` / `{rec.arm}` — {grade}; "
+            f"picked: {_fmt_path_list(score.selected_paths)}; "
+            f"oracle: {_fmt_path_list(score.required_paths)}; "
+            f"dropped (absent at checkout): "
+            f"{_fmt_path_list(score.dropped_oracle_paths)}"
+        )
+    if not entries:
+        return ""
+    lines = ["## Per-run gather picks", ""]
+    lines.extend(entries)
     lines.append("")
     return "\n".join(lines)
 
@@ -633,11 +769,20 @@ def render_gather_precision_from_records(
     """End-to-end: pool the records' gather scores and render the markdown section.
 
     The convenience the spine wires in, paired with
-    :func:`render_gather_report_from_ledger` for the token half. Records without a
-    gather score contribute nothing; an all-empty input renders the honest "not
-    available — needs a live run" note (never a fake 0).
+    :func:`render_gather_report_from_ledger` for the token half. Composes the
+    pooled per-arm table + AC4 verdict, the coverage line (how many scored runs
+    were gradeable), and the per-run pick detail. Records without a gather score
+    contribute nothing; an all-empty input renders the honest "not available —
+    needs a live run" note (never a fake 0).
     """
-    return render_gather_precision_markdown(aggregate_gather_precision(records))
+    section = render_gather_precision_markdown(
+        aggregate_gather_precision(records),
+        coverage=gather_precision_coverage(records),
+    )
+    detail = render_per_run_gather_details(records)
+    if detail:
+        section = f"{section}\n{detail}"
+    return section
 
 
 __all__ = [
@@ -658,6 +803,9 @@ __all__ = [
     "AC4_RECALL_FLOOR",
     "ArmPrecisionReport",
     "aggregate_gather_precision",
+    "GatherCoverage",
+    "gather_precision_coverage",
     "render_gather_precision_markdown",
+    "render_per_run_gather_details",
     "render_gather_precision_from_records",
 ]

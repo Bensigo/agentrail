@@ -65,16 +65,21 @@ def _write_phase(
     finished_at: Optional[str] = "2026-07-05T10:05:00Z",
     exit_status: int = 0,
     with_output: bool = True,
+    verdict: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Write a phase dir (agentrail.run.artifacts.write_phase_status shape).
 
     dir_name is the directory name (may be retry-suffixed, e.g. "execute-2");
     phase_field is the "phase" key inside status.json, which the real pipeline
     always sets to the *base* name even inside a retry dir — defaults to
-    dir_name when not overridden.
+    dir_name when not overridden. ``verdict``, when given, mirrors what
+    agentrail.run.artifacts.write_phase_verdict merges onto a verify phase's
+    status.json post-#1181; omitted by default (no "verdict" key at all),
+    matching a phase status.json that predates the write-back or was never a
+    verify phase.
     """
     phase_dir = run_dir / dir_name
-    _write_json(phase_dir / "status.json", {
+    payload: Dict[str, Any] = {
         "phase": phase_field or dir_name,
         "status": status,
         "startedAt": started_at,
@@ -84,7 +89,10 @@ def _write_phase(
         "outputFile": f"{dir_name}/output.md" if with_output else None,
         "executionAttempt": 1,
         "maxExecutionAttempts": 3,
-    })
+    }
+    if verdict is not None:
+        payload["verdict"] = verdict
+    _write_json(phase_dir / "status.json", payload)
     if with_output:
         (phase_dir / "output.md").write_text("phase output\n", encoding="utf-8")
     return phase_dir
@@ -141,7 +149,10 @@ def test_modern_full_run_with_ledger(tmp_path: Path) -> None:
     ))
     _write_phase(run_dir, "plan", started_at="2026-07-05T10:00:05Z", finished_at="2026-07-05T10:02:00Z")
     _write_phase(run_dir, "execute", started_at="2026-07-05T10:02:00Z", finished_at="2026-07-05T10:10:00Z")
-    _write_phase(run_dir, "verify", started_at="2026-07-05T10:10:00Z", finished_at="2026-07-05T10:12:00Z")
+    _write_phase(
+        run_dir, "verify", started_at="2026-07-05T10:10:00Z", finished_at="2026-07-05T10:12:00Z",
+        verdict={"accepted": True, "reason": "tests pin the AC"},
+    )
 
     ledger_path = tmp_path / "cost-events.jsonl"
     _write_ledger(ledger_path, [
@@ -190,6 +201,9 @@ def test_modern_full_run_with_ledger(tmp_path: Path) -> None:
     assert record["objective_gate"] == {"passed": True, "reason": "tests green"}
     assert record["review"] == {"outcome": "approved"}
     assert record["verify_phase_ran"] is True
+    assert record["verify_verdict"] == {"accepted": True, "reason": "tests pin the AC"}
+    verify_phase = next(p for p in record["phases"] if p["name"] == "verify")
+    assert verify_phase["verdict"] == {"accepted": True, "reason": "tests pin the AC"}
     assert record["blocked_reason"] is None
     assert record["verifier_findings_file"] is None
     assert record["ci_outcome"] is None
@@ -536,3 +550,113 @@ def test_cli_unknown_option_returns_2(capsys: pytest.CaptureFixture) -> None:
     rc = run_run_records(["--bogus"])
     assert rc == 2
     assert "Unknown option: --bogus" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Scenario 9: verify verdict pass-through + missing[] semantics (issue #1181)
+# ---------------------------------------------------------------------------
+#
+# A phase's status.json is written purely from the process exit code: a verify
+# agent that runs cleanly but REJECTS the change in prose is otherwise
+# structurally indistinguishable from a genuine approval (status="completed",
+# exitStatus=0 either way). agentrail.run.pipeline now writes the parsed
+# Verdict back onto verify/status.json (agentrail.run.artifacts.write_phase_verdict)
+# right after agentrail.run.verifier.parse_verdict runs; these tests exercise
+# how that structured field surfaces in the assembled record.
+
+def test_verify_phase_without_verdict_field_flags_missing(tmp_path: Path) -> None:
+    """A verify phase dir exists but its status.json predates the #1181
+    write-back (no "verdict" key at all) -> verify_verdict is null AND the gap
+    is named in missing, distinct from "no verify phase ran"."""
+    run_id = "20260610-090000-issue-42-claude-7777"
+    run_dir = tmp_path / run_id
+    _write_json(run_dir / "run.json", _run_json(targetIssue=42))
+    _write_phase(run_dir, "execute", started_at="2026-06-10T09:00:05Z", finished_at="2026-06-10T09:02:00Z")
+    _write_phase(run_dir, "verify", started_at="2026-06-10T09:02:00Z", finished_at="2026-06-10T09:04:00Z")
+
+    record = assemble_run_record(run_dir, ledger_path=None)
+
+    assert record["verify_phase_ran"] is True
+    assert record["verify_verdict"] is None
+    verify_phase = next(p for p in record["phases"] if p["name"] == "verify")
+    assert verify_phase["verdict"] is None
+    assert "verify verdict (absent in verify/status.json)" in record["missing"]
+
+
+def test_no_verify_phase_does_not_flag_missing_verdict(tmp_path: Path) -> None:
+    """No verify phase ran at all (e.g. no distinct verifier model configured)
+    -> verify_verdict is null but this must NOT be reported in missing (that
+    absence is already fully explained by verify_phase_ran=False)."""
+    run_id = "20260610-090000-issue-42-claude-8888"
+    run_dir = tmp_path / run_id
+    _write_json(run_dir / "run.json", _run_json(targetIssue=42))
+    _write_phase(run_dir, "execute", started_at="2026-06-10T09:00:05Z", finished_at="2026-06-10T09:02:00Z")
+
+    record = assemble_run_record(run_dir, ledger_path=None)
+
+    assert record["verify_phase_ran"] is False
+    assert record["verify_verdict"] is None
+    assert not any("verify verdict" in m for m in record["missing"])
+
+
+def test_verify_verdict_rejected_passes_through_per_phase_and_top_level(tmp_path: Path) -> None:
+    run_id = "20260706-090000-issue-99-claude-9999"
+    run_dir = tmp_path / run_id
+    _write_json(run_dir / "run.json", _run_json(targetIssue=99))
+    _write_phase(run_dir, "execute", started_at="2026-07-06T09:00:05Z", finished_at="2026-07-06T09:02:00Z")
+    _write_phase(
+        run_dir, "verify", started_at="2026-07-06T09:02:00Z", finished_at="2026-07-06T09:04:00Z",
+        verdict={"accepted": False, "reason": "tautological test, never observed red"},
+    )
+
+    record = assemble_run_record(run_dir, ledger_path=None)
+
+    expected = {"accepted": False, "reason": "tautological test, never observed red"}
+    assert record["verify_verdict"] == expected
+    verify_phase = next(p for p in record["phases"] if p["name"] == "verify")
+    assert verify_phase["verdict"] == expected
+    # A rejected verdict is not itself a data gap — the field IS present.
+    assert not any("verify verdict" in m for m in record["missing"])
+
+
+def test_ac3_prose_reject_with_clean_exit_is_distinguishable_from_approval(tmp_path: Path) -> None:
+    """AC3 regression (issue #1181): reproduce the historical false-green shape
+    — the verify agent process exits 0 and its own status.json says
+    status="completed" exactly as an approval would, but its output.md is a
+    prose REJECT. Before this fix, nothing in the phase's own artifacts (nor
+    the assembled record) distinguished this from a genuine approval; only the
+    structured "verdict" field does. This pins that the structured field alone
+    is sufficient to tell them apart — a judge/consumer must not need to
+    re-parse output.md prose."""
+    run_id = "20260628-090000-issue-1181-claude-aaaa"
+    run_dir = tmp_path / run_id
+    _write_json(run_dir / "run.json", _run_json(targetIssue=1181))
+    _write_phase(run_dir, "execute", started_at="2026-06-28T09:00:05Z", finished_at="2026-06-28T09:02:00Z")
+
+    # The historical shape: clean process exit, "completed" status — nothing
+    # here says REJECT ...
+    verify_dir = _write_phase(
+        run_dir, "verify", status="completed", exit_status=0,
+        started_at="2026-06-28T09:02:00Z", finished_at="2026-06-28T09:04:00Z",
+        with_output=False,
+        # ... except the structured verdict the #1181 fix now writes back:
+        verdict={"accepted": False, "reason": "asserts nothing about the acceptance criteria"},
+    )
+    # ... and the agent's own prose, buried in output.md, is the only OTHER
+    # place a rejection shows up pre-fix — a judge should NOT need to parse this.
+    (verify_dir / "output.md").write_text(
+        'VERDICT: {"verdict": "reject", "reason": "asserts nothing about the acceptance criteria"}\n',
+        encoding="utf-8",
+    )
+
+    record = assemble_run_record(run_dir, ledger_path=None)
+
+    verify_phase = next(p for p in record["phases"] if p["name"] == "verify")
+    # The structurally ambiguous fields, taken alone, look exactly like an
+    # approval — this is precisely the bug #1181 fixes.
+    assert verify_phase["status"] == "completed"
+    assert verify_phase["exit_status"] == 0
+    # The verdict field is what actually distinguishes reject from accept.
+    assert verify_phase["verdict"]["accepted"] is False
+    assert record["verify_verdict"]["accepted"] is False
+    assert not any("verify verdict" in m for m in record["missing"])

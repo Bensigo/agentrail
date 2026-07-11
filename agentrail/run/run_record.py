@@ -89,6 +89,7 @@ def _read_phase(phase_dir: Path, missing: List[str]) -> Dict[str, Any]:
         "exit_status": status.get("exitStatus"),
         "started_at": status.get("startedAt"),
         "finished_at": status.get("finishedAt"),
+        "verdict": status.get("verdict"),
         "output_file": output_file,
         "tokens": None,
         "cost_usd": None,
@@ -196,6 +197,23 @@ def assemble_run_record(run_dir: Path, ledger_path: Optional[Path]) -> dict:
     finished_at = max(finished_candidates) if finished_candidates else None
     verify_phase_ran = any(p["name"] == "verify" for p in phases)
 
+    # A verify phase's parsed verdict (issue #1181): exit code alone cannot
+    # distinguish a verifier that cleanly REJECTED in prose from a genuine
+    # approval, so the phase's own status.json carries a structured
+    # {"accepted": bool, "reason": str} verdict (written by
+    # artifacts.write_phase_verdict). Surface it at the top level for the
+    # common "did verify actually approve this?" query. Only flag it in
+    # ``missing`` when verify/status.json was itself readable but lacks the
+    # field — a verify phase that never wrote a status.json at all is already
+    # reported via _read_phase's own "verify/status.json (absent)" entry, so
+    # this must not double-report that case.
+    verify_phase = next((p for p in phases if p["name"] == "verify"), None)
+    verify_verdict = verify_phase["verdict"] if verify_phase else None
+    if verify_phase is not None:
+        verify_status, _verify_status_reason = _read_json_safe(run_dir / "verify" / "status.json")
+        if verify_status is not None and "verdict" not in verify_status:
+            missing.append("verify verdict (absent in verify/status.json)")
+
     # -- cost ledger --------------------------------------------------------
     events, ledger_missing = _read_ledger_events(
         Path(ledger_path) if ledger_path is not None else None, run_id
@@ -228,6 +246,7 @@ def assemble_run_record(run_dir: Path, ledger_path: Optional[Path]) -> dict:
         "objective_gate": run_json.get("objectiveGate"),
         "review": run_json.get("review"),
         "verify_phase_ran": verify_phase_ran,
+        "verify_verdict": verify_verdict,
         "blocked_reason": run_json.get("blockedReason"),
         "verifier_findings_file": run_json.get("verifierFindingsFile"),
         # Reserved for the enrichment slice (resolving CI/PR/review outcomes

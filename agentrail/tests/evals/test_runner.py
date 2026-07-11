@@ -304,6 +304,12 @@ def test_run_returns_a_run_record_with_the_contract_fields(corpus_task: CorpusTa
     assert record.gate_passed is True
     assert len(record.retries) == 1
     assert record.retries[0].reason == "gate red"
+    # #1169 forensics fields: no verdicts from this fake (it never sets any,
+    # matching the honest "no verdict-bearing phase ran" default), but the
+    # wall-clock brackets are always populated on a successful run.
+    assert record.verdicts == []
+    assert record.started_at is not None
+    assert record.finished_at is not None
 
 
 def test_run_record_gate_passed_is_a_real_bool(corpus_task: CorpusTask) -> None:
@@ -1502,3 +1508,197 @@ def test_is_network_artifact_false_for_real_models_and_none():
     assert is_network_artifact("claude-opus-4-8") is False
     assert is_network_artifact("") is False
     assert is_network_artifact(None) is False
+
+
+# ---------------------------------------------------------------------------
+# Verdict harvest off the phase-output filesystem, and forensic wall-clock
+# brackets (#1169).
+#
+# The best-of-N critic loop and the standalone verify phase each write a
+# ``VERDICT: {"verdict": "accept"|"reject", "reason": ...}`` JSON block into
+# their own ``<phase>/output.md`` under the run's log root
+# (``<workdir>/.agentrail-runs/host-run/<phase>/output.md`` —
+# ``_RUN_LOG_ROOT_RELPATH``). ``SandboxAgentExecutor.execute`` harvests every
+# phase directory that actually produced a parseable verdict, in canonical
+# phase order, BEFORE ``runner.run``'s ``finally`` tears the workdir down, and
+# threads the result onto ``AgentExecution.verdicts``.
+#
+# ``_harvest_verdicts`` itself is a small, pure ``Path -> List[Dict]`` helper
+# with no executor/clone/capture_usage machinery involved, so — matching this
+# file's stated policy of testing the runner's expensive seam SPARINGLY — its
+# parsing/ordering/skip behaviour is unit-tested directly; one lighter test
+# below pins the WIRING between ``SandboxAgentExecutor.execute`` and the
+# harvest. ``run()`` also brackets the executor call with real UTC timestamps
+# (independent of ``clock()``'s monotonic DURATION reading) so a forensics
+# record can be ordered against other systems' logs.
+# ---------------------------------------------------------------------------
+
+
+def _write_phase_output(workdir: Path, phase: str, text: str) -> None:
+    """Materialize ``<workdir>/.agentrail-runs/host-run/<phase>/output.md``.
+
+    Mirrors exactly where the live pipeline (``agentrail/run/pipeline.py``)
+    writes each phase's raw agent reply inside an eval run's workdir.
+    """
+    phase_dir = workdir / ".agentrail-runs" / "host-run" / phase
+    phase_dir.mkdir(parents=True, exist_ok=True)
+    (phase_dir / "output.md").write_text(text, encoding="utf-8")
+
+
+def test_harvest_verdicts_parses_an_accept_verdict_from_the_critic_phase(
+    tmp_path: Path,
+) -> None:
+    from agentrail.evals.runner import _harvest_verdicts
+
+    _write_phase_output(
+        tmp_path,
+        "critic",
+        'Looks good.\n\nVERDICT: {"verdict": "accept", "reason": "matches the diff"}\n',
+    )
+    assert _harvest_verdicts(tmp_path) == [
+        {"phase": "critic", "accepted": True, "reason": "matches the diff"}
+    ]
+
+
+def test_harvest_verdicts_parses_a_reject_verdict_from_the_verify_phase(
+    tmp_path: Path,
+) -> None:
+    from agentrail.evals.runner import _harvest_verdicts
+
+    _write_phase_output(
+        tmp_path,
+        "verify",
+        'VERDICT: {"verdict": "reject", "reason": "hidden tests still red"}\n',
+    )
+    assert _harvest_verdicts(tmp_path) == [
+        {"phase": "verify", "accepted": False, "reason": "hidden tests still red"}
+    ]
+
+
+def test_harvest_verdicts_skips_a_phase_with_no_verdict_marker(
+    tmp_path: Path,
+) -> None:
+    """A prose-only phase (``plan``/``gather``/``execute``) is SKIPPED, never
+    fabricated into a false reject — the presence check runs BEFORE the
+    fail-closed parse (``parse_verdict`` always returns a ``Verdict``, so
+    skipping the presence check would manufacture a reject for every phase
+    that never produced one).
+    """
+    from agentrail.evals.runner import _harvest_verdicts
+
+    _write_phase_output(
+        tmp_path, "gather", "CONTEXT MANIFEST\nRelevant files:\n- foo.py\n"
+    )
+    _write_phase_output(
+        tmp_path, "critic", 'VERDICT: {"verdict": "accept", "reason": "ok"}\n'
+    )
+    assert _harvest_verdicts(tmp_path) == [
+        {"phase": "critic", "accepted": True, "reason": "ok"}
+    ]
+
+
+def test_harvest_verdicts_orders_critic_passes_numerically_not_lexically(
+    tmp_path: Path,
+) -> None:
+    """``critic-10`` must sort AFTER ``critic-2`` — a lexical sort would put it
+    before (``"1" < "2"``), scrambling the best-of-N loop's real chronological
+    order.
+    """
+    from agentrail.evals.runner import _harvest_verdicts
+
+    _write_phase_output(
+        tmp_path, "critic-10", 'VERDICT: {"verdict": "accept", "reason": "pass 10"}\n'
+    )
+    _write_phase_output(
+        tmp_path, "critic", 'VERDICT: {"verdict": "reject", "reason": "pass 1"}\n'
+    )
+    _write_phase_output(
+        tmp_path, "critic-2", 'VERDICT: {"verdict": "reject", "reason": "pass 2"}\n'
+    )
+
+    result = _harvest_verdicts(tmp_path)
+    assert [v["phase"] for v in result] == ["critic", "critic-2", "critic-10"]
+
+
+def test_harvest_verdicts_empty_when_no_log_root_exists(tmp_path: Path) -> None:
+    """No ``.agentrail-runs`` dir at all (e.g. a synthetic run) → ``[]``, never
+    a crash — mirrors ``_harvest_cost_events``'s / ``_harvest_gather_manifest``'s
+    best-effort contract.
+    """
+    from agentrail.evals.runner import _harvest_verdicts
+
+    assert _harvest_verdicts(tmp_path) == []
+
+
+def test_harvest_verdicts_empty_when_phase_dir_has_no_output_file(
+    tmp_path: Path,
+) -> None:
+    """A phase directory exists but never wrote ``output.md`` → skipped, not
+    an error.
+    """
+    from agentrail.evals.runner import _harvest_verdicts
+
+    (tmp_path / ".agentrail-runs" / "host-run" / "gather").mkdir(parents=True)
+    assert _harvest_verdicts(tmp_path) == []
+
+
+def test_execute_harvests_verdicts_from_the_workdir_before_returning(
+    corpus_task: CorpusTask, tmp_path: Path, monkeypatch
+) -> None:
+    """Pins the WIRING: ``SandboxAgentExecutor.execute`` threads
+    ``_harvest_verdicts(workdir)``'s result onto ``AgentExecution.verdicts``,
+    while the workdir still exists (before ``runner.run``'s teardown). The
+    harvest's own parsing/ordering/skip behaviour is unit-tested directly
+    above; this only proves the two are wired together.
+    """
+
+    def fake_run_issue_on_host(*, repo_url, ref, issue_ref, prompt=None, **kwargs):
+        from agentrail.sandbox.docker_runner import RunResult
+
+        return RunResult(status="green")
+
+    import agentrail.sandbox.native_runner as nr
+
+    monkeypatch.setattr(nr, "run_issue_on_host", fake_run_issue_on_host)
+    monkeypatch.setattr(
+        "agentrail.run.usage_capture.capture_usage", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "agentrail.evals.runner._capture_workdir_diff", lambda *a, **k: ""
+    )
+
+    workdir = tmp_path / "agent-wd"
+    workdir.mkdir()
+    _write_phase_output(
+        workdir,
+        "critic",
+        'VERDICT: {"verdict": "accept", "reason": "matches the diff"}\n',
+    )
+
+    execution = SandboxAgentExecutor().execute(
+        task=corpus_task, arm=full(), workdir=workdir
+    )
+
+    assert execution.verdicts == [
+        {"phase": "critic", "accepted": True, "reason": "matches the diff"}
+    ]
+
+
+def test_run_started_at_and_finished_at_are_real_ordered_utc_timestamps(
+    corpus_task: CorpusTask,
+) -> None:
+    """``run()`` brackets the executor call with real UTC timestamps (#1169) —
+    independent of ``clock()``'s monotonic DURATION reading — so a forensics
+    record can be ordered against other systems' logs.
+    """
+    from datetime import datetime
+
+    record = run(corpus_task, full(), executor=FakeExecutor())
+
+    assert record.started_at is not None
+    assert record.finished_at is not None
+    started = datetime.fromisoformat(record.started_at)
+    finished = datetime.fromisoformat(record.finished_at)
+    assert started.tzinfo is not None
+    assert finished.tzinfo is not None
+    assert finished >= started

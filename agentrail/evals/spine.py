@@ -150,6 +150,14 @@ class HiddenTestRunner(Protocol):
 
     The implementation MUST NOT mutate the ``RunRecord`` or any file inside the
     runner's (already-destroyed) workdir.
+
+    Optional richer entrypoint (issue #1169, AC3): an implementation MAY also
+    define ``run_hidden_tests_with_output(self, *, task, run_record) ->
+    tuple[bool, str]``, returning the gate's verbatim stdout/stderr alongside
+    the same bool. The spine duck-types this (``hasattr``) rather than adding
+    it to the Protocol, so existing bool-only implementations keep working
+    unchanged — ``ProductionHiddenTestRunner`` is the one production
+    implementation of it today.
     """
 
     def run_hidden_tests(self, *, task: CorpusTask, run_record: RunRecord) -> bool:
@@ -262,6 +270,8 @@ def _append_cost_ledger_events(
     events: Sequence[Dict[str, Any]],
     *,
     arm_name: str,
+    task_name: str,
+    rep: int,
     lock: "threading.Lock",
 ) -> None:
     """Append a run's per-phase cost events to the aggregate ledger, arm-tagged.
@@ -272,6 +282,11 @@ def _append_cost_ledger_events(
     it to the single aggregate ledger the report reads. Tagging every line with
     ``arm`` is exactly what ``aggregate_gather_tokens`` needs to attribute tokens
     to ``full`` vs ``full-plus-gather`` WITHOUT a separate ``run_id → arm`` map.
+
+    Issue #1169 AC2: every event is ALSO stamped with ``task`` and ``rep`` so a
+    ledger line can be traced back to the exact repetition that produced it —
+    the legacy ``"host-run"`` constant some events still carry may remain as a
+    legacy field, but it is no longer the only identity on the line.
 
     Best-effort and never fatal — the ledger is diagnostic evidence, not part of
     any verdict, so an IO or serialization problem is swallowed (a warning, no
@@ -284,6 +299,8 @@ def _append_cost_ledger_events(
     for ev in events:
         rec = dict(ev)
         rec["arm"] = arm_name
+        rec["task"] = task_name
+        rec["rep"] = rep
         try:
             lines.append(json.dumps(rec))
         except (TypeError, ValueError):
@@ -298,6 +315,122 @@ def _append_cost_ledger_events(
                 fh.write(payload)
     except OSError as exc:
         _log.warning("could not append cost ledger events to %s: %s", ledger_path, exc)
+
+
+# ---------------------------------------------------------------------------
+# Per-repetition forensics record (#1169): identity, verbatim gate output,
+# verdicts, per-phase cost — one JSON file per (task, arm, rep) so "what
+# happened on this exact rep" never requires opening run.log or the ledger.
+# ---------------------------------------------------------------------------
+
+
+def _aggregate_phase_usage(cost_events: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+    """Bucket a run's harvested cost events by ``phase``, summing tokens + cost.
+
+    Defensive by design: cost events are diagnostic evidence produced by a
+    separate sandbox-side writer (``agentrail.run.cost_push.build_cost_record``),
+    not a contract this module owns, so a missing/malformed field must never
+    raise here. Events missing a ``phase`` are bucketed under ``"unknown"``
+    rather than dropped, so their tokens/cost are never silently lost from the
+    per-rep total.
+    """
+    usage: Dict[str, Dict[str, float]] = {}
+    for ev in cost_events:
+        if not isinstance(ev, dict):
+            continue
+        phase = ev.get("phase") or "unknown"
+        if not isinstance(phase, str):
+            phase = "unknown"
+        bucket = usage.setdefault(phase, {"tokens": 0.0, "cost_usd": 0.0})
+        tokens = ev.get("tokens")
+        if isinstance(tokens, (int, float)):
+            bucket["tokens"] += float(tokens)
+        cost_usd = ev.get("cost_usd")
+        if isinstance(cost_usd, (int, float)):
+            bucket["cost_usd"] += float(cost_usd)
+    return usage
+
+
+def _forensics_record_path(records_dir: Path, *, task_name: str, arm_name: str, rep: int) -> Path:
+    return records_dir / f"{task_name}--{arm_name}--rep{rep}.json"
+
+
+def _write_forensics_record(
+    records_dir: Path,
+    lock: "threading.Lock",
+    *,
+    task_name: str,
+    arm_name: str,
+    rep: int,
+    solved: bool,
+    false_green: bool,
+    synthetic: bool,
+    gate_output: str,
+    verdicts: Sequence[Dict[str, Any]],
+    cost_events: Sequence[Dict[str, Any]],
+    diff: str,
+    started_at: Optional[str],
+    finished_at: Optional[str],
+) -> None:
+    """Write one per-rep forensics record (#1169 AC1): identity, verbatim gate
+    output, verdicts, per-phase cost — everything needed to answer "what
+    happened on this exact rep" without opening ``run.log`` or the cost ledger.
+
+    Best-effort and never fatal, matching ``_append_cost_ledger_events``: this
+    is diagnostic evidence, not part of any verdict, so a filesystem or
+    serialization problem is logged and swallowed rather than sinking an
+    otherwise-valid eval unit.
+
+    The verbatim diff (when non-empty) is written to a SIBLING ``.diff`` file
+    instead of embedded in the JSON — it is arbitrary free-form text that can
+    be large, and a standalone file stays diffable/greppable on its own.
+    ``diff_path`` is the sibling file's name (relative to this record's own
+    directory) — ``None`` (never a path to an empty file) when there was no
+    diff, matching the None-vs-empty discipline used throughout this record:
+    ``None`` means "not applicable", never a fabricated empty value.
+
+    Each ``(task, arm, rep)`` is unique within one ``run_spine`` call (the
+    ``units`` list has exactly one entry per combination), so concurrent units
+    never target the same record file; ``lock`` exists for the same reason
+    ``cost_ledger_lock`` does elsewhere in this module — cheap, obviously-
+    correct serialization of a filesystem side effect, not a performance path.
+    """
+    try:
+        with lock:
+            records_dir.mkdir(parents=True, exist_ok=True)
+            record_path = _forensics_record_path(
+                records_dir, task_name=task_name, arm_name=arm_name, rep=rep
+            )
+            diff_path: Optional[Path] = None
+            if diff.strip():
+                diff_path = record_path.with_suffix(".diff")
+            payload = {
+                "task": task_name,
+                "arm": arm_name,
+                "rep": rep,
+                "solved": solved,
+                "false_green": false_green,
+                "synthetic": synthetic,
+                "gate_output": gate_output,
+                "verdicts": list(verdicts),
+                "phase_usage": _aggregate_phase_usage(cost_events),
+                "diff_path": diff_path.name if diff_path is not None else None,
+                "started_at": started_at,
+                "finished_at": finished_at,
+            }
+            record_path.write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            if diff_path is not None:
+                diff_path.write_text(diff, encoding="utf-8")
+    except (OSError, TypeError, ValueError) as exc:
+        _log.warning(
+            "could not write forensics record for task=%s arm=%s rep=%s: %s",
+            task_name,
+            arm_name,
+            rep,
+            exc,
+        )
 
 
 def run_spine(
@@ -398,15 +531,15 @@ def run_spine(
     # so results re-assemble deterministically regardless of completion order —
     # ``ThreadPoolExecutor.map`` yields in submission order, so a parallel run
     # produces byte-identical repetition ordering to the sequential one.
-    units: List[Tuple[CorpusTask, Arm]] = [
-        (task, arm)
+    units: List[Tuple[CorpusTask, Arm, int]] = [
+        (task, arm, rep_index)
         for task in tasks
         for arm in config.arms
-        for _rep in range(config.reps)
+        for rep_index in range(config.reps)
     ]
 
-    def _run_unit(unit: Tuple[CorpusTask, Arm]):
-        task, arm = unit
+    def _run_unit(unit: Tuple[CorpusTask, Arm, int]):
+        task, arm, rep_index = unit
         # Step 1 — runner runs to completion BEFORE any hidden-test code path
         # is reached. The runner enforces AC3 spatially (no answer key in the
         # agent's workdir); this per-unit sequencing enforces AC2 temporally.
@@ -437,10 +570,29 @@ def run_spine(
             )
 
         # Step 2 — hidden-test execution, AFTER the runner returned (fail-soft).
+        # Issue #1169 AC3: prefer the richer ``run_hidden_tests_with_output``
+        # entrypoint (implemented on ``ProductionHiddenTestRunner``), which ALSO
+        # returns the gate's verbatim stdout/stderr — the evidence a per-rep
+        # forensics record needs to answer "what did the gate print" without
+        # opening run.log. This is duck-typed (``hasattr``), not a Protocol
+        # change, so any ``HiddenTestRunner`` that predates #1169 and only
+        # implements the original bool-only ``run_hidden_tests`` keeps working
+        # unchanged — ``gate_output`` is then honestly empty rather than
+        # fabricated.
+        gate_output = ""
         try:
-            hidden_tests_passed = hidden_test_runner.run_hidden_tests(
-                task=task, run_record=record
-            )
+            if hasattr(hidden_test_runner, "run_hidden_tests_with_output"):
+                hidden_tests_passed, gate_output = (
+                    hidden_test_runner.run_hidden_tests_with_output(
+                        task=task, run_record=record
+                    )
+                )
+                if not isinstance(gate_output, str):
+                    gate_output = ""
+            else:
+                hidden_tests_passed = hidden_test_runner.run_hidden_tests(
+                    task=task, run_record=record
+                )
         except Exception as exc:  # noqa: BLE001 - survive a crashed scorer run
             return _failed_unit_result(unit, exc)
         if not isinstance(hidden_tests_passed, bool):
@@ -494,8 +646,32 @@ def run_spine(
                 config.cost_ledger_path,
                 record.cost_events,
                 arm_name=arm.name,
+                task_name=task.name,
+                rep=rep_index + 1,
                 lock=cost_ledger_lock,
             )
+        # Per-rep forensics record (#1169 AC1): identity, verbatim gate output,
+        # verdicts, per-phase cost — written for EVERY rep (unlike the cost
+        # ledger above, which is opt-in via ``cost_ledger_path`` and skips
+        # synthetic runs) so "what happened on this exact rep" is always
+        # discoverable, synthetic runs included (AC4 — recorded with
+        # ``synthetic=True`` and zero-cost usage, not silently omitted).
+        _write_forensics_record(
+            records_dir,
+            records_lock,
+            task_name=task.name,
+            arm_name=arm.name,
+            rep=rep_index + 1,
+            solved=verdict.solved,
+            false_green=verdict.false_green,
+            synthetic=rep.network_artifact,
+            gate_output=gate_output,
+            verdicts=record.verdicts,
+            cost_events=record.cost_events,
+            diff=record.diff,
+            started_at=record.started_at,
+            finished_at=record.finished_at,
+        )
         # Issue #960: keep the RunRecord joined with its solved verdict (a pure
         # ScoredRun join — no new truth) so the intrinsic probes can be driven
         # from this real run instead of being dropped.
@@ -509,15 +685,26 @@ def run_spine(
     # final write below re-renders the complete report and appends the probes.
     date_str = date or _date.today().isoformat()
     base = Path(reports_dir) if reports_dir is not None else default_reports_dir()
+    # Per-rep forensics records (#1169 AC1) live in ``run-records/<date>/`` — a
+    # SIBLING of the dated markdown report inside the same reports directory,
+    # so every existing test that overrides ``reports_dir`` already isolates
+    # the new forensics writes too. A separate lock from ``cost_ledger_lock``:
+    # the two write to different files/directories and need not serialize
+    # against each other. ``_run_unit`` (defined above) and
+    # ``_failed_unit_result`` (defined below) both close over these two names
+    # — safe because neither is actually CALLED until the dispatch loop further
+    # down, well after both are assigned here.
+    records_dir = base / "run-records" / date_str
+    records_lock = threading.Lock()
 
-    def _failed_unit_result(unit: Tuple[CorpusTask, Arm], exc: Exception):
+    def _failed_unit_result(unit: Tuple[CorpusTask, Arm, int], exc: Exception):
         # Fail-soft: a single unit raising (an unexpected crash, or a contract
         # violation from a defective executor) must NOT zero out the whole
         # corpus run. Record it as an unsolved repetition and keep going — an
         # errored task is honestly a failure, scored 0, and the other units'
         # numbers are preserved. There is no RunRecord to join, so the probe
         # ScoredRun is omitted (the probes tolerate fewer rows than reps).
-        task, arm = unit
+        task, arm, rep_index = unit
         _log.warning("eval unit failed task=%s arm=%s: %s", task.name, arm.name, exc)
         rep = RepetitionRecord(
             task=task.name,
@@ -536,6 +723,27 @@ def run_spine(
         )
         verdict = Verdict(
             task=task.name, arm=arm.name, solved=False, gate_passed=False, false_green=False
+        )
+        # Per-rep forensics record (#1169): a crash still gets a record — the
+        # abort message IS the "what did the gate print" answer here (there is
+        # no RunRecord, so no verdicts/cost/diff/timestamps were ever
+        # captured; None/empty throughout, never fabricated, matching this
+        # unit's honest ``network_artifact=False`` default above).
+        _write_forensics_record(
+            records_dir,
+            records_lock,
+            task_name=task.name,
+            arm_name=arm.name,
+            rep=rep_index + 1,
+            solved=False,
+            false_green=False,
+            synthetic=rep.network_artifact,
+            gate_output=str(exc),
+            verdicts=[],
+            cost_events=[],
+            diff="",
+            started_at=None,
+            finished_at=None,
         )
         return rep, verdict, None
 

@@ -24,7 +24,7 @@ apps/jace/agent/subagents/qa/
   tools/*.ts                    # disableTool() sentinels (see §4 — web_fetch NOT stripped)
 ```
 
-Root wiring: a new "QA-checking a shipped change" delegation section in `apps/jace/agent/instructions.md`, sibling to triage's "Diagnosing a failed run". Model: gateway override to the **sonnet-class tier** via `chooseModel(env, { gatewayModelId: SONNET_GATEWAY_MODEL_ID })` (new constant in `agent/lib/model.core.mjs`, pattern from `HAIKU_GATEWAY_MODEL_ID`) — QA is multi-step and judgmental, heavier than triage's mechanical fetch-and-shape, lighter than root. Self-hosted (non-gateway) operators keep exactly the model they configured, same as triage.
+Root wiring: a new "QA-checking a shipped change" delegation section in `apps/jace/agent/instructions.md`, sibling to triage's "Diagnosing a failed run". Model: the **sonnet-class tier** — which is already the gateway default (`GATEWAY_MODEL_ID = "anthropic/claude-sonnet-4.6"` in `agent/lib/model.core.mjs`), so `qa/agent.ts` calls `chooseModel(process.env)` with **no override** and `model.core.mjs` is unchanged. QA is multi-step and judgmental, heavier than triage's mechanical fetch-and-shape (triage overrides down to haiku); root and QA share the default. Self-hosted (non-gateway) operators keep exactly the model they configured, same as triage.
 
 ## 3. Trigger & data flow
 
@@ -96,7 +96,7 @@ Two compose sidecar services next to the existing Playwright one. Both servers s
 
 - `test/qa.core.test.mjs` — schema validation: verdict rules, anti-confabulation rejections (§5), issue_draft coupling.
 - `test/qa-read-only.test.mjs` — every sentinel present and correctly named (a misnamed sentinel throws at resolve under Node 24); `web_fetch` deliberately absent from sentinels; no `child_process`/DB imports in the subagent tree.
-- `test/no-second-write-path.test.mjs` — extended: `qa` added to the roster; still exactly one write path (root's `create_issue`).
+- `test/no-second-write-path.test.mjs` — no edit needed: its subagent guarantee is a generic loop over `agent/subagents/*` (write-path regex + approval-gate regex + recursive `child_process` scan), so `qa` is auto-covered; verify it still passes unmodified.
 - Connection allowlist tests in `lib/connections.core.mjs` coverage: excluded tools (evaluate/upload/cookies) never allowlisted; URL resolvers honor env + fallback.
 - `eve build` green.
 

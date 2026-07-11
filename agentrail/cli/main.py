@@ -30,6 +30,7 @@ from agentrail.cli.commands.prompt import run_prompt
 from agentrail.cli.commands.skills import run_skills
 from agentrail.cli.commands.resume import run_resume
 from agentrail.cli.commands.run import run_run
+from agentrail.cli.commands.run_records import run_run_records
 from agentrail.cli.commands.status import run_status
 from agentrail.cli.commands.upgrade import run_upgrade
 from agentrail.cli.commands.timeline import run_timeline
@@ -48,6 +49,7 @@ def _usage() -> str:
         "  agentrail context query \"<task>\" [--target DIR]\n"
         "  agentrail run [--agent codex|claude] [--target DIR]\n"
         "  agentrail run issue NUMBER [--agent codex|claude] [--target DIR]\n"
+        "  agentrail run-records [--target DIR] [--since YYYY-MM-DD] [--force] [--json]\n"
         "  agentrail afk [--concurrency 2] [--max-waves 20] [--base main] [--dry-run]\n"
         "  agentrail heartbeat run [--workspace ID] [--once] [--interval SECONDS]\n"
         "  agentrail heartbeat serve [--workspace ID] [--port PORT]\n"
@@ -87,6 +89,7 @@ def _usage() -> str:
         "Commands:\n"
         "  context     Build/query the context index\n"
         "  run         Run a workflow\n"
+        "  run-records Assemble per-run production records (issue #1178)\n"
         "  afk         Run the AFK queue/worktree loop\n"
         "  heartbeat   Run the live Heartbeat dispatcher loop (MVP)\n"
         "  status      Show worktree / session status\n"
@@ -139,6 +142,7 @@ def main(argv: List[str] | None = None) -> int:
         "guardrails",                  # local registry read / doc regen
         "evals",                        # local eval-harness spine (#938)
         "status", "timeline", "cost",  # local read-only state
+        "run-records",                 # local read-only run-record assembly (#1178)
         "link", "console",             # local worktree↔session / TUI
     }
     if args[0] not in _OFFLINE_COMMANDS:
@@ -195,6 +199,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_prompt(args[1:])
     if args[0] == "run":
         return run_run(args[1:])
+    if args[0] == "run-records":
+        return run_run_records(args[1:])
     if args[0] == "upgrade":
         return run_upgrade(args[1:])
     if args[0] == "internal":

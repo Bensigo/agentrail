@@ -393,3 +393,43 @@ def test_real_corpus_has_at_least_one_abstain_task() -> None:
     tasks = load_corpus(include_held_out=True)
     abstain = [t for t in tasks if t.task_kind == "abstain"]
     assert abstain, "corpus must have at least one abstain task"
+
+
+# ---------------------------------------------------------------------------
+# readContext field (oracle fairness — the READ-time gather answer key)
+# ---------------------------------------------------------------------------
+
+
+def test_read_context_defaults_empty_when_absent(tmp_path: Path) -> None:
+    """readContext is optional; absent means 'fall back to requiredContext'."""
+    task = load_task(_write_task(tmp_path, record=_valid_record()))
+    assert task.read_context == []
+
+
+def test_read_context_loads_onto_record(tmp_path: Path) -> None:
+    rec = _valid_record()
+    rec["readContext"] = ["agentrail/example/reader.py", "agentrail/example/other.py"]
+    task = load_task(_write_task(tmp_path, record=rec))
+    assert task.read_context == [
+        "agentrail/example/reader.py",
+        "agentrail/example/other.py",
+    ]
+    # requiredContext stays untouched — readContext is a separate oracle.
+    assert task.required_context == ["agentrail/example/module.py"]
+
+
+def test_malformed_read_context_is_rejected(tmp_path: Path) -> None:
+    """A non-list (or empty-string entry) readContext is a config mistake, not a fallback."""
+    rec = _valid_record()
+    rec["readContext"] = "agentrail/example/reader.py"
+    task_dir = _write_task(tmp_path, record=rec)
+    with pytest.raises(CorpusError, match="readContext"):
+        load_task(task_dir)
+
+
+def test_read_context_with_empty_string_entry_is_rejected(tmp_path: Path) -> None:
+    rec = _valid_record()
+    rec["readContext"] = ["agentrail/example/reader.py", ""]
+    task_dir = _write_task(tmp_path, record=rec)
+    with pytest.raises(CorpusError, match="readContext"):
+        load_task(task_dir)

@@ -54,7 +54,7 @@ from agentrail.evals.arms import (
     new_flow_minus,
 )
 from agentrail.evals.corpus.loader import CorpusTask, HiddenTestRef
-from agentrail.evals.run_record import RetryEvent, RunRecord
+from agentrail.evals.run_record import NO_GRADEABLE_ORACLE_REASON, RetryEvent, RunRecord
 from agentrail.evals.runner import (
     SYNTHETIC_MODEL,
     AgentExecution,
@@ -73,8 +73,12 @@ MODEL = "claude-sonnet-4-5"
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
-def corpus_task(tmp_path: Path) -> CorpusTask:
+def _make_corpus_task(
+    tmp_path: Path,
+    *,
+    required_context: Optional[List[str]] = None,
+    read_context: Optional[List[str]] = None,
+) -> CorpusTask:
     """Materialize a minimal but FAITHFUL corpus task on disk.
 
     Layout (mirrors ``agentrail/evals/corpus/<task>/`` exactly):
@@ -88,7 +92,9 @@ def corpus_task(tmp_path: Path) -> CorpusTask:
 
     The hidden test file is a real file the loader's existence check accepts,
     and crucially it lives OUTSIDE ``workdir/`` so the runner's leak guard has
-    a real answer key to defend against.
+    a real answer key to defend against. ``read_context`` (when given) lands in
+    the optional ``readContext`` field — the READ-time oracle the gather scorer
+    prefers over ``requiredContext``.
     """
     task_dir = tmp_path / "sample-task"
     visible = task_dir / "workdir"
@@ -108,14 +114,22 @@ def corpus_task(tmp_path: Path) -> CorpusTask:
         "prompt": "Make X work.",
         "agentVisibleRoot": "workdir",
         "hiddenTests": {"root": "answer_key", "files": ["test_hidden.py"]},
-        "requiredContext": ["agentrail/evals/runner.py"],
+        "requiredContext": required_context or ["agentrail/evals/runner.py"],
         "difficulty": "easy",
     }
+    if read_context is not None:
+        task_json["readContext"] = read_context
     (task_dir / "task.json").write_text(json.dumps(task_json), encoding="utf-8")
 
     from agentrail.evals.corpus.loader import load_task
 
     return load_task(task_dir)
+
+
+@pytest.fixture()
+def corpus_task(tmp_path: Path) -> CorpusTask:
+    """The default minimal corpus task (see :func:`_make_corpus_task`)."""
+    return _make_corpus_task(tmp_path)
 
 
 @dataclass
@@ -175,6 +189,13 @@ class FakeExecutor:
     # faithful to production where the gather subagent authors this file.
     gather_manifest_to_write: Optional[str] = None
 
+    # Optional repo-relative files the executor materializes under its clone
+    # subtree (``workdir/repo/<rel>``) — the tree the gatherer actually saw.
+    # Faithful to production, where the executor clones the pinned repo into
+    # ``workdir/repo`` and the oracle-fairness existence filter checks the
+    # task's answer-key paths against exactly that checkout.
+    repo_files_to_write: Optional[List[str]] = None
+
     # Spy state — populated on every call so tests can introspect.
     invoked_with_arm: Optional[Arm] = None
     invoked_with_workdir: Optional[Path] = None
@@ -201,6 +222,11 @@ class FakeExecutor:
             )
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text(self.gather_manifest_to_write, encoding="utf-8")
+        if self.repo_files_to_write is not None:
+            for rel in self.repo_files_to_write:
+                stub = workdir / "repo" / rel
+                stub.parent.mkdir(parents=True, exist_ok=True)
+                stub.write_text("# stub — exists at checkout\n", encoding="utf-8")
         return AgentExecution(
             diff=self.diff,
             usage=self.usage,
@@ -948,10 +974,14 @@ def test_run_cost_events_empty_when_no_ledger(corpus_task: CorpusTask) -> None:
 #
 # When the gather phase runs it writes a CONTEXT MANIFEST at
 # ``workdir/.agentrail-runs/host-run/gather/output.md``. The runner must harvest
-# that file BEFORE teardown and score its picks against the task's
-# ``requiredContext`` answer key. These prove the score is attached correctly and
-# that a missing manifest reads as ``None`` (undefined), never a fabricated 0.
-# The corpus fixture's answer key is ``["agentrail/evals/runner.py"]``.
+# that file BEFORE teardown and score its picks against the task's FAIR oracle:
+# ``readContext`` when declared (else ``requiredContext``), EXISTENCE-FILTERED to
+# the files present in the executor's checkout (``workdir/repo`` — the tree the
+# gatherer saw). These prove the score is attached correctly, that a missing
+# manifest reads as ``None`` (undefined), never a fabricated 0, and that an
+# oracle with no gradeable entries yields an explicit UNGRADED score rather
+# than a structural zero. The corpus fixture's answer key is
+# ``["agentrail/evals/runner.py"]``.
 # ---------------------------------------------------------------------------
 
 
@@ -966,7 +996,10 @@ def test_run_scores_the_gather_manifest_against_the_answer_key(
         "Checked, not relevant:\n"
         "- checked agentrail/evals/spine.py — orchestration, not the change\n"
     )
-    executor = FakeExecutor(gather_manifest_to_write=manifest)
+    executor = FakeExecutor(
+        gather_manifest_to_write=manifest,
+        repo_files_to_write=["agentrail/evals/runner.py"],
+    )
 
     record = run(corpus_task, full(), executor=executor)
 
@@ -976,6 +1009,9 @@ def test_run_scores_the_gather_manifest_against_the_answer_key(
     assert record.gather_score.intersection == 1
     assert record.gather_score.precision == 1.0
     assert record.gather_score.recall == 1.0
+    assert record.gather_score.dropped_oracle_paths == []
+    assert record.gather_score.ungraded_reason is None
+    assert record.gather_score.gradeable is True
     # The workdir the manifest lived in is gone — harvest happened before teardown.
     assert executor.invoked_with_workdir is not None
     assert not executor.invoked_with_workdir.exists()
@@ -988,12 +1024,123 @@ def test_run_gather_score_captures_a_wrong_pick(corpus_task: CorpusTask) -> None
         "Relevant files:\n"
         "- agentrail/evals/spine.py:1-10 — wrong pick, not the answer key\n"
     )
-    record = run(corpus_task, full(), executor=FakeExecutor(gather_manifest_to_write=manifest))
+    executor = FakeExecutor(
+        gather_manifest_to_write=manifest,
+        repo_files_to_write=["agentrail/evals/runner.py"],
+    )
+    record = run(corpus_task, full(), executor=executor)
 
     assert record.gather_score is not None
     assert record.gather_score.intersection == 0
     assert record.gather_score.precision == 0.0  # 1 pick, 0 correct
     assert record.gather_score.recall == 0.0  # real answer key, 0 hits
+    assert record.gather_score.gradeable is True
+
+
+def test_run_gather_score_existence_filters_the_oracle(tmp_path: Path) -> None:
+    """Oracle entries ABSENT at the checkout are dropped, not scored against.
+
+    A 2-entry answer key where only one file exists at the executor's checkout
+    (``workdir/repo``): the filtered oracle keeps the existing file, the absent
+    one lands in ``dropped_oracle_paths``, and a manifest picking exactly the
+    existing file scores a clean 1.0/1.0 — no structural miss for a file the
+    gatherer could never have picked.
+    """
+    task = _make_corpus_task(
+        tmp_path,
+        required_context=[
+            "agentrail/evals/runner.py",
+            "agentrail/evals/created_by_the_fix.py",
+        ],
+    )
+    manifest = (
+        "CONTEXT MANIFEST\n"
+        "Relevant files:\n"
+        "- agentrail/evals/runner.py:1-40 — the answer-key file\n"
+    )
+    executor = FakeExecutor(
+        gather_manifest_to_write=manifest,
+        repo_files_to_write=["agentrail/evals/runner.py"],
+    )
+
+    record = run(task, full(), executor=executor)
+
+    assert record.gather_score is not None
+    assert record.gather_score.required_paths == ["agentrail/evals/runner.py"]
+    assert record.gather_score.dropped_oracle_paths == [
+        "agentrail/evals/created_by_the_fix.py"
+    ]
+    assert record.gather_score.precision == 1.0
+    assert record.gather_score.recall == 1.0
+    assert record.gather_score.ungraded_reason is None
+    assert record.gather_score.gradeable is True
+
+
+def test_run_gather_score_ungraded_when_no_oracle_file_exists_at_checkout(
+    corpus_task: CorpusTask,
+) -> None:
+    """NO oracle file at checkout → explicit UNGRADED score, never a fake 0.
+
+    The fixture's answer key (``agentrail/evals/runner.py``) is never
+    materialized in the fake workdir, so the existence filter empties the
+    oracle. The runner must return a score (the gatherer DID run) carrying
+    ``ungraded_reason`` with precision/recall ``None`` — distinguishable from
+    both 'gatherer did not run' (score is None) and 'gatherer picked nothing'
+    (real 0.0 recall).
+    """
+    manifest = (
+        "CONTEXT MANIFEST\n"
+        "Relevant files:\n"
+        "- agentrail/evals/spine.py:1-10 — a pick, right or wrong\n"
+    )
+    record = run(corpus_task, full(), executor=FakeExecutor(gather_manifest_to_write=manifest))
+
+    score = record.gather_score
+    assert score is not None
+    assert score.precision is None
+    assert score.recall is None
+    assert score.ungraded_reason == NO_GRADEABLE_ORACLE_REASON
+    assert score.gradeable is False
+    assert score.required_paths == []
+    assert score.dropped_oracle_paths == ["agentrail/evals/runner.py"]
+    # Raw picks are preserved so the run can be re-graded offline.
+    assert score.selected_paths == ["agentrail/evals/spine.py"]
+    assert score.intersection == 0
+
+
+def test_run_gather_score_prefers_read_context_over_required_context(
+    tmp_path: Path,
+) -> None:
+    """A declared ``readContext`` IS the oracle; ``requiredContext`` is ignored.
+
+    ``requiredContext`` names a fix-produced file (absent at checkout) while
+    ``readContext`` names the file a solver must READ — which exists. The score
+    must grade against ``readContext`` alone: the requiredContext entry appears
+    nowhere (not even in ``dropped_oracle_paths``).
+    """
+    task = _make_corpus_task(
+        tmp_path,
+        required_context=["agentrail/evals/created_by_the_fix.py"],
+        read_context=["agentrail/evals/runner.py"],
+    )
+    manifest = (
+        "CONTEXT MANIFEST\n"
+        "Relevant files:\n"
+        "- agentrail/evals/runner.py:1-40 — the read-time answer-key file\n"
+    )
+    executor = FakeExecutor(
+        gather_manifest_to_write=manifest,
+        repo_files_to_write=["agentrail/evals/runner.py"],
+    )
+
+    record = run(task, full(), executor=executor)
+
+    assert record.gather_score is not None
+    assert record.gather_score.required_paths == ["agentrail/evals/runner.py"]
+    assert record.gather_score.dropped_oracle_paths == []
+    assert record.gather_score.precision == 1.0
+    assert record.gather_score.recall == 1.0
+    assert record.gather_score.gradeable is True
 
 
 def test_run_gather_score_none_when_no_manifest(corpus_task: CorpusTask) -> None:

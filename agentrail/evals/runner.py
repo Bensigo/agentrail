@@ -72,7 +72,12 @@ from agentrail.evals.arms import (
 from agentrail.evals.corpus.loader import CorpusTask
 from agentrail.evals.gather_manifest import parse_manifest_paths
 from agentrail.evals.pack_scorer import pack_precision_recall
-from agentrail.evals.run_record import GatherScore, RetryEvent, RunRecord
+from agentrail.evals.run_record import (
+    NO_GRADEABLE_ORACLE_REASON,
+    GatherScore,
+    RetryEvent,
+    RunRecord,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -320,33 +325,77 @@ def _harvest_gather_manifest(workdir: Path) -> str:
 
 
 def _score_gather_manifest(workdir: Path, task: CorpusTask) -> Optional[GatherScore]:
-    """Score the gather phase's file picks against the task's answer key.
+    """Score the gather phase's file picks against the task's FAIR oracle.
 
-    Harvests the CONTEXT MANIFEST from ``workdir``, parses the paths the gatherer
-    SELECTED (union of "Relevant files:" and "Pinned symbols:", excluding the
-    "Checked, not relevant:" negatives), and scores them against
-    ``task.required_context`` with the shared
-    :func:`agentrail.evals.pack_scorer.pack_precision_recall`.
+    Harvests the CONTEXT MANIFEST from ``workdir`` and parses the paths the
+    gatherer SELECTED (union of "Relevant files:" and "Pinned symbols:",
+    excluding the "Checked, not relevant:" negatives), then grades them with the
+    shared :func:`agentrail.evals.pack_scorer.pack_precision_recall` against an
+    oracle built for FAIRNESS, not just correctness of the fix:
+
+    1. **Oracle choice** — ``task.read_context`` (the read-time answer key: the
+       files a solver must READ at the pinned checkout) when the task declares
+       one, else ``task.required_context``. ``requiredContext`` names the files
+       the FIX touches, some of which do not exist yet at the pre-fix checkout
+       the gatherer sees — grading picks against those is a structural zero, a
+       measurement artifact, not a gatherer miss.
+    2. **Existence filter** — only oracle entries that actually EXIST in the
+       sandbox working tree at harvest time (the executor's clone under
+       ``workdir/repo`` — the same tree the gatherer reconnoitered — falling
+       back to ``workdir`` itself when no clone subtree exists) are gradeable.
+       Entries the filter drops are recorded on the score
+       (``dropped_oracle_paths``) so any past run can be re-graded offline.
 
     Returns ``None`` when the gatherer produced no manifest (gather phase OFF, or
     the run never reached it) — the honest "gather did not run" signal, distinct
     from a manifest that selected nothing (which is scored as a real
-    ``recall == 0.0``). This is the None-vs-0.0 discipline the harness keeps
-    everywhere: undefined is never fabricated as measured-zero.
+    ``recall == 0.0``). When the existence filter empties the oracle entirely the
+    run is UNGRADEABLE: the score carries ``precision is None`` / ``recall is
+    None`` with the explicit :data:`NO_GRADEABLE_ORACLE_REASON` — a third state,
+    never folded into aggregates and never fabricated as a zero. This is the
+    None-vs-0.0 discipline the harness keeps everywhere: undefined is never
+    fabricated as measured-zero.
     """
     manifest_text = _harvest_gather_manifest(workdir)
     if not manifest_text.strip():
         return None
 
     selected = sorted(parse_manifest_paths(manifest_text))
-    required = sorted(set(task.required_context))
-    score = pack_precision_recall(selected, required)
+
+    # Fair oracle: prefer the read-time answer key when the task declares one.
+    oracle = sorted(set(task.read_context or task.required_context))
+
+    # Existence filter: grade only against files present in the tree the
+    # gatherer saw. The executor clones the repo under ``workdir/repo``
+    # (``_EXECUTOR_CLONE_SUBDIR``); when that subtree is absent (e.g. an
+    # executor that works in the bare workdir) fall back to the workdir itself.
+    tree = workdir / _EXECUTOR_CLONE_SUBDIR
+    if not tree.is_dir():
+        tree = workdir
+    gradeable = [path for path in oracle if (tree / path).exists()]
+    dropped = [path for path in oracle if path not in set(gradeable)]
+
+    if not gradeable:
+        # Nothing to grade against at this checkout — an UNGRADEABLE run, with
+        # the reason stamped explicitly. Never a fabricated 0.
+        return GatherScore(
+            precision=None,
+            recall=None,
+            selected_paths=selected,
+            required_paths=[],
+            intersection=0,
+            dropped_oracle_paths=dropped,
+            ungraded_reason=NO_GRADEABLE_ORACLE_REASON,
+        )
+
+    score = pack_precision_recall(selected, gradeable)
     return GatherScore(
         precision=score.precision,
         recall=score.recall,
         selected_paths=selected,
-        required_paths=required,
+        required_paths=gradeable,
         intersection=score.intersection,
+        dropped_oracle_paths=dropped,
     )
 
 
@@ -493,11 +542,14 @@ def run(
         cost_events = _harvest_cost_events(workdir)
 
         # Gather file-picking accuracy (#1049 AC4, precision half) — score the
-        # gatherer's CONTEXT MANIFEST against this task's ``requiredContext``
-        # answer key from the SAME soon-to-be-torn-down workdir. This is the one
-        # place that has BOTH the manifest (in the workdir) and the answer key (on
-        # ``task``) in hand. ``None`` when the gather phase did not run this arm —
-        # not a fabricated zero. See :func:`_score_gather_manifest`.
+        # gatherer's CONTEXT MANIFEST against this task's FAIR oracle
+        # (``readContext`` else ``requiredContext``, existence-filtered to what
+        # exists at the checkout the gatherer saw) from the SAME
+        # soon-to-be-torn-down workdir. This is the one place that has ALL
+        # THREE in hand: the manifest (filesystem), the answer key (on
+        # ``task``), and the checkout tree the existence filter needs. ``None``
+        # when the gather phase did not run this arm — not a fabricated zero.
+        # See :func:`_score_gather_manifest`.
         gather_score = _score_gather_manifest(workdir, task)
 
         return RunRecord(

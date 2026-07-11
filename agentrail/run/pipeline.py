@@ -1477,6 +1477,10 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
             )
             verdict = verifier_mod.parse_verdict(verify_output)
             verification_evidence = verifier_mod.gate_evidence(verdict)
+            artifacts.write_phase_verdict(
+                rc.run_dir, "verify",
+                {"accepted": verdict.accepted, "reason": verdict.reason},
+            )
 
     # 12b. Objective Gate — the falsifiable definition of "done" (ADR 0007).
     # AFTER the execute phase we run the OBJECTIVE checks ourselves (the agent's

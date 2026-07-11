@@ -57,6 +57,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
@@ -139,6 +140,12 @@ class AgentExecution:
     - ``precision_at_budget`` / ``citation_coverage`` (#994) — context-pack
       quality metrics for the run's retrieval, when the executor can surface
       them (``None`` otherwise — the live sandbox executor does not yet).
+    - ``verdicts`` (#1169) — the parsed VERDICT objects (as plain
+      ``{"phase", "accepted", "reason"}`` dicts) every verdict-bearing phase
+      (best-of-N ``critic``/``critic-2``/... or the standalone ``verify``
+      phase) emitted during the run, in the order the phases ran. Empty list
+      when the run carried no verdict-bearing phase, or the executor cannot
+      surface them (e.g. a test fake that doesn't write any).
     """
 
     diff: str
@@ -151,6 +158,10 @@ class AgentExecution:
     gate_failure_reason: Optional[str] = None
     precision_at_budget: Optional[float] = None
     citation_coverage: Optional[float] = None
+    # Verdict forensics (#1169) — APPENDED last to preserve positional
+    # back-compat; empty list is the faithful default for every existing test
+    # fake that predates this field.
+    verdicts: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class AgentExecutor(Protocol):
@@ -322,6 +333,88 @@ def _harvest_gather_manifest(workdir: Path) -> str:
     except OSError:
         return ""
     return ""
+
+
+# The production pipeline's blocking Independent Verification check runs as
+# EITHER the best-of-N critic loop (``critic``, ``critic-2``, ``critic-3``,
+# ...) OR a standalone ``verify`` phase — ``agentrail/run/pipeline.py``'s
+# if/elif, never both — and each writes its raw agent reply to
+# ``<log_dir>/<phase>/output.md``. Inside an eval run the log dir is
+# ``workdir/.agentrail-runs/host-run`` (see ``_GATHER_MANIFEST_RELPATH``
+# above; same run id). This is the root :func:`_harvest_verdicts` walks.
+_RUN_LOG_ROOT_RELPATH = Path(".agentrail-runs") / "host-run"
+
+
+def _phase_sort_key(phase_name: str) -> tuple:
+    """Order phase directory names chronologically for verdict harvesting.
+
+    The best-of-N loop numbers its critic passes ``critic``, ``critic-2``,
+    ``critic-3``, ... (the first pass has no suffix); this sorts them in the
+    order they actually ran. ``verify`` (the mutually-exclusive standalone
+    phase) and any unrecognized name sort after, by name — harmless because a
+    run only ever has ONE of the two families present.
+    """
+    if phase_name == "critic":
+        return (0, 1, phase_name)
+    if phase_name.startswith("critic-"):
+        suffix = phase_name[len("critic-"):]
+        if suffix.isdigit():
+            return (0, int(suffix), phase_name)
+    return (1, 0, phase_name)
+
+
+def _harvest_verdicts(workdir: Path) -> List[Dict[str, Any]]:
+    """Read every verdict a verdict-bearing phase wrote inside ``workdir``.
+
+    Walks ``workdir/_RUN_LOG_ROOT_RELPATH``'s immediate subdirectories (the
+    per-phase log dirs), and for each ``<phase>/output.md`` that actually
+    CONTAINS a verdict object, parses it via
+    ``agentrail.run.verifier.parse_verdict`` and returns the results — as
+    plain ``{"phase", "accepted", "reason"}`` dicts, in the order the phases
+    ran (see :func:`_phase_sort_key`) — so a downstream consumer never has to
+    re-open the run's raw logs to see what a verifier/critic pass decided.
+
+    Presence is checked with ``verifier._extract_verdict_object`` BEFORE
+    calling ``parse_verdict``: ``parse_verdict`` is **fail-closed** (it ALWAYS
+    returns a ``Verdict``, fabricating a reject when nothing parses), so
+    skipping the presence check would manufacture a false reject for every
+    non-verdict phase (``plan`` / ``gather`` / ``execute``).
+
+    **Best-effort and never fatal**, exactly like :func:`_harvest_cost_events`
+    and :func:`_harvest_gather_manifest`: an empty list means "no verdict-
+    bearing phase ran (or none could be read)" — never a fabricated verdict.
+    """
+    # Imported lazily (like ``native_runner`` / ``capture_usage`` below) so
+    # this module stays cheap to import; ``verifier`` is lightweight but this
+    # keeps the harvest's dependency footprint visible at its one call site.
+    from agentrail.run.verifier import _extract_verdict_object, parse_verdict
+
+    root = workdir / _RUN_LOG_ROOT_RELPATH
+    try:
+        if not root.is_dir():
+            return []
+        phase_dirs = [p for p in root.iterdir() if p.is_dir()]
+    except OSError:
+        return []
+
+    phase_dirs.sort(key=lambda p: _phase_sort_key(p.name))
+
+    verdicts: List[Dict[str, Any]] = []
+    for phase_dir in phase_dirs:
+        output_path = phase_dir / "output.md"
+        if not output_path.is_file():
+            continue
+        try:
+            text = output_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if _extract_verdict_object(text) is None:
+            continue
+        verdict = parse_verdict(text)
+        verdicts.append(
+            {"phase": phase_dir.name, "accepted": verdict.accepted, "reason": verdict.reason}
+        )
+    return verdicts
 
 
 def _paths_at_checkout(tree: Path, commit: str) -> Optional[frozenset]:
@@ -555,8 +648,13 @@ def run(
         _assert_no_answer_key_in_workdir(task, workdir=workdir)
 
         start = clock()
+        # Forensic wall-clock brackets (#1169) — ISO-8601 UTC, independent of
+        # ``clock()``'s monotonic reading above (which measures DURATION only).
+        # These let a per-rep record be ordered against other systems' logs.
+        started_at = datetime.now(timezone.utc).isoformat()
         execution = executor.execute(task=task, arm=arm, workdir=workdir)
         elapsed = max(0.0, float(clock() - start))
+        finished_at = datetime.now(timezone.utc).isoformat()
 
         # AC3, gate 2: assert the executor did not write the answer key into
         # the AGENT-VISIBLE tree (e.g. by reaching outside its sandbox), and
@@ -633,6 +731,12 @@ def run(
             # Gather file-picking accuracy scored above (#1049 AC4, precision
             # half). None when the gather phase did not run this arm.
             gather_score=gather_score,
+            # Per-repetition forensics (#1169). ``verdicts`` threads straight off
+            # the execution (empty when the executor surfaced none);
+            # started_at/finished_at bracket the executor.execute() call above.
+            verdicts=list(execution.verdicts),
+            started_at=started_at,
+            finished_at=finished_at,
         )
     finally:
         if owns_workdir:
@@ -773,6 +877,12 @@ class SandboxAgentExecutor:
         else:  # "red" (or any non-green, non-error status)
             gate_failure_reason = "tests didn't pass / gate red"
 
+        # Verdict forensics (#1169) — harvest every verdict-bearing phase's
+        # parsed VERDICT (the best-of-N critic loop or the standalone verify
+        # phase) from the run's log dir NOW, while ``workdir`` still exists
+        # (``runner.run``'s ``finally`` tears it down after this method returns).
+        verdicts = _harvest_verdicts(workdir)
+
         # TODO(#994): surface context-pack quality (precision_at_budget /
         # citation_coverage) here. They are computed live by
         # ``agentrail.context.pack_quality.compute_pack_quality`` inside the
@@ -789,6 +899,7 @@ class SandboxAgentExecutor:
             gate_failure_reason=gate_failure_reason,
             precision_at_budget=None,
             citation_coverage=None,
+            verdicts=verdicts,
         )
 
 

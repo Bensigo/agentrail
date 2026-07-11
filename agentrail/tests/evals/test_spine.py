@@ -152,6 +152,13 @@ class SpyExecutor:
     # overwrites on ECONNRESET fallback. Defaults to the arm's pinned model.
     model_for: Dict[str, str] = field(default_factory=dict)
 
+    # Caller can pre-program the parsed VERDICT objects (arm name -> list of
+    # dicts) the real ``_harvest_verdicts`` would have scraped off the
+    # Critic/Verifier phase output (#1169). ``AgentExecution.verdicts``
+    # defaults to ``[]``, so tests that do not set this exercise the honest
+    # "no verdicts captured" case.
+    verdicts_payload_for: Dict[str, List[dict]] = field(default_factory=dict)
+
     def execute(self, *, task: CorpusTask, arm: Arm, workdir: Path) -> AgentExecution:
         self.invocations.append((task.name, arm.name))
         snapshot = [p.name for p in workdir.rglob("*") if p.is_file()]
@@ -187,6 +194,7 @@ class SpyExecutor:
             model=model,
             gate_passed=gate,
             retries=[],
+            verdicts=list(self.verdicts_payload_for.get(arm.name, [])),
         )
 
 
@@ -209,6 +217,30 @@ class HiddenTestSpy:
         if self.call_log is not None:
             self.call_log.append(f"hidden:{task.name}:{run_record.arm}")
         return bool(self.outcomes.get((task.name, run_record.arm), self.default))
+
+
+@dataclass
+class RichHiddenTestSpy:
+    """Hidden-test runner exposing the #1169 richer entrypoint.
+
+    ``run_hidden_tests_with_output`` returns the real ``(bool, str)`` shape
+    ``ProductionHiddenTestRunner`` produces — the verbatim gate stdout/stderr
+    alongside the pass/fail bool. Spine prefers this entrypoint via
+    ``hasattr()`` (see ``run_spine``'s Step 2), so this fake proves
+    ``gate_output`` is threaded into the forensics record verbatim (AC3),
+    instead of only exercising the bool-only fallback ``HiddenTestSpy`` covers.
+    """
+
+    # (task, arm) -> (hidden_tests_passed, gate_output)
+    outcomes: Dict[tuple, tuple] = field(default_factory=dict)
+    invocations: List[tuple] = field(default_factory=list)
+    default: tuple = (False, "")
+
+    def run_hidden_tests_with_output(
+        self, *, task: CorpusTask, run_record: RunRecord
+    ) -> tuple:
+        self.invocations.append((task.name, run_record.arm))
+        return self.outcomes.get((task.name, run_record.arm), self.default)
 
 
 class FakeMetricsWriter:
@@ -1649,3 +1681,242 @@ def test_gather_precision_section_flags_a_wrong_manifest(
     text = result.report_path.read_text(encoding="utf-8")
     assert "MISSES AC4" in text and "FLAGGED" in text
     assert "Do NOT turn the gather flag on" in text
+
+
+# ---------------------------------------------------------------------------
+# #1169 — Per-repetition forensics record: identity, verbatim gate output,
+# verdicts, per-phase cost. One JSON file per (task, arm, rep) lives under
+# ``run-records/<date>/`` inside the reports dir (a sibling of the dated
+# markdown report), and every cost-ledger event carries task/arm/rep.
+#
+# These tests drive the SAME faithful-fake seam as every test above —
+# SpyExecutor / HiddenTestSpy / RichHiddenTestSpy — so they prove spine.py's
+# PLUMBING (does it write what the seams handed it, to the right place, with
+# the right shape). Verdict-parsing off the filesystem (``_harvest_verdicts``)
+# and the gate's real captured-output plumbing (``run_hidden_tests_with_output``)
+# are exercised at their own seams in test_runner.py / test_hidden_tests.py.
+# ---------------------------------------------------------------------------
+
+
+def _read_forensics_record(
+    reports_dir: Path, *, date: str, task: str, arm: str, rep: int
+) -> dict:
+    path = reports_dir / "run-records" / date / f"{task}--{arm}--rep{rep}.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_ac1_forensics_record_has_all_fields_for_a_normal_rep(
+    corpus_root: Path, reports_dir: Path, tmp_path: Path
+) -> None:
+    """A normal solved rep gets exactly one JSON record with every AC1 field,
+    and its cost-ledger lines carry task/arm/rep (AC2)."""
+    ledger = tmp_path / "cost-events.jsonl"
+    cost_events_for = {
+        "baseline": [
+            {
+                "run_id": "r1",
+                "phase": "execute",
+                "tokens": 150,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_tokens": 0,
+                "cache_creation_tokens": 0,
+                "cost_usd": 0.01,
+            },
+        ],
+    }
+    result = run_spine(
+        SpineConfig(
+            arms=[baseline()],
+            reps=1,
+            task_filter=["alpha-task"],
+            corpus_root=corpus_root,
+            cost_ledger_path=ledger,
+        ),
+        executor=SpyExecutor(cost_events_for=cost_events_for),
+        hidden_test_runner=HiddenTestSpy(default=True),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-11",
+    )
+    assert result.repetitions[0].solved is True
+
+    record = _read_forensics_record(
+        reports_dir, date="2026-07-11", task="alpha-task", arm="baseline", rep=1
+    )
+    assert record["task"] == "alpha-task"
+    assert record["arm"] == "baseline"
+    assert record["rep"] == 1
+    assert record["solved"] is True
+    assert record["false_green"] is False
+    assert record["synthetic"] is False
+    # HiddenTestSpy is bool-only (no run_hidden_tests_with_output) — the
+    # hasattr() fallback in spine.py leaves gate_output honestly empty.
+    assert record["gate_output"] == ""
+    assert record["verdicts"] == []
+    assert record["phase_usage"] == {"execute": {"tokens": 150.0, "cost_usd": 0.01}}
+    assert record["diff_path"] is None  # SpyExecutor's default diff is ""
+    assert record["started_at"] is not None
+    assert record["finished_at"] is not None
+
+    ledger_rows = [
+        json.loads(line)
+        for line in ledger.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(ledger_rows) == 1
+    assert ledger_rows[0]["task"] == "alpha-task"
+    assert ledger_rows[0]["arm"] == "baseline"
+    assert ledger_rows[0]["rep"] == 1
+
+
+def test_ac1_forensics_record_diff_externalised_to_sibling_file(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """A non-empty diff is written to a sibling ``.diff`` file; ``diff_path``
+    names it (relative, not absolute) rather than embedding the diff in JSON."""
+    result = run_spine(
+        SpineConfig(arms=[baseline()], reps=1, task_filter=["alpha-task"], corpus_root=corpus_root),
+        executor=SpyExecutor(diff="--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-x\n+y\n"),
+        hidden_test_runner=HiddenTestSpy(default=True),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-11",
+    )
+    assert result.repetitions[0].solved is True
+    record = _read_forensics_record(
+        reports_dir, date="2026-07-11", task="alpha-task", arm="baseline", rep=1
+    )
+    assert record["diff_path"] == "alpha-task--baseline--rep1.diff"
+    diff_file = reports_dir / "run-records" / "2026-07-11" / record["diff_path"]
+    assert "+y" in diff_file.read_text(encoding="utf-8")
+
+
+def test_ac3_forensics_record_carries_verbatim_gate_output_on_false_green(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """A false-green rep (sandbox gate says pass, hidden tests actually fail)
+    records ``false_green=True`` AND the hidden-test runner's verbatim gate
+    output — enough to answer "what did the gate print" without run.log."""
+    hidden = RichHiddenTestSpy(
+        outcomes={
+            ("alpha-task", "baseline"): (
+                False,
+                "FAILED answer_key/test_hidden.py::test_truth - AssertionError\n1 failed in 0.01s",
+            ),
+        },
+    )
+    result = run_spine(
+        SpineConfig(arms=[baseline()], reps=1, task_filter=["alpha-task"], corpus_root=corpus_root),
+        executor=SpyExecutor(gate_passed=True),
+        hidden_test_runner=hidden,
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-11",
+    )
+    assert result.repetitions[0].false_green is True
+
+    record = _read_forensics_record(
+        reports_dir, date="2026-07-11", task="alpha-task", arm="baseline", rep=1
+    )
+    assert record["solved"] is False
+    assert record["false_green"] is True
+    assert "AssertionError" in record["gate_output"]
+    assert "1 failed in 0.01s" in record["gate_output"]
+
+
+def test_verdicts_flow_from_agent_execution_through_to_the_forensics_record(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """A non-empty ``AgentExecution.verdicts`` payload (the Critic/Verifier
+    VERDICT objects the runner harvests off the workdir — #1169's
+    ``_harvest_verdicts``) threads all the way to the forensics record's
+    ``verdicts`` list, unmodified."""
+    verdict_objs = [
+        {"phase": "critic", "verdict": "accept", "reason": "matches the diff"},
+        {"phase": "verifier", "verdict": "accept", "reason": "hidden tests green"},
+    ]
+    result = run_spine(
+        SpineConfig(arms=[baseline()], reps=1, task_filter=["alpha-task"], corpus_root=corpus_root),
+        executor=SpyExecutor(verdicts_payload_for={"baseline": verdict_objs}),
+        hidden_test_runner=HiddenTestSpy(default=True),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-11",
+    )
+    assert result.repetitions[0].solved is True
+
+    record = _read_forensics_record(
+        reports_dir, date="2026-07-11", task="alpha-task", arm="baseline", rep=1
+    )
+    assert record["verdicts"] == verdict_objs
+
+
+def test_ac4_synthetic_rep_recorded_with_zero_cost_and_synthetic_true(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """A <synthetic> (ECONNRESET) fallback rep is recorded distinguishably:
+    ``synthetic=True``, and — since it never reaches the cost ledger (existing
+    #1033 exclusion) and wrote no cost-events file — ``phase_usage`` is empty
+    rather than fabricated."""
+    result = run_spine(
+        SpineConfig(arms=[baseline()], reps=1, task_filter=["alpha-task"], corpus_root=corpus_root),
+        executor=SpyExecutor(model_for={"baseline": SYNTHETIC_MODEL}),
+        hidden_test_runner=HiddenTestSpy(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-11",
+    )
+    assert result.repetitions[0].network_artifact is True
+
+    record = _read_forensics_record(
+        reports_dir, date="2026-07-11", task="alpha-task", arm="baseline", rep=1
+    )
+    assert record["synthetic"] is True
+    assert record["phase_usage"] == {}
+
+
+def test_crash_path_rep_recorded_with_abort_message_as_gate_output(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    """A unit that raises still gets exactly one forensics record — the crash
+    message IS the ``gate_output`` (there is no gate to ask), and verdicts /
+    diff / timestamps are honestly empty/None rather than fabricated. The
+    healthy sibling task is unaffected (fail-soft: one crash doesn't blank the
+    run)."""
+
+    class _ExplodingExecutor(SpyExecutor):
+        def execute(self, *, task: CorpusTask, arm: Arm, workdir: Path) -> AgentExecution:
+            if task.name == "alpha-task":
+                raise RuntimeError("boom: simulated crash in alpha-task")
+            return super().execute(task=task, arm=arm, workdir=workdir)
+
+    result = run_spine(
+        SpineConfig(arms=[baseline()], reps=1, corpus_root=corpus_root, concurrency=2),
+        executor=_ExplodingExecutor(),
+        hidden_test_runner=HiddenTestSpy(default=True),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-11",
+    )
+    by_task = {r.task: r.solved for r in result.repetitions}
+    assert by_task == {"alpha-task": False, "bravo-task": True}
+
+    record = _read_forensics_record(
+        reports_dir, date="2026-07-11", task="alpha-task", arm="baseline", rep=1
+    )
+    assert record["solved"] is False
+    assert record["false_green"] is False
+    assert record["synthetic"] is False
+    assert "boom: simulated crash in alpha-task" in record["gate_output"]
+    assert record["verdicts"] == []
+    assert record["phase_usage"] == {}
+    assert record["diff_path"] is None
+    assert record["started_at"] is None
+    assert record["finished_at"] is None
+
+    healthy = _read_forensics_record(
+        reports_dir, date="2026-07-11", task="bravo-task", arm="baseline", rep=1
+    )
+    assert healthy["solved"] is True
+    assert healthy["gate_output"] == ""

@@ -272,6 +272,32 @@ class RunRecord:
     # arm (no manifest); a real 0.0-recall score when it ran and missed. Built
     # once by the runner from the harvested manifest and never mutated after.
     gather_score: Optional[GatherScore] = None
+    # Per-repetition forensics (issue #1169) — APPENDED last to preserve
+    # positional back-compat. These extend the contract with EVIDENCE a human
+    # (or a later probe) can use to answer "what actually happened on this
+    # rep" without re-running anything or opening raw logs:
+    #
+    # - ``verdicts`` — the parsed VERDICT JSON objects (see
+    #   ``agentrail.run.verifier.parse_verdict``) emitted by every
+    #   verdict-bearing phase the run went through (the best-of-N ``critic``,
+    #   ``critic-2``, ... loop, or the standalone ``verify`` phase — the
+    #   pipeline runs one or the other, never both), in the order the phases
+    #   ran. Harvested by the runner from the sandbox's run-log directory
+    #   BEFORE teardown, gating on ``verifier._extract_verdict_object``
+    #   PRESENCE first — ``parse_verdict`` itself is fail-closed (it always
+    #   returns a ``Verdict``, fabricating a reject when nothing parses), so a
+    #   presence check must gate it or every non-verdict phase (plan/gather/
+    #   execute) would manufacture a false reject. Empty list when the run
+    #   carried no verdict-bearing phase (or the harvest found nothing) —
+    #   distinct from "a phase ran and rejected".
+    # - ``started_at`` / ``finished_at`` — ISO-8601 UTC timestamps bracketing
+    #   the executor's ``execute`` call (wall-clock, independent of
+    #   ``wall_time_s``'s monotonic clock — these are for forensic ordering
+    #   against other systems' logs, not duration math). ``None`` when not
+    #   captured (old records / executors that predate this field).
+    verdicts: List[Dict[str, Any]] = field(default_factory=list)
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
 
     @property
     def attempts(self) -> int:

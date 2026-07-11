@@ -110,6 +110,22 @@ DEFAULT_TIMEOUT_S = 120.0
 # lives under tests/ so pytest's default rootdir + conftest discovery work.
 HIDDEN_TESTS_SUBPATH = Path("tests") / "_eval_hidden"
 
+# Per-repetition forensics (issue #1169, AC3): a per-rep record embeds the
+# gate's verbatim output directly, so it is capped here to keep one runaway
+# rep (a print loop, a giant traceback) from bloating a record file without
+# bound. Truncation keeps the TAIL — pytest prints its failure summary and
+# tracebacks LAST, so the tail is the actionable part — and prefixes a marker
+# so a reader can tell the text was cut rather than assume it's complete.
+_MAX_GATE_OUTPUT_CHARS = 200_000
+_GATE_OUTPUT_TRUNCATION_MARKER = "...[truncated]\n"
+
+
+def _cap_gate_output(text: str) -> str:
+    """Cap ``text`` to :data:`_MAX_GATE_OUTPUT_CHARS`, keeping the tail."""
+    if len(text) <= _MAX_GATE_OUTPUT_CHARS:
+        return text
+    return _GATE_OUTPUT_TRUNCATION_MARKER + text[-_MAX_GATE_OUTPUT_CHARS:]
+
 
 # ---------------------------------------------------------------------------
 # Repo-root discovery — find the host repo whose objects we'll clone.
@@ -173,6 +189,28 @@ class ProductionHiddenTestRunner:
         Fail-closed: returns ``False`` on any error (apply failure, missing
         answer-key file, pytest non-zero exit, timeout, exception). Never
         raises into the spine.
+
+        Delegates to :meth:`run_hidden_tests_with_output` (issue #1169) and
+        discards the verbatim-output half, so this method's contract — and
+        every existing caller's behaviour — is UNCHANGED.
+        """
+        return self.run_hidden_tests_with_output(task=task, run_record=run_record)[0]
+
+    def run_hidden_tests_with_output(
+        self, *, task: CorpusTask, run_record: RunRecord
+    ) -> "tuple[bool, str]":
+        """Like :meth:`run_hidden_tests`, but also return the gate's verbatim output.
+
+        The ``str`` half is the evidence a per-rep forensics record needs
+        (issue #1169, AC3) to answer "what did the gate print" without
+        opening ``run.log``: the hidden-test runner's own error message on a
+        materialize/apply/copy/timeout failure, or pytest's verbatim
+        ``stdout``+``stderr`` on an actual test run. Capped by
+        :func:`_cap_gate_output` so one runaway rep cannot bloat a record
+        file unboundedly.
+
+        Fail-closed exactly like :meth:`run_hidden_tests`: the bool half is
+        ``False`` on any error, never raises into the spine.
         """
         repo_root = self.repo_root or _default_repo_root()
 
@@ -186,7 +224,7 @@ class ProductionHiddenTestRunner:
                     task.name,
                     error,
                 )
-                return False
+                return False, _cap_gate_output(f"materialize failed: {error}")
 
             if run_record.diff.strip():
                 try:
@@ -197,7 +235,7 @@ class ProductionHiddenTestRunner:
                         task.name,
                         error,
                     )
-                    return False
+                    return False, _cap_gate_output(f"git apply failed: {error}")
 
             try:
                 test_paths = self._copy_hidden_tests(task, workspace)
@@ -207,16 +245,26 @@ class ProductionHiddenTestRunner:
                     task.name,
                     error,
                 )
-                return False
+                return False, _cap_gate_output(f"copy hidden tests failed: {error}")
 
-            return self._run_pytest(workspace, test_paths)
+            result = self._run_pytest(workspace, test_paths)
+            if isinstance(result, tuple):
+                passed, output = result
+            else:
+                # Back-compat: a subclass (or test double) that predates
+                # #1169 and still overrides ``_run_pytest`` to return a bare
+                # bool. Treat it as faithfully as we can: no verbatim output
+                # was captured, so the string half is empty rather than
+                # fabricated.
+                passed, output = bool(result), ""
+            return bool(passed), _cap_gate_output(output)
         except Exception as error:  # noqa: BLE001 - fail closed on anything.
             logger.warning(
                 "hidden-test runner: unexpected error for task=%s: %s",
                 task.name,
                 error,
             )
-            return False
+            return False, _cap_gate_output(f"unexpected error: {error}")
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
 
@@ -315,13 +363,17 @@ class ProductionHiddenTestRunner:
 
     # ----- step 4: run pytest with a wall-clock timeout ---------------------
 
-    def _run_pytest(self, workspace: Path, test_paths: list[Path]) -> bool:
-        """Run ``pytest`` on the hidden-test files; return True iff exit 0.
+    def _run_pytest(self, workspace: Path, test_paths: list[Path]) -> "tuple[bool, str]":
+        """Run ``pytest`` on the hidden-test files; return ``(passed, output)``.
 
         AC4: a hidden test that hangs returns ``False`` within ``timeout_s``.
         We use ``sys.executable -m pytest`` so the spine's interpreter runs
         the tests, and ``-q`` to keep output small. We also pass
         ``--no-header`` and ``-p no:cacheprovider`` to keep the run hermetic.
+
+        ``output`` (issue #1169, AC3) is the verbatim combined stdout+stderr,
+        uncapped — the caller (:meth:`run_hidden_tests_with_output`) applies
+        the cap uniformly across every failure branch.
         """
         rel_paths = [str(p.relative_to(workspace)) for p in test_paths]
         cmd = [
@@ -358,12 +410,16 @@ class ProductionHiddenTestRunner:
                 text=True,
                 timeout=self.timeout_s,
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as error:
             logger.warning(
                 "hidden-test runner: pytest exceeded timeout (%ss); failing closed",
                 self.timeout_s,
             )
-            return False
+            timeout_output = (
+                f"pytest exceeded timeout ({self.timeout_s}s); failing closed\n"
+                f"stdout:\n{error.stdout or ''}\nstderr:\n{error.stderr or ''}"
+            )
+            return False, timeout_output
         if result.returncode != 0:
             logger.info(
                 "hidden-test runner: pytest exit %s\nstdout:\n%s\nstderr:\n%s",
@@ -371,7 +427,8 @@ class ProductionHiddenTestRunner:
                 (result.stdout or "")[-1000:],
                 (result.stderr or "")[-500:],
             )
-        return result.returncode == 0
+        output = f"stdout:\n{result.stdout or ''}\nstderr:\n{result.stderr or ''}"
+        return result.returncode == 0, output
 
     # ----- subprocess helper -----------------------------------------------
 

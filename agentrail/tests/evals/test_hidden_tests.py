@@ -564,3 +564,112 @@ def test_hidden_tests_subpath_is_under_tests_dir() -> None:
     parts = HIDDEN_TESTS_SUBPATH.parts
     assert parts[0] == "tests"
     assert parts[1].startswith("_")
+
+
+# ---------------------------------------------------------------------------
+# gate_output plumbing (#1169 AC3) — cap helper + verbatim pytest text.
+# ---------------------------------------------------------------------------
+
+
+def test_cap_gate_output_keeps_the_tail_and_marks_truncation() -> None:
+    """``_cap_gate_output`` caps oversized gate output while keeping the TAIL.
+
+    pytest prints its failure summary and tracebacks LAST, so truncating the
+    HEAD of an oversized capture (and marking that a cut happened) preserves
+    the actionable part of a gate's output; anything already under the cap
+    is returned unchanged.
+    """
+    from agentrail.evals.hidden_tests import (
+        _cap_gate_output,
+        _GATE_OUTPUT_TRUNCATION_MARKER,
+        _MAX_GATE_OUTPUT_CHARS,
+    )
+
+    short = "1 passed in 0.01s"
+    capped_short = _cap_gate_output(short)
+    assert capped_short == short
+    assert _GATE_OUTPUT_TRUNCATION_MARKER not in capped_short
+
+    text = ("x" * _MAX_GATE_OUTPUT_CHARS) + "THE-TAIL-SENTINEL"
+    capped = _cap_gate_output(text)
+    assert capped.startswith(_GATE_OUTPUT_TRUNCATION_MARKER)
+    assert capped.endswith("THE-TAIL-SENTINEL")
+    assert capped == _GATE_OUTPUT_TRUNCATION_MARKER + text[-_MAX_GATE_OUTPUT_CHARS:]
+
+
+def test_with_output_returns_verbatim_pytest_failure_output(tmp_path: Path) -> None:
+    """``run_hidden_tests_with_output`` carries REAL pytest text as gate_output.
+
+    Production seam for #1169 AC3: a per-rep forensics record's
+    ``gate_output`` must show what pytest actually printed, not a fabricated
+    summary. Mirrors ``test_ac3_stub_repo_solving_diff_passes_empty_diff_fails``
+    but drives the tuple-returning method with the empty diff (the failing
+    branch). With no diff applied, ``agentrail/run/sample.py`` was never
+    shipped, so the hidden test fails at IMPORT time: pytest reports this as
+    a collection ERROR ("1 error"), not an assertion FAILURE ("1 failed").
+    The assertions below were pinned by running this exact scenario and
+    reading the real captured output, not by assumption.
+    """
+    repo, parent_commit, _head_commit = _make_stub_repo(tmp_path)
+
+    hidden_test = (
+        "from agentrail.run.sample import add\n"
+        "\n"
+        "def test_add():\n"
+        "    assert add(2, 3) == 5\n"
+    )
+
+    task_dir = tmp_path / "task-with-output"
+    task = _make_task(
+        name="stub-add-with-output",
+        repo_root=repo,
+        commit=parent_commit,  # workspace materialized at PRE-solution commit.
+        task_dir=task_dir,
+        hidden_files={"test_add.py": hidden_test},
+    )
+
+    runner = ProductionHiddenTestRunner(repo_root=repo, timeout_s=60.0)
+    empty_record = _run_record_for(task, diff="")
+    passed, output = runner.run_hidden_tests_with_output(task=task, run_record=empty_record)
+
+    assert passed is False
+    assert isinstance(output, str)
+    # The _run_pytest formatting prefix — proves this came from the real
+    # subprocess capture, not a hand-built string.
+    assert "stdout:" in output
+    # Real pytest evidence: a collection error (see docstring for why it's
+    # "error" and not "failed" in this particular empty-diff scenario), the
+    # concrete exception, and the hidden test's own name.
+    assert "error" in output
+    assert "ModuleNotFoundError" in output
+    assert "test_add" in output
+
+
+def test_with_output_error_branch_names_the_failure(tmp_path: Path) -> None:
+    """Error branches still produce a human-readable, non-fabricated gate_output.
+
+    Mirrors the not-a-repo setup in
+    ``test_ac1_returns_real_bool_on_missing_workspace``, but through
+    ``run_hidden_tests_with_output``: the materialize step fails before
+    pytest ever runs, so ``gate_output`` must still name WHICH step failed
+    and why — otherwise a crashed clone and a real hidden-test failure would
+    be indistinguishable when read back out of a forensics record.
+    """
+    not_a_repo = tmp_path / "not-a-repo"
+    not_a_repo.mkdir()
+    runner = ProductionHiddenTestRunner(repo_root=not_a_repo, timeout_s=5.0)
+
+    task_dir = tmp_path / "task"
+    task = _make_task(
+        name="t1",
+        repo_root=not_a_repo,
+        commit="deadbeef",
+        task_dir=task_dir,
+        hidden_files={"test_x.py": "def test_x():\n    assert True\n"},
+    )
+    record = _run_record_for(task, diff="")
+    passed, output = runner.run_hidden_tests_with_output(task=task, run_record=record)
+
+    assert passed is False
+    assert isinstance(output, str)
+    assert "materialize failed" in output

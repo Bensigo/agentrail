@@ -621,6 +621,160 @@ def test_strip_answer_keys_removes_corpus_answer_keys_from_clone(tmp_path: Path)
     assert repo_code.exists()  # repo code untouched
 
 
+def _build_prepared_sandbox_clone(tmp_path: Path, *, dirname: str = "clone") -> Path:
+    """Build a real git clone and run the REAL post-checkout hook on it.
+
+    Mirrors exactly what the harness does to a fresh sandbox clone before the
+    agent ever sees it: a real ``git clone`` of an ``origin`` repo whose
+    committed tree includes a corpus task's ``answer_key/`` (plus an unrelated
+    ``task.json`` and some ordinary repo code), followed by the REAL
+    ``_prepare_eval_clone`` post-checkout hook — the same function
+    ``SandboxAgentExecutor`` wires into ``native_runner.run_issue_on_host`` as
+    ``post_checkout``.
+
+    Returns the path to the prepared clone.
+    """
+    from agentrail.evals.runner import _prepare_eval_clone
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+
+    def git(*args: str, cwd: Path = origin) -> None:
+        subprocess.run(
+            ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True,
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@t.dev")
+    git("config", "user.name", "t")
+
+    corpus_task_dir = origin / "agentrail" / "evals" / "corpus" / "some-task"
+    answer_key = corpus_task_dir / "answer_key"
+    answer_key.mkdir(parents=True)
+    (answer_key / "test_secret.py").write_text("hidden")
+    (corpus_task_dir / "task.json").write_text("{}")
+    repo_code = origin / "agentrail" / "context" / "rerank.py"
+    repo_code.parent.mkdir(parents=True)
+    repo_code.write_text("code")
+
+    git("add", "-A")
+    git("commit", "-q", "-m", "pinned commit")
+
+    clone = tmp_path / dirname
+    subprocess.run(
+        ["git", "clone", "--quiet", str(origin), str(clone)],
+        check=True, capture_output=True, text=True,
+    )
+
+    _prepare_eval_clone(clone)
+    return clone
+
+
+def test_prepared_clone_is_answer_key_free_immediately_after_post_checkout(
+    tmp_path: Path,
+) -> None:
+    """Baseline: the post-checkout hook itself removes the answer_key dir."""
+    clone = _build_prepared_sandbox_clone(tmp_path)
+    answer_key = clone / "agentrail" / "evals" / "corpus" / "some-task" / "answer_key"
+    assert not answer_key.exists()
+
+
+def test_git_checkout_dot_does_not_resurrect_answer_keys_in_prepared_clone(
+    tmp_path: Path,
+) -> None:
+    """#1171 regression: ``git checkout -- .`` must not restore ``answer_key/``.
+
+    The filesystem-only strip (``_strip_answer_keys_from_clone``) deletes the
+    directory from disk but never from git's index, so git still considers it
+    tracked and present. The first worktree-refreshing command run inside the
+    clone resurrects it straight from the index. Reproducing command:
+
+        git clone <origin> clone
+        # (post_checkout hook runs: seed config, strip answer_key dirs)
+        cd clone && git checkout -- .
+
+    Pre-fix, this restores ``agentrail/evals/corpus/<task>/answer_key/`` in
+    full, right back into the agent-visible workdir.
+    """
+    clone = _build_prepared_sandbox_clone(tmp_path)
+    answer_key = clone / "agentrail" / "evals" / "corpus" / "some-task" / "answer_key"
+    assert not answer_key.exists()  # baseline, per the hook
+
+    subprocess.run(
+        ["git", "checkout", "--", "."], cwd=str(clone), check=True,
+        capture_output=True, text=True,
+    )
+
+    assert not answer_key.exists(), (
+        "git checkout -- . resurrected answer_key/ from the clone's index (#1171)"
+    )
+
+
+def test_git_reset_hard_does_not_resurrect_answer_keys_in_prepared_clone(
+    tmp_path: Path,
+) -> None:
+    """#1171 regression: ``git reset --hard`` must not restore ``answer_key/``.
+
+    Same mechanism as the ``checkout -- .`` case above, via the other common
+    worktree-refresh command a sandboxed agent (or the harness itself) might
+    run. Reproducing command:
+
+        git clone <origin> clone
+        # (post_checkout hook runs: seed config, strip answer_key dirs)
+        cd clone && git reset --hard
+    """
+    clone = _build_prepared_sandbox_clone(tmp_path)
+    answer_key = clone / "agentrail" / "evals" / "corpus" / "some-task" / "answer_key"
+    assert not answer_key.exists()  # baseline, per the hook
+
+    subprocess.run(
+        ["git", "reset", "--hard"], cwd=str(clone), check=True,
+        capture_output=True, text=True,
+    )
+
+    assert not answer_key.exists(), (
+        "git reset --hard resurrected answer_key/ from the clone's index (#1171)"
+    )
+
+
+def test_prepared_clone_diff_against_pinned_commit_has_no_answer_key_noise(
+    tmp_path: Path,
+) -> None:
+    """The scored diff must not carry the stripped corpus files as noise.
+
+    Tier 1 of ``_capture_workdir_diff`` runs ``git add -A`` then
+    ``git diff --cached <base_ref>`` against ``task.commit`` (the pinned
+    commit — confirmed as the diff baseline for AC1/#1171 investigation).
+    Before the fix, the filesystem-only strip left the answer_key files
+    "deleted from disk but still tracked in the index", so ``git add -A``
+    staged them as real deletions and every scored diff carried that noise,
+    independent of whether any checkout/reset ever ran.
+    """
+    clone = _build_prepared_sandbox_clone(tmp_path)
+    pinned = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=str(clone),
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    # The agent makes an unrelated, real edit.
+    (clone / "agentrail" / "context" / "rerank.py").write_text("code v2")
+
+    subprocess.run(
+        ["git", "add", "-A"], cwd=str(clone), check=True,
+        capture_output=True, text=True,
+    )
+    diff = subprocess.run(
+        ["git", "diff", "--cached", pinned], cwd=str(clone),
+        capture_output=True, text=True, check=True,
+    ).stdout
+
+    assert "rerank.py" in diff  # the real agent edit is present
+    assert "answer_key" not in diff, (
+        "scored diff contains answer_key noise from the stripped-but-still-"
+        "tracked corpus files (#1171)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # AC4 — the RunRecord shape matches what the scorer consumes.
 # ---------------------------------------------------------------------------

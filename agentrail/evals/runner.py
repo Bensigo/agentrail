@@ -950,10 +950,92 @@ def _seed_agentrail_config(repo_dir: Path) -> None:
 # clones the FULL agentrail repo into the workdir, that clone carries the entire
 # corpus — including EVERY task's ``answer_key/`` — into the agent-visible tree.
 # That is the ROOT CAUSE of the AC3 leak: the answer sheet rides in on the clone.
-# We strip those directories at clone-prep time so the answer never reaches the
-# agent in the first place (the gate-2 directory check is the net behind this).
+#
+# Two layers now keep it out of the agent-visible workdir:
+#
+#   1. ``_apply_answer_key_sparse_checkout`` scopes the clone's WORKTREE (via
+#      ``git sparse-checkout``) to exclude ``answer_key/`` before the agent ever
+#      sees the tree. Because sparse-checkout is enforced by git itself on
+#      every worktree-materializing operation, ``answer_key/`` stays gone even
+#      if something later runs ``git checkout -- .`` or ``git reset --hard``
+#      inside the clone — see #1171: those commands used to RESURRECT the
+#      answer_key dirs that step 2 below had deleted, because a plain
+#      filesystem strip never touches git's index, so git still considers the
+#      files "tracked and present" and happily restores them on the next
+#      worktree-refreshing command (the sandboxed agent's own ordinary git
+#      hygiene is enough to trigger this — it doesn't need to know the corpus
+#      exists).
+#   2. ``_strip_answer_keys_from_clone`` is the original (2026-06-27, #937)
+#      filesystem strip, kept as a defense-in-depth fallback for a git that
+#      doesn't support sparse-checkout, or a workdir that isn't a git repo at
+#      all (e.g. a test double). With step 1 in place this is normally a
+#      no-op: sparse-checkout already kept the directories out of the
+#      worktree, so there's nothing left for the ``rglob`` walk to find.
+#
+# The gate-2 directory check (``_assert_no_answer_key_in_workdir``) remains the
+# net behind both.
 _CORPUS_SUBPATH = ("agentrail", "evals", "corpus")
 _ANSWER_KEY_DIRNAME = "answer_key"
+
+# Non-cone sparse-checkout patterns (gitignore-style, applied in order):
+# include everything, then exclude the corpus's answer_key dirs at ANY depth
+# under a task directory. ``**`` (rather than a single ``*``) mirrors the
+# strip's fully-recursive ``rglob`` semantics exactly and stays correct even
+# if a task ever nests its ``answer_key/`` more than one level deep.
+_SPARSE_CHECKOUT_INCLUDE_ALL = "/*"
+_SPARSE_CHECKOUT_EXCLUDE_ANSWER_KEYS = (
+    "!/" + "/".join(_CORPUS_SUBPATH) + f"/**/{_ANSWER_KEY_DIRNAME}/"
+)
+
+
+def _apply_answer_key_sparse_checkout(repo_dir: Path) -> None:
+    """Durably exclude the corpus's ``answer_key/`` dirs from the clone's worktree.
+
+    ``_strip_answer_keys_from_clone`` deletes the directories from the
+    filesystem only — it never touches git's index. Git still believes those
+    paths are tracked and present, so the FIRST worktree-refreshing command run
+    inside the clone (``git checkout -- .``, ``git reset --hard``, and similar)
+    restores them straight from the index, undoing the strip (#1171).
+
+    ``git sparse-checkout`` closes this off at the source: once a path is
+    excluded, git marks it ``SKIP_WORKTREE`` in the index, and every
+    worktree-materializing command (checkout, reset --hard, etc.) honors that
+    bit and leaves the path un-materialized. This changes the WORKTREE only —
+    it does not move ``HEAD``, rewrite any commit, or alter the index's diff
+    against a base commit — so the pinned commit the eval scores against, and
+    the executor's own diff-capture baseline (``task.commit`` in
+    :func:`_capture_workdir_diff`), are both unaffected. As a side effect this
+    also stops the corpus's stripped-but-still-tracked answer_key files from
+    showing up as spurious deletions in that diff (``git add -A`` would
+    otherwise stage them, since the strip's plain ``rmtree`` looks identical to
+    the agent having deleted tracked files).
+
+    Uses ``--no-cone`` mode because the exclude pattern needs a wildcard in the
+    MIDDLE of the path (``corpus/**/answer_key``), which cone mode cannot
+    express. A single ``sparse-checkout set`` call is sufficient — it implies
+    ``core.sparseCheckout=true`` and immediately updates the worktree; no
+    separate ``sparse-checkout init`` is required first.
+
+    Best-effort and non-fatal: an unusual git (no sparse-checkout support) or a
+    workdir that isn't a git repository at all (e.g. a test double) leaves this
+    a no-op, and ``_strip_answer_keys_from_clone`` below still runs as a
+    fallback.
+    """
+    if not (repo_dir / ".git").exists():
+        return
+    try:
+        subprocess.run(
+            [
+                "git", "sparse-checkout", "set", "--no-cone",
+                _SPARSE_CHECKOUT_INCLUDE_ALL,
+                _SPARSE_CHECKOUT_EXCLUDE_ANSWER_KEYS,
+            ],
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+        )
+    except OSError:  # pragma: no cover - git missing
+        pass
 
 
 def _strip_answer_keys_from_clone(repo_dir: Path) -> None:
@@ -965,6 +1047,11 @@ def _strip_answer_keys_from_clone(repo_dir: Path) -> None:
     the agent could read the answer sheet straight off the clone. We delete those
     directories before the agent runs. Scoped to the corpus subtree so we never
     touch a directory the repo legitimately named ``answer_key`` elsewhere.
+
+    Kept as a fallback alongside :func:`_apply_answer_key_sparse_checkout` (see
+    #1171): harmless when sparse-checkout already did the job (there is
+    nothing left for ``rglob`` to find), still effective on its own for a
+    non-git workdir.
 
     No-op when the clone carries no corpus (a different repo under test).
     """
@@ -979,12 +1066,16 @@ def _strip_answer_keys_from_clone(repo_dir: Path) -> None:
 def _prepare_eval_clone(repo_dir: Path) -> None:
     """Post-checkout hook: make a clone safe + verifiable for the agent to work in.
 
-    Composes the two clone-prep steps run after checkout and before the agent:
-    seed a verify policy (:func:`_seed_agentrail_config`) and strip the corpus
-    answer keys that ride in on a full-repo clone
-    (:func:`_strip_answer_keys_from_clone`).
+    Composes the clone-prep steps run after checkout and before the agent:
+    seed a verify policy (:func:`_seed_agentrail_config`), durably exclude the
+    corpus's answer keys from the worktree via sparse-checkout so they survive
+    a later ``git checkout -- .`` / ``git reset --hard``
+    (:func:`_apply_answer_key_sparse_checkout`, #1171), then run the original
+    filesystem strip (:func:`_strip_answer_keys_from_clone`) as a fallback for
+    anything sparse-checkout didn't cover.
     """
     _seed_agentrail_config(repo_dir)
+    _apply_answer_key_sparse_checkout(repo_dir)
     _strip_answer_keys_from_clone(repo_dir)
 
 

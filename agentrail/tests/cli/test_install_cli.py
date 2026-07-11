@@ -363,15 +363,26 @@ class TestVendorTrim(TestCase):
         follow-up). ``_materialize_source`` copies that whole package tree,
         so without an explicit exclusion the 282-file pytest suite and the
         Docker build context would ship into every installed project.
+
+        The one exception is ``agentrail/scripts/agentrail`` — the runtime
+        launcher, a managed extraFile a self-upgrade must read back from the
+        vendor (#1162 x #1163). The dev-only scripts alongside it (benchmark/
+        typecheck/test) still must NOT be vendored.
         """
+        # A dev-only script alongside the launcher, to prove it is trimmed
+        # while the launcher survives.
+        (self.repo / "agentrail" / "scripts" / "benchmark-context.py").write_text("# dev only\n")
         _run_install(self.repo, self.target)
         vendored_package = self.target / ".agentrail" / "source" / "agentrail"
         self.assertFalse((vendored_package / "tests").exists(),
                          ".agentrail/source/agentrail/tests must not be vendored")
-        self.assertFalse((vendored_package / "scripts").exists(),
-                         ".agentrail/source/agentrail/scripts must not be vendored")
         self.assertFalse((vendored_package / "docker").exists(),
                          ".agentrail/source/agentrail/docker must not be vendored")
+        # scripts/ is trimmed to ONLY the runtime launcher.
+        self.assertFalse((vendored_package / "scripts" / "benchmark-context.py").exists(),
+                         "dev-only agentrail/scripts/*.py must not be vendored")
+        self.assertTrue((vendored_package / "scripts" / "agentrail").exists(),
+                        "the runtime launcher must survive the agentrail/scripts trim")
 
     def test_nested_templates_scripts_survives_dev_subdir_exclusion(self):
         """Regression guard for the fix above: excluding agentrail/scripts
@@ -386,6 +397,23 @@ class TestVendorTrim(TestCase):
             (vendored_package / "templates" / "scripts" / "context-first.sh").exists(),
             "nested templates/scripts/context-first.sh must survive the vendor dev-subdir trim",
         )
+
+    def test_self_upgrade_build_inventory_reads_vendored_launcher(self):
+        """Regression (#1162 x #1163): a self-upgrade runs _build_inventory
+        against the vendored .agentrail/source. #1162's dev-subdir trim
+        stripped agentrail/scripts/ wholesale — including the runtime launcher
+        the inventory's ``scripts/agentrail`` extraFile sources — so
+        _build_inventory raised FileNotFoundError ("failed to build inventory")
+        on every installed project's `agentrail upgrade`. The launcher must
+        survive the trim so a self-upgrade can rebuild its inventory.
+        """
+        from agentrail.cli.commands._template_sync import _build_inventory
+        _run_install(self.repo, self.target)
+        vendored = self.target / ".agentrail" / "source"
+        # Must not raise FileNotFoundError building the launcher extraFile hash.
+        inventory = _build_inventory(vendored)
+        paths = [entry["path"] for entry in inventory]
+        self.assertIn("scripts/agentrail", paths)
 
 
 class TestLegacyAdoption(TestCase):

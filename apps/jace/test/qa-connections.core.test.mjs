@@ -65,7 +65,13 @@ for (const [name, list] of [
 }
 
 test("forbidden patterns cover the spec's exclusions", () => {
-  const mustCatch = ["browser_evaluate", "upload_file", "set_cookie", "local_storage_write"];
+  const mustCatch = [
+    "browser_evaluate",
+    "agent_browser_eval",
+    "upload_file",
+    "set_cookie",
+    "local_storage_write",
+  ];
   for (const bad of mustCatch) {
     assert.ok(
       QA_FORBIDDEN_TOOL_PATTERNS.some((p) => p.test(bad)),

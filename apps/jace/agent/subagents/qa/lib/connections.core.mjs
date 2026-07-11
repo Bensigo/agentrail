@@ -91,7 +91,7 @@ export const BROWSER_USE_QA_TOOLS = [
 ];
 
 export const QA_FORBIDDEN_TOOL_PATTERNS = [
-  /evaluate/i,
+  /eval/i,
   /upload/i,
   /cookie/i,
   /storage/i,

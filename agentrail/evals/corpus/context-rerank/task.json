@@ -15,6 +15,12 @@
     "agentrail/context/packs.py",
     "agentrail/context/retrieval.py"
   ],
+  "readContext": [
+    "agentrail/context/retrieval.py",
+    "agentrail/context/compiler.py",
+    "agentrail/context/packs.py",
+    "agentrail/context/evaluation.py"
+  ],
   "difficulty": "medium",
   "source": {
     "repo": "Bensigo/agentrail",

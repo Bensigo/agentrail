@@ -10,6 +10,11 @@
     "files": ["test_scorer_false_green.py"]
   },
   "requiredContext": ["agentrail/evals/scorer.py"],
+  "readContext": [
+    "agentrail/evals/scorer.py",
+    "tests/evals/test_scorer.py",
+    "agentrail/evals/run_record.py"
+  ],
   "difficulty": "easy",
   "source": {
     "issue": 992

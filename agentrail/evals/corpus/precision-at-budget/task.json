@@ -15,6 +15,13 @@
     "agentrail/context/packs.py",
     "agentrail/context/retrieval-fixtures.json"
   ],
+  "readContext": [
+    "agentrail/context/packs.py",
+    "agentrail/context/pack_quality.py",
+    "agentrail/context/evaluation.py",
+    "agentrail/context/retrieval.py",
+    "docs/superpowers/specs/2026-06-18-context-quality-live-metrics.md"
+  ],
   "difficulty": "medium",
   "heldOut": true,
   "source": {

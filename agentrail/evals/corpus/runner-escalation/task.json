@@ -15,6 +15,12 @@
     "agentrail/runner/escalation.py",
     "agentrail/runner/client.py"
   ],
+  "readContext": [
+    "agentrail/cli/commands/runner.py",
+    "agentrail/runner/client.py",
+    "agentrail/sandbox/native_runner.py",
+    "agentrail/sandbox/docker_runner.py"
+  ],
   "difficulty": "medium",
   "source": {
     "repo": "Bensigo/agentrail",

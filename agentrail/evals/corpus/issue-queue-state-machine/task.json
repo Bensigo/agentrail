@@ -13,6 +13,12 @@
   "requiredContext": [
     "agentrail/afk/queue_state.py"
   ],
+  "readContext": [
+    "agentrail/afk/state.py",
+    "docs/design/verification-contract-architecture.md",
+    "CONTEXT.md",
+    "docs/milestones/035-issue-queue-and-input-contract.md"
+  ],
   "difficulty": "easy",
   "source": {
     "repo": "Bensigo/agentrail",

@@ -104,6 +104,124 @@ services:
       retries: 5
       start_period: 20s
 
+  # QA subagent sidecar 1/2 — agent-browser MCP, the primary UI driver, behind a
+  # stdio->streamable-HTTP bridge. agent-browser's `mcp` command speaks stdio
+  # only (no native HTTP mode), so supergateway exposes it as the Streamable-HTTP
+  # /mcp endpoint apps/jace consumes via JACE_AGENT_BROWSER_MCP_URL
+  # (default http://localhost:8932/mcp). Flags + pins verified via Context7
+  # (/vercel-labs/agent-browser, /supercorp-ai/supergateway) and boot-tested in
+  # this image (initialize + a real agent_browser_open tools/call) 2026-07-12.
+  #
+  #  - Exact pins for reproducibility: agent-browser@0.31.1 is the version Task B3
+  #    verified the qa 16-tool allowlist against (npm `latest` 2026-07-12; an
+  #    unpinned install can resolve a stale cached 0.27.0 that has no `mcp`
+  #    subcommand and would boot-loop). supergateway@3.4.3 is npm `latest`.
+  #  - NO `agent-browser install`: Chrome for Testing publishes no Linux ARM64
+  #    builds, so that step hard-fails on arm64 hosts (Apple Silicon dev boxes).
+  #    Instead we symlink the image's bundled Chromium into the system-Chrome
+  #    discovery path (agent-browser probes /usr/bin/google-chrome). The
+  #    `--executable-path` flag is NOT honored in `mcp` mode (probe-verified:
+  #    accepted-but-ignored in both flag positions) — don't "simplify" to it.
+  #    The glob keeps this arch-proof and survives playwright image bumps.
+  #  - --tools core,network,debug (NOT the naive core,network): the qa allowlist
+  #    includes the console + page-error tools (agent_browser_console/_errors),
+  #    which live in the `debug` profile. `debug` also exposes agent-browser's
+  #    command.run/inspect tools on this port; the qa connection's 16-name
+  #    allowlist never surfaces those to the subagent, but keep this sidecar
+  #    host-local / firewalled.
+  #  - supergateway --stateful is REQUIRED: in stateless mode it starts a fresh
+  #    MCP server (hence a fresh browser) per HTTP request, losing the page
+  #    between navigate and click; stateful keeps one browser across the run.
+  #  - agent-browser auto-adds --no-sandbox under Docker/root and is headless by
+  #    default.
+  agent-browser:
+    image: mcr.microsoft.com/playwright:latest
+    init: true
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        npm i -g agent-browser@0.31.1 supergateway@3.4.3
+        ln -sf "$$(ls /ms-playwright/chromium-*/chrome-linux/chrome | head -1)" /usr/bin/google-chrome
+        exec supergateway --stdio 'agent-browser mcp --tools core,network,debug' --outputTransport streamableHttp --streamableHttpPath /mcp --port 8932 --stateful
+    ports:
+      - "8932:8932"
+    healthcheck:
+      # node ships in the playwright base from second zero, so this probe works
+      # during the npm-install window before the port opens.
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('net').connect(8932,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # covers the `npm i -g` window before supergateway opens port 8932.
+      start_period: 120s
+
+  # QA subagent sidecar 2/2 — browser-use MCP, LLM-powered extraction + fallback
+  # for when agent-browser is down. browser-use is a Python package whose `--mcp`
+  # mode speaks stdio, so supergateway bridges it to Streamable HTTP. Consumed via
+  # JACE_BROWSER_USE_MCP_URL (default http://localhost:8933/mcp). Verified via
+  # Context7 (/browser-use/browser-use, /supercorp-ai/supergateway) and boot-tested
+  # in this image (pip install + stdio MCP initialize) 2026-07-12; there is no
+  # published official browser-use MCP image (only in-repo Dockerfiles), hence the
+  # runtime install here.
+  #
+  #  - Image is PINNED to a -noble (Ubuntu 24.04) tag, unlike the other services:
+  #    every published browser-use version requires Python >=3.11, but
+  #    playwright/python:latest still resolves to a stale jammy build (Python
+  #    3.10, apt nodejs v12) where the pip install finds "no matching
+  #    distribution" and apt node can't run supergateway. v1.61.0-noble = newest
+  #    noble tag 2026-07-12 (Python 3.12, apt nodejs 18 — both probe-verified).
+  #  - Pins: browser-use[cli]==0.13.4 (PyPI latest 2026-07-12; noble's PEP-668
+  #    python needs pip --break-system-packages), supergateway@3.4.3. nodejs is
+  #    apt-installed only to run supergateway (a Node CLI). --stateful for the
+  #    same reason as sidecar 1/2 — keep one browser session across the run.
+  #  - google-chrome symlink: browser-use 0.13 drives the browser via cdp-use
+  #    (not playwright-python), so it won't find the image's bundled browsers
+  #    through playwright's registry; the symlink gives its local-browser launch
+  #    a discoverable system Chrome, same trick as sidecar 1/2.
+  #  - BROWSER_USE_LLM_KEY is the ONLY env passthrough and is OPTIONAL: browser-use
+  #    reads OPENAI_API_KEY for the LLM behind browser_extract_content (verified —
+  #    the documented browser-use MCP config sets OPENAI_API_KEY). Absent key =>
+  #    only browser_extract_content errors and qa falls back to browser_get_state.
+  #    No Jace secret is ever mounted into this sidecar.
+  browser-use:
+    image: mcr.microsoft.com/playwright/python:v1.61.0-noble
+    init: true
+    environment:
+      - OPENAI_API_KEY=${BROWSER_USE_LLM_KEY:-}
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        apt-get update
+        apt-get install -y --no-install-recommends nodejs npm
+        npm i -g supergateway@3.4.3
+        pip install --no-cache-dir --break-system-packages 'browser-use[cli]==0.13.4'
+        ln -sf "$$(ls /ms-playwright/chromium-*/chrome-linux/chrome | head -1)" /usr/bin/google-chrome
+        exec supergateway --stdio 'browser-use --mcp' --outputTransport streamableHttp --streamableHttpPath /mcp --port 8933 --stateful
+    ports:
+      - "8933:8933"
+    healthcheck:
+      # python3 is guaranteed in the playwright/python base from second zero;
+      # `node` is not on PATH until the apt-get install finishes, so probe with
+      # python to avoid a healthcheck that errors during the startup window.
+      test:
+        - "CMD"
+        - "python3"
+        - "-c"
+        - "import socket,sys; s=socket.socket(); s.settimeout(2); sys.exit(0 if s.connect_ex(('127.0.0.1',8933))==0 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # generous: apt-get + a heavy `pip install browser-use` run before port 8933 is up.
+      start_period: 300s
+
 volumes:
   pgdata:
   chdata:

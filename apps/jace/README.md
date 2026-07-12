@@ -108,6 +108,9 @@ workspace's outbound stays on its legacy console sender until its cutover.
 | `LOOPMESSAGE_WEBHOOK_SECRET_TOKEN` | The dashboard `webhook_header` value; inbound LoopMessage webhooks must present it as `Authorization`. Verified constant-time — unset ⇒ fail-closed (every inbound `401`s). |
 | `LOOPMESSAGE_DEFAULT_RECIPIENT` | Fallback iMessage recipient (phone/email) for run-outcome pushes that carry no `target.handle`. |
 | `JACE_PLAYWRIGHT_MCP_URL` | Streamable-HTTP URL of the headless Playwright MCP sidecar the `researcher` subagent drives read-only. Defaults to `http://localhost:8931/mcp` (the compose service / `npx @playwright/mcp` local dev). If unreachable, the researcher degrades gracefully to Context7-only. |
+| `JACE_AGENT_BROWSER_MCP_URL` | Streamable-HTTP URL of the agent-browser MCP sidecar the `qa` subagent drives as its primary UI tester. Defaults to `http://localhost:8932/mcp` (the compose `agent-browser` service). If unreachable, qa falls back to the browser-use sidecar. |
+| `JACE_BROWSER_USE_MCP_URL` | Streamable-HTTP URL of the browser-use MCP sidecar — the `qa` subagent's extraction + fallback engine. Defaults to `http://localhost:8933/mcp` (the compose `browser-use` service). Its optional LLM key is `BROWSER_USE_LLM_KEY` (see below). |
+| `BROWSER_USE_LLM_KEY` | Optional. LLM key powering only the browser-use sidecar's `browser_extract_content` tool; passed to that sidecar (as its `OPENAI_API_KEY`) and to no other service. Unset = qa skips content extraction and falls back to `browser_get_state`. Never a Jace model/GitHub secret. |
 | `CONTEXT7_API_KEY` | Optional. Raises Context7 hosted-MCP rate limits for the `researcher`; sent as the `CONTEXT7_API_KEY` request header. Unset = the keyless public tier. |
 
 ## The researcher subagent

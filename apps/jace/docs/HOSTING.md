@@ -115,6 +115,65 @@ page says, it never acts on what a page tells it to do.
 
 [pw]: https://github.com/microsoft/playwright-mcp
 
+## QA MCP sidecars
+
+Jace's `qa` subagent drives a running app like a user to verify a change works
+end-to-end. It uses two browser MCP sidecars, both reached over Streamable HTTP,
+both fail-soft the same way the researcher's sources do — Eve resolves connection
+tools lazily, so an unreachable sidecar just never surfaces its tools.
+
+Unlike the researcher's read-only Playwright, these are **interactive** drivers
+(click, fill, type). The `qa` subagent nonetheless holds no write path to your
+systems: it is confined to a curated tool allowlist per sidecar (navigation,
+snapshot, click/fill/type, wait, screenshot, console/errors, network reads) with
+JS-evaluate, file upload, cookie/storage, and pdf/install tools deliberately
+excluded, and Eve's subagent boundary plus `disableTool()` sentinels strip the
+default agent harness. It drives the app; it never scripts the page.
+
+Both underlying servers speak **stdio only**, so each is fronted by a
+[supergateway][sg] stdio→Streamable-HTTP bridge (run `--stateful`, so one browser
+session persists across a run rather than respawning per request).
+
+- **agent-browser** (primary UI driver). The `agent-browser` connection drives an
+  [agent-browser][ab] MCP server for deterministic step-wise UI testing. Point it
+  with `JACE_AGENT_BROWSER_MCP_URL` (default `http://localhost:8932/mcp`).
+
+- **browser-use** (extraction + fallback). The `browser-use` connection drives a
+  [browser-use][bu] MCP server for content extraction and as the fallback when
+  agent-browser is down. Point it with `JACE_BROWSER_USE_MCP_URL` (default
+  `http://localhost:8933/mcp`).
+
+  - **LLM key (optional).** Only browser-use's `browser_extract_content` tool
+    calls an LLM, and it runs **on the sidecar with the sidecar's own key** —
+    `BROWSER_USE_LLM_KEY`, passed into that one container as its `OPENAI_API_KEY`
+    and to no other service. No Jace model or GitHub secret is ever mounted into
+    these sidecars. Unset the key and `browser_extract_content` simply fails; qa
+    falls back to `browser_get_state`.
+
+- **Production (compose).** The root `docker-compose.yml` ships both services on
+  the `mcr.microsoft.com/playwright` (agent-browser) and
+  `mcr.microsoft.com/playwright/python` (browser-use) base images — each installs
+  its CLI + supergateway at start and publishes its `/mcp` port. Co-located
+  services use `http://agent-browser:8932/mcp` / `http://browser-use:8933/mcp`; a
+  Jace process outside the compose network uses the published localhost ports.
+  Because agent-browser's toolset exposes a shell/inspect surface on its port
+  (filtered out of qa's allowlist, but present on the wire), keep both sidecars
+  host-local or firewalled — do not expose these ports to untrusted networks.
+
+- **Local dev (npx/pip).** No Docker needed — run each bridge directly, e.g.
+  `supergateway --stdio 'agent-browser mcp --tools core,network,debug'
+  --outputTransport streamableHttp --streamableHttpPath /mcp --port 8932
+  --stateful`, and the analogous `browser-use --mcp` on `8933`. Jace then uses the
+  default localhost URLs, so no env var is required locally.
+
+- **Degraded mode.** If agent-browser is unreachable, qa continues on browser-use
+  alone; if both are unreachable it reports that it could not exercise the app
+  rather than claiming a pass it never observed.
+
+[sg]: https://github.com/supercorp-ai/supergateway
+[ab]: https://github.com/vercel-labs/agent-browser
+[bu]: https://github.com/browser-use/browser-use
+
 ## Runtime and dependency policy
 
 - Node.js `>= 24` is required.

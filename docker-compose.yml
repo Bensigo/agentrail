@@ -143,7 +143,7 @@ services:
       - |
         set -e
         npm i -g agent-browser@0.31.1 supergateway@3.4.3
-        ln -sf "$$(ls /ms-playwright/chromium-*/chrome-linux/chrome | head -1)" /usr/bin/google-chrome
+        CHROME_BIN="$$(ls /ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -1)"; [ -n "$$CHROME_BIN" ] || { echo 'chrome binary not found in image' >&2; exit 1; }; ln -sf "$$CHROME_BIN" /usr/bin/google-chrome
         exec supergateway --stdio 'agent-browser mcp --tools core,network,debug' --outputTransport streamableHttp --streamableHttpPath /mcp --port 8932 --stateful
     ports:
       - "8932:8932"
@@ -203,7 +203,7 @@ services:
         apt-get install -y --no-install-recommends nodejs npm
         npm i -g supergateway@3.4.3
         pip install --no-cache-dir --break-system-packages 'browser-use[cli]==0.13.4'
-        ln -sf "$$(ls /ms-playwright/chromium-*/chrome-linux/chrome | head -1)" /usr/bin/google-chrome
+        CHROME_BIN="$$(ls /ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -1)"; [ -n "$$CHROME_BIN" ] || { echo 'chrome binary not found in image' >&2; exit 1; }; ln -sf "$$CHROME_BIN" /usr/bin/google-chrome
         exec supergateway --stdio 'browser-use --mcp' --outputTransport streamableHttp --streamableHttpPath /mcp --port 8933 --stateful
     ports:
       - "8933:8933"

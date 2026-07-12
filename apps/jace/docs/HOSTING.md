@@ -160,6 +160,15 @@ session persists across a run rather than respawning per request).
   (filtered out of qa's allowlist, but present on the wire), keep both sidecars
   host-local or firewalled — do not expose these ports to untrusted networks.
 
+  - **macOS Docker Desktop pull hang.** If `docker compose pull`/`up` for these
+    two services hangs indefinitely, Docker Desktop's `desktop` credential
+    helper is stalling on registry auth in a headless session — both base
+    images are public and pull anonymously. Skip the helper by pointing
+    `DOCKER_CONFIG` at an empty config dir (`{}` in `config.json`, plus a
+    `cli-plugins/docker-compose` symlink so `compose` still resolves):
+    `DOCKER_CONFIG=/tmp/docker-empty-config docker compose pull agent-browser
+    browser-use`.
+
 - **Local dev (npx/pip).** No Docker needed — run each bridge directly, e.g.
   `supergateway --stdio 'agent-browser mcp --tools core,network,debug'
   --outputTransport streamableHttp --streamableHttpPath /mcp --port 8932

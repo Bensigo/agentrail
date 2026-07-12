@@ -4,6 +4,7 @@ Native sanitized_agent_exec and portable_timeout (originally bash helpers; now
 the canonical implementation).
 """
 from __future__ import annotations
+import contextlib
 import os
 import signal
 import subprocess
@@ -70,7 +71,16 @@ def run_with_timeout(argv: List[str], *, cwd: Path, timeout: int, output_file: P
 
     try:
         proc.wait(timeout=timeout)
-        reader.join()
+        # The child exited, but a lingering grandchild may still hold the
+        # stdout pipe's write end open (e.g. a verify check that backgrounds
+        # a dev server and exits 0) — an unbounded join() would then block
+        # for that grandchild's full lifetime. Give it a short drain grace;
+        # legitimate pipe drainage after the child exits takes milliseconds,
+        # so only a surviving grandchild would still be blocking past it.
+        reader.join(timeout=2)
+        if reader.is_alive():
+            _kill_tree(proc)
+            reader.join(timeout=5)
         rc = proc.returncode
     except subprocess.TimeoutExpired:
         _kill_tree(proc)
@@ -87,15 +97,18 @@ def run_with_timeout(argv: List[str], *, cwd: Path, timeout: int, output_file: P
 
 def _kill_tree(proc: "subprocess.Popen") -> None:
     """SIGKILL the child's whole process group when possible, so surviving
-    grandchildren (a booted dev server, a detached tail) are reaped too. Falls
-    back to killing just the direct child on platforms/states where the group
-    kill is unavailable. Best-effort: a dead child is already success."""
-    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    grandchildren (a booted dev server, a detached tail) are reaped too. Safe
+    to call after the leader itself has already been reaped (the success
+    path calls this post-wait()): start_new_session guarantees
+    pgid == proc.pid, so killpg(proc.pid, ...) still reaches surviving group
+    members even though os.getpgid(proc.pid) would raise ProcessLookupError
+    once the leader is gone. Falls back to killing just the direct child on
+    platforms/states where group kill is unavailable. Best-effort: a dead
+    child is already success."""
+    if hasattr(os, "killpg"):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
             return
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
     try:
         proc.kill()
     except (ProcessLookupError, OSError):

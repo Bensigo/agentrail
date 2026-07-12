@@ -143,6 +143,44 @@ class RunWithTimeoutTests(unittest.TestCase):
                 f"timeout took {elapsed:.1f}s — a surviving grandchild wedged the reader thread",
             )
 
+    @unittest.skipUnless(
+        hasattr(os, "killpg") and hasattr(os, "setsid"),
+        "process-group semantics are POSIX-only",
+    )
+    def test_success_exit_reaps_lingering_grandchildren(self) -> None:
+        # The child exits 0 immediately but leaves behind a GRANDCHILD that
+        # inherited the stdout pipe and keeps sleeping. The child succeeded,
+        # so this must NOT be treated as a timeout — but the write end of
+        # the pipe stays open until the grandchild exits, so an unbounded
+        # reader.join() on the success path blocks for the grandchild's
+        # full lifetime. A verify check that backgrounds a dev server and
+        # exits 0 would wedge the caller (and the whole verify gate)
+        # indefinitely. The success path must bound the join and reap the
+        # group, while still reporting the child's real (successful) rc.
+        child_src = (
+            "import subprocess, sys; "
+            "print('success-marker', flush=True); "
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)']); "
+            "sys.exit(0)"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out = tmp_path / "out.log"
+            start = time.monotonic()
+            rc = run_with_timeout(
+                [sys.executable, "-c", child_src],
+                cwd=tmp_path,
+                timeout=30,
+                output_file=out,
+            )
+            elapsed = time.monotonic() - start
+            self.assertEqual(rc, 0)
+            self.assertIn("success-marker", out.read_text())
+            self.assertLess(
+                elapsed, 6.0,
+                f"success exit took {elapsed:.1f}s — a lingering grandchild wedged the reader thread",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

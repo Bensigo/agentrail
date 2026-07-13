@@ -1,4 +1,5 @@
 from __future__ import annotations
+import dataclasses
 import datetime as _dt
 import json
 import logging
@@ -13,6 +14,7 @@ from typing import Any, Dict, Optional
 
 from agentrail.run import artifacts, context as ctx, prompts, skills, state as state_mod
 from agentrail.guardrails.policies.input_contract import screen_injection
+from agentrail.observability.tracer import RunTracer
 from agentrail.run.check_runner import (
     ac_coverage_for,
     load_verify_checks,
@@ -42,7 +44,7 @@ from agentrail.run.output_enforcer import (
     push_format_rejection_event,
 )
 from agentrail.run.layer_overrides import layer_override
-from agentrail.run.pricing import cost_usd
+from agentrail.run.pricing import cost_breakdown, cost_usd
 from agentrail.run.proc import run_with_timeout
 from agentrail.run import best_of_n as bestofn
 from agentrail.run import critic as critic_mod
@@ -200,6 +202,15 @@ class RunContext:
     # shared task context (one set of bytes = one shared cache key). "" = no
     # manifest → phase prompts stay byte-identical to pre-#1049 output.
     gather_manifest: str = ""
+    # Langfuse per-run tracer (Task 3, langfuse-tracing-shadow-judge PRD).
+    # Defaults to an INERT RunTracer (client=None) rather than None, so every
+    # call site can invoke rc.tracer.* unconditionally with no `if` — inert
+    # methods are no-ops by construction (see RunTracer._safe_emit). This also
+    # keeps direct RunContext(...) construction in existing tests (which never
+    # pass tracer=) safe: rc.tracer is never None, so run_issue_phase's cost
+    # block never hits an AttributeError even without _run_pipeline's real
+    # RunTracer.start() wiring.
+    tracer: RunTracer = field(default_factory=lambda: RunTracer(None, "", "", {}))
 
 
 def finalize_objective_gate(
@@ -540,6 +551,29 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
                     _f.write(json.dumps(record) + "\n")
             except Exception as _exc:
                 _log.debug("cost ledger write skipped: %s", _exc)
+            # Langfuse generation-per-phase-cost-capture (Task 3) — isolated in
+            # its own try/except, same as the ledger write above, so a tracing
+            # failure can never disable (or reorder) the cost accounting above
+            # it, which the budget guardrail depends on. usage is a Usage
+            # dataclass (model, input_tokens, output_tokens, cache_tokens,
+            # cache_creation_tokens); dataclasses.asdict maps those field names
+            # 1:1 into usageDetails, matching RunTracer.phase_generation's
+            # `usage: dict` contract. cost_breakdown(usage) gives the flat
+            # category→USD dict RunTracer folds into costDetails. usage.model
+            # (the model actually observed in the transcript this phase) is
+            # passed as the generation's model — NOT rc.model, which does not
+            # exist on RunContext.
+            try:
+                rc.tracer.phase_generation(
+                    phase,
+                    dataclasses.asdict(usage),
+                    cost,
+                    cost_breakdown(usage),
+                    phase_start_ts,
+                    usage.model or None,
+                )
+            except Exception as _exc:
+                _log.debug("langfuse phase trace skipped: %s", _exc)
     except Exception as _exc:
         _log.debug("cost capture skipped: %s", _exc)
 
@@ -1231,6 +1265,26 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         budget_usd=budget_usd,
     )
 
+    # 10a. Langfuse tracer (Task 3, langfuse-tracing-shadow-judge PRD): one
+    # trace per run, attached to rc so every downstream phase can reach it.
+    # RunTracer.start() is itself non-fatal by construction (inert when the
+    # AGENTRAIL_LANGFUSE_ENABLED flag is off or keys are missing, and never
+    # raises even when enabled — see agentrail/observability/tracer.py), but
+    # this call site still wraps it in its own try/except to match the
+    # non-fatal pattern used for every other observability/telemetry block in
+    # this file (cost push, ledger write, activity push, format enforcement).
+    # rc.tracer defaults to an inert RunTracer (see RunContext.tracer above),
+    # so a failure here leaves rc.tracer inert rather than None — additive
+    # only, never a risk to the run or the budget guardrail below.
+    try:
+        rc.tracer = RunTracer.start(
+            run_id,
+            session_id=os.environ.get("AGENTRAIL_LANGFUSE_SESSION_ID") or None,
+            metadata={"agent": agent, "label": str(label)},
+        )
+    except Exception as _exc:
+        _log.debug("langfuse tracer start skipped: %s", _exc)
+
     # 10b. Read-side injection re-screen (issue #1035).
     #
     # Defense-in-depth against prompt injection: the queue-entrance gate (#1026)
@@ -1290,6 +1344,10 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
             issue_context=resolution_text,
             context_pack_file=run_context_pack_file or "",
         )
+        try:
+            rc.tracer.finish(2)
+        except Exception as _exc:
+            _log.debug("langfuse tracer finish skipped: %s", _exc)
         return 2
 
     # 11. Phase execution
@@ -1596,4 +1654,8 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         issue_context=resolution_text,
         context_pack_file=run_context_pack_file or "",
     )
+    try:
+        rc.tracer.finish(status)
+    except Exception as _exc:
+        _log.debug("langfuse tracer finish skipped: %s", _exc)
     return status

@@ -3,7 +3,7 @@
 Mirrors the subcommand-dispatch shape of ``agentrail/cli/commands/evals.py``
 (a ``kind = args[0]`` dispatch inside ``run_langfuse``).
 
-Two subcommands:
+Three subcommands:
 
   * ``sync-models`` pushes ``agentrail.context.pricing.PRICE_TABLE`` into
     Langfuse's Models API via ``agentrail.observability.price_sync.sync_models``
@@ -14,16 +14,25 @@ Two subcommands:
     ``agentrail.observability.score_push.push_scores`` (see that module's
     docstring for the pinned scores-API contract and the fail-closed
     per-record contract).
+  * ``calibration-report`` reads those same scores back and reports how often
+    the optional shadow judge (``judge_verdict``) agrees with the ground
+    truth (``solved`` / ``verify_verdict``) via
+    ``agentrail.observability.calibration.calibration`` (see that module's
+    docstring for the pinned read-side API contract and the no-vanity-metrics
+    sample-size gate); writes a dated markdown report under
+    ``agentrail/evals/reports/``.
 
-Both are explicit operator actions — neither is ever run implicitly by a
+All three are explicit operator actions — none is ever run implicitly by a
 flag, so there is no feature-flag gate here.
 """
 from __future__ import annotations
 
 import sys
+from datetime import date as _date
 from pathlib import Path
 from typing import List
 
+from agentrail.observability.calibration import calibration, write_markdown_report
 from agentrail.observability.langfuse_client import LangfuseHTTP
 from agentrail.observability.price_sync import sync_models
 from agentrail.observability.score_push import push_scores
@@ -34,6 +43,7 @@ def _usage() -> str:
         "Usage:\n"
         "  agentrail langfuse sync-models [--dry-run]\n"
         "  agentrail langfuse push-scores --records <dir> [--judge <ledger.json>] [--dry-run]\n"
+        "  agentrail langfuse calibration-report [--reports-dir <dir>] [--date YYYY-MM-DD]\n"
         "\n"
         "Subcommands:\n"
         "  sync-models  Push agentrail.context.pricing.PRICE_TABLE into Langfuse's\n"
@@ -44,6 +54,12 @@ def _usage() -> str:
         "               files (production run-records or eval per-rep records).\n"
         "               Fail-closed per record: a malformed record is skipped with\n"
         "               a reason, never blocks the rest of the batch.\n"
+        "  calibration-report\n"
+        "               Read judge_verdict/solved/verify_verdict scores back from\n"
+        "               Langfuse and report how often the shadow judge agrees with\n"
+        "               the ground truth. Writes a dated markdown report; an\n"
+        "               agreement rate below n=10 renders as insufficient data,\n"
+        "               never a bare percentage.\n"
         "\n"
         "Options:\n"
         "  --dry-run       Report what would be created/pushed without issuing any\n"
@@ -51,6 +67,12 @@ def _usage() -> str:
         "  --records <dir> (push-scores) Directory of run-record JSON files.\n"
         "  --judge <file>  (push-scores) Optional JSON ledger of shadow-judge\n"
         "                  verdicts keyed by record identity.\n"
+        "  --reports-dir <dir>\n"
+        "                  (calibration-report) Directory to write the dated\n"
+        "                  report into. Defaults to agentrail/evals/reports/.\n"
+        "  --date YYYY-MM-DD\n"
+        "                  (calibration-report) Date to stamp the report file\n"
+        "                  and its 'Generated:' line with. Defaults to today.\n"
         "  -h, --help      Show this help\n"
     )
 
@@ -146,6 +168,55 @@ def _run_push_scores(args: List[str]) -> int:
     return 0
 
 
+def _run_calibration_report(args: List[str]) -> int:
+    reports_dir: str = ""
+    date: str = ""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-h", "--help"):
+            print(_usage())
+            return 0
+        elif a == "--reports-dir":
+            if i + 1 >= len(args):
+                print("error: --reports-dir requires a value", file=sys.stderr)
+                return 2
+            reports_dir = args[i + 1]
+            i += 2
+        elif a == "--date":
+            if i + 1 >= len(args):
+                print("error: --date requires a value", file=sys.stderr)
+                return 2
+            date = args[i + 1]
+            i += 2
+        else:
+            print(f"error: unknown option: {a}", file=sys.stderr)
+            return 2
+
+    client = LangfuseHTTP.from_env()
+    if client is None:
+        print(
+            "error: Langfuse is not configured "
+            "(set LANGFUSE_HOST or LANGFUSE_BASE_URL, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY)",
+            file=sys.stderr,
+        )
+        return 1
+
+    result = calibration(client)
+    date_str = date or _date.today().isoformat()
+    path = write_markdown_report(
+        result,
+        reports_dir=Path(reports_dir) if reports_dir else None,
+        date=date_str,
+    )
+
+    print(f"Wrote {path}")
+    print(f"n={result['n']} (insufficient: {result['insufficient']})")
+    for key, rate in result["agreement"].items():
+        print(f"  {key}: {rate if rate is not None else 'n/a'}")
+    return 0
+
+
 def run_langfuse(args: List[str]) -> int:
     """Dispatch ``agentrail langfuse <subcommand>``."""
     kind = args[0] if args else ""
@@ -159,6 +230,9 @@ def run_langfuse(args: List[str]) -> int:
 
     if kind == "push-scores":
         return _run_push_scores(args[1:])
+
+    if kind == "calibration-report":
+        return _run_calibration_report(args[1:])
 
     print(f"Unknown langfuse command: {kind}", file=sys.stderr)
     return 2

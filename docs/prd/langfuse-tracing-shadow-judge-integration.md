@@ -68,11 +68,14 @@ block :523-544), `agentrail/run/pricing.py`, `agentrail/context/pricing.py` (PRI
    which calibration and datasets depend on. Pin the compose to a tag, don't track main.
    SDKs read `LANGFUSE_HOST`/`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` from env; unset = disabled.
 
-2. **Agentrail tracer** (`agentrail/observability/langfuse_tracer.py`, Python SDK v3, OTel-based).
-   One trace per `_run_pipeline()`; one generation per `run_issue_phase` call, carrying phase name,
-   model, and explicit `usage_details`/`cost_details` computed by the *existing* `cost_usd()`/
-   `cost_breakdown()` at pipeline.py:523-544. Langfuse's own price lookup is never used for
-   agentrail generations.
+2. **Agentrail tracer** (`agentrail/observability/` — `langfuse_client.py` + `tracer.py`) talks to
+   Langfuse's stable public REST API directly via stdlib `urllib` (house pattern:
+   `agentrail/run/cost_push.py`) — no Python SDK dependency, so SDK major churn can't touch us and
+   trace IDs are derived deterministically from `run_id` (sha256 prefix), letting score-push find
+   traces with no lookup. One trace per `_run_pipeline()`; one generation per `run_issue_phase`
+   call, carrying phase name, model, and explicit `usageDetails`/`costDetails` computed by the
+   *existing* `cost_usd()`/`cost_breakdown()` at pipeline.py:523-544. Langfuse's own price lookup
+   is never used for agentrail generations.
 
 3. **Subprocess linking.** AFK shells out to the `agentrail` CLI (`afk/runner.py:243`), so true
    parent-child spans across that boundary are impossible. One `AGENTRAIL_LANGFUSE_SESSION_ID` per
@@ -137,9 +140,11 @@ block :523-544), `agentrail/run/pricing.py`, `agentrail/context/pricing.py` (PRI
   per-phase cost events landed 2026-06-12 (#503) and the judged runs were June 4–12, predating the
   feature. But the seam is therefore *unproven* in dogfood: one fresh dogfood run on current main
   must produce a populated `cost-events.jsonl` before the Langfuse cost story builds on it.
-- **P2 — SDK pins.** Pin exact versions at implementation time: Langfuse Python SDK v3.x,
-  `@langfuse/tracing`/`@langfuse/otel` (TS v4), compose image tag. Jace side re-verified against
-  the Eve-pinned versions (Node ≥ 24, `ai@7.0.11` — both compatible per current Langfuse docs).
+- **P2 — version pins.** Agentrail needs no Langfuse SDK (REST only); the pins that matter are the
+  compose image tag and Jace's JS packages (`@langfuse/otel` — the docs' current major moves fast:
+  a v4→v5 migration guide already exists, so pin whatever is current at implementation time, exact
+  version not a range, matching the Eve-pin philosophy). Jace side re-verified against the
+  Eve-pinned stack (Node ≥ 24, `ai@7.0.11` — both compatible per current Langfuse docs).
 
 ## Measurement (definition of success)
 

@@ -13,6 +13,7 @@ from agentrail.cli.commands.evals import run_evals
 from agentrail.cli.commands.guardrails import run_guardrails
 from agentrail.cli.commands.heartbeat import run_heartbeat
 from agentrail.cli.commands.issue import run_issue
+from agentrail.cli.commands.langfuse import run_langfuse
 from agentrail.cli.commands.milestone import run_milestone
 from agentrail.cli.commands.prd import run_prd
 from agentrail.cli.commands.console import run_console
@@ -85,6 +86,7 @@ def _usage() -> str:
         "  agentrail timeline [--target DIR]\n"
         "  agentrail cost [--target DIR] [--run ID] [--since REF] [--json]\n"
         "  agentrail cost [RUN_ID] --recommend [--json]\n"
+        "  agentrail langfuse sync-models [--dry-run]\n"
         "\n"
         "Commands:\n"
         "  context     Build/query the context index\n"
@@ -118,6 +120,7 @@ def _usage() -> str:
         "  runner      Run the local worker that executes queued issues\n"
         "  timeline    Show session timeline\n"
         "  cost        Per-issue real-dollar cost from the AFK journal\n"
+        "  langfuse    Langfuse integration operator commands (price sync)\n"
     )
 
 
@@ -144,6 +147,7 @@ def main(argv: List[str] | None = None) -> int:
         "status", "timeline", "cost",  # local read-only state
         "run-records",                 # local read-only run-record assembly (#1178)
         "link", "console",             # local worktree↔session / TUI
+        "langfuse",                    # talks to Langfuse, not the AgentRail server
     }
     if args[0] not in _OFFLINE_COMMANDS:
         if load_credentials() is None and not os.environ.get("AGENTRAIL_SERVER_API_KEY"):
@@ -183,6 +187,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_timeline(args[1:])
     if args[0] == "cost":
         return run_cost(args[1:])
+    if args[0] == "langfuse":
+        return run_langfuse(args[1:])
     if args[0] == "resume":
         return run_resume(args[1:])
     if args[0] == "status":

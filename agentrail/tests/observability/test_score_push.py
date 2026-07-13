@@ -351,12 +351,10 @@ def test_production_record_with_no_verify_verdict_and_no_judge_is_skipped(tmp_pa
 def test_mixed_batch_skip_list_is_exact(tmp_path, monkeypatch, client):
     good_run_id = "20260705-100000-issue-1178-claude-8"
     _write(tmp_path / f"{good_run_id}.json", _production_record(good_run_id, accepted=True))
-    _write(tmp_path / "corrupt.json", {})  # valid JSON, but empty dict -> no identity
     (tmp_path / "corrupt.json").write_text("not json at all", encoding="utf-8")
     _write(tmp_path / "beta-task--gather--rep2.json",
            _eval_record("beta-task", "gather", 2, solved=False, synthetic=True))
-    no_identity_record = {"unrelated": True}
-    _write(tmp_path / "unrelated.json", no_identity_record)
+    _write(tmp_path / "unrelated.json", {"unrelated": True})
 
     calls = _post_spy(monkeypatch)
     result = score_push.push_scores(client, tmp_path)

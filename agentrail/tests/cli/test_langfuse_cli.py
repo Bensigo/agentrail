@@ -1,10 +1,12 @@
-"""CLI tests for ``agentrail langfuse sync-models`` (agentrail/cli/commands/langfuse.py).
+"""CLI tests for ``agentrail langfuse`` (agentrail/cli/commands/langfuse.py).
 
-Drives the real dispatch (``run_langfuse``). ``sync_models`` itself is
-exercised end-to-end in agentrail/tests/observability/test_price_sync.py; here
-we only assert the CLI's OWN responsibilities: subcommand dispatch, the
---dry-run flag threading through, and the clean exit-1 error when Langfuse
-isn't configured.
+Drives the real dispatch (``run_langfuse``). ``sync_models``/``push_scores``
+themselves are exercised end-to-end in
+agentrail/tests/observability/test_price_sync.py and
+agentrail/tests/observability/test_score_push.py respectively; here we only
+assert the CLI's OWN responsibilities: subcommand dispatch, flag threading
+(``--dry-run``, ``--records``, ``--judge``), and the clean exit-1 error when
+Langfuse isn't configured.
 """
 from __future__ import annotations
 
@@ -74,6 +76,74 @@ class LangfuseCliTests(unittest.TestCase):
             return_value=object(),
         ):
             rc, _out, err = _run(["sync-models", "--bogus"])
+        self.assertEqual(2, rc)
+        self.assertIn("unknown option: --bogus", err)
+
+    # -- push-scores ---------------------------------------------------
+
+    def test_push_scores_errors_cleanly_when_langfuse_not_configured(self):
+        with patch(
+            "agentrail.cli.commands.langfuse.LangfuseHTTP.from_env",
+            return_value=None,
+        ):
+            rc, _out, err = _run(["push-scores", "--records", "/tmp/whatever"])
+        self.assertEqual(1, rc)
+        self.assertEqual(1, len(err.strip().splitlines()))
+        self.assertIn("not configured", err)
+
+    def test_push_scores_requires_records_flag(self):
+        with patch(
+            "agentrail.cli.commands.langfuse.LangfuseHTTP.from_env",
+            return_value=object(),
+        ):
+            rc, _out, err = _run(["push-scores"])
+        self.assertEqual(2, rc)
+        self.assertIn("--records <dir> is required", err)
+
+    def test_push_scores_dry_run_threads_flags_and_reports_result(self):
+        fake_client = object()
+        mock_push = MagicMock(return_value={
+            "pushed": 3,
+            "skipped": [{"record": "bad.json", "reason": "unparseable"}],
+        })
+        with patch(
+            "agentrail.cli.commands.langfuse.LangfuseHTTP.from_env",
+            return_value=fake_client,
+        ), patch("agentrail.cli.commands.langfuse.push_scores", mock_push):
+            rc, out, _err = _run([
+                "push-scores", "--records", "/tmp/recs", "--judge", "/tmp/j.json", "--dry-run",
+            ])
+
+        self.assertEqual(0, rc)
+        from pathlib import Path
+        mock_push.assert_called_once_with(
+            fake_client, Path("/tmp/recs"), Path("/tmp/j.json"), dry_run=True,
+        )
+        self.assertIn("Would push: 3 score(s)", out)
+        self.assertIn("Skipped: 1", out)
+        self.assertIn("bad.json: unparseable", out)
+
+    def test_push_scores_without_judge_flag_passes_none(self):
+        fake_client = object()
+        mock_push = MagicMock(return_value={"pushed": 0, "skipped": []})
+        with patch(
+            "agentrail.cli.commands.langfuse.LangfuseHTTP.from_env",
+            return_value=fake_client,
+        ), patch("agentrail.cli.commands.langfuse.push_scores", mock_push):
+            rc, out, _err = _run(["push-scores", "--records", "/tmp/recs"])
+
+        self.assertEqual(0, rc)
+        from pathlib import Path
+        mock_push.assert_called_once_with(fake_client, Path("/tmp/recs"), None, dry_run=False)
+        self.assertIn("Pushed: 0 score(s)", out)
+        self.assertIn("Skipped: 0", out)
+
+    def test_push_scores_unknown_option_errors(self):
+        with patch(
+            "agentrail.cli.commands.langfuse.LangfuseHTTP.from_env",
+            return_value=object(),
+        ):
+            rc, _out, err = _run(["push-scores", "--records", "/tmp/recs", "--bogus"])
         self.assertEqual(2, rc)
         self.assertIn("unknown option: --bogus", err)
 

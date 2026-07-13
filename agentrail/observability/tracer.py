@@ -9,7 +9,16 @@ passed in or what the transport does.
 
 Field names verified against Langfuse API ingestion schema:
   trace-create body: id, sessionId, name, metadata, tags
-  generation-create body: traceId, name, model, startTime, endTime, usageDetails, costDetails
+  generation-create body: id, traceId, name, model, startTime, endTime, usageDetails, costDetails
+
+`generation-create`'s body REQUIRES its own `id` (the observation's own identity,
+distinct from the outer batch envelope's event id set by `_event()`) — omitting
+it is rejected by the real ingestion endpoint with a 400 ("expected string,
+received undefined" at body.id), confirmed against a live local Langfuse
+instance (v3.212.0). Every existing test mocked `_request` and asserted only on
+individual body fields, so this was never caught until a real E2E run: the
+tracer's own non-fatal design meant every phase_generation call silently failed
+in production while the run itself succeeded normally.
 """
 from __future__ import annotations
 
@@ -63,6 +72,7 @@ class RunTracer:
             cost_details = dict(breakdown) if breakdown else {}
             cost_details["total"] = cost_usd
             return {
+                "id": str(uuid.uuid4()),
                 "traceId": self._trace_id,
                 "name": phase,
                 "model": model,

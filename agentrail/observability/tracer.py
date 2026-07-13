@@ -57,7 +57,7 @@ class RunTracer:
         return tracer
 
     def phase_generation(self, phase: str, usage: dict, cost_usd: float,
-                         breakdown: Optional[dict], start_ts: float,
+                         breakdown: Optional[dict], start_ts: Optional[float],
                          model: Optional[str]) -> None:
         def build() -> dict:
             cost_details = dict(breakdown) if breakdown else {}
@@ -66,7 +66,10 @@ class RunTracer:
                 "traceId": self._trace_id,
                 "name": phase,
                 "model": model,
-                "startTime": _ts_iso(start_ts) if start_ts else _now_iso(),
+                # `is not None`, not truthiness: start_ts=0.0 is a valid Unix
+                # epoch (1970-01-01Z), not "unset" — a bare `if start_ts`
+                # would silently record _now_iso() instead.
+                "startTime": _ts_iso(start_ts) if start_ts is not None else _now_iso(),
                 "endTime": _now_iso(),
                 "usageDetails": usage,
                 "costDetails": cost_details,

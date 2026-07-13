@@ -58,6 +58,24 @@ def test_phase_generation_carries_explicit_cost(capture):
     assert body["usageDetails"] == {"input": 100, "output": 20}
 
 
+def test_phase_generation_start_ts_zero_records_epoch_not_now(capture):
+    # start_ts=0.0 is a valid Unix epoch (1970-01-01Z), NOT "unset" — a bare
+    # `if start_ts` truthiness check would silently substitute the current
+    # time. Pin the emitted startTime so that regression can't return.
+    t = RunTracer.start("run-x")
+    t.phase_generation("execute", {"input": 1}, 0.0, None, 0.0, "m")
+    gens = [e for batch in capture for e in batch if e["type"] == "generation-create"]
+    assert gens[0]["body"]["startTime"].startswith("1970-01-01T00:00:00")
+
+
+def test_phase_generation_start_ts_passthrough(capture):
+    t = RunTracer.start("run-x")
+    t.phase_generation("verify", {"input": 1}, 0.0, None, 1720000000.0, "m")
+    gens = [e for batch in capture for e in batch if e["type"] == "generation-create"]
+    # 1720000000.0 == 2024-07-03T09:46:40Z — the provided value, not _now_iso().
+    assert gens[0]["body"]["startTime"].startswith("2024-07-03T09:46:40")
+
+
 def test_transport_error_swallowed(capture, monkeypatch):
     def boom(*a, **k):
         raise OSError("connection refused")

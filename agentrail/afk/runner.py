@@ -150,6 +150,27 @@ class Runner:
         # session_id is stashed on the store by build_store after attach_journal;
         # fall back to None so the runner is safe if constructed without it.
         self.session_id: Optional[str] = getattr(store, "_session_id", None)
+        # Task 4 (langfuse-tracing-shadow-judge PRD): the runner's own start
+        # time, fixed once per Runner instance (i.e. once per `agentrail afk`
+        # invocation). Combined with the issue number in
+        # `_langfuse_session_id`, it gives every AFK work-item (one GitHub
+        # issue's implement phase) a Langfuse session id that stays constant
+        # even if that phase is retried, while still being distinct from the
+        # same issue reprocessed by a later `agentrail afk` run.
+        from datetime import datetime, timezone
+        self._start_iso = datetime.now(timezone.utc).isoformat()
+
+    def _langfuse_session_id(self, issue: int) -> str:
+        """Session id shared by every phase/retry of one AFK work-item.
+
+        Consumed by Task 3's ``RunTracer.start(..., session_id=...)`` read of
+        ``AGENTRAIL_LANGFUSE_SESSION_ID`` in ``agentrail/run/pipeline.py`` —
+        so every ``agentrail run issue`` phase for this issue groups into one
+        Langfuse session. Harmless metadata when Langfuse is disabled or the
+        consuming command ignores it (e.g. review/objective-fix subprocesses
+        that don't currently read this env var).
+        """
+        return f"afk-{issue}-{self._start_iso}"
 
     # --- worktree helpers ----------------------------------------------------
 
@@ -267,6 +288,11 @@ class Runner:
             env["AGENTRAIL_SERVER_BASE_URL"] = link["base_url"]
             env["AGENTRAIL_SERVER_API_KEY"] = link["api_key"]
             env["AGENTRAIL_SERVER_REPOSITORY_ID"] = link["repository_id"]
+        # Task 4 (langfuse-tracing-shadow-judge PRD): propagate this item's
+        # Langfuse session id so `run issue`'s pipeline.py RunTracer.start()
+        # groups every phase of this issue's implement run into one session.
+        # Unconditional — harmless metadata when Langfuse is disabled.
+        env["AGENTRAIL_LANGFUSE_SESSION_ID"] = self._langfuse_session_id(issue)
         rc = await _sh(
             cmd,
             cwd=wt,

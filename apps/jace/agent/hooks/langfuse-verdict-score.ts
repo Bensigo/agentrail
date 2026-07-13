@@ -73,6 +73,25 @@ const SCORE_NAME_BY_SUBAGENT = {
   qa: "qa_verdict",
 };
 
+// De-dup guard (issue #1196): the same completed subagent result was observed
+// to reach this hook more than once for one turn (two identical scores with the
+// same callId). Score each callId at most once. Bounded so a long-running
+// process can't grow this set without limit — oldest ids evict first.
+const SEEN_CALL_IDS_MAX = 500;
+const _seenCallIds = new Set();
+function markScored(seen, callId) {
+  if (!callId) return true; // no id to dedup on — don't suppress
+  if (seen.has(callId)) return false;
+  seen.add(callId);
+  if (seen.size > SEEN_CALL_IDS_MAX) seen.delete(seen.values().next().value);
+  return true;
+}
+
+/** Test-only: clear the process-wide de-dup memory so tests stay isolated. */
+export function __resetScoredForTests() {
+  _seenCallIds.clear();
+}
+
 /**
  * Derive the score `value` (+ `dataType`) from one subagent's parsed
  * structured output.
@@ -95,7 +114,20 @@ const SCORE_NAME_BY_SUBAGENT = {
  * @returns {{ value: string, dataType: "CATEGORICAL" } | undefined}
  */
 export function verdictValueFor(subagentName, output) {
-  const o = output !== null && typeof output === "object" ? output : {};
+  // The subagent's structured output arrives as a JSON STRING on the live
+  // stream (verified against a real `subagent.completed` / `action.result`
+  // event: `typeof output === "string"`), not a pre-parsed object. Parse it
+  // first, otherwise `blocking_reason` / `verdict` is never read and triage
+  // always scores "unblocked" regardless of the real diagnosis (issue #1197).
+  let parsed = output;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      parsed = {};
+    }
+  }
+  const o = parsed !== null && typeof parsed === "object" ? parsed : {};
   if (subagentName === "qa") {
     const verdict = typeof o.verdict === "string" && o.verdict.trim() ? o.verdict : "unknown";
     return { value: verdict, dataType: "CATEGORICAL" };
@@ -177,6 +209,10 @@ export async function handleActionResult(event, ctx, deps = {}) {
 
   const verdict = verdictValueFor(subagentName, result.output);
   if (!verdict) return;
+
+  // Score this completion at most once (issue #1196).
+  const seen = deps.seen ?? _seenCallIds;
+  if (!markScored(seen, result.callId)) return;
 
   const fetchImpl = deps.fetchImpl ?? fetch;
   await pushScore({

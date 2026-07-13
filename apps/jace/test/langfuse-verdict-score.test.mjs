@@ -32,7 +32,11 @@ import {
   handleActionResult,
   verdictValueFor,
   pushScore,
+  __resetScoredForTests,
 } from "../agent/hooks/langfuse-verdict-score.ts";
+import { beforeEach } from "node:test";
+
+beforeEach(() => __resetScoredForTests());
 
 const FAKE_ENV = {
   LANGFUSE_PUBLIC_KEY: "pk-fake",
@@ -300,4 +304,56 @@ test("pushScore de-slashes a trailing slash on baseUrl", async () => {
     body: { sessionId: "s", name: "triage_verdict", value: "blocked", dataType: "CATEGORICAL" },
   });
   assert.equal(fetchImpl.calls[0].url, "https://fake.langfuse.example.com/api/public/scores");
+});
+
+// ---------------------------------------------------------------------------
+// issue #1197 — the live stream delivers `output` as a JSON STRING, so
+// verdictValueFor must parse it (else triage always scores "unblocked").
+
+test("verdictValueFor: parses a JSON-string triage output to 'blocked'", () => {
+  assert.deepEqual(verdictValueFor("triage", JSON.stringify(TRIAGE_OUTPUT_BLOCKED)), {
+    value: "blocked",
+    dataType: "CATEGORICAL",
+  });
+});
+
+test("verdictValueFor: parses a JSON-string qa output to its verdict", () => {
+  assert.deepEqual(verdictValueFor("qa", JSON.stringify(QA_OUTPUT_ISSUES)), {
+    value: "issues_found",
+    dataType: "CATEGORICAL",
+  });
+});
+
+test("verdictValueFor: an unparseable string falls back safely (unblocked)", () => {
+  assert.deepEqual(verdictValueFor("triage", "not json at all"), {
+    value: "unblocked",
+    dataType: "CATEGORICAL",
+  });
+});
+
+// ---------------------------------------------------------------------------
+// issue #1196 — the same completed result reaches the hook more than once per
+// turn; dedup by callId so one completion scores exactly once.
+
+test("handleActionResult: the same callId scores exactly once", async () => {
+  const fetchImpl = fakeFetch();
+  const seen = new Set();
+  const ev = triageActionResultEvent(TRIAGE_OUTPUT_BLOCKED); // callId call_triage_1
+  await handleActionResult(ev, FAKE_CTX, { env: FAKE_ENV, fetchImpl, seen });
+  await handleActionResult(ev, FAKE_CTX, { env: FAKE_ENV, fetchImpl, seen });
+  assert.equal(fetchImpl.calls.length, 1, "one score despite two identical events");
+});
+
+test("handleActionResult: different callIds each score once", async () => {
+  const fetchImpl = fakeFetch();
+  const seen = new Set();
+  const a = triageActionResultEvent(TRIAGE_OUTPUT_BLOCKED, {
+    result: { kind: "subagent-result", callId: "call_A", subagentName: "triage", output: TRIAGE_OUTPUT_BLOCKED },
+  });
+  const b = triageActionResultEvent(TRIAGE_OUTPUT_BLOCKED, {
+    result: { kind: "subagent-result", callId: "call_B", subagentName: "triage", output: TRIAGE_OUTPUT_BLOCKED },
+  });
+  await handleActionResult(a, FAKE_CTX, { env: FAKE_ENV, fetchImpl, seen });
+  await handleActionResult(b, FAKE_CTX, { env: FAKE_ENV, fetchImpl, seen });
+  assert.equal(fetchImpl.calls.length, 2);
 });

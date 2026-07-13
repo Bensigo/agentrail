@@ -41,3 +41,25 @@ test("posts the split messages and pauses typing between them", () => {
   assert.match(code, /channel\.telegram\.post\(message\)/);
   assert.match(code, /channel\.telegram\.startTyping\(\)/);
 });
+
+test("wires the typing keep-alive: start on turn.started, stop on turn end", () => {
+  // The keep-alive LOGIC is fully exercised by typing-keepalive.core.test.mjs;
+  // this locks that the channel actually drives it on the right events.
+  assert.match(
+    code,
+    /import\s*{\s*createTypingKeepalive\s*}\s*from\s*["']\.\.\/lib\/typing-keepalive\.core\.mjs["']/,
+  );
+  assert.match(code, /["']turn\.started["']/);
+  assert.match(code, /typing\.start\(convoKey\(ctx\),\s*\(\)\s*=>\s*channel\.telegram\.startTyping\(\)\)/);
+  // Stops on both success paths.
+  assert.match(code, /["']turn\.completed["']/);
+  assert.match(code, /typing\.stop\(convoKey\(ctx\)\)/);
+});
+
+test("does NOT override turn.failed / session.failed (keeps Eve's error posts)", () => {
+  // Overriding these would clobber Eve's default terminal-error messages, which
+  // are not exported for chaining. The keep-alive's own safety cap covers the
+  // failure path instead.
+  assert.doesNotMatch(code, /["']turn\.failed["']/);
+  assert.doesNotMatch(code, /["']session\.failed["']/);
+});

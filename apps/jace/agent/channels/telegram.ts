@@ -23,15 +23,35 @@
 // why, and instructions.md's "Voice and reply length" section for the model
 // contract this relies on. The `finishReason`/`message` guard mirrors Eve's
 // default exactly, so tool-call and empty-message turns behave unchanged.
+//
+// `events["turn.started"]` overrides Eve's default one-shot `startTyping()`.
+// Telegram expires a typing indicator after ~5s, so on a slow model the chat
+// looks dead for the rest of a 30s–2min turn. The keep-alive re-sends the
+// action until the turn ends (stopped on message.completed / turn.completed;
+// the failure path is backstopped by the keep-alive's own safety cap so we do
+// not clobber Eve's default turn.failed / session.failed error handlers, which
+// Eve does not export for chaining). See agent/lib/typing-keepalive.core.mjs.
 import { telegramChannel } from "eve/channels/telegram";
 import { splitIntoChatMessages } from "../lib/chat-split.core.mjs";
+import { createTypingKeepalive } from "../lib/typing-keepalive.core.mjs";
 
 const botUsername = (process.env["TELEGRAM_BOT_USERNAME"] ?? "").trim();
+
+const typing = createTypingKeepalive();
+const convoKey = (ctx: { session?: { id?: string } }) =>
+  ctx?.session?.id ?? "telegram";
 
 export default telegramChannel({
   botUsername,
   events: {
-    async "message.completed"(data, channel) {
+    "turn.started"(_data, channel, ctx) {
+      typing.start(convoKey(ctx), () => channel.telegram.startTyping());
+    },
+    "turn.completed"(_data, _channel, ctx) {
+      typing.stop(convoKey(ctx));
+    },
+    async "message.completed"(data, channel, ctx) {
+      typing.stop(convoKey(ctx));
       if (data.finishReason === "tool-calls" || !data.message) return;
       const messages = splitIntoChatMessages(data.message);
       for (const [index, message] of messages.entries()) {

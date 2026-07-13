@@ -1,5 +1,7 @@
 # Contributing to AgentRail
 
+<!-- AgentRail is the control plane for AI coding agents: durable context, bounded issue execution, review loops, and verification gates. -->
+
 AgentRail is the control plane for AI coding agents: durable context, bounded
 issue execution, review loops, and verification gates. This guide gets you from
 a clean checkout to a green local run so you can land a change with confidence.

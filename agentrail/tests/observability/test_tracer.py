@@ -58,6 +58,23 @@ def test_phase_generation_carries_explicit_cost(capture):
     assert body["usageDetails"] == {"input": 100, "output": 20}
 
 
+def test_phase_generation_body_carries_its_own_id(capture):
+    # Confirmed against a live local Langfuse instance (v3.212.0): the real
+    # ingestion endpoint 400s a generation-create body missing its own "id"
+    # ("expected string, received undefined" at body.id) -- this is the
+    # observation's own identity, distinct from the outer batch envelope's
+    # event id (_event()'s "id"). Every prior test only asserted individual
+    # body fields and never caught this; it silently failed against the real
+    # server while the tracer's non-fatal design let the run continue normally.
+    t = RunTracer.start("run-x")
+    t.phase_generation("verify", {"input": 100, "output": 20}, 0.0123,
+                       {"input": 0.01, "output": 0.0023}, 1720000000.0, "opus")
+    gens = [e for batch in capture for e in batch if e["type"] == "generation-create"]
+    body_id = gens[0]["body"]["id"]
+    assert isinstance(body_id, str) and body_id
+    assert body_id != gens[0]["id"]  # distinct from the outer envelope's event id
+
+
 def test_phase_generation_start_ts_zero_records_epoch_not_now(capture):
     # start_ts=0.0 is a valid Unix epoch (1970-01-01Z), NOT "unset" — a bare
     # `if start_ts` truthiness check would silently substitute the current

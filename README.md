@@ -1,4 +1,5 @@
 # AgentRail
+<!-- AgentRail is the control plane that runs coding agents on your GitHub issues. -->
 
 [![CI](https://github.com/Bensigo/agentrail/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Bensigo/agentrail/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)

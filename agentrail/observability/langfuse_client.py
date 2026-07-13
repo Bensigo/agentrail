@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import os
+import urllib.error
 import urllib.request
 from typing import Optional
 
@@ -29,8 +30,14 @@ def deterministic_trace_id(run_id: str) -> str:
 
 def _request(method, url, headers, data, timeout):
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 — https/local
-        return resp.status, resp.read()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 — https/local
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as e:
+        # urlopen raises HTTPError for non-2xx/redirect responses instead of
+        # returning them; normalize back to the tuple[int, bytes] contract so
+        # callers' `if status >= 400` checks are real, reachable code.
+        return e.code, e.read()
 
 
 class LangfuseHTTP:

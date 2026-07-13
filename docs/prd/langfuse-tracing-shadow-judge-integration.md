@@ -1,119 +1,187 @@
-# PRD: Langfuse tracing + shadow-judge integration (agentrail + Jace)
+# PRD: Langfuse tracing + evals — the self-improvement substrate
 
 ## Problem
 
-No tracing/observability infrastructure exists anywhere in this repo today — zero OpenTelemetry
-or equivalent instrumentation. All "observability" is bespoke JSON: `.agentrail/runs/<run-id>/run.json`,
-`cost-events.jsonl`, `verify/status.json`, hand-assembled into records by `agentrail run-records`
-and read line-by-line by the run-forensics sonnet judge (epic #1168). That loop works — it has
-already shipped one fix (#1181 → PR #1183) — but it is expensive to read by hand, has no
-visualization, and its own cost ledgers are 0/54 populated in dogfood history: a known, unresolved
-gap, because cost tracking is hand-rolled through `agentrail/run/pricing.py` with no per-call trace
-to hang it on.
+No tracing infrastructure exists in this repo — zero OpenTelemetry anywhere. Observability is
+bespoke JSON (`.agentrail/runs/<run-id>/run.json`, `cost-events.jsonl`, `verify/status.json`)
+hand-assembled by `agentrail run-records` and read line-by-line by the run-forensics sonnet judge
+(epic #1168). That loop works — it shipped #1181 → PR #1183 — but it is manual, has no
+visualization, no failure-history queries, and no way to prove a fix killed a failure class
+rather than just closing an issue. Jace (Eve-based coordinator) has no tracing or cost tracking
+at all beyond Eve's automatic `$eve.*` workflow tags.
 
-Jace (the Eve-based coordinator) has no cost/token tracking beyond Eve's own automatic `$eve.*`
-workflow tags, and no tracing at all. Its three subagents (triage, researcher, QA) each produce a
-structured verdict today, but nothing records the invoke → output → verdict lifecycle around them.
+The deeper problem: the improvement loop is open. We record runs and judge them, but deviations
+become issues by hand, fixes are validated by re-reading logs by hand, and nothing accumulates
+into a regression corpus. For a reliable, cost-effective factory, the loop must close: every
+failure observed → queryable → becomes a test case → every fix proven against that test case.
 
 ## Goals
 
-1. Real distributed tracing for both agentrail's SDLC/AFK run loop and Jace's Eve-based subagents,
-   against a locally self-hosted Langfuse instance for dev.
-2. Real per-phase / per-call cost data in Langfuse, reusing agentrail's existing `pricing.py` as the
-   single source of dollar truth — not Langfuse's own model-price table.
-3. Shadow-judge: push the verdicts that already exist (agentrail's sonnet run-forensics judge; Jace's
-   triage and QA subagent verdicts) into Langfuse as custom scores attached to their traces — additive
-   telemetry only, no new judge logic.
+1. **Tracing** for both agentrail's SDLC/AFK run loop and Jace's Eve subagents, against a locally
+   self-hosted Langfuse (persistent named volumes — history survives restarts; cloud is a later,
+   separate decision for prod).
+2. **Cost with one price source.** `agentrail/context/pricing.py:PRICE_TABLE` remains the sole
+   dollar truth for both systems; Langfuse never invents a price we didn't give it.
+3. **Truth-scores + shadow-judge with a calibration gate.** Hidden-test outcomes and verify-gate
+   verdicts land on traces as scores (the ungameable signal); the existing sonnet forensics judge's
+   verdict lands beside them; agreement between the two is a tracked metric with a named consumer.
+4. **Self-improvement substrate.** Failing traces, tagged by failure fingerprint, become Langfuse
+   dataset items; fixes are validated by experiments against those datasets. This is the loop
+   #1172/#1173 asked for, and this PRD is the vehicle that subsumes them.
 
 ## Non-goals
 
-- No production/cloud Langfuse rollout. This phase is local dev only; cloud configuration is a
-  separate, later decision.
-- No replacement of the hidden-tests gate or the run-forensics ledger/issue-filing loop. They remain
-  the sole real arbiter of correctness.
-- No use of Langfuse's managed, UI-configured LLM-as-a-judge evaluator. "Shadow-judge" here means
-  piping our own existing judge verdicts in as custom scores via the API — not adopting a
-  Langfuse-managed judge.
-- No replacement of the `agentrail/evals/` harness (corpus/arms/runner/scorer/reporter).
-- No console/dashboard UI work.
+- No production/cloud Langfuse in this phase (config isolation: nothing here may require cloud creds).
+- No Langfuse managed UI-configured LLM-as-a-judge evaluator. Shadow-judge = our own judges pushing
+  scores via API (`create_score`). Adopting the managed evaluator is a possible later phase, gated
+  on calibration data.
+- The hidden-tests gate and the `.memory/forensics/` issue-filing contract are not touched. They
+  remain the final arbiter; Langfuse informs them, never replaces them.
+- No console UI work.
+
+## End-state: what retires, what stays
+
+This integration must consolidate, not become a third observability system.
+
+| Surface | Fate | When |
+| --- | --- | --- |
+| Hidden-tests gate (`agentrail/evals/` scorer) | **Stays forever** — final arbiter | — |
+| `pricing.py` / `PRICE_TABLE` | **Stays forever** — single price source | — |
+| `.agentrail/runs/<id>/` artifacts (run.json, verify/status.json) | **Stay** — runner-local ground truth the pipeline itself consumes | — |
+| `cost-events.jsonl` + console cost push | **Retires** once Langfuse cost parity is proven bit-for-bit over one full dogfood batch | Phase 2 exit |
+| Judge reads hand-assembled `run-records/*.json` | **Migrates** — judge queries traces via Langfuse API; `run-records` CLI stays as offline fallback | Phase 3 |
+| Manual "did the fix work?" log re-reading | **Retires** — replaced by experiments against fingerprint datasets | Phase 3 |
+| `agentrail/evals/` spine (corpus/arms/runner/reporter) | **Stays** — Langfuse stores/visualizes its outputs, doesn't replace its execution | — |
 
 ## Design
 
-Anchor files:
-- `agentrail/run/pipeline.py` — `_run_pipeline` (:1084, run start/finish), `run_issue_phase` (:310),
-  cost-capture block (:523-544)
-- `agentrail/run/pricing.py` — `cost_usd`, `cost_breakdown`
-- `agentrail/afk/runner.py` — `Runner._implement` (:243, subprocess boundary)
-- `.memory/forensics/` ledger + sonnet judge (run-forensics loop, epic #1168)
-- `apps/jace/agent/instrumentation.ts` (new — Eve's auto-discovered OTel seam, unused today)
-- `apps/jace/agent/hooks/` (new — Eve `defineHook`, directory doesn't exist yet)
-- `apps/jace/agent/subagents/{triage,researcher,qa}/`
+Anchor files: `agentrail/run/pipeline.py` (`_run_pipeline` :1084, `run_issue_phase` :310, cost
+block :523-544), `agentrail/run/pricing.py`, `agentrail/context/pricing.py` (PRICE_TABLE),
+`agentrail/afk/runner.py` (`Runner._implement` :243, subprocess boundary),
+`apps/jace/agent/instrumentation.ts` (new), `apps/jace/agent/hooks/` (new),
+`apps/jace/agent/subagents/{triage,researcher,qa}/`.
 
-1. **Local Langfuse instance.** `docker compose up` from Langfuse's own repo at `localhost:3000` —
-   no persistence, dev-only, per Langfuse's own docs ("ideal for testing... not suitable for
-   production"). Both systems read `LANGFUSE_HOST` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`
-   from env; unset by default so the integration is opt-in.
+### Phase 1 — tracing + cost (both systems in parallel)
 
-2. **Agentrail tracing.** A new thin wrapper module (e.g. `agentrail/observability/langfuse_tracer.py`)
-   using Langfuse Python SDK v3 (`@observe`, OpenTelemetry-based — the current recommended pattern,
-   not the legacy low-level client). One trace per `_run_pipeline()` invocation; one generation per
-   `run_issue_phase` call. The generation's `usage_details` / `cost_details` are populated from the
-   *already-computed* `cost_usd()` / `cost_breakdown()` values — Langfuse's own model-price lookup is
-   never invoked, so there is exactly one source of dollar truth.
+1. **Local instance.** Langfuse v3 docker compose at `localhost:3000`. Verified: the compose file
+   declares named volumes (`langfuse_postgres_data` etc.) — trace history persists across restarts,
+   which calibration and datasets depend on. Pin the compose to a tag, don't track main.
+   SDKs read `LANGFUSE_HOST`/`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` from env; unset = disabled.
 
-3. **Subprocess trace linking.** AFK's `Runner._implement` shells out to the `agentrail` CLI as a
-   subprocess rather than calling the pipeline in-process, so there is no true parent-child span
-   across that boundary. Propagate a shared identifier (e.g. `AGENTRAIL_LANGFUSE_SESSION_ID`, one per
-   AFK run) and use Langfuse's `sessionId` grouping to link every phase's trace under one session,
-   instead of forcing artificial span nesting across a process boundary.
+2. **Agentrail tracer** (`agentrail/observability/langfuse_tracer.py`, Python SDK v3, OTel-based).
+   One trace per `_run_pipeline()`; one generation per `run_issue_phase` call, carrying phase name,
+   model, and explicit `usage_details`/`cost_details` computed by the *existing* `cost_usd()`/
+   `cost_breakdown()` at pipeline.py:523-544. Langfuse's own price lookup is never used for
+   agentrail generations.
 
-4. **Agentrail shadow-judge.** After the existing sonnet run-forensics judge produces its verdict for
-   a run (unchanged), additionally call Langfuse's `create_score` API to attach that same verdict to
-   the run's trace, looked up by `run_id`. The `.memory/forensics/` ledger and issue-filing flow are
-   untouched — this is a pure additional sink for an existing signal.
+3. **Subprocess linking.** AFK shells out to the `agentrail` CLI (`afk/runner.py:243`), so true
+   parent-child spans across that boundary are impossible. One `AGENTRAIL_LANGFUSE_SESSION_ID` per
+   AFK run, propagated via env, groups all phase traces under one Langfuse session. This is
+   deliberate session-grouping, not fake nesting.
 
-5. **Jace tracing.** `apps/jace/agent/instrumentation.ts` is Eve's auto-discovered OTel export seam.
-   Install `@langfuse/vercel-ai-sdk` + `@langfuse/tracing` + `@langfuse/otel`, since Jace's model calls
-   already route through the `ai` package (`ai@7.0.11`) — this traces every model call (root Jace and
-   all subagents) with minimal manual span code. The exporter setup also captures Eve's automatic
-   `$eve.*` workflow tags (token counts, session/turn/subagent tree) so cost is read from the
-   framework, not reconstructed by hand.
+4. **Jace via Eve's own OTel seam.** Verified against Eve v0.19.0's instrumentation guide: Eve does
+   NOT own the OTel provider — `agent/instrumentation.ts`'s `setup` callback is where the app
+   registers it, and Eve already produces the full span tree (`ai.eve.turn` → `ai.streamText` →
+   model/tool calls) through the AI SDK automatically, including subagent sessions. So the
+   integration is: register the Langfuse span processor in `setup`, and use the
+   `events["step.started"]` runtime-context callback to stamp the root session id onto spans so
+   Langfuse groups a whole session tree (root + triage/researcher/QA subagent runs) under one
+   session. No per-subagent span authoring needed. Note: `$eve.*` workflow tags are a separate
+   Vercel-dashboard surface and do NOT appear on OTel spans — token usage comes from the AI SDK
+   spans themselves.
 
-6. **Jace subagent-boundary spans.** New `apps/jace/agent/hooks/`, using Eve's `defineHook` subscribed
-   to `turn.started` / `turn.completed` / `action.result`, emits spans around each subagent's
-   invoke → output → verdict lifecycle (triage, researcher, QA). Eve hooks are observe-only — exactly
-   the right constraint here, since tracing must never mutate agent context.
+5. **Jace cost policy.** Jace has no pricing module, so its dollars come from Langfuse model
+   definitions — but those definitions are *synced from PRICE_TABLE* by a small idempotent script
+   (`langfuse models sync` CLI or API) run as part of local setup. One price source, two consumers.
+   Any model seen in traces with no matching definition is a visible gap in Langfuse, not a silent $0.
 
-7. **Jace shadow-judge.** Pipe the triage subagent's structured verdict and the QA subagent's verdict
-   into Langfuse as custom scores on their corresponding traces — the same additive pattern as
-   agentrail's shadow-judge, no new judge logic invented for Jace.
+6. **Flags default-OFF.** `AGENTRAIL_LANGFUSE_ENABLED` gates the Python tracer; the presence of
+   Langfuse env keys gates `instrumentation.ts` (Eve enables telemetry by the file's presence, so
+   the file itself must no-op its exporter without keys). Flag-off inertness is a tested property.
 
-8. **Feature flags.** Both integrations ship default-OFF (`AGENTRAIL_LANGFUSE_ENABLED` for agentrail;
-   an equivalent env check inside `instrumentation.ts` for Jace), matching this repo's standing
-   rollout-safety convention.
+### Phase 2 — truth-scores + shadow-judge + calibration
+
+7. **Truth-scores.** Eval-harness runs attach `solved` (hidden tests) and `false_green` per trace;
+   production runs attach the verify-gate verdict (`verify_verdict` from PR #1183). These are the
+   scores Langfuse filtering/error-analysis pivots on — opinion scores never substitute for them.
+
+8. **Shadow-judge.** The existing sonnet forensics judge additionally pushes its verdict via
+   `create_score` onto the run's trace (looked up by `run_id`). Ledger and issue-filing flow
+   unchanged — pure additional sink.
+
+9. **Calibration gate (the consumer).** A small report (extends the existing forensics judge pass)
+   computes judge-vs-truth agreement: on eval runs, judge verdict vs hidden tests; on production
+   runs, judge verdict vs verify-gate + CI + review outcome. Published per judge pass. The standing
+   rule: no judge graduates to any gating role until its agreement rate on the held-out split
+   clears a pre-registered threshold — and that graduation decision is itself a user call, out of
+   scope here. Scores without this consumer are vanity metrics; this report is why Phase 2 exists.
+
+### Phase 3 — the self-improvement loop
+
+10. **Fingerprint tags.** The forensics failure taxonomy (doctor-waived, verify-prose-reject,
+    rapid-relaunch, quota-as-failure, …) becomes trace tags, applied by the judge pass. Failure
+    classes become queryable and countable in Langfuse instead of living only in ledger markdown.
+
+11. **Datasets from failures.** Each fingerprint gets a Langfuse dataset; failing traces are added
+    as items (linked via `sourceTraceId`). Datasets split seen/held-out per the two-set acceptance
+    gate convention.
+
+12. **Experiments validate fixes.** A fix for fingerprint X is accepted only when an experiment
+    over dataset X shows the failure class dead (and the held-out split doesn't regress) — replacing
+    manual log re-reading as fix validation. Hidden tests + dollars remain the final arbiter for
+    anything the experiment can't prove.
+
+## Prerequisites (before Phase 1 code)
+
+- **P1 — cost-capture smoke run.** The 0/54 empty cost ledgers in dogfood history are explained:
+  per-phase cost events landed 2026-06-12 (#503) and the judged runs were June 4–12, predating the
+  feature. But the seam is therefore *unproven* in dogfood: one fresh dogfood run on current main
+  must produce a populated `cost-events.jsonl` before the Langfuse cost story builds on it.
+- **P2 — SDK pins.** Pin exact versions at implementation time: Langfuse Python SDK v3.x,
+  `@langfuse/tracing`/`@langfuse/otel` (TS v4), compose image tag. Jace side re-verified against
+  the Eve-pinned versions (Node ≥ 24, `ai@7.0.11` — both compatible per current Langfuse docs).
 
 ## Measurement (definition of success)
 
-- A real agentrail run (dogfood or eval-harness run, with the flag on) produces a Langfuse trace with
-  correct phase-level generations, whose cost figures match `pricing.py`'s own computed cost for that
-  run bit-for-bit — asserted via the Langfuse API, not a manual UI check.
-- A real Jace triage-subagent invocation produces a trace with a linked custom score matching the
-  subagent's actual structured verdict.
-- With the flag off, both integrations are provably inert: zero behavior change to the hidden-tests
-  gate, the run-forensics ledger, or any subagent's verdict logic.
+- **Cost parity:** one dogfood run with the flag on produces a Langfuse trace whose per-phase and
+  total cost match `pricing.py`'s figures bit-for-bit, asserted via the Langfuse API.
+- **Session stitching:** an AFK run's phases appear as one Langfuse session; a Jace session tree
+  (root + one subagent) appears grouped under one session id.
+- **Truth linkage:** an eval-harness run's trace carries its hidden-test score; a production run's
+  trace carries its verify verdict; a judged run additionally carries the judge score.
+- **Calibration report exists** and states the judge-vs-truth agreement rate with its sample size.
+- **Loop closure (Phase 3):** at least one fingerprint dataset exists, built from real failing
+  traces, and one experiment has been run against it.
+- **Flag-off inertness:** with flags off, zero behavior change — verified by the existing full
+  test suite plus an explicit no-network assertion.
+
+## Testing Decisions
+
+- **Tracer unit tests** run against a fake Langfuse client: correct trace/generation shape, explicit
+  cost_details always present, no call escapes when the flag is off (fail the test on any network
+  attempt).
+- **Price-sync test:** syncing PRICE_TABLE twice is idempotent; a model missing from PRICE_TABLE is
+  reported, never silently priced.
+- **Integration smoke** (one per system) runs only when a local Langfuse is reachable (skipped
+  otherwise, never mocked-green in CI): perform a real traced run, then assert via the Langfuse API
+  that the trace, session grouping, and cost figures landed.
+- **Score-push tests:** verdict → `create_score` payload mapping, including the fail-closed case
+  (missing run_id/trace lookup logs and skips, never blocks the judge pass).
+- Jace `instrumentation.ts` is covered by the smoke test (Eve auto-discovery is framework behavior
+  we don't re-test), plus a unit test that the exporter no-ops without env keys.
 
 ## Risks
 
-- **Subprocess trace-context boundary** (AFK → `agentrail` CLI) is the trickiest piece of this design;
-  session-grouping is a deliberate fallback, not true span nesting — call this out plainly rather than
-  pretend it's seamless.
-- **Duplicated cost-of-truth risk**: if Langfuse's own price-table lookup is left enabled instead of
-  always passing explicit `cost_details`, agentrail ends up with two disagreeing dollar figures for
-  the same run. Explicit `cost_details` on every generation is a hard requirement, not an
-  optimization.
-- **Eve churn**: Eve is pinned to an exact version (v0.19.0) because it is pre-1.0 and ships roughly
-  41 releases per two weeks. The `instrumentation.ts` / `defineHook` surface used here should be
-  treated as version-pinned and re-verified on any Eve bump.
-- **Local-only scope creep**: nothing in this design should require or assume Langfuse Cloud
-  credentials. Keep production/cloud entirely out of this PRD's code paths so local dev tooling
-  doesn't silently become a production dependency.
+- **Eve churn:** pre-1.0, ~41 releases/fortnight, pinned exact at 0.19.0. `instrumentation.ts` and
+  `step.started` are the seams used here; re-verify both on any Eve bump (they are documented
+  surfaces, not internals — but pre-1.0 docs churn too).
+- **Trace payload sensitivity:** Eve records full message history and outputs by default
+  (`recordInputs`/`recordOutputs`); agentrail traces carry prompts and diffs. Acceptable while
+  self-hosted local-only; any move to cloud re-opens this as a sanitization decision (shared-memory
+  prompt-injection surface rule applies).
+- **Volume/sampling:** dogfood volume is trivially small; no sampling in this phase. If prod-scale
+  ever matters, sampling is an exporter-level knob, noted so it isn't rediscovered as a crisis.
+- **Write-only-scores regression:** the calibration report (Phase 2, item 9) is the named consumer;
+  if it's descoped, the shadow-judge should be descoped with it.
+- **Subprocess boundary:** session-grouping across AFK→CLI is a documented limitation, not a bug to
+  fix later with heroics.

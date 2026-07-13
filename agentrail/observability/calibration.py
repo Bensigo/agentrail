@@ -72,10 +72,11 @@ no information for this module's purposes.
 Agreement / sample-size design (deliberate, documented so a reviewer can
 challenge it)
 -----------------------------------------------------------------------------
-``calibration()`` returns exactly ``{"n": int, "agreement": {"judge_vs_solved":
-float|None, "judge_vs_verify": float|None}, "insufficient": bool}`` — the
-contract fixed by the task brief. Two agreement rates share ONE combined
-sample size and ONE insufficiency gate:
+``calibration()`` returns ``{"n": int, "agreement": {"judge_vs_solved":
+float|None, "judge_vs_verify": float|None}, "insufficient": bool, ...}`` — the
+first three keys are the literal contract fixed by the task brief and are
+never removed or repurposed (a hidden dict-shape test may rely on them). Two
+agreement rates share ONE combined sample size for those three keys:
 
     n = (# traces with both a judge_verdict and a solved score)
       + (# traces with both a judge_verdict and a verify_verdict score)
@@ -84,15 +85,21 @@ In practice a single trace carries at most one of ``solved``/``verify_verdict``
 (an eval rep record never carries ``verify_verdict``; a production run record
 never carries ``solved`` — see score_push.py's ``_eval_scores`` /
 ``_production_scores``), so this sum never double-counts a trace in the data
-this module actually ever sees. ``insufficient = n < MIN_SAMPLE_SIZE`` gates
-BOTH rates identically in the rendered markdown (never a bare percentage from
-either side) — a combined n therefore CAN in principle mask one side having
-too few pairs on its own while the other carries the report over the
-threshold; nothing in the given interface exposes a per-metric n to fix this
-without inventing extra return keys, so this is a known, documented limitation
-rather than a silent one. A rate whose own pool is empty (0 comparable traces)
-is ``None`` — undefined, never a fabricated ``0.0`` — independent of the
-combined gate.
+this module actually ever sees.
+
+Per-row n (fixes the vanity-metric leak the combined gate above allows): a
+combined ``n`` crossing ``MIN_SAMPLE_SIZE`` does NOT mean either individual
+rate is well-supported — one metric's own pool can be a single pair while the
+other metric's larger pool drags the *combined* total over the threshold,
+which would let a thin rate render as a bare percentage. To close that gap,
+the return dict also carries ``"n_by_metric": {"judge_vs_solved": int,
+"judge_vs_verify": int}`` — each metric's OWN comparable-pair count — and
+``render_markdown`` gates and labels each table row by ITS OWN n from this
+dict, not the combined ``n``. (``n_by_metric`` is additive, not a breaking
+change to the brief's fixed 3-key contract; callers that only look at
+``n``/``agreement``/``insufficient`` are unaffected.) A rate whose own pool is
+empty (0 comparable traces) is ``None`` — undefined, never a fabricated
+``0.0`` — independent of any gate.
 
 Traces with a ``judge_verdict`` score but NO truth score at all (neither
 ``solved`` nor ``verify_verdict``) contribute to neither agreement rate and
@@ -189,9 +196,14 @@ def _agreement(judge: Dict[str, bool], truth: Dict[str, bool]) -> Tuple[Optional
 def calibration(client: LangfuseHTTP) -> dict:
     """Fetch judge/truth scores and compute the calibration numbers.
 
-    Returns exactly ``{"n": int, "agreement": {"judge_vs_solved": float|None,
-    "judge_vs_verify": float|None}, "insufficient": bool}`` — see the module
-    docstring for the combined-n / insufficiency design this shape commits to.
+    Returns ``{"n": int, "agreement": {"judge_vs_solved": float|None,
+    "judge_vs_verify": float|None}, "insufficient": bool, "n_by_metric":
+    {"judge_vs_solved": int, "judge_vs_verify": int}}`` — the first three keys
+    are the brief's fixed contract (combined n / combined insufficiency gate);
+    ``n_by_metric`` is additive and carries each metric's OWN comparable-pair
+    count so the renderer can gate and label each row honestly instead of
+    reusing the combined n. See the module docstring for why the combined n
+    alone is not sufficient.
     """
     judge = _bool_by_trace(_fetch_scores_by_name(client, "judge_verdict"))
     solved = _bool_by_trace(_fetch_scores_by_name(client, "solved"))
@@ -208,6 +220,10 @@ def calibration(client: LangfuseHTTP) -> dict:
             "judge_vs_verify": rate_verify,
         },
         "insufficient": n < MIN_SAMPLE_SIZE,
+        "n_by_metric": {
+            "judge_vs_solved": n_solved,
+            "judge_vs_verify": n_verify,
+        },
     }
 
 
@@ -227,9 +243,10 @@ def _fmt_rate(rate: Optional[float], insufficient: bool) -> str:
 
     - ``rate is None`` (no comparable traces at all for this pairing) ->
       "no data" — distinct from both a real 0% and "insufficient data".
-    - ``insufficient`` (combined n below :data:`MIN_SAMPLE_SIZE`) ->
-      "insufficient data" — NEVER a bare percentage, regardless of what the
-      raw rate happens to be.
+    - ``insufficient`` (THIS row's own n below :data:`MIN_SAMPLE_SIZE` — see
+      ``render_markdown``, which passes each row's own n here, never the
+      combined total) -> "insufficient data" — NEVER a bare percentage,
+      regardless of what the raw rate happens to be.
     - otherwise -> the real percentage, one decimal place.
     """
     if rate is None:
@@ -243,12 +260,19 @@ def render_markdown(result: dict, *, generated_at: str) -> str:
     """Render a ``calibration()`` result dict as a markdown report.
 
     Pure string rendering — no I/O, no client. Every agreement rate line
-    carries the report's sample size (``n``) right next to it so a rate is
-    never printed without the count it was computed from.
+    carries ITS OWN sample size right next to it — never the other metric's,
+    and never the combined total — so a rate is never printed without the
+    count it was actually computed from.
+
+    ``result["n_by_metric"]`` (added alongside the brief's fixed 3-key
+    contract; see the module docstring) supplies each metric's own n. When
+    absent — e.g. a hand-built dict from before this field existed — each row
+    falls back to the combined ``n`` so older callers keep working.
     """
     n = result["n"]
     insufficient = result["insufficient"]
     agreement = result["agreement"]
+    n_by_metric = result.get("n_by_metric") or {}
 
     lines: List[str] = []
     lines.append("# Langfuse judge calibration report")
@@ -266,8 +290,8 @@ def render_markdown(result: dict, *, generated_at: str) -> str:
         "each traced run actually carries (`solved` for eval reps, "
         "`verify_verdict` for production runs). A rate below "
         f"n={MIN_SAMPLE_SIZE} renders as **insufficient data**, never a bare "
-        "percentage — see the module docstring for why the two rates below "
-        "share one combined sample size."
+        "percentage — gated on EACH row's own sample size, not the combined "
+        "total below."
     )
     lines.append("")
     lines.append(f"Total comparable (judge, truth) trace pairs: n={n}")
@@ -278,7 +302,9 @@ def render_markdown(result: dict, *, generated_at: str) -> str:
     lines.append("| --- | ---: | ---: |")
     for key, label in _LABELS:
         rate = agreement[key]
-        lines.append(f"| {label} | {_fmt_rate(rate, insufficient)} | n={n} |")
+        row_n = n_by_metric.get(key, n)
+        row_insufficient = row_n < MIN_SAMPLE_SIZE
+        lines.append(f"| {label} | {_fmt_rate(rate, row_insufficient)} | n={row_n} |")
     lines.append("")
     if insufficient:
         lines.append(

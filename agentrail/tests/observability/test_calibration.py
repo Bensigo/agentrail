@@ -252,6 +252,126 @@ def test_malformed_rows_are_skipped_not_crashed_on(monkeypatch, client):
 # Pagination plumbing mirrors price_sync._fetch_all_models exactly
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Review-fix regression: a row's OWN n must gate/label it, never the combined
+# total — a thin metric must not "borrow" a healthy n from the other metric.
+# ---------------------------------------------------------------------------
+
+def test_n_by_metric_present_and_correct_alongside_combined_n(monkeypatch, client):
+    """calibration() carries each metric's own n in ``n_by_metric`` in
+    addition to (never instead of) the brief's fixed 3-key contract."""
+    judge_rows = [
+        _row("t1", "judge_verdict", 1),
+        _row("t2", "judge_verdict", 1),
+        _row("t3", "judge_verdict", 0),
+        _row("t4", "judge_verdict", 1),
+    ]
+    solved_rows = [
+        _row("t1", "solved", 1),
+        _row("t2", "solved", 1),
+        _row("t3", "solved", 0),
+        _row("t4", "solved", 0),
+    ]
+    _serve_by_name(monkeypatch, {"judge_verdict": judge_rows, "solved": solved_rows})
+
+    result = calibration.calibration(client)
+
+    # Brief's fixed contract untouched.
+    assert result["n"] == 4
+    assert result["agreement"]["judge_vs_solved"] == pytest.approx(0.75)
+    assert result["insufficient"] is True
+    # Additive field: this metric's own pool is exactly the same 4 pairs here
+    # (single-truth-kind scenario), the other metric's own pool is 0.
+    assert result["n_by_metric"] == {"judge_vs_solved": 4, "judge_vs_verify": 0}
+
+
+def test_thin_metric_does_not_borrow_combined_n_from_the_other_metric(monkeypatch, client):
+    """Reproduces the exact reported leak: 1 real judge_vs_solved pair
+    (100% agreement) + 9 real judge_vs_verify pairs (55.6% agreement).
+    Combined n=10 crosses MIN_SAMPLE_SIZE, but judge_vs_solved's OWN pool is
+    just 1 pair — it must render as "insufficient data", not a bare "100.0%"
+    borrowed from the other metric's healthier n. Drives the real
+    fetch -> calibration() -> render_markdown() pipeline end to end, not a
+    hand-built dict.
+    """
+    judge_rows = [_row("eval-1", "judge_verdict", 1)] + [
+        _row(f"prod-{i}", "judge_verdict", 1 if i < 5 else 0) for i in range(9)
+    ]
+    solved_rows = [_row("eval-1", "solved", 1)]
+    # 9 verify pairs: judge says True for prod-0..4 (5), False for prod-5..8
+    # (4). Truth agrees with judge on the first 5 traces and disagrees on the
+    # remaining 4 -> 5/9 = 0.5555... = 55.6% agreement.
+    verify_rows = []
+    for i in range(9):
+        judge_val = 1 if i < 5 else 0
+        agree = i < 5
+        truth_val = judge_val if agree else (1 - judge_val)
+        verify_rows.append(_row(f"prod-{i}", "verify_verdict", truth_val))
+
+    _serve_by_name(monkeypatch, {
+        "judge_verdict": judge_rows, "solved": solved_rows, "verify_verdict": verify_rows,
+    })
+
+    result = calibration.calibration(client)
+
+    assert result["n"] == 10  # 1 + 9 crosses MIN_SAMPLE_SIZE combined
+    assert result["insufficient"] is False  # combined gate says "sufficient"
+    assert result["n_by_metric"] == {"judge_vs_solved": 1, "judge_vs_verify": 9}
+    assert result["agreement"]["judge_vs_solved"] == pytest.approx(1.0)
+    assert result["agreement"]["judge_vs_verify"] == pytest.approx(5 / 9)
+
+    md = calibration.render_markdown(result, generated_at="2026-07-13")
+
+    # The thin metric (n=1) must NEVER render as a bare percentage, even
+    # though the combined total says "sufficient".
+    solved_line = [l for l in md.splitlines() if l.startswith("| judge_verdict vs solved")][0]
+    assert "insufficient data" in solved_line
+    assert "100.0%" not in solved_line
+    assert "n=1" in solved_line
+    # judge_vs_verify's own n (9) is also below MIN_SAMPLE_SIZE (10) on its
+    # own -> it must ALSO render as insufficient, not the 55.6% a
+    # combined-n-only gate would have shown.
+    verify_line = [l for l in md.splitlines() if l.startswith("| judge_verdict vs verify_verdict")][0]
+    assert "insufficient data" in verify_line
+    assert "55.6%" not in verify_line
+    assert "n=9" in verify_line
+
+
+def test_one_row_sufficient_on_its_own_renders_even_if_other_row_is_thin():
+    """Complementary case: a row whose OWN n clears MIN_SAMPLE_SIZE must
+    render its real percentage even though the OTHER row's own n is thin —
+    per-row gating must not become overly conservative either."""
+    result = {
+        "n": 18,
+        "agreement": {"judge_vs_solved": 0.8, "judge_vs_verify": 0.5},
+        "insufficient": False,
+        "n_by_metric": {"judge_vs_solved": 15, "judge_vs_verify": 3},
+    }
+    md = calibration.render_markdown(result, generated_at="2026-07-13")
+
+    solved_line = [l for l in md.splitlines() if l.startswith("| judge_verdict vs solved")][0]
+    assert "80.0%" in solved_line
+    assert "n=15" in solved_line
+
+    verify_line = [l for l in md.splitlines() if l.startswith("| judge_verdict vs verify_verdict")][0]
+    assert "insufficient data" in verify_line
+    assert "n=3" in verify_line
+
+
+def test_render_markdown_falls_back_to_combined_n_when_n_by_metric_absent():
+    """Old-shape callers (no ``n_by_metric`` key) keep working: each row
+    falls back to the combined n rather than raising."""
+    result = {
+        "n": 12,
+        "agreement": {"judge_vs_solved": 0.9166666666666666, "judge_vs_verify": None},
+        "insufficient": False,
+    }
+    md = calibration.render_markdown(result, generated_at="2026-07-13")
+    solved_line = [l for l in md.splitlines() if l.startswith("| judge_verdict vs solved")][0]
+    assert "91.7%" in solved_line
+    assert "n=12" in solved_line
+
+
 def test_fetch_scores_by_name_follows_pagination(monkeypatch, client):
     page1 = {
         "data": [_row("t1", "judge_verdict", 1)],

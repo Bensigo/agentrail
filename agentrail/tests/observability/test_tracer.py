@@ -65,3 +65,34 @@ def test_transport_error_swallowed(capture, monkeypatch):
     t = RunTracer.start("run-x")
     t.phase_generation("execute", {"input": 1}, 0.0, None, 0.0, None)
     t.finish(1)  # nothing raises
+
+
+def test_phase_generation_with_invalid_start_ts_does_not_raise_flag_off(monkeypatch):
+    def explode(*a, **k):
+        raise AssertionError("network attempted with flag off")
+    monkeypatch.setattr(lc, "_request", explode)
+    t = RunTracer.start("run-x")
+    # NaN can't be converted to a timestamp; must not raise even though the
+    # tracer is fully disabled (no client at all).
+    t.phase_generation("execute", {"input": 1}, 0.0, None, float("nan"), None)
+
+
+def test_phase_generation_with_invalid_start_ts_does_not_raise_flag_on(capture):
+    t = RunTracer.start("run-x")
+    # Malformed input while enabled: body construction raises internally,
+    # must be swallowed just like a transport error, and never sent.
+    t.phase_generation("execute", {"input": 1}, 0.0, None, float("nan"), None)
+    gens = [e for batch in capture for e in batch if e["type"] == "generation-create"]
+    assert gens == []
+
+
+def test_finish_preserves_metadata_set_at_start(capture):
+    t = RunTracer.start("run-x", metadata={"custom": "value", "goal": "ship"})
+    t.finish(0)
+    events = [e for batch in capture for e in batch]
+    trace_creates = [e for e in events if e["type"] == "trace-create"]
+    finish_body = trace_creates[-1]["body"]
+    assert finish_body["metadata"]["custom"] == "value"
+    assert finish_body["metadata"]["goal"] == "ship"
+    assert finish_body["metadata"]["exit_status"] == 0
+    assert finish_body["metadata"]["run_id"] == "run-x"

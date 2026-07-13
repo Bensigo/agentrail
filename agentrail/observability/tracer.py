@@ -2,7 +2,10 @@
 
 Every public method is non-fatal by construction: a Langfuse outage or
 misconfiguration must never affect a run (mirrors the cost block's contract
-at agentrail/run/pipeline.py:523-544).
+at agentrail/run/pipeline.py:523-544). This includes malformed inputs (e.g. a
+NaN timestamp) — event-body construction happens inside the same guarded path
+as the network call, so no public method can ever raise regardless of what is
+passed in or what the transport does.
 
 Field names verified against Langfuse API ingestion schema:
   trace-create body: id, sessionId, name, metadata, tags
@@ -44,44 +47,57 @@ class RunTracer:
             _log.warning("AGENTRAIL_LANGFUSE_ENABLED set but LANGFUSE_* keys missing; "
                          "tracing disabled for this run")
         tracer = cls(client, run_id, session_id or run_id, metadata or {})
-        tracer._emit([tracer._event("trace-create", {
+        tracer._safe_emit("trace-create", lambda: {
             "id": tracer._trace_id,
             "name": f"agentrail-run:{run_id}",
             "sessionId": tracer._session_id,
             "metadata": {"run_id": run_id, **tracer._metadata},
             "tags": ["agentrail"],
-        })])
+        })
         return tracer
 
     def phase_generation(self, phase: str, usage: dict, cost_usd: float,
                          breakdown: Optional[dict], start_ts: float,
                          model: Optional[str]) -> None:
-        cost_details = dict(breakdown) if breakdown else {}
-        cost_details["total"] = cost_usd
-        self._emit([self._event("generation-create", {
-            "traceId": self._trace_id,
-            "name": phase,
-            "model": model,
-            "startTime": _ts_iso(start_ts) if start_ts else _now_iso(),
-            "endTime": _now_iso(),
-            "usageDetails": usage,
-            "costDetails": cost_details,
-        })])
+        def build() -> dict:
+            cost_details = dict(breakdown) if breakdown else {}
+            cost_details["total"] = cost_usd
+            return {
+                "traceId": self._trace_id,
+                "name": phase,
+                "model": model,
+                "startTime": _ts_iso(start_ts) if start_ts else _now_iso(),
+                "endTime": _now_iso(),
+                "usageDetails": usage,
+                "costDetails": cost_details,
+            }
+        self._safe_emit("generation-create", build)
 
     def finish(self, exit_status: int) -> None:
-        self._emit([self._event("trace-create", {   # trace upsert: same id, new fields
+        # Trace-create ingestion merges at the field level (a later event's
+        # field fully replaces the prior value, no deep-merge of nested
+        # dicts) — resend the full metadata state set at start() plus the
+        # new exit_status field, so this upsert never clobbers it.
+        self._safe_emit("trace-create", lambda: {   # trace upsert: same id, new fields
             "id": self._trace_id,
-            "metadata": {"run_id": self._run_id, "exit_status": exit_status},
-        })])
+            "metadata": {"run_id": self._run_id, **self._metadata, "exit_status": exit_status},
+        })
 
     def _event(self, etype: str, body: dict) -> dict:
         return {"id": str(uuid.uuid4()), "type": etype,
                 "timestamp": _now_iso(), "body": body}
 
-    def _emit(self, batch: list) -> None:
+    def _safe_emit(self, etype: str, body_fn) -> None:
+        """Build one event and ingest it. Inert (no-op) when disabled.
+
+        Body construction happens INSIDE this guarded call, not by the
+        caller before invoking it — otherwise malformed inputs (e.g. a NaN
+        start_ts) would raise before this method is ever reached, even when
+        the tracer is disabled. Nothing here ever propagates.
+        """
         if self._client is None:
             return
         try:
-            self._client.ingest(batch)
+            self._client.ingest([self._event(etype, body_fn())])
         except Exception as exc:
-            _log.warning("langfuse emit failed (run continues): %s", exc)
+            _log.warning("langfuse %s failed (run continues): %s", etype, exc)

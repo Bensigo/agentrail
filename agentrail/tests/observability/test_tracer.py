@@ -131,3 +131,98 @@ def test_finish_preserves_metadata_set_at_start(capture):
     assert finish_body["metadata"]["goal"] == "ship"
     assert finish_body["metadata"]["exit_status"] == 0
     assert finish_body["metadata"]["run_id"] == "run-x"
+
+
+# ---------------------------------------------------------------------------
+# Trace-level readability: name / input / output (#trace-readability).
+#
+# TraceBody exposes `name`, `input`, `output` as first-class fields (verified
+# against the installed @langfuse/core types) — populating Langfuse's trace
+# list/detail I/O columns. New params are keyword-optional and pruned when
+# absent so every existing caller and body stays byte-identical to before.
+# ---------------------------------------------------------------------------
+
+def _trace_bodies(capture):
+    return [e["body"] for batch in capture for e in batch
+            if e["type"] == "trace-create"]
+
+
+def test_trace_input_and_name_set_when_provided(capture):
+    RunTracer.start("run-x", name="issue #42", input_text="Fix the bug")
+    body = _trace_bodies(capture)[0]
+    assert body["name"] == "issue #42"
+    assert body["input"] == "Fix the bug"
+
+
+def test_trace_name_defaults_to_run_id_when_absent(capture):
+    # Locks the backward-compat fallback: no name => the exact prior default.
+    RunTracer.start("run-x")
+    body = _trace_bodies(capture)[0]
+    assert body["name"] == "agentrail-run:run-x"
+
+
+def test_trace_input_omitted_when_none(capture):
+    # Prune behavior: an omitted input is never sent as a literal null.
+    RunTracer.start("run-x")
+    body = _trace_bodies(capture)[0]
+    assert "input" not in body
+
+
+def test_finish_sets_output(capture):
+    t = RunTracer.start("run-x")
+    t.finish(0, output={"exitStatus": 0, "verdict": "green"})
+    body = _trace_bodies(capture)[-1]
+    # Output coexists with the metadata-merge invariant.
+    assert body["output"]["verdict"] == "green"
+    assert body["output"]["exitStatus"] == 0
+    assert body["metadata"]["exit_status"] == 0
+
+
+def test_finish_without_output_unchanged(capture):
+    # No output => body byte-identical to before (no `output` key), metadata
+    # still carries run_id/exit_status.
+    t = RunTracer.start("run-x")
+    t.finish(0)
+    body = _trace_bodies(capture)[-1]
+    assert "output" not in body
+    assert body["metadata"]["exit_status"] == 0
+    assert body["metadata"]["run_id"] == "run-x"
+
+
+def test_input_and_output_are_clipped(capture):
+    big_input = "x" * 20000
+    big_output = {"blob": "y" * 20000, "reasons": ["z" * 20000] * 10}
+    t = RunTracer.start("run-x", input_text=big_input)
+    t.finish(1, output=big_output)
+    bodies = _trace_bodies(capture)
+    # Input clipped to the field bound.
+    assert len(bodies[0]["input"]) <= 8000
+    # Output serialized size bounded (string leaves clipped, whole thing capped).
+    import json
+    assert len(json.dumps(bodies[-1]["output"], default=str)) <= 16000 + 100
+
+
+def test_malformed_output_flag_on_never_raises_and_sends_nothing_bad(capture):
+    # Mirrors test_phase_generation_with_invalid_start_ts_does_not_raise_flag_on:
+    # an output that can't be serialized cleanly is handled inside _safe_emit's
+    # guarded lambda — the call must not raise. A non-JSON-able object falls
+    # back to a clipped repr rather than propagating.
+    class Unserializable:
+        def __repr__(self):
+            return "u" * 20000
+
+    t = RunTracer.start("run-x")
+    t.finish(1, output={"bad": Unserializable()})  # must not raise
+    body = _trace_bodies(capture)[-1]
+    # Emitted output stays bounded even for the awkward value.
+    import json
+    assert len(json.dumps(body["output"], default=str)) <= 16000 + 100
+
+
+def test_long_input_flag_off_never_raises(monkeypatch):
+    def explode(*a, **k):
+        raise AssertionError("network attempted with flag off")
+    monkeypatch.setattr(lc, "_request", explode)
+    # Fully disabled: even a huge input / malformed output must be a no-op.
+    t = RunTracer.start("run-x", input_text="x" * 50000)
+    t.finish(0, output={"blob": "y" * 50000})

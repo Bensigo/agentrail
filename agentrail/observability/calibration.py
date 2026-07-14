@@ -7,6 +7,14 @@ and on how many traces? A calibration number without its sample size is
 exactly the vanity-metric failure mode this module exists to prevent — see
 ``MIN_SAMPLE_SIZE`` below.
 
+The same report ALSO calibrates Jace's coordinator verdicts against reality:
+``triage_verdict`` (blocked|unblocked) and ``qa_verdict`` (passed|
+issues_found|not_verifiable). Those are SESSION-scoped CATEGORICAL scores
+(``stringValue`` label, ``traceId`` null) joined to the factory ground truth
+on ``metadata.run_id`` — a DIFFERENT read path than the BOOLEAN judge/truth
+scores above (see the "Jace verdict calibration" block lower in this file).
+Every verdict block is gated by its OWN ``n`` against ``MIN_SAMPLE_SIZE`` too.
+
 Score vocabulary (consumed, not invented): this module reads back exactly the
 four names ``agentrail.observability.score_push.SCORE_NAMES`` ever pushes
 (``solved``, ``false_green``, ``verify_verdict``, ``judge_verdict``) — see that
@@ -110,7 +118,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from agentrail.observability.langfuse_client import LangfuseHTTP
+from agentrail.observability.langfuse_client import (
+    LangfuseHTTP,
+    deterministic_trace_id,
+)
 from agentrail.observability.score_push import SCORE_NAMES
 
 # Below this many comparable (judge, truth) trace pairs, an agreement rate is
@@ -193,6 +204,172 @@ def _agreement(judge: Dict[str, bool], truth: Dict[str, bool]) -> Tuple[Optional
     return agree / n, n
 
 
+# ---------------------------------------------------------------------------
+# Jace verdict calibration (triage_verdict / qa_verdict vs real run outcomes).
+#
+# These two scores are SESSION-scoped CATEGORICAL scores pushed by Jace's
+# verdict hook (apps/jace/agent/hooks/langfuse-verdict-score.ts): their
+# ``traceId`` is null, the verdict label lives in ``stringValue`` (not the
+# numeric ``value``), and the ONLY join key back to the factory's per-run
+# ground truth is ``metadata.run_id`` — so ``_bool_by_trace`` (which requires
+# a ``traceId`` and a 1/0 ``value``) can NOT read them. The factory pushes its
+# truth (``solved`` / ``verify_verdict``) TRACE-scoped, keyed by
+# ``deterministic_trace_id(run_id)``, so the join is: verdict.metadata.run_id
+# -> deterministic_trace_id(run_id) -> the truth row's ``traceId``.
+#
+# "Reality" (a run passed vs. failed/rejected) is resolved from whichever truth
+# the run carries: an accepted ``verify_verdict`` (value 1) or a ``solved`` run
+# (value 1) counts as PASSED; a rejected verify (0) / unsolved run (0) counts
+# as FAILED. verify_verdict is consulted first (production runs), then solved
+# (eval reps); a run carries at most one in practice (see this module's
+# docstring / score_push.py's _eval_scores vs _production_scores).
+# ---------------------------------------------------------------------------
+
+# Verdict score names read from GET /api/public/v2/scores (Jace's hook writes
+# exactly these two CATEGORICAL scores). Kept separate from score_push's
+# SCORE_NAMES because those four are BOOLEAN factory/judge scores; these two
+# are the coordinator's session-scoped verdicts.
+_TRIAGE_SCORE_NAME = "triage_verdict"
+_QA_SCORE_NAME = "qa_verdict"
+
+# qa_verdict -> expected run reality. ``not_verifiable`` is deliberately absent:
+# it is EXCLUDED from agreement (there is no ground-truth expectation to hold
+# it to), never scored as agree or disagree.
+_QA_EXPECT_PASS = {"passed": True, "issues_found": False}
+
+
+def _str_by_run_id(scores: Sequence[dict]) -> Dict[str, str]:
+    """Map ``metadata.run_id -> stringValue`` from session-scoped CATEGORICAL
+    verdict score rows.
+
+    Unlike :func:`_bool_by_trace`, this reads the CATEGORICAL shape Jace's
+    verdict hook writes: the label is in ``stringValue`` (the numeric ``value``
+    is null/unused for a categorical score) and the join key is
+    ``metadata.run_id`` (``traceId`` is null on a session-scoped score). Any
+    row missing a usable string ``run_id`` under ``metadata`` or a usable
+    ``stringValue`` is dropped — there is nothing to join or compare. On a
+    duplicate ``run_id`` the last row seen wins (a re-run's later verdict
+    supersedes an earlier one), matching the iteration order Langfuse returns.
+    """
+    out: Dict[str, str] = {}
+    for row in scores:
+        meta = row.get("metadata")
+        if not isinstance(meta, dict):
+            continue
+        run_id = meta.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            continue
+        value = row.get("stringValue")
+        if not isinstance(value, str) or not value:
+            continue
+        out[run_id] = value
+    return out
+
+
+def _reality_passed(
+    run_id: str, solved: Dict[str, bool], verify: Dict[str, bool]
+) -> Optional[bool]:
+    """Resolve a run's real outcome to ``True`` (passed), ``False``
+    (failed/rejected), or ``None`` (no ground truth to compare against).
+
+    Joins the verdict's raw ``run_id`` to the factory's trace-keyed truth via
+    ``deterministic_trace_id`` (the exact key score_push.py wrote the truth
+    under). verify_verdict (accepted) takes precedence over solved when both
+    are somehow present; in practice a run carries at most one.
+    """
+    trace_id = deterministic_trace_id(run_id)
+    if trace_id in verify:
+        return verify[trace_id]
+    if trace_id in solved:
+        return solved[trace_id]
+    return None
+
+
+def _triage_agreement(
+    triage_by_run: Dict[str, str],
+    solved: Dict[str, bool],
+    verify: Dict[str, bool],
+) -> dict:
+    """triage_verdict (blocked|unblocked) vs. reality.
+
+    ``blocked`` is correct iff the run did NOT pass (verify-rejected /
+    terminally failed); ``unblocked`` is correct iff the run passed. Rows whose
+    verdict is neither literal, or whose run carries no ground truth, are
+    excluded from ``n``. Emits the agreement rate plus the two directional
+    error counts the brief asks for: ``false_blocked`` (blocked but the run
+    actually passed) and ``false_unblocked`` (unblocked but the run failed).
+    """
+    n = agree = false_blocked = false_unblocked = 0
+    for run_id, verdict in triage_by_run.items():
+        if verdict not in ("blocked", "unblocked"):
+            continue
+        passed = _reality_passed(run_id, solved, verify)
+        if passed is None:
+            continue
+        n += 1
+        if verdict == "blocked":
+            if not passed:
+                agree += 1
+            else:
+                false_blocked += 1
+        else:  # unblocked
+            if passed:
+                agree += 1
+            else:
+                false_unblocked += 1
+    return {
+        "n": n,
+        "agreement": (agree / n) if n else None,
+        "false_blocked": false_blocked,
+        "false_unblocked": false_unblocked,
+        "insufficient": n < MIN_SAMPLE_SIZE,
+    }
+
+
+def _qa_agreement(
+    qa_by_run: Dict[str, str],
+    solved: Dict[str, bool],
+    verify: Dict[str, bool],
+) -> dict:
+    """qa_verdict (passed|issues_found|not_verifiable) vs. reality.
+
+    ``passed`` -> expect the run passed; ``issues_found`` -> expect the run
+    failed; ``not_verifiable`` -> EXCLUDED from agreement entirely (counted
+    only for the breakdown). Rows whose run carries no ground truth are also
+    excluded from ``n``. Returns the agreement rate plus a per-verdict
+    breakdown (comparable count + agree count for the scored verdicts, and the
+    excluded count for ``not_verifiable``).
+    """
+    n = agree = 0
+    breakdown: Dict[str, Dict[str, int]] = {
+        "passed": {"total": 0, "agree": 0},
+        "issues_found": {"total": 0, "agree": 0},
+        "not_verifiable": {"excluded": 0},
+    }
+    for run_id, verdict in qa_by_run.items():
+        if verdict == "not_verifiable":
+            breakdown["not_verifiable"]["excluded"] += 1
+            continue
+        expect = _QA_EXPECT_PASS.get(verdict)
+        if expect is None:
+            continue  # unknown verdict label -> nothing to compare
+        passed = _reality_passed(run_id, solved, verify)
+        if passed is None:
+            continue
+        cell = breakdown.setdefault(verdict, {"total": 0, "agree": 0})
+        cell["total"] += 1
+        n += 1
+        if passed == expect:
+            agree += 1
+            cell["agree"] += 1
+    return {
+        "n": n,
+        "agreement": (agree / n) if n else None,
+        "breakdown": breakdown,
+        "insufficient": n < MIN_SAMPLE_SIZE,
+    }
+
+
 def calibration(client: LangfuseHTTP) -> dict:
     """Fetch judge/truth scores and compute the calibration numbers.
 
@@ -204,6 +381,12 @@ def calibration(client: LangfuseHTTP) -> dict:
     count so the renderer can gate and label each row honestly instead of
     reusing the combined n. See the module docstring for why the combined n
     alone is not sufficient.
+
+    Also additive (never removing the judge keys above): ``"triage"`` and
+    ``"qa"`` carry Jace's verdict calibration — see :func:`_triage_agreement`
+    and :func:`_qa_agreement`. Each is independently gated by its OWN ``n``
+    against :data:`MIN_SAMPLE_SIZE`; zero paired data renders "insufficient
+    data", never a vanity rate or a crash.
     """
     judge = _bool_by_trace(_fetch_scores_by_name(client, "judge_verdict"))
     solved = _bool_by_trace(_fetch_scores_by_name(client, "solved"))
@@ -211,6 +394,11 @@ def calibration(client: LangfuseHTTP) -> dict:
 
     rate_solved, n_solved = _agreement(judge, solved)
     rate_verify, n_verify = _agreement(judge, verify)
+
+    # Jace's session-scoped CATEGORICAL verdicts, joined to the SAME factory
+    # truth (solved / verify) on run_id. Additive to the judge contract below.
+    triage_by_run = _str_by_run_id(_fetch_scores_by_name(client, _TRIAGE_SCORE_NAME))
+    qa_by_run = _str_by_run_id(_fetch_scores_by_name(client, _QA_SCORE_NAME))
 
     n = n_solved + n_verify
     return {
@@ -224,6 +412,8 @@ def calibration(client: LangfuseHTTP) -> dict:
             "judge_vs_solved": n_solved,
             "judge_vs_verify": n_verify,
         },
+        "triage": _triage_agreement(triage_by_run, solved, verify),
+        "qa": _qa_agreement(qa_by_run, solved, verify),
     }
 
 
@@ -315,7 +505,84 @@ def render_markdown(result: dict, *, generated_at: str) -> str:
         )
         lines.append("")
 
+    _render_triage(lines, result.get("triage"))
+    _render_qa(lines, result.get("qa"))
+
     return "\n".join(lines)
+
+
+def _render_triage(lines: List[str], triage: Optional[dict]) -> None:
+    """Append the triage_verdict-vs-reality section (no-op when absent, so
+    old-shape ``result`` dicts without a ``"triage"`` key render unchanged)."""
+    if triage is None:
+        return
+    n = triage["n"]
+    insufficient = triage["insufficient"]
+    lines.append("## Jace triage verdict vs reality")
+    lines.append("")
+    lines.append(
+        "`triage_verdict` (session-scoped, joined on `metadata.run_id`) vs. the "
+        "run's real outcome: **blocked** is correct when the run was "
+        "verify-rejected / terminally failed, **unblocked** when it passed."
+    )
+    lines.append("")
+    lines.append("| Comparison | Agreement | n |")
+    lines.append("| --- | ---: | ---: |")
+    lines.append(
+        f"| triage_verdict vs reality | {_fmt_rate(triage['agreement'], insufficient)} "
+        f"| n={n} |"
+    )
+    lines.append("")
+    lines.append(f"- false_blocked (blocked, but the run passed): {triage['false_blocked']}")
+    lines.append(
+        f"- false_unblocked (unblocked, but the run failed): {triage['false_unblocked']}"
+    )
+    lines.append("")
+    if insufficient:
+        lines.append(
+            f"_Insufficient data: only {n} comparable run pair(s) "
+            f"(need >= {MIN_SAMPLE_SIZE})._"
+        )
+        lines.append("")
+
+
+def _render_qa(lines: List[str], qa: Optional[dict]) -> None:
+    """Append the qa_verdict-vs-reality section (no-op when absent)."""
+    if qa is None:
+        return
+    n = qa["n"]
+    insufficient = qa["insufficient"]
+    breakdown = qa.get("breakdown") or {}
+    lines.append("## Jace QA verdict vs reality")
+    lines.append("")
+    lines.append(
+        "`qa_verdict` vs. the run's real outcome: **passed** expects a passing "
+        "run, **issues_found** a failing one; **not_verifiable** is excluded "
+        "from agreement entirely."
+    )
+    lines.append("")
+    lines.append("| Comparison | Agreement | n |")
+    lines.append("| --- | ---: | ---: |")
+    lines.append(
+        f"| qa_verdict vs reality | {_fmt_rate(qa['agreement'], insufficient)} | n={n} |"
+    )
+    lines.append("")
+    lines.append("Per-verdict breakdown:")
+    lines.append("")
+    lines.append("| Verdict | Comparable | Agree |")
+    lines.append("| --- | ---: | ---: |")
+    for label in ("passed", "issues_found"):
+        cell = breakdown.get(label) or {"total": 0, "agree": 0}
+        lines.append(f"| {label} | {cell.get('total', 0)} | {cell.get('agree', 0)} |")
+    excluded = (breakdown.get("not_verifiable") or {}).get("excluded", 0)
+    lines.append(f"| not_verifiable (excluded) | {excluded} | n/a |")
+    lines.append("")
+    if insufficient:
+        lines.append(
+            f"_Insufficient data: only {n} comparable run pair(s) "
+            f"(need >= {MIN_SAMPLE_SIZE})._"
+        )
+        lines.append("")
 
 
 def default_reports_dir() -> Path:

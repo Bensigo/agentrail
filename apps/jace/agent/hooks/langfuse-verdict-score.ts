@@ -171,7 +171,18 @@ export function runIdFrom(output) {
     }
   }
   const o = parsed !== null && typeof parsed === "object" ? parsed : {};
-  const id = typeof o.run_id === "string" ? o.run_id.trim() : "";
+  // run_id may be echoed as a string ("4077") or a JSON number (4077) depending
+  // on how the model fills the schema. Accept both and normalize to a trimmed
+  // string so the calibration join key is never silently lost. (Booleans are a
+  // `number`? no — excluded by the `typeof === "number"` guard; NaN/Infinity are
+  // dropped by Number.isFinite.)
+  const raw = o.run_id;
+  const id =
+    typeof raw === "string"
+      ? raw.trim()
+      : typeof raw === "number" && Number.isFinite(raw)
+        ? String(raw)
+        : "";
   return id ? id : undefined;
 }
 

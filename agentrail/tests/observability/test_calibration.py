@@ -437,6 +437,19 @@ def test_str_by_run_id_reads_stringvalue_and_metadata_run_id():
     assert calibration._str_by_run_id(rows) == {"run-1": "blocked", "run-2": "unblocked"}
 
 
+def test_str_by_run_id_coerces_numeric_run_id():
+    # Regression for the real-end-to-end-test bug: Langfuse returns a numeric
+    # run_id (e.g. the model echoed run #4077, stored/returned as int 4077).
+    # The reader must accept it and normalize to str, or every verdict is dropped
+    # and calibration silently reports n=0 forever.
+    rows = [
+        {"id": "a", "name": "triage_verdict", "stringValue": "blocked", "metadata": {"run_id": 4077}},
+        # bool run_id is nonsense (bool is an int subclass) -> dropped
+        {"id": "b", "name": "triage_verdict", "stringValue": "blocked", "metadata": {"run_id": True}},
+    ]
+    assert calibration._str_by_run_id(rows) == {"4077": "blocked"}
+
+
 def test_triage_verdict_agreement_false_blocked_and_false_unblocked(monkeypatch, client):
     triage_rows = []
     solved_rows = []

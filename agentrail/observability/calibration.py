@@ -257,7 +257,15 @@ def _str_by_run_id(scores: Sequence[dict]) -> Dict[str, str]:
         if not isinstance(meta, dict):
             continue
         run_id = meta.get("run_id")
-        if not isinstance(run_id, str) or not run_id:
+        # run_id may arrive as a string ("4077") or a JSON number (4077) depending
+        # on how the model echoed it into the verdict's structured output. Accept
+        # both and normalize to str — deterministic_trace_id() stringifies anyway,
+        # so "4077" and 4077 join to the same trace. bool is an int subclass, so
+        # reject it explicitly (a True/False run_id is nonsense, not id 1/0).
+        if isinstance(run_id, bool) or not isinstance(run_id, (str, int)):
+            continue
+        run_id = str(run_id).strip()
+        if not run_id:
             continue
         value = row.get("stringValue")
         if not isinstance(value, str) or not value:

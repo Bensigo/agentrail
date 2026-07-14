@@ -70,6 +70,8 @@ export default defineInstrumentation({
         createSpanProcessor: () =>
           createSessionPromotingProcessor(new LangfuseSpanProcessor(), {
             sessionIdAttribute: LangfuseOtelSpanAttributes.TRACE_SESSION_ID,
+            traceNameAttribute: LangfuseOtelSpanAttributes.TRACE_NAME,
+            traceInputAttribute: LangfuseOtelSpanAttributes.TRACE_INPUT,
           }),
       }),
     );
@@ -80,7 +82,10 @@ export default defineInstrumentation({
         configured: isLangfuseConfigured(process.env),
         session: input.session,
         channel: input.channel,
+        modelInput: input.modelInput,
         sessionIdAttribute: LangfuseOtelSpanAttributes.TRACE_SESSION_ID,
+        traceNameAttribute: LangfuseOtelSpanAttributes.TRACE_NAME,
+        traceInputAttribute: LangfuseOtelSpanAttributes.TRACE_INPUT,
       });
     },
   },

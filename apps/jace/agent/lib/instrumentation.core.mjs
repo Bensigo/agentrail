@@ -79,6 +79,76 @@ export function buildOtelConfig({ agentName, env = {}, createSpanProcessor }) {
 export const LANGFUSE_SESSION_ID_ATTRIBUTE = "session.id";
 
 /**
+ * The current (v5) canonical Langfuse OTel span attributes for TRACE-level name
+ * and input — `LangfuseOtelSpanAttributes.TRACE_NAME` / `.TRACE_INPUT` in
+ * `@langfuse/core` (re-exported from `@langfuse/tracing`), verified against the
+ * installed `@langfuse/core` type declarations on 2026-07-14. Setting these on
+ * ANY observation upserts the enclosing TRACE's name/input (same class as
+ * `session.id`), which is why they ride the same context-bearing-span promotion
+ * path #1198 uses — see `promoteContextAttribute` below. Exported only as the
+ * DEFAULTS so this module needs no SDK import; the real wrapper passes the live
+ * enum values explicitly so a future SDK rename can't silently drift.
+ *
+ * @type {string}
+ */
+export const LANGFUSE_TRACE_NAME_ATTRIBUTE = "langfuse.trace.name";
+/** @type {string} */
+export const LANGFUSE_TRACE_INPUT_ATTRIBUTE = "langfuse.trace.input";
+
+/**
+ * Extract concatenated text from a `ModelMessage`'s content. A user
+ * `ModelMessage.content` is either a plain string or an array of parts; only
+ * text parts (`{ type: "text", text: string }`) contribute — file/image parts
+ * are ignored (verified against eve's bundled @ai-sdk message types).
+ *
+ * @param {{ content?: unknown } | undefined} message
+ * @returns {string}
+ */
+export function extractMessageText(message) {
+  const content = message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((p) => p && p.type === "text" && typeof p.text === "string")
+      .map((p) => p.text)
+      .join("");
+  }
+  return "";
+}
+
+/**
+ * Text of the last `role === "user"` message in a model input's `messages`
+ * array — the current turn's initiating message. Stable across all steps of a
+ * turn (only tool/assistant roles get appended mid-turn) and, across a
+ * multi-turn conversation, resolves to the latest user message. Trimmed.
+ *
+ * @param {readonly { role?: string, content?: unknown }[] | undefined} messages
+ * @returns {string}
+ */
+export function lastUserMessageText(messages) {
+  if (!Array.isArray(messages)) return "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "user") return extractMessageText(messages[i]).trim();
+  }
+  return "";
+}
+
+/**
+ * Human-readable trace name derived from arbitrary text: whitespace-collapsed
+ * and truncated to `maxLength` chars (with a trailing ellipsis when cut).
+ * Returns `undefined` when the text is blank, so a caller can fall back.
+ *
+ * @param {unknown} text
+ * @param {{ maxLength?: number }} [opts]
+ * @returns {string|undefined}
+ */
+export function deriveTraceName(text, { maxLength = 96 } = {}) {
+  const clean = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!clean) return undefined;
+  return clean.length > maxLength ? `${clean.slice(0, maxLength - 1)}…` : clean;
+}
+
+/**
  * Resolve the session id that should group an entire dispatch tree (the root
  * session plus every delegated subagent run) into one Langfuse session.
  *
@@ -111,11 +181,23 @@ export function resolveRootSessionId(session) {
  * used `"eve.subagent"`, which would never have landed. This uses
  * `"jace.subagent"` instead.
  *
+ * Also derives a human-readable trace NAME and, when the turn carries real user
+ * text, a trace INPUT — both stamped as runtimeContext keys so they ride the
+ * same context-bearing-span promotion path as `session.id` (see
+ * `promoteContextAttribute`). NAME is guaranteed non-empty: the last user
+ * message's text, else the channel kind (which normalizes to `"unknown"` at
+ * worst). INPUT is emitted only when there IS user text, length-capped to bound
+ * payload duplication across the turn's spans.
+ *
  * @param {{
  *   configured: boolean,
  *   session: { id?: string, parent?: { rootSessionId?: string } } | undefined,
  *   channel: { kind?: string } | undefined,
+ *   modelInput?: { messages?: readonly { role?: string, content?: unknown }[] } | undefined,
  *   sessionIdAttribute?: string,
+ *   traceNameAttribute?: string,
+ *   traceInputAttribute?: string,
+ *   inputMaxLength?: number,
  * }} params
  * @returns {{ runtimeContext: Record<string, string|boolean|undefined> } | undefined}
  */
@@ -123,15 +205,27 @@ export function buildStepStartedResult({
   configured,
   session,
   channel,
+  modelInput,
   sessionIdAttribute = LANGFUSE_SESSION_ID_ATTRIBUTE,
+  traceNameAttribute = LANGFUSE_TRACE_NAME_ATTRIBUTE,
+  traceInputAttribute = LANGFUSE_TRACE_INPUT_ATTRIBUTE,
+  inputMaxLength = 8000,
 }) {
   if (!configured) return undefined;
-  return {
-    runtimeContext: {
-      [sessionIdAttribute]: resolveRootSessionId(session),
-      "jace.subagent": channel?.kind === "subagent",
-    },
+  const userText = lastUserMessageText(modelInput?.messages);
+  const runtimeContext = {
+    [sessionIdAttribute]: resolveRootSessionId(session),
+    "jace.subagent": channel?.kind === "subagent",
   };
+  // NAME (guaranteed): user text, else channel kind (worst case "unknown").
+  const name = deriveTraceName(userText) ?? deriveTraceName(channel?.kind);
+  if (name) runtimeContext[traceNameAttribute] = name;
+  // INPUT (optional): only when there's real user text; length-capped.
+  if (userText) {
+    runtimeContext[traceInputAttribute] =
+      userText.length > inputMaxLength ? userText.slice(0, inputMaxLength) : userText;
+  }
+  return { runtimeContext };
 }
 
 // ---------------------------------------------------------------------------
@@ -183,12 +277,33 @@ export function sessionIdFromSpanAttributes(
 }
 
 /**
+ * Promote one AI-SDK-namespaced context attribute (`ai.settings.context.<bareKey>`)
+ * to the bare top-level key Langfuse reads. No-op if the bare key is already set
+ * (never clobber) or the source is not a non-blank string. Mutates `attributes`
+ * in place. Used for trace name/input, which — unlike session id — have no
+ * `eve.*` framework fallback, so a plain namespaced→bare lift is all they need.
+ *
+ * @param {Record<string, unknown>|undefined} attributes
+ * @param {string} bareKey the un-prefixed key Langfuse reads (e.g. "langfuse.trace.name")
+ * @returns {void}
+ */
+export function promoteContextAttribute(attributes, bareKey) {
+  if (!attributes || attributes[bareKey]) return;
+  const value = attributes[`${AI_SDK_CONTEXT_PREFIX}${bareKey}`];
+  if (typeof value === "string" && value.trim()) attributes[bareKey] = value;
+}
+
+/**
  * Wrap a real OTel span processor (the `LangfuseSpanProcessor`) so every span
- * it exports carries the top-level session-id attribute Langfuse reads,
- * promoted from the AI-SDK-namespaced runtime-context attribute. The promotion
+ * it exports carries the top-level attributes Langfuse reads — session id (via
+ * #1198's `eve.session.id`-fallback path) plus trace name/input (via the
+ * generic `promoteContextAttribute` lift) — promoted from their
+ * AI-SDK-namespaced runtime-context attributes. (Name is a slight misnomer now
+ * that it promotes name/input too; kept to avoid blast radius.) The promotion
  * happens in `onEnd`, mutating the span's final `attributes` object in place
  * before delegating — that object is what the processor serializes to OTLP, so
- * the promoted key reaches Langfuse's ingestion and sets the trace `sessionId`.
+ * the promoted keys reach Langfuse's ingestion and set the trace's
+ * sessionId/name/input.
  *
  * Deliberately dependency-free and structural: it touches only
  * `span.attributes` (a plain object) and forwards the processor lifecycle to
@@ -197,12 +312,16 @@ export function sessionIdFromSpanAttributes(
  * convention as `buildSpanProcessors`' `createSpanProcessor`).
  *
  * @param {{ onStart?: Function, onEnd?: Function, forceFlush?: Function, shutdown?: Function }} inner
- * @param {{ sessionIdAttribute?: string }} [opts]
+ * @param {{ sessionIdAttribute?: string, traceNameAttribute?: string, traceInputAttribute?: string }} [opts]
  * @returns {{ onStart: Function, onEnd: Function, forceFlush: Function, shutdown: Function }}
  */
 export function createSessionPromotingProcessor(
   inner,
-  { sessionIdAttribute = LANGFUSE_SESSION_ID_ATTRIBUTE } = {},
+  {
+    sessionIdAttribute = LANGFUSE_SESSION_ID_ATTRIBUTE,
+    traceNameAttribute = LANGFUSE_TRACE_NAME_ATTRIBUTE,
+    traceInputAttribute = LANGFUSE_TRACE_INPUT_ATTRIBUTE,
+  } = {},
 ) {
   return {
     onStart(span, parentContext) {
@@ -212,16 +331,21 @@ export function createSessionPromotingProcessor(
       // A span processor must never throw — that would break telemetry export
       // for the whole span. Promotion is best-effort: any failure (e.g. a
       // frozen attributes object) is swallowed so the span still exports, just
-      // without the promoted session id.
+      // without the promoted attributes.
       try {
         const attributes = span?.attributes;
-        // Don't clobber a session id that's already correctly set.
-        if (attributes && !attributes[sessionIdAttribute]) {
-          const sessionId = sessionIdFromSpanAttributes(attributes, sessionIdAttribute);
-          if (sessionId) attributes[sessionIdAttribute] = sessionId;
+        if (attributes) {
+          // Session id keeps its special eve.session.id fallback path.
+          if (!attributes[sessionIdAttribute]) {
+            const sessionId = sessionIdFromSpanAttributes(attributes, sessionIdAttribute);
+            if (sessionId) attributes[sessionIdAttribute] = sessionId;
+          }
+          // Trace name/input: plain namespaced→bare lift (no eve.* fallback).
+          promoteContextAttribute(attributes, traceNameAttribute);
+          promoteContextAttribute(attributes, traceInputAttribute);
         }
       } catch {
-        // no-op: never let session-id promotion break span export
+        // no-op: never let attribute promotion break span export
       }
       inner?.onEnd?.(span);
     },

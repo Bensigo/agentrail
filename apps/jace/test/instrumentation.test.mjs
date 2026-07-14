@@ -30,8 +30,14 @@ import {
   buildSpanProcessors,
   buildStepStartedResult,
   createSessionPromotingProcessor,
+  deriveTraceName,
+  extractMessageText,
   isLangfuseConfigured,
   LANGFUSE_SESSION_ID_ATTRIBUTE,
+  LANGFUSE_TRACE_INPUT_ATTRIBUTE,
+  LANGFUSE_TRACE_NAME_ATTRIBUTE,
+  lastUserMessageText,
+  promoteContextAttribute,
   resolveRootSessionId,
   sessionIdFromSpanAttributes,
 } from "../agent/lib/instrumentation.core.mjs";
@@ -157,11 +163,14 @@ test("buildStepStartedResult carries the root session id under the current Langf
     configured: true,
     session: { id: "sess_root" },
     channel: { kind: "http" },
+    modelInput: { messages: [{ role: "user", content: "Fix the login bug" }] },
   });
   assert.deepEqual(result, {
     runtimeContext: {
       [LANGFUSE_SESSION_ID_ATTRIBUTE]: "sess_root",
       "jace.subagent": false,
+      [LANGFUSE_TRACE_NAME_ATTRIBUTE]: "Fix the login bug",
+      [LANGFUSE_TRACE_INPUT_ATTRIBUTE]: "Fix the login bug",
     },
   });
 });
@@ -174,11 +183,14 @@ test("buildStepStartedResult groups a delegated subagent turn under the ROOT ses
       parent: { rootSessionId: "sess_root", sessionId: "sess_parent", callId: "call_1", turn: { id: "t1", sequence: 0 } },
     },
     channel: { kind: "subagent" },
+    modelInput: { messages: [{ role: "user", content: "Add a test" }] },
   });
   assert.deepEqual(result, {
     runtimeContext: {
       [LANGFUSE_SESSION_ID_ATTRIBUTE]: "sess_root",
       "jace.subagent": true,
+      [LANGFUSE_TRACE_NAME_ATTRIBUTE]: "Add a test",
+      [LANGFUSE_TRACE_INPUT_ATTRIBUTE]: "Add a test",
     },
   });
 });
@@ -188,12 +200,15 @@ test("buildStepStartedResult honors an explicit sessionIdAttribute override (the
     configured: true,
     session: { id: "sess_root" },
     channel: { kind: "http" },
+    modelInput: { messages: [{ role: "user", content: "Ship it" }] },
     sessionIdAttribute: "langfuse.session.id", // the legacy compat key, just to prove it's not hard-coded
   });
   assert.deepEqual(result, {
     runtimeContext: {
       "langfuse.session.id": "sess_root",
       "jace.subagent": false,
+      [LANGFUSE_TRACE_NAME_ATTRIBUTE]: "Ship it",
+      [LANGFUSE_TRACE_INPUT_ATTRIBUTE]: "Ship it",
     },
   });
 });
@@ -210,6 +225,131 @@ test("no runtimeContext key begins with the framework-reserved eve. prefix", () 
   });
   for (const key of Object.keys(result.runtimeContext)) {
     assert.ok(!key.startsWith("eve."), `runtimeContext key "${key}" begins with the reserved "eve." prefix and would be silently dropped`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Trace readability — pure text helpers for NAME/INPUT derivation.
+// ---------------------------------------------------------------------------
+
+test("extractMessageText: string content is returned as-is", () => {
+  assert.equal(extractMessageText({ role: "user", content: "hello world" }), "hello world");
+});
+
+test("extractMessageText: concatenates text parts and ignores non-text parts", () => {
+  const msg = {
+    role: "user",
+    content: [
+      { type: "text", text: "a" },
+      { type: "image", image: "…" },
+      { type: "text", text: "b" },
+    ],
+  };
+  assert.equal(extractMessageText(msg), "ab");
+});
+
+test("extractMessageText: undefined / non-array content → empty string", () => {
+  assert.equal(extractMessageText(undefined), "");
+  assert.equal(extractMessageText({}), "");
+  assert.equal(extractMessageText({ content: 42 }), "");
+});
+
+test("lastUserMessageText: picks the LAST user-role message across a mixed thread and trims", () => {
+  const messages = [
+    { role: "user", content: "first" },
+    { role: "assistant", content: "reply" },
+    { role: "tool", content: "result" },
+    { role: "user", content: "  latest  " },
+  ];
+  assert.equal(lastUserMessageText(messages), "latest");
+});
+
+test("lastUserMessageText: empty string when there is no user message or input is not an array", () => {
+  assert.equal(lastUserMessageText([{ role: "assistant", content: "x" }]), "");
+  assert.equal(lastUserMessageText(undefined), "");
+});
+
+test("deriveTraceName: collapses whitespace, leaves a short string intact", () => {
+  assert.equal(deriveTraceName("  Fix   the\nlogin bug  "), "Fix the login bug");
+});
+
+test("deriveTraceName: blank / whitespace-only → undefined (so caller can fall back)", () => {
+  assert.equal(deriveTraceName(""), undefined);
+  assert.equal(deriveTraceName("   \n\t "), undefined);
+  assert.equal(deriveTraceName(undefined), undefined);
+});
+
+test("deriveTraceName: truncates a >96-char string to 96 chars ending in an ellipsis", () => {
+  const long = "x".repeat(200);
+  const name = deriveTraceName(long);
+  assert.equal(name.length, 96);
+  assert.ok(name.endsWith("…"), "truncated name must end with an ellipsis");
+  assert.equal(name, "x".repeat(95) + "…");
+});
+
+// Anti-drift PINs — the core defaults must equal the live @langfuse/tracing enum.
+test("PIN: LANGFUSE_TRACE_NAME_ATTRIBUTE equals the live @langfuse/tracing TRACE_NAME enum", () => {
+  assert.equal(LANGFUSE_TRACE_NAME_ATTRIBUTE, LangfuseOtelSpanAttributes.TRACE_NAME);
+});
+
+test("PIN: LANGFUSE_TRACE_INPUT_ATTRIBUTE equals the live @langfuse/tracing TRACE_INPUT enum", () => {
+  assert.equal(LANGFUSE_TRACE_INPUT_ATTRIBUTE, LangfuseOtelSpanAttributes.TRACE_INPUT);
+});
+
+// ---------------------------------------------------------------------------
+// buildStepStartedResult — trace NAME/INPUT derivation.
+// ---------------------------------------------------------------------------
+
+test("buildStepStartedResult: long user message → NAME truncated with ellipsis, INPUT is the full text (name ≠ input)", () => {
+  const long = "Refactor the authentication middleware " + "y".repeat(120);
+  const result = buildStepStartedResult({
+    configured: true,
+    session: { id: "sess_root" },
+    channel: { kind: "http" },
+    modelInput: { messages: [{ role: "user", content: long }] },
+  });
+  const name = result.runtimeContext[LANGFUSE_TRACE_NAME_ATTRIBUTE];
+  const input = result.runtimeContext[LANGFUSE_TRACE_INPUT_ATTRIBUTE];
+  assert.equal(name.length, 96);
+  assert.ok(name.endsWith("…"));
+  assert.equal(input, long, "INPUT keeps the full (uncapped-at-this-length) user text");
+  assert.notEqual(name, input, "the long case must have a distinct truncated name and full input");
+});
+
+test("buildStepStartedResult: INPUT is length-capped at inputMaxLength", () => {
+  const huge = "z".repeat(9000);
+  const result = buildStepStartedResult({
+    configured: true,
+    session: { id: "sess_root" },
+    channel: { kind: "http" },
+    modelInput: { messages: [{ role: "user", content: huge }] },
+  });
+  assert.equal(result.runtimeContext[LANGFUSE_TRACE_INPUT_ATTRIBUTE].length, 8000);
+});
+
+test("buildStepStartedResult: attachments-only / no user text → NAME falls back to channel.kind and NO input key", () => {
+  const result = buildStepStartedResult({
+    configured: true,
+    session: { id: "sess_root" },
+    channel: { kind: "telegram" },
+    modelInput: { messages: [{ role: "user", content: [{ type: "image", image: "…" }] }] },
+  });
+  assert.equal(result.runtimeContext[LANGFUSE_TRACE_NAME_ATTRIBUTE], "telegram");
+  assert.ok(
+    !(LANGFUSE_TRACE_INPUT_ATTRIBUTE in result.runtimeContext),
+    "no real user text → the trace input key must be absent, not empty",
+  );
+});
+
+test("buildStepStartedResult: none of the emitted NAME/INPUT keys begin with the reserved eve. prefix", () => {
+  const result = buildStepStartedResult({
+    configured: true,
+    session: { id: "sess_root" },
+    channel: { kind: "subagent" },
+    modelInput: { messages: [{ role: "user", content: "do the thing" }] },
+  });
+  for (const key of Object.keys(result.runtimeContext)) {
+    assert.ok(!key.startsWith("eve."), `runtimeContext key "${key}" would be dropped by eve`);
   }
 });
 
@@ -291,6 +431,78 @@ test("createSessionPromotingProcessor: a frozen/immutable attributes object neve
   const span = { attributes: Object.freeze({ [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_SESSION_ID_ATTRIBUTE}`]: "wrun_root_1" }) };
   assert.doesNotThrow(() => proc.onEnd(span));
   assert.ok(delegated, "inner.onEnd must still be called even when promotion fails");
+});
+
+// ---------------------------------------------------------------------------
+// Trace NAME/INPUT promotion — same namespaced→bare lift as session id.
+// ---------------------------------------------------------------------------
+
+test("promoteContextAttribute: promotes the AI-SDK-namespaced value to the bare top-level key", () => {
+  const attrs = { [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_TRACE_NAME_ATTRIBUTE}`]: "Fix the login bug" };
+  promoteContextAttribute(attrs, LANGFUSE_TRACE_NAME_ATTRIBUTE);
+  assert.equal(attrs[LANGFUSE_TRACE_NAME_ATTRIBUTE], "Fix the login bug");
+});
+
+test("promoteContextAttribute: never clobbers an already-set bare key", () => {
+  const attrs = {
+    [LANGFUSE_TRACE_NAME_ATTRIBUTE]: "already set",
+    [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_TRACE_NAME_ATTRIBUTE}`]: "from context",
+  };
+  promoteContextAttribute(attrs, LANGFUSE_TRACE_NAME_ATTRIBUTE);
+  assert.equal(attrs[LANGFUSE_TRACE_NAME_ATTRIBUTE], "already set");
+});
+
+test("promoteContextAttribute: no-op when the source is blank/whitespace/missing", () => {
+  const blank = { [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_TRACE_INPUT_ATTRIBUTE}`]: "   " };
+  promoteContextAttribute(blank, LANGFUSE_TRACE_INPUT_ATTRIBUTE);
+  assert.equal(blank[LANGFUSE_TRACE_INPUT_ATTRIBUTE], undefined);
+
+  const missing = {};
+  promoteContextAttribute(missing, LANGFUSE_TRACE_INPUT_ATTRIBUTE);
+  assert.equal(missing[LANGFUSE_TRACE_INPUT_ATTRIBUTE], undefined);
+
+  assert.doesNotThrow(() => promoteContextAttribute(undefined, LANGFUSE_TRACE_NAME_ATTRIBUTE));
+});
+
+test("createSessionPromotingProcessor: onEnd promotes session id, trace name AND trace input, then forwards the same span", () => {
+  const seen = [];
+  const inner = { onEnd: (s) => seen.push(s) };
+  const proc = createSessionPromotingProcessor(inner);
+  const span = {
+    attributes: {
+      [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_SESSION_ID_ATTRIBUTE}`]: "wrun_root_1",
+      [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_TRACE_NAME_ATTRIBUTE}`]: "Fix the login bug",
+      [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_TRACE_INPUT_ATTRIBUTE}`]: "Fix the login bug in the header",
+    },
+  };
+  proc.onEnd(span);
+  assert.equal(span.attributes[LANGFUSE_SESSION_ID_ATTRIBUTE], "wrun_root_1");
+  assert.equal(span.attributes[LANGFUSE_TRACE_NAME_ATTRIBUTE], "Fix the login bug");
+  assert.equal(span.attributes[LANGFUSE_TRACE_INPUT_ATTRIBUTE], "Fix the login bug in the header");
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0], span, "the SAME mutated span is forwarded, so promoted attrs are exported");
+});
+
+test("createSessionPromotingProcessor: a frozen attributes object never breaks export even with name/input present", () => {
+  let delegated = false;
+  const proc = createSessionPromotingProcessor({ onEnd() { delegated = true; } });
+  const span = {
+    attributes: Object.freeze({
+      [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_TRACE_NAME_ATTRIBUTE}`]: "Fix the login bug",
+    }),
+  };
+  assert.doesNotThrow(() => proc.onEnd(span));
+  assert.ok(delegated, "inner.onEnd must still be called even when promotion fails");
+});
+
+test("createSessionPromotingProcessor: onEnd sets no name/input when the span carries none of the context keys", () => {
+  let delegated = false;
+  const proc = createSessionPromotingProcessor({ onEnd() { delegated = true; } });
+  const span = { attributes: { "gen_ai.request.model": "x" } };
+  proc.onEnd(span);
+  assert.equal(span.attributes[LANGFUSE_TRACE_NAME_ATTRIBUTE], undefined);
+  assert.equal(span.attributes[LANGFUSE_TRACE_INPUT_ATTRIBUTE], undefined);
+  assert.ok(delegated);
 });
 
 test("createSessionPromotingProcessor: forwards onStart/forceFlush/shutdown to inner", async () => {

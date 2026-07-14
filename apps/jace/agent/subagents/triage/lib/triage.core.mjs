@@ -91,6 +91,15 @@ export const TRIAGE_SCHEMA = {
     "evidence_refs",
   ],
   properties: {
+    run_id: {
+      type: "string",
+      description:
+        "Echo, verbatim, the run_id you were asked to diagnose (the one you " +
+        "passed to fetch_run_evidence). Optional and never invented: it is a " +
+        "join key so the parent's observability can pair this diagnosis with " +
+        "the factory run's own outcome. Copy it exactly; if you were given no " +
+        "run_id, omit this field rather than guessing.",
+    },
     diagnosis: {
       type: "string",
       minLength: 1,

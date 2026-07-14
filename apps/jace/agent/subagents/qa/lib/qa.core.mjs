@@ -22,6 +22,14 @@ export const QA_SCHEMA = {
     "evidence_refs",
   ],
   properties: {
+    run_id: {
+      type: "string",
+      description:
+        "Echo, verbatim, the factory run_id whose shipped change you QA'd, if " +
+        "the parent gave you one. Optional and never invented: it is a join " +
+        "key so observability can pair this advisory with the run's own " +
+        "outcome. Copy it exactly; omit this field when no run_id was provided.",
+    },
     verdict: {
       type: "string",
       enum: QA_VERDICTS,

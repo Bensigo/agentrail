@@ -68,6 +68,10 @@ pointed at.
 
 Fill the schema:
 
+- `run_id`: if the parent's task prompt named a factory `run_id` for the
+  change you QA'd, echo it back verbatim — it is a join key the parent's
+  observability uses to pair this advisory with the run's own outcome. Omit
+  it when you were given no run_id; never invent one.
 - `verdict`: `passed` (everything exercised behaved), `issues_found` (at
   least one finding), or `not_verifiable` (could not test — give
   `not_verifiable_reason`).

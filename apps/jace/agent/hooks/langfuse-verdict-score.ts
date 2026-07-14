@@ -140,6 +140,42 @@ export function verdictValueFor(subagentName, output) {
 }
 
 /**
+ * Extract the factory `run_id` the subagent operated on, if it echoed one.
+ *
+ * The `action.result` event carries ONLY `result` ({ callId, isError, kind,
+ * output, subagentName }) — never the original subagent-call input — so the
+ * run_id the parent handed the subagent is not directly on the event. The
+ * reliable hook-visible source is the subagent's own structured output:
+ * TRIAGE_SCHEMA / QA_SCHEMA each carry an optional `run_id` the subagent is
+ * instructed to echo verbatim (see their instructions.md). This is the join
+ * key calibration needs to pair the session-scoped verdict against the
+ * factory run's TRACE-scoped ground-truth outcome — WITHOUT re-scoping the
+ * score to the run trace (the score stays session-scoped, preserving the
+ * Langfuse session badge from #1198; only metadata.run_id is added).
+ *
+ * Parses the same JSON-string-or-object output `verdictValueFor` does, and is
+ * total: any non-object output, unparseable string, or missing/blank run_id
+ * yields `undefined` (metadata.run_id is then simply omitted — never
+ * fabricated, never a throw). Observe-only + fail-open is preserved.
+ *
+ * @param {unknown} output
+ * @returns {string | undefined}
+ */
+export function runIdFrom(output) {
+  let parsed = output;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return undefined;
+    }
+  }
+  const o = parsed !== null && typeof parsed === "object" ? parsed : {};
+  const id = typeof o.run_id === "string" ? o.run_id.trim() : "";
+  return id ? id : undefined;
+}
+
+/**
  * POST one session-scoped score to Langfuse (`POST /api/public/scores`).
  * Fire-and-forget: every failure — transport rejection or a non-2xx
  * response — funnels into exactly one `console.warn`, and the returned
@@ -214,6 +250,15 @@ export async function handleActionResult(event, ctx, deps = {}) {
   const seen = deps.seen ?? _seenCallIds;
   if (!markScored(seen, result.callId)) return;
 
+  // Join key for calibration (item 9): the factory run_id this subagent
+  // operated on, echoed on its structured output. Added to metadata ONLY when
+  // present — an absent/blank run_id omits the field cleanly (never throws,
+  // never fabricated). The score stays session-scoped; run_id is metadata, not
+  // a re-scope to the run trace.
+  const metadata = { subagentName, callId: result.callId };
+  const runId = runIdFrom(result.output);
+  if (runId) metadata.run_id = runId;
+
   const fetchImpl = deps.fetchImpl ?? fetch;
   await pushScore({
     baseUrl: env.LANGFUSE_BASE_URL,
@@ -225,7 +270,7 @@ export async function handleActionResult(event, ctx, deps = {}) {
       name: scoreName,
       value: verdict.value,
       dataType: verdict.dataType,
-      metadata: { subagentName, callId: result.callId },
+      metadata,
     },
   });
 }

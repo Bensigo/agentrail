@@ -58,6 +58,10 @@ ambiguity in the diagnosis rather than asserting the bolder claim.
 
 Emit the diagnosis in the required output shape:
 
+- `run_id` — echo, verbatim, the `run_id` you were handed and passed to
+  `fetch_run_evidence`. Copy it exactly; it is a join key the parent's
+  observability uses to pair this diagnosis with the run's own outcome. Omit it
+  only if you were genuinely given no run_id — never invent one.
 - `diagnosis` — what went wrong, grounded only in the fetched evidence.
 - `what_was_tried` — the steps the run/agent attempted before it stopped, read
   from the timeline and failing phase. Empty when the timeline carries nothing.

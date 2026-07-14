@@ -31,6 +31,7 @@ import assert from "node:assert/strict";
 import {
   handleActionResult,
   verdictValueFor,
+  runIdFrom,
   pushScore,
   __resetScoredForTests,
 } from "../agent/hooks/langfuse-verdict-score.ts";
@@ -342,6 +343,84 @@ test("handleActionResult: the same callId scores exactly once", async () => {
   await handleActionResult(ev, FAKE_CTX, { env: FAKE_ENV, fetchImpl, seen });
   await handleActionResult(ev, FAKE_CTX, { env: FAKE_ENV, fetchImpl, seen });
   assert.equal(fetchImpl.calls.length, 1, "one score despite two identical events");
+});
+
+// ---------------------------------------------------------------------------
+// #2 calibration join key — the subagent echoes the factory run_id it
+// operated on into its structured output (TRIAGE_SCHEMA/QA_SCHEMA optional
+// `run_id`), and the hook carries it into metadata.run_id so a session-scoped
+// verdict can be paired with the run's TRACE-scoped ground-truth outcome.
+// The score STAYS session-scoped (no traceId) — run_id is metadata only.
+
+test("runIdFrom: reads run_id from an object output", () => {
+  assert.equal(runIdFrom({ run_id: "run_abc123" }), "run_abc123");
+});
+
+test("runIdFrom: parses a JSON-string output and trims the run_id", () => {
+  assert.equal(runIdFrom(JSON.stringify({ run_id: "  run_xyz  " })), "run_xyz");
+});
+
+test("runIdFrom: absent/blank/non-string/unparseable -> undefined", () => {
+  assert.equal(runIdFrom({}), undefined);
+  assert.equal(runIdFrom({ run_id: "   " }), undefined);
+  assert.equal(runIdFrom({ run_id: 42 }), undefined);
+  assert.equal(runIdFrom("not json at all"), undefined);
+  assert.equal(runIdFrom(null), undefined);
+});
+
+test("triage result with an echoed run_id -> metadata.run_id carries it (still session-scoped)", async () => {
+  const fetchImpl = fakeFetch();
+  const output = { ...TRIAGE_OUTPUT_BLOCKED, run_id: "run_triage_42" };
+  await handleActionResult(triageActionResultEvent(output), FAKE_CTX, {
+    env: FAKE_ENV,
+    fetchImpl,
+  });
+  assert.equal(fetchImpl.calls.length, 1);
+  const body = JSON.parse(fetchImpl.calls[0].init.body);
+  assert.equal(body.metadata.run_id, "run_triage_42");
+  assert.equal(body.metadata.subagentName, "triage");
+  assert.equal(body.sessionId, "sess_root_123");
+  assert.equal("traceId" in body, false); // never re-scoped to the run trace
+});
+
+test("triage result with an echoed run_id survives the JSON-string wire form", async () => {
+  const fetchImpl = fakeFetch();
+  const output = JSON.stringify({ ...TRIAGE_OUTPUT_BLOCKED, run_id: "run_wire_7" });
+  await handleActionResult(triageActionResultEvent(output), FAKE_CTX, {
+    env: FAKE_ENV,
+    fetchImpl,
+  });
+  const body = JSON.parse(fetchImpl.calls[0].init.body);
+  assert.equal(body.metadata.run_id, "run_wire_7");
+});
+
+test("qa result with an echoed run_id -> metadata.run_id carries it", async () => {
+  const fetchImpl = fakeFetch();
+  const output = { ...QA_OUTPUT_ISSUES, run_id: "run_qa_99" };
+  await handleActionResult(qaActionResultEvent(output), FAKE_CTX, {
+    env: FAKE_ENV,
+    fetchImpl,
+  });
+  const body = JSON.parse(fetchImpl.calls[0].init.body);
+  assert.equal(body.metadata.run_id, "run_qa_99");
+  assert.equal(body.name, "qa_verdict");
+});
+
+test("a result with NO run_id -> metadata omits run_id, no throw (triage + qa)", async () => {
+  const fetchImpl = fakeFetch();
+  await handleActionResult(triageActionResultEvent(TRIAGE_OUTPUT_BLOCKED), FAKE_CTX, {
+    env: FAKE_ENV,
+    fetchImpl,
+  });
+  await handleActionResult(qaActionResultEvent(QA_OUTPUT_ISSUES), FAKE_CTX, {
+    env: FAKE_ENV,
+    fetchImpl,
+  });
+  assert.equal(fetchImpl.calls.length, 2);
+  for (const call of fetchImpl.calls) {
+    const body = JSON.parse(call.init.body);
+    assert.equal("run_id" in body.metadata, false);
+  }
 });
 
 test("handleActionResult: different callIds each score once", async () => {

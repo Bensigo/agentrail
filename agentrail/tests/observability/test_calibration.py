@@ -16,6 +16,7 @@ import pytest
 
 from agentrail.observability import calibration
 from agentrail.observability import langfuse_client as lc
+from agentrail.observability.langfuse_client import deterministic_trace_id
 from agentrail.observability.score_push import SCORE_NAMES
 
 
@@ -393,6 +394,209 @@ def test_fetch_scores_by_name_follows_pagination(monkeypatch, client):
     rows = calibration._fetch_scores_by_name(client, "judge_verdict")
     trace_ids = {r["traceId"] for r in rows}
     assert trace_ids == {"t1", "t2"}
+
+
+# ---------------------------------------------------------------------------
+# Jace verdict calibration: triage_verdict / qa_verdict (session-scoped
+# CATEGORICAL, joined to factory truth on metadata.run_id) vs reality.
+# ---------------------------------------------------------------------------
+
+def _cat_row(run_id: str, name: str, string_value: str) -> dict:
+    """A session-scoped CATEGORICAL GET /api/public/v2/scores row as Jace's
+    verdict hook writes it: traceId null, label in stringValue, join key in
+    metadata.run_id (see calibration._str_by_run_id)."""
+    return {
+        "id": f"score-{run_id}-{name}",
+        "traceId": None,
+        "sessionId": f"sess-{run_id}",
+        "name": name,
+        "value": None,
+        "stringValue": string_value,
+        "dataType": "CATEGORICAL",
+        "metadata": {"subagentName": name.split("_")[0], "callId": f"c-{run_id}", "run_id": run_id},
+    }
+
+
+def _truth_row(run_id: str, name: str, value: int) -> dict:
+    """A factory truth row keyed the way score_push.py wrote it: TRACE-scoped,
+    traceId = deterministic_trace_id(run_id), BOOLEAN value 1/0."""
+    return _row(deterministic_trace_id(run_id), name, value)
+
+
+def test_str_by_run_id_reads_stringvalue_and_metadata_run_id():
+    rows = [
+        _cat_row("run-1", "triage_verdict", "blocked"),
+        _cat_row("run-2", "triage_verdict", "unblocked"),
+        # dropped: no run_id in metadata
+        {"id": "x", "name": "triage_verdict", "stringValue": "blocked", "metadata": {}},
+        # dropped: no metadata dict at all
+        {"id": "y", "name": "triage_verdict", "stringValue": "blocked", "traceId": None},
+        # dropped: missing stringValue
+        {"id": "z", "name": "triage_verdict", "metadata": {"run_id": "run-3"}},
+    ]
+    assert calibration._str_by_run_id(rows) == {"run-1": "blocked", "run-2": "unblocked"}
+
+
+def test_triage_verdict_agreement_false_blocked_and_false_unblocked(monkeypatch, client):
+    triage_rows = []
+    solved_rows = []
+    verify_rows = []
+
+    # 5 blocked + run failed (verify rejected) -> agree
+    for i in range(5):
+        rid = f"bf-{i}"
+        triage_rows.append(_cat_row(rid, "triage_verdict", "blocked"))
+        verify_rows.append(_truth_row(rid, "verify_verdict", 0))
+    # 2 blocked + run passed (solved) -> false_blocked
+    for i in range(2):
+        rid = f"bp-{i}"
+        triage_rows.append(_cat_row(rid, "triage_verdict", "blocked"))
+        solved_rows.append(_truth_row(rid, "solved", 1))
+    # 4 unblocked + run passed -> agree
+    for i in range(4):
+        rid = f"up-{i}"
+        triage_rows.append(_cat_row(rid, "triage_verdict", "unblocked"))
+        solved_rows.append(_truth_row(rid, "solved", 1))
+    # 1 unblocked + run failed -> false_unblocked
+    triage_rows.append(_cat_row("uf-0", "triage_verdict", "unblocked"))
+    solved_rows.append(_truth_row("uf-0", "solved", 0))
+    # 1 blocked verdict with NO ground truth -> excluded from n
+    triage_rows.append(_cat_row("orphan", "triage_verdict", "blocked"))
+
+    _serve_by_name(monkeypatch, {
+        "triage_verdict": triage_rows,
+        "solved": solved_rows,
+        "verify_verdict": verify_rows,
+    })
+
+    result = calibration.calibration(client)
+    triage = result["triage"]
+
+    assert triage["n"] == 12  # orphan (no truth) excluded
+    assert triage["agreement"] == pytest.approx(9 / 12)
+    assert triage["false_blocked"] == 2
+    assert triage["false_unblocked"] == 1
+    assert triage["insufficient"] is False  # 12 >= MIN_SAMPLE_SIZE
+
+    md = calibration.render_markdown(result, generated_at="2026-07-15")
+    line = [l for l in md.splitlines() if l.startswith("| triage_verdict vs reality")][0]
+    assert "75.0%" in line
+    assert "n=12" in line
+    assert "false_blocked (blocked, but the run passed): 2" in md
+    assert "false_unblocked (unblocked, but the run failed): 1" in md
+
+
+def test_qa_verdict_agreement_breakdown_and_not_verifiable_excluded(monkeypatch, client):
+    qa_rows = []
+    solved_rows = []
+    verify_rows = []
+
+    # 6 passed + run passed -> agree
+    for i in range(6):
+        rid = f"pp-{i}"
+        qa_rows.append(_cat_row(rid, "qa_verdict", "passed"))
+        verify_rows.append(_truth_row(rid, "verify_verdict", 1))
+    # 1 passed + run failed -> disagree
+    qa_rows.append(_cat_row("pf-0", "qa_verdict", "passed"))
+    verify_rows.append(_truth_row("pf-0", "verify_verdict", 0))
+    # 4 issues_found + run failed -> agree
+    for i in range(4):
+        rid = f"if-{i}"
+        qa_rows.append(_cat_row(rid, "qa_verdict", "issues_found"))
+        solved_rows.append(_truth_row(rid, "solved", 0))
+    # 1 issues_found + run passed -> disagree
+    qa_rows.append(_cat_row("ip-0", "qa_verdict", "issues_found"))
+    solved_rows.append(_truth_row("ip-0", "solved", 1))
+    # 3 not_verifiable -> EXCLUDED from n entirely (with or without truth)
+    for i in range(3):
+        rid = f"nv-{i}"
+        qa_rows.append(_cat_row(rid, "qa_verdict", "not_verifiable"))
+        solved_rows.append(_truth_row(rid, "solved", 1))
+
+    _serve_by_name(monkeypatch, {
+        "qa_verdict": qa_rows,
+        "solved": solved_rows,
+        "verify_verdict": verify_rows,
+    })
+
+    result = calibration.calibration(client)
+    qa = result["qa"]
+
+    # not_verifiable (3) excluded -> n = 6+1+4+1 = 12, NOT 15.
+    assert qa["n"] == 12
+    assert qa["agreement"] == pytest.approx(10 / 12)  # 6 + 4 agree
+    assert qa["insufficient"] is False
+    assert qa["breakdown"]["passed"] == {"total": 7, "agree": 6}
+    assert qa["breakdown"]["issues_found"] == {"total": 5, "agree": 4}
+    assert qa["breakdown"]["not_verifiable"] == {"excluded": 3}
+
+    md = calibration.render_markdown(result, generated_at="2026-07-15")
+    line = [l for l in md.splitlines() if l.startswith("| qa_verdict vs reality")][0]
+    assert "83.3%" in line
+    assert "n=12" in line
+    assert "| not_verifiable (excluded) | 3 | n/a |" in md
+
+
+def test_verdict_blocks_gate_thin_n_as_insufficient(monkeypatch, client):
+    """A verdict block below MIN_SAMPLE_SIZE renders 'insufficient data', never
+    a bare percentage — even though the rate itself is computed honestly."""
+    triage_rows = [
+        _cat_row("a", "triage_verdict", "blocked"),
+        _cat_row("b", "triage_verdict", "unblocked"),
+    ]
+    verify_rows = [_truth_row("a", "verify_verdict", 0)]   # blocked, failed -> agree
+    solved_rows = [_truth_row("b", "solved", 1)]           # unblocked, passed -> agree
+    _serve_by_name(monkeypatch, {
+        "triage_verdict": triage_rows,
+        "verify_verdict": verify_rows,
+        "solved": solved_rows,
+    })
+
+    result = calibration.calibration(client)
+    triage = result["triage"]
+    assert triage["n"] == 2
+    assert triage["agreement"] == pytest.approx(1.0)  # honest rate still computed
+    assert triage["insufficient"] is True
+
+    md = calibration.render_markdown(result, generated_at="2026-07-15")
+    line = [l for l in md.splitlines() if l.startswith("| triage_verdict vs reality")][0]
+    assert "insufficient data" in line
+    assert "%" not in line
+
+
+def test_zero_paired_verdict_data_renders_insufficient_never_crashes(monkeypatch, client):
+    """No paired data at all (verdicts present but no matching ground truth, or
+    no verdicts at all) must render insufficient and never crash."""
+    triage_rows = [_cat_row("orphan", "triage_verdict", "blocked")]  # no matching truth
+    _serve_by_name(monkeypatch, {"triage_verdict": triage_rows})
+
+    result = calibration.calibration(client)
+    assert result["triage"]["n"] == 0
+    assert result["triage"]["agreement"] is None
+    assert result["triage"]["insufficient"] is True
+    assert result["qa"]["n"] == 0
+    assert result["qa"]["agreement"] is None
+
+    # Rendering the empty/zero-data result must not raise.
+    md = calibration.render_markdown(result, generated_at="2026-07-15")
+    assert "Jace triage verdict vs reality" in md
+    assert "Jace QA verdict vs reality" in md
+    # n=0 -> _fmt_rate(None, ...) -> "no data", not a fabricated percentage.
+    triage_line = [l for l in md.splitlines() if l.startswith("| triage_verdict vs reality")][0]
+    assert "no data" in triage_line
+
+
+def test_render_markdown_omits_verdict_sections_for_old_shape_dicts():
+    """Old-shape judge-only result dicts (no triage/qa keys) render unchanged —
+    no verdict sections, no crash."""
+    result = {
+        "n": 12,
+        "agreement": {"judge_vs_solved": 0.9166666666666666, "judge_vs_verify": None},
+        "insufficient": False,
+    }
+    md = calibration.render_markdown(result, generated_at="2026-07-15")
+    assert "Jace triage verdict vs reality" not in md
+    assert "Jace QA verdict vs reality" not in md
 
 
 if __name__ == "__main__":

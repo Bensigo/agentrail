@@ -133,3 +133,103 @@ export function buildStepStartedResult({
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// #1198 — session-id promotion.
+//
+// `events["step.started"]` returns `runtimeContext`, and per Eve's
+// instrumentation guide those values ride onto AI SDK spans under the AI SDK's
+// OWN namespace: a returned key `"session.id"` lands on the span as
+// `ai.settings.context.session.id`, NOT as a top-level `session.id`. Langfuse's
+// OTLP ingestion reads the top-level `session.id` (v5
+// `LangfuseOtelSpanAttributes.TRACE_SESSION_ID`) to set a trace's `sessionId`;
+// it does not look under `ai.settings.context.`. So the session id was on every
+// span but in the wrong namespace, every Jace trace landed with `sessionId:
+// null`, and the session-scoped verdict scores (which key on `ctx.session.id`)
+// had no visible session to attach to — invisible in the dashboard despite
+// existing in the API. `runtimeContext` is the only session-aware seam Eve
+// exposes and it can only ever produce `ai.settings.context.*`, so the fix is
+// to promote the value into the key Langfuse reads, on the span, before export.
+
+/** The prefix the AI SDK adds to every `runtimeContext` key when it projects
+ *  runtime context onto a span (verified live: our `"session.id"` context key
+ *  is observed on spans as `ai.settings.context.session.id`). */
+export const AI_SDK_CONTEXT_PREFIX = "ai.settings.context.";
+
+/**
+ * Read the root session id out of a span's attributes, looking under the AI SDK
+ * runtime-context namespace. Prefers the id WE set (`sessionIdAttribute`, i.e.
+ * the root-resolved id that matches the score's `sessionId`) and falls back to
+ * Eve's framework `eve.session.id`. Returns `undefined` when neither is a
+ * non-blank string.
+ *
+ * @param {Record<string, unknown>} [attributes]
+ * @param {string} [sessionIdAttribute] the un-prefixed runtimeContext key
+ * @returns {string|undefined}
+ */
+export function sessionIdFromSpanAttributes(
+  attributes = {},
+  sessionIdAttribute = LANGFUSE_SESSION_ID_ATTRIBUTE,
+) {
+  const candidates = [
+    `${AI_SDK_CONTEXT_PREFIX}${sessionIdAttribute}`,
+    `${AI_SDK_CONTEXT_PREFIX}eve.session.id`,
+  ];
+  for (const key of candidates) {
+    const value = attributes[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Wrap a real OTel span processor (the `LangfuseSpanProcessor`) so every span
+ * it exports carries the top-level session-id attribute Langfuse reads,
+ * promoted from the AI-SDK-namespaced runtime-context attribute. The promotion
+ * happens in `onEnd`, mutating the span's final `attributes` object in place
+ * before delegating — that object is what the processor serializes to OTLP, so
+ * the promoted key reaches Langfuse's ingestion and sets the trace `sessionId`.
+ *
+ * Deliberately dependency-free and structural: it touches only
+ * `span.attributes` (a plain object) and forwards the processor lifecycle to
+ * `inner`, so it is unit-tested with fake spans and a fake inner processor —
+ * no `@opentelemetry/sdk-trace-base` import here (same injected-seam
+ * convention as `buildSpanProcessors`' `createSpanProcessor`).
+ *
+ * @param {{ onStart?: Function, onEnd?: Function, forceFlush?: Function, shutdown?: Function }} inner
+ * @param {{ sessionIdAttribute?: string }} [opts]
+ * @returns {{ onStart: Function, onEnd: Function, forceFlush: Function, shutdown: Function }}
+ */
+export function createSessionPromotingProcessor(
+  inner,
+  { sessionIdAttribute = LANGFUSE_SESSION_ID_ATTRIBUTE } = {},
+) {
+  return {
+    onStart(span, parentContext) {
+      inner?.onStart?.(span, parentContext);
+    },
+    onEnd(span) {
+      // A span processor must never throw — that would break telemetry export
+      // for the whole span. Promotion is best-effort: any failure (e.g. a
+      // frozen attributes object) is swallowed so the span still exports, just
+      // without the promoted session id.
+      try {
+        const attributes = span?.attributes;
+        // Don't clobber a session id that's already correctly set.
+        if (attributes && !attributes[sessionIdAttribute]) {
+          const sessionId = sessionIdFromSpanAttributes(attributes, sessionIdAttribute);
+          if (sessionId) attributes[sessionIdAttribute] = sessionId;
+        }
+      } catch {
+        // no-op: never let session-id promotion break span export
+      }
+      inner?.onEnd?.(span);
+    },
+    forceFlush() {
+      return inner?.forceFlush ? inner.forceFlush() : Promise.resolve();
+    },
+    shutdown() {
+      return inner?.shutdown ? inner.shutdown() : Promise.resolve();
+    },
+  };
+}

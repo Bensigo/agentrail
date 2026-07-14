@@ -49,6 +49,7 @@ import { LangfuseOtelSpanAttributes } from "@langfuse/tracing";
 import {
   buildOtelConfig,
   buildStepStartedResult,
+  createSessionPromotingProcessor,
   isLangfuseConfigured,
 } from "./lib/instrumentation.core.mjs";
 
@@ -58,7 +59,18 @@ export default defineInstrumentation({
       buildOtelConfig({
         agentName,
         env: process.env,
-        createSpanProcessor: () => new LangfuseSpanProcessor(),
+        // #1198: wrap Langfuse's processor so the root session id (which Eve
+        // can only place under `ai.settings.context.session.id` via
+        // runtimeContext) is promoted to the top-level `session.id` Langfuse
+        // reads — otherwise traces land session-less and the session-scoped
+        // verdict scores have no visible session to attach to. Pass the SAME
+        // live SDK enum the `step.started` hook uses below, so the key the
+        // promoter reads/writes can never drift from the key that hook stamps
+        // (a future `@langfuse/tracing` rename must move both, or neither).
+        createSpanProcessor: () =>
+          createSessionPromotingProcessor(new LangfuseSpanProcessor(), {
+            sessionIdAttribute: LangfuseOtelSpanAttributes.TRACE_SESSION_ID,
+          }),
       }),
     );
   },

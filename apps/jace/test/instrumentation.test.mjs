@@ -23,13 +23,17 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { LangfuseOtelSpanAttributes } from "@langfuse/tracing";
 import {
+  AI_SDK_CONTEXT_PREFIX,
   buildOtelConfig,
   buildSpanProcessors,
   buildStepStartedResult,
+  createSessionPromotingProcessor,
   isLangfuseConfigured,
   LANGFUSE_SESSION_ID_ATTRIBUTE,
   resolveRootSessionId,
+  sessionIdFromSpanAttributes,
 } from "../agent/lib/instrumentation.core.mjs";
 
 const FAKE_LANGFUSE_ENV = {
@@ -207,4 +211,107 @@ test("no runtimeContext key begins with the framework-reserved eve. prefix", () 
   for (const key of Object.keys(result.runtimeContext)) {
     assert.ok(!key.startsWith("eve."), `runtimeContext key "${key}" begins with the reserved "eve." prefix and would be silently dropped`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// #1198 — session-id promotion. The session id set via `runtimeContext` lands
+// on spans under `ai.settings.context.session.id`, but Langfuse reads the
+// top-level `session.id`. These lock the read + the promoting processor.
+// ---------------------------------------------------------------------------
+
+test("PIN: the core's default session-id key equals the live @langfuse/tracing enum (anti-drift)", () => {
+  // instrumentation.ts wires BOTH the step.started stamp AND the promoting
+  // processor to LangfuseOtelSpanAttributes.TRACE_SESSION_ID. The core's
+  // LANGFUSE_SESSION_ID_ATTRIBUTE default must stay equal to that live enum, or
+  // a future SDK rename would desync the key we stamp from the key we promote
+  // into and silently reintroduce #1198 (traces back to sessionId: null).
+  assert.equal(LANGFUSE_SESSION_ID_ATTRIBUTE, LangfuseOtelSpanAttributes.TRACE_SESSION_ID);
+});
+
+test("sessionIdFromSpanAttributes reads the AI-SDK-namespaced session id we set", () => {
+  const attrs = { [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_SESSION_ID_ATTRIBUTE}`]: "wrun_root_1" };
+  assert.equal(sessionIdFromSpanAttributes(attrs), "wrun_root_1");
+});
+
+test("sessionIdFromSpanAttributes falls back to eve's framework session id", () => {
+  const attrs = { [`${AI_SDK_CONTEXT_PREFIX}eve.session.id`]: "wrun_eve_1" };
+  assert.equal(sessionIdFromSpanAttributes(attrs), "wrun_eve_1");
+});
+
+test("sessionIdFromSpanAttributes prefers OUR root-resolved id over eve's when both present", () => {
+  const attrs = {
+    [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_SESSION_ID_ATTRIBUTE}`]: "wrun_root_1",
+    [`${AI_SDK_CONTEXT_PREFIX}eve.session.id`]: "wrun_child_1",
+  };
+  assert.equal(sessionIdFromSpanAttributes(attrs), "wrun_root_1");
+});
+
+test("sessionIdFromSpanAttributes returns undefined when neither key is a non-blank string", () => {
+  assert.equal(sessionIdFromSpanAttributes({}), undefined);
+  assert.equal(sessionIdFromSpanAttributes({ [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_SESSION_ID_ATTRIBUTE}`]: "   " }), undefined);
+});
+
+test("createSessionPromotingProcessor: onEnd promotes the namespaced id to the top-level key Langfuse reads, then delegates", () => {
+  const seen = [];
+  const inner = { onEnd: (s) => seen.push(s) };
+  const proc = createSessionPromotingProcessor(inner);
+  const span = { attributes: { [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_SESSION_ID_ATTRIBUTE}`]: "wrun_root_1" } };
+  proc.onEnd(span);
+  assert.equal(span.attributes[LANGFUSE_SESSION_ID_ATTRIBUTE], "wrun_root_1", "top-level session.id must be set for Langfuse ingestion");
+  assert.equal(seen.length, 1, "inner processor must still receive the span");
+  assert.equal(seen[0], span, "the SAME (mutated) span object is forwarded, so the promoted attr is exported");
+});
+
+test("createSessionPromotingProcessor: onEnd never clobbers an already-set top-level session.id", () => {
+  const proc = createSessionPromotingProcessor({ onEnd() {} });
+  const span = {
+    attributes: {
+      [LANGFUSE_SESSION_ID_ATTRIBUTE]: "already_correct",
+      [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_SESSION_ID_ATTRIBUTE}`]: "wrun_root_1",
+    },
+  };
+  proc.onEnd(span);
+  assert.equal(span.attributes[LANGFUSE_SESSION_ID_ATTRIBUTE], "already_correct");
+});
+
+test("createSessionPromotingProcessor: onEnd is a no-op (no throw) when no session id is present", () => {
+  let delegated = false;
+  const proc = createSessionPromotingProcessor({ onEnd() { delegated = true; } });
+  const span = { attributes: { "gen_ai.request.model": "x" } };
+  proc.onEnd(span);
+  assert.equal(span.attributes[LANGFUSE_SESSION_ID_ATTRIBUTE], undefined);
+  assert.ok(delegated, "inner.onEnd must still be called");
+});
+
+test("createSessionPromotingProcessor: a frozen/immutable attributes object never breaks span export", () => {
+  let delegated = false;
+  const proc = createSessionPromotingProcessor({ onEnd() { delegated = true; } });
+  // Object.freeze makes the assignment throw in strict mode — the processor
+  // must swallow it and still export the span (never throw out of onEnd).
+  const span = { attributes: Object.freeze({ [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_SESSION_ID_ATTRIBUTE}`]: "wrun_root_1" }) };
+  assert.doesNotThrow(() => proc.onEnd(span));
+  assert.ok(delegated, "inner.onEnd must still be called even when promotion fails");
+});
+
+test("createSessionPromotingProcessor: forwards onStart/forceFlush/shutdown to inner", async () => {
+  const calls = [];
+  const inner = {
+    onStart: (s, c) => calls.push(["onStart", s, c]),
+    forceFlush: () => { calls.push(["forceFlush"]); return Promise.resolve("flushed"); },
+    shutdown: () => { calls.push(["shutdown"]); return Promise.resolve("down"); },
+  };
+  const proc = createSessionPromotingProcessor(inner);
+  proc.onStart("span", "ctx");
+  assert.deepEqual(calls[0], ["onStart", "span", "ctx"]);
+  assert.equal(await proc.forceFlush(), "flushed");
+  assert.equal(await proc.shutdown(), "down");
+});
+
+test("createSessionPromotingProcessor: tolerates an inner processor missing optional lifecycle methods", async () => {
+  const proc = createSessionPromotingProcessor({});
+  // none of these should throw
+  proc.onStart({}, {});
+  proc.onEnd({ attributes: {} });
+  await proc.forceFlush();
+  await proc.shutdown();
 });

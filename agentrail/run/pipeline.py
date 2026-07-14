@@ -1281,6 +1281,11 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
             run_id,
             session_id=os.environ.get("AGENTRAIL_LANGFUSE_SESSION_ID") or None,
             metadata={"agent": agent, "label": str(label)},
+            # Readable trace name (`issue #42` / `prompt <task>`) instead of the
+            # opaque run-id, and the run's actual ask as trace-level input so the
+            # Langfuse trace list/detail I/O columns are populated.
+            name=context_query or None,
+            input_text=resolution_text,
         )
     except Exception as _exc:
         _log.debug("langfuse tracer start skipped: %s", _exc)
@@ -1345,7 +1350,7 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
             context_pack_file=run_context_pack_file or "",
         )
         try:
-            rc.tracer.finish(2)
+            rc.tracer.finish(2, output={"exitStatus": 2, "blocked": park_reason})
         except Exception as _exc:
             _log.debug("langfuse tracer finish skipped: %s", _exc)
         return 2
@@ -1655,7 +1660,14 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         context_pack_file=run_context_pack_file or "",
     )
     try:
-        rc.tracer.finish(status)
+        gate = outcome.get("objectiveGate", {}) if isinstance(outcome, dict) else {}
+        rc.tracer.finish(status, output={
+            "exitStatus": status,
+            "done": outcome.get("done") if isinstance(outcome, dict) else None,
+            "verdict": gate.get("verdict"),
+            "failedReasons": gate.get("failedReasons", []),
+            "lastPhase": last_phase,
+        })
     except Exception as _exc:
         _log.debug("langfuse tracer finish skipped: %s", _exc)
     return status

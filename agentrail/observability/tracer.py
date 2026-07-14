@@ -8,8 +8,19 @@ as the network call, so no public method can ever raise regardless of what is
 passed in or what the transport does.
 
 Field names verified against Langfuse API ingestion schema:
-  trace-create body: id, sessionId, name, metadata, tags
+  trace-create body: id, sessionId, name, input, output, metadata, tags
   generation-create body: id, traceId, name, model, startTime, endTime, usageDetails, costDetails
+
+`input`/`output` are first-class trace-level fields (TraceBody, verified against
+the installed @langfuse/core types) — they populate the I/O columns of Langfuse's
+trace list and detail view. Both are optional and only emitted when a caller
+supplies them; `_prune` drops any None-valued key so an omitted field is never
+sent as a literal null (trace-create merges at the field level, so a stray
+`output: null` on the finish upsert would otherwise clobber a value set at
+start()). Both are size-bounded (`_clip`/`_clip_json`) so a large issue body
+can't blow up the ingestion POST, and — like every other body field — they are
+constructed inside `_safe_emit`'s guarded lambda so a malformed value can never
+raise.
 
 `generation-create`'s body REQUIRES its own `id` (the observation's own identity,
 distinct from the outer batch envelope's event id set by `_event()`) — omitting
@@ -23,6 +34,7 @@ in production while the run itself succeeded normally.
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import uuid
 from typing import Optional
@@ -31,6 +43,11 @@ from . import langfuse_client as lc
 
 _log = logging.getLogger(__name__)
 
+# Upper bound on any single trace I/O field's serialized size. Bounds the
+# ingestion POST payload so a large issue body / verdict blob can't blow up the
+# 10s-timeout ingestion request.
+_MAX_FIELD = 8000
+
 
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -38,6 +55,46 @@ def _now_iso() -> str:
 
 def _ts_iso(ts: float) -> str:
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).isoformat()
+
+
+def _prune(body: dict) -> dict:
+    """Drop keys whose value is None so an omitted optional field is never sent
+    as a literal null. Trace-create merges at the field level, so a stray
+    `input: null`/`output: null` on an upsert would clobber a previously-set
+    value; pruning keeps the body byte-identical to the pre-I/O behavior when
+    no name/input/output is supplied."""
+    return {k: v for k, v in body.items() if v is not None}
+
+
+def _clip(value, limit: int = _MAX_FIELD):
+    """Bound a string field's length; pass non-strings through untouched."""
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit]
+    return value
+
+
+def _clip_json(obj, limit: int = _MAX_FIELD):
+    """Bound a JSON-able value's serialized size. Clips string leaves and caps
+    list lengths; if the whole thing is still oversized, falls back to a clipped
+    serialized string so the emitted field is always bounded."""
+    clipped = _clip_leaves(obj, limit)
+    try:
+        serialized = json.dumps(clipped, default=str)
+    except Exception:
+        return _clip(repr(obj), limit)
+    if len(serialized) > limit * 2:
+        return serialized[: limit * 2]
+    return clipped
+
+
+def _clip_leaves(obj, limit: int):
+    if isinstance(obj, str):
+        return _clip(obj, limit)
+    if isinstance(obj, dict):
+        return {k: _clip_leaves(v, limit) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clip_leaves(v, limit) for v in obj[:200]]
+    return obj
 
 
 class RunTracer:
@@ -50,19 +107,24 @@ class RunTracer:
 
     @classmethod
     def start(cls, run_id: str, session_id: Optional[str] = None,
-              metadata: Optional[dict] = None) -> "RunTracer":
+              metadata: Optional[dict] = None, name: Optional[str] = None,
+              input_text: Optional[str] = None) -> "RunTracer":
         client = lc.LangfuseHTTP.from_env() if lc.enabled() else None
         if lc.enabled() and client is None:
             _log.warning("AGENTRAIL_LANGFUSE_ENABLED set but LANGFUSE_* keys missing; "
                          "tracing disabled for this run")
         tracer = cls(client, run_id, session_id or run_id, metadata or {})
-        tracer._safe_emit("trace-create", lambda: {
+        # `name or "agentrail-run:<run_id>"` preserves the exact prior default
+        # when no readable name is supplied; `input` is pruned when absent so
+        # the emitted body stays byte-identical to the pre-I/O behavior.
+        tracer._safe_emit("trace-create", lambda: _prune({
             "id": tracer._trace_id,
-            "name": f"agentrail-run:{run_id}",
+            "name": name or f"agentrail-run:{run_id}",
             "sessionId": tracer._session_id,
+            "input": _clip(input_text) if input_text is not None else None,
             "metadata": {"run_id": run_id, **tracer._metadata},
             "tags": ["agentrail"],
-        })
+        }))
         return tracer
 
     def phase_generation(self, phase: str, usage: dict, cost_usd: float,
@@ -86,15 +148,18 @@ class RunTracer:
             }
         self._safe_emit("generation-create", build)
 
-    def finish(self, exit_status: int) -> None:
+    def finish(self, exit_status: int, output=None) -> None:
         # Trace-create ingestion merges at the field level (a later event's
         # field fully replaces the prior value, no deep-merge of nested
         # dicts) — resend the full metadata state set at start() plus the
-        # new exit_status field, so this upsert never clobbers it.
-        self._safe_emit("trace-create", lambda: {   # trace upsert: same id, new fields
+        # new exit_status field, so this upsert never clobbers it. `output`
+        # is size-bounded and pruned when absent (so an omitted output never
+        # sends a literal null that would wipe a value).
+        self._safe_emit("trace-create", lambda: _prune({   # trace upsert: same id, new fields
             "id": self._trace_id,
             "metadata": {"run_id": self._run_id, **self._metadata, "exit_status": exit_status},
-        })
+            "output": _clip_json(output) if output is not None else None,
+        }))
 
     def _event(self, etype: str, body: dict) -> dict:
         return {"id": str(uuid.uuid4()), "type": etype,

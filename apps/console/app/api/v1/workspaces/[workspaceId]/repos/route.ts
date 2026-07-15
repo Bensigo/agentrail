@@ -7,11 +7,16 @@ import {
   createRepository,
   getConnector,
   upsertConnector,
+  enqueueOnboard,
+  hasActiveRunner,
 } from "@agentrail/db-postgres";
 import { getLatestIndexSnapshotsForWorkspace } from "@agentrail/db-clickhouse";
 import { repoHealth, type HealthStatus } from "../../../../../../lib/repo-health";
 
 const ADMIN_ROLES = ["owner", "admin"] as const;
+
+// Onboard-on-connect: default-OFF rollout flag (only the exact value "1" enables it).
+const ONBOARD_ON_CONNECT_FLAG = "AGENTRAIL_ONBOARD_ON_CONNECT";
 
 const REPO_NAME_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 // Reject refs with control chars, spaces, and git-unsafe sequences
@@ -164,6 +169,19 @@ export async function POST(
     });
   } catch (err) {
     console.error("[repos] failed to self-configure github connector:", err);
+  }
+
+  // When the workspace has an active self-hosted runner, enqueue a one-shot
+  // idempotent onboard entry so the runner indexes the repo and seeds workspace
+  // memory. Flag-gated OFF by default (rollout safety); best-effort.
+  if (process.env[ONBOARD_ON_CONNECT_FLAG] === "1") {
+    try {
+      if (await hasActiveRunner(workspaceId)) {
+        await enqueueOnboard({ workspaceId, repoFullName: created.name });
+      }
+    } catch (err) {
+      console.error("[repos] failed to enqueue onboard:", err);
+    }
   }
 
   return NextResponse.json(

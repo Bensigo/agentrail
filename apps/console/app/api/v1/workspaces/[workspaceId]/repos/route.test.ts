@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 import { POST } from "./route";
 
@@ -12,6 +12,8 @@ vi.mock("@agentrail/db-postgres", () => ({
   listWorkspaceRepositories: vi.fn(),
   getRepositoryByName: vi.fn(),
   createRepository: vi.fn(),
+  enqueueOnboard: vi.fn(),
+  hasActiveRunner: vi.fn(),
 }));
 
 vi.mock("@agentrail/db-clickhouse", () => ({
@@ -23,6 +25,8 @@ import {
   getWorkspaceMembership,
   getRepositoryByName,
   createRepository,
+  enqueueOnboard,
+  hasActiveRunner,
 } from "@agentrail/db-postgres";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -61,8 +65,19 @@ const createdRepo = {
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
+  const savedOnboardFlag = process.env.AGENTRAIL_ONBOARD_ON_CONNECT;
+
   beforeEach(() => {
     vi.resetAllMocks();
+    delete process.env.AGENTRAIL_ONBOARD_ON_CONNECT;
+  });
+
+  afterEach(() => {
+    if (savedOnboardFlag === undefined) {
+      delete process.env.AGENTRAIL_ONBOARD_ON_CONNECT;
+    } else {
+      process.env.AGENTRAIL_ONBOARD_ON_CONNECT = savedOnboardFlag;
+    }
   });
 
   it("returns 201 and the new repository on success", async () => {
@@ -82,6 +97,81 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
     expect(json.repository.name).toBe("bensigo/agentrail");
     expect(json.repository.health_status).toBe("critical");
     expect(json.repository.last_indexed_at).toBeNull();
+  });
+
+  it("enqueues an onboard entry when flag is ON and an active runner exists", async () => {
+    process.env.AGENTRAIL_ONBOARD_ON_CONNECT = "1";
+    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      userId: "user-1",
+      workspaceId: WORKSPACE_ID,
+      role: "owner",
+    } as never);
+    vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
+    vi.mocked(createRepository).mockResolvedValue(createdRepo as never);
+    vi.mocked(hasActiveRunner).mockResolvedValue(true);
+
+    const res = await POST(makeRequest(validBody), makeParams());
+
+    expect(res.status).toBe(201);
+    expect(enqueueOnboard).toHaveBeenCalledTimes(1);
+    expect(enqueueOnboard).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      repoFullName: createdRepo.name,
+    });
+  });
+
+  it("does not enqueue an onboard entry when the flag is OFF (unset)", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      userId: "user-1",
+      workspaceId: WORKSPACE_ID,
+      role: "owner",
+    } as never);
+    vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
+    vi.mocked(createRepository).mockResolvedValue(createdRepo as never);
+
+    const res = await POST(makeRequest(validBody), makeParams());
+
+    expect(res.status).toBe(201);
+    expect(hasActiveRunner).not.toHaveBeenCalled();
+    expect(enqueueOnboard).not.toHaveBeenCalled();
+  });
+
+  it("does not enqueue an onboard entry when flag is ON but no active runner exists", async () => {
+    process.env.AGENTRAIL_ONBOARD_ON_CONNECT = "1";
+    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      userId: "user-1",
+      workspaceId: WORKSPACE_ID,
+      role: "owner",
+    } as never);
+    vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
+    vi.mocked(createRepository).mockResolvedValue(createdRepo as never);
+    vi.mocked(hasActiveRunner).mockResolvedValue(false);
+
+    const res = await POST(makeRequest(validBody), makeParams());
+
+    expect(res.status).toBe(201);
+    expect(enqueueOnboard).not.toHaveBeenCalled();
+  });
+
+  it("still returns 201 when the onboard enqueue throws (best-effort)", async () => {
+    process.env.AGENTRAIL_ONBOARD_ON_CONNECT = "1";
+    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      userId: "user-1",
+      workspaceId: WORKSPACE_ID,
+      role: "owner",
+    } as never);
+    vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
+    vi.mocked(createRepository).mockResolvedValue(createdRepo as never);
+    vi.mocked(hasActiveRunner).mockResolvedValue(true);
+    vi.mocked(enqueueOnboard).mockRejectedValue(new Error("db down"));
+
+    const res = await POST(makeRequest(validBody), makeParams());
+
+    expect(res.status).toBe(201);
   });
 
   it("returns 401 when unauthenticated", async () => {

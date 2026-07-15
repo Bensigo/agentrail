@@ -645,6 +645,32 @@ export async function touchApiKeyLastUsed(keyId: string) {
     .where(eq(apiKeys.id, keyId));
 }
 
+/**
+ * True when the workspace has a non-revoked API key used within `windowMs`
+ * (default 60 min). api_keys double as the self-hosted runner token, and
+ * `last_used_at` is bumped on every claim/result poll — so a recent, live key
+ * is a strong "a runner is here to claim work" signal. Used to gate onboard
+ * enqueue so we never queue an onboard entry no runner will pick up.
+ */
+export async function hasActiveRunner(
+  workspaceId: string,
+  windowMs = 60 * 60 * 1000,
+): Promise<boolean> {
+  const since = new Date(Date.now() - windowMs);
+  const rows = await db
+    .select({ id: apiKeys.id })
+    .from(apiKeys)
+    .where(
+      and(
+        eq(apiKeys.workspaceId, workspaceId),
+        isNull(apiKeys.revokedAt),
+        gte(apiKeys.lastUsedAt, since),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
 export async function getRepository(workspaceId: string, repositoryId: string) {
   const rows = await db
     .select()
@@ -1235,6 +1261,7 @@ export {
   validateAcceptanceCriteria,
   findWorkspaceByRepo,
   enqueueGithubIssue,
+  enqueueOnboard,
   type AcGateResult,
   type EnqueueResult,
 } from "./github_intake.js";

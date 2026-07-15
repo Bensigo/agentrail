@@ -190,6 +190,13 @@
       "when": 1780907365699,
       "tag": "0025_add_kind_to_queue_entries",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1780907365700,
+      "tag": "0026_memory_items_fts_index",
+      "breakpoints": true
     }
   ]
 }

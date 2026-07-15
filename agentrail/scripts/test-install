@@ -160,10 +160,32 @@ for fname in "${forbidden_flow_scripts[@]}"; do
     exit 1
   fi
 done
-# No scripts/ tree may be vendored (this is where the flow launchers/helpers
-# would otherwise live, including pr/memory).
-if [[ -e "${tmp_dir}/.agentrail/source/scripts" ]]; then
-  echo ".agentrail/source/scripts must not be vendored (#404 Option B)" >&2
+# repo-structure-v2 nests tests/, scripts/, and docker/ directly under the
+# vendored agentrail/ package, so the real vendor path is
+# .agentrail/source/agentrail/{tests,docker,scripts} (NOT the pre-v2
+# top-level .agentrail/source/scripts). #1162's _ignore_vendor_dev_subdirs
+# must strip the dev-only trees while keeping the runtime launcher. Mirrors
+# the pytest test test_dev_only_subdirs_excluded_from_vendor: a regression of
+# that fix would ship the 282-file pytest suite + Docker build context into
+# every installed project.
+vendored_package="${tmp_dir}/.agentrail/source/agentrail"
+for devdir in tests docker; do
+  if [[ -e "${vendored_package}/${devdir}" ]]; then
+    echo ".agentrail/source/agentrail/${devdir} must not be vendored (#1162 dev-subdir exclusion regressed)" >&2
+    exit 1
+  fi
+done
+# scripts/ is trimmed to ONLY the runtime launcher (agentrail); dev-only
+# scripts alongside it (benchmark/typecheck/test) must not be vendored.
+if [[ -e "${vendored_package}/scripts" ]]; then
+  vendored_scripts="$(find "${vendored_package}/scripts" -type f 2>/dev/null | sed "s#${vendored_package}/scripts/##" | sort)"
+  if [[ "$vendored_scripts" != "agentrail" ]]; then
+    echo "vendored agentrail/scripts/ must contain only the launcher, got: ${vendored_scripts}" >&2
+    exit 1
+  fi
+fi
+if [[ ! -e "${vendored_package}/scripts/agentrail" ]]; then
+  echo "the runtime launcher .agentrail/source/agentrail/scripts/agentrail must survive the dev-subdir trim" >&2
   exit 1
 fi
 # The only scripts/ on the project surface is the launcher itself.

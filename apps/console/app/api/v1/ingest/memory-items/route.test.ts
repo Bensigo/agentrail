@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   insertMemoryItems: vi.fn(),
+  replaceMemoryItemsByWriter: vi.fn(),
   getRepository: vi.fn(),
 }));
 vi.mock("../../../../../lib/bearer-auth", () => ({
@@ -10,7 +11,11 @@ vi.mock("../../../../../lib/bearer-auth", () => ({
 }));
 
 import { POST } from "./route";
-import { insertMemoryItems, getRepository } from "@agentrail/db-postgres";
+import {
+  insertMemoryItems,
+  replaceMemoryItemsByWriter,
+  getRepository,
+} from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 
 const WS = "00000000-0000-0000-0000-000000000001";
@@ -47,6 +52,7 @@ beforeEach(() => {
   } as never);
   vi.mocked(getRepository).mockResolvedValue({ id: REPO, workspaceId: WS } as never);
   vi.mocked(insertMemoryItems).mockResolvedValue(undefined);
+  vi.mocked(replaceMemoryItemsByWriter).mockResolvedValue(undefined);
 });
 
 describe("POST /api/v1/ingest/memory-items", () => {
@@ -248,5 +254,76 @@ describe("POST /api/v1/ingest/memory-items", () => {
     const res = await POST(req(body));
     expect(res.status).toBe(400);
     expect(insertMemoryItems).not.toHaveBeenCalled();
+  });
+
+  it("replace_by_writer + written_by -> replaceMemoryItemsByWriter, not insert", async () => {
+    const body = {
+      run_id: RUN_ID,
+      repository_id: REPO,
+      written_by: "onboarder",
+      source: "onboard",
+      replace_by_writer: true,
+      items: [
+        { content: "Prefer pnpm over npm here", tags: ["setup"], type: "preference" },
+      ],
+    };
+    const res = await POST(req(body));
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(replaceMemoryItemsByWriter).toHaveBeenCalledTimes(1);
+    expect(replaceMemoryItemsByWriter).toHaveBeenCalledWith({
+      workspaceId: WS,
+      repositoryId: REPO,
+      writtenBy: "onboarder",
+      source: "onboard",
+      items: [
+        {
+          content: "Prefer pnpm over npm here",
+          tags: ["setup", `run:${RUN_ID}`],
+          type: "preference",
+        },
+      ],
+    });
+    expect(insertMemoryItems).not.toHaveBeenCalled();
+  });
+
+  it("backward compat: no replace_by_writer -> insertMemoryItems, not replace", async () => {
+    const res = await POST(req(valid));
+    expect(res.status).toBe(202);
+    expect(insertMemoryItems).toHaveBeenCalledWith({
+      workspaceId: WS,
+      repositoryId: REPO,
+      source: "review",
+      items: [
+        { content: "Always mock subprocess in tests", tags: ["testing", `run:${RUN_ID}`] },
+      ],
+    });
+    expect(replaceMemoryItemsByWriter).not.toHaveBeenCalled();
+  });
+
+  it("replace_by_writer without written_by falls back to insert path", async () => {
+    const body = {
+      run_id: RUN_ID,
+      repository_id: REPO,
+      source: "onboard",
+      replace_by_writer: true,
+      items: [{ content: "A note without a writer", tags: ["setup"] }],
+    };
+    const res = await POST(req(body));
+    expect(res.status).toBe(202);
+    expect(insertMemoryItems).toHaveBeenCalledTimes(1);
+    expect(replaceMemoryItemsByWriter).not.toHaveBeenCalled();
+  });
+
+  it("400 on non-boolean replace_by_writer, and touches neither db fn", async () => {
+    const body = {
+      ...valid,
+      written_by: "onboarder",
+      replace_by_writer: "yes",
+    };
+    const res = await POST(req(body));
+    expect(res.status).toBe(400);
+    expect(insertMemoryItems).not.toHaveBeenCalled();
+    expect(replaceMemoryItemsByWriter).not.toHaveBeenCalled();
   });
 });

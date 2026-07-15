@@ -11,6 +11,7 @@ wire contract of ``push_onboard_items``.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agentrail.runner.client import WorkItem
@@ -132,6 +133,49 @@ def test_run_onboard_push_failure_is_red():
     assert "boom" in result.gate_reason
 
 
+def test_run_onboard_clears_committed_index_before_building():
+    """A freshly cloned repo carrying a COMMITTED context index must have it
+    wiped before the index build runs, so onboarding indexes the real code.
+    """
+    # index build failures are best-effort (swallowed inside run_onboard), so we
+    # record the observed state here and assert on it at the top level instead of
+    # relying on an assertion inside index_fn propagating.
+    seen: Dict[str, Any] = {}
+
+    def work_dir_factory() -> str:
+        import tempfile
+
+        work_dir = tempfile.mkdtemp(prefix="agentrail-onboard-test-")
+        # Simulate a cloned repo shipping a committed/stale context index.
+        index_dir = Path(work_dir) / "repo" / ".agentrail" / "context" / "index"
+        index_dir.mkdir(parents=True, exist_ok=True)
+        (index_dir / "index.json").write_text('{"stale": true}', encoding="utf-8")
+        return work_dir
+
+    def index_fn(repo_dir: Path) -> dict:
+        committed = repo_dir / ".agentrail" / "context" / "index" / "index.json"
+        # run_onboard must have removed the committed index before calling us.
+        assert not committed.exists(), "committed index should be cleared first"
+        seen["committed_exists"] = committed.exists()
+        seen["ran"] = True
+        return {"indexed": 1, "graphNodes": 0, "commitSha": "fresh"}
+
+    result = run_onboard(
+        _work_item(),
+        base_url="https://app.agentrail.dev",
+        api_key="rt_secret",
+        clone_fn=lambda *a, **k: None,  # dir already exists; no-op clone
+        index_fn=index_fn,
+        brief_fn=lambda *a, **k: list(_FOUR_ITEMS),
+        push_fn=lambda *a, **k: (True, "ok"),
+        work_dir_factory=work_dir_factory,
+    )
+
+    assert seen.get("ran"), "index_fn must have been invoked"
+    assert seen.get("committed_exists") is False, "committed index must be cleared before build"
+    assert result.status == "green"
+
+
 # ---------------------------------------------------------------------------
 # generate_onboard_items: fail-open + type-clamp
 # ---------------------------------------------------------------------------
@@ -216,6 +260,7 @@ def test_push_onboard_items_posts_pinned_contract():
     body = captured["body"]
     assert body["written_by"] == "onboarder"
     assert body["source"] == "onboard"
+    assert body["replace_by_writer"] is True
     assert body["run_id"] == "wi-1"
     assert body["repository_id"] == "repo-1"
     assert body["items"][0]["type"] == "decision"

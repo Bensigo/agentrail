@@ -339,6 +339,7 @@ def push_onboard_items(
         "repository_id": str(repository_id),
         "written_by": "onboarder",
         "source": "onboard",
+        "replace_by_writer": True,
         "items": items,
     }
     body = json.dumps(payload).encode("utf-8")
@@ -415,6 +416,9 @@ def run_onboard(
                 gate_reason=f"clone failed: {exc}",
                 branch=item.ref,
             )
+
+        # Never trust a committed/stale context index — force a clean rebuild.
+        shutil.rmtree(repo_dir / ".agentrail" / "context" / "index", ignore_errors=True)
 
         # Build the context index for a repo digest (best-effort — a repo whose
         # summary mode isn't "disabled" raises, and we simply skip the stats).

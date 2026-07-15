@@ -438,6 +438,52 @@ export async function insertMemoryItems(data: {
   );
 }
 
+/**
+ * Idempotent re-seed: atomically remove all memory items previously written by
+ * `writtenBy` for (workspaceId, repositoryId), then insert the new batch. Used
+ * by the onboarder so a re-run REPLACES its own notes instead of appending
+ * duplicates. Scope is strict — it only ever deletes rows matching that exact
+ * (workspace, repo, writer) triple, so human/review memory is never touched.
+ * Requires a repositoryId (workspace-wide replace is intentionally unsupported).
+ */
+export async function replaceMemoryItemsByWriter(data: {
+  workspaceId: string;
+  repositoryId: string;
+  writtenBy: string;
+  source: string;
+  items: Array<{ content: string; tags: string[]; type?: MemoryType }>;
+}): Promise<void> {
+  // delete + insert in ONE transaction so a re-run never leaves the writer's
+  // notes half-cleared (matches the `db.transaction` pattern used elsewhere).
+  await db.transaction(async (tx) => {
+    // Strict scope: only rows matching this exact (workspace, repo, writer)
+    // triple are removed — human/review memory for the same repo is untouched.
+    await tx
+      .delete(memoryItems)
+      .where(
+        and(
+          eq(memoryItems.workspaceId, data.workspaceId),
+          eq(memoryItems.repositoryId, data.repositoryId),
+          eq(memoryItems.writtenBy, data.writtenBy)
+        )
+      );
+    // A re-run with zero items still clears stale notes (delete already ran);
+    // only skip the insert itself.
+    if (data.items.length === 0) return;
+    await tx.insert(memoryItems).values(
+      data.items.map((item) => ({
+        workspaceId: data.workspaceId,
+        repositoryId: data.repositoryId,
+        source: data.source,
+        content: item.content,
+        type: item.type ?? "fact",
+        writtenBy: data.writtenBy,
+        tags: item.tags,
+      }))
+    );
+  });
+}
+
 // ---- Failure resolutions (is-this-fixed state) ----
 
 export type FailureResolutionStatus = "open" | "fixed";

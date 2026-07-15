@@ -23,6 +23,7 @@ import type { EvalArmMetric } from "../schema/index.js";
 import type {
   ReviewGate,
   ReviewGateFindingCategory,
+  MemoryItem,
 } from "../schema/index.js";
 import { reviewGateFindingCategories } from "../schema/index.js";
 
@@ -405,6 +406,250 @@ export async function listMemoryItems(workspaceId: string): Promise<MemoryItemRo
     .where(eq(memoryItems.workspaceId, workspaceId))
     .orderBy(desc(memoryItems.createdAt));
   return rows as MemoryItemRow[];
+}
+
+// ---- retrieveMemory: BM25 + heuristic-rerank workspace-memory retriever ----
+//
+// `listMemoryItems` above returns EVERY row for a workspace — no limit, no
+// relevance ranking (issue #1215). That's fine for the admin "list all notes"
+// view but unusable as a context source for an agent: it dumps the whole
+// table into the prompt. `retrieveMemory` is the replacement retrieval path —
+// a small, ranked, budget-capped slice, reusable by any future caller (the
+// Jace context-pack consumer wires it up in a follow-up PR; this function
+// stays runtime-agnostic and does no sanitization of its own).
+//
+// Pipeline:
+//   1. FTS prefilter  → ≤30 candidates via websearch_to_tsquery + GIN index,
+//      falling back to the 30 most-recent notes when nothing matches lexically.
+//   2. Real BM25 (k1=1.2, b=0.75) over those ≤30 candidates.
+//   3. Heuristic blend (bm25 + recency + type + repo match) → keep top k.
+//   4. Pinned core: up to 3 most-recent decisions always ride along.
+//   5. Trim each returned note's content to a fixed budget.
+
+const MEMORY_CANDIDATE_LIMIT = 30;
+const MEMORY_PINNED_DECISION_LIMIT = 3;
+const MEMORY_DEFAULT_K = 8;
+const MEMORY_CONTENT_MAX_CHARS = 1000;
+const BM25_K1 = 1.2;
+const BM25_B = 0.75;
+const MEMORY_TYPE_RANK: Record<MemoryType, number> = {
+  decision: 1.0,
+  preference: 0.6,
+  fact: 0.3,
+};
+
+export interface RetrieveMemoryOptions {
+  /** Max ranked results to return (before the pinned-decision core is added). Default 8. */
+  k?: number;
+  /** When set, scopes candidate fetching to this repo and awards a repo-match bonus. */
+  repositoryId?: string;
+}
+
+/** Map a raw (snake_case) `db.execute` row back to the typed `MemoryItem` shape. */
+function mapMemoryExecRow(r: Record<string, unknown>): MemoryItem {
+  return {
+    id: String(r.id),
+    workspaceId: String(r.workspace_id),
+    repositoryId: (r.repository_id as string | null) ?? null,
+    source: String(r.source),
+    content: String(r.content),
+    type: r.type as MemoryItem["type"],
+    writtenBy: String(r.written_by),
+    tags: (r.tags as string[] | null) ?? [],
+    createdAt: r.created_at as Date,
+    lastUsedAt: (r.last_used_at as Date | null) ?? null,
+  };
+}
+
+/** Scope condition shared by the FTS and recency-fallback candidate queries. */
+function memoryScopeConditions(workspaceId: string, repositoryId?: string): SQL[] {
+  const conditions: SQL[] = [sql`workspace_id = ${workspaceId}`];
+  if (repositoryId) {
+    conditions.push(sql`repository_id = ${repositoryId}`);
+  }
+  return conditions;
+}
+
+/** Step 1a: FTS candidates ranked by ts_rank_cd, scoped by workspace (+ repo). */
+async function fetchFtsCandidates(
+  workspaceId: string,
+  query: string,
+  repositoryId?: string
+): Promise<MemoryItem[]> {
+  const whereClause = sql.join(memoryScopeConditions(workspaceId, repositoryId), sql` AND `);
+  const result = await db.execute(sql`
+    SELECT id, workspace_id, repository_id, source, content, type, written_by, tags, created_at, last_used_at
+    FROM memory_items
+    WHERE ${whereClause}
+      AND to_tsvector('english', content) @@ websearch_to_tsquery('english', ${query})
+    ORDER BY ts_rank_cd(to_tsvector('english', content), websearch_to_tsquery('english', ${query})) DESC
+    LIMIT ${MEMORY_CANDIDATE_LIMIT}
+  `);
+  return (Array.from(result) as Record<string, unknown>[]).map(mapMemoryExecRow);
+}
+
+/** Step 1b: fallback when FTS finds nothing — the 30 most-recent notes. */
+async function fetchRecentCandidates(
+  workspaceId: string,
+  repositoryId?: string
+): Promise<MemoryItem[]> {
+  const whereClause = sql.join(memoryScopeConditions(workspaceId, repositoryId), sql` AND `);
+  const result = await db.execute(sql`
+    SELECT id, workspace_id, repository_id, source, content, type, written_by, tags, created_at, last_used_at
+    FROM memory_items
+    WHERE ${whereClause}
+    ORDER BY created_at DESC
+    LIMIT ${MEMORY_CANDIDATE_LIMIT}
+  `);
+  return (Array.from(result) as Record<string, unknown>[]).map(mapMemoryExecRow);
+}
+
+/** Step 4: the pinned core — up to 3 most-recent `decision` notes for the workspace. */
+async function fetchPinnedDecisions(workspaceId: string): Promise<MemoryItem[]> {
+  const result = await db.execute(sql`
+    SELECT id, workspace_id, repository_id, source, content, type, written_by, tags, created_at, last_used_at
+    FROM memory_items
+    WHERE workspace_id = ${workspaceId}
+      AND type = 'decision'
+    ORDER BY created_at DESC
+    LIMIT ${MEMORY_PINNED_DECISION_LIMIT}
+  `);
+  return (Array.from(result) as Record<string, unknown>[]).map(mapMemoryExecRow);
+}
+
+/** Lowercase, alnum-run tokenizer shared by BM25 term-frequency and query parsing. */
+function tokenizeForBm25(text: string): string[] {
+  return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+/** Min-max normalize to [0,1]; a zero-spread set collapses to 1 (nonzero) or 0 (all-zero). */
+function minMaxNormalize(values: number[]): number[] {
+  if (values.length === 0) return [];
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (max === min) {
+    return values.map(() => (max === 0 ? 0 : 1));
+  }
+  return values.map((v) => (v - min) / (max - min));
+}
+
+/**
+ * Step 2 + 3: score each candidate with Okapi BM25 (k1=1.2, b=0.75) blended with
+ * recency / type / repo-match, then return candidates sorted best-first.
+ *
+ * IDF choice: document frequency is computed OVER THE CANDIDATE SET (≤30 rows),
+ * not a second workspace-wide aggregate query. The candidate set is already the
+ * FTS-narrowed population the ranker competes within, so a corpus-wide IDF query
+ * would add a DB round trip to re-rank the same rows against a slightly
+ * different (larger) population — a real fidelity trade, but one candidate-set
+ * IDF makes reasonable given the candidate window mirrors relevance already.
+ */
+function rerankCandidates(
+  candidates: MemoryItem[],
+  queryTerms: string[],
+  repositoryId?: string
+): MemoryItem[] {
+  if (candidates.length === 0) return [];
+
+  const docs = candidates.map((c) => tokenizeForBm25(c.content));
+  const docLengths = docs.map((d) => d.length);
+  const avgDocLen = docLengths.reduce((a, b) => a + b, 0) / (docLengths.length || 1);
+  const docCount = candidates.length;
+
+  const documentFrequency = new Map<string, number>();
+  for (const term of new Set(queryTerms)) {
+    let df = 0;
+    for (const doc of docs) {
+      if (doc.includes(term)) df++;
+    }
+    documentFrequency.set(term, df);
+  }
+
+  const bm25Raw = candidates.map((_, i) => {
+    const doc = docs[i]!;
+    const docLen = docLengths[i] ?? 0;
+    let score = 0;
+    for (const term of queryTerms) {
+      const df = documentFrequency.get(term) ?? 0;
+      if (df === 0) continue;
+      const tf = doc.filter((t) => t === term).length;
+      if (tf === 0) continue;
+      const idf = Math.log(1 + (docCount - df + 0.5) / (df + 0.5));
+      const denom = tf + BM25_K1 * (1 - BM25_B + BM25_B * (docLen / (avgDocLen || 1)));
+      score += idf * ((tf * (BM25_K1 + 1)) / (denom || 1));
+    }
+    return score;
+  });
+  const bm25Norm = minMaxNormalize(bm25Raw);
+
+  const recencyRaw = candidates.map((c) => (c.lastUsedAt ?? c.createdAt).getTime());
+  const recencyNorm = minMaxNormalize(recencyRaw);
+
+  const scored = candidates.map((c, i) => {
+    const typeRank = MEMORY_TYPE_RANK[c.type as MemoryType];
+    const repoMatch = repositoryId && c.repositoryId === repositoryId ? 1 : 0;
+    const score =
+      0.5 * bm25Norm[i]! + 0.2 * recencyNorm[i]! + 0.2 * typeRank + 0.1 * repoMatch;
+    return { item: c, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.map((s) => s.item);
+}
+
+/** Trim content to the context budget, marking truncation with an ellipsis. */
+function trimMemoryContent(content: string): string {
+  if (content.length <= MEMORY_CONTENT_MAX_CHARS) return content;
+  return content.slice(0, MEMORY_CONTENT_MAX_CHARS - 1) + "…";
+}
+
+/**
+ * Retrieve a ranked, budget-capped slice of workspace memory for a query —
+ * FTS prefilter → BM25 → heuristic rerank → pinned decisions → content trim.
+ * See the pipeline comment above `MEMORY_CANDIDATE_LIMIT` for the full algorithm.
+ *
+ * Tenant safety: every underlying query is scoped by `workspace_id`, and the
+ * result is re-filtered by `workspaceId` in application code as a defense-in-
+ * depth net — this function must never leak a row from another workspace.
+ */
+export async function retrieveMemory(
+  workspaceId: string,
+  query: string,
+  opts?: RetrieveMemoryOptions
+): Promise<MemoryItem[]> {
+  const k = Math.max(0, opts?.k ?? MEMORY_DEFAULT_K);
+  const repositoryId = opts?.repositoryId;
+  const trimmedQuery = query.trim();
+
+  // Step 1: FTS prefilter, falling back to recency when it has no matches. An
+  // empty/whitespace query has no lexical content to rank on, so skip the FTS
+  // round trip entirely and go straight to the recency fallback.
+  let candidates =
+    trimmedQuery.length > 0
+      ? await fetchFtsCandidates(workspaceId, trimmedQuery, repositoryId)
+      : [];
+  if (candidates.length === 0) {
+    candidates = await fetchRecentCandidates(workspaceId, repositoryId);
+  }
+  candidates = candidates.filter((c) => c.workspaceId === workspaceId);
+
+  const pinned = (await fetchPinnedDecisions(workspaceId))
+    .filter((c) => c.workspaceId === workspaceId)
+    .slice(0, MEMORY_PINNED_DECISION_LIMIT);
+
+  // Steps 2 + 3: BM25 + heuristic blend, ranked desc, capped at k.
+  const queryTerms = Array.from(new Set(tokenizeForBm25(trimmedQuery)));
+  const topK = rerankCandidates(candidates, queryTerms, repositoryId).slice(0, k);
+
+  // Step 4: pinned core ∪ top-k, decisions first, deduped, capped at k+3.
+  const pinnedIds = new Set(pinned.map((p) => p.id));
+  const merged = [...pinned, ...topK.filter((item) => !pinnedIds.has(item.id))].slice(
+    0,
+    k + MEMORY_PINNED_DECISION_LIMIT
+  );
+
+  // Step 5: trim content to the context budget.
+  return merged.map((item) => ({ ...item, content: trimMemoryContent(item.content) }));
 }
 
 /**

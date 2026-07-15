@@ -94,6 +94,7 @@ from agentrail.evals.gather_report import (
     render_gather_precision_from_records,
     render_gather_report_from_ledger,
 )
+from agentrail.evals.memory_report import render_memory_report_from_ledger
 from agentrail.evals.pack_scorer import ArmPackScore
 from agentrail.evals.pack_scoring import compute_pack_scores
 from agentrail.evals.reporter import (
@@ -854,6 +855,18 @@ def run_spine(
     gather_precision_md = render_gather_precision_from_records(
         [sr.run for sr in scored_runs]
     )
+    # Memory-lane token effect (#1039/#1071 — supersedes #1216, whose reducer
+    # landed with zero call sites). Reads the SAME per-phase cost ledger the
+    # gather report reads (``config.cost_ledger_path``): the before/after
+    # per-run token totals for the memory-lane-OFF (``full-minus-memory_lane``)
+    # vs memory-lane-ON (``full``) arms. A ``<synthetic>`` network-artifact rep
+    # never reaches the ledger at all (see the ``not rep.network_artifact``
+    # guard above ``_append_cost_ledger_events``), so it cannot contaminate this
+    # aggregate either — the same structural exclusion the gather report gets
+    # for free. Renders the honest "n/a — not available" note when the ledger
+    # is unset/missing or does not carry both arms (never a fabricated 0), so
+    # the section is ALWAYS present in the report and self-explains its state.
+    memory_md = render_memory_report_from_ledger(config.cost_ledger_path)
     with report_path.open("a", encoding="utf-8") as fh:
         fh.write("\n")
         fh.write(probes_md)
@@ -863,6 +876,8 @@ def run_spine(
         fh.write(gather_md)
         fh.write("\n")
         fh.write(gather_precision_md)
+        fh.write("\n")
+        fh.write(memory_md)
 
     # AC4 — same per-arm numbers go via the injected MetricsWriter. Default:
     # the HttpMetricsWriter (honest no-op until #942).

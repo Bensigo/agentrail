@@ -1920,3 +1920,95 @@ def test_crash_path_rep_recorded_with_abort_message_as_gate_output(
     )
     assert healthy["solved"] is True
     assert healthy["gate_output"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Memory-lane token effect (#1039/#1071 — supersedes #1216) — the spine appends
+# this section to the dated report alongside the gather sections above, reading
+# the SAME per-phase cost ledger (``config.cost_ledger_path``). #1216 added the
+# reducer but never wired a call site, so no report ever showed a number; these
+# assert the wiring actually fires. Without a ledger it renders the honest
+# "n/a / not available" note; with a ledger carrying both the
+# memory-lane-OFF (``full-minus-memory_lane``) and memory-lane-ON (``full``)
+# arms it renders real numbers.
+# ---------------------------------------------------------------------------
+
+
+def test_memory_report_section_renders_not_available_without_ledger(
+    corpus_root: Path, reports_dir: Path
+) -> None:
+    result = run_spine(
+        SpineConfig(arms=[baseline(), full()], reps=1, corpus_root=corpus_root),
+        executor=SpyExecutor(),
+        hidden_test_runner=HiddenTestSpy(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-15",
+    )
+    text = result.report_path.read_text(encoding="utf-8")
+    # The section always renders so it is discoverable...
+    assert "Memory-lane token effect (#1039/#1071)" in text
+    # ...and honestly says n/a / not available (never a fabricated 0).
+    assert "n/a" in text and "not available" in text
+
+
+def test_memory_report_section_populated_with_arm_tagged_ledger(
+    corpus_root: Path, reports_dir: Path, tmp_path: Path
+) -> None:
+    # Drive real cost events through the whole seam, exactly like the gather
+    # test above: the executor leaves a per-phase ledger, the runner harvests
+    # it before teardown, the spine tags each row with the arm and appends to
+    # the aggregate ledger, and the memory report reads that back.
+    #
+    # ``memory_lane`` is now a registered ablation layer, so the OFF arm is the
+    # REAL ``full_minus("memory_lane")`` (name ``full-minus-memory_lane`` =
+    # ``MEMORY_LANE_OFF_ARM``) — the same arm a live eval would run — not a
+    # hand-built stand-in. This proves the number renders through the actual
+    # ablation machinery, not just the report.
+    memory_lane_off_arm = full_minus("memory_lane")
+    assert memory_lane_off_arm.name == "full-minus-memory_lane"
+    ledger = tmp_path / "cost-events.jsonl"
+    cost_events_for = {
+        "full-minus-memory_lane": [
+            {"run_id": "off", "phase": "execute", "input_tokens": 9000,
+             "output_tokens": 1000, "cache_tokens": 1000, "cache_creation_tokens": 0},
+        ],
+        "full": [
+            {"run_id": "on", "phase": "execute", "input_tokens": 3000,
+             "output_tokens": 1000, "cache_tokens": 1200, "cache_creation_tokens": 0},
+        ],
+    }
+
+    result = run_spine(
+        SpineConfig(
+            arms=[memory_lane_off_arm, full()],
+            reps=1,
+            # One task per arm keeps the token sums single-instance (no doubling
+            # across the two-task corpus).
+            task_filter=["alpha-task"],
+            corpus_root=corpus_root,
+            cost_ledger_path=ledger,
+        ),
+        executor=SpyExecutor(cost_events_for=cost_events_for),
+        hidden_test_runner=HiddenTestSpy(),
+        metrics_writer=FakeMetricsWriter(),
+        reports_dir=reports_dir,
+        date="2026-07-15",
+    )
+    text = result.report_path.read_text(encoding="utf-8")
+    assert "Memory-lane token effect (#1039/#1071)" in text
+    assert "full-minus-memory_lane" in text
+    # OFF total 11000 (9000+1000+1000), ON total 5200 (3000+1000+1200).
+    assert "11000" in text and "5200" in text
+    # Execute-context: OFF 10000 (9000+1000) vs ON 4200 (3000+1200) — dropped.
+    assert "10000" in text and "4200" in text
+    assert "REDUCED tokens" in text
+
+    ledger_rows = [
+        json.loads(line)
+        for line in ledger.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(ledger_rows) == 2
+    assert sum(1 for r in ledger_rows if r["arm"] == "full-minus-memory_lane") == 1
+    assert sum(1 for r in ledger_rows if r["arm"] == "full") == 1

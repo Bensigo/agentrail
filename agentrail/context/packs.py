@@ -12,7 +12,7 @@ from agentrail.context.compiler import compiler_contract
 from agentrail.context.dedup import compute_retrieval_dedup
 from agentrail.context.index import append_audit, load_index
 from agentrail.context.llm_rerank import llm_rerank_cost_usd
-from agentrail.context.memory_lane import build_memory_lane, frame_untrusted_memory
+from agentrail.context.memory_lane import build_memory_lane, frame_untrusted_memory, memory_lane_enabled
 from agentrail.context.pack_quality import compute_pack_quality
 from agentrail.context.pricing import cost_for
 from agentrail.context.retrieval import RETRIEVAL_MAX_TOKENS, compute_tokens_saved, estimate_tokens, get_file_lines, query_context
@@ -673,7 +673,16 @@ def build_context_pack(
     # the local snapshot. This lane is NOT subject to the retrieval token budget
     # trim below — it is independently byte-capped inside build_memory_lane so
     # its bytes stay stable for cache identity regardless of retrieval pressure.
-    sections["memoryLane"] = build_memory_lane(root, items=memory_items)
+    # Gated (default ON) so an offline token A/B can turn the lane off: when
+    # memory_lane_enabled() is False we feed [] to build_memory_lane, emptying
+    # the lane (the memoryLane section still exists — the frame may still emit —
+    # it just carries no items). Enabled: pass memory_items through unchanged
+    # (None -> snapshot read; an injected list -> that list). With the env var
+    # unset (the production default) memory_lane_enabled() is True, so this is
+    # byte-identical to the previous unconditional call.
+    sections["memoryLane"] = build_memory_lane(
+        root, items=memory_items if memory_lane_enabled() else []
+    )
 
     # Greedy token budget fill: enforce RETRIEVAL_MAX_TOKENS by dropping
     # entire low-relevance candidates (whole-item selection beats truncation).

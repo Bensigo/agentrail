@@ -1,4 +1,4 @@
-import { eq, and, lt, gte, lte, desc, isNull, count, inArray, gt, sql, or } from "drizzle-orm";
+import { eq, and, lt, gte, lte, desc, isNull, count, max, inArray, gt, sql, or } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { randomBytes } from "crypto";
 import { db } from "../db.js";
@@ -405,6 +405,41 @@ export async function listMemoryItems(workspaceId: string): Promise<MemoryItemRo
     .where(eq(memoryItems.workspaceId, workspaceId))
     .orderBy(desc(memoryItems.createdAt));
   return rows as MemoryItemRow[];
+}
+
+/**
+ * Newest onboarder-written memory timestamp for a repo (by owner/name), or null
+ * if the repo has never been onboarded. Used by the runner to skip re-onboarding
+ * when fresh notes already exist. Scoped to written_by = "onboarder".
+ */
+export async function getLatestOnboardMemoryAt(
+  workspaceId: string,
+  repoFullName: string,
+): Promise<{ onboardedAt: Date | null; count: number }> {
+  // Single aggregate over onboarder-written memory for the repo whose
+  // (workspace_id, name) match. When the repo row is absent or has no such
+  // memory the inner-join yields no rows and Postgres still returns one row
+  // with max=NULL / count=0 — i.e. { onboardedAt: null, count: 0 }.
+  const rows = await db
+    .select({
+      onboardedAt: max(memoryItems.createdAt),
+      count: count(memoryItems.id),
+    })
+    .from(memoryItems)
+    .innerJoin(repositories, eq(memoryItems.repositoryId, repositories.id))
+    .where(
+      and(
+        eq(repositories.workspaceId, workspaceId),
+        eq(repositories.name, repoFullName),
+        eq(memoryItems.writtenBy, "onboarder"),
+      ),
+    );
+
+  const row = rows[0];
+  return {
+    onboardedAt: row?.onboardedAt ?? null,
+    count: Number(row?.count ?? 0),
+  };
 }
 
 export async function insertMemoryItems(data: {

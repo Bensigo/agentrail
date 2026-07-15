@@ -199,6 +199,11 @@ export interface WorkItem {
   id: string;
   workspace_id: string;
   source: string;
+  // What kind of work this claim is: 'issue' (default — run the SDLC spine) or
+  // 'onboard' (index a freshly connected repo and seed workspace memory). The
+  // runner dispatches on it; older runners that don't read it keep running the
+  // issue path unchanged.
+  kind: string;
   external_id: string;
   repo_url: string;
   ref: string;
@@ -259,10 +264,19 @@ async function deriveRepoSlug(
   workspaceId: string,
   externalId: string
 ): Promise<string> {
-  const urlMatch = externalId.match(/^https?:\/\/github\.com\/([^/]+\/[^/#]+)/i);
+  // Onboard entries encode their repo as `onboard:owner/name` (no issue number).
+  // Strip the prefix so the slug match below resolves the repo from the entry
+  // itself; otherwise the colon fails both patterns and we'd fall back to the
+  // workspace's first configured repo — onboarding the wrong repo on a
+  // multi-repo workspace (#1149).
+  const id = externalId.startsWith("onboard:")
+    ? externalId.slice("onboard:".length)
+    : externalId;
+
+  const urlMatch = id.match(/^https?:\/\/github\.com\/([^/]+\/[^/#]+)/i);
   if (urlMatch) return urlMatch[1]!;
 
-  const slugMatch = externalId.match(/^([\w.-]+\/[\w.-]+)(?:#.*)?$/);
+  const slugMatch = id.match(/^([\w.-]+\/[\w.-]+)(?:#.*)?$/);
   if (slugMatch) return slugMatch[1]!;
 
   const rows = await db
@@ -418,13 +432,14 @@ export async function claimQueueEntry(
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING id, workspace_id, source, external_id, title, body, tier
+    RETURNING id, workspace_id, source, kind, external_id, title, body, tier
   `);
 
   const claimed = Array.from(result) as Array<{
     id: string;
     workspace_id: string;
     source: string;
+    kind: string;
     external_id: string;
     title: string;
     body: string;
@@ -469,6 +484,9 @@ export async function claimQueueEntry(
     id: row.id,
     workspace_id: row.workspace_id,
     source: row.source,
+    // Default to 'issue' when the column is absent/null so a row written before
+    // this migration (or by an older path) still dispatches down the issue spine.
+    kind: row.kind || "issue",
     external_id: row.external_id,
     repo_url: repoUrl,
     ref: "main",

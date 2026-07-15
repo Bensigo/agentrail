@@ -669,3 +669,50 @@ export async function enqueueGithubIssue(data: {
     ? { enqueued: true, id, state, blockedBy, reason }
     : { enqueued: true, id, state, blockedBy };
 }
+
+/**
+ * Admit a one-shot `onboard` job into the durable queue for a freshly connected
+ * repo. Unlike an issue, this carries no AC gate, no blockers, and no v2 screen —
+ * it is workspace-owned indexing work, not user-authored content. The runner
+ * claims it (kind='onboard'), clones the repo at its default branch, builds the
+ * context index, and seeds a handful of workspace memory items.
+ *
+ * Idempotency is the whole point: the row id is `entryId(workspaceId, 'github',
+ * 'onboard:<repoFullName>')`, so re-connecting the same repo (or a double webhook
+ * / double click) maps to the SAME row and `ON CONFLICT DO NOTHING` makes the
+ * second call a no-op. Exactly one onboard per repo, forever — the caller can fire
+ * it on every connect without guarding.
+ */
+export async function enqueueOnboard(data: {
+  workspaceId: string;
+  repoFullName: string;
+}): Promise<EnqueueResult> {
+  // The onboard externalId is repo-scoped (not issue-scoped) so there is one
+  // durable onboard row per repo. `deriveRepoSlug` (claim side) reads the repo
+  // slug back off this same `onboard:<owner/name>` shape.
+  const externalId = `onboard:${data.repoFullName}`;
+  const id = entryId(data.workspaceId, "github", externalId);
+
+  const inserted = await db
+    .insert(queueEntries)
+    .values({
+      id,
+      workspaceId: data.workspaceId,
+      source: "github",
+      kind: "onboard",
+      externalId,
+      title: `Onboard ${data.repoFullName}`,
+      body: "",
+      tier: 0,
+      remainingBudget: 5,
+      state: "queued",
+      blockedBy: [],
+    })
+    .onConflictDoNothing({ target: queueEntries.id })
+    .returning({ id: queueEntries.id });
+
+  if (inserted.length === 0) {
+    return { enqueued: false, reason: "already onboarded (deduped)" };
+  }
+  return { enqueued: true, id, state: "queued", blockedBy: [] };
+}

@@ -16,6 +16,7 @@ ablation"):
     guardrails   — the safety/existence guardrails
     rerank       — the deterministic code-aware context rerank stage (#904/#1029)
     expansion    — the recall-layer query-expansion stage (#1043)
+    memory_lane  — the factory-side shared-memory lane (#1039), default-ON
 
 Two anchor arms are defined now:
 
@@ -50,6 +51,7 @@ LAYER_NAMES: Tuple[str, ...] = (
     "guardrails",
     "rerank",
     "expansion",
+    "memory_lane",
 )
 
 # The three NEW-flow layers (issue #980), in a fixed, documented order. These
@@ -144,6 +146,7 @@ class Layers:
     guardrails: bool
     rerank: bool
     expansion: bool
+    memory_lane: bool
 
     def as_dict(self) -> Dict[str, bool]:
         """Map each layer name to its on/off flag (stable ``LAYER_NAMES`` order)."""

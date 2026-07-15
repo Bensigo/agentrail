@@ -45,7 +45,7 @@ def test_arm_has_name_layers_model_and_temperature() -> None:
     assert isinstance(arm.temperature, float)
 
 
-def test_layers_names_are_the_seven_documented_layers() -> None:
+def test_layers_names_are_the_eight_documented_layers() -> None:
     assert LAYER_NAMES == (
         "context",
         "routing",
@@ -54,6 +54,7 @@ def test_layers_names_are_the_seven_documented_layers() -> None:
         "guardrails",
         "rerank",
         "expansion",
+        "memory_lane",
     )
 
 

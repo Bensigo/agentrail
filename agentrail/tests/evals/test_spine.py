@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Sequence
 
 import pytest
 
-from agentrail.evals.arms import Arm, Layers, baseline, full, full_minus, gather_arm, gather_arms
+from agentrail.evals.arms import Arm, baseline, full, full_minus, gather_arm, gather_arms
 from agentrail.evals.corpus.loader import CorpusTask, load_task
 from agentrail.evals.probes import (
     ScoredRun,
@@ -1960,11 +1960,13 @@ def test_memory_report_section_populated_with_arm_tagged_ledger(
     # it before teardown, the spine tags each row with the arm and appends to
     # the aggregate ledger, and the memory report reads that back.
     #
-    # The ``memory_lane`` eval layer itself is not registered yet (a separate,
-    # already-tracked follow-up), so the memory-lane-OFF arm is hand-built here
-    # with the exact name ``full_minus("memory_lane")`` will produce once that
-    # layer lands — this test only exercises the REPORT wiring, not the layer.
-    memory_lane_off_arm = Arm(name="full-minus-memory_lane", layers=Layers.all_on())
+    # ``memory_lane`` is now a registered ablation layer, so the OFF arm is the
+    # REAL ``full_minus("memory_lane")`` (name ``full-minus-memory_lane`` =
+    # ``MEMORY_LANE_OFF_ARM``) — the same arm a live eval would run — not a
+    # hand-built stand-in. This proves the number renders through the actual
+    # ablation machinery, not just the report.
+    memory_lane_off_arm = full_minus("memory_lane")
+    assert memory_lane_off_arm.name == "full-minus-memory_lane"
     ledger = tmp_path / "cost-events.jsonl"
     cost_events_for = {
         "full-minus-memory_lane": [

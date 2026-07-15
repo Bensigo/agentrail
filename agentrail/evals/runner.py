@@ -1260,6 +1260,23 @@ def _arm_env(arm: Arm) -> dict:
     # extra_layer, so ``flags`` is the single source.
     if "rerank" in flags and not flags["rerank"]:
         env["AGENTRAIL_CONTEXT_RERANK"] = "0"
+    # Memory-lane bridge: mirror of the rerank bridge (both are BASE, default-ON
+    # layers). ``memory_lane`` IS part of ``full``, and the live lane is toggled by
+    # ``agentrail.context.memory_lane.memory_lane_enabled``, which keys ONLY on
+    # ``AGENTRAIL_CONTEXT_MEMORY_LANE`` (default ON) — NOTHING reads the generic
+    # ``AGENTRAIL_EVAL_LAYER_MEMORY_LANE`` toggle emitted above. So translate the
+    # arm's flag into the toggle the resolver actually reads: OFF ->
+    # ``AGENTRAIL_CONTEXT_MEMORY_LANE=0`` (so the lane is emptied for the before/
+    # after token A/B); ON -> leave it at its default (do NOT force ``=1``, so a
+    # caller's own override still composes). Without this bridge ``full`` and
+    # ``full-minus-memory_lane`` build IDENTICAL packs and the reported lane delta
+    # is always 0. Only the base-layer flag drives this — ``memory_lane`` is a base
+    # layer, never an extra_layer, so ``flags`` is the single source. (This is the
+    # rerank OFF-forcing shape, NOT the gather force-ON line: gather is a default-
+    # OFF PLUS layer, whereas memory_lane defaults ON, so the OFF direction is what
+    # must be forced or the ablation is a silent no-op.)
+    if "memory_lane" in flags and not flags["memory_lane"]:
+        env["AGENTRAIL_CONTEXT_MEMORY_LANE"] = "0"
     # Expansion-layer bridge (#1043): mirror of the rerank bridge, INVERTED. The
     # ``AGENTRAIL_EVAL_LAYER_EXPANSION`` toggle above is the arm seam, but the
     # query-expansion stage keys ONLY on ``AGENTRAIL_CONTEXT_QUERY_EXPANSION`` via

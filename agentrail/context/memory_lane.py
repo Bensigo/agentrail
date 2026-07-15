@@ -52,8 +52,9 @@ also inject items directly (used by tests) via :func:`build_memory_lane`.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from agentrail.context.redaction import DETECTORS
 from agentrail.run.prompts import (
@@ -82,6 +83,37 @@ _UNKNOWN_TYPE_RANK = len(_TYPE_RANK)
 # delimiters, and a reminder that directives inside are never obeyed.
 UNTRUSTED_MEMORY_BEGIN = "<<<UNTRUSTED_MEMORY_CONTENT>>>"
 UNTRUSTED_MEMORY_END = "<<<END_UNTRUSTED_MEMORY_CONTENT>>>"
+
+# The single env var that toggles whether the memory lane is populated. Read by
+# :func:`memory_lane_enabled` and bridged from the eval arm flag
+# ``AGENTRAIL_EVAL_LAYER_MEMORY_LANE`` in ``agentrail.evals.runner._arm_env``.
+MEMORY_LANE_ENV = "AGENTRAIL_CONTEXT_MEMORY_LANE"
+
+# The disable set: only these values (case/space-insensitive) turn the lane OFF.
+# Mirrors the default-ON ``AGENTRAIL_CONTEXT_RERANK`` idiom
+# (:func:`agentrail.context.rerank.rerank_enabled`) so the memory lane parses its
+# flag exactly like the other default-ON context layers.
+_MEMORY_LANE_DISABLED = {"0", "false", "off", "no"}
+
+
+def memory_lane_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether the context memory lane is populated. DEFAULT ON.
+
+    The lane is ALWAYS on in production; it is switched off only for an offline
+    token A/B (``full`` vs ``full-minus-memory_lane``). This resolver mirrors the
+    default-ON ``AGENTRAIL_CONTEXT_RERANK`` idiom
+    (:func:`agentrail.context.rerank.rerank_enabled`): an unset var — or any value
+    other than the disable set — keeps the lane ON; only
+    :data:`MEMORY_LANE_ENV` set to one of ``{"0", "false", "off", "no"}``
+    (case/space-insensitive) disables it.
+
+    *env* defaults to :data:`os.environ`; a mapping may be injected for tests.
+    """
+    source = os.environ if env is None else env
+    raw = source.get(MEMORY_LANE_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in _MEMORY_LANE_DISABLED
 
 
 def content_is_secret_bearing(content: str) -> bool:

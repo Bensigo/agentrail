@@ -81,25 +81,15 @@ required=(
   ".agentrail/agents/triage-labels.md"
   "docs/prd/.gitkeep"
   "docs/milestones/.gitkeep"
-  # House-2 (repo-structure-v2, PR-5 / #1136): the skills root installs to
-  # BOTH the legacy top-level skills/ copy and the new .agentrail/skills/
-  # copy this PR. Dropping the legacy top-level copy is explicitly PR-8's
-  # job (design doc §6), not PR-5's, so both sets are asserted here.
-  "skills/backend-api/SKILL.md"
-  "skills/desktop-tauri/SKILL.md"
-  "skills/devops-deploy/SKILL.md"
-  "skills/docs-current/SKILL.md"
-  "skills/frontend-web/SKILL.md"
+  # House-2 (repo-structure-v2): the skills root installs ONLY to the
+  # canonical .agentrail/skills/ copy. PR-8 (#1159) dropped the legacy
+  # top-level skills/ mirror, so a fresh install must NOT create it — that is
+  # asserted negatively below. _migrate_legacy_layout removes the stale
+  # top-level copy for repos installed before #1159.
   # NOTE: the coordinator-flavored skills (grill-me, to-prd, to-milestones,
   # to-issues) moved out of the factory into apps/jace/agent/skills/. The
   # factory installer only vends agentrail/templates/ + agentrail/skills/, so
   # those no longer land in an installed project — do NOT assert them here.
-  "skills/tdd/SKILL.md"
-  "skills/tdd/deep-modules.md"
-  "skills/tdd/interface-design.md"
-  "skills/tdd/mocking.md"
-  "skills/tdd/refactoring.md"
-  "skills/tdd/tests.md"
   ".agentrail/skills/backend-api/SKILL.md"
   ".agentrail/skills/desktop-tauri/SKILL.md"
   ".agentrail/skills/devops-deploy/SKILL.md"
@@ -265,22 +255,19 @@ if [[ "$(json_value "${tmp_dir}/.agentrail/state.json" "data.managedFiles.some((
   exit 1
 fi
 
-# NOTE: these two dual-mirror checks read $symlink_target's state.json, not
-# $tmp_dir's. `agentrail upgrade` (exercised against $tmp_dir at line ~181,
-# below) intentionally migrates the legacy top-level skills/ mirror into
-# .agentrail/skills/ and prunes the now-removed skills/-prefixed entries from
-# managedFiles (see _migrate_legacy_layout in agentrail/cli/commands/upgrade.py).
-# By the time this script reaches these assertions, $tmp_dir has already been
-# upgraded, so its state.json no longer carries the fresh-install dual-mirror
-# invariant being asserted here. $symlink_target was only ever `install`ed
-# (never upgraded), so it still reflects that invariant.
-if [[ "$(json_value "${symlink_target}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === 'skills/frontend-web/SKILL.md' && file.source === 'agentrail/skills/frontend-web/SKILL.md')")" != "true" ]]; then
-  echo "state file does not track bundled skill files" >&2
+# These checks read $symlink_target's state.json (a fresh `install`, never
+# upgraded). After PR-8 (#1159) a fresh install writes ONLY the canonical
+# .agentrail/skills/ mirror — the legacy top-level skills/ entry must be
+# absent. `agentrail upgrade` still prunes any stale top-level skills/-prefixed
+# entries for pre-#1159 repos (see _migrate_legacy_layout in
+# agentrail/cli/commands/upgrade.py), which is exercised against $tmp_dir.
+if [[ "$(json_value "${symlink_target}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === 'skills/frontend-web/SKILL.md')")" != "false" ]]; then
+  echo "state file must NOT track the legacy top-level skills/ mirror (deduped in #1159)" >&2
   exit 1
 fi
 
 if [[ "$(json_value "${symlink_target}/.agentrail/state.json" "data.managedFiles.some((file) => file.path === '.agentrail/skills/frontend-web/SKILL.md' && file.source === 'agentrail/skills/frontend-web/SKILL.md')")" != "true" ]]; then
-  echo "state file does not track the House-2 .agentrail/skills copy" >&2
+  echo "state file does not track the canonical .agentrail/skills copy" >&2
   exit 1
 fi
 
@@ -300,6 +287,15 @@ for excluded_file in ".claude/agents/github-pr-reviewer.md" ".codex/agents/githu
     exit 1
   fi
 done
+
+# #1159: a fresh install must not create the legacy top-level skills/ mirror.
+# Only the canonical .agentrail/skills/ copy is written now. Check the
+# never-upgraded fresh install ($symlink_target) so the migration path can't
+# mask a regression here.
+if [[ -e "${symlink_target}/skills" ]]; then
+  echo "legacy top-level skills/ must not be created by a fresh install (deduped in #1159)" >&2
+  exit 1
+fi
 
 if ! grep -q -- ".agentrail/taste.md" "${tmp_dir}/AGENTS.md"; then
   echo "AGENTS.md does not tell agents to read .agentrail/taste.md when present" >&2

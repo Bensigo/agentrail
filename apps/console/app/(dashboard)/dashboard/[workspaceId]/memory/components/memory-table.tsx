@@ -76,7 +76,7 @@ export function MemoryTable({ workspaceId }: MemoryTableProps) {
     });
   }
 
-  const COLS = 5; // source, repository, content preview, created_at, last_used_at
+  const COLS = 7; // source, written_by, type, repository, content preview, created_at, last_used_at
 
   return (
     <div className="rounded border border-[var(--gray-05)] overflow-hidden">
@@ -86,6 +86,12 @@ export function MemoryTable({ workspaceId }: MemoryTableProps) {
             <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] w-6" />
             <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
               Source
+            </th>
+            <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] whitespace-nowrap">
+              Written by
+            </th>
+            <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] whitespace-nowrap">
+              Type
             </th>
             <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
               Repository
@@ -143,6 +149,20 @@ export function MemoryTable({ workspaceId }: MemoryTableProps) {
                       <span className="font-mono text-xs text-[var(--gray-11)] truncate block">
                         {item.source}
                       </span>
+                    </td>
+                    <td className="px-3 py-1.5 max-w-[160px]">
+                      <span className="font-mono text-xs text-[var(--gray-11)] truncate block">
+                        {item.written_by || "—"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-1.5 whitespace-nowrap">
+                      {item.type ? (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[var(--gray-04)] text-[var(--gray-10)] border border-[var(--gray-06)]">
+                          {item.type}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-[var(--gray-10)]">—</span>
+                      )}
                     </td>
                     <td className="px-3 py-1.5 max-w-[200px]">
                       <span className="font-mono text-xs text-[var(--gray-10)] truncate block">

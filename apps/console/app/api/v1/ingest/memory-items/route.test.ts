@@ -186,4 +186,67 @@ describe("POST /api/v1/ingest/memory-items", () => {
     expect(res.status).toBe(202);
     expect(insertMemoryItems).toHaveBeenCalled();
   });
+
+  it("forwards written_by, source, and per-item type when provided", async () => {
+    const body = {
+      run_id: RUN_ID,
+      repository_id: REPO,
+      written_by: "onboarder",
+      source: "onboard",
+      items: [
+        { content: "Prefer pnpm over npm here", tags: ["setup"], type: "preference" },
+        { content: "We chose Postgres over Mongo", tags: ["adr"], type: "decision" },
+      ],
+    };
+    const res = await POST(req(body));
+    expect(res.status).toBe(202);
+    expect(insertMemoryItems).toHaveBeenCalledWith({
+      workspaceId: WS,
+      repositoryId: REPO,
+      source: "onboard",
+      writtenBy: "onboarder",
+      items: [
+        {
+          content: "Prefer pnpm over npm here",
+          tags: ["setup", `run:${RUN_ID}`],
+          type: "preference",
+        },
+        {
+          content: "We chose Postgres over Mongo",
+          tags: ["adr", `run:${RUN_ID}`],
+          type: "decision",
+        },
+      ],
+    });
+  });
+
+  it("backward compat: no source/written_by/type -> source review, type undefined", async () => {
+    const res = await POST(req(valid));
+    expect(res.status).toBe(202);
+    // Legacy body maps to source "review"; writtenBy is left undefined so the
+    // query layer falls back to source, and item type is undefined so the query
+    // layer falls back to "fact". No `type` is forced onto the item here.
+    expect(insertMemoryItems).toHaveBeenCalledWith({
+      workspaceId: WS,
+      repositoryId: REPO,
+      source: "review",
+      items: [
+        { content: "Always mock subprocess in tests", tags: ["testing", `run:${RUN_ID}`] },
+      ],
+    });
+    const callArg = vi.mocked(insertMemoryItems).mock.calls[0][0];
+    expect(callArg.source).toBe("review");
+    expect(callArg.writtenBy).toBeUndefined();
+    expect(callArg.items[0].type).toBeUndefined();
+  });
+
+  it("400 on item with an out-of-enum type, and does not insert", async () => {
+    const body = {
+      ...valid,
+      items: [{ content: "note", tags: [], type: "bogus" }],
+    };
+    const res = await POST(req(body));
+    expect(res.status).toBe(400);
+    expect(insertMemoryItems).not.toHaveBeenCalled();
+  });
 });

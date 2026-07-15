@@ -5,7 +5,11 @@
  * Authenticates via bearer API key (see lib/bearer-auth.ts).
  * workspace_id comes from the API key; repository_id is validated.
  *
- * Body: { run_id, repository_id, items: [{ content, tags[] }] }
+ * Body: { run_id, repository_id, items: [{ content, tags[], type? }],
+ *         written_by?, source? }
+ * `type` (per item), `written_by` and `source` (batch-level) are OPTIONAL and
+ * backward compatible: when omitted, source defaults to "review", writtenBy
+ * falls back to source, and each item's type falls back to "fact" downstream.
  * Returns: 202 { ok: true }
  */
 import { NextRequest, NextResponse } from "next/server";
@@ -13,37 +17,61 @@ import { getRepository, insertMemoryItems } from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 import { scanForSecrets, summarizeFindings } from "../../../../../lib/secret-scan";
 
+// Mirrors the `memory_type` enum (packages/db-postgres schema / MemoryType).
+// Kept as a local const so the validator can reject unknown values at the edge.
+const MEMORY_TYPES = ["decision", "preference", "fact"] as const;
+type MemoryTypeLiteral = (typeof MEMORY_TYPES)[number];
+
 interface RawMemoryItem {
   content: string;
   tags: string[];
+  type?: MemoryTypeLiteral;
 }
 
 interface RawBody {
   run_id: string;
   repository_id: string;
+  written_by?: string;
+  source?: string;
   items: RawMemoryItem[];
 }
 
 function isRawMemoryItem(v: unknown): v is RawMemoryItem {
   if (!v || typeof v !== "object") return false;
   const o = v as Record<string, unknown>;
-  return (
-    typeof o.content === "string" &&
-    o.content.trim().length > 0 &&
-    Array.isArray(o.tags) &&
-    (o.tags as unknown[]).every((t) => typeof t === "string")
-  );
+  if (
+    typeof o.content !== "string" ||
+    o.content.trim().length === 0 ||
+    !Array.isArray(o.tags) ||
+    !(o.tags as unknown[]).every((t) => typeof t === "string")
+  ) {
+    return false;
+  }
+  // `type` is optional; when present it must be one of the enum values.
+  if (
+    o.type !== undefined &&
+    !(MEMORY_TYPES as readonly string[]).includes(o.type as string)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function isRawBody(v: unknown): v is RawBody {
   if (!v || typeof v !== "object") return false;
   const o = v as Record<string, unknown>;
-  return (
-    typeof o.run_id === "string" &&
-    typeof o.repository_id === "string" &&
-    Array.isArray(o.items) &&
-    (o.items as unknown[]).every(isRawMemoryItem)
-  );
+  if (
+    typeof o.run_id !== "string" ||
+    typeof o.repository_id !== "string" ||
+    !Array.isArray(o.items) ||
+    !(o.items as unknown[]).every(isRawMemoryItem)
+  ) {
+    return false;
+  }
+  // Optional batch-level attribution; strings when present.
+  if (o.written_by !== undefined && typeof o.written_by !== "string") return false;
+  if (o.source !== undefined && typeof o.source !== "string") return false;
+  return true;
 }
 
 export async function POST(req: NextRequest) {
@@ -102,14 +130,22 @@ export async function POST(req: NextRequest) {
   const itemsWithRunTag = body.items.map((item) => ({
     content: item.content,
     tags: item.tags.includes(runTag) ? item.tags : [...item.tags, runTag],
+    type: item.type,
   }));
 
   try {
     await insertMemoryItems({
       workspaceId,
       repositoryId: body.repository_id,
-      source: "review",
-      items: itemsWithRunTag,
+      // Defaults preserve prior behavior: source "review", writtenBy falls back
+      // to source, and each item's type falls back to "fact" inside the query.
+      source: body.source ?? "review",
+      writtenBy: body.written_by,
+      items: itemsWithRunTag.map((it) => ({
+        content: it.content,
+        tags: it.tags,
+        type: it.type,
+      })),
     });
   } catch (err) {
     console.error("[ingest/memory-items] Postgres insert failed:", err);

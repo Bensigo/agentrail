@@ -41,6 +41,9 @@ def _make_execute(creds):
     accepts_model = "model" in _params
 
     def execute(item: WorkItem) -> RunResult:
+        if item.kind == "onboard":
+            from agentrail.runner.onboard import run_onboard
+            return run_onboard(item, base_url=creds.base_url, api_key=creds.token)
         run_env = dict(os.environ)
         # Link this run to the backend so cost/telemetry land on the dashboard.
         # Needs all three (base, key, repo) or load_link ignores it.

@@ -381,6 +381,110 @@ def retry_attribution(scored_runs: Sequence[ScoredRun]) -> RetryAttributionRepor
 
 
 # ---------------------------------------------------------------------------
+# #1172 AC1 — reviewer false-claim rate (accept ∧ not solved)
+#
+# The single biggest eval-failure cause the run-forensics mining found: the
+# in-loop reviewer ACCEPTED the work, the hidden ground-truth tests REJECTED it
+# (37.5% of real failures this week). This probe instruments that rate — accept
+# vs hidden-test outcome, per arm — from already-recorded fields (the parsed
+# VERDICT objects on ``RunRecord.verdicts`` joined with the scorer's ``solved``).
+# It is measurement ONLY: it computes and reports the rate; it does not change
+# any accept decision (the evidence contract #1172 AC2 and enforcement AC3 are
+# deliberately out of scope here).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ArmFalseClaim:
+    """Per-arm reviewer false-claim counts + rate (#1172 AC1).
+
+    - ``accepted_runs`` — the DENOMINATOR: runs the reviewer accepted (see
+      :func:`_reviewer_accepted`).
+    - ``false_claims`` — the NUMERATOR: accepted runs that were ALSO not solved
+      by the hidden tests (the reviewer claimed success the ground truth denies).
+    - ``false_claim_rate`` — ``false_claims / accepted_runs``; ``None`` when the
+      arm accepted nothing (undefined denominator — never a fabricated 0.0,
+      matching the ``false_green_rate`` discipline).
+    """
+
+    arm: str
+    accepted_runs: int
+    false_claims: int
+    false_claim_rate: Optional[float]
+
+
+@dataclass(frozen=True)
+class FalseClaimReport:
+    """Reviewer false-claim rate across the run set, per arm (#1172 AC1).
+
+    ``per_arm`` breaks the accept-vs-hidden-test disagreement out per arm. There
+    is deliberately NO pooled cross-arm rate: pooling would mix arms with
+    different reviewers/flows into one misleading number. Each arm's rate is
+    ``None`` when that arm accepted nothing (undefined denominator).
+    """
+
+    per_arm: List[ArmFalseClaim] = field(default_factory=list)
+
+
+def _reviewer_accepted(sr: "ScoredRun") -> bool:
+    """Whether the reviewer ACCEPTED this run — the FINAL verdict-bearing phase.
+
+    ``RunRecord.verdicts`` carries the parsed VERDICT objects
+    (``{"phase", "accepted", "reason"}``) emitted by every verdict-bearing phase
+    IN THE ORDER THEY RAN. We read the LAST entry's ``accepted`` as the
+    reviewer's operative decision: it is the run's TERMINAL accept — the verdict
+    on which the work was actually shipped (a best-of-N loop may reject earlier
+    candidates and accept a later one; an earlier accept later overturned by a
+    reject did not ship). A run with NO verdict-bearing phase (empty
+    ``verdicts``) carried no reviewer accept at all and is excluded from the
+    denominator entirely — distinct from "a phase ran and rejected".
+    """
+    verdicts = sr.run.verdicts
+    if not verdicts:
+        return False
+    return bool(verdicts[-1].get("accepted", False))
+
+
+def false_claim_rate(scored_runs: Sequence["ScoredRun"]) -> FalseClaimReport:
+    """Compute the reviewer false-claim rate (accept ∧ not solved) per arm.
+
+    For each arm: the denominator is the runs the reviewer accepted
+    (:func:`_reviewer_accepted` — the final verdict-bearing phase accepted); the
+    numerator is those accepted runs that the hidden tests did NOT solve. The
+    rate is ``None`` when the arm accepted nothing (undefined denominator — never
+    a fabricated 0.0). Measurement only: no accept decision is changed.
+    """
+    per_arm_accepted: Dict[str, int] = {}
+    per_arm_false: Dict[str, int] = {}
+    for sr in scored_runs:
+        arm = sr.run.arm
+        per_arm_accepted.setdefault(arm, 0)
+        per_arm_false.setdefault(arm, 0)
+        if not _reviewer_accepted(sr):
+            continue
+        per_arm_accepted[arm] += 1
+        if not sr.solved:
+            per_arm_false[arm] += 1
+
+    per_arm = [
+        ArmFalseClaim(
+            arm=arm,
+            accepted_runs=per_arm_accepted[arm],
+            false_claims=per_arm_false[arm],
+            # None (NOT 0.0) when the arm accepted nothing — undefined
+            # denominator, matching the false_green_rate discipline.
+            false_claim_rate=(
+                (per_arm_false[arm] / per_arm_accepted[arm])
+                if per_arm_accepted[arm]
+                else None
+            ),
+        )
+        for arm in sorted(per_arm_accepted)
+    ]
+    return FalseClaimReport(per_arm=per_arm)
+
+
+# ---------------------------------------------------------------------------
 # AC3 — guardrail injection-corpus catch-rate
 # ---------------------------------------------------------------------------
 

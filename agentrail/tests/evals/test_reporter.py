@@ -1376,3 +1376,57 @@ def test_ac4_report_byte_identical_when_no_synthetic_rows():
     assert rows_base == rows_explicit
     # The count field is present and zero (honest, not absent).
     assert all(row["network_artifact_count"] == 0 for row in rows_base)
+
+
+# ---------------------------------------------------------------------------
+# #1172 AC1 — reviewer false-claim rate renders in the probes markdown, with
+# the None-vs-0% honesty rule preserved (n/a for an empty denominator).
+# ---------------------------------------------------------------------------
+
+
+def test_render_probes_false_claim_section_per_arm():
+    from agentrail.evals.reporter import render_probes_markdown
+    from agentrail.evals.probes import ArmFalseClaim, FalseClaimReport
+
+    fc = FalseClaimReport(
+        per_arm=[
+            ArmFalseClaim(
+                arm="full",
+                accepted_runs=4,
+                false_claims=3,
+                false_claim_rate=0.75,
+            )
+        ]
+    )
+    md = render_probes_markdown(false_claim=fc)
+    assert "Reviewer false-claim rate (accept ∧ not solved)" in md
+    assert "full: 75.0% (3 of 4 accepted run(s) not solved)" in md
+
+
+def test_render_probes_false_claim_denominator_zero_renders_na_not_zero():
+    from agentrail.evals.reporter import render_probes_markdown
+    from agentrail.evals.probes import ArmFalseClaim, FalseClaimReport
+
+    fc = FalseClaimReport(
+        per_arm=[
+            ArmFalseClaim(
+                arm="full",
+                accepted_runs=0,
+                false_claims=0,
+                false_claim_rate=None,
+            )
+        ]
+    )
+    md = render_probes_markdown(false_claim=fc)
+    # Undefined denominator renders n/a, never a fabricated 0.0%.
+    assert "full: n/a (0 of 0 accepted run(s) not solved)" in md
+    assert "full: 0.0%" not in md
+
+
+def test_render_probes_false_claim_none_renders_not_available():
+    from agentrail.evals.reporter import render_probes_markdown
+
+    md = render_probes_markdown(false_claim=None)
+    assert "Reviewer false-claim rate (accept ∧ not solved)" in md
+    # A None report renders an honest "not available", never a fabricated table.
+    assert "_Not available" in md

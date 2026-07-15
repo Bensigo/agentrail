@@ -41,6 +41,7 @@ from agentrail.evals.corpus.loader import DIFFICULTY_TAGS
 from agentrail.evals.pack_scorer import ArmPackScore
 from agentrail.evals.pricing_adapter import usage_cost, usage_cost_breakdown
 from agentrail.evals.probes import (
+    FalseClaimReport,
     GuardrailCatchReport,
     RetryAttributionReport,
     RetryLiftReport,
@@ -1304,13 +1305,20 @@ def render_probes_markdown(
     routing: Optional["RoutingRegretReport"] = None,
     retry: Optional["RetryLiftReport"] = None,
     guardrail: Optional["GuardrailCatchReport"] = None,
+    false_claim: Optional["FalseClaimReport"] = None,
 ) -> str:
-    """Render the three intrinsic probes as a markdown section (issue #943).
+    """Render the intrinsic probes as a markdown section (issue #943).
 
     Each probe is optional; a probe left ``None`` (e.g. no per-run records were
     collected for routing/retry) renders an honest "not available" line rather
     than a fabricated zero. Undefined ratios (empty denominators) render as
     ``n/a`` — never a fake 0.0, matching the rest of the reporter's honesty rail.
+
+    ``false_claim`` (#1172 AC1) is the reviewer false-claim rate (accept ∧ not
+    solved) per arm — the sibling of the Objective-Gate false-green section, but
+    measured against the REVIEWER's accept rather than the gate's pass. ``None``
+    renders "not available"; an arm that accepted nothing renders ``n/a`` (never
+    a fake 0%).
     """
     lines: List[str] = []
     lines.append("# AgentRail intrinsic probes")
@@ -1407,6 +1415,40 @@ def render_probes_markdown(
             else:
                 status = "false positive" if c.flagged else "clean (not flagged)"
             lines.append(f"  - {c.kind} via {c.guardrail}: {status}")
+        lines.append("")
+
+    # --- Reviewer false-claim rate (#1172 AC1) ---------------------------
+    # The sibling of the Objective-Gate false-green section, measured against the
+    # REVIEWER's accept (the final verdict-bearing phase) rather than the gate's
+    # pass: of the runs the reviewer accepted, the fraction the hidden tests did
+    # NOT solve. Measurement only — no accept decision is changed here.
+    lines.append("## Reviewer false-claim rate (accept ∧ not solved)")
+    lines.append("")
+    lines.append(
+        "Of the runs the reviewer ACCEPTED (the final verdict-bearing phase's "
+        "verdict), the fraction the hidden ground-truth tests did NOT solve — the "
+        "reviewer claimed a success the ground truth denies. Per arm; `n/a` when "
+        "the arm accepted nothing (undefined denominator, NOT a 0% rate). "
+        "Measurement only (#1172 AC1) — no accept decision is changed."
+    )
+    lines.append("")
+    if false_claim is None:
+        lines.append(
+            "_Not available: this report carries no per-run records (reviewer "
+            "verdicts needed for the false-claim rate)._"
+        )
+        lines.append("")
+    elif not false_claim.per_arm:
+        lines.append("_Not available: no runs to report._")
+        lines.append("")
+    else:
+        lines.append("- Per arm:")
+        for a in false_claim.per_arm:
+            lines.append(
+                f"  - {a.arm}: {_fmt_rate_pct(a.false_claim_rate)} "
+                f"({a.false_claims} of {a.accepted_runs} accepted run(s) not "
+                "solved)"
+            )
         lines.append("")
 
     return "\n".join(lines)

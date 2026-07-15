@@ -29,11 +29,13 @@ from agentrail.evals.pricing_adapter import usage_cost
 from agentrail.evals.run_record import RetryEvent, RunRecord
 from agentrail.evals.probes import (
     INJECTION_CORPUS,
+    FalseClaimReport,
     GuardrailCatchReport,
     InjectionCase,
     RetryLiftReport,
     RoutingRegretReport,
     ScoredRun,
+    false_claim_rate,
     guardrail_catch_rate,
     retry_lift,
     routing_cost_regret,
@@ -267,6 +269,124 @@ def test_retry_lift_empty_is_defined_not_crash():
     assert report.first_attempt_solve_rate is None
     assert report.lift is None
     assert report.wasted_retry_cost_usd == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# #1172 AC1 — reviewer false-claim rate (accept ∧ not solved)
+# ---------------------------------------------------------------------------
+
+
+def _run_v(
+    *,
+    task: str,
+    arm: str,
+    verdicts,
+) -> RunRecord:
+    """A RunRecord carrying reviewer verdicts (the #1169 forensics field)."""
+    return RunRecord(
+        task=task,
+        arm=arm,
+        diff="",
+        model=CHEAP_MODEL,
+        usage=_usage(model=CHEAP_MODEL),
+        wall_time_s=1.0,
+        gate_passed=True,
+        verdicts=list(verdicts),
+    )
+
+
+def _verdict(accepted: bool, phase: str = "verify") -> dict:
+    return {"phase": phase, "accepted": accepted, "reason": ""}
+
+
+def test_false_claim_counts_accepted_not_solved():
+    """accept ∧ not-solved is a false claim; accept ∧ solved is NOT; reject ∧
+    not-solved is NOT (the reviewer never claimed success)."""
+    runs = [
+        # accepted AND not solved -> counted (numerator + denominator).
+        _scored(_run_v(task="t1", arm="full", verdicts=[_verdict(True)]), False),
+        # accepted AND solved -> denominator only, NOT a false claim.
+        _scored(_run_v(task="t2", arm="full", verdicts=[_verdict(True)]), True),
+        # rejected AND not solved -> excluded entirely (no accept claim).
+        _scored(_run_v(task="t3", arm="full", verdicts=[_verdict(False)]), False),
+    ]
+    report = false_claim_rate(runs)
+    assert isinstance(report, FalseClaimReport)
+    (arm,) = report.per_arm
+    assert arm.arm == "full"
+    # Denominator = accepted runs (t1, t2). t3 rejected -> excluded.
+    assert arm.accepted_runs == 2
+    # Numerator = accepted AND not solved (t1 only).
+    assert arm.false_claims == 1
+    assert arm.false_claim_rate == pytest.approx(0.5)
+
+
+def test_false_claim_empty_verdicts_excluded_from_denominator():
+    """A run with NO verdict-bearing phase carried no reviewer accept — it is
+    excluded from the denominator, even when it did not solve."""
+    runs = [
+        # No verdicts at all: the reviewer never accepted -> not in denominator.
+        _scored(_run_v(task="t1", arm="full", verdicts=[]), False),
+        # A real accepted-not-solved so the arm still appears.
+        _scored(_run_v(task="t2", arm="full", verdicts=[_verdict(True)]), False),
+    ]
+    (arm,) = false_claim_rate(runs).per_arm
+    assert arm.accepted_runs == 1  # only t2; the empty-verdicts run is excluded
+    assert arm.false_claims == 1
+    assert arm.false_claim_rate == pytest.approx(1.0)
+
+
+def test_false_claim_uses_final_verdict_bearing_phase():
+    """When a run has multiple verdict phases, the FINAL one's accept is the
+    reviewer's operative decision — an earlier reject overturned by a later
+    accept still ships."""
+    runs = [
+        _scored(
+            _run_v(
+                task="t1",
+                arm="full",
+                verdicts=[_verdict(False, "critic"), _verdict(True, "critic-2")],
+            ),
+            False,
+        ),
+    ]
+    (arm,) = false_claim_rate(runs).per_arm
+    # Final verdict accepted -> counted as an accept; not solved -> false claim.
+    assert arm.accepted_runs == 1
+    assert arm.false_claims == 1
+    assert arm.false_claim_rate == pytest.approx(1.0)
+
+
+def test_false_claim_rate_none_when_arm_accepted_nothing():
+    """An arm that accepted NOTHING has an undefined denominator: the rate is
+    None (never a fabricated 0.0), matching the false_green_rate discipline."""
+    runs = [
+        _scored(_run_v(task="t1", arm="full", verdicts=[_verdict(False)]), False),
+        _scored(_run_v(task="t2", arm="full", verdicts=[]), True),
+    ]
+    (arm,) = false_claim_rate(runs).per_arm
+    assert arm.accepted_runs == 0
+    assert arm.false_claims == 0
+    assert arm.false_claim_rate is None
+
+
+def test_false_claim_rate_is_per_arm():
+    """Counts are broken out per arm, in sorted arm order."""
+    runs = [
+        _scored(_run_v(task="t1", arm="baseline", verdicts=[_verdict(True)]), False),
+        _scored(_run_v(task="t1", arm="full", verdicts=[_verdict(True)]), True),
+    ]
+    report = false_claim_rate(runs)
+    arms = {a.arm: a for a in report.per_arm}
+    assert [a.arm for a in report.per_arm] == ["baseline", "full"]
+    assert arms["baseline"].false_claim_rate == pytest.approx(1.0)
+    assert arms["full"].false_claim_rate == pytest.approx(0.0)
+
+
+def test_false_claim_rate_empty_is_defined_not_crash():
+    report = false_claim_rate([])
+    assert isinstance(report, FalseClaimReport)
+    assert report.per_arm == []
 
 
 # ---------------------------------------------------------------------------

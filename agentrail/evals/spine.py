@@ -108,6 +108,7 @@ from agentrail.evals.reporter import (
 )
 from agentrail.evals.probes import (
     ScoredRun,
+    false_claim_rate,
     guardrail_catch_rate,
     retry_attribution,
     retry_lift,
@@ -818,8 +819,13 @@ def run_spine(
     routing = routing_cost_regret(scored_runs)
     retry = retry_lift(scored_runs)
     guardrail = guardrail_catch_rate()
+    # Reviewer false-claim rate (#1172 AC1): accept ∧ not-solved per arm, computed
+    # from the SAME scored_runs (the parsed reviewer verdicts on each RunRecord
+    # joined with the hidden-test ``solved``). Measurement only — no accept
+    # decision is changed.
+    false_claim = false_claim_rate(scored_runs)
     probes_md = render_probes_markdown(
-        routing=routing, retry=retry, guardrail=guardrail
+        routing=routing, retry=retry, guardrail=guardrail, false_claim=false_claim
     )
     # Finding 4 — routing/retry VALUE audit (measurement only). Computed from the
     # SAME scored_runs (no extra runs, no behaviour change): routing $-delta vs

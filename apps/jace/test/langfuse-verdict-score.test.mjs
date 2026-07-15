@@ -360,10 +360,18 @@ test("runIdFrom: parses a JSON-string output and trims the run_id", () => {
   assert.equal(runIdFrom(JSON.stringify({ run_id: "  run_xyz  " })), "run_xyz");
 });
 
-test("runIdFrom: absent/blank/non-string/unparseable -> undefined", () => {
+test("runIdFrom: coerces a numeric run_id to a string (model may echo it as a JSON number)", () => {
+  // The real end-to-end test showed the model echoes run #4077 as the number
+  // 4077; the join key would be silently lost if we only accepted strings.
+  assert.equal(runIdFrom({ run_id: 4077 }), "4077");
+  assert.equal(runIdFrom(JSON.stringify({ run_id: 42 })), "42");
+});
+
+test("runIdFrom: absent/blank/non-usable/unparseable -> undefined", () => {
   assert.equal(runIdFrom({}), undefined);
   assert.equal(runIdFrom({ run_id: "   " }), undefined);
-  assert.equal(runIdFrom({ run_id: 42 }), undefined);
+  assert.equal(runIdFrom({ run_id: true }), undefined); // bool is not a usable id
+  assert.equal(runIdFrom({ run_id: Number.NaN }), undefined);
   assert.equal(runIdFrom("not json at all"), undefined);
   assert.equal(runIdFrom(null), undefined);
 });

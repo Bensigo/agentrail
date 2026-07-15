@@ -263,15 +263,14 @@ def _build_inventory(repo_dir: Path) -> List[Dict[str, Any]]:
     AGENTS.md, docs/prd/, and docs/milestones/ stay at their existing root
     paths).
 
-    The skills root installs to BOTH the legacy top-level ``skills/`` copy and
-    the new ``.agentrail/skills`` copy this PR. Per the execution plan
-    (§6 of the design doc), dropping the legacy top-level ``skills/`` copy is
-    explicitly PR-8's job ("drop ... dup skills copy from install"), not
-    PR-5's — PR-5 only adds the new House-2 install targets.
+    The skills root installs to the single canonical ``.agentrail/skills`` copy.
+    The legacy top-level ``skills/`` copy has been dropped from install (PR-8,
+    #1159 — "drop ... dup skills copy from install"). ``upgrade``'s
+    ``_migrate_legacy_layout`` folds any pre-existing top-level ``skills/``
+    content into ``.agentrail/skills`` for already-installed repos.
     """
     roots = [
         (repo_dir / "agentrail" / "templates", ""),
-        (repo_dir / "agentrail" / "skills", "skills"),
         (repo_dir / "agentrail" / "skills", ".agentrail/skills"),
     ]
     inventory: List[Dict[str, Any]] = []

@@ -13,7 +13,11 @@
  * Returns: 202 { ok: true }
  */
 import { NextRequest, NextResponse } from "next/server";
-import { getRepository, insertMemoryItems } from "@agentrail/db-postgres";
+import {
+  getRepository,
+  insertMemoryItems,
+  replaceMemoryItemsByWriter,
+} from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 import { scanForSecrets, summarizeFindings } from "../../../../../lib/secret-scan";
 
@@ -33,6 +37,7 @@ interface RawBody {
   repository_id: string;
   written_by?: string;
   source?: string;
+  replace_by_writer?: boolean;
   items: RawMemoryItem[];
 }
 
@@ -71,6 +76,9 @@ function isRawBody(v: unknown): v is RawBody {
   // Optional batch-level attribution; strings when present.
   if (o.written_by !== undefined && typeof o.written_by !== "string") return false;
   if (o.source !== undefined && typeof o.source !== "string") return false;
+  // Optional idempotent re-seed flag; boolean when present.
+  if (o.replace_by_writer !== undefined && typeof o.replace_by_writer !== "boolean")
+    return false;
   return true;
 }
 
@@ -134,19 +142,42 @@ export async function POST(req: NextRequest) {
   }));
 
   try {
-    await insertMemoryItems({
-      workspaceId,
-      repositoryId: body.repository_id,
-      // Defaults preserve prior behavior: source "review", writtenBy falls back
-      // to source, and each item's type falls back to "fact" inside the query.
-      source: body.source ?? "review",
-      writtenBy: body.written_by,
-      items: itemsWithRunTag.map((it) => ({
-        content: it.content,
-        tags: it.tags,
-        type: it.type,
-      })),
-    });
+    // Idempotent re-seed: when the caller asks to replace and identifies the
+    // writer (and repo), atomically delete prior rows for that writer then
+    // insert this batch — so re-running onboarding does not accumulate dupes.
+    // Requires a non-empty writtenBy: without a writer there is nothing to
+    // scope the delete to, so fall back to the plain insert path.
+    if (
+      body.replace_by_writer === true &&
+      body.written_by &&
+      body.repository_id
+    ) {
+      await replaceMemoryItemsByWriter({
+        workspaceId,
+        repositoryId: body.repository_id,
+        writtenBy: body.written_by,
+        source: body.source ?? "review",
+        items: itemsWithRunTag.map((it) => ({
+          content: it.content,
+          tags: it.tags,
+          type: it.type,
+        })),
+      });
+    } else {
+      await insertMemoryItems({
+        workspaceId,
+        repositoryId: body.repository_id,
+        // Defaults preserve prior behavior: source "review", writtenBy falls back
+        // to source, and each item's type falls back to "fact" inside the query.
+        source: body.source ?? "review",
+        writtenBy: body.written_by,
+        items: itemsWithRunTag.map((it) => ({
+          content: it.content,
+          tags: it.tags,
+          type: it.type,
+        })),
+      });
+    }
   } catch (err) {
     console.error("[ingest/memory-items] Postgres insert failed:", err);
     return NextResponse.json({ error: "Upstream storage error" }, { status: 502 });

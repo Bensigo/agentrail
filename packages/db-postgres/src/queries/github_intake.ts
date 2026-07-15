@@ -704,7 +704,10 @@ export async function enqueueOnboard(data: {
       title: `Onboard ${data.repoFullName}`,
       body: "",
       tier: 0,
-      remainingBudget: 5,
+      // Onboarding is best-effort — cap at 3 attempts. Unlike an issue run, a
+      // bigger model/tier can't fix a clone/index failure, so extra retries only
+      // burn budget without changing the outcome.
+      remainingBudget: 3,
       state: "queued",
       blockedBy: [],
     })

@@ -93,7 +93,7 @@ describe("enqueueOnboard — one-shot onboard admission (kind='onboard')", () =>
       title: "Onboard acme/widgets",
       state: "queued",
       tier: 0,
-      remainingBudget: 5,
+      remainingBudget: 3,
       blockedBy: [],
     });
     // And the row id equals the deterministic id it returns.

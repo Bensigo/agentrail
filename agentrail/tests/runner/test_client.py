@@ -405,3 +405,33 @@ def test_from_dict_defaults_tier_to_zero_when_non_int():
 def test_from_dict_coerces_numeric_string_tier():
     # A JSON-stringified int is coerced rather than rejected.
     assert WorkItem.from_dict(_claim_payload(tier="1")).tier == 1
+
+
+# --- WorkItem.from_dict: work kind (#1149) -----------------------------------
+
+
+def test_from_dict_defaults_kind_to_issue_when_absent():
+    # A payload from an older server that omits `kind` must run the normal issue
+    # path, never the onboard path.
+    item = WorkItem.from_dict(_claim_payload())  # no `kind` key at all
+    assert item.kind == "issue"
+
+
+def test_from_dict_honors_onboard_kind():
+    item = WorkItem.from_dict(_claim_payload(kind="onboard"))
+    assert item.kind == "onboard"
+
+
+def test_from_dict_coerces_null_kind_to_issue():
+    # A null kind falls back to "issue" via the `or "issue"` guard, so a
+    # malformed payload never dispatches into an empty/None kind.
+    assert WorkItem.from_dict(_claim_payload(kind=None)).kind == "issue"
+
+
+def test_workitem_defaults_kind_to_issue():
+    # Constructing a WorkItem without passing kind defaults to "issue".
+    item = WorkItem(
+        id="x", workspace_id="w", source="github",
+        external_id="42", repo_url="", ref="main", title="", body="",
+    )
+    assert item.kind == "issue"

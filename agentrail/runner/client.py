@@ -73,6 +73,12 @@ class WorkItem:
     # The backend repositories row id, used to link this run's ingested cost /
     # telemetry back to the dashboard. "" when the backend didn't resolve one.
     repository_id: str = ""
+    # What kind of work this is: "issue" (default — run the SDLC spine) or
+    # "onboard" (index a freshly connected repo and seed workspace memory). The
+    # backend stamps it on the queue entry (queue_entries.kind); the runner
+    # dispatches on it. Defaults to "issue" so a payload from an older server
+    # that omits it always runs the normal issue path.
+    kind: str = "issue"
     # The escalation tier the backend assigned this (re-)attempt. 0 = run at the
     # config-default model; 1+ = escalate to a stronger model (see
     # agentrail.runner.escalation.model_for_tier). Defaults to 0 so a payload
@@ -123,6 +129,7 @@ class WorkItem:
             title=str(d.get("title") or ""),
             body=str(d.get("body") or ""),
             repository_id=str(d.get("repository_id") or ""),
+            kind=str(d.get("kind") or "issue"),
             tier=tier,
             mcp_keys=mcp_keys,
         )

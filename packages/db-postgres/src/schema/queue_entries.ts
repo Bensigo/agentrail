@@ -36,6 +36,12 @@ export const queueEntries = pgTable("queue_entries", {
     .notNull()
     .references(() => workspaces.id, { onDelete: "cascade" }),
   source: queueSourceEnum("source").notNull(),
+  // What kind of work this entry represents: 'issue' (default — run the SDLC
+  // spine against a GitHub/CLI issue) or 'onboard' (index a freshly connected
+  // repo and seed workspace memory). Additive + backward-compatible: existing
+  // rows and any claim payload that omits it default to 'issue', so old runners
+  // and old servers keep working unchanged.
+  kind: text("kind").notNull().default("issue"),
   // GH issue number/url, Linear id, or a cli-local id.
   externalId: text("external_id").notNull(),
   title: text("title").notNull(),

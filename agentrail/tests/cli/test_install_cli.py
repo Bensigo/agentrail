@@ -82,7 +82,7 @@ class TestFreshInstall(TestCase):
         _run_install(self.repo, self.target)
         self.assertTrue((self.target / "AGENTS.md").exists())
         self.assertTrue((self.target / "some-template.md").exists())
-        self.assertTrue((self.target / "skills" / "my-skill" / "SKILL.md").exists())
+        self.assertTrue((self.target / ".agentrail" / "skills" / "my-skill" / "SKILL.md").exists())
         self.assertTrue((self.target / "scripts" / "agentrail").exists())
 
     def test_skip_patterns_not_installed(self):
@@ -124,7 +124,7 @@ class TestFreshInstall(TestCase):
     def test_tracks_skill_and_registry_sources(self):
         _run_install(self.repo, self.target)
         state = json.loads((self.target / ".agentrail" / "state.json").read_text())
-        skill = next(f for f in state["managedFiles"] if f["path"] == "skills/my-skill/SKILL.md")
+        skill = next(f for f in state["managedFiles"] if f["path"] == ".agentrail/skills/my-skill/SKILL.md")
         self.assertEqual(skill["source"], "agentrail/skills/my-skill/SKILL.md")
 
 
@@ -132,9 +132,9 @@ class TestHouse2Layout(TestCase):
     """PR-5 / #1136: fresh installs write the House-2 .agentrail/-rooted layout.
 
     CONTEXT.md and docs/agents/* are clean one-time moves (no transitional
-    duplicate at the old path). skills/ installs to BOTH the legacy top-level
-    copy and the new .agentrail/skills copy — dropping the legacy dup is
-    explicitly PR-8's job per the execution plan, not this PR's."""
+    duplicate at the old path). skills/ installs to the single canonical
+    .agentrail/skills copy — the legacy top-level dup was dropped from install
+    in PR-8 (#1159)."""
 
     def setUp(self):
         self.repo = _make_repo()
@@ -169,19 +169,19 @@ class TestHouse2Layout(TestCase):
         self.assertNotIn("CONTEXT.md", paths)
         self.assertNotIn("docs/agents/agent-instructions.md", paths)
 
-    def test_dual_skills_root_both_installed(self):
+    def test_skills_root_installed_at_canonical_location_only(self):
         _run_install(self.repo, self.target)
-        self.assertTrue((self.target / "skills" / "my-skill" / "SKILL.md").exists())
+        self.assertFalse((self.target / "skills" / "my-skill" / "SKILL.md").exists())
         self.assertTrue((self.target / ".agentrail" / "skills" / "my-skill" / "SKILL.md").exists())
 
-    def test_dual_skills_root_share_source_in_state(self):
+    def test_skills_root_tracked_at_canonical_location_only(self):
         _run_install(self.repo, self.target)
         state = json.loads((self.target / ".agentrail" / "state.json").read_text())
-        legacy_skill = next(f for f in state["managedFiles"] if f["path"] == "skills/my-skill/SKILL.md")
+        paths = {f["path"] for f in state["managedFiles"]}
+        self.assertNotIn("skills/my-skill/SKILL.md", paths)
         house2_skill = next(
             f for f in state["managedFiles"] if f["path"] == ".agentrail/skills/my-skill/SKILL.md"
         )
-        self.assertEqual(legacy_skill["source"], "agentrail/skills/my-skill/SKILL.md")
         self.assertEqual(house2_skill["source"], "agentrail/skills/my-skill/SKILL.md")
 
     def test_agentrail_gitignore_written(self):

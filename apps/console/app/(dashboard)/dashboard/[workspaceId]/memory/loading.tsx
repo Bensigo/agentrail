@@ -9,7 +9,7 @@ export default function Loading() {
           Memory is managed via the AgentRail CLI.
         </p>
       </div>
-      <SkeletonTable columns={5} rows={8} />
+      <SkeletonTable columns={7} rows={8} />
     </div>
   );
 }

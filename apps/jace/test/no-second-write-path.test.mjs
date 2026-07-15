@@ -51,7 +51,12 @@ function stripComments(src) {
 
 // The known, reviewed tool set. A file appearing here or not is a deliberate
 // human decision, not something a maker should silently expand.
-const EXPECTED_TOOL_FILES = ["codebase_query.ts", "create_issue.ts", "standup.ts"].sort();
+const EXPECTED_TOOL_FILES = [
+  "codebase_query.ts",
+  "create_issue.ts",
+  "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
+  "standup.ts",
+].sort();
 const EXPECTED_MUTATING_TOOL = "create_issue.ts";
 const EXPECTED_CHILD_PROCESS_SITES = [
   "agent/tools/codebase_query.ts",

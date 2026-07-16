@@ -159,6 +159,36 @@ def _ref_is_commit_sha(ref: str) -> bool:
     return bool(_SHA_RE.match(ref))
 
 
+def _authenticated_clone_url(repo_url: str, token: str) -> str:
+    """Embed ``token`` as HTTP Basic auth (``x-access-token``) in an ``https://``
+    clone URL, so ``git clone`` (and, since the cloned ``origin`` remote then
+    carries it, every later ``git push``) authenticates as the workspace's
+    connected GitHub OAuth token / a locally configured PAT — the SAME
+    substitution the Docker sandbox's entrypoint already does
+    (``agentrail/docker/runner/entrypoint.sh``), so both sandbox paths
+    authenticate identically.
+
+    A no-op when there is no token, or the URL isn't ``https://`` (SSH remotes
+    are unaffected — git's credential subsystem is HTTP(S)-only, so an SSH clone
+    keeps relying on the host's own SSH keys exactly as before this fix).
+    """
+    if not token or not repo_url.startswith("https://"):
+        return repo_url
+    return repo_url.replace("https://", f"https://x-access-token:{token}@", 1)
+
+
+def _redact_token(text: str, token: str) -> str:
+    """Strip a raw secret out of captured process output before it can leave this
+    host as ``logs_tail``/``gate_reason`` (``report_result``/``report_telemetry``
+    upload both to the backend). Defense in depth: git/gh diagnostics don't
+    always redact credentials embedded in a URL on their own, and this makes it
+    impossible for the token to survive into anything this runner reports back.
+    """
+    if not token:
+        return text
+    return text.replace(token, "***")
+
+
 def _clone_command(repo_url: str, ref: str, dest: str) -> List[str]:
     # ``--branch`` checks out ref directly when it is a branch/tag NAME. A bare
     # commit SHA is NOT a valid ``--branch`` argument (``fatal: Remote branch
@@ -274,9 +304,13 @@ def run_issue_on_host(
 
     ``env`` is forwarded to the run; ``AGENTRAIL_FAILURE_HANDOFF`` is set from
     ``failure_handoff`` (a possibly large/multiline compacted handoff, kept off
-    the argv), and any link env (``AGENTRAIL_SERVER_*``) already in ``env`` is
-    passed through so the run ingests. The agent defaults to ``claude`` unless
-    ``AGENTRAIL_AGENT`` is set in ``env``.
+    the argv). ``env["GIT_TOKEN"]`` (the workspace's connected GitHub OAuth
+    token, or a locally configured PAT) authenticates the clone/push over HTTPS
+    and `gh pr create` on green — see :func:`_authenticated_clone_url`; a token
+    is never placed on argv or left in any captured output this function
+    returns (:func:`_redact_token`). Any link env (``AGENTRAIL_SERVER_*``)
+    already in ``env`` is passed through so the run ingests. The agent defaults
+    to ``claude`` unless ``AGENTRAIL_AGENT`` is set in ``env``.
 
     When ``AGENTRAIL_SANDBOX_RUNTIME=1`` is in ``env``, the run command is wrapped
     with ``npx @anthropic-ai/sandbox-runtime`` for whole-process isolation
@@ -308,12 +342,27 @@ def run_issue_on_host(
     agent = env.get(ENV_AGENT) or DEFAULT_AGENT
     sandbox_runtime = env.get(ENV_SANDBOX_RUNTIME) == "1"
 
+    # GitHub auth for this run: GIT_TOKEN is either the workspace's connected
+    # OAuth token (threaded through by the CLI's claim handling — see
+    # agentrail/cli/commands/runner.py / agentrail/runner/client.py) or a
+    # locally configured PAT (back-compat fallback, unchanged behaviour).
+    # Embedded into the clone URL below so clone/push authenticate, and
+    # exported as GH_TOKEN so `gh pr create` in _publish_green does too. NOTE:
+    # an OAuth token issued at login can expire; there is no refresh here — an
+    # expired token just surfaces as a normal git/gh auth failure.
+    git_token = (env.get("GIT_TOKEN") or "").strip()
+
     # Child-process env: inherit our environment, layer the caller's env, and set
     # the compacted handoff (the execute phase reads it from this var).
     child_env = dict(os.environ)
     child_env.update(env)
     if failure_handoff is not None:
         child_env[ENV_FAILURE_HANDOFF] = failure_handoff
+    if git_token and not child_env.get("GH_TOKEN") and not child_env.get("GITHUB_TOKEN"):
+        # gh CLI reads GH_TOKEN (preferred) or GITHUB_TOKEN to authenticate
+        # non-interactively; only set it when the caller hasn't already
+        # configured gh auth some other way.
+        child_env["GH_TOKEN"] = git_token
 
     # Fresh isolated working dir per run (injectable for hermetic tests).
     if run_dir_factory is not None:
@@ -327,10 +376,13 @@ def run_issue_on_host(
     log_dir = work_dir / _LOG_SUBDIR
 
     try:
-        # 1. Clone at ref.
+        # 1. Clone at ref. The clone URL carries the token (if any) as HTTP Basic
+        # auth so a private repo authenticates; repo_url itself (token-free) is
+        # what's echoed anywhere we log/report the repo being run.
+        clone_url = _authenticated_clone_url(repo_url, git_token)
         try:
             clone = runner.run(
-                _clone_command(repo_url, ref, str(repo_dir)),
+                _clone_command(clone_url, ref, str(repo_dir)),
                 cwd=str(work_dir), env=child_env, timeout=timeout,
             )
         except HostTimeout as exc:
@@ -339,7 +391,10 @@ def run_issue_on_host(
         except (HostError, OSError, ValueError) as exc:
             return RunResult(status="error", gate_reason=f"clone error: {exc}")
         if getattr(clone, "returncode", 0) != 0:
-            tail = _logs_tail(getattr(clone, "stdout", ""), getattr(clone, "stderr", ""))
+            tail = _redact_token(
+                _logs_tail(getattr(clone, "stdout", ""), getattr(clone, "stderr", "")),
+                git_token,
+            )
             return RunResult(status="error",
                              gate_reason="git clone failed",
                              logs_tail=tail or "(no output)")
@@ -359,8 +414,11 @@ def run_issue_on_host(
                 return RunResult(status="error",
                                  gate_reason=f"checkout error: {exc}")
             if getattr(checkout, "returncode", 0) != 0:
-                tail = _logs_tail(
-                    getattr(checkout, "stdout", ""), getattr(checkout, "stderr", "")
+                tail = _redact_token(
+                    _logs_tail(
+                        getattr(checkout, "stdout", ""), getattr(checkout, "stderr", "")
+                    ),
+                    git_token,
                 )
                 return RunResult(status="error",
                                  gate_reason=f"git checkout {ref} failed",
@@ -437,7 +495,10 @@ def run_issue_on_host(
                              gate_reason=f"host run error: {exc}")
 
         # 3. Parse run.json → RunResult (mirrors the container parser).
-        logs_tail = _logs_tail(getattr(proc, "stdout", ""), getattr(proc, "stderr", ""))
+        logs_tail = _redact_token(
+            _logs_tail(getattr(proc, "stdout", ""), getattr(proc, "stderr", "")),
+            git_token,
+        )
         result = _result_from_run_json(
             log_dir / run_id,
             run_status=getattr(proc, "returncode", 1),

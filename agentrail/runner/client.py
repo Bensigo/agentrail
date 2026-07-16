@@ -89,6 +89,16 @@ class WorkItem:
     # AGENTRAIL_MCP_<PROVIDER>_KEY so native_runner writes the agent's MCP config
     # into the clone. Empty when no MCP connector is connected.
     mcp_keys: Dict[str, str] = field(default_factory=dict)
+    # The workspace's connected GitHub OAuth access_token (the console's
+    # getGithubToken, attached by the claim route), so the runner can
+    # authenticate git clone/push + `gh pr create` for THIS workspace without a
+    # separately-configured PAT. "" when the workspace owner hasn't linked
+    # GitHub — the runner then falls back to whatever GIT_TOKEN it already has
+    # in its own environment (back-compat). NOTE: this OAuth token can expire;
+    # there is no refresh here, an expired token just surfaces as a normal
+    # git/gh auth failure. Never logged — see native_runner's redaction of
+    # captured process output before it is reported back as telemetry.
+    github_token: str = ""
 
     @property
     def issue_number(self) -> str:
@@ -132,6 +142,7 @@ class WorkItem:
             kind=str(d.get("kind") or "issue"),
             tier=tier,
             mcp_keys=mcp_keys,
+            github_token=str(d.get("github_token") or ""),
         )
 
 

@@ -3,6 +3,7 @@ import {
   claimQueueEntry,
   touchApiKeyLastUsed,
   getMcpConnectorKeys,
+  getGithubToken,
 } from "@agentrail/db-postgres";
 import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
@@ -59,5 +60,29 @@ export async function GET(request: NextRequest) {
     console.error("[runner/claim] failed to load MCP keys:", err);
   }
 
-  return NextResponse.json({ ...item, mcp_keys: mcpKeys });
+  // Hand the run the workspace's connected GitHub OAuth token (the same token
+  // getGithubToken already resolves for the heartbeat's GitHub polling) so the
+  // runner can authenticate `git clone`/`git push`/`gh pr create` for THIS
+  // workspace's repo over the already-authenticated claim link — no separately
+  // configured PAT required. "" when the workspace owner hasn't linked GitHub
+  // (or the stored token is null); the runner then falls back to its own
+  // locally configured GIT_TOKEN, if any (back-compat).
+  //
+  // NOTE: this is the OAuth access_token NextAuth persisted at login — it can
+  // expire and there is no refresh flow here (out of scope for this fix). An
+  // expired token surfaces as an ordinary git/gh auth failure on the runner
+  // side. Never logged: only caught error OBJECTS are logged below, never the
+  // token value itself.
+  let githubToken = "";
+  try {
+    githubToken = (await getGithubToken(workspaceId)) ?? "";
+  } catch (err) {
+    console.error("[runner/claim] failed to load GitHub token:", err);
+  }
+
+  return NextResponse.json({
+    ...item,
+    mcp_keys: mcpKeys,
+    github_token: githubToken,
+  });
 }

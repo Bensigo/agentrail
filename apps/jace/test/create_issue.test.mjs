@@ -5,6 +5,8 @@ import {
   buildCreateArgv,
   parseCreateOutput,
   runCreateIssue,
+  notConnectedGuidance,
+  NOT_CONNECTED_MARKER,
 } from "../agent/lib/create_issue.core.mjs";
 
 test("buildIssueBody renders the house-format sections in order", () => {
@@ -64,6 +66,25 @@ test("buildCreateArgv produces the exact args array", () => {
     "--body",
     "MARKDOWN BODY",
   ]);
+});
+
+test("buildCreateArgv omits --repo when repo is not given", () => {
+  const argv = buildCreateArgv({ title: "My title", body: "MARKDOWN BODY" });
+  assert.deepEqual(argv, [
+    "issue",
+    "create",
+    "--connector",
+    "github",
+    "--title",
+    "My title",
+    "--body",
+    "MARKDOWN BODY",
+  ]);
+});
+
+test("buildCreateArgv omits --repo when repo is an empty string", () => {
+  const argv = buildCreateArgv({ repo: "", title: "t", body: "b" });
+  assert.ok(!argv.includes("--repo"));
 });
 
 test("parseCreateOutput parses the real success line", () => {
@@ -177,17 +198,24 @@ test("runCreateIssue prefers explicit repo over JACE_TARGET_REPO", async () => {
   assert.equal(seenRepo, "explicit/repo");
 });
 
-test("runCreateIssue throws when neither repo nor JACE_TARGET_REPO is set", async () => {
-  await assert.rejects(
-    () =>
-      runCreateIssue({
-        execFileFn: async () => ({ stdout: "" }),
-        env: {},
-        title: "t",
-        acceptanceCriteria: ["ac"],
-      }),
-    /no target repo/,
-  );
+test("runCreateIssue omits --repo when neither repo nor JACE_TARGET_REPO is set (CLI resolves it)", async () => {
+  // Connecting a repo on the console must be sufficient — no manual repo
+  // config required from Jace's side. The CLI resolves the repo itself.
+  let seenArgv = null;
+  const fakeExec = async (bin, argv) => {
+    seenArgv = argv;
+    return {
+      stdout: "Created a/b#1 (label ready-for-agent): https://x/issues/1\n",
+    };
+  };
+  const ref = await runCreateIssue({
+    execFileFn: fakeExec,
+    env: {},
+    title: "t",
+    acceptanceCriteria: ["ac"],
+  });
+  assert.ok(!seenArgv.includes("--repo"));
+  assert.equal(ref.repo, "a/b");
 });
 
 test("runCreateIssue surfaces a clear error when the CLI fails", async () => {
@@ -205,6 +233,62 @@ test("runCreateIssue surfaces a clear error when the CLI fails", async () => {
         acceptanceCriteria: ["ac"],
       }),
     /issue create` failed[\s\S]*gh: not authenticated/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// "Connect a repo first" graceful guidance (no separately-supplied GitHub PAT,
+// no manual JACE_TARGET_REPO) — the CLI signals via NOT_CONNECTED_MARKER when
+// it can resolve NEITHER a repo NOR a token for the workspace.
+// ---------------------------------------------------------------------------
+
+test("notConnectedGuidance includes the console URL when configured", () => {
+  const msg = notConnectedGuidance({ JACE_CONSOLE_BASE_URL: "https://app.agentrail.dev/" });
+  assert.match(msg, /connect a repo/i);
+  assert.match(msg, /https:\/\/app\.agentrail\.dev/);
+  assert.ok(!msg.endsWith("/"), "trailing slash from the base URL is stripped");
+});
+
+test("notConnectedGuidance still reads fine with no console URL configured", () => {
+  const msg = notConnectedGuidance({});
+  assert.match(msg, /connect a repo/i);
+});
+
+test("runCreateIssue returns friendly guidance instead of throwing when the CLI reports not connected", async () => {
+  const failing = async () => {
+    const err = new Error("exit code 3");
+    err.stderr =
+      `${NOT_CONNECTED_MARKER}: no GitHub repo is connected for this workspace ` +
+      "(and no --repo was given). Connect a repo on the AgentRail console.";
+    throw err;
+  };
+  const result = await runCreateIssue({
+    execFileFn: failing,
+    env: { JACE_CONSOLE_BASE_URL: "https://app.agentrail.dev" },
+    title: "t",
+    acceptanceCriteria: ["ac"],
+  });
+  assert.deepEqual(result, {
+    connected: false,
+    message: notConnectedGuidance({ JACE_CONSOLE_BASE_URL: "https://app.agentrail.dev" }),
+  });
+});
+
+test("runCreateIssue does not mistake an unrelated CLI failure for not-connected", async () => {
+  const failing = async () => {
+    const err = new Error("exit code 1");
+    err.stderr = "gh: rate limited";
+    throw err;
+  };
+  await assert.rejects(
+    () =>
+      runCreateIssue({
+        execFileFn: failing,
+        env: {},
+        title: "t",
+        acceptanceCriteria: ["ac"],
+      }),
+    /issue create` failed[\s\S]*rate limited/,
   );
 });
 

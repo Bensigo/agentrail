@@ -18,6 +18,36 @@
 
 import { hardenUntrusted, FIELD_CAPS } from "./sanitize-untrusted.core.mjs";
 
+// Stable marker the CLI (`agentrail issue create --connector github`, see
+// agentrail/cli/commands/issue.py) prefixes onto its stderr when it could not
+// resolve EITHER a target repo or a GitHub token for this workspace by any
+// means (no --repo, no GITHUB_OAUTH_TOKEN/GITHUB_TOKEN env, AND its own
+// Postgres fallback found nothing connected for AGENTRAIL_WORKSPACE_ID). This
+// is what lets `runCreateIssue` tell "the user hasn't connected a repo yet"
+// apart from a genuine CLI/network/auth failure, so it can hand back friendly
+// guidance instead of a raw stack-trace-shaped error (issue: connect-repo
+// sufficiency fix).
+export const NOT_CONNECTED_MARKER = "AGENTRAIL_NOT_CONNECTED";
+
+/**
+ * Friendly "connect a repo first" guidance shown instead of the raw CLI error
+ * when the CLI reports {@link NOT_CONNECTED_MARKER}. Includes the console URL
+ * when Jace has one configured (JACE_CONSOLE_BASE_URL — the same var
+ * fetch_workspace_memory already reads) so the user knows exactly where to go.
+ *
+ * @param {Record<string, string|undefined>} [env]
+ * @returns {string}
+ */
+export function notConnectedGuidance(env = {}) {
+  const consoleUrl = String(env.JACE_CONSOLE_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  const where = consoleUrl ? ` (${consoleUrl})` : "";
+  return (
+    "I can't create an issue yet — no GitHub repo is connected for this " +
+    `workspace. Connect a repo on the AgentRail console${where} ` +
+    "(Settings → Connectors → GitHub), then try again."
+  );
+}
+
 /**
  * Build the AgentRail "house format" issue body.
  *
@@ -87,25 +117,24 @@ export function buildIssueBody({
  * The trigger label `ready-for-agent` is applied SERVER-SIDE by the CLI in
  * connector mode; we deliberately do NOT pass any labels.
  *
+ * `repo` is OPTIONAL: when omitted (or empty), `--repo` is left off entirely
+ * and the CLI resolves the target repo itself from the workspace's connected
+ * GitHub repo (the same one "connect a repo" writes on the console) — this is
+ * what lets Jace work without a manually-set JACE_TARGET_REPO. Pass `repo`
+ * only for an explicit override (a caller-supplied repo, or the
+ * JACE_TARGET_REPO last-resort env fallback — see {@link runCreateIssue}).
+ *
  * @param {object} input
- * @param {string} input.repo - "owner/repo"
+ * @param {string} [input.repo] - "owner/repo"; omitted lets the CLI resolve it
  * @param {string} input.title
  * @param {string} input.body - full house-format markdown
  * @returns {string[]}
  */
 export function buildCreateArgv({ repo, title, body } = {}) {
-  return [
-    "issue",
-    "create",
-    "--connector",
-    "github",
-    "--repo",
-    repo,
-    "--title",
-    title,
-    "--body",
-    body,
-  ];
+  const argv = ["issue", "create", "--connector", "github"];
+  if (repo) argv.push("--repo", repo);
+  argv.push("--title", title, "--body", body);
+  return argv;
 }
 
 /**
@@ -140,17 +169,34 @@ export function parseCreateOutput(stdout) {
  * side-effect-free: `execFileFn` is a promisified execFile-style function
  * `(bin, argv, opts) => Promise<{ stdout, stderr }>`.
  *
+ * The target repo is NOT required from the caller or the environment: when
+ * `repo` is omitted, `--repo` is left off the CLI invocation entirely and the
+ * CLI resolves it itself from the workspace's connected GitHub repo (the one
+ * "connect a repo" writes on the console) — connecting a repo on the console is
+ * the only thing a user should ever need to do. `env.JACE_TARGET_REPO` is
+ * still honored, but only as a LAST-RESORT override for deployments that need
+ * to pin a specific repo; it is never required. Likewise, no GitHub token needs
+ * to be supplied here — the CLI resolves that from the workspace's connection
+ * too (see agentrail/cli/commands/issue.py).
+ *
+ * When the CLI can resolve NEITHER a repo NOR a token for this workspace, it
+ * fails with {@link NOT_CONNECTED_MARKER} on stderr; this function catches
+ * that specific case and returns a friendly `{ connected: false, message }`
+ * result instead of throwing, so the tool can relay clear guidance ("connect a
+ * repo on the console") rather than a raw CLI error. Any OTHER CLI failure
+ * (bad title, network trouble, `gh`/API errors) still throws as before.
+ *
  * @param {object} input
  * @param {(bin: string, argv: string[], opts: object) => Promise<{stdout: string, stderr?: string}>} input.execFileFn
  * @param {NodeJS.ProcessEnv} input.env
- * @param {string} [input.repo] - falls back to env.JACE_TARGET_REPO
+ * @param {string} [input.repo] - explicit override; falls back to env.JACE_TARGET_REPO (last resort), then to the CLI's own workspace lookup
  * @param {string} input.title
  * @param {string} [input.parent]
  * @param {string} [input.requiredContext]
  * @param {string} [input.whatToBuild]
  * @param {string[]} input.acceptanceCriteria
  * @param {string} [input.verification]
- * @returns {Promise<{ repo: string, number: number, url: string, label: string }>}
+ * @returns {Promise<{ repo: string, number: number, url: string, label: string } | { connected: false, message: string }>}
  */
 export async function runCreateIssue({
   execFileFn,
@@ -165,13 +211,10 @@ export async function runCreateIssue({
 } = {}) {
   const resolvedEnv = env ?? {};
   const bin = resolvedEnv.JACE_AGENTRAIL_BIN || "agentrail";
-  const resolvedRepo = repo || resolvedEnv.JACE_TARGET_REPO;
+  // Last-resort override only — an unset repo is NOT an error here; the CLI
+  // resolves it from the workspace's connected GitHub repo.
+  const resolvedRepo = repo || resolvedEnv.JACE_TARGET_REPO || "";
 
-  if (!resolvedRepo) {
-    throw new Error(
-      "runCreateIssue: no target repo. Pass `repo` or set JACE_TARGET_REPO in the environment.",
-    );
-  }
   if (!title) {
     throw new Error("runCreateIssue: `title` is required.");
   }
@@ -193,9 +236,12 @@ export async function runCreateIssue({
   try {
     result = await execFileFn(bin, argv, { env: resolvedEnv });
   } catch (err) {
-    const stderr = err && err.stderr ? `\n${err.stderr}` : "";
+    const stderr = err && err.stderr ? String(err.stderr) : "";
+    if (stderr.includes(NOT_CONNECTED_MARKER)) {
+      return { connected: false, message: notConnectedGuidance(resolvedEnv) };
+    }
     throw new Error(
-      `runCreateIssue: \`${bin} issue create\` failed: ${err && err.message ? err.message : String(err)}${stderr}`,
+      `runCreateIssue: \`${bin} issue create\` failed: ${err && err.message ? err.message : String(err)}${stderr ? `\n${stderr}` : ""}`,
     );
   }
 

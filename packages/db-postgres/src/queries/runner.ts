@@ -351,6 +351,11 @@ export interface QueueEntryListItem {
   tier: number;
   remainingBudget: number;
   state: string;
+  /** Issue numbers this entry is blocked by (parked while any is unmet) — the
+   * only durable, human-surfaceable "park reason" (guardrail park reasons ride
+   * on the enqueue response only; the schema has no reason column, see
+   * `github_intake.ts`). */
+  blockedBy: number[];
   updatedAt: string;
 }
 
@@ -397,6 +402,7 @@ export async function listQueueEntries(
       tier: queueEntries.tier,
       remainingBudget: queueEntries.remainingBudget,
       state: queueEntries.state,
+      blockedBy: queueEntries.blockedBy,
       updatedAt: queueEntries.updatedAt,
     })
     .from(queueEntries)
@@ -410,6 +416,7 @@ export async function listQueueEntries(
     tier: r.tier,
     remainingBudget: r.remainingBudget,
     state: r.state,
+    blockedBy: (r.blockedBy ?? []) as number[],
     updatedAt:
       r.updatedAt instanceof Date ? r.updatedAt.toISOString() : String(r.updatedAt),
   }));

@@ -62,6 +62,11 @@ export async function GET(
       repository_name: repositoryName,
       agent: run.agent,
       branch: run.branch,
+      // The issue/task title (set at claim time from queue_entries.title —
+      // see `claimQueueEntry`). Used by the run-detail breadcrumb so it can
+      // read "Work / <run name>" instead of a raw run id (#1231, names over
+      // IDs — house rule).
+      title: run.title ?? null,
       status: run.status,
       startedAt: run.startedAt?.toISOString() ?? null,
       finishedAt: run.finishedAt?.toISOString() ?? null,

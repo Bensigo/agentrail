@@ -9,6 +9,9 @@ export interface RunDetail {
   repository_name: string | null;
   branch: string;
   agent: string;
+  /** The issue/task title (claim-time copy of queue_entries.title); null for
+   * runs that predate the durable queue or weren't claimed from it. */
+  title?: string | null;
   status: string;
   duration: number | null;
   total_cost: number;

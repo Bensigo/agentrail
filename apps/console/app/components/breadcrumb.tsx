@@ -3,10 +3,12 @@
 import { usePathname } from "next/navigation";
 
 // Duplicate of the sidebar's grouping in ./sidebar-nav — keep in sync when
-// the nav changes (#1229). "queue" is Issue Queue, not yet renamed "Work" —
-// that rename lands in a later slice (spec §3).
+// the nav changes (#1229, renamed #1231). "queue" stays mapped to its old
+// label for the instant before its redirect fires; "work" is the real nav
+// destination now (spec §3).
 const SEGMENT_LABELS: Record<string, string> = {
   runs: "Runs",
+  work: "Work",
   queue: "Issue Queue",
   connectors: "Connectors",
   failures: "Failures",

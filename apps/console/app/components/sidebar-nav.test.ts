@@ -26,10 +26,10 @@ describe("NAV_ZONES data structure", () => {
     expect(SETTINGS_ZONE.collapsible).toBe(false);
   });
 
-  it("Your engineer zone: Home (root href) then Issue Queue (unchanged href)", () => {
+  it("Your engineer zone: Home (root href) then Work (href renamed from queue, #1231)", () => {
     expect(YOUR_ENGINEER_ZONE.items.map((i) => [i.label, i.href])).toEqual([
       ["Home", ""],
-      ["Issue Queue", "queue"],
+      ["Work", "work"],
     ]);
   });
 
@@ -54,11 +54,13 @@ describe("NAV_ZONES data structure", () => {
     ]);
   });
 
-  it("every pre-existing href from the flat nav is still present exactly once", () => {
+  it("every pre-existing href except queue (renamed to work, #1231) is still present exactly once", () => {
     const legacyHrefs = [
       "", // Overview -> Home
       "runs",
-      "queue",
+      // "queue" intentionally excluded: #1231 renamed its nav item's href to
+      // "work" — the /queue route itself still exists, but only as a
+      // redirect (see the next test), not a nav destination.
       "connectors",
       "failures",
       "review-gates",
@@ -76,11 +78,17 @@ describe("NAV_ZONES data structure", () => {
     }
   });
 
-  it("adds no new hrefs beyond the legacy set (teams stays a redirect stub to /members)", () => {
+  it("queue is gone from the nav; work is present exactly once (#1231 rename)", () => {
+    const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
+    expect(allHrefs).not.toContain("queue");
+    expect(allHrefs.filter((h) => h === "work")).toHaveLength(1);
+  });
+
+  it("adds no new hrefs beyond the legacy set plus work (teams stays a redirect stub to /members)", () => {
     const legacyHrefs = new Set([
       "",
       "runs",
-      "queue",
+      "work", // #1231: renamed from "queue"
       "connectors",
       "failures",
       "review-gates",
@@ -133,6 +141,9 @@ describe("isEngineRoomRoute", () => {
 
   it("is false for Your engineer and Settings routes", () => {
     expect(isEngineRoomRoute(BASE, BASE)).toBe(false);
+    expect(isEngineRoomRoute(`${BASE}/work`, BASE)).toBe(false);
+    // /queue still exists as a redirect (#1231) — its pathname is likewise
+    // not an engine-room route.
     expect(isEngineRoomRoute(`${BASE}/queue`, BASE)).toBe(false);
     expect(isEngineRoomRoute(`${BASE}/connectors`, BASE)).toBe(false);
     expect(isEngineRoomRoute(`${BASE}/teams`, BASE)).toBe(false);

@@ -56,6 +56,18 @@ def _make_execute(creds):
         # half of MCP connectors. Keys arrive decrypted from the claim payload.
         for provider, key in item.mcp_keys.items():
             run_env[f"AGENTRAIL_MCP_{provider.upper()}_KEY"] = key
+        # GitHub auth: prefer the workspace's connected OAuth token the backend
+        # resolved on the claim (per-workspace, no shared secret needed) over
+        # whatever GIT_TOKEN is already in this process's own environment — set
+        # it ONLY when the claim actually carries one, so a locally configured
+        # GIT_TOKEN (PAT) still works as a fallback (older backends, or a
+        # workspace with no linked GitHub owner). See
+        # native_runner.run_issue_on_host for how GIT_TOKEN then authenticates
+        # `git clone`/`git push`/`gh pr create`. NOTE: OAuth tokens issued at
+        # login can expire; there is no refresh here (documented limitation) —
+        # an expired token just surfaces as a normal git/gh auth failure.
+        if item.github_token:
+            run_env["GIT_TOKEN"] = item.github_token
         kwargs = dict(
             repo_url=item.repo_url,
             ref=item.ref,

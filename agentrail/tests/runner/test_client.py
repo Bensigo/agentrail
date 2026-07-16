@@ -225,6 +225,22 @@ def test_report_result_carries_repository_id():
     assert sent["repository_id"] == "repo-7"
 
 
+def test_report_result_never_forwards_the_github_token():
+    # The claim-time token rides on the WorkItem so the runner can authenticate
+    # git; report_result's payload lists explicit fields and must never widen to
+    # include it (it would otherwise leave the host toward the backend + logs).
+    item = WorkItem(
+        id="wi-1", workspace_id="ws1", source="github", external_id="42",
+        repo_url="https://github.com/o/r", ref="main", title="t", body="b",
+        github_token="gho_super_secret",
+    )
+    transport = FakeTransport([Response(status=202, body=b"")])
+    _client(transport).report_result(item, status="green")
+    sent = _json.loads(transport.calls[0]["body"].decode())
+    assert "gho_super_secret" not in _json.dumps(sent)
+    assert "github_token" not in sent
+
+
 def test_report_result_repository_id_defaults_empty():
     transport = FakeTransport([Response(status=202, body=b"")])
     _client(transport).report_result(_work_item(), status="green")  # repository_id=""
@@ -426,6 +442,33 @@ def test_from_dict_coerces_null_kind_to_issue():
     # A null kind falls back to "issue" via the `or "issue"` guard, so a
     # malformed payload never dispatches into an empty/None kind.
     assert WorkItem.from_dict(_claim_payload(kind=None)).kind == "issue"
+
+
+# --- WorkItem.from_dict: connected GitHub OAuth token -------------------------
+
+
+def test_from_dict_parses_github_token():
+    item = WorkItem.from_dict(_claim_payload(github_token="gho_workspace_token"))
+    assert item.github_token == "gho_workspace_token"
+
+
+def test_from_dict_defaults_github_token_to_empty_when_absent():
+    # An older backend that hasn't shipped the claim-time token attach yet must
+    # still parse — the runner then falls back to its own env GIT_TOKEN.
+    item = WorkItem.from_dict(_claim_payload())
+    assert item.github_token == ""
+
+
+def test_from_dict_coerces_null_github_token_to_empty():
+    assert WorkItem.from_dict(_claim_payload(github_token=None)).github_token == ""
+
+
+def test_workitem_defaults_github_token_to_empty():
+    item = WorkItem(
+        id="x", workspace_id="w", source="github",
+        external_id="42", repo_url="", ref="main", title="", body="",
+    )
+    assert item.github_token == ""
 
 
 def test_workitem_defaults_kind_to_issue():

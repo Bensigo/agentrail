@@ -16,9 +16,14 @@
 //   JACE_MODEL_ID       model id for that endpoint (default gemma4:latest)
 //   JACE_MODEL_CONTEXT_WINDOW_TOKENS  context window for that model, forwarded to Eve
 //                       (default 8192); only used on the OpenAI-compatible path
-//   JACE_TARGET_REPO    owner/repo the created issue lands in (used by the create_issue tool)
+//   JACE_TARGET_REPO    LAST-RESORT override for the target repo; normally
+//                       unset — the CLI resolves the repo (and its GitHub
+//                       token) from the workspace's connection on the console
+//                       (AGENTRAIL_WORKSPACE_ID + DATABASE_URL), see
+//                       agentrail/cli/commands/issue.py
 //   VERCEL_OIDC_TOKEN or AI_GATEWAY_API_KEY   AI Gateway auth for the string model id
-//   GITHUB_OAUTH_TOKEN or GITHUB_TOKEN        auth for the CLI's github connector
+//   GITHUB_OAUTH_TOKEN or GITHUB_TOKEN        optional manual override for the CLI's
+//                       github connector auth; normally unset — see JACE_TARGET_REPO above
 //   JACE_AGENTRAIL_BIN  optional override for the `agentrail` binary
 
 import { Client } from "eve/client";

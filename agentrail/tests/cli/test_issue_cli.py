@@ -547,17 +547,108 @@ class ConnectorCreateTests(unittest.TestCase):
             ])
         self.assertNotEqual(rc, 0)
         self.assertIn("token", err.getvalue().lower())
+        self.assertIn(issue_mod.NOT_CONNECTED_MARKER, err.getvalue())
+        self.assertEqual(rc, issue_mod.NOT_CONNECTED_EXIT_CODE)
 
     def test_create_via_github_connector_requires_repo(self):
         err = StringIO()
-        with patch.dict("os.environ", {"GITHUB_OAUTH_TOKEN": "gho_x"}, clear=False), \
-            patch("sys.stderr", err):
+        # Explicitly blank AGENTRAIL_WORKSPACE_ID/DATABASE_URL so this test is
+        # hermetic regardless of what the ambient shell happens to have set —
+        # with no workspace context there is nothing to fall back to, so no DB
+        # is ever touched.
+        env = {
+            "GITHUB_OAUTH_TOKEN": "gho_x",
+            "AGENTRAIL_WORKSPACE_ID": "",
+            "DATABASE_URL": "",
+        }
+        with patch.dict("os.environ", env, clear=False), patch("sys.stderr", err):
             rc = run_issue([
                 "create", "--connector", "github",
                 "--title", "T", "--body", "B",
             ])
         self.assertNotEqual(rc, 0)
         self.assertIn("--repo", err.getvalue())
+        self.assertIn(issue_mod.NOT_CONNECTED_MARKER, err.getvalue())
+        self.assertEqual(rc, issue_mod.NOT_CONNECTED_EXIT_CODE)
+
+    def test_create_via_github_connector_resolves_token_and_repo_from_workspace(self):
+        # Connecting a repo on the console is sufficient: no --repo flag, no
+        # GITHUB_OAUTH_TOKEN/GITHUB_TOKEN env — both come from the workspace's
+        # Postgres-stored connection (the same one "connect a repo" writes).
+        import agentrail.cli.commands.issue as mod
+        from agentrail.connectors.github import GitHubOAuthClient
+
+        created = {
+            "number": 12,
+            "title": "Add thing",
+            "html_url": "https://github.com/acme/widgets/issues/12",
+        }
+        transport = self._fake_transport(created)
+        client = GitHubOAuthClient(
+            token="gho_from_db", repos=["acme/widgets"], transport=transport
+        )
+
+        out = StringIO()
+        env = {"AGENTRAIL_WORKSPACE_ID": "ws-1", "GITHUB_OAUTH_TOKEN": ""}
+        with patch.dict("os.environ", env, clear=False), \
+            patch.object(
+                mod, "_resolve_workspace_connection",
+                lambda workspace_id, **kw: ("gho_from_db", "acme/widgets"),
+            ), \
+            patch.object(mod, "_build_github_client", lambda token, repo: client), \
+            patch("sys.stdout", out):
+            rc = mod.run_issue([
+                "create", "--connector", "github",
+                "--title", "Add thing",
+                "--body", "## Acceptance criteria\n- [ ] AC1\n",
+            ])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("12", out.getvalue())
+
+    def test_create_via_github_connector_explicit_repo_wins_over_workspace_lookup(self):
+        import agentrail.cli.commands.issue as mod
+        from agentrail.connectors.github import GitHubOAuthClient
+
+        created = {
+            "number": 13,
+            "title": "Add thing",
+            "html_url": "https://github.com/other/repo/issues/13",
+        }
+        transport = self._fake_transport(created)
+        client = GitHubOAuthClient(
+            token="gho_x", repos=["other/repo"], transport=transport
+        )
+
+        def _resolver_should_not_be_needed(workspace_id, **kw):
+            raise AssertionError(
+                "workspace lookup must not run when --repo AND a token are both explicit"
+            )
+
+        out = StringIO()
+        with patch.dict("os.environ", {"GITHUB_OAUTH_TOKEN": "gho_x"}, clear=False), \
+            patch.object(mod, "_resolve_workspace_connection", _resolver_should_not_be_needed), \
+            patch.object(mod, "_build_github_client", lambda token, repo: client), \
+            patch("sys.stdout", out):
+            rc = mod.run_issue([
+                "create", "--connector", "github",
+                "--repo", "other/repo",
+                "--title", "Add thing",
+                "--body", "## Acceptance criteria\n- [ ] AC1\n",
+            ])
+
+        self.assertEqual(rc, 0)
+
+    def test_resolve_workspace_connection_degrades_to_none_on_executor_error(self):
+        import agentrail.cli.commands.issue as mod
+
+        class _BoomExecutor:
+            def query(self, *a, **kw):
+                raise RuntimeError("no DB configured")
+
+        token, repo = mod._resolve_workspace_connection("ws-x", executor=_BoomExecutor())
+        self.assertIsNone(token)
+        self.assertIsNone(repo)
 
 
 if __name__ == "__main__":

@@ -75,7 +75,7 @@ _USAGE = """\
 Usage:
   agentrail issue create <milestone-or-prd> [--agent codex|claude|cursor|hermes|custom]
                          [--target DIR] [--headless|--yes] [--dry-run]
-  agentrail issue create --connector github --repo <owner/name>
+  agentrail issue create --connector github [--repo <owner/name>]
                          --title <t> --body <b>
 
 Skill mode (default): launches the configured agent seeded with the to-issues
@@ -84,10 +84,15 @@ house-template GitHub issues and publish them. Interactive by default (the agent
 quizzes you on the slice breakdown before publishing). --headless/--yes skips the
 quiz and publishes without prompting. --dry-run prints what would be published.
 
-Connector mode (--connector github): creates a single GitHub issue directly via
-the user's stored GitHub OAuth token (env GITHUB_OAUTH_TOKEN or GITHUB_TOKEN),
+Connector mode (--connector github): creates a single GitHub issue directly,
 applying the ready-for-agent trigger label so the polling intake / heartbeat
-picks it up. No agent, no gh CLI.
+picks it up. No agent, no gh CLI. --repo and the GitHub token both resolve the
+same way: an explicit value wins (--repo <owner/name>; env GITHUB_OAUTH_TOKEN
+or GITHUB_TOKEN) and otherwise falls back to whatever repo/token
+AGENTRAIL_WORKSPACE_ID has connected on the AgentRail console (read from
+Postgres via DATABASE_URL) — connecting a repo on the console is enough on its
+own, no env vars required. Fails with a clear "connect a repo" error if
+neither source resolves both.
 """
 
 # Env vars the connector path reads the user's GitHub OAuth access token from.
@@ -178,6 +183,23 @@ def publish_issue(body: str, target_dir: str, _subprocess=None, title: Optional[
 # Connector mode (GitHub OAuth: create one labeled issue directly)
 # ---------------------------------------------------------------------------
 
+# A single workspace context for this CLI process, used ONLY as the key for the
+# Postgres fallback lookups below (workspace GitHub token / connected repo).
+# Mirrors the Heartbeat daemon's established single-workspace convention
+# (agentrail/cli/commands/heartbeat.py: --workspace / AGENTRAIL_WORKSPACE_ID)
+# rather than inventing a second one — a self-hosted runner or a Jace
+# deployment is already scoped to one workspace.
+_WORKSPACE_ID_ENV = "AGENTRAIL_WORKSPACE_ID"
+
+# Stable, greppable marker prefixed onto the UsageError message when neither a
+# GitHub token nor a connected repo could be resolved for this workspace by ANY
+# means (env, --repo flag, nor the Postgres fallback). Callers that shell out to
+# this CLI (e.g. Jace's create_issue tool) match on this exact string in stderr
+# to turn a raw CLI failure into a friendly "connect a repo first" message
+# instead of surfacing a stack-trace-shaped error to the end user.
+NOT_CONNECTED_MARKER = "AGENTRAIL_NOT_CONNECTED"
+NOT_CONNECTED_EXIT_CODE = 3
+
 
 def _github_oauth_token() -> Optional[str]:
     """Return the user's stored GitHub OAuth access token from the environment.
@@ -194,6 +216,62 @@ def _github_oauth_token() -> Optional[str]:
     return None
 
 
+def _resolve_workspace_connection(
+    workspace_id: str, *, executor=None
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve ``(token, repo)`` for ``workspace_id`` straight from Postgres —
+    the SAME persistence seam (the QueueStore's ``Executor``, ``PostgresExecutor``
+    in production) the Heartbeat daemon already uses, so there is one DB edge,
+    not two:
+
+      - token: the workspace owner's stored GitHub OAuth ``access_token``
+        (``agentrail.heartbeat.token_provider.get_github_token`` — the Python
+        twin of the TS ``getGithubToken``).
+      - repo: the first repo in the workspace's enabled ``github`` connector
+        (``agentrail.afk.connectors_store.get_active_connector``), which is
+        exactly what "connect a repo" on the console writes (the repos route
+        self-configures the connector on connect). The first entry is treated
+        as the de facto default when more than one is connected — this mirrors
+        the console's own claim-time resolver (``deriveRepoSlug``:
+        ``cfg?.repos?.[0]``); there is no separate "default repo" field today.
+
+    This is what lets the CLI (and Jace, which shells out to it) work off
+    *only* "a repo is connected on the console" — no separately-supplied
+    GITHUB_OAUTH_TOKEN/GITHUB_TOKEN/JACE_TARGET_REPO required.
+
+    ``executor`` is injectable for tests. Any failure (no DATABASE_URL, no DB
+    driver, a connection error) degrades to ``(None, None)`` rather than
+    raising — a DB hiccup must surface as the same friendly "not connected"
+    guidance as a genuinely unconfigured workspace, never a crash.
+    """
+    try:
+        from agentrail.afk.connectors_store import get_active_connector
+        from agentrail.heartbeat.token_provider import get_github_token
+
+        if executor is None:
+            from agentrail.afk.queue_store import PostgresExecutor
+
+            executor = PostgresExecutor()
+
+        token: Optional[str] = None
+        try:
+            token = get_github_token(workspace_id, executor)
+        except Exception:
+            token = None
+
+        repo: Optional[str] = None
+        try:
+            gh = get_active_connector(workspace_id, "github", executor)
+            if gh and gh.repos:
+                repo = gh.repos[0]
+        except Exception:
+            repo = None
+
+        return token, repo
+    except Exception:
+        return None, None
+
+
 def _build_github_client(token: str, repo: str):
     """Construct the OAuth REST client (seam patched in tests)."""
     from agentrail.connectors.github import GitHubOAuthClient
@@ -208,26 +286,53 @@ def _create_via_connector(
 
     Currently supports ``github``: opens the issue with the ``ready-for-agent``
     trigger label via the user's OAuth token so the polling intake picks it up.
+
+    Token and repo each resolve in the same order: an explicit value (``--repo``
+    / the ``GITHUB_OAUTH_TOKEN``/``GITHUB_TOKEN`` env) wins when present;
+    otherwise fall back to whatever "connecting a repo on the console" already
+    wrote to Postgres for ``AGENTRAIL_WORKSPACE_ID`` (see
+    :func:`_resolve_workspace_connection`). When NEITHER source resolves a repo,
+    or NEITHER resolves a token, this raises a :class:`UsageError` carrying
+    :data:`NOT_CONNECTED_MARKER` — callers that shell out to this CLI (Jace)
+    match on that marker to show friendly "connect a repo first" guidance
+    instead of a raw error.
     """
     if connector != "github":
         raise UsageError(f"--connector must be 'github' (got {connector!r})")
-    if not repo:
-        raise UsageError("--connector github requires --repo <owner/name>")
     if not title:
         raise UsageError("--connector github requires --title")
     if body is None:
         raise UsageError("--connector github requires --body")
 
     token = _github_oauth_token()
+    resolved_repo = repo
+
+    workspace_id = os.environ.get(_WORKSPACE_ID_ENV) or None
+    if workspace_id and (not token or not resolved_repo):
+        db_token, db_repo = _resolve_workspace_connection(workspace_id)
+        token = token or db_token
+        resolved_repo = resolved_repo or db_repo
+
+    if not resolved_repo:
+        raise UsageError(
+            f"{NOT_CONNECTED_MARKER}: no GitHub repo is connected for this "
+            "workspace (and no --repo was given). Connect a repo on the "
+            "AgentRail console (Settings → Connectors → GitHub), or pass "
+            "--repo <owner/name> explicitly.",
+            code=NOT_CONNECTED_EXIT_CODE,
+        )
     if not token:
         raise UsageError(
-            "no GitHub OAuth token found; set GITHUB_OAUTH_TOKEN (or GITHUB_TOKEN) "
-            "to the access token granted at login (re-login once to grant the "
-            "'repo' scope)"
+            f"{NOT_CONNECTED_MARKER}: no GitHub OAuth token is available for "
+            "this workspace. Connect (or re-connect) GitHub on the AgentRail "
+            "console, then try again — re-login grants the 'repo' scope. "
+            "(GITHUB_OAUTH_TOKEN/GITHUB_TOKEN env also works, e.g. a manually "
+            "configured PAT.)",
+            code=NOT_CONNECTED_EXIT_CODE,
         )
 
-    client = _build_github_client(token, repo)
-    ref = client.create_issue(repo=repo, title=title, body=body)
+    client = _build_github_client(token, resolved_repo)
+    ref = client.create_issue(repo=resolved_repo, title=title, body=body)
     print(f"Created {ref.repo}#{ref.number} (label {TRIAGE_LABEL}): {ref.url}")
     return 0
 

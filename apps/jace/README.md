@@ -91,8 +91,10 @@ workspace's outbound stays on its legacy console sender until its cutover.
 | `JACE_MODEL_ID` | Model id for the OpenAI-compatible endpoint. Defaults to `gemma4:latest`. Ignored on the AI Gateway path. |
 | `JACE_MODEL_API_KEY` | Optional bearer token for the OpenAI-compatible endpoint. Omitted when unset (a local Ollama needs none). |
 | `JACE_MODEL_CONTEXT_WINDOW_TOKENS` | Context-window size (tokens) for the OpenAI-compatible model, forwarded to Eve as `modelContextWindowTokens`. Defaults to `8192`. Used only on this path — a custom model has no AI Gateway catalog entry, and Eve refuses to boot without a window to compile its compaction trigger. Ignored on the AI Gateway path. Set it to match your model / Ollama `num_ctx`. |
-| `GITHUB_OAUTH_TOKEN` or `GITHUB_TOKEN` | Auth for the CLI's `github` connector when creating the issue. |
-| `JACE_TARGET_REPO` | Default `owner/repo` the created issue lands in (the `create_issue` tool falls back to this when `repo` isn't supplied). |
+| `GITHUB_OAUTH_TOKEN` or `GITHUB_TOKEN` | Optional manual override for the CLI's `github` connector auth. Normally unset: connecting a repo on the AgentRail console is sufficient — the CLI resolves the workspace's GitHub OAuth token from Postgres (`AGENTRAIL_WORKSPACE_ID` + `DATABASE_URL`) when no env token is given. See `agentrail/cli/commands/issue.py`. |
+| `JACE_TARGET_REPO` | LAST-RESORT override for the `owner/repo` the created issue lands in. Normally unset: the CLI resolves the workspace's connected GitHub repo itself when `repo` isn't supplied to the `create_issue` tool. |
+| `AGENTRAIL_WORKSPACE_ID` | The workspace this Jace deployment / its `agentrail` CLI invocations act for — the key the CLI uses to look up the connected GitHub repo + token in Postgres. |
+| `DATABASE_URL` | Postgres connection the CLI's workspace lookup reads (the same store the console writes "connect a repo" to). Required only for the automatic repo/token resolution above; unused when `GITHUB_OAUTH_TOKEN`/`GITHUB_TOKEN` and `JACE_TARGET_REPO` (or an explicit `repo`) are both already set. |
 | `JACE_AGENTRAIL_BIN` | Optional override for the `agentrail` binary. Defaults to `agentrail`. |
 | `EVE_HOST` | Base URL used by the round-trip harness. Defaults to `http://127.0.0.1:2000`. |
 | `TELEGRAM_BOT_USERNAME` | The Telegram bot's @username (without `@`) for the native `telegram` channel. |
@@ -187,8 +189,11 @@ npm run roundtrip
 
 The reject arm and the human-gated approval boundary itself need only the local
 model. The approve arm additionally shells out to `agentrail issue create`, so it
-still needs a GitHub connector token (`GITHUB_OAUTH_TOKEN`/`GITHUB_TOKEN`) and a
-reachable `agentrail` CLI to create the real issue.
+still needs a reachable `agentrail` CLI and a resolvable GitHub repo + token —
+either a repo connected on the AgentRail console (`AGENTRAIL_WORKSPACE_ID` +
+`DATABASE_URL`) or the manual `GITHUB_OAUTH_TOKEN`/`GITHUB_TOKEN` + `JACE_TARGET_REPO`
+overrides — to create the real issue. With neither, `create_issue` returns a
+friendly "connect a repo first" message instead of failing.
 
 ## Unit tests
 

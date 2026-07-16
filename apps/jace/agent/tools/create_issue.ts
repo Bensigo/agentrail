@@ -31,7 +31,12 @@ export default defineTool({
     "Create ONE AgentRail issue in the house format. This is the only way " +
     "Jace acts on the outside world; it is always human-approved before it " +
     "runs. The AgentRail factory picks the issue up automatically via the " +
-    "server-applied ready-for-agent label.",
+    "server-applied ready-for-agent label. The target repo and GitHub " +
+    "credentials are resolved automatically from the workspace's connected " +
+    "GitHub repo (connected on the AgentRail console) — no repo/token input " +
+    "needed. If the workspace hasn't connected a repo yet, this returns " +
+    "{ connected: false, message } with guidance to relay to the user instead " +
+    "of failing.",
   // Always require a human approve/reject before this tool executes.
   approval: always(),
   inputSchema: z.object({
@@ -61,7 +66,13 @@ export default defineTool({
     repo: z
       .string()
       .optional()
-      .describe("Target owner/repo; falls back to JACE_TARGET_REPO."),
+      .describe(
+        "Target owner/repo. Almost always omit this — it is auto-resolved " +
+          "from the workspace's connected GitHub repo. Only set it to " +
+          "override that for a workspace with multiple connected repos; " +
+          "JACE_TARGET_REPO is a deployment-level last-resort fallback, not " +
+          "something a user should ever need to configure.",
+      ),
   }),
   async execute(input) {
     // The trigger label is applied server-side by the CLI; we never pass labels.

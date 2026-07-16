@@ -25,7 +25,9 @@ import pytest
 from agentrail.sandbox.native_runner import (
     HostError,
     HostTimeout,
+    _authenticated_clone_url,
     _build_run_command,
+    _redact_token,
     run_issue_on_host,
 )
 from agentrail.sandbox.docker_runner import RunResult
@@ -331,6 +333,136 @@ class TestHappyPath:
         # And the gh pr create call WAS made with capture_output=True.
         create_call = next(c for c in runner.calls if "create" in c["cmd"])
         assert create_call["kwargs"].get("capture_output") is True
+
+
+# ---------------------------------------------------------------------------
+# GitHub auth (per-workspace OAuth token / PAT) — clone/push/gh authenticate
+# off ``env["GIT_TOKEN"]`` without the token ever landing on argv or in
+# anything this runner reports back as telemetry.
+# ---------------------------------------------------------------------------
+
+class TestAuthenticatedCloneUrl:
+    def test_embeds_token_in_https_url(self) -> None:
+        url = _authenticated_clone_url("https://github.com/acme/widgets.git", "ght-secret")
+        assert url == "https://x-access-token:ght-secret@github.com/acme/widgets.git"
+
+    def test_no_token_leaves_url_unchanged(self) -> None:
+        url = _authenticated_clone_url("https://github.com/acme/widgets.git", "")
+        assert url == "https://github.com/acme/widgets.git"
+
+    def test_ssh_url_is_never_modified_even_with_a_token(self) -> None:
+        url = _authenticated_clone_url("git@github.com:acme/widgets.git", "ght-secret")
+        assert url == "git@github.com:acme/widgets.git"
+
+
+class TestRedactToken:
+    def test_strips_every_occurrence(self) -> None:
+        text = "fatal: unable to access 'https://x-access-token:ght-secret@github.com/x'\nght-secret again"
+        out = _redact_token(text, "ght-secret")
+        assert "ght-secret" not in out
+        assert out.count("***") == 2
+
+    def test_no_token_is_a_no_op(self) -> None:
+        assert _redact_token("some log text", "") == "some log text"
+
+
+class TestGitTokenThreadedIntoRun:
+    """End-to-end (faked subprocess): GIT_TOKEN drives the clone URL + GH_TOKEN,
+    and is scrubbed from anything the run reports back on failure.
+    """
+
+    def _run(self, tmp_path, runner, **over):
+        dirs = _RunDirs(tmp_path)
+        kwargs = dict(
+            repo_url="https://github.com/acme/widgets.git",
+            ref="main",
+            issue_ref="7",
+            workspace_id="ws-123",
+            env={"GIT_TOKEN": "ght-secret"},
+            run_dir_factory=dirs,
+            runner=runner,
+        )
+        kwargs.update(over)
+        return run_issue_on_host(**kwargs), dirs
+
+    def test_clone_url_carries_the_token(self, tmp_path) -> None:
+        runner = FakeRunner([_Completed(128, stdout="", stderr="fatal: not found")])
+        self._run(tmp_path, runner)
+        clone_cmd = runner.command_with("clone")
+        joined = " ".join(clone_cmd)
+        assert "x-access-token:ght-secret@github.com" in joined
+        # ...but never the plain, unauthenticated URL — the token IS embedded.
+        assert "https://github.com/acme/widgets.git" not in clone_cmd
+
+    def test_no_token_clones_the_plain_url(self, tmp_path) -> None:
+        runner = FakeRunner([_Completed(128, stdout="", stderr="fatal: not found")])
+        self._run(tmp_path, runner, env={})
+        clone_cmd = runner.command_with("clone")
+        assert "https://github.com/acme/widgets.git" in clone_cmd
+        assert "x-access-token" not in " ".join(clone_cmd)
+
+    def test_clone_failure_never_leaks_the_token_in_logs_tail(self, tmp_path) -> None:
+        # Simulate git itself echoing the authenticated URL back on a 403 — the
+        # runner's own redaction must catch it regardless of git's behaviour.
+        leaking_stderr = (
+            "fatal: unable to access "
+            "'https://x-access-token:ght-secret@github.com/acme/widgets.git/': "
+            "The requested URL returned error: 403"
+        )
+        runner = FakeRunner([_Completed(128, stdout="", stderr=leaking_stderr)])
+        result, _ = self._run(tmp_path, runner)
+        assert result.status == "error"
+        assert "ght-secret" not in result.logs_tail
+        assert "***" in result.logs_tail
+
+    def test_gh_token_exported_for_publish_step(self, tmp_path) -> None:
+        run_dir = tmp_path / "run-1"
+
+        def _do_run(cmd, cwd, env):
+            log_dir = _extract_log_dir(cmd, run_dir)
+            run_id = _extract_run_id(cmd) or "host-run"
+            _write_run_json(Path(log_dir) / run_id, _green_run_json())
+            return _Completed(0, stdout="ran")
+
+        runner = FakeRunner([
+            _Completed(0, stdout="cloned"),
+            _do_run,
+            _Completed(0, stdout="main"),   # rev-parse
+            _Completed(0),                  # checkout -B
+            _Completed(0),                  # add -A
+            _Completed(0),                  # commit
+            _Completed(0),                  # push
+            _Completed(0, stdout="https://github.com/acme/widgets/pull/9"),  # gh pr create
+        ])
+        self._run(tmp_path, runner, pr_title="Add a thing")
+        pr_call = next(c for c in runner.calls if "create" in c["cmd"])
+        assert pr_call["env"].get("GH_TOKEN") == "ght-secret"
+
+    def test_gh_token_does_not_override_an_existing_gh_auth(self, tmp_path) -> None:
+        run_dir = tmp_path / "run-1"
+
+        def _do_run(cmd, cwd, env):
+            log_dir = _extract_log_dir(cmd, run_dir)
+            run_id = _extract_run_id(cmd) or "host-run"
+            _write_run_json(Path(log_dir) / run_id, _green_run_json())
+            return _Completed(0, stdout="ran")
+
+        runner = FakeRunner([
+            _Completed(0, stdout="cloned"),
+            _do_run,
+            _Completed(0, stdout="main"),
+            _Completed(0),
+            _Completed(0),
+            _Completed(0),
+            _Completed(0),
+            _Completed(0, stdout="https://github.com/acme/widgets/pull/9"),
+        ])
+        self._run(
+            tmp_path, runner, pr_title="Add a thing",
+            env={"GIT_TOKEN": "ght-secret", "GH_TOKEN": "already-configured"},
+        )
+        pr_call = next(c for c in runner.calls if "create" in c["cmd"])
+        assert pr_call["env"].get("GH_TOKEN") == "already-configured"
 
 
 # ---------------------------------------------------------------------------

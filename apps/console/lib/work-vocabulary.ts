@@ -29,15 +29,13 @@
  *    `runs` statuses, so it assumes the Python pure state machine's
  *    `queue_state.QueueEntry.remaining_budget` default (2). Left UNCHANGED —
  *    no silent escalation-semantics change (AC3).
- *  - `QUEUE_ENTRY_DEFAULT_BUDGET` (=5, imported from `@agentrail/db-postgres`)
- *    — the durable-queue projection ({@link mapQueueEntryRows}), which reads
- *    the REAL `queue_entries.remaining_budget` column. That column (and the
- *    explicit `remainingBudget: 5` a GitHub issue is seeded with in
+ *  - {@link QUEUE_ENTRY_DEFAULT_BUDGET} (=5) — the durable-queue projection
+ *    ({@link mapQueueEntryRows}), which reads the REAL
+ *    `queue_entries.remaining_budget` column. That column (and the explicit
+ *    `remainingBudget: 5` a GitHub issue is seeded with in
  *    `github_intake.ts::enqueueGithubIssue`) is 5, not 2 — `mapQueueEntryRows`
  *    was wrongly reusing `DEFAULT_BUDGET`'s value for a different data source.
  */
-
-import { QUEUE_ENTRY_DEFAULT_BUDGET } from "@agentrail/db-postgres";
 
 // ---------------------------------------------------------------------------
 // Queue state (technical vocabulary + durable-queue projection)
@@ -52,6 +50,22 @@ import { QUEUE_ENTRY_DEFAULT_BUDGET } from "@agentrail/db-postgres";
  * for a durable-row computation; the two data sources disagree on purpose.
  */
 export const DEFAULT_BUDGET = 2;
+
+/**
+ * Default starting budget of a durable `queue_entries` row — MUST equal
+ * `QUEUE_ENTRY_DEFAULT_BUDGET` in
+ * `packages/db-postgres/src/schema/queue_entries.ts` (the `remaining_budget`
+ * column default, and what `enqueueGithubIssue` seeds explicitly).
+ *
+ * Mirrored locally instead of imported: this module is in the CLIENT bundle
+ * (via the "use client" Work components), and `@agentrail/db-postgres` only
+ * exports its barrel, whose module graph opens a `postgres` connection and
+ * pulls node built-ins (`net`, `tls`, `fs`) — a value import from here 500s
+ * the entire Work page with "Module not found: Can't resolve 'net'". Drift is
+ * guarded by `work-vocabulary.test.ts`, which runs in node, imports BOTH
+ * constants, and asserts they are equal.
+ */
+export const QUEUE_ENTRY_DEFAULT_BUDGET = 5;
 
 /** Non-terminal lifecycle states + the three Run Outcome terminals. */
 export type QueueState =

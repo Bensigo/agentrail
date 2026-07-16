@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { QUEUE_ENTRY_DEFAULT_BUDGET } from "@agentrail/db-postgres";
+// Node-only import (vitest runs in node): work-vocabulary.ts itself must NOT
+// import this barrel — it is client-bundled and the barrel drags `postgres` +
+// node built-ins into the browser graph, 500ing the Work page. The test is
+// the one place both constants meet, so drift fails here instead.
+import { QUEUE_ENTRY_DEFAULT_BUDGET as DB_QUEUE_ENTRY_DEFAULT_BUDGET } from "@agentrail/db-postgres";
 import {
   ACTIVE_QUEUE_STATES,
   DEFAULT_BUDGET,
+  QUEUE_ENTRY_DEFAULT_BUDGET,
   WORK_GROUPS,
   WORK_STATE_CHIP_CLASSNAME,
   formatParkReason,
@@ -377,12 +382,16 @@ describe("DEFAULT_BUDGET (runs-history fallback projection ONLY — issue #1240)
   });
 });
 
-// Issue #1240 AC1: the durable-row source of truth is `QUEUE_ENTRY_DEFAULT_BUDGET`,
-// exported from db-postgres colocated with the `queue_entries.remaining_budget`
-// column default — the same value `mapQueueEntryRows` derives `failedAttempts`
-// from, so they cannot drift apart again.
+// Issue #1240 AC1: the durable-row source of truth is `QUEUE_ENTRY_DEFAULT_BUDGET`
+// in db-postgres, colocated with the `queue_entries.remaining_budget` column
+// default. work-vocabulary.ts mirrors it locally (client-bundle constraint, see
+// its doc comment); this suite is the drift guard that keeps the mirror honest.
 describe("QUEUE_ENTRY_DEFAULT_BUDGET (durable queue_entries default — issue #1240)", () => {
   it("is 5, matching the queue_entries.remaining_budget column default and enqueueGithubIssue's explicit seed", () => {
     expect(QUEUE_ENTRY_DEFAULT_BUDGET).toBe(5);
+  });
+
+  it("local mirror stays in lockstep with the db-postgres schema constant (drift guard)", () => {
+    expect(QUEUE_ENTRY_DEFAULT_BUDGET).toBe(DB_QUEUE_ENTRY_DEFAULT_BUDGET);
   });
 });

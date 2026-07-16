@@ -28,7 +28,6 @@ apps/jace/.eve/
 apps/jace/.workflow-data/
 
 # Python / agentrail CLI source — not needed to build the console image.
-agentrail/
 __pycache__/
 *.egg-info/
 .venv/

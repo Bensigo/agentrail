@@ -75,7 +75,13 @@ COPY packages/ui/package.json packages/ui/package.json
 COPY packages/mcp/package.json packages/mcp/package.json
 # pnpm-workspace.yaml excludes apps/jace, so pnpm never tries to resolve it —
 # apps/jace is not copied into this build context at all (see .dockerignore).
-RUN pnpm install --frozen-lockfile
+# --ignore-scripts: the deps stage has ONLY manifests (no source yet), so the
+# console's `postinstall` (fumadocs-mdx) has nothing to generate and crashes.
+# The builder stage below re-runs fumadocs-mdx explicitly once source is present
+# (and db-postgres is built there too), so no lifecycle script is needed here.
+# esbuild's platform binary ships as an optionalDependency (resolved from the
+# lockfile, not a postinstall), so skipping scripts does not break it.
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # ---- 3. builder — real source, build db-postgres, regen mdx, next build ------
 FROM deps AS builder

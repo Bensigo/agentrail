@@ -51,12 +51,38 @@
 FROM node:24-slim AS deps
 WORKDIR /app
 COPY apps/jace/package.json apps/jace/package-lock.json ./
-RUN npm ci
+# eve@0.19.0's default "just-bash" sandbox backend is NOT bundled with eve and is
+# missing from apps/jace/package.json — `eve start` ENOENT/crash-loops without it.
+# Install it here (--no-save: don't touch the pinned lockfile) so the sandbox can
+# initialize. (Proper follow-up: add `just-bash` to apps/jace/package.json.)
+RUN npm ci \
+    && npm install --no-save just-bash
 
 # ---- 2. builder — eve build -> .output/ ---------------------------------------
 FROM deps AS builder
 WORKDIR /app
 COPY apps/jace/ ./
+# Jace resolves its model AT `eve build` TIME: agent.ts runs
+# `chooseModel(process.env)` during the build and the choice is BAKED into the
+# compiled agent manifest (.eve/compile/compiled-agent-manifest.json). With no
+# JACE_MODEL_BASE_URL present, chooseModel takes the Vercel AI Gateway branch and
+# emits a PLAIN STRING model id, which Eve bakes as a STATIC gateway reference —
+# runtime env can no longer change it, so Jace keeps calling the (uncredentialed)
+# Vercel gateway even after you set JACE_MODEL_* at runtime and redeploy. When
+# JACE_MODEL_BASE_URL IS set, agent.ts takes the openai-compatible branch and the
+# model compiles to a SOURCE-BACKED reference (routing.kind:"external",
+# source.sourceKind:"module") that Eve RE-IMPORTS and re-resolves against the
+# RUNTIME env (incl. JACE_MODEL_API_KEY) on every boot. So these must be present
+# at BUILD time — declaring them as ARG lets Railway inject the matching service
+# variables into the build (Railway only injects vars that are declared as ARG).
+# The API key is deliberately NOT an ARG: it is read at runtime, never baked into
+# an image layer.
+ARG JACE_MODEL_BASE_URL
+ARG JACE_MODEL_ID
+ARG JACE_MODEL_CONTEXT_WINDOW_TOKENS
+ENV JACE_MODEL_BASE_URL=${JACE_MODEL_BASE_URL} \
+    JACE_MODEL_ID=${JACE_MODEL_ID} \
+    JACE_MODEL_CONTEXT_WINDOW_TOKENS=${JACE_MODEL_CONTEXT_WINDOW_TOKENS}
 RUN npm run build
 
 # ---- 3. runtime ---------------------------------------------------------------
@@ -93,6 +119,10 @@ WORKDIR /app
 ENV NODE_ENV=production PORT=2000
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.output ./.output
+# eve start reads compiled agent metadata from .eve/compile/
+# (compile-metadata.json, compiled-agent-manifest.json), produced by `eve build`
+# in the builder stage — carry it into runtime or `eve start` ENOENT-crashes.
+COPY --from=builder /app/.eve ./.eve
 COPY --from=builder /app/package.json ./package.json
 # agent/instructions.md (persona) and agent/skills/**/SKILL.md are loaded by
 # Eve's filesystem convention at runtime, not fully inlined at build time in

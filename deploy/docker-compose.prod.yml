@@ -1,0 +1,192 @@
+# AgentRail walking-skeleton — single Docker host (Vultr Ubuntu VM), single
+# tenant / dogfood. Five services: postgres, console, jace, caddy, runner.
+#
+# ClickHouse and MinIO are INTENTIONALLY OMITTED — see deploy/README.md. The
+# app tolerates their absence: every ClickHouse write on the runner's terminal
+# reporting path is try/caught (e.g. apps/console/app/api/v1/runner/result/route.ts),
+# and S3_*/MinIO has no reader anywhere in apps/console or packages/ today (dead
+# config, reserved for a future artifact-storage feature — grepped, zero hits).
+# The root docker-compose.yml's Playwright/agent-browser/browser-use MCP
+# sidecars (Jace's researcher/qa subagent tool sources) are also omitted for the
+# same reason: both subagents fail SOFT when their sidecar is unreachable
+# (degrade to Context7-only / report "could not exercise the app" — see
+# apps/jace/docs/HOSTING.md) rather than failing to boot. Add them back as
+# compose services later if you want those subagents at full strength.
+#
+# Run from the REPO ROOT:
+#   docker compose -f deploy/docker-compose.prod.yml up -d --build
+# (build contexts below are `..` = repo root, resolved relative to THIS file's
+# directory, which is also Compose's default project directory for relative
+# paths like `env_file` and the Caddyfile bind mount.)
+#
+# Full runbook: deploy/README.md.
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    env_file: ./.env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentrail}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-agentrail}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentrail} -d ${POSTGRES_DB:-agentrail}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    # Not published to the host on purpose (single-tenant box, smaller attack
+    # surface) — every consumer (console, jace, migrate, db:migrate) reaches it
+    # over the compose network as `postgres:5432`. Add a `ports:` block
+    # yourself if you need host-side psql access.
+
+  # One-off migration runner: reuses the console image's `builder` stage (has
+  # pnpm + the full workspace source + drizzle-kit installed), overriding the
+  # command to run ONLY the Postgres migration. See
+  # packages/db-postgres/src/migrate.ts (reads DATABASE_URL, applies
+  # packages/db-postgres/drizzle/migrations/*.sql). Not part of the normal
+  # `up -d` set — invoked on demand. `--profile tools` is required for `run` to
+  # see a profile-gated service by name (unlike `up -d migrate`, which would
+  # auto-enable its own profile; `run` does not):
+  #   docker compose -f deploy/docker-compose.prod.yml --profile tools run --rm migrate
+  migrate:
+    build:
+      context: ..
+      dockerfile: apps/console/Dockerfile
+      target: builder
+    env_file: ./.env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env}
+    command: ["pnpm", "--filter", "@agentrail/db-postgres", "migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["tools"] # excluded from a bare `up`/`up -d`; run explicitly.
+
+  console:
+    build:
+      context: ..
+      dockerfile: apps/console/Dockerfile
+    restart: unless-stopped
+    env_file: ./.env
+    environment:
+      # Internal service DNS names — these two are compose-topology-specific,
+      # so they're pinned here rather than left to deploy/.env.
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env}
+      EVE_HOST: http://jace:2000
+      # Required behind Caddy's reverse proxy — Auth.js v5 must trust the
+      # X-Forwarded-Host/-Proto headers Caddy sets, or GitHub OAuth callbacks
+      # resolve to the wrong origin. Confirmed via next-auth's own deployment
+      # docs: "In a Docker environment, make sure to set ... AUTH_TRUST_HOST ...
+      # to true." (AUTH_URL itself is NOT needed — v5 infers the host from
+      # request headers once AUTH_TRUST_HOST is set; only needed for a custom
+      # auth base path, which this deploy doesn't use.)
+      AUTH_TRUST_HOST: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # No dedicated /api/health route exists in apps/console today — a bare
+      # TCP connect is a reasonable liveness proxy (Node is guaranteed present
+      # in this image; no curl/wget in node:24-slim). Matches the house style
+      # already used for the sidecar healthchecks in the root docker-compose.yml.
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('net').connect(3000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  jace:
+    build:
+      context: ..
+      dockerfile: apps/jace/Dockerfile
+    restart: unless-stopped
+    env_file: ./.env
+    environment:
+      # Eve's Postgres world adapter (apps/jace/docs/HOSTING.md: "State is
+      # backed by @workflow/world-postgres ... no separate Jace-side
+      # datastore") — a DIFFERENT env-var contract from the console's
+      # DATABASE_URL, verified against the installed
+      # @workflow/world-postgres package's own README. Reuses the same
+      # Postgres instance/database as the console for this single-tenant
+      # deploy; give it a dedicated database (e.g. `jace` instead of
+      # `agentrail`) if you want stronger isolation between Eve's workflow
+      # tables and Drizzle's schema.
+      WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
+      WORKFLOW_POSTGRES_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env}
+      # NOT the same thing as the console's EVE_HOST (which points the console
+      # AT jace, http://jace:2000 above): this is Jace's OWN default for its
+      # dev-only round-trip test harness (apps/jace/README.md), self-referential
+      # and irrelevant at runtime — left unset here, its default already
+      # matches this topology.
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('net').connect(2000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - console
+      - jace
+
+  runner:
+    build:
+      context: ..
+      dockerfile: deploy/runner/Dockerfile
+    restart: unless-stopped
+    env_file: ./.env
+    environment:
+      RUNNER_MODEL: ${RUNNER_MODEL:-z-ai/glm-4.6}
+      AGENTRAIL_AGENT: custom
+      # ANTHROPIC_API_KEY is deliberately NOT set anywhere in this compose file
+      # — see deploy/runner/Dockerfile's header comment. Its mere presence
+      # flips agentrail/sandbox/native_runner.py:select_sandbox_runner() into
+      # Docker-sandbox mode, which needs /var/run/docker.sock. Do not add it
+      # here unless you've also uncommented the socket mount below AND built
+      # agentrail/docker/runner/Dockerfile's image on the host.
+    volumes:
+      # Persists /root/.agentrail/credentials.json (the `agentrail login`
+      # device-flow token) across container restarts/rebuilds — see
+      # agentrail/runner/credentials.py (Path.home() resolution) and
+      # deploy/runner/Dockerfile's note on why this is /root, not a named
+      # user's home. Without this the interactive login step
+      # (deploy/README.md) has to be repeated every time the container is
+      # recreated.
+      - runner_agentrail_home:/root/.agentrail
+      # Uncomment ONLY if you switch to Docker-sandbox execution mode (set
+      # ANTHROPIC_API_KEY above too):
+      # - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      console:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+  runner_agentrail_home:

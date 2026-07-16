@@ -45,12 +45,11 @@ describe("NAV_ZONES data structure", () => {
     ]);
   });
 
-  it("Settings zone: Connectors, Repos & Health, Team, Teams (new), API Keys", () => {
+  it("Settings zone: Connectors, Repos & Health, Team, API Keys", () => {
     expect(SETTINGS_ZONE.items.map((i) => [i.label, i.href])).toEqual([
       ["Connectors", "connectors"],
       ["Repos & Health", "repos"],
       ["Team", "members"],
-      ["Teams", "teams"],
       ["API Keys", "api-keys"],
     ]);
   });
@@ -77,7 +76,7 @@ describe("NAV_ZONES data structure", () => {
     }
   });
 
-  it("adds exactly one new href (teams) beyond the legacy set", () => {
+  it("adds no new hrefs beyond the legacy set (teams stays a redirect stub to /members)", () => {
     const legacyHrefs = new Set([
       "",
       "runs",
@@ -95,7 +94,7 @@ describe("NAV_ZONES data structure", () => {
     ]);
     const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
     const newHrefs = allHrefs.filter((h) => !legacyHrefs.has(h));
-    expect(newHrefs).toEqual(["teams"]);
+    expect(newHrefs).toEqual([]);
   });
 
   it("has no duplicate hrefs across zones", () => {

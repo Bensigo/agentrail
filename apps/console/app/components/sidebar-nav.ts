@@ -11,7 +11,6 @@ import {
   Brain,
   Key,
   Users,
-  UsersRound,
   Activity,
   Plug,
 } from "lucide-react";
@@ -68,9 +67,9 @@ export const SETTINGS_ZONE: NavZone = {
   items: [
     { label: "Connectors", href: "connectors", icon: Plug },
     { label: "Repos & Health", href: "repos", icon: Database },
+    // No separate Teams item: teams/page.tsx is a redirect stub to /members —
+    // the combined Team page covers the spec's Settings-zone "Teams" entry.
     { label: "Team", href: "members", icon: Users },
-    // New link: the `teams` page already exists but wasn't reachable from nav.
-    { label: "Teams", href: "teams", icon: UsersRound },
     { label: "API Keys", href: "api-keys", icon: Key },
   ],
 };

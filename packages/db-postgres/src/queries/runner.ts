@@ -1,4 +1,4 @@
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { createHash, randomBytes } from "crypto";
 import { db } from "../db.js";
 import { deviceCodes } from "../schema/device_codes.js";
@@ -365,12 +365,30 @@ const ACTIVE_QUEUE_STATES = ["queued", "parked", "running"] as const;
  * `activeOnly` (default true) returns only non-terminal entries, so the queue
  * surface self-flushes: an entry leaves the moment it reaches a terminal
  * (green / escalated-to-human / blocked). Pass false to include history.
+ *
+ * `states`, when given, overrides `activeOnly` and returns only entries in
+ * that exact set (e.g. the Home digest wants queued/running for "in progress"
+ * and escalated-to-human/parked for "needs you" — a targeted filter instead
+ * of pulling the entire history and filtering client-side).
  */
 export async function listQueueEntries(
   workspaceId: string,
-  opts: { activeOnly?: boolean } = {}
+  opts: { activeOnly?: boolean; states?: string[] } = {}
 ): Promise<QueueEntryListItem[]> {
   const activeOnly = opts.activeOnly ?? true;
+  const whereClause =
+    opts.states && opts.states.length > 0
+      ? and(eq(queueEntries.workspaceId, workspaceId), inArray(queueEntries.state, opts.states))
+      : activeOnly
+        ? and(
+            eq(queueEntries.workspaceId, workspaceId),
+            sql`${queueEntries.state} IN (${sql.join(
+              ACTIVE_QUEUE_STATES.map((s) => sql`${s}`),
+              sql`, `
+            )})`
+          )
+        : eq(queueEntries.workspaceId, workspaceId);
+
   const rows = await db
     .select({
       id: queueEntries.id,
@@ -382,17 +400,7 @@ export async function listQueueEntries(
       updatedAt: queueEntries.updatedAt,
     })
     .from(queueEntries)
-    .where(
-      activeOnly
-        ? and(
-            eq(queueEntries.workspaceId, workspaceId),
-            sql`${queueEntries.state} IN (${sql.join(
-              ACTIVE_QUEUE_STATES.map((s) => sql`${s}`),
-              sql`, `
-            )})`
-          )
-        : eq(queueEntries.workspaceId, workspaceId)
-    )
+    .where(whereClause)
     .orderBy(sql`${queueEntries.updatedAt} DESC`);
 
   return rows.map((r) => ({

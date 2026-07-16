@@ -12,7 +12,9 @@ import {
  */
 export function WorkStateChip({ entry }: { entry: QueueEntryView }) {
   const reason =
-    entry.state === "parked" ? formatParkReason(entry.blockedBy) : undefined;
+    entry.state === "parked"
+      ? formatParkReason(entry.parkReason, entry.blockedBy)
+      : undefined;
   return (
     <div className="flex flex-col gap-0.5">
       <span

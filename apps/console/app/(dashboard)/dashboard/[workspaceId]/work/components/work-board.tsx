@@ -38,7 +38,9 @@ function WorkCard({
 }) {
   const router = useRouter();
   const reason =
-    entry.state === "parked" ? formatParkReason(entry.blockedBy) : undefined;
+    entry.state === "parked"
+      ? formatParkReason(entry.parkReason, entry.blockedBy)
+      : undefined;
   const go = () => router.push(`/dashboard/${workspaceId}/runs/${entry.id}`);
 
   return (

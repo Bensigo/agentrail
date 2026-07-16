@@ -150,6 +150,64 @@ def test_enqueue_parks_entry_with_unmet_blocked_by():
     assert row["blocked_by"] == [99]
 
 
+# --- issue #1239: park_reason persistence + round-trip -----------------------
+
+
+def test_enqueue_persists_park_reason_for_a_blocked_by_park():
+    """The pure state machine's human-readable reason (queue_state.admit) must be
+    written to the durable row, not just held on the in-memory QueueEntry."""
+    store, fake = _store()
+    entry = store.enqueue(
+        workspace_id="ws1",
+        source="cli",
+        external_id="7",
+        title="Blocked",
+        body=_GOOD_BODY,
+        blocked_by=frozenset({99}),
+    )
+    assert isinstance(entry, QueueEntry)
+    assert entry.reason  # the pure machine populated a reason
+    row = next(iter(fake.entries.values()))
+    assert row["park_reason"] == entry.reason
+    assert "99" in row["park_reason"]
+
+
+def test_enqueue_persists_park_reason_none_for_a_clean_admit():
+    """A QUEUED entry carries reason="" — persisted as NULL, not an empty string,
+    matching the nullable Postgres column (issue #1239)."""
+    store, fake = _store()
+    entry = store.enqueue(
+        workspace_id="ws1",
+        source="github",
+        external_id="42",
+        title="Good AC",
+        body=_GOOD_BODY,
+    )
+    assert isinstance(entry, QueueEntry)
+    assert entry.reason == ""
+    row = next(iter(fake.entries.values()))
+    assert row["park_reason"] is None
+
+
+def test_list_queue_round_trips_park_reason():
+    """A persisted park_reason survives a read back through list_queue — the
+    console (and any Python caller) sees the SAME reason the pure machine set,
+    not a lost/defaulted empty string (issue #1239, _row_to_entry rehydration)."""
+    store, _ = _store()
+    store.enqueue(
+        workspace_id="ws1",
+        source="cli",
+        external_id="7",
+        title="Blocked",
+        body=_GOOD_BODY,
+        blocked_by=frozenset({99}),
+    )
+    [reloaded] = store.list_queue("ws1")
+    assert reloaded.state == QueueState.PARKED
+    assert reloaded.reason
+    assert "99" in reloaded.reason
+
+
 # --- AC2: next_grabbable ordering, skips parked/terminal ----------------------
 
 
@@ -416,6 +474,8 @@ def test_v2_flag_on_live_seam_parks_duplicate_content(monkeypatch):
     # Persisted as a parked row (operator-visible), and NOT grabbable.
     dup_row = fake.entries[store.entry_id(dup)]
     assert dup_row["state"] == QueueState.PARKED.value
+    # Issue #1239: the reason is persisted too, not just held in memory.
+    assert dup_row["park_reason"] == dup.reason
     # Only the first (clean) entry is grabbable; the parked dup is skipped.
     grabbed = store.next_grabbable("ws1")
     assert isinstance(grabbed, QueueEntry)
@@ -485,6 +545,10 @@ def test_v2_flag_on_legit_issue_tripping_injection_is_parked_not_dropped(monkeyp
     row = fake.entries[store.entry_id(result)]
     assert row["state"] == QueueState.PARKED.value
     assert store.next_grabbable("ws1") is None
+    # Issue #1239: the guardrail's own reason text is persisted on the row, not
+    # just held on the in-memory entry.
+    assert row["park_reason"] == result.reason
+    assert "prompt-injection" in row["park_reason"]
 
 
 def test_v2_flag_off_intake_is_unchanged(monkeypatch):

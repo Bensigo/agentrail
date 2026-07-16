@@ -30,16 +30,17 @@ export interface NavZone {
   items: NavItem[];
 }
 
-// Slice ① (#1229) is a pure sidebar regroup — no route/href changes. The
-// existing overview route is relabeled "Home" and Issue Queue keeps its href
-// (it becomes "Work" in a later slice, per the IA spec §3).
+// Slice ① (#1229) was a pure sidebar regroup — no route/href changes. Slice ③
+// (#1231) renames Issue Queue to "Work" and moves its href from `queue` to
+// `work` (spec §3/§4): `/work` is the new task-list page and `/queue`
+// redirects to it, so old deep links keep working without staying in the nav.
 export const YOUR_ENGINEER_ZONE: NavZone = {
   id: "your-engineer",
   label: "Your engineer",
   collapsible: false,
   items: [
     { label: "Home", href: "", icon: LayoutDashboard },
-    { label: "Issue Queue", href: "queue", icon: ListChecks },
+    { label: "Work", href: "work", icon: ListChecks },
   ],
 };
 

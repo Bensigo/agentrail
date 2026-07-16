@@ -122,13 +122,22 @@ export default function RunDetailPage() {
     <div className="mx-auto max-w-[1440px]">
       <div className="mb-2 flex items-center gap-2 text-xs text-[var(--gray-09)]">
         <button
-          onClick={() => router.push(`/dashboard/${workspaceId}/runs`)}
+          onClick={() => router.push(`/dashboard/${workspaceId}/work`)}
           className="flex items-center gap-1 rounded px-1.5 py-1 text-[var(--gray-11)] transition-colors hover:bg-[var(--gray-03)] hover:text-[var(--gray-12)]"
-          aria-label="Back to runs"
+          aria-label="Back to Work"
         >
           <ArrowLeft size={14} />
           Back
         </button>
+        {/* Work is the task list a run item is reached from (#1231); Runs
+            stays reachable as the engine-room evidence view. */}
+        <a
+          href={`/dashboard/${workspaceId}/work`}
+          className="hover:text-[var(--gray-11)] transition-colors"
+        >
+          Work
+        </a>
+        <span>/</span>
         <a
           href={`/dashboard/${workspaceId}/runs`}
           className="hover:text-[var(--gray-11)] transition-colors"
@@ -136,7 +145,9 @@ export default function RunDetailPage() {
           Runs
         </a>
         <span>/</span>
-        <span className="font-mono">{runId.slice(0, 8)}</span>
+        <span className={run?.title ? "" : "font-mono"}>
+          {run?.title || runId.slice(0, 8)}
+        </span>
       </div>
 
       <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">

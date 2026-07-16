@@ -30,6 +30,12 @@ interface DataTableProps<T> {
   rowKey?: (row: T) => string;
   /** When provided, rows become clickable and expand to show this content. */
   renderSubRow?: (row: T) => React.ReactNode;
+  /**
+   * When provided, rows become clickable and call this instead of expanding
+   * (e.g. navigate to a detail page). Takes priority over `renderSubRow` if
+   * both are somehow passed.
+   */
+  onRowClick?: (row: T) => void;
   onRetry?: () => void;
   skeletonRows?: number;
 }
@@ -50,6 +56,7 @@ export function DataTable<T>({
   filterBar,
   rowKey,
   renderSubRow,
+  onRowClick,
   onRetry,
   skeletonRows = 8,
 }: DataTableProps<T>) {
@@ -79,7 +86,8 @@ export function DataTable<T>({
     [rowKey]
   );
 
-  const hasExpand = Boolean(renderSubRow);
+  const hasExpand = Boolean(renderSubRow) && !onRowClick;
+  const clickable = Boolean(onRowClick) || hasExpand;
   const colSpan = columns.length + (hasExpand ? 1 : 0);
 
   return (
@@ -149,8 +157,14 @@ export function DataTable<T>({
                 return [
                   <tr
                     key={row.id}
-                    onClick={hasExpand ? () => toggleExpand(row.original) : undefined}
-                    className={`border-b border-[var(--gray-04)] hover:bg-[var(--gray-02)] transition-colors${hasExpand ? " cursor-pointer" : ""}`}
+                    onClick={
+                      onRowClick
+                        ? () => onRowClick(row.original)
+                        : hasExpand
+                          ? () => toggleExpand(row.original)
+                          : undefined
+                    }
+                    className={`border-b border-[var(--gray-04)] hover:bg-[var(--gray-02)] transition-colors${clickable ? " cursor-pointer" : ""}`}
                     style={{ height: "34px" }}
                   >
                     {row.getVisibleCells().map((cell) => {

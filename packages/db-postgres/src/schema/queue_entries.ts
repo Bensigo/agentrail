@@ -58,6 +58,14 @@ export const queueEntries = pgTable("queue_entries", {
   state: text("state").notNull().default("queued"),
   // Issue numbers this entry is blocked by (parked while any is unmet).
   blockedBy: jsonb("blocked_by").$type<number[]>().notNull().default([]),
+  // Human-readable reason the entry is CURRENTLY parked (issue #1239): a
+  // guardrail park (duplicate content / rate limit / injection screen) or an
+  // unmet blocked-by dependency ("Waiting on #12, #14"). Nullable — null for a
+  // non-parked entry, and for a legacy row written before this column existed.
+  // Every code path that transitions an entry INTO 'parked' sets it; every
+  // transition OUT clears it back to null (see `github_intake.ts` and the
+  // Python persistence edge `agentrail/afk/queue_store.py`).
+  parkReason: text("park_reason"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

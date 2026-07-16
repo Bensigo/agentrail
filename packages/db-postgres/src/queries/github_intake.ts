@@ -504,6 +504,18 @@ export type EnqueueResult =
  * id so a re-delivery of the same issue dedupes (ON CONFLICT DO NOTHING).
  */
 /**
+ * Human-readable reason for a dependency park (issue #1239): the unmet blocker
+ * issue numbers, comma-joined ("Waiting on #12, #14"). Distinct wording from
+ * `formatParkReason`'s blockedBy-only FALLBACK in the console
+ * (`apps/console/lib/work-vocabulary.ts`, "Blocked by #12 and #14") — that
+ * fallback only renders when NO stored reason exists at all; once this reason is
+ * persisted, it is preferred and this exact string is what a human sees.
+ */
+function formatWaitingOnReason(unmet: number[]): string {
+  return `Waiting on ${unmet.map((n) => `#${n}`).join(", ")}`;
+}
+
+/**
  * Of the declared blockers, return those NOT yet satisfied — i.e. issues in the
  * same repo that have a queue entry which has not reached the terminal `green`
  * state. A blocker with no entry yet is treated as unmet (it may arrive later);
@@ -567,7 +579,7 @@ export async function unparkDependents(
     if (stillUnmet.length === 0) {
       await db
         .update(queueEntries)
-        .set({ state: "queued", updatedAt: new Date() })
+        .set({ state: "queued", parkReason: null, updatedAt: new Date() })
         .where(
           and(
             eq(queueEntries.workspaceId, workspaceId),
@@ -607,6 +619,13 @@ export async function enqueueGithubIssue(data: {
   const unmet = await unmetBlockers(data.workspaceId, data.repoFullName, blockedBy);
   let state: "queued" | "parked" = unmet.length > 0 ? "parked" : "queued";
   let reason: string | undefined;
+  // Issue #1239: the durable, human-readable park reason persisted on the row
+  // (distinct from `reason` above, which only rides the enqueue HTTP response).
+  // Seeded from the dependency park when that's why the entry parked; a v2
+  // guardrail park below overrides it with its own reason when BOTH fire (v2
+  // check order is security-first — see `screenV2` — so a guardrail park always
+  // wins when both a guardrail and a dependency would park the same entry).
+  let parkReason: string | null = state === "parked" ? formatWaitingOnReason(unmet) : null;
 
   // Input-Contract v2 (issue #1034), default-OFF behind V2_FLAG so the legacy
   // path is byte-for-byte unchanged until the flag is turned on. When enabled we
@@ -634,6 +653,7 @@ export async function enqueueGithubIssue(data: {
     if (verdict.decision === "park") {
       state = "parked";
       reason = verdict.reason;
+      parkReason = verdict.reason;
     }
     // Only thread the ledger forward for the shared process ledger; a test-injected
     // ledger is owned by the caller (mirrors Python threading `admission.ledger`).
@@ -655,6 +675,7 @@ export async function enqueueGithubIssue(data: {
       remainingBudget: 5,
       state,
       blockedBy,
+      parkReason,
     })
     .onConflictDoNothing({ target: queueEntries.id })
     .returning({ id: queueEntries.id });
@@ -662,9 +683,13 @@ export async function enqueueGithubIssue(data: {
   if (inserted.length === 0) {
     return { enqueued: false, reason: "already queued (deduped)" };
   }
-  // A v2 park (dup/rate-limit/injection) still enqueues a durable row so a human
-  // can review it — the reason rides on the result, not a persisted column (the
-  // schema has none, matching the Python store), and the row records state='parked'.
+  // A v2 park (dup/rate-limit/injection) or a dependency park still enqueues a
+  // durable row so a human can review it — the row records state='parked' AND
+  // (issue #1239) the human-readable `parkReason`, so a later read (the console
+  // Work page) can show WHY without needing this response. `reason` below is a
+  // separate, response-only field: it only ever carries a v2 guardrail reason
+  // (never the dependency-park reason), keeping the webhook response contract
+  // unchanged from before #1239.
   return reason !== undefined
     ? { enqueued: true, id, state, blockedBy, reason }
     : { enqueued: true, id, state, blockedBy };

@@ -26,6 +26,7 @@ function entryRow(over: Partial<QueueEntryRow>): QueueEntryRow {
     remainingBudget: 2,
     state: "queued",
     blockedBy: [],
+    parkReason: null,
     updatedAt: "2026-06-16T00:00:00.000Z",
     ...over,
   };
@@ -145,6 +146,18 @@ describe("mapQueueEntryRows", () => {
     expect(mapQueueEntryRows([withoutBlockedBy as QueueEntryRow])[0].blockedBy).toEqual(
       []
     );
+  });
+
+  it("carries parkReason through, defaulting to null when absent (issue #1239)", () => {
+    expect(
+      mapQueueEntryRows([
+        entryRow({ state: "parked", parkReason: "duplicate content: …" }),
+      ])[0].parkReason
+    ).toBe("duplicate content: …");
+    const { parkReason: _omit, ...withoutParkReason } = entryRow({});
+    expect(
+      mapQueueEntryRows([withoutParkReason as QueueEntryRow])[0].parkReason
+    ).toBeNull();
   });
 
   it("sorts most-recently-updated first", () => {
@@ -267,24 +280,44 @@ describe("groupWorkEntries", () => {
   });
 });
 
-describe("formatParkReason", () => {
-  it("returns undefined when there are no recorded blockers", () => {
-    expect(formatParkReason(undefined)).toBeUndefined();
-    expect(formatParkReason([])).toBeUndefined();
+describe("formatParkReason (issue #1239: reason preferred, blockedBy fallback)", () => {
+  // AC3: reason-only, blockers-only, both, neither.
+
+  it("neither: returns undefined when there is no reason and no recorded blockers", () => {
+    expect(formatParkReason(undefined, undefined)).toBeUndefined();
+    expect(formatParkReason(null, [])).toBeUndefined();
   });
 
-  it("renders a single blocker", () => {
-    expect(formatParkReason([12])).toBe("Blocked by #12");
+  it("reason-only: renders the stored reason verbatim, even with no blockedBy", () => {
+    expect(
+      formatParkReason(
+        "duplicate content: an issue with identical content is already in the queue",
+        undefined
+      )
+    ).toBe(
+      "duplicate content: an issue with identical content is already in the queue"
+    );
+    expect(formatParkReason("rate limit: writer 'jace' exceeded its limit", [])).toBe(
+      "rate limit: writer 'jace' exceeded its limit"
+    );
   });
 
-  it("renders two blockers with 'and'", () => {
-    expect(formatParkReason([12, 14])).toBe("Blocked by #12 and #14");
-  });
-
-  it("renders three or more blockers as an oxford-comma list", () => {
-    expect(formatParkReason([12, 14, 16])).toBe(
+  it("blockers-only: falls back to formatting blockedBy when no reason is stored", () => {
+    expect(formatParkReason(undefined, [12])).toBe("Blocked by #12");
+    expect(formatParkReason(null, [12, 14])).toBe("Blocked by #12 and #14");
+    expect(formatParkReason(undefined, [12, 14, 16])).toBe(
       "Blocked by #12, #14, and #16"
     );
+  });
+
+  it("both: the stored reason wins over the blockedBy fallback", () => {
+    expect(formatParkReason("Waiting on #12, #14", [12, 14])).toBe(
+      "Waiting on #12, #14"
+    );
+  });
+
+  it("treats an empty-string reason as absent and falls back to blockedBy", () => {
+    expect(formatParkReason("", [12])).toBe("Blocked by #12");
   });
 });
 

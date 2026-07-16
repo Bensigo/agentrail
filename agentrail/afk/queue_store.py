@@ -284,6 +284,13 @@ class QueueStore:
                 "remaining_budget": entry.remaining_budget,
                 "state": _state_value(entry.state),
                 "blocked_by": sorted(entry.blocked_by),
+                # Issue #1239: persist the pure state machine's human-readable
+                # park reason (set by ``queue_state.admit`` for a blocked-by
+                # dependency, or by the Input-Contract v2 gate for a duplicate/
+                # rate-limit/injection park) so a later read — the console Work
+                # page — can show WHY without needing this enqueue call's return
+                # value. Empty string (a QUEUED/RUNNING entry) persists as NULL.
+                "park_reason": entry.reason or None,
                 "created_at": now,
                 "updated_at": now,
             },
@@ -379,6 +386,12 @@ class QueueStore:
                 "remaining_budget": entry.remaining_budget,
                 "state": _state_value(entry.state),
                 "blocked_by": sorted(entry.blocked_by),
+                # Issue #1239: ``transition`` never operates on a PARKED entry
+                # (queue_state.transition raises), so by construction every
+                # entry reaching this method carries reason="" — this write is
+                # the clear-on-unpark side of the contract, defensively kept in
+                # lockstep with ``insert_entry`` rather than assumed.
+                "park_reason": entry.reason or None,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             },
         )
@@ -399,12 +412,17 @@ class QueueStore:
         }
         state = _parse_state(row["state"])
         blocked = frozenset(int(b) for b in (row.get("blocked_by") or []))
+        # Issue #1239: rehydrate the persisted park reason so a resumed/re-read
+        # entry (list_queue, next_grabbable) keeps its human-readable reason
+        # instead of silently losing it to the dataclass's "" default.
+        reason = str(row.get("park_reason") or "")
         return QueueEntry(
             number=number,
             tier=Tier(int(row["tier"])),
             remaining_budget=int(row["remaining_budget"]),
             state=state,
             blocked_by=blocked,
+            reason=reason,
         )
 
 
@@ -436,16 +454,17 @@ _SQL = {
     "insert_entry": (
         "INSERT INTO queue_entries "
         "(id, workspace_id, source, external_id, title, body, tier, "
-        " remaining_budget, state, blocked_by, created_at, updated_at) "
+        " remaining_budget, state, blocked_by, park_reason, created_at, updated_at) "
         "VALUES (%(id)s, %(workspace_id)s, %(source)s, %(external_id)s, "
         " %(title)s, %(body)s, %(tier)s, %(remaining_budget)s, %(state)s, "
-        " %(blocked_by)s, %(created_at)s, %(updated_at)s) "
+        " %(blocked_by)s, %(park_reason)s, %(created_at)s, %(updated_at)s) "
         "ON CONFLICT (id) DO NOTHING"
     ),
     "update_entry": (
         "UPDATE queue_entries SET tier = %(tier)s, "
         " remaining_budget = %(remaining_budget)s, state = %(state)s, "
-        " blocked_by = %(blocked_by)s, updated_at = %(updated_at)s "
+        " blocked_by = %(blocked_by)s, park_reason = %(park_reason)s, "
+        " updated_at = %(updated_at)s "
         "WHERE id = %(id)s"
     ),
     "upsert_run": (
@@ -463,13 +482,13 @@ _SQL = {
     ),
     "list_queue": (
         "SELECT id, workspace_id, source, external_id, title, body, tier, "
-        " remaining_budget, state, blocked_by, created_at, updated_at "
+        " remaining_budget, state, blocked_by, park_reason, created_at, updated_at "
         "FROM queue_entries WHERE workspace_id = %(workspace_id)s "
         "ORDER BY created_at ASC"
     ),
     "next_grabbable": (
         "SELECT id, workspace_id, source, external_id, title, body, tier, "
-        " remaining_budget, state, blocked_by, created_at, updated_at "
+        " remaining_budget, state, blocked_by, park_reason, created_at, updated_at "
         "FROM queue_entries WHERE workspace_id = %(workspace_id)s "
         "AND state = 'queued' ORDER BY created_at ASC LIMIT 1"
     ),

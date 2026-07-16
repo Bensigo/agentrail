@@ -81,6 +81,9 @@ export interface QueueEntryView {
   updatedAt: string;
   /** Issue numbers this entry is blocked by (parked only); empty otherwise. */
   blockedBy: number[];
+  /** Human-readable reason the entry is CURRENTLY parked (issue #1239); null
+   * when not parked or when no reason was recorded. See {@link formatParkReason}. */
+  parkReason: string | null;
 }
 
 /** Run statuses that count as a failed attempt (consume one budget unit). */
@@ -134,6 +137,9 @@ export function projectQueueEntries(runs: QueueRunInput[]): QueueEntryView[] {
       failedAttempts,
       updatedAt: latest.createdAt,
       blockedBy: [],
+      // The runs-history projection has no `queue_entries` row to read a
+      // recorded reason from — it only ever infers state from run statuses.
+      parkReason: null,
     });
   }
   // Most-recently-active issue first (time is the primary axis, TASTE.md).
@@ -179,13 +185,14 @@ export interface QueueEntryRow {
   remainingBudget: number;
   /** queue_state vocabulary: queued|parked|running + terminals. */
   state: string;
-  /** Issue numbers this entry is blocked by (parked while any is unmet). The
-   * only DURABLE park reason: guardrail park reasons (duplicate content /
-   * rate limit / injection) ride on the enqueue response only and are never
-   * persisted — the schema has no reason column (see
-   * `packages/db-postgres/src/queries/github_intake.ts`) — so they cannot be
-   * reconstructed on a later read. */
+  /** Issue numbers this entry is blocked by (parked while any is unmet). */
   blockedBy?: number[];
+  /** Human-readable reason the entry is CURRENTLY parked (issue #1239): a
+   * guardrail park (duplicate content / rate limit / injection screen) or a
+   * dependency park ("Waiting on #12, #14"), persisted on the row (see
+   * `packages/db-postgres/src/queries/github_intake.ts`). Null/absent when
+   * not parked, or for a legacy/reasonless row. */
+  parkReason?: string | null;
   updatedAt: string;
 }
 
@@ -230,6 +237,7 @@ export function mapQueueEntryRows(rows: QueueEntryRow[]): QueueEntryView[] {
       failedAttempts,
       updatedAt: row.updatedAt,
       blockedBy: row.blockedBy ?? [],
+      parkReason: row.parkReason ?? null,
     } satisfies QueueEntryView;
   });
   entries.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
@@ -314,16 +322,20 @@ export function groupWorkEntries(
 }
 
 /**
- * Human-readable park reason from a parked entry's unmet blockers
- * (`queue_entries.blockedBy`). This is the only reason that survives a later
- * read: guardrail park reasons (duplicate content / rate limit / injection
- * screen) are returned once on the enqueue response and never persisted (no
- * `reason` column on `queue_entries` — see `github_intake.ts`), so a page
- * rendered from a durable read can never recover them. Returns `undefined`
- * when there is nothing to report (not parked on a dependency, or an
- * ephemeral guardrail park with no recorded blocker).
+ * Human-readable park reason for a parked entry (issue #1239). Prefers the
+ * STORED reason (`queue_entries.parkReason` — a guardrail park's own wording,
+ * e.g. "duplicate content: …", or a dependency park's "Waiting on #12, #14"):
+ * that is the human-authored/gate-authored text and is always the most
+ * accurate description of why an entry parked. Falls back to formatting
+ * `blockedBy` ("Blocked by #N …") only for a legacy/reasonless row that
+ * predates the `parkReason` column, or a park recorded with no reason at all.
+ * Returns `undefined` when there is nothing to report.
  */
-export function formatParkReason(blockedBy: number[] | undefined): string | undefined {
+export function formatParkReason(
+  parkReason: string | null | undefined,
+  blockedBy: number[] | undefined
+): string | undefined {
+  if (parkReason) return parkReason;
   if (!blockedBy || blockedBy.length === 0) return undefined;
   const refs = blockedBy.map((n) => `#${n}`);
   if (refs.length === 1) return `Blocked by ${refs[0]}`;

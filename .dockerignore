@@ -1,0 +1,53 @@
+# Build context is the REPO ROOT (apps/console/Dockerfile needs the whole pnpm
+# workspace to resolve `workspace:*` deps), so this file lives at the repo root
+# too — a .dockerignore only applies to the directory it sits in.
+#
+# Keep this in sync with .gitignore where it makes sense, but it is NOT the same
+# file: this trims the *build context* sent to the Docker daemon (build speed +
+# image hygiene), while .gitignore trims what git tracks.
+
+# VCS
+.git/
+.github/
+
+# Node
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+.source/
+**/.source/
+*.tsbuildinfo
+
+# Jace (apps/jace) is excluded from the pnpm workspace and installs standalone;
+# it is never needed in the console's build context and its own node_modules /
+# .output are large.
+apps/jace/node_modules/
+apps/jace/.output/
+apps/jace/.eve/
+apps/jace/.workflow-data/
+
+# Python / agentrail CLI source — not needed to build the console image.
+__pycache__/
+*.egg-info/
+.venv/
+venv/
+
+# Local state / secrets — never send these into a build context.
+.env
+.env.local
+.env.*.local
+.agentrail/
+.afk-workflow/
+.memory/
+.worktrees/
+
+# Docs / misc not needed at build time
+*.md
+!README.md
+docs/
+
+# Editors / OS cruft
+.vscode/
+.idea/
+.DS_Store

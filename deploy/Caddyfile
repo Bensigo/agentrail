@@ -1,0 +1,36 @@
+# AgentRail — single-host Caddy reverse proxy.
+#
+# No custom domain for this walking-skeleton deploy: 65.20.91.127.sslip.io
+# resolves (via sslip.io's wildcard DNS trick) to the box's own public IP
+# 65.20.91.127, so Caddy can request a real Let's Encrypt certificate for it
+# automatically — no DNS provider account, no manual cert handling. Caddy needs
+# ports 80 (ACME HTTP-01 challenge + HTTP->HTTPS redirect, automatic) and 443
+# reachable from the internet; docker-compose.prod.yml publishes both.
+#
+# If you later move to a real domain, this file only needs its site address
+# changed — everything else (the two `handle` blocks) stays the same.
+
+65.20.91.127.sslip.io {
+	# Jace's Eve-native inbound surface — ALL of it lives under /eve/v1/*
+	# (apps/jace/README.md's "Topology" section: GET /eve/v1/health, POST
+	# /eve/v1/session[/:id], GET /eve/v1/session/:id/stream, plus every
+	# platform channel's inbound webhook — Eve mounts each channel file under
+	# agent/channels/ at /eve/v1/<filename>, e.g. telegram.ts -> /eve/v1/telegram,
+	# discord.ts -> /eve/v1/discord, slack.ts -> /eve/v1/slack,
+	# imessage.ts -> /eve/v1/imessage, run-outcome.ts -> /eve/v1/run-outcome).
+	# Register this exact path with each platform's webhook config — see
+	# deploy/README.md for the concrete Telegram setWebhook call.
+	handle /eve/v1/* {
+		reverse_proxy jace:2000
+	}
+
+	# Everything else is the console: the dashboard/login UI, the Fumadocs site,
+	# every /api/* route — which covers the GitHub OAuth callback
+	# (/api/auth/callback/github), the GitHub issues webhook
+	# (/api/v1/connectors/github/webhook), and the runner's claim/result/ingest
+	# API (/api/v1/runner/*, /api/v1/ingest/*, /api/v1/auth/device/*) — all under
+	# the console's own /api/* tree, so one catch-all handles them.
+	handle {
+		reverse_proxy console:3000
+	}
+}

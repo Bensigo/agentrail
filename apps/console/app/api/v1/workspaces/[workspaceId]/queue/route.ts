@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import { getWorkspaceMembership, listQueueEntries } from "@agentrail/db-postgres";
-import { mapQueueEntryRows } from "../../../../../../app/(dashboard)/dashboard/[workspaceId]/queue/components/queue-helpers";
+import { mapQueueEntryRows } from "../../../../../../lib/work-vocabulary";
 
 /**
  * Issue Queue read model. Reads the authoritative durable `queue_entries` table

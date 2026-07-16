@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { getMembership, getSession } from "../../../../lib/cached";
 import { PageHeader } from "../../../components/page-header";
 import { DigestPanel } from "./components/digest-panel";
+import { OnboardingBanner } from "./components/onboarding-banner";
 
 export default async function WorkspaceDashboardPage({
   params,
@@ -33,6 +34,7 @@ export default async function WorkspaceDashboardPage({
       />
 
       <div className="mt-2 flex flex-col gap-6">
+        <OnboardingBanner workspaceId={workspaceId} />
         <DigestPanel workspaceId={workspaceId} />
       </div>
     </div>

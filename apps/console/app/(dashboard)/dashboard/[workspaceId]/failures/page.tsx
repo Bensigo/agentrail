@@ -26,9 +26,13 @@ export default async function FailuresPage({
 
   return (
     <div className="mx-auto max-w-[1440px]">
-      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
+      <h1 className="text-sm font-semibold text-[var(--gray-12)]">
         Failures
       </h1>
+      <p className="mb-4 mt-1 text-xs text-[var(--gray-09)]">
+        Every way Jace&apos;s work has broken, grouped so the pattern is
+        obvious.
+      </p>
       <FailureClusters workspaceId={workspaceId} />
       <FailuresTable
         workspaceId={workspaceId}

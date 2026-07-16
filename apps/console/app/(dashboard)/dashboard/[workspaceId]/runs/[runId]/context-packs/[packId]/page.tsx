@@ -49,10 +49,15 @@ export default async function ContextPackDetailPage({
   // read-grounded scalar precision/recall have no ClickHouse column (that would
   // need a schema migration; see PR notes). Fetch it so the read-grounded
   // diagnostics can be honestly labelled n/a for engines without a transcript.
+  // Also carries the run's title for the breadcrumb (#1232): names over IDs
+  // — the run crumb shows the work item's title when one exists, falling
+  // back to a short id like the run-detail breadcrumb does.
   let engine = "";
+  let runTitle: string | null = null;
   try {
     const run = await getRun(workspaceId, runId);
     engine = (run?.agent ?? "").toLowerCase();
+    runTitle = run?.title ?? null;
   } catch {
     // Postgres unavailable — leave engine blank; diagnostics fall back to n/a.
   }
@@ -74,8 +79,18 @@ export default async function ContextPackDetailPage({
 
   return (
     <div className="mx-auto max-w-[1440px]">
-      {/* Breadcrumb */}
+      {/* Breadcrumb — extends the Work → run detail trail (#1231) into this
+          run sub-page, so drilling from a work item never strands the user
+          (#1232 AC2). The run crumb shows its title when one exists (names
+          over IDs); the context pack itself has no name, so it stays id'd. */}
       <nav className="mb-4 flex items-center gap-1 text-xs text-[var(--gray-09)]">
+        <Link
+          href={`/dashboard/${workspaceId}/work`}
+          className="hover:text-[var(--gray-12)] transition-colors"
+        >
+          Work
+        </Link>
+        <span>/</span>
         <Link
           href={`/dashboard/${workspaceId}/runs`}
           className="hover:text-[var(--gray-12)] transition-colors"
@@ -85,14 +100,16 @@ export default async function ContextPackDetailPage({
         <span>/</span>
         <Link
           href={`/dashboard/${workspaceId}/runs/${runId}`}
-          className="font-mono hover:text-[var(--gray-12)] transition-colors"
+          className={`hover:text-[var(--gray-12)] transition-colors ${runTitle ? "" : "font-mono"}`}
         >
-          {runId}
+          {runTitle || runId.slice(0, 8)}
         </Link>
         <span>/</span>
         <span className="text-[var(--gray-11)]">Context Pack</span>
         <span>/</span>
-        <span className="font-mono text-[var(--gray-11)]">{packId}</span>
+        <span className="font-mono text-[var(--gray-11)]">
+          {packId.slice(0, 8)}
+        </span>
       </nav>
 
       {/* Pack metadata */}

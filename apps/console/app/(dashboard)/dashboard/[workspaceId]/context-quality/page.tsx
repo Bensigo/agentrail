@@ -25,8 +25,7 @@ export default async function ContextQualityPage({
         Context Quality
       </h1>
       <p className="mb-4 text-xs text-[var(--gray-09)]">
-        Precision, citation coverage, staleness, and denied-source counts across
-        runs for this workspace.
+        How solid the information Jace worked from has been, run over run.
       </p>
 
       {/* Eval results — the falsifiable signal (#942). Solve-rate,

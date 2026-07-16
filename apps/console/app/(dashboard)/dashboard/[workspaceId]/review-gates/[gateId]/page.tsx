@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
+import { ArrowLeft } from "lucide-react";
 
 type ReviewGateStatus = "passed" | "failed" | "pending";
 type Category = "tests" | "visual" | "citations" | "ac" | "blocked";
@@ -46,6 +47,52 @@ function EvidenceBadge({ present }: { present: boolean }) {
     >
       {present ? "present" : "missing"}
     </span>
+  );
+}
+
+/**
+ * Breadcrumb trail back to Review Gates (this entity's list page) and to
+ * Work (#1232 AC2), mirroring the run-detail pattern (#1231): a Back
+ * control that returns to the immediate list, plus a full crumb trail. The
+ * leaf shows the gate name when it has loaded; names over IDs.
+ */
+function GateBreadcrumb({
+  workspaceId,
+  gateName,
+}: {
+  workspaceId: string;
+  gateName?: string;
+}) {
+  return (
+    <div className="mb-4 flex items-center gap-2 text-xs text-[var(--gray-09)]">
+      <a
+        href={`/dashboard/${workspaceId}/review-gates`}
+        className="flex items-center gap-1 rounded px-1.5 py-1 text-[var(--gray-11)] transition-colors hover:bg-[var(--gray-03)] hover:text-[var(--gray-12)]"
+        aria-label="Back to Review Gates"
+      >
+        <ArrowLeft size={14} />
+        Back
+      </a>
+      <a
+        href={`/dashboard/${workspaceId}/work`}
+        className="hover:text-[var(--gray-11)] transition-colors"
+      >
+        Work
+      </a>
+      <span>/</span>
+      <a
+        href={`/dashboard/${workspaceId}/review-gates`}
+        className="hover:text-[var(--gray-11)] transition-colors"
+      >
+        Review Gates
+      </a>
+      {gateName && (
+        <>
+          <span>/</span>
+          <span className="max-w-[320px] truncate">{gateName}</span>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -118,6 +165,7 @@ export default function ReviewGateDetailPage() {
   if (loading) {
     return (
       <div className="mx-auto max-w-[900px]">
+        <GateBreadcrumb workspaceId={workspaceId} />
         <p className="text-sm text-[var(--gray-09)] animate-pulse py-8">
           Loading review gate...
         </p>
@@ -128,12 +176,7 @@ export default function ReviewGateDetailPage() {
   if (error || !gate) {
     return (
       <div className="mx-auto max-w-[900px]">
-        <a
-          href={`/dashboard/${workspaceId}/review-gates`}
-          className="mb-4 inline-flex text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)] transition-colors"
-        >
-          ← gates
-        </a>
+        <GateBreadcrumb workspaceId={workspaceId} />
         <p className="text-sm text-[#ff9592] py-8">{error ?? "Review gate not found"}</p>
       </div>
     );
@@ -141,12 +184,7 @@ export default function ReviewGateDetailPage() {
 
   return (
     <div className="mx-auto max-w-[900px]">
-      <a
-        href={`/dashboard/${workspaceId}/review-gates`}
-        className="mb-4 inline-flex text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)] transition-colors"
-      >
-        ← gates
-      </a>
+      <GateBreadcrumb workspaceId={workspaceId} gateName={gate.gateName} />
 
       <div className="mb-6 flex flex-col gap-3 border-b border-[var(--gray-05)] pb-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">

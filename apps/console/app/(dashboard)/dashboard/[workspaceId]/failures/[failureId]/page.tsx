@@ -40,18 +40,57 @@ function SeverityBadge({ level }: { level: SeverityMeaning["level"] }) {
   );
 }
 
+/**
+ * Breadcrumb trail back to Failures (this entity's list page) and to Work
+ * (#1232 AC2), mirroring the run-detail (#1231) and review-gate-detail
+ * patterns: a Back control to the immediate list, plus a full crumb trail.
+ * The leaf shows the failure's human title when it has loaded; names over
+ * IDs.
+ */
+function FailureBreadcrumb({
+  workspaceId,
+  title,
+}: {
+  workspaceId: string;
+  title?: string;
+}) {
+  return (
+    <div className="mb-4 flex items-center gap-2 text-xs text-[var(--gray-09)]">
+      <Link
+        href={`/dashboard/${workspaceId}/failures`}
+        className="flex items-center gap-1 rounded px-1.5 py-1 text-[var(--gray-11)] transition-colors hover:bg-[var(--gray-03)] hover:text-[var(--gray-12)]"
+        aria-label="Back to Failures"
+      >
+        <ChevronLeft className="h-3.5 w-3.5" />
+        Back
+      </Link>
+      <Link
+        href={`/dashboard/${workspaceId}/work`}
+        className="hover:text-[var(--gray-11)] transition-colors"
+      >
+        Work
+      </Link>
+      <span>/</span>
+      <Link
+        href={`/dashboard/${workspaceId}/failures`}
+        className="hover:text-[var(--gray-11)] transition-colors"
+      >
+        Failures
+      </Link>
+      {title && (
+        <>
+          <span>/</span>
+          <span className="max-w-[320px] truncate">{title}</span>
+        </>
+      )}
+    </div>
+  );
+}
+
 function FailureDbError({ workspaceId }: { workspaceId: string }) {
   return (
     <div className="mx-auto max-w-[900px]">
-      <div className="mb-4 flex items-center gap-2">
-        <Link
-          href={`/dashboard/${workspaceId}/failures`}
-          className="flex items-center gap-1 text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)] transition-colors"
-        >
-          <ChevronLeft className="h-3 w-3" />
-          Failures
-        </Link>
-      </div>
+      <FailureBreadcrumb workspaceId={workspaceId} />
       <div className="rounded border border-[#e5484d]/30 bg-[#e5484d]/10 px-4 py-4 flex flex-col gap-3">
         <div className="flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 text-[#ff9592] shrink-0" />
@@ -189,15 +228,7 @@ export default async function FailureDetailPage({
 
   return (
     <div className="mx-auto max-w-[900px]">
-      <div className="mb-4 flex items-center gap-2">
-        <Link
-          href={`/dashboard/${workspaceId}/failures`}
-          className="flex items-center gap-1 text-xs text-[var(--gray-09)] hover:text-[var(--gray-12)] transition-colors"
-        >
-          <ChevronLeft className="h-3 w-3" />
-          Failures
-        </Link>
-      </div>
+      <FailureBreadcrumb workspaceId={workspaceId} title={explanation.title} />
 
       {/* Human title + severity */}
       <div className="flex items-start justify-between gap-4 mb-2">

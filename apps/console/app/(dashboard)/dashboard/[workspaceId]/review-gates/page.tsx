@@ -371,14 +371,9 @@ export default function ReviewGatesPage() {
         <h1 className="text-sm font-semibold text-[var(--gray-12)]">
           Review Gates
         </h1>
-        <p className="mt-1 max-w-[80ch] text-xs leading-relaxed text-[var(--gray-09)]">
-          A review gate decides whether a change may merge. It{" "}
-          <span className="text-[var(--green-11)]">passes</span> or{" "}
-          <span className="text-[var(--red-11)]">fails</span> on objective
-          evidence only — CI (tests, build, lint) and security checks. The
-          listed findings are <span className="text-[var(--gray-12)]">advisory</span>:
-          they never block merge. Convert any finding into a Linear or GitHub
-          issue from the row below.
+        <p className="mt-1 text-xs text-[var(--gray-09)]">
+          The evidence that decided whether each of Jace&apos;s changes was
+          safe to merge.
         </p>
       </div>
 

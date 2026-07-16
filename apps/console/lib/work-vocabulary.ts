@@ -20,13 +20,37 @@
  *    from spec §3 ("Needs you", "Blocked", …), used on the Work page and the
  *    Home digest. User-facing copy never says `queue_entry`, `tier`, or
  *    `remaining_budget` (house rule + spec §3).
+ *
+ * Issue #1240 — TWO independent budget constants live here, on purpose, for
+ * TWO independent projections that read different data:
+ *  - {@link DEFAULT_BUDGET} (=2) — the runs-history FALLBACK projection
+ *    ({@link projectQueueEntries}/{@link resolveQueueState}). It has no
+ *    `queue_entries` row to read a real budget from; it infers everything from
+ *    `runs` statuses, so it assumes the Python pure state machine's
+ *    `queue_state.QueueEntry.remaining_budget` default (2). Left UNCHANGED —
+ *    no silent escalation-semantics change (AC3).
+ *  - `QUEUE_ENTRY_DEFAULT_BUDGET` (=5, imported from `@agentrail/db-postgres`)
+ *    — the durable-queue projection ({@link mapQueueEntryRows}), which reads
+ *    the REAL `queue_entries.remaining_budget` column. That column (and the
+ *    explicit `remainingBudget: 5` a GitHub issue is seeded with in
+ *    `github_intake.ts::enqueueGithubIssue`) is 5, not 2 — `mapQueueEntryRows`
+ *    was wrongly reusing `DEFAULT_BUDGET`'s value for a different data source.
  */
+
+import { QUEUE_ENTRY_DEFAULT_BUDGET } from "@agentrail/db-postgres";
 
 // ---------------------------------------------------------------------------
 // Queue state (technical vocabulary + durable-queue projection)
 // ---------------------------------------------------------------------------
 
-/** Default per-issue budget, matching `queue_state.QueueEntry.remaining_budget`. */
+/**
+ * Default per-issue budget for the runs-history FALLBACK projection only
+ * ({@link projectQueueEntries}/{@link resolveQueueState}). Matches
+ * `queue_state.QueueEntry.remaining_budget`'s default (2) — NOT the durable
+ * `queue_entries.remaining_budget` column, which seeds at 5 for a GitHub issue
+ * (see `QUEUE_ENTRY_DEFAULT_BUDGET`, issue #1240). Do not reuse this constant
+ * for a durable-row computation; the two data sources disagree on purpose.
+ */
 export const DEFAULT_BUDGET = 2;
 
 /** Non-terminal lifecycle states + the three Run Outcome terminals. */
@@ -92,6 +116,15 @@ const FAILED_STATUSES = new Set(["failed", "error"]);
 /**
  * Resolve an issue's queue state from its runs' statuses (in any order).
  * Pure and total: an unknown status is treated as not-yet-resolved (`queued`).
+ *
+ * Issue #1240 (AC3): this is the runs-history FALLBACK's escalation heuristic —
+ * it has no `queue_entries.remaining_budget` to read, so it assumes
+ * {@link DEFAULT_BUDGET} (2, the Python pure state machine's default) is the
+ * budget every issue started with. That assumption is UNCHANGED by #1240 — no
+ * silent escalation-semantics change. It is a genuinely different question
+ * from what `mapQueueEntryRows` answers (which reads a real, persisted budget
+ * per row and can be seeded to 5, or 3 for onboard entries) and the two must
+ * not be conflated.
  */
 export function resolveQueueState(statuses: string[]): QueueState {
   if (statuses.some((s) => s === "success")) return "green";
@@ -107,7 +140,16 @@ function resolveTier(attempts: number): QueueTier {
   return attempts > 1 ? "strong" : "cheap";
 }
 
-/** Group runs by branch (= one issue) and project each into a queue entry. */
+/**
+ * Group runs by branch (= one issue) and project each into a queue entry.
+ *
+ * Issue #1240 (AC3): this is the runs-history FALLBACK projection — it has no
+ * `queue_entries` row to read, so `remainingBudget`/`failedAttempts` here are
+ * derived entirely from run statuses against {@link DEFAULT_BUDGET} (2), left
+ * unchanged by #1240. Prefer {@link mapQueueEntryRows} (the durable-queue
+ * projection) wherever a `queue_entries` row is available; this fallback
+ * exists for callers that only have `runs`.
+ */
 export function projectQueueEntries(runs: QueueRunInput[]): QueueEntryView[] {
   const byBranch = new Map<string, QueueRunInput[]>();
   for (const run of runs) {
@@ -219,12 +261,24 @@ function asQueueState(state: string): QueueState {
 /**
  * Project authoritative `queue_entries` rows into view entries. Pure: tier and
  * state come straight from the row (the state machine already decided them);
- * failed attempts are inferred from the consumed budget. Most-recently-updated
- * first, matching the runs projection's ordering.
+ * failed attempts are inferred from the consumed budget, against
+ * `QUEUE_ENTRY_DEFAULT_BUDGET` (issue #1240) — the REAL starting budget a
+ * durable row is seeded with, not the runs-projection's `DEFAULT_BUDGET`.
+ * Most-recently-updated first, matching the runs projection's ordering.
+ *
+ * Known imprecision (documented, not fixed — out of #1240's stated scope):
+ * `enqueueOnboard` seeds onboard-kind rows with a DIFFERENT starting budget
+ * (3, not 5) — `QueueEntryRow` carries no `kind`, so an onboard entry's
+ * inferred `failedAttempts` can be off by up to 2. Pre-existing (it was off
+ * from the old constant too); the AC2 example this fix targets is a
+ * GitHub-issue row, where 5 is the correct starting budget.
  */
 export function mapQueueEntryRows(rows: QueueEntryRow[]): QueueEntryView[] {
   const entries = rows.map((row) => {
-    const failedAttempts = Math.max(DEFAULT_BUDGET - row.remainingBudget, 0);
+    const failedAttempts = Math.max(
+      QUEUE_ENTRY_DEFAULT_BUDGET - row.remainingBudget,
+      0
+    );
     return {
       id: row.id,
       issueKey: row.externalId,

@@ -165,9 +165,13 @@ export default async function ScorecardPage({
 
   return (
     <div className="mx-auto max-w-[1440px]">
-      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
+      <h1 className="text-sm font-semibold text-[var(--gray-12)]">
         Agent Scorecard
       </h1>
+      <p className="mb-4 mt-1 text-xs text-[var(--gray-09)]">
+        How reliably each agent and model Jace uses ships working code, by
+        the numbers.
+      </p>
 
       {!hasFinishedRuns && agents.length === 0 ? (
         <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-6 py-10 text-center">

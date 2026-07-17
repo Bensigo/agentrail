@@ -15,3 +15,5 @@ export * from "./queue_entries.js";
 export * from "./connectors.js";
 export * from "./device_codes.js";
 export * from "./eval_arm_metrics.js";
+export * from "./channel_inbox.js";
+export * from "./jace_sessions.js";

@@ -6,12 +6,10 @@ import {
   AlertTriangle,
   ShieldCheck,
   DollarSign,
-  TrendingUp,
   Database,
   Brain,
   Key,
   Users,
-  Activity,
   Plug,
 } from "lucide-react";
 
@@ -54,8 +52,6 @@ export const ENGINE_ROOM_ZONE: NavZone = {
     { label: "Runs", href: "runs", icon: Play },
     { label: "Review Gates", href: "review-gates", icon: ShieldCheck },
     { label: "Costs", href: "costs", icon: DollarSign },
-    { label: "Scorecard", href: "scorecard", icon: TrendingUp },
-    { label: "Context Quality", href: "context-quality", icon: Activity },
     { label: "Memory", href: "memory", icon: Brain },
     { label: "Failures", href: "failures", icon: AlertTriangle },
   ],

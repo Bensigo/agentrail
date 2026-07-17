@@ -14,8 +14,6 @@ const SEGMENT_LABELS: Record<string, string> = {
   failures: "Failures",
   "review-gates": "Review Gates",
   costs: "Costs",
-  scorecard: "Scorecard",
-  "context-quality": "Context Quality",
   repos: "Repos & Health",
   memory: "Memory",
   "api-keys": "API Keys",

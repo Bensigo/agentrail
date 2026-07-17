@@ -261,6 +261,12 @@ Then: door → identity → cloud factory (incl. onboard executor + runtime
 verification) → alignment gate → approvals loop → landing rebuild +
 quickstart — with §4.6 repairs slotted where they block the slice, and
 long-lead items (WhatsApp business verification, LoopMessage production plan)
-started immediately in parallel. One PR per piece; nothing marked done
-without live verification (§6). Issues for **everything** in §5 are filed up
+started immediately in parallel. Issues for **everything** in §5 are filed up
 front so the backlog is the single source of what remains.
+
+**PR sizing rule (owner-stated):** work ships as multiple small PRs sized for
+human review — one issue deliberately splits into several stacked PRs (e.g.
+schema → logic → UI; "an issue can have 3 PRs"), each reviewable on its own.
+Never one big PR per issue. Nothing is marked done without live verification
+(§6). This rule is encoded into the agent-facing repo docs during the step-zero
+canon rewrite so every executing agent inherits it.

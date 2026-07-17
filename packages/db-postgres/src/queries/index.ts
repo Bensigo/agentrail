@@ -1790,10 +1790,15 @@ export {
 // (workspace, channel, conversation) -> one Eve session; resolveApproval is
 // the publication idempotency guard (atomic pending->resolved flip) that lets
 // callers publish a downstream side effect exactly once per approval.
+// getOrCreateIntroJaceSession + bindJaceSessionWorkspace (issue #1261 PR ②)
+// are the workspace-less counterpart: a session anchored to chat_identity_id
+// for a sender with no resolved workspace yet, that graduates in place.
 export {
   getOrCreateJaceSession,
   bindEveSession,
   setJaceSessionStatus,
+  getOrCreateIntroJaceSession,
+  bindJaceSessionWorkspace,
   recordApprovalRequest,
   findApprovalByCallbackToken,
   resolveApproval,

@@ -1,6 +1,30 @@
-# AgentRail
+# AgentRail — context for agents working in this repo
 
-AgentRail is a context control plane for AI engineering work. It gives coding agents task-specific context packs and gives teams an auditable view of agent runs, context decisions, review gates, failures, memory, and cost.
+The product is **Jace**: an open-source AI engineer you hire onto your team
+and talk to in chat. He turns rough ideas into concrete issues, **aligns with
+the user before any work starts** (goal, approach, acceptance criteria,
+model, cost), executes through the factory's SDLC, and opens pull requests —
+never merging by default. The hosted product lives at
+[heyjace.com](https://heyjace.com); self-hosting is fully supported.
+
+Three components, one repo:
+
+- **Jace, the coordinator** (`apps/jace`, built on Eve) — owns all
+  conversation and every chat channel (Telegram live; Discord, Slack,
+  iMessage, WhatsApp being brought up), ideation skills
+  (`grill-me` → PRD → issues), and gated write tools (`create_issue`, with
+  `create_workspace`/`create_repo` in the current arc). His only write path
+  into the factory is the gated create-issue tool.
+- **The factory** (`agentrail/`) — a pure SDLC engine: queue → context pack →
+  failing test first → implement → independent review → objective gate → PR.
+  It does all execution and no conversation.
+- **The console** (`apps/console`, heyjace.com) — the evidence room: work
+  board, runs, review gates, costs, approvals. Secondary door; chat is
+  primary.
+
+Design authority: `docs/superpowers/specs/2026-07-17-jace-end-to-end-flow-design.md`
+(the end-to-end arc — message-first door, cloud factory, alignment gate) and
+`TASTE.md` (product quality bar; light-first design direction).
 
 ## Language
 
@@ -48,13 +72,13 @@ _Avoid_: Dumping every skill into every prompt.
 A policy checkpoint that decides whether a run or PR has enough evidence, verification, and context provenance to continue.
 _Avoid_: Generic checklist.
 
-**Agent Operations Console**:
-The team-facing dashboard for workspace switching, runs, the **Issue Queue**, connectors, triggers/**Heartbeat** config, context packs, failures, review gates, costs, repositories, indexing health, memory, API keys, and teams. It obeys the console display rule: only *falsifiable* metrics (numbers that can come back negative). The one-sided "savings" surface is removed; the vs-**Raw-Agent Baseline** claim lives on a separate, dated validation-benchmark surface.
-_Avoid_: Generic analytics dashboard, vanity metrics page, any metric that cannot come back negative.
+**The Console** (heyjace.com):
+The evidence room behind Jace, organized in two zones: **Your engineer** (Home digest "This week from Jace", Work board, Approvals) speaks employer-of-an-engineer vocabulary — *task, assigned, in progress, needs you, shipped* — and **Engine room** (Runs, Review gates, Costs, Memory, Failures) keeps technical depth for trust and drill-down. It obeys the console display rule: only *falsifiable* metrics (numbers that can come back negative). The one-sided "savings" surface is removed; the vs-**Raw-Agent Baseline** claim lives on a separate, dated validation-benchmark surface. Observability is deliberately light — the console shows what matters to someone employing Jace, not a metrics platform.
+_Avoid_: Factory-operator vocabulary (`queue_entry`, `tier`, `remaining_budget`) in user-facing copy; vanity metrics; any metric that cannot come back negative; raw UUIDs as primary UI text.
 
 **Console Design**:
-A dense, operational UI style using overview-to-drilldown dashboards, event tables, filters, health states, timelines, and clear evidence surfaces following observability product patterns.
-_Avoid_: Decorative dashboards, vanity metrics, or layouts that cannot be traced back to server events.
+Light-first, calm, evidence-forward — the product quality bar and visual system live in `TASTE.md`. Engine-room tables keep density where the data demands it; density is not the identity.
+_Avoid_: Treating the console as a dense dark observability tool; decorative dashboards; layouts that cannot be traced back to server events.
 
 **Index Snapshot**:
 A versioned record of a repository's indexed state, including commit SHA, source hashes, graph metadata, freshness, and ingestion health.
@@ -84,9 +108,25 @@ _Avoid_: Treating old generated summaries as authoritative.
 The unit of cost measurement: one good goal taken to a change that passes the **Objective Gate**. AgentRail's economics are measured per Completed Issue, not per prompt or per model call.
 _Avoid_: Measuring cost per prompt, per phase, or per retrieval call as if that were the product's cost.
 
-**Execution-Only Autonomy**:
-AgentRail's autonomy is in *execution*, not *goal selection*. Humans (or **Code Review** suggestions a human converts) create issues; the agent decides only *how* to complete each one. It never invents its own goals. Goal drift is therefore designed out, not detected.
-_Avoid_: Goal-seeking autonomy where the agent picks its own work from a "vision"; "give it your roadmap and walk away."
+**Execution-Only Autonomy (factory)**:
+The *factory's* autonomy is in execution, not goal selection — it never invents its own work; it drains a queue of approved issues. Goal-adjacent behavior lives one layer up in **Jace**, and every one of his write paths is human-gated: `create_issue` requires approval, the **Alignment Gate** holds every entry until the user confirms, and the goal loop (when it ships) files issues through the same gated path under a leash. Autonomy grows by widening *permissions* (alignment auto-confirm, merge rights), never by adding ungated write paths.
+_Avoid_: Ungated goal-seeking; a queue the factory fills itself; treating Jace's gated ideation as a violation of factory purity.
+
+**Alignment Gate**:
+The flow step between admission and execution: Jace posts an **alignment brief** — goal, planned approach, acceptance criteria, suggested model with its cost estimate, budget — and the entry holds (parked, "awaiting alignment") until the user confirms through the single approval seam. Applies to chat-born and label-born work alike; `requireAlignment` defaults ON.
+_Avoid_: Starting development straight from an issue label; a second approval code path.
+
+**Single Approval Seam**:
+Every human yes/no — tool approvals, alignment confirms, run-decision buttons — is a `jace_approvals` row resolved by one atomic pending→resolved flip, whether the click came from a chat button or the console approvals page. One seam, many surfaces.
+_Avoid_: Parallel approval mechanisms per surface.
+
+**Chat Identity**:
+The platform + platform-user-id pair that IS a user's provisional account. Inbound messages resolve chat identity → workspace; a connect-GitHub magic link sent in-chat binds chat identity + GitHub account + workspace. Unknown identities get an onboarding conversation, not an error.
+_Avoid_: Requiring console signup before Jace will talk to someone.
+
+**Merge Permission (trust ladder)**:
+Jace opens PRs; he cannot merge. Merge rights are a per-workspace, revocable, audited grant — OFF by default. The probation ladder: review everything → grant alignment auto-confirm → grant merge.
+_Avoid_: Any auto-merge without an explicit recorded grant (the AFK dogfood loop's auto-merge never touches hosted-customer repos).
 
 **Issue Queue**:
 The concurrency-bounded queue of human-defined issues awaiting or undergoing autonomous execution. Each entry carries its tier (which model), remaining budget, and state. Escalation is a queue transition (re-enqueue at a higher tier with a compacted failure handoff and decremented budget).
@@ -150,8 +190,9 @@ _Avoid_: Reporting context-retrieval token deltas (e.g. the −21% retrieval ben
 - A repository may contain many **Codebase Units**, and retrieval should prefer the smallest relevant unit before expanding across dependency or ownership edges.
 - **Graph Enrichment** may help discovery, but it must not outrank deterministic code, tests, explicit docs, ownership config, git history, issues, PRs, or run evidence.
 - **Context Memory** is advisory and must not outrank current code, explicit docs, or current task instructions.
-- The **Agent Operations Console** shows what AgentRail did, what context it used, what it excluded, what failed, what it cost, and which policies or review gates applied.
-- **Console Design** guides the dashboard information architecture and interaction style. AgentRail owns its implementation and visual system.
+- **Jace** is the only conversational surface; the factory produces events and data and does no talking. Jace's only write path into the factory is the gated create-issue tool, and the **Alignment Gate** holds every entry until the user confirms.
+- **The Console** shows what the factory did, what context it used, what it excluded, what failed, what it cost, and which policies or review gates applied — the evidence behind Jace's work.
+- **Console Design** guides the console's information architecture and interaction style per `TASTE.md` (light-first). AgentRail owns its implementation and visual system.
 - **Run Events**, **Cost Events**, and **Audit Events** are server-readable evidence for dashboard, billing, review gates, and incident review.
 - A **Retrieval Quality Gate** must pass before the **Context Compiler** is treated as production-ready.
 
@@ -168,8 +209,8 @@ _Avoid_: Reporting context-retrieval token deltas (e.g. the −21% retrieval ben
 - "LLM-generated graph edges" are not authoritative. Resolved: they are **Graph Enrichment** only and must be lower authority than deterministic evidence.
 - "Package", "app", "service", and "module" may mean different things across enterprise repositories. Resolved: use **Codebase Unit** as the canonical flexible term.
 - "High-quality context" means the smallest cited context pack that covers the task without stale, irrelevant, or policy-denied sources.
-- "Dashboard" means **Agent Operations Console** with workspace switching, runs, context packs, failures, review gates, costs, repos/indexing health, memory, API keys, and teams.
-- "Console design" means the dense observability UI style defined in TASTE.md. AgentRail owns its visual system.
+- "Dashboard" means **The Console** at heyjace.com: the two-zone evidence room (Your engineer / Engine room) — not an observability platform. Observability stays deliberately light.
+- "Console design" means the light-first product direction defined in TASTE.md. AgentRail owns its visual system.
 - "Not noise" means required-source inclusion is 100% for fixtures, citation coverage is 100%, stale or denied leakage is 0, graph expansion is bounded, token budgets are explicit, and every included or excluded item has a reason.
 - "Raw agent" and "cost reduction" were ambiguous. Resolved: cost is measured as **Cost-per-Issue-to-Green** — AgentRail's loop vs the **Raw-Agent Baseline** (same agent, same issue, run autonomously to the same **Objective Gate**) — per **Completed Issue**, not per prompt. The −21% context-retrieval benchmark is supporting evidence the engine helps, not the headline cost claim.
 - "Done" was undefined, which caused unbounded loops. Resolved: a run is done when the **Objective Gate** (tests/build/lint + acceptance criteria) passes. Advisory **Code Review** does not define done.

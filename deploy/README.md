@@ -76,24 +76,28 @@ OAuth App from step 3, so those two can wait.
      the route works without it, but skips signature verification if unset)
    - Events: **Issues** only
 
-## 4. Bring up Postgres and run migrations
-
-```bash
-docker compose -f deploy/docker-compose.prod.yml up -d postgres
-docker compose -f deploy/docker-compose.prod.yml --profile tools run --rm migrate
-```
-
-`migrate` is a one-off service (Compose `profiles: ["tools"]`, so it never
-starts under a bare `up`/`up -d`) that reuses the console image's `builder`
-stage and runs `pnpm --filter @agentrail/db-postgres migrate` — see
-`packages/db-postgres/src/migrate.ts`. Re-run it any time you pull new
-migrations; it's idempotent (drizzle tracks what's already applied).
-
-## 5. Build and start everything
+## 4. Build and start everything (migrations run automatically)
 
 ```bash
 docker compose -f deploy/docker-compose.prod.yml up -d --build
 ```
+
+Migrations are applied **automatically on every `up`** — no separate manual
+step. The `migrate` service is a one-shot (`restart: "no"`) that reuses the
+console image's `builder` stage, runs `pnpm --filter @agentrail/db-postgres
+migrate` (see `packages/db-postgres/src/migrate.ts`), then exits 0. `console`
+and `jace` both declare
+`depends_on: { migrate: { condition: service_completed_successfully } }`, so
+Compose brings up Postgres → runs `migrate` to completion → *then* starts the
+app services. The schema is therefore always current before anything reads it.
+It's idempotent (drizzle tracks what's already applied), so re-running `up`
+after pulling new migrations just applies the new ones.
+
+> This is what fixes the console **home** and **work** pages 500ing on a fresh
+> or newly-pulled deploy: previously `migrate` was profile-gated out of `up`
+> and had to be run by hand, so a deploy that skipped it left the queries
+> reading not-yet-created columns (e.g. `queueEntries.parkReason` from
+> migration 0027) and crashing.
 
 First build will take a while (console: full pnpm workspace install +
 `next build`; jace: `npm ci` + `eve build`; runner: apt + pip + pipx installs).
@@ -114,7 +118,7 @@ Verify: `https://65.20.91.127.sslip.io` should load the console's login page,
 and `https://65.20.91.127.sslip.io/eve/v1/health` should return Jace's health
 response.
 
-## 6. Log in, create a workspace
+## 5. Log in, create a workspace
 
 Sign in with GitHub at `https://65.20.91.127.sslip.io`. The first login flow
 creates a workspace (or routes you to `/setup` — see the root page's
@@ -126,7 +130,7 @@ workspace-aware routing). Once a workspace exists:
   (optional — `fetch_workspace_memory`/`fetch_run_evidence` just report "not
   configured" without it, nothing else breaks).
 
-## 7. Attach a runner
+## 6. Attach a runner
 
 `agentrail runner` authenticates via an OAuth **device flow**
 (`agentrail login`) — this is an interactive, human-approved step and cannot
@@ -144,7 +148,7 @@ You could also use the public `https://65.20.91.127.sslip.io` URL; the
 internal one is simpler and one fewer hop.)
 
 This prints a short code + a verification URL. Open that URL in **your own
-browser** (already signed into the console from step 6), approve, and the
+browser** (already signed into the console from step 5), approve, and the
 command exits once approved. Then start the long-running daemon:
 
 ```bash
@@ -184,7 +188,7 @@ via `npm install -g @openai/codex`) — but note codex's current
 OpenRouter's Chat Completions format (verified against the codex-rs source);
 confirm OpenRouter Responses-API compatibility before going that route.
 
-## 8. Wire up optional channels
+## 7. Wire up optional channels
 
 **Telegram** (only if you set `TELEGRAM_BOT_TOKEN`/`TELEGRAM_BOT_USERNAME`/
 `TELEGRAM_WEBHOOK_SECRET_TOKEN` in step 2):
@@ -216,8 +220,9 @@ docker compose -f deploy/docker-compose.prod.yml up -d --no-deps console
 git pull
 docker compose -f deploy/docker-compose.prod.yml up -d --build
 
-# Run a new migration
-docker compose -f deploy/docker-compose.prod.yml --profile tools run --rm migrate
+# Re-apply migrations by hand (normally automatic on `up` — this is just an
+# escape hatch, e.g. after pulling new migrations without cycling the stack)
+docker compose -f deploy/docker-compose.prod.yml run --rm migrate
 
 # Stop everything (data volumes persist)
 docker compose -f deploy/docker-compose.prod.yml down
@@ -268,7 +273,7 @@ in this environment) — validate these on the actual server:
    see `deploy/runner/Dockerfile`'s header comment for the full reasoning.
    The aider-via-`--agent custom` path was assembled from aider's own
    documented flags/OpenRouter support but never exercised end to end. Run
-   `agentrail runner --once` (step 7) and read the logs before trusting an
+   `agentrail runner --once` (step 6) and read the logs before trusting an
    unattended loop.
 5. **Runner execution-mode choice (host-native, no Docker socket).** This is
    the correct reading of `agentrail/sandbox/native_runner.py:select_sandbox_runner()`

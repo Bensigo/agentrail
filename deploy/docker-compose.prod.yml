@@ -43,20 +43,26 @@ services:
     # over the compose network as `postgres:5432`. Add a `ports:` block
     # yourself if you need host-side psql access.
 
-  # One-off migration runner: reuses the console image's `builder` stage (has
+  # One-shot migration runner: reuses the console image's `builder` stage (has
   # pnpm + the full workspace source + drizzle-kit installed), overriding the
   # command to run ONLY the Postgres migration. See
   # packages/db-postgres/src/migrate.ts (reads DATABASE_URL, applies
-  # packages/db-postgres/drizzle/migrations/*.sql). Not part of the normal
-  # `up -d` set — invoked on demand. `--profile tools` is required for `run` to
-  # see a profile-gated service by name (unlike `up -d migrate`, which would
-  # auto-enable its own profile; `run` does not):
-  #   docker compose -f deploy/docker-compose.prod.yml --profile tools run --rm migrate
+  # packages/db-postgres/drizzle/migrations/*.sql). Runs automatically as part
+  # of `up`/`up -d` (no profile gate), applies any pending migrations, then
+  # exits 0 (`restart: "no"` — a one-shot, not a long-running service). Every
+  # app service that touches Postgres at boot gates on its successful
+  # completion via
+  # `depends_on: { migrate: { condition: service_completed_successfully } }`,
+  # so the schema is always current before console/jace start. Idempotent
+  # (drizzle tracks what's already applied). You can still run it standalone to
+  # (re)apply migrations without cycling the whole stack:
+  #   docker compose -f deploy/docker-compose.prod.yml run --rm migrate
   migrate:
     build:
       context: ..
       dockerfile: apps/console/Dockerfile
       target: builder
+    restart: "no" # one-shot: run migrations, exit 0, do not restart.
     env_file: ./.env
     environment:
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env}
@@ -64,7 +70,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    profiles: ["tools"] # excluded from a bare `up`/`up -d`; run explicitly.
 
   console:
     build:
@@ -88,6 +93,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       # No dedicated /api/health route exists in apps/console today — a bare
       # TCP connect is a reasonable liveness proxy (Node is guaranteed present
@@ -129,6 +136,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         - "CMD"

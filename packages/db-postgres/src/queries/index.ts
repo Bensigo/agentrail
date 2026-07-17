@@ -1805,8 +1805,10 @@ export {
 // Chat identities — the identity spine for every inbound chat message (spec
 // §4.2, issue #1261; see `schema/chat_identities.ts` for the table shape and
 // the WHY behind the design). Maps (platform, platform_user_id) -> at most
-// one linked user and one resolved workspace; PR ② (Jace inbound resolution)
-// and issue #1263 (link-token issuance/expiry) are this module's callers.
+// one linked user and one resolved workspace. resolveInboundChatIdentity (PR
+// ②) is the composed entry point the shared-bot webhook door (#1262) and
+// #1264's create_workspace (graduation) call; issue #1263 owns link-token
+// issuance/expiry on top of the storage primitives here.
 export {
   insertChatIdentity,
   getChatIdentity,
@@ -1814,4 +1816,7 @@ export {
   bindChatIdentityUser,
   setChatIdentityLinkToken,
   getChatIdentityByLinkToken,
+  resolveInboundChatIdentity,
+  type ResolveInboundChatIdentityInput,
+  type ResolveInboundChatIdentityResult,
 } from "./chat_identities.js";

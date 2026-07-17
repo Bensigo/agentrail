@@ -22,6 +22,7 @@ import {
   bindChatIdentityUser,
   setChatIdentityLinkToken,
   getChatIdentityByLinkToken,
+  resolveInboundChatIdentity,
 } from "./chat_identities.js";
 
 const mockDb = vi.mocked(db);
@@ -182,5 +183,134 @@ describe("getChatIdentityByLinkToken", () => {
     const result = await getChatIdentityByLinkToken("nonexistent-token");
 
     expect(result).toBeNull();
+  });
+});
+
+describe("resolveInboundChatIdentity", () => {
+  it("creates a new identity on first contact: created=true, disposition='intro'", async () => {
+    const newRow = {
+      ...MOCK_IDENTITY,
+      id: "chat-identity-new",
+      displayName: "Ada",
+      workspaceId: null,
+    };
+    const insertChain = makeChain("returning", [newRow]);
+    mockDb.insert = vi.fn(() => insertChain as ReturnType<typeof db.insert>);
+
+    const result = await resolveInboundChatIdentity({
+      platform: "telegram",
+      platformUserId: "tg-999",
+      displayName: "Ada",
+    });
+
+    expect(mockDb.insert).toHaveBeenCalled();
+    const valuesCalls = (insertChain.values as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(valuesCalls[0]?.[0]).toEqual({
+      platform: "telegram",
+      platformUserId: "tg-999",
+      displayName: "Ada",
+    });
+    expect(insertChain.onConflictDoNothing).toHaveBeenCalled();
+    // The fast path (this call won the insert) must never issue a redundant
+    // lookup or a self-refresh update.
+    expect(mockDb.select).not.toHaveBeenCalled();
+    expect(mockDb.update).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      identity: newRow,
+      created: true,
+      disposition: "intro",
+    });
+  });
+
+  it("returns disposition 'bound' when the resolved identity already has a workspace_id", async () => {
+    const insertChain = makeChain("returning", []); // lost the race
+    mockDb.insert = vi.fn(() => insertChain as ReturnType<typeof db.insert>);
+    const boundIdentity = { ...MOCK_IDENTITY, workspaceId: "ws-1" };
+    const selectChain = makeChain("limit", [boundIdentity]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await resolveInboundChatIdentity({
+      platform: "telegram",
+      platformUserId: "tg-123",
+    });
+
+    expect(result.created).toBe(false);
+    expect(result.disposition).toBe("bound");
+    expect(result.identity).toEqual(boundIdentity);
+  });
+
+  it("refreshes display_name when provided and different from the stored value", async () => {
+    const insertChain = makeChain("returning", []);
+    mockDb.insert = vi.fn(() => insertChain as ReturnType<typeof db.insert>);
+    const existing = { ...MOCK_IDENTITY, displayName: "Old Name" };
+    const selectChain = makeChain("limit", [existing]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+    const updateChain = makeChain("returning", [
+      { ...existing, displayName: "New Name" },
+    ]);
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+
+    const result = await resolveInboundChatIdentity({
+      platform: "telegram",
+      platformUserId: "tg-123",
+      displayName: "New Name",
+    });
+
+    expect(mockDb.update).toHaveBeenCalled();
+    const setCalls = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls;
+    expect(setCalls[0]?.[0]?.displayName).toBe("New Name");
+    expect(setCalls[0]?.[0]?.updatedAt).toBeInstanceOf(Date);
+    expect(result.identity.displayName).toBe("New Name");
+    expect(result.created).toBe(false);
+  });
+
+  it("does not update when displayName is provided but matches the stored value", async () => {
+    const insertChain = makeChain("returning", []);
+    mockDb.insert = vi.fn(() => insertChain as ReturnType<typeof db.insert>);
+    const existing = { ...MOCK_IDENTITY, displayName: "Same Name" };
+    const selectChain = makeChain("limit", [existing]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await resolveInboundChatIdentity({
+      platform: "telegram",
+      platformUserId: "tg-123",
+      displayName: "Same Name",
+    });
+
+    expect(mockDb.update).not.toHaveBeenCalled();
+    expect(result.identity).toEqual(existing);
+  });
+
+  it("does not update when displayName is omitted", async () => {
+    const insertChain = makeChain("returning", []);
+    mockDb.insert = vi.fn(() => insertChain as ReturnType<typeof db.insert>);
+    const existing = { ...MOCK_IDENTITY, displayName: "Whatever" };
+    const selectChain = makeChain("limit", [existing]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await resolveInboundChatIdentity({
+      platform: "telegram",
+      platformUserId: "tg-123",
+    });
+
+    expect(mockDb.update).not.toHaveBeenCalled();
+    expect(result.identity).toEqual(existing);
+  });
+
+  it("throws a prefixed error when neither the insert nor the follow-up lookup finds a row (unreachable in practice)", async () => {
+    const insertChain = makeChain("returning", []);
+    mockDb.insert = vi.fn(() => insertChain as ReturnType<typeof db.insert>);
+    const selectChain = makeChain("limit", []);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    await expect(
+      resolveInboundChatIdentity({
+        platform: "telegram",
+        platformUserId: "tg-123",
+      })
+    ).rejects.toThrow(
+      /resolveInboundChatIdentity: no row found for telegram\/tg-123/
+    );
   });
 });

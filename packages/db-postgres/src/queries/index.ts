@@ -1761,3 +1761,38 @@ export async function getLatestEvalArmMetrics(
 
   return { runId: top.runId, createdAt: top.createdAt, arms };
 }
+
+// Channel inbox — the async ingest buffer between channel webhooks and the
+// Jace dispatcher worker (issue #1246, spec §4). Bounded retry with backoff is
+// a pure decision function (nextInboxStateAfterFailure) so the retry policy is
+// unit-testable and can't drift from the SQL that applies it.
+export {
+  INBOX_MAX_ATTEMPTS,
+  INBOX_BACKOFF_SECONDS,
+  INBOX_STALE_PROCESSING_MINUTES,
+  nextInboxStateAfterFailure,
+  enqueueChannelMessage,
+  claimNextChannelMessage,
+  completeChannelMessage,
+  failChannelMessage,
+  reclaimStaleChannelMessages,
+  type InboxRetryDecision,
+  type EnqueueChannelMessageInput,
+  type EnqueueChannelMessageResult,
+  type ClaimedChannelInboxRow,
+  type ClaimNextChannelMessageOptions,
+} from "./channel_inbox.js";
+
+// Jace session map + pending approvals (issue #1246, spec §4). Maps
+// (workspace, channel, conversation) -> one Eve session; resolveApproval is
+// the publication idempotency guard (atomic pending->resolved flip) that lets
+// callers publish a downstream side effect exactly once per approval.
+export {
+  getOrCreateJaceSession,
+  bindEveSession,
+  setJaceSessionStatus,
+  recordApprovalRequest,
+  findApprovalByCallbackToken,
+  resolveApproval,
+  type RecordApprovalRequestInput,
+} from "./jace_sessions.js";

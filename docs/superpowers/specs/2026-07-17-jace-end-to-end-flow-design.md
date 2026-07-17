@@ -33,7 +33,7 @@ on a roadmap.** Delivery is sequenced, but the backlog is complete up front.
 | Offer | Talk to Jace in chat; he indexes your repo on connect, helps sharpen fuzzy ideas into issues, **aligns with you before building**, works issues through a real SDLC in the cloud, ships PRs; no merge rights by default, grantable later |
 | Pain / buyers | (1) Developers priced out of ~$20/mo agentic IDEs + fast-internet requirements (e.g. Nigeria), met on chat platforms they already use, hired per task or monthly; (2) small→enterprise teams whose hiring can't keep up with the backlog and who need production-level SDLC work, not vibe coding |
 | Execution location | **REVERSAL of 2026-07-08 spec:** execution happens in the cloud on a hosted runner fleet with operator-supplied model access. "The VPS never runs customer code" is retired. Self-hosting stays possible (Jace is open source) but is the advanced path, not onboarding |
-| Factory runtime | The cloud factory runs **Claude Code as the agent harness with third-party models via the AI gateway** (API-key routing; Anthropic OAuth path is not available for this). Per-phase model split stays as the default; **each task carries a suggested model the user can override** (see §4.4). Compatibility of harness + gateway is a named verification item, not an assumption |
+| Factory runtime | The cloud factory runs **Claude Code as the agent harness with third-party models via the AI gateway** (API-key routing; Anthropic OAuth path is not available for this). Per-phase model split stays as the default; **each task carries a task-type-aware suggested model the user can override — coding model only** (see §4.4). Compatibility of harness + gateway is a named verification item, not an assumption |
 | Front door | **"Message Jace."** The landing page is Jace's resume; the primary CTA is messaging him — you don't sign up to talk to an engineer whose resume you like. The landing also carries a **secondary sign-up/sign-in button** into the console for people who want the evidence room first |
 | Channels | Shared, hosted Jace bot identity per platform, owned by us. **All of: Telegram (live today, was the test bed), Discord, Slack, iMessage, WhatsApp.** All are issues now; rollout ordered by code reality (§4.1) |
 | Alignment gate | **Jace never starts development unverified.** Before any queue entry executes — chat-born or label-born — Jace posts an alignment brief (goal, approach, acceptance criteria, budget) and waits for user confirmation, delivered through the single approval seam |
@@ -139,11 +139,16 @@ on a roadmap.** Delivery is sequenced, but the backlog is complete up front.
   (parked, reason "awaiting alignment") until the user confirms. Confirm/deny
   are `jace_approvals` rows resolved through the **single approval seam** —
   same atomic flip, same buttons, no second path.
-- **Per-task model choice:** the confirm payload may carry a different model
-  than suggested; it lands as a model override on the queue entry, flows
-  through the WorkItem to the runner, and takes precedence over the per-phase
-  default for that task. The brief's cost estimate re-keys to the chosen
-  model. No choice = suggested model.
+- **Per-task model choice:** the suggestion is **task-type-aware, not just
+  cost-tiered** — Jace picks by the kind of work (strongest frontend track
+  record for UI tasks, strongest reasoning model for a hard refactor, a cheap
+  model for mechanical changes), with the cost estimate shown alongside
+  either way. The confirm payload may carry a different model; it lands as an
+  override on the queue entry, flows through the WorkItem to the runner, and
+  **overrides the coding model only** — the per-phase defaults keep the other
+  seats (planner, independent reviewer), which also guarantees a user's pick
+  can never collapse reviewer and executor into one model. The brief's cost
+  estimate re-keys to the chosen model. No choice = suggested model.
 - Chat-born issues: the `grill-me → to-issues` flow ends in the brief; the
   existing gated `create_issue` approval is enriched into it (one confirm,
   not two).
@@ -215,10 +220,11 @@ Grouped for issue creation (house format, one issue per bullet unless noted):
   isolation hardening; dollar-budget wiring; reviewer silent-skip fix;
   AFK customer-repo quarantine; per-workspace cost metering surface.
 - **Alignment & approvals:** alignment brief + parked-awaiting-alignment
-  admission; **per-task suggested model + user override** (brief field, queue
-  column, WorkItem passthrough, runner precedence, cost re-estimate);
-  Telegram approve/deny callbacks; console /approvals page; replyable
-  run-outcome threads; merge-permission column + toggle + enforcement.
+  admission; **per-task suggested model + user override** (task-type-aware
+  suggestion logic; brief field, queue column, WorkItem passthrough,
+  coding-model-only runner precedence, cost re-estimate); Telegram
+  approve/deny callbacks; console /approvals page; replyable run-outcome
+  threads; merge-permission column + toggle + enforcement.
 - **Intake:** Linear webhook-or-safe-heartbeat; connector catalog
   reclassification; GitHub repo picker (replace hand-typed owner/repo, uses
   granted scope); incremental OAuth consent (minimal scopes at sign-in,

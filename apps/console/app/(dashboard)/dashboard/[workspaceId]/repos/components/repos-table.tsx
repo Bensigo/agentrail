@@ -24,15 +24,15 @@ interface ReposTableProps {
 }
 
 const healthDotClass: Record<HealthStatus, string> = {
-  healthy: "bg-[#29a383]",
-  stale: "bg-[#ffe629]",
-  critical: "bg-[#e5484d]",
+  healthy: "bg-[var(--green-09)]",
+  stale: "bg-[var(--yellow-09)]",
+  critical: "bg-[var(--red-09)]",
 };
 
 const healthTextClass: Record<HealthStatus, string> = {
-  healthy: "text-[#1fd8a4]",
-  stale: "text-[#f5e147]",
-  critical: "text-[#ff9592]",
+  healthy: "text-[var(--green-11)]",
+  stale: "text-[var(--yellow-11)]",
+  critical: "text-[var(--red-11)]",
 };
 
 function formatAge(stalenessSeconds: number | null): string {
@@ -72,7 +72,7 @@ export function ReposTable({ workspaceId, initialRows, canManage }: ReposTablePr
         <div className="flex justify-end">
           <button
             onClick={() => setShowAdd(true)}
-            className="flex items-center gap-1.5 h-8 px-3 rounded bg-[#ffe629] text-black text-sm font-medium hover:bg-[#ffdc00] transition-colors"
+            className="flex items-center gap-1.5 h-8 px-3 rounded bg-[var(--yellow-09)] text-black text-sm font-medium hover:bg-[#ffdc00] transition-colors"
           >
             <Plus size={14} />
             Add repository
@@ -86,7 +86,7 @@ export function ReposTable({ workspaceId, initialRows, canManage }: ReposTablePr
           {canManage && (
             <button
               onClick={() => setShowAdd(true)}
-              className="mt-2 text-[#70b8ff] hover:underline"
+              className="mt-2 text-[var(--blue-11)] hover:underline"
             >
               Add your first repository.
             </button>
@@ -170,7 +170,7 @@ export function ReposTable({ workspaceId, initialRows, canManage }: ReposTablePr
                     <button
                       type="button"
                       onClick={() => setReindexOpenFor(reindexOpenFor === row.id ? null : row.id)}
-                      className="text-[#70b8ff] hover:underline text-sm"
+                      className="text-[var(--blue-11)] hover:underline text-sm"
                     >
                       Re-index
                     </button>

@@ -197,7 +197,7 @@ export default function MembersClient() {
           {isAdmin && (
             <button
               onClick={() => setInviteDialogOpen(true)}
-              className="flex h-8 items-center gap-1.5 rounded bg-[#ffe629] px-3 text-sm font-medium text-black transition-colors hover:bg-[#ffdc00]"
+              className="flex h-8 items-center gap-1.5 rounded bg-[var(--yellow-09)] px-3 text-sm font-medium text-black transition-colors hover:bg-[#ffdc00]"
             >
               <Plus size={14} />
               Invite member
@@ -208,7 +208,7 @@ export default function MembersClient() {
         {membersLoading && <SkeletonTable columns={4} rows={5} />}
 
         {!membersLoading && membersError && (
-          <div className="rounded border border-[#e5484d]/30 bg-[#e5484d]/10 px-4 py-3 text-sm text-[#ff9592]">
+          <div className="rounded border border-[var(--red-09)]/30 bg-[var(--red-09)]/10 px-4 py-3 text-sm text-[var(--red-11)]">
             {membersError}
           </div>
         )}
@@ -284,7 +284,7 @@ export default function MembersClient() {
         {invitesLoading && <SkeletonTable columns={4} rows={3} />}
 
         {!invitesLoading && invitesError && (
-          <div className="rounded border border-[#e5484d]/30 bg-[#e5484d]/10 px-4 py-3 text-sm text-[#ff9592]">
+          <div className="rounded border border-[var(--red-09)]/30 bg-[var(--red-09)]/10 px-4 py-3 text-sm text-[var(--red-11)]">
             {invitesError}
           </div>
         )}
@@ -352,7 +352,7 @@ export default function MembersClient() {
                         <button
                           onClick={() => handleRevoke(inv.id)}
                           disabled={revoking === inv.id}
-                          className="flex h-7 items-center gap-1.5 rounded border border-[#e5484d]/30 bg-[var(--gray-03)] px-2.5 text-xs text-[#ff9592] transition-colors hover:border-[#e5484d]/50 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="flex h-7 items-center gap-1.5 rounded border border-[var(--red-09)]/30 bg-[var(--gray-03)] px-2.5 text-xs text-[var(--red-11)] transition-colors hover:border-[var(--red-09)]/50 disabled:cursor-not-allowed disabled:opacity-50"
                           title={`Revoke invite for ${inv.email}`}
                         >
                           <Trash2 size={12} />
@@ -385,9 +385,9 @@ export default function MembersClient() {
 function RoleBadge({ role }: { role: string }) {
   const styles: Record<string, string> = {
     owner:
-      "bg-[#6e56cf]/20 border-[#6e56cf]/30 text-[#baa7ff]",
+      "bg-[var(--purple-09)]/20 border-[var(--purple-09)]/30 text-[var(--purple-11)]",
     admin:
-      "bg-[#0090ff]/20 border-[#0090ff]/30 text-[#70b8ff]",
+      "bg-[var(--blue-09)]/20 border-[var(--blue-09)]/30 text-[var(--blue-11)]",
     member:
       "bg-[var(--gray-04)] border-[var(--gray-06)] text-[var(--gray-11)]",
   };

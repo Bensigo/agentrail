@@ -15,14 +15,14 @@ export function ConnectorStatusBadge({
 }) {
   if (availability === "planned") {
     return (
-      <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[#ffe629]/15 text-[#f5e147] border border-[#ffe629]/30">
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[var(--yellow-09)]/15 text-[var(--yellow-11)] border border-[var(--yellow-09)]/30">
         Planned
       </span>
     );
   }
   const className =
     status === "connected"
-      ? "bg-[#29a383]/20 text-[#1fd8a4] border border-[#29a383]/30"
+      ? "bg-[var(--green-09)]/20 text-[var(--green-11)] border border-[var(--green-09)]/30"
       : "bg-[var(--gray-04)] text-[var(--gray-10)] border border-[var(--gray-06)]";
   return (
     <span

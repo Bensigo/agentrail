@@ -114,7 +114,7 @@ export function MemoryTable({ workspaceId }: MemoryTableProps) {
             <tr>
               <td
                 colSpan={COLS + 1}
-                className="px-3 py-8 text-center text-sm text-[#ff9592]"
+                className="px-3 py-8 text-center text-sm text-[var(--red-11)]"
               >
                 {error}
               </td>

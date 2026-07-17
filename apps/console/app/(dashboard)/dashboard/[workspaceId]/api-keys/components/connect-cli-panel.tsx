@@ -28,7 +28,7 @@ function CopyButton({ text }: { text: string }) {
       aria-label="Copy"
     >
       {copied ? (
-        <Check size={11} className="text-[#1fd8a4]" />
+        <Check size={11} className="text-[var(--green-11)]" />
       ) : (
         <Copy size={11} />
       )}
@@ -88,7 +88,7 @@ export function ConnectCliPanel({ workspaceId, secret }: ConnectCliPanelProps) {
           <select
             value={repoId}
             onChange={(e) => setRepoId(e.target.value)}
-            className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-xs text-[var(--gray-12)] font-mono focus:outline-none focus:ring-2 focus:ring-[#ffe629] focus:ring-offset-1 focus:ring-offset-[var(--gray-02)]"
+            className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-xs text-[var(--gray-12)] font-mono focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)] focus:ring-offset-1 focus:ring-offset-[var(--gray-02)]"
           >
             {repos.map((r) => (
               <option key={r.id} value={r.id}>
@@ -103,7 +103,7 @@ export function ConnectCliPanel({ workspaceId, secret }: ConnectCliPanelProps) {
       <div className="flex flex-col gap-1">
         <span className="text-xs text-[var(--gray-09)]">Run in your terminal</span>
         <div className="flex items-start gap-2">
-          <code className="flex-1 font-mono text-xs text-[#1fd8a4] bg-[var(--gray-03)] border border-[var(--gray-05)] rounded px-2 py-2 break-all leading-relaxed">
+          <code className="flex-1 font-mono text-xs text-[var(--green-11)] bg-[var(--gray-03)] border border-[var(--gray-05)] rounded px-2 py-2 break-all leading-relaxed">
             {snippet}
           </code>
           <CopyButton text={snippet} />
@@ -111,7 +111,7 @@ export function ConnectCliPanel({ workspaceId, secret }: ConnectCliPanelProps) {
       </div>
 
       {/* Secret warning */}
-      <p className="text-xs text-[#ffa057] bg-[#f76b15]/10 border border-[#f76b15]/30 rounded px-3 py-1.5">
+      <p className="text-xs text-[var(--orange-11)] bg-[var(--orange-09)]/10 border border-[var(--orange-09)]/30 rounded px-3 py-1.5">
         This secret will not be shown again after you leave this page.
       </p>
     </div>

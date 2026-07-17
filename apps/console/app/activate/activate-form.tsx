@@ -71,17 +71,17 @@ export function ActivateForm() {
               placeholder="WDJB-MJHT"
               autoComplete="off"
               spellCheck={false}
-              className="h-9 rounded bg-[var(--gray-01)] border border-[var(--gray-05)] px-3 font-mono text-sm tracking-widest text-[var(--gray-12)] placeholder:text-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[#ffe629] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)]"
+              className="h-9 rounded bg-[var(--gray-01)] border border-[var(--gray-05)] px-3 font-mono text-sm tracking-widest text-[var(--gray-12)] placeholder:text-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)]"
               autoFocus
             />
           </div>
 
-          {error && <p className="text-xs text-[#ff9592]">{error}</p>}
+          {error && <p className="text-xs text-[var(--red-11)]">{error}</p>}
 
           <button
             type="submit"
             disabled={loading || !code.trim()}
-            className="h-9 px-4 rounded bg-[#ffe629] text-black text-sm font-medium hover:bg-[#ffdc00] disabled:opacity-50 transition-colors"
+            className="h-9 px-4 rounded bg-[var(--yellow-09)] text-black text-sm font-medium hover:bg-[#ffdc00] disabled:opacity-50 transition-colors"
           >
             {loading ? "Authorizing…" : "Authorize runner"}
           </button>
@@ -89,7 +89,7 @@ export function ActivateForm() {
       ) : (
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2 text-[var(--gray-12)]">
-            <Check size={16} className="text-[#1fd8a4]" />
+            <Check size={16} className="text-[var(--green-11)]" />
             <span className="text-sm font-medium">Runner authorized</span>
           </div>
           <p className="text-xs text-[var(--gray-10)]">

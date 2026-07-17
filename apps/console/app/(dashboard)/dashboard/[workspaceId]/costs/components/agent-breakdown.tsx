@@ -94,7 +94,7 @@ export function AgentBreakdown({ workspaceId, timeRange }: AgentBreakdownProps) 
               <tr>
                 <td
                   colSpan={COLUMNS}
-                  className="px-3 py-6 text-center text-sm text-[#ff9592]"
+                  className="px-3 py-6 text-center text-sm text-[var(--red-11)]"
                 >
                   Agent breakdown unavailable
                 </td>

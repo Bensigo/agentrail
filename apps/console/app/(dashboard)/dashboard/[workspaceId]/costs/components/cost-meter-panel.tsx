@@ -79,7 +79,7 @@ export function CostMeterPanel({ workspaceId, timeRange }: CostMeterPanelProps) 
         )}
 
         {state === "error" && (
-          <p className="font-mono text-xs text-[#ff9592]">{error}</p>
+          <p className="font-mono text-xs text-[var(--red-11)]">{error}</p>
         )}
 
         {state === "empty" && (
@@ -93,7 +93,7 @@ export function CostMeterPanel({ workspaceId, timeRange }: CostMeterPanelProps) 
             {/* Headline metric row: two dense stat tiles. */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {/* Cost-per-Issue-to-Green */}
-              <div className="flex flex-col gap-1 border-l-2 border-[#ffe629] pl-3">
+              <div className="flex flex-col gap-1 border-l-2 border-[var(--yellow-09)] pl-3">
                 <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)]">
                   Cost-per-Issue-to-Green
                 </span>
@@ -118,7 +118,7 @@ export function CostMeterPanel({ workspaceId, timeRange }: CostMeterPanelProps) 
                 <span
                   className={`font-mono text-2xl font-semibold leading-none ${
                     data.cacheRatio.ratio !== null && data.cacheRatio.ratio < 1
-                      ? "text-[#ff9592]"
+                      ? "text-[var(--red-11)]"
                       : "text-[var(--gray-12)]"
                   }`}
                 >

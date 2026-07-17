@@ -105,7 +105,7 @@ export function CostSection({ workspaceId, runId, runStatus }: CostSectionProps)
   }
 
   if (error) {
-    return <p className="text-sm text-[#ff9592] py-4">{error}</p>;
+    return <p className="text-sm text-[var(--red-11)] py-4">{error}</p>;
   }
 
   const tokensSaved = packTokensSaved + (totals?.cache_tokens ?? 0);

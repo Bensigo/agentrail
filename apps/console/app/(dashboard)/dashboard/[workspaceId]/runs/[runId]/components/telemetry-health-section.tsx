@@ -135,14 +135,14 @@ export function TelemetryHealthSection({
                   {present ? (
                     <span
                       className="inline-block rounded px-1.5 py-0.5 text-[11px] font-medium"
-                      style={{ color: "#29a383", backgroundColor: "#29a3831a" }}
+                      style={{ color: "var(--green-09)", backgroundColor: "#29a3831a" }}
                     >
                       Present
                     </span>
                   ) : (
                     <span
                       className="inline-block rounded px-1.5 py-0.5 text-[11px] font-medium"
-                      style={{ color: "#e5484d", backgroundColor: "#e5484d1a" }}
+                      style={{ color: "var(--red-09)", backgroundColor: "#e5484d1a" }}
                     >
                       Missing
                     </span>

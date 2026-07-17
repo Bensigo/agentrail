@@ -11,10 +11,10 @@ import {
 /** Column accent — a thin top border, not a full color wash (dense product, TASTE.md). */
 const GROUP_ACCENT: Record<WorkGroup, string> = {
   Assigned: "border-t-[var(--gray-07)]",
-  "In progress": "border-t-[#f76b15]",
-  Blocked: "border-t-[#ffe629]",
-  "Needs you": "border-t-[#e5484d]",
-  Shipped: "border-t-[#29a383]",
+  "In progress": "border-t-[var(--orange-09)]",
+  Blocked: "border-t-[var(--yellow-09)]",
+  "Needs you": "border-t-[var(--red-09)]",
+  Shipped: "border-t-[var(--green-09)]",
 };
 
 function formatUpdatedAt(iso: string): string {

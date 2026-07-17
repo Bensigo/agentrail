@@ -130,14 +130,14 @@ export function InviteMemberDialog({
               placeholder="name@example.com"
               className={[
                 "h-8 rounded bg-[var(--gray-01)] border px-3 font-mono text-sm text-[var(--gray-12)] placeholder:text-[var(--gray-08)]",
-                "focus:outline-none focus:ring-2 focus:ring-[#ffe629] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)] transition-colors duration-150",
+                "focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)] transition-colors duration-150",
                 emailError
-                  ? "border-[#e5484d]"
+                  ? "border-[var(--red-09)]"
                   : "border-[var(--gray-05)] hover:border-[var(--gray-08)]",
               ].join(" ")}
               autoFocus
             />
-            {emailError && <p className="text-xs text-[#ff9592]">{emailError}</p>}
+            {emailError && <p className="text-xs text-[var(--red-11)]">{emailError}</p>}
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -148,14 +148,14 @@ export function InviteMemberDialog({
               id="invite-role"
               value={role}
               onChange={(e) => setRole(e.target.value as "member" | "admin")}
-              className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-3 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)] transition-colors duration-150"
+              className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-3 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)] transition-colors duration-150"
             >
               <option value="member">Member</option>
               <option value="admin">Admin</option>
             </select>
           </div>
 
-          {formError && <p className="text-xs text-[#ff9592]">{formError}</p>}
+          {formError && <p className="text-xs text-[var(--red-11)]">{formError}</p>}
 
           <div className="flex justify-end gap-2 pt-1">
             <button
@@ -168,7 +168,7 @@ export function InviteMemberDialog({
             <button
               type="submit"
               disabled={submitting}
-              className="flex h-8 items-center gap-1.5 rounded bg-[#ffe629] px-4 text-sm font-medium text-black transition-colors hover:bg-[#ffdc00] disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex h-8 items-center gap-1.5 rounded bg-[var(--yellow-09)] px-4 text-sm font-medium text-black transition-colors hover:bg-[#ffdc00] disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Plus size={14} />
               {submitting ? "Sending…" : "Send invite"}

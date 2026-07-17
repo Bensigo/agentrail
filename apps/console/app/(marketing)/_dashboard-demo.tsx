@@ -18,7 +18,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-const ACCENT = "#ffe629";
+const ACCENT = "var(--yellow-09)";
 
 /* The demo mirrors the real console: the nav, route slugs, table columns,
  * statuses, and metrics below are copied from the live dashboard so the
@@ -59,13 +59,13 @@ const NAV: { label: ViewKey; slug: string; icon: LucideIcon }[] = [
  * console's status-badge, failures-table, and queue-state-badge. */
 const PILL = "inline-flex items-center rounded-sm border px-1.5 py-0.5 text-[11px] font-medium";
 const TONE = {
-  green: "bg-[#29a383]/20 text-[#1fd8a4] border-[#29a383]/30",
-  red: "bg-[#e5484d]/20 text-[#ff9592] border-[#e5484d]/30",
-  orange: "bg-[#f76b15]/20 text-[#ffa057] border-[#f76b15]/30",
-  yellow: "bg-[#ffe629]/15 text-[#f5e147] border-[#ffe629]/30",
-  blue: "bg-[#0090ff]/20 text-[#70b8ff] border-[#0090ff]/30",
-  purple: "bg-[#6e56cf]/20 text-[#baa7ff] border-[#6e56cf]/30",
-  teal: "bg-[#0bd8b6]/15 text-[#0bd8b6] border-[#0bd8b6]/30",
+  green: "bg-[var(--green-09)]/20 text-[var(--green-11)] border-[var(--green-09)]/30",
+  red: "bg-[var(--red-09)]/20 text-[var(--red-11)] border-[var(--red-09)]/30",
+  orange: "bg-[var(--orange-09)]/20 text-[var(--orange-11)] border-[var(--orange-09)]/30",
+  yellow: "bg-[var(--yellow-09)]/15 text-[var(--yellow-11)] border-[var(--yellow-09)]/30",
+  blue: "bg-[var(--blue-09)]/20 text-[var(--blue-11)] border-[var(--blue-09)]/30",
+  purple: "bg-[var(--purple-09)]/20 text-[var(--purple-11)] border-[var(--purple-09)]/30",
+  teal: "bg-[var(--teal-11)]/15 text-[var(--teal-11)] border-[var(--teal-11)]/30",
   gray: "bg-[var(--gray-04)] text-[var(--gray-10)] border-[var(--gray-06)]",
 } as const;
 
@@ -134,7 +134,7 @@ function RangePills({ active = "24h" }: { active?: string }) {
           className="inline-flex h-7 items-center rounded border px-2 text-[11px] font-medium"
           style={
             r === active
-              ? { background: ACCENT, color: "#000", borderColor: ACCENT }
+              ? { background: ACCENT, color: "var(--gray-00)", borderColor: ACCENT }
               : { borderColor: "var(--gray-05)", color: "var(--gray-10)" }
           }
         >
@@ -180,7 +180,7 @@ function RunsPanel() {
             <td className={`${TD} text-[11px] text-[var(--gray-11)]`}>{r.agent}</td>
             <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>{r.dur}</td>
             <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>{r.cost}</td>
-            <td className={`${TD} ${MONO} text-[#1fd8a4]`}>{r.saved}</td>
+            <td className={`${TD} ${MONO} text-[var(--green-11)]`}>{r.saved}</td>
           </Row>
         ))}
       </TableShell>
@@ -205,7 +205,7 @@ function QueuePanel() {
             className="inline-flex h-7 items-center rounded border px-2.5 text-[11px] font-medium"
             style={
               f === "Queued"
-                ? { background: ACCENT, color: "#000", borderColor: ACCENT }
+                ? { background: ACCENT, color: "var(--gray-00)", borderColor: ACCENT }
                 : { borderColor: "var(--gray-05)", color: "var(--gray-10)" }
             }
           >
@@ -225,7 +225,7 @@ function QueuePanel() {
             </td>
             <td className={`${TD} text-[11px] text-[var(--gray-11)]`}>{q.agent}</td>
             <td className={`${TD} ${MONO} text-[var(--gray-11)]`}>{q.tier}</td>
-            <td className={`${TD} ${MONO} ${q.budget.startsWith("0") ? "text-[#ff9592]" : "text-[var(--gray-11)]"}`}>{q.budget}</td>
+            <td className={`${TD} ${MONO} ${q.budget.startsWith("0") ? "text-[var(--red-11)]" : "text-[var(--gray-11)]"}`}>{q.budget}</td>
             <td className={TD}><Badge tone={q.tone}>{q.state}</Badge></td>
             <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>{q.updated}</td>
           </Row>
@@ -391,9 +391,9 @@ function ConnectorsPanel() {
         issues and post run results back.
       </p>
       <div className="mb-4 flex items-center gap-2 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 py-2">
-        <span className="h-1.5 w-1.5 rounded-full bg-[#1fd8a4]" />
+        <span className="h-1.5 w-1.5 rounded-full bg-[var(--green-11)]" />
         <span className="text-[12px] font-medium text-[var(--gray-12)]">Heartbeat</span>
-        <span className="rounded-full bg-[#29a383]/20 px-2 py-0.5 text-[10px] font-medium text-[#1fd8a4]">2 active</span>
+        <span className="rounded-full bg-[var(--green-09)]/20 px-2 py-0.5 text-[10px] font-medium text-[var(--green-11)]">2 active</span>
       </div>
       <div className="space-y-4">
         {sections.map((s) => (
@@ -402,7 +402,7 @@ function ConnectorsPanel() {
             <div className="space-y-2">
               {s.rows.map((r) => (
                 <div key={r.name} className="flex items-center gap-3 rounded border border-[var(--gray-05)] bg-[var(--gray-01)]/60 px-3 py-2.5">
-                  <span className="h-1.5 w-1.5 rounded-full" style={{ background: r.tone === "green" ? "#1fd8a4" : "var(--gray-07)" }} />
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ background: r.tone === "green" ? "var(--green-11)" : "var(--gray-07)" }} />
                   <span className="text-[12.5px] font-medium text-[var(--gray-12)]">{r.name}</span>
                   <span className="text-[11px] text-[var(--gray-09)]">{r.cap}{r.target ? ` · ${r.target}` : ""}</span>
                   <span className="ml-auto"><Badge tone={r.tone}>{r.state}</Badge></span>
@@ -429,7 +429,7 @@ function ReviewGatesPanel() {
         are advisory — they never block a merge.
       </p>
       <div className="mb-3 flex gap-5">
-        {[{ l: "Passed", v: "14", c: "#1fd8a4" }, { l: "Failed", v: "2", c: "#ff9592" }, { l: "Pending", v: "1", c: "#f5e147" }].map((s) => (
+        {[{ l: "Passed", v: "14", c: "var(--green-11)" }, { l: "Failed", v: "2", c: "var(--red-11)" }, { l: "Pending", v: "1", c: "var(--yellow-11)" }].map((s) => (
           <div key={s.l}>
             <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)]">{s.l}</p>
             <p className="font-mono text-xl font-bold" style={{ color: s.c }}>{s.v}</p>
@@ -508,7 +508,7 @@ function ScorecardPanel() {
             { n: "self-hosted-runner-01", r: "64", s: "95.0%", rf: "12.0%", h: "8.0%", c: "$0.4210", ce: "83.0%" },
           ].map((x) => (
             <Row key={x.n}>
-              <td className={`${TD} text-[12px] text-[#70b8ff]`}>{x.n}</td>
+              <td className={`${TD} text-[12px] text-[var(--blue-11)]`}>{x.n}</td>
               <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>{x.r}</td>
               <td className={`${TD} ${MONO}`} style={{ color: "#30a46c" }}>{x.s}</td>
               <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>{x.rf}</td>
@@ -537,9 +537,9 @@ function ContextQualityPanel() {
   ] as const;
   return (
     <>
-      <div className="mb-3 flex items-center gap-2 rounded border border-[#29a383]/30 bg-[#29a383]/10 px-3 py-2">
-        <span className="h-1.5 w-1.5 rounded-full bg-[#1fd8a4]" />
-        <span className="text-[12px] text-[#1fd8a4]">All metrics stable</span>
+      <div className="mb-3 flex items-center gap-2 rounded border border-[var(--green-09)]/30 bg-[var(--green-09)]/10 px-3 py-2">
+        <span className="h-1.5 w-1.5 rounded-full bg-[var(--green-11)]" />
+        <span className="text-[12px] text-[var(--green-11)]">All metrics stable</span>
         <span className="ml-auto font-mono text-[11px] text-[var(--gray-09)]">12 runs · 30d · latest 06-13</span>
       </div>
       <div className="mb-4 grid grid-cols-2 gap-2.5 lg:grid-cols-4">
@@ -547,20 +547,20 @@ function ContextQualityPanel() {
           <div key={k.l} className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3">
             <p className="text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)]">{k.l}</p>
             <p className="mt-1 font-mono text-xl font-bold text-[var(--gray-12)]">{k.v}</p>
-            <p className="mt-0.5 font-mono text-[10px]" style={{ color: k.up === null ? "var(--gray-09)" : "#1fd8a4" }}>{k.d}</p>
+            <p className="mt-0.5 font-mono text-[10px]" style={{ color: k.up === null ? "var(--gray-09)" : "var(--green-11)" }}>{k.d}</p>
           </div>
         ))}
       </div>
       <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)]">Context rot score</p>
       <div className="mb-3 flex items-center gap-3 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-4 py-3">
-        <span className="font-mono text-3xl font-bold" style={{ color: "#f5e147" }}>34</span>
+        <span className="font-mono text-3xl font-bold" style={{ color: "var(--yellow-11)" }}>34</span>
         <span className="text-[11px] text-[var(--gray-09)]">Risk score · 0–100, lower is better</span>
       </div>
       <TableShell head={["Type", "Name", "Staleness", "Contribution"]}>
         {rot.map((r) => (
           <Row key={r.name}>
             <td className={TD}><Badge tone={r.tone}>{r.type}</Badge></td>
-            <td className={`${TD} text-[12px] text-[#70b8ff]`}>{r.name}</td>
+            <td className={`${TD} text-[12px] text-[var(--blue-11)]`}>{r.name}</td>
             <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>{r.stale}</td>
             <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>{r.pts}</td>
           </Row>
@@ -576,8 +576,8 @@ function ReposPanel() {
     { name: "bensigo/ai-workflow", branch: "feat/health-on-overview", health: "stale", tone: "yellow", sha: "91c95f6a", age: "3h ago", units: "8,204" },
     { name: "bensigo/db-clickhouse", branch: "main", health: "critical", tone: "red", sha: "—", age: "6d ago", units: "—" },
   ] as const;
-  const dot: Record<string, string> = { healthy: "#29a383", stale: "#ffe629", critical: "#e5484d" };
-  const txt: Record<string, string> = { healthy: "#1fd8a4", stale: "#f5e147", critical: "#ff9592" };
+  const dot: Record<string, string> = { healthy: "var(--green-09)", stale: "var(--yellow-09)", critical: "var(--red-09)" };
+  const txt: Record<string, string> = { healthy: "var(--green-11)", stale: "var(--yellow-11)", critical: "var(--red-11)" };
   return (
     <TableShell head={["Health", "Repository", "Last Commit", "Index Age", "Codebase Units", ""]}>
       {rows.map((r) => (
@@ -595,7 +595,7 @@ function ReposPanel() {
           <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>{r.sha}</td>
           <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>{r.age}</td>
           <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>{r.units}</td>
-          <td className={`${TD} text-right text-[11px] text-[#70b8ff]`}>Re-index</td>
+          <td className={`${TD} text-right text-[11px] text-[var(--blue-11)]`}>Re-index</td>
         </Row>
       ))}
     </TableShell>
@@ -643,7 +643,7 @@ function ApiKeysPanel() {
             <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>{r.key}</td>
             <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>{r.created}</td>
             <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>{r.used}</td>
-            <td className={`${TD} text-[11px] text-[#ff9592]`}>{r.status === "active" ? "Revoke" : ""}</td>
+            <td className={`${TD} text-[11px] text-[var(--red-11)]`}>{r.status === "active" ? "Revoke" : ""}</td>
           </Row>
         ))}
       </TableShell>
@@ -681,8 +681,8 @@ function TeamPanel() {
             <td className={`${TD} ${MONO} text-[var(--gray-12)]`}>margaret@bensigo.ai</td>
             <td className={TD}><Badge tone="gray">member</Badge></td>
             <td className={`${TD} ${MONO} text-[var(--gray-10)]`}>Jun 17, 2026</td>
-            <td className={`${TD} text-[11px] text-[#70b8ff]`}>Copy link</td>
-            <td className={`${TD} text-[11px] text-[#ff9592]`}>Revoke</td>
+            <td className={`${TD} text-[11px] text-[var(--blue-11)]`}>Copy link</td>
+            <td className={`${TD} text-[11px] text-[var(--red-11)]`}>Revoke</td>
           </Row>
         </TableShell>
       </div>

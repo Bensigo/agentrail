@@ -70,7 +70,7 @@ export function RevokeKeyDialog({
         </p>
 
         {error && (
-          <p className="text-xs text-[#ff9592] mb-3">{error}</p>
+          <p className="text-xs text-[var(--red-11)] mb-3">{error}</p>
         )}
 
         <div className="flex justify-end gap-2">
@@ -86,7 +86,7 @@ export function RevokeKeyDialog({
             type="button"
             onClick={handleRevoke}
             disabled={loading}
-            className="h-8 px-4 rounded bg-[#e5484d] text-white text-sm font-medium hover:bg-[#ce2c31] disabled:opacity-50 transition-colors"
+            className="h-8 px-4 rounded bg-[var(--red-09)] text-white text-sm font-medium hover:bg-[#ce2c31] disabled:opacity-50 transition-colors"
           >
             {loading ? "Revoking…" : "Revoke key"}
           </button>

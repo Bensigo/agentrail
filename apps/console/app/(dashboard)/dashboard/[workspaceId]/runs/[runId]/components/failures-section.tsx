@@ -27,7 +27,7 @@ function FailureRow({ failure }: { failure: FailureEvent }) {
       >
         <span
           title="Failure"
-          style={{ color: "#ff9592" }}
+          style={{ color: "var(--red-11)" }}
           className="text-sm font-bold shrink-0"
           aria-label="Failure"
         >
@@ -133,17 +133,17 @@ export function FailuresSection({ workspaceId, runId }: FailuresSectionProps) {
         </h2>
         <a
           href={`/dashboard/${workspaceId}/failures?runId=${runId}`}
-          className="text-xs text-[#70b8ff] hover:underline"
+          className="text-xs text-[var(--blue-11)] hover:underline"
         >
           View all →
         </a>
       </div>
       {error ? (
-        <p className="text-sm text-[#ff9592] py-4">{error}</p>
+        <p className="text-sm text-[var(--red-11)] py-4">{error}</p>
       ) : (
         <>
           <div className="flex items-center gap-3 mb-3">
-            <span className="text-xs text-[#ff9592]">
+            <span className="text-xs text-[var(--red-11)]">
               {failures.length} failure{failures.length !== 1 ? "s" : ""}
             </span>
           </div>

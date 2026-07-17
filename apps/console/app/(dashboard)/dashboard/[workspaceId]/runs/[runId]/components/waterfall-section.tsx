@@ -47,7 +47,7 @@ function BottleneckBadge({ label }: { label: string }) {
       className="inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-medium"
       style={{
         background: "rgba(255,230,41,0.15)",
-        color: "#ffe629",
+        color: "var(--yellow-09)",
         border: "1px solid rgba(255,230,41,0.3)",
       }}
     >
@@ -96,7 +96,7 @@ function PhaseBar({ phase }: { phase: WaterfallPhase }) {
             minWidth: "2px",
             background:
               phase.isSlowest || phase.isMostExpensive
-                ? "#ffe629"
+                ? "var(--yellow-09)"
                 : "var(--gray-08)",
           }}
         />

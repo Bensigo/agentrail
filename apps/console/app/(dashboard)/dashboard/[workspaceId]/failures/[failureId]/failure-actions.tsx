@@ -169,7 +169,7 @@ export function FailureActions({
             <span className="text-xs text-[#3dd68c]">{memoryState.message}</span>
           )}
           {memoryState.kind === "error" && (
-            <span className="text-xs text-[#ff9592]">{memoryState.message}</span>
+            <span className="text-xs text-[var(--red-11)]">{memoryState.message}</span>
           )}
         </div>
 
@@ -230,7 +230,7 @@ export function FailureActions({
               <span className="text-xs text-[#3dd68c]">{issueState.message}</span>
             ))}
           {issueState.kind === "error" && (
-            <span className="text-xs text-[#ff9592]">{issueState.message}</span>
+            <span className="text-xs text-[var(--red-11)]">{issueState.message}</span>
           )}
         </div>
       </div>
@@ -247,7 +247,7 @@ function StatusBadge({ status }: { status: Status }) {
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-xs font-medium bg-[#f76b15]/20 text-[#ffa057] border border-[#f76b15]/30">
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-xs font-medium bg-[var(--orange-09)]/20 text-[var(--orange-11)] border border-[var(--orange-09)]/30">
       <CircleDot className="h-3 w-3" /> Open
     </span>
   );

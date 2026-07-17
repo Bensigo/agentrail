@@ -14,14 +14,14 @@ interface WorkspaceSwitcherProps {
 // Deterministic avatar background derived from the workspace id, so each
 // workspace keeps a stable colour across renders and sessions.
 const AVATAR_COLORS = [
-  "#ffe629", // brand yellow
+  "var(--yellow-09)", // brand yellow
   "#46a758", // green
   "#3e9bff", // blue
   "#e93d82", // pink
-  "#f76b15", // orange
+  "var(--orange-09)", // orange
   "#8e4ec6", // purple
-  "#12a594", // teal
-  "#e5484d", // red
+  "var(--teal-09)", // teal
+  "var(--red-09)", // red
 ];
 
 function avatarColor(id: string): string {

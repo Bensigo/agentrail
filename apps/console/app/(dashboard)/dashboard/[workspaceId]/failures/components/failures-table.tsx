@@ -67,15 +67,15 @@ type Severity = "critical" | "high" | "medium" | "low";
 const severityConfig: Record<Severity, { label: string; className: string }> = {
   critical: {
     label: "critical",
-    className: "bg-[#e5484d]/20 text-[#ff9592] border border-[#e5484d]/30",
+    className: "bg-[var(--red-09)]/20 text-[var(--red-11)] border border-[var(--red-09)]/30",
   },
   high: {
     label: "high",
-    className: "bg-[#f76b15]/20 text-[#ffa057] border border-[#f76b15]/30",
+    className: "bg-[var(--orange-09)]/20 text-[var(--orange-11)] border border-[var(--orange-09)]/30",
   },
   medium: {
     label: "medium",
-    className: "bg-[#ffe629]/20 text-[#f5d90a] border border-[#ffe629]/30",
+    className: "bg-[var(--yellow-09)]/20 text-[#f5d90a] border border-[var(--yellow-09)]/30",
   },
   low: {
     label: "low",
@@ -151,7 +151,7 @@ function buildColumns(
         <a
           href={`/dashboard/${workspaceId}/failures?run_id=${info.getValue()}`}
           onClick={(e) => e.stopPropagation()}
-          className="font-mono text-xs text-[var(--gray-11)] hover:text-[#ffe629] transition-colors"
+          className="font-mono text-xs text-[var(--gray-11)] hover:text-[var(--yellow-09)] transition-colors"
         >
           {info.getValue().slice(0, 8)}
         </a>
@@ -260,7 +260,7 @@ export function FailuresTable({
         <select
           value={repoId}
           onChange={(e) => setRepoId(e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
+          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
         >
           <option value="">All repos</option>
           {repositories.map((r) => (
@@ -273,7 +273,7 @@ export function FailuresTable({
         <select
           value={severity}
           onChange={(e) => setSeverity(e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
+          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
         >
           <option value="">All severities</option>
           <option value="critical">Critical</option>
@@ -285,7 +285,7 @@ export function FailuresTable({
         <select
           value={failureType}
           onChange={(e) => setFailureType(e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
+          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
         >
           <option value="">All types</option>
           <option value="tool_error">tool_error</option>
@@ -305,7 +305,7 @@ export function FailuresTable({
               }
               className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
                 timeRange === value
-                  ? "bg-[#ffe629] text-black border-[#ffe629]"
+                  ? "bg-[var(--yellow-09)] text-black border-[var(--yellow-09)]"
                   : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
               }`}
             >
@@ -347,7 +347,7 @@ export function FailuresTable({
               <tr>
                 <td
                   colSpan={columns.length}
-                  className="px-3 py-8 text-center text-sm text-[#ff9592]"
+                  className="px-3 py-8 text-center text-sm text-[var(--red-11)]"
                 >
                   {error}
                 </td>

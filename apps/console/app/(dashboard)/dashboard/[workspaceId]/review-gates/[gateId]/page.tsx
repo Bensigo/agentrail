@@ -25,9 +25,9 @@ const CATEGORY_ORDER: Category[] = ["tests", "visual", "citations", "ac", "block
 
 function StatusBadge({ status }: { status: ReviewGateStatus }) {
   const styles: Record<ReviewGateStatus, string> = {
-    passed: "bg-[#1a3d33] text-[#1fd8a4]",
-    failed: "bg-[#3d1a1a] text-[#ff9592]",
-    pending: "bg-[#3d3a1a] text-[#f5e147]",
+    passed: "bg-[#1a3d33] text-[var(--green-11)]",
+    failed: "bg-[#3d1a1a] text-[var(--red-11)]",
+    pending: "bg-[#3d3a1a] text-[var(--yellow-11)]",
   };
   return (
     <span className={`px-1.5 py-0.5 rounded-sm text-xs font-medium ${styles[status]}`}>
@@ -41,8 +41,8 @@ function EvidenceBadge({ present }: { present: boolean }) {
     <span
       className={
         present
-          ? "px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[#1a3d33] text-[#1fd8a4]"
-          : "px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[#3d1a1a] text-[#ff9592]"
+          ? "px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[#1a3d33] text-[var(--green-11)]"
+          : "px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[#3d1a1a] text-[var(--red-11)]"
       }
     >
       {present ? "present" : "missing"}
@@ -177,7 +177,7 @@ export default function ReviewGateDetailPage() {
     return (
       <div className="mx-auto max-w-[900px]">
         <GateBreadcrumb workspaceId={workspaceId} />
-        <p className="text-sm text-[#ff9592] py-8">{error ?? "Review gate not found"}</p>
+        <p className="text-sm text-[var(--red-11)] py-8">{error ?? "Review gate not found"}</p>
       </div>
     );
   }
@@ -194,7 +194,7 @@ export default function ReviewGateDetailPage() {
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--gray-09)]">
             <a
               href={`/dashboard/${workspaceId}/runs/${gate.runId}`}
-              className="font-mono text-[#70b8ff] hover:underline"
+              className="font-mono text-[var(--blue-11)] hover:underline"
             >
               run:{gate.runId}
             </a>

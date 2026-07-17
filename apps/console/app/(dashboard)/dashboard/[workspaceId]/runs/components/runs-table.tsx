@@ -185,7 +185,7 @@ const columns = [
       const saved = info.getValue();
       return (
         <span
-          className="font-mono text-xs text-[#1fd8a4]"
+          className="font-mono text-xs text-[var(--green-11)]"
           title="Context retrieval + cache reads"
         >
           {formatTokens(saved)}
@@ -273,7 +273,7 @@ export function RunsTable({ workspaceId, repositories }: RunsTableProps) {
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
+          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
         >
           <option value="">All statuses</option>
           <option value="queued">Queued</option>
@@ -285,7 +285,7 @@ export function RunsTable({ workspaceId, repositories }: RunsTableProps) {
         <select
           value={repoId}
           onChange={(e) => setRepoId(e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
+          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
         >
           <option value="">All repos</option>
           {repositories.map((r) => (
@@ -304,7 +304,7 @@ export function RunsTable({ workspaceId, repositories }: RunsTableProps) {
               }
               className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
                 timeRange === value
-                  ? "bg-[#ffe629] text-black border-[#ffe629]"
+                  ? "bg-[var(--yellow-09)] text-black border-[var(--yellow-09)]"
                   : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
               }`}
             >
@@ -346,7 +346,7 @@ export function RunsTable({ workspaceId, repositories }: RunsTableProps) {
               <tr>
                 <td
                   colSpan={columns.length}
-                  className="px-3 py-8 text-center text-sm text-[#ff9592]"
+                  className="px-3 py-8 text-center text-sm text-[var(--red-11)]"
                 >
                   {error}
                 </td>

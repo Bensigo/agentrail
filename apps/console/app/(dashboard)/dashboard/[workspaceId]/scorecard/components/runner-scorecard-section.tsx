@@ -70,7 +70,7 @@ function MetricCell({ value, href }: { value: string; href?: string }) {
   }
   return (
     <td className="px-3 py-1.5 font-mono text-xs">
-      <a href={href} className="text-[#70b8ff] hover:underline">
+      <a href={href} className="text-[var(--blue-11)] hover:underline">
         {value}
       </a>
     </td>
@@ -156,7 +156,7 @@ export function RunnerScorecardSection({
         <select
           value={repositoryId}
           onChange={(e) => updateParam("repository_id", e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
+          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
         >
           <option value="">All repos</option>
           {repositories.map((r) => (
@@ -173,7 +173,7 @@ export function RunnerScorecardSection({
               onClick={() => updateParam("time_range", value)}
               className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
                 timeRange === value
-                  ? "bg-[#ffe629] text-black border-[#ffe629]"
+                  ? "bg-[var(--yellow-09)] text-black border-[var(--yellow-09)]"
                   : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
               }`}
             >
@@ -187,7 +187,7 @@ export function RunnerScorecardSection({
           value={taskType}
           onChange={(e) => updateParam("task_type", e.target.value)}
           placeholder="Task type"
-          className="h-8 w-36 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm font-mono text-[var(--gray-12)] placeholder:text-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
+          className="h-8 w-36 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm font-mono text-[var(--gray-12)] placeholder:text-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
         />
       </div>
 
@@ -227,7 +227,7 @@ export function RunnerScorecardSection({
               <tr>
                 <td
                   colSpan={COL_COUNT}
-                  className="px-3 py-8 text-center text-sm text-[#ff9592]"
+                  className="px-3 py-8 text-center text-sm text-[var(--red-11)]"
                 >
                   {error}
                 </td>

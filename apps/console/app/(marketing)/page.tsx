@@ -18,7 +18,7 @@ const TRACK_RECORD = {
   sample: { issue: 221, title: "Add API keys view", pr: 308 },
 };
 
-const ACCENT = "#ffe629";
+const ACCENT = "var(--yellow-09)";
 
 const STEPS = [
   {
@@ -196,7 +196,7 @@ export default async function LandingPage() {
             >
               <button
                 type="submit"
-                className="group inline-flex items-center gap-2 rounded-md bg-[#ffe629] px-5 py-3 text-[15px] font-bold text-black transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#ffdc00]"
+                className="group inline-flex items-center gap-2 rounded-md bg-[var(--yellow-09)] px-5 py-3 text-[15px] font-bold text-black transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#ffdc00]"
               >
                 <GitHubIcon />
                 Start free
@@ -258,12 +258,12 @@ export default async function LandingPage() {
                     </p>
                     <p className="text-[var(--gray-10)]">
                       <span style={{ color: ACCENT }}>▸</span> verify · independent model{" "}
-                      <span className="text-[#1fd8a4]">✓</span>
+                      <span className="text-[var(--green-11)]">✓</span>
                     </p>
                     <p className="text-[var(--gray-10)]">
                       <span style={{ color: ACCENT }}>▸</span> gate · tests 142 passed
                     </p>
-                    <p className="text-[#1fd8a4]">✓ green — opened PR #421</p>
+                    <p className="text-[var(--green-11)]">✓ green — opened PR #421</p>
                   </div>
                 </div>
               </div>
@@ -480,7 +480,7 @@ export default async function LandingPage() {
             <Reveal delay={100}>
               <div
                 className="ar-cell relative flex h-full flex-col rounded-xl border bg-[var(--gray-01)] p-6"
-                style={{ borderColor: "color-mix(in srgb, #ffe629 40%, var(--gray-05))" }}
+                style={{ borderColor: "color-mix(in srgb, var(--yellow-09) 40%, var(--gray-05))" }}
               >
                 <div className="relative flex items-center justify-between">
                   <span className="text-[15px] font-bold" style={{ color: ACCENT }}>
@@ -569,7 +569,7 @@ export default async function LandingPage() {
             >
               <button
                 type="submit"
-                className="inline-flex items-center gap-2 rounded-md bg-[#ffe629] px-6 py-3.5 text-[15px] font-bold text-black transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#ffdc00]"
+                className="inline-flex items-center gap-2 rounded-md bg-[var(--yellow-09)] px-6 py-3.5 text-[15px] font-bold text-black transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#ffdc00]"
               >
                 <GitHubIcon />
                 Sign in with GitHub

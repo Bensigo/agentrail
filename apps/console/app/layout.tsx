@@ -2,8 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "AgentRail Console",
-  description: "Agent operations console for workspace management, runs, context packs, and review gates.",
+  title: "Jace — your AI engineer",
+  description:
+    "Jace is an AI engineer you talk to in chat. He turns ideas into issues, aligns with you before building, and ships pull requests — nothing merges without your review.",
 };
 
 export default function RootLayout({

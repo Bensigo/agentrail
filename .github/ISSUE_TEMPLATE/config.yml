@@ -4,5 +4,5 @@ contact_links:
     url: https://github.com/Bensigo/agentrail/security/advisories/new
     about: Report security issues privately — do not open a public issue. See SECURITY.md.
   - name: Documentation
-    url: https://app.useagentrail.com/docs
+    url: https://heyjace.com/docs
     about: Read the getting-started and CLI docs before filing.

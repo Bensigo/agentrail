@@ -12,7 +12,7 @@ npm install -g @useagentrail/cli
 
 ## Quick Start
 
-Sign up at [app.useagentrail.com](https://app.useagentrail.com), connect your
+Sign up at [heyjace.com](https://heyjace.com), connect your
 GitHub repos on the Connectors page (trigger label: `ready-for-agent`), then:
 
 Log in to your workspace (required):
@@ -59,7 +59,7 @@ and a reviewed PR comes back automatically.
 
 ## Dashboard
 
-The [AgentRail dashboard](https://app.useagentrail.com) is the central workspace
+The [console at heyjace.com](https://heyjace.com) is the central workspace
 for connecting repos, managing the issue queue, reviewing run outcomes, and
 tracking cost across your team:
 

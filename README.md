@@ -1,22 +1,38 @@
-# AgentRail
+# AgentRail — the factory behind Jace
 
 [![CI](https://github.com/Bensigo/agentrail/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Bensigo/agentrail/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-AgentRail is your AI fractional engineer. Label a GitHub issue `ready-for-agent`, and it picks it up — writes the code, opens a reviewed PR, and pings you on Telegram when it's done or needs a decision. You stay in the loop without babysitting the run.
+[Jace](https://heyjace.com) is an AI engineer you hire onto your team. You
+talk to him in chat. He helps turn a rough idea into a concrete issue,
+confirms goal, approach, and cost with you before any work starts, then works
+the issue through a real development cycle — a failing test first, an
+implementation, an independent review, a verification gate — and opens a pull
+request. He does not merge by default; you review, and merge rights are yours
+to grant.
 
-Unlike a pure software factory (automated pipelines that churn out output), AgentRail is designed to feel like a team member: it works unattended, but it communicates. You can message it, get notified on progress, and step in when it escalates. The Telegram integration is first-class — not an afterthought.
+Jace is open source. This repository is all of him:
 
-Under the hood, AgentRail is the control plane that runs coding agents — Claude Code, Codex, or Cursor. It gives them durable repo context, bounded execution, independent review, and verification gates so their work is cheaper, inspectable, and safe to leave overnight.
+- **`apps/jace`** — the coordinator: conversation, ideation skills
+  (`grill-me` → PRD → issues), and the chat channels. Telegram is wired
+  today; Discord, Slack, iMessage, and WhatsApp are being brought up.
+- **`agentrail/`** — the factory: the SDLC engine that takes an approved
+  issue to a reviewed, gated pull request. Also usable standalone as a CLI.
+- **`apps/console`** — the console at [heyjace.com](https://heyjace.com):
+  work board, runs, review gates, costs, approvals — the evidence behind
+  every PR.
 
-**Primary flow: hosted dashboard + self-hosted runner.** Sign up at
-[app.useagentrail.com](https://app.useagentrail.com), connect your GitHub repos,
-install the CLI, run `agentrail login`, then `agentrail runner`. The runner
-claims queued issues over HTTP, executes them locally with your own LLM keys,
-opens PRs, and reports back. Login is required — only `login`, `logout`,
-`whoami`, and `--help` are exempt.
+**Status (2026-07):** the hosted message-first flow — message Jace at
+[heyjace.com](https://heyjace.com), zero setup, execution in the cloud — is
+being assembled; the design is
+[`docs/superpowers/specs/2026-07-17-jace-end-to-end-flow-design.md`](docs/superpowers/specs/2026-07-17-jace-end-to-end-flow-design.md)
+and the work is tracked on this repo's issue board. What runs end to end
+today: chat with Jace on Telegram, idea → house-format GitHub issue through
+his gated create-issue tool, `ready-for-agent` issues executed by a runner to
+reviewed PRs, and the console over all of it. Everything below documents
+running that yourself — as a self-hoster or a contributor.
 
-AgentRail is the harness. The configured runner is the worker, such as Codex, Claude, Cursor, Hermes, or a custom command. Ralph is the internal one-issue executor AgentRail invokes during issue execution. AFK is the queue/worktree loop for unattended batches of eligible issues.
+Terminology used throughout: AgentRail is the harness. The configured runner is the worker — Codex, Claude, Cursor, Hermes, or a custom command. Ralph is the internal one-issue executor AgentRail invokes during issue execution. AFK is the queue/worktree loop for unattended batches of eligible issues.
 
 It installs:
 
@@ -32,7 +48,10 @@ It does **not** create `.agentrail/taste.md` or `.agentrail/memory/` — add
 those yourself when you want product-taste guidance or durable project
 memory; AgentRail reads them when present.
 
-## Install & Quick Start
+## Self-hosting: install & quick start
+
+The hosted product runs the runner for you. Self-hosters run it themselves:
+your machine, your LLM keys, your custody of the code.
 
 Install the CLI globally from npm:
 
@@ -52,9 +71,9 @@ Start the local runner to claim and execute queued issues:
 agentrail runner
 ```
 
-The runner polls the dashboard for issues labelled `ready-for-agent`, executes
+The runner polls the console for issues labelled `ready-for-agent`, executes
 them locally, opens PRs, and reports back. See
-[Getting Started](https://app.useagentrail.com/docs/getting-started/quickstart)
+[Getting Started](https://heyjace.com/docs/getting-started/quickstart)
 for the full sign-up → connect GitHub → runner flow.
 
 Initialize in a project (for local index and workflow files):
@@ -507,7 +526,7 @@ The main context files fit together like this:
 - GitHub issues: implementation source of truth, acceptance criteria, blockers, and AFK eligibility.
 - `.agentrail/state.json`: durable workflow pointer for compaction recovery, handoffs, active issue/PR state, active run state, AgentRail-owned worktree lifecycle, retry attempts, recent completed/failed runs, and next suggested action.
 
-AgentRail is local CLI workflow infrastructure, not a hosted orchestration platform. Keep runs bounded, review PRs before merge, and verify changes with the commands recorded in each PR.
+The factory CLI is the local workflow layer under Jace. The hosted product lives at [heyjace.com](https://heyjace.com); self-hosters run the same factory with their own runner and keys. Either way: keep runs bounded, review PRs before merge, and verify changes with the commands recorded in each PR.
 
 ## Common Commands
 

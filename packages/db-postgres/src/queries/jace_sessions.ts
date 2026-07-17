@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   jaceSessions,
@@ -188,4 +188,48 @@ export async function resolveApproval(
     .returning({ id: jaceApprovals.id });
 
   return result.length > 0;
+}
+
+/** A pending approval joined with its session's channel/conversation, for the console approvals inbox (issue #1234). */
+export interface PendingApprovalRow {
+  id: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  approveOptionId: string;
+  denyOptionId: string;
+  channel: string;
+  conversationKey: string;
+  createdAt: Date;
+}
+
+/**
+ * List pending approvals for a workspace, newest first, joined to their
+ * owning session so the console approvals inbox can show which
+ * channel/conversation each approval came from without a second query.
+ */
+export async function pendingApprovalsForWorkspace(
+  workspaceId: string
+): Promise<PendingApprovalRow[]> {
+  const rows = await db
+    .select({
+      id: jaceApprovals.id,
+      toolName: jaceApprovals.toolName,
+      toolInput: jaceApprovals.toolInput,
+      approveOptionId: jaceApprovals.approveOptionId,
+      denyOptionId: jaceApprovals.denyOptionId,
+      channel: jaceSessions.channel,
+      conversationKey: jaceSessions.conversationKey,
+      createdAt: jaceApprovals.createdAt,
+    })
+    .from(jaceApprovals)
+    .innerJoin(jaceSessions, eq(jaceApprovals.sessionId, jaceSessions.id))
+    .where(
+      and(
+        eq(jaceApprovals.workspaceId, workspaceId),
+        eq(jaceApprovals.status, "pending")
+      )
+    )
+    .orderBy(desc(jaceApprovals.createdAt));
+
+  return rows as PendingApprovalRow[];
 }

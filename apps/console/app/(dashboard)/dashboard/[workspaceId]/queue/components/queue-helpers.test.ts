@@ -106,7 +106,9 @@ describe("mapQueueEntryRows", () => {
   it("carries remaining budget straight through and derives failed attempts from it", () => {
     const [view] = mapQueueEntryRows([entryRow({ remainingBudget: 1 })]);
     expect(view.remainingBudget).toBe(1);
-    expect(view.failedAttempts).toBe(1); // DEFAULT_BUDGET(2) - 1
+    // Issue #1240: mapQueueEntryRows derives failedAttempts from the durable
+    // queue_entries default (5), not the runs-projection's DEFAULT_BUDGET(2).
+    expect(view.failedAttempts).toBe(4); // QUEUE_ENTRY_DEFAULT_BUDGET(5) - 1
   });
 
   it("preserves the parked state (blocked-on-dependency, still in the queue)", () => {

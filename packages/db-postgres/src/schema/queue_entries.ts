@@ -20,6 +20,21 @@ export const queueSourceEnum = pgEnum("queue_source", [
 ]);
 
 /**
+ * Issue #1240: the starting `remaining_budget` a GitHub-issue queue entry is
+ * seeded with (`github_intake.ts::enqueueGithubIssue` passes this explicitly on
+ * insert, overriding the column default below). This is the ONE place that
+ * number is declared; both the column default and the console read model
+ * (`apps/console/lib/work-vocabulary.ts::mapQueueEntryRows`, which infers
+ * `failedAttempts` as `QUEUE_ENTRY_DEFAULT_BUDGET - remainingBudget`) import it
+ * from here so they cannot drift apart again.
+ *
+ * Note: `enqueueOnboard` seeds a DIFFERENT starting budget (3) for onboard-kind
+ * entries — this constant does not apply to those rows; see the `attempts`
+ * accuracy caveat on `mapQueueEntryRows`.
+ */
+export const QUEUE_ENTRY_DEFAULT_BUDGET = 5;
+
+/**
  * Durable Issue Queue.
  *
  * Today the console "queue" is just `runs` grouped by branch; there is no
@@ -52,7 +67,9 @@ export const queueEntries = pgTable("queue_entries", {
   // (see recordRunnerResult / nextQueueTransition), so this is the max number of
   // attempts before an entry escalates to a human. 5 ⇒ "retry on error max 5
   // times" (#890).
-  remainingBudget: integer("remaining_budget").notNull().default(5),
+  remainingBudget: integer("remaining_budget")
+    .notNull()
+    .default(QUEUE_ENTRY_DEFAULT_BUDGET),
   // QueueState ('queued'|'parked'|'running') or Terminal
   // ('green'|'escalated-to-human'|'blocked').
   state: text("state").notNull().default("queued"),

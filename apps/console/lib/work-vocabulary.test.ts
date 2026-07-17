@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
+// Node-only import (vitest runs in node): work-vocabulary.ts itself must NOT
+// import this barrel — it is client-bundled and the barrel drags `postgres` +
+// node built-ins into the browser graph, 500ing the Work page. The test is
+// the one place both constants meet, so drift fails here instead.
+import { QUEUE_ENTRY_DEFAULT_BUDGET as DB_QUEUE_ENTRY_DEFAULT_BUDGET } from "@agentrail/db-postgres";
 import {
   ACTIVE_QUEUE_STATES,
   DEFAULT_BUDGET,
+  QUEUE_ENTRY_DEFAULT_BUDGET,
   WORK_GROUPS,
   WORK_STATE_CHIP_CLASSNAME,
   formatParkReason,
@@ -125,10 +131,32 @@ describe("mapQueueEntryRows", () => {
     expect(mapQueueEntryRows([entryRow({ tier: 1 })])[0].tier).toBe("strong");
   });
 
-  it("carries remaining budget straight through and derives failed attempts from it", () => {
+  it("carries remaining budget straight through", () => {
     const [view] = mapQueueEntryRows([entryRow({ remainingBudget: 1 })]);
     expect(view.remainingBudget).toBe(1);
-    expect(view.failedAttempts).toBe(1); // DEFAULT_BUDGET(2) - 1
+  });
+
+  // Issue #1240 AC2: an entry with budget consumed (remainingBudget 3 of the
+  // real 5-budget durable default) shows the correct failed-attempt count —
+  // NOT derived from the runs-projection's DEFAULT_BUDGET(2).
+  it("derives failed attempts from QUEUE_ENTRY_DEFAULT_BUDGET(5), not DEFAULT_BUDGET(2)", () => {
+    const [view] = mapQueueEntryRows([entryRow({ remainingBudget: 3 })]);
+    expect(QUEUE_ENTRY_DEFAULT_BUDGET).toBe(5);
+    expect(view.remainingBudget).toBe(3);
+    expect(view.failedAttempts).toBe(2); // 5 - 3, matches the AC2 example exactly
+    expect(view.attempts).toBe(2);
+  });
+
+  it("a fresh durable row (remainingBudget at the full 5) shows zero failed attempts", () => {
+    const [view] = mapQueueEntryRows([entryRow({ remainingBudget: 5 })]);
+    expect(view.failedAttempts).toBe(0);
+  });
+
+  it("clamps failed attempts at zero rather than going negative", () => {
+    // A remainingBudget above the default (shouldn't happen, but the read
+    // model must stay total/defensive) never reports negative attempts.
+    const [view] = mapQueueEntryRows([entryRow({ remainingBudget: 9 })]);
+    expect(view.failedAttempts).toBe(0);
   });
 
   it("preserves the parked state (blocked-on-dependency, still in the queue)", () => {
@@ -344,8 +372,26 @@ describe("WORK_STATE_CHIP_CLASSNAME", () => {
   });
 });
 
-describe("DEFAULT_BUDGET", () => {
+describe("DEFAULT_BUDGET (runs-history fallback projection ONLY — issue #1240)", () => {
   it("is 2, matching queue_state.QueueEntry.remaining_budget's default", () => {
     expect(DEFAULT_BUDGET).toBe(2);
+  });
+
+  it("is a DIFFERENT constant from the durable-row default (they must not be conflated)", () => {
+    expect(DEFAULT_BUDGET).not.toBe(QUEUE_ENTRY_DEFAULT_BUDGET);
+  });
+});
+
+// Issue #1240 AC1: the durable-row source of truth is `QUEUE_ENTRY_DEFAULT_BUDGET`
+// in db-postgres, colocated with the `queue_entries.remaining_budget` column
+// default. work-vocabulary.ts mirrors it locally (client-bundle constraint, see
+// its doc comment); this suite is the drift guard that keeps the mirror honest.
+describe("QUEUE_ENTRY_DEFAULT_BUDGET (durable queue_entries default — issue #1240)", () => {
+  it("is 5, matching the queue_entries.remaining_budget column default and enqueueGithubIssue's explicit seed", () => {
+    expect(QUEUE_ENTRY_DEFAULT_BUDGET).toBe(5);
+  });
+
+  it("local mirror stays in lockstep with the db-postgres schema constant (drift guard)", () => {
+    expect(QUEUE_ENTRY_DEFAULT_BUDGET).toBe(DB_QUEUE_ENTRY_DEFAULT_BUDGET);
   });
 });

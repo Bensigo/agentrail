@@ -32,14 +32,15 @@ Depends: none. Blocks: every agent-executed issue below.
 PR splits: ① README rewrite + `useagentrail.com`→`heyjace.com` sweep ② CONTEXT.md rewrite (Jace the engineer; AgentRail = factory CLI; retire "context control plane" framing) ③ TASTE.md console guide → light-first product direction (retire "dense dark observability… dark-first") ④ console tab/brand says Jace (`apps/console/app/layout.tsx` metadata).
 AC: fresh-agent briefing test — an agent briefed only by the repo describes chat-first Jace, cloud factory, light-first design; zero live `useagentrail.com` references.
 
-**W0-2. process: WhatsApp Business (Meta Cloud API) verification — start now**
-Depends: none. Long-lead; owner does the Meta side, issue tracks credentials into prod env.
-PR splits: none until credentials exist; then ① env/config plumbing.
-AC: verified WABA + phone number id + a successful test send recorded.
+**W0-2. tracking: WhatsApp Business (Meta Cloud API) verification — open until approved**
+Depends: none. Long-lead **tracking issue**: filed now, application submitted now (owner does the Meta side), then the issue **stays open through the external approval — no implementation before approval**. W5-3 (WhatsApp build) is hard-blocked by this issue.
+PR splits: none until Meta approval lands; then ① env/config credential plumbing only.
+AC: Meta approval received; verified WABA + phone number id + a successful test send recorded; only then does W5-3 unblock.
 
-**W0-3. process: iMessage production plan (LoopMessage)**
-Depends: none. PR splits: ① prod credential plumbing when purchased.
-AC: production-capable LoopMessage credentials in prod env; sandbox limits documented as gone.
+**W0-3. tracking: iMessage production plan (LoopMessage) — open until purchased**
+Depends: none. Same shape: **tracking issue**, stays open until the LoopMessage production plan is purchased/approved — no implementation before then. W5-4 (iMessage launch) is hard-blocked by this issue.
+PR splits: none until purchase; then ① prod credential plumbing only.
+AC: production-capable LoopMessage credentials in prod env; sandbox limits gone; only then does W5-4 unblock.
 
 ## Wave 1 — Identity spine + the door
 

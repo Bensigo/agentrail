@@ -1,9 +1,11 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   chatIdentities,
   type ChatIdentityRow,
 } from "../schema/chat_identities.js";
+import { workspaceMemberships } from "../schema/workspace_memberships.js";
+import { workspaces } from "../schema/workspaces.js";
 
 /**
  * Chat identity queries (spec §4.2; see `schema/chat_identities.ts` for the
@@ -204,4 +206,60 @@ export async function resolveInboundChatIdentity(
     created,
     disposition: identity.workspaceId != null ? "bound" : "intro",
   };
+}
+
+/** One workspace a chat identity can reach, as surfaced to the disambiguation flow (issue #1261 PR ③). */
+export interface ReachableWorkspace {
+  id: string;
+  name: string;
+}
+
+/**
+ * Every workspace a chat identity can reach (issue #1261 PR ③) — the union of
+ * its own `workspace_id` binding and, when it's linked to a user (`user_id`
+ * set), every workspace that user belongs to via `workspace_memberships`.
+ * Deduped by workspace id, sorted by name so callers (the multi-workspace
+ * disambiguation flow in `jace_sessions.ts`) render a stable list.
+ *
+ * A single LEFT JOIN from the identity to `workspace_memberships` on
+ * `membership.user_id = identity.user_id` gathers both candidate sources at
+ * once: the identity's own `workspace_id` rides along on every row (from
+ * `chat_identities` directly), while `membership.workspace_id` is null when
+ * the identity has no linked user or the user has no memberships (a LEFT
+ * JOIN on a NULL `user_id` matches nothing, per SQL's `NULL = NULL` being
+ * unknown rather than true — never a false-positive join). A second query
+ * resolves the deduped id set to names. Returns `[]` for an unknown
+ * identity id or one with neither anchor — never throws on a "reaches
+ * nothing" outcome, since that is the normal shape for a brand-new sender.
+ */
+export async function listWorkspacesForChatIdentity(
+  chatIdentityId: string
+): Promise<ReachableWorkspace[]> {
+  const rows = await db
+    .select({
+      ownWorkspaceId: chatIdentities.workspaceId,
+      membershipWorkspaceId: workspaceMemberships.workspaceId,
+    })
+    .from(chatIdentities)
+    .leftJoin(
+      workspaceMemberships,
+      eq(workspaceMemberships.userId, chatIdentities.userId)
+    )
+    .where(eq(chatIdentities.id, chatIdentityId));
+
+  const workspaceIds = new Set<string>();
+  for (const row of rows) {
+    if (row.ownWorkspaceId) workspaceIds.add(row.ownWorkspaceId);
+    if (row.membershipWorkspaceId) workspaceIds.add(row.membershipWorkspaceId);
+  }
+
+  if (workspaceIds.size === 0) {
+    return [];
+  }
+
+  return db
+    .select({ id: workspaces.id, name: workspaces.name })
+    .from(workspaces)
+    .where(inArray(workspaces.id, Array.from(workspaceIds)))
+    .orderBy(workspaces.name);
 }

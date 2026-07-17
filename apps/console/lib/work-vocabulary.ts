@@ -421,10 +421,10 @@ export function formatParkReason(
  * waiting on a dependency), gray=queued/inactive.
  */
 export const WORK_STATE_CHIP_CLASSNAME: Record<QueueState, string> = {
-  green: "bg-[#29a383]/20 text-[#1fd8a4] border border-[#29a383]/30",
-  running: "bg-[#f76b15]/20 text-[#ffa057] border border-[#f76b15]/30",
-  "escalated-to-human": "bg-[#e5484d]/20 text-[#ff9592] border border-[#e5484d]/30",
-  blocked: "bg-[#ffe629]/15 text-[#f5e147] border border-[#ffe629]/30",
+  green: "bg-[var(--green-09)]/20 text-[var(--green-11)] border border-[var(--green-09)]/30",
+  running: "bg-[var(--orange-09)]/20 text-[var(--orange-11)] border border-[var(--orange-09)]/30",
+  "escalated-to-human": "bg-[var(--red-09)]/20 text-[var(--red-11)] border border-[var(--red-09)]/30",
+  blocked: "bg-[var(--yellow-09)]/15 text-[var(--yellow-11)] border border-[var(--yellow-09)]/30",
   parked: "bg-[#3b82f6]/15 text-[#7cc0ff] border border-[#3b82f6]/30",
   queued: "bg-[var(--gray-04)] text-[var(--gray-10)] border border-[var(--gray-06)]",
 };

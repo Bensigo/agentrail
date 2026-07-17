@@ -352,16 +352,16 @@ describe("formatParkReason (issue #1239: reason preferred, blockedBy fallback)",
 describe("WORK_STATE_CHIP_CLASSNAME", () => {
   it("has a class for all six states and reuses queue-state-badge's exact classes", () => {
     expect(WORK_STATE_CHIP_CLASSNAME.green).toBe(
-      "bg-[#29a383]/20 text-[#1fd8a4] border border-[#29a383]/30"
+      "bg-[var(--green-09)]/20 text-[var(--green-11)] border border-[var(--green-09)]/30"
     );
     expect(WORK_STATE_CHIP_CLASSNAME.running).toBe(
-      "bg-[#f76b15]/20 text-[#ffa057] border border-[#f76b15]/30"
+      "bg-[var(--orange-09)]/20 text-[var(--orange-11)] border border-[var(--orange-09)]/30"
     );
     expect(WORK_STATE_CHIP_CLASSNAME["escalated-to-human"]).toBe(
-      "bg-[#e5484d]/20 text-[#ff9592] border border-[#e5484d]/30"
+      "bg-[var(--red-09)]/20 text-[var(--red-11)] border border-[var(--red-09)]/30"
     );
     expect(WORK_STATE_CHIP_CLASSNAME.blocked).toBe(
-      "bg-[#ffe629]/15 text-[#f5e147] border border-[#ffe629]/30"
+      "bg-[var(--yellow-09)]/15 text-[var(--yellow-11)] border border-[var(--yellow-09)]/30"
     );
     expect(WORK_STATE_CHIP_CLASSNAME.parked).toBe(
       "bg-[#3b82f6]/15 text-[#7cc0ff] border border-[#3b82f6]/30"

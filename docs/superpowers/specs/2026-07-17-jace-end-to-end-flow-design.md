@@ -33,8 +33,8 @@ on a roadmap.** Delivery is sequenced, but the backlog is complete up front.
 | Offer | Talk to Jace in chat; he indexes your repo on connect, helps sharpen fuzzy ideas into issues, **aligns with you before building**, works issues through a real SDLC in the cloud, ships PRs; no merge rights by default, grantable later |
 | Pain / buyers | (1) Developers priced out of ~$20/mo agentic IDEs + fast-internet requirements (e.g. Nigeria), met on chat platforms they already use, hired per task or monthly; (2) small→enterprise teams whose hiring can't keep up with the backlog and who need production-level SDLC work, not vibe coding |
 | Execution location | **REVERSAL of 2026-07-08 spec:** execution happens in the cloud on a hosted runner fleet with operator-supplied model access. "The VPS never runs customer code" is retired. Self-hosting stays possible (Jace is open source) but is the advanced path, not onboarding |
-| Factory runtime | The cloud factory runs **Claude Code as the agent harness with third-party models via the AI gateway** (API-key routing; Anthropic OAuth path is not available for this). Per-phase model split stays. Compatibility of harness + gateway is a named verification item, not an assumption |
-| Front door | **"Message Jace."** The landing page is Jace's resume; the CTA is messaging him — you don't sign up to talk to an engineer whose resume you like. Console sign-in remains as the secondary door |
+| Factory runtime | The cloud factory runs **Claude Code as the agent harness with third-party models via the AI gateway** (API-key routing; Anthropic OAuth path is not available for this). Per-phase model split stays as the default; **each task carries a suggested model the user can override** (see §4.4). Compatibility of harness + gateway is a named verification item, not an assumption |
+| Front door | **"Message Jace."** The landing page is Jace's resume; the primary CTA is messaging him — you don't sign up to talk to an engineer whose resume you like. The landing also carries a **secondary sign-up/sign-in button** into the console for people who want the evidence room first |
 | Channels | Shared, hosted Jace bot identity per platform, owned by us. **All of: Telegram (live today, was the test bed), Discord, Slack, iMessage, WhatsApp.** All are issues now; rollout ordered by code reality (§4.1) |
 | Alignment gate | **Jace never starts development unverified.** Before any queue entry executes — chat-born or label-born — Jace posts an alignment brief (goal, approach, acceptance criteria, budget) and waits for user confirmation, delivered through the single approval seam |
 | Workspace from chat | Every inbound chat message resolves to the user's workspace via a chat-identity link; Jace can create a workspace conversationally; multi-workspace users get asked once per conversation |
@@ -58,9 +58,11 @@ on a roadmap.** Delivery is sequenced, but the backlog is complete up front.
 5. **Index** — repo connect enqueues the `onboard` entry; the cloud factory
    executes it; Jace can now answer questions about the codebase.
 6. **Align** — idea → issue draft → **alignment brief** (goal, approach,
-   acceptance criteria, cost budget) → your explicit confirm through the
-   approval seam. Label-born issues (GitHub `ready-for-agent`, Linear) get the
-   same brief-and-confirm before first execution. Only then does work start.
+   acceptance criteria, **suggested model with its cost estimate — switchable
+   to a different model in the confirm**, cost budget) → your explicit confirm
+   through the approval seam. Label-born issues (GitHub `ready-for-agent`,
+   Linear) get the same brief-and-confirm before first execution. Only then
+   does work start.
 7. **Build** — the cloud factory runs the SDLC: context pack → failing test
    first → red baseline → implement → independent review (ON) → objective
    gate — Claude Code harness, gateway models, dollar budget enforced.
@@ -132,10 +134,16 @@ on a roadmap.** Delivery is sequenced, but the backlog is complete up front.
 ### 4.4 Alignment gate (the missing step)
 
 - Mechanics: admission produces an **alignment brief** — goal, planned
-  approach, acceptance criteria, cost budget — posted to the workspace's
-  channel(s). The entry holds (parked, reason "awaiting alignment") until the
-  user confirms. Confirm/deny are `jace_approvals` rows resolved through the
-  **single approval seam** — same atomic flip, same buttons, no second path.
+  approach, acceptance criteria, **suggested model + cost estimate keyed to
+  it**, cost budget — posted to the workspace's channel(s). The entry holds
+  (parked, reason "awaiting alignment") until the user confirms. Confirm/deny
+  are `jace_approvals` rows resolved through the **single approval seam** —
+  same atomic flip, same buttons, no second path.
+- **Per-task model choice:** the confirm payload may carry a different model
+  than suggested; it lands as a model override on the queue entry, flows
+  through the WorkItem to the runner, and takes precedence over the per-phase
+  default for that task. The brief's cost estimate re-keys to the chosen
+  model. No choice = suggested model.
 - Chat-born issues: the `grill-me → to-issues` flow ends in the brief; the
   existing gated `create_issue` approval is enriched into it (one confirm,
   not two).
@@ -170,7 +178,8 @@ removed from the enum.
   nothing merges without you) → **track record** (live dogfood numbers,
   failures counted — "I count the ones that didn't land" survives) → **how we
   work together** (channels that are actually open; permission ladder) →
-  **Message me.**
+  **Message me** (primary CTA) with the **secondary sign-up/sign-in button**
+  (nav + footer) into the console.
 - The centerpiece demo is a **real chat conversation with Jace** (the actual
   product), replacing the dashboard mockup that today shows the deleted
   observability console.
@@ -206,9 +215,10 @@ Grouped for issue creation (house format, one issue per bullet unless noted):
   isolation hardening; dollar-budget wiring; reviewer silent-skip fix;
   AFK customer-repo quarantine; per-workspace cost metering surface.
 - **Alignment & approvals:** alignment brief + parked-awaiting-alignment
-  admission; Telegram approve/deny callbacks; console /approvals page;
-  replyable run-outcome threads; merge-permission column + toggle +
-  enforcement.
+  admission; **per-task suggested model + user override** (brief field, queue
+  column, WorkItem passthrough, runner precedence, cost re-estimate);
+  Telegram approve/deny callbacks; console /approvals page; replyable
+  run-outcome threads; merge-permission column + toggle + enforcement.
 - **Intake:** Linear webhook-or-safe-heartbeat; connector catalog
   reclassification; GitHub repo picker (replace hand-typed owner/repo, uses
   granted scope); incremental OAuth consent (minimal scopes at sign-in,

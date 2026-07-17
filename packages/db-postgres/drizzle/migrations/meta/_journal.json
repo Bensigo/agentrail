@@ -218,6 +218,13 @@
       "when": 1784324118290,
       "tag": "0029_chat_identities",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1784325865602,
+      "tag": "0030_jace_sessions_intro_anchor",
+      "breakpoints": true
     }
   ]
 }

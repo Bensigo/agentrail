@@ -5,9 +5,9 @@
 
 /** TASTE.md severity colors (dark mode): green ≤ 30, yellow 31–60, red > 60. */
 export function severityColor(score: number): string {
-  if (score <= 30) return "#1fd8a4";
-  if (score <= 60) return "#f5e147";
-  return "#ff9592";
+  if (score <= 30) return "var(--green-11)";
+  if (score <= 60) return "var(--yellow-11)";
+  return "var(--red-11)";
 }
 
 /** Truncate an ID to 12 chars + ellipsis if longer. */
@@ -49,7 +49,7 @@ export function contributorTypeLabel(
 export function badgeColors(
   type: "memory_item" | "index_snapshot" | "hash_churn"
 ): { bg: string; text: string } {
-  if (type === "memory_item") return { bg: "#0c2417", text: "#1fd8a4" };
-  if (type === "index_snapshot") return { bg: "#1f1a08", text: "#f5e147" };
-  return { bg: "#051a19", text: "#0bd8b6" };
+  if (type === "memory_item") return { bg: "#0c2417", text: "var(--green-11)" };
+  if (type === "index_snapshot") return { bg: "#1f1a08", text: "var(--yellow-11)" };
+  return { bg: "#051a19", text: "var(--teal-11)" };
 }

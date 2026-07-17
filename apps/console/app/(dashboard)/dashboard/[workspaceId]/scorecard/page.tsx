@@ -63,7 +63,7 @@ function AgentTable({ rows }: { rows: AgentScorecardRow[] }) {
                 {row.finishedRuns.toLocaleString()}
               </td>
               <td className="px-3 py-1.5 font-mono text-xs">
-                <span className={row.successRate >= 0.8 ? "text-[#30a46c]" : row.successRate >= 0.5 ? "text-[#e5a100]" : "text-[#e5484d]"}>
+                <span className={row.successRate >= 0.8 ? "text-[#30a46c]" : row.successRate >= 0.5 ? "text-[#e5a100]" : "text-[var(--red-09)]"}>
                   {row.finishedRuns > 0 ? fmtPct(row.successRate) : "—"}
                 </span>
               </td>

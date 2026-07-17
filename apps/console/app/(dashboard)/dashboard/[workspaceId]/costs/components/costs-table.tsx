@@ -70,7 +70,7 @@ function fmtTokens(n: number): string {
 function SortIcon({ dir }: { dir: "asc" | "desc" | false }) {
   if (!dir) return <span className="ml-0.5 text-[var(--gray-07)]">↕</span>;
   return (
-    <span className="ml-0.5 text-[#ffe629]">{dir === "asc" ? "↑" : "↓"}</span>
+    <span className="ml-0.5 text-[var(--yellow-09)]">{dir === "asc" ? "↑" : "↓"}</span>
   );
 }
 
@@ -244,7 +244,7 @@ export function CostsTable({
               onClick={() => setGroupBy(value)}
               className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
                 groupBy === value
-                  ? "bg-[#ffe629] text-black border-[#ffe629]"
+                  ? "bg-[var(--yellow-09)] text-black border-[var(--yellow-09)]"
                   : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
               }`}
             >
@@ -263,7 +263,7 @@ export function CostsTable({
               onClick={() => onTimeRangeToggle(value)}
               className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
                 timeRange === value
-                  ? "bg-[#ffe629] text-black border-[#ffe629]"
+                  ? "bg-[var(--yellow-09)] text-black border-[var(--yellow-09)]"
                   : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
               }`}
             >
@@ -306,7 +306,7 @@ export function CostsTable({
               <tr>
                 <td
                   colSpan={columns.length}
-                  className="px-3 py-8 text-center text-sm text-[#ff9592]"
+                  className="px-3 py-8 text-center text-sm text-[var(--red-11)]"
                 >
                   {error}
                 </td>

@@ -25,21 +25,21 @@ export interface TimelineEvent {
 
 const EVENT_TYPE_COLORS: Record<string, string> = {
   context_event: "#7c66dc",
-  failure_event: "#e5484d",
-  review_gate: "#f76b15",
-  cost_event: "#0090ff",
-  audit_event: "#ffa057",
+  failure_event: "var(--red-09)",
+  review_gate: "var(--orange-09)",
+  cost_event: "var(--blue-09)",
+  audit_event: "var(--orange-11)",
   agent_activity: "#b58df1",
   // AFK action types map to teal / semantic colors
-  EnqueueIssue: "#12a594",
-  ClaimIssue: "#12a594",
-  SetStatus: "#12a594",
-  SetPr: "#12a594",
-  RecordFailure: "#e5484d",
-  ReleaseIssue: "#6e56cf",
-  RequeueIssue: "#f76b15",
-  IncrementReviewRound: "#f76b15",
-  FreeSlot: "#6e56cf",
+  EnqueueIssue: "var(--teal-09)",
+  ClaimIssue: "var(--teal-09)",
+  SetStatus: "var(--teal-09)",
+  SetPr: "var(--teal-09)",
+  RecordFailure: "var(--red-09)",
+  ReleaseIssue: "var(--purple-09)",
+  RequeueIssue: "var(--orange-09)",
+  IncrementReviewRound: "var(--orange-09)",
+  FreeSlot: "var(--purple-09)",
 };
 
 function dotColor(event_type: string, kind?: string): string {
@@ -291,7 +291,7 @@ function ActivityEntryRow({
         {entry.fullText && (
           <button
             onClick={() => setShowFull((v) => !v)}
-            className="text-xs text-[#70b8ff] hover:underline"
+            className="text-xs text-[var(--blue-11)] hover:underline"
           >
             {showFull ? "Show less" : "Show full text"}
           </button>

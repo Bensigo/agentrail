@@ -116,7 +116,7 @@ export function CostAnomalyTable({
               <tr>
                 <td
                   colSpan={7}
-                  className="px-3 py-8 text-center text-sm text-[#ff9592]"
+                  className="px-3 py-8 text-center text-sm text-[var(--red-11)]"
                 >
                   Cost anomalies unavailable
                 </td>
@@ -139,12 +139,12 @@ export function CostAnomalyTable({
                 >
                   <td className="px-3 py-1.5">
                     <div className="flex items-center gap-2">
-                      <span className="rounded-sm bg-[#f76b151f] px-1.5 py-0.5 text-xs font-medium text-[#f76b15]">
+                      <span className="rounded-sm bg-[#f76b151f] px-1.5 py-0.5 text-xs font-medium text-[var(--orange-09)]">
                         Anomaly
                       </span>
                       <a
                         href={`/dashboard/${workspaceId}/runs/${row.run_id}`}
-                        className="font-mono text-xs text-[#70b8ff] hover:underline"
+                        className="font-mono text-xs text-[var(--blue-11)] hover:underline"
                       >
                         {row.run_id}
                       </a>
@@ -162,7 +162,7 @@ export function CostAnomalyTable({
                   <td className="px-3 py-1.5 font-mono text-xs font-medium text-[var(--gray-12)]">
                     {formatCostUsd(row.cost_usd)}
                   </td>
-                  <td className="px-3 py-1.5 font-mono text-xs font-medium text-[#f76b15]">
+                  <td className="px-3 py-1.5 font-mono text-xs font-medium text-[var(--orange-09)]">
                     {formatDeviationSigma(row.deviation_sigmas)}
                   </td>
                   <td className="px-3 py-1.5 font-mono text-xs text-[var(--gray-10)]">

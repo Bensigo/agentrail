@@ -27,7 +27,7 @@ interface FailureClustersProps {
 
 function FailureTypeBadge({ value }: { value: string }) {
   return (
-    <span className="inline-flex min-w-[112px] items-center justify-center rounded-sm border border-[#e5484d]/30 bg-[#e5484d]/20 px-1.5 py-0.5 text-xs font-medium text-[#ff9592]">
+    <span className="inline-flex min-w-[112px] items-center justify-center rounded-sm border border-[var(--red-09)]/30 bg-[var(--red-09)]/20 px-1.5 py-0.5 text-xs font-medium text-[var(--red-11)]">
       {value || "failure"}
     </span>
   );
@@ -103,7 +103,7 @@ export function FailureClusters({ workspaceId }: FailureClustersProps) {
               <SkeletonTableRows columns={7} rows={4} />
             ) : error ? (
               <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-sm text-[#ff9592]">
+                <td colSpan={7} className="px-3 py-8 text-center text-sm text-[var(--red-11)]">
                   {error}
                 </td>
               </tr>
@@ -181,7 +181,7 @@ export function FailureClusters({ workspaceId }: FailureClustersProps) {
                               <a
                                 key={runId}
                                 href={buildRunDetailHref(workspaceId, runId)}
-                                className="font-mono text-xs text-[var(--gray-11)] underline-offset-2 hover:text-[#ffe629] hover:underline"
+                                className="font-mono text-xs text-[var(--gray-11)] underline-offset-2 hover:text-[var(--yellow-09)] hover:underline"
                               >
                                 {runId}
                               </a>

@@ -34,9 +34,9 @@ type EvalMetricsResult = {
 };
 
 const C = {
-  good: "#1fd8a4",
-  warn: "#f5e147",
-  bad: "#ff9592",
+  good: "var(--green-11)",
+  warn: "var(--yellow-11)",
+  bad: "var(--red-11)",
   neutral: "#8b949e",
 } as const;
 
@@ -157,7 +157,7 @@ export function EvalMetricsPanel({ workspaceId }: { workspaceId: string }) {
       <div className="p-3">
         {/* Error state */}
         {error && (
-          <div className="flex items-center gap-2 py-2 text-xs text-[#ff9592]">
+          <div className="flex items-center gap-2 py-2 text-xs text-[var(--red-11)]">
             <AlertTriangle className="h-3.5 w-3.5" />
             <span>{error}</span>
           </div>
@@ -232,9 +232,9 @@ export function EvalMetricsPanel({ workspaceId }: { workspaceId: string }) {
                   False-green rate
                   {headline.false_green_rate === null ? null : headline.false_green_rate >
                     0 ? (
-                    <AlertTriangle className="h-3 w-3 text-[#ff9592]" />
+                    <AlertTriangle className="h-3 w-3 text-[var(--red-11)]" />
                   ) : (
-                    <CheckCircle className="h-3 w-3 text-[#1fd8a4]" />
+                    <CheckCircle className="h-3 w-3 text-[var(--green-11)]" />
                   )}
                 </div>
                 <div
@@ -252,7 +252,7 @@ export function EvalMetricsPanel({ workspaceId }: { workspaceId: string }) {
             </div>
 
             {anyFalseGreen && (
-              <div className="mb-3 flex items-start gap-2 rounded border border-[rgba(255,149,146,0.3)] bg-[rgba(59,15,16,0.5)] px-3 py-2 text-[11px] text-[#ff9592]">
+              <div className="mb-3 flex items-start gap-2 rounded border border-[rgba(255,149,146,0.3)] bg-[rgba(59,15,16,0.5)] px-3 py-2 text-[11px] text-[var(--red-11)]">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span>
                   At least one arm has gate-passed runs that failed the hidden

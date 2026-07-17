@@ -77,7 +77,7 @@ export function MemorySection({ workspaceId, runId }: MemorySectionProps) {
         </h2>
         <a
           href={`/dashboard/${workspaceId}/memory`}
-          className="text-xs text-[#70b8ff] hover:underline"
+          className="text-xs text-[var(--blue-11)] hover:underline"
         >
           View all →
         </a>

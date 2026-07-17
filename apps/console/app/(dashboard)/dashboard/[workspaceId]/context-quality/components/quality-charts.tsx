@@ -64,9 +64,9 @@ const RANGE_OPTS: { key: RangeKey; label: string; days: number }[] = [
 
 // Decision palette (dark mode): healthy/improving green, warning amber, bad red.
 const C = {
-  good: "#1fd8a4",
-  warn: "#f5e147",
-  bad: "#ff9592",
+  good: "var(--green-11)",
+  warn: "var(--yellow-11)",
+  bad: "var(--red-11)",
   neutral: "#8b949e",
   grid: "var(--gray-04)",
 } as const;
@@ -507,7 +507,7 @@ function MetricChart({
       </div>
       )}
       {reported && regression && latestDate && (
-        <p className="mt-1.5 text-[10px] text-[#ff9592]">
+        <p className="mt-1.5 text-[10px] text-[var(--red-11)]">
           Regressed below baseline on {prettyDate(latestDate)}.
         </p>
       )}
@@ -643,7 +643,7 @@ export function QualityChartsClient({
         <select
           value={repositoryId}
           onChange={(e) => setRepositoryId(e.target.value)}
-          className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-2 text-xs text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
+          className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-2 text-xs text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
         >
           <option value="">All repositories</option>
           {repos.map((r) => (
@@ -685,20 +685,20 @@ export function QualityChartsClient({
               type="date"
               value={customFrom}
               onChange={(e) => setCustomFrom(e.target.value)}
-              className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-2 text-xs text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
+              className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-2 text-xs text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
             />
             <span className="text-xs text-[var(--gray-09)]">to</span>
             <input
               type="date"
               value={customTo}
               onChange={(e) => setCustomTo(e.target.value)}
-              className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-2 text-xs text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[#ffe629]"
+              className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-2 text-xs text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
             />
           </>
         )}
       </div>
 
-      {error && <p className="py-4 text-center text-sm text-[#ff9592]">{error}</p>}
+      {error && <p className="py-4 text-center text-sm text-[var(--red-11)]">{error}</p>}
 
       {/* Loading */}
       {loading && !error && (
@@ -749,11 +749,11 @@ export function QualityChartsClient({
               >
                 <div className="flex items-center gap-2">
                   {regressingCount > 0 ? (
-                    <AlertTriangle className="h-4 w-4 text-[#ff9592]" />
+                    <AlertTriangle className="h-4 w-4 text-[var(--red-11)]" />
                   ) : noQualitySignal || result.insufficient_data ? (
                     <Info className="h-4 w-4 text-[var(--gray-09)]" />
                   ) : (
-                    <CheckCircle className="h-4 w-4 text-[#1fd8a4]" />
+                    <CheckCircle className="h-4 w-4 text-[var(--green-11)]" />
                   )}
                   <span className="text-xs font-medium text-[var(--gray-12)]">
                     {regressingCount > 0
@@ -773,7 +773,7 @@ export function QualityChartsClient({
 
               {/* No-quality-signal notice — the producer isn't emitting precision/coverage */}
               {noQualitySignal && !noticeDismissed && (
-                <div className="flex items-start gap-2 rounded border border-[rgba(245,225,71,0.3)] bg-[rgba(31,26,8,0.5)] px-3 py-2 text-[11px] text-[#f5e147]">
+                <div className="flex items-start gap-2 rounded border border-[rgba(245,225,71,0.3)] bg-[rgba(31,26,8,0.5)] px-3 py-2 text-[11px] text-[var(--yellow-11)]">
                   <span className="flex-1">
                     {result.run_count} runs recorded, but precision &amp; citation
                     coverage are 0 on every one — the run pipeline isn’t computing
@@ -783,7 +783,7 @@ export function QualityChartsClient({
                   <button
                     onClick={dismissNotice}
                     aria-label="Dismiss"
-                    className="-mr-1 shrink-0 rounded p-0.5 text-[#f5e147]/70 transition-colors hover:bg-[rgba(245,225,71,0.15)] hover:text-[#f5e147]"
+                    className="-mr-1 shrink-0 rounded p-0.5 text-[var(--yellow-11)]/70 transition-colors hover:bg-[rgba(245,225,71,0.15)] hover:text-[var(--yellow-11)]"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -792,7 +792,7 @@ export function QualityChartsClient({
 
               {/* Insufficient-data notice (graceful, not a wall) */}
               {result.insufficient_data && !noQualitySignal && !noticeDismissed && (
-                <div className="flex items-start gap-2 rounded border border-[rgba(245,225,71,0.3)] bg-[rgba(31,26,8,0.5)] px-3 py-2 text-[11px] text-[#f5e147]">
+                <div className="flex items-start gap-2 rounded border border-[rgba(245,225,71,0.3)] bg-[rgba(31,26,8,0.5)] px-3 py-2 text-[11px] text-[var(--yellow-11)]">
                   <span className="flex-1">
                     Showing the {result.run_count} run
                     {result.run_count === 1 ? "" : "s"} recorded so far. Trend
@@ -801,7 +801,7 @@ export function QualityChartsClient({
                   <button
                     onClick={dismissNotice}
                     aria-label="Dismiss"
-                    className="-mr-1 shrink-0 rounded p-0.5 text-[#f5e147]/70 transition-colors hover:bg-[rgba(245,225,71,0.15)] hover:text-[#f5e147]"
+                    className="-mr-1 shrink-0 rounded p-0.5 text-[var(--yellow-11)]/70 transition-colors hover:bg-[rgba(245,225,71,0.15)] hover:text-[var(--yellow-11)]"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>

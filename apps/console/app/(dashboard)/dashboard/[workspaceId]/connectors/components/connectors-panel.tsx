@@ -127,7 +127,7 @@ function TriggerControls({
           disabled={!canManage || saving}
           onClick={() => put({ enabled: !connector.enabled })}
           className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
-            connector.enabled ? "bg-[#29a383]" : "bg-[var(--gray-06)]"
+            connector.enabled ? "bg-[var(--green-09)]" : "bg-[var(--gray-06)]"
           }`}
         >
           <span
@@ -179,7 +179,7 @@ function TriggerControls({
             {saving ? "Saving…" : "Save"}
           </button>
         </div>
-        {err && <p className="text-xs text-[#ff9592]">{err}</p>}
+        {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
       </form>
     </div>
   );
@@ -284,7 +284,7 @@ function SecretManage({
     return (
       <div className="flex flex-col gap-2">
         <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
-          <CheckCircle2 size={13} className="text-[#1fd8a4]" />
+          <CheckCircle2 size={13} className="text-[var(--green-11)]" />
           {meta?.credentialLabel ?? "Credential"} stored
           {connector.target ? (
             <code className="font-mono text-[var(--gray-11)]">
@@ -299,7 +299,7 @@ function SecretManage({
         >
           {saving ? "Disconnecting…" : "Disconnect"}
         </button>
-        {err && <p className="text-xs text-[#ff9592]">{err}</p>}
+        {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
       </div>
     );
   }
@@ -355,7 +355,7 @@ function SecretManage({
       >
         {saving ? "Connecting…" : "Connect"}
       </button>
-      {err && <p className="text-xs text-[#ff9592]">{err}</p>}
+      {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
       <SetupHelp connector={connector} />
     </form>
   );
@@ -414,7 +414,7 @@ function DiscordManage({
     return (
       <div className="flex flex-col gap-2">
         <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
-          <CheckCircle2 size={13} className="text-[#1fd8a4]" />
+          <CheckCircle2 size={13} className="text-[var(--green-11)]" />
           Posting to{" "}
           <code className="font-mono text-[var(--gray-11)]">
             {connector.target ?? "the configured webhook"}
@@ -427,7 +427,7 @@ function DiscordManage({
         >
           {saving ? "Disconnecting…" : "Disconnect"}
         </button>
-        {err && <p className="text-xs text-[#ff9592]">{err}</p>}
+        {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
       </div>
     );
   }
@@ -457,7 +457,7 @@ function DiscordManage({
       >
         {saving ? "Connecting…" : "Connect"}
       </button>
-      {err && <p className="text-xs text-[#ff9592]">{err}</p>}
+      {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
       <SetupHelp connector={connector} />
     </form>
   );
@@ -523,7 +523,7 @@ function ConnectorCard({
             </span>
             <span
               className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                isConnected ? "bg-[#1fd8a4]" : "bg-[var(--gray-07)]"
+                isConnected ? "bg-[var(--green-11)]" : "bg-[var(--gray-07)]"
               }`}
               aria-hidden="true"
             />
@@ -604,13 +604,13 @@ function HeartbeatStatusHeader({ connectors }: { connectors: ConnectorView[] }) 
         <span
           className={`ml-auto inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs font-medium ${
             active.length > 0
-              ? "bg-[#29a383]/15 text-[#1fd8a4]"
+              ? "bg-[var(--green-09)]/15 text-[var(--green-11)]"
               : "bg-[var(--gray-04)] text-[var(--gray-10)]"
           }`}
         >
           <span
             className={`h-1.5 w-1.5 rounded-full ${
-              active.length > 0 ? "bg-[#1fd8a4]" : "bg-[var(--gray-08)]"
+              active.length > 0 ? "bg-[var(--green-11)]" : "bg-[var(--gray-08)]"
             }`}
           />
           {active.length > 0
@@ -752,7 +752,7 @@ export function ConnectorsPanel({ workspaceId }: { workspaceId: string }) {
           ))}
         </div>
       ) : error ? (
-        <div className="rounded border border-[#e5484d]/30 bg-[#e5484d]/10 px-3 py-8 text-center text-sm text-[#ff9592]">
+        <div className="rounded border border-[var(--red-09)]/30 bg-[var(--red-09)]/10 px-3 py-8 text-center text-sm text-[var(--red-11)]">
           {error}
         </div>
       ) : connectors.length === 0 ? (

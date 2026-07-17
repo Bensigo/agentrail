@@ -34,7 +34,7 @@ function StatusIcon({ status }: { status: ReviewGate["status"] }) {
     return (
       <span
         title="Passed"
-        style={{ color: "#1fd8a4" }}
+        style={{ color: "var(--green-11)" }}
         className="text-sm font-bold shrink-0"
         aria-label="Passed"
       >
@@ -46,7 +46,7 @@ function StatusIcon({ status }: { status: ReviewGate["status"] }) {
     return (
       <span
         title="Failed"
-        style={{ color: "#ff9592" }}
+        style={{ color: "var(--red-11)" }}
         className="text-sm font-bold shrink-0"
         aria-label="Failed"
       >
@@ -57,7 +57,7 @@ function StatusIcon({ status }: { status: ReviewGate["status"] }) {
   return (
     <span
       title="Pending"
-      style={{ color: "#f5e147" }}
+      style={{ color: "var(--yellow-11)" }}
       className="text-sm shrink-0"
       aria-label="Pending"
     >
@@ -68,9 +68,9 @@ function StatusIcon({ status }: { status: ReviewGate["status"] }) {
 
 function StatusBadge({ status }: { status: ReviewGate["status"] }) {
   const styles: Record<ReviewGate["status"], string> = {
-    passed: "bg-[#1a3d33] text-[#1fd8a4]",
-    failed: "bg-[#3d1a1a] text-[#ff9592]",
-    pending: "bg-[#3d3a1a] text-[#f5e147]",
+    passed: "bg-[#1a3d33] text-[var(--green-11)]",
+    failed: "bg-[#3d1a1a] text-[var(--red-11)]",
+    pending: "bg-[#3d3a1a] text-[var(--yellow-11)]",
   };
   return (
     <span
@@ -87,7 +87,7 @@ function SeverityBadge({
   severity: ReviewGateFinding["severity"];
 }) {
   const styles: Record<ReviewGateFinding["severity"], string> = {
-    critical: "bg-[#3d1a1a] text-[#ff9592]",
+    critical: "bg-[#3d1a1a] text-[var(--red-11)]",
     major: "bg-[#3d2a1a] text-[#ffb077]",
     minor: "bg-[var(--gray-04)] text-[var(--gray-10)]",
   };
@@ -179,7 +179,7 @@ function GateRow({ gate }: { gate: ReviewGate }) {
                 {gate.blockingReasons.map((reason, i) => (
                   <li
                     key={i}
-                    className="text-xs font-mono text-[#ff9592] flex items-start gap-1.5"
+                    className="text-xs font-mono text-[var(--red-11)] flex items-start gap-1.5"
                   >
                     <span className="mt-0.5 shrink-0">✕</span>
                     <span>{reason}</span>
@@ -199,7 +199,7 @@ function GateRow({ gate }: { gate: ReviewGate }) {
                   <a
                     key={i}
                     href={ref.url}
-                    className="text-xs text-[#70b8ff] hover:underline font-mono"
+                    className="text-xs text-[var(--blue-11)] hover:underline font-mono"
                   >
                     {ref.label} →
                   </a>
@@ -283,7 +283,7 @@ export function ReviewGatesSection({
 
   if (error) {
     return (
-      <p className="text-sm text-[#ff9592] py-4">{error}</p>
+      <p className="text-sm text-[var(--red-11)] py-4">{error}</p>
     );
   }
 
@@ -305,13 +305,13 @@ export function ReviewGatesSection({
     <div>
       <div className="flex items-center gap-3 mb-3">
         {passed > 0 && (
-          <span className="text-xs text-[#1fd8a4]">{passed} passed</span>
+          <span className="text-xs text-[var(--green-11)]">{passed} passed</span>
         )}
         {failed > 0 && (
-          <span className="text-xs text-[#ff9592]">{failed} failed</span>
+          <span className="text-xs text-[var(--red-11)]">{failed} failed</span>
         )}
         {pending > 0 && (
-          <span className="text-xs text-[#f5e147]">{pending} pending</span>
+          <span className="text-xs text-[var(--yellow-11)]">{pending} pending</span>
         )}
       </div>
       <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] overflow-hidden">

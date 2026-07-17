@@ -24,9 +24,9 @@ import { parseGithubSlug } from "./github-slug";
 import { FailureActions } from "./failure-actions";
 
 const severityBadgeClass: Record<SeverityMeaning["level"], string> = {
-  critical: "bg-[#e5484d]/20 text-[#ff9592] border border-[#e5484d]/30",
-  high: "bg-[#f76b15]/20 text-[#ffa057] border border-[#f76b15]/30",
-  medium: "bg-[#ffe629]/20 text-[#f5d90a] border border-[#ffe629]/30",
+  critical: "bg-[var(--red-09)]/20 text-[var(--red-11)] border border-[var(--red-09)]/30",
+  high: "bg-[var(--orange-09)]/20 text-[var(--orange-11)] border border-[var(--orange-09)]/30",
+  medium: "bg-[var(--yellow-09)]/20 text-[#f5d90a] border border-[var(--yellow-09)]/30",
   low: "bg-[var(--gray-04)] text-[var(--gray-10)] border border-[var(--gray-06)]",
 };
 
@@ -91,10 +91,10 @@ function FailureDbError({ workspaceId }: { workspaceId: string }) {
   return (
     <div className="mx-auto max-w-[900px]">
       <FailureBreadcrumb workspaceId={workspaceId} />
-      <div className="rounded border border-[#e5484d]/30 bg-[#e5484d]/10 px-4 py-4 flex flex-col gap-3">
+      <div className="rounded border border-[var(--red-09)]/30 bg-[var(--red-09)]/10 px-4 py-4 flex flex-col gap-3">
         <div className="flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 text-[#ff9592] shrink-0" />
-          <span className="text-sm font-medium text-[#ff9592]">
+          <AlertTriangle className="h-4 w-4 text-[var(--red-11)] shrink-0" />
+          <span className="text-sm font-medium text-[var(--red-11)]">
             Unable to load failure details — ClickHouse unavailable
           </span>
         </div>
@@ -233,7 +233,7 @@ export default async function FailureDetailPage({
       {/* Human title + severity */}
       <div className="flex items-start justify-between gap-4 mb-2">
         <div className="flex items-center gap-2.5">
-          <AlertTriangle className="h-5 w-5 text-[#ff9592] shrink-0" />
+          <AlertTriangle className="h-5 w-5 text-[var(--red-11)] shrink-0" />
           <h1 className="text-lg font-semibold text-[var(--gray-12)] leading-tight">
             {explanation.title}
           </h1>
@@ -272,7 +272,7 @@ export default async function FailureDetailPage({
       </Section>
 
       {/* What to check */}
-      <Section icon={<ListChecks className="h-4 w-4 text-[#70b8ff]" />} title="What to check next">
+      <Section icon={<ListChecks className="h-4 w-4 text-[var(--blue-11)]" />} title="What to check next">
         <ol className="flex flex-col gap-1.5">
           {explanation.whatToCheck.map((c, i) => (
             <li key={i} className="flex gap-2 text-sm text-[var(--gray-11)] leading-relaxed">
@@ -287,7 +287,7 @@ export default async function FailureDetailPage({
 
       {/* Severity meaning */}
       <Section
-        icon={<ShieldAlert className="h-4 w-4 text-[#ffa057]" />}
+        icon={<ShieldAlert className="h-4 w-4 text-[var(--orange-11)]" />}
         title="How serious is this?"
       >
         <div className="flex items-start gap-2.5">
@@ -313,7 +313,7 @@ export default async function FailureDetailPage({
           <Field label="Run">
             <Link
               href={`/dashboard/${workspaceId}/runs/${failure.run_id}`}
-              className="font-mono text-[var(--gray-11)] hover:text-[#ffe629] transition-colors"
+              className="font-mono text-[var(--gray-11)] hover:text-[var(--yellow-09)] transition-colors"
             >
               {failure.run_id.slice(0, 12)}
             </Link>
@@ -332,7 +332,7 @@ export default async function FailureDetailPage({
       {/* Raw message + evidence — the verbatim detail, kept last for the curious */}
       <Section title="Raw error & evidence">
         <Field label="Message">
-          <p className="mt-1 font-mono text-xs text-[#ff9592] leading-relaxed whitespace-pre-wrap break-words">
+          <p className="mt-1 font-mono text-xs text-[var(--red-11)] leading-relaxed whitespace-pre-wrap break-words">
             {failure.message}
           </p>
         </Field>

@@ -113,7 +113,7 @@ export default async function ContextPackDetailPage({
       </nav>
 
       {/* Pack metadata */}
-      <div className="mb-6 rounded border border-[#6e56cf]/40 bg-[var(--gray-02)] p-4">
+      <div className="mb-6 rounded border border-[var(--purple-09)]/40 bg-[var(--gray-02)] p-4">
         <h1 className="mb-3 flex flex-wrap items-center gap-2 text-sm font-semibold text-[var(--gray-12)]">
           Context Pack
           <span className="font-mono text-[var(--gray-09)] font-normal text-xs">
@@ -286,10 +286,10 @@ export default async function ContextPackDetailPage({
           <h2 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--gray-09)]">
             <span
               className="inline-block h-2 w-2 rounded-full"
-              style={{ backgroundColor: "#1fd8a4" }}
+              style={{ backgroundColor: "var(--green-11)" }}
             />
             Included
-            <span className="rounded-sm bg-[#1a3a2e] px-1.5 py-0.5 text-[10px] text-[#1fd8a4] font-mono">
+            <span className="rounded-sm bg-[#1a3a2e] px-1.5 py-0.5 text-[10px] text-[var(--green-11)] font-mono">
               {included.length}
             </span>
           </h2>
@@ -357,7 +357,7 @@ export default async function ContextPackDetailPage({
                         </span>
                       </td>
                       <td className="px-3 py-1.5 text-right">
-                        <span className="font-mono text-[#baa7ff]">
+                        <span className="font-mono text-[var(--purple-11)]">
                           {item.score.toFixed(2)}
                         </span>
                       </td>
@@ -374,10 +374,10 @@ export default async function ContextPackDetailPage({
           <h2 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--gray-09)]">
             <span
               className="inline-block h-2 w-2 rounded-full"
-              style={{ backgroundColor: "#ff9592" }}
+              style={{ backgroundColor: "var(--red-11)" }}
             />
             Excluded
-            <span className="rounded-sm bg-[#3a1a1a] px-1.5 py-0.5 text-[10px] text-[#ff9592] font-mono">
+            <span className="rounded-sm bg-[#3a1a1a] px-1.5 py-0.5 text-[10px] text-[var(--red-11)] font-mono">
               {excluded.length}
             </span>
           </h2>

@@ -113,7 +113,7 @@ export default function RunDetailPage() {
   if (error) {
     return (
       <div className="mx-auto max-w-[1440px]">
-        <p className="text-sm text-[#ff9592] py-8">{error}</p>
+        <p className="text-sm text-[var(--red-11)] py-8">{error}</p>
       </div>
     );
   }
@@ -229,7 +229,7 @@ export default function RunDetailPage() {
             </h2>
             <a
               href={`/dashboard/${workspaceId}/review-gates?runId=${runId}`}
-              className="text-xs text-[#70b8ff] hover:underline"
+              className="text-xs text-[var(--blue-11)] hover:underline"
             >
               View all →
             </a>

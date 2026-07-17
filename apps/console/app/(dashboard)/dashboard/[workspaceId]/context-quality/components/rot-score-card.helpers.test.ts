@@ -10,22 +10,22 @@ import {
 
 describe("severityColor", () => {
   it("returns green for score = 0", () => {
-    expect(severityColor(0)).toBe("#1fd8a4");
+    expect(severityColor(0)).toBe("var(--green-11)");
   });
   it("returns green for score = 30 (boundary)", () => {
-    expect(severityColor(30)).toBe("#1fd8a4");
+    expect(severityColor(30)).toBe("var(--green-11)");
   });
   it("returns yellow for score = 31 (boundary)", () => {
-    expect(severityColor(31)).toBe("#f5e147");
+    expect(severityColor(31)).toBe("var(--yellow-11)");
   });
   it("returns yellow for score = 60 (boundary)", () => {
-    expect(severityColor(60)).toBe("#f5e147");
+    expect(severityColor(60)).toBe("var(--yellow-11)");
   });
   it("returns red for score = 61 (boundary)", () => {
-    expect(severityColor(61)).toBe("#ff9592");
+    expect(severityColor(61)).toBe("var(--red-11)");
   });
   it("returns red for score = 100", () => {
-    expect(severityColor(100)).toBe("#ff9592");
+    expect(severityColor(100)).toBe("var(--red-11)");
   });
 });
 
@@ -102,6 +102,6 @@ describe("badgeColors", () => {
     expect(mem.text).not.toBe(churn.text);
   });
   it("returns teal for hash_churn", () => {
-    expect(badgeColors("hash_churn").text).toBe("#0bd8b6");
+    expect(badgeColors("hash_churn").text).toBe("var(--teal-11)");
   });
 });

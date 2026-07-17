@@ -119,7 +119,7 @@ export function RotScoreCard({ workspaceId, repositoryId }: RotScoreCardProps) {
 
       {/* Error */}
       {!loading && error && (
-        <p className="py-4 text-center text-sm text-[#ff9592]">{error}</p>
+        <p className="py-4 text-center text-sm text-[var(--red-11)]">{error}</p>
       )}
 
       {/* Loaded state */}
@@ -189,7 +189,7 @@ export function RotScoreCard({ workspaceId, repositoryId }: RotScoreCardProps) {
                         <td className="px-3 py-1 text-xs text-[var(--gray-11)]">
                           <Link
                             href={href}
-                            className="text-[var(--blue-11,#70b8ff)] hover:underline"
+                            className="text-[var(--blue-11,var(--blue-11))] hover:underline"
                           >
                             {row.label}
                           </Link>

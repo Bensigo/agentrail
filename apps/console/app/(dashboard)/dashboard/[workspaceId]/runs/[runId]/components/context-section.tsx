@@ -65,7 +65,7 @@ function BudgetBar({
       </div>
       <div className="h-1.5 w-full rounded-full bg-[var(--gray-04)] overflow-hidden">
         <div
-          className={`h-full rounded-full ${over ? "bg-[#ff9592]" : "bg-[#70b8ff]"}`}
+          className={`h-full rounded-full ${over ? "bg-[var(--red-11)]" : "bg-[var(--blue-11)]"}`}
           style={{ width: `${pct}%` }}
         />
       </div>
@@ -185,7 +185,7 @@ export function ContextSection({ workspaceId, runId, runStatus }: ContextSection
   }
 
   if (error) {
-    return <p className="text-sm text-[#ff9592] py-4">{error}</p>;
+    return <p className="text-sm text-[var(--red-11)] py-4">{error}</p>;
   }
 
   if (packs.length === 0) {

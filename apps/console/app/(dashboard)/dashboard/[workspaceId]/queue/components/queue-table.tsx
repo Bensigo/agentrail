@@ -88,7 +88,7 @@ export function QueueTable({ workspaceId }: { workspaceId: string }) {
             onClick={() => setStateFilter(value)}
             className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
               stateFilter === value
-                ? "bg-[#ffe629] text-black border-[#ffe629]"
+                ? "bg-[var(--yellow-09)] text-black border-[var(--yellow-09)]"
                 : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
             }`}
           >
@@ -148,7 +148,7 @@ export function QueueTable({ workspaceId }: { workspaceId: string }) {
               <tr>
                 <td
                   colSpan={COLUMN_COUNT}
-                  className="px-3 py-8 text-center text-sm text-[#ff9592]"
+                  className="px-3 py-8 text-center text-sm text-[var(--red-11)]"
                 >
                   {error}
                 </td>
@@ -197,7 +197,7 @@ export function QueueTable({ workspaceId }: { workspaceId: string }) {
                     <span
                       className={`font-mono text-xs ${
                         entry.remainingBudget === 0
-                          ? "text-[#ff9592]"
+                          ? "text-[var(--red-11)]"
                           : "text-[var(--gray-11)]"
                       }`}
                       title="Remaining escalation-attempt budget (Budget Leash)"

@@ -58,7 +58,7 @@ export function ApiKeysTable({
         <div className="flex justify-end">
           <button
             onClick={() => setShowCreate(true)}
-            className="flex items-center gap-1.5 h-8 px-3 rounded bg-[#ffe629] text-black text-sm font-medium hover:bg-[#ffdc00] transition-colors"
+            className="flex items-center gap-1.5 h-8 px-3 rounded bg-[var(--yellow-09)] text-black text-sm font-medium hover:bg-[#ffdc00] transition-colors"
           >
             <Plus size={14} />
             New key
@@ -72,7 +72,7 @@ export function ApiKeysTable({
           {canManage && (
             <button
               onClick={() => setShowCreate(true)}
-              className="mt-2 text-[#70b8ff] hover:underline"
+              className="mt-2 text-[var(--blue-11)] hover:underline"
             >
               Create your first key.
             </button>
@@ -118,7 +118,7 @@ export function ApiKeysTable({
                         revoked
                       </span>
                     ) : (
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[#29a383]/20 text-[#1fd8a4] border border-[#29a383]/30">
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[var(--green-09)]/20 text-[var(--green-11)] border border-[var(--green-09)]/30">
                         active
                       </span>
                     )}
@@ -148,7 +148,7 @@ export function ApiKeysTable({
                       {!key.is_revoked && (
                         <button
                           onClick={() => setRevokeTarget(key)}
-                          className="h-7 px-2.5 rounded bg-[var(--gray-03)] border border-[var(--gray-06)] text-xs text-[#ff9592] hover:border-[#e5484d]/50 transition-colors"
+                          className="h-7 px-2.5 rounded bg-[var(--gray-03)] border border-[var(--gray-06)] text-xs text-[var(--red-11)] hover:border-[var(--red-09)]/50 transition-colors"
                         >
                           Revoke
                         </button>

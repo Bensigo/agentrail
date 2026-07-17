@@ -239,10 +239,18 @@ Grouped for issue creation (house format, one issue per bullet unless noted):
 
 ## 7. Sequencing
 
-Door → identity → cloud factory (incl. onboard executor + runtime
-verification) → alignment gate → approvals loop → landing rebuild → canon
-docs — with §4.6 repairs slotted where they block the slice, and long-lead
-items (WhatsApp verification, LoopMessage production) started immediately in
-parallel. One PR per piece; nothing marked done without live verification
-(§6). Issues for **everything** in §5 are filed up front so the backlog is
-the single source of what remains.
+**Step zero — before any agent-executed issue starts: the canon rewrite**
+(README, CONTEXT.md, TASTE.md to the locked story; useagentrail.com →
+heyjace.com sweep). Rationale: the agents executing this arc's issues read
+those files first; leaving them describing the old product would corrupt the
+arc with the exact disease it cures. (The user-facing docs/quickstart rewrite
+is the one §4.8 piece that waits — it teaches Message-Jace, so it lands with
+the landing rebuild once the door actually works.)
+
+Then: door → identity → cloud factory (incl. onboard executor + runtime
+verification) → alignment gate → approvals loop → landing rebuild +
+quickstart — with §4.6 repairs slotted where they block the slice, and
+long-lead items (WhatsApp business verification, LoopMessage production plan)
+started immediately in parallel. One PR per piece; nothing marked done
+without live verification (§6). Issues for **everything** in §5 are filed up
+front so the backlog is the single source of what remains.

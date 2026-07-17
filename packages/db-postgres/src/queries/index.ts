@@ -1801,3 +1801,17 @@ export {
   type RecordApprovalRequestInput,
   type PendingApprovalRow,
 } from "./jace_sessions.js";
+
+// Chat identities — the identity spine for every inbound chat message (spec
+// §4.2, issue #1261; see `schema/chat_identities.ts` for the table shape and
+// the WHY behind the design). Maps (platform, platform_user_id) -> at most
+// one linked user and one resolved workspace; PR ② (Jace inbound resolution)
+// and issue #1263 (link-token issuance/expiry) are this module's callers.
+export {
+  insertChatIdentity,
+  getChatIdentity,
+  bindChatIdentityWorkspace,
+  bindChatIdentityUser,
+  setChatIdentityLinkToken,
+  getChatIdentityByLinkToken,
+} from "./chat_identities.js";

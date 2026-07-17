@@ -279,3 +279,79 @@ export async function reclaimStaleChannelMessages(): Promise<number> {
   `)) as unknown as Array<{ id: string }>;
   return Array.from(rows).length;
 }
+
+// --- dead-letter read/requeue (console approvals inbox — issue #1234) ---------
+
+/** Normalized (camelCase) shape of a dead-lettered channel_inbox row. */
+export interface DeadLetterChannelMessageRow {
+  id: string;
+  channel: string;
+  conversationKey: string;
+  kind: string;
+  attempts: number;
+  lastError: string | null;
+  createdAt: Date;
+}
+
+/**
+ * List dead-lettered channel_inbox rows for a workspace, newest first — the
+ * console approvals inbox's "failed messages" view (issue #1234).
+ */
+export async function deadLettersForWorkspace(
+  workspaceId: string
+): Promise<DeadLetterChannelMessageRow[]> {
+  const rows = (await db.execute(sql`
+    SELECT id, channel, conversation_key, kind, attempts, last_error, created_at
+    FROM channel_inbox
+    WHERE workspace_id = ${workspaceId}
+      AND state = 'dead'
+    ORDER BY created_at DESC
+  `)) as unknown as Array<{
+    id: string;
+    channel: string;
+    conversation_key: string;
+    kind: string;
+    attempts: number;
+    last_error: string | null;
+    created_at: Date;
+  }>;
+
+  return Array.from(rows).map((row) => ({
+    id: row.id,
+    channel: row.channel,
+    conversationKey: row.conversation_key,
+    kind: row.kind,
+    attempts: row.attempts,
+    lastError: row.last_error,
+    createdAt: row.created_at,
+  }));
+}
+
+/**
+ * Requeue a single dead-lettered channel_inbox message: resets `attempts` to
+ * 0, clears `last_error`, and sets `state = 'queued'` so the claim query
+ * picks it up immediately.
+ *
+ * `WHERE id = ... AND workspace_id = ... AND state = 'dead'` makes this
+ * atomic and safe against misuse: it flips ONLY a row that is currently
+ * `dead` and owned by the given workspace. A row in any other state, or one
+ * that belongs to a different workspace, matches zero rows and the UPDATE is
+ * a no-op — returns `false`, row untouched. Mirrors the same
+ * guarded-UPDATE...RETURNING idempotency pattern as `resolveApproval` in
+ * `jace_sessions.ts`.
+ */
+export async function requeueDeadChannelMessage(
+  workspaceId: string,
+  id: string
+): Promise<boolean> {
+  const rows = (await db.execute(sql`
+    UPDATE channel_inbox
+    SET state = 'queued', attempts = 0, next_attempt_at = now(), last_error = null, updated_at = now()
+    WHERE id = ${id}
+      AND workspace_id = ${workspaceId}
+      AND state = 'dead'
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+
+  return Array.from(rows).length > 0;
+}

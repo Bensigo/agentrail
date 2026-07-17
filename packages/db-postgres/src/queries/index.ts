@@ -1776,11 +1776,14 @@ export {
   completeChannelMessage,
   failChannelMessage,
   reclaimStaleChannelMessages,
+  deadLettersForWorkspace,
+  requeueDeadChannelMessage,
   type InboxRetryDecision,
   type EnqueueChannelMessageInput,
   type EnqueueChannelMessageResult,
   type ClaimedChannelInboxRow,
   type ClaimNextChannelMessageOptions,
+  type DeadLetterChannelMessageRow,
 } from "./channel_inbox.js";
 
 // Jace session map + pending approvals (issue #1246, spec §4). Maps
@@ -1794,5 +1797,7 @@ export {
   recordApprovalRequest,
   findApprovalByCallbackToken,
   resolveApproval,
+  pendingApprovalsForWorkspace,
   type RecordApprovalRequestInput,
+  type PendingApprovalRow,
 } from "./jace_sessions.js";

@@ -40,9 +40,9 @@ Keep this file specific to the product. Remove anything that does not help an ag
 
 ---
 
-## Console Design Guide
+## Console Design Guide (light-first)
 
-The Agent Operations Console follows dense observability product patterns. This guide defines the exact visual system. Do not deviate without explicit approval.
+The console is the evidence room behind Jace — a tool for someone who employs an engineer, not an observability platform. It is **light-first**: light background is the default, dark is an opt-in toggle. Surfaces in the "Your engineer" zone (Home, Work, Approvals, Chat) are calm and breathe; engine-room tables (Runs, Review gates, Costs, Failures, Memory) keep density where the data demands it. Density is a tool, not the identity. This guide defines the exact visual system. Do not deviate without explicit approval.
 
 ### Typography
 
@@ -73,40 +73,40 @@ font-family: "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Conso
 
 ### Color System
 
-All colors use CSS custom properties with dark-first values (dark mode is the default for observability tools).
+All colors use CSS custom properties with **light-first values — light mode is the default; dark is the opt-in toggle**.
 
 **Gray Scale (neutral backgrounds, borders, text):**
 
-| Token | Dark Mode | Light Mode | Usage |
+| Token | Light Mode (default) | Dark Mode (toggle) | Usage |
 |-------|-----------|------------|-------|
-| --gray-00 | #000000 | #ffffff | Page background |
-| --gray-01 | #111111 | #fcfcfc | Sidebar/panel background |
-| --gray-02 | #191919 | #f9f9f9 | Card/surface background |
-| --gray-03 | #222222 | #f0f0f0 | Elevated surface |
-| --gray-04 | #2a2a2a | #e8e8e8 | Subtle border, divider |
-| --gray-05 | #313131 | #e0e0e0 | Border default |
-| --gray-06 | #3a3a3a | #d9d9d9 | Border strong |
-| --gray-07 | #484848 | #cecece | Disabled text |
-| --gray-08 | #606060 | #bbbbbb | Placeholder text |
-| --gray-09 | #6e6e6e | #8d8d8d | Muted text |
-| --gray-10 | #7b7b7b | #838383 | Secondary text |
-| --gray-11 | #b4b4b4 | #646464 | Body text |
-| --gray-12 | #eeeeee | #202020 | Primary text, headings |
-| --gray-13 | #ffffff | #0c0c0c | High-contrast text |
+| --gray-00 | #ffffff | #000000 | Page background |
+| --gray-01 | #fcfcfc | #111111 | Sidebar/panel background |
+| --gray-02 | #f9f9f9 | #191919 | Card/surface background |
+| --gray-03 | #f0f0f0 | #222222 | Elevated surface |
+| --gray-04 | #e8e8e8 | #2a2a2a | Subtle border, divider |
+| --gray-05 | #e0e0e0 | #313131 | Border default |
+| --gray-06 | #d9d9d9 | #3a3a3a | Border strong |
+| --gray-07 | #cecece | #484848 | Disabled text |
+| --gray-08 | #bbbbbb | #606060 | Placeholder text |
+| --gray-09 | #8d8d8d | #6e6e6e | Muted text |
+| --gray-10 | #838383 | #7b7b7b | Secondary text |
+| --gray-11 | #646464 | #b4b4b4 | Body text |
+| --gray-12 | #202020 | #eeeeee | Primary text, headings |
+| --gray-13 | #0c0c0c | #ffffff | High-contrast text |
 
 **Semantic Colors (status, actions, feedback):**
 
 | Scale | --09 (base) | --11 (text) | Usage |
 |-------|------------|-------------|-------|
-| Blue | #0090ff | #70b8ff (dark) / #0d74ce (light) | Links, active states, info |
-| Green | #29a383 | #1fd8a4 (dark) / #208368 (light) | Success, healthy, passed |
-| Red | #e5484d | #ff9592 (dark) / #ce2c31 (light) | Error, failed, critical |
-| Orange | #f76b15 | #ffa057 (dark) / #cc4e00 (light) | Warning, degraded, running |
-| Yellow | #ffe629 | #f5e147 (dark) / #9e6c00 (light) | Caution, stale |
-| Purple | #6e56cf | #baa7ff (dark) / #6550b9 (light) | Context, enrichment |
-| Teal | #12a594 | #0bd8b6 (dark) / #008573 (light) | Telemetry, events |
+| Blue | #0090ff | #0d74ce (light) / #70b8ff (dark) | Links, active states, info |
+| Green | #29a383 | #208368 (light) / #1fd8a4 (dark) | Success, healthy, passed |
+| Red | #e5484d | #ce2c31 (light) / #ff9592 (dark) | Error, failed, critical |
+| Orange | #f76b15 | #cc4e00 (light) / #ffa057 (dark) | Warning, degraded, running |
+| Yellow | #ffe629 | #9e6c00 (light) / #f5e147 (dark) | Caution, stale |
+| Purple | #6e56cf | #6550b9 (light) / #baa7ff (dark) | Context, enrichment |
+| Teal | #12a594 | #008573 (light) / #0bd8b6 (dark) | Telemetry, events |
 
-**Brand accent:** `#ffe629` / lemon (used for primary CTA buttons, focus rings, active indicators). On dark backgrounds use full `#ffe629`; on light backgrounds use darkened `#9e6c00` for contrast.
+**Brand accent:** amber `#9e6c00` on light backgrounds (the default) for accents and active indicators; lemon `#ffe629` is **fill-with-dark-text only** (primary CTA buttons, highlights) — never text on white. On dark surfaces (opt-in mode) full `#ffe629` works as an accent.
 
 ### Spacing
 
@@ -124,7 +124,7 @@ Use a 4px base unit. Standard spacing tokens:
 | space-12 | 48px (3rem) | Page-level spacing |
 | space-16 | 64px (4rem) | Major section breaks |
 
-**Density principle:** Observability tools are dense. Prefer `space-2` to `space-4` gaps inside tables, sidebars, and filter bars. Use `space-4` to `space-6` for card padding. Reserve `space-8`+ for page-level separation.
+**Density principle:** density follows the zone. Engine-room tables, sidebars, and filter bars stay tight (`space-2` to `space-4` gaps). "Your engineer" surfaces (Home, Work, Approvals, Chat) breathe — `space-4` to `space-6` between elements. Card padding `space-4` to `space-6`. Reserve `space-8`+ for page-level separation.
 
 ### Border Radius
 
@@ -135,11 +135,11 @@ Use a 4px base unit. Standard spacing tokens:
 | rounded-[2.5px] | 2.5px | Table cells, small UI elements |
 | rounded-full | 9999px | Avatars, status dots, pills |
 
-**No large radius.** Observability UIs use tight corners. Never use `rounded-lg` (8px) or `rounded-xl` (12px) for data-dense components.
+**No large radius on data.** Data-dense components use tight corners — never `rounded-lg` (8px) or `rounded-xl` (12px) on tables, badges, or inputs. Larger radii are acceptable only on marketing surfaces.
 
 ### Borders
 
-- Default border: `1px solid var(--gray-05)` (dark) / `var(--gray-06)` (light).
+- Default border: `1px solid var(--gray-06)` (light, default) / `var(--gray-05)` (dark toggle).
 - Subtle border: `0.5px solid var(--gray-04)`.
 - Strong/hover border: `var(--gray-08)`.
 - Dashed borders for drop targets and optional boundaries.
@@ -239,41 +239,52 @@ Use a 4px base unit. Standard spacing tokens:
 
 ### Route Architecture
 
-The console app has two top-level route groups:
+The console app's top-level route groups:
 
 ```
 apps/console/app/
-  (marketing)/         — public marketing pages (no auth required)
-    page.tsx           — landing/hero page
-    pricing/
-    docs/
-    blog/
-    changelog/
-    layout.tsx         — marketing layout (full-width, lighter, promotional)
+  (marketing)/         — public landing (no auth required)
+    page.tsx           — Jace's resume (the landing page)
+  (docs)/              — documentation site (Fumadocs)
   (dashboard)/         — authenticated console (workspace-scoped)
     dashboard/[workspaceId]/
+      work/            — the task board (/queue redirects here)
       runs/
-      context-packs/
-      failures/
       review-gates/
       costs/
-      repos/
+      failures/
       memory/
-      api-keys/
-      teams/
-    layout.tsx         — console layout (sidebar, dense, operational)
-  (auth)/              — login, signup, callback routes
+      repos/
+      connectors/
+      members/  teams/  api-keys/
+    setup/             — onboarding wizard (derived-state)
+  (auth)/              — login + callback routes
 ```
 
-**Marketing pages** are reserved for launch. They use a different visual tone from the dense console: more whitespace, confident plain copy, hero sections, real social proof. But the mood is **dark and premium** — near-black backgrounds with subtle atmospheric depth, in the spirit of cursor.com, devin.ai, and agentmail.to — not flat-light minimalism and not a gimmicky themed "world." The real product (the console) is the hero: lead with large, literal product surfaces, not abstract diagrams or metaphors. Same font stack (Inter + Berkeley Mono); lemon `#ffe629` is a single surgical accent (primary CTA, one live indicator) — never decorative glow blobs, pulsing-dot pill badges, or an uppercase-mono eyebrow on every section (those read as AI-generated). Voice stays direct, concrete, no hype.
+Arriving with the end-to-end arc: `approvals/` and `chat/` under the
+workspace, per the arc spec. Scorecard and Context Quality were removed
+deliberately — observability stays light; do not reintroduce them.
 
-**Console pages** use the dense operational observability style defined below.
+**The landing page is Jace's resume.** Light, single-column, persona-led —
+in the spirit of boardy.ai, not cursor.com's dark-premium mood. Structure:
+who I am → how I work → track record (real numbers, failures counted) → how
+we work together → **Message me** (primary CTA) with a secondary
+sign-up/sign-in button. The centerpiece demo is a real chat conversation
+with Jace — never a dashboard mockup, and never surfaces the product no
+longer has. Same font stack (Inter + Berkeley Mono); amber `#9e6c00` accent
+on light, lemon `#ffe629` as fill-with-dark-text only — never decorative
+glow blobs, pulsing-dot pill badges, or an uppercase-mono eyebrow on every
+section (those read as AI-generated). Voice stays direct, concrete, no hype.
+The page claims only what the live flow does.
+
+**Console pages** use the light-first system defined above: calm in the
+"Your engineer" zone, dense in the engine room.
 
 ### Information Architecture Principles
 
 1. **Overview first, detail on demand.** Every view starts with a filterable list/table. Detail is one click away.
 2. **Evidence over claims.** Every status, failure, or decision must link to underlying events or artifacts.
-3. **Dense but scannable.** Pack information tight, but maintain clear visual hierarchy with typography weight and color contrast.
+3. **Scannable at the zone's density.** Engine-room views pack information tight; Your-engineer views stay calm. Both keep clear hierarchy with typography weight and color contrast.
 4. **Workspace-scoped everything.** Every view operates within one workspace context. The workspace switcher is always accessible.
 5. **Time is primary axis.** Most views sort by time. Time range controls appear on every event-driven view.
 6. **No vanity metrics.** Every number must be actionable. If you can't drill into it, don't show it.

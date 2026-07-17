@@ -48,7 +48,7 @@ export default async function ActivatePage() {
               fontSize: "1rem",
               fontWeight: 500,
               background: "#24292e",
-              color: "#fff",
+              color: "var(--gray-13)",
               border: "none",
               borderRadius: "6px",
               cursor: "pointer",

@@ -28,6 +28,12 @@ import { chatIdentities } from "./chat_identities.js";
  * workspace_id gets set once a workspace exists (`bindJaceSessionWorkspace`)
  * — so the dispatcher only ever has to check this one session store. The
  * table-level CHECK below guarantees a row always has at least one anchor.
+ * Note: `chat_identity_id`'s `ON DELETE CASCADE` means deleting a chat
+ * identity cascades its jace_sessions rows too — INCLUDING already-graduated
+ * ones (chat_identity_id is never cleared on graduation, so a bound session
+ * still carries it); a future disconnect-identity flow must unbind or
+ * archive those sessions first rather than rely on the cascade. (The cascade
+ * choice itself is spec-mandated and stays.)
  *
  * `jace_approvals` records each Eve `waiting` inputRequest we surfaced to the
  * channel as approve/deny buttons. `callback_token` is a short random token the

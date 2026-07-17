@@ -378,14 +378,21 @@ describe("pinConversationWorkspace", () => {
       conversationKey: "tg-chat-77",
     });
 
-    // The extra "keep the identity link" UPDATE this function adds on top.
+    // The extra "keep the identity link" UPDATE this function adds on top —
+    // scoped to `isNull(chatIdentityId)` so a same-workspace race can't let
+    // the loser's UPDATE clobber the winner's identity link.
     const setCalls = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls;
     expect(setCalls[0]?.[0]?.chatIdentityId).toBe("chat-identity-1");
     expect(setCalls[0]?.[0]?.updatedAt).toBeInstanceOf(Date);
     const updateWhereArgs = (updateChain.where as ReturnType<typeof vi.fn>)
       .mock.calls[0]?.[0];
     expect(renderCondition(updateWhereArgs)).toEqual(
-      renderCondition(eq(jaceSessions.id, "session-fresh-1"))
+      renderCondition(
+        and(
+          eq(jaceSessions.id, "session-fresh-1"),
+          isNull(jaceSessions.chatIdentityId)
+        )
+      )
     );
   });
 });

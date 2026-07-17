@@ -401,7 +401,9 @@ export async function pinConversationWorkspace(
   await db
     .update(jaceSessions)
     .set({ chatIdentityId, updatedAt: new Date() })
-    .where(eq(jaceSessions.id, session.id));
+    .where(
+      and(eq(jaceSessions.id, session.id), isNull(jaceSessions.chatIdentityId))
+    );
 
   return { ok: true, sessionId: session.id };
 }

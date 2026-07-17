@@ -73,7 +73,20 @@ export async function getChatIdentity(
   return row ?? null;
 }
 
-/** Bind a chat identity to its resolved workspace. */
+/**
+ * Bind a chat identity to its resolved workspace. Last-write-wins: no guard
+ * against overwriting an existing binding.
+ *
+ * SECURITY: this setter, together with `bindChatIdentityUser` below, DEFINES
+ * reachability — both feed `listWorkspacesForChatIdentity`, the
+ * tenant-isolation source of truth the multi-workspace disambiguation flow
+ * (`jace_sessions.ts`) trusts without re-checking. `workspaceId` must always
+ * be server-derived — the verified link-token flow (issue #1263) or a
+ * just-created workspace (issue #1264) — never model output or a
+ * user-supplied string. Binding an attacker-chosen id here would let that
+ * identity reach, and later pin conversations into, a workspace it has no
+ * legitimate membership in.
+ */
 export async function bindChatIdentityWorkspace(
   chatIdentityId: string,
   workspaceId: string
@@ -84,7 +97,16 @@ export async function bindChatIdentityWorkspace(
     .where(eq(chatIdentities.id, chatIdentityId));
 }
 
-/** Bind a chat identity to its linked user. */
+/**
+ * Bind a chat identity to its linked user. Last-write-wins, same as
+ * `bindChatIdentityWorkspace` above.
+ *
+ * SECURITY: same contract as `bindChatIdentityWorkspace` above —
+ * `listWorkspacesForChatIdentity` follows this identity's `userId` to every
+ * workspace that user belongs to, so `userId` must always be server-derived
+ * (issue #1263 / #1264's flows), never model output or a user-supplied
+ * string.
+ */
 export async function bindChatIdentityUser(
   chatIdentityId: string,
   userId: string
@@ -111,7 +133,11 @@ export async function setChatIdentityLinkToken(
     .where(eq(chatIdentities.id, chatIdentityId));
 }
 
-/** Look up a chat identity by its active link token. */
+/**
+ * Look up a chat identity by its link token. Does NOT check
+ * `linkTokenExpiresAt` — this is a raw lookup only; expiry enforcement is
+ * issue #1263's responsibility, applied by its caller after this returns.
+ */
 export async function getChatIdentityByLinkToken(
   linkToken: string
 ): Promise<ChatIdentityRow | null> {
@@ -135,7 +161,13 @@ export interface ResolveInboundChatIdentityResult {
    * from the insert's own `.returning()`, never guessed from timestamps). */
   created: boolean;
   /** 'bound' iff the resolved identity already has a workspace_id, else
-   * 'intro' — the unknown-identity flow (spec §4.1). */
+   * 'intro' — the unknown-identity flow (spec §4.1). Describes the
+   * identity's OWN binding only, not what a conversation routes to: an
+   * identity with a linked user and workspace memberships but no own
+   * `workspace_id` is 'intro' here yet fully routable via
+   * `resolveConversationWorkspace` (jace_sessions.ts), which also checks
+   * membership-derived reachability. Callers doing conversation routing must
+   * call that function rather than branch on `disposition` alone. */
   disposition: "bound" | "intro";
 }
 

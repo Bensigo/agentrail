@@ -121,6 +121,23 @@ export async function setJaceSessionStatus(
  * second identity racing the same conversation key resolves to the session
  * the first one created (matches the workspace-anchored session's own
  * one-row-per-conversation-key invariant).
+ *
+ * CALLER CONTRACT: callers MUST call `resolveConversationWorkspace` (below)
+ * first and only reach this function on its `kind: "intro"` result. Calling
+ * this directly for a conversation that already has a workspace-anchored
+ * `jace_sessions` row does NOT fail — the partial unique index above only
+ * polices the `workspace_id IS NULL` universe, so an out-of-contract call
+ * silently FORKS the conversation: a shadow intro row is inserted beside the
+ * already-anchored row, and both live on undetected. The loud failure mode
+ * (a unique-constraint violation) only shows up later, and only if the
+ * shadow row is graduated (`bindJaceSessionWorkspace`) to the SAME workspace
+ * as the existing anchor — that UPDATE collides with
+ * `jace_sessions_conversation_unique`. Graduating the shadow row to a
+ * DIFFERENT workspace never errors at all: it silently produces two
+ * workspace-anchored sessions for one (channel, conversationKey), the exact
+ * dual-anchored ambiguity `resolveConversationWorkspace`'s `ambiguous` flag
+ * exists to detect after the fact. Resolve-first is the contract; this
+ * function is not safe to call speculatively.
  */
 export async function getOrCreateIntroJaceSession(
   chatIdentityId: string,
@@ -238,6 +255,19 @@ export type ResolveConversationWorkspaceResult =
  *  3. `single` — no pinned session, exactly 1 reachable workspace.
  *  4. `intro` — no pinned session, 0 reachable workspaces (unknown/unbound
  *     identity; the door continues the intro conversation per PR ②).
+ *
+ * SECURITY: the `pinned` path's entire security rests on (channel,
+ * conversationKey) being platform-authoritative — taken from the webhook
+ * payload's own routing fields (e.g. chat/thread id), never derived from
+ * message content or model output. `conversationKey` is the sole match key
+ * for `pinned` (deliberately, with no `chatIdentityId` filter — see point 1
+ * above); a caller-supplied or model-guessed key that happens to collide
+ * with another conversation's key rides that conversation's existing pin
+ * straight into a foreign workspace. Consequence worth calling out: in a
+ * group chat, every participant sharing the (channel, conversationKey)
+ * inherits the SAME pin once one is set, including identities that reach
+ * zero workspaces of their own — the pin belongs to the conversation, not to
+ * any one identity in it.
  */
 export async function resolveConversationWorkspace(
   input: ResolveConversationWorkspaceInput
@@ -319,6 +349,19 @@ export type PinConversationWorkspaceResult =
  *    workspace-anchored session is created (`getOrCreateJaceSession`) and
  *    `chat_identity_id` is set on it with one small UPDATE, so the identity
  *    link is kept even though this path never touches a pre-existing row.
+ *
+ * CONCURRENCY: a returned `ok: true` is NOT mutually exclusive across
+ * racing callers. Two concurrent calls for the same brand-new (channel,
+ * conversationKey) but DIFFERENT workspaces can both pass the "no existing
+ * session" branch above before either write lands (`getOrCreateJaceSession`'s
+ * own conflict target includes `workspaceId`, so two different workspace ids
+ * never collide with each other) — each call then returns `ok: true`,
+ * leaving two dual-anchored rows for the one conversation. This is the
+ * designed recovery path, not a gap left open here: the next
+ * `resolveConversationWorkspace` call surfaces exactly this outcome as
+ * `pinned` with `ambiguous: true`. Callers must treat `ok: true` as "this
+ * call's write landed," never as "this workspace is now the exclusive
+ * answer" — re-resolve rather than trust a cached pin.
  */
 export async function pinConversationWorkspace(
   input: PinConversationWorkspaceInput

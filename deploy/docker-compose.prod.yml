@@ -169,15 +169,19 @@ services:
       dockerfile: deploy/runner/Dockerfile
     restart: unless-stopped
     env_file: ./.env
-    environment:
-      RUNNER_MODEL: ${RUNNER_MODEL:-z-ai/glm-4.6}
-      AGENTRAIL_AGENT: custom
-      # ANTHROPIC_API_KEY is deliberately NOT set anywhere in this compose file
-      # — see deploy/runner/Dockerfile's header comment. Its mere presence
-      # flips agentrail/sandbox/native_runner.py:select_sandbox_runner() into
-      # Docker-sandbox mode, which needs /var/run/docker.sock. Do not add it
-      # here unless you've also uncommented the socket mount below AND built
-      # agentrail/docker/runner/Dockerfile's image on the host.
+    # No environment: overrides here (#1266) — the agent (claude), its
+    # headless --bare command, and OpenRouter's base URL are all baked as ENV
+    # directly in deploy/runner/Dockerfile, and OPENROUTER_API_KEY reaches the
+    # container via env_file above (runner-entrypoint maps it to
+    # ANTHROPIC_AUTH_TOKEN at start). See deploy/runner/README.md for the full
+    # env contract and deploy/runner/agentrail-config.hosted.json for the
+    # per-repo model routing (execute/verify/critic).
+    # ANTHROPIC_API_KEY is deliberately NOT set anywhere in this compose file
+    # — see deploy/runner/Dockerfile's header comment. Its mere presence
+    # flips agentrail/sandbox/native_runner.py:select_sandbox_runner() into
+    # Docker-sandbox mode, which needs /var/run/docker.sock. Do not add it
+    # here unless you've also uncommented the socket mount below AND built
+    # agentrail/docker/runner/Dockerfile's image on the host.
     volumes:
       # Persists /root/.agentrail/credentials.json (the `agentrail login`
       # device-flow token) across container restarts/rebuilds — see

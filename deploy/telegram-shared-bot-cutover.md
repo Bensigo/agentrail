@@ -12,6 +12,25 @@ The workspace's old `connectors` row for `telegram` (the per-workspace bot
 token stored by the setup wizard / Connectors page) is never read, written,
 or deleted by any of this — it stays in Postgres untouched.
 
+## 0. Before you cut over: Telegram approval buttons
+
+The console's webhook accepts `message`/`edited_message` only — every other
+update kind, including `callback_query` (inline-keyboard button taps), fails
+the shape check and returns `{ ok: true, ignored: true }`
+(`apps/console/app/api/v1/connectors/telegram/webhook/route.ts`). Telegram
+delivers ALL update types to whichever one URL `setWebhook` currently points
+at, so repointing it (step 2) doesn't filter anything on Telegram's side —
+it just means those taps now land on a route that silently drops them: no
+error, no retry, the tap does nothing.
+
+This matters for Eve's HITL approvals (e.g. the `create_issue` approve/deny
+buttons), which arrive as `callback_query`.
+
+**Gate:** don't cut over a workspace that depends on Telegram-button
+approvals until #1273 (Telegram approve/deny callbacks through the console
+seam) lands — or be prepared to approve via a fallback in the interim.
+Rollback (step 4) restores buttons immediately.
+
 ## 1. Set the console's shared-bot env vars
 
 Copy the exact values the sidecar already has configured for its native

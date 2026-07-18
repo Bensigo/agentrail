@@ -7,7 +7,7 @@ vi.mock("@agentrail/auth", () => ({
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
   getConnector: vi.fn(),
-  workspaceHasExecutionPath: vi.fn(),
+  getWorkspace: vi.fn(),
   hasActiveSelfHostedRunner: vi.fn(),
   listInvites: vi.fn(),
   listWorkspaceMembers: vi.fn(),
@@ -18,7 +18,7 @@ import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
   getConnector,
-  workspaceHasExecutionPath,
+  getWorkspace,
   hasActiveSelfHostedRunner,
   listInvites,
   listWorkspaceMembers,
@@ -39,7 +39,13 @@ beforeEach(() => {
   vi.mocked(auth).mockResolvedValue({ user: { id: USER } } as never);
   vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "member" } as never);
   vi.mocked(getConnector).mockResolvedValue(null);
-  vi.mocked(workspaceHasExecutionPath).mockResolvedValue(false);
+  // hostedExecution=false + no self-hosted runner = no execution path — the
+  // loader derives the disjunct locally from these two reads (see
+  // onboarding-data.ts for why it doesn't call workspaceHasExecutionPath).
+  vi.mocked(getWorkspace).mockResolvedValue({
+    id: WS,
+    hostedExecution: false,
+  } as never);
   vi.mocked(hasActiveSelfHostedRunner).mockResolvedValue(false);
   vi.mocked(listInvites).mockResolvedValue([]);
   vi.mocked(listWorkspaceMembers).mockResolvedValue([
@@ -94,7 +100,8 @@ describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
       }
       return null;
     });
-    vi.mocked(workspaceHasExecutionPath).mockResolvedValue(true);
+    // hostedExecution stays false so the assertion below proves the
+    // SELF-HOSTED leg of the disjunct drives connected on its own.
     vi.mocked(hasActiveSelfHostedRunner).mockResolvedValue(true);
     vi.mocked(listWorkspaceMembers).mockResolvedValue([
       { userId: "owner-1", name: "Owner", email: "o@x.com", role: "owner", joinedAt: new Date() },
@@ -114,10 +121,13 @@ describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
   });
 
   it("#1268: attach-runner completes for a hosted-eligible workspace with NO self-hosted runner", async () => {
-    // The exact regression this predicate closes: a runner-less (hosted)
-    // workspace must read as having an execution path, but the UI signal
-    // must stay honest that no self-hosted runner is actually polling.
-    vi.mocked(workspaceHasExecutionPath).mockResolvedValue(true);
+    // The exact regression #1268 closes: a runner-less (hosted) workspace
+    // must read as having an execution path, but the UI signal must stay
+    // honest that no self-hosted runner is actually polling.
+    vi.mocked(getWorkspace).mockResolvedValue({
+      id: WS,
+      hostedExecution: true,
+    } as never);
     vi.mocked(hasActiveSelfHostedRunner).mockResolvedValue(false);
 
     const res = await GET(req(), params());
@@ -126,8 +136,18 @@ describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
     expect(body.runner).toEqual({ connected: true, selfHosted: false });
   });
 
+  it("defensively reads no execution path when the workspace row is missing", async () => {
+    vi.mocked(getWorkspace).mockResolvedValue(null as never);
+    vi.mocked(hasActiveSelfHostedRunner).mockResolvedValue(false);
+
+    const res = await GET(req(), params());
+    const body = await res.json();
+    expect(body.steps).toContainEqual({ id: "attach-runner", status: "incomplete" });
+    expect(body.runner).toEqual({ connected: false, selfHosted: false });
+  });
+
   it("500 when the loader throws", async () => {
-    vi.mocked(workspaceHasExecutionPath).mockRejectedValue(new Error("db down"));
+    vi.mocked(getWorkspace).mockRejectedValue(new Error("db down"));
     const res = await GET(req(), params());
     expect(res.status).toBe(500);
   });

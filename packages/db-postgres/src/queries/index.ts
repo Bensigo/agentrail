@@ -1008,12 +1008,15 @@ export async function hasActiveRunner(
  * would count).
  *
  * `hasActiveRunner` itself is UNCHANGED and still kind-agnostic. Its three
- * former callers (onboard-enqueue gating in `runner/repos/route.ts` and
- * `workspaces/[workspaceId]/repos/route.ts`, plus the onboarding-steps UI read
- * in `onboarding-data.ts`) have been swapped (#1268) to
- * {@link workspaceHasExecutionPath} below, which composes THIS function with
- * `workspaces.hostedExecution` rather than narrowing to self-hosted alone —
- * see that function's own doc-comment for why.
+ * former callers were swapped off it (#1268): the two onboard-enqueue gates
+ * (`runner/repos/route.ts`, `workspaces/[workspaceId]/repos/route.ts`) now
+ * call {@link workspaceHasExecutionPath} below, which composes THIS function
+ * with `workspaces.hostedExecution` rather than narrowing to self-hosted
+ * alone — see that function's own doc-comment for why. The third
+ * (`onboarding-data.ts`, a 4-second wizard poll) needs the bare self-hosted
+ * signal too, so it calls THIS function once plus `getWorkspace` and derives
+ * the same disjunct locally rather than paying for the presence probe twice
+ * per tick.
  */
 export async function hasActiveSelfHostedRunner(
   workspaceId: string,

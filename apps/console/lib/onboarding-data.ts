@@ -1,9 +1,9 @@
 import {
   getConnector,
+  getWorkspace,
   hasActiveSelfHostedRunner,
   listInvites,
   listWorkspaceMembers,
-  workspaceHasExecutionPath,
 } from "@agentrail/db-postgres";
 import {
   deriveOnboardingSteps,
@@ -56,15 +56,25 @@ export interface OnboardingData {
 export async function loadOnboardingData(
   workspaceId: string
 ): Promise<OnboardingData> {
-  const [githubConnector, telegramConnector, pendingInvites, members, hasExecutionPath, selfHostedActive] =
+  const [githubConnector, telegramConnector, pendingInvites, members, workspace, selfHostedActive] =
     await Promise.all([
       getConnector(workspaceId, "github"),
       getConnector(workspaceId, "telegram"),
       listInvites(workspaceId), // pending, unexpired only
       listWorkspaceMembers(workspaceId),
-      workspaceHasExecutionPath(workspaceId),
+      getWorkspace(workspaceId),
       hasActiveSelfHostedRunner(workspaceId),
     ]);
+
+  // Same disjunct as `workspaceHasExecutionPath` (the named onboard-enqueue
+  // gate the connect-time routes use — see its doc-comment in
+  // packages/db-postgres/src/queries/index.ts), derived LOCALLY here instead
+  // of calling it: this loader also needs the bare `selfHosted` signal for
+  // honest wizard copy, and the predicate internally runs the same two reads
+  // — calling both on the wizard's 4-second poll loop would query
+  // hasActiveSelfHostedRunner twice per tick for no reason. Keep this line in
+  // lockstep with workspaceHasExecutionPath if that predicate ever changes.
+  const hasExecutionPath = Boolean(workspace?.hostedExecution) || selfHostedActive;
 
   const repos = githubConnector?.config.repos ?? [];
   const webhookSecret = githubConnector?.config.webhookSecret ?? null;

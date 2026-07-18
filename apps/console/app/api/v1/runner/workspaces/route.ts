@@ -10,8 +10,10 @@ import {
 import { requireBearer } from "../../../../../lib/bearer-auth";
 
 const NAME_MAX = 80;
-// Appended on a slug collision retry: 3 random bytes -> 6 hex chars. Short,
-// but this only ever has to dodge ONE prior collision on the same base slug.
+// Random hex size: 3 bytes -> 6 hex chars. Used both to break a slug
+// collision on retry, and as the random part of a generated fallback slug
+// (see slugifyWithFallback) when a name has no Latin/digit characters to
+// slugify. Short, but each usage only ever has to dodge one prior collision.
 const SLUG_SUFFIX_BYTES = 3;
 
 const ALREADY_ATTACHED_MESSAGE =
@@ -45,6 +47,20 @@ function slugify(name: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * A name written entirely in non-Latin script (Chinese, Arabic, Cyrillic,
+ * ...) or in punctuation/emoji strips to "" under `slugify` above — that is
+ * a fallback, not a rejection: non-Latin names are first-class, and the
+ * slug is only an internal handle, never shown as the name (the display
+ * `name` itself carries the meaning, unchanged).
+ */
+function slugifyWithFallback(name: string): string {
+  const slug = slugify(name);
+  return slug.length > 0
+    ? slug
+    : `workspace-${randomBytes(SLUG_SUFFIX_BYTES).toString("hex")}`;
 }
 
 /**
@@ -99,7 +115,12 @@ async function createWorkspaceWithSlugRetry(input: {
     if (!isUniqueViolation(err)) throw err;
   }
 
-  const retrySlug = `${baseSlug}-${randomBytes(SLUG_SUFFIX_BYTES).toString("hex")}`;
+  // Guarded, not just interpolated: baseSlug is expected to already be
+  // non-empty (callers pass slugifyWithFallback's output), but if it were
+  // ever empty this still avoids composing a leading-hyphen slug.
+  const retrySuffix = randomBytes(SLUG_SUFFIX_BYTES).toString("hex");
+  const retrySlug =
+    baseSlug.length > 0 ? `${baseSlug}-${retrySuffix}` : `workspace-${retrySuffix}`;
   try {
     const workspace = await createWorkspaceForIdentity({ identity, name, slug: retrySlug });
     return { ok: true, workspace };
@@ -235,7 +256,7 @@ export async function POST(request: NextRequest) {
   const created = await createWorkspaceWithSlugRetry({
     identity,
     name,
-    baseSlug: slugify(name),
+    baseSlug: slugifyWithFallback(name),
   });
   if (!created.ok) {
     return NextResponse.json({ error: SLUG_EXHAUSTED_MESSAGE }, { status: 409 });

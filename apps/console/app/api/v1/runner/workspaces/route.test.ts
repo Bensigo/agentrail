@@ -357,6 +357,49 @@ describe("POST /api/v1/runner/workspaces", () => {
     expect(secondSlug).not.toBe(firstSlug);
   });
 
+  it("falls back to a generated 'workspace-<hex>' slug when a non-Latin name slugifies to empty (Chinese)", async () => {
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(INTRO_SESSION as never);
+    vi.mocked(getChatIdentityById).mockResolvedValue(OWNER_ELECT_IDENTITY as never);
+    vi.mocked(createWorkspaceOwnerElect).mockResolvedValue(MOCK_WORKSPACE as never);
+
+    const res = await POST(req({ eveSessionId: "eve-session-1", name: "你好世界" }));
+
+    expect(res.status).toBe(201);
+    const call = vi.mocked(createWorkspaceOwnerElect).mock.calls[0]![0];
+    expect(call.slug).toMatch(/^workspace-[0-9a-f]{6}$/);
+    expect(call.name).toBe("你好世界");
+  });
+
+  it("falls back to a generated slug when a punctuation-only name slugifies to empty", async () => {
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(INTRO_SESSION as never);
+    vi.mocked(getChatIdentityById).mockResolvedValue(OWNER_ELECT_IDENTITY as never);
+    vi.mocked(createWorkspaceOwnerElect).mockResolvedValue(MOCK_WORKSPACE as never);
+
+    const res = await POST(req({ eveSessionId: "eve-session-1", name: "!!! ??? ---" }));
+
+    expect(res.status).toBe(201);
+    const call = vi.mocked(createWorkspaceOwnerElect).mock.calls[0]![0];
+    expect(call.slug).toMatch(/^workspace-[0-9a-f]{6}$/);
+    expect(call.name).toBe("!!! ??? ---");
+  });
+
+  it("two different non-Latin names both succeed with different fallback slugs, never a 409", async () => {
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(INTRO_SESSION as never);
+    vi.mocked(getChatIdentityById).mockResolvedValue(OWNER_ELECT_IDENTITY as never);
+    vi.mocked(createWorkspaceOwnerElect).mockResolvedValue(MOCK_WORKSPACE as never);
+
+    const res1 = await POST(req({ eveSessionId: "eve-session-1", name: "你好世界" }));
+    const res2 = await POST(req({ eveSessionId: "eve-session-1", name: "Здравствуй" }));
+
+    expect(res1.status).toBe(201);
+    expect(res2.status).toBe(201);
+    const slug1 = vi.mocked(createWorkspaceOwnerElect).mock.calls[0]![0].slug;
+    const slug2 = vi.mocked(createWorkspaceOwnerElect).mock.calls[1]![0].slug;
+    expect(slug1).toMatch(/^workspace-[0-9a-f]{6}$/);
+    expect(slug2).toMatch(/^workspace-[0-9a-f]{6}$/);
+    expect(slug1).not.toBe(slug2);
+  });
+
   it("also retries the slug on the user-bound (createWorkspace) path", async () => {
     vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(INTRO_SESSION as never);
     vi.mocked(getChatIdentityById).mockResolvedValue(USER_BOUND_IDENTITY as never);

@@ -229,6 +229,22 @@ test("on 409 no-workspace, surfaces the console's own message verbatim — no re
   assert.equal(result, "this conversation has no workspace yet — create one first");
 });
 
+test("on 409, a message that merely contains 'already exists' but doesn't end with the route's exact name-taken tail does NOT get the retry nudge — verbatim only", async () => {
+  const transport = fakeTransport(() => ({
+    status: 409,
+    json: async () => ({ error: "a repo named widgets already exists" }),
+  }));
+
+  const result = await runCreateRepo({
+    eveSessionId: "eve-session-1",
+    name: "widgets",
+    env: ENV,
+    transport,
+  });
+
+  assert.equal(result, "a repo named widgets already exists");
+});
+
 test("on 409 no-token, surfaces the console's own message verbatim — no retry nudge appended", async () => {
   const transport = fakeTransport(() => ({
     status: 409,

@@ -18,6 +18,7 @@ from agentrail.run.artifacts import (
     write_phase_metadata,
     write_phase_verdict,
     write_phase_budget_marker,
+    write_run_refusal_marker,
 )
 from agentrail.run.verifier import parse_verdict
 
@@ -512,6 +513,125 @@ class WritePhaseBudgetMarkerTests(unittest.TestCase):
         path.write_text("not valid json{")
         write_phase_budget_marker(self.run_dir, "execute", spent=1.50, ceiling=1.00)
         self.assertEqual(path.read_text(), "not valid json{")
+
+
+class WriteRunRefusalMarkerTests(unittest.TestCase):
+    """write_run_refusal_marker (#1267 PR③): a hosted run that refuses to
+    start at #1270's startup assert exits before finalize_objective_gate ever
+    runs, so its run.json needs its own top-level write recording WHY —
+    distinct from write_phase_budget_marker, which is best-effort onto a
+    PHASE's status.json; this one merges onto the RUN-level run.json, which is
+    guaranteed to already exist (write_run_metadata already wrote it earlier
+    in the same pipeline run), so it is NOT best-effort."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "run.json"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _seed_run_metadata(self, **overrides) -> None:
+        defaults = dict(
+            started_at="2026-07-18T12:00:00Z",
+            issue=42,
+            agent="claude",
+            command="claude -p",
+            prompt_file="/tmp/prompt.md",
+            resolved_skills_file="/tmp/skills.json",
+            resolved_skills=[],
+            max_execution_attempts=5,
+            context_pack_file=None,
+            context_retrieval={},
+        )
+        defaults.update(overrides)
+        write_run_metadata(self.path, **defaults)
+
+    def test_writes_refusal_object_with_kind_status_message(self) -> None:
+        self._seed_run_metadata()
+        write_run_refusal_marker(
+            self.path,
+            kind="independent_review",
+            status="skipped_no_distinct_model",
+            message="FATAL: hosted run refused",
+            independent_review_value="skipped:no_distinct_model",
+        )
+        data = _read(self.path)
+        self.assertEqual(
+            data["refusal"],
+            {
+                "kind": "independent_review",
+                "status": "skipped_no_distinct_model",
+                "message": "FATAL: hosted run refused",
+            },
+        )
+
+    def test_writes_independent_review_field_alongside_refusal(self) -> None:
+        self._seed_run_metadata()
+        write_run_refusal_marker(
+            self.path,
+            kind="independent_review",
+            status="skipped_layer_off",
+            message="FATAL: ...",
+            independent_review_value="skipped:layer_off",
+        )
+        data = _read(self.path)
+        self.assertEqual(data["independentReview"], "skipped:layer_off")
+
+    def test_preserves_fields_written_by_write_run_metadata(self) -> None:
+        """The pre-refusal shape (startedAt, agent, promptFile, ...) survives
+        untouched — this is a merge, not a wholesale rewrite."""
+        self._seed_run_metadata(agent="codex", issue=99)
+        write_run_refusal_marker(
+            self.path,
+            kind="independent_review",
+            status="skipped_explicit_command",
+            message="FATAL: ...",
+            independent_review_value="skipped:explicit_command",
+        )
+        data = _read(self.path)
+        self.assertEqual(data["agent"], "codex")
+        self.assertEqual(data["targetIssue"], 99)
+        self.assertEqual(data["startedAt"], "2026-07-18T12:00:00Z")
+
+    def test_second_call_overwrites_the_first(self) -> None:
+        self._seed_run_metadata()
+        write_run_refusal_marker(
+            self.path, kind="independent_review", status="skipped_layer_off",
+            message="first", independent_review_value="skipped:layer_off",
+        )
+        write_run_refusal_marker(
+            self.path, kind="independent_review", status="skipped_no_distinct_model",
+            message="second", independent_review_value="skipped:no_distinct_model",
+        )
+        data = _read(self.path)
+        self.assertEqual(data["refusal"]["message"], "second")
+        self.assertEqual(data["independentReview"], "skipped:no_distinct_model")
+
+    def test_missing_run_json_creates_a_fresh_one(self) -> None:
+        """Mirrors finalize_objective_gate's own forgiving read: a run.json
+        that does not exist YET is treated as {} and written fresh (the real
+        call site always has one already, from write_run_metadata, but the
+        helper itself is not stricter than its sibling top-level writer)."""
+        ghost = Path(self._tmp.name) / "nested" / "run.json"
+        write_run_refusal_marker(
+            ghost, kind="independent_review", status="skipped_layer_off",
+            message="x", independent_review_value="skipped:layer_off",
+        )
+        data = _read(ghost)
+        self.assertEqual(data["refusal"]["status"], "skipped_layer_off")
+
+    def test_corrupt_run_json_raises_rather_than_silently_no_op(self) -> None:
+        """Unlike write_phase_budget_marker (best-effort, swallows a corrupt
+        status.json), a corrupt run.json here is a genuine bug — this must
+        NOT swallow the error."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text("not valid json{")
+        with self.assertRaises(Exception):
+            write_run_refusal_marker(
+                self.path, kind="independent_review", status="skipped_layer_off",
+                message="x", independent_review_value="skipped:layer_off",
+            )
 
 
 if __name__ == "__main__":

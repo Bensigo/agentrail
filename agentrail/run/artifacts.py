@@ -66,6 +66,41 @@ def update_run_metadata_attempts(
     write_json(path, data)
 
 
+def write_run_refusal_marker(
+    path: Path,
+    *,
+    kind: str,
+    status: str,
+    message: str,
+    independent_review_value: str,
+) -> None:
+    """Record a startup refusal directly into the top-level run.json (#1267 PR③).
+
+    A hosted run that refuses to start (e.g. no Independent Reviewer
+    configured, #1270) exits BEFORE ``finalize_objective_gate`` ever runs, so
+    its run.json would otherwise carry only the pre-refusal shape written by
+    :func:`write_run_metadata` — no ``objectiveGate``, no ``independentReview``,
+    nothing that says why. This merges in a top-level ``refusal`` object
+    (``{"kind", "status", "message"}``) PLUS the same ``independentReview``
+    value the run would have gotten at finalize (the caller computes it via
+    ``independent_review_metadata_value`` and passes it through — this module
+    must not import from ``agentrail.run.pipeline``, which imports this module,
+    so the mapping itself stays in the caller).
+
+    Unlike :func:`write_phase_budget_marker` (best-effort, phase-level
+    status.json that may not exist yet), run.json is GUARANTEED to already
+    exist at the refusal call site (written by ``write_run_metadata`` earlier
+    in the same pipeline run) — a read/write failure here is a genuine bug,
+    not a race, so this does not swallow exceptions (mirrors
+    ``finalize_objective_gate`` / ``update_run_metadata_attempts``, the other
+    top-level run.json writers, which are likewise unguarded).
+    """
+    data = read_json(path) if path.exists() else {}
+    data["refusal"] = {"kind": kind, "status": status, "message": message}
+    data["independentReview"] = independent_review_value
+    write_json(path, data)
+
+
 def write_phase_status(
     path: Path,
     *,

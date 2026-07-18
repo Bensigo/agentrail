@@ -294,6 +294,174 @@ class HostedActiveProceeds(unittest.TestCase):
             self.assertEqual(data["independentReview"], "active")
 
 
+class HostedRefusalPersistsAsRefusalNotFakeGateFailure(unittest.TestCase):
+    """#1267 PR③: today a hosted refusal leaves a run.json that exists but is
+    permanently unfinalized (no objectiveGate key), so native_runner.py's
+    ``_result_from_run_json`` folded it into an ordinary
+    ``status="red", gate_reason="agentrail run exited 1"`` — indistinguishable
+    from a real objective-gate failure, and the queue retried it up to the
+    full budget with pointless tier escalation before a human ever heard.
+
+    This records the refusal as its own first-class, greppable fact — a
+    ``refusal`` object in run.json PLUS a ``hosted_refusal`` failure-telemetry
+    push — while leaving the exit code and stderr message BYTE-IDENTICAL to
+    #1270's original behavior (regression: see
+    ``HostedNoDistinctModelRefusesToStart`` above, which this does not alter).
+    """
+
+    def test_writes_refusal_marker_with_kind_status_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            stub = _stub_run_with_timeout(0)
+
+            with patch("agentrail.run.pipeline.run_with_timeout", stub), \
+                 patch("agentrail.run.pipeline.push_failure_event"), \
+                 patch.dict(os.environ, {"AGENTRAIL_HOSTED": "1"}):
+                run_issue(
+                    target, 42,
+                    agent="claude", command="claude -p",
+                    repo_dir=target,
+                    log_dir=Path(tmp) / "runs",
+                    independent_review_status="skipped_no_distinct_model",
+                )
+
+            expected_message = pipeline._independent_review_fatal_message(
+                "claude", "skipped_no_distinct_model"
+            )
+            data = _read_run_json(tmp)
+            self.assertEqual(
+                data["refusal"],
+                {
+                    "kind": "independent_review",
+                    "status": "skipped_no_distinct_model",
+                    "message": expected_message,
+                },
+            )
+            # The same field finalize_objective_gate would have set — recorded
+            # even though finalize_objective_gate itself never runs.
+            self.assertEqual(data["independentReview"], "skipped:no_distinct_model")
+
+    def test_pushes_hosted_refusal_failure_event_with_startup_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            stub = _stub_run_with_timeout(0)
+
+            with patch("agentrail.run.pipeline.run_with_timeout", stub), \
+                 patch("agentrail.run.pipeline.push_failure_event") as mock_push, \
+                 patch.dict(os.environ, {"AGENTRAIL_HOSTED": "1"}):
+                run_issue(
+                    target, 42,
+                    agent="claude", command="claude -p",
+                    repo_dir=target,
+                    log_dir=Path(tmp) / "runs",
+                    independent_review_status="skipped_layer_off",
+                )
+
+            expected_message = pipeline._independent_review_fatal_message(
+                "claude", "skipped_layer_off"
+            )
+            mock_push.assert_called_once()
+            args = mock_push.call_args.args
+            self.assertEqual(args[2], "hosted_refusal")
+            self.assertEqual(args[3], "startup")
+            self.assertEqual(args[4], expected_message)
+
+    def test_a_broken_failure_push_never_blocks_the_refusal_exit(self) -> None:
+        """push_failure_event is non-fatal by contract (every other call site
+        in this module treats it the same way) — an unexpected raise out of
+        the (already-non-raising) seam must still exit 1, not crash."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            stub = _stub_run_with_timeout(0)
+            err = io.StringIO()
+
+            with patch("agentrail.run.pipeline.run_with_timeout", stub), \
+                 patch("agentrail.run.pipeline.push_failure_event",
+                       side_effect=RuntimeError("network is down")), \
+                 patch.dict(os.environ, {"AGENTRAIL_HOSTED": "1"}), \
+                 redirect_stderr(err):
+                rc = run_issue(
+                    target, 42,
+                    agent="claude", command="claude -p",
+                    repo_dir=target,
+                    log_dir=Path(tmp) / "runs",
+                    independent_review_status="skipped_no_distinct_model",
+                )
+
+            self.assertEqual(rc, 1)
+            self.assertIn("FATAL", err.getvalue())
+
+    def test_exit_code_and_stderr_byte_identical_to_pre_pr3_behavior(self) -> None:
+        """Regression: #1267 PR③ adds a run.json write + a telemetry push, but
+        the OBSERVABLE process contract (exit code, stderr text) is exactly
+        what #1270 already shipped — the runner's caller sees no difference
+        except for what now lives in run.json."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            stub = _stub_run_with_timeout(0)
+            err = io.StringIO()
+
+            with patch("agentrail.run.pipeline.run_with_timeout", stub), \
+                 patch("agentrail.run.pipeline.push_failure_event"), \
+                 patch.dict(os.environ, {"AGENTRAIL_HOSTED": "1"}), \
+                 redirect_stderr(err):
+                rc = run_issue(
+                    target, 42,
+                    agent="claude", command="claude -p",
+                    repo_dir=target,
+                    log_dir=Path(tmp) / "runs",
+                    independent_review_status="skipped_no_distinct_model",
+                )
+
+            self.assertEqual(rc, 1)
+            expected_message = pipeline._independent_review_fatal_message(
+                "claude", "skipped_no_distinct_model"
+            )
+            self.assertEqual(err.getvalue(), expected_message + "\n")
+            self.assertEqual(len(stub.calls), 0, "no phase should have run")
+
+
+class LocalSkipDoesNotWriteARefusalMarker(unittest.TestCase):
+    """Regression: the LOCAL (non-hosted) warning path is untouched by PR③ —
+    it never writes a ``refusal`` key (that vocabulary is reserved for the
+    hosted fatal-refusal path); ``independentReview`` still lands only at
+    finalization, exactly as #1270 shipped it."""
+
+    def test_local_skip_run_json_has_no_refusal_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            stub = _stub_run_with_timeout(0, sentinel=target / "impl_done")
+
+            with patch("agentrail.run.pipeline.run_with_timeout", stub), \
+                 patch("agentrail.run.pipeline.capture_usage", return_value=MagicMock()), \
+                 patch("agentrail.run.pipeline.cost_usd", return_value=0.0), \
+                 patch("agentrail.run.pipeline.push_failure_event") as mock_push, \
+                 patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("AGENTRAIL_HOSTED", None)
+                rc = run_issue(
+                    target, 42,
+                    agent="claude", command="claude -p",
+                    repo_dir=target,
+                    log_dir=Path(tmp) / "runs",
+                    independent_review_status="skipped_no_distinct_model",
+                )
+
+            self.assertEqual(rc, 0)
+            data = _read_run_json(tmp)
+            self.assertNotIn("refusal", data)
+            self.assertEqual(data["independentReview"], "skipped:no_distinct_model")
+            # No hosted_refusal push on the local path — the whole branch this
+            # PR touches never fires when is_hosted_run() is False.
+            for call in mock_push.call_args_list:
+                self.assertNotEqual(call.args[2] if len(call.args) > 2 else None,
+                                     "hosted_refusal")
+
+
 class LocalSkipWarnsAndRecords(unittest.TestCase):
     """AC2: a local (non-hosted) single-model run is NOT blocked — it prints
     the loud warning and still finishes, with the reason recorded."""

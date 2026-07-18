@@ -23,10 +23,13 @@
 // pattern this mirrors, and agent/lib/create_repo.core.mjs's module comment
 // for the full resolution + failure-handling contract).
 //
-// The description below is written for BOTH readers at the approval gate: a
-// human sees the tool name, this description, and the model's exact input
-// (name + private) together before approving — so it says plainly what will
-// happen, not just what the model needs to know to call it correctly.
+// The description below documents intent for CODE readers, not a promise
+// about what the approving human sees: Eve's stock HITL renders only
+// "Approve tool call: create_repo" + Yes/No on Telegram (no input, no
+// description at all), and adds just the raw input JSON on Slack — neither
+// surface renders this description. Until #1273 enriches approval
+// rendering, the LIVE safety mechanism is the mandated pre-call confirmation
+// in chat (instructions.md: confirm the exact name first).
 
 import { defineTool } from "eve/tools";
 import { z } from "zod";

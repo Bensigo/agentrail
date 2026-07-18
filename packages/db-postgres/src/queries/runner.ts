@@ -6,6 +6,7 @@ import { queueEntries } from "../schema/queue_entries.js";
 import { connectors } from "../schema/connectors.js";
 import type { ConnectorConfig } from "../schema/connectors.js";
 import { apiKeys } from "../schema/api_keys.js";
+import type { ApiKeyKind } from "../schema/api_keys.js";
 import { runs } from "../schema/runs.js";
 import { repositories } from "../schema/repositories.js";
 import { unparkDependents } from "./github_intake.js";
@@ -21,11 +22,19 @@ import { unparkDependents } from "./github_intake.js";
  * client exactly once — only the sha256 hash is stored. This mirrors the
  * console's session-authenticated key route so the runner token is an ordinary
  * api_key that `requireBearer` validates for free.
+ *
+ * `kind` (#1267 PR ①) defaults to `'self_hosted'` — every pre-existing caller
+ * (the device-flow exchange below) stays byte-stable. The hosted fleet's sync
+ * endpoint is the only caller that passes `kind: 'fleet'` explicitly. A
+ * concurrent second `'fleet'` mint for the SAME workspace violates
+ * `api_keys_one_active_fleet_key_idx` (migration 0033) — the caller must
+ * catch that unique-violation itself; this function does not.
  */
 export async function mintApiKey(data: {
   workspaceId: string;
   teamId?: string | null;
   name: string;
+  kind?: ApiKeyKind;
 }): Promise<{ id: string; rawKey: string; keyPrefix: string }> {
   const raw = randomBytes(32).toString("hex");
   const rawKey = `ar_${raw}`;
@@ -40,6 +49,7 @@ export async function mintApiKey(data: {
       name: data.name,
       keyPrefix,
       keyHash,
+      kind: data.kind ?? "self_hosted",
     })
     .returning();
   return { id: rows[0]!.id, rawKey, keyPrefix };

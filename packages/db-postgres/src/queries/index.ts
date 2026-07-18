@@ -998,6 +998,94 @@ export async function hasActiveRunner(
   return rows.length > 0;
 }
 
+/**
+ * Same presence heuristic as {@link hasActiveRunner} above, narrowed to
+ * `kind = 'self_hosted'` (#1267 PR ①): a non-revoked SELF-HOSTED key whose
+ * `last_used_at` is within `windowMs`. This is the signal the runner claim
+ * route's fleet-precedence guard uses — a `kind: 'fleet'` bearer backs off a
+ * workspace with a live self-hosted runner, and must not be fooled by ITS OWN
+ * `last_used_at` touches (which `hasActiveRunner` above, being kind-agnostic,
+ * would count).
+ *
+ * `hasActiveRunner` itself is UNCHANGED and still kind-agnostic — its existing
+ * callers (onboard-enqueue gating in `runner/repos/route.ts` and
+ * `workspaces/[workspaceId]/repos/route.ts`, plus the onboarding-steps UI read
+ * in `onboarding-data.ts`) keep counting either kind as "a runner is here".
+ * Narrowing THOSE call sites to self-hosted-only is #1268's job, not this
+ * PR's — noted here rather than silently done.
+ */
+export async function hasActiveSelfHostedRunner(
+  workspaceId: string,
+  windowMs = 60 * 60 * 1000,
+): Promise<boolean> {
+  const since = new Date(Date.now() - windowMs);
+  const rows = await db
+    .select({ id: apiKeys.id })
+    .from(apiKeys)
+    .where(
+      and(
+        eq(apiKeys.workspaceId, workspaceId),
+        eq(apiKeys.kind, "self_hosted"),
+        isNull(apiKeys.revokedAt),
+        gte(apiKeys.lastUsedAt, since),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+export interface FleetProvisionStateRow {
+  workspaceId: string;
+  slug: string;
+  hostedExecution: boolean;
+  /** True when a live (non-revoked) `kind: 'fleet'` api_key already exists. */
+  hasActiveFleetKey: boolean;
+  /** The active fleet key's id, or null when it has none (mint) or is
+   * self-hosted-only (revoke has nothing to do). */
+  fleetKeyId: string | null;
+}
+
+/**
+ * One row per workspace, describing exactly what the hosted fleet sync
+ * endpoint (#1267 PR ①, `POST /api/v1/fleet/workspace-tokens/sync`) needs to
+ * decide whether to mint, leave alone, or revoke that workspace's `kind:
+ * 'fleet'` api_key:
+ *   - hostedExecution=true,  hasActiveFleetKey=false -> mint
+ *   - hostedExecution=true,  hasActiveFleetKey=true  -> already active, no-op
+ *   - hostedExecution=false, hasActiveFleetKey=true   -> revoke
+ *   - hostedExecution=false, hasActiveFleetKey=false  -> nothing to do
+ *
+ * The LEFT JOIN is safe against fan-out: `api_keys_one_active_fleet_key_idx`
+ * (migration 0033) guarantees at most one non-revoked `kind='fleet'` row per
+ * workspace, so this never returns more than one row per workspace.
+ */
+export async function listFleetProvisionState(): Promise<FleetProvisionStateRow[]> {
+  const rows = await db
+    .select({
+      workspaceId: workspaces.id,
+      slug: workspaces.slug,
+      hostedExecution: workspaces.hostedExecution,
+      fleetKeyId: apiKeys.id,
+    })
+    .from(workspaces)
+    .leftJoin(
+      apiKeys,
+      and(
+        eq(apiKeys.workspaceId, workspaces.id),
+        eq(apiKeys.kind, "fleet"),
+        isNull(apiKeys.revokedAt),
+      ),
+    );
+
+  return rows.map((r) => ({
+    workspaceId: r.workspaceId,
+    slug: r.slug,
+    hostedExecution: r.hostedExecution,
+    hasActiveFleetKey: r.fleetKeyId != null,
+    fleetKeyId: r.fleetKeyId ?? null,
+  }));
+}
+
 export async function getRepository(workspaceId: string, repositoryId: string) {
   const rows = await db
     .select()

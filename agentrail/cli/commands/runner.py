@@ -74,6 +74,10 @@ def _make_execute(creds):
         # `git clone`/`git push`/`gh pr create`. NOTE: OAuth tokens issued at
         # login can expire; there is no refresh here (documented limitation) —
         # an expired token just surfaces as a normal git/gh auth failure.
+        # NOTE: the onboard path above deliberately does NOT get this local
+        # GIT_TOKEN fallback — claim-token only, to prevent cross-workspace
+        # token bleed on the shared fleet process; see the clone call site in
+        # agentrail/runner/onboard.py (run_onboard) for the full rationale.
         if item.github_token:
             run_env["GIT_TOKEN"] = item.github_token
         kwargs = dict(

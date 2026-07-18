@@ -637,6 +637,21 @@ def run_onboard(
             # unconditionally, same as issue-kind items) — threaded straight
             # through rather than via env, since clone_fn is plain Python
             # here, not a shelled-out contract (#1268).
+            #
+            # DELIBERATE DIVERGENCE from the issue path's GIT_TOKEN semantics
+            # (agentrail/cli/commands/runner.py, _make_execute): the issue
+            # path falls back to a locally configured GIT_TOKEN env var when
+            # the claim carries no token. Onboard uses ONLY the claim's
+            # item.github_token, with NO process-env fallback — on the hosted
+            # fleet, one shared process serves MANY workspaces, so reading
+            # process-wide os.environ["GIT_TOKEN"] here would risk cloning
+            # workspace A's repo with workspace B's (or the operator's own)
+            # credentials: cross-workspace token bleed. Plain consequence: a
+            # self-hosted operator with a local PAT but no linked GitHub
+            # owner gets an UNAUTHENTICATED onboard clone (private-repo
+            # onboard fails for them until they link a GitHub owner), which
+            # is the accepted trade — correctness of tenant isolation over
+            # that convenience.
             clone_fn(item.repo_url, item.ref or "main", str(repo_dir), token=item.github_token)
         except Exception as exc:  # noqa: BLE001 - clone failure is a run error
             # Defense in depth: _clone (the default clone_fn) already redacts

@@ -232,6 +232,10 @@ describe("dispatchQueuedChannelMessages — 'intro' kind", () => {
             },
           },
         }),
+        // Fix 2 (reviewer Important #1): every hosted-inbound fetch now
+        // carries a bounded AbortSignal — see the "sidecar timeout" describe
+        // below for the dedicated timeout/abort coverage.
+        signal: expect.any(AbortSignal),
       },
     );
 
@@ -356,6 +360,51 @@ describe("dispatchQueuedChannelMessages — sidecar failures", () => {
     expect(mockFail).toHaveBeenCalledWith("row-1", expect.stringContaining("ECONNREFUSED"));
     expect(mockComplete).not.toHaveBeenCalled();
     expect(result).toEqual({ processed: 0, failed: 1 });
+  });
+});
+
+describe("dispatchQueuedChannelMessages — sidecar timeout (reviewer Important #1)", () => {
+  it("wires a bounded AbortSignal onto the hosted-inbound fetch call", async () => {
+    mockClaim.mockResolvedValueOnce(row()).mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-intro-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    const init = mockFetch.mock.calls[0]?.[1] as RequestInit;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("aborts a hanging fetch after the bounded timeout and fails the row (never wedges the drain)", async () => {
+    vi.useFakeTimers();
+    try {
+      mockClaim.mockResolvedValueOnce(row()).mockResolvedValueOnce(null);
+      mockResolve.mockResolvedValue({ kind: "intro" } as never);
+      mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-intro-1" } as never);
+      // A faithful stand-in for real fetch's own abort contract: the promise
+      // never settles on its own, only when the wired signal fires.
+      mockFetch.mockImplementation((_url: unknown, init?: RequestInit) => {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          });
+        });
+      });
+
+      const pending = dispatchQueuedChannelMessages();
+      await vi.advanceTimersByTimeAsync(60_000);
+      const result = await pending;
+
+      expect(mockFail).toHaveBeenCalledWith(
+        "row-1",
+        expect.stringContaining("hosted-inbound unreachable"),
+      );
+      expect(mockComplete).not.toHaveBeenCalled();
+      expect(mockBindEveSession).not.toHaveBeenCalled();
+      expect(result).toEqual({ processed: 0, failed: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

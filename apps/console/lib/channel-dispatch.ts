@@ -47,6 +47,26 @@ const EVE_HOST = process.env["EVE_HOST"] || "http://127.0.0.1:2000";
 const HOSTED_INBOUND_URL =
   process.env["JACE_HOSTED_INBOUND_URL"] || `${EVE_HOST}/eve/v1/hosted-inbound`;
 
+// An Eve dispatch-acknowledge should be fast: hosted-inbound.ts's
+// args.receive() resolves at DISPATCH time (session created), not at turn
+// completion — see that file's header comment. 60s is generous headroom for
+// that, not a turn-completion budget. Bounding it matters because a HUNG
+// (never-settling) fetch would otherwise wedge the module-level
+// `inflightDrain` latch below forever — process-wide dispatch death until
+// restart. Mirrors the fetch-with-timeout pattern already used by
+// app/api/v1/workspaces/[workspaceId]/connectors/secret/telegram.ts.
+const EVE_TURN_TIMEOUT_MS = 60_000;
+
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), EVE_TURN_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export interface DispatchResult {
   processed: number;
   failed: number;
@@ -157,7 +177,7 @@ async function runEveTurn(params: {
 }): Promise<EveTurnOutcome> {
   let response: Response;
   try {
-    response = await fetch(HOSTED_INBOUND_URL, {
+    response = await fetchWithTimeout(HOSTED_INBOUND_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

@@ -8,7 +8,7 @@ import {
   getConnector,
   upsertConnector,
   enqueueOnboard,
-  hasActiveRunner,
+  workspaceHasExecutionPath,
 } from "@agentrail/db-postgres";
 import { getLatestIndexSnapshotsForWorkspace } from "@agentrail/db-clickhouse";
 import { repoHealth, type HealthStatus } from "../../../../../../lib/repo-health";
@@ -171,12 +171,13 @@ export async function POST(
     console.error("[repos] failed to self-configure github connector:", err);
   }
 
-  // When the workspace has an active self-hosted runner, enqueue a one-shot
-  // idempotent onboard entry so the runner indexes the repo and seeds workspace
-  // memory. Flag-gated OFF by default (rollout safety); best-effort.
+  // When the workspace has an execution path — hosted (the default) or an
+  // active self-hosted runner (#1268, workspaceHasExecutionPath) — enqueue a
+  // one-shot idempotent onboard entry so a runner indexes the repo and seeds
+  // workspace memory. Flag-gated OFF by default (rollout safety); best-effort.
   if (process.env[ONBOARD_ON_CONNECT_FLAG] === "1") {
     try {
-      if (await hasActiveRunner(workspaceId)) {
+      if (await workspaceHasExecutionPath(workspaceId)) {
         await enqueueOnboard({ workspaceId, repoFullName: created.name });
       }
     } catch (err) {

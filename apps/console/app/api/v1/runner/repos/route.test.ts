@@ -9,7 +9,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   getConnector: vi.fn(),
   upsertConnector: vi.fn(),
   enqueueOnboard: vi.fn(),
-  hasActiveRunner: vi.fn(),
+  workspaceHasExecutionPath: vi.fn(),
 }));
 vi.mock("../../../../../lib/bearer-auth", () => ({
   requireBearer: vi.fn(),
@@ -24,7 +24,7 @@ import {
   getConnector,
   upsertConnector,
   enqueueOnboard,
-  hasActiveRunner,
+  workspaceHasExecutionPath,
 } from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 
@@ -119,7 +119,7 @@ beforeEach(() => {
   } as never);
   vi.mocked(getConnector).mockResolvedValue(null as never);
   vi.mocked(upsertConnector).mockResolvedValue({} as never);
-  vi.mocked(hasActiveRunner).mockResolvedValue(false);
+  vi.mocked(workspaceHasExecutionPath).mockResolvedValue(false);
   vi.mocked(enqueueOnboard).mockResolvedValue({
     enqueued: true,
     id: "queue-1",
@@ -716,31 +716,40 @@ describe("POST /api/v1/runner/repos", () => {
   });
 
   // ---------------------------------------------------------------------
-  // onboard enqueue — scouted: enqueueOnboard/hasActiveRunner already exist
-  // and are reused verbatim, gated by the SAME rollout flag as the manual
-  // connect flow. No new queue kind invented.
+  // onboard enqueue — scouted: enqueueOnboard already exists and is reused
+  // verbatim, gated by the SAME rollout flag as the manual connect flow. No
+  // new queue kind invented. The gate itself is workspaceHasExecutionPath
+  // (#1268, swapped in from the former kind-agnostic hasActiveRunner) — this
+  // route only ever sees its single boolean result, so these tests exercise
+  // "true → enqueues" / "false → stays gated"; the sub-cases behind that
+  // boolean (hosted-only with no runner ever vs. an active self-hosted
+  // runner vs. neither) are unit-tested directly on the predicate itself in
+  // packages/db-postgres/src/__tests__/workspace-has-execution-path.test.ts.
   // ---------------------------------------------------------------------
 
-  it("does not call hasActiveRunner/enqueueOnboard when the flag is unset (default OFF)", async () => {
+  it("does not call workspaceHasExecutionPath/enqueueOnboard when the flag is unset (default OFF)", async () => {
     mockFetchSequence(githubCreateResponse(), githubHookResponse());
 
     const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
     const json = await res.json();
 
-    expect(hasActiveRunner).not.toHaveBeenCalled();
+    expect(workspaceHasExecutionPath).not.toHaveBeenCalled();
     expect(enqueueOnboard).not.toHaveBeenCalled();
     expect(json.onboardQueued).toBe(false);
   });
 
-  it("enqueues onboard with exact args when the flag is ON and an active runner exists", async () => {
+  it("#1268: enqueues onboard for a hosted-only workspace (no runner has EVER claimed anything)", async () => {
     process.env.AGENTRAIL_ONBOARD_ON_CONNECT = "1";
-    vi.mocked(hasActiveRunner).mockResolvedValue(true);
+    // workspaceHasExecutionPath(true) here stands in for the exact regression
+    // this predicate fixes: hostedExecution=true, zero api_keys rows ever
+    // touched — the old hasActiveRunner gate would have been false forever.
+    vi.mocked(workspaceHasExecutionPath).mockResolvedValue(true);
     mockFetchSequence(githubCreateResponse(), githubHookResponse());
 
     const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
     const json = await res.json();
 
-    expect(hasActiveRunner).toHaveBeenCalledWith("ws-1");
+    expect(workspaceHasExecutionPath).toHaveBeenCalledWith("ws-1");
     expect(enqueueOnboard).toHaveBeenCalledWith({
       workspaceId: "ws-1",
       repoFullName: "ada/widgets",
@@ -748,9 +757,9 @@ describe("POST /api/v1/runner/repos", () => {
     expect(json.onboardQueued).toBe(true);
   });
 
-  it("does not enqueue onboard when the flag is ON but no active runner exists", async () => {
+  it("stays gated when workspaceHasExecutionPath is false (hostedExecution=false + no active self-hosted runner)", async () => {
     process.env.AGENTRAIL_ONBOARD_ON_CONNECT = "1";
-    vi.mocked(hasActiveRunner).mockResolvedValue(false);
+    vi.mocked(workspaceHasExecutionPath).mockResolvedValue(false);
     mockFetchSequence(githubCreateResponse(), githubHookResponse());
 
     const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
@@ -762,7 +771,7 @@ describe("POST /api/v1/runner/repos", () => {
 
   it("201 (best-effort) with onboardQueued:false + a warning when enqueueOnboard throws", async () => {
     process.env.AGENTRAIL_ONBOARD_ON_CONNECT = "1";
-    vi.mocked(hasActiveRunner).mockResolvedValue(true);
+    vi.mocked(workspaceHasExecutionPath).mockResolvedValue(true);
     vi.mocked(enqueueOnboard).mockRejectedValue(new Error("db down"));
     mockFetchSequence(githubCreateResponse(), githubHookResponse());
 
@@ -776,7 +785,7 @@ describe("POST /api/v1/runner/repos", () => {
 
   it("onboardQueued reflects enqueueOnboard's own result (false on a deduped call)", async () => {
     process.env.AGENTRAIL_ONBOARD_ON_CONNECT = "1";
-    vi.mocked(hasActiveRunner).mockResolvedValue(true);
+    vi.mocked(workspaceHasExecutionPath).mockResolvedValue(true);
     vi.mocked(enqueueOnboard).mockResolvedValue({
       enqueued: false,
       reason: "already onboarded (deduped)",

@@ -3,7 +3,13 @@
 import { useState } from "react";
 import { CheckCircle2, Loader2 } from "lucide-react";
 
-export function RunnerStep({ connected }: { connected: boolean }) {
+export function RunnerStep({
+  connected,
+  selfHosted,
+}: {
+  connected: boolean;
+  selfHosted: boolean;
+}) {
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,19 +38,32 @@ export function RunnerStep({ connected }: { connected: boolean }) {
     }
   }
 
-  if (connected) {
+  if (selfHosted) {
     return (
       <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
         <CheckCircle2 size={13} className="text-[var(--green-11)]" />
-        A runner is connected and polling for work.
+        A self-hosted runner is connected and polling for work.
       </p>
     );
   }
 
   return (
     <div className="flex flex-col gap-3">
+      {connected && (
+        // hostedExecution covers this workspace even with no self-hosted
+        // runner attached (#1268) — say so honestly rather than implying "a
+        // runner" is what's actually polling (execution comes from
+        // AgentRail's managed fleet instead).
+        <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
+          <CheckCircle2 size={13} className="text-[var(--green-11)]" />
+          Execution is hosted — AgentRail&apos;s managed fleet runs your work
+          here, no runner required.
+        </p>
+      )}
       <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-        On the machine you want to run your code, sign it in:
+        {connected
+          ? "Prefer to run on your own machine instead? Sign it in:"
+          : "On the machine you want to run your code, sign it in:"}
       </p>
       <code className="w-fit rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-2 py-1 font-mono text-xs text-[var(--gray-12)]">
         agentrail login

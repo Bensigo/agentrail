@@ -1,8 +1,9 @@
 import {
   getConnector,
-  hasActiveRunner,
+  hasActiveSelfHostedRunner,
   listInvites,
   listWorkspaceMembers,
+  workspaceHasExecutionPath,
 } from "@agentrail/db-postgres";
 import {
   deriveOnboardingSteps,
@@ -41,20 +42,28 @@ export interface OnboardingData {
     count: number;
   };
   runner: {
+    /** True whenever the workspace has ANY execution path — hosted (the
+     * default) or an active self-hosted runner. Drives the "Attach a runner"
+     * step's completion (#1268, workspaceHasExecutionPath). */
     connected: boolean;
+    /** Specifically whether a self-hosted runner (not hosted-fleet
+     * execution) is live — lets the UI say something honest instead of
+     * calling hosted-fleet execution "your runner" (#1268). */
+    selfHosted: boolean;
   };
 }
 
 export async function loadOnboardingData(
   workspaceId: string
 ): Promise<OnboardingData> {
-  const [githubConnector, telegramConnector, pendingInvites, members, runnerConnected] =
+  const [githubConnector, telegramConnector, pendingInvites, members, hasExecutionPath, selfHostedActive] =
     await Promise.all([
       getConnector(workspaceId, "github"),
       getConnector(workspaceId, "telegram"),
       listInvites(workspaceId), // pending, unexpired only
       listWorkspaceMembers(workspaceId),
-      hasActiveRunner(workspaceId),
+      workspaceHasExecutionPath(workspaceId),
+      hasActiveSelfHostedRunner(workspaceId),
     ]);
 
   const repos = githubConnector?.config.repos ?? [];
@@ -72,7 +81,7 @@ export async function loadOnboardingData(
     github: { repoCount: repos.length, hasWebhookSecret: Boolean(webhookSecret) },
     channel: { connected: channelConnected, skipped: channelSkipped },
     invites: { count: invitesCount },
-    runner: { connected: runnerConnected },
+    runner: { connected: hasExecutionPath },
   };
 
   return {
@@ -89,6 +98,6 @@ export async function loadOnboardingData(
       chatId: telegramConnector?.config.chatId ?? null,
     },
     invites: { count: invitesCount },
-    runner: { connected: runnerConnected },
+    runner: { connected: hasExecutionPath, selfHosted: selfHostedActive },
   };
 }

@@ -33,8 +33,19 @@ Supplied at **runtime only**, never baked, never logged (`entrypoint.sh`):
 2026-07-18) specifically documents the Bearer/`ANTHROPIC_AUTH_TOKEN` shape with
 `ANTHROPIC_API_KEY` left empty.
 
-## UNVERIFIED — the one thing PR② must confirm first
+## Auth mechanism — verified empirically in review (PR② re-confirms against the real endpoint)
 
+**Resolution (independent review, 2026-07-18):** tested against a local HTTP
+capture server with the exact shipped env (`ANTHROPIC_BASE_URL` + placeholder
+`ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_API_KEY=""` + `--bare`): the CLI sends
+`Authorization: Bearer <ANTHROPIC_AUTH_TOKEN>` to the configured base URL, and
+the empty `ANTHROPIC_API_KEY` does not shadow it (a no-credential control run
+refused with "Not logged in" before any network call). The docs/help wording
+below does not reflect runtime behavior; kept for the record. PR② re-confirms
+once against the real OpenRouter endpoint, then this section collapses to one
+line.
+
+The original unreconciled sources, for the record:
 Two things are true and, as far as this build environment could establish, not
 fully reconciled with each other:
 
@@ -116,9 +127,11 @@ Fields, and why:
   `execute`** (#1270's hosted assert: a hosted run refuses to proceed at all
   unless the Independent Verifier resolves to a different model —
   `agentrail/run/pipeline.py:is_hosted_run()` + `_run_pipeline`'s step 9a).
-  DeepSeek was the brief's other suggested option; it could not be found under
-  any `deepseek/*` id in OpenRouter's current public catalog (checked twice),
-  so GLM was chosen instead — confirmed present and priced.
+  DeepSeek was the brief's other suggested option and DOES exist on OpenRouter
+  (`deepseek/deepseek-chat`, `deepseek/deepseek-v4-*` — an earlier claim here
+  that it was absent was wrong; corrected in review). GLM stays as the verify
+  seat on its own merits: live, ~6-10x cheaper than the execute model, and
+  distinct — swapping to a DeepSeek id later is a one-line config change.
 - `runners.claude.models.critic` = `~anthropic/claude-haiku-latest` — cheap,
   opt-in advisory reviewer (#977). The leading `~` is genuinely part of
   OpenRouter's id for this entry (a rolling "latest" alias; no separately
@@ -183,7 +196,7 @@ PR② (a separate task) will:
 3. Confirm: a green Objective Gate + PR (AC1), a per-phase cost ledger with
    the configured models showing up in run records (AC2), and that a bad key
    or unavailable model surfaces as a run failure rather than a hang (AC3).
-4. Resolve the UNVERIFIED auth-token question above as its very first
+4. Re-confirm the (review-verified) auth mechanism against the real endpoint as its very first
    observation, before anything else in the run is trusted.
 
 ## Smoke-tested for this PR (offline, no OpenRouter calls)
@@ -219,5 +232,5 @@ environment, and this PR does not write one anywhere. The `OPENROUTER_API_KEY`
 value used above is an obvious placeholder string used only to prove the
 entrypoint's env-to-env mapping copies a value across; it never leaves the
 container and nothing was sent over the network. The actual authenticated
-call to OpenRouter — and the UNVERIFIED auth-token question above — is PR②'s
+call to OpenRouter is PR②'s
 job.

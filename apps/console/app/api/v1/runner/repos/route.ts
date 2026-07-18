@@ -92,9 +92,12 @@ function githubHeaders(token: string): HeadersInit {
 
 /**
  * True when a 422 response body carries GitHub's documented "name already
- * exists" shape (`errors[].field === "name"`), with a plain-text fallback for
- * a body that doesn't parse as JSON (or doesn't match the documented shape)
- * but still contains the phrase GitHub uses for this exact case.
+ * exists" shape — `errors[].field === "name"` AND a message matching
+ * GitHub's actual wording (`/already exists/i`) — so a name-field 422 for any
+ * other reason (e.g. an invalid-name-shape rejection) falls through to the
+ * generic 502 path instead of being misreported as a 409. Falls back to a
+ * plain-text match against the same phrase for a body that doesn't parse as
+ * JSON (or doesn't match the documented shape).
  */
 function isNameTakenError(bodyText: string): boolean {
   try {
@@ -102,7 +105,7 @@ function isNameTakenError(bodyText: string): boolean {
       errors?: Array<{ field?: string; message?: string }>;
     };
     return (parsed.errors ?? []).some(
-      (e) => e.field === "name" || /already exists/i.test(e.message ?? "")
+      (e) => e.field === "name" && /already exists/i.test(e.message ?? "")
     );
   } catch {
     return /already exists/i.test(bodyText);

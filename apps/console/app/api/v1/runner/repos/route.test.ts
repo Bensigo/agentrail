@@ -456,6 +456,24 @@ describe("POST /api/v1/runner/repos", () => {
     expect(res.status).toBe(502);
   });
 
+  it("502 (not 409) when the 422 has field 'name' but the message isn't GitHub's name-taken wording", async () => {
+    mockFetchSequence(
+      githubErrorResponse(
+        422,
+        JSON.stringify({
+          errors: [
+            { resource: "Repository", code: "invalid", field: "name", message: "name is not a valid repository name" },
+          ],
+        })
+      )
+    );
+
+    const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
+
+    expect(res.status).toBe(502);
+    expect(createRepository).not.toHaveBeenCalled();
+  });
+
   it("409 'GitHub rejected the stored credentials' on a 401", async () => {
     mockFetchSequence(githubErrorResponse(401, JSON.stringify({ message: "Bad credentials" })));
 

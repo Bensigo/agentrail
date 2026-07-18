@@ -64,7 +64,8 @@ export function nextInboxStateAfterFailure(
 // --- enqueue (webhook side) ----------------------------------------------------
 
 export interface EnqueueChannelMessageInput {
-  workspaceId: string;
+  workspaceId?: string;
+  chatIdentityId?: string;
   channel: string;
   conversationKey: string;
   kind?: "message" | "approval_response";
@@ -86,16 +87,28 @@ export interface EnqueueChannelMessageResult {
  * Telegram retry after a slow ACK) hits ON CONFLICT DO NOTHING and returns
  * `deduped: true` with no second row and no double-processing. Webhook routes
  * should do exactly this, verify-secret, and return 200 — nothing else.
+ *
+ * The anchor is EITHER `workspaceId` (a known sender) OR `chatIdentityId` (a
+ * pre-workspace "intro" row from the shared-bot door, issue #1262 — see
+ * `schema/channel_inbox.ts`'s doc-comment). Both are optional in the input
+ * type so a caller can pass whichever it resolved, but at least one is
+ * required — the table's CHECK constraint enforces this in the DB too, so
+ * this throws before the INSERT rather than letting Postgres reject it.
  */
 export async function enqueueChannelMessage(
   input: EnqueueChannelMessageInput
 ): Promise<EnqueueChannelMessageResult> {
+  if (!input.workspaceId && !input.chatIdentityId) {
+    throw new Error(
+      "enqueueChannelMessage: requires either workspaceId or chatIdentityId"
+    );
+  }
   const rows = (await db.execute(sql`
     INSERT INTO channel_inbox (
-      workspace_id, channel, conversation_key, kind,
+      workspace_id, chat_identity_id, channel, conversation_key, kind,
       sender_id, sender_display, provider_message_id, payload
     ) VALUES (
-      ${input.workspaceId}, ${input.channel}, ${input.conversationKey}, ${input.kind ?? "message"},
+      ${input.workspaceId ?? null}, ${input.chatIdentityId ?? null}, ${input.channel}, ${input.conversationKey}, ${input.kind ?? "message"},
       ${input.senderId ?? ""}, ${input.senderDisplay ?? ""}, ${input.providerMessageId}, ${JSON.stringify(input.payload)}::jsonb
     )
     ON CONFLICT (channel, provider_message_id) DO NOTHING

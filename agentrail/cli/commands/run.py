@@ -24,7 +24,14 @@ from agentrail.run.budget_leash import DEFAULT_PER_ISSUE_BUDGET_USD
 from agentrail.run.pipeline import jit_gather_enabled, layer_enabled
 
 AGENTS = {"codex", "claude", "cursor", "hermes", "custom"}
-BUDGET_SOURCES = {"flag", "config", "default"}
+# "brief" (#1274/#1275): the self-hosted runner relays this for a claimed
+# WorkItem whose queue_entries.estimated_budget_usd an alignment brief has
+# already priced — see agentrail.cli.commands.runner._make_execute, the one
+# call site that ever passes it. Owner rule: the estimate IS the budget, so
+# this source's stop/resume message (agentrail/run/pipeline.py) reads
+# differently from "flag"/"config"/"default" — it names the confirmed brief,
+# not a bare number.
+BUDGET_SOURCES = {"flag", "config", "default", "brief"}
 
 DEFAULT_COMMANDS = {
     "codex": "codex exec --sandbox danger-full-access -",
@@ -71,10 +78,12 @@ the product default (${DEFAULT_PER_ISSUE_BUDGET_USD:.2f}) applies. Explicit 0
 — either --budget-usd 0 or budgets.per_issue_usd: 0 in config — always means
 deliberately uncapped, at whichever tier it is set.
 
---budget-source {{flag,config,default}} (internal use — `agentrail afk` relays
-this) overrides the flag/config/default label recorded for THIS run's
-budget-stop message and run.json, so a --budget-usd value AFK forwards from
-its own product-default fallback is never mislabeled as an operator override.
+--budget-source {{flag,config,default,brief}} (internal use — `agentrail afk`
+relays this, and the self-hosted runner relays "brief" for a claimed issue an
+alignment brief already priced) overrides the flag/config/default/brief label
+recorded for THIS run's budget-stop message and run.json, so a --budget-usd
+value forwarded from something other than an operator's own flag is never
+mislabeled as one.
 """
 
 
@@ -103,11 +112,14 @@ class RunOptions:
     label: str = ""
     # "" (unset, the default) = compute the source normally, via
     # effective_budget_source's own flag > config > default precedence. A
-    # caller may set this directly to override that computed label — the ONE
-    # consumer today is `agentrail afk`, which always forwards a resolved
+    # caller may set this directly to override that computed label — TWO
+    # consumers today: `agentrail afk`, which always forwards a resolved
     # --budget-usd (even when IT fell back to the product default) and needs
     # a way to say so honestly instead of this run inferring "flag" just
-    # because a --budget-usd value showed up on argv.
+    # because a --budget-usd value showed up on argv; and the self-hosted
+    # runner's `_make_execute` (agentrail/cli/commands/runner.py, #1275),
+    # which relays "brief" for a claimed WorkItem an alignment brief already
+    # priced.
     budget_source: str = ""
 
 
@@ -154,7 +166,9 @@ def parse_run_options(args: List[str]) -> RunOptions:
         elif a == "--budget-source":
             value = _need_value(args, i, "--budget-source")
             if value not in BUDGET_SOURCES:
-                raise UsageError("--budget-source must be flag, config, or default")
+                raise UsageError(
+                    "--budget-source must be flag, config, default, or brief"
+                )
             opts.budget_source = value
             i += 2
         elif a in ("-h", "--help"):

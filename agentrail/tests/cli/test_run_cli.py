@@ -100,13 +100,14 @@ class ParseRunOptionsTests(unittest.TestCase):
 
     def test_bad_budget_source_rejected(self) -> None:
         """#1269 PR2b item 3: --budget-source is a closed enum
-        {flag,config,default}, same shape as --agent's allowlist above."""
+        {flag,config,default,brief} (brief added #1274/#1275), same shape as
+        --agent's allowlist above."""
         with self.assertRaises(UsageError) as ctx:
             parse_run_options(["--budget-source", "bogus"])
         self.assertEqual(ctx.exception.code, 2)
 
     def test_all_budget_sources_accepted(self) -> None:
-        for value in ("flag", "config", "default"):
+        for value in ("flag", "config", "default", "brief"):
             with self.subTest(value=value):
                 opts = parse_run_options(["--budget-source", value])
                 self.assertEqual(opts.budget_source, value)

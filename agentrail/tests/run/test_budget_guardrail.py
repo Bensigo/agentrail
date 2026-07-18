@@ -753,6 +753,19 @@ class TestEffectiveBudgetSource(unittest.TestCase):
         opts = parse_run_options(["--target", str(self.target), "--budget-source", "config"])
         self.assertEqual(effective_budget_source(opts), "config")
 
+    def test_brief_override_wins_over_explicit_flag(self) -> None:
+        """The runner-relay case (#1274/#1275): --budget-usd is present
+        (would otherwise infer "flag") but --budget-source "brief" says the
+        real source was a confirmed alignment brief — the override must win,
+        same as the pre-existing "default" override case above."""
+        from agentrail.cli.commands.run import effective_budget_source, parse_run_options
+        opts = parse_run_options([
+            "--target", str(self.target),
+            "--budget-usd", "12.50",
+            "--budget-source", "brief",
+        ])
+        self.assertEqual(effective_budget_source(opts), "brief")
+
 
 class TestParseRunOptionsBudgetSourceFlag(unittest.TestCase):
     """--budget-source is optional and, when absent, leaves RunOptions in the
@@ -783,12 +796,17 @@ class TestParseRunOptionsBudgetSourceFlag(unittest.TestCase):
         with self.assertRaises(UsageError) as ctx:
             parse_run_options(["--budget-source", "lol"])
         self.assertEqual(ctx.exception.code, 2)
-        self.assertIn("--budget-source must be flag, config, or default",
-                      str(ctx.exception))
+        self.assertIn(
+            "--budget-source must be flag, config, default, or brief",
+            str(ctx.exception),
+        )
 
-    def test_accepts_all_three_valid_sources(self) -> None:
+    def test_accepts_all_four_valid_sources(self) -> None:
+        """"brief" (#1274/#1275) joined {flag,config,default} as a 4th
+        legal source — the self-hosted runner relays it for a claimed issue
+        an alignment brief already priced."""
         from agentrail.cli.commands.run import parse_run_options
-        for value in ("flag", "config", "default"):
+        for value in ("flag", "config", "default", "brief"):
             with self.subTest(value=value):
                 opts = parse_run_options(["--budget-source", value])
                 self.assertEqual(opts.budget_source, value)
@@ -880,6 +898,24 @@ class TestBudgetStopMessageSourceGuidance(unittest.TestCase):
             self.assertNotIn("#1274/#1275", text)
         self.assertIn("budget exceeded after test-author phase", reason)
 
+    def test_brief_source_stop_message_carries_confirmed_estimate_guidance(self) -> None:
+        """#1274/#1275: a "brief"-sourced stop gets its OWN guidance — this
+        ceiling is the estimate the user already confirmed, not an
+        estimate-absent backstop, so it must NOT read like one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            reason, err = self._run_with_source(tmp, target, "test-run-src-brief", "brief")
+
+        for text in (reason, err):
+            self.assertIn("estimate you confirmed in the alignment brief", text)
+            self.assertIn("re-confirming a revised brief", text)
+            self.assertIn("#1274/#1275", text)
+            # This is NOT the estimate-absent backstop framing.
+            self.assertNotIn("estimate-absent backstop", text)
+        # the original, unembellished phrasing is still the message's prefix.
+        self.assertIn("budget exceeded after test-author phase", reason)
+
 
 # ---------------------------------------------------------------------------
 # #1269 PR2b item 2: the pushed budget_exceeded failure event's message must
@@ -960,6 +996,25 @@ class TestBudgetExceededPushCarriesResumeGuidance(unittest.TestCase):
         pushed_message = call.args[4]
         self.assertEqual(pushed_message, blocked_reason)
         self.assertNotIn("estimate-absent backstop", pushed_message)
+
+    def test_brief_source_push_message_matches_blocked_reason_with_confirmed_estimate_guidance(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            blocked_reason, mock_push = self._run_and_capture_push(
+                tmp, target, "test-run-push-brief", "brief"
+            )
+
+        mock_push.assert_called_once()
+        call = mock_push.call_args
+        self.assertEqual(call.args[2], "budget_exceeded")  # failure_type stable
+        pushed_message = call.args[4]
+        self.assertEqual(pushed_message, blocked_reason)
+        self.assertIn("estimate you confirmed in the alignment brief", pushed_message)
+        self.assertNotIn("estimate-absent backstop", pushed_message)
+        self.assertIn("budget exceeded after test-author phase", pushed_message)
 
 
 if __name__ == "__main__":

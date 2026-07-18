@@ -133,6 +133,27 @@ def test_bad_concurrency_env_var_falls_back_to_default(capsys):
     assert "FLEET_CONCURRENCY" in capsys.readouterr().err
 
 
+def test_sync_interval_below_the_floor_is_clamped(capsys):
+    # FLEET_SYNC_INTERVAL_SECONDS=0 would busy-loop the console's sync
+    # endpoint — it must clamp to the documented 30s floor, loudly.
+    with patch.dict(os.environ, _clean_env(FLEET_SYNC_INTERVAL_SECONDS="0"), clear=True), \
+         patch.object(fleet_cmd, "run_sync_cycle", return_value={}), \
+         patch.object(fleet_cmd, "run_fleet_worker"):
+        fleet_cmd.run_fleet([])
+    captured = capsys.readouterr()
+    assert "30s" in captured.out  # the banner shows the resolved (clamped) interval, not 0
+    assert "clamp" in captured.err.lower()
+
+
+def test_float_env_clamps_to_minimum(monkeypatch, capsys):
+    monkeypatch.setenv("X_INTERVAL", "5")
+    assert fleet_cmd._float_env("X_INTERVAL", 300.0, minimum=30.0) == 30.0
+    assert "floor" in capsys.readouterr().err
+    monkeypatch.setenv("X_INTERVAL", "45")
+    assert fleet_cmd._float_env("X_INTERVAL", 300.0, minimum=30.0) == 45.0
+    assert capsys.readouterr().err == ""  # above the floor: no warning
+
+
 def test_sync_interval_env_var_is_passed_to_the_sync_cycle_helper():
     # run_sync_cycle itself doesn't take an interval (it's a single cycle); the
     # interval governs how often run_fleet's own periodic thread re-invokes it.
@@ -154,6 +175,100 @@ def test_fleet_home_env_var_is_forwarded_to_sync_cycle(tmp_path):
          patch.object(fleet_cmd, "run_fleet_worker"):
         fleet_cmd.run_fleet([])
     assert mock_sync.call_args.kwargs["home"] == tmp_path
+
+
+# --- _run_sync_loop: the periodic re-sync thread's body ----------------------
+# Driven directly with a scripted stop event — no real thread, no real sleep.
+
+
+class _ScriptedStop:
+    """Stands in for threading.Event: wait(timeout) records the timeout and
+    replays scripted returns (False = tick proceeds, True = shutdown)."""
+
+    def __init__(self, script) -> None:
+        self._script = list(script)
+        self.waits: List[float] = []
+
+    def wait(self, timeout: float) -> bool:
+        self.waits.append(timeout)
+        return self._script.pop(0) if self._script else True
+
+
+def _rotation_of(*workspace_ids: str) -> "fleet_cmd.WorkspaceRotation":
+    from agentrail.runner.fleet_worker import WorkspaceRotation, WorkspaceSlot
+
+    return WorkspaceRotation(
+        [
+            WorkspaceSlot(workspace_id=ws, client=object(), execute=lambda item: None)
+            for ws in workspace_ids
+        ]
+    )
+
+
+def test_periodic_resync_success_refreshes_the_rotation(tmp_path):
+    rotation = _rotation_of("ws-old")
+    stop = _ScriptedStop([False, True])  # one tick, then shutdown
+    new_tokens = {"ws-new": FleetWorkspaceToken(workspace_id="ws-new", slug="n", token="rt_n")}
+    with patch.object(fleet_cmd, "run_sync_cycle", return_value=new_tokens) as mock_sync:
+        fleet_cmd._run_sync_loop(
+            stop,
+            base_url="https://app.agentrail.dev",
+            console_token="fleet-secret",
+            home=tmp_path,
+            sync_interval=60.0,
+            rotation=rotation,
+        )
+    # The tick really ran run_sync_cycle and swapped the rotation to the new set.
+    mock_sync.assert_called_once_with(
+        base_url="https://app.agentrail.dev", console_token="fleet-secret", home=tmp_path
+    )
+    assert rotation.workspace_ids() == ["ws-new"]
+    # And it paced itself with the configured interval (both waits: the tick's
+    # lead-in and the shutdown check).
+    assert stop.waits == [60.0, 60.0]
+
+
+def test_periodic_resync_failure_warns_and_keeps_the_existing_rotation(tmp_path, capsys):
+    rotation = _rotation_of("ws-old")
+    stop = _ScriptedStop([False, True])  # one (failing) tick, then shutdown
+    with patch.object(
+        fleet_cmd, "run_sync_cycle", side_effect=FleetSyncError("HTTP 500")
+    ):
+        fleet_cmd._run_sync_loop(
+            stop,
+            base_url="https://app.agentrail.dev",
+            console_token="fleet-secret",
+            home=tmp_path,
+            sync_interval=60.0,
+            rotation=rotation,
+        )
+    # Warned, did NOT crash, and the existing rotation keeps serving untouched.
+    err = capsys.readouterr().err
+    assert "re-sync failed" in err
+    assert rotation.workspace_ids() == ["ws-old"]
+
+
+def test_periodic_resync_recovers_on_the_tick_after_a_failure(tmp_path, capsys):
+    # Tick 1 fails (warn, keep serving), tick 2 succeeds (rotation refreshed) —
+    # a transient console outage never permanently wedges provisioning.
+    rotation = _rotation_of("ws-old")
+    stop = _ScriptedStop([False, False, True])
+    new_tokens = {"ws-new": FleetWorkspaceToken(workspace_id="ws-new", slug="n", token="rt_n")}
+    with patch.object(
+        fleet_cmd,
+        "run_sync_cycle",
+        side_effect=[FleetSyncError("HTTP 502"), new_tokens],
+    ):
+        fleet_cmd._run_sync_loop(
+            stop,
+            base_url="https://app.agentrail.dev",
+            console_token="fleet-secret",
+            home=tmp_path,
+            sync_interval=60.0,
+            rotation=rotation,
+        )
+    assert "re-sync failed" in capsys.readouterr().err
+    assert rotation.workspace_ids() == ["ws-new"]
 
 
 # --- build_slots: reuses the existing single-workspace machinery -------------

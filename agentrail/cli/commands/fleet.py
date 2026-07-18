@@ -30,8 +30,11 @@ Configuration is entirely via environment (documented below and in
   FLEET_CONCURRENCY               optional, default 2. How many claims can
                                   execute at once across the WHOLE fleet
                                   (not per workspace).
-  FLEET_SYNC_INTERVAL_SECONDS     optional, default 300. How often to re-call
-                                  the sync route after the initial boot sync.
+  FLEET_SYNC_INTERVAL_SECONDS     optional, default 300, floor 30. How often
+                                  to re-call the sync route after the initial
+                                  boot sync. Values below 30 are clamped to
+                                  30 (with a warning) — 0 or a tiny interval
+                                  would busy-loop the console's sync endpoint.
 
 IMPORTANT — do NOT set AGENTRAIL_WORKSPACE_ID in this process's own
 environment. That var (see ``agentrail/cli/commands/afk.py``'s
@@ -67,11 +70,20 @@ from agentrail.runner.fleet_credentials import FleetWorkspaceToken
 from agentrail.runner.fleet_sync import FleetSyncError, run_sync_cycle
 from agentrail.runner.fleet_worker import WorkspaceRotation, WorkspaceSlot, run_fleet_worker
 
-# Reuses worker.py's own default meaning (how long a slot waits after an idle
-# or failed claim before trying again) — not exposed as a fleet env var
-# because the brief for this daemon names no such knob; if that changes,
-# add FLEET_IDLE_SECONDS here rather than hardcoding a different number.
+# Reuses worker.py's own default meaning (how long the fleet pauses after a
+# fully-empty rotation pass — see fleet_worker's per-pass idle semantics) —
+# not exposed as a fleet env var because the brief for this daemon names no
+# such knob; if that changes, add FLEET_IDLE_SECONDS here rather than
+# hardcoding a different number.
 _DEFAULT_IDLE_SECONDS = 10.0
+
+# Floor for FLEET_SYNC_INTERVAL_SECONDS. Without one, 0 (or any tiny value)
+# turns the periodic re-sync thread into a busy loop against the console's
+# sync endpoint — every tick is a full listFleetProvisionState sweep plus
+# potential mints server-side, so this is a real cost, not just noise. 30s is
+# far below any practical provisioning latency need (default is 300s) while
+# making the pathological configs harmless.
+_MIN_SYNC_INTERVAL_SECONDS = 30.0
 
 
 def build_slots(
@@ -99,6 +111,42 @@ def build_slots(
     return slots
 
 
+def _run_sync_loop(
+    stop: threading.Event,
+    *,
+    base_url: str,
+    console_token: str,
+    home: "Path | None",
+    sync_interval: float,
+    rotation: WorkspaceRotation,
+) -> None:
+    """The periodic re-sync thread's body (module-level so tests can drive
+    ticks with a scripted stop event — no real sleeping, no real thread).
+
+    ``stop.wait(timeout)`` both paces the loop AND doubles as the shutdown
+    signal — it returns ``True`` immediately when ``stop`` is set, where a
+    plain ``time.sleep`` would ignore the shutdown until it next woke on its
+    own. Each tick: one :func:`run_sync_cycle`; on success the rotation is
+    refreshed with the new workspace set, on :class:`FleetSyncError` the
+    failure is a stderr warning and the EXISTING rotation keeps serving
+    untouched (periodic failure is never fatal — see the module docstring).
+    """
+    while not stop.wait(sync_interval):
+        try:
+            new_tokens = run_sync_cycle(
+                base_url=base_url, console_token=console_token, home=home
+            )
+        except FleetSyncError as exc:
+            # Periodic failure is a warning, not fatal — keep serving the
+            # existing rotation untouched (see module docstring).
+            print(
+                f"agentrail fleet: re-sync failed (keeping existing token store) — {exc}",
+                file=sys.stderr,
+            )
+            continue
+        rotation.refresh(build_slots(base_url, new_tokens))
+
+
 def _int_env(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if not raw:
@@ -113,18 +161,27 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-def _float_env(name: str, default: float) -> float:
+def _float_env(name: str, default: float, *, minimum: float | None = None) -> float:
     raw = os.environ.get(name)
     if not raw:
         return default
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         print(
             f"agentrail fleet: {name} must be a number, got {raw!r} — using default {default}",
             file=sys.stderr,
         )
         return default
+    if minimum is not None and value < minimum:
+        print(
+            f"agentrail fleet: {name}={value:g} is below the floor of "
+            f"{minimum:g}s — clamping to {minimum:g} (a smaller interval "
+            "would busy-loop the console's sync endpoint)",
+            file=sys.stderr,
+        )
+        return minimum
+    return value
 
 
 def run_fleet(args: List[str]) -> int:
@@ -155,7 +212,9 @@ def run_fleet(args: List[str]) -> int:
     home_env = os.environ.get("AGENTRAIL_FLEET_HOME")
     home = Path(home_env).expanduser() if home_env else None
     concurrency = _int_env("FLEET_CONCURRENCY", 2)
-    sync_interval = _float_env("FLEET_SYNC_INTERVAL_SECONDS", 300.0)
+    sync_interval = _float_env(
+        "FLEET_SYNC_INTERVAL_SECONDS", 300.0, minimum=_MIN_SYNC_INTERVAL_SECONDS
+    )
 
     # Boot sync MUST succeed — see module docstring. A 404 (the sync route's
     # anti-enumeration posture collapses "secret unset" and "secret wrong"
@@ -179,27 +238,19 @@ def run_fleet(args: List[str]) -> int:
     )
 
     stop = threading.Event()
-
-    def _sync_loop() -> None:
-        # stop.wait(timeout) both sleeps AND doubles as the shutdown signal —
-        # returns True immediately if `stop` is set, instead of a plain
-        # time.sleep that would ignore it until it next wakes up on its own.
-        while not stop.wait(sync_interval):
-            try:
-                new_tokens = run_sync_cycle(
-                    base_url=base_url, console_token=console_token, home=home
-                )
-            except FleetSyncError as exc:
-                # Periodic failure is a warning, not fatal — keep serving the
-                # existing rotation untouched (see module docstring).
-                print(
-                    f"agentrail fleet: re-sync failed (keeping existing token store) — {exc}",
-                    file=sys.stderr,
-                )
-                continue
-            rotation.refresh(build_slots(base_url, new_tokens))
-
-    sync_thread = threading.Thread(target=_sync_loop, daemon=True, name="fleet-sync")
+    sync_thread = threading.Thread(
+        target=_run_sync_loop,
+        args=(stop,),
+        kwargs=dict(
+            base_url=base_url,
+            console_token=console_token,
+            home=home,
+            sync_interval=sync_interval,
+            rotation=rotation,
+        ),
+        daemon=True,
+        name="fleet-sync",
+    )
     sync_thread.start()
 
     try:

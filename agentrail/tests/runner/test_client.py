@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from agentrail.runner.client import (
+    CLAIM_BLOCKED_WORKSPACE_BUDGET,
     Response,
     RunnerAuthError,
     RunnerClient,
@@ -92,6 +93,98 @@ def test_claim_next_returns_none_when_nothing_grabbable():
     # 204 No Content with an empty body means "no work right now".
     transport = FakeTransport([Response(status=204, body=b"")])
     assert _client(transport).claim_next() is None
+
+
+# --- claim_next: blocked-claim visibility (#1269 PR2b item 4) ----------------
+#
+# The backend's claim route (console/db lane, #1269 PR2a) signals a
+# workspace-budget-blocked claim with a plain 204 plus an
+# X-Agentrail-Claim-Blocked response header — indistinguishable from an empty
+# queue by status/body alone. claim_next() must keep returning None either way
+# (the None-means-idle contract every existing caller relies on) while
+# exposing the reason via the last_claim_blocked attribute.
+
+
+def test_claim_next_returns_none_when_blocked_same_as_when_idle():
+    """The None-means-idle contract is unbroken: a blocked claim and a truly
+    empty queue are the SAME return value. Only the attribute differs."""
+    transport = FakeTransport(
+        [Response(status=204, body=b"", headers={"x-agentrail-claim-blocked": "workspace-budget"})]
+    )
+    assert _client(transport).claim_next() is None
+
+
+def test_claim_next_sets_last_claim_blocked_when_header_present():
+    transport = FakeTransport(
+        [Response(status=204, body=b"", headers={"x-agentrail-claim-blocked": "workspace-budget"})]
+    )
+    client = _client(transport)
+    client.claim_next()
+    assert client.last_claim_blocked == "workspace-budget"
+
+
+def test_claim_next_last_claim_blocked_defaults_to_none():
+    client = _client(FakeTransport([]))
+    assert client.last_claim_blocked is None
+
+
+def test_claim_next_last_claim_blocked_none_on_plain_204():
+    # Regression-pin: a 204 with no blocked header behaves exactly as before
+    # this feature — nothing grabbable, no blocked signal.
+    transport = FakeTransport([Response(status=204, body=b"")])
+    client = _client(transport)
+    client.claim_next()
+    assert client.last_claim_blocked is None
+
+
+def test_claim_next_last_claim_blocked_none_when_work_is_claimed():
+    # Even if a header somehow rode along on a 200 (never expected from the
+    # real backend), only a 204 sets last_claim_blocked.
+    transport = FakeTransport(
+        [
+            Response(
+                status=200,
+                headers={"x-agentrail-claim-blocked": "workspace-budget"},
+                body=(
+                    b'{"id":"wi-1","workspace_id":"ws1","source":"github",'
+                    b'"external_id":"42","repo_url":"https://github.com/o/r"}'
+                ),
+            )
+        ]
+    )
+    client = _client(transport)
+    item = client.claim_next()
+    assert item is not None
+    assert client.last_claim_blocked is None
+
+
+def test_claim_next_last_claim_blocked_clears_on_next_unblocked_poll():
+    """last_claim_blocked reflects only the MOST RECENT poll — an unblocked
+    poll after a blocked one clears it, never sticky across calls."""
+    transport = FakeTransport(
+        [
+            Response(status=204, body=b"", headers={"x-agentrail-claim-blocked": "workspace-budget"}),
+            Response(status=204, body=b""),
+        ]
+    )
+    client = _client(transport)
+    client.claim_next()
+    assert client.last_claim_blocked == "workspace-budget"
+    client.claim_next()
+    assert client.last_claim_blocked is None
+
+
+def test_claim_next_last_claim_blocked_header_lookup_is_case_insensitive():
+    # The real transport lower-cases header keys before building Response
+    # (email.message.Message preserves wire casing, e.g.
+    # "X-Agentrail-Claim-Blocked"); the client must not depend on a fake
+    # transport doing the same lower-casing by accident.
+    transport = FakeTransport(
+        [Response(status=204, body=b"", headers={"x-agentrail-claim-blocked": "workspace-budget"})]
+    )
+    client = _client(transport)
+    client.claim_next()
+    assert client.last_claim_blocked == CLAIM_BLOCKED_WORKSPACE_BUDGET
 
 
 def test_claim_next_parses_mcp_keys_from_payload():

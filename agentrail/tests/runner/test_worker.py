@@ -264,3 +264,94 @@ def test_worker_survives_a_transient_claim_error_and_keeps_polling():
         should_continue=_stop_after(3),
     )
     assert client.reported == ["wi-9"]  # recovered and processed the item
+
+
+# --- blocked-claim visibility (#1269 PR2b item 4) ----------------------------
+#
+# client.last_claim_blocked (set by RunnerClient.claim_next on a 204 that
+# carries the workspace-budget header) must produce exactly one log line per
+# idle->blocked transition -- never one per poll (the loop polls every
+# idle_seconds, so that would spam the log every ~10s) and never zero (an
+# operator watching the daemon needs SOME signal that claims are paused on
+# spend, not silently treated as "nothing queued").
+
+
+class BlockableFakeClient:
+    """Always returns None from claim_next (as a real blocked OR idle poll
+    does) and scripts last_claim_blocked per call -- one entry per poll,
+    None once the script runs out."""
+
+    def __init__(self, blocked_sequence: List[Optional[str]]) -> None:
+        self._script = list(blocked_sequence)
+        self.last_claim_blocked: Optional[str] = None
+        self.polls = 0
+
+    def claim_next(self) -> Optional[WorkItem]:
+        self.polls += 1
+        self.last_claim_blocked = self._script.pop(0) if self._script else None
+        return None
+
+    def report_result(self, item: WorkItem, **kw: Any) -> bool:  # pragma: no cover
+        raise AssertionError("blocked/idle polls never yield an item to report")
+
+    def report_telemetry(self, item: WorkItem, **kw: Any) -> None:  # pragma: no cover
+        raise AssertionError("blocked/idle polls never yield an item to report")
+
+
+def test_worker_logs_blocked_claim_once_per_transition(caplog):
+    import logging
+
+    # blocked, blocked, idle, blocked -> exactly two logs: the first blocked
+    # poll (idle->blocked), and the fourth (idle->blocked again, after the
+    # third poll's unblocked tick re-armed it). The second poll (still
+    # blocked) and third (idle) stay silent.
+    client = BlockableFakeClient(
+        ["workspace-budget", "workspace-budget", None, "workspace-budget"]
+    )
+    with caplog.at_level(logging.WARNING, logger="agentrail.runner.worker"):
+        run_worker(
+            client,
+            execute=lambda item: RunResult(status="green"),
+            sleep=lambda _s: None,
+            idle_seconds=0,
+            should_continue=_stop_after(4),
+        )
+
+    assert client.polls == 4
+    blocked_logs = [
+        r for r in caplog.records if "workspace budget exhausted" in r.message
+    ]
+    assert len(blocked_logs) == 2
+
+
+def test_worker_never_logs_blocked_when_header_absent():
+    """Regression-pin: a plain idle client (no last_claim_blocked ever set to
+    a truthy value) must produce zero blocked-claim logs -- today's behavior,
+    byte-identical."""
+    client = FakeClient([None, None, None])
+    run_worker(
+        client,
+        execute=lambda item: RunResult(status="green"),
+        sleep=lambda _s: None,
+        should_continue=_stop_after(3),
+    )
+    # FakeClient has no last_claim_blocked attribute at all -- the loop must
+    # tolerate that (getattr default) rather than crash.
+    assert not hasattr(client, "last_claim_blocked")
+
+
+def test_worker_tolerates_client_without_last_claim_blocked_attribute():
+    """A client stand-in that predates this feature (no last_claim_blocked
+    attribute) must not crash the loop -- getattr(..., None) is the seam."""
+    client = FakeClient([_item("1")])
+
+    def execute(item: WorkItem) -> RunResult:
+        return RunResult(status="green")
+
+    run_worker(
+        client,
+        execute=execute,
+        sleep=lambda _s: None,
+        should_continue=_stop_after(1),
+    )
+    assert client.reported[0]["id"] == "wi-1"

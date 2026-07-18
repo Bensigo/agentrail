@@ -16,13 +16,25 @@ import threading
 import time
 from typing import Callable
 
-from agentrail.runner.client import RunnerAuthError, WorkItem
+from agentrail.runner.client import CLAIM_BLOCKED_WORKSPACE_BUDGET, RunnerAuthError, WorkItem
 from agentrail.sandbox.docker_runner import RunResult
 
 _log = logging.getLogger("agentrail.runner.worker")
 
 # execute(item) -> RunResult. The default in the CLI is host-native execution.
 Execute = Callable[[WorkItem], RunResult]
+
+# Known blocked-claim reasons (client.last_claim_blocked, #1269) -> the log
+# line an operator sees. A reason the runner doesn't recognize yet (a future
+# backend addition) still logs, generically, rather than being silently
+# dropped.
+_BLOCKED_CLAIM_MESSAGES = {
+    CLAIM_BLOCKED_WORKSPACE_BUDGET: "workspace budget exhausted — claims paused",
+}
+
+
+def _blocked_claim_message(reason: str) -> str:
+    return _BLOCKED_CLAIM_MESSAGES.get(reason, f"claims paused — blocked: {reason}")
 
 
 def _report(client, item: WorkItem, result: RunResult) -> None:
@@ -52,7 +64,15 @@ def _run_slot(
     atomic (``FOR UPDATE SKIP LOCKED``), N slots never grab the same item, so N
     issues run truly in parallel. ``stop`` is shared: a terminal auth failure in
     any slot signals all of them to exit.
+
+    ``was_blocked`` is this slot's own transition tracker for the
+    workspace-budget claim-blocked signal (#1269): a fresh 204 that carries
+    the blocked reason logs once, on the idle->blocked edge; it stays quiet on
+    every subsequent still-blocked poll, and re-arms the moment an unblocked
+    poll intervenes. Local to this loop (not shared across slots), matching
+    each slot polling independently.
     """
+    was_blocked = False
     while should_continue() and not stop.is_set():
         try:
             item = client.claim_next()
@@ -66,6 +86,13 @@ def _run_slot(
             _log.warning("claim failed (will retry): %s", exc)
             sleep(idle_seconds)
             continue
+        blocked_reason = getattr(client, "last_claim_blocked", None)
+        if blocked_reason:
+            if not was_blocked:
+                _log.warning(_blocked_claim_message(blocked_reason))
+                was_blocked = True
+        else:
+            was_blocked = False
         if item is None:
             sleep(idle_seconds)
             continue

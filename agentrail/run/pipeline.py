@@ -162,6 +162,22 @@ def jit_gather_enabled() -> bool:
     return (os.environ.get("AGENTRAIL_JIT_GATHER") or "").strip() == "1"
 
 
+# Set by the hosted fleet runner (#1267) to mark this run as executing on
+# AgentRail's managed infrastructure, rather than a developer's own machine.
+# Hosted runs may NEVER proceed without the Independent Verifier seat (spec
+# Sec 4.4: the per-task model override applies to the coding model only — the
+# reviewer seat is never user-collapsible on the hosted path); see the
+# startup assert in `_run_pipeline` (#1270 AC1). Same opt-in-only convention
+# as `jit_gather_enabled`: default OFF, only an explicit "1" turns it on, so a
+# developer's local/dev checkout is never accidentally treated as hosted.
+AGENTRAIL_HOSTED_ENV = "AGENTRAIL_HOSTED"
+
+
+def is_hosted_run() -> bool:
+    """Is this run executing on the hosted fleet (#1267)? DEFAULT False."""
+    return (os.environ.get(AGENTRAIL_HOSTED_ENV) or "").strip() == "1"
+
+
 DIFF_ONLY_DEFAULT_MAX_ATTEMPTS = 2  # 1 initial + 1 redo-as-diff; kept small (cost lever)
 
 
@@ -196,6 +212,12 @@ class RunContext:
     context_retrieval: Dict[str, Any] = field(default_factory=dict)
     phase_commands: Dict[str, str] = field(default_factory=dict)
     budget_usd: float = 0.0
+    # Independent Review visibility (#1270): the status token computed by
+    # `agentrail.cli.commands.run.independent_review_status` and threaded
+    # through unchanged, so `finalize_objective_gate` can record WHY the
+    # verify/critic seat did or didn't run. "active" (the default) keeps
+    # direct `RunContext(...)` construction in existing tests byte-identical.
+    independent_review_status: str = "active"
     cumulative_cost_usd: float = 0.0
     # #1049: deterministic context manifest captured ONCE from the gather
     # phase's output artifact and injected VERBATIM into every later phase's
@@ -213,11 +235,93 @@ class RunContext:
     tracer: RunTracer = field(default_factory=lambda: RunTracer(None, "", "", {}))
 
 
+# Independent Review visibility (#1270): reason tokens produced by
+# `agentrail.cli.commands.run.independent_review_status`, each mapped to a
+# human-readable reason + the exact config that restores the seat. Kept as
+# plain string literals (not a shared import) — pipeline.py must not import
+# the cli layer (cli/commands/run.py imports FROM pipeline.py at module scope,
+# so the reverse import would be circular); the token spellings are pinned by
+# tests on both sides instead.
+_INDEPENDENT_REVIEW_REASONS: Dict[str, "tuple[str, str]"] = {
+    "skipped_explicit_command": (
+        "an explicit --command was passed, so no phase commands (verify "
+        "included) were built",
+        "drop --command, or configure runners.<agent>.models.verify and let "
+        "AgentRail build the agent command",
+    ),
+    "skipped_layer_off": (
+        "the VERIFY_GATE layer is turned off for this run",
+        "unset AGENTRAIL_EVAL_LAYER_VERIFY_GATE (or clear layers.verify_gate "
+        "in .agentrail/layer-overrides.json)",
+    ),
+    "skipped_no_distinct_model": (
+        "no model configured differs from the Implementer's",
+        "set runners.<agent>.models.verify in .agentrail/config.json to a "
+        "model different from the Implementer's",
+    ),
+}
+
+
+def _independent_review_reason(agent: str, status: str) -> "tuple[str, str]":
+    reason, fix = _INDEPENDENT_REVIEW_REASONS.get(
+        status,
+        ("the Independent Verifier is not configured",
+         "set runners.<agent>.models.verify in .agentrail/config.json"),
+    )
+    return reason, fix.replace("<agent>", agent)
+
+
+def independent_review_metadata_value(status: str) -> str:
+    """Map an ``independent_review_status`` token to its run.json value.
+
+    ``"active"`` passes through unchanged; any ``skipped_<reason>`` token
+    becomes ``"skipped:<reason>"`` (#1270 AC1/AC2 evidence format) — the same
+    field records a real verdict for hosted runs (always "active"; a hosted
+    run can only reach finalization when the seat is active, see the startup
+    assert in ``_run_pipeline``) and the skip reason for local runs.
+    """
+    if status == "active":
+        return status
+    prefix = "skipped_"
+    if status.startswith(prefix):
+        return "skipped:" + status[len(prefix):]
+    return status
+
+
+def _independent_review_fatal_message(agent: str, status: str) -> str:
+    reason, fix = _independent_review_reason(agent, status)
+    bar = "=" * 78
+    return (
+        f"\n{bar}\n"
+        "FATAL: hosted run refused — no Independent Reviewer configured\n"
+        f"  reason: {reason}\n"
+        f"  fix:    {fix}\n"
+        "  a hosted run may never proceed without the independent review "
+        "seat (#1270).\n"
+        f"{bar}\n"
+    )
+
+
+def _independent_review_warning(agent: str, status: str) -> str:
+    reason, fix = _independent_review_reason(agent, status)
+    bar = "!" * 78
+    return (
+        f"\n{bar}\n"
+        "WARNING: independent review is OFF for this run\n"
+        f"  reason: {reason}\n"
+        f"  fix:    {fix}\n"
+        "  the executor's own test results are the ONLY signal on this run "
+        "(#1270).\n"
+        f"{bar}\n"
+    )
+
+
 def finalize_objective_gate(
     metadata_file: Path,
     *,
     gate_result: GateResult,
     review_advisory: Optional[Dict[str, Any]] = None,
+    independent_review_status: str = "active",
 ) -> Dict[str, Any]:
     """Mark a run done from the Objective Gate and record review as advisory.
 
@@ -240,6 +344,10 @@ def finalize_objective_gate(
     # Review is advisory only — recorded for the run surface, never gating.
     if review_advisory is not None:
         data["review"] = {"role": "advisory", "findings": review_advisory}
+
+    # Independent Review visibility (#1270 AC1/AC2): every run's record shows
+    # whether the verify/critic seat ran, and why not when it didn't.
+    data["independentReview"] = independent_review_metadata_value(independent_review_status)
 
     write_json(metadata_file, data)
 
@@ -1036,7 +1144,8 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
               repo_dir: Path, log_dir: Optional[Path] = None,
               run_id: str = "",
               phase_commands: Optional[Dict[str, str]] = None,
-              budget_usd: float = 0.0) -> int:
+              budget_usd: float = 0.0,
+              independent_review_status: str = "active") -> int:
     """Native port of legacy run_issue (scripts/agentrail-legacy:6376-6566).
     Assumes guards (source-run, active-run conflict, command availability) were
     already done by the caller (agentrail/cli/commands/run.py:_dispatch).
@@ -1070,6 +1179,7 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
         run_id=run_id,
         phase_commands=phase_commands,
         budget_usd=budget_usd,
+        independent_review_status=independent_review_status,
         run_id_stem=f"issue-{issue}",
         context_query=f"issue #{issue}",
     )
@@ -1079,7 +1189,8 @@ def run_prompt(target_dir: Path, prompt: str, *, label: str, agent: str,
                command: str, repo_dir: Path, log_dir: Optional[Path] = None,
                run_id: str = "",
                phase_commands: Optional[Dict[str, str]] = None,
-               budget_usd: float = 0.0) -> int:
+               budget_usd: float = 0.0,
+               independent_review_status: str = "active") -> int:
     """Prompt-driven run mode (#968) — run the pipeline off a raw prompt.
 
     Mirrors :func:`run_issue` but injects the supplied ``prompt`` as the
@@ -1110,6 +1221,7 @@ def run_prompt(target_dir: Path, prompt: str, *, label: str, agent: str,
         run_id=run_id,
         phase_commands=phase_commands,
         budget_usd=budget_usd,
+        independent_review_status=independent_review_status,
         run_id_stem=f"prompt-{safe_label}",
         context_query=f"prompt {label}",
     )
@@ -1120,6 +1232,7 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
                   log_dir: Optional[Path] = None, run_id: str = "",
                   phase_commands: Optional[Dict[str, str]] = None,
                   budget_usd: float = 0.0,
+                  independent_review_status: str = "active",
                   run_id_stem: str = "",
                   context_query: str = "") -> int:
     """Shared run body for issue mode and prompt mode (#968).
@@ -1245,6 +1358,23 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
     print(f"prompt: {prompt_file}")
     print(f"metadata: {metadata_file}")
 
+    # 9a. Independent Review visibility (#1270): the verify/critic seat is the
+    # crux of "not vibe coding" and must never silently vanish. A hosted run
+    # (AGENTRAIL_HOSTED=1, set by the fleet runner, #1267) may NEVER proceed
+    # without it — refuse right here, before any phase runs (RunContext isn't
+    # even built yet). A local/dev run instead gets a loud, non-fatal warning
+    # printed into this same run header so it cannot be missed in the
+    # transcript. Either way, the reason is recorded into run.json at
+    # finalization (finalize_objective_gate, below) so every run's record
+    # shows why the seat did or didn't run. When status is "active" neither
+    # branch fires — byte-identical to before this seam existed.
+    if is_hosted_run() and independent_review_status != "active":
+        print(_independent_review_fatal_message(agent, independent_review_status),
+              file=sys.stderr)
+        return 1
+    if not is_hosted_run() and independent_review_status != "active":
+        print(_independent_review_warning(agent, independent_review_status))
+
     # 10. Build RunContext
     rc = RunContext(
         target_dir=target_dir,
@@ -1263,6 +1393,7 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         context_retrieval=run_context_retrieval,
         phase_commands=phase_commands or {},
         budget_usd=budget_usd,
+        independent_review_status=independent_review_status,
     )
 
     # 10a. Langfuse tracer (Task 3, langfuse-tracing-shadow-judge PRD): one
@@ -1599,7 +1730,10 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         red_green_evidence=red_green_evidence,
         verification_evidence=verification_evidence,
     )
-    outcome = finalize_objective_gate(metadata_file, gate_result=gate_result, review_advisory=None)
+    outcome = finalize_objective_gate(
+        metadata_file, gate_result=gate_result, review_advisory=None,
+        independent_review_status=rc.independent_review_status,
+    )
 
     # Done is gate-driven: green → exit 0; red → non-zero. Preserve a genuine
     # agent failure code when the agent itself failed, otherwise surface 1 for a

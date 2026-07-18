@@ -164,29 +164,27 @@ docker compose -f deploy/docker-compose.prod.yml logs -f runner
 You should see `Runner active — workspace <id> @ http://console:3000. ...`.
 
 **Runner execution mode, and what's unverified about it** — read
-`deploy/runner/Dockerfile`'s header comment in full before relying on this in
-anger. Short version: this runner deliberately runs in *host-native* mode (no
-`/var/run/docker.sock`, no nested sandbox container — see the
-`ANTHROPIC_API_KEY` note there) and drives the coding agent through
-**aider**, routed to OpenRouter via a small stdin-to-`--message-file` wrapper
-script (`deploy/runner/aider-stdin-wrapper.sh`). This wiring was verified
-against aider's own docs (OpenRouter support, scripting flags) but was
-**never run end-to-end** — this build environment has no Docker. Before
-trusting a real run:
+`deploy/runner/Dockerfile`'s header comment and `deploy/runner/README.md` in
+full before relying on this in anger. Short version: this runner deliberately
+runs in *host-native* mode (no `/var/run/docker.sock`, no nested sandbox
+container — see the `ANTHROPIC_API_KEY` note there) and drives the coding
+agent through **Claude Code**, headless (`claude --bare -p`), routed to
+OpenRouter via its native Anthropic-Messages-compatible endpoint (#1266 —
+supersedes an earlier `aider`-based choice; `deploy/runner/README.md` has the
+full history of why aider was picked first and why it's no longer needed).
+The image build + `claude --version`/`agentrail --help` were smoke-tested;
+whether Claude Code's `--bare` mode actually authenticates via
+`ANTHROPIC_AUTH_TOKEN` against a non-Anthropic base URL was **not** — no
+OpenRouter key exists in the environment that built this image, and none
+should ever be committed to this repo. `deploy/runner/README.md`'s
+"UNVERIFIED" section has the exact fallback if the first real run's auth
+fails. Before trusting a real run:
 
 ```bash
 # Drain exactly one claim and watch it closely:
 docker compose -f deploy/docker-compose.prod.yml run --rm runner \
   agentrail runner --once
 ```
-
-If aider's OpenRouter/stdin wiring turns out not to work as expected, the
-fallback is `agentrail run`'s `codex` agent (already the default in
-`agentrail/cli/commands/run.py`'s `DEFAULT_COMMANDS`, and already installable
-via `npm install -g @openai/codex`) — but note codex's current
-`model_providers.*` config only supports the Responses API wire format, not
-OpenRouter's Chat Completions format (verified against the codex-rs source);
-confirm OpenRouter Responses-API compatibility before going that route.
 
 ## 7. Wire up optional channels
 
@@ -266,15 +264,17 @@ in this environment) — validate these on the actual server:
    `agentrail` package's two declared deps (`tree-sitter`,
    `tree-sitter-language-pack`) resolving cleanly on whatever Python/Debian
    base ends up in use.
-4. **Runner agent/OpenRouter wiring (aider) — the biggest unknown.** No
-   OpenRouter integration exists anywhere in this codebase to copy (grepped,
-   zero hits), and `agentrail`'s only four built-in agent CLIs
-   (`codex`/`claude`/`cursor`/`hermes`) don't cleanly fit OpenRouter today —
-   see `deploy/runner/Dockerfile`'s header comment for the full reasoning.
-   The aider-via-`--agent custom` path was assembled from aider's own
-   documented flags/OpenRouter support but never exercised end to end. Run
-   `agentrail runner --once` (step 6) and read the logs before trusting an
-   unattended loop.
+4. **Runner agent/OpenRouter wiring (Claude Code) — the biggest unknown.**
+   As of #1266, this runner drives `claude --bare -p` against OpenRouter's
+   native Anthropic-Messages-compatible endpoint (superseding the earlier
+   `aider` choice — see `deploy/runner/README.md`'s "Supersedes" section).
+   The image builds and `claude --version`/`agentrail --help` run inside it,
+   but whether `--bare` mode's auth resolution actually honors
+   `ANTHROPIC_AUTH_TOKEN` against a non-Anthropic base URL is unverified — see
+   `deploy/runner/README.md`'s "UNVERIFIED" section for the exact conflict
+   found in Claude Code's own docs/help text, and the one-line fallback if
+   the first real run's auth fails. Run `agentrail runner --once` (step 6)
+   and read the logs before trusting an unattended loop.
 5. **Runner execution-mode choice (host-native, no Docker socket).** This is
    the correct reading of `agentrail/sandbox/native_runner.py:select_sandbox_runner()`
    (Docker-sandbox mode triggers ONLY on `ANTHROPIC_API_KEY` being set), but
@@ -282,7 +282,9 @@ in this environment) — validate these on the actual server:
    the agent CLI run directly inside the runner container, not in a disposable
    sibling container) — acceptable for a single-tenant dogfood box, revisit if
    this ever serves untrusted issues.
-6. **`pipx` apt package name.** `deploy/runner/Dockerfile` installs aider via
-   `apt-get install pipx` on `python:3.11-slim` (Debian bookworm) — this
-   package name is expected to resolve but wasn't verified against a live
-   `apt-get update` in this environment.
+6. ~~`pipx` apt package name.~~ Resolved by #1266: the image no longer
+   installs aider/pipx at all (superseded by Claude Code + OpenRouter, see
+   `deploy/runner/README.md`). The image now builds on `node:22-slim` (Claude
+   Code requires Node >=22) with `python3`/`python3-pip` added via apt for the
+   `agentrail` CLI — both confirmed by an actual `docker build` in the
+   environment that produced #1266's PR, not just by reading source.

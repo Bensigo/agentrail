@@ -249,3 +249,85 @@ def test_docker_wrapper_preserves_introspectable_signature_for_make_execute():
     assert "model" in params
     assert "env" in params
     assert "run_id" not in params  # run_issue_in_sandbox never had this param
+
+
+def test_make_execute_env_survives_the_real_allowlist_end_to_end(monkeypatch):
+    """Integration: the REAL _make_execute(creds) output through the REAL
+    (unmocked) selector + allowlist — only the container spawn is faked.
+
+    The per-claim env names _make_execute sets (GIT_TOKEN,
+    AGENTRAIL_SERVER_BASE_URL/API_KEY/REPOSITORY_ID, AGENTRAIL_MCP_*_KEY)
+    and the names this allowlist forwards are two halves of one contract
+    kept in different files. The unit tests above each fake the other half;
+    this test couples them, so a future rename in _make_execute cannot
+    silently fall out of the allowlist (the run would still execute — the
+    container would just quietly lose its git auth / MCP keys / dashboard
+    link)."""
+    import functools
+    import json
+    from types import SimpleNamespace
+
+    import agentrail.cli.commands.runner as runner_cmd
+    from agentrail.runner.client import WorkItem
+    from agentrail.sandbox import docker_runner
+
+    calls = []
+
+    def fake_run_container(cmd, *, env=None, timeout=None):
+        calls.append({"cmd": list(cmd), "env": dict(env or {})})
+        if len(calls) == 1:
+            payload = json.dumps(
+                {"status": "green", "cost_usd": 0.0, "branch": "", "gate_reason": ""}
+            )
+            return docker_runner.ContainerResult(
+                exit_code=0,
+                stdout=(
+                    f"{docker_runner.RESULT_BEGIN}\n{payload}\n{docker_runner.RESULT_END}\n"
+                ),
+            )
+        return docker_runner.ContainerResult(exit_code=0)  # the teardown `docker rm`
+
+    # Fake ONLY the container spawn: bind run_container onto the REAL
+    # run_issue_in_sandbox. select_sandbox_runner imports the module
+    # attribute at call time, then wraps whatever it finds with the REAL
+    # allowlist wrapper — so the filter under test is the production one.
+    monkeypatch.setattr(
+        docker_runner,
+        "run_issue_in_sandbox",
+        functools.partial(
+            docker_runner.run_issue_in_sandbox, run_container=fake_run_container
+        ),
+    )
+    monkeypatch.setenv("AGENTRAIL_SANDBOX", "docker")
+    # An operator-only secret that must NOT survive into the container even
+    # though it sits in this process's environment (_make_execute's
+    # run_env = dict(os.environ) carries the WHOLE process env in).
+    monkeypatch.setenv("FLEET_CONSOLE_TOKEN", "fleet-secret")
+    monkeypatch.delenv("GIT_TOKEN", raising=False)
+
+    execute = runner_cmd._make_execute(
+        SimpleNamespace(
+            base_url="https://console.example", token="dash-key", workspace_id="ws-1"
+        )
+    )
+    result = execute(
+        WorkItem(
+            id="wi-7", workspace_id="ws-1", source="github", external_id="o/r#7",
+            repo_url="https://github.com/o/r", ref="main", title="t", body="b",
+            repository_id="repo-1",
+            mcp_keys={"linear": "lin-key"},
+            github_token="gho_workspace_token",
+        )
+    )
+
+    assert result.status == "green"
+    forwarded = calls[0]["env"]
+    # Everything _make_execute sets per-claim made it through the allowlist:
+    assert forwarded["GIT_TOKEN"] == "gho_workspace_token"
+    assert forwarded["AGENTRAIL_SERVER_BASE_URL"] == "https://console.example"
+    assert forwarded["AGENTRAIL_SERVER_API_KEY"] == "dash-key"
+    assert forwarded["AGENTRAIL_SERVER_REPOSITORY_ID"] == "repo-1"
+    assert forwarded["AGENTRAIL_MCP_LINEAR_KEY"] == "lin-key"
+    # ...and the process's own broader environment did not:
+    for leaked in ("FLEET_CONSOLE_TOKEN", "PATH", "HOME", "AGENTRAIL_SANDBOX"):
+        assert leaked not in forwarded

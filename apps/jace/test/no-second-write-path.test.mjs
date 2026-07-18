@@ -5,7 +5,14 @@
 // app's runtime source to PROVE the factory's mutating write path is reachable
 // only through the single, human-gated `create_issue` tool, while allowing
 // additional READ-ONLY tools to exist (and, where genuinely needed, to shell
-// out via `child_process`) without weakening that guarantee:
+// out via `child_process`) without weakening that guarantee. `send_connect_link`
+// (issue #1263 PR ②) is a THIRD category this test also tolerates: an
+// ungated write that is narrow and self-scoped enough to not count as a
+// second path into the FACTORY — it only ever overwrites the CALLING
+// conversation's own chat-identity link-token slot, never GitHub or a
+// workspace. See its own file doc-comment for the full argument; this test
+// only needs to keep proving `create_issue` stays the sole GATED/factory-
+// facing write:
 //
 //   1. `agent/tools/` contains exactly the known, reviewed tool set:
 //      `create_issue` (mutating), `standup` and `codebase_query` (read-only).
@@ -55,6 +62,7 @@ const EXPECTED_TOOL_FILES = [
   "codebase_query.ts",
   "create_issue.ts",
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
+  "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process
   "standup.ts",
 ].sort();
 const EXPECTED_MUTATING_TOOL = "create_issue.ts";

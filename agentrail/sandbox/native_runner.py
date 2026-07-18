@@ -50,6 +50,15 @@ ENV_AGENT = "AGENTRAIL_AGENT"
 ENV_SANDBOX_RUNTIME = "AGENTRAIL_SANDBOX_RUNTIME"
 SANDBOX_RUNTIME_PKG = "@anthropic-ai/sandbox-runtime"
 
+# #1267 PR③: the deterministic prefix a hosted-refusal ``gate_reason`` always
+# starts with. This is the cross-process CONTRACT the TS queue-transition side
+# keys on (packages/db-postgres/src/queries/runner.ts defines the byte-identical
+# ``HOSTED_REFUSAL_PREFIX`` constant) to route a refusal straight to a human —
+# spending NO retry budget and bumping NO tier — instead of retrying it like an
+# ordinary gate failure. Keep the two constants in lockstep if you ever change
+# one; a mismatch silently turns every refusal back into a normal retry.
+HOSTED_REFUSAL_PREFIX = "hosted-refusal: "
+
 # The run id + log dir we drive ``agentrail run issue`` to write under, so the
 # verdict/cost artifacts land at a known path inside the isolated working dir.
 RUN_ID = "host-run"
@@ -85,10 +94,17 @@ def _result_from_run_json(
 ) -> RunResult:
     """Parse ``run_dir/run.json`` → RunResult, mirroring the container parser.
 
-    Verdict comes from ``objectiveGate.verdict``; on a missing gate we fall back
-    to the process exit status. Cost is the sum of the per-phase cost ledger
-    (``.agentrail/run/cost-events.jsonl``). The branch is the repo's current HEAD.
-    A missing/unreadable ``run.json`` is an ``error`` (no trustworthy verdict).
+    A top-level ``refusal`` marker (#1267 PR③ — written by pipeline.py's hosted
+    startup assert, before any phase runs) takes precedence over everything
+    else: it always yields ``status="error"`` with ``gate_reason`` prefixed by
+    :data:`HOSTED_REFUSAL_PREFIX`, so the queue transition can route it straight
+    to a human instead of retrying it like an ordinary gate failure.
+
+    Otherwise verdict comes from ``objectiveGate.verdict``; on a missing gate we
+    fall back to the process exit status. Cost is the sum of the per-phase cost
+    ledger (``.agentrail/run/cost-events.jsonl``). The branch is the repo's
+    current HEAD. A missing/unreadable ``run.json`` is an ``error`` (no
+    trustworthy verdict).
     """
     status = "error"
     cost = 0.0
@@ -98,19 +114,34 @@ def _result_from_run_json(
     run_json = run_dir / "run.json"
     try:
         data = json.loads(run_json.read_text())
-        gate = data.get("objectiveGate") or {}
-        verdict = gate.get("verdict")
-        if verdict == "green":
-            status = "green"
-        elif verdict == "red":
-            status = "red"
-            reasons = gate.get("failedReasons") or []
-            reason = "; ".join(str(r) for r in reasons)
+        refusal = data.get("refusal")
+        if isinstance(refusal, dict):
+            # #1267 PR③: a hosted startup refusal (e.g. no Independent Reviewer
+            # configured, #1270) writes this marker BEFORE finalize_objective_gate
+            # ever runs — its run.json therefore has no "objectiveGate" key,
+            # which the fallback below would otherwise read as "agentrail run
+            # exited 1" and treat exactly like a real gate failure (retried up
+            # to the full budget, escalating tiers that can never fix a static
+            # config gap). Recognize the marker FIRST so a refusal is always
+            # "error" with a deterministically-prefixed reason, never "red"
+            # (red means "worth retrying/escalating tier"; this never is).
+            status = "error"
+            message = str(refusal.get("message") or "hosted run refused at startup")
+            reason = f"{HOSTED_REFUSAL_PREFIX}{message}"
         else:
-            # No gate recorded: fall back to the process exit status.
-            status = "green" if run_status == 0 else "red"
-            if status == "red":
-                reason = f"agentrail run exited {run_status}"
+            gate = data.get("objectiveGate") or {}
+            verdict = gate.get("verdict")
+            if verdict == "green":
+                status = "green"
+            elif verdict == "red":
+                status = "red"
+                reasons = gate.get("failedReasons") or []
+                reason = "; ".join(str(r) for r in reasons)
+            else:
+                # No gate recorded: fall back to the process exit status.
+                status = "green" if run_status == 0 else "red"
+                if status == "red":
+                    reason = f"agentrail run exited {run_status}"
     except FileNotFoundError:
         status = "error"
         reason = "run.json not found; agentrail run did not complete"

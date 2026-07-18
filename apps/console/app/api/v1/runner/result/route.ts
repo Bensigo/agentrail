@@ -93,6 +93,12 @@ export async function POST(request: NextRequest) {
     status,
     costUsd: typeof body.cost_usd === "number" ? body.cost_usd : undefined,
     prUrl: typeof body.pr_url === "string" ? body.pr_url : undefined,
+    // #1267 PR③: thread the runner's gate_reason into the queue transition so a
+    // hosted-refusal `error` (gate_reason prefixed "hosted-refusal: ") escalates
+    // straight to a human, spending no retry budget — without this passthrough
+    // the refusal detection in recordRunnerResult can never fire. Any other
+    // value (or absence) leaves the transition byte-identical to before.
+    gateReason: typeof body.gate_reason === "string" ? body.gate_reason : undefined,
   });
   if (!result.updated) {
     return NextResponse.json(

@@ -1512,13 +1512,40 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
     # without it — refuse right here, before any phase runs (RunContext isn't
     # even built yet). A local/dev run instead gets a loud, non-fatal warning
     # printed into this same run header so it cannot be missed in the
-    # transcript. Either way, the reason is recorded into run.json at
-    # finalization (finalize_objective_gate, below) so every run's record
-    # shows why the seat did or didn't run. When status is "active" neither
-    # branch fires — byte-identical to before this seam existed.
+    # transcript. The reason is recorded into run.json either way: a hosted
+    # refusal records it immediately below (it never reaches finalization —
+    # see write_run_refusal_marker, #1267 PR③); a local warning's reason is
+    # recorded at finalization (finalize_objective_gate, below) so every run's
+    # record shows why the seat did or didn't run. When status is "active"
+    # neither branch fires — byte-identical to before this seam existed.
     if is_hosted_run() and independent_review_status != "active":
-        print(_independent_review_fatal_message(agent, independent_review_status),
-              file=sys.stderr)
+        fatal_message = _independent_review_fatal_message(agent, independent_review_status)
+        # Persist the refusal itself (#1267 PR③): a hosted refusal previously
+        # left a run.json that existed but was permanently unfinalized, with no
+        # field saying why — the runner's native_runner.py then folded it into
+        # a bare "agentrail run exited 1", indistinguishable from a real
+        # objective-gate failure, and the queue retried it up to the full
+        # budget (pointless: no stronger model fixes a static config gap).
+        # Recording the SAME message object used for the stderr print below
+        # keeps this a single source of truth — no risk of the two drifting.
+        artifacts.write_run_refusal_marker(
+            metadata_file,
+            kind="independent_review",
+            status=independent_review_status,
+            message=fatal_message,
+            independent_review_value=independent_review_metadata_value(
+                independent_review_status
+            ),
+        )
+        # Failure telemetry — non-fatal, same push_failure_event seam and env
+        # link every other call site in this module uses (see step 17c below).
+        try:
+            push_failure_event(
+                target_dir, run_id, "hosted_refusal", "startup", fatal_message,
+            )
+        except Exception as _exc:  # noqa: BLE001 — non-fatal by design
+            _log.debug("hosted refusal failure push skipped: %s", _exc)
+        print(fatal_message, file=sys.stderr)
         return 1
     if not is_hosted_run() and independent_review_status != "active":
         print(_independent_review_warning(agent, independent_review_status))

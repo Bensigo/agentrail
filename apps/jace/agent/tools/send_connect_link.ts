@@ -11,7 +11,7 @@
 // token, scoped server-side to the caller. That narrow blast radius (a
 // stray, harmless re-mint for the identity already talking to Jace right
 // now, never a cross-tenant or factory-facing action) is why this carries NO
-// `approval` gate, unlike create_issue's `approval: always()`.
+// `approval` gate, unlike the console-gated write tools (create_issue etc.).
 //
 // It takes NO input from the model — inputSchema is an empty object. The
 // identifying value is `ctx.session.id`, Eve's own session id for the

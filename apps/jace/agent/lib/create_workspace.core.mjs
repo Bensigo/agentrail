@@ -1,7 +1,7 @@
 // Pure, dependency-free core for creating a workspace from a conversation via
 // the console (issue #1264 PR ①) — Jace's other GATED write action on the
 // outside world, alongside create_issue (see agent/tools/create_workspace.ts's
-// doc-comment for why this carries approval: always(), same gate class as
+// doc-comment for why this carries the console-gated approval, same gate class as
 // create_issue). No SDK, no network primitives of its own: the single HTTP
 // call is an injected `transport` seam (real `fetch` with a timeout in the
 // thin tool wrapper, a fake in tests), so every branch is unit-testable
@@ -16,7 +16,7 @@
 // supplied: the tool wrapper reads it off `ctx.session.id` — Eve's own
 // session id for the conversation actually invoking this tool. `name` IS
 // model-supplied, but that's fine: the human approves the EXACT name before
-// this ever runs (approval: always()).
+// this ever runs (console-gated approval).
 //
 // Failure handling deliberately differs from send_connect_link: THIS
 // endpoint's 409 family (apps/console/app/api/v1/runner/workspaces/route.ts)

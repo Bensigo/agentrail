@@ -16,7 +16,8 @@ HTTP sidecar.
   `POST /eve/v1/session/:id`, `GET /eve/v1/session/:id/stream` (NDJSON).
 - Jace has THREE human-gated ways to act on the outside world: `create_issue`,
   `create_workspace`, and `create_repo`. Every call to any of them is approved
-  or rejected by a human before it runs (`approval: always()`). Every other
+  or rejected by a human before it runs (approve/deny buttons in chat via
+  `consoleGatedApproval`). Every other
   tool is ungated because it is read-only or scoped to this conversation's own
   state — never a write to GitHub, a workspace, or the factory.
 - `create_issue` shells out to the existing `agentrail issue create` CLI

@@ -23,7 +23,7 @@
 //
 //   C. Connections. Its two connections are declared with an ALLOW-list
 //      (smallest surface), and neither carries an approval gate (a read-only
-//      source has nothing to gate — and a blanket always() would read as a
+//      source has nothing to gate — and any approval gate would read as a
 //      second write path).
 //
 // The complementary guarantee — that root's write surface is UNCHANGED — is
@@ -179,8 +179,8 @@ test("both researcher connections are read-only allow-lists with no approval gat
     assert.match(src, /tools:\s*\{\s*allow:/, `${f} must restrict tools with an allow-list`);
     assert.doesNotMatch(
       src,
-      /approval:\s*(always|once)\(/,
-      `${f} is read-only and must not carry an approval gate`,
+      /approval:\s*(always|once)\(|consoleGatedApproval/,
+      `${f} is read-only and must not carry an approval gate (always/once or consoleGatedApproval)`,
     );
   }
 });

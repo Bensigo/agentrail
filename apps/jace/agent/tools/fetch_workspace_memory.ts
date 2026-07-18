@@ -11,7 +11,7 @@
 //
 // Least privilege by construction:
 //  - It writes NOTHING and sets NO `approval` — read-only tools do not gate
-//    (approval: always() is reserved for root's single mutating create_issue).
+//    (approval gates are reserved for root's gated write tools).
 //  - The network reach is exactly one endpoint via the global `fetch`. It does
 //    NOT import node:child_process; the model cannot use it to reach an
 //    arbitrary URL — the host/path come from configured env, never from model

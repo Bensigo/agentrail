@@ -225,6 +225,13 @@
       "when": 1784325865602,
       "tag": "0030_jace_sessions_intro_anchor",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1784336006641,
+      "tag": "0031_channel_inbox_intro_anchor",
+      "breakpoints": true
     }
   ]
 }

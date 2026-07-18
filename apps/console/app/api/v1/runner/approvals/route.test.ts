@@ -53,6 +53,7 @@ const MOCK_BODY = {
   eveSessionId: "eve-session-1",
   toolName: "create_issue",
   toolInput: { title: "Add dark mode", acceptanceCriteria: ["Toggle in settings"] },
+  idempotencyKey: "eve-session-1:turn-1:create_issue:abc123",
 };
 
 const MOCK_SESSION_WS = {
@@ -80,7 +81,7 @@ const MOCK_APPROVAL = {
   chatIdentityId: "chat-identity-1",
   sessionId: "session-1",
   eveSessionId: "eve-session-1",
-  requestId: "req-1",
+  requestId: MOCK_BODY.idempotencyKey,
   callbackToken: "cbtoken123456",
   toolName: "create_issue",
   toolInput: MOCK_BODY.toolInput,
@@ -140,26 +141,51 @@ describe("POST /api/v1/runner/approvals — auth + body validation", () => {
   });
 
   it("400 when eveSessionId is missing", async () => {
-    const res = await POST(req({ toolName: "create_issue", toolInput: {} }));
+    const res = await POST(
+      req({ toolName: "create_issue", toolInput: {}, idempotencyKey: "k" })
+    );
     expect(res.status).toBe(400);
     expect(mockGetSession).not.toHaveBeenCalled();
   });
 
   it("400 when toolName is missing", async () => {
-    const res = await POST(req({ eveSessionId: "eve-session-1", toolInput: {} }));
+    const res = await POST(
+      req({ eveSessionId: "eve-session-1", toolInput: {}, idempotencyKey: "k" })
+    );
     expect(res.status).toBe(400);
   });
 
   it("400 when toolInput is missing", async () => {
-    const res = await POST(req({ eveSessionId: "eve-session-1", toolName: "create_issue" }));
+    const res = await POST(
+      req({ eveSessionId: "eve-session-1", toolName: "create_issue", idempotencyKey: "k" })
+    );
     expect(res.status).toBe(400);
   });
 
   it("400 when toolInput is not a plain object (e.g. an array)", async () => {
     const res = await POST(
-      req({ eveSessionId: "eve-session-1", toolName: "create_issue", toolInput: [] })
+      req({
+        eveSessionId: "eve-session-1",
+        toolName: "create_issue",
+        toolInput: [],
+        idempotencyKey: "k",
+      })
     );
     expect(res.status).toBe(400);
+  });
+
+  it("400 when idempotencyKey is missing — it is REQUIRED, not optional", async () => {
+    const res = await POST(
+      req({ eveSessionId: "eve-session-1", toolName: "create_issue", toolInput: {} })
+    );
+    expect(res.status).toBe(400);
+    expect(mockGetSession).not.toHaveBeenCalled();
+  });
+
+  it("400 when idempotencyKey is an empty string", async () => {
+    const res = await POST(req({ ...MOCK_BODY, idempotencyKey: "" }));
+    expect(res.status).toBe(400);
+    expect(mockGetSession).not.toHaveBeenCalled();
   });
 });
 
@@ -211,9 +237,12 @@ describe("POST /api/v1/runner/approvals — session resolution + tenant scoping"
   it("201 when the session is an intro (workspaceId null) session, regardless of which bearer asks — the create_workspace cold-start flow", async () => {
     mockGetSession.mockResolvedValue(MOCK_SESSION_INTRO as never);
     mockRecord.mockResolvedValue({
-      ...MOCK_APPROVAL,
-      workspaceId: null,
-      sessionId: MOCK_SESSION_INTRO.id,
+      approval: {
+        ...MOCK_APPROVAL,
+        workspaceId: null,
+        sessionId: MOCK_SESSION_INTRO.id,
+      },
+      created: true,
     } as never);
 
     const res = await POST(req(MOCK_BODY));
@@ -229,7 +258,7 @@ describe("POST /api/v1/runner/approvals — session resolution + tenant scoping"
 
   it("201 when the session's workspaceId matches the bearer's own workspace", async () => {
     mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
-    mockRecord.mockResolvedValue(MOCK_APPROVAL as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
 
     const res = await POST(req(MOCK_BODY));
 
@@ -244,9 +273,9 @@ describe("POST /api/v1/runner/approvals — session resolution + tenant scoping"
 });
 
 describe("POST /api/v1/runner/approvals — recordApprovalRequest arguments + response shape", () => {
-  it("passes eveSessionId/toolName/toolInput straight through, vestigial literal approve/deny option ids, and a freshly-minted requestId", async () => {
+  it("passes eveSessionId/toolName/toolInput straight through, vestigial literal approve/deny option ids, and requestId = the caller's idempotencyKey verbatim", async () => {
     mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
-    mockRecord.mockResolvedValue(MOCK_APPROVAL as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
 
     await POST(req(MOCK_BODY));
 
@@ -257,26 +286,26 @@ describe("POST /api/v1/runner/approvals — recordApprovalRequest arguments + re
         toolInput: MOCK_BODY.toolInput,
         approveOptionId: "approve",
         denyOptionId: "deny",
-        requestId: expect.any(String),
+        requestId: MOCK_BODY.idempotencyKey,
       })
     );
   });
 
-  it("mints a DIFFERENT requestId on each call (never a fixed/reused constant)", async () => {
+  it("derives requestId from idempotencyKey alone — two different keys produce two different requestIds, same key produces the same requestId", async () => {
     mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
-    mockRecord.mockResolvedValue(MOCK_APPROVAL as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
 
-    await POST(req(MOCK_BODY));
-    await POST(req(MOCK_BODY));
+    await POST(req({ ...MOCK_BODY, idempotencyKey: "key-a" }));
+    await POST(req({ ...MOCK_BODY, idempotencyKey: "key-b" }));
+    await POST(req({ ...MOCK_BODY, idempotencyKey: "key-a" }));
 
-    const first = mockRecord.mock.calls[0]?.[0]?.requestId;
-    const second = mockRecord.mock.calls[1]?.[0]?.requestId;
-    expect(first).not.toBe(second);
+    const requestIds = mockRecord.mock.calls.map((c) => c[0]?.requestId);
+    expect(requestIds).toEqual(["key-a", "key-b", "key-a"]);
   });
 
-  it("responds 201 { approvalId, status: 'pending' } — exactly those two fields", async () => {
+  it("responds 201 { approvalId, status: 'pending' } — exactly those two fields — on a fresh (created: true) record", async () => {
     mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
-    mockRecord.mockResolvedValue(MOCK_APPROVAL as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
 
     const res = await POST(req(MOCK_BODY));
     const body = await res.json();
@@ -286,10 +315,51 @@ describe("POST /api/v1/runner/approvals — recordApprovalRequest arguments + re
   });
 });
 
+describe("POST /api/v1/runner/approvals — idempotent replay (created: false, issue #1273 PR ②)", () => {
+  it("responds 200 with the EXISTING approval's { approvalId, status } — no second row, no second send", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    const existing = { ...MOCK_APPROVAL, id: "approval-existing", status: "pending" };
+    mockRecord.mockResolvedValue({ approval: existing, created: false } as never);
+
+    const res = await POST(req(MOCK_BODY));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ approvalId: "approval-existing", status: "pending" });
+    expect(mockRender).not.toHaveBeenCalled();
+    expect(mockBuildKeyboard).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("reflects the EXISTING approval's actual (already-terminal) status on replay, not a hardcoded 'pending'", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    const existing = { ...MOCK_APPROVAL, id: "approval-existing", status: "approved" };
+    mockRecord.mockResolvedValue({ approval: existing, created: false } as never);
+
+    const res = await POST(req(MOCK_BODY));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ approvalId: "approval-existing", status: "approved" });
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("still calls recordApprovalRequest with the same derived requestId on replay (the DB layer is what detects the conflict, not this route)", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: false } as never);
+
+    await POST(req(MOCK_BODY));
+
+    expect(mockRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: MOCK_BODY.idempotencyKey })
+    );
+  });
+});
+
 describe("POST /api/v1/runner/approvals — rich Telegram send (best-effort)", () => {
   it("renders the message from toolName/toolInput and sends it with an Approve/Deny keyboard to the session's conversation", async () => {
     mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
-    mockRecord.mockResolvedValue(MOCK_APPROVAL as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
 
     await POST(req(MOCK_BODY));
 
@@ -305,7 +375,7 @@ describe("POST /api/v1/runner/approvals — rich Telegram send (best-effort)", (
 
   it("still responds 201 when the Telegram send fails (best-effort, never blocks the record)", async () => {
     mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
-    mockRecord.mockResolvedValue(MOCK_APPROVAL as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
     mockSend.mockResolvedValue({ ok: false, error: "boom" } as never);
 
     const res = await POST(req(MOCK_BODY));
@@ -315,7 +385,7 @@ describe("POST /api/v1/runner/approvals — rich Telegram send (best-effort)", (
 
   it("still responds 201 when the Telegram send throws unexpectedly", async () => {
     mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
-    mockRecord.mockResolvedValue(MOCK_APPROVAL as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
     mockSend.mockRejectedValue(new Error("network down"));
 
     const res = await POST(req(MOCK_BODY));
@@ -326,7 +396,7 @@ describe("POST /api/v1/runner/approvals — rich Telegram send (best-effort)", (
   it("skips the send (no throw, still 201) when TELEGRAM_BOT_TOKEN is unset", async () => {
     delete process.env["TELEGRAM_BOT_TOKEN"];
     mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
-    mockRecord.mockResolvedValue(MOCK_APPROVAL as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
 
     const res = await POST(req(MOCK_BODY));
 
@@ -339,7 +409,7 @@ describe("POST /api/v1/runner/approvals — rich Telegram send (best-effort)", (
       ...MOCK_SESSION_WS,
       channel: "slack",
     } as never);
-    mockRecord.mockResolvedValue(MOCK_APPROVAL as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
 
     const res = await POST(req(MOCK_BODY));
 

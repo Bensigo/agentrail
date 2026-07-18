@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import {
   getJaceSessionByEveSessionId,
@@ -36,12 +35,12 @@ import {
  * question connect-link's doc-comment tracks under #1295 — this route
  * inherits that posture rather than re-litigating it.
  *
- * Body: `{ eveSessionId, toolName, toolInput }`. Every failure to resolve a
- * usable session — absent, or a defensive (unreachable in practice) row with
- * neither anchor, or a cross-tenant mismatch — collapses into the SAME 404
- * body (house anti-enumeration posture, matching connect-link): a caller
- * cannot distinguish "no such session" from "wrong tenant" from a data
- * anomaly by reading the response.
+ * Body: `{ eveSessionId, toolName, toolInput, idempotencyKey }`. Every
+ * failure to resolve a usable session — absent, or a defensive (unreachable
+ * in practice) row with neither anchor, or a cross-tenant mismatch —
+ * collapses into the SAME 404 body (house anti-enumeration posture,
+ * matching connect-link): a caller cannot distinguish "no such session"
+ * from "wrong tenant" from a data anomaly by reading the response.
  *
  * `chatIdentityId`/`workspaceId` are both passed through to
  * `recordApprovalRequest` whenever the session has them (NOT an either/or
@@ -49,27 +48,37 @@ import {
  * the Telegram webhook's SENDER CHECK verifies against later, and a
  * graduated session still needs it even though it also has a `workspaceId`.
  *
- * `requestId` is freshly minted here (`randomUUID()`) rather than carrying
- * any real Eve inputRequest id — the whole point of this seam (CONTROLLER
- * DESIGN point 1) is that the gated tools' approval function bypasses Eve's
- * HITL/inputRequest machinery entirely, so no such id exists to reuse. It
- * exists solely to satisfy `jace_approvals`'s `(eveSessionId, requestId)`
- * uniqueness — as vestigial as the literal "approve"/"deny" option ids below.
+ * `idempotencyKey` (issue #1273 PR ②, REQUIRED) is composed by the caller —
+ * Jace's `consoleGatedApproval` approval fn, `apps/jace/agent/lib/
+ * console_gated_approval.core.mjs` — and used VERBATIM as `requestId`: no
+ * hashing, no reshaping. It rides through `recordApprovalRequest`'s
+ * `(eveSessionId, requestId)` uniqueness (issue #1273 PR ①'s vestigial-id
+ * slot, now load-bearing), which is now idempotent-on-conflict rather than
+ * throwing: a retried POST with the same `(eveSessionId, idempotencyKey)`
+ * returns the EXISTING approval's `{ approvalId, status }` with 200 —
+ * `created: false` on the query result — instead of minting a second row or
+ * sending the channel message a second time. A fresh request (`created:
+ * true`) still responds 201, unchanged from PR ①. The replay response's
+ * `status` reflects the EXISTING row's actual (possibly already-terminal)
+ * status, never a hardcoded `"pending"` — a caller that retries after a
+ * human already answered gets the real answer back immediately.
  *
  * The Telegram send is BEST-EFFORT (mirrors `notifyRunOutcome`'s posture
  * elsewhere in this app): the approval row is the durable source of truth,
  * so a transport blip, a missing `TELEGRAM_BOT_TOKEN`, or a non-Telegram
  * channel never fails this response — the poller (PR ②) keeps waiting and
- * owns its own TTL either way. Expiry is not enforced here at all: no
- * server-side timeout flips a `pending` approval to `expired` in this PR —
- * that "the poller's TTL times out to an honest denial" flow is PR ②'s deny
- * path, not this route's.
+ * owns its own TTL either way. It fires ONLY on `created: true` — a replay
+ * must never send a second message for the same request. Expiry is not
+ * enforced here at all: no server-side timeout flips a `pending` approval to
+ * `expired` in this PR — that "the poller's TTL times out to an honest
+ * denial" flow is PR ②'s deny path, not this route's.
  */
 
 interface RawBody {
   eveSessionId: string;
   toolName: string;
   toolInput: Record<string, unknown>;
+  idempotencyKey: string;
 }
 
 function isRawBody(value: unknown): value is RawBody {
@@ -82,7 +91,9 @@ function isRawBody(value: unknown): value is RawBody {
     body["toolName"].length > 0 &&
     !!body["toolInput"] &&
     typeof body["toolInput"] === "object" &&
-    !Array.isArray(body["toolInput"])
+    !Array.isArray(body["toolInput"]) &&
+    typeof body["idempotencyKey"] === "string" &&
+    body["idempotencyKey"].length > 0
   );
 }
 
@@ -146,7 +157,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Body must have eveSessionId (string), toolName (string) and toolInput (object)",
+          "Body must have eveSessionId (string), toolName (string), toolInput (object), and idempotencyKey (string)",
       },
       { status: 400 }
     );
@@ -163,27 +174,29 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
-  const approval = await recordApprovalRequest({
+  const { approval, created } = await recordApprovalRequest({
     workspaceId: session.workspaceId ?? undefined,
     chatIdentityId: session.chatIdentityId ?? undefined,
     sessionId: session.id,
     eveSessionId: body.eveSessionId,
-    requestId: randomUUID(),
+    requestId: body.idempotencyKey,
     toolName: body.toolName,
     toolInput: body.toolInput,
     approveOptionId: "approve",
     denyOptionId: "deny",
   });
 
-  await sendApprovalMessage(
-    session,
-    approval.callbackToken,
-    body.toolName,
-    body.toolInput
-  );
+  if (created) {
+    await sendApprovalMessage(
+      session,
+      approval.callbackToken,
+      body.toolName,
+      body.toolInput
+    );
+  }
 
   return NextResponse.json(
-    { approvalId: approval.id, status: "pending" },
-    { status: 201 }
+    { approvalId: approval.id, status: approval.status },
+    { status: created ? 201 : 200 }
   );
 }

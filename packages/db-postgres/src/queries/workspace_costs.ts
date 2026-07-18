@@ -1,0 +1,299 @@
+import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { db } from "../db.js";
+import { runs } from "../schema/runs.js";
+import { queueEntries } from "../schema/queue_entries.js";
+import { getWorkspaceBudgetState, sumWorkspaceSpendSince } from "./workspace_budget.js";
+
+/**
+ * Per-workspace cost aggregation reads (issue #1272 PR ①). Consumed by the
+ * console workspace-costs page (PR ②, an RSC read — no API route needed).
+ *
+ * Honesty caveats this whole file inherits from #1269 PR ②a
+ * (queries/workspace_budget.ts) and its recon (issue #1269 PR② annex §1/§2)
+ * — repeated here because every function below reads the same `runs` rows:
+ *   - Costs land ONCE, at terminal report (`recordRunnerResult`,
+ *     queries/runner.ts) — an in-flight `running` run's spend is invisible
+ *     until it finishes. These are historical numbers, not a real-time meter.
+ *   - Bucketing is by `runs.created_at` (claim time), not completion time —
+ *     a run claimed in the last minute of a month books to that month even
+ *     if it finishes into the next one.
+ *   - This is the coarse Postgres surface. ClickHouse's `cost_events`
+ *     (packages/db-clickhouse) is the granular per-phase/per-token-type path
+ *     — not duplicated here.
+ *   - Per-issue budget caps (the $3 default leash / --budget-usd) are
+ *     factory-side (agentrail/run) config, enforced and recorded into each
+ *     run's own `run.json` (`blockedReason` / `budgetCeilingCrossed`, #1316)
+ *     — invisible to this workspace-level surface. `getWorkspaceCostOverview`
+ *     below only ever reports the WORKSPACE monthly ceiling (#1269), never
+ *     a per-issue one.
+ */
+
+/** A page's worth of recent per-task rows for the cost detail view; the
+ * monthly rollup is what a chart/summary reads, this is just recent detail.
+ * Callers needing more history can pass an explicit larger limit. */
+export const DEFAULT_RUN_COST_LIST_LIMIT = 50;
+
+export interface WorkspaceRunCostRow {
+  runId: string;
+  /** Human-meaningful task identity — NEVER the bare run id/UUID (house UI
+   * rule). Three-tier fallback, one per real `runs` writer (see the
+   * writer-landscape note on `listWorkspaceRunCosts`): `runs.title` when the
+   * writer set it, else the LEFT-JOINed `queue_entries.title`, else
+   * `runs.branch` (`NOT NULL` on every writer) as the floor. */
+  taskIdentity: string;
+  status: "queued" | "running" | "success" | "failed";
+  costUsd: number;
+  createdAt: string;
+}
+
+/**
+ * Per-task cost rows for `workspaceId` within `[periodStartIso,
+ * periodEndIso)`, newest-first. Half-open window for the same reason
+ * `sumWorkspaceSpendSince` is: the caller controls both edges explicitly.
+ * Backed by the same `runs_workspace_id_created_at_idx` composite index
+ * (migration 0034) `sumWorkspaceSpendSince` uses.
+ *
+ * Writer landscape for `runs` (all three verified by reading + live dev-DB
+ * rows — this is WHY the query joins):
+ *   1. `claimQueueEntry` (queries/runner.ts:492-511, the self-hosted/fleet
+ *      claim path): sets `runs.id` AND `runs.queue_entry_id` to the queue
+ *      entry's own id and denormalizes `queue_entries.title` onto
+ *      `runs.title` at insert — the join is redundant for these rows, but
+ *      harmless (both tiers agree).
+ *   2. `register_run` (agentrail/afk/queue_store.py:332-368, called by the
+ *      heartbeat dispatch loop, agentrail/heartbeat/runtime.py:~420-482):
+ *      upserts `runs` rows with NO title at all, under its OWN uuid4 run id
+ *      (≠ `queue_entry_id`), branch synthesized as
+ *      `afk/{source}-{external_id}`. Its `queue_entry_id` DOES resolve to a
+ *      `queue_entries` row with a real title — the LEFT JOIN exists for
+ *      exactly these rows; without it they'd surface branch slugs like
+ *      "afk/github-owner/repo#901" instead of the actual issue title.
+ *   3. `upsertRun` (queries/index.ts, the CLI-direct ingest path): `title`
+ *      optional (nullable), `queue_entry_id` never set — no queue entry
+ *      exists at all, which is why the join must be LEFT (an inner join
+ *      would drop these rows entirely) and why `runs.branch` remains the
+ *      final floor.
+ * `runs.queue_entry_id` has no DB-level FK (no `.references()` in the
+ * Drizzle schema, no constraint in any migration) — the join target
+ * `queue_entries.id` is its PK, so the LEFT JOIN cannot fan out rows.
+ */
+export async function listWorkspaceRunCosts(
+  workspaceId: string,
+  periodStartIso: string,
+  periodEndIso: string,
+  limit: number = DEFAULT_RUN_COST_LIST_LIMIT
+): Promise<WorkspaceRunCostRow[]> {
+  const rows = await db
+    .select({
+      id: runs.id,
+      taskIdentity: sql<string>`COALESCE(${runs.title}, ${queueEntries.title}, ${runs.branch})`,
+      status: runs.status,
+      costUsd: sql<number>`COALESCE(${runs.costUsd}, 0)`,
+      createdAt: runs.createdAt,
+    })
+    .from(runs)
+    .leftJoin(queueEntries, eq(runs.queueEntryId, queueEntries.id))
+    .where(
+      and(
+        eq(runs.workspaceId, workspaceId),
+        gte(runs.createdAt, new Date(periodStartIso)),
+        lt(runs.createdAt, new Date(periodEndIso))
+      )
+    )
+    .orderBy(desc(runs.createdAt))
+    .limit(limit);
+
+  return rows.map((r) => ({
+    runId: r.id,
+    taskIdentity: r.taskIdentity,
+    status: r.status,
+    costUsd: r.costUsd ?? 0,
+    createdAt:
+      r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+  }));
+}
+
+/** Default months of history the rollup returns (including the current
+ * partial month) — enough for a trailing trend chart without an explicit
+ * caller-supplied window. */
+export const DEFAULT_MONTHLY_ROLLUP_MONTHS = 6;
+
+export interface WorkspaceMonthlyCostRow {
+  /** UTC "YYYY-MM", same format as workspace_budget.ts's `period` key. */
+  monthKey: string;
+  totalCostUsd: number;
+  runCount: number;
+}
+
+/**
+ * The UTC month, `monthsAgo` months before `now` (0 = the current, partial,
+ * month) — mirrors apps/console/app/api/v1/runner/claim/route.ts's
+ * `currentBudgetWindow` (lines ~33-44) EXACTLY: same `Date.UTC(year, month,
+ * 1)` / `Date.UTC(year, month + 1, 1)` half-open construction and the same
+ * "YYYY-MM" key format, generalized to step back an arbitrary number of
+ * months instead of only "this month". That route's helper cannot be
+ * imported here (it lives in apps/console, a downstream consumer of this
+ * package, not a dependency of it) — this is a parallel implementation of
+ * the SAME convention, not a copy of the SAME symbol. JS `Date.UTC`
+ * normalizes an out-of-range month index by carrying into the year, so
+ * stepping back across a year boundary needs no special-casing.
+ */
+function utcMonthWindow(
+  monthsAgo: number,
+  now: Date
+): { key: string; startIso: string; endIso: string } {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth() - monthsAgo;
+  const start = new Date(Date.UTC(year, month, 1));
+  const end = new Date(Date.UTC(year, month + 1, 1));
+  const key = `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, "0")}`;
+  return { key, startIso: start.toISOString(), endIso: end.toISOString() };
+}
+
+/**
+ * One row per UTC calendar month for `workspaceId`, oldest-first, ending at
+ * (and including) the current partial month — `monthsBack` total rows.
+ * `monthsBack` is clamped to `Math.max(1, Math.trunc(monthsBack))`, so a
+ * zero/negative/fractional value still yields at least the current month.
+ * Months with no runs still get a row (`totalCostUsd: 0, runCount: 0`) so a
+ * trend chart never shows a gap.
+ *
+ * Buckets in a single grouped query rather than `monthsBack` round trips.
+ * Deliberately uses `EXTRACT(YEAR/MONTH FROM created_at AT TIME ZONE
+ * 'UTC')::int` instead of `date_trunc(...)`, for two reasons verified before
+ * writing this:
+ *   1. postgres.js (this package's driver, packages/db-postgres/src/db.ts)
+ *      returns `bigint`/`numeric` columns as STRINGS by default (no custom
+ *      type parsers are registered) — an uncast `COUNT(*)` would land as
+ *      `"3"`, not `3`. The explicit `::int` cast (int4) is what makes it
+ *      come back as a genuine JS number.
+ *   2. `date_trunc('month', created_at AT TIME ZONE 'UTC')` would return a
+ *      timestamp already shifted to UTC wall-clock but WITHOUT a timezone
+ *      marker on the wire — and postgres.js's date parser is a plain `new
+ *      Date(x)`, which parses a marker-less date-time string as LOCAL time,
+ *      not UTC. Round-tripping the bucket through a timestamp value would
+ *      silently reintroduce a timezone bug on any machine whose local TZ
+ *      isn't UTC. Returning two small cast integers sidesteps this
+ *      entirely — no timestamp value crosses the wire for the bucket key.
+ *
+ * NULL-safe the same way `sumWorkspaceSpendSince` is: `COALESCE(SUM(...),
+ * 0)` in SQL (a group made entirely of legacy NULL `cost_usd` rows sums to
+ * NULL otherwise) plus a JS-level `?? 0` belt-and-braces fallback.
+ *
+ * The window bounds are interpolated as plain ISO strings, NOT `new
+ * Date(...)` — confirmed against the real dev DB, not just the mocked unit
+ * tests: a raw `Date` object passed into a `db.execute(sql\`...\`)` template
+ * reaches postgres.js's low-level parameter binder un-serialized and throws
+ * (`ERR_INVALID_ARG_TYPE`). The fluent query builder (`sumWorkspaceSpendSince`,
+ * `listWorkspaceRunCosts` above) doesn't hit this because it knows the
+ * target column's type and serializes accordingly; a raw interpolated value
+ * has no such column context. Postgres implicitly casts a well-formed ISO
+ * string parameter to `timestamptz` when compared against one, so the plain
+ * string works and is what real execution actually requires here.
+ */
+export async function workspaceMonthlyCostRollup(
+  workspaceId: string,
+  monthsBack: number = DEFAULT_MONTHLY_ROLLUP_MONTHS,
+  now: Date = new Date()
+): Promise<WorkspaceMonthlyCostRow[]> {
+  const span = Math.max(1, Math.trunc(monthsBack));
+  // Oldest -> newest, ending at (and including) the current partial month.
+  const months = Array.from({ length: span }, (_, i) => utcMonthWindow(span - 1 - i, now));
+  const windowStartIso = months[0]!.startIso;
+  const windowEndIso = utcMonthWindow(0, now).endIso;
+
+  const yearExpr = sql`EXTRACT(YEAR FROM ${runs.createdAt} AT TIME ZONE 'UTC')::int`;
+  const monthExpr = sql`EXTRACT(MONTH FROM ${runs.createdAt} AT TIME ZONE 'UTC')::int`;
+
+  const result = await db.execute(sql`
+    SELECT
+      ${yearExpr} AS bucket_year,
+      ${monthExpr} AS bucket_month,
+      COALESCE(SUM(${runs.costUsd}), 0) AS total_cost_usd,
+      COUNT(*)::int AS run_count
+    FROM ${runs}
+    WHERE ${runs.workspaceId} = ${workspaceId}
+      AND ${runs.createdAt} >= ${windowStartIso}
+      AND ${runs.createdAt} < ${windowEndIso}
+    GROUP BY ${yearExpr}, ${monthExpr}
+    ORDER BY ${yearExpr} ASC, ${monthExpr} ASC
+  `);
+
+  const byKey = new Map<string, { totalCostUsd: number; runCount: number }>();
+  for (const row of Array.from(result) as Record<string, unknown>[]) {
+    const bucketYear = Number(row.bucket_year);
+    const bucketMonth = Number(row.bucket_month);
+    const key = `${bucketYear}-${String(bucketMonth).padStart(2, "0")}`;
+    byKey.set(key, {
+      totalCostUsd: Number(row.total_cost_usd ?? 0),
+      runCount: Number(row.run_count ?? 0),
+    });
+  }
+
+  return months.map(({ key }) => ({
+    monthKey: key,
+    totalCostUsd: byKey.get(key)?.totalCostUsd ?? 0,
+    runCount: byKey.get(key)?.runCount ?? 0,
+  }));
+}
+
+export type WorkspaceCapStatus = "uncapped" | "under" | "exhausted";
+
+export interface WorkspaceCostOverview {
+  currentMonthSpendUsd: number;
+  monthlyBudgetUsd: number | null;
+  budgetExhaustedNotifiedPeriod: string | null;
+  capStatus: WorkspaceCapStatus;
+}
+
+/**
+ * The composed read the workspace-costs page opens with (#1272 PR ①, AC2).
+ * Pure composition — no new SQL beyond the two existing #1269 helpers:
+ * `getWorkspaceBudgetState` for the ceiling + last-notified period,
+ * `sumWorkspaceSpendSince` for the actual current-month spend number. Unlike
+ * the claim route (apps/console's runner/claim/route.ts), which SKIPS the
+ * SUM entirely for an uncapped workspace because it only cares whether a
+ * ceiling is breached, this overview always calls `sumWorkspaceSpendSince`
+ * — the page wants to show "you've spent $X this month" regardless of
+ * whether any ceiling is set.
+ *
+ * `capStatus` is the same `>=` comparison the claim route enforces with
+ * (apps/console/app/api/v1/runner/claim/route.ts: `spend >=
+ * budgetState.monthlyBudgetUsd`) — "exhausted" at the exact boundary, not
+ * only past it, so this page's status can never disagree with what actually
+ * blocked (or will block) the next claim.
+ *
+ * Honest scope note: this reports ONLY the workspace-level monthly ceiling
+ * (#1269). Per-issue budget caps (the $3 default leash / --budget-usd) are
+ * factory-side (agentrail/run) config that lives in each run's own
+ * `run.json` (`blockedReason` / `budgetCeilingCrossed`, #1316) — a
+ * different, per-run mechanism this overview does not read or represent.
+ *
+ * Returns `null` only when the workspace row itself does not exist (mirrors
+ * `getWorkspaceBudgetState`'s own defensive null) — and short-circuits
+ * before ever calling `sumWorkspaceSpendSince` in that case.
+ */
+export async function getWorkspaceCostOverview(
+  workspaceId: string,
+  now: Date = new Date()
+): Promise<WorkspaceCostOverview | null> {
+  const budgetState = await getWorkspaceBudgetState(workspaceId);
+  if (!budgetState) return null;
+
+  const { startIso, endIso } = utcMonthWindow(0, now);
+  const currentMonthSpendUsd = await sumWorkspaceSpendSince(workspaceId, startIso, endIso);
+
+  const capStatus: WorkspaceCapStatus =
+    budgetState.monthlyBudgetUsd === null
+      ? "uncapped"
+      : currentMonthSpendUsd >= budgetState.monthlyBudgetUsd
+        ? "exhausted"
+        : "under";
+
+  return {
+    currentMonthSpendUsd,
+    monthlyBudgetUsd: budgetState.monthlyBudgetUsd,
+    budgetExhaustedNotifiedPeriod: budgetState.budgetExhaustedNotifiedPeriod,
+    capStatus,
+  };
+}

@@ -90,6 +90,7 @@ guesses) can express for this service:
    | `AGENTRAIL_FLEET_HOME` | No | Default `~/.agentrail` (= `/root/.agentrail`, see step 3). Only set this if you're mounting the volume somewhere else. |
    | `FLEET_CONCURRENCY` | No | Default `2` — claims executing at once across the WHOLE fleet, not per workspace. This is the knob for scaling a busy fleet (never replicas — see the 1-replica constraint above). |
    | `FLEET_SYNC_INTERVAL_SECONDS` | No | Default `300`, floor `30` — how often the fleet re-syncs its token set after the initial boot sync. Values below 30 are clamped (with a warning): a tiny interval would busy-loop the console's sync endpoint. |
+   | `AGENTRAIL_SANDBOX` | No | `host` (default, via the legacy trigger — see the Isolation section below) or `docker`. This daemon's `ANTHROPIC_API_KEY` is always empty (OpenRouter auth rides `ANTHROPIC_AUTH_TOKEN` instead), so the legacy ANTHROPIC_API_KEY-presence trigger can never select Docker mode here on its own — `AGENTRAIL_SANDBOX=docker` is the ONLY way to turn on per-task container isolation for this service. Requires the Docker socket + the separate sandbox image; see the Isolation section. |
 
    **Do NOT set `AGENTRAIL_WORKSPACE_ID`** here under any circumstances — see
    `agentrail/cli/commands/fleet.py`'s module docstring for exactly why (it
@@ -126,8 +127,15 @@ which one you need before an incident, not during one:
   service to 0 / stop the deployment. Neither lever above is instant at the
   whole-fleet level — this is the one that is.
 
-## What this fleet does and doesn't isolate
+## Isolation
 
+Two deploy shapes exist for this fleet today, with genuinely different
+isolation properties. Pick knowing which one you're actually running — no
+softening either way.
+
+### The Railway shape (this directory's own `railway.json`) — one container, no per-task isolation
+
+This is what `railway.json` deploys by default (`AGENTRAIL_SANDBOX` unset).
 Each claimed run clones into its own disposable temp directory
 (`agentrail/sandbox/native_runner.py:run_issue_on_host` — `tempfile.mkdtemp`,
 always `shutil.rmtree`'d afterward, even on error/timeout) inside **this one
@@ -137,7 +145,51 @@ every concurrent run shares this container's CPU, memory, process
 namespace, and kernel. There is no per-task container, VM, network
 namespace, or resource cap — a runaway or malicious task in one workspace's
 clone can affect every other concurrently-running task in the same
-container. Genuine per-task container isolation is PR④'s job, tracked
-separately; this PR does not attempt it, and the temp-dir clone approach
-is left exactly as `agentrail runner` already does it — same tradeoff, now
-just shared across more tenants at once.
+container, and nothing at this layer stops one concurrently-running task
+from reading another's clone on the same filesystem. Say this plainly to
+anyone evaluating the fleet for multi-tenant use: on the bare Railway shape,
+"isolation" between workspaces is disposable-directory hygiene, not a
+security boundary.
+
+### The VM/socket shape (`AGENTRAIL_SANDBOX=docker`) — genuine per-task containers
+
+`agentrail/sandbox/native_runner.py:select_sandbox_runner` picks a different
+execution backend entirely when `AGENTRAIL_SANDBOX=docker` is set on this
+service (an explicit override — the legacy ANTHROPIC_API_KEY-presence
+trigger can never fire here on its own, since this daemon's
+`ANTHROPIC_API_KEY` is always empty). Each claim then spawns a fresh,
+disposable **sibling** container per task — its own filesystem, process
+namespace, and (subject to `docker_runner.build_run_command`'s `--cpus`/
+`--memory`/`--pids-limit` flags) resource limits, unconditionally removed
+after the run. That sibling container is built from a genuinely DIFFERENT
+image — `agentrail/docker/runner/Dockerfile` (tag `agentrail/runner:latest`)
+— not this service's own `deploy/runner/Dockerfile`; the two "runner"
+Dockerfiles in this repo are not interchangeable, and the sandbox image must
+be built and available on the host before flipping this on. Env forwarded
+into that sibling container is an explicit, commented allowlist, not a
+blanket dump of this process's own environment — see
+`agentrail/sandbox/native_runner.py`'s `_DOCKER_SANDBOX_ENV_ALLOWLIST`.
+One residual the allowlist deliberately does not remove: the coding agent's
+OpenRouter credential is inside every per-task container by design — its
+value rides in as `ANTHROPIC_AUTH_TOKEN`, which the agent cannot
+authenticate without — so a malicious task can read the operator's real
+OpenRouter key even in this shape. That residual is one of the concrete
+reasons the #1295 hardening below is a precondition for calling this shape
+fully multi-tenant-safe, not an optional extra.
+
+This mode needs the Docker socket mounted into the fleet container — see the
+commented `- /var/run/docker.sock:/var/run/docker.sock` line under the
+`runner:` service in `deploy/docker-compose.prod.yml` for the exact mechanic
+(that file is the single-tenant compose deploy, not this Railway service, but
+the socket-mount requirement is identical here). This repo has not verified
+whether Railway's own managed container platform exposes a host Docker
+socket to a service at all — do not assume it does. Treat "VM/socket shape"
+literally: a VM or self-hosted Docker host you control, not a claim about
+what `railway.json` alone can express on Railway's managed containers.
+
+**Recommended over the bare Railway shape for multi-tenant production**,
+until the #1295 hardening work (network policy, rootless containers, tighter
+resource caps) lands on top of it. Per-task containers close the
+shared-filesystem/process/kernel gap described above; #1295's items address
+what's still open even with per-task containers (a container boundary is
+not, by itself, a hardened one).

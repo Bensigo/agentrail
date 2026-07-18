@@ -289,6 +289,44 @@ def resolve_verifier_command(
     return append_model_to_command(command, agent, chosen)
 
 
+def independent_review_status(agent: str, target: str, opts: "RunOptions") -> str:
+    """Classify why the Independent Verifier phase will (or will not) run (#1270).
+
+    The verify seat is the crux of "not vibe coding": on a default single-model
+    install it silently does not run and the pipeline just executes one fewer
+    phase, with no signal anywhere that this happened. This function makes
+    that state legible WITHOUT changing it — it is derived from EXACTLY the
+    same inputs :func:`resolve_verifier_command` already reads
+    (``opts.command_explicit``, the ``VERIFY_GATE`` layer, and the verifier's
+    candidate-model resolution). No new config reads, and calling this
+    decides nothing about which phases actually run — callers still build
+    ``phase_commands`` exactly as before.
+
+    Returns one of:
+      * ``"active"`` — a verify phase with a model distinct from the
+        Implementer's will be built.
+      * ``"skipped_explicit_command"`` — ``--command`` was passed explicitly;
+        no phase commands (verify included) are ever built in that mode.
+      * ``"skipped_layer_off"`` — the ``VERIFY_GATE`` layer is off (eval
+        ablation env var, or ``.agentrail/layer-overrides.json``).
+      * ``"skipped_no_distinct_model"`` — VERIFY_GATE is on but no model in
+        ``runners.<agent>.models`` (or the flat ``model``) differs from the
+        Implementer's (``execute``) model — the common default-install gap
+        this issue is about.
+    """
+    if opts.command_explicit:
+        return "skipped_explicit_command"
+    if not layer_enabled("VERIFY_GATE"):
+        return "skipped_layer_off"
+    from agentrail.run.verifier import select_verifier_model
+
+    implementer_model = resolve_model_for_phase(agent, opts.model, target, "execute")
+    chosen = select_verifier_model(
+        implementer_model, verifier_candidate_models(agent, target)
+    )
+    return "active" if chosen else "skipped_no_distinct_model"
+
+
 def resolve_critic_command(
     agent: str, command: str, model_flag: str, target: str
 ) -> str:
@@ -540,10 +578,13 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
             if gather_command:
                 phase_commands["gather"] = gather_command
 
+    review_status = independent_review_status(agent, str(target), opts)
+
     return run_issue(target, issue, agent=agent, command=command,
                      repo_dir=_repo_dir(), log_dir=log_dir,
                      run_id=opts.run_id, phase_commands=phase_commands,
-                     budget_usd=effective_budget(opts))
+                     budget_usd=effective_budget(opts),
+                     independent_review_status=review_status)
 
 
 def _phase_commands_for(opts: "RunOptions", agent: str, command: str, target: Path) -> Dict[str, str]:
@@ -607,11 +648,13 @@ def exec_prompt(prompt: str, opts: RunOptions) -> int:
     label = opts.label or "prompt"
 
     phase_commands = _phase_commands_for(opts, agent, command, target)
+    review_status = independent_review_status(agent, str(target), opts)
 
     return run_prompt(target, prompt, label=label, agent=agent, command=command,
                       repo_dir=_repo_dir(), log_dir=log_dir,
                       run_id=opts.run_id, phase_commands=phase_commands,
-                      budget_usd=effective_budget(opts))
+                      budget_usd=effective_budget(opts),
+                      independent_review_status=review_status)
 
 
 @dataclass

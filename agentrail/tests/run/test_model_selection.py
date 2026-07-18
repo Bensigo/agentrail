@@ -21,6 +21,8 @@ from agentrail.cli.commands.run import (
     RunOptions,
     append_model_to_command,
     exec_issue,
+    exec_prompt,
+    independent_review_status,
     parse_batch_args,
     parse_run_options,
     resolve_model_for_phase,
@@ -28,6 +30,16 @@ from agentrail.cli.commands.run import (
     resolve_verifier_command,
     verifier_candidate_models,
 )
+
+
+def _clean_verify_gate_env(**overrides):
+    """Same scrubbing idiom as test_eval_layer_toggles.py's _clean_env: start
+    from a copy with AGENTRAIL_EVAL_LAYER_* removed so a default-behavior
+    assertion is never polluted by an ambient eval env."""
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("AGENTRAIL_EVAL_LAYER_")}
+    env.update(overrides)
+    return patch.dict(os.environ, env, clear=True)
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +183,8 @@ class ModelFlagOnRunIssueTests(unittest.TestCase):
         captured: list[dict] = []
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
-                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0):
+                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0,
+                           independent_review_status="active"):
             captured.append({"phase_commands": phase_commands or {}})
             return 0
 
@@ -201,7 +214,8 @@ class ModelFlagOnRunIssueTests(unittest.TestCase):
         captured: list[dict] = []
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
-                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0):
+                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0,
+                           independent_review_status="active"):
             captured.append({"phase_commands": phase_commands or {}})
             return 0
 
@@ -234,7 +248,8 @@ class PerPhaseConfigTests(unittest.TestCase):
         captured: list[dict] = []
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
-                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0):
+                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0,
+                           independent_review_status="active"):
             captured.append({"command": command, "phase_commands": phase_commands or {}})
             return 0
 
@@ -278,7 +293,8 @@ class ExplicitCommandNotMutatedTests(unittest.TestCase):
         captured: list[dict] = []
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
-                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0):
+                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0,
+                           independent_review_status="active"):
             captured.append({"command": command, "phase_commands": phase_commands or {}})
             return 0
 
@@ -313,7 +329,8 @@ class NoModelPassthroughTests(unittest.TestCase):
         captured: list[dict] = []
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
-                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0):
+                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0,
+                           independent_review_status="active"):
             captured.append({"phase_commands": phase_commands or {}})
             return 0
 
@@ -427,7 +444,8 @@ class VerifierCommandOnExecIssueTests(unittest.TestCase):
         captured: list[dict] = []
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
-                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0):
+                           log_dir=None, run_id="", phase_commands=None, budget_usd=0.0,
+                           independent_review_status="active"):
             captured.append({"phase_commands": phase_commands or {}})
             return 0
 
@@ -462,6 +480,171 @@ class VerifierCommandOnExecIssueTests(unittest.TestCase):
             "claude": {"model": "claude-opus-4-8"}
         })
         self.assertNotIn("verify", phase_commands)
+
+
+# ---------------------------------------------------------------------------
+# independent_review_status: truth table (issue #1270)
+#
+# The verify seat is the crux of "not vibe coding" — it must never silently
+# disappear. This function classifies exactly why the verify phase will or
+# will not run, derived from the SAME inputs resolve_verifier_command already
+# reads. It decides nothing about which phases actually run.
+# ---------------------------------------------------------------------------
+
+class IndependentReviewStatusTests(unittest.TestCase):
+    def _make_target(self, runners_cfg: dict) -> str:
+        d = tempfile.mkdtemp()
+        agentrail_dir = Path(d) / ".agentrail"
+        agentrail_dir.mkdir()
+        (agentrail_dir / "config.json").write_text(
+            json.dumps({"runners": runners_cfg})
+        )
+        return d
+
+    def test_active_when_distinct_model_configured(self) -> None:
+        target = self._make_target({
+            "claude": {"models": {"execute": "claude-opus-4-8",
+                                  "verify": "claude-sonnet-4-6"}}
+        })
+        opts = RunOptions(agent="claude", target=target, command_explicit=False)
+        with _clean_verify_gate_env():
+            self.assertEqual(
+                independent_review_status("claude", target, opts), "active"
+            )
+
+    def test_skipped_no_distinct_model_on_default_single_model_install(self) -> None:
+        """The common/default case this issue is about: one flat model, no
+        models.verify — the real loop sets no such config."""
+        target = self._make_target({"claude": {"model": "claude-opus-4-8"}})
+        opts = RunOptions(agent="claude", target=target, command_explicit=False)
+        with _clean_verify_gate_env():
+            self.assertEqual(
+                independent_review_status("claude", target, opts),
+                "skipped_no_distinct_model",
+            )
+
+    def test_skipped_no_distinct_model_on_no_config_at_all(self) -> None:
+        target = tempfile.mkdtemp()
+        opts = RunOptions(agent="claude", target=target, command_explicit=False)
+        with _clean_verify_gate_env():
+            self.assertEqual(
+                independent_review_status("claude", target, opts),
+                "skipped_no_distinct_model",
+            )
+
+    def test_skipped_layer_off_even_with_distinct_model(self) -> None:
+        target = self._make_target({
+            "claude": {"models": {"execute": "claude-opus-4-8",
+                                  "verify": "claude-sonnet-4-6"}}
+        })
+        opts = RunOptions(agent="claude", target=target, command_explicit=False)
+        with _clean_verify_gate_env(AGENTRAIL_EVAL_LAYER_VERIFY_GATE="0"):
+            self.assertEqual(
+                independent_review_status("claude", target, opts),
+                "skipped_layer_off",
+            )
+
+    def test_skipped_explicit_command_even_with_distinct_model(self) -> None:
+        target = self._make_target({
+            "claude": {"models": {"execute": "claude-opus-4-8",
+                                  "verify": "claude-sonnet-4-6"}}
+        })
+        opts = RunOptions(agent="claude", target=target, command="my-agent",
+                          command_explicit=True)
+        with _clean_verify_gate_env():
+            self.assertEqual(
+                independent_review_status("claude", target, opts),
+                "skipped_explicit_command",
+            )
+
+    def test_explicit_command_wins_over_layer_off(self) -> None:
+        """Precedence matches exec_issue's control flow: command_explicit
+        wraps the whole phase_commands block, so it is checked FIRST."""
+        target = self._make_target({"claude": {"model": "claude-opus-4-8"}})
+        opts = RunOptions(agent="claude", target=target, command="my-agent",
+                          command_explicit=True)
+        with _clean_verify_gate_env(AGENTRAIL_EVAL_LAYER_VERIFY_GATE="0"):
+            self.assertEqual(
+                independent_review_status("claude", target, opts),
+                "skipped_explicit_command",
+            )
+
+    def test_layer_off_wins_over_no_distinct_model(self) -> None:
+        """Precedence matches exec_issue's control flow: layer_enabled gates
+        whether resolve_verifier_command is even consulted, so a layer-off
+        run reports "skipped_layer_off" even where the config would ALSO
+        have produced skipped_no_distinct_model."""
+        target = self._make_target({"claude": {"model": "claude-opus-4-8"}})
+        opts = RunOptions(agent="claude", target=target, command_explicit=False)
+        with _clean_verify_gate_env(AGENTRAIL_EVAL_LAYER_VERIFY_GATE="0"):
+            self.assertEqual(
+                independent_review_status("claude", target, opts),
+                "skipped_layer_off",
+            )
+
+
+class IndependentReviewStatusWiredIntoRunTests(unittest.TestCase):
+    """exec_issue / exec_prompt thread the computed status into
+    run_issue / run_prompt as independent_review_status= — the value the
+    pipeline uses for the hosted assert / local warning / run.json field."""
+
+    def test_exec_issue_passes_computed_status(self) -> None:
+        mock_run_issue = MagicMock(return_value=0)
+        with patch("agentrail.run.pipeline.run_issue", mock_run_issue), \
+             patch("agentrail.cli.commands.run._repo_dir", return_value=Path("/repo")), \
+             _clean_verify_gate_env():
+            with tempfile.TemporaryDirectory() as td:
+                agentrail_dir = Path(td) / ".agentrail"
+                agentrail_dir.mkdir()
+                (agentrail_dir / "config.json").write_text(json.dumps({
+                    "runners": {"claude": {"model": "claude-opus-4-8"}}
+                }))
+                opts = RunOptions(agent="claude", target=td,
+                                  command="claude -p", command_explicit=False)
+                exec_issue(1, opts)
+
+        self.assertEqual(
+            mock_run_issue.call_args.kwargs["independent_review_status"],
+            "skipped_no_distinct_model",
+        )
+
+    def test_exec_prompt_passes_computed_status(self) -> None:
+        mock_run_prompt = MagicMock(return_value=0)
+        with patch("agentrail.run.pipeline.run_prompt", mock_run_prompt), \
+             patch("agentrail.cli.commands.run._repo_dir", return_value=Path("/repo")), \
+             _clean_verify_gate_env():
+            with tempfile.TemporaryDirectory() as td:
+                agentrail_dir = Path(td) / ".agentrail"
+                agentrail_dir.mkdir()
+                (agentrail_dir / "config.json").write_text(json.dumps({
+                    "runners": {"claude": {"models": {
+                        "execute": "claude-opus-4-8",
+                        "verify": "claude-sonnet-4-6",
+                    }}}
+                }))
+                opts = RunOptions(agent="claude", target=td,
+                                  command="claude -p", command_explicit=False)
+                exec_prompt("do the thing", opts)
+
+        self.assertEqual(
+            mock_run_prompt.call_args.kwargs["independent_review_status"],
+            "active",
+        )
+
+    def test_exec_issue_reports_explicit_command_status(self) -> None:
+        mock_run_issue = MagicMock(return_value=0)
+        with patch("agentrail.run.pipeline.run_issue", mock_run_issue), \
+             patch("agentrail.cli.commands.run._repo_dir", return_value=Path("/repo")), \
+             _clean_verify_gate_env():
+            with tempfile.TemporaryDirectory() as td:
+                opts = RunOptions(agent="claude", target=td,
+                                  command="my-agent", command_explicit=True)
+                exec_issue(1, opts)
+
+        self.assertEqual(
+            mock_run_issue.call_args.kwargs["independent_review_status"],
+            "skipped_explicit_command",
+        )
 
 
 if __name__ == "__main__":

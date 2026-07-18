@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import { runs } from "../schema/runs.js";
+import { queueEntries } from "../schema/queue_entries.js";
 import { getWorkspaceBudgetState, sumWorkspaceSpendSince } from "./workspace_budget.js";
 
 /**
@@ -35,13 +36,10 @@ export const DEFAULT_RUN_COST_LIST_LIMIT = 50;
 export interface WorkspaceRunCostRow {
   runId: string;
   /** Human-meaningful task identity — NEVER the bare run id/UUID (house UI
-   * rule). `runs.title` is already a denormalized copy of the originating
-   * queue entry's title (written once, at claim time — see
-   * queries/runner.ts's `claimQueueEntry`) or whatever the caller passed
-   * directly (`upsertRun`, the non-queue CLI-direct path, where `title` is
-   * optional and can be `null`). `runs.branch` is `NOT NULL` on both
-   * insertion paths, so it is the fallback when title is absent — no join to
-   * `queue_entries` is needed (see this file's own recon note below). */
+   * rule). Three-tier fallback, one per real `runs` writer (see the
+   * writer-landscape note on `listWorkspaceRunCosts`): `runs.title` when the
+   * writer set it, else the LEFT-JOINed `queue_entries.title`, else
+   * `runs.branch` (`NOT NULL` on every writer) as the floor. */
   taskIdentity: string;
   status: "queued" | "running" | "success" | "failed";
   costUsd: number;
@@ -55,18 +53,29 @@ export interface WorkspaceRunCostRow {
  * Backed by the same `runs_workspace_id_created_at_idx` composite index
  * (migration 0034) `sumWorkspaceSpendSince` uses.
  *
- * Join-shape recon (verified by reading, not assumed): `runs.queue_entry_id`
- * is a bare nullable uuid column — no DB-level FK exists anywhere in the
- * migrations, and no `.references()` call exists in the Drizzle schema
- * either. For a queue-driven run, `claimQueueEntry` (queries/runner.ts) sets
- * BOTH `runs.id` and `runs.queue_entry_id` to the SAME value (the queue
- * entry's own id) AND copies `title` across at insert time — so
- * `runs.queue_entry_id` never carries information `runs.id`/`runs.title`
- * don't already have. A join to `queue_entries` would be redundant for this
- * query; reading `runs.title` (with the `branch` fallback above) directly is
- * both simpler and strictly equivalent for the queue-driven path, and is the
- * ONLY option for the non-queue `upsertRun` path anyway (those rows have no
- * `queue_entries` row at all — `queue_entry_id` is left null).
+ * Writer landscape for `runs` (all three verified by reading + live dev-DB
+ * rows — this is WHY the query joins):
+ *   1. `claimQueueEntry` (queries/runner.ts:492-511, the self-hosted/fleet
+ *      claim path): sets `runs.id` AND `runs.queue_entry_id` to the queue
+ *      entry's own id and denormalizes `queue_entries.title` onto
+ *      `runs.title` at insert — the join is redundant for these rows, but
+ *      harmless (both tiers agree).
+ *   2. `register_run` (agentrail/afk/queue_store.py:332-368, called by the
+ *      heartbeat dispatch loop, agentrail/heartbeat/runtime.py:~420-482):
+ *      upserts `runs` rows with NO title at all, under its OWN uuid4 run id
+ *      (≠ `queue_entry_id`), branch synthesized as
+ *      `afk/{source}-{external_id}`. Its `queue_entry_id` DOES resolve to a
+ *      `queue_entries` row with a real title — the LEFT JOIN exists for
+ *      exactly these rows; without it they'd surface branch slugs like
+ *      "afk/github-owner/repo#901" instead of the actual issue title.
+ *   3. `upsertRun` (queries/index.ts, the CLI-direct ingest path): `title`
+ *      optional (nullable), `queue_entry_id` never set — no queue entry
+ *      exists at all, which is why the join must be LEFT (an inner join
+ *      would drop these rows entirely) and why `runs.branch` remains the
+ *      final floor.
+ * `runs.queue_entry_id` has no DB-level FK (no `.references()` in the
+ * Drizzle schema, no constraint in any migration) — the join target
+ * `queue_entries.id` is its PK, so the LEFT JOIN cannot fan out rows.
  */
 export async function listWorkspaceRunCosts(
   workspaceId: string,
@@ -77,12 +86,13 @@ export async function listWorkspaceRunCosts(
   const rows = await db
     .select({
       id: runs.id,
-      taskIdentity: sql<string>`COALESCE(${runs.title}, ${runs.branch})`,
+      taskIdentity: sql<string>`COALESCE(${runs.title}, ${queueEntries.title}, ${runs.branch})`,
       status: runs.status,
       costUsd: sql<number>`COALESCE(${runs.costUsd}, 0)`,
       createdAt: runs.createdAt,
     })
     .from(runs)
+    .leftJoin(queueEntries, eq(runs.queueEntryId, queueEntries.id))
     .where(
       and(
         eq(runs.workspaceId, workspaceId),
@@ -143,6 +153,8 @@ function utcMonthWindow(
 /**
  * One row per UTC calendar month for `workspaceId`, oldest-first, ending at
  * (and including) the current partial month — `monthsBack` total rows.
+ * `monthsBack` is clamped to `Math.max(1, Math.trunc(monthsBack))`, so a
+ * zero/negative/fractional value still yields at least the current month.
  * Months with no runs still get a row (`totalCostUsd: 0, runCount: 0`) so a
  * trend chart never shows a gap.
  *

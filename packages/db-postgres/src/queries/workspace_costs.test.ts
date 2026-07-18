@@ -21,6 +21,7 @@ vi.mock("./workspace_budget.js", () => ({
 
 import { db } from "../db.js";
 import { runs } from "../schema/runs.js";
+import { queueEntries } from "../schema/queue_entries.js";
 import {
   getWorkspaceBudgetState,
   sumWorkspaceSpendSince,
@@ -40,7 +41,7 @@ const mockSumWorkspaceSpendSince = vi.mocked(sumWorkspaceSpendSince);
 /** A chainable mock: every method returns the chain except `terminalMethod`, which resolves `finalValue`. */
 function makeChain(terminalMethod: string, finalValue: unknown) {
   const chain: Record<string, unknown> = {};
-  const methods = ["from", "where", "orderBy", "limit"];
+  const methods = ["from", "leftJoin", "where", "orderBy", "limit"];
   for (const m of methods) {
     chain[m] = vi.fn(() => chain);
   }
@@ -131,11 +132,16 @@ describe("listWorkspaceRunCosts", () => {
     expect(limitArgs).toBe(10);
   });
 
-  it("falls back to the run's branch (never a bare UUID) when title is null", async () => {
+  it("surfaces the joined queue-entry title (never a bare UUID) for a heartbeat-registered run whose runs.title is null", async () => {
+    // Models the real third-writer rows verified live on the dev DB (e.g.
+    // run 43dc7116…): agentrail/afk/queue_store.py's register_run writes NO
+    // title, but its queue_entry_id resolves to a queue_entries row with a
+    // real one — the LEFT JOIN + three-tier COALESCE (pinned at argument
+    // level below) is what surfaces it.
     const selectChain = makeChain("limit", [
       {
         id: "run-2",
-        taskIdentity: "afk/github-42",
+        taskIdentity: "Context Compiler: compute precision-at-budget live",
         status: "running",
         costUsd: 0,
         createdAt: new Date("2026-07-11T00:00:00.000Z"),
@@ -149,14 +155,13 @@ describe("listWorkspaceRunCosts", () => {
       "2026-08-01T00:00:00.000Z"
     );
 
-    // The COALESCE(title, branch) happens in the SQL projection (asserted via
-    // the .select() column-expression pin below); here we assert the mapped
-    // row surfaces whatever came back verbatim, and it is never the raw run id.
-    expect(result[0]!.taskIdentity).toBe("afk/github-42");
+    expect(result[0]!.taskIdentity).toBe(
+      "Context Compiler: compute precision-at-budget live"
+    );
     expect(result[0]!.taskIdentity).not.toBe(result[0]!.runId);
   });
 
-  it("pins the selected-column expressions: taskIdentity COALESCE(title, branch) and costUsd COALESCE(cost_usd, 0)", async () => {
+  it("pins the selected-column expressions: taskIdentity three-tier COALESCE(runs.title, queue_entries.title, runs.branch) and costUsd COALESCE(cost_usd, 0)", async () => {
     const selectChain = makeChain("limit", []);
     const selectSpy = vi.fn(() => selectChain as ReturnType<typeof db.select>);
     mockDb.select = selectSpy;
@@ -167,12 +172,38 @@ describe("listWorkspaceRunCosts", () => {
       "2026-08-01T00:00:00.000Z"
     );
 
+    // Tier order matters: runs.title (claim-path denormalized copy) wins,
+    // then the joined queue_entries.title (heartbeat register_run rows,
+    // which write no runs.title), then runs.branch (NOT NULL everywhere) as
+    // the never-a-UUID floor. A mutation that dropped the middle tier would
+    // regress heartbeat rows back to branch slugs and is caught here.
     const columns = selectSpy.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(renderCondition(columns.taskIdentity)).toEqual(
-      renderCondition(sql`COALESCE(${runs.title}, ${runs.branch})`)
+      renderCondition(
+        sql`COALESCE(${runs.title}, ${queueEntries.title}, ${runs.branch})`
+      )
     );
     expect(renderCondition(columns.costUsd)).toEqual(
       renderCondition(sql`COALESCE(${runs.costUsd}, 0)`)
+    );
+  });
+
+  it("LEFT JOINs queue_entries on runs.queue_entry_id (left, not inner — upsertRun rows have no queue entry at all)", async () => {
+    const selectChain = makeChain("limit", []);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    await listWorkspaceRunCosts(
+      "ws-1",
+      "2026-07-01T00:00:00.000Z",
+      "2026-08-01T00:00:00.000Z"
+    );
+
+    const leftJoinCalls = (selectChain.leftJoin as ReturnType<typeof vi.fn>)
+      .mock.calls;
+    expect(leftJoinCalls).toHaveLength(1);
+    expect(leftJoinCalls[0]?.[0]).toBe(queueEntries);
+    expect(renderCondition(leftJoinCalls[0]?.[1])).toEqual(
+      renderCondition(eq(runs.queueEntryId, queueEntries.id))
     );
   });
 

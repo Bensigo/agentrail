@@ -54,6 +54,12 @@ ENV_HOSTED = "AGENTRAIL_HOSTED"  # same marker agentrail.run.pipeline.is_hosted_
 ENV_HOSTED_CONFIG = "AGENTRAIL_HOSTED_CONFIG"  # path to the baked default-config template.
 SANDBOX_RUNTIME_PKG = "@anthropic-ai/sandbox-runtime"
 
+# Deliberate sandbox-mode selection (#1267 PR④ item 1) — see
+# select_sandbox_runner below for the full selection contract.
+ENV_SANDBOX_MODE = "AGENTRAIL_SANDBOX"
+SANDBOX_MODE_HOST = "host"
+SANDBOX_MODE_DOCKER = "docker"
+
 # #1267 PR③: the deterministic prefix a hosted-refusal ``gate_reason`` always
 # starts with. This is the cross-process CONTRACT the TS queue-transition side
 # keys on (packages/db-postgres/src/queries/runner.ts defines the byte-identical
@@ -722,12 +728,53 @@ def _publish_green(
 def select_sandbox_runner(env: Dict[str, str]) -> Callable[..., RunResult]:
     """Choose the sandbox backend from ``env``.
 
-    Host-native by default (local dev: the agent CLI uses the host login + its
-    own native sandbox). Docker when ``ANTHROPIC_API_KEY`` is set (CI / cloud:
-    API-key auth works fine inside a container).
+    Two ways to pick, checked in this order:
+
+    1. **Explicit** ``AGENTRAIL_SANDBOX`` ∈ {``"host"``, ``"docker"``}
+       (case/whitespace-insensitive) always WINS, regardless of
+       ``ANTHROPIC_API_KEY``. This is the ONLY way to select Docker-sandbox
+       mode for a process whose ``ANTHROPIC_API_KEY`` is structurally always
+       empty — exactly the hosted fleet's own case
+       (``deploy/runner/Dockerfile`` bakes ``ANTHROPIC_API_KEY=""`` on
+       purpose; OpenRouter auth rides ``ANTHROPIC_AUTH_TOKEN`` instead — see
+       that file's header) but that still runs on a socket-capable host and
+       wants genuine per-task container isolation (#1267 PR④; see
+       ``deploy/fleet/README.md``'s Isolation section). An unrecognized
+       non-empty value is treated the same as unset (a loud stderr warning,
+       then fall through to the legacy trigger below) — never a hard crash
+       over a typo.
+    2. **Legacy trigger** (unchanged, kept BYTE-IDENTICAL — do not remove):
+       when ``AGENTRAIL_SANDBOX`` is unset, Docker is selected purely because
+       ``ANTHROPIC_API_KEY`` happens to be set (CI / cloud: API-key auth
+       works fine inside a container); otherwise host-native (local dev: the
+       agent CLI uses the host login + its own native sandbox). Deployed
+       environments — including ``deploy/docker-compose.prod.yml``'s
+       commented socket-mount instructions — document and rely on exactly
+       this rule when no explicit override is set.
     """
     from agentrail.sandbox.docker_runner import run_issue_in_sandbox
 
+    raw_mode = (env.get(ENV_SANDBOX_MODE) or "").strip()
+    mode = raw_mode.lower()
+    if mode == SANDBOX_MODE_DOCKER:
+        return run_issue_in_sandbox
+    if mode == SANDBOX_MODE_HOST:
+        return run_issue_on_host
+    if mode:
+        # Non-empty but not a recognized value — warn loudly, then fall
+        # through to the legacy trigger exactly as if unset, rather than
+        # crashing the runner over a typo.
+        print(
+            f"agentrail: {ENV_SANDBOX_MODE}={raw_mode!r} is not "
+            f"{SANDBOX_MODE_HOST!r} or {SANDBOX_MODE_DOCKER!r} — ignoring it "
+            "and falling back to the legacy ANTHROPIC_API_KEY-based "
+            "selection.",
+            file=sys.stderr,
+        )
+
+    # LEGACY trigger — pre-#1267-PR④ behaviour, kept byte-identical. Do NOT
+    # remove: deployed environments rely on this exact rule when
+    # AGENTRAIL_SANDBOX is unset.
     if (env.get("ANTHROPIC_API_KEY") or "").strip():
         return run_issue_in_sandbox
     return run_issue_on_host

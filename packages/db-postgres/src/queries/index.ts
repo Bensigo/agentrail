@@ -1882,13 +1882,15 @@ export {
 // §4.2, issue #1261; see `schema/chat_identities.ts` for the table shape and
 // the WHY behind the design). Maps (platform, platform_user_id) -> at most
 // one linked user and one resolved workspace. resolveInboundChatIdentity (PR
-// ②) is the composed entry point the shared-bot webhook door (#1262) and
-// #1264's create_workspace (graduation) call. listWorkspacesForChatIdentity
-// (PR ③) is every workspace an identity can reach — the input to the
-// multi-workspace disambiguation above. consumeChatIdentityLinkToken (issue
-// #1263) is the single-use, expiry-checked consume primitive the
-// /connect/[token] bind flow calls after `setChatIdentityLinkToken` mints a
-// link.
+// ②) is the composed entry point the shared-bot webhook door (#1262) calls.
+// #1264's create_workspace instead resolves through the session ledger
+// (getJaceSessionByEveSessionId -> getChatIdentityById, see the
+// jace_sessions.js comment above) — never resolveInboundChatIdentity.
+// listWorkspacesForChatIdentity (PR ③) is every workspace an identity can
+// reach — the input to the multi-workspace disambiguation above.
+// consumeChatIdentityLinkToken (issue #1263) is the single-use,
+// expiry-checked consume primitive the /connect/[token] bind flow calls
+// after `setChatIdentityLinkToken` mints a link.
 export {
   insertChatIdentity,
   getChatIdentity,

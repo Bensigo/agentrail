@@ -57,3 +57,72 @@ export function decideConnectWorkspaceBind(
   }
   return { action: "bind", workspace: input.memberships[0]! };
 }
+
+/**
+ * Pure decision helper for what `/connect/[token]` does with a freshly
+ * CONSUMED link token (issue #1263 PR ① review fix). `consumeChatIdentityLinkToken`
+ * already guarantees single-use + expiry; what it does not guarantee is that
+ * the token is still being redeemed by the same person it was minted for.
+ * The mint-side endpoint (`route.ts`) now refuses to mint for an identity
+ * already linked to a user, but this helper is an independent, redemption-
+ * side backstop against the same underlying threat — an identity's `userId`
+ * must never be silently overwritten by anyone other than the user it
+ * already belongs to — so a defect or bypass on the mint side can't alone
+ * cause a hijack.
+ *
+ * Three outcomes, in this priority order:
+ *  1. `foreign_user` — the identity is already linked to a user, and it is
+ *     NOT the user signed in right now. This is the attack case: a
+ *     redeemable link for someone else's identity, landed in the wrong
+ *     hands (e.g. a stale-but-unexpired link, or a mint-side bug). The
+ *     caller must render the SAME error state as an expired/unknown token —
+ *     never a distinct message, which would confirm the identity exists and
+ *     reveal it belongs to someone — and must never call
+ *     `bindChatIdentityUser`. This variant deliberately carries no
+ *     `workspaceDecision` field: since workspace binding is never computed
+ *     for this outcome, "foreign user but somehow also workspace-bound" is
+ *     unrepresentable rather than merely unlikely.
+ *  2. `already_yours` — the identity is already linked to THIS signed-in
+ *     user (a reload, a double redemption, or the rightful owner using the
+ *     same link twice). Idempotent: skip `bindChatIdentityUser` (it would be
+ *     a same-value no-op) but still run the workspace-completion rule and
+ *     report success — redeeming again as the rightful owner should behave
+ *     like the first time, not error.
+ *  3. `fresh_bind` — the identity has no linked user yet, the common case:
+ *     bind it to the signed-in user, then run the workspace-completion rule.
+ *
+ * `already_yours` and `fresh_bind` both carry `decideConnectWorkspaceBind`'s
+ * result under `workspaceDecision` — workspace completion is orthogonal to
+ * which of the two non-attack outcomes this is, so it's computed the same
+ * way for both and the page just acts on it.
+ */
+
+export interface ConnectIdentityBindInput {
+  identity: { userId: string | null; workspaceId: string | null };
+  sessionUserId: string;
+  memberships: ConnectWorkspaceMembership[];
+}
+
+export type ConnectIdentityBindDecision =
+  | { kind: "foreign_user" }
+  | { kind: "already_yours"; workspaceDecision: ConnectWorkspaceBindDecision }
+  | { kind: "fresh_bind"; workspaceDecision: ConnectWorkspaceBindDecision };
+
+export function decideConnectIdentityBind(
+  input: ConnectIdentityBindInput
+): ConnectIdentityBindDecision {
+  const { identity, sessionUserId, memberships } = input;
+
+  if (identity.userId != null && identity.userId !== sessionUserId) {
+    return { kind: "foreign_user" };
+  }
+
+  const workspaceDecision = decideConnectWorkspaceBind({
+    identity: { workspaceId: identity.workspaceId },
+    memberships,
+  });
+
+  return identity.userId === sessionUserId
+    ? { kind: "already_yours", workspaceDecision }
+    : { kind: "fresh_bind", workspaceDecision };
+}

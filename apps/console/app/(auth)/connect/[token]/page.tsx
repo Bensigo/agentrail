@@ -5,7 +5,7 @@ import {
   bindChatIdentityWorkspace,
   listWorkspacesForUser,
 } from "@agentrail/db-postgres";
-import { decideConnectWorkspaceBind } from "../../../../lib/connect-bind-decision";
+import { decideConnectIdentityBind } from "../../../../lib/connect-bind-decision";
 
 interface Props {
   params: Promise<{ token: string }>;
@@ -83,16 +83,22 @@ export default async function ConnectPage({ params }: Props) {
   // "expired" on a refresh is expected, not a bug, because the success
   // screen already told the user it worked.
   const identity = await consumeChatIdentityLinkToken(token);
-  if (!identity) {
-    return (
-      <ConnectMessage
-        title="Link expired or already used"
-        body="Ask Jace for a fresh connect link in the chat."
-      />
-    );
-  }
 
-  await bindChatIdentityUser(identity.id, session.user.id);
+  // Reused verbatim below for the foreign_user case too (review fix,
+  // #1263 PR ①): an identity claimed by someone else must render as
+  // INDISTINGUISHABLE from "no such token" — same title, same body, same
+  // element — never a different message that would confirm the token was
+  // real and reveal it belongs to another account.
+  const expiredOrUsedScreen = (
+    <ConnectMessage
+      title="Link expired or already used"
+      body="Ask Jace for a fresh connect link in the chat."
+    />
+  );
+
+  if (!identity) {
+    return expiredOrUsedScreen;
+  }
 
   // Workspace completion rule (spec §4.2, controller-resolved): auto-bind
   // the workspace only when there's exactly one unambiguous answer AND the
@@ -100,13 +106,30 @@ export default async function ConnectPage({ params }: Props) {
   // doc-comment for the zero/many rationale. Never creates a membership or a
   // workspace (#1264 owns workspace creation) — only binds to one that
   // already exists.
+  //
+  // decideConnectIdentityBind (review fix, #1263 PR ①) gates this: a
+  // consumed token whose identity is already linked to a DIFFERENT user
+  // (foreign_user) is a hijack attempt — never bind, never workspace-bind,
+  // render the same expired/unknown screen as above. Redeeming twice as the
+  // rightful owner (already_yours) is idempotent success. See the helper's
+  // own doc-comment for the full truth table.
   const memberships = await listWorkspacesForUser(session.user.id);
-  const decision = decideConnectWorkspaceBind({
-    identity: { workspaceId: identity.workspaceId },
+  const decision = decideConnectIdentityBind({
+    identity: { userId: identity.userId, workspaceId: identity.workspaceId },
+    sessionUserId: session.user.id,
     memberships: memberships.map((m) => ({ id: m.id, name: m.name })),
   });
-  if (decision.action === "bind") {
-    await bindChatIdentityWorkspace(identity.id, decision.workspace.id);
+
+  if (decision.kind === "foreign_user") {
+    return expiredOrUsedScreen;
+  }
+
+  if (decision.kind === "fresh_bind") {
+    await bindChatIdentityUser(identity.id, session.user.id);
+  }
+
+  if (decision.workspaceDecision.action === "bind") {
+    await bindChatIdentityWorkspace(identity.id, decision.workspaceDecision.workspace.id);
   }
 
   const user = session.user as typeof session.user & {
@@ -132,8 +155,10 @@ export default async function ConnectPage({ params }: Props) {
       <h1 style={{ fontSize: "1.5rem" }}>You&apos;re connected</h1>
       <p style={{ color: "#666", maxWidth: "40ch" }}>
         {accountLabel} is now linked
-        {decision.action === "bind" ? ` to ${decision.workspace.name}` : ""}.
-        Jace will confirm in the chat.
+        {decision.workspaceDecision.action === "bind"
+          ? ` to ${decision.workspaceDecision.workspace.name}`
+          : ""}
+        . Jace will confirm in the chat.
       </p>
     </main>
   );

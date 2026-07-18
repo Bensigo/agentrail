@@ -55,11 +55,20 @@ class RunAfkBudgetPrecedenceTests(unittest.TestCase):
                 patch("agentrail.cli.commands.afk.build_store"), \
                 patch("agentrail.cli.commands.afk.Runner") as runner_mock, \
                 patch("agentrail.cli.commands.afk.asyncio.run",
-                      return_value=MagicMock(completed=1, failed=0)):
+                      return_value=MagicMock(completed=1, failed=0)), \
+                patch("agentrail.afk.hosted_repo_guard.resolve_foreign_workspaces",
+                      return_value=([], None)) as resolve_mock:
             gh_mock.list_queue_issues.return_value = issues
-            sp_mock.return_value = MagicMock(stdout="")  # clean tree
+            sp_mock.return_value = MagicMock(returncode=0, stdout="")  # clean tree, no origin match
             rc = run_afk(["--target", str(self.target)] + extra_args)
             self.assertEqual(rc, 0)
+            # Budget precedence is what this test class covers; the hosted-repo
+            # quarantine guard (#1271) is exercised separately in
+            # test_afk_hosted_repo_quarantine.py. Explicitly stub it here (rather
+            # than relying on subprocess.run's generic mock returncode) so this
+            # suite never depends on Mock attribute defaults, and never risks a
+            # real DB lookup regardless of environment.
+            resolve_mock.assert_not_called()
         return runner_mock
 
     def _runner_budget(self, runner_mock: MagicMock) -> float:

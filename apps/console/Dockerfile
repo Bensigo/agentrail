@@ -101,9 +101,16 @@ RUN pnpm --filter @agentrail/db-postgres build
 # the console's own "predev" belt-and-suspenders re-run rather than trusting
 # postinstall's ordering during a workspace-wide `pnpm install`.
 RUN pnpm --filter @agentrail/console exec fumadocs-mdx
-# No env vars are read at build time (no NEXT_PUBLIC_* in apps/console — grep
-# confirms none), so this image is env-agnostic: the same build artifact can
-# run in any environment via runtime env vars alone.
+# One NEXT_PUBLIC_* var exists in apps/console today: NEXT_PUBLIC_TELEGRAM_BOT_USERNAME
+# (the hosted setup wizard's shared-bot deep link — see
+# app/(dashboard)/setup/components/channel-step.tsx). Inlining it into the
+# browser bundle requires the var to be present at BUILD time, not just at
+# container start. Railway sets build-time env vars automatically, so its
+# build of this image picks it up with no changes here; this compose
+# Dockerfile has no build-arg plumbing for it, which is fine for self-host,
+# where the var is expected to stay unset (see
+# deploy/telegram-shared-bot-cutover.md) and the bring-your-own-bot form
+# renders instead.
 RUN pnpm --filter @agentrail/console build
 
 # ---- 4. runner — slim runtime, standalone server only ------------------------

@@ -116,6 +116,9 @@ export function ChannelStep({
     );
   }
 
+  // No auto-complete signal for this step in hosted mode yet — completion
+  // still keys off the per-workspace connector secret in lib/onboarding-data.ts.
+  // The identity spine (#1261/#1262) will supply it later; until then, Skip.
   if (hostedBotUsername) {
     return (
       <div className="flex flex-col gap-2.5">

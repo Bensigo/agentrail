@@ -23,11 +23,13 @@ from typing import List, Optional
 import pytest
 
 from agentrail.sandbox.native_runner import (
+    HOSTED_REFUSAL_PREFIX,
     HostError,
     HostTimeout,
     _authenticated_clone_url,
     _build_run_command,
     _redact_token,
+    _result_from_run_json,
     run_issue_on_host,
 )
 from agentrail.sandbox.docker_runner import RunResult
@@ -538,6 +540,182 @@ class TestErrorAndTimeout:
         result, dirs = self._run(tmp_path, runner)
         assert result.status == "error"
         # Caller-owned-workdir contract (#997): the injected dir is preserved.
+        for d in dirs.created:
+            assert d.exists()
+
+
+# ---------------------------------------------------------------------------
+# #1267 PR③ — a hosted startup refusal (marked by a top-level `refusal` object
+# in run.json, written by pipeline.py's #1270 assert BEFORE any phase runs)
+# must map to status="error" with a gate_reason carrying the deterministic
+# HOSTED_REFUSAL_PREFIX — never "red" (red means "worth retrying / escalating
+# tier", which a static per-repo config gap never is). The no-marker exit-1
+# fallback (today's pre-existing behavior) must stay byte-identical.
+# ---------------------------------------------------------------------------
+
+class _BranchRunner:
+    """Minimal runner stub for the post-parse `git rev-parse` branch lookup
+    (best-effort — _result_from_run_json swallows any failure here)."""
+
+    def run(self, cmd, *, cwd=None, env=None, timeout=None, **kwargs):
+        return _Completed(0, stdout="main\n")
+
+
+class TestResultFromRunJsonRefusalMarker:
+    """Direct unit tests on `_result_from_run_json` (no clone, no subprocess)."""
+
+    def test_refusal_marker_maps_to_error_with_prefixed_reason(self, tmp_path) -> None:
+        run_dir = tmp_path / "run-1"
+        _write_run_json(run_dir, {
+            "refusal": {
+                "kind": "independent_review",
+                "status": "skipped_no_distinct_model",
+                "message": "FATAL: hosted run refused",
+            }
+        })
+        result = _result_from_run_json(
+            run_dir, run_status=1, repo_dir=tmp_path, logs_tail="",
+            runner=_BranchRunner(),
+        )
+        assert result.status == "error"
+        assert result.gate_reason == f"{HOSTED_REFUSAL_PREFIX}FATAL: hosted run refused"
+
+    def test_refusal_marker_never_maps_to_red(self, tmp_path) -> None:
+        run_dir = tmp_path / "run-1"
+        _write_run_json(run_dir, {"refusal": {"message": "no reviewer configured"}})
+        result = _result_from_run_json(
+            run_dir, run_status=1, repo_dir=tmp_path, logs_tail="",
+            runner=_BranchRunner(),
+        )
+        assert result.status != "red"
+        assert result.status == "error"
+
+    def test_refusal_marker_takes_priority_over_objective_gate(self, tmp_path) -> None:
+        """Belt-and-suspenders: a refusal exits before any phase runs, so a
+        real run.json never carries both keys — but if it somehow did, the
+        refusal must win (it is the more specific, more recent fact)."""
+        run_dir = tmp_path / "run-1"
+        _write_run_json(run_dir, {
+            "refusal": {"message": "no reviewer configured"},
+            "objectiveGate": {"verdict": "green"},
+        })
+        result = _result_from_run_json(
+            run_dir, run_status=1, repo_dir=tmp_path, logs_tail="",
+            runner=_BranchRunner(),
+        )
+        assert result.status == "error"
+
+    def test_missing_message_falls_back_to_a_generic_reason(self, tmp_path) -> None:
+        run_dir = tmp_path / "run-1"
+        _write_run_json(run_dir, {"refusal": {}})
+        result = _result_from_run_json(
+            run_dir, run_status=1, repo_dir=tmp_path, logs_tail="",
+            runner=_BranchRunner(),
+        )
+        assert result.status == "error"
+        assert result.gate_reason.startswith(HOSTED_REFUSAL_PREFIX)
+
+    def test_no_marker_exit_1_still_maps_to_red_exactly_as_before(self, tmp_path) -> None:
+        """Regression: the pre-#1267-PR③ fallback (no gate, no marker, nonzero
+        exit) is untouched — byte-identical reason string."""
+        run_dir = tmp_path / "run-1"
+        _write_run_json(run_dir, {})
+        result = _result_from_run_json(
+            run_dir, run_status=1, repo_dir=tmp_path, logs_tail="",
+            runner=_BranchRunner(),
+        )
+        assert result.status == "red"
+        assert result.gate_reason == "agentrail run exited 1"
+
+    def test_no_marker_exit_0_still_maps_to_green_exactly_as_before(self, tmp_path) -> None:
+        run_dir = tmp_path / "run-1"
+        _write_run_json(run_dir, {})
+        result = _result_from_run_json(
+            run_dir, run_status=0, repo_dir=tmp_path, logs_tail="",
+            runner=_BranchRunner(),
+        )
+        assert result.status == "green"
+        assert result.gate_reason == ""
+
+    def test_real_objective_gate_verdicts_still_parse_exactly_as_before(self, tmp_path) -> None:
+        """Regression: a run.json with no `refusal` key still reads
+        objectiveGate.verdict exactly as it did pre-#1267-PR③."""
+        run_dir = tmp_path / "run-1"
+        _write_run_json(run_dir, {
+            "objectiveGate": {"verdict": "red", "failedReasons": ["AC2 unverified"]},
+        })
+        result = _result_from_run_json(
+            run_dir, run_status=1, repo_dir=tmp_path, logs_tail="",
+            runner=_BranchRunner(),
+        )
+        assert result.status == "red"
+        assert "AC2 unverified" in result.gate_reason
+
+
+class TestHostedRefusalEndToEnd:
+    """Full stack (faked subprocess): the 'agentrail run issue' step exits 1
+    AND writes a run.json carrying the refusal marker — exactly what a real
+    hosted refusal does (pipeline.py writes the marker, then `return 1`).
+    `run_issue_on_host` must report status="error" with the prefixed reason.
+    """
+
+    def _refusal_runner(
+        self, run_dir: Path, message: str = "FATAL: hosted run refused"
+    ) -> FakeRunner:
+        def _do_run(cmd, cwd, env):
+            log_dir = _extract_log_dir(cmd, run_dir)
+            run_id = _extract_run_id(cmd) or "host-run"
+            _write_run_json(Path(log_dir) / run_id, {
+                "refusal": {
+                    "kind": "independent_review",
+                    "status": "skipped_no_distinct_model",
+                    "message": message,
+                }
+            })
+            # A refused run exits 1 — same as agentrail/run/pipeline.py's
+            # `return 1` at the #1270 startup assert.
+            return _Completed(1, stdout="", stderr=message)
+
+        return FakeRunner([
+            _Completed(0, stdout="cloned"),  # git clone
+            _do_run,                          # agentrail run issue (refuses)
+        ])
+
+    def _run(self, tmp_path, runner, **over):
+        dirs = _RunDirs(tmp_path)
+        kwargs = dict(
+            repo_url="https://github.com/acme/widgets.git",
+            ref="main", issue_ref="7", workspace_id="ws-123",
+            env={}, run_dir_factory=dirs, runner=runner,
+        )
+        kwargs.update(over)
+        return run_issue_on_host(**kwargs), dirs
+
+    def test_refused_run_reports_error_with_hosted_refusal_reason(self, tmp_path) -> None:
+        runner = self._refusal_runner(tmp_path / "run-1")
+        result, _ = self._run(tmp_path, runner)
+        assert result.status == "error"
+        assert result.gate_reason == f"{HOSTED_REFUSAL_PREFIX}FATAL: hosted run refused"
+
+    def test_refused_run_never_reports_red(self, tmp_path) -> None:
+        runner = self._refusal_runner(tmp_path / "run-1")
+        result, _ = self._run(tmp_path, runner)
+        assert result.status != "red"
+
+    def test_refused_run_never_publishes_a_pr(self, tmp_path) -> None:
+        """Only a green gate publishes (commit/push/PR) — a refusal must never
+        trigger that path even though publish_pr defaults to True."""
+        runner = self._refusal_runner(tmp_path / "run-1")
+        result, _ = self._run(tmp_path, runner)
+        assert result.pr_url == ""
+        # No `gh pr create` (or push-to-feature-branch) command ever issued.
+        assert not any("create" in c and "gh" in c for c in runner.commands)
+        assert not any("push" in c for c in runner.commands)
+
+    def test_refused_run_preserves_caller_owned_dir(self, tmp_path) -> None:
+        # Caller-owned-workdir contract (#997), same as the error/timeout paths.
+        runner = self._refusal_runner(tmp_path / "run-1")
+        _, dirs = self._run(tmp_path, runner)
         for d in dirs.created:
             assert d.exists()
 

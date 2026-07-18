@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Set
 
 from agentrail.runner.client import RunnerAuthError
 from agentrail.runner.worker import Execute, _report
@@ -89,6 +89,20 @@ class WorkspaceRotation:
         # size.
         self._empty_streak = 0
         self._idle_gen = 0
+        # Per-workspace blocked-claim transition tracking (#1267 PR④ item 0 —
+        # a PR②-re-review-carried fix: this rotation never read
+        # client.last_claim_blocked at all, so a budget-capped fleet
+        # workspace idled in rotation with NO operator-visible log line, even
+        # though worker.py's single-workspace loop already had this signal
+        # for the plain `agentrail runner` daemon via its own `was_blocked`
+        # local, #1324). Keyed per-workspace (not per-slot-thread) because
+        # multiple slot threads can visit the SAME workspace across turns of
+        # this shared rotation — a thread-local flag would double-log or
+        # under-log depending on which thread happened to poll a given
+        # workspace next; centralizing it here, behind the same lock as the
+        # rest of this class's shared state, is the only place that is
+        # correct regardless of which thread does the polling.
+        self._blocked: Set[str] = set()
 
     def next(self) -> Optional[WorkspaceSlot]:
         """The next workspace slot in rotation, or ``None`` if none are active."""
@@ -121,6 +135,32 @@ class WorkspaceRotation:
         with self._lock:
             self._empty_streak = 0
 
+    def note_claim_blocked(self, workspace_id: str) -> bool:
+        """Record a blocked-claim poll for ``workspace_id``.
+
+        Returns ``True`` exactly on the transition into blocked — this
+        workspace was NOT already flagged — so the caller logs once per
+        transition, mirroring ``worker.py``'s single-workspace ``was_blocked``
+        semantics exactly (idle->blocked logs once; every subsequent
+        still-blocked poll stays quiet). Returns ``False`` on every
+        subsequent still-blocked poll for the SAME workspace.
+        """
+        with self._lock:
+            if workspace_id in self._blocked:
+                return False
+            self._blocked.add(workspace_id)
+            return True
+
+    def note_claim_unblocked(self, workspace_id: str) -> None:
+        """Clear ``workspace_id``'s blocked flag (a poll came back unblocked),
+        re-arming the transition so the NEXT blocked poll for this workspace
+        logs again — mirrors ``worker.py``'s ``was_blocked = False`` on an
+        unblocked poll. A no-op when the workspace wasn't flagged (the common
+        case: most polls are never blocked at all).
+        """
+        with self._lock:
+            self._blocked.discard(workspace_id)
+
     def idle_generation(self) -> int:
         """The current idle generation (bumped once per fully-empty pass)."""
         with self._lock:
@@ -133,6 +173,10 @@ class WorkspaceRotation:
             # The pass is redefined by the membership change; a stale streak
             # could otherwise compare against the wrong rotation size.
             self._empty_streak = 0
+            # A dropped workspace shouldn't linger "blocked" forever in
+            # memory; if it rejoins later (a fresh token from the next sync),
+            # that is a fresh transition and should log again.
+            self._blocked.discard(workspace_id)
 
     def refresh(self, slots: List[WorkspaceSlot]) -> None:
         """Swap in a wholly new workspace list (called after each sync cycle).
@@ -145,6 +189,14 @@ class WorkspaceRotation:
             self._slots = list(slots)
             self._i = 0
             self._empty_streak = 0
+            # Same reset-on-refresh treatment as _empty_streak above: a fresh
+            # sync cycle is a clean slate for transition tracking too. Worst
+            # case a workspace that is STILL blocked across a sync cycle logs
+            # one extra line every FLEET_SYNC_INTERVAL_SECONDS (default 300s)
+            # instead of staying silent — cheap, and far safer than the
+            # alternative of a stale entry silently suppressing a genuine
+            # transition forever if that workspace ever drops out and rejoins.
+            self._blocked = set()
 
     def workspace_ids(self) -> List[str]:
         with self._lock:
@@ -234,6 +286,23 @@ def _fleet_slot(
             # console is down) must reach a fully-empty pass and idle, not spin.
             rotation.note_empty()
             continue
+        # Budget-capped workspace claims-paused signal (#1269 PR2a's header
+        # bit, worker.py's #1324 fix, carried into the fleet here — #1267
+        # PR④ item 0). A blocked claim looks EXACTLY like an empty one (both
+        # return None from claim_next()), so without this check a
+        # budget-capped workspace idles in rotation with zero operator-
+        # visible signal, indistinguishable from "nothing queued." Logged
+        # ONCE per workspace per transition into blocked — see
+        # WorkspaceRotation.note_claim_blocked's docstring for why this is
+        # tracked per-workspace rather than per-slot-thread.
+        blocked_reason = getattr(slot.client, "last_claim_blocked", None)
+        if blocked_reason:
+            if rotation.note_claim_blocked(slot.workspace_id):
+                _log.warning(
+                    "workspace %s: claims paused (%s)", slot.workspace_id, blocked_reason
+                )
+        else:
+            rotation.note_claim_unblocked(slot.workspace_id)
         if item is None:
             # Nothing queued for THIS workspace — move straight on to the next
             # workspace in rotation; the sleep happens once per fully-empty

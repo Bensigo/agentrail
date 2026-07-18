@@ -383,3 +383,130 @@ def test_rotation_drop_and_refresh_reset_the_streak():
     rotation.refresh([_slot("ws3", FakeClient("ws3")), _slot("ws4", FakeClient("ws4"))])
     rotation.note_empty()
     assert rotation.idle_generation() == 1  # refresh reset the streak too
+
+
+# --- Blocked-claim visibility (#1267 PR④ item 0, reviewer-carried from PR②) --
+#
+# client.last_claim_blocked (set by RunnerClient.claim_next on a 204 that
+# carries the workspace-budget header, #1269 PR2a) was read by worker.py's
+# single-workspace loop (#1324) but never by this rotation at all -- a
+# budget-capped fleet workspace idled in rotation with NO operator-visible
+# signal, indistinguishable from "nothing queued anywhere." These tests pin
+# the fix: exactly one log line per workspace per idle->blocked transition,
+# tracked independently per workspace so one workspace's budget cap never
+# affects another's logging.
+
+
+def test_rotation_note_claim_blocked_transitions_are_tracked_per_workspace():
+    rotation = WorkspaceRotation(
+        [_slot("ws-a", FakeClient("ws-a")), _slot("ws-b", FakeClient("ws-b"))]
+    )
+    assert rotation.note_claim_blocked("ws-a") is True  # first block -> transition
+    assert rotation.note_claim_blocked("ws-a") is False  # still blocked -> quiet
+    assert rotation.note_claim_blocked("ws-a") is False  # still blocked -> quiet
+    # ws-b's own blocked tracking is completely independent of ws-a's state.
+    assert rotation.note_claim_blocked("ws-b") is True
+    rotation.note_claim_unblocked("ws-a")  # an unblocked poll re-arms ws-a
+    assert rotation.note_claim_blocked("ws-a") is True  # transition again
+    assert rotation.note_claim_blocked("ws-b") is False  # ws-b untouched throughout
+
+
+def test_rotation_note_claim_unblocked_is_a_no_op_when_never_blocked():
+    rotation = WorkspaceRotation([_slot("ws1", FakeClient("ws1"))])
+    rotation.note_claim_unblocked("ws1")  # must not raise
+    assert rotation.note_claim_blocked("ws1") is True  # still a fresh transition
+
+
+class BlockableFakeClient(FakeClient):
+    """Always returns None from claim_next (as a real blocked OR idle poll
+    does) and scripts last_claim_blocked per call -- mirrors
+    agentrail/tests/runner/test_worker.py's own fake for the single-workspace
+    loop, adapted to carry a workspace_id."""
+
+    def __init__(self, workspace_id: str, blocked_sequence: List[Optional[str]]) -> None:
+        super().__init__(workspace_id)
+        self._script = list(blocked_sequence)
+        self.last_claim_blocked: Optional[str] = None
+
+    def claim_next(self) -> Optional[WorkItem]:
+        self.claim_calls += 1
+        self.last_claim_blocked = self._script.pop(0) if self._script else None
+        return None
+
+
+class AlwaysClaimableClient(FakeClient):
+    """A workspace that always has fresh work to claim.
+
+    Used as the OTHER slot alongside a BlockableFakeClient so that
+    workspace's idle streak never accumulates (every claim resets it via
+    note_claim()) -- keeping the round-robin turn order perfectly
+    predictable (no interleaved idle-pass sleep turns) so the exact
+    blocked/blocked/idle/blocked sequence lands on the turns this test
+    expects.
+    """
+
+    def claim_next(self) -> Optional[WorkItem]:
+        self.claim_calls += 1
+        return _item(self.workspace_id, str(self.claim_calls))
+
+
+def test_fleet_logs_blocked_claim_once_per_transition_and_other_workspaces_unaffected(caplog):
+    import logging
+
+    # blocked, blocked, idle, blocked -> exactly two logs for ws-blocked: the
+    # first blocked poll (idle->blocked), and the fourth (idle->blocked again,
+    # after the third poll's unblocked tick re-armed it). The second poll
+    # (still blocked) and third (idle) stay silent -- byte-identical
+    # transition semantics to test_worker.py's own single-workspace pin.
+    blocked = BlockableFakeClient(
+        "ws-blocked", ["workspace-budget", "workspace-budget", None, "workspace-budget"]
+    )
+    other = AlwaysClaimableClient("ws-other")
+    rotation = WorkspaceRotation([_slot("ws-blocked", blocked), _slot("ws-other", other)])
+
+    with caplog.at_level(logging.WARNING, logger="agentrail.runner.fleet_worker"):
+        run_fleet_worker(
+            rotation, sleep=lambda _s: None, idle_seconds=0,
+            should_continue=_stop_after(8), concurrency=1,
+        )
+
+    assert blocked.claim_calls == 4
+    blocked_logs = [
+        r for r in caplog.records if "ws-blocked: claims paused" in r.message
+    ]
+    assert len(blocked_logs) == 2
+    assert "workspace-budget" in blocked_logs[0].message
+
+    # The other workspace claimed and reported every turn without any
+    # blocked-related interference or extra log noise about IT.
+    assert other.claim_calls == 4
+    assert len(other.reported) == 4
+    assert not [r for r in caplog.records if "ws-other" in r.message]
+
+
+def test_fleet_never_logs_blocked_when_header_absent():
+    """Regression-pin: a plain client (no last_claim_blocked ever truthy) must
+    produce zero blocked-claim logs -- today's behavior, byte-identical."""
+    import logging
+
+    client = FakeClient("ws1")  # always returns None, no last_claim_blocked attr at all
+    rotation = WorkspaceRotation([_slot("ws1", client)])
+    with_caplog = []
+
+    class _Handler(logging.Handler):
+        def emit(self, record):
+            with_caplog.append(record)
+
+    logger = logging.getLogger("agentrail.runner.fleet_worker")
+    handler = _Handler()
+    logger.addHandler(handler)
+    try:
+        run_fleet_worker(
+            rotation, sleep=lambda _s: None, idle_seconds=0,
+            should_continue=_stop_after(3), concurrency=1,
+        )
+    finally:
+        logger.removeHandler(handler)
+
+    assert not hasattr(client, "last_claim_blocked")
+    assert not [r for r in with_caplog if "claims paused" in r.getMessage()]

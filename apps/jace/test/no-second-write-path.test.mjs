@@ -109,10 +109,11 @@ const EXPECTED_TOOL_FILES = [
   "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process
   "standup.ts",
 ].sort();
-// The enumerated set of gated/mutating tools. Every tool named here must set
-// `approval: always()`; the test below also asserts no OTHER tool does — so
-// this list is a ceiling as well as a floor. Adding a fourth entry is a
-// deliberate human edit, not something a maker should do silently.
+// The enumerated set of gated/mutating tools. Every tool named here must
+// wire `approval: (ctx) => consoleGatedApproval(ctx)`; the test below also
+// asserts no OTHER tool does — so this list is a ceiling as well as a floor.
+// Adding a fourth entry is a deliberate human edit, not something a maker
+// should do silently.
 const EXPECTED_MUTATING_TOOLS = ["create_issue.ts", "create_workspace.ts", "create_repo.ts"].sort();
 const EXPECTED_CHILD_PROCESS_SITES = [
   "agent/tools/codebase_query.ts",

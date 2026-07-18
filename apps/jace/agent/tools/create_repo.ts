@@ -6,13 +6,15 @@
 // doc-comment for the authoritative account of that chain, issue #1265 PR
 // ①, spec §4.2).
 //
-// `approval: always()` — the SAME gate class as create_issue and
-// create_workspace: this creates real, durable, EXTERNAL product state (a
+// Human-gated via consoleGatedApproval — the SAME gate class as create_issue
+// and create_workspace: this creates real, durable, EXTERNAL product state (a
 // GitHub repo under the user's own account, wired into this workspace), not
 // a read and not a narrowly self-scoped write like send_connect_link. See
 // apps/jace/test/no-second-write-path.test.mjs for the enumerated set of
-// gated tools this invariant is checked against; every invocation pauses for
-// a human approve/reject before it runs.
+// gated tools this invariant is checked against; every invocation records an
+// approval request with the console, which renders the input in-chat with an
+// Approve/Deny keyboard, and this only runs once that request comes back
+// approved.
 //
 // The model supplies `name` and, optionally, `private` — the human approves
 // the EXACT call (name + visibility) before this runs. Everything else this

@@ -6,9 +6,10 @@
 // factory then picks the issue up by polling GitHub for the server-applied
 // `ready-for-agent` trigger label, with zero Jace-side plumbing.
 //
-// It is human-gated: `approval: always()` means every invocation pauses for a
-// human approve/reject before the CLI runs. There is deliberately no second
-// write path.
+// It is human-gated via consoleGatedApproval: every invocation records an
+// approval request with the console, which renders the input in-chat with an
+// Approve/Deny keyboard, and the CLI only runs once that request comes back
+// approved. There is deliberately no second write path.
 
 import { defineTool } from "eve/tools";
 import { z } from "zod";

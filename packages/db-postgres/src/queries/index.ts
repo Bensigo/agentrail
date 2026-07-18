@@ -18,6 +18,7 @@ import {
   users,
   accounts,
   evalArmMetrics,
+  chatIdentities,
 } from "../schema/index.js";
 import type { EvalArmMetric } from "../schema/index.js";
 import type {
@@ -1030,6 +1031,59 @@ export async function createWorkspace(data: {
       userId: data.userId,
       role: "owner",
     });
+    return workspace;
+  });
+}
+
+/**
+ * Create a workspace whose owner is not yet a linked user — the chat-first
+ * creation path (issue #1264 PR ①, spec §4.2). Jace's `create_workspace` tool
+ * calls this (via the console's runner endpoint) when the CALLING
+ * conversation's chat identity has no linked user yet: the workspace is
+ * created and the identity is bound to it (`chat_identities.workspace_id`),
+ * but — unlike `createWorkspace` above — NO `workspace_memberships` row is
+ * inserted. "Owner-elect" names that gap precisely: there is no owner (a
+ * membership requires a `user_id`) until the identity completes a GitHub bind
+ * (issue #1263's connect flow) and issue #1264 PR ② promotes the
+ * now-linked user to an owner membership on this same workspace. Until then
+ * the workspace is real and visible on the console — reachable by this
+ * identity via `listWorkspacesForChatIdentity`'s own-`workspace_id` join —
+ * but ownerless.
+ *
+ * `chatIdentityId` must be server-derived (the caller's own conversation,
+ * resolved through the session ledger — see `connect-link/route.ts`'s
+ * doc-comment for the pattern) — same SECURITY contract as
+ * `bindChatIdentityWorkspace` itself (chat_identities.ts): binding an
+ * attacker-chosen id here would let that identity reach a workspace it has
+ * no legitimate claim to.
+ *
+ * `slug` is caller-supplied — the console endpoint derives it from `name` and
+ * owns collision-retry policy. A unique violation on `workspaces.slug`
+ * bubbles up as a thrown error for the caller to catch; this function does
+ * not auto-suffix.
+ *
+ * Both writes happen in ONE transaction, so a crash between them can never
+ * leave a workspace with no bound identity. The bind is inlined here as
+ * `tx.update(chatIdentities)...` rather than calling the exported
+ * `bindChatIdentityWorkspace` — that helper writes through the top-level `db`
+ * handle, not `tx`, so reusing it here would silently commit the bind
+ * outside this transaction.
+ */
+export async function createWorkspaceOwnerElect(data: {
+  name: string;
+  slug: string;
+  chatIdentityId: string;
+}) {
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .insert(workspaces)
+      .values({ name: data.name, slug: data.slug })
+      .returning();
+    const workspace = rows[0]!;
+    await tx
+      .update(chatIdentities)
+      .set({ workspaceId: workspace.id, updatedAt: new Date() })
+      .where(eq(chatIdentities.id, data.chatIdentityId));
     return workspace;
   });
 }

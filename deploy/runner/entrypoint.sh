@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Runner container ENTRYPOINT: wire up `gh`/`git` GitHub auth from
-# GITHUB_TOKEN, then exec whatever CMD was given.
+# GITHUB_TOKEN and the coding agent's OpenRouter auth from OPENROUTER_API_KEY,
+# then exec whatever CMD was given.
 #
 # This does NOT hardcode `agentrail runner` — it execs "$@" generically so the
 # SAME image serves both:
@@ -38,6 +39,27 @@ if [ -n "$GH_AUTH_TOKEN" ]; then
 else
   echo "runner-entrypoint: WARNING — GITHUB_TOKEN/GITHUB_OAUTH_TOKEN not set." >&2
   echo "  git clone/push and gh pr create/issue view will fail once a job is claimed." >&2
+fi
+
+# --- OpenRouter auth for Claude Code (#1266) ---------------------------------
+# ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY="" are baked into the image
+# (Dockerfile ENV, non-secret). Only the credential itself is supplied at
+# runtime — mapped here from OPENROUTER_API_KEY (already the one env name
+# deploy/.env.production.example documents for this service) into the
+# variable Claude Code actually reads for a Bearer-style credential,
+# ANTHROPIC_AUTH_TOKEN. Doing the mapping here (not in docker-compose.prod.yml)
+# keeps ONE secret name across the whole deploy folder and keeps the secret
+# out of both the image and any compose file — it exists only in this
+# process's environment. Never echoed/logged. See deploy/runner/Dockerfile's
+# header comment and deploy/runner/README.md for the UNVERIFIED note on
+# whether Claude Code's `--bare` mode actually honors this env var — if it
+# turns out not to, the fix is a one-line swap right here (set
+# ANTHROPIC_API_KEY instead and drop this export), not a re-architecture.
+if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+  export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
+else
+  echo "runner-entrypoint: WARNING — OPENROUTER_API_KEY not set." >&2
+  echo "  claude (the coding agent) will fail to authenticate against OpenRouter once a job is claimed." >&2
 fi
 
 exec "$@"

@@ -24,13 +24,14 @@
 #     into a fresh temp dir INSIDE THIS CONTAINER and runs `agentrail run issue
 #     N` directly as a subprocess, no nested container, no Docker socket.
 #
-# This deployment routes the coding agent through OpenRouter (OPENROUTER_API_KEY
-# in .env.production, not ANTHROPIC_API_KEY), so ANTHROPIC_API_KEY is left
-# UNSET here on purpose -> host-native mode is selected automatically. This is
-# the simpler and safer choice for a single dogfood VM: no privileged socket
-# mount, no need to `docker build` and tag the separate sandbox image on the
-# server, one fewer thing to keep in sync. The tradeoff (per
-# agentrail/sandbox/native_runner.py's own module docstring) is weaker
+# This deployment routes the coding agent through OpenRouter (the secret lives
+# in ANTHROPIC_AUTH_TOKEN at runtime, mapped from OPENROUTER_API_KEY — see
+# below and entrypoint.sh), so ANTHROPIC_API_KEY is left UNSET (explicitly
+# empty — see the baked ENV below) on purpose -> host-native mode is selected
+# automatically. This is the simpler and safer choice for a single dogfood VM:
+# no privileged socket mount, no need to `docker build` and tag the separate
+# sandbox image on the server, one fewer thing to keep in sync. The tradeoff
+# (per agentrail/sandbox/native_runner.py's own module docstring) is weaker
 # isolation between this container and the cloned-repo agent execution — both
 # share this container's filesystem/process namespace, mitigated by the coding
 # agent's own sandboxing and the always-deleted-afterward temp working dir. If
@@ -40,56 +41,91 @@
 # on the host so the sibling image exists to spawn.
 #
 # ---------------------------------------------------------------------------
-# CODING AGENT: aider, routed through OpenRouter. UNVERIFIED — see README.
+# CODING AGENT: Claude Code (headless), routed through OpenRouter (#1266).
 # ---------------------------------------------------------------------------
-# agentrail/cli/commands/run.py's DEFAULT_COMMANDS only ships four concrete
-# agent CLIs: codex, claude, cursor, hermes (plus the "custom" escape hatch,
-# --agent custom --command <...> / AGENTRAIL_CUSTOM_COMMAND). None of those four
-# is a good OpenRouter fit today:
-#   - codex: the currently-published `@openai/codex` CLI's `model_providers.*`
-#     config REMOVED `wire_api = "chat"` support (Responses-API endpoints only —
-#     verified against the codex-rs source: WireApi::deserialize rejects "chat"
-#     with an explicit removal error). OpenRouter speaks the OpenAI
-#     Chat-Completions wire format, not the Responses API, so pointing codex at
-#     OpenRouter via a custom model_provider is NOT expected to work as of this
-#     writing (unverified whether OpenRouter has since added Responses-API
-#     compatibility — check before relying on this path).
-#   - claude (Claude Code CLI): reads Anthropic's own Messages API shape;
-#     OpenRouter does not expose an Anthropic-Messages-compatible endpoint.
-#   - cursor-agent / hermes: no documented custom-provider/base-URL override
-#     was found or verified for either.
+# Supersedes the prior `aider`-via-`--agent custom` choice (see
+# deploy/runner/README.md's "Supersedes aider" section for the full history of
+# why aider was picked first). That choice is no longer needed: OpenRouter now
+# documents a NATIVE Anthropic-Messages-compatible endpoint — Claude Code's own
+# wire format, no shim/LiteLLM/custom-agent wrapper required (verified
+# 2026-07-18: openrouter.ai/docs/cookbook/coding-agents/claude-code-integration):
 #
-# So this image installs `aider-chat` (pip, isolated via pipx) instead, wired
-# through the `--agent custom` escape hatch. Aider has FIRST-CLASS, documented
-# OpenRouter support: set OPENROUTER_API_KEY and pass `--model
-# openrouter/<vendor>/<model>` (verified via aider's own docs,
-# aider/website/docs/llms/openrouter.md). agentrail's run pipeline PIPES THE
-# PROMPT OVER STDIN to the agent command (agentrail/run/proc.py:
-# run_with_timeout's `stdin_text`), matching codex's trailing `-` / claude's
-# `-p` / cursor's `-p` — but aider's non-interactive interface is `--message`/
-# `--message-file`, NOT stdin. /usr/local/bin/aider-stdin-wrapper below bridges
-# that gap: it reads stdin into a temp file and calls aider with
-# `--message-file`. This wrapper is WRITTEN BUT NOT RUN END-TO-END here (no
-# Docker available in this build environment) — validate it for real on the
-# server (see deploy/README.md's runner verification steps) before trusting a
-# live run.
+#   ANTHROPIC_BASE_URL="https://openrouter.ai/api"
+#   ANTHROPIC_AUTH_TOKEN="<your OpenRouter key>"   (RUNTIME secret, see entrypoint.sh)
+#   ANTHROPIC_API_KEY=""                           (must be explicitly empty)
+#
+# Headless invocation is `claude --bare -p`: `--bare` skips local-machine
+# discovery — hooks, skills, plugin sync, MCP servers, CLAUDE.md
+# auto-discovery, keychain/OAuth reads (code.claude.com/docs/en/headless.md,
+# "Start faster with bare mode"). That is exactly the posture a hosted runner
+# needs: it clones ARBITRARY target repos and must never execute whatever
+# hooks or CLAUDE.md THAT repo happens to carry. `--dangerously-skip-permissions`
+# is required alongside it — same as this very repo's own pre-#1266 `claude`
+# runner command (.agentrail/config.json) — because a headless run with no
+# human watching would otherwise hang forever on the first permission prompt.
+#
+# UNVERIFIED INTERACTION — read before trusting a live run; this is exactly
+# what PR② (the real end-to-end run) exists to settle:
+#   code.claude.com/docs/en/headless.md states, verbatim: "Bare mode skips
+#   OAuth and keychain reads. Anthropic authentication must come from
+#   ANTHROPIC_API_KEY or an apiKeyHelper in the JSON passed to --settings" —
+#   ANTHROPIC_AUTH_TOKEN is not named as a bare-mode-compatible credential
+#   there. The installed CLI's own `--bare` --help text says close to the same
+#   thing ("Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via
+#   --settings (OAuth and keychain are never read)"). Meanwhile OpenRouter's
+#   OWN Claude Code integration guide (cited above) is written around the
+#   ANTHROPIC_AUTH_TOKEN + empty-ANTHROPIC_API_KEY shape and never mentions
+#   `--bare` at all. Neither source explicitly contradicts the other, but
+#   together they leave it genuinely unverified whether `--bare` reads
+#   ANTHROPIC_AUTH_TOKEN at all when talking to a non-Anthropic base URL. This
+#   could not be tested in the build environment that produced this image (no
+#   OpenRouter key here, and none should ever be written into this repo — see
+#   deploy/runner/README.md). The default below is the OpenRouter-documented
+#   shape; if PR②'s first real run 401s (or otherwise fails to authenticate)
+#   instead of reaching the model, the one-line fallback is: in
+#   entrypoint.sh, set `ANTHROPIC_API_KEY="$OPENROUTER_API_KEY"` instead of
+#   `ANTHROPIC_AUTH_TOKEN`, and drop the empty-string override — not a
+#   re-architecture.
+#
+# Model routing is per-target-repo, not baked into this image:
+# `.agentrail/config.json`'s `runners.claude.models.{execute,verify,critic}`
+# (see deploy/runner/agentrail-config.hosted.json, the reference template —
+# and deploy/runner/README.md for why the image does not auto-inject this
+# file into a clone). `--model` is appended per-phase, already shell-quoted,
+# by agentrail/cli/commands/run.py's `append_model_to_command`.
+#
+# `--bare` is wired via the AGENTRAIL_CLAUDE_COMMAND env override baked below
+# — NOT by changing DEFAULT_COMMANDS["claude"] in
+# agentrail/cli/commands/run.py. That constant is also what every LOCAL
+# developer's `agentrail run` falls back to; hardcoding `--bare` there would
+# silently take away their own hooks/CLAUDE.md/MCP servers. The env override
+# (agentrail/cli/commands/run.py: ENV_NAMES = {"claude": "AGENTRAIL_CLAUDE_COMMAND", ...},
+# read by resolve_agent_command) only affects processes that inherit THIS
+# image's environment, i.e. only hosted/containerized runs.
 #
 # ---------------------------------------------------------------------------
-FROM python:3.11-slim AS runtime
+FROM node:22-slim AS runtime
 
 # git + gh: agentrail/sandbox/native_runner.py shells out to both directly
 # (git clone/checkout/add/commit/push; gh pr create / gh pr view) — confirmed
 # by reading native_runner.py. `agentrail run`'s bare-issue-selection path also
 # calls `gh issue list` (agentrail/cli/commands/run.py) and `gh issue view`
-# (agentrail/run/context.py). curl: installs gh's apt repo + pipx.
-# ca-certificates: outbound HTTPS to the console, OpenRouter, GitHub.
+# (agentrail/run/context.py). curl: installs gh's apt repo. ca-certificates:
+# outbound HTTPS to the console, OpenRouter, GitHub. python3/python3-pip: the
+# agentrail CLI is pure Python (see below) — this base image is Node-first
+# (Claude Code needs Node >=22; see the pin note below), so Python is the one
+# added via apt here, mirroring apps/jace/Dockerfile's identical vendoring
+# recipe on the same node:*-slim base. --break-system-packages is required on
+# Debian 12+'s PEP 668 "externally managed environment" python (same flag
+# apps/jace/Dockerfile already uses).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         git \
         curl \
         ca-certificates \
         gnupg \
-        pipx \
+        python3 \
+        python3-pip \
     && install -d -m 0755 /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -99,36 +135,51 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- agentrail CLI (Python) ---------------------------------------------------
-# Same vendoring recipe as agentrail/docker/runner/Dockerfile and
-# apps/jace/Dockerfile: vendor the package source, pip install it (registers
-# `agentrail` + resolves its tree-sitter deps from pyproject.toml), put the
-# bash launcher on PATH.
+# Same vendoring recipe as apps/jace/Dockerfile and agentrail/docker/runner/Dockerfile:
+# vendor the package source, pip install it (registers `agentrail` + resolves
+# its tree-sitter deps from pyproject.toml), put the bash launcher on PATH.
 WORKDIR /opt/agentrail
 COPY pyproject.toml ./pyproject.toml
 COPY agentrail ./agentrail
 RUN rm -rf ./agentrail/tests ./agentrail/docker \
-    && pip install --no-cache-dir . \
+    && python3 -m pip install --no-cache-dir --break-system-packages . \
     && chmod +x agentrail/scripts/agentrail \
     && ln -sf /opt/agentrail/agentrail/scripts/agentrail /usr/local/bin/agentrail
 
-# ---- aider (isolated via pipx, keeps its dep tree off agentrail's) -----------
-# PIPX_BIN_DIR=/usr/local/bin puts the `aider` shim straight on the default
-# PATH, so no `pipx ensurepath` (which edits shell profile files — meaningless
-# in a non-interactive container, skipped on purpose) is needed.
-ENV PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin
-RUN pipx install aider-chat
+# ---- Claude Code CLI (the coding agent; #1266) -------------------------------
+# Exact pin, not a floating `npm i -g @anthropic-ai/claude-code` — house pin
+# discipline: an unpinned install would silently change agent behavior on
+# every image rebuild. 2.1.214 was the current published `latest` as of
+# 2026-07-18 (`npm view @anthropic-ai/claude-code version`). Bump deliberately.
+#
+# Node >=22 is a hard requirement of this package (`npm view
+# @anthropic-ai/claude-code engines` -> {"node": ">=22.0.0"}) — this is why
+# this image's base is node:22-slim rather than python:3.11-slim (the prior
+# base): Debian bookworm's own apt `nodejs` package is v18, too old to run a
+# current claude-code build at all.
+RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code@2.1.214 \
+    && npm cache clean --force
 
-# stdin -> --message-file bridge (see the wire-format note above).
-COPY deploy/runner/aider-stdin-wrapper.sh /usr/local/bin/aider-stdin-wrapper
 COPY deploy/runner/entrypoint.sh /usr/local/bin/runner-entrypoint
-RUN chmod +x /usr/local/bin/aider-stdin-wrapper /usr/local/bin/runner-entrypoint
+RUN chmod +x /usr/local/bin/runner-entrypoint
 
-# `agentrail run`'s custom-agent resolution reads AGENTRAIL_CUSTOM_COMMAND (see
-# agentrail/cli/commands/run.py's ENV_NAMES) when --agent custom / AGENTRAIL_AGENT=custom
-# is selected; the actual `--agent custom` selection happens via AGENTRAIL_AGENT
-# (read by run_issue_on_host, agentrail/sandbox/native_runner.py) at runtime,
-# set in docker-compose.prod.yml rather than baked here so it stays overridable.
-ENV AGENTRAIL_CUSTOM_COMMAND="/usr/local/bin/aider-stdin-wrapper"
+# ---- Env baked into the image (all non-secret) -------------------------------
+# ANTHROPIC_AUTH_TOKEN — the actual OpenRouter credential — is deliberately
+# NOT here. runner-entrypoint maps it in at container start from
+# OPENROUTER_API_KEY (docker-compose.prod.yml's env_file), so the secret is
+# never an image layer and never logged. See entrypoint.sh + README.md.
+#
+# `docker build` prints a linter warning on the ANTHROPIC_API_KEY line below
+# ("SecretsUsedInArgOrEnv") — it is pattern-matching the variable NAME, not
+# its value. The value here is the empty string, on purpose (required by
+# OpenRouter's own Claude Code integration guide, so it never shadows
+# ANTHROPIC_AUTH_TOKEN); there is no secret in this ENV instruction to leak.
+ENV ANTHROPIC_BASE_URL="https://openrouter.ai/api" \
+    ANTHROPIC_API_KEY="" \
+    CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1 \
+    AGENTRAIL_HOSTED=1 \
+    AGENTRAIL_AGENT=claude \
+    AGENTRAIL_CLAUDE_COMMAND="claude --bare -p --dangerously-skip-permissions"
 
 # Runs as root (no USER directive) — simplest for a single-tenant VM writing
 # into a named volume, and matches Python's home-dir resolution below. `HOME`

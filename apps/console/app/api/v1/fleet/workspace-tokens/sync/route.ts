@@ -21,15 +21,17 @@ const FLEET_KEY_NAME = "Hosted fleet";
  *
  * Auth: a single shared secret, `FLEET_CONSOLE_TOKEN`, presented as an
  * ordinary `Authorization: Bearer <token>` header and compared with
- * `timingSafeEqual` (the constant-time idiom `connectors/telegram/webhook`
- * uses for its own shared-bot secret) — NOT `requireBearer` / a per-workspace
- * `api_keys` row: this route provisions those rows, so it cannot itself be
- * gated by one. A missing env var or a mismatched token both collapse into
- * the SAME 404 `{ error: "Not found" }` (house anti-enumeration posture,
- * matching `api-keys/[keyId]/route.ts` and friends) — this door is reachable
- * by anyone who finds the URL, so "secret unset" must never look different
- * from "wrong secret", and neither may look different from "route doesn't
- * exist".
+ * `timingSafeEqual` (the constant-time, fail-closed idiom
+ * `connectors/telegram/webhook`'s `verifySecret` uses for its own shared-bot
+ * secret) — NOT `requireBearer` / a per-workspace `api_keys` row: this route
+ * provisions those rows, so it cannot itself be gated by one. A missing env
+ * var and a mismatched token both collapse into the SAME 404 `{ error: "Not
+ * found" }` — the 404-indistinguishable refusal posture the runner
+ * `connect-link` / `approvals` routes use at their own resolution boundaries
+ * (every distinct refusal folds into one unreadable response) — because this
+ * door is reachable by anyone who finds the URL, so "secret unset" must never
+ * look different from "wrong secret", and neither may look different from
+ * "route doesn't exist".
  *
  * Scoping (open, tracked on #1295, same as `JACE_CONSOLE_TOKEN`'s own
  * unresolved question): ONE shared secret authorizes syncing EVERY
@@ -60,8 +62,23 @@ const FLEET_KEY_NAME = "Hosted fleet";
  * "already active", not a 500: the workspace ends up with exactly one active
  * fleet key either way, and that's this endpoint's only invariant.
  *
+ * Per-row failure isolation (review fix): EVERY row's unit of work (mint or
+ * revoke) runs in its own try/catch. Any other failure — a transient DB error
+ * on row N+1, say — lands that one workspace in the `failed` bucket (terse
+ * `reason: 'mint_failed' | 'revoke_failed'`, never a token, never raw error
+ * text) and the sweep CONTINUES. Without this, a mid-batch throw would
+ * discard the whole HTTP response including raw tokens already durably minted
+ * for earlier rows — hash-only storage means those tokens would be
+ * unrecoverable: the workspaces would sit at hasActiveFleetKey=true holding a
+ * token the fleet never received, with nothing surfacing it. The fleet's
+ * PR-② client warns on a non-empty `failed` and simply retries those
+ * workspaces on its next sync. Failures are logged server-side as caught
+ * error OBJECTS (the claim route's own posture) — a mint error can never
+ * carry the raw token, which exists only in this process's memory and is not
+ * a parameter of the failed INSERT.
+ *
  * Response 200: `{ minted: [{workspaceId, slug, token}], active: [workspaceId,
- * ...], revoked: [workspaceId, ...] }`.
+ * ...], revoked: [workspaceId, ...], failed: [{workspaceId, reason}, ...] }`.
  */
 
 function verifyFleetBearer(req: NextRequest): boolean {
@@ -97,6 +114,13 @@ interface MintedFleetToken {
   token: string;
 }
 
+interface FailedFleetSync {
+  workspaceId: string;
+  // Terse, fixed vocabulary ONLY (review fix): never a token, never raw error
+  // text — the underlying error object goes to the server log, not the wire.
+  reason: "mint_failed" | "revoke_failed";
+}
+
 export async function POST(request: NextRequest) {
   if (!verifyFleetBearer(request)) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -107,6 +131,7 @@ export async function POST(request: NextRequest) {
   const minted: MintedFleetToken[] = [];
   const active: string[] = [];
   const revoked: string[] = [];
+  const failed: FailedFleetSync[] = [];
 
   for (const row of state) {
     if (row.hostedExecution && !row.hasActiveFleetKey) {
@@ -118,20 +143,42 @@ export async function POST(request: NextRequest) {
         });
         minted.push({ workspaceId: row.workspaceId, slug: row.slug, token: key.rawKey });
       } catch (err) {
-        if (!isUniqueViolation(err)) throw err;
-        // Lost the race to a concurrent sync's mint for this same workspace —
-        // it has an active fleet key either way, so report it as such.
-        active.push(row.workspaceId);
+        if (isUniqueViolation(err)) {
+          // Lost the race to a concurrent sync's mint for this same workspace
+          // — it has an active fleet key either way, so report it as such.
+          active.push(row.workspaceId);
+        } else {
+          // Per-row isolation (review fix): rethrowing here would discard the
+          // whole response — including raw tokens already minted for EARLIER
+          // rows, which hash-only storage makes unrecoverable. Record, log
+          // the error object (never a token — see doc-comment), continue.
+          console.error(
+            `[fleet/workspace-tokens/sync] mint failed for workspace ${row.workspaceId}:`,
+            err
+          );
+          failed.push({ workspaceId: row.workspaceId, reason: "mint_failed" });
+        }
       }
     } else if (row.hostedExecution && row.hasActiveFleetKey) {
       active.push(row.workspaceId);
     } else if (!row.hostedExecution && row.hasActiveFleetKey && row.fleetKeyId) {
-      await revokeApiKey(row.workspaceId, row.fleetKeyId);
-      revoked.push(row.workspaceId);
+      try {
+        await revokeApiKey(row.workspaceId, row.fleetKeyId);
+        revoked.push(row.workspaceId);
+      } catch (err) {
+        // Same per-row isolation as the mint branch: a failed revoke must not
+        // discard the rest of the sweep's response. The key stays active until
+        // a later sync's revoke succeeds.
+        console.error(
+          `[fleet/workspace-tokens/sync] revoke failed for workspace ${row.workspaceId}:`,
+          err
+        );
+        failed.push({ workspaceId: row.workspaceId, reason: "revoke_failed" });
+      }
     }
     // hostedExecution=false && !hasActiveFleetKey -> nothing to do, omitted
     // from every bucket.
   }
 
-  return NextResponse.json({ minted, active, revoked });
+  return NextResponse.json({ minted, active, revoked, failed });
 }

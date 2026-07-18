@@ -107,6 +107,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint/active/revoke bucket
       minted: [{ workspaceId: "ws-1", slug: "acme", token: "ar_rawtoken1" }],
       active: [],
       revoked: [],
+      failed: [],
     });
     expect(mockRevoke).not.toHaveBeenCalled();
   });
@@ -119,7 +120,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint/active/revoke bucket
     const res = await POST(req(SECRET));
     const body = await res.json();
 
-    expect(body).toEqual({ minted: [], active: ["ws-2"], revoked: [] });
+    expect(body).toEqual({ minted: [], active: ["ws-2"], revoked: [], failed: [] });
     expect(mockMint).not.toHaveBeenCalled();
     expect(mockRevoke).not.toHaveBeenCalled();
   });
@@ -134,7 +135,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint/active/revoke bucket
     const body = await res.json();
 
     expect(mockRevoke).toHaveBeenCalledWith("ws-3", "key-3");
-    expect(body).toEqual({ minted: [], active: [], revoked: ["ws-3"] });
+    expect(body).toEqual({ minted: [], active: [], revoked: ["ws-3"], failed: [] });
     expect(mockMint).not.toHaveBeenCalled();
   });
 
@@ -146,7 +147,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint/active/revoke bucket
     const res = await POST(req(SECRET));
     const body = await res.json();
 
-    expect(body).toEqual({ minted: [], active: [], revoked: [] });
+    expect(body).toEqual({ minted: [], active: [], revoked: [], failed: [] });
     expect(mockMint).not.toHaveBeenCalled();
     expect(mockRevoke).not.toHaveBeenCalled();
   });
@@ -168,12 +169,13 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint/active/revoke bucket
       minted: [{ workspaceId: "ws-1", slug: "a", token: "ar_freshtoken" }],
       active: ["ws-2"],
       revoked: ["ws-3"],
+      failed: [],
     });
   });
 });
 
 describe("POST /api/v1/fleet/workspace-tokens/sync — mint race (unique violation)", () => {
-  it("treats a unique-violation (err.code 23505) on mint as already-active, no 500", async () => {
+  it("treats a unique-violation (err.code 23505) on mint as already-active, no 500, NOT failed", async () => {
     mockListState.mockResolvedValue([
       { workspaceId: "ws-5", slug: "race", hostedExecution: true, hasActiveFleetKey: false, fleetKeyId: null },
     ]);
@@ -183,7 +185,7 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint race (unique violati
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toEqual({ minted: [], active: ["ws-5"], revoked: [] });
+    expect(body).toEqual({ minted: [], active: ["ws-5"], revoked: [], failed: [] });
   });
 
   it("treats a DRIZZLE-WRAPPED unique-violation (err.cause.code 23505) as already-active too", async () => {
@@ -198,16 +200,110 @@ describe("POST /api/v1/fleet/workspace-tokens/sync — mint race (unique violati
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toEqual({ minted: [], active: ["ws-6"], revoked: [] });
+    expect(body).toEqual({ minted: [], active: ["ws-6"], revoked: [], failed: [] });
+  });
+});
+
+describe("POST /api/v1/fleet/workspace-tokens/sync — per-row failure isolation (review fix)", () => {
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    // The isolation path logs the caught error object; keep test output
+    // pristine and capture what was logged for the no-token assertions.
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   });
 
-  it("rethrows a non-unique-violation mint error (does not silently swallow real failures)", async () => {
-    mockListState.mockResolvedValue([
-      { workspaceId: "ws-7", slug: "broken", hostedExecution: true, hasActiveFleetKey: false, fleetKeyId: null },
-    ]);
-    mockMint.mockRejectedValue(new Error("connection reset"));
+  afterEach(() => {
+    errorSpy.mockRestore();
+  });
 
-    await expect(POST(req(SECRET))).rejects.toThrow("connection reset");
+  it("a generic mint error on a LATER row still returns 200 with the EARLIER row's minted token; the later row lands in failed", async () => {
+    mockListState.mockResolvedValue([
+      { workspaceId: "ws-ok", slug: "ok", hostedExecution: true, hasActiveFleetKey: false, fleetKeyId: null },
+      { workspaceId: "ws-broken", slug: "broken", hostedExecution: true, hasActiveFleetKey: false, fleetKeyId: null },
+    ]);
+    const EARLIER_TOKEN = "ar_earlier-rows-durably-minted-token";
+    mockMint
+      .mockResolvedValueOnce({ id: "key-ok", rawKey: EARLIER_TOKEN, keyPrefix: "ar_earlier" })
+      .mockRejectedValueOnce(new Error("connection reset"));
+
+    const res = await POST(req(SECRET));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({
+      minted: [{ workspaceId: "ws-ok", slug: "ok", token: EARLIER_TOKEN }],
+      active: [],
+      revoked: [],
+      failed: [{ workspaceId: "ws-broken", reason: "mint_failed" }],
+    });
+    // The isolation log must never carry the earlier row's raw token.
+    const logged = errorSpy.mock.calls
+      .flat()
+      .map((arg: unknown) =>
+        typeof arg === "string" ? arg : JSON.stringify(arg) ?? String(arg)
+      )
+      .join("\n");
+    expect(logged).not.toContain(EARLIER_TOKEN);
+  });
+
+  it("a generic mint error on an EARLIER row does not stop later rows from minting", async () => {
+    mockListState.mockResolvedValue([
+      { workspaceId: "ws-broken", slug: "broken", hostedExecution: true, hasActiveFleetKey: false, fleetKeyId: null },
+      { workspaceId: "ws-ok", slug: "ok", hostedExecution: true, hasActiveFleetKey: false, fleetKeyId: null },
+    ]);
+    mockMint
+      .mockRejectedValueOnce(new Error("deadlock detected"))
+      .mockResolvedValueOnce({ id: "key-ok", rawKey: "ar_later-token", keyPrefix: "ar_later-t" });
+
+    const res = await POST(req(SECRET));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({
+      minted: [{ workspaceId: "ws-ok", slug: "ok", token: "ar_later-token" }],
+      active: [],
+      revoked: [],
+      failed: [{ workspaceId: "ws-broken", reason: "mint_failed" }],
+    });
+    expect(mockMint).toHaveBeenCalledTimes(2);
+  });
+
+  it("a revoke failure lands in failed as revoke_failed and does not disturb the rest of the sweep", async () => {
+    mockListState.mockResolvedValue([
+      { workspaceId: "ws-revoke-broken", slug: "rb", hostedExecution: false, hasActiveFleetKey: true, fleetKeyId: "key-rb" },
+      { workspaceId: "ws-mint", slug: "m", hostedExecution: true, hasActiveFleetKey: false, fleetKeyId: null },
+      { workspaceId: "ws-revoke-ok", slug: "ro", hostedExecution: false, hasActiveFleetKey: true, fleetKeyId: "key-ro" },
+    ]);
+    mockRevoke
+      .mockRejectedValueOnce(new Error("connection reset"))
+      .mockResolvedValueOnce({ id: "key-ro" } as never);
+    mockMint.mockResolvedValue({ id: "key-m", rawKey: "ar_mint-token", keyPrefix: "ar_mint-to" });
+
+    const res = await POST(req(SECRET));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({
+      minted: [{ workspaceId: "ws-mint", slug: "m", token: "ar_mint-token" }],
+      active: [],
+      revoked: ["ws-revoke-ok"],
+      failed: [{ workspaceId: "ws-revoke-broken", reason: "revoke_failed" }],
+    });
+  });
+
+  it("failed entries carry ONLY {workspaceId, reason} — never a token and never raw error text", async () => {
+    mockListState.mockResolvedValue([
+      { workspaceId: "ws-broken", slug: "broken", hostedExecution: true, hasActiveFleetKey: false, fleetKeyId: null },
+    ]);
+    const SENSITIVE_ERROR_TEXT = "password=hunter2 in connection string";
+    mockMint.mockRejectedValue(new Error(SENSITIVE_ERROR_TEXT));
+
+    const res = await POST(req(SECRET));
+    const bodyText = JSON.stringify(await res.json());
+
+    expect(bodyText).not.toContain(SENSITIVE_ERROR_TEXT);
+    expect(bodyText).toContain('"reason":"mint_failed"');
   });
 });
 

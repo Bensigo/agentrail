@@ -43,6 +43,17 @@ guesses) can express for this service:
   file itself and Railway's GraphQL API docs — some prose examples in
   Railway's docs show a lowercase `"never"`; the schema's own declared enum
   is uppercase, so that's what's used here.)
+- **Run this service at exactly 1 replica.** The schema HAS a
+  `deploy.numReplicas` field (Railway allows up to 200) and nothing
+  platform-side will warn you — but the per-workspace token store
+  (`fleet-credentials.json` on the volume) is last-writer-wins with no
+  cross-replica coordination: two replicas syncing the same console race
+  each other's mints, and whichever wrote the file last wins while the
+  other's freshly minted (hash-only, unrecoverable) tokens are silently
+  lost. `numReplicas` is deliberately omitted from `railway.json` so it
+  stays at Railway's default of 1; do not raise it in the dashboard either.
+  Scale a busy fleet UP via `FLEET_CONCURRENCY` (more concurrent claims in
+  the one process), not OUT via replicas.
 - **Not expressible in this schema, confirmed absent from
   `railway.schema.json`'s properties list**: volumes, and any environment
   variable. Both are dashboard-only (or `railway variables set` via the
@@ -77,8 +88,8 @@ guesses) can express for this service:
    | `OPENROUTER_API_KEY` | **Yes** | The coding agent's OpenRouter credential — same var `deploy/runner/README.md` documents for the single-tenant runner; `entrypoint.sh` maps it to `ANTHROPIC_AUTH_TOKEN` at container start, never baked, never logged. |
    | `GITHUB_TOKEN` (or `GITHUB_OAUTH_TOKEN`) | No | Optional shared fallback identity for `gh`/`git`. Each REAL claimed run already carries its own per-workspace GitHub OAuth token from the claim payload (`item.github_token`), embedded straight into the authenticated clone/push URL and `GH_TOKEN` — this shared var is only ever used for a workspace that hasn't connected GitHub on the console. If every hosted-eligible workspace has GitHub connected, it's fine to leave this unset (the entrypoint's boot-time warning about it is then harmless noise, not a real gap). If you DO set it, remember its blast radius: one shared PAT usable as a fallback across every workspace lacking its own connection. |
    | `AGENTRAIL_FLEET_HOME` | No | Default `~/.agentrail` (= `/root/.agentrail`, see step 3). Only set this if you're mounting the volume somewhere else. |
-   | `FLEET_CONCURRENCY` | No | Default `2` — claims executing at once across the WHOLE fleet, not per workspace. |
-   | `FLEET_SYNC_INTERVAL_SECONDS` | No | Default `300` — how often the fleet re-syncs its token set after the initial boot sync. |
+   | `FLEET_CONCURRENCY` | No | Default `2` — claims executing at once across the WHOLE fleet, not per workspace. This is the knob for scaling a busy fleet (never replicas — see the 1-replica constraint above). |
+   | `FLEET_SYNC_INTERVAL_SECONDS` | No | Default `300`, floor `30` — how often the fleet re-syncs its token set after the initial boot sync. Values below 30 are clamped (with a warning): a tiny interval would busy-loop the console's sync endpoint. |
 
    **Do NOT set `AGENTRAIL_WORKSPACE_ID`** here under any circumstances — see
    `agentrail/cli/commands/fleet.py`'s module docstring for exactly why (it

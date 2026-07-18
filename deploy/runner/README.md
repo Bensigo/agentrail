@@ -242,3 +242,22 @@ entrypoint's env-to-env mapping copies a value across; it never leaves the
 container and nothing was sent over the network. The actual authenticated
 call to OpenRouter is PR②'s
 job.
+
+## Smoke-tested for #1267 PR② (config-injection wiring; offline, no OpenRouter calls)
+
+PR② changed this image (the hosted-config template `COPY` + the
+`AGENTRAIL_HOSTED_CONFIG` env, and a new `agentrail fleet` CLI in the vendored
+package), so the build was re-verified the same way — a real
+`docker build -f deploy/runner/Dockerfile .` from repo root (clean end to end,
+same single pre-existing `SecretsUsedInArgOrEnv` linter warning), then inside
+the built image:
+
+| Check | Result |
+|---|---|
+| `docker run --rm <image> env` | now additionally carries `AGENTRAIL_HOSTED_CONFIG=/opt/agentrail/agentrail-config.hosted.json`; all previously verified vars unchanged |
+| `cat /opt/agentrail/agentrail-config.hosted.json` in the image | byte-identical to the committed `deploy/runner/agentrail-config.hosted.json` (models.execute/verify/critic intact, verify distinct from execute) |
+| `agentrail fleet --help` in the image | prints the fleet daemon's full env-var contract (the new CLI is wired through the vendored package) |
+| `agentrail fleet` in the image with no env set | exits 1 with `missing required env var(s): AGENTRAIL_SERVER_BASE_URL, FLEET_CONSOLE_TOKEN` — fails loud and early, does not start half-configured |
+
+Same posture as the #1266 table above: no OpenRouter call, no real secret
+anywhere near the build.

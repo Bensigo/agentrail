@@ -1,5 +1,7 @@
 # Hosted fleet — Railway service (issue #1267 PR②)
 
+Day-2 operations (kill switches, scaling, restart, log triage, incident playbooks) live in [RUNBOOK.md](./RUNBOOK.md) — this file is setup only.
+
 `agentrail fleet` (`agentrail/cli/commands/fleet.py`) is one long-running
 process that serves **every** hosted-eligible workspace at once: it syncs its
 own set of per-workspace tokens from the console (no human ever clicks

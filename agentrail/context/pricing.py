@@ -57,11 +57,22 @@ PRICE_TABLE: dict[str, _Rates] = {
     'claude-sonnet-3-7': {"input": 3.0, "output": 15.0, "cached_read": 0.3, "cached_write": 3.75},
     'claude-sonnet-4-5': {"input": 3.0, "output": 15.0, "cached_read": 0.3, "cached_write": 3.75},
     'claude-sonnet-4-6': {"input": 3.0, "output": 15.0, "cached_read": 0.3, "cached_write": 3.75},
+    # Claude Sonnet 5 — sticker rates ($3/$15 per MTok). OpenRouter bills an
+    # introductory $2/$10 through 2026-08-31; we deliberately price at sticker so
+    # ledgers never silently understate spend when the promo lapses (small,
+    # conservative overstatement until then).
+    'claude-sonnet-5': {"input": 3.0, "output": 15.0, "cached_read": 0.3, "cached_write": 3.75},
     'codex-mini-latest': {"input": 1.5, "output": 6.0, "cached_read": 0.375, "cached_write": 1.5},
     'cursor/claude-opus-4-6': {"input": 5.0, "output": 25.0, "cached_read": 0.5, "cached_write": 6.25},
     'cursor/claude-sonnet-4-5': {"input": 3.0, "output": 15.0, "cached_read": 0.3, "cached_write": 3.75},
     'cursor/gpt-4.1': {"input": 2.0, "output": 8.0, "cached_read": 0.5, "cached_write": 2.0},
     'cursor/gpt-4o': {"input": 2.5, "output": 10.0, "cached_read": 1.25, "cached_write": 2.5},
+    # GLM 5.2 (the hosted fleet's verify seat, reached as z-ai/glm-5.2 via
+    # OpenRouter). OpenRouter's balanced routing lists ~$0.2982/$0.9372 per MTok
+    # and rates vary by upstream provider (Z.ai direct is $1.40/$4.40) — these
+    # are approximations, rounded up. cached_read assumes ~75% off (automatic
+    # caching); cached_write = input (no write premium on automatic-cache models).
+    'glm-5.2': {"input": 0.30, "output": 0.94, "cached_read": 0.075, "cached_write": 0.30},
     'gpt-4.1': {"input": 2.0, "output": 8.0, "cached_read": 0.5, "cached_write": 2.0},
     'gpt-4.1-mini': {"input": 0.4, "output": 1.6, "cached_read": 0.1, "cached_write": 0.4},
     'gpt-4.1-nano': {"input": 0.1, "output": 0.4, "cached_read": 0.025, "cached_write": 0.1},

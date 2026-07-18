@@ -67,9 +67,38 @@ def _resolve_rates(model: str) -> Optional[_Rates]:
        pricing identically to before).
     2. If *model* ends in a ``-YYYYMMDD`` date snapshot, strip it and match the
        base alias (e.g. ``claude-sonnet-4-5-20250929`` → ``claude-sonnet-4-5``).
+    3. If *model* carries an AI-gateway provider prefix, strip it and re-run
+       steps 1–2 (e.g. ``anthropic/claude-sonnet-5`` → ``claude-sonnet-5``,
+       ``z-ai/glm-5.2`` → ``glm-5.2``).
+    4. If the (possibly stripped) id versions with dots the way OpenRouter
+       renders Anthropic slugs, swap dots for dashes and re-run steps 1–2
+       (e.g. ``claude-opus-4.8`` → ``claude-opus-4-8``).
 
     Returns ``None`` when neither resolves — the caller then warns + returns 0.
     """
+    rates = _exact_or_dated(model)
+    if rates is not None:
+        return rates
+    # 3. AI-gateway slugs carry a provider prefix the canonical table never
+    #    keys on (OpenRouter: "anthropic/claude-sonnet-5", "z-ai/glm-5.2").
+    #    Strip everything up to the last "/" and retry — without this, every
+    #    hosted-fleet run priced as $0 (a silent cost-metering false green).
+    if "/" in model:
+        stripped = model.rsplit("/", 1)[1]
+        rates = _exact_or_dated(stripped)
+        if rates is not None:
+            return rates
+        model = stripped
+    # 4. OpenRouter versions Anthropic slugs with dots ("claude-opus-4.8")
+    #    while the canonical table uses dashes ("claude-opus-4-8").
+    dashed = model.replace(".", "-")
+    if dashed != model:
+        return _exact_or_dated(dashed)
+    return None
+
+
+def _exact_or_dated(model: str) -> Optional[_Rates]:
+    """Steps 1–2 of the chain: exact key, then trailing-date-snapshot strip."""
     rates = PRICES.get(model)
     if rates is not None:
         return rates

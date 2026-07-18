@@ -23,7 +23,7 @@
 // console's own default (private) wins — this core never invents its own
 // default, that would be a second source of truth for it.
 //
-// Failure handling mirrors create_workspace, with one addition for AC3: THIS
+// Failure handling mirrors create_workspace, with two additions for AC3: THIS
 // endpoint's 409 family is honest by design — a human already approved this
 // specific call in this specific conversation, so there is no anti-
 // enumeration reason to hide which refusal happened. A 409's own `error`
@@ -31,8 +31,11 @@
 // name-taken case, which gets a short retry nudge appended (issue #1265
 // AC3: "failure surfaces honestly in-thread with a retry path") — the other
 // 409s (no workspace, no token, stale credentials) already tell the user
-// what to do, so nothing is added. Every OTHER non-2xx outcome (400 name
-// validation; 401 auth; 404 the endpoint's own deliberately-indistinguishable
+// what to do, so nothing is added. A 400 (the route's own `validateRepoName`
+// rejection — blank, too long, or a disallowed character) is honest for the
+// same reason and gets its own retry nudge, since an invalid name is exactly
+// as fixable in-thread as a taken one. Every OTHER non-2xx outcome (401
+// auth; 404 the endpoint's own deliberately-indistinguishable
 // resolution-failure case; 500; 502 GitHub-call failures) collapses to ONE
 // generic honest string, same posture as create_workspace's non-2xx
 // handling.
@@ -49,6 +52,12 @@ export const GENERIC_FAILURE_MESSAGE = "couldn't create the repo for this conver
 // stale-credentials) contain this phrase.
 const NAME_TAKEN_RE = /already exists on your GitHub$/;
 const NAME_TAKEN_RETRY_SUFFIX = " — pick another name and I'll try again";
+
+// Appended to the route's own 400 validation message (blank / too long / a
+// disallowed character — see apps/console/app/api/v1/runner/repos/route.ts's
+// `validateRepoName`), so the retry path reads the same as the name-taken
+// 409's.
+const INVALID_NAME_RETRY_SUFFIX = " — suggest a valid name and I'll try again";
 
 /**
  * Resolve the console endpoint + bearer from the environment. Trims both,
@@ -102,11 +111,15 @@ export function buildCreateRepoUrl(baseUrl) {
  *                                          no-token / stale-credentials
  *                                          already tell the user what to do)
  *   6. status 409, malformed body      -> GENERIC_FAILURE_MESSAGE
- *   7. any other non-2xx status        -> GENERIC_FAILURE_MESSAGE (400, 401,
- *                                          404, 500, 502 alike — see module
+ *   7. status 400, valid error body    -> the route's own validation message
+ *                                          (blank / too long / disallowed
+ *                                          character) PLUS a retry nudge
+ *   8. status 400, malformed body      -> GENERIC_FAILURE_MESSAGE
+ *   9. any other non-2xx status        -> GENERIC_FAILURE_MESSAGE (401, 404,
+ *                                          500, 502 alike — see module
  *                                          comment)
- *   8. non-JSON / malformed 2xx body   -> GENERIC_FAILURE_MESSAGE
- *   9. success                         -> { url, fullName, private,
+ *  10. non-JSON / malformed 2xx body   -> GENERIC_FAILURE_MESSAGE
+ *  11. success                         -> { url, fullName, private,
  *                                          webhookCreated, onboardQueued }
  *
  * @param {{ eveSessionId: string, name: string, private?: boolean,
@@ -162,6 +175,17 @@ export async function runCreateRepo({ eveSessionId, name, private: isPrivate, en
         return NAME_TAKEN_RE.test(errorBody.error)
           ? `${errorBody.error}${NAME_TAKEN_RETRY_SUFFIX}`
           : errorBody.error;
+      }
+    }
+    if (status === 400) {
+      let errorBody;
+      try {
+        errorBody = await res.json();
+      } catch {
+        return GENERIC_FAILURE_MESSAGE;
+      }
+      if (errorBody && typeof errorBody === "object" && typeof errorBody.error === "string" && errorBody.error) {
+        return `${errorBody.error}${INVALID_NAME_RETRY_SUFFIX}`;
       }
     }
     return GENERIC_FAILURE_MESSAGE;

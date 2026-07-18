@@ -7,9 +7,10 @@
 // (apps/console/app/api/v1/runner/repos/route.ts) is honest by design, so a
 // 409's own `error` message is surfaced VERBATIM for Jace to relay — EXCEPT
 // the name-taken case (AC3's retry path), where a short retry nudge is
-// appended so Jace doesn't have to invent one. Every other non-2xx (400,
-// 401, 404, 500, 502) collapses to ONE generic honest string, same posture
-// as create_workspace / send_connect_link.
+// appended so Jace doesn't have to invent one. The 400 family (the route's
+// own name-validation message) gets the same honest-plus-nudge treatment.
+// Every other non-2xx (401, 404, 500, 502) collapses to ONE generic honest
+// string, same posture as create_workspace / send_connect_link.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -307,6 +308,71 @@ test("on 409 with non-JSON body, falls back to the generic message rather than t
 });
 
 // ---------------------------------------------------------------------------
+// runCreateRepo — the 400 family: the route's own name-validation message is
+// honest by the same AC3 reasoning as the 409 name-taken case, plus a retry
+// nudge (an invalid name is exactly as fixable in-thread as a taken one)
+// ---------------------------------------------------------------------------
+
+test("on 400, appends a retry nudge to the route's own validation message (bad charset — the route's real validateRepoName wording)", async () => {
+  const transport = fakeTransport(() => ({
+    status: 400,
+    json: async () => ({ error: "name may only contain letters, numbers, '.', '_', and '-'" }),
+  }));
+
+  const result = await runCreateRepo({
+    eveSessionId: "eve-session-1",
+    name: "widgets!!",
+    env: ENV,
+    transport,
+  });
+
+  assert.equal(
+    result,
+    "name may only contain letters, numbers, '.', '_', and '-' — suggest a valid name and I'll try again"
+  );
+});
+
+test("on 400, appends the same retry nudge to the route's other validation messages (too long / blank)", async () => {
+  for (const routeMessage of ["name must be at most 100 characters", "name is required"]) {
+    const transport = fakeTransport(() => ({ status: 400, json: async () => ({ error: routeMessage }) }));
+    const result = await runCreateRepo({
+      eveSessionId: "eve-session-1",
+      name: "whatever",
+      env: ENV,
+      transport,
+    });
+    assert.equal(result, `${routeMessage} — suggest a valid name and I'll try again`);
+  }
+});
+
+test("on 400 with a malformed/missing error body, falls back to the generic message rather than throwing", async () => {
+  const transport = fakeTransport(() => ({ status: 400, json: async () => ({}) }));
+  const result = await runCreateRepo({
+    eveSessionId: "eve-session-1",
+    name: "widgets",
+    env: ENV,
+    transport,
+  });
+  assert.equal(result, GENERIC_FAILURE_MESSAGE);
+});
+
+test("on 400 with non-JSON body, falls back to the generic message rather than throwing", async () => {
+  const transport = fakeTransport(() => ({
+    status: 400,
+    json: async () => {
+      throw new SyntaxError("Unexpected token < in JSON");
+    },
+  }));
+  const result = await runCreateRepo({
+    eveSessionId: "eve-session-1",
+    name: "widgets",
+    env: ENV,
+    transport,
+  });
+  assert.equal(result, GENERIC_FAILURE_MESSAGE);
+});
+
+// ---------------------------------------------------------------------------
 // runCreateRepo — every OTHER failure outcome collapses to ONE generic
 // message (same posture as create_workspace / send_connect_link)
 // ---------------------------------------------------------------------------
@@ -342,8 +408,8 @@ test("returns GENERIC_FAILURE_MESSAGE when the transport throws (network error) 
   assert.doesNotMatch(result, /ECONNREFUSED|10\.0\.0\.1/);
 });
 
-test("returns GENERIC_FAILURE_MESSAGE on 400, 401, 404, 500, and 502 — same generic message, status never leaked", async () => {
-  for (const status of [400, 401, 404, 500, 502]) {
+test("returns GENERIC_FAILURE_MESSAGE on 401, 404, 500, and 502 — same generic message, status never leaked (400 is handled separately above)", async () => {
+  for (const status of [401, 404, 500, 502]) {
     const transport = fakeTransport(() => ({ status, json: async () => ({ error: "whatever" }) }));
     const result = await runCreateRepo({ eveSessionId: "eve-session-1", name: "widgets", env: ENV, transport });
     assert.equal(result, GENERIC_FAILURE_MESSAGE, `status ${status} must fail with the generic message`);

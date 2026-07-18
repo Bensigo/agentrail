@@ -83,7 +83,11 @@ export default defineTool({
       .string()
       .min(1)
       .max(100)
-      .describe("The repo name, confirmed with the user before calling."),
+      .describe(
+        "The repo name, confirmed with the user before calling. GitHub only " +
+          "allows letters, numbers, '.', '_', and '-' — propose a name using " +
+          "only those characters.",
+      ),
     private: z
       .boolean()
       .optional()

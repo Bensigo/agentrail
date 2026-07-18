@@ -12,7 +12,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from agentrail.afk import github as gh
 from agentrail.afk import hosted_repo_guard
@@ -22,7 +22,9 @@ from agentrail.afk.runner import Runner, build_store
 # workspace context for this CLI process, read straight from the environment
 # rather than a new flag (a self-hosted runner or a Jace deployment is already
 # scoped to one workspace). Used ONLY to exempt the operator's own workspace
-# from the hosted-repo quarantine guard below (#1271).
+# from the hosted-repo quarantine guard below (#1271). Left unset, NO
+# workspace is exempt, so any hosted match refuses (safe over-refusal) — set
+# this to your own dogfood workspace id to exempt it.
 _WORKSPACE_ID_ENV = "AGENTRAIL_WORKSPACE_ID"
 
 
@@ -109,20 +111,29 @@ def _parse(args: List[str]) -> dict:
     return opts
 
 
-def _origin_repo_slug(target: Path) -> Optional[str]:
-    """Best-effort ``owner/repo`` for ``target``'s git ``origin`` remote.
+def _origin_repo_slug(target: Path) -> Tuple[Optional[str], Optional[str]]:
+    """Best-effort ``(owner/repo, raw_origin_url)`` for ``target``'s git
+    ``origin`` remote.
 
-    ``None`` when there is no ``origin`` remote, ``target`` isn't a git
-    checkout, or the remote isn't a recognizable GitHub URL — the caller
-    treats that as "nothing to hosted-repo-check", not an error.
+    ``(None, None)`` when there is no ``origin`` remote, or ``target`` isn't a
+    git checkout — the caller treats that as "nothing to hosted-repo-check",
+    not an error. ``(None, url)`` when an origin URL exists but isn't a
+    recognizable GitHub remote — this includes SSH host aliases (e.g.
+    ``git@github-work:owner/repo.git``), which cannot be resolved to
+    ``github.com`` without reading the user's ssh config; this module
+    deliberately does not do that (no ssh-config parsing), so an aliased
+    GitHub remote surfaces here the same as any other unparseable URL, and
+    the caller prints a notice naming the raw URL rather than silently
+    skipping the quarantine check without saying why.
     """
     result = subprocess.run(
         ["git", "-C", str(target), "remote", "get-url", "origin"],
         check=False, capture_output=True, text=True,
     )
     if result.returncode != 0:
-        return None
-    return hosted_repo_guard.parse_repo_slug(result.stdout.strip())
+        return None, None
+    url = result.stdout.strip()
+    return hosted_repo_guard.parse_repo_slug(url), url
 
 
 def run_afk(args: List[str]) -> int:
@@ -137,13 +148,21 @@ def run_afk(args: List[str]) -> int:
     # point, before ANY queue/worktree work (including --dry-run's read-only
     # issue listing below).
     hosted_override_banner = ""
-    repo_slug = _origin_repo_slug(target)
+    repo_slug, origin_url = _origin_repo_slug(target)
     if repo_slug is None:
-        print(
-            "AFK: hosted-repo quarantine check skipped: could not determine a "
-            "GitHub owner/repo for this checkout's origin remote.",
-            file=sys.stderr,
-        )
+        if origin_url:
+            print(
+                "AFK: hosted-repo quarantine check skipped: origin remote not "
+                "recognized as github.com (SSH host aliases are not "
+                f"resolved) — {origin_url}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "AFK: hosted-repo quarantine check skipped: could not determine a "
+                "GitHub owner/repo for this checkout's origin remote.",
+                file=sys.stderr,
+            )
     else:
         own_workspace_id = os.environ.get(_WORKSPACE_ID_ENV)
         foreign, db_notice = hosted_repo_guard.resolve_foreign_workspaces(
@@ -189,12 +208,12 @@ def run_afk(args: List[str]) -> int:
 
     issues = gh.list_queue_issues(opts["afk_label"], opts["queue_labels"])
     if not issues:
-        print("AFK: no queued issues matching labels; nothing to do.")
+        print(f"AFK: no queued issues matching labels; nothing to do.{hosted_override_banner}")
         return 0
 
     if opts["dry_run"]:
         print(f"AFK dry-run — would process {len(issues)} issue(s) "
-              f"at concurrency {opts['concurrency']}:")
+              f"at concurrency {opts['concurrency']}:{hosted_override_banner}")
         blockers = sorted({b for it in issues for b in it.get("blocked_by") or ()})
         open_blockers = gh.open_issue_numbers(blockers) if blockers else set()
         for it in issues:

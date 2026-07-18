@@ -56,11 +56,14 @@ from enum import Enum
 # PURPOSE for a price-sensitive product: a silent runaway burns real money, so
 # an un-estimated task checks in at $3 rather than being trusted to self-limit.
 #
-# That check-in is RESUMABLE, never a kill: hitting it does not fail the
-# issue or discard any work — it pauses with a visible reason (blockedReason +
-# phase marker) and picks back up the moment a real budget is supplied (a
-# bigger --budget-usd/--budget-per-issue, a configured budgets.per_issue_usd,
-# or a future alignment-brief estimate). A huge task with no estimate is
+# That check-in is RESUMABLE by design: the run stops with a visible reason
+# (blockedReason + phase marker + resume guidance in the stop message) and a
+# re-run with a real budget picks the work back up wherever the working tree
+# survives (in-place `run issue`: yes; AFK keeps its implement worktree too,
+# though its issue status today reads as a generic failure — see #1269 PR ②;
+# `run batch` tears down worktrees unconditionally, a pre-existing behavior).
+# The resume path is a bigger --budget-usd/--budget-per-issue, a configured
+# budgets.per_issue_usd, or a future alignment-brief estimate. A huge task with no estimate is
 # expected to hit this and check in; that is the design working, not a
 # failure mode — never describe or message it as a hard death (owner call,
 # 2026-07-18: $10 was judged too generous a silent runway for an

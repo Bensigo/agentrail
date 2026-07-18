@@ -225,6 +225,13 @@ describe("workspaceMonthlyCostRollup", () => {
 
     const yearExpr = sql`EXTRACT(YEAR FROM ${runs.createdAt} AT TIME ZONE 'UTC')::int`;
     const monthExpr = sql`EXTRACT(MONTH FROM ${runs.createdAt} AT TIME ZONE 'UTC')::int`;
+    // Window bounds are plain ISO strings, NOT `new Date(...)` — verified
+    // against the real dev DB (not just this mock): a raw Date object
+    // interpolated into a db.execute(sql`...`) template reaches postgres.js's
+    // parameter binder un-serialized and throws ERR_INVALID_ARG_TYPE. The
+    // fluent builder (listWorkspaceRunCosts above) doesn't hit this because
+    // it has column-type context to serialize with; a raw sql template does
+    // not, so this MUST stay a string.
     const expected = sql`
     SELECT
       ${yearExpr} AS bucket_year,
@@ -233,13 +240,22 @@ describe("workspaceMonthlyCostRollup", () => {
       COUNT(*)::int AS run_count
     FROM ${runs}
     WHERE ${runs.workspaceId} = ${"ws-1"}
-      AND ${runs.createdAt} >= ${new Date("2026-06-01T00:00:00.000Z")}
-      AND ${runs.createdAt} < ${new Date("2026-08-01T00:00:00.000Z")}
+      AND ${runs.createdAt} >= ${"2026-06-01T00:00:00.000Z"}
+      AND ${runs.createdAt} < ${"2026-08-01T00:00:00.000Z"}
     GROUP BY ${yearExpr}, ${monthExpr}
     ORDER BY ${yearExpr} ASC, ${monthExpr} ASC
   `;
 
     expect(renderCondition(executedArg)).toEqual(renderCondition(expected));
+
+    // Direct type guard on the window-bound params: this is the regression
+    // test for the exact crash found by running this query against the real
+    // dev DB (not just this mock) — a raw Date object interpolated into a
+    // db.execute(sql`...`) template throws ERR_INVALID_ARG_TYPE at the
+    // driver level, something no mocked-chain test can surface on its own.
+    const rendered = renderCondition(executedArg);
+    expect(typeof rendered.params[1]).toBe("string");
+    expect(typeof rendered.params[2]).toBe("string");
   });
 
   it("zero-fills months with no runs, oldest-first, ending at the current partial month", async () => {

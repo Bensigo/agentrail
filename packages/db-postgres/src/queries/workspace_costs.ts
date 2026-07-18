@@ -167,6 +167,17 @@ function utcMonthWindow(
  * NULL-safe the same way `sumWorkspaceSpendSince` is: `COALESCE(SUM(...),
  * 0)` in SQL (a group made entirely of legacy NULL `cost_usd` rows sums to
  * NULL otherwise) plus a JS-level `?? 0` belt-and-braces fallback.
+ *
+ * The window bounds are interpolated as plain ISO strings, NOT `new
+ * Date(...)` — confirmed against the real dev DB, not just the mocked unit
+ * tests: a raw `Date` object passed into a `db.execute(sql\`...\`)` template
+ * reaches postgres.js's low-level parameter binder un-serialized and throws
+ * (`ERR_INVALID_ARG_TYPE`). The fluent query builder (`sumWorkspaceSpendSince`,
+ * `listWorkspaceRunCosts` above) doesn't hit this because it knows the
+ * target column's type and serializes accordingly; a raw interpolated value
+ * has no such column context. Postgres implicitly casts a well-formed ISO
+ * string parameter to `timestamptz` when compared against one, so the plain
+ * string works and is what real execution actually requires here.
  */
 export async function workspaceMonthlyCostRollup(
   workspaceId: string,
@@ -190,8 +201,8 @@ export async function workspaceMonthlyCostRollup(
       COUNT(*)::int AS run_count
     FROM ${runs}
     WHERE ${runs.workspaceId} = ${workspaceId}
-      AND ${runs.createdAt} >= ${new Date(windowStartIso)}
-      AND ${runs.createdAt} < ${new Date(windowEndIso)}
+      AND ${runs.createdAt} >= ${windowStartIso}
+      AND ${runs.createdAt} < ${windowEndIso}
     GROUP BY ${yearExpr}, ${monthExpr}
     ORDER BY ${yearExpr} ASC, ${monthExpr} ASC
   `);

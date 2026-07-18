@@ -28,10 +28,11 @@ AgentRail install.
 
 ## Why co-located
 
-Jace's single write path is the local `agentrail issue create` CLI. Running the
-sidecar next to the operator's AgentRail install means that CLI, its `github`
-connector auth, and Jace share one host and one trust boundary. There is no
-network hop between Jace and the write path it depends on.
+Jace's single write path into the factory is the local `agentrail issue create`
+CLI. Running the sidecar next to the operator's AgentRail install means that
+CLI, its `github` connector auth, and Jace share one host and one trust
+boundary. There is no network hop between Jace and the write path it depends
+on.
 
 ## Authentication
 

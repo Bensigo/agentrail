@@ -14,16 +14,19 @@ HTTP sidecar.
 - Jace runs as an Eve self-hosted sidecar on `http://127.0.0.1:2000`.
 - HTTP surface: `GET /eve/v1/health`, `POST /eve/v1/session`,
   `POST /eve/v1/session/:id`, `GET /eve/v1/session/:id/stream` (NDJSON).
-- Jace has exactly ONE way to act on the outside world: the human-gated
-  `create_issue` tool. Every call to it is approved or rejected by a human before
-  it runs (`approval: always()`).
+- Jace has THREE human-gated ways to act on the outside world: `create_issue`,
+  `create_workspace`, and `create_repo`. Every call to any of them is approved
+  or rejected by a human before it runs (`approval: always()`). Every other
+  tool is ungated because it is read-only or scoped to this conversation's own
+  state — never a write to GitHub, a workspace, or the factory.
 - `create_issue` shells out to the existing `agentrail issue create` CLI
-  (connector mode → a direct GitHub issue create). This is the single write path
-  into the factory. The `ready-for-agent` trigger label is applied server-side by
-  the CLI; Jace never passes labels.
+  (connector mode → a direct GitHub issue create). This is still the single
+  write path into the factory — `create_workspace` and `create_repo` write
+  elsewhere (a workspace row; a GitHub repo and its connect chain) but neither
+  enqueues factory work. The `ready-for-agent` trigger label is applied
+  server-side by the CLI; Jace never passes labels.
 
-There is no second write path. Jace never merges pull requests, runs the factory,
-or triggers builds.
+Jace never merges pull requests, runs the factory, or triggers builds.
 
 ## Channels
 

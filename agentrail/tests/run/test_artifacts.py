@@ -17,6 +17,7 @@ from agentrail.run.artifacts import (
     write_phase_status,
     write_phase_metadata,
     write_phase_verdict,
+    write_phase_budget_marker,
 )
 from agentrail.run.verifier import parse_verdict
 
@@ -181,6 +182,30 @@ class UpdateRunMetadataAttemptsTests(unittest.TestCase):
         )
         data = _read(self.path)
         self.assertEqual(data["blockedReason"], "needs review")
+
+    def test_budget_ceiling_crossed_absent_by_default(self) -> None:
+        """#1269 review (double-classification fix): the default (False) must
+        not write the key at all — a run.json that never crossed the ceiling
+        looks exactly as it did before this field existed."""
+        update_run_metadata_attempts(
+            self.path,
+            execution_attempt=2,
+            max_execution_attempts=5,
+            failed_verification_attempts=1,
+        )
+        data = _read(self.path)
+        self.assertNotIn("budgetCeilingCrossed", data)
+
+    def test_budget_ceiling_crossed_present_when_true(self) -> None:
+        update_run_metadata_attempts(
+            self.path,
+            execution_attempt=2,
+            max_execution_attempts=5,
+            failed_verification_attempts=1,
+            budget_ceiling_crossed=True,
+        )
+        data = _read(self.path)
+        self.assertTrue(data["budgetCeilingCrossed"])
 
 
 class WritePhaseStatusTests(unittest.TestCase):
@@ -409,6 +434,83 @@ class WritePhaseVerdictTests(unittest.TestCase):
         path.write_text("not valid json{")
         write_phase_verdict(self.run_dir, "verify", {"accepted": True, "reason": "ok"})
         # Untouched — still the original corrupt content, no exception raised.
+        self.assertEqual(path.read_text(), "not valid json{")
+
+
+class WritePhaseBudgetMarkerTests(unittest.TestCase):
+    """write_phase_budget_marker (issue #1269 review, Fix 1): same best-effort
+    merge-onto-status.json disambiguator pattern as write_phase_verdict
+    (#1181) — a budget-stopped phase otherwise writes status="failed"
+    indistinguishably from a genuine agent failure."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.run_dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _seed_status(self, phase: str, **overrides) -> Path:
+        path = self.run_dir / phase / "status.json"
+        defaults = dict(
+            phase=phase,
+            status="failed",
+            started_at="2026-07-18T12:00:00Z",
+            finished_at="2026-07-18T12:30:00Z",
+            exit_status=1,
+            metadata_file="/tmp/meta.json",
+            output_file="/tmp/out.txt",
+            execution_attempt=1,
+            max_execution_attempts=5,
+        )
+        defaults.update(overrides)
+        write_phase_status(path, **defaults)
+        return path
+
+    def test_merges_marker_onto_existing_status_preserving_prior_fields(self) -> None:
+        path = self._seed_status("execute")
+        write_phase_budget_marker(self.run_dir, "execute", spent=1.50, ceiling=1.00)
+        data = _read(path)
+        self.assertIs(data["budgetExceeded"], True)
+        self.assertEqual(data["budgetSpentUsd"], 1.50)
+        self.assertEqual(data["budgetCeilingUsd"], 1.00)
+        # Everything the exit-code path already wrote survives untouched.
+        self.assertEqual(data["status"], "failed")
+        self.assertEqual(data["exitStatus"], 1)
+        self.assertEqual(data["startedAt"], "2026-07-18T12:00:00Z")
+        self.assertEqual(data["finishedAt"], "2026-07-18T12:30:00Z")
+
+    def test_marker_absent_when_never_called(self) -> None:
+        """A phase status.json that never had a budget stop has no marker key
+        at all — not False, absent — matching the "absent otherwise"
+        contract (agentrail.run.run_record._read_phase surfaces this as
+        None via status.get, not a measured False)."""
+        path = self._seed_status("execute", status="completed", exit_status=0)
+        data = _read(path)
+        self.assertNotIn("budgetExceeded", data)
+
+    def test_second_call_overwrites_the_first(self) -> None:
+        path = self._seed_status("test-author")
+        write_phase_budget_marker(self.run_dir, "test-author", spent=1.10, ceiling=1.00)
+        write_phase_budget_marker(self.run_dir, "test-author", spent=1.25, ceiling=1.00)
+        data = _read(path)
+        self.assertEqual(data["budgetSpentUsd"], 1.25)
+
+    def test_missing_status_json_is_a_silent_no_op(self) -> None:
+        # No status.json ever written for this phase.
+        write_phase_budget_marker(self.run_dir, "execute", spent=1.50, ceiling=1.00)
+        self.assertFalse((self.run_dir / "execute" / "status.json").exists())
+
+    def test_missing_run_dir_entirely_is_a_silent_no_op(self) -> None:
+        ghost = self.run_dir / "does-not-exist"
+        write_phase_budget_marker(ghost, "execute", spent=1.50, ceiling=1.00)
+        self.assertFalse(ghost.exists())
+
+    def test_corrupt_status_json_is_a_silent_no_op(self) -> None:
+        path = self.run_dir / "execute" / "status.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not valid json{")
+        write_phase_budget_marker(self.run_dir, "execute", spent=1.50, ceiling=1.00)
         self.assertEqual(path.read_text(), "not valid json{")
 
 

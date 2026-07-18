@@ -473,5 +473,152 @@ class TestPerPhaseBudgetBreach(unittest.TestCase):
             self.assertIn("1.00", reason)
 
 
+# ---------------------------------------------------------------------------
+# #1269 review Fix 1: structured budget marker on the TRIGGERING phase's own
+# status.json — reuses the write_phase_verdict (#1181) merge pattern so a
+# budget-stopped phase is distinguishable from a genuine agent failure, both
+# of which otherwise write status="failed" with nothing else to tell them
+# apart.
+# ---------------------------------------------------------------------------
+
+class TestBudgetMarkerOnPhaseArtifact(unittest.TestCase):
+
+    def test_triggering_phase_status_json_carries_budget_marker(self):
+        """A clean-phase breach (status==0 on its own) marks the TRIGGERING
+        phase's own status.json with budgetExceeded + spent/ceiling."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+
+            stub = _stub_run_with_timeout(0)
+            mock_usage = MagicMock()
+            run_id = "test-run-budget-marker"
+
+            with patch("agentrail.run.pipeline.run_with_timeout", stub), \
+                 patch("agentrail.run.pipeline.capture_usage", return_value=mock_usage), \
+                 patch("agentrail.run.pipeline.cost_usd", return_value=1.50), \
+                 patch("agentrail.run.pipeline.push_failure_event"):
+
+                run_issue(
+                    target, 42,
+                    agent="claude", command="claude -p",
+                    repo_dir=target,
+                    log_dir=Path(tmp) / "runs",
+                    run_id=run_id,
+                    budget_usd=1.00,
+                )
+
+            status_file = Path(tmp) / "runs" / run_id / "test-author" / "status.json"
+            data = json.loads(status_file.read_text())
+            self.assertIs(data["budgetExceeded"], True)
+            self.assertEqual(data["budgetSpentUsd"], 1.50)
+            self.assertEqual(data["budgetCeilingUsd"], 1.00)
+            # The generic exit-code fields survive untouched alongside the marker.
+            self.assertEqual(data["status"], "failed")
+
+    def test_marker_absent_on_phase_that_completes_under_budget(self):
+        """No budget stop at all -> the phase's status.json never gains the
+        marker key (absent, not False)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+
+            stub = _stub_run_with_timeout(0, sentinel=target / "impl_done")
+            mock_usage = MagicMock()
+            run_id = "test-run-budget-marker-absent"
+
+            with patch("agentrail.run.pipeline.run_with_timeout", stub), \
+                 patch("agentrail.run.pipeline.capture_usage", return_value=mock_usage), \
+                 patch("agentrail.run.pipeline.cost_usd", return_value=0.25), \
+                 patch("agentrail.run.pipeline.push_failure_event"):
+
+                run_issue(
+                    target, 42,
+                    agent="claude", command="claude -p",
+                    repo_dir=target,
+                    log_dir=Path(tmp) / "runs",
+                    run_id=run_id,
+                    budget_usd=1.00,
+                )
+
+            status_file = Path(tmp) / "runs" / run_id / "test-author" / "status.json"
+            data = json.loads(status_file.read_text())
+            self.assertNotIn("budgetExceeded", data)
+
+
+# ---------------------------------------------------------------------------
+# #1269 review Fix 2: double-classification — a phase that ALREADY failed on
+# its own (status != 0, e.g. a timeout) must not have that specific,
+# evidence-bearing failure suppressed in favor of the generic budget message,
+# even when the same cost tick also crosses the ceiling. The ceiling-crossed
+# FACT is still recorded in run.json, and the run still stops (the phase's
+# own non-zero status already gates every later phase off).
+# ---------------------------------------------------------------------------
+
+class TestBudgetDoesNotSuppressGenuinePhaseFailure(unittest.TestCase):
+
+    def test_timeout_and_breach_generic_push_fires_not_budget_push(self):
+        """Phase exits 124 (timeout) on its own AND the same cost tick crosses
+        the ceiling: the generic timeout push must fire (with evidence); the
+        budget_exceeded push must NOT; run.json still records the ceiling
+        fact; the phase's own status.json gets no budgetExceeded marker
+        (Fix 1 stays scoped to the CLEAN-breach case only)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+
+            stub = _stub_run_with_timeout(124, output_text="agent timed out mid-edit")
+            mock_usage = MagicMock()
+            run_id = "test-run-timeout-and-breach"
+
+            with patch("agentrail.run.pipeline.run_with_timeout", stub), \
+                 patch("agentrail.run.pipeline.capture_usage", return_value=mock_usage), \
+                 patch("agentrail.run.pipeline.cost_usd", return_value=1.50), \
+                 patch("agentrail.run.pipeline.push_failure_event") as mock_push:
+
+                rc = run_issue(
+                    target, 42,
+                    agent="claude", command="claude -p",
+                    repo_dir=target,
+                    log_dir=Path(tmp) / "runs",
+                    run_id=run_id,
+                    budget_usd=1.00,
+                )
+
+            self.assertNotEqual(rc, 0)
+            # Only test-author ran; the breach (whichever kind) stops the run
+            # before execute.
+            self.assertEqual(len(stub.calls), 1)
+
+            # Exactly one failure push — the generic timeout push — never a
+            # second "budget_exceeded" push for the same phase. The 17c call
+            # site passes failure_type/phase positionally and evidence as a
+            # kwarg, so read positional/kwargs directly rather than reusing
+            # the all-positional-or-all-kwargs helper the budget-path tests
+            # above use (that helper would look for "failure_type" inside a
+            # kwargs dict that here only ever contains "evidence").
+            mock_push.assert_called_once()
+            call = mock_push.call_args
+            failure_type = call.args[2]
+            phase = call.args[3]
+            evidence = call.kwargs.get("evidence", "")
+            self.assertEqual(failure_type, "timeout")
+            self.assertEqual(phase, "test-author")
+            self.assertIn("agent timed out mid-edit", evidence)
+
+            # The phase's own artifact has no budgetExceeded marker — the
+            # timeout, not the budget, is this phase's recorded cause.
+            status_file = Path(tmp) / "runs" / run_id / "test-author" / "status.json"
+            status_data = json.loads(status_file.read_text())
+            self.assertNotIn("budgetExceeded", status_data)
+
+            # run.json still names the ceiling-crossed FACT even though it
+            # was not blockedReason's cause.
+            metadata_file = Path(tmp) / "runs" / run_id / "run.json"
+            run_data = json.loads(metadata_file.read_text())
+            self.assertTrue(run_data.get("budgetCeilingCrossed"))
+            self.assertNotIn("blockedReason", run_data)
+
+
 if __name__ == "__main__":
     unittest.main()

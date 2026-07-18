@@ -66,6 +66,7 @@ def _write_phase(
     exit_status: int = 0,
     with_output: bool = True,
     verdict: Optional[Dict[str, Any]] = None,
+    budget_marker: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Write a phase dir (agentrail.run.artifacts.write_phase_status shape).
 
@@ -76,7 +77,11 @@ def _write_phase(
     agentrail.run.artifacts.write_phase_verdict merges onto a verify phase's
     status.json post-#1181; omitted by default (no "verdict" key at all),
     matching a phase status.json that predates the write-back or was never a
-    verify phase.
+    verify phase. ``budget_marker``, when given, mirrors what
+    agentrail.run.artifacts.write_phase_budget_marker merges on post-#1269
+    review (e.g. ``{"budgetExceeded": True, "budgetSpentUsd": 1.5,
+    "budgetCeilingUsd": 1.0}``); omitted by default (no budget keys at all),
+    matching a phase that never had a budget stop.
     """
     phase_dir = run_dir / dir_name
     payload: Dict[str, Any] = {
@@ -92,6 +97,8 @@ def _write_phase(
     }
     if verdict is not None:
         payload["verdict"] = verdict
+    if budget_marker is not None:
+        payload.update(budget_marker)
     _write_json(phase_dir / "status.json", payload)
     if with_output:
         (phase_dir / "output.md").write_text("phase output\n", encoding="utf-8")
@@ -660,3 +667,56 @@ def test_ac3_prose_reject_with_clean_exit_is_distinguishable_from_approval(tmp_p
     assert verify_phase["verdict"]["accepted"] is False
     assert record["verify_verdict"]["accepted"] is False
     assert not any("verify verdict" in m for m in record["missing"])
+
+
+# ---------------------------------------------------------------------------
+# Scenario 10: budget-stop marker pass-through (issue #1269 review, Fix 1)
+# ---------------------------------------------------------------------------
+#
+# A phase the Budget Leash stops writes status="failed" indistinguishably from
+# a genuine agent failure (run_issue_phase forces the exit status non-zero
+# either way). agentrail.run.pipeline now writes a structured budget marker
+# back onto the TRIGGERING phase's status.json (agentrail.run.artifacts.
+# write_phase_budget_marker) right after the Budget Leash trips; these tests
+# exercise how that field surfaces in the assembled record.
+
+def test_budget_exceeded_marker_passes_through_to_phase_record(tmp_path: Path) -> None:
+    run_id = "20260718-090000-issue-1269-claude-bbbb"
+    run_dir = tmp_path / run_id
+    _write_json(run_dir / "run.json", _run_json(targetIssue=1269))
+    _write_phase(run_dir, "test-author", started_at="2026-07-18T09:00:05Z", finished_at="2026-07-18T09:01:00Z")
+    _write_phase(
+        run_dir, "execute", status="failed", exit_status=1,
+        started_at="2026-07-18T09:01:00Z", finished_at="2026-07-18T09:02:00Z",
+        budget_marker={
+            "budgetExceeded": True, "budgetSpentUsd": 1.50, "budgetCeilingUsd": 1.00,
+        },
+    )
+
+    record = assemble_run_record(run_dir, ledger_path=None)
+
+    execute_phase = next(p for p in record["phases"] if p["name"] == "execute")
+    assert execute_phase["budget_exceeded"] is True
+    assert execute_phase["budget_spent_usd"] == 1.50
+    assert execute_phase["budget_ceiling_usd"] == 1.00
+
+
+def test_budget_exceeded_absent_when_phase_never_budget_stopped(tmp_path: Path) -> None:
+    """A phase that failed for an ordinary reason (no budget marker written)
+    surfaces budget_exceeded as None, not False — "never recorded" stays
+    distinguishable from "recorded, and it was clean" (mirrors verify_verdict's
+    None-when-absent contract above)."""
+    run_id = "20260718-090000-issue-1269-claude-cccc"
+    run_dir = tmp_path / run_id
+    _write_json(run_dir / "run.json", _run_json(targetIssue=1269))
+    _write_phase(
+        run_dir, "execute", status="failed", exit_status=124,
+        started_at="2026-07-18T09:01:00Z", finished_at="2026-07-18T09:02:00Z",
+    )
+
+    record = assemble_run_record(run_dir, ledger_path=None)
+
+    execute_phase = next(p for p in record["phases"] if p["name"] == "execute")
+    assert execute_phase["budget_exceeded"] is None
+    assert execute_phase["budget_spent_usd"] is None
+    assert execute_phase["budget_ceiling_usd"] is None

@@ -229,7 +229,20 @@ class RunContext:
     # gather phase, #1049) and needs to tell "budget stop" apart from
     # "gather itself just failed", and for surfacing the reason in run
     # metadata at finalize.
+    #
+    # budget_exceeded means "the breach IS the stop cause": set ONLY when the
+    # phase itself succeeded on its own (status == 0 at the moment the Budget
+    # Leash tripped) — this is what 17c's generic failure-push guard and the
+    # phase-level budgetExceeded marker (write_phase_budget_marker) key off.
+    # budget_ceiling_crossed is the broader, review-finding fact (double-
+    # classification fix): the ceiling was ALSO crossed even when the phase
+    # already failed for its own reason (e.g. a timeout) — that phase's own
+    # failure remains the reported cause (the generic push fires with its own
+    # evidence, unsuppressed), but the ceiling-crossed fact still gets
+    # recorded in run.json's metadata at finalize, and it still counts as
+    # "handled" for the sticky once-only guard below.
     budget_exceeded: bool = False
+    budget_ceiling_crossed: bool = False
     budget_stop_reason: str = ""
     # #1049: deterministic context manifest captured ONCE from the gather
     # phase's output artifact and injected VERBATIM into every later phase's
@@ -652,6 +665,12 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
     phase_finished_at = _utc_now_iso()
 
     # 17a. Cost capture — non-fatal
+    # #1269 review: True only when THIS call trips a clean-phase budget stop
+    # (below) — set BEFORE step 18 rewrites status.json wholesale (not a
+    # merge), so the write_phase_budget_marker call after step 18 knows
+    # whether to fire without re-deriving it from rc's now-possibly-stale
+    # sticky flags.
+    budget_marker_pending = False
     try:
         usage = capture_usage(rc.agent, rc.target_dir, phase_start_ts)
         if usage:
@@ -672,7 +691,7 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
             # smallest valid attempt_limit (1) — that combination can never
             # itself satisfy `attempts >= attempt_limit`, so only ceiling vs.
             # spent can trip STOP_TO_HUMAN here.
-            if (not rc.budget_exceeded
+            if (not rc.budget_exceeded and not rc.budget_ceiling_crossed
                     and budget_leash.check(
                         spent=rc.cumulative_cost_usd,
                         attempts=0,
@@ -680,19 +699,40 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
                         attempt_limit=1,
                         gate_red=False,
                     ) is budget_leash.Decision.STOP_TO_HUMAN):
-                rc.budget_exceeded = True
                 budget_msg = (f"${rc.cumulative_cost_usd:.2f} spent of "
                               f"${rc.budget_usd:.2f} budget")
-                rc.budget_stop_reason = f"budget exceeded after {phase} phase: {budget_msg}"
-                print(rc.budget_stop_reason, file=sys.stderr)
-                try:
-                    push_failure_event(
-                        rc.target_dir, rc.run_id, "budget_exceeded", phase, budget_msg,
-                    )
-                except Exception as _exc:
-                    _log.debug("budget failure push skipped: %s", _exc)
+                # Double-classification review fix: the ceiling is crossed
+                # either way, so that FACT is always recorded (below, and in
+                # run.json's metadata at finalize). But it is only THE stop
+                # cause — budget_exceeded, the phase-level budgetExceeded
+                # marker, and the dedicated budget_exceeded failure push —
+                # when the phase succeeded on its own (status == 0 right now,
+                # before any forcing). When the phase already failed for its
+                # own reason (e.g. a timeout, status == 124), that failure is
+                # the evidence-bearing signal: leave it to the generic 17c
+                # failure push (which reads the phase's real output as
+                # evidence) instead of masking it behind this generic
+                # dollar-figure message.
+                rc.budget_ceiling_crossed = True
                 if status == 0:
+                    rc.budget_exceeded = True
+                    rc.budget_stop_reason = (
+                        f"budget exceeded after {phase} phase: {budget_msg}"
+                    )
+                    print(rc.budget_stop_reason, file=sys.stderr)
+                    budget_marker_pending = True
+                    try:
+                        push_failure_event(
+                            rc.target_dir, rc.run_id, "budget_exceeded", phase, budget_msg,
+                        )
+                    except Exception as _exc:
+                        _log.debug("budget failure push skipped: %s", _exc)
                     status = 1
+                else:
+                    _log.debug(
+                        "budget ceiling crossed after %s phase but phase status "
+                        "was already %s on its own: %s", phase, status, budget_msg,
+                    )
 
             push_cost_event(rc.target_dir, rc.run_id, phase, usage, cost)
             # Local append-only ledger for `agentrail context savings` — isolated
@@ -915,6 +955,18 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
             execution_attempt=execution_attempt,
             max_execution_attempts=rc.max_execution_attempts,
             verifier_findings_file=verifier_findings_file,
+        )
+
+    # 18b. Budget-stop marker (#1269 review, Fix 1): merged in AFTER step 18
+    # above, which OVERWRITES (not merges) status.json — writing it any
+    # earlier would just be clobbered. Reuses the write_phase_verdict (#1181)
+    # merge pattern so run_record.py (and any other consumer) can tell "the
+    # Budget Leash stopped this phase" apart from a genuine agent failure —
+    # both otherwise land on status="failed" with no other signal.
+    if budget_marker_pending:
+        artifacts.write_phase_budget_marker(
+            rc.run_dir, phase_dir_name,
+            spent=rc.cumulative_cost_usd, ceiling=rc.budget_usd,
         )
 
     # 19. Return
@@ -1573,11 +1625,16 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
     if status == 0 and "gather" in rc.phase_commands and jit_gather_enabled():
         gather_status, _ = run_issue_phase(rc, "gather", 1, plan_output=plan_output)
         if gather_status != 0:
-            if rc.budget_exceeded:
+            if rc.budget_exceeded or rc.budget_ceiling_crossed:
                 # #1269: a budget breach during gather is a hard stop, unlike a
                 # genuine gather failure (advisory-only, below) — propagate so
                 # test-author (and every later phase) never starts having
-                # already blown the per-issue cap.
+                # already blown the per-issue cap. Checks BOTH flags (review
+                # fix): rc.budget_ceiling_crossed covers the case where gather
+                # ALSO failed on its own terms (rc.budget_exceeded then stays
+                # False by design, so the generic push isn't suppressed) —
+                # the ceiling was still crossed, so this is still a hard stop,
+                # not gather's usual advisory-only failure path.
                 status = gather_status
             else:
                 print("gather phase failed; continuing without gathered context",
@@ -1830,6 +1887,14 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
     # metadata and .agentrail/state.json both surface WHY, not just THAT.
     # "" (the default, unless the leash tripped) writes no blockedReason at
     # all — both callees only set the field when it is truthy.
+    #
+    # budget_ceiling_crossed (review fix, double-classification): recorded
+    # separately from blocked_reason. It is True whenever the per-issue
+    # ceiling was crossed at all — including when the triggering phase had
+    # ALREADY failed for its own reason (rc.budget_exceeded stays False in
+    # that case so the generic failure push keeps its evidence, and
+    # blocked_reason stays "" too) — so run.json still names the ceiling fact
+    # even though it was not what stopped the run.
     artifacts.update_run_metadata_attempts(
         metadata_file,
         execution_attempt=1,
@@ -1837,6 +1902,7 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         failed_verification_attempts=0,
         verifier_findings_file="",
         blocked_reason=rc.budget_stop_reason,
+        budget_ceiling_crossed=rc.budget_ceiling_crossed,
     )
     state_mod.update_run_state(
         target_dir, "finish",

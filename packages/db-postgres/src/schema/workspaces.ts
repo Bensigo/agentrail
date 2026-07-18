@@ -5,6 +5,7 @@ import {
   timestamp,
   integer,
   boolean,
+  numeric,
 } from "drizzle-orm/pg-core";
 
 export const workspaces = pgTable("workspaces", {
@@ -30,6 +31,24 @@ export const workspaces = pgTable("workspaces", {
   // Defaults true so every existing AND future workspace is hosted-eligible
   // from day one.
   hostedExecution: boolean("hosted_execution").notNull().default(true),
+  // Monthly spend ceiling (#1269 PR ②a). NULL = uncapped, the default until
+  // billing (#1290) sets real values — the per-issue leash + $3 default
+  // check-in already guard runaway single-run spend; this is a coarser,
+  // workspace-level backstop enforced at claim time (see
+  // queries/workspace_budget.ts + apps/console's runner/claim route). No UI
+  // to set this yet — a direct row edit only.
+  monthlyBudgetUsd: numeric("monthly_budget_usd", {
+    precision: 10,
+    scale: 2,
+    mode: "number",
+  }),
+  // Set to the "YYYY-MM" period key the moment the ceiling-exhausted chat
+  // notice is sent for that period — the atomic compare-and-set dedup gate
+  // (markBudgetExhaustedNotified) flips this exactly once per period so two
+  // concurrent blocked claims can never both send. NULL = never notified (or
+  // only for an earlier period — this column tracks the latest notified
+  // period only, not a history).
+  budgetExhaustedNotifiedPeriod: text("budget_exhausted_notified_period"),
 });
 
 export type Workspace = typeof workspaces.$inferSelect;

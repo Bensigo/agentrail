@@ -5,9 +5,43 @@ import {
   hasActiveSelfHostedRunner,
   getMcpConnectorKeys,
   getGithubToken,
+  getWorkspaceBudgetState,
+  sumWorkspaceSpendSince,
+  markBudgetExhaustedNotified,
 } from "@agentrail/db-postgres";
 import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
+import { notifyWorkspaceBudgetExhausted } from "./notify";
+
+/** Response header naming the reason an empty 204 was returned. Set ONLY
+ * when the workspace's monthly budget ceiling is why — never on an ordinary
+ * empty-queue 204 (see the two 204 returns below that do NOT set it). Old
+ * runner clients ignore unknown headers; a future runner build can log it
+ * (issue #1269 PR ②b). */
+const CLAIM_BLOCKED_HEADER = "X-Agentrail-Claim-Blocked";
+
+/**
+ * The current UTC calendar month as both a stable "YYYY-MM" period key (the
+ * markBudgetExhaustedNotified dedup key) and its [start, end) ISO bounds
+ * (sumWorkspaceSpendSince's window). Bucketing is by `runs.created_at`,
+ * stamped at CLAIM time, not completion — a coarse, honestly-documented
+ * tradeoff (queries/workspace_budget.ts + issue #1269 PR② recon §1/§2): a run
+ * claimed in the last minute of a month books to that month even if it
+ * finishes into the next one, and an in-flight run's cost is invisible to
+ * this SUM until it reports (self-hosted runners never heartbeat cost).
+ */
+function currentBudgetWindow(now: Date = new Date()): {
+  period: string;
+  periodStartIso: string;
+  periodEndIso: string;
+} {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  const periodStartIso = new Date(Date.UTC(year, month, 1)).toISOString();
+  const periodEndIso = new Date(Date.UTC(year, month + 1, 1)).toISOString();
+  const period = `${year}-${String(month + 1).padStart(2, "0")}`;
+  return { period, periodStartIso, periodEndIso };
+}
 
 /**
  * Runner work-claim. Bearer-authenticated with the runner token (an api_key).
@@ -54,6 +88,46 @@ export async function GET(request: NextRequest) {
 
   if (auth.kind === "fleet" && (await hasActiveSelfHostedRunner(workspaceId))) {
     return new NextResponse(null, { status: 204 });
+  }
+
+  // Workspace monthly-budget ceiling (#1269 PR ②a): a coarse, workspace-level
+  // spend guardrail on top of the per-issue leash. Applies to BOTH bearer
+  // kinds — it's a workspace property, not a runner-fleet property (unlike
+  // the fleet-precedence guard above). A NULL ceiling (the default) skips
+  // this ENTIRELY: no SUM over `runs` runs, so an uncapped workspace's claim
+  // poll costs exactly what it did before this block existed.
+  const budgetState = await getWorkspaceBudgetState(workspaceId);
+  if (budgetState && budgetState.monthlyBudgetUsd !== null) {
+    const { period, periodStartIso, periodEndIso } = currentBudgetWindow();
+    const spend = await sumWorkspaceSpendSince(
+      workspaceId,
+      periodStartIso,
+      periodEndIso
+    );
+    if (spend >= budgetState.monthlyBudgetUsd) {
+      // Atomic compare-and-set: send the chat notice ONLY on the flip into
+      // this period — race-safe for two concurrent blocked claims (see
+      // markBudgetExhaustedNotified's own doc-comment). Best-effort: a send
+      // failure must never fail the claim response.
+      if (await markBudgetExhaustedNotified(workspaceId, period)) {
+        try {
+          await notifyWorkspaceBudgetExhausted(
+            workspaceId,
+            spend,
+            budgetState.monthlyBudgetUsd
+          );
+        } catch (err) {
+          console.error(
+            "[runner/claim] failed to send budget-exhausted notice:",
+            err
+          );
+        }
+      }
+      return new NextResponse(null, {
+        status: 204,
+        headers: { [CLAIM_BLOCKED_HEADER]: "workspace-budget" },
+      });
+    }
   }
 
   const item = await claimQueueEntry(workspaceId);

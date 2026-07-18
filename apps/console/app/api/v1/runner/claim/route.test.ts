@@ -7,12 +7,18 @@ vi.mock("@agentrail/db-postgres", () => ({
   hasActiveSelfHostedRunner: vi.fn(),
   getMcpConnectorKeys: vi.fn(),
   getGithubToken: vi.fn(),
+  getWorkspaceBudgetState: vi.fn(),
+  sumWorkspaceSpendSince: vi.fn(),
+  markBudgetExhaustedNotified: vi.fn(),
 }));
 vi.mock("@agentrail/db-clickhouse", () => ({
   recordRunLifecycleEvent: vi.fn(),
 }));
 vi.mock("../../../../../lib/bearer-auth", () => ({
   requireBearer: vi.fn(),
+}));
+vi.mock("./notify", () => ({
+  notifyWorkspaceBudgetExhausted: vi.fn(),
 }));
 
 import { GET } from "./route";
@@ -22,9 +28,13 @@ import {
   hasActiveSelfHostedRunner,
   getMcpConnectorKeys,
   getGithubToken,
+  getWorkspaceBudgetState,
+  sumWorkspaceSpendSince,
+  markBudgetExhaustedNotified,
 } from "@agentrail/db-postgres";
 import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
+import { notifyWorkspaceBudgetExhausted } from "./notify";
 
 const mockClaim = vi.mocked(claimQueueEntry);
 const mockTouch = vi.mocked(touchApiKeyLastUsed);
@@ -33,6 +43,12 @@ const mockGetMcpKeys = vi.mocked(getMcpConnectorKeys);
 const mockGetGithubToken = vi.mocked(getGithubToken);
 const mockRecordLifecycle = vi.mocked(recordRunLifecycleEvent);
 const mockRequireBearer = vi.mocked(requireBearer);
+const mockGetBudgetState = vi.mocked(getWorkspaceBudgetState);
+const mockSumSpend = vi.mocked(sumWorkspaceSpendSince);
+const mockMarkNotified = vi.mocked(markBudgetExhaustedNotified);
+const mockNotifyBudgetExhausted = vi.mocked(notifyWorkspaceBudgetExhausted);
+
+const CLAIM_BLOCKED_HEADER = "X-Agentrail-Claim-Blocked";
 
 const WS = "ws-1";
 
@@ -73,6 +89,17 @@ beforeEach(() => {
   mockGetMcpKeys.mockResolvedValue({});
   mockGetGithubToken.mockResolvedValue("");
   mockRecordLifecycle.mockResolvedValue(undefined as never);
+  // Uncapped by default (the product default — see #1269 PR ②a's own suite
+  // below for every capped-path behavior) so every PRE-EXISTING test above
+  // stays byte-identical: the budget block short-circuits before touching
+  // sumWorkspaceSpendSince/markBudgetExhaustedNotified/notify at all.
+  mockGetBudgetState.mockResolvedValue({
+    monthlyBudgetUsd: null,
+    budgetExhaustedNotifiedPeriod: null,
+  });
+  mockSumSpend.mockResolvedValue(0);
+  mockMarkNotified.mockResolvedValue(false);
+  mockNotifyBudgetExhausted.mockResolvedValue(undefined);
 });
 
 describe("GET /api/v1/runner/claim — baseline (pre-#1267 behavior)", () => {
@@ -229,5 +256,185 @@ describe("GET /api/v1/runner/claim — self-hosted precedence guard (#1267 PR �
     await GET(req(WS));
 
     expect(mockTouch).toHaveBeenCalledWith("key-1");
+  });
+});
+
+describe("GET /api/v1/runner/claim — workspace monthly-budget ceiling (#1269 PR ②a)", () => {
+  it("uncapped (monthly_budget_usd null, the default) — claims normally, never runs the spend SUM", async () => {
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: null,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    // The whole point of the NULL short-circuit: zero EXTRA queries beyond
+    // the one cheap ceiling lookup itself.
+    expect(mockSumSpend).not.toHaveBeenCalled();
+    expect(mockMarkNotified).not.toHaveBeenCalled();
+    expect(mockNotifyBudgetExhausted).not.toHaveBeenCalled();
+    expect(mockClaim).toHaveBeenCalledWith(WS);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+  });
+
+  it("capped, spend below ceiling — claims normally, no header", async () => {
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(4.5);
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    expect(mockSumSpend).toHaveBeenCalledWith(WS, expect.any(String), expect.any(String));
+    expect(mockMarkNotified).not.toHaveBeenCalled();
+    expect(mockClaim).toHaveBeenCalledWith(WS);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+  });
+
+  it("capped, spend at/above ceiling — 204 + the blocked header, claimQueueEntry never called", async () => {
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(10);
+    mockMarkNotified.mockResolvedValue(true);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("workspace-budget");
+    expect(mockClaim).not.toHaveBeenCalled();
+    expect(mockRecordLifecycle).not.toHaveBeenCalled();
+  });
+
+  it("sends the notice ONLY when markBudgetExhaustedNotified flips (the CAS), never on a read-only check", async () => {
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(15);
+    mockMarkNotified.mockResolvedValue(true);
+
+    await GET(req(WS));
+
+    expect(mockMarkNotified).toHaveBeenCalledWith(WS, expect.any(String));
+    expect(mockNotifyBudgetExhausted).toHaveBeenCalledWith(WS, 15, 10);
+  });
+
+  it("two consecutive exceeded polls — exactly one notify send (the second poll's CAS reports already-notified)", async () => {
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(12);
+    mockMarkNotified.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    const first = await GET(req(WS));
+    const second = await GET(req(WS));
+
+    expect(first.status).toBe(204);
+    expect(second.status).toBe(204);
+    expect(first.headers.get(CLAIM_BLOCKED_HEADER)).toBe("workspace-budget");
+    expect(second.headers.get(CLAIM_BLOCKED_HEADER)).toBe("workspace-budget");
+    expect(mockMarkNotified).toHaveBeenCalledTimes(2);
+    expect(mockNotifyBudgetExhausted).toHaveBeenCalledTimes(1);
+  });
+
+  it("a notify-send failure still 204s with the header — best-effort, never fails the claim response", async () => {
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(10);
+    mockMarkNotified.mockResolvedValue(true);
+    mockNotifyBudgetExhausted.mockRejectedValue(new Error("telegram down"));
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("workspace-budget");
+  });
+
+  it("blocks a self_hosted bearer too — the ceiling is a workspace property, not a fleet-only guard", async () => {
+    mockRequireBearer.mockResolvedValue(authResult("self_hosted") as never);
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(10);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("workspace-budget");
+    expect(mockClaim).not.toHaveBeenCalled();
+  });
+
+  it("blocks a fleet bearer too (with no active self-hosted runner in the way)", async () => {
+    mockRequireBearer.mockResolvedValue(authResult("fleet") as never);
+    mockHasActiveSelfHosted.mockResolvedValue(false);
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(10);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("workspace-budget");
+    expect(mockClaim).not.toHaveBeenCalled();
+  });
+
+  it("does NOT set the header on an ordinary nothing-queued 204 (uncapped)", async () => {
+    mockClaim.mockResolvedValue(null);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+  });
+
+  it("does NOT set the header on an ordinary nothing-queued 204 (capped, but under the ceiling)", async () => {
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(2);
+    mockClaim.mockResolvedValue(null);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+  });
+
+  it("computes the spend window as the current UTC calendar month (cross-month-boundary safe)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-31T23:59:00.000Z"));
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(0);
+    mockClaim.mockResolvedValue(null);
+
+    try {
+      await GET(req(WS));
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(mockSumSpend).toHaveBeenCalledWith(
+      WS,
+      "2026-01-01T00:00:00.000Z",
+      "2026-02-01T00:00:00.000Z"
+    );
+    expect(mockMarkNotified).not.toHaveBeenCalled();
   });
 });

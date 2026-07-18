@@ -492,6 +492,40 @@ export async function latestTelegramSessionForChatIdentity(
   return row ?? null;
 }
 
+/**
+ * The most recently active `telegram` session for a WORKSPACE — the same
+ * lookup as {@link latestTelegramSessionForChatIdentity} above, keyed by
+ * `workspaceId` instead of `chatIdentityId`. This is how a workspace-scoped
+ * system notice (e.g. the monthly-budget-ceiling notify, issue #1269 PR ②a)
+ * finds which Telegram chat to post INTO: the shared-bot session ledger
+ * (`jace_sessions`) is where a workspace's actual bound Telegram conversation
+ * lives today (post-#1262), not the legacy per-workspace `connectors` row
+ * `runner/result/notify.ts`'s run-outcome fan-out reads.
+ *
+ * Scoped to `channel = 'telegram'` only, same v1 scope as the per-identity
+ * lookup. Ordered by `lastActivityAt` descending so a workspace with more
+ * than one bound conversation (e.g. two people chatting about the same
+ * workspace) resolves to whichever is currently most active. Returns `null`
+ * when the workspace has no Telegram session at all — callers must skip the
+ * send silently in that case, never error.
+ */
+export async function latestTelegramSessionForWorkspace(
+  workspaceId: string
+): Promise<JaceSessionRow | null> {
+  const [row] = await db
+    .select()
+    .from(jaceSessions)
+    .where(
+      and(
+        eq(jaceSessions.workspaceId, workspaceId),
+        eq(jaceSessions.channel, "telegram")
+      )
+    )
+    .orderBy(desc(jaceSessions.lastActivityAt))
+    .limit(1);
+  return row ?? null;
+}
+
 // --- approvals --------------------------------------------------------------
 
 export interface RecordApprovalRequestInput {

@@ -4,6 +4,10 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   recordRunnerResult: vi.fn(),
   touchApiKeyLastUsed: vi.fn(),
+  // #1268 PR②: onboard-notify.ts's real implementation runs in this suite
+  // (NOT mocked away as a module — see the onboard-kind describe block below),
+  // so its one db-postgres dependency must be mockable here too.
+  latestTelegramSessionForWorkspace: vi.fn(),
 }));
 vi.mock("@agentrail/db-clickhouse", () => ({
   insertFailureEvents: vi.fn(),
@@ -15,14 +19,23 @@ vi.mock("../../../../../lib/bearer-auth", () => ({
 vi.mock("./notify", () => ({
   notifyRunOutcome: vi.fn(),
 }));
+// #1268 PR②: onboard-notify.ts's other dependency (its Telegram sender).
+vi.mock("../../../../../lib/telegram-system-message", () => ({
+  sendSystemTelegramMessage: vi.fn(),
+}));
 // NOTE: lib/evidence is intentionally NOT mocked so the route exercises the real
 // bound + secret-scrub path (AC5). It only depends on the pure secret-scan util.
 
 import { POST } from "./route";
-import { recordRunnerResult, touchApiKeyLastUsed } from "@agentrail/db-postgres";
+import {
+  recordRunnerResult,
+  touchApiKeyLastUsed,
+  latestTelegramSessionForWorkspace,
+} from "@agentrail/db-postgres";
 import { insertFailureEvents, recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 import { notifyRunOutcome } from "./notify";
+import { sendSystemTelegramMessage } from "../../../../../lib/telegram-system-message";
 
 const WS = "00000000-0000-0000-0000-000000000001";
 const REPO = "00000000-0000-0000-0000-000000000010";
@@ -56,6 +69,11 @@ beforeEach(() => {
   vi.mocked(touchApiKeyLastUsed).mockResolvedValue(undefined as never);
   vi.mocked(recordRunLifecycleEvent).mockResolvedValue(undefined as never);
   vi.mocked(notifyRunOutcome).mockResolvedValue(undefined as never);
+  // #1268 PR②: harmless defaults for onboard-notify's real (unmocked-as-a-
+  // module) dependencies — existing tests below all use issue-kind external
+  // ids, so the onboard branch (and these two mocks) never fire for them.
+  vi.mocked(latestTelegramSessionForWorkspace).mockResolvedValue(null);
+  vi.mocked(sendSystemTelegramMessage).mockResolvedValue({ ok: true } as never);
   vi.mocked(insertFailureEvents).mockResolvedValue(1);
   vi.mocked(recordRunnerResult).mockResolvedValue({
     updated: true,
@@ -276,5 +294,114 @@ describe("POST /api/v1/runner/result — hosted refusal gateReason passthrough (
     expect(recordRunnerResult).toHaveBeenCalledWith(
       expect.objectContaining({ gateReason: undefined })
     );
+  });
+});
+
+/**
+ * #1268 PR② — onboard-kind results ride a DIFFERENT, honest, workspace-scoped
+ * notice (onboard-notify.ts) instead of notifyRunOutcome's issue-shaped
+ * message ("PR ready — issue #", empty number for an onboard external id).
+ * Both branches share the SAME existing terminal-state hook (no second
+ * notify path, no second terminality check) — these tests pin that the
+ * issue-kind branch stays byte-identical (regression) while the onboard-kind
+ * branch is exercised end-to-end against the mocked db-postgres/telegram
+ * seams (onboard-notify.ts itself is NOT mocked away as a module here, so
+ * this also proves the route wires it correctly).
+ */
+describe("POST /api/v1/runner/result — onboard-kind vs issue-kind notify branching (#1268 PR②)", () => {
+  const SESSION = {
+    id: "session-1",
+    workspaceId: WS,
+    chatIdentityId: null,
+    channel: "telegram",
+    conversationKey: "tg-chat-onboard",
+    eveSessionId: "eve-1",
+    status: "active",
+    lastActivityAt: new Date("2026-07-18T00:00:00Z"),
+    createdAt: new Date("2026-07-01T00:00:00Z"),
+    updatedAt: new Date("2026-07-18T00:00:00Z"),
+  };
+
+  it("green onboard result: notifies the bound conversation, names the repo, never touches notifyRunOutcome", async () => {
+    vi.mocked(latestTelegramSessionForWorkspace).mockResolvedValue(SESSION as never);
+    vi.mocked(recordRunnerResult).mockResolvedValue({
+      updated: true,
+      terminalState: "green",
+      externalId: "onboard:acme/widgets",
+    } as never);
+
+    const res = await POST(req({ ...base, status: "green" }));
+
+    expect(res.status).toBe(202);
+    expect(latestTelegramSessionForWorkspace).toHaveBeenCalledWith(WS);
+    const [chatId, message] = vi.mocked(sendSystemTelegramMessage).mock.calls[0]!;
+    expect(chatId).toBe("tg-chat-onboard");
+    expect(message).toContain("acme/widgets");
+    expect(message).toContain("indexed");
+    expect(notifyRunOutcome).not.toHaveBeenCalled();
+  });
+
+  it("escalated-to-human onboard result: honest didn't-finish copy, no PR/issue-number nonsense", async () => {
+    vi.mocked(latestTelegramSessionForWorkspace).mockResolvedValue(SESSION as never);
+    vi.mocked(recordRunnerResult).mockResolvedValue({
+      updated: true,
+      terminalState: "escalated-to-human",
+      externalId: "onboard:acme/widgets",
+    } as never);
+
+    await POST(req({ ...base, status: "error" }));
+
+    const [, message] = vi.mocked(sendSystemTelegramMessage).mock.calls[0]!;
+    expect(message).toContain("acme/widgets");
+    expect(message).toMatch(/didn't finish/i);
+    expect(message).not.toMatch(/PR ready/i);
+    expect(notifyRunOutcome).not.toHaveBeenCalled();
+  });
+
+  it("regression-pin: an issue-kind result still calls notifyRunOutcome byte-identically and never touches the onboard telegram path", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue({
+      updated: true,
+      terminalState: "green",
+      externalId: "owner/name#42",
+    } as never);
+
+    const res = await POST(
+      req({
+        ...base,
+        status: "green",
+        pr_url: "https://github.com/o/r/pull/9",
+        cost_usd: 1.2,
+      })
+    );
+
+    expect(res.status).toBe(202);
+    expect(notifyRunOutcome).toHaveBeenCalledTimes(1);
+    expect(notifyRunOutcome).toHaveBeenCalledWith(WS, {
+      issueNumber: "42",
+      outcome: "green",
+      prUrl: "https://github.com/o/r/pull/9",
+      costUsd: 1.2,
+    });
+    expect(latestTelegramSessionForWorkspace).not.toHaveBeenCalled();
+    expect(sendSystemTelegramMessage).not.toHaveBeenCalled();
+  });
+
+  it("no bound conversation: logs a no-op, never an error, and the route still returns 202", async () => {
+    vi.mocked(latestTelegramSessionForWorkspace).mockResolvedValue(null);
+    vi.mocked(recordRunnerResult).mockResolvedValue({
+      updated: true,
+      terminalState: "green",
+      externalId: "onboard:acme/widgets",
+    } as never);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const res = await POST(req({ ...base, status: "green" }));
+      expect(res.status).toBe(202);
+      expect(sendSystemTelegramMessage).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining(WS));
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 });

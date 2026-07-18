@@ -12,6 +12,7 @@ import {
 import { requireBearer } from "../../../../../lib/bearer-auth";
 import { boundEvidence } from "../../../../../lib/evidence";
 import { notifyRunOutcome } from "./notify";
+import { notifyOnboardOutcome, onboardRepoFullName } from "./onboard-notify";
 
 /** The issue number for a queue entry's external id (trailing digits, else ""). */
 function issueNumberOf(externalId: string): string {
@@ -112,14 +113,26 @@ export async function POST(request: NextRequest) {
   // so we never spam a message on every attempt (the correctness trap). The
   // issue number comes from the queue entry's external id; pr/cost from the body.
   // BEST-EFFORT: any failure is swallowed and never changes the 202 below (AC3).
+  //
+  // Kind branch (#1268 PR②): an onboard row's external_id is `onboard:<repo>`
+  // (see onboardRepoFullName's doc-comment) — the one detection point, no
+  // `kind` column read. Onboard rides its OWN honest, workspace-scoped notice
+  // (onboard-notify.ts) instead of notifyRunOutcome, whose issue-shaped
+  // message ("PR ready — issue #", empty number) is wrong for onboarding.
+  // Everything else (the issue-kind path) is byte-identical to before.
   if (result.terminalState) {
+    const repoFullName = onboardRepoFullName(result.externalId);
     try {
-      await notifyRunOutcome(workspace_id, {
-        issueNumber: issueNumberOf(result.externalId),
-        outcome: result.terminalState,
-        prUrl: typeof body.pr_url === "string" ? body.pr_url : undefined,
-        costUsd: typeof body.cost_usd === "number" ? body.cost_usd : undefined,
-      });
+      if (repoFullName) {
+        await notifyOnboardOutcome(workspace_id, repoFullName, result.terminalState);
+      } else {
+        await notifyRunOutcome(workspace_id, {
+          issueNumber: issueNumberOf(result.externalId),
+          outcome: result.terminalState,
+          prUrl: typeof body.pr_url === "string" ? body.pr_url : undefined,
+          costUsd: typeof body.cost_usd === "number" ? body.cost_usd : undefined,
+        });
+      }
     } catch {
       // notify is best-effort; the runner result is already recorded.
     }

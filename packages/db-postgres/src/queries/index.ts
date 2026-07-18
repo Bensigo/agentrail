@@ -1818,12 +1818,24 @@ export {
 // ONBOARD_EXTERNAL_ID_PREFIX (#1268 PR②) is the onboard rows' external-id
 // marker, single-sourced next to its writer so every reader (deriveRepoSlug,
 // the console's onboardRepoFullName) imports the same string.
+// #1274 PR ①: githubIssueUrl is the single-sourced issue-URL shape both the
+// admission-time confirmed-lookup (hasConfirmedAlignmentBrief, internal to
+// enqueueGithubIssue) and the console github-webhook route's brief
+// composition key off — so the two can never drift on formatting.
+// ALIGNMENT_PARK_REASON is the exact vocabulary the console's
+// formatParkReason renders verbatim. confirmAlignmentBrief/
+// denyAlignmentBrief are the OTHER half of the gate: the Telegram webhook's
+// confirm/deny side-effect once a human answers the posted brief.
 export {
   validateAcceptanceCriteria,
   findWorkspaceByRepo,
   enqueueGithubIssue,
   enqueueOnboard,
   ONBOARD_EXTERNAL_ID_PREFIX,
+  githubIssueUrl,
+  ALIGNMENT_PARK_REASON,
+  confirmAlignmentBrief,
+  denyAlignmentBrief,
   type AcGateResult,
   type EnqueueResult,
 } from "./github_intake.js";

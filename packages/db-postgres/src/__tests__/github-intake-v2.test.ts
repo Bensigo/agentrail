@@ -6,15 +6,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // The db module is mocked so importing the query module is side-effect free. The
 // v2 primitives under test (screenInjection / contentHash / AdmissionLedger /
 // screenV2) are pure and never touch it. `enqueueGithubIssue` DOES call the db, so
-// the mock returns faithful chained shapes for the two calls it makes:
-//   unmetBlockers → db.select().from().where() → [] (no unmet blockers), and
-//   insert        → db.insert().values().onConflictDoNothing().returning() → one row.
-// Defined inside the factory (vi.mock is hoisted above the file body, so it may
-// not close over a top-level variable).
+// the mock returns faithful chained shapes for the calls it makes:
+//   unmetBlockers               → db.select({externalId}).from().where() → []
+//   workspaceRequiresAlignment  → db.select({requireAlignment}).from().where() → [{requireAlignment:false}]
+//   hasConfirmedAlignmentBrief  → db.select({id}).from().where() → [] (never
+//     reached in this file: requireAlignment:false short-circuits it)
+//   insert                      → db.insert().values().onConflictDoNothing().returning() → one row.
+// This whole file drives v2-guardrail scenarios (injection/dedup/rate-limit),
+// not the #1274 alignment gate, so the workspace lookup always answers
+// "alignment off" — every existing "clean admit -> queued" assertion here stays
+// about v2, not alignment. Differentiated by the `cols` key rather than table
+// identity so this stays a plain inline factory (vi.mock is hoisted above the
+// file body, so it may not close over a top-level variable/import).
 vi.mock("../db.js", () => ({
   db: {
-    select: () => ({
-      from: () => ({ where: async () => [] as unknown[] }),
+    select: (cols?: Record<string, unknown>) => ({
+      from: () => ({
+        where: async () => {
+          if (cols && Object.prototype.hasOwnProperty.call(cols, "requireAlignment")) {
+            return [{ requireAlignment: false }] as unknown[];
+          }
+          return [] as unknown[];
+        },
+      }),
     }),
     insert: () => ({
       values: () => ({

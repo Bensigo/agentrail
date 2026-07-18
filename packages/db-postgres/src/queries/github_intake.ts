@@ -2,6 +2,8 @@ import { createHash } from "crypto";
 import { sql, and, eq, inArray } from "drizzle-orm";
 import { db } from "../db.js";
 import { queueEntries } from "../schema/queue_entries.js";
+import { workspaces } from "../schema/workspaces.js";
+import { jaceApprovals } from "../schema/jace_sessions.js";
 
 /**
  * Server-side GitHub issue intake — the webhook half of the Issue Queue.
@@ -495,6 +497,14 @@ export type EnqueueResult =
       // response contract does not read it (it only reads `id`), so surfacing it
       // here keeps that contract unchanged while making the park operator-visible.
       reason?: string;
+      // #1274: the discriminable outcome the console github-webhook route needs
+      // to decide whether to compose+post an alignment brief. Present, and
+      // ALWAYS "awaiting_alignment", ONLY when THIS enqueue parked the row via
+      // the alignment hold below (never for a dependency/guardrail park — those
+      // already have their own `reason`/`parkReason` and must not also trigger
+      // brief composition; regression-pinned). Absent for every other path,
+      // including every row admitted before this column existed.
+      parkedFor?: "awaiting_alignment";
     }
   | { enqueued: false; reason: string };
 
@@ -593,6 +603,132 @@ export async function unparkDependents(
   return released;
 }
 
+// --- alignment gate (#1274) ----------------------------------------------------
+//
+// "Before ANY queue entry executes, Jace posts an alignment brief and the
+// entry holds parked until confirmed" (recon annex, owner ACs). This is the
+// admission-time half: enqueueGithubIssue holds a clean-admit row parked
+// instead of queued so the console github-webhook route can compose+post the
+// brief; confirmAlignmentBrief/denyAlignmentBrief below are the OTHER half
+// (the webhook's confirm/deny side-effect once a human answers).
+
+/**
+ * Canonical GitHub issue URL, matching GitHub's own `html_url` shape
+ * (`https://github.com/<owner>/<repo>/issues/<number>`). SINGLE SOURCE OF
+ * TRUTH: {@link hasConfirmedAlignmentBrief} below reads this exact shape back
+ * out of `jace_approvals.published_issue_url`, and the console route composing
+ * the brief imports this same function for the `issueUrl` it stores on the
+ * approval's `toolInput` — so the two sides can never drift on formatting.
+ * ASSUMPTION (documented, not yet exercised): PR ②'s chat-born stamping is
+ * expected to persist the real GitHub API `html_url` verbatim, which is this
+ * exact shape.
+ */
+export function githubIssueUrl(repoFullName: string, number: number): string {
+  return `https://github.com/${repoFullName}/issues/${number}`;
+}
+
+/** Read a workspace's `require_alignment` flag. Defaults to `true` (the spec default, and this column's own NOT NULL DEFAULT) if the workspace row is somehow missing — fails toward the safer "still gate" direction rather than silently admitting unaligned work. No `.limit()` — matches `unmetBlockers`'s own chain shape in this file (a plain `.select().from().where()` awaited directly), since `workspace_id` is already unique. */
+async function workspaceRequiresAlignment(workspaceId: string): Promise<boolean> {
+  const rows = await db
+    .select({ requireAlignment: workspaces.requireAlignment })
+    .from(workspaces)
+    .where(eq(workspaces.id, workspaceId));
+  return rows[0]?.requireAlignment ?? true;
+}
+
+/**
+ * Has this issue already been through a CONFIRMED alignment brief? The
+ * lookup: an `approved` `jace_approvals` row whose `published_issue_url`
+ * matches this issue's URL exactly. Nothing populates that column yet — PR
+ * ②'s chat-born one-confirm collapse is what will start stamping it once a
+ * `create_issue` approval's resulting issue is known — so this always
+ * returns `false` today. That is the CORRECT direction to fail in until PR ②
+ * lands: a chat-born issue re-delivered through the label-webhook path parks
+ * for a second (redundant, but safe) confirm rather than silently skipping
+ * alignment.
+ */
+async function hasConfirmedAlignmentBrief(issueUrl: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: jaceApprovals.id })
+    .from(jaceApprovals)
+    .where(
+      and(
+        eq(jaceApprovals.status, "approved"),
+        eq(jaceApprovals.publishedIssueUrl, issueUrl)
+      )
+    );
+  return rows.length > 0;
+}
+
+/**
+ * The exact, house-format park reason vocabulary the alignment hold writes.
+ * `apps/console/lib/work-vocabulary.ts::formatParkReason` renders the STORED
+ * reason verbatim (issue #1239), so this literal string IS what a human sees
+ * on the console Work board — changing it here changes displayed copy.
+ */
+export const ALIGNMENT_PARK_REASON = "awaiting alignment";
+
+/**
+ * Atomically confirm a parked alignment hold: flips `queue_entries` from
+ * `parked` to `queued` and writes the two #1333 threading columns in the SAME
+ * update — this write IS what activates that dormant plumbing (owner rule:
+ * "confirming the brief = sanctioning the ceiling"; the values exist ONLY
+ * from this point on, never before). `WHERE state = 'parked'` is the same
+ * belt-and-suspenders idempotency shape `unparkDependents` uses: the CALLER
+ * (the Telegram webhook's `handleApprovalCallback`) already gates this on
+ * `resolveApproval`'s own atomic pending->approved flip, so a double-tap
+ * never reaches this function twice — this WHERE clause guards the
+ * (currently theoretical) case where the row left `parked` some other way
+ * between the approval being recorded and being resolved. Returns `false`
+ * (no-op) rather than throwing when it matches zero rows.
+ */
+export async function confirmAlignmentBrief(input: {
+  queueEntryId: string;
+  estimatedBudgetUsd: number;
+  modelOverride: string;
+}): Promise<boolean> {
+  const result = await db
+    .update(queueEntries)
+    .set({
+      state: "queued",
+      parkReason: null,
+      estimatedBudgetUsd: input.estimatedBudgetUsd,
+      modelOverride: input.modelOverride,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(queueEntries.id, input.queueEntryId),
+        eq(queueEntries.state, "parked")
+      )
+    )
+    .returning({ id: queueEntries.id });
+  return result.length > 0;
+}
+
+/**
+ * Alignment-brief denial: the entry STAYS parked (revise flow is PR ③), only
+ * `parkReason` changes to an honest, human-readable denial notice — never a
+ * silent no-op and never a state flip. Same `WHERE state = 'parked'` shape as
+ * {@link confirmAlignmentBrief}; see that function's doc-comment for why.
+ */
+export async function denyAlignmentBrief(queueEntryId: string): Promise<boolean> {
+  const result = await db
+    .update(queueEntries)
+    .set({
+      parkReason: "alignment denied — ask Jace to revise the brief",
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(queueEntries.id, queueEntryId),
+        eq(queueEntries.state, "parked")
+      )
+    )
+    .returning({ id: queueEntries.id });
+  return result.length > 0;
+}
+
 export async function enqueueGithubIssue(data: {
   workspaceId: string;
   repoFullName: string;
@@ -660,6 +796,30 @@ export async function enqueueGithubIssue(data: {
     if (data.ledger === undefined) processLedger = verdict.ledger;
   }
 
+  // Alignment gate (#1274, locked design point 3): fires ONLY when the entry
+  // would OTHERWISE reach `queued` clean — a row already parked above (an
+  // unmet dependency or a v2 guardrail hit) keeps ITS OWN reason; the
+  // alignment hold never overrides a more specific existing park, and the
+  // gating matrix this module is tested against is deliberately just
+  // (requireAlignment x kind x confirmed-lookup), not crossed with those.
+  // `kind` here is always 'issue' by construction — this function never
+  // inserts any other kind (see `enqueueOnboard` below, which never routes
+  // through this check at all: requireAlignment=true never parks an onboard
+  // row, regression-pinned).
+  let parkedFor: "awaiting_alignment" | undefined;
+  if (state === "queued") {
+    const requireAlignment = await workspaceRequiresAlignment(data.workspaceId);
+    if (requireAlignment) {
+      const issueUrl = githubIssueUrl(data.repoFullName, data.number);
+      const confirmed = await hasConfirmedAlignmentBrief(issueUrl);
+      if (!confirmed) {
+        state = "parked";
+        parkReason = ALIGNMENT_PARK_REASON;
+        parkedFor = "awaiting_alignment";
+      }
+    }
+  }
+
   const inserted = await db
     .insert(queueEntries)
     .values({
@@ -689,10 +849,18 @@ export async function enqueueGithubIssue(data: {
   // Work page) can show WHY without needing this response. `reason` below is a
   // separate, response-only field: it only ever carries a v2 guardrail reason
   // (never the dependency-park reason), keeping the webhook response contract
-  // unchanged from before #1239.
-  return reason !== undefined
-    ? { enqueued: true, id, state, blockedBy, reason }
-    : { enqueued: true, id, state, blockedBy };
+  // unchanged from before #1239. `parkedFor` is the #1274 discriminant the
+  // console github-webhook route reads to decide whether to compose+post an
+  // alignment brief — independent of `reason` (never both at once: the
+  // alignment hold only ever fires on an otherwise-clean admit).
+  return {
+    enqueued: true,
+    id,
+    state,
+    blockedBy,
+    ...(reason !== undefined ? { reason } : {}),
+    ...(parkedFor !== undefined ? { parkedFor } : {}),
+  };
 }
 
 /**

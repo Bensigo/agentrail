@@ -93,6 +93,12 @@ describe("enqueueGithubIssue: parkReason on a dependency park", () => {
   });
 
   it("persists parkReason: null on a clean (non-parked) admit", async () => {
+    // #1274: no "Blocked by" declaration means unmetBlockers short-circuits
+    // (no select call), so the ONLY select this admit makes is the alignment
+    // gate's workspace lookup — seed it `requireAlignment: false` so this
+    // test keeps proving parkReason-clearing behavior on a truly clean admit,
+    // orthogonal to the (separately tested) alignment hold.
+    selectQueue = [[{ requireAlignment: false }]];
     const result = await enqueueGithubIssue({
       workspaceId: "ws-1",
       repoFullName: "owner/repo",

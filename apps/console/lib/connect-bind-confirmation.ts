@@ -15,6 +15,7 @@
 import { latestTelegramSessionForChatIdentity } from "@agentrail/db-postgres";
 import { sendSystemTelegramMessage } from "./telegram-system-message";
 import type { ConnectIdentityBindDecision } from "./connect-bind-decision";
+import type { OwnerElectCompletionResult } from "./connect-owner-elect-completion";
 
 /**
  * Whether a completed `/connect/[token]` bind is worth confirming in-thread.
@@ -44,15 +45,25 @@ export function shouldConfirmConnectBind(
 export interface BuildConnectBindConfirmationTextInput {
   accountLabel: string;
   workspaceName?: string;
+  /** True iff THIS bind just completed owner-elect ownership (issue #1264
+   * PR ②, `completeConnectOwnerElect`'s `completed`) — swaps the neutral
+   * "Workspace: X." clause for an ownership-flavored one. Never true at the
+   * same time `workspaceName` reflects the #1263 auto-bind-to-an-existing-
+   * membership path in practice (the two paths are mutually exclusive per
+   * request), but this function doesn't assume that: it just renders
+   * whatever combination it's given. */
+  ownershipCompleted?: boolean;
 }
 
 /** Plain-text (no markdown) confirmation, matching telegram-system-message.ts's other builders. */
 export function buildConnectBindConfirmationText(
   input: BuildConnectBindConfirmationTextInput
 ): string {
-  const workspaceClause = input.workspaceName
-    ? ` Workspace: ${input.workspaceName}.`
-    : "";
+  const workspaceClause = input.ownershipCompleted
+    ? ` You now own ${input.workspaceName ?? "this workspace"}.`
+    : input.workspaceName
+      ? ` Workspace: ${input.workspaceName}.`
+      : "";
   return `GitHub connected: ${input.accountLabel}.${workspaceClause} You can ask me to use it now.`;
 }
 
@@ -60,6 +71,10 @@ export interface SendConnectBindConfirmationInput {
   chatIdentityId: string;
   decision: ConnectIdentityBindDecision;
   accountLabel: string;
+  /** Owner-elect completion result (issue #1264 PR ②), when the caller ran
+   * one for this bind. Omitted (or `completed: false`) falls back to the
+   * pre-#1264 wording driven by `decision.workspaceDecision` alone. */
+  ownerElectCompletion?: OwnerElectCompletionResult;
 }
 
 /**
@@ -76,7 +91,11 @@ export interface SendConnectBindConfirmationInput {
  *     identity has no Telegram session (e.g. bound from a non-telegram flow
  *     later); a lookup failure is caught and treated the same as "skip".
  *  3. Build the text (workspace clause only when THIS redemption just bound
- *     one — `decision.workspaceDecision.action === "bind"`) and send.
+ *     one — `decision.workspaceDecision.action === "bind"` — UNLESS
+ *     `ownerElectCompletion.completed` is true, issue #1264 PR ②, which
+ *     takes priority and swaps in the ownership-flavored wording instead;
+ *     the two are mutually exclusive in practice, see
+ *     `connect-owner-elect-completion.ts`'s doc-comment) and send.
  *     `sendSystemTelegramMessage` already returns a typed `{ ok: false }`
  *     rather than rejecting on a known failure; the `.catch` below is the
  *     backstop for an unexpected throw so this function's own promise never
@@ -85,7 +104,7 @@ export interface SendConnectBindConfirmationInput {
 export async function sendConnectBindConfirmation(
   input: SendConnectBindConfirmationInput
 ): Promise<void> {
-  const { chatIdentityId, decision, accountLabel } = input;
+  const { chatIdentityId, decision, accountLabel, ownerElectCompletion } = input;
   if (!shouldConfirmConnectBind(decision)) return;
 
   let session;
@@ -96,11 +115,16 @@ export async function sendConnectBindConfirmation(
   }
   if (!session) return; // no telegram session for this identity — skip silently
 
-  const workspaceName =
-    decision.workspaceDecision.action === "bind"
+  const workspaceName = ownerElectCompletion?.completed
+    ? (ownerElectCompletion.workspaceName ?? undefined)
+    : decision.workspaceDecision.action === "bind"
       ? decision.workspaceDecision.workspace.name
       : undefined;
-  const text = buildConnectBindConfirmationText({ accountLabel, workspaceName });
+  const text = buildConnectBindConfirmationText({
+    accountLabel,
+    workspaceName,
+    ownershipCompleted: ownerElectCompletion?.completed ?? false,
+  });
 
   await sendSystemTelegramMessage(session.conversationKey, text).catch(() => {
     // Best-effort: an unexpected throw/rejection from the send must not

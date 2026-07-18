@@ -88,6 +88,34 @@ describe("buildConnectBindConfirmationText", () => {
     const text = buildConnectBindConfirmationText({ accountLabel: "Ada", workspaceName: "Acme" });
     expect(text).not.toMatch(/[*_`[\]]/);
   });
+
+  it("issue #1264 PR 2/2: ownershipCompleted true + a workspace name — ownership line replaces the neutral workspace clause", () => {
+    const text = buildConnectBindConfirmationText({
+      accountLabel: "Ada",
+      workspaceName: "Acme",
+      ownershipCompleted: true,
+    });
+    expect(text).toBe("GitHub connected: Ada. You now own Acme. You can ask me to use it now.");
+  });
+
+  it("ownershipCompleted true with no workspace name (lookup failed): generic fallback, never blank", () => {
+    const text = buildConnectBindConfirmationText({
+      accountLabel: "Ada",
+      ownershipCompleted: true,
+    });
+    expect(text).toBe(
+      "GitHub connected: Ada. You now own this workspace. You can ask me to use it now."
+    );
+  });
+
+  it("ownershipCompleted false (default) with a workspace name: unchanged neutral 'Workspace: X.' wording", () => {
+    const text = buildConnectBindConfirmationText({
+      accountLabel: "Ada",
+      workspaceName: "Acme",
+      ownershipCompleted: false,
+    });
+    expect(text).toBe("GitHub connected: Ada. Workspace: Acme. You can ask me to use it now.");
+  });
 });
 
 describe("sendConnectBindConfirmation", () => {
@@ -214,5 +242,91 @@ describe("sendConnectBindConfirmation", () => {
     ).resolves.toBeUndefined();
 
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  describe("ownerElectCompletion (issue #1264 PR 2/2)", () => {
+    it("completed:true + name: extends the text with the ownership line, even when the decision itself carries no workspace bind", async () => {
+      mockLatestSession.mockResolvedValue(SESSION_ROW as never);
+      mockSend.mockResolvedValue({ ok: true });
+
+      await sendConnectBindConfirmation({
+        chatIdentityId: "chat-identity-1",
+        decision: FRESH_BIND_NO_WORKSPACE,
+        accountLabel: "Ada",
+        ownerElectCompletion: { completed: true, workspaceName: "Acme" },
+      });
+
+      expect(mockSend).toHaveBeenCalledWith(
+        "tg-chat-42",
+        "GitHub connected: Ada. You now own Acme. You can ask me to use it now."
+      );
+    });
+
+    it("completed:true, no name (lookup failed): generic fallback ownership line, never blank", async () => {
+      mockLatestSession.mockResolvedValue(SESSION_ROW as never);
+      mockSend.mockResolvedValue({ ok: true });
+
+      await sendConnectBindConfirmation({
+        chatIdentityId: "chat-identity-1",
+        decision: FRESH_BIND_NO_WORKSPACE,
+        accountLabel: "Ada",
+        ownerElectCompletion: { completed: true, workspaceName: null },
+      });
+
+      expect(mockSend).toHaveBeenCalledWith(
+        "tg-chat-42",
+        "GitHub connected: Ada. You now own this workspace. You can ask me to use it now."
+      );
+    });
+
+    it("completed:false: falls back to the pre-existing decision.workspaceDecision wording, unaffected", async () => {
+      mockLatestSession.mockResolvedValue(SESSION_ROW as never);
+      mockSend.mockResolvedValue({ ok: true });
+
+      await sendConnectBindConfirmation({
+        chatIdentityId: "chat-identity-1",
+        decision: FRESH_BIND_WITH_WORKSPACE,
+        accountLabel: "Ada",
+        ownerElectCompletion: { completed: false, workspaceName: null },
+      });
+
+      expect(mockSend).toHaveBeenCalledWith(
+        "tg-chat-42",
+        "GitHub connected: Ada. Workspace: Acme. You can ask me to use it now."
+      );
+    });
+
+    it("omitted entirely: behaves exactly as before this PR (backward compatible)", async () => {
+      mockLatestSession.mockResolvedValue(SESSION_ROW as never);
+      mockSend.mockResolvedValue({ ok: true });
+
+      await sendConnectBindConfirmation({
+        chatIdentityId: "chat-identity-1",
+        decision: FRESH_BIND_WITH_WORKSPACE,
+        accountLabel: "Ada",
+      });
+
+      expect(mockSend).toHaveBeenCalledWith(
+        "tg-chat-42",
+        "GitHub connected: Ada. Workspace: Acme. You can ask me to use it now."
+      );
+    });
+
+    it("takes precedence over decision.workspaceDecision's own workspace name when both are somehow present (defensive — real callers never produce both)", async () => {
+      mockLatestSession.mockResolvedValue(SESSION_ROW as never);
+      mockSend.mockResolvedValue({ ok: true });
+
+      await sendConnectBindConfirmation({
+        chatIdentityId: "chat-identity-1",
+        decision: FRESH_BIND_WITH_WORKSPACE, // workspaceDecision names "Acme"
+        accountLabel: "Ada",
+        ownerElectCompletion: { completed: true, workspaceName: "Beta Corp" },
+      });
+
+      expect(mockSend).toHaveBeenCalledWith(
+        "tg-chat-42",
+        "GitHub connected: Ada. You now own Beta Corp. You can ask me to use it now."
+      );
+    });
   });
 });

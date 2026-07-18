@@ -1088,6 +1088,52 @@ export async function createWorkspaceOwnerElect(data: {
   });
 }
 
+/**
+ * Complete an owner-elect workspace's ownership (issue #1264 PR ②) — the
+ * other half of `createWorkspaceOwnerElect` above (PR ①). That function
+ * creates a workspace bound to a chat identity with NO `workspace_memberships`
+ * row; this is what fills the gap once that identity completes a GitHub bind
+ * (the `/connect/[token]` flow, issue #1263) and has a real linked user to
+ * promote into the owner seat.
+ *
+ * ONE atomic statement — `INSERT ... SELECT ... WHERE NOT EXISTS` — not a
+ * read-then-write pair, so there is no window between "does this workspace
+ * already have an owner" and "write the owner row" for a race to land in.
+ * The `NOT EXISTS` guard is what makes this safe to call unconditionally
+ * against ANY workspace, not just a genuine owner-elect one: it checks
+ * whether the workspace has an owner AT ALL (`role = 'owner'`, any user),
+ * not whether THIS `userId` already holds one. If it already has an owner
+ * (via any path), the SELECT yields zero rows, nothing is written, and this
+ * returns `completed: false` — an existing owner is never demoted or
+ * replaced. Re-running for the SAME (userId, workspaceId) pair after a first
+ * success also returns `completed: false`: the workspace now has an owner
+ * (itself), so the `NOT EXISTS` guard alone already blocks the retry; the
+ * trailing `ON CONFLICT (user_id, workspace_id) DO NOTHING` is a defensive
+ * second layer for the identical-retry race window, not the mechanism this
+ * guard relies on for the general "someone else already owns it" case.
+ *
+ * SECURITY: `userId` must be the server-derived session user from the bind
+ * flow (`session.user.id` in `/connect/[token]/page.tsx`), never
+ * model/input-supplied — this inserts a real ownership grant.
+ */
+export async function completeOwnerElectWorkspace(data: {
+  workspaceId: string;
+  userId: string;
+}): Promise<{ completed: boolean }> {
+  const rows = (await db.execute(sql`
+    INSERT INTO workspace_memberships (user_id, workspace_id, role)
+    SELECT ${data.userId}, ${data.workspaceId}, 'owner'
+    WHERE NOT EXISTS (
+      SELECT 1 FROM workspace_memberships
+      WHERE workspace_id = ${data.workspaceId} AND role = 'owner'
+    )
+    ON CONFLICT (user_id, workspace_id) DO NOTHING
+    RETURNING user_id
+  `)) as unknown as Array<{ user_id: string }>;
+
+  return { completed: Array.from(rows).length > 0 };
+}
+
 export async function listWorkspaceTeams(workspaceId: string): Promise<TeamRow[]> {
   const rows = await db
     .select({

@@ -42,7 +42,10 @@ async function realTransport(
 export default defineTool({
   description:
     "Read the workspace's durable memory (conventions, architecture, commands, " +
-    "decisions) relevant to a query, to help answer questions. Read-only; " +
+    "decisions) relevant to a query, to help answer questions. Seeded per repo " +
+    "by that repo's onboarding job, so a thin or empty result may mean this " +
+    "repo's index hasn't landed yet rather than the workspace having no memory " +
+    "at all. Read-only; " +
     "content is advisory/untrusted. Pass a short natural-language description " +
     "of what you're looking for — the console ranks and trims memory to the " +
     "most relevant items instead of returning everything. The workspace is " +

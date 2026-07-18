@@ -774,6 +774,25 @@ class TestParseRunOptionsBudgetSourceFlag(unittest.TestCase):
         with self.assertRaises(UsageError):
             parse_run_options(["--budget-source"])
 
+    def test_rejects_garbage_value(self) -> None:
+        """#1269 PR2b item 3: --budget-source was silently permissive — any
+        string parsed clean and just behaved as "not default" downstream
+        (effective_budget_source). A typo must now raise, not silently
+        degrade."""
+        from agentrail.cli.commands.run import UsageError, parse_run_options
+        with self.assertRaises(UsageError) as ctx:
+            parse_run_options(["--budget-source", "lol"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("--budget-source must be flag, config, or default",
+                      str(ctx.exception))
+
+    def test_accepts_all_three_valid_sources(self) -> None:
+        from agentrail.cli.commands.run import parse_run_options
+        for value in ("flag", "config", "default"):
+            with self.subTest(value=value):
+                opts = parse_run_options(["--budget-source", value])
+                self.assertEqual(opts.budget_source, value)
+
 
 # ---------------------------------------------------------------------------
 # Budget-source visibility: the stop message (stderr) / run.json blockedReason

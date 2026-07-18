@@ -239,6 +239,13 @@
       "when": 1784367096000,
       "tag": "0032_jace_approvals_intro_anchor",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1784376121834,
+      "tag": "0033_fleet_tokens",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import { runs } from "../schema/runs.js";
+import { getWorkspaceBudgetState, sumWorkspaceSpendSince } from "./workspace_budget.js";
 
 /**
  * Per-workspace cost aggregation reads (issue #1272 PR ①). Consumed by the
@@ -211,4 +212,65 @@ export async function workspaceMonthlyCostRollup(
     totalCostUsd: byKey.get(key)?.totalCostUsd ?? 0,
     runCount: byKey.get(key)?.runCount ?? 0,
   }));
+}
+
+export type WorkspaceCapStatus = "uncapped" | "under" | "exhausted";
+
+export interface WorkspaceCostOverview {
+  currentMonthSpendUsd: number;
+  monthlyBudgetUsd: number | null;
+  budgetExhaustedNotifiedPeriod: string | null;
+  capStatus: WorkspaceCapStatus;
+}
+
+/**
+ * The composed read the workspace-costs page opens with (#1272 PR ①, AC2).
+ * Pure composition — no new SQL beyond the two existing #1269 helpers:
+ * `getWorkspaceBudgetState` for the ceiling + last-notified period,
+ * `sumWorkspaceSpendSince` for the actual current-month spend number. Unlike
+ * the claim route (apps/console's runner/claim/route.ts), which SKIPS the
+ * SUM entirely for an uncapped workspace because it only cares whether a
+ * ceiling is breached, this overview always calls `sumWorkspaceSpendSince`
+ * — the page wants to show "you've spent $X this month" regardless of
+ * whether any ceiling is set.
+ *
+ * `capStatus` is the same `>=` comparison the claim route enforces with
+ * (apps/console/app/api/v1/runner/claim/route.ts: `spend >=
+ * budgetState.monthlyBudgetUsd`) — "exhausted" at the exact boundary, not
+ * only past it, so this page's status can never disagree with what actually
+ * blocked (or will block) the next claim.
+ *
+ * Honest scope note: this reports ONLY the workspace-level monthly ceiling
+ * (#1269). Per-issue budget caps (the $3 default leash / --budget-usd) are
+ * factory-side (agentrail/run) config that lives in each run's own
+ * `run.json` (`blockedReason` / `budgetCeilingCrossed`, #1316) — a
+ * different, per-run mechanism this overview does not read or represent.
+ *
+ * Returns `null` only when the workspace row itself does not exist (mirrors
+ * `getWorkspaceBudgetState`'s own defensive null) — and short-circuits
+ * before ever calling `sumWorkspaceSpendSince` in that case.
+ */
+export async function getWorkspaceCostOverview(
+  workspaceId: string,
+  now: Date = new Date()
+): Promise<WorkspaceCostOverview | null> {
+  const budgetState = await getWorkspaceBudgetState(workspaceId);
+  if (!budgetState) return null;
+
+  const { startIso, endIso } = utcMonthWindow(0, now);
+  const currentMonthSpendUsd = await sumWorkspaceSpendSince(workspaceId, startIso, endIso);
+
+  const capStatus: WorkspaceCapStatus =
+    budgetState.monthlyBudgetUsd === null
+      ? "uncapped"
+      : currentMonthSpendUsd >= budgetState.monthlyBudgetUsd
+        ? "exhausted"
+        : "under";
+
+  return {
+    currentMonthSpendUsd,
+    monthlyBudgetUsd: budgetState.monthlyBudgetUsd,
+    budgetExhaustedNotifiedPeriod: budgetState.budgetExhaustedNotifiedPeriod,
+    capStatus,
+  };
 }

@@ -11,16 +11,31 @@ vi.mock("../db.js", () => ({
   },
 }));
 
+// getWorkspaceCostOverview is pure composition over these two (#1269)
+// helpers — mocked directly (not the db chain) so its tests assert
+// composition logic, not re-derive workspace_budget.ts's own SQL.
+vi.mock("./workspace_budget.js", () => ({
+  getWorkspaceBudgetState: vi.fn(),
+  sumWorkspaceSpendSince: vi.fn(),
+}));
+
 import { db } from "../db.js";
 import { runs } from "../schema/runs.js";
+import {
+  getWorkspaceBudgetState,
+  sumWorkspaceSpendSince,
+} from "./workspace_budget.js";
 import {
   listWorkspaceRunCosts,
   DEFAULT_RUN_COST_LIST_LIMIT,
   workspaceMonthlyCostRollup,
   DEFAULT_MONTHLY_ROLLUP_MONTHS,
+  getWorkspaceCostOverview,
 } from "./workspace_costs.js";
 
 const mockDb = vi.mocked(db);
+const mockGetWorkspaceBudgetState = vi.mocked(getWorkspaceBudgetState);
+const mockSumWorkspaceSpendSince = vi.mocked(sumWorkspaceSpendSince);
 
 /** A chainable mock: every method returns the chain except `terminalMethod`, which resolves `finalValue`. */
 function makeChain(terminalMethod: string, finalValue: unknown) {
@@ -292,5 +307,92 @@ describe("workspaceMonthlyCostRollup", () => {
     );
 
     expect(result.map((r) => r.monthKey)).toEqual(["2025-11", "2025-12", "2026-01"]);
+  });
+});
+
+describe("getWorkspaceCostOverview", () => {
+  const NOW = new Date("2026-07-15T12:00:00.000Z");
+
+  it("returns null when the workspace does not exist, and never calls sumWorkspaceSpendSince", async () => {
+    mockGetWorkspaceBudgetState.mockResolvedValue(null);
+
+    const result = await getWorkspaceCostOverview("ws-missing", NOW);
+
+    expect(result).toBeNull();
+    expect(mockSumWorkspaceSpendSince).not.toHaveBeenCalled();
+  });
+
+  it("reports capStatus 'uncapped' when monthlyBudgetUsd is null, but still surfaces the real current-month spend", async () => {
+    mockGetWorkspaceBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: null,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumWorkspaceSpendSince.mockResolvedValue(42.5);
+
+    const result = await getWorkspaceCostOverview("ws-1", NOW);
+
+    expect(result).toEqual({
+      currentMonthSpendUsd: 42.5,
+      monthlyBudgetUsd: null,
+      budgetExhaustedNotifiedPeriod: null,
+      capStatus: "uncapped",
+    });
+  });
+
+  it("reports capStatus 'under' when spend is below the ceiling", async () => {
+    mockGetWorkspaceBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 100,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumWorkspaceSpendSince.mockResolvedValue(50);
+
+    const result = await getWorkspaceCostOverview("ws-1", NOW);
+
+    expect(result?.capStatus).toBe("under");
+  });
+
+  it("reports capStatus 'exhausted' exactly AT the ceiling boundary (spend === ceiling proves >=, not >)", async () => {
+    mockGetWorkspaceBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 100,
+      budgetExhaustedNotifiedPeriod: "2026-07",
+    });
+    mockSumWorkspaceSpendSince.mockResolvedValue(100);
+
+    const result = await getWorkspaceCostOverview("ws-1", NOW);
+
+    expect(result).toEqual({
+      currentMonthSpendUsd: 100,
+      monthlyBudgetUsd: 100,
+      budgetExhaustedNotifiedPeriod: "2026-07",
+      capStatus: "exhausted",
+    });
+  });
+
+  it("reports capStatus 'exhausted' when spend has gone past the ceiling", async () => {
+    mockGetWorkspaceBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 100,
+      budgetExhaustedNotifiedPeriod: "2026-07",
+    });
+    mockSumWorkspaceSpendSince.mockResolvedValue(150);
+
+    const result = await getWorkspaceCostOverview("ws-1", NOW);
+
+    expect(result?.capStatus).toBe("exhausted");
+  });
+
+  it("passes the current UTC month's [start, end) bounds to sumWorkspaceSpendSince", async () => {
+    mockGetWorkspaceBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumWorkspaceSpendSince.mockResolvedValue(0);
+
+    await getWorkspaceCostOverview("ws-1", NOW);
+
+    expect(mockSumWorkspaceSpendSince).toHaveBeenCalledWith(
+      "ws-1",
+      "2026-07-01T00:00:00.000Z",
+      "2026-08-01T00:00:00.000Z"
+    );
   });
 });

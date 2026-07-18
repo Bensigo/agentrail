@@ -2077,7 +2077,10 @@ export {
 // `queries/workspace_costs.ts` for the honesty caveats these all inherit
 // from #1269's budget helpers above). listWorkspaceRunCosts is the per-task
 // detail list; workspaceMonthlyCostRollup is the UTC-month trend series
-// (zero-filled, including the current partial month) the page's chart reads.
+// (zero-filled, including the current partial month) the page's chart reads;
+// getWorkspaceCostOverview is the composed read the page opens with (pure
+// composition over getWorkspaceBudgetState + sumWorkspaceSpendSince above —
+// no new SQL of its own).
 export {
   DEFAULT_RUN_COST_LIST_LIMIT,
   listWorkspaceRunCosts,
@@ -2085,4 +2088,7 @@ export {
   DEFAULT_MONTHLY_ROLLUP_MONTHS,
   workspaceMonthlyCostRollup,
   type WorkspaceMonthlyCostRow,
+  getWorkspaceCostOverview,
+  type WorkspaceCostOverview,
+  type WorkspaceCapStatus,
 } from "./workspace_costs.js";

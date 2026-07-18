@@ -13,14 +13,19 @@
 //
 // `eveSessionId` is the ONLY identifying input, and it is never model-
 // supplied: the tool wrapper reads it off `ctx.session.id` — Eve's own
-// session id for the conversation actually invoking this tool — so this can
-// only ever mint a link for the CALLING conversation's own chat identity,
-// never an arbitrary caller-chosen one. This is what closes the accepted
-// residual from the #1263 PR ① review (documented in PR #1305's body: any
-// valid bearer could mint for a caller-supplied (platform, platformUserId)
-// belonging to a never-connected identity outside its own conversation); see
-// apps/console/app/api/v1/runner/connect-link/route.ts's own doc-comment for
-// the server-side half of this fix.
+// session id for the conversation actually invoking this tool. From THIS
+// caller, that means links are only ever minted for the calling
+// conversation's own chat identity. At the HTTP layer the guarantee is
+// narrower: the endpoint accepts any session-id string, so what the input
+// change actually closes is the guessable (platform, platformUserId) vector
+// — an opaque runtime session id replaces it, and the server adds tenant
+// cross-checks on both the identity's and the session's workspace vs the
+// bearer. A valid bearer minting for a never-connected intro identity
+// remains an accepted, narrowed residual (compensating control: Jace only
+// ever delivers links in-thread; redemption guards backstop stale links).
+// See apps/console/app/api/v1/runner/connect-link/route.ts's doc-comment for
+// the authoritative closes/residual statement, and #1295 for the open
+// confirmations (session-id entropy, bearer scoping).
 //
 // On ANY failure — unset config, a blank eveSessionId, an unreachable
 // console, or a non-2xx (the console's 404 covers "no chat identity yet",

@@ -169,6 +169,13 @@ be built and available on the host before flipping this on. Env forwarded
 into that sibling container is an explicit, commented allowlist, not a
 blanket dump of this process's own environment — see
 `agentrail/sandbox/native_runner.py`'s `_DOCKER_SANDBOX_ENV_ALLOWLIST`.
+One residual the allowlist deliberately does not remove: the coding agent's
+OpenRouter credential is inside every per-task container by design — its
+value rides in as `ANTHROPIC_AUTH_TOKEN`, which the agent cannot
+authenticate without — so a malicious task can read the operator's real
+OpenRouter key even in this shape. That residual is one of the concrete
+reasons the #1295 hardening below is a precondition for calling this shape
+fully multi-tenant-safe, not an optional extra.
 
 This mode needs the Docker socket mounted into the fleet container — see the
 commented `- /var/run/docker.sock:/var/run/docker.sock` line under the

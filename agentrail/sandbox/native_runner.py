@@ -743,12 +743,26 @@ def _publish_green(
 # ``ANTHROPIC_API_KEY`` is always empty in that image so Docker-sandbox mode
 # is never reachable for it — but item 1 above (``AGENTRAIL_SANDBOX=docker``)
 # makes it reachable on purpose. Without this filter, flipping that switch
-# would leak the fleet operator's own secrets (the console sync token, the
-# OpenRouter key) into a customer's disposable per-task sandbox container —
-# exactly the kind of thing an "isolation, honestly" PR exists to close, not
-# carry forward. This wrapper is the fix: reduce ``env`` to an explicit,
-# justified allowlist before ``run_issue_in_sandbox`` ever sees it, no matter
-# what the caller handed in.
+# would forward operator-only secrets the sandbox has no use for — most
+# concretely ``FLEET_CONSOLE_TOKEN``, the console sync secret that can mint
+# per-workspace runner tokens — into a customer's disposable per-task
+# sandbox container. This wrapper is the fix: reduce ``env`` to an explicit,
+# justified allowlist before ``run_issue_in_sandbox`` ever sees it, no
+# matter what the caller handed in.
+#
+# What this filter does NOT achieve — stated plainly, because "isolation,
+# honestly" cuts both ways: the operator's OpenRouter credential is still
+# inside every sandbox container, by design. Its VALUE arrives as
+# ``ANTHROPIC_AUTH_TOKEN`` (deploy/runner/entrypoint.sh maps
+# OPENROUTER_API_KEY -> ANTHROPIC_AUTH_TOKEN at fleet-container start, and
+# that name is deliberately allowlisted below — the coding agent cannot
+# authenticate without it). Excluding the raw ``OPENROUTER_API_KEY`` name
+# therefore removes only a redundant, unconsumed copy of the same secret; a
+# task running inside the sandbox can still read the operator's real
+# OpenRouter credential. That residual exposure is part of why the
+# multi-tenant production guidance (deploy/fleet/README.md's Isolation
+# section) points at #1295 hardening rather than calling per-task
+# containers alone sufficient.
 #
 # What's allowed through, and why:
 #   ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN     - Claude Code's OpenRouter
@@ -793,12 +807,13 @@ def _publish_green(
 # ``ANTHROPIC_API_KEY``-presence trigger) — the passthrough boundary is a
 # property of the CONTAINER, not of which trigger picked it. Which is also
 # why the two vars below are included even though they're not part of the
-# OpenRouter/hosted list: they are the pre-existing, still-valid CI/cloud
-# contract (``agentrail/docker/runner/Dockerfile``'s own header: "Required
+# OpenRouter/hosted list: they are the sandbox image's own DOCUMENTED env
+# interface (``agentrail/docker/runner/Dockerfile``'s header: "Required
 # RUNTIME env ... ANTHROPIC_API_KEY agent API key for the Claude CLI (or ...
-# OPENAI_API_KEY for codex)"). Omitting them would silently break that
-# already-working legacy path the very first time this allowlist applied to
-# it — not a byte-identical migration.
+# OPENAI_API_KEY for codex)") — a documented interface, not a claim that a
+# live CI pipeline actively exercises that path today. Omitting them would
+# silently narrow that documented interface out from under any deployment
+# that does rely on it, the first time this allowlist applied to it.
 #   ANTHROPIC_API_KEY, OPENAI_API_KEY             - the disposable sandbox
 #       image's own pre-existing, documented agent-CLI credential contract
 #       (claude / codex respectively). For the OpenRouter/hosted case this
@@ -807,6 +822,15 @@ def _publish_green(
 #       verified not to shadow it (deploy/runner/README.md's "Auth mechanism"
 #       section: "a no-credential control run refused with 'Not logged in'
 #       before any network call").
+#
+# The third select_sandbox_runner caller — the heartbeat runtime
+# (agentrail/cli/commands/heartbeat.py) — was checked too: it hand-builds a
+# small env of {AGENT_API_KEY, GIT_TOKEN, ANTHROPIC_API_KEY}, of which
+# AGENT_API_KEY is vestigial (forwarded by name since the MVP but consumed
+# by nothing in the sandbox image, its entrypoint, or the agent CLIs —
+# grepped; only heartbeat help text and a docker_runner docstring example
+# mention it), so this allowlist omitting it changes nothing observable for
+# that path either.
 #
 # Nothing else passes. A var some future run genuinely needs that isn't
 # listed here is a bug to fix by adding a new, named, justified entry —

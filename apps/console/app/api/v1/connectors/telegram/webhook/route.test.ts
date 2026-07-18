@@ -6,6 +6,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   enqueueChannelMessage: vi.fn(),
   getApprovalByCallbackToken: vi.fn(),
   getChatIdentityById: vi.fn(),
+  getJaceSessionById: vi.fn(),
   resolveApproval: vi.fn(),
 }));
 
@@ -30,6 +31,7 @@ import {
   enqueueChannelMessage,
   getApprovalByCallbackToken,
   getChatIdentityById,
+  getJaceSessionById,
   resolveApproval,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
@@ -45,6 +47,7 @@ const mockEnqueue = vi.mocked(enqueueChannelMessage);
 const mockDispatch = vi.mocked(dispatchQueuedChannelMessages);
 const mockGetApproval = vi.mocked(getApprovalByCallbackToken);
 const mockGetChatIdentity = vi.mocked(getChatIdentityById);
+const mockGetJaceSessionById = vi.mocked(getJaceSessionById);
 const mockResolveApproval = vi.mocked(resolveApproval);
 const mockRender = vi.mocked(renderApprovalMessage);
 const mockAnswer = vi.mocked(answerCallbackQuery);
@@ -517,6 +520,7 @@ function arCallbackUpdate(opts: {
   firstName?: string;
   username?: string;
   withMessage?: boolean;
+  chatType?: string;
 } = {}): Record<string, unknown> {
   const from: Record<string, unknown> = { id: opts.fromId ?? 555 };
   if (opts.firstName !== undefined) from["first_name"] = opts.firstName;
@@ -528,7 +532,9 @@ function arCallbackUpdate(opts: {
     data: opts.data ?? "ar:ytoken123456",
   };
   if (opts.withMessage !== false) {
-    callbackQuery["message"] = { chat: { id: -100123 }, message_id: 42 };
+    const chat: Record<string, unknown> = { id: -100123 };
+    if (opts.chatType !== undefined) chat["type"] = opts.chatType;
+    callbackQuery["message"] = { chat, message_id: 42 };
   }
   return { update_id: 99, callback_query: callbackQuery };
 }
@@ -636,7 +642,7 @@ describe("POST /api/v1/connectors/telegram/webhook — ar: flow (issue #1273)", 
     expect(mockResolveApproval).toHaveBeenCalledWith("approval-1", "approved");
   });
 
-  it("treats a null chatIdentityId on the approval as a failed sender check (defensive) — never looks up an identity, never flips", async () => {
+  it("treats a null chatIdentityId on the approval as a failed sender check when the DM fallback ALSO can't establish authority (no chat.type at all, e.g. a malformed/missing message) — never looks up an identity, never flips", async () => {
     mockParse.mockReturnValue({ decision: "approved", callbackToken: "token123456" });
     mockGetApproval.mockResolvedValue({
       ...MOCK_APPROVAL_ROW,
@@ -647,6 +653,98 @@ describe("POST /api/v1/connectors/telegram/webhook — ar: flow (issue #1273)", 
 
     expect(res.status).toBe(200);
     expect(mockGetChatIdentity).not.toHaveBeenCalled();
+    expect(mockGetJaceSessionById).not.toHaveBeenCalled();
+    expect(mockAnswer).toHaveBeenCalledWith(
+      "test-bot-token",
+      "cbq-1",
+      expect.stringMatching(/yours to approve/i)
+    );
+    expect(mockResolveApproval).not.toHaveBeenCalled();
+  });
+
+  // --- null-identity DM-scoped fallback (review fix) ------------------------
+  // A legacy approval with chatIdentityId null can never pass the strict
+  // check above (identity is always null) — without a fallback, its buttons
+  // look tappable but refuse EVERY tap forever. These four cases are the
+  // fix's own contract: private chat + matching tapper succeeds; group chat
+  // refuses (can't infer authority); private chat + mismatched tapper
+  // refuses; the identity-present path (already covered by the two "SENDER
+  // CHECK (both ways)" tests above) is untouched by any of this.
+
+  it("null-identity DM fallback: flips when the tap is in the session's own PRIVATE chat and the tapper's id equals the session's conversationKey", async () => {
+    mockParse.mockReturnValue({ decision: "approved", callbackToken: "token123456" });
+    mockGetApproval.mockResolvedValue({
+      ...MOCK_APPROVAL_ROW,
+      chatIdentityId: null,
+    } as never);
+    mockGetJaceSessionById.mockResolvedValue({
+      id: "session-1",
+      conversationKey: "777",
+    } as never);
+    mockResolveApproval.mockResolvedValue(true);
+
+    const res = await POST(
+      req(
+        arCallbackUpdate({ fromId: 777, chatType: "private" }),
+        { header: SECRET }
+      )
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockGetChatIdentity).not.toHaveBeenCalled();
+    expect(mockGetJaceSessionById).toHaveBeenCalledWith("session-1");
+    expect(mockResolveApproval).toHaveBeenCalledWith("approval-1", "approved");
+    expect(mockAnswer).toHaveBeenCalledWith("test-bot-token", "cbq-1", "✅ Approved");
+  });
+
+  it("null-identity DM fallback: refuses when the tap comes from a GROUP chat, even if the tapper's id happens to equal the session's conversationKey — a group's conversationKey is the group's own chat id, not any member's", async () => {
+    mockParse.mockReturnValue({ decision: "approved", callbackToken: "token123456" });
+    mockGetApproval.mockResolvedValue({
+      ...MOCK_APPROVAL_ROW,
+      chatIdentityId: null,
+    } as never);
+    mockGetJaceSessionById.mockResolvedValue({
+      id: "session-1",
+      conversationKey: "777",
+    } as never);
+
+    const res = await POST(
+      req(
+        arCallbackUpdate({ fromId: 777, chatType: "group" }),
+        { header: SECRET }
+      )
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockGetJaceSessionById).not.toHaveBeenCalled();
+    expect(mockAnswer).toHaveBeenCalledWith(
+      "test-bot-token",
+      "cbq-1",
+      expect.stringMatching(/yours to approve/i)
+    );
+    expect(mockResolveApproval).not.toHaveBeenCalled();
+  });
+
+  it("null-identity DM fallback: refuses when the chat is private but the tapper's id does NOT match the session's conversationKey", async () => {
+    mockParse.mockReturnValue({ decision: "approved", callbackToken: "token123456" });
+    mockGetApproval.mockResolvedValue({
+      ...MOCK_APPROVAL_ROW,
+      chatIdentityId: null,
+    } as never);
+    mockGetJaceSessionById.mockResolvedValue({
+      id: "session-1",
+      conversationKey: "777",
+    } as never);
+
+    const res = await POST(
+      req(
+        arCallbackUpdate({ fromId: 999, chatType: "private" }),
+        { header: SECRET }
+      )
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockGetJaceSessionById).toHaveBeenCalledWith("session-1");
     expect(mockAnswer).toHaveBeenCalledWith(
       "test-bot-token",
       "cbq-1",

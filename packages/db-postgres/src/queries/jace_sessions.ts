@@ -115,6 +115,28 @@ export async function getJaceSessionByEveSessionId(
   return row ?? null;
 }
 
+/**
+ * Look up a Jace session by its own primary key. Added as the null-`chatIdentityId`
+ * fallback for the Telegram webhook's callback_query SENDER CHECK (issue
+ * #1273 review fix): a legacy approval recorded before identity backfill has
+ * `chat_identity_id` permanently null, so the strict identity check can never
+ * pass for it — this lets the webhook fall back to reading the OWNING
+ * session's own `conversationKey` via `jaceApprovals.sessionId` instead
+ * (`conversationKey` IS the chat id for a Telegram DM, the #1262 convention).
+ * No further scoping needed: `id` is the session's own uuid PK, never
+ * caller-guessable (mirrors `getApprovalById`'s own no-scope rationale).
+ */
+export async function getJaceSessionById(
+  id: string
+): Promise<JaceSessionRow | null> {
+  const [row] = await db
+    .select()
+    .from(jaceSessions)
+    .where(eq(jaceSessions.id, id))
+    .limit(1);
+  return row ?? null;
+}
+
 /** Update a Jace session's status and touch lastActivityAt. */
 export async function setJaceSessionStatus(
   sessionId: string,

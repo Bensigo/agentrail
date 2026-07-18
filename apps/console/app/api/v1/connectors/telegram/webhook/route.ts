@@ -5,6 +5,7 @@ import {
   enqueueChannelMessage,
   getApprovalByCallbackToken,
   getChatIdentityById,
+  getJaceSessionById,
   resolveApproval,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
@@ -115,7 +116,10 @@ interface TelegramCallbackQuery {
   id: string;
   from: TelegramFrom;
   data?: string;
-  message?: { chat: { id: number }; message_id: number };
+  // `chat.type` (private|group|supergroup|channel) is what the null-identity
+  // DM fallback below checks — the SAME `message.chat` Telegram's
+  // callback_query update carries, not a separately-fetched field.
+  message?: { chat: { id: number; type: string }; message_id: number };
 }
 
 function isTelegramCallbackQuery(
@@ -238,7 +242,34 @@ async function handleApprovalCallback(
   const identity = approval.chatIdentityId
     ? await getChatIdentityById(approval.chatIdentityId)
     : null;
-  const senderOk = !!identity && identity.platformUserId === String(cq.from.id);
+  let senderOk = !!identity && identity.platformUserId === String(cq.from.id);
+
+  // Legacy-session bridge (review fix): a `chatIdentityId`-null approval
+  // (recorded from a session that predates identity backfill) can NEVER pass
+  // the strict check above — identity is always null, so senderOk is always
+  // false — which renders working-looking buttons that refuse EVERY tap
+  // forever. Identity-anchored approvals never reach this branch (senderOk
+  // is already decided above); this is strictly additive for the
+  // null-identity case, the strict check itself is untouched.
+  //
+  // Fallback authority: allow the tap iff it fired in the conversation's own
+  // PRIVATE chat AND the tapper's own Telegram user id equals the owning
+  // session's conversationKey — which IS the chat id for a Telegram DM
+  // (#1262 convention), so "tapper's id == conversationKey" means "tapper is
+  // this DM's one participant." A group/channel's conversationKey is the
+  // GROUP's chat id, never any one member's user id, so there is no way to
+  // infer authority there — nor when the update carries no `message` at all
+  // (can't even learn the chat kind) — and the strict refusal below stands
+  // for both, same as it always has.
+  if (
+    !senderOk &&
+    !approval.chatIdentityId &&
+    cq.message?.chat.type === "private"
+  ) {
+    const session = await getJaceSessionById(approval.sessionId);
+    senderOk = !!session && String(cq.from.id) === session.conversationKey;
+  }
+
   if (!senderOk) {
     await answerCallbackQuery(token, cq.id, "This isn't yours to approve.");
     return NextResponse.json({ ok: true });

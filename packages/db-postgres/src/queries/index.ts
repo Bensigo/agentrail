@@ -1907,7 +1907,9 @@ export {
 // callback_data token, with no workspace to scope by yet, unlike the
 // workspace-scoped findApprovalByCallbackToken above. getApprovalById is the
 // GET /api/v1/runner/approvals/[id] poller's own read, scoped by the
-// console-minted uuid alone.
+// console-minted uuid alone. getJaceSessionById (issue #1273 review fix)
+// resolves a session by its own PK — the null-chatIdentityId SENDER CHECK
+// fallback's read of the owning session's conversationKey.
 export {
   getOrCreateJaceSession,
   bindEveSession,
@@ -1917,6 +1919,7 @@ export {
   resolveConversationWorkspace,
   pinConversationWorkspace,
   getJaceSessionByEveSessionId,
+  getJaceSessionById,
   latestTelegramSessionForChatIdentity,
   recordApprovalRequest,
   findApprovalByCallbackToken,

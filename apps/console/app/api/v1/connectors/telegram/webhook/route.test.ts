@@ -6,14 +6,24 @@ vi.mock("@agentrail/db-postgres", () => ({
   enqueueChannelMessage: vi.fn(),
 }));
 
+vi.mock("../../../../../../lib/channel-dispatch", () => ({
+  dispatchQueuedChannelMessages: vi.fn(),
+}));
+
 import { POST } from "./route";
 import {
   resolveInboundChatIdentity,
   enqueueChannelMessage,
 } from "@agentrail/db-postgres";
+import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 
 const mockResolve = vi.mocked(resolveInboundChatIdentity);
 const mockEnqueue = vi.mocked(enqueueChannelMessage);
+const mockDispatch = vi.mocked(dispatchQueuedChannelMessages);
+// Every test gets a non-throwing default so route.ts's `.catch(...)` on the
+// kick has a real Promise to attach to; clearAllMocks (below) resets call
+// counts/args between tests but not this persistent implementation.
+mockDispatch.mockResolvedValue({ processed: 0, failed: 0 });
 
 const HEADER = "x-telegram-bot-api-secret-token";
 const SECRET = "shared-bot-secret-abc123";
@@ -338,5 +348,72 @@ describe("POST /api/v1/connectors/telegram/webhook — identity + enqueue argume
         payload: expect.objectContaining({ text: "hello jace (edited)" }),
       })
     );
+  });
+});
+
+describe("POST /api/v1/connectors/telegram/webhook — dispatcher kick", () => {
+  beforeEach(() => {
+    process.env["TELEGRAM_WEBHOOK_SECRET_TOKEN"] = SECRET;
+  });
+
+  it("kicks the dispatcher after a fresh enqueue (the happy path)", async () => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+
+    const res = await POST(req(MESSAGE_UPDATE, { header: SECRET }));
+
+    expect(res.status).toBe(200);
+    expect(mockDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("still kicks the dispatcher on a deduped (redelivered) enqueue", async () => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: false,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: null, deduped: true });
+
+    const res = await POST(req(MESSAGE_UPDATE, { header: SECRET }));
+
+    expect(res.status).toBe(200);
+    expect(mockDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT kick when verification fails (nothing was enqueued)", async () => {
+    delete process.env["TELEGRAM_WEBHOOK_SECRET_TOKEN"];
+
+    const res = await POST(req(MESSAGE_UPDATE, { header: "whatever" }));
+
+    expect(res.status).toBe(401);
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it("does NOT kick when the update is ignored (e.g. callback_query — nothing was enqueued)", async () => {
+    const res = await POST(
+      req({ update_id: 2, callback_query: { id: "cb1" } }, { header: SECRET })
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it("never lets a dispatcher rejection surface into the route's response (fire-and-forget)", async () => {
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: null } as never,
+      created: true,
+      disposition: "intro",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+    mockDispatch.mockRejectedValueOnce(new Error("drain blew up"));
+
+    const res = await POST(req(MESSAGE_UPDATE, { header: SECRET }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
   });
 });

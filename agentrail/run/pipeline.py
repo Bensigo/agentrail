@@ -759,8 +759,17 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
                     print(rc.budget_stop_reason, file=sys.stderr)
                     budget_marker_pending = True
                     try:
+                        # Push the SAME source-aware string run.json's
+                        # blockedReason gets (rc.budget_stop_reason, above) —
+                        # not the plain dollar-figure budget_msg — so a
+                        # server-side reader (or AFK's own _fail, which reads
+                        # this run's run.json) sees the check-in framing and
+                        # resume guidance too, not just "budget_exceeded".
+                        # failure_type stays "budget_exceeded" unconditionally
+                        # — only the message changes.
                         push_failure_event(
-                            rc.target_dir, rc.run_id, "budget_exceeded", phase, budget_msg,
+                            rc.target_dir, rc.run_id, "budget_exceeded", phase,
+                            rc.budget_stop_reason,
                         )
                     except Exception as _exc:
                         _log.debug("budget failure push skipped: %s", _exc)

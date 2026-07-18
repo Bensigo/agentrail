@@ -232,6 +232,13 @@
       "when": 1784336006641,
       "tag": "0031_channel_inbox_intro_anchor",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1784367096000,
+      "tag": "0032_jace_approvals_intro_anchor",
+      "breakpoints": true
     }
   ]
 }

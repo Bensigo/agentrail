@@ -3,20 +3,47 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   resolveInboundChatIdentity,
   enqueueChannelMessage,
+  getApprovalByCallbackToken,
+  getChatIdentityById,
+  getJaceSessionById,
+  resolveApproval,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
+import { renderApprovalMessage } from "../../../../../../lib/approval-message";
+import {
+  answerCallbackQuery,
+  editMessageText,
+  parseApprovalCallbackData,
+  APPROVAL_CALLBACK_PREFIX,
+} from "../../../workspaces/[workspaceId]/connectors/secret/telegram";
 
 /**
  * Shared Telegram webhook — the ingestion half of the hosted Jace door
- * (issue #1262, spec §4.1). ONE hosted bot multiplexes every workspace, so
+ * (issue #1262, spec §4.1) AND (issue #1273) the console-gated approval
+ * seam's callback handler. ONE hosted bot multiplexes every workspace, so
  * unlike a per-workspace connector this route never looks up a
- * workspace-scoped secret: it verifies the ONE shared-bot secret, ensures the
- * sender's chat identity (issue #1261), and enqueues into `channel_inbox`
- * (PR ①) — then (PR ②) fires a fire-and-forget kick at the dispatcher
- * (`lib/channel-dispatch.ts`) before returning 200. The route itself still
- * does no Eve call and no reply inline; the kick only asks the dispatcher to
- * drain, and never affects this route's response (`.catch`-swallowed — a
- * drain failure is not this request's failure).
+ * workspace-scoped secret: it verifies the ONE shared-bot secret, then
+ * branches on update kind.
+ *
+ * `message`/`edited_message`: ensures the sender's chat identity (issue
+ * #1261), and enqueues into `channel_inbox` (PR ①) — then (PR ②) fires a
+ * fire-and-forget kick at the dispatcher (`lib/channel-dispatch.ts`) before
+ * returning 200. The route itself still does no Eve call and no reply
+ * inline; the kick only asks the dispatcher to drain, and never affects this
+ * route's response (`.catch`-swallowed — a drain failure is not this
+ * request's failure). Byte-unchanged by #1273.
+ *
+ * `callback_query` (issue #1273 — previously silently ignored, see
+ * `deploy/telegram-shared-bot-cutover.md`'s former "Before you cut over"
+ * gate, now closed by this handling): `data` starting with `ar:` is THIS
+ * seam's own button (`handleApprovalCallback` below) — looked up by its
+ * opaque callback token, sender-checked against the approval's own chat
+ * identity, atomically flipped, and answered/edited in place. ANY other
+ * callback_query (including Eve's own `eve:`-prefixed native HITL buttons)
+ * is forwarded VERBATIM to the Jace sidecar's real `/eve/v1/telegram`
+ * channel — this is the cutover bridge: Eve-native approval buttons keep
+ * working on the console's webhook exactly as they did on the sidecar's own,
+ * so a workspace can cut over to the shared bot without losing them.
  *
  * FAIL CLOSED: unlike the github webhook route (`../github/webhook/route.ts`,
  * flagged as a defect for skipping verification when its secret env is
@@ -83,6 +110,249 @@ function displayNameFor(from: TelegramFrom): string {
   return from.username ?? [from.first_name, from.last_name].join(" ").trim();
 }
 
+// --- callback_query (issue #1273) -------------------------------------------
+
+interface TelegramCallbackQuery {
+  id: string;
+  from: TelegramFrom;
+  data?: string;
+  // `chat.type` (private|group|supergroup|channel) is what the null-identity
+  // DM fallback below checks — the SAME `message.chat` Telegram's
+  // callback_query update carries, not a separately-fetched field.
+  message?: { chat: { id: number; type: string }; message_id: number };
+}
+
+function isTelegramCallbackQuery(
+  value: unknown
+): value is TelegramCallbackQuery {
+  if (!value || typeof value !== "object") return false;
+  const cq = value as Record<string, unknown>;
+  const from = cq["from"];
+  return (
+    typeof cq["id"] === "string" &&
+    !!from &&
+    typeof from === "object" &&
+    typeof (from as Record<string, unknown>)["id"] !== "undefined"
+  );
+}
+
+/** The live tapper's display name for the "Approved/Denied by <name>" edit — straight off the callback_query, never the (possibly stale) stored chat_identities.display_name. */
+function callbackFromName(from: TelegramFrom): string {
+  return from.first_name ?? from.username ?? String(from.id);
+}
+
+const EVE_HOST = process.env["EVE_HOST"] || "http://127.0.0.1:2000";
+
+/**
+ * The real Eve native Telegram channel (`apps/jace/agent/channels/telegram.ts`
+ * -> `/eve/v1/telegram`, self-host verify idiom this route's own doc-comment
+ * references). Overridable for tests / non-default topologies, mirroring
+ * `channel-dispatch.ts`'s `HOSTED_INBOUND_URL` convention.
+ */
+const EVE_TELEGRAM_URL =
+  process.env["JACE_TELEGRAM_URL"] || `${EVE_HOST}/eve/v1/telegram`;
+
+// Mirrors channel-dispatch.ts's own fetchWithTimeout: bound the forward so an
+// unreachable/hanging sidecar can never wedge this request past Telegram's
+// own patience for a webhook response.
+const FORWARD_TIMEOUT_MS = 10_000;
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FORWARD_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Forward a callback_query update this door doesn't own (anything NOT
+ * `ar:`-prefixed — Eve's own `eve:`-prefixed native HITL buttons, or any
+ * other kind) to the sidecar's real `/eve/v1/telegram` channel, VERBATIM
+ * (the original raw body, the same secret-token header Telegram sent us —
+ * already verified by the time this is called). Mirrors the sidecar's
+ * response status/content-type back to Telegram — but ONLY on a 2xx.
+ *
+ * Any non-2xx from the sidecar (reached, but rejecting the update — e.g. a
+ * persistently-500ing-but-up sidecar) becomes 200
+ * `{ ok: true, forwarded: false, sidecarStatus }`, logged via console.error
+ * so the failure isn't silent; an unreachable sidecar keeps its own
+ * `{ ok: true, forwarded: false }` (no HTTP status was ever received to
+ * report). Deliberately NOT mirroring a non-2xx/502 the way the generic
+ * `connectors/jace/inbound/[workspaceId]/route.ts` forwarder does: THAT route
+ * isn't fielding Telegram's own webhook contract, but this one is — Telegram
+ * retry-storms a webhook URL that keeps returning non-2xx, and every retry
+ * would just hit the same broken (or unreachable) sidecar again. Acking 200
+ * here accepts "this specific update's Eve-native reply silently doesn't
+ * happen" as the degraded outcome, rather than compounding an outage with a
+ * retry storm.
+ */
+async function forwardCallbackQueryToEve(
+  raw: string,
+  secretHeaderValue: string | null
+): Promise<NextResponse> {
+  try {
+    const upstream = await fetchWithTimeout(EVE_TELEGRAM_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [SECRET_HEADER]: secretHeaderValue ?? "",
+      },
+      body: raw,
+    });
+
+    if (upstream.status < 200 || upstream.status >= 300) {
+      console.error(
+        `[telegram/webhook] forwardCallbackQueryToEve: sidecar reachable but returned non-2xx status ${upstream.status}; not mirrored to Telegram (would retry-storm)`
+      );
+      return NextResponse.json({
+        ok: true,
+        forwarded: false,
+        sidecarStatus: upstream.status,
+      });
+    }
+
+    const payload = await upstream.text();
+    return new NextResponse(payload, {
+      status: upstream.status,
+      headers: {
+        "Content-Type":
+          upstream.headers.get("content-type") ?? "application/json",
+      },
+    });
+  } catch {
+    return NextResponse.json({ ok: true, forwarded: false });
+  }
+}
+
+/**
+ * Handle an `ar:`-prefixed callback_query — this seam's own Approve/Deny
+ * button (issue #1273). Every branch answers the callback_query (Telegram
+ * requires SOME response or the tapper's client shows a permanent loading
+ * spinner) and returns 200; none of them ever throw past this function.
+ */
+async function handleApprovalCallback(
+  cq: TelegramCallbackQuery,
+  token: string
+): Promise<NextResponse> {
+  const parsed = parseApprovalCallbackData(cq.data ?? "");
+  if (!parsed) {
+    await answerCallbackQuery(token, cq.id, "This approval link looks invalid.");
+    return NextResponse.json({ ok: true });
+  }
+
+  const approval = await getApprovalByCallbackToken(parsed.callbackToken);
+  if (!approval) {
+    await answerCallbackQuery(token, cq.id, "This approval could not be found.");
+    return NextResponse.json({ ok: true });
+  }
+
+  // SENDER CHECK (v1 rule, annex-1273-recon.md CONTROLLER DESIGN point 6): the
+  // tap must come from the conversation's own chat identity. Never broadened
+  // to "any workspace member" in this PR — a future PR may loosen this once a
+  // session graduates to a workspace.
+  const identity = approval.chatIdentityId
+    ? await getChatIdentityById(approval.chatIdentityId)
+    : null;
+  let senderOk = !!identity && identity.platformUserId === String(cq.from.id);
+
+  // Legacy-session bridge (review fix): a `chatIdentityId`-null approval
+  // (recorded from a session that predates identity backfill) can NEVER pass
+  // the strict check above — identity is always null, so senderOk is always
+  // false — which renders working-looking buttons that refuse EVERY tap
+  // forever. Identity-anchored approvals never reach this branch (senderOk
+  // is already decided above); this is strictly additive for the
+  // null-identity case, the strict check itself is untouched.
+  //
+  // Fallback authority: allow the tap iff it fired in the conversation's own
+  // PRIVATE chat AND the tapper's own Telegram user id equals the owning
+  // session's conversationKey — which IS the chat id for a Telegram DM
+  // (#1262 convention), so "tapper's id == conversationKey" means "tapper is
+  // this DM's one participant." A group/channel's conversationKey is the
+  // GROUP's chat id, never any one member's user id, so there is no way to
+  // infer authority there — nor when the update carries no `message` at all
+  // (can't even learn the chat kind) — and the strict refusal below stands
+  // for both, same as it always has.
+  if (
+    !senderOk &&
+    !approval.chatIdentityId &&
+    cq.message?.chat.type === "private"
+  ) {
+    const session = await getJaceSessionById(approval.sessionId);
+    senderOk = !!session && String(cq.from.id) === session.conversationKey;
+  }
+
+  if (!senderOk) {
+    await answerCallbackQuery(token, cq.id, "This isn't yours to approve.");
+    return NextResponse.json({ ok: true });
+  }
+
+  const flipped = await resolveApproval(approval.id, parsed.decision);
+  if (!flipped) {
+    // Duplicate tap (a redelivered callback_query, or two taps racing each
+    // other): resolveApproval's atomic pending->resolved guard already
+    // matched zero rows, so this is a no-op — the FIRST resolution already
+    // answered and edited the message; do not do either again.
+    await answerCallbackQuery(token, cq.id, "Already resolved.");
+    return NextResponse.json({ ok: true });
+  }
+
+  const label = parsed.decision === "approved" ? "✅ Approved" : "❌ Denied";
+  const who = callbackFromName(cq.from);
+  await answerCallbackQuery(token, cq.id, label);
+
+  if (cq.message) {
+    // Re-render from the SAME (toolName, toolInput) the original send used —
+    // renderApprovalMessage is pure, so this reproduces byte-identical text
+    // without needing to have stored the composed message anywhere. v1 keeps
+    // no message_id storage at all (annex-1273-recon.md CONTROLLER DESIGN
+    // point 4): editing uses callback_query.message.{chat.id, message_id}
+    // straight off THIS update.
+    const originalText = renderApprovalMessage(
+      approval.toolName,
+      approval.toolInput
+    );
+    await editMessageText(
+      token,
+      cq.message.chat.id,
+      cq.message.message_id,
+      `${originalText}\n\n${label} by ${who}`
+    );
+  }
+
+  return NextResponse.json({ ok: true });
+}
+
+/**
+ * Route a callback_query to this seam's own `ar:` handler or forward it —
+ * the branch point issue #1273 adds in place of the former blanket
+ * silent-ignore.
+ */
+async function handleCallbackQuery(
+  cq: TelegramCallbackQuery,
+  raw: string,
+  secretHeaderValue: string | null
+): Promise<NextResponse> {
+  const data = cq.data ?? "";
+  if (!data.startsWith(APPROVAL_CALLBACK_PREFIX)) {
+    return forwardCallbackQueryToEve(raw, secretHeaderValue);
+  }
+
+  const token = process.env["TELEGRAM_BOT_TOKEN"];
+  if (!token) {
+    console.error(
+      "[telegram/webhook] callback_query is 'ar:'-prefixed but TELEGRAM_BOT_TOKEN is unset; cannot answer/edit"
+    );
+    return NextResponse.json({ ok: true });
+  }
+  return handleApprovalCallback(cq, token);
+}
+
 export async function POST(request: NextRequest) {
   // Verify BEFORE the body is even read off the request stream.
   if (!verifySecret(request.headers.get(SECRET_HEADER))) {
@@ -104,6 +374,20 @@ export async function POST(request: NextRequest) {
   }
 
   const update = body as Record<string, unknown>;
+
+  // callback_query (issue #1273): handled BEFORE the message-shape check
+  // below — a real Telegram callback_query update carries no top-level
+  // `message`/`edited_message` key at all (only nested inside
+  // `callback_query.message`), so it always fell into the final
+  // `{ok:true, ignored:true}` branch until this PR.
+  if (isTelegramCallbackQuery(update["callback_query"])) {
+    return handleCallbackQuery(
+      update["callback_query"],
+      raw,
+      request.headers.get(SECRET_HEADER)
+    );
+  }
+
   const carriesMessageKey =
     update["message"] !== undefined || update["edited_message"] !== undefined;
   const message = update["message"] ?? update["edited_message"];
@@ -118,9 +402,9 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    // A real Telegram update kind this door doesn't process — callback_query
-    // rides the Eve-native approvals path today; my_chat_member, channel_post,
-    // etc. are simply not conversational turns.
+    // A real Telegram update kind this door doesn't process (my_chat_member,
+    // channel_post, etc. — not conversational turns and not callback_query,
+    // handled above).
     return NextResponse.json({ ok: true, ignored: true });
   }
 

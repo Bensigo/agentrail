@@ -33,11 +33,12 @@ describe("NAV_ZONES data structure", () => {
     ]);
   });
 
-  it("Engine room zone contains exactly the demoted evidence pages, hrefs unchanged", () => {
+  it("Engine room zone contains exactly the demoted evidence pages, plus Budget (#1272)", () => {
     expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).toEqual([
       "runs",
       "review-gates",
       "costs",
+      "budget",
       "memory",
       "failures",
     ]);
@@ -74,13 +75,18 @@ describe("NAV_ZONES data structure", () => {
     }
   });
 
+  it("budget is present exactly once (#1272: new workspace $ ceiling + per-task/monthly spend page)", () => {
+    const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
+    expect(allHrefs.filter((h) => h === "budget")).toHaveLength(1);
+  });
+
   it("queue is gone from the nav; work is present exactly once (#1231 rename)", () => {
     const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
     expect(allHrefs).not.toContain("queue");
     expect(allHrefs.filter((h) => h === "work")).toHaveLength(1);
   });
 
-  it("adds no new hrefs beyond the legacy set plus work (teams stays a redirect stub to /members)", () => {
+  it("adds no new hrefs beyond the legacy set plus work and budget (teams stays a redirect stub to /members)", () => {
     const legacyHrefs = new Set([
       "",
       "runs",
@@ -89,6 +95,7 @@ describe("NAV_ZONES data structure", () => {
       "failures",
       "review-gates",
       "costs",
+      "budget", // #1272: new workspace $ ceiling + per-task/monthly spend page
       "repos",
       "memory",
       "api-keys",

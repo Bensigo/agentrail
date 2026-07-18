@@ -101,3 +101,114 @@ export async function listWorkspaceRunCosts(
       r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
   }));
 }
+
+/** Default months of history the rollup returns (including the current
+ * partial month) — enough for a trailing trend chart without an explicit
+ * caller-supplied window. */
+export const DEFAULT_MONTHLY_ROLLUP_MONTHS = 6;
+
+export interface WorkspaceMonthlyCostRow {
+  /** UTC "YYYY-MM", same format as workspace_budget.ts's `period` key. */
+  monthKey: string;
+  totalCostUsd: number;
+  runCount: number;
+}
+
+/**
+ * The UTC month, `monthsAgo` months before `now` (0 = the current, partial,
+ * month) — mirrors apps/console/app/api/v1/runner/claim/route.ts's
+ * `currentBudgetWindow` (lines ~33-44) EXACTLY: same `Date.UTC(year, month,
+ * 1)` / `Date.UTC(year, month + 1, 1)` half-open construction and the same
+ * "YYYY-MM" key format, generalized to step back an arbitrary number of
+ * months instead of only "this month". That route's helper cannot be
+ * imported here (it lives in apps/console, a downstream consumer of this
+ * package, not a dependency of it) — this is a parallel implementation of
+ * the SAME convention, not a copy of the SAME symbol. JS `Date.UTC`
+ * normalizes an out-of-range month index by carrying into the year, so
+ * stepping back across a year boundary needs no special-casing.
+ */
+function utcMonthWindow(
+  monthsAgo: number,
+  now: Date
+): { key: string; startIso: string; endIso: string } {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth() - monthsAgo;
+  const start = new Date(Date.UTC(year, month, 1));
+  const end = new Date(Date.UTC(year, month + 1, 1));
+  const key = `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, "0")}`;
+  return { key, startIso: start.toISOString(), endIso: end.toISOString() };
+}
+
+/**
+ * One row per UTC calendar month for `workspaceId`, oldest-first, ending at
+ * (and including) the current partial month — `monthsBack` total rows.
+ * Months with no runs still get a row (`totalCostUsd: 0, runCount: 0`) so a
+ * trend chart never shows a gap.
+ *
+ * Buckets in a single grouped query rather than `monthsBack` round trips.
+ * Deliberately uses `EXTRACT(YEAR/MONTH FROM created_at AT TIME ZONE
+ * 'UTC')::int` instead of `date_trunc(...)`, for two reasons verified before
+ * writing this:
+ *   1. postgres.js (this package's driver, packages/db-postgres/src/db.ts)
+ *      returns `bigint`/`numeric` columns as STRINGS by default (no custom
+ *      type parsers are registered) — an uncast `COUNT(*)` would land as
+ *      `"3"`, not `3`. The explicit `::int` cast (int4) is what makes it
+ *      come back as a genuine JS number.
+ *   2. `date_trunc('month', created_at AT TIME ZONE 'UTC')` would return a
+ *      timestamp already shifted to UTC wall-clock but WITHOUT a timezone
+ *      marker on the wire — and postgres.js's date parser is a plain `new
+ *      Date(x)`, which parses a marker-less date-time string as LOCAL time,
+ *      not UTC. Round-tripping the bucket through a timestamp value would
+ *      silently reintroduce a timezone bug on any machine whose local TZ
+ *      isn't UTC. Returning two small cast integers sidesteps this
+ *      entirely — no timestamp value crosses the wire for the bucket key.
+ *
+ * NULL-safe the same way `sumWorkspaceSpendSince` is: `COALESCE(SUM(...),
+ * 0)` in SQL (a group made entirely of legacy NULL `cost_usd` rows sums to
+ * NULL otherwise) plus a JS-level `?? 0` belt-and-braces fallback.
+ */
+export async function workspaceMonthlyCostRollup(
+  workspaceId: string,
+  monthsBack: number = DEFAULT_MONTHLY_ROLLUP_MONTHS,
+  now: Date = new Date()
+): Promise<WorkspaceMonthlyCostRow[]> {
+  const span = Math.max(1, Math.trunc(monthsBack));
+  // Oldest -> newest, ending at (and including) the current partial month.
+  const months = Array.from({ length: span }, (_, i) => utcMonthWindow(span - 1 - i, now));
+  const windowStartIso = months[0]!.startIso;
+  const windowEndIso = utcMonthWindow(0, now).endIso;
+
+  const yearExpr = sql`EXTRACT(YEAR FROM ${runs.createdAt} AT TIME ZONE 'UTC')::int`;
+  const monthExpr = sql`EXTRACT(MONTH FROM ${runs.createdAt} AT TIME ZONE 'UTC')::int`;
+
+  const result = await db.execute(sql`
+    SELECT
+      ${yearExpr} AS bucket_year,
+      ${monthExpr} AS bucket_month,
+      COALESCE(SUM(${runs.costUsd}), 0) AS total_cost_usd,
+      COUNT(*)::int AS run_count
+    FROM ${runs}
+    WHERE ${runs.workspaceId} = ${workspaceId}
+      AND ${runs.createdAt} >= ${new Date(windowStartIso)}
+      AND ${runs.createdAt} < ${new Date(windowEndIso)}
+    GROUP BY ${yearExpr}, ${monthExpr}
+    ORDER BY ${yearExpr} ASC, ${monthExpr} ASC
+  `);
+
+  const byKey = new Map<string, { totalCostUsd: number; runCount: number }>();
+  for (const row of Array.from(result) as Record<string, unknown>[]) {
+    const bucketYear = Number(row.bucket_year);
+    const bucketMonth = Number(row.bucket_month);
+    const key = `${bucketYear}-${String(bucketMonth).padStart(2, "0")}`;
+    byKey.set(key, {
+      totalCostUsd: Number(row.total_cost_usd ?? 0),
+      runCount: Number(row.run_count ?? 0),
+    });
+  }
+
+  return months.map(({ key }) => ({
+    monthKey: key,
+    totalCostUsd: byKey.get(key)?.totalCostUsd ?? 0,
+    runCount: byKey.get(key)?.runCount ?? 0,
+  }));
+}

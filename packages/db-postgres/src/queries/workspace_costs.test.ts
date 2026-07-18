@@ -13,7 +13,12 @@ vi.mock("../db.js", () => ({
 
 import { db } from "../db.js";
 import { runs } from "../schema/runs.js";
-import { listWorkspaceRunCosts, DEFAULT_RUN_COST_LIST_LIMIT } from "./workspace_costs.js";
+import {
+  listWorkspaceRunCosts,
+  DEFAULT_RUN_COST_LIST_LIMIT,
+  workspaceMonthlyCostRollup,
+  DEFAULT_MONTHLY_ROLLUP_MONTHS,
+} from "./workspace_costs.js";
 
 const mockDb = vi.mocked(db);
 
@@ -188,5 +193,104 @@ describe("listWorkspaceRunCosts", () => {
     );
 
     expect(result).toEqual([]);
+  });
+});
+
+describe("workspaceMonthlyCostRollup", () => {
+  // Fixed "now" so UTC month math is deterministic across the whole suite.
+  const NOW = new Date("2026-07-15T12:00:00.000Z");
+
+  it("pins the rendered SQL: workspace scope, half-open window over the full span, UTC year/month EXTRACT+cast bucketing reused in SELECT/GROUP BY/ORDER BY, NULL-safe SUM, ::int-cast COUNT", async () => {
+    mockDb.execute = vi.fn(() => Promise.resolve([]));
+
+    await workspaceMonthlyCostRollup("ws-1", 2, NOW);
+
+    const executedArg = (mockDb.execute as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+
+    const yearExpr = sql`EXTRACT(YEAR FROM ${runs.createdAt} AT TIME ZONE 'UTC')::int`;
+    const monthExpr = sql`EXTRACT(MONTH FROM ${runs.createdAt} AT TIME ZONE 'UTC')::int`;
+    const expected = sql`
+    SELECT
+      ${yearExpr} AS bucket_year,
+      ${monthExpr} AS bucket_month,
+      COALESCE(SUM(${runs.costUsd}), 0) AS total_cost_usd,
+      COUNT(*)::int AS run_count
+    FROM ${runs}
+    WHERE ${runs.workspaceId} = ${"ws-1"}
+      AND ${runs.createdAt} >= ${new Date("2026-06-01T00:00:00.000Z")}
+      AND ${runs.createdAt} < ${new Date("2026-08-01T00:00:00.000Z")}
+    GROUP BY ${yearExpr}, ${monthExpr}
+    ORDER BY ${yearExpr} ASC, ${monthExpr} ASC
+  `;
+
+    expect(renderCondition(executedArg)).toEqual(renderCondition(expected));
+  });
+
+  it("zero-fills months with no runs, oldest-first, ending at the current partial month", async () => {
+    mockDb.execute = vi.fn(() =>
+      Promise.resolve([{ bucket_year: 2026, bucket_month: 7, total_cost_usd: 4.25, run_count: 2 }])
+    );
+
+    const result = await workspaceMonthlyCostRollup("ws-1", 3, NOW);
+
+    expect(result).toEqual([
+      { monthKey: "2026-05", totalCostUsd: 0, runCount: 0 },
+      { monthKey: "2026-06", totalCostUsd: 0, runCount: 0 },
+      { monthKey: "2026-07", totalCostUsd: 4.25, runCount: 2 },
+    ]);
+  });
+
+  it("coerces string-shaped aggregate values (postgres.js returns bigint/numeric as strings by default) to genuine JS numbers", async () => {
+    // Simulates what a regression dropping the ::int cast (or a bare
+    // date_trunc grouping key) would actually hand back from the driver.
+    mockDb.execute = vi.fn(() =>
+      Promise.resolve([{ bucket_year: "2026", bucket_month: "7", total_cost_usd: "12.50", run_count: "3" }])
+    );
+
+    const result = await workspaceMonthlyCostRollup("ws-1", 1, NOW);
+
+    expect(result).toEqual([{ monthKey: "2026-07", totalCostUsd: 12.5, runCount: 3 }]);
+    expect(typeof result[0]!.totalCostUsd).toBe("number");
+    expect(typeof result[0]!.runCount).toBe("number");
+  });
+
+  it("sums to 0 (never null) for a month whose rows are all legacy NULL cost_usd", async () => {
+    mockDb.execute = vi.fn(() =>
+      Promise.resolve([{ bucket_year: 2026, bucket_month: 7, total_cost_usd: null, run_count: 1 }])
+    );
+
+    const result = await workspaceMonthlyCostRollup("ws-1", 1, NOW);
+
+    expect(result).toEqual([{ monthKey: "2026-07", totalCostUsd: 0, runCount: 1 }]);
+  });
+
+  it("defaults to DEFAULT_MONTHLY_ROLLUP_MONTHS when monthsBack is omitted", async () => {
+    mockDb.execute = vi.fn(() => Promise.resolve([]));
+
+    const result = await workspaceMonthlyCostRollup("ws-1", undefined, NOW);
+
+    expect(result).toHaveLength(DEFAULT_MONTHLY_ROLLUP_MONTHS);
+    expect(result[result.length - 1]!.monthKey).toBe("2026-07");
+  });
+
+  it("clamps a zero/negative monthsBack to at least the current month", async () => {
+    mockDb.execute = vi.fn(() => Promise.resolve([]));
+
+    const result = await workspaceMonthlyCostRollup("ws-1", 0, NOW);
+
+    expect(result).toEqual([{ monthKey: "2026-07", totalCostUsd: 0, runCount: 0 }]);
+  });
+
+  it("steps back across a UTC year boundary correctly", async () => {
+    mockDb.execute = vi.fn(() => Promise.resolve([]));
+
+    const result = await workspaceMonthlyCostRollup(
+      "ws-1",
+      3,
+      new Date("2026-01-15T00:00:00.000Z")
+    );
+
+    expect(result.map((r) => r.monthKey)).toEqual(["2025-11", "2025-12", "2026-01"]);
   });
 });

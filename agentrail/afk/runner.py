@@ -129,6 +129,57 @@ def _read_run_cost(worktree: Path) -> float:
     return total
 
 
+def _run_json_path(worktree: Path, sid: Optional[str], issue: int) -> Optional[Path]:
+    """Locate this issue's ``run.json`` inside ``worktree``, or ``None``.
+
+    With a ``session_id`` the id is deterministic (``run_uuid(sid, issue)``,
+    same helper ``_register_run``/``_fail`` already use) so the path is exact.
+    Without one (``sid`` falsy — no journal attached), ``agentrail run issue``
+    auto-generates its own timestamp+pid run id that AFK cannot predict, so we
+    glob ``.agentrail/runs/*`` instead: a fresh worktree's runs dir holds
+    exactly one entry per ``_implement`` call, so a single match is trusted; a
+    stale/absent/ambiguous runs dir returns ``None`` rather than guessing.
+    """
+    runs_dir = worktree / ".agentrail" / "runs"
+    if sid:
+        from agentrail.afk.run_register import run_uuid
+        return runs_dir / run_uuid(sid, issue) / "run.json"
+    if not runs_dir.is_dir():
+        return None
+    candidates = sorted(runs_dir.glob("*/run.json"))
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _budget_stop_reason(worktree: Path, sid: Optional[str], issue: int) -> Optional[str]:
+    """Best-effort read of this issue's pipeline-composed budget-stop label.
+
+    ``run.json``'s ``blockedReason`` key (written by
+    ``agentrail.run.artifacts.update_run_metadata_attempts`` at finalize) is
+    the EXACT source-aware check-in string ``pipeline.py`` already composed —
+    "budget exceeded after <phase> phase: $X spent of $Y budget" plus the
+    resume-guidance suffix when the ceiling came from the estimate-absent
+    product default rather than an operator's flag/config choice (#1269
+    follow-up / #1274 / #1275). Reading it here (instead of re-deriving or
+    pasting a copy of that string) is the ONE shared source of truth between
+    the pipeline's own stop message and AFK's failure label, so the two can
+    never drift out of sync.
+
+    ``None`` when the run never hit the budget leash (key absent), or the
+    artifact can't be located/read/parsed — the caller falls back to its own
+    generic failure reason.
+    """
+    path = _run_json_path(worktree, sid, issue)
+    if path is None:
+        return None
+    try:
+        from agentrail.shared.json import read_json
+        data = read_json(path)
+    except Exception:  # noqa: BLE001 — best-effort, never raises
+        return None
+    reason = data.get("blockedReason")
+    return reason if isinstance(reason, str) and reason else None
+
+
 class Runner:
     def __init__(self, target: Path, *, engine: str, base: str,
                  concurrency: int, afk_label: str, queue_labels: List[str],
@@ -513,7 +564,18 @@ class Runner:
             self.store.dispatch(SetStatus(issue, IssueStatus.RUNNING))
             ok = await self._implement(slot, issue)
             if not ok:
-                self._fail(issue, "implementation failed")
+                # Budget check-in labeling (#1269 follow-up): a plain
+                # "implementation failed" is right for a genuine test/
+                # implementation break, but wrong for a run the pipeline
+                # itself stopped on the budget leash — that's a resumable
+                # check-in, not an abandoned attempt. When run.json carries
+                # the pipeline's own budget-stop label, use it verbatim
+                # instead of the generic reason (regression-pin: no marker ->
+                # byte-identical "implementation failed").
+                budget_reason = _budget_stop_reason(
+                    self._worktree(slot, issue), getattr(self, "session_id", None), issue,
+                )
+                self._fail(issue, budget_reason or "implementation failed")
                 return
 
             pr = gh.detect_pr_for_issue(issue)

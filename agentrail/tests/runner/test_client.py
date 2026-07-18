@@ -531,6 +531,18 @@ def test_from_dict_honors_onboard_kind():
     assert item.kind == "onboard"
 
 
+def test_from_dict_onboard_kind_tolerates_absent_estimate_and_override_fields():
+    """#1275: onboard-kind entries never get an alignment brief (no user-
+    authored goal/AC to price) — queue_entries.estimated_budget_usd/
+    model_override stay NULL forever for these rows BY DESIGN, nothing
+    special required. Pin that an onboard WorkItem parses cleanly with both
+    fields entirely absent from the payload, same as an issue-kind one."""
+    item = WorkItem.from_dict(_claim_payload(kind="onboard"))
+    assert item.kind == "onboard"
+    assert item.estimated_budget_usd is None
+    assert item.model_override is None
+
+
 def test_from_dict_coerces_null_kind_to_issue():
     # A null kind falls back to "issue" via the `or "issue"` guard, so a
     # malformed payload never dispatches into an empty/None kind.

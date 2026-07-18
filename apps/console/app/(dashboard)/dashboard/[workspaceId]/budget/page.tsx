@@ -1,12 +1,18 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
+  DEFAULT_RUN_COST_LIST_LIMIT,
   getWorkspaceCostOverview,
   listWorkspaceRunCosts,
   workspaceMonthlyCostRollup,
 } from "@agentrail/db-postgres";
 import { getMembership, getSession } from "../../../../../lib/cached";
 import { PageHeader } from "../../../../components/page-header";
-import { currentUtcMonthWindow } from "./budget-helpers";
+import {
+  currentUtcMonthWindow,
+  isRunListTruncated,
+  truncatedRunListNote,
+} from "./budget-helpers";
 import { OverviewStrip } from "./components/overview-strip";
 import { TaskCostTable } from "./components/task-cost-table";
 import { MonthlyRollupTable } from "./components/monthly-rollup-table";
@@ -38,9 +44,12 @@ export default async function BudgetPage({
 
   const { startIso, endIso } = currentUtcMonthWindow();
 
+  // Limit passed explicitly so the truncation check below and the query can
+  // never drift onto different numbers.
+  const runListLimit = DEFAULT_RUN_COST_LIST_LIMIT;
   const [overview, tasks, monthly] = await Promise.all([
     getWorkspaceCostOverview(workspaceId),
-    listWorkspaceRunCosts(workspaceId, startIso, endIso),
+    listWorkspaceRunCosts(workspaceId, startIso, endIso, runListLimit),
     workspaceMonthlyCostRollup(workspaceId),
   ]);
 
@@ -64,6 +73,11 @@ export default async function BudgetPage({
             This month&apos;s runs
           </h2>
           <TaskCostTable rows={tasks} />
+          {isRunListTruncated(tasks.length, runListLimit) && (
+            <p className="text-xs text-[var(--gray-09)]">
+              {truncatedRunListNote(runListLimit)}
+            </p>
+          )}
         </section>
 
         <section className="flex flex-col gap-2">
@@ -73,10 +87,22 @@ export default async function BudgetPage({
           <MonthlyRollupTable rows={monthly} />
         </section>
 
-        <p className="text-xs text-[var(--gray-09)]">
-          Costs are recorded when a run completes — spend from work still in progress isn&apos;t
-          reflected here yet.
-        </p>
+        <div className="flex flex-col gap-1">
+          <p className="text-xs text-[var(--gray-09)]">
+            Costs are recorded when a run completes — spend from work still in progress isn&apos;t
+            reflected here yet.
+          </p>
+          <p className="text-xs text-[var(--gray-09)]">
+            See also:{" "}
+            <Link
+              href={`/dashboard/${workspaceId}/costs`}
+              className="text-[var(--blue-11)] hover:underline"
+            >
+              Costs
+            </Link>{" "}
+            — per-issue and per-model token breakdowns.
+          </p>
+        </div>
       </div>
     </div>
   );

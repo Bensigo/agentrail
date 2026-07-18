@@ -7,6 +7,10 @@ import {
 } from "@agentrail/db-postgres";
 import { decideConnectIdentityBind } from "../../../../lib/connect-bind-decision";
 import { sendConnectBindConfirmation } from "../../../../lib/connect-bind-confirmation";
+import {
+  completeConnectOwnerElect,
+  buildOwnerElectCompletionLine,
+} from "../../../../lib/connect-owner-elect-completion";
 
 interface Props {
   params: Promise<{ token: string }>;
@@ -133,6 +137,24 @@ export default async function ConnectPage({ params }: Props) {
     await bindChatIdentityWorkspace(identity.id, decision.workspaceDecision.workspace.id);
   }
 
+  // Owner-elect completion (issue #1264 PR ②): `identity.workspaceId` here is
+  // the value captured ABOVE, from `consumeChatIdentityLinkToken`'s return —
+  // BEFORE any of this request's own mutations. Non-null means the identity
+  // already carried a workspace (most commonly one Jace's `create_workspace`
+  // tool created ownerless, issue #1264 PR ①). This is deliberately NOT
+  // `decision.workspaceDecision`'s workspace id (the #1263 auto-bind-to-an-
+  // existing-membership path just above): that action only ever fires when
+  // `identity.workspaceId` was null to begin with, so the two never overlap
+  // in one request. Safe to call unconditionally — see
+  // connect-owner-elect-completion.ts's doc-comment for why an already-owned
+  // workspace makes this a harmless no-op. Awaited (not fire-and-forget, per
+  // the confirmation send below): the success screen needs to know
+  // completed/name before it renders, but this itself never throws.
+  const ownerElectCompletion = await completeConnectOwnerElect({
+    workspaceId: identity.workspaceId,
+    userId: session.user.id,
+  });
+
   const user = session.user as typeof session.user & {
     email?: string;
     name?: string;
@@ -150,7 +172,10 @@ export default async function ConnectPage({ params }: Props) {
     chatIdentityId: identity.id,
     decision,
     accountLabel,
+    ownerElectCompletion,
   }).catch(() => {});
+
+  const ownerElectCompletionLine = buildOwnerElectCompletionLine(ownerElectCompletion);
 
   return (
     <main
@@ -174,6 +199,9 @@ export default async function ConnectPage({ params }: Props) {
           : ""}
         . Jace will confirm in the chat.
       </p>
+      {ownerElectCompletionLine ? (
+        <p style={{ color: "#666", maxWidth: "40ch" }}>{ownerElectCompletionLine}</p>
+      ) : null}
     </main>
   );
 }

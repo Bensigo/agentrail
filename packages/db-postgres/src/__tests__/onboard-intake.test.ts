@@ -35,7 +35,10 @@ vi.mock("../db.js", () => ({
   },
 }));
 
-import { enqueueOnboard } from "../queries/github_intake.js";
+import {
+  enqueueOnboard,
+  ONBOARD_EXTERNAL_ID_PREFIX,
+} from "../queries/github_intake.js";
 
 // ---------------------------------------------------------------------------
 // Independent oracle for the deterministic row id. `entryId` / `uuid5Url` are
@@ -58,9 +61,11 @@ function uuid5Url(name: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
 
-/** entryId(workspaceId, "github", `onboard:${repoFullName}`) re-derived. */
+/** entryId(workspaceId, "github", `${ONBOARD_EXTERNAL_ID_PREFIX}${repoFullName}`) re-derived. */
 function expectedOnboardId(workspaceId: string, repoFullName: string): string {
-  return uuid5Url(`agentrail-queue:${workspaceId}:github:onboard:${repoFullName}`);
+  return uuid5Url(
+    `agentrail-queue:${workspaceId}:github:${ONBOARD_EXTERNAL_ID_PREFIX}${repoFullName}`
+  );
 }
 
 describe("enqueueOnboard — one-shot onboard admission (kind='onboard')", () => {
@@ -89,7 +94,7 @@ describe("enqueueOnboard — one-shot onboard admission (kind='onboard')", () =>
     expect(mockState.capturedValues).toMatchObject({
       kind: "onboard",
       source: "github",
-      externalId: "onboard:acme/widgets",
+      externalId: `${ONBOARD_EXTERNAL_ID_PREFIX}acme/widgets`,
       title: "Onboard acme/widgets",
       state: "queued",
       tier: 0,

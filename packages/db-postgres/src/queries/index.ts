@@ -1815,11 +1815,15 @@ export {
 
 // GitHub issue intake — the webhook half of the queue: the AC gate + workspace
 // resolution + idempotent enqueue (deterministic id matches the Python store).
+// ONBOARD_EXTERNAL_ID_PREFIX (#1268 PR②) is the onboard rows' external-id
+// marker, single-sourced next to its writer so every reader (deriveRepoSlug,
+// the console's onboardRepoFullName) imports the same string.
 export {
   validateAcceptanceCriteria,
   findWorkspaceByRepo,
   enqueueGithubIssue,
   enqueueOnboard,
+  ONBOARD_EXTERNAL_ID_PREFIX,
   type AcGateResult,
   type EnqueueResult,
 } from "./github_intake.js";

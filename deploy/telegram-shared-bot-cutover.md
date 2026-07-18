@@ -12,24 +12,38 @@ The workspace's old `connectors` row for `telegram` (the per-workspace bot
 token stored by the setup wizard / Connectors page) is never read, written,
 or deleted by any of this — it stays in Postgres untouched.
 
-## 0. Before you cut over: Telegram approval buttons
+## 0. Telegram approval buttons — this gate is now CLOSED (issue #1273)
 
-The console's webhook accepts `message`/`edited_message` only — every other
-update kind, including `callback_query` (inline-keyboard button taps), fails
-the shape check and returns `{ ok: true, ignored: true }`
-(`apps/console/app/api/v1/connectors/telegram/webhook/route.ts`). Telegram
-delivers ALL update types to whichever one URL `setWebhook` currently points
-at, so repointing it (step 2) doesn't filter anything on Telegram's side —
-it just means those taps now land on a route that silently drops them: no
-error, no retry, the tap does nothing.
+Previously: the console's webhook accepted `message`/`edited_message` only —
+every other update kind, including `callback_query` (inline-keyboard button
+taps), failed the shape check and returned `{ ok: true, ignored: true }`.
+Telegram delivers ALL update types to whichever one URL `setWebhook` currently
+points at, so repointing it (step 2) didn't filter anything on Telegram's
+side — button taps just landed on a route that silently dropped them: no
+error, no retry, the tap did nothing. That made this cutover unsafe for any
+workspace depending on Telegram-button approvals.
 
-This matters for Eve's HITL approvals (e.g. the `create_issue` approve/deny
-buttons), which arrive as `callback_query`.
+Issue #1273 closes this. The webhook
+(`apps/console/app/api/v1/connectors/telegram/webhook/route.ts`) now handles
+`callback_query` explicitly, branching on `data`:
 
-**Gate:** don't cut over a workspace that depends on Telegram-button
-approvals until #1273 (Telegram approve/deny callbacks through the console
-seam) lands — or be prepared to approve via a fallback in the interim.
-Rollback (step 4) restores buttons immediately.
+- `ar:`-prefixed data is the console-gated approval seam's OWN button
+  (`create_issue`/`create_workspace`/`create_repo`'s approval function,
+  #1273 PR ②): looked up by its opaque callback token, sender-checked against
+  the approval's own chat identity, atomically flipped, answered, and the
+  message edited in place to show the outcome.
+- ANY other `callback_query` — including Eve's own stock `eve:`-prefixed HITL
+  buttons — is forwarded VERBATIM to the sidecar's real `/eve/v1/telegram`
+  channel, with the same `x-telegram-bot-api-secret-token` header Telegram
+  sent. This is what keeps Eve-native approval buttons working through the
+  cutover even for gated tools PR ② hasn't (yet, or ever) been swapped to the
+  console seam: nothing about this forwarding depends on PR ② having landed.
+
+**No gate remains.** A workspace depending on Telegram-button approvals can
+cut over safely: the three gated tools' buttons work either via the new ar:
+seam (once #1273 PR ② swaps their approval function) or, until/unless that
+swap happens for a given tool, via the forwarding bridge above — either way,
+a tap is never silently dropped. Rollback (step 4) is unaffected either way.
 
 ## 1. Set the console's shared-bot env vars
 

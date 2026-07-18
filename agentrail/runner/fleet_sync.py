@@ -6,9 +6,10 @@ device flow, :mod:`agentrail.runner.login`, mints a SINGLE-workspace token for
 whichever workspace a signed-in user picks). Instead the fleet calls this
 route on its own schedule — at boot and every
 ``FLEET_SYNC_INTERVAL_SECONDS`` — with a single shared secret
-(``FLEET_CONSOLE_TOKEN``), and reads off ``{minted, active, revoked}`` to keep
-its on-disk multi-workspace store (:mod:`agentrail.runner.fleet_credentials`)
-in sync with the console's ``hosted_execution`` flag per workspace.
+(``FLEET_CONSOLE_TOKEN``), and reads off ``{minted, active, revoked, failed}``
+to keep its on-disk multi-workspace store
+(:mod:`agentrail.runner.fleet_credentials`) in sync with the console's
+``hosted_execution`` flag per workspace.
 
 Reuses the SAME ``Response``/``Transport`` shape
 :mod:`agentrail.runner.client` established (an injectable HTTP seam, real
@@ -31,6 +32,7 @@ from agentrail.runner.fleet_credentials import (
     save_fleet_store,
 )
 
+
 class FleetSyncError(Exception):
     """The sync call itself failed — network error, or a non-2xx status.
 
@@ -46,12 +48,27 @@ class FleetSyncError(Exception):
 
 
 @dataclass(frozen=True)
+class FleetFailedWorkspace:
+    """One workspace whose sync-side unit of work (mint/revoke) failed.
+
+    ``reason`` is the route's closed union — ``'mint_failed' |
+    'revoke_failed'`` — terse by design (never a token, never raw error
+    text; the route's own doc-comment guarantees this), so it is safe to
+    print verbatim in the warning below.
+    """
+
+    workspace_id: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class FleetSyncResult:
-    """The parsed ``{minted, active, revoked}`` response body."""
+    """The parsed ``{minted, active, revoked, failed}`` response body."""
 
     minted: List[FleetWorkspaceToken] = field(default_factory=list)
     active: List[str] = field(default_factory=list)
     revoked: List[str] = field(default_factory=list)
+    failed: List[FleetFailedWorkspace] = field(default_factory=list)
 
 
 def sync_fleet_tokens(
@@ -94,7 +111,15 @@ def sync_fleet_tokens(
     ]
     active = [str(w) for w in (data.get("active") or [])]
     revoked = [str(w) for w in (data.get("revoked") or [])]
-    return FleetSyncResult(minted=minted, active=active, revoked=revoked)
+    failed = [
+        FleetFailedWorkspace(
+            workspace_id=str(f.get("workspaceId") or ""),
+            reason=str(f.get("reason") or "unknown"),
+        )
+        for f in (data.get("failed") or [])
+        if isinstance(f, dict)
+    ]
+    return FleetSyncResult(minted=minted, active=active, revoked=revoked, failed=failed)
 
 
 def apply_sync(
@@ -162,5 +187,27 @@ def run_sync_cycle(
             "revoke the orphaned key for each of these workspaces in the "
             "console — the next sync will mint a fresh one this instance "
             "receives."
+        )
+    if result.failed:
+        # Per-row failure isolation on the route side (its review-fix round):
+        # a mint/revoke that failed for ONE workspace lands here instead of
+        # discarding the whole response. Nothing to do locally — a
+        # mint_failed workspace handed us no token, and a revoke_failed
+        # workspace's key is still active server-side (so keeping our stored
+        # token is correct until the revoke actually lands). The route
+        # re-derives state fresh every sync, so the failed unit of work is
+        # automatically retried on our next cycle; this warning exists so a
+        # PERSISTENTLY failing workspace is visible to the operator rather
+        # than silently retried forever. Reasons are the route's closed
+        # union ('mint_failed' | 'revoke_failed') — never a token, never raw
+        # error text — so printing them verbatim is safe.
+        details = ", ".join(
+            f"{f.workspace_id} ({f.reason})"
+            for f in sorted(result.failed, key=lambda f: f.workspace_id)
+        )
+        warn(
+            f"fleet: sync reported per-workspace failures: {details}. These "
+            "will be retried automatically on the next sync cycle; if the "
+            "same workspace keeps failing, check the console service's logs."
         )
     return new_store

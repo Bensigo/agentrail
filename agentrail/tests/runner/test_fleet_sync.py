@@ -20,6 +20,7 @@ from agentrail.runner.fleet_credentials import (
     load_fleet_store,
 )
 from agentrail.runner.fleet_sync import (
+    FleetFailedWorkspace,
     FleetSyncError,
     FleetSyncResult,
     apply_sync,
@@ -121,11 +122,56 @@ def test_sync_error_message_never_contains_the_console_token():
 
 
 def test_sync_defaults_missing_optional_fields_to_empty_lists():
+    # Also covers a pre-failed-bucket server (older console) — `failed` absent
+    # must parse as [], never crash.
     transport = FakeTransport([Response(status=200, body=b"{}")])
     result = sync_fleet_tokens(
         base_url="https://app.agentrail.dev", console_token="t", transport=transport
     )
-    assert result == FleetSyncResult(minted=[], active=[], revoked=[])
+    assert result == FleetSyncResult(minted=[], active=[], revoked=[], failed=[])
+
+
+def test_sync_parses_failed_bucket():
+    # The route's review-fix round added per-row failure isolation: a mint or
+    # revoke that failed for ONE workspace lands in `failed` with a terse
+    # closed-union reason instead of discarding the whole response.
+    transport = FakeTransport(
+        [
+            Response(
+                status=200,
+                body=(
+                    b'{"minted":[],"active":[],"revoked":[],'
+                    b'"failed":[{"workspaceId":"ws1","reason":"mint_failed"},'
+                    b'{"workspaceId":"ws2","reason":"revoke_failed"}]}'
+                ),
+            )
+        ]
+    )
+    result = sync_fleet_tokens(
+        base_url="https://app.agentrail.dev", console_token="t", transport=transport
+    )
+    assert result.failed == [
+        FleetFailedWorkspace(workspace_id="ws1", reason="mint_failed"),
+        FleetFailedWorkspace(workspace_id="ws2", reason="revoke_failed"),
+    ]
+
+
+def test_sync_failed_bucket_skips_malformed_entries():
+    transport = FakeTransport(
+        [
+            Response(
+                status=200,
+                body=(
+                    b'{"failed":["not-a-dict",'
+                    b'{"workspaceId":"ws1","reason":"mint_failed"}]}'
+                ),
+            )
+        ]
+    )
+    result = sync_fleet_tokens(
+        base_url="https://app.agentrail.dev", console_token="t", transport=transport
+    )
+    assert result.failed == [FleetFailedWorkspace(workspace_id="ws1", reason="mint_failed")]
 
 
 # --- apply_sync: pure merge logic -------------------------------------------
@@ -260,6 +306,65 @@ def test_run_sync_cycle_drift_warning_never_contains_a_token(tmp_path: Path):
         warn=warnings.append,
     )
     assert "super-secret-console-token" not in warnings[0]
+
+
+def test_run_sync_cycle_warns_on_failed_bucket_naming_workspaces_and_reasons(tmp_path: Path):
+    transport = FakeTransport(
+        [
+            Response(
+                status=200,
+                body=(
+                    b'{"minted":[],"active":[],"revoked":[],'
+                    b'"failed":[{"workspaceId":"ws-broken","reason":"mint_failed"}]}'
+                ),
+            )
+        ]
+    )
+    warnings: List[str] = []
+    run_sync_cycle(
+        base_url="https://app.agentrail.dev",
+        console_token="fleet-secret",
+        home=tmp_path,
+        transport=transport,
+        warn=warnings.append,
+    )
+    assert len(warnings) == 1
+    assert "ws-broken" in warnings[0]
+    assert "mint_failed" in warnings[0]
+    # And it must say retry happens automatically (route contract: the fleet
+    # "warns on a non-empty `failed` and simply retries ... on its next sync").
+    assert "next sync" in warnings[0]
+
+
+def test_run_sync_cycle_failed_bucket_does_not_touch_the_store(tmp_path: Path):
+    # A revoke_failed workspace's key is still active server-side, so keeping
+    # our stored token is CORRECT until the revoke actually lands; a
+    # mint_failed workspace never handed us a token. Either way: no store change.
+    from agentrail.runner.fleet_credentials import save_fleet_store
+
+    original = {"ws1": FleetWorkspaceToken(workspace_id="ws1", slug="acme", token="rt_1")}
+    save_fleet_store(original, home=tmp_path)
+    transport = FakeTransport(
+        [
+            Response(
+                status=200,
+                body=(
+                    b'{"minted":[],"active":["ws1"],"revoked":[],'
+                    b'"failed":[{"workspaceId":"ws1","reason":"revoke_failed"},'
+                    b'{"workspaceId":"ws2","reason":"mint_failed"}]}'
+                ),
+            )
+        ]
+    )
+    result = run_sync_cycle(
+        base_url="https://app.agentrail.dev",
+        console_token="fleet-secret",
+        home=tmp_path,
+        transport=transport,
+        warn=lambda _msg: None,
+    )
+    assert result == original
+    assert load_fleet_store(home=tmp_path) == original
 
 
 def test_run_sync_cycle_no_drift_warning_when_everything_reconciles(tmp_path: Path):

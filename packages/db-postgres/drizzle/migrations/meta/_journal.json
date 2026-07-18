@@ -260,6 +260,13 @@
       "when": 1784414294432,
       "tag": "0035_queue_entries_estimate_threading",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1784418616208,
+      "tag": "0036_alignment_gate",
+      "breakpoints": true
     }
   ]
 }

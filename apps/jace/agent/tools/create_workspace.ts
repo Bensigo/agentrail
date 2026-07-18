@@ -8,14 +8,16 @@
 // @agentrail/db-postgres for what that means and who completes it, issue
 // #1264 PR ②).
 //
-// `approval: always()` — the SAME gate class as create_issue, not
-// send_connect_link's narrower ungated exception: unlike send_connect_link
+// Human-gated via consoleGatedApproval — the SAME gate class as create_issue,
+// not send_connect_link's narrower ungated exception: unlike send_connect_link
 // (which only ever overwrites this same conversation's own link-token slot),
 // this tool creates real, durable product state — a workspace that shows up
 // on the console and that other tools (create_issue) can act against. See
 // apps/jace/test/no-second-write-path.test.mjs for the enumerated set of
-// gated tools this invariant is checked against; every invocation pauses for
-// a human approve/reject before it runs.
+// gated tools this invariant is checked against; every invocation records an
+// approval request with the console, which renders the input in-chat with an
+// Approve/Deny keyboard, and this only runs once that request comes back
+// approved.
 //
 // The model supplies only `name` — the human approves the EXACT name before
 // this runs. Everything else this resolves to (which conversation, which
@@ -28,7 +30,7 @@
 
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { always } from "eve/tools/approval";
+import { consoleGatedApproval } from "../lib/console_gated_approval.core.mjs";
 import { runCreateWorkspace } from "../lib/create_workspace.core.mjs";
 
 // Stdlib `fetch` with a timeout — mirrors send_connect_link.ts's own
@@ -68,7 +70,7 @@ export default defineTool({
     "explanation or retrying silently.",
   // Always require a human approve/reject before this tool executes — same
   // gate class as create_issue (see the file-level comment above).
-  approval: always(),
+  approval: (ctx) => consoleGatedApproval(ctx),
   inputSchema: z.object({
     name: z
       .string()

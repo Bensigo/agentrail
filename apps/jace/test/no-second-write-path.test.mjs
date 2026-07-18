@@ -8,17 +8,20 @@
 // mutating tool is gated, and every ungated tool is self-scoped.
 //
 //   - Every GATED/mutating tool — authored with `defineTool` and
-//     `approval: always()`, so every invocation pauses for a human before it
-//     runs — must be in the enumerated `EXPECTED_MUTATING_TOOLS` set below.
-//     Today that set is `create_issue` (Jace's only path into the factory:
-//     GitHub issues, workspaces, builds), `create_workspace` (creates a real
-//     workspace, own product state), and `create_repo` (creates a real
-//     GitHub repository under the user's own account and connects it to the
-//     workspace) — all three are the same gate class, see each tool's own
-//     file doc-comment. The set is enumerated, not open-ended: adding a
-//     FOURTH gated tool requires deliberately editing
-//     EXPECTED_MUTATING_TOOLS below — that edit IS the human review this
-//     test exists to force, same as EXPECTED_TOOL_FILES below it.
+//     `approval: (ctx) => consoleGatedApproval(ctx)` (issue #1273 PR ②;
+//     before that, `approval: always()` — Eve's stock HITL gate is now
+//     fully retired for these three), so every invocation pauses for a
+//     human before it runs — must be in the enumerated
+//     `EXPECTED_MUTATING_TOOLS` set below. Today that set is `create_issue`
+//     (Jace's only path into the factory: GitHub issues, workspaces,
+//     builds), `create_workspace` (creates a real workspace, own product
+//     state), and `create_repo` (creates a real GitHub repository under the
+//     user's own account and connects it to the workspace) — all three are
+//     the same gate class, see each tool's own file doc-comment. The set is
+//     enumerated, not open-ended: adding a FOURTH gated tool requires
+//     deliberately editing EXPECTED_MUTATING_TOOLS below — that edit IS the
+//     human review this test exists to force, same as EXPECTED_TOOL_FILES
+//     below it.
 //   - Any OTHER tool is allowed to write something only if it is
 //     UNGATED-but-self-scoped: every target of its write must be derived
 //     from the tool's OWN session context (e.g. `ctx.session.id`), never
@@ -42,8 +45,11 @@
 //      Adding/removing a tool file requires updating EXPECTED_TOOL_FILES
 //      below — that edit IS the human review this test exists to force.
 //   2. Of those, EXACTLY the tools in EXPECTED_MUTATING_TOOLS are GATED —
-//      authored with `defineTool` and `approval: always()`. Every other tool
-//      sets no `approval` field.
+//      authored with `defineTool` and `approval: (ctx) => consoleGatedApproval(ctx)`.
+//      Every other tool sets no `approval` field. A separate negative check
+//      below proves Eve's stock `always()` gate is fully retired: it must
+//      not appear in ANY tool file, gated or not — the console seam is the
+//      only gate mechanism a tool may wire.
 //   3. `node:child_process` is imported ONLY by the expected, reviewed sites:
 //      the gated `create_issue` tool, and the read-only `codebase_query` tool
 //      (which shells out via `execFile` — never a shell string — to the
@@ -68,7 +74,18 @@ const subagentsDir = fileURLToPath(new URL("../agent/subagents", import.meta.url
 const SOURCE_RE = /\.(ts|mjs|js)$/;
 const CHILD_PROCESS_IMPORT_RE =
   /(?:from\s+["']node:child_process["'])|(?:from\s+["']child_process["'])|(?:require\(\s*["']node:?child_process["']\s*\))/;
-const APPROVAL_ALWAYS_RE = /approval:\s*always\(\)/;
+// The gated set's current mechanism (issue #1273 PR ②): a tool is gated by
+// wiring its `approval` field to the shared consoleGatedApproval fn, not by
+// calling Eve's own always()/once() helpers. Whitespace-tolerant but
+// structural — it matches the exact wired shape, not just the presence of
+// the word "approval" somewhere in the file (several of these tool files
+// document, in prose, why they do or don't carry a gate).
+const CONSOLE_GATED_APPROVAL_RE =
+  /approval:\s*\(\s*ctx\s*\)\s*=>\s*consoleGatedApproval\(\s*ctx\s*\)/;
+// Eve's stock always()/once() approval helpers, retired for the gated set by
+// PR ②. A bare `always(` catches both the call itself and (defensively) an
+// import of it; either would mean the stock gate crept back in somewhere.
+const ALWAYS_CALL_RE = /\balways\(/;
 
 // Strip `//` line comments and `/* */` block comments before matching
 // APPROVAL_ALWAYS_RE against real code. Several of these tool files document —
@@ -92,10 +109,11 @@ const EXPECTED_TOOL_FILES = [
   "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process
   "standup.ts",
 ].sort();
-// The enumerated set of gated/mutating tools. Every tool named here must set
-// `approval: always()`; the test below also asserts no OTHER tool does — so
-// this list is a ceiling as well as a floor. Adding a fourth entry is a
-// deliberate human edit, not something a maker should do silently.
+// The enumerated set of gated/mutating tools. Every tool named here must
+// wire `approval: (ctx) => consoleGatedApproval(ctx)`; the test below also
+// asserts no OTHER tool does — so this list is a ceiling as well as a floor.
+// Adding a fourth entry is a deliberate human edit, not something a maker
+// should do silently.
 const EXPECTED_MUTATING_TOOLS = ["create_issue.ts", "create_workspace.ts", "create_repo.ts"].sort();
 const EXPECTED_CHILD_PROCESS_SITES = [
   "agent/tools/codebase_query.ts",
@@ -134,29 +152,44 @@ test("agent/tools exposes exactly the enumerated GATED/mutating tools: create_is
   const files = readdirSync(toolsDir).filter((f) => SOURCE_RE.test(f));
   const mutating = files
     .filter((f) =>
-      APPROVAL_ALWAYS_RE.test(stripComments(readFileSync(`${toolsDir}/${f}`, "utf8"))),
+      CONSOLE_GATED_APPROVAL_RE.test(stripComments(readFileSync(`${toolsDir}/${f}`, "utf8"))),
     )
     .sort();
   assert.deepEqual(
     mutating,
     EXPECTED_MUTATING_TOOLS,
-    `Every mutating tool must be gated (approval: always()), and the gated ` +
-      `set is enumerated, not open-ended: an UNGATED mutating tool, or an ` +
-      `unreviewed EXTRA gated tool, is a policy violation the moment it ` +
-      `diverges from EXPECTED_MUTATING_TOOLS. Found: ${mutating.join(", ") || "(none)"}`,
+    `Every mutating tool must be gated (approval: (ctx) => consoleGatedApproval(ctx)), ` +
+      `and the gated set is enumerated, not open-ended: an UNGATED mutating ` +
+      `tool, or an unreviewed EXTRA gated tool, is a policy violation the ` +
+      `moment it diverges from EXPECTED_MUTATING_TOOLS. Found: ${mutating.join(", ") || "(none)"}`,
   );
 });
 
-test("every enumerated gated tool is human-gated (defineTool + approval: always())", () => {
+test("every enumerated gated tool is human-gated via the console seam (defineTool + approval wired to consoleGatedApproval)", () => {
   for (const file of EXPECTED_MUTATING_TOOLS) {
     const src = stripComments(readFileSync(`${toolsDir}/${file}`, "utf8"));
     assert.match(src, /defineTool\(/, `${file} must be authored with defineTool`);
     assert.match(
       src,
-      APPROVAL_ALWAYS_RE,
-      `${file} must gate every invocation behind approval: always()`,
+      CONSOLE_GATED_APPROVAL_RE,
+      `${file} must gate every invocation behind approval: (ctx) => consoleGatedApproval(ctx)`,
     );
   }
+});
+
+test("Eve's stock always()/once() approval gate is fully retired — no tool file references it (issue #1273 PR ②)", () => {
+  const files = readdirSync(toolsDir).filter((f) => SOURCE_RE.test(f));
+  const stillUsingAlways = files
+    .filter((f) => ALWAYS_CALL_RE.test(stripComments(readFileSync(`${toolsDir}/${f}`, "utf8"))))
+    .sort();
+  assert.deepEqual(
+    stillUsingAlways,
+    [],
+    `Eve's stock approval:always() gate must be fully retired in favor of ` +
+      `consoleGatedApproval for every tool in this directory (issue #1273 ` +
+      `PR ②) — gated or not, no tool file may call always()/once() any ` +
+      `more. Found lingering always() in: ${stillUsingAlways.join(", ") || "(none)"}`,
+  );
 });
 
 test("no subagent authors a mutating tool or a second write path", () => {
@@ -177,6 +210,15 @@ test("no subagent authors a mutating tool or a second write path", () => {
       src,
       APPROVAL_GATE_RE,
       `${rel} — a subagent must not author a human-gated mutating tool (that is a second write path)`,
+    );
+    // Same guarantee, current mechanism (issue #1273 PR ②): a subagent
+    // wiring `consoleGatedApproval` would ALSO be authoring a second
+    // human-gated write path, even though it no longer matches the
+    // always()/once() pattern above.
+    assert.doesNotMatch(
+      src,
+      /consoleGatedApproval/,
+      `${rel} — a subagent must not wire consoleGatedApproval (that is a second write path, same as approval: always()/once())`,
     );
     assert.doesNotMatch(
       src,

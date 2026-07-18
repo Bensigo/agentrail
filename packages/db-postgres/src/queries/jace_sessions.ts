@@ -512,9 +512,23 @@ export interface RecordApprovalRequestInput {
   denyOptionId: string;
 }
 
+export interface RecordApprovalRequestResult {
+  approval: JaceApprovalRow;
+  // true when THIS call inserted the row; false when it found an existing
+  // one via the (eveSessionId, requestId) conflict path below (issue #1273
+  // PR ②'s idempotent-replay caller — POST /api/v1/runner/approvals — uses
+  // this to decide whether to send the channel message a second time (never)
+  // and which HTTP status to answer with (201 vs 200).
+  created: boolean;
+}
+
 /**
  * Record a pending approval for an Eve `waiting` inputRequest and mint the
- * short callback token the channel button carries.
+ * short callback token the channel button carries — or, if a request with
+ * the SAME `(eveSessionId, requestId)` already exists, return that existing
+ * row untouched (issue #1273 PR ②: the caller composes `requestId` from its
+ * own idempotency key, so a retried POST must never create a second row or
+ * mint a second callback token).
  *
  * `callbackToken` is `randomBytes(8).toString("hex")` — 16 hex chars, well
  * under Telegram's 64-byte callback_data limit alongside a prefix, and
@@ -526,10 +540,20 @@ export interface RecordApprovalRequestInput {
  * constraint reject it — but unlike that guard this is NOT strictly
  * either/or; a caller with both on hand (a graduated session whose identity
  * is still known) should pass both.
+ *
+ * Race-safe the same way `getOrCreateJaceSession` is: `onConflictDoNothing`
+ * targets the exact `jace_approvals_request_unique` columns
+ * `(eve_session_id, request_id)`, so two near-simultaneous calls for the same
+ * request (a genuine retry, or two concurrent pollers) can never both insert.
+ * Unlike `getOrCreateJaceSession`, this checks `.returning()` on the insert
+ * ITSELF first — the caller needs to know which one of them actually created
+ * the row, not just get a row back — and only falls back to a plain SELECT
+ * on the same unique pair when the insert lost the race (or this is a pure
+ * replay of an already-recorded request).
  */
 export async function recordApprovalRequest(
   input: RecordApprovalRequestInput
-): Promise<JaceApprovalRow> {
+): Promise<RecordApprovalRequestResult> {
   if (!input.workspaceId && !input.chatIdentityId) {
     throw new Error(
       "recordApprovalRequest: requires either workspaceId or chatIdentityId"
@@ -538,7 +562,7 @@ export async function recordApprovalRequest(
 
   const callbackToken = randomBytes(8).toString("hex");
 
-  const [row] = await db
+  const inserted = await db
     .insert(jaceApprovals)
     .values({
       workspaceId: input.workspaceId,
@@ -552,14 +576,35 @@ export async function recordApprovalRequest(
       approveOptionId: input.approveOptionId,
       denyOptionId: input.denyOptionId,
     })
+    .onConflictDoNothing({
+      target: [jaceApprovals.eveSessionId, jaceApprovals.requestId],
+    })
     .returning();
 
-  if (!row) {
+  if (inserted[0]) {
+    return { approval: inserted[0], created: true };
+  }
+
+  const [existing] = await db
+    .select()
+    .from(jaceApprovals)
+    .where(
+      and(
+        eq(jaceApprovals.eveSessionId, input.eveSessionId),
+        eq(jaceApprovals.requestId, input.requestId)
+      )
+    )
+    .limit(1);
+
+  if (!existing) {
+    // Unreachable in practice: the insert above either created the row or
+    // lost the race to a concurrent insert/replay that did — see
+    // getOrCreateJaceSession's identical rationale.
     throw new Error(
-      `recordApprovalRequest: insert returned no row for session ${input.sessionId} request ${input.requestId}`
+      `recordApprovalRequest: no row found for ${input.eveSessionId}/${input.requestId} after conflict`
     );
   }
-  return row;
+  return { approval: existing, created: false };
 }
 
 /**

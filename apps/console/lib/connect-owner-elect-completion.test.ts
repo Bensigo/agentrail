@@ -65,7 +65,12 @@ describe("completeConnectOwnerElect", () => {
 
   it("completed:true but the workspace lookup returns null (defensive — should be unreachable given FK integrity): completed stays true, name falls back to null", async () => {
     mockComplete.mockResolvedValue({ completed: true });
-    mockGetWorkspace.mockResolvedValue(null);
+    // getWorkspace's inferred return type doesn't admit `null` even though
+    // its real implementation returns `rows[0] ?? null` (a pre-existing gap
+    // in that function's type inference, out of scope here) — `as never`
+    // is this codebase's established workaround (see e.g.
+    // app/api/v1/context/memory-items/route.test.ts).
+    mockGetWorkspace.mockResolvedValue(null as never);
 
     const result = await completeConnectOwnerElect({ workspaceId: "ws-1", userId: "user-1" });
 

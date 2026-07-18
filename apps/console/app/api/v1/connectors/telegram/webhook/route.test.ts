@@ -894,12 +894,13 @@ describe("POST /api/v1/connectors/telegram/webhook — forward path (issue #1273
     expect((init as RequestInit).body).toBe(JSON.stringify(update));
   });
 
-  it("mirrors a non-2xx status from the sidecar", async () => {
+  it("does NOT mirror a non-2xx status from a reachable-but-failing sidecar — 200-with-flag instead, so Telegram never retry-storms a persistently-500ing sidecar", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ error: "sidecar rejected it" }), {
-          status: 400,
+        new Response(JSON.stringify({ error: "sidecar blew up" }), {
+          status: 500,
           headers: { "content-type": "application/json" },
         })
       )
@@ -909,8 +910,14 @@ describe("POST /api/v1/connectors/telegram/webhook — forward path (issue #1273
       req(arCallbackUpdate({ data: "eve:abc123" }), { header: SECRET })
     );
 
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: "sidecar rejected it" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      forwarded: false,
+      sidecarStatus: 500,
+    });
+    expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("500"));
+    consoleErrorSpy.mockRestore();
   });
 
   it("responds 200 { ok: true, forwarded: false } when the sidecar is unreachable — never a retry-storm-inducing non-2xx", async () => {

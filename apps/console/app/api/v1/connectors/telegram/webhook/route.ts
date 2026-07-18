@@ -176,16 +176,21 @@ async function fetchWithTimeout(
  * other kind) to the sidecar's real `/eve/v1/telegram` channel, VERBATIM
  * (the original raw body, the same secret-token header Telegram sent us —
  * already verified by the time this is called). Mirrors the sidecar's
- * response status/content-type back to Telegram.
+ * response status/content-type back to Telegram — but ONLY on a 2xx.
  *
- * Unreachable sidecar -> 200 `{ ok: true, forwarded: false }`, deliberately
- * NOT mirroring a non-2xx/502 the way the generic
+ * Any non-2xx from the sidecar (reached, but rejecting the update — e.g. a
+ * persistently-500ing-but-up sidecar) becomes 200
+ * `{ ok: true, forwarded: false, sidecarStatus }`, logged via console.error
+ * so the failure isn't silent; an unreachable sidecar keeps its own
+ * `{ ok: true, forwarded: false }` (no HTTP status was ever received to
+ * report). Deliberately NOT mirroring a non-2xx/502 the way the generic
  * `connectors/jace/inbound/[workspaceId]/route.ts` forwarder does: THAT route
  * isn't fielding Telegram's own webhook contract, but this one is — Telegram
  * retry-storms a webhook URL that keeps returning non-2xx, and every retry
- * would just hit the same unreachable sidecar again. Acking 200 here accepts
- * "this specific update's Eve-native reply silently doesn't happen" as the
- * degraded outcome, rather than compounding an outage with a retry storm.
+ * would just hit the same broken (or unreachable) sidecar again. Acking 200
+ * here accepts "this specific update's Eve-native reply silently doesn't
+ * happen" as the degraded outcome, rather than compounding an outage with a
+ * retry storm.
  */
 async function forwardCallbackQueryToEve(
   raw: string,
@@ -200,6 +205,18 @@ async function forwardCallbackQueryToEve(
       },
       body: raw,
     });
+
+    if (upstream.status < 200 || upstream.status >= 300) {
+      console.error(
+        `[telegram/webhook] forwardCallbackQueryToEve: sidecar reachable but returned non-2xx status ${upstream.status}; not mirrored to Telegram (would retry-storm)`
+      );
+      return NextResponse.json({
+        ok: true,
+        forwarded: false,
+        sidecarStatus: upstream.status,
+      });
+    }
+
     const payload = await upstream.text();
     return new NextResponse(payload, {
       status: upstream.status,

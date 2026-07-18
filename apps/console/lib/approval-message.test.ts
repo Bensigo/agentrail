@@ -138,6 +138,40 @@ describe("renderApprovalMessage — unknown tool (generic fallback)", () => {
     const text = renderApprovalMessage("some_future_tool", hugeInput);
     expect(text.length).toBeLessThanOrEqual(TELEGRAM_TEXT_LIMIT);
   });
+
+  it("caps the number of rendered keys well before hardTruncate would ever kick in, and notes how many were omitted", () => {
+    const input: Record<string, unknown> = {};
+    for (let i = 0; i < 20; i++) {
+      input[`field_${i}`] = i;
+    }
+
+    const text = renderApprovalMessage("some_future_tool", input);
+
+    for (let i = 0; i < 12; i++) {
+      expect(text).toContain(`field_${i}: ${i}`);
+    }
+    for (let i = 12; i < 20; i++) {
+      expect(text).not.toContain(`field_${i}: ${i}`);
+    }
+    expect(text).toContain("...and 8 more");
+    // Small values well under Telegram's limit — proves the cap is a
+    // distinct mechanism from hardTruncate, not a side effect of it.
+    expect(text.toLowerCase()).not.toContain("truncated");
+  });
+
+  it("does not append a '...and N more' line when the input is at or under the cap", () => {
+    const input: Record<string, unknown> = {};
+    for (let i = 0; i < 12; i++) {
+      input[`field_${i}`] = i;
+    }
+
+    const text = renderApprovalMessage("some_future_tool", input);
+
+    expect(text).not.toContain("more");
+    for (let i = 0; i < 12; i++) {
+      expect(text).toContain(`field_${i}: ${i}`);
+    }
+  });
 });
 
 describe("renderApprovalMessage — defensive against malformed input", () => {

@@ -131,14 +131,30 @@ function renderCreateRepo(input: Record<string, unknown>): string {
   );
 }
 
+/**
+ * Cap on how many `toolInput` keys the generic fallback renders. `hardTruncate`
+ * alone isn't enough protection against a wide/adversarial object (hundreds
+ * of keys): its note only fires once the FULL composed text is already over
+ * Telegram's limit, so a moderately-sized wall of short fields could still
+ * bury the actually useful bit (toolName, the first few real fields) under
+ * key noise well before hardTruncate ever kicks in.
+ */
+const GENERIC_FALLBACK_MAX_KEYS = 12;
+
 /** Unknown tool: toolName + compact key:value lines, so PR ② never blocks on shipping a new gated tool before this file learns to render it. */
 function renderGenericFallback(
   toolName: string,
   input: Record<string, unknown>
 ): string {
   const lines = [`Approve tool call: ${sanitizeField(toolName, 100)}`];
-  for (const [key, value] of Object.entries(input)) {
+  const entries = Object.entries(input);
+  const shown = entries.slice(0, GENERIC_FALLBACK_MAX_KEYS);
+  for (const [key, value] of shown) {
     lines.push(`${sanitizeField(key, 60)}: ${sanitizeField(value, 200)}`);
+  }
+  const omitted = entries.length - shown.length;
+  if (omitted > 0) {
+    lines.push(`...and ${omitted} more`);
   }
   return hardTruncate(lines.join("\n"));
 }

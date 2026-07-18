@@ -29,6 +29,7 @@ works out of the box.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -722,6 +723,151 @@ def _publish_green(
 
 
 # ---------------------------------------------------------------------------
+# Docker-sandbox env passthrough allowlist (#1267 PR④ item 2)
+# ---------------------------------------------------------------------------
+#
+# ``run_issue_in_sandbox`` (agentrail.sandbox.docker_runner) forwards EVERY
+# key of the ``env`` dict it is handed into the spawned container, by name
+# (``docker_runner.build_run_command``'s ``env_keys = sorted(env.keys())`` ->
+# ``docker run -e KEY`` per key) — whatever is in that dict reaches the
+# container, nothing more and nothing less. The dict it is normally handed
+# (``agentrail.cli.commands.runner._make_execute``'s ``run_env =
+# dict(os.environ)``, reused verbatim by ``agentrail.cli.commands.fleet``'s
+# own docstring: "Every per-workspace run this daemon executes inherits this
+# process's OS environment") starts as a full copy of THIS process's entire
+# environment. For the hosted fleet daemon (``deploy/runner/Dockerfile`` /
+# ``agentrail/cli/commands/fleet.py``) that is EVERYTHING the container was
+# started with — ``FLEET_CONSOLE_TOKEN``, ``OPENROUTER_API_KEY``,
+# ``AGENTRAIL_SERVER_*``, ``PATH``/``HOME``/etc: a blanket dump, not a
+# deliberate contract. Today that is harmless by accident, because
+# ``ANTHROPIC_API_KEY`` is always empty in that image so Docker-sandbox mode
+# is never reachable for it — but item 1 above (``AGENTRAIL_SANDBOX=docker``)
+# makes it reachable on purpose. Without this filter, flipping that switch
+# would leak the fleet operator's own secrets (the console sync token, the
+# OpenRouter key) into a customer's disposable per-task sandbox container —
+# exactly the kind of thing an "isolation, honestly" PR exists to close, not
+# carry forward. This wrapper is the fix: reduce ``env`` to an explicit,
+# justified allowlist before ``run_issue_in_sandbox`` ever sees it, no matter
+# what the caller handed in.
+#
+# What's allowed through, and why:
+#   ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN     - Claude Code's OpenRouter
+#       auth (deploy/runner/Dockerfile bakes the base URL; entrypoint.sh maps
+#       OPENROUTER_API_KEY -> ANTHROPIC_AUTH_TOKEN at container start — see
+#       that file's own header on why ANTHROPIC_API_KEY is deliberately left
+#       empty instead of holding the real credential).
+#   CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK          - required alongside the
+#       two vars above for the OpenRouter-routed model path to work at all
+#       (baked as an image ENV right next to them).
+#   AGENTRAIL_HOSTED                              - the marker
+#       agentrail.run.pipeline.is_hosted_run() reads; without it inside the
+#       container, #1270's independent-review assert silently never engages.
+#   AGENTRAIL_CLAUDE_COMMAND                      - the baked
+#       `claude --bare -p --dangerously-skip-permissions` override
+#       (resolve_agent_command's env slot); without it the container falls
+#       back to a command built for a different auth flow.
+#   AGENTRAIL_HOSTED_CONFIG                       - path to the seeded
+#       default `.agentrail/config.json` template (see
+#       _inject_hosted_config above). Forwarded for parity with the
+#       host-native path even though today's docker-sandbox entrypoint
+#       (agentrail/docker/runner/entrypoint.sh) does not yet call the
+#       equivalent injection itself — that is a pre-existing gap in that
+#       image, out of scope for this PR (see its out-of-scope list).
+#   GIT_TOKEN                                     - the CLAIMED workspace's
+#       own GitHub token, set fresh per run (never baked) — needed for the
+#       in-container clone/push to authenticate as THAT workspace, not the
+#       fleet operator.
+#   AGENTRAIL_MCP_<PROVIDER>_KEY (prefix match)   - per-workspace MCP
+#       connector keys (Linear/Figma/Context7), one env var per connected
+#       provider — see write_mcp_config_from_env's own contract.
+#   AGENTRAIL_SERVER_BASE_URL, AGENTRAIL_SERVER_API_KEY,
+#   AGENTRAIL_SERVER_REPOSITORY_ID                 - links THIS run's
+#       ingested cost/telemetry back to the dashboard run (_make_execute
+#       sets these per-claim); without them the run still executes but the
+#       dashboard never sees its cost or telemetry — the same link
+#       run_issue_on_host's own docstring already documents forwarding for
+#       the host-native path.
+#
+# This SAME allowlist governs BOTH ways ``select_sandbox_runner`` can choose
+# Docker mode (the new explicit ``AGENTRAIL_SANDBOX=docker`` and the legacy
+# ``ANTHROPIC_API_KEY``-presence trigger) — the passthrough boundary is a
+# property of the CONTAINER, not of which trigger picked it. Which is also
+# why the two vars below are included even though they're not part of the
+# OpenRouter/hosted list: they are the pre-existing, still-valid CI/cloud
+# contract (``agentrail/docker/runner/Dockerfile``'s own header: "Required
+# RUNTIME env ... ANTHROPIC_API_KEY agent API key for the Claude CLI (or ...
+# OPENAI_API_KEY for codex)"). Omitting them would silently break that
+# already-working legacy path the very first time this allowlist applied to
+# it — not a byte-identical migration.
+#   ANTHROPIC_API_KEY, OPENAI_API_KEY             - the disposable sandbox
+#       image's own pre-existing, documented agent-CLI credential contract
+#       (claude / codex respectively). For the OpenRouter/hosted case this
+#       rides through as the empty string (deploy/runner/Dockerfile bakes
+#       ANTHROPIC_API_KEY="" on purpose) alongside ANTHROPIC_AUTH_TOKEN —
+#       verified not to shadow it (deploy/runner/README.md's "Auth mechanism"
+#       section: "a no-credential control run refused with 'Not logged in'
+#       before any network call").
+#
+# Nothing else passes. A var some future run genuinely needs that isn't
+# listed here is a bug to fix by adding a new, named, justified entry —
+# never by widening this back into a blanket forward.
+_DOCKER_SANDBOX_ENV_ALLOWLIST = frozenset(
+    {
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK",
+        "AGENTRAIL_HOSTED",
+        "AGENTRAIL_CLAUDE_COMMAND",
+        "AGENTRAIL_HOSTED_CONFIG",
+        "GIT_TOKEN",
+        "AGENTRAIL_SERVER_BASE_URL",
+        "AGENTRAIL_SERVER_API_KEY",
+        "AGENTRAIL_SERVER_REPOSITORY_ID",
+    }
+)
+# Per-provider MCP connector keys are one env var per provider
+# (AGENTRAIL_MCP_LINEAR_KEY, AGENTRAIL_MCP_FIGMA_KEY, ...) — a prefix match,
+# not a fixed name.
+_DOCKER_SANDBOX_ENV_PREFIX_ALLOWLIST = ("AGENTRAIL_MCP_",)
+
+
+def filter_docker_sandbox_env(env: Dict[str, str]) -> Dict[str, str]:
+    """Reduce ``env`` to :data:`_DOCKER_SANDBOX_ENV_ALLOWLIST` (+ the
+    ``AGENTRAIL_MCP_`` prefix). Exported so tests — and any future caller —
+    can assert on the filter directly without going through the full runner.
+    """
+    return {
+        k: v
+        for k, v in (env or {}).items()
+        if k in _DOCKER_SANDBOX_ENV_ALLOWLIST or k.startswith(_DOCKER_SANDBOX_ENV_PREFIX_ALLOWLIST)
+    }
+
+
+def _wrap_docker_sandbox_env(fn: Callable[..., RunResult]) -> Callable[..., RunResult]:
+    """Wrap ``fn`` (``run_issue_in_sandbox``) so its ``env`` kwarg is always
+    reduced to the allowlist above before ``fn`` actually runs.
+
+    ``functools.wraps`` copies ``fn``'s ``__wrapped__`` onto the returned
+    closure, which ``inspect.signature`` follows by default — this matters
+    because ``agentrail.cli.commands.runner._make_execute`` introspects the
+    selected runner's signature (``"model" in
+    inspect.signature(runner).parameters``, etc.) to decide which kwargs to
+    pass it. Without ``functools.wraps``, a plain ``**kwargs`` wrapper would
+    hide every real parameter name from that introspection and silently stop
+    forwarding ``model`` on a Docker-sandbox escalation retry — a functional
+    regression, not just a style nit.
+    """
+
+    @functools.wraps(fn)
+    def _docker_sandbox_with_allowlisted_env(*, env: Dict[str, str], **kwargs):
+        return fn(env=filter_docker_sandbox_env(env), **kwargs)
+
+    return _docker_sandbox_with_allowlisted_env
+
+
+# ---------------------------------------------------------------------------
 # Backend selector (AC3)
 # ---------------------------------------------------------------------------
 
@@ -751,13 +897,21 @@ def select_sandbox_runner(env: Dict[str, str]) -> Callable[..., RunResult]:
        environments — including ``deploy/docker-compose.prod.yml``'s
        commented socket-mount instructions — document and rely on exactly
        this rule when no explicit override is set.
+
+    Either way, the returned Docker-mode callable is NOT the bare
+    ``run_issue_in_sandbox`` — it is wrapped so its ``env`` is reduced to an
+    explicit allowlist before the sandbox container ever sees it (#1267 PR④
+    item 2; see ``_wrap_docker_sandbox_env`` above for the full contract and
+    why: the dict this is normally handed starts as a full copy of this
+    process's own environment, which would otherwise leak wholesale into a
+    customer's disposable per-task container).
     """
     from agentrail.sandbox.docker_runner import run_issue_in_sandbox
 
     raw_mode = (env.get(ENV_SANDBOX_MODE) or "").strip()
     mode = raw_mode.lower()
     if mode == SANDBOX_MODE_DOCKER:
-        return run_issue_in_sandbox
+        return _wrap_docker_sandbox_env(run_issue_in_sandbox)
     if mode == SANDBOX_MODE_HOST:
         return run_issue_on_host
     if mode:
@@ -772,9 +926,13 @@ def select_sandbox_runner(env: Dict[str, str]) -> Callable[..., RunResult]:
             file=sys.stderr,
         )
 
-    # LEGACY trigger — pre-#1267-PR④ behaviour, kept byte-identical. Do NOT
-    # remove: deployed environments rely on this exact rule when
-    # AGENTRAIL_SANDBOX is unset.
+    # LEGACY trigger — pre-#1267-PR④ SELECTION behaviour, kept byte-identical
+    # (do NOT remove: deployed environments rely on this exact rule when
+    # AGENTRAIL_SANDBOX is unset). The allowlist wrap below is an item-2
+    # passthrough fix, not a selection change — it applies uniformly to
+    # every path that picks Docker mode, this one included, because the
+    # blanket-forward gap it closes is a property of the CONTAINER, not of
+    # which trigger chose it.
     if (env.get("ANTHROPIC_API_KEY") or "").strip():
-        return run_issue_in_sandbox
+        return _wrap_docker_sandbox_env(run_issue_in_sandbox)
     return run_issue_on_host

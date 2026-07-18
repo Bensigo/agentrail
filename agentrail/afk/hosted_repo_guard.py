@@ -112,11 +112,51 @@ def find_hosted_workspaces(repo_slug: str, executor: _Reader) -> List[str]:
     ``config.repos`` and the ``repositories`` table. Sorted, de-duplicated.
     Does not know about (and never excludes) the operator's own workspace —
     that filtering is the caller's job (``resolve_foreign_workspaces``).
+
+    Thin wrapper over :func:`_find_hosted_workspaces_degrading` (which is the
+    one that actually runs each source behind its own try/except) that drops
+    the failed-sources list — for callers that only need the hit list itself.
+    """
+    hits, _failed = _find_hosted_workspaces_degrading(repo_slug, executor)
+    return hits
+
+
+def _find_hosted_workspaces_degrading(
+    repo_slug: str, executor: _Reader
+) -> Tuple[List[str], List[str]]:
+    """Same lookup as :func:`find_hosted_workspaces`, but the two sources —
+    the github connector's ``config.repos``, the ``repositories`` table —
+    each run behind their OWN try/except, mirroring
+    ``agentrail.cli.commands.issue._resolve_workspace_connection``'s
+    per-lookup try/except (issue.py:256-268), instead of one try/except
+    wrapped around both. That distinction matters: with a single shared
+    try/except, a hit the connectors query already found could be discarded
+    just because the unrelated repositories query blew up afterwards — the
+    guard would fail OPEN even though the DB had already proven the repo
+    hosted.
+
+    Returns ``(hits, failed_sources)``. ``failed_sources`` names whichever
+    quer(y/ies) raised (``"connectors"``, ``"repositories"``), so the caller
+    (:func:`resolve_foreign_workspaces`) can tell apart:
+      - both sources down — nothing was actually checked, fail open exactly
+        like a hard connection failure;
+      - one source down but the OTHER still found a hit — a proven hosted
+        match must never be thrown away, so this refuses, no notice needed;
+      - one source down and the survivor found nothing — fail open, but say
+        so distinctly, since this isn't a clean "no match" (coverage was
+        reduced).
     """
     target = repo_slug.strip().lower()
     hits: set = set()
+    failed: List[str] = []
 
-    for row in executor.query(HOSTED_CONNECTORS_OP, {}):
+    try:
+        connector_rows = executor.query(HOSTED_CONNECTORS_OP, {})
+    except Exception:
+        connector_rows = []
+        failed.append("connectors")
+
+    for row in connector_rows:
         cfg = _coerce_config(row.get("config"))
         repos = cfg.get("repos")
         if not isinstance(repos, list):
@@ -128,7 +168,13 @@ def find_hosted_workspaces(repo_slug: str, executor: _Reader) -> List[str]:
                     hits.add(str(ws))
                 break
 
-    for row in executor.query(HOSTED_REPOSITORIES_OP, {}):
+    try:
+        repository_rows = executor.query(HOSTED_REPOSITORIES_OP, {})
+    except Exception:
+        repository_rows = []
+        failed.append("repositories")
+
+    for row in repository_rows:
         name = str(row.get("name") or "").strip().lower()
         slug = name if name == target else parse_repo_slug(str(row.get("url") or ""))
         if slug == target:
@@ -136,7 +182,7 @@ def find_hosted_workspaces(repo_slug: str, executor: _Reader) -> List[str]:
             if ws:
                 hits.add(str(ws))
 
-    return sorted(hits)
+    return sorted(hits), failed
 
 
 def resolve_foreign_workspaces(
@@ -149,12 +195,21 @@ def resolve_foreign_workspaces(
 
     ``foreign_workspace_ids``: workspace ids OTHER than ``own_workspace_id``
     whose connected repos include ``repo_slug``. Empty when no such workspace
-    exists, or when the DB couldn't be consulted at all.
+    exists, when the DB couldn't be consulted at all, or when exactly one
+    lookup degraded and the surviving lookup found nothing.
 
-    ``db_notice``: a one-line, stderr-worthy message when the DB could not be
-    consulted for ANY reason (no ``DATABASE_URL``, no driver installed,
-    connection refused, an unexpected query error, ...) — ``None`` when the
-    query actually ran (even if it found nothing).
+    ``db_notice``: a one-line, stderr-worthy message, or ``None`` — which is
+    returned both when the query actually ran and found nothing AND when a
+    hit was found (a proven match always drives a refusal, even if the OTHER
+    lookup happened to fail — see :func:`_find_hosted_workspaces_degrading`).
+    Two distinct fail-open notices are possible instead:
+      - ``"hosted-repo quarantine check skipped: no database reachable"`` —
+        the connection itself failed, or BOTH lookups raised, so nothing was
+        actually checked;
+      - ``"hosted-repo quarantine check partial: <source> unavailable"`` —
+        exactly one lookup raised and the other found no hit, so the check
+        proceeded on reduced coverage rather than a clean, complete "no
+        match".
 
     Design (fail OPEN on no DB, not closed): AFK is operator-run dogfood
     tooling — a self-hosted runner or a developer's laptop with no reachable
@@ -172,9 +227,21 @@ def resolve_foreign_workspaces(
             from agentrail.afk.queue_store import PostgresExecutor
 
             executor = PostgresExecutor()
-        hits = find_hosted_workspaces(repo_slug, executor)
+        hits, failed = _find_hosted_workspaces_degrading(repo_slug, executor)
     except Exception:
         return [], "hosted-repo quarantine check skipped: no database reachable"
 
     foreign = [w for w in hits if w != own_workspace_id]
+
+    if len(failed) >= 2:
+        # Both sources raised: nothing was actually checked — identical
+        # fail-open to a hard connection failure above.
+        return [], "hosted-repo quarantine check skipped: no database reachable"
+
+    if failed and not foreign:
+        # Exactly one source degraded and the survivor found no foreign hit:
+        # proceed, but don't let this look like a clean "nothing found" —
+        # coverage was reduced.
+        return [], f"hosted-repo quarantine check partial: {failed[0]} unavailable"
+
     return foreign, None

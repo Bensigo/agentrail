@@ -6,7 +6,7 @@ workspaces's own-executor path is exercised via dependency injection).
 from __future__ import annotations
 
 import unittest
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Set
 
 from agentrail.afk.hosted_repo_guard import (
     HOSTED_CONNECTORS_OP,
@@ -18,10 +18,21 @@ from agentrail.afk.hosted_repo_guard import (
 
 
 class FakeExecutor:
-    """In-memory Executor: canned rows per op, regardless of params."""
+    """In-memory Executor: canned rows per op, regardless of params.
 
-    def __init__(self, rows_by_op: Dict[str, List[Dict[str, Any]]]):
+    ``raise_ops`` lets a test simulate one (or both) of the two lookups
+    throwing — e.g. a connection blip on just the ``repositories`` query —
+    without touching the other, canned-rows op.
+    """
+
+    def __init__(
+        self,
+        rows_by_op: Dict[str, List[Dict[str, Any]]],
+        *,
+        raise_ops: Optional[Set[str]] = None,
+    ):
         self._rows_by_op = rows_by_op
+        self._raise_ops = raise_ops or set()
         self.queries: List[tuple] = []
 
     def execute(self, op: str, params: Dict[str, Any]) -> None:  # pragma: no cover
@@ -29,6 +40,8 @@ class FakeExecutor:
 
     def query(self, op: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
         self.queries.append((op, params))
+        if op in self._raise_ops:
+            raise RuntimeError(f"{op} unavailable")
         return list(self._rows_by_op.get(op, []))
 
 
@@ -251,6 +264,115 @@ class ResolveForeignWorkspacesTests(unittest.TestCase):
         self.assertEqual(foreign, [])
         self.assertEqual(
             notice, "hosted-repo quarantine check skipped: no database reachable"
+        )
+
+
+class PerQueryDegradeTests(unittest.TestCase):
+    """resolve_foreign_workspaces must degrade the connectors query and the
+    repositories query independently (#1271 review fix): a hit the surviving
+    query already found must never be thrown away just because the OTHER,
+    unrelated query happened to throw.
+    """
+
+    # -- (a)/(b): one source hits, the other throws -> the hit still refuses #
+
+    def test_connectors_hit_survives_repositories_throwing(self) -> None:
+        ex = FakeExecutor(
+            {
+                HOSTED_CONNECTORS_OP: [
+                    {"workspace_id": "ws-customer", "config": {"repos": ["acme/widgets"]}},
+                ],
+                HOSTED_REPOSITORIES_OP: [],
+            },
+            raise_ops={HOSTED_REPOSITORIES_OP},
+        )
+        foreign, notice = resolve_foreign_workspaces(
+            "acme/widgets", own_workspace_id="ws-own", executor=ex
+        )
+        self.assertEqual(foreign, ["ws-customer"])
+        self.assertIsNone(notice)
+
+    def test_repositories_hit_survives_connectors_throwing(self) -> None:
+        ex = FakeExecutor(
+            {
+                HOSTED_CONNECTORS_OP: [],
+                HOSTED_REPOSITORIES_OP: [
+                    {"workspace_id": "ws-customer", "name": "acme/widgets", "url": ""},
+                ],
+            },
+            raise_ops={HOSTED_CONNECTORS_OP},
+        )
+        foreign, notice = resolve_foreign_workspaces(
+            "acme/widgets", own_workspace_id="ws-own", executor=ex
+        )
+        self.assertEqual(foreign, ["ws-customer"])
+        self.assertIsNone(notice)
+
+    # -- (c): both sources throw -> fail-open, not partial ------------------ #
+
+    def test_both_sources_throwing_is_fail_open_not_partial(self) -> None:
+        ex = FakeExecutor(
+            {HOSTED_CONNECTORS_OP: [], HOSTED_REPOSITORIES_OP: []},
+            raise_ops={HOSTED_CONNECTORS_OP, HOSTED_REPOSITORIES_OP},
+        )
+        foreign, notice = resolve_foreign_workspaces(
+            "acme/widgets", own_workspace_id="ws-own", executor=ex
+        )
+        self.assertEqual(foreign, [])
+        self.assertEqual(
+            notice, "hosted-repo quarantine check skipped: no database reachable"
+        )
+
+    # -- (d): one source throws, no hit in the survivor -> partial notice --- #
+
+    def test_connectors_throwing_with_no_hit_elsewhere_is_partial_notice(self) -> None:
+        ex = FakeExecutor(
+            {HOSTED_CONNECTORS_OP: [], HOSTED_REPOSITORIES_OP: []},
+            raise_ops={HOSTED_CONNECTORS_OP},
+        )
+        foreign, notice = resolve_foreign_workspaces(
+            "acme/widgets", own_workspace_id="ws-own", executor=ex
+        )
+        self.assertEqual(foreign, [])
+        self.assertEqual(
+            notice, "hosted-repo quarantine check partial: connectors unavailable"
+        )
+
+    def test_repositories_throwing_with_no_hit_elsewhere_is_partial_notice(self) -> None:
+        ex = FakeExecutor(
+            {HOSTED_CONNECTORS_OP: [], HOSTED_REPOSITORIES_OP: []},
+            raise_ops={HOSTED_REPOSITORIES_OP},
+        )
+        foreign, notice = resolve_foreign_workspaces(
+            "acme/widgets", own_workspace_id="ws-own", executor=ex
+        )
+        self.assertEqual(foreign, [])
+        self.assertEqual(
+            notice, "hosted-repo quarantine check partial: repositories unavailable"
+        )
+
+    def test_hit_belonging_only_to_own_workspace_with_other_source_throwing_is_partial(
+        self,
+    ) -> None:
+        # The surviving query DID find a hit, but it's the operator's own
+        # workspace (excluded from `foreign`) — this must still report the
+        # reduced coverage, not a clean, silent proceed: the failed source
+        # might have found a genuinely foreign match.
+        ex = FakeExecutor(
+            {
+                HOSTED_CONNECTORS_OP: [
+                    {"workspace_id": "ws-own", "config": {"repos": ["acme/widgets"]}},
+                ],
+                HOSTED_REPOSITORIES_OP: [],
+            },
+            raise_ops={HOSTED_REPOSITORIES_OP},
+        )
+        foreign, notice = resolve_foreign_workspaces(
+            "acme/widgets", own_workspace_id="ws-own", executor=ex
+        )
+        self.assertEqual(foreign, [])
+        self.assertEqual(
+            notice, "hosted-repo quarantine check partial: repositories unavailable"
         )
 
 

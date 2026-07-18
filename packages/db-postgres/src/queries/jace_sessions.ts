@@ -87,6 +87,34 @@ export async function bindEveSession(
     .where(eq(jaceSessions.id, sessionId));
 }
 
+/**
+ * Look up a Jace session by its bound Eve session id. Used by the
+ * connect-GitHub mint endpoint (issue #1263 PR ②) to resolve the CALLING
+ * conversation's own chat identity server-side from `ctx.session.id` (Eve's
+ * own session id, read off ToolContext — never model-supplied and never a
+ * caller-chosen (platform, platformUserId) pair). See
+ * `connect-link/route.ts`'s doc-comment for why this replaces that shape and
+ * what accepted residual it closes.
+ *
+ * `eve_session_id` carries no DB-level uniqueness constraint (a row gets one
+ * bound via `bindEveSession`, but nothing enforces that it's the only row
+ * with that value), so this orders by `lastActivityAt` descending and takes
+ * the top row — the same most-recently-active tie-break
+ * `resolveConversationWorkspace` uses for its own (legally) multi-row case.
+ * Returns `null` when no session has this eve_session_id bound yet.
+ */
+export async function getJaceSessionByEveSessionId(
+  eveSessionId: string
+): Promise<JaceSessionRow | null> {
+  const [row] = await db
+    .select()
+    .from(jaceSessions)
+    .where(eq(jaceSessions.eveSessionId, eveSessionId))
+    .orderBy(desc(jaceSessions.lastActivityAt))
+    .limit(1);
+  return row ?? null;
+}
+
 /** Update a Jace session's status and touch lastActivityAt. */
 export async function setJaceSessionStatus(
   sessionId: string,
@@ -406,6 +434,40 @@ export async function pinConversationWorkspace(
     );
 
   return { ok: true, sessionId: session.id };
+}
+
+// --- post-bind confirmation (spec §4.2, issue #1263 PR ②) -------------------
+
+/**
+ * The most recently active `telegram` session for a chat identity — how the
+ * post-bind confirmation (`/connect/[token]`) finds which Telegram chat to
+ * confirm INTO after a fresh GitHub bind. `conversationKey` on the returned
+ * row IS the Telegram chat id for this channel (see this file's module
+ * comment); callers read `.conversationKey`, there is no separate column.
+ *
+ * Scoped to `channel = 'telegram'` only: the shared-bot confirmation flow is
+ * Telegram-only for v1 (annex-1263-recon). Ordered by `lastActivityAt`
+ * descending so a chat identity with more than one historic Telegram session
+ * (e.g. an intro conversation before it graduated, plus the graduated one)
+ * resolves to the one the user is actually talking in now. Returns `null`
+ * when the identity has no Telegram session at all — the caller's contract
+ * is to skip the confirmation silently in that case, never to error.
+ */
+export async function latestTelegramSessionForChatIdentity(
+  chatIdentityId: string
+): Promise<JaceSessionRow | null> {
+  const [row] = await db
+    .select()
+    .from(jaceSessions)
+    .where(
+      and(
+        eq(jaceSessions.chatIdentityId, chatIdentityId),
+        eq(jaceSessions.channel, "telegram")
+      )
+    )
+    .orderBy(desc(jaceSessions.lastActivityAt))
+    .limit(1);
+  return row ?? null;
 }
 
 // --- approvals --------------------------------------------------------------

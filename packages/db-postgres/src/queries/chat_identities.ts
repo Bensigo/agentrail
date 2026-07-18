@@ -74,6 +74,26 @@ export async function getChatIdentity(
 }
 
 /**
+ * Look up a chat identity by its own id. Added for the connect-GitHub mint
+ * endpoint's session-derived resolution chain (issue #1263 PR ②):
+ * `getJaceSessionByEveSessionId` (jace_sessions.ts) resolves the CALLING
+ * conversation down to a `chat_identity_id`, and this is the follow-up
+ * lookup for the identity row itself — the same "by id" shape as
+ * `getChatIdentity`'s (platform, platformUserId) lookup, just keyed
+ * differently.
+ */
+export async function getChatIdentityById(
+  id: string
+): Promise<ChatIdentityRow | null> {
+  const [row] = await db
+    .select()
+    .from(chatIdentities)
+    .where(eq(chatIdentities.id, id))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
  * Bind a chat identity to its resolved workspace. Last-write-wins: no guard
  * against overwriting an existing binding.
  *

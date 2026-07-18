@@ -23,6 +23,7 @@ import { workspaces } from "../schema/workspaces.js";
 import {
   insertChatIdentity,
   getChatIdentity,
+  getChatIdentityById,
   bindChatIdentityWorkspace,
   bindChatIdentityUser,
   setChatIdentityLinkToken,
@@ -142,6 +143,31 @@ describe("getChatIdentity", () => {
     mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
 
     const result = await getChatIdentity("telegram", "unknown-user");
+
+    expect(result).toBeNull();
+  });
+});
+
+describe("getChatIdentityById", () => {
+  it("returns the row for a matching id", async () => {
+    const selectChain = makeChain("limit", [MOCK_IDENTITY]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await getChatIdentityById("chat-identity-1");
+
+    expect(result).toEqual(MOCK_IDENTITY);
+    const whereArgs = (selectChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(whereArgs)).toEqual(
+      renderCondition(eq(chatIdentities.id, "chat-identity-1"))
+    );
+  });
+
+  it("returns null when no identity matches the id", async () => {
+    const selectChain = makeChain("limit", []);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await getChatIdentityById("unknown-id");
 
     expect(result).toBeNull();
   });

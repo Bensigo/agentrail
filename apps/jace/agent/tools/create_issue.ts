@@ -16,10 +16,15 @@ import { z } from "zod";
 //  - the tool-authoring helper is `defineTool` from "eve/tools" (there is no
 //    top-level `tool` export), and the tool is the file's DEFAULT export — its
 //    runtime name is the filename slug (`create_issue`), so no `name` field.
-//  - the approval gate key is `approval` (not `needsApproval`); `always()` comes
-//    from "eve/tools/approval". #1038's AC3 prose says "needsApproval"; that key
-//    does not exist in this Eve version, `approval: always()` is the equivalent.
-import { always } from "eve/tools/approval";
+//  - the approval gate key is `approval` (not `needsApproval`). #1038's AC3
+//    prose says "needsApproval"; that key does not exist in this Eve
+//    version. As of issue #1273 PR ② this is wired to `consoleGatedApproval`
+//    (the console-owned approval seam) rather than the stock `always()`
+//    helper from "eve/tools/approval" — see
+//    agent/lib/console_gated_approval.core.mjs for what decides
+//    approved/denied and why a thrown/failed approval fn can never resolve
+//    to approved.
+import { consoleGatedApproval } from "../lib/console_gated_approval.core.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runCreateIssue } from "../lib/create_issue.core.mjs";
@@ -38,7 +43,7 @@ export default defineTool({
     "{ connected: false, message } with guidance to relay to the user instead " +
     "of failing.",
   // Always require a human approve/reject before this tool executes.
-  approval: always(),
+  approval: (ctx) => consoleGatedApproval(ctx),
   inputSchema: z.object({
     title: z.string().min(1).describe("Concise issue title."),
     parent: z

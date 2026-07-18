@@ -28,7 +28,7 @@
 
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { always } from "eve/tools/approval";
+import { consoleGatedApproval } from "../lib/console_gated_approval.core.mjs";
 import { runCreateWorkspace } from "../lib/create_workspace.core.mjs";
 
 // Stdlib `fetch` with a timeout — mirrors send_connect_link.ts's own
@@ -68,7 +68,7 @@ export default defineTool({
     "explanation or retrying silently.",
   // Always require a human approve/reject before this tool executes — same
   // gate class as create_issue (see the file-level comment above).
-  approval: always(),
+  approval: (ctx) => consoleGatedApproval(ctx),
   inputSchema: z.object({
     name: z
       .string()

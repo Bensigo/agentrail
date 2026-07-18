@@ -24,16 +24,20 @@
 // for the full resolution + failure-handling contract).
 //
 // The description below documents intent for CODE readers, not a promise
-// about what the approving human sees: Eve's stock HITL renders only
-// "Approve tool call: create_repo" + Yes/No on Telegram (no input, no
-// description at all), and adds just the raw input JSON on Slack — neither
-// surface renders this description. Until #1273 enriches approval
-// rendering, the LIVE safety mechanism is the mandated pre-call confirmation
-// in chat (instructions.md: confirm the exact name first).
+// about what the approving human sees: as of issue #1273 PR ②, `approval`
+// is wired to `consoleGatedApproval`
+// (agent/lib/console_gated_approval.core.mjs), which POSTs to the console's
+// own approvals seam and renders a rich, per-tool message (name +
+// visibility) with an Approve/Deny keyboard — Eve's stock HITL (a bare
+// "Approve tool call: create_repo" + Yes/No) never fires for this tool,
+// because the fn always resolves to an explicit approved/denied itself. The
+// mandated pre-call confirmation in chat (instructions.md: confirm the
+// exact name first) stays as a complementary, defense-in-depth practice,
+// not the sole safety mechanism it was before this PR.
 
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { always } from "eve/tools/approval";
+import { consoleGatedApproval } from "../lib/console_gated_approval.core.mjs";
 import { runCreateRepo } from "../lib/create_repo.core.mjs";
 
 // Stdlib `fetch` with a timeout — mirrors create_workspace.ts's own
@@ -77,7 +81,7 @@ export default defineTool({
   // Always require a human approve/reject before this tool executes — same
   // gate class as create_issue and create_workspace (see the file-level
   // comment above).
-  approval: always(),
+  approval: (ctx) => consoleGatedApproval(ctx),
   inputSchema: z.object({
     name: z
       .string()

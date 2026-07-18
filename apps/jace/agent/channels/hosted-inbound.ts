@@ -8,8 +8,10 @@
 // message to the native `telegram` channel via `args.receive(channel,
 // { message, target, auth })` — the documented cross-channel hand-off (the
 // same primitive `run-outcome.ts` uses for the OUTBOUND direction). The
-// channel id is this file's name (`hosted-inbound`), so the route mounts at
-// `/eve/v1/hosted-inbound`.
+// route below is declared at the literal path `/eve/v1/hosted-inbound` —
+// routes mount at the literal declared path; /eve/v1/<id> is an adapter
+// default, not a framework rewrite, so the channel id alone does NOT
+// determine the mount path (a bare "/" would be unreachable here).
 //
 // Unlike run-outcome.ts (which fires-and-forgets under `waitUntil` because the
 // console only wants the request to survive, not a synchronous result), this
@@ -55,7 +57,9 @@ function json(body: unknown, status = 200): Response {
 
 export default defineChannel({
   routes: [
-    POST("/", async (req, args) => {
+    // Routes mount at the literal declared path; /eve/v1/<id> is an adapter
+    // default, not a framework rewrite (see the header comment above).
+    POST("/eve/v1/hosted-inbound", async (req, args) => {
       let raw: unknown;
       try {
         raw = await req.json();

@@ -34,9 +34,13 @@ test("imports the telegram channel module as the sole receive target", () => {
   assert.match(code, /import\s+telegram\s+from\s*["']\.\/telegram\.js["']/);
 });
 
-test("declares exactly one POST(\"/\") route", () => {
-  const matches = code.match(/POST\(\s*["']\/["']/g) ?? [];
+test("declares exactly one POST(\"/eve/v1/hosted-inbound\") route — the LITERAL mount path (Eve mounts defineChannel routes at their literal declared path; /eve/v1/<id> is a built-in-adapter default, not a framework rewrite)", () => {
+  const matches = code.match(/POST\(\s*["']\/eve\/v1\/hosted-inbound["']/g) ?? [];
   assert.equal(matches.length, 1);
+});
+
+test("does NOT declare a bare POST(\"/\") route (that path is unreachable at /eve/v1/hosted-inbound in every environment — verified via .eve/compile/compiled-agent-manifest.json's urlPath)", () => {
+  assert.doesNotMatch(code, /POST\(\s*["']\/["']/);
 });
 
 test("validates the body through normalizeHostedInbound before receiving", () => {

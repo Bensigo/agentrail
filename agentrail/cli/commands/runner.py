@@ -39,6 +39,7 @@ def _make_execute(creds):
     accepts_run_id = "run_id" in _params
     accepts_pr_title = "pr_title" in _params
     accepts_model = "model" in _params
+    accepts_budget = "budget_usd" in _params
 
     def execute(item: WorkItem) -> RunResult:
         if item.kind == "onboard":
@@ -92,14 +93,41 @@ def _make_execute(creds):
             kwargs["run_id"] = item.id
         if accepts_pr_title and item.title:
             kwargs["pr_title"] = item.title
-        # Escalation: map this attempt's tier to a model override. Tier 0 ⇒ None
-        # ⇒ pass NO model so the local run uses the config default; tier 1+ ⇒ a
-        # stronger model so a re-queued (previously failed) attempt actually
-        # escalates instead of re-running at the same failing model (BUG 1).
+        # Budget passthrough (#1275): the alignment brief's confirmed estimate,
+        # when present, IS the run's enforced budget (owner rule: "confirming
+        # the brief = sanctioning the ceiling") — pass it straight through as
+        # --budget-usd + --budget-source "brief" so effective_budget /
+        # effective_budget_source (agentrail/cli/commands/run.py) give it TOP
+        # precedence over any --budget-usd flag/config/default this host would
+        # otherwise apply. Dormant: item.estimated_budget_usd is None for
+        # every claim until #1274's brief-generation lane starts writing a
+        # value, so this is a no-op today — byte-identical argv. `is not None`
+        # (not truthiness) so an explicit $0 estimate — a deliberate
+        # "uncapped" choice, same convention as --budget-usd 0 — still forwards.
+        if accepts_budget and item.estimated_budget_usd is not None:
+            kwargs["budget_usd"] = item.estimated_budget_usd
+            kwargs["budget_source"] = "brief"
+        # Model: escalation vs. brief-confirmed override — CONTROLLER-DECIDED
+        # precedence (#1275). Tier 0 ⇒ model_for_tier returns None ⇒ the
+        # user's model_override (if any) wins, exactly like an explicit
+        # --model flag would over the config default. Tier >= 1 ⇒ this
+        # attempt is a re-queued RETRY of a PREVIOUS gate-red/error result
+        # (nextQueueTransition, packages/db-postgres/src/queries/runner.ts) —
+        # escalation ALWAYS wins over model_override here: the override
+        # already ran once (at tier 0) and failed, so blindly re-running the
+        # same user pick would burn the bounded retry budget (#890 — "retry on
+        # error max 5 times") without ever reaching the stronger model the
+        # escalation ladder exists to try. The override is not lost forever —
+        # queue_entries.model_override is untouched by this decision, it is a
+        # per-ATTEMPT precedence choice, not a deletion. No override and tier
+        # 0 ⇒ neither branch fires ⇒ byte-identical to pre-#1275 behavior (no
+        # model kwarg at all, local run uses the config default).
         if accepts_model:
-            model = model_for_tier(item.tier)
-            if model:
-                kwargs["model"] = model
+            escalated_model = model_for_tier(item.tier)
+            if escalated_model:
+                kwargs["model"] = escalated_model
+            elif item.model_override:
+                kwargs["model"] = item.model_override
         return runner(**kwargs)
 
     return execute

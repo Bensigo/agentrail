@@ -212,16 +212,19 @@ class RunContext:
     context_retrieval: Dict[str, Any] = field(default_factory=dict)
     phase_commands: Dict[str, str] = field(default_factory=dict)
     budget_usd: float = 0.0
-    # Budget-source visibility (#1269 follow-up, 2026-07-18): which tier
-    # actually set budget_usd above — "flag" (explicit --budget-usd),
-    # "config" (budgets.per_issue_usd), or "default" (neither said anything,
-    # so the flat DEFAULT_PER_ISSUE_BUDGET_USD estimate-absent backstop
-    # applied — see budget_leash.py). Computed by
+    # Budget-source visibility (#1269 follow-up / #1274 / #1275, 2026-07-18):
+    # which tier actually set budget_usd above — "flag" (explicit
+    # --budget-usd), "config" (budgets.per_issue_usd), "default" (neither said
+    # anything, so the flat DEFAULT_PER_ISSUE_BUDGET_USD estimate-absent
+    # backstop applied — see budget_leash.py), or "brief" (the self-hosted
+    # runner relayed a claimed WorkItem's estimated_budget_usd — an alignment
+    # brief the user already confirmed priced this issue). Computed by
     # `agentrail.cli.commands.run.effective_budget_source` and threaded
     # through unchanged. Consulted ONLY where the budget-stop message is
-    # built below, to decide whether this run's stop reads as a deliberate
-    # ceiling (flag/config: unembellished phrasing, unchanged) or as the
-    # resumable estimate-absent check-in (default: resume guidance appended).
+    # built below, to decide how this run's stop reads: a deliberate ceiling
+    # (flag/config: unembellished phrasing, unchanged), the resumable
+    # estimate-absent check-in (default: resume guidance appended), or the
+    # confirmed-estimate ceiling (brief: names the brief, not a bare number).
     # Defaults to "default" — the honest, conservative assumption for any
     # direct `RunContext(...)` construction (tests) that never sets this.
     budget_source: str = "default"
@@ -477,6 +480,20 @@ _BUDGET_DEFAULT_SOURCE_GUIDANCE = (
     "resume with a real budget: re-run with --budget-usd <n>, set "
     "budgets.per_issue_usd, or let the alignment brief estimate it "
     "(#1274/#1275)"
+)
+
+# Budget-source visibility, "brief" case (#1274/#1275): appended ONLY when
+# rc.budget_source == "brief" — the self-hosted runner relayed a claimed
+# WorkItem's estimated_budget_usd, i.e. an alignment brief the user already
+# confirmed priced this issue (owner rule: "confirming the brief = sanctioning
+# the ceiling"). Unlike the "default" backstop above, this ceiling was NOT a
+# gap nobody filled — it is exactly the number the user signed off on, so the
+# honest resume story is different: raising it means re-confirming a REVISED
+# brief, not just picking a bigger number off the top of your head.
+_BUDGET_BRIEF_SOURCE_GUIDANCE = (
+    "this ceiling is the estimate you confirmed in the alignment brief, not "
+    "an arbitrary limit — resuming with more budget means re-confirming a "
+    "revised brief (#1274/#1275), not just a bigger --budget-usd"
 )
 
 
@@ -748,13 +765,18 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
                     rc.budget_stop_reason = (
                         f"budget exceeded after {phase} phase: {budget_msg}"
                     )
-                    # Budget-source visibility: only the estimate-absent
-                    # backstop gets the resume guidance appended — a flag or
-                    # config ceiling was a deliberate choice, so those keep
+                    # Budget-source visibility: the estimate-absent backstop
+                    # and the confirmed-brief ceiling each get their OWN
+                    # resume guidance appended — a flag or config ceiling was
+                    # a deliberate choice made some other way, so those keep
                     # the plain message above unchanged.
                     if rc.budget_source == "default":
                         rc.budget_stop_reason += (
                             f"; {_BUDGET_DEFAULT_SOURCE_GUIDANCE}"
+                        )
+                    elif rc.budget_source == "brief":
+                        rc.budget_stop_reason += (
+                            f"; {_BUDGET_BRIEF_SOURCE_GUIDANCE}"
                         )
                     print(rc.budget_stop_reason, file=sys.stderr)
                     budget_marker_pending = True

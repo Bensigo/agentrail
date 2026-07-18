@@ -220,6 +220,41 @@ class TestHappyPath:
         run_cmd = runner.command_with("issue")
         assert "--model" not in run_cmd
 
+    def test_budget_and_source_passed_when_given(self, tmp_path) -> None:
+        """#1275: budget_usd/budget_source mirror model/--model exactly."""
+        runner = self._ok_runner(tmp_path / "run-1")
+        self._run(tmp_path, runner, budget_usd=12.5, budget_source="brief")
+        run_cmd = runner.command_with("issue")
+        assert "--budget-usd" in run_cmd
+        assert run_cmd[run_cmd.index("--budget-usd") + 1] == "12.5"
+        assert "--budget-source" in run_cmd
+        assert run_cmd[run_cmd.index("--budget-source") + 1] == "brief"
+
+    def test_no_budget_flags_when_absent(self, tmp_path) -> None:
+        """Regression pin: budget_usd/budget_source both default to None ->
+        byte-identical argv (neither flag appears at all)."""
+        runner = self._ok_runner(tmp_path / "run-1")
+        self._run(tmp_path, runner)
+        run_cmd = runner.command_with("issue")
+        assert "--budget-usd" not in run_cmd
+        assert "--budget-source" not in run_cmd
+
+    def test_budget_source_omitted_when_only_budget_usd_given(self, tmp_path) -> None:
+        runner = self._ok_runner(tmp_path / "run-1")
+        self._run(tmp_path, runner, budget_usd=3.0)
+        run_cmd = runner.command_with("issue")
+        assert "--budget-usd" in run_cmd
+        assert "--budget-source" not in run_cmd
+
+    def test_zero_budget_still_passes_the_flag(self, tmp_path) -> None:
+        """0 is a deliberate, real "uncapped" choice (same convention as
+        --budget-usd 0 downstream) — it must not be dropped as falsy."""
+        runner = self._ok_runner(tmp_path / "run-1")
+        self._run(tmp_path, runner, budget_usd=0.0, budget_source="brief")
+        run_cmd = runner.command_with("issue")
+        assert "--budget-usd" in run_cmd
+        assert run_cmd[run_cmd.index("--budget-usd") + 1] == "0.0"
+
     def test_failure_handoff_forwarded_via_env_not_argv(self, tmp_path) -> None:
         handoff = "## Escalation\n### Exact gate error\nAC2 unverified"
         runner = self._ok_runner(tmp_path / "run-1")
@@ -1034,6 +1069,44 @@ class TestInjectableLauncherCommand:
         # The clone is named explicitly so the agent edits it (not the source).
         assert "--target" in cmd
         assert cmd[cmd.index("--target") + 1] == "/clone/repo"
+
+    def test_budget_usd_and_source_appended_when_given(self) -> None:
+        cmd = _build_run_command(
+            issue_ref="42", agent="claude", model=None,
+            log_dir="/logs", sandbox_runtime=False, run_id="host-run",
+            budget_usd=12.5, budget_source="brief",
+        )
+        assert cmd == [
+            "agentrail", "run", "issue", "42",
+            "--agent", "claude",
+            "--run-id", "host-run",
+            "--log-dir", "/logs",
+            "--budget-usd", "12.5",
+            "--budget-source", "brief",
+        ]
+
+    def test_budget_source_omitted_without_a_label(self) -> None:
+        cmd = _build_run_command(
+            issue_ref="42", agent="claude", model=None,
+            log_dir="/logs", sandbox_runtime=False, run_id="host-run",
+            budget_usd=3.0,
+        )
+        assert "--budget-usd" in cmd
+        assert "--budget-source" not in cmd
+
+    def test_no_budget_flags_when_both_absent_byte_identical(self) -> None:
+        cmd = _build_run_command(
+            issue_ref="42", agent="claude", model=None,
+            log_dir="/logs", sandbox_runtime=False, run_id="host-run",
+        )
+        assert cmd == [
+            "agentrail", "run", "issue", "42",
+            "--agent", "claude",
+            "--run-id", "host-run",
+            "--log-dir", "/logs",
+        ]
+        assert "--budget-usd" not in cmd
+        assert "--budget-source" not in cmd
 
 
 class TestInjectableLauncherRun:

@@ -230,6 +230,7 @@ def _build_run_command(
     *, issue_ref: str, agent: str, model: Optional[str], log_dir: str,
     sandbox_runtime: bool, run_id: str, prompt: Optional[str] = None,
     agentrail_cmd: Optional[List[str]] = None, target: Optional[str] = None,
+    budget_usd: Optional[float] = None, budget_source: Optional[str] = None,
 ) -> List[str]:
     """Build the ``agentrail run`` command driven on the host.
 
@@ -252,6 +253,14 @@ def _build_run_command(
     is set to the clone so the agent still edits the cloned task repo. When
     ``agentrail_cmd`` is ``None`` (the real loop), the command is byte-identical
     to before — bare ``["agentrail", ...]`` with no ``--target`` flag.
+
+    Budget passthrough (#1275): when ``budget_usd`` is given, appends
+    ``--budget-usd <value>`` mirroring exactly how ``model`` becomes
+    ``--model`` above, plus ``--budget-source <budget_source>`` when a source
+    label is also given (the runner always pairs the two — see
+    ``agentrail.cli.commands.runner._make_execute``, the only caller that ever
+    sets these). ``None`` (the default) appends neither flag — byte-identical
+    to before this parameter existed.
     """
     launcher = list(agentrail_cmd) if agentrail_cmd is not None else ["agentrail"]
     if prompt is not None:
@@ -271,6 +280,10 @@ def _build_run_command(
         ]
     if model:
         cmd += ["--model", model]
+    if budget_usd is not None:
+        cmd += ["--budget-usd", str(budget_usd)]
+        if budget_source:
+            cmd += ["--budget-source", budget_source]
     # Only the injected-launcher path passes ``--target``: the default loop runs
     # the command with ``cwd`` == the clone, so ``run`` already targets the
     # clone (its default target is the cwd) and adding ``--target`` would change
@@ -373,6 +386,8 @@ def run_issue_on_host(
     workspace_id: str,
     env: Dict[str, str],
     model: Optional[str] = None,
+    budget_usd: Optional[float] = None,
+    budget_source: Optional[str] = None,
     failure_handoff: Optional[str] = None,
     timeout: int = DEFAULT_TIMEOUT,
     run_id: str = RUN_ID,
@@ -414,6 +429,16 @@ def run_issue_on_host(
     When ``AGENTRAIL_SANDBOX_RUNTIME=1`` is in ``env``, the run command is wrapped
     with ``npx @anthropic-ai/sandbox-runtime`` for whole-process isolation
     (default OFF).
+
+    Budget passthrough (#1275): ``budget_usd``/``budget_source`` mirror
+    ``model`` exactly — forwarded to :func:`_build_run_command` as
+    ``--budget-usd``/``--budget-source``, appended to the in-clone command
+    ONLY when ``budget_usd`` is given (``None``, the default, means neither
+    flag appears — byte-identical to before these parameters existed). The
+    caller (``agentrail.cli.commands.runner._make_execute``) sets both
+    together from a claimed WorkItem's ``estimated_budget_usd`` — an
+    alignment brief's confirmed per-issue ceiling (owner rule: "confirming
+    the brief = sanctioning the ceiling").
 
     Launcher injection (#970, eval-only): by default the in-clone command is
     ``agentrail run ...`` invoked with ``cwd`` == the clone, exactly as the
@@ -574,6 +599,7 @@ def run_issue_on_host(
             log_dir=str(log_dir), sandbox_runtime=sandbox_runtime,
             run_id=run_id, prompt=prompt,
             agentrail_cmd=agentrail_cmd, target=run_target,
+            budget_usd=budget_usd, budget_source=budget_source,
         )
         run_command_cwd = run_cwd if run_cwd is not None else str(repo_dir)
         run_command_env = child_env

@@ -114,6 +114,22 @@ class WorkItem:
     # git/gh auth failure. Never logged — see native_runner's redaction of
     # captured process output before it is reported back as telemetry.
     github_token: str = ""
+    # #1275 (estimate→enforcement threading): the alignment brief's confirmed
+    # per-issue $ ceiling. Owner rule (2026-07-18): "confirming the brief =
+    # sanctioning the ceiling" — when present, ``_make_execute`` (see
+    # agentrail.cli.commands.runner) passes this straight through as
+    # ``--budget-usd <value> --budget-source brief``, which wins over every
+    # other budget tier (agentrail.cli.commands.run.effective_budget). None
+    # when no brief has priced this entry yet — true for every claim today;
+    # #1274's brief-generation lane is what starts writing a value here.
+    estimated_budget_usd: Optional[float] = None
+    # #1275: the coding-phase model chosen when confirming the alignment
+    # brief. None when no brief/no override (true for every claim today).
+    # CONTROLLER-DECIDED precedence (see _make_execute): a tier >= 1
+    # escalation always wins over this value — a re-queued failing attempt
+    # escalates as designed (#890), it does not keep re-running a user's pick
+    # that already failed at tier 0.
+    model_override: Optional[str] = None
 
     @property
     def issue_number(self) -> str:
@@ -144,6 +160,27 @@ class WorkItem:
             tier = int(raw_tier)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             tier = 0
+        # #1275: tolerant of an absent/None/malformed value — an older
+        # console that predates this column (or a claim payload from before
+        # #1274 writes any value at all) never crashes the runner loop, and a
+        # malformed estimate never becomes a real dollar ceiling by accident.
+        # None (not 0.0) is the "no estimate" fallback: 0 is a real, if
+        # unusual, deliberately-uncapped budget elsewhere in this codebase
+        # (see agentrail.cli.commands.run.effective_budget), so it must never
+        # be confused with "absent".
+        raw_budget = d.get("estimated_budget_usd")
+        try:
+            estimated_budget_usd = (
+                float(raw_budget) if raw_budget is not None else None  # type: ignore[arg-type]
+            )
+        except (TypeError, ValueError):
+            estimated_budget_usd = None
+        raw_model_override = d.get("model_override")
+        model_override = (
+            raw_model_override.strip()
+            if isinstance(raw_model_override, str) and raw_model_override.strip()
+            else None
+        )
         return cls(
             id=str(d["id"]),
             workspace_id=str(d["workspace_id"]),
@@ -158,6 +195,8 @@ class WorkItem:
             tier=tier,
             mcp_keys=mcp_keys,
             github_token=str(d.get("github_token") or ""),
+            estimated_budget_usd=estimated_budget_usd,
+            model_override=model_override,
         )
 
 

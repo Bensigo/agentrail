@@ -6,6 +6,7 @@ import {
   timestamp,
   jsonb,
   pgEnum,
+  numeric,
 } from "drizzle-orm/pg-core";
 import { workspaces } from "./workspaces.js";
 
@@ -83,6 +84,34 @@ export const queueEntries = pgTable("queue_entries", {
   // transition OUT clears it back to null (see `github_intake.ts` and the
   // Python persistence edge `agentrail/afk/queue_store.py`).
   parkReason: text("park_reason"),
+  // #1275 (estimate→enforcement threading): the alignment brief's confirmed
+  // per-issue cost estimate. Owner rule (2026-07-18): "confirming the brief =
+  // sanctioning the ceiling" — when present, this dollar figure IS the run's
+  // enforced budget and WINS over every other tier the runner would otherwise
+  // apply (--budget-usd flag / .agentrail/config.json / the product default —
+  // see agentrail.cli.commands.run.effective_budget and
+  // agentrail/run/budget_leash.py). NULL = no brief has priced this entry yet
+  // (true for every row today — #1274's brief-generation lane is what starts
+  // writing a value here; this column is dormant until then, and stays NULL
+  // forever for kind='onboard' rows by design). Numeric mode "number" mirrors
+  // workspaces.monthlyBudgetUsd's own dollar-figure convention.
+  estimatedBudgetUsd: numeric("estimated_budget_usd", {
+    precision: 10,
+    scale: 2,
+    mode: "number",
+  }),
+  // #1275: the coding-phase model the user chose when confirming the
+  // alignment brief (task-type-suggested by default; this records an
+  // explicit override only). Consulted ONLY for the execute/test-author
+  // phase — per-phase planner/reviewer seats are untouched, protecting
+  // #1270's independent-review guarantee. NULL = no brief/no override (true
+  // for every row today). See agentrail/cli/commands/runner.py::_make_execute
+  // for the precedence this loses to: a tier >= 1 escalation (a re-queued
+  // attempt retrying a PREVIOUS gate-red/error result, #890) always wins over
+  // this value — the override already failed once at tier 0, so re-running
+  // the same user pick would burn the bounded retry budget instead of ever
+  // reaching the stronger escalation model.
+  modelOverride: text("model_override"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

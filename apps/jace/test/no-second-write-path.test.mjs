@@ -2,19 +2,21 @@
 //
 // The name of this file overstates the invariant it actually enforces: it is
 // NOT "no second write path" full stop — an ungated write path exists here by
-// design (`send_connect_link`, issue #1263 PR ②), and a SECOND gated tool now
-// exists too (`create_workspace`, issue #1264 PR ①). What this test actually
-// proves is narrower and precise: every mutating tool is gated, and every
-// ungated tool is self-scoped.
+// design (`send_connect_link`, issue #1263 PR ②), and the gated set has grown
+// to THREE (`create_workspace`, issue #1264 PR ①; `create_repo`, issue #1265
+// PR ②). What this test actually proves is narrower and precise: every
+// mutating tool is gated, and every ungated tool is self-scoped.
 //
 //   - Every GATED/mutating tool — authored with `defineTool` and
 //     `approval: always()`, so every invocation pauses for a human before it
 //     runs — must be in the enumerated `EXPECTED_MUTATING_TOOLS` set below.
 //     Today that set is `create_issue` (Jace's only path into the factory:
-//     GitHub issues, workspaces, builds) and `create_workspace` (creates a
-//     real workspace, own product state — same gate class as create_issue,
-//     see its own file doc-comment). The set is enumerated, not open-ended:
-//     adding a THIRD gated tool requires deliberately editing
+//     GitHub issues, workspaces, builds), `create_workspace` (creates a real
+//     workspace, own product state), and `create_repo` (creates a real
+//     GitHub repository under the user's own account and connects it to the
+//     workspace) — all three are the same gate class, see each tool's own
+//     file doc-comment. The set is enumerated, not open-ended: adding a
+//     FOURTH gated tool requires deliberately editing
 //     EXPECTED_MUTATING_TOOLS below — that edit IS the human review this
 //     test exists to force, same as EXPECTED_TOOL_FILES below it.
 //   - Any OTHER tool is allowed to write something only if it is
@@ -34,7 +36,7 @@
 // Mechanically, this test proves the above by checking:
 //
 //   1. `agent/tools/` contains exactly the known, reviewed tool set:
-//      `create_issue` + `create_workspace` (gated/mutating),
+//      `create_issue` + `create_workspace` + `create_repo` (gated/mutating),
 //      `send_connect_link` (ungated but self-scoped), and `standup` /
 //      `codebase_query` / `fetch_workspace_memory` (read-only).
 //      Adding/removing a tool file requires updating EXPECTED_TOOL_FILES
@@ -46,9 +48,10 @@
 //      the gated `create_issue` tool, and the read-only `codebase_query` tool
 //      (which shells out via `execFile` — never a shell string — to the
 //      read-only `agentrail context` CLI, restricted to an allowlist of
-//      read-only subcommands). `create_workspace` reaches the console over
-//      HTTP (like `send_connect_link`), never `child_process`. `standup`
-//      reaches the database directly via `postgres` and must NOT appear here.
+//      read-only subcommands). `create_workspace` and `create_repo` each
+//      reach the console over HTTP (like `send_connect_link`), never
+//      `child_process`. `standup` reaches the database directly via
+//      `postgres` and must NOT appear here.
 //
 // String or comment mentions of "agentrail" elsewhere (docs, the driver
 // harness's prompt) are not a write path — only an imported child_process is.
@@ -83,6 +86,7 @@ function stripComments(src) {
 const EXPECTED_TOOL_FILES = [
   "codebase_query.ts",
   "create_issue.ts",
+  "create_repo.ts", // gated: creates a real GitHub repo under the user's own account + connects it to the workspace — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
   "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process
@@ -90,9 +94,9 @@ const EXPECTED_TOOL_FILES = [
 ].sort();
 // The enumerated set of gated/mutating tools. Every tool named here must set
 // `approval: always()`; the test below also asserts no OTHER tool does — so
-// this list is a ceiling as well as a floor. Adding a third entry is a
+// this list is a ceiling as well as a floor. Adding a fourth entry is a
 // deliberate human edit, not something a maker should do silently.
-const EXPECTED_MUTATING_TOOLS = ["create_issue.ts", "create_workspace.ts"].sort();
+const EXPECTED_MUTATING_TOOLS = ["create_issue.ts", "create_workspace.ts", "create_repo.ts"].sort();
 const EXPECTED_CHILD_PROCESS_SITES = [
   "agent/tools/codebase_query.ts",
   "agent/tools/create_issue.ts",
@@ -126,7 +130,7 @@ test("agent/tools exposes exactly the known, reviewed tool set", () => {
   );
 });
 
-test("agent/tools exposes exactly the enumerated GATED/mutating tools: create_issue, create_workspace", () => {
+test("agent/tools exposes exactly the enumerated GATED/mutating tools: create_issue, create_workspace, create_repo", () => {
   const files = readdirSync(toolsDir).filter((f) => SOURCE_RE.test(f));
   const mutating = files
     .filter((f) =>

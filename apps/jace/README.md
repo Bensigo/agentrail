@@ -79,6 +79,19 @@ text the sandbox sender first (rolling 24h window, ≤5 contacts).
 These are gated per-workspace by `jaceOwns<Channel>Notify` (default OFF); a
 workspace's outbound stays on its legacy console sender until its cutover.
 
+### Hosted vs self-host
+
+The Telegram bullet above is the self-host path: your own BotFather bot,
+webhook pointed straight at this sidecar's `/eve/v1/telegram`. The hosted
+product instead runs ONE shared bot for every workspace — Telegram's
+`setWebhook` points at the AgentRail console's
+`/api/v1/connectors/telegram/webhook` (secret-verified with the same
+`TELEGRAM_WEBHOOK_SECRET_TOKEN`), which resolves the sender's workspace and
+dispatches the turn into this sidecar's `/eve/v1/hosted-inbound` door.
+Self-hosters keep the flow documented above unchanged; see
+[`deploy/telegram-shared-bot-cutover.md`](../../deploy/telegram-shared-bot-cutover.md)
+to migrate an existing self-hosted workspace onto the shared bot.
+
 ## Requirements
 
 - Node.js `>= 24` (the tests use Node's built-in `node --test`).

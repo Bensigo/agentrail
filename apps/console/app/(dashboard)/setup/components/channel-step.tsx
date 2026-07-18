@@ -3,6 +3,11 @@
 import { useState } from "react";
 import { CheckCircle2 } from "lucide-react";
 import { validateConnectorCredential } from "@/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
+import {
+  resolveHostedBotUsername,
+  telegramDeepLink,
+  SELF_HOST_TELEGRAM_DOCS_URL,
+} from "./channel-step-helpers";
 
 export function ChannelStep({
   workspaceId,
@@ -17,6 +22,12 @@ export function ChannelStep({
   chatId: string | null;
   onChanged: () => void;
 }) {
+  // Hosted deploys set this (issue #1262 PR ③) to flip this step's incomplete
+  // render from the bring-your-own-bot form to a "message the shared bot"
+  // deep link — self-host default (unset) keeps the form below unchanged.
+  const hostedBotUsername = resolveHostedBotUsername(
+    process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME
+  );
   const [token, setToken] = useState("");
   const [chatIdInput, setChatIdInput] = useState("");
   const [connecting, setConnecting] = useState(false);
@@ -101,6 +112,50 @@ export function ChannelStep({
         >
           Connect now
         </button>
+      </div>
+    );
+  }
+
+  // No auto-complete signal for this step in hosted mode yet — completion
+  // still keys off the per-workspace connector secret in lib/onboarding-data.ts.
+  // The identity spine (#1261/#1262) will supply it later; until then, Skip.
+  if (hostedBotUsername) {
+    return (
+      <div className="flex flex-col gap-2.5">
+        <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+          Notify a Telegram chat when Jace ships or needs you. Message the
+          bot below once — that chat becomes your connection, no token to
+          paste.
+        </p>
+        <a
+          href={telegramDeepLink(hostedBotUsername)}
+          target="_blank"
+          rel="noreferrer"
+          className="flex h-8 w-full items-center justify-center rounded bg-[var(--brand-accent)] px-3 text-xs font-medium text-black transition-colors hover:opacity-90"
+        >
+          Message @{hostedBotUsername} on Telegram
+        </a>
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs text-[var(--gray-09)]">
+            Self-hosting?{" "}
+            <a
+              href={SELF_HOST_TELEGRAM_DOCS_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="text-[var(--blue-11)] hover:underline"
+            >
+              Bring your own bot
+            </a>
+          </p>
+          <button
+            type="button"
+            onClick={handleSkip}
+            disabled={skipping}
+            className="shrink-0 h-8 rounded border border-[var(--gray-06)] bg-[var(--gray-03)] px-3 text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+          >
+            {skipping ? "Skipping…" : "Skip for now"}
+          </button>
+        </div>
       </div>
     );
   }

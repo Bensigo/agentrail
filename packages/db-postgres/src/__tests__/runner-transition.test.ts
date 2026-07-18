@@ -4,7 +4,11 @@ import { describe, it, expect, vi } from "vitest";
 // transition under test is pure and never touches it.
 vi.mock("../db.js", () => ({ db: {} }));
 
-import { nextQueueTransition, MAX_TIER } from "../queries/runner.js";
+import {
+  nextQueueTransition,
+  MAX_TIER,
+  HOSTED_REFUSAL_PREFIX,
+} from "../queries/runner.js";
 
 /**
  * nextQueueTransition is the PURE result→queue-state decision extracted from
@@ -86,5 +90,93 @@ describe("nextQueueTransition", () => {
     ]);
     expect(budget).toBe(0);
     expect(tier).toBe(MAX_TIER);
+  });
+
+  // ---------------------------------------------------------------------------
+  // #1267 PR③ — a hosted startup refusal (a static per-repo config gap, e.g. no
+  // Independent Reviewer configured, #1270) must jump straight to a human,
+  // spending NEITHER budget NOR tier — no retry or stronger model fixes it.
+  // ---------------------------------------------------------------------------
+  describe("hosted refusal (#1267 PR③)", () => {
+    it("an error whose gateReason carries the hosted-refusal prefix escalates immediately, budget/tier untouched", () => {
+      expect(
+        nextQueueTransition({
+          status: "error",
+          remainingBudget: 5,
+          tier: 0,
+          gateReason: `${HOSTED_REFUSAL_PREFIX}no Independent Reviewer configured`,
+        })
+      ).toEqual({ state: "escalated-to-human", remainingBudget: 5, tier: 0 });
+    });
+
+    it("escalates on the FIRST attempt, not just when budget is nearly exhausted", () => {
+      // A fresh entry (full budget, tier 0) still escalates immediately — this
+      // is the whole point: no retries burned before a human hears.
+      const out = nextQueueTransition({
+        status: "error",
+        remainingBudget: 5,
+        tier: 0,
+        gateReason: `${HOSTED_REFUSAL_PREFIX}x`,
+      });
+      expect(out.state).toBe("escalated-to-human");
+      expect(out.remainingBudget).toBe(5);
+      expect(out.tier).toBe(0);
+    });
+
+    it("never bumps tier, even at tier 0", () => {
+      const out = nextQueueTransition({
+        status: "error",
+        remainingBudget: 3,
+        tier: 0,
+        gateReason: `${HOSTED_REFUSAL_PREFIX}x`,
+      });
+      expect(out.tier).toBe(0);
+    });
+
+    it("a `red` status is NEVER treated as a hosted refusal, even with the prefix in gateReason", () => {
+      // The prefix is only meaningful on `error` — a gate failure (`red`) is a
+      // genuinely different outcome kind and must keep its ordinary handling.
+      expect(
+        nextQueueTransition({
+          status: "red",
+          remainingBudget: 5,
+          tier: 0,
+          gateReason: `${HOSTED_REFUSAL_PREFIX}x`,
+        })
+      ).toEqual({ state: "queued", remainingBudget: 4, tier: 1 });
+    });
+
+    it("an ordinary error (no prefix, or no gateReason at all) is unaffected — regression", () => {
+      expect(
+        nextQueueTransition({ status: "error", remainingBudget: 5, tier: 0 })
+      ).toEqual({ state: "queued", remainingBudget: 4, tier: 0 });
+      expect(
+        nextQueueTransition({
+          status: "error",
+          remainingBudget: 5,
+          tier: 0,
+          gateReason: "agentrail run exited 1",
+        })
+      ).toEqual({ state: "queued", remainingBudget: 4, tier: 0 });
+      expect(
+        nextQueueTransition({
+          status: "error",
+          remainingBudget: 5,
+          tier: 0,
+          gateReason: undefined,
+        })
+      ).toEqual({ state: "queued", remainingBudget: 4, tier: 0 });
+    });
+
+    it("a gateReason that merely CONTAINS the prefix (not as a starting anchor) is NOT a refusal", () => {
+      expect(
+        nextQueueTransition({
+          status: "error",
+          remainingBudget: 5,
+          tier: 0,
+          gateReason: `see also: ${HOSTED_REFUSAL_PREFIX}x`,
+        })
+      ).toEqual({ state: "queued", remainingBudget: 4, tier: 0 });
+    });
   });
 });

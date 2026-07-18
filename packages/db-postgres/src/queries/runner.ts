@@ -536,6 +536,25 @@ export type RunnerStatus = "green" | "red" | "error" | "running";
 export const MAX_TIER = 2;
 
 /**
+ * #1267 PR③: the deterministic prefix a hosted-refusal `gate_reason` always
+ * starts with. This is the cross-process CONTRACT the Python sandbox side
+ * defines (agentrail/sandbox/native_runner.py's byte-identical
+ * `HOSTED_REFUSAL_PREFIX` constant) when it recognizes a hosted run's startup
+ * refusal (no Independent Reviewer configured, #1270) — a static per-repo
+ * config gap that no retry or stronger model can fix. Keep the two constants
+ * in lockstep if you ever change one; a mismatch silently turns every refusal
+ * back into an ordinary retried gate failure.
+ */
+export const HOSTED_REFUSAL_PREFIX = "hosted-refusal: ";
+
+/** Is this `error` outcome a hosted startup refusal, per the shared prefix
+ * contract? `gateReason` is optional (additive — most callers don't pass it
+ * yet, see recordRunnerResult's route caller), so absence is simply "no". */
+function isHostedRefusal(status: RunnerStatus, gateReason?: string): boolean {
+  return status === "error" && !!gateReason && gateReason.startsWith(HOSTED_REFUSAL_PREFIX);
+}
+
+/**
  * The PURE result→queue-transition decision, extracted so it is unit-testable
  * without a live Postgres. Given the current `remainingBudget`/`tier` and the
  * runner `status`, returns the next durable `state` plus the new budget/tier.
@@ -543,7 +562,12 @@ export const MAX_TIER = 2;
  * Semantics:
  *   - green   → terminal 'green' (budget/tier unchanged).
  *   - running → 'running' heartbeat (budget/tier unchanged).
- *   - red OR error → a non-green outcome is retryable AND bounded:
+ *   - hosted refusal (error whose gateReason carries HOSTED_REFUSAL_PREFIX,
+ *     #1267 PR③) → terminal 'escalated-to-human' IMMEDIATELY, budget/tier
+ *     UNCHANGED: a startup refusal is a static config gap, not a transient or
+ *     fixable-by-a-stronger-model failure, so retrying it (let alone 5 times)
+ *     only delays the human who actually needs to act.
+ *   - red OR error (ordinary) → a non-green outcome is retryable AND bounded:
  *       spend one unit of budget and re-admit as 'queued'. When the budget would
  *       be exhausted (<= 1 remaining before this attempt), transition to the
  *       terminal 'escalated-to-human' instead of looping forever.
@@ -559,16 +583,24 @@ export function nextQueueTransition(input: {
   status: RunnerStatus;
   remainingBudget: number;
   tier: number;
+  /** The runner's reported gate_reason (#1267 PR③, additive — optional so
+   * every existing caller that never passed it keeps byte-identical
+   * behavior). Only consulted to detect a hosted-refusal `error`. */
+  gateReason?: string;
 }): { state: string; remainingBudget: number; tier: number } {
-  const { status, remainingBudget, tier } = input;
+  const { status, remainingBudget, tier, gateReason } = input;
   if (status === "green") {
     return { state: "green", remainingBudget, tier };
   }
   if (status === "running") {
     return { state: "running", remainingBudget, tier };
   }
-  // red OR error: retryable + bounded. Spend one unit of budget; escalate to a
-  // human when this attempt exhausts it.
+  if (isHostedRefusal(status, gateReason)) {
+    // Jump straight to a human — spend NEITHER budget nor tier (#1267 PR③).
+    return { state: "escalated-to-human", remainingBudget, tier };
+  }
+  // red OR error (ordinary): retryable + bounded. Spend one unit of budget;
+  // escalate to a human when this attempt exhausts it.
   const nextBudget = Math.max(remainingBudget - 1, 0);
   // Model escalation (tier bump) is for gate failures only — a stronger model
   // can't fix an infra/timeout error, so `error` retries at the same tier.
@@ -629,6 +661,13 @@ export async function recordRunnerResult(data: {
   status: RunnerStatus;
   costUsd?: number;
   prUrl?: string;
+  /** The runner's reported gate_reason (#1267 PR③, additive/optional — see
+   * {@link nextQueueTransition}). Only a hosted-refusal `error` (prefixed with
+   * {@link HOSTED_REFUSAL_PREFIX}) changes behavior; every other value
+   * (including undefined) keeps the pre-existing red/error handling. When it
+   * IS a hosted refusal, this message is also persisted onto the queue row's
+   * `park_reason` (§ below) so an operator sees WHY without a new column. */
+  gateReason?: string;
 }): Promise<RecordRunnerResult> {
   // Map the outcome onto the queue state machine. The critical cases are `red`
   // AND `error` (#890): a non-green outcome must NOT re-queue unconditionally
@@ -647,25 +686,50 @@ export async function recordRunnerResult(data: {
   // is the state we set directly.
   let resultingState = "";
   if (data.status === "red" || data.status === "error") {
-    // Single conditional UPDATE so two concurrent results never double-decrement.
-    // tier bumps only for red (mirrors nextQueueTransition's status==='red').
-    const tierExpr =
-      data.status === "red" ? sql`LEAST(tier + 1, ${MAX_TIER})` : sql`tier`;
-    const rows = Array.from(
-      await db.execute(sql`
-      UPDATE queue_entries
-      SET state = CASE WHEN remaining_budget <= 1 THEN 'escalated-to-human' ELSE 'queued' END,
-          remaining_budget = GREATEST(remaining_budget - 1, 0),
-          tier = ${tierExpr},
-          updated_at = now()
-      WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
-      RETURNING id, state, external_id
-    `)
-    ) as Array<{ id: string; state: string; external_id: string }>;
-    updated = rows.length > 0;
-    if (updated) {
-      resultingState = rows[0]!.state;
-      completedExternalId = rows[0]!.external_id;
+    if (isHostedRefusal(data.status, data.gateReason)) {
+      // Hosted refusal (#1267 PR③): jump straight to escalated-to-human,
+      // spending NEITHER remaining_budget NOR tier — lockstep with
+      // nextQueueTransition's hosted-refusal branch above. The message rides
+      // `park_reason` — the one existing free-text per-row reason column
+      // (today scoped by convention to `parked`; reused here rather than
+      // inventing a new column, since `escalated-to-human` is equally "sitting
+      // here, needs a human" — see queue_entries.ts's parkReason doc comment).
+      const rows = Array.from(
+        await db.execute(sql`
+        UPDATE queue_entries
+        SET state = 'escalated-to-human',
+            park_reason = ${data.gateReason ?? null},
+            updated_at = now()
+        WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
+        RETURNING id, state, external_id
+      `)
+      ) as Array<{ id: string; state: string; external_id: string }>;
+      updated = rows.length > 0;
+      if (updated) {
+        resultingState = rows[0]!.state;
+        completedExternalId = rows[0]!.external_id;
+      }
+    } else {
+      // Single conditional UPDATE so two concurrent results never double-decrement.
+      // tier bumps only for red (mirrors nextQueueTransition's status==='red').
+      const tierExpr =
+        data.status === "red" ? sql`LEAST(tier + 1, ${MAX_TIER})` : sql`tier`;
+      const rows = Array.from(
+        await db.execute(sql`
+        UPDATE queue_entries
+        SET state = CASE WHEN remaining_budget <= 1 THEN 'escalated-to-human' ELSE 'queued' END,
+            remaining_budget = GREATEST(remaining_budget - 1, 0),
+            tier = ${tierExpr},
+            updated_at = now()
+        WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
+        RETURNING id, state, external_id
+      `)
+      ) as Array<{ id: string; state: string; external_id: string }>;
+      updated = rows.length > 0;
+      if (updated) {
+        resultingState = rows[0]!.state;
+        completedExternalId = rows[0]!.external_id;
+      }
     }
   } else {
     const { state: nextState } = nextQueueTransition({

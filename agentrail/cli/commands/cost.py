@@ -24,7 +24,7 @@ from agentrail.run.pricing import cost_usd
 from agentrail.run.usage_capture import capture_usage
 from agentrail.run.routing import _apply_routing, classify, routing_record
 from agentrail.run.cost_recommend import recommend, ESTIMATE_UNAVAILABLE
-from agentrail.cli.commands.run import _read_config, resolve_agent_name, resolve_default_budget
+from agentrail.cli.commands.run import _read_config, resolve_agent_name
 from agentrail.context.pricing import cost_for
 
 
@@ -289,6 +289,47 @@ def _collect_rows(
     return rows
 
 
+def _cost_warning_threshold(target: str) -> float:
+    """Return the #698 advisory budget-warning threshold for ``agentrail cost``.
+
+    Reads ``budgets.per_issue_usd`` from ``.agentrail/config.json`` DIRECTLY —
+    deliberately NOT routed through ``agentrail.cli.commands.run.
+    resolve_default_budget``, which (issue #1269) falls back to
+    ``DEFAULT_PER_ISSUE_BUDGET_USD`` ($10) when the key is absent. That
+    default is the hard spend backstop for the run/afk PRODUCT PATH — an
+    enforcement decision the loop itself acts on when nobody configured a
+    number. Reusing it here would silently flip #698's deliberately-disabled-
+    by-default advisory warning ON for every unconfigured project (any run
+    over $10 would now warn with no config change) and would start appending
+    ``budget_warning`` events — a WRITE — from what is meant to be a read-only
+    report command. So this threshold gets its own, decoupled fallback:
+    absent, non-numeric, boolean, or negative config means disabled (0.0),
+    exactly as it behaved before #1269 changed the shared resolver's default.
+    Only an explicit, valid ``budgets.per_issue_usd`` enables the warning —
+    the same parsing #698 always had.
+    """
+    cfg = _read_config(target)
+    raw = (cfg.get("budgets") or {}).get("per_issue_usd") if cfg else None
+    if raw is None:
+        return 0.0
+    if isinstance(raw, bool):
+        value = None
+    else:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = None
+    if value is None or value < 0:
+        print(
+            f"warning: ignoring invalid budgets.per_issue_usd in "
+            f".agentrail/config.json: {raw!r} (must be a non-negative number); "
+            "budget warnings disabled",
+            file=sys.stderr,
+        )
+        return 0.0
+    return value
+
+
 def _emit_budget_warnings(rows: List[dict], threshold: float, target: Path) -> List[dict]:
     """Print stderr warnings and append journal events for over-threshold issues.
 
@@ -550,7 +591,7 @@ def run_cost(args: List[str]) -> int:
         if ratio is not None and ratio > ratio_threshold:
             row["flags"].append("output-wasteful")
 
-    threshold = resolve_default_budget(str(target))
+    threshold = _cost_warning_threshold(str(target))
     violations = _emit_budget_warnings(rows, threshold, target)
 
     # --recommend: build a per-run record and emit recommendations.

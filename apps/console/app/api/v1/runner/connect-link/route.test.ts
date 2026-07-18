@@ -194,6 +194,68 @@ describe("POST /api/v1/runner/connect-link", () => {
     expect(await unknownRes.text()).toBe(text);
   });
 
+  it("404 when the ledgered session row's workspace_id differs from the bearer's own — tenant cross-check on the SESSION, byte-identical to the unknown-session 404", async () => {
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({
+      ...MOCK_SESSION_ROW,
+      workspaceId: "ws-other",
+    } as never);
+    vi.mocked(getChatIdentityById).mockResolvedValue({
+      id: "chat-identity-1",
+      platform: "telegram",
+      platformUserId: "tg-123",
+      displayName: "Ada",
+      userId: null,
+      workspaceId: null,
+      linkToken: null,
+      linkTokenExpiresAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    } as never);
+
+    // beforeEach mocks requireBearer's workspaceId as "ws-1" — deliberately
+    // different from the session's "ws-other" above. The identity itself is
+    // otherwise eligible (no linked user, no workspace of its own), so this
+    // isolates the session-side check as the sole reason for the refusal.
+    const res = await POST(req({ eveSessionId: "eve-session-1" }));
+    const text = await res.text();
+
+    expect(res.status).toBe(404);
+    expect(setChatIdentityLinkToken).not.toHaveBeenCalled();
+    expect(JSON.parse(text)).toEqual({ error: "Chat identity not found" });
+
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(null as never);
+    const unknownRes = await POST(req({ eveSessionId: "unknown-eve-session" }));
+    expect(await unknownRes.text()).toBe(text);
+  });
+
+  it("200: mints when the ledgered session row's workspace_id matches the bearer's OWN workspace (same tenant)", async () => {
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({
+      ...MOCK_SESSION_ROW,
+      workspaceId: "ws-1", // same as requireBearer's mocked workspaceId
+    } as never);
+    vi.mocked(getChatIdentityById).mockResolvedValue({
+      id: "chat-identity-1",
+      platform: "telegram",
+      platformUserId: "tg-123",
+      displayName: "Ada",
+      userId: null,
+      workspaceId: null,
+      linkToken: null,
+      linkTokenExpiresAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    } as never);
+
+    const res = await POST(req({ eveSessionId: "eve-session-1" }));
+
+    expect(res.status).toBe(200);
+    expect(setChatIdentityLinkToken).toHaveBeenCalledWith(
+      "chat-identity-1",
+      expect.any(String),
+      expect.any(Date)
+    );
+  });
+
   it("200: mints when the resolved identity's workspace_id matches the bearer's OWN workspace (same tenant, not yet user-linked)", async () => {
     vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(
       MOCK_SESSION_ROW as never

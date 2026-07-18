@@ -61,13 +61,41 @@ function isRawBody(v: unknown): v is RawBody {
  * populates it) to `chat_identity_id`, then loads that identity
  * (`getChatIdentityById`). A session row with a null `chat_identity_id`, or
  * no session row at all for this `eveSessionId`, collapses into the exact
- * same 404 as every other refusal below — so this endpoint can now ONLY
- * ever mint a link for the identity behind the conversation that is
- * actually asking, never an arbitrary caller-chosen one.
+ * same 404 as every other refusal below.
  *
- * The PR ① eligibility rules are UNCHANGED once the identity is resolved.
- * Refuses to mint (404, the SAME body as the unknown-identity 404 — never a
- * distinguishable status or message) when EITHER:
+ * What this closes, precisely: the GUESSABLE `(platform, platformUserId)`
+ * input above — a pair a caller could pick and iterate — is gone;
+ * `eveSessionId` is an opaque runtime identifier Eve mints, never a value a
+ * caller chooses. And the tenant cross-check that follows now runs on BOTH
+ * halves of the resolution chain: the resolved identity's `workspaceId`
+ * (PR ①'s original check) and, new in this PR, the session row's OWN
+ * `workspaceId` (a session graduates its `workspaceId` independently of its
+ * identity's — see `jace_sessions.ts`'s schema comment — so the two can
+ * diverge). This does NOT mean the endpoint can only ever mint for "the
+ * identity behind the conversation actually asking" — see the residual
+ * immediately below.
+ *
+ * What remains, an accepted and narrowed residual: a valid bearer can still
+ * mint a link for a never-connected "intro" identity/session (both
+ * `workspaceId`s null) that has nothing to do with its own conversation —
+ * with no tenant on either side yet, there is nothing left here to scope
+ * against. Two things keep this from being exploitable in practice: the
+ * minted URL is only ever delivered in-thread by Jace's own reply — there is
+ * no separate "send to an address" step (see `send_connect_link`'s own
+ * doc-comment) — and the redemption-side `foreign_user` guard from PR ①
+ * (`connect-bind-decision.ts`'s `decideConnectIdentityBind`) backstops a
+ * stale or otherwise-misdirected link by refusing to rebind an identity
+ * already linked to someone else.
+ *
+ * Open and unconfirmed, tracked as a follow-up under #1295: how much entropy
+ * `eveSessionId` actually carries, and whether `JACE_CONSOLE_TOKEN` is
+ * per-workspace or one bearer shared across workspaces — both bound how
+ * narrow the residual above really is.
+ *
+ * The PR ① eligibility rules below are otherwise unchanged; this PR adds
+ * only the session-side tenant check alongside them. Refuses to mint (404,
+ * the SAME body as the unknown-identity 404 — never a distinguishable status
+ * or message) when ANY of:
  *  - the identity already has a linked user (`userId` non-null). Re-linking
  *    an already-bound identity is a deliberate future flow, not this
  *    endpoint's job: minting here would hand out a redeemable token that
@@ -78,7 +106,14 @@ function isRawBody(v: unknown): v is RawBody {
  *    stays allowed for any valid bearer — that's the intended cold-start
  *    flow this endpoint exists for. An identity already resolved to the
  *    SAME workspace as the bearer is allowed through too.
- * The two refusals collapse into the same 404 as "identity not found" on
+ *  - the SESSION row itself has a resolved `workspaceId` that DIFFERS from
+ *    the bearer's own `workspaceId`. A session's `workspaceId` graduates
+ *    independently of its identity's (`bindJaceSessionWorkspace` vs
+ *    `bindChatIdentityWorkspace`), so this catches a cross-tenant mint the
+ *    identity-side check alone could miss. An intro session (`workspaceId`
+ *    NULL) has no tenant yet and stays mintable, same rationale as the
+ *    identity case above.
+ * All three refusals collapse into the same 404 as "identity not found" on
  * purpose: a distinguishable response would let any valid bearer enumerate
  * which sessions/identities exist and which tenant/user they already belong
  * to, just by reading the status code.
@@ -124,7 +159,8 @@ export async function POST(request: NextRequest) {
   const ineligible =
     !identity ||
     identity.userId != null ||
-    (identity.workspaceId != null && identity.workspaceId !== bearerWorkspaceId);
+    (identity.workspaceId != null && identity.workspaceId !== bearerWorkspaceId) ||
+    (session?.workspaceId != null && session.workspaceId !== bearerWorkspaceId);
   if (ineligible) {
     return NextResponse.json({ error: "Chat identity not found" }, { status: 404 });
   }

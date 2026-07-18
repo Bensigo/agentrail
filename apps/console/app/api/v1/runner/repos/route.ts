@@ -215,13 +215,17 @@ async function createRepoWebhook(
  *      but our own write failed, which is a genuine inconsistency (same
  *      posture as #1264's "pinConversationWorkspace refused" — thrown, not
  *      swallowed into a misleading 201). The connector self-configure IS
- *      best-effort (logged, not thrown), replicated from
- *      `workspaces/[workspaceId]/repos/route.ts` — see the code comment at
- *      its call site for why it's replicated rather than shared, and why it
- *      is merged with step 2's secret handling into one read + one write.
+ *      best-effort (logged AND recorded in `warnings`, never thrown),
+ *      replicated from `workspaces/[workspaceId]/repos/route.ts` — see the
+ *      code comment at its call site for why it's replicated rather than
+ *      shared, and why it is merged with step 2's secret handling into one
+ *      read + one write. A failure here also skips step 2 entirely (below).
  *  (2) webhook creation — best-effort; a failure here does NOT fail the
- *      whole call (the repo is already connected). `webhookCreated` reports
- *      the real outcome and a human-readable entry lands in `warnings`.
+ *      whole call (the repo is already connected). Skipped outright (never
+ *      attempted) when step 1's connector-config write failed, since a
+ *      webhook bound to a secret we know wasn't persisted is worse than no
+ *      webhook at all. `webhookCreated` reports the real outcome either way
+ *      and a human-readable entry always lands in `warnings` on failure.
  *  (3) onboard enqueue — see `ONBOARD_ON_CONNECT_FLAG`'s comment above:
  *      reuses the existing flag + `hasActiveRunner` gate + `enqueueOnboard`
  *      verbatim (best-effort). No new queue kind invented.
@@ -354,11 +358,16 @@ export async function POST(request: NextRequest) {
   // each do their own separate read/write for their own single concern; this
   // flow needs both, so it reads the connector ONCE and merges both concerns
   // into a single upsert rather than round-tripping twice. Failure here is
-  // logged, never thrown: the repository row above already exists, so a
-  // connector-config hiccup must not undo (or fail the response for) work
-  // that already succeeded.
+  // logged AND surfaced in `warnings` (never thrown: the repository row
+  // above already exists, so a connector-config hiccup must not undo, or
+  // fail the response for, work that already succeeded) — and it disables
+  // step 2 below, since creating a webhook against a secret we know we
+  // failed to persist would be actively misleading rather than merely
+  // incomplete.
   const repoSet = new Set<string>([fullName]);
   let webhookSecret = randomBytes(WEBHOOK_SECRET_BYTES).toString("hex");
+  const warnings: string[] = [];
+  let connectorConfigured = true;
   try {
     const existingConnector = await getConnector(workspaceId, "github");
     if (existingConnector) {
@@ -373,15 +382,31 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     console.error("[runner/repos] failed to self-configure github connector:", err);
+    connectorConfigured = false;
+    warnings.push(
+      "workspace connector config could not be updated — the repo may not be tracked and the webhook secret was not saved; reconnect from the console"
+    );
   }
 
   // --- connect chain: step 2 — webhook creation (best-effort) --------------
   const targetUrl = `${new URL(request.url).origin}${WEBHOOK_RECEIVER_PATH}`;
-  const warnings: string[] = [];
-  const hookResult = await createRepoWebhook(fullName, token, targetUrl, webhookSecret);
-  const webhookCreated = hookResult.ok;
-  if (!hookResult.ok && hookResult.error) {
-    warnings.push(hookResult.error);
+  let webhookCreated = false;
+  if (!connectorConfigured) {
+    // Step 1b already failed to persist `webhookSecret` (and possibly this
+    // repo's entry in `config.repos`). Registering the GitHub webhook anyway
+    // would create a real, live hook whose secret nothing on our side can
+    // verify against — worse than no webhook, since `webhookCreated: true`
+    // would then misreport a working integration. Skip the call and report
+    // the same honest failure instead.
+    warnings.push(
+      "webhook not created — the connector config write failed above, so the webhook secret was never persisted"
+    );
+  } else {
+    const hookResult = await createRepoWebhook(fullName, token, targetUrl, webhookSecret);
+    webhookCreated = hookResult.ok;
+    if (!hookResult.ok && hookResult.error) {
+      warnings.push(hookResult.error);
+    }
   }
 
   // --- connect chain: step 3 — onboard enqueue (best-effort) ---------------

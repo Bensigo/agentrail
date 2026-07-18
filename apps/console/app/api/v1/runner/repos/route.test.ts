@@ -677,15 +677,24 @@ describe("POST /api/v1/runner/repos", () => {
     expect(json.warnings[0]).toMatch(/could not reach github/i);
   });
 
-  it("201 (best-effort) even when the connector self-configure step throws", async () => {
+  it("201 (best-effort) even when the connector self-configure step throws — warns honestly and skips the webhook call", async () => {
     vi.mocked(getConnector).mockRejectedValue(new Error("db down"));
-    mockFetchSequence(githubCreateResponse(), githubHookResponse());
+    const fetchMock = mockFetchSequence(githubCreateResponse(), githubHookResponse());
 
     const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
+    const json = await res.json();
 
     expect(res.status).toBe(201);
-    const json = await res.json();
     expect(json.connected).toBe(true);
+    expect(json.webhookCreated).toBe(false);
+    expect(json.warnings).toHaveLength(2);
+    expect(json.warnings[0]).toMatch(/connector config could not be updated/i);
+    expect(json.warnings[0]).toMatch(/may not be tracked/i);
+    expect(json.warnings[0]).toMatch(/webhook secret was not saved/i);
+    expect(json.warnings[1]).toMatch(/webhook/i);
+    // The config write failed, so the secret was never persisted — the
+    // webhook call (the sequence's 2nd mocked response) must never fire.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   // ---------------------------------------------------------------------

@@ -2,13 +2,21 @@
 //
 // The name of this file overstates the invariant it actually enforces: it is
 // NOT "no second write path" full stop — an ungated write path exists here by
-// design (`send_connect_link`, issue #1263 PR ②). What this test actually
-// proves is narrower and precise:
+// design (`send_connect_link`, issue #1263 PR ②), and a SECOND gated tool now
+// exists too (`create_workspace`, issue #1264 PR ①). What this test actually
+// proves is narrower and precise: every mutating tool is gated, and every
+// ungated tool is self-scoped.
 //
-//   - Exactly ONE tool may be GATED/mutating: authored with `defineTool` and
+//   - Every GATED/mutating tool — authored with `defineTool` and
 //     `approval: always()`, so every invocation pauses for a human before it
-//     runs. That tool is `create_issue` — Jace's only path into the factory
-//     (GitHub issues, workspaces, builds).
+//     runs — must be in the enumerated `EXPECTED_MUTATING_TOOLS` set below.
+//     Today that set is `create_issue` (Jace's only path into the factory:
+//     GitHub issues, workspaces, builds) and `create_workspace` (creates a
+//     real workspace, own product state — same gate class as create_issue,
+//     see its own file doc-comment). The set is enumerated, not open-ended:
+//     adding a THIRD gated tool requires deliberately editing
+//     EXPECTED_MUTATING_TOOLS below — that edit IS the human review this
+//     test exists to force, same as EXPECTED_TOOL_FILES below it.
 //   - Any OTHER tool is allowed to write something only if it is
 //     UNGATED-but-self-scoped: every target of its write must be derived
 //     from the tool's OWN session context (e.g. `ctx.session.id`), never
@@ -26,19 +34,21 @@
 // Mechanically, this test proves the above by checking:
 //
 //   1. `agent/tools/` contains exactly the known, reviewed tool set:
-//      `create_issue` (gated/mutating), `send_connect_link` (ungated but
-//      self-scoped), and `standup` / `codebase_query` / `fetch_workspace_memory`
-//      (read-only). Adding/removing a tool file requires updating
-//      EXPECTED_TOOL_FILES below — that edit IS the human review this test
-//      exists to force.
-//   2. Of those, exactly ONE is GATED — authored with `defineTool` and
-//      `approval: always()`. Every other tool sets no `approval` field.
+//      `create_issue` + `create_workspace` (gated/mutating),
+//      `send_connect_link` (ungated but self-scoped), and `standup` /
+//      `codebase_query` / `fetch_workspace_memory` (read-only).
+//      Adding/removing a tool file requires updating EXPECTED_TOOL_FILES
+//      below — that edit IS the human review this test exists to force.
+//   2. Of those, EXACTLY the tools in EXPECTED_MUTATING_TOOLS are GATED —
+//      authored with `defineTool` and `approval: always()`. Every other tool
+//      sets no `approval` field.
 //   3. `node:child_process` is imported ONLY by the expected, reviewed sites:
 //      the gated `create_issue` tool, and the read-only `codebase_query` tool
 //      (which shells out via `execFile` — never a shell string — to the
 //      read-only `agentrail context` CLI, restricted to an allowlist of
-//      read-only subcommands). `standup` reaches the database directly via
-//      `postgres` and must NOT appear here.
+//      read-only subcommands). `create_workspace` reaches the console over
+//      HTTP (like `send_connect_link`), never `child_process`. `standup`
+//      reaches the database directly via `postgres` and must NOT appear here.
 //
 // String or comment mentions of "agentrail" elsewhere (docs, the driver
 // harness's prompt) are not a write path — only an imported child_process is.
@@ -73,11 +83,16 @@ function stripComments(src) {
 const EXPECTED_TOOL_FILES = [
   "codebase_query.ts",
   "create_issue.ts",
+  "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
   "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process
   "standup.ts",
 ].sort();
-const EXPECTED_MUTATING_TOOL = "create_issue.ts";
+// The enumerated set of gated/mutating tools. Every tool named here must set
+// `approval: always()`; the test below also asserts no OTHER tool does — so
+// this list is a ceiling as well as a floor. Adding a third entry is a
+// deliberate human edit, not something a maker should do silently.
+const EXPECTED_MUTATING_TOOLS = ["create_issue.ts", "create_workspace.ts"].sort();
 const EXPECTED_CHILD_PROCESS_SITES = [
   "agent/tools/codebase_query.ts",
   "agent/tools/create_issue.ts",
@@ -111,7 +126,7 @@ test("agent/tools exposes exactly the known, reviewed tool set", () => {
   );
 });
 
-test("agent/tools exposes exactly one MUTATING tool: create_issue", () => {
+test("agent/tools exposes exactly the enumerated GATED/mutating tools: create_issue, create_workspace", () => {
   const files = readdirSync(toolsDir).filter((f) => SOURCE_RE.test(f));
   const mutating = files
     .filter((f) =>
@@ -120,24 +135,24 @@ test("agent/tools exposes exactly one MUTATING tool: create_issue", () => {
     .sort();
   assert.deepEqual(
     mutating,
-    [EXPECTED_MUTATING_TOOL],
-    `Exactly one tool may be human-gated/mutating (approval: always()); a ` +
-      `second one is a second write path. Found: ${mutating.join(", ") || "(none)"}`,
+    EXPECTED_MUTATING_TOOLS,
+    `Every mutating tool must be gated (approval: always()), and the gated ` +
+      `set is enumerated, not open-ended: an UNGATED mutating tool, or an ` +
+      `unreviewed EXTRA gated tool, is a policy violation the moment it ` +
+      `diverges from EXPECTED_MUTATING_TOOLS. Found: ${mutating.join(", ") || "(none)"}`,
   );
 });
 
-test("the create_issue tool is human-gated (defineTool + approval: always())", () => {
-  const src = stripComments(readFileSync(`${toolsDir}/create_issue.ts`, "utf8"));
-  assert.match(
-    src,
-    /defineTool\(/,
-    "create_issue must be authored with defineTool",
-  );
-  assert.match(
-    src,
-    APPROVAL_ALWAYS_RE,
-    "create_issue must gate every invocation behind approval: always()",
-  );
+test("every enumerated gated tool is human-gated (defineTool + approval: always())", () => {
+  for (const file of EXPECTED_MUTATING_TOOLS) {
+    const src = stripComments(readFileSync(`${toolsDir}/${file}`, "utf8"));
+    assert.match(src, /defineTool\(/, `${file} must be authored with defineTool`);
+    assert.match(
+      src,
+      APPROVAL_ALWAYS_RE,
+      `${file} must gate every invocation behind approval: always()`,
+    );
+  }
 });
 
 test("no subagent authors a mutating tool or a second write path", () => {

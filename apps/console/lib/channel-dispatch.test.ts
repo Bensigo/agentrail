@@ -201,6 +201,48 @@ describe("dispatchQueuedChannelMessages — 'ask' kind", () => {
   });
 });
 
+describe("dispatchQueuedChannelMessages — 'ask' kind — name-vs-index precedence (reviewer Important #3)", () => {
+  // A workspace literally named "2" sits at position 1 (index 0) — a
+  // DIFFERENT position than what a numeric-first parse of the reply "2"
+  // would index to (position 2, "Other"). This is the exact mis-pin the
+  // reviewer flagged: an exact name match must win before a numeric index
+  // is even considered.
+  const NAME_COLLIDES_WITH_INDEX_OPTIONS = [
+    { id: "ws-named-2", name: "2" },
+    { id: "ws-other", name: "Other" },
+  ];
+
+  it("an exact name match wins over the numeric-index reading of the same text", async () => {
+    mockClaim.mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "2" } })).mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "ask", options: NAME_COLLIDES_WITH_INDEX_OPTIONS } as never);
+    mockPin.mockResolvedValue({ ok: true, sessionId: "pin-sess-named-2" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    // Pins the workspace NAMED "2" (position 1) — NOT position 2 ("Other"),
+    // which is what treating "2" as a 1-indexed position (index 2-1=1)
+    // would have wrongly picked.
+    expect(mockPin).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: "ws-named-2" }),
+    );
+  });
+
+  it("still falls back to the 1-indexed position when no workspace name matches the reply", async () => {
+    mockClaim.mockResolvedValueOnce(row({ payload: { chatId: -100123, text: "1" } })).mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "ask", options: NAME_COLLIDES_WITH_INDEX_OPTIONS } as never);
+    mockPin.mockResolvedValue({ ok: true, sessionId: "pin-sess-pos-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    // No workspace is named "1", so this reply falls through to the numeric
+    // path and resolves position 1 (index 0) — ws-named-2, in this fixture,
+    // reached via the INDEX path rather than the name-match path.
+    expect(mockPin).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: "ws-named-2" }),
+    );
+  });
+});
+
 describe("dispatchQueuedChannelMessages — 'intro' kind", () => {
   it("runs the Eve turn with workspace null in the auth attributes, and posts the EXACT body", async () => {
     mockClaim.mockResolvedValueOnce(row()).mockResolvedValueOnce(null);

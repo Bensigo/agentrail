@@ -107,22 +107,29 @@ function extractPayload(payload: unknown): TelegramInboxPayload | null {
 }
 
 /**
- * Parse an 'ask' conversation's reply as a workspace choice: an integer
- * 1..N (1-indexed against `options`) or an exact case-insensitive
- * workspace-name match. Returns `null` for anything else (the "invalid
- * reply" path, which re-sends the same options).
+ * Parse an 'ask' conversation's reply as a workspace choice: an exact
+ * case-insensitive workspace-name match, or (only if no name matches) an
+ * integer 1..N (1-indexed against `options`). Returns `null` for anything
+ * else (the "invalid reply" path, which re-sends the same options).
+ *
+ * Name match MUST run before the numeric-index check: a workspace can
+ * legitimately be named "2", and it may not sit at position 2 — checking
+ * the index first would silently mis-pin whatever happens to occupy that
+ * position instead of the workspace the reply actually names.
  */
 function parseWorkspaceChoice(
   text: string,
   options: readonly ReachableWorkspace[]
 ): ReachableWorkspace | null {
   const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+  const byName = options.find((option) => option.name.toLowerCase() === lower);
+  if (byName) return byName;
   if (/^\d+$/.test(trimmed)) {
     const index = Number(trimmed) - 1;
     return options[index] ?? null;
   }
-  const lower = trimmed.toLowerCase();
-  return options.find((option) => option.name.toLowerCase() === lower) ?? null;
+  return null;
 }
 
 /**
@@ -242,6 +249,11 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       return "failed";
     }
 
+    // INVARIANT this dispatcher assumes but does not enforce: channel_inbox's
+    // (channel, senderId) here MUST equal the (platform, platformUserId) a
+    // chat_identities row was created under. The Telegram webhook (route.ts)
+    // guarantees it today (same String(from.id) feeds both). A future
+    // Discord/Slack writer that breaks this pairing dead-letters silently below.
     const identity = await getChatIdentity(row.channel, row.senderId);
     if (!identity) {
       await failChannelMessage(

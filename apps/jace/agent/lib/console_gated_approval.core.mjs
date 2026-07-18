@@ -80,6 +80,16 @@
 // callback three DIFFERENT tools wire in — so the thin ctx-extracting entry
 // point production code actually calls lives here too, right next to the
 // pure core it wraps, rather than in a separate per-tool file.
+//
+// ARCHITECTURAL RESIDUAL (acceptable for v1; revisit if it bites): while an
+// approval is pending, `pollApprovalStatus`'s `await` keeps the calling Eve
+// turn open for as long as POLL_TTL_MS (up to 30 minutes) — from Eve's point
+// of view, this whole approval fn call is a single durable-workflow step
+// blocked on the poll, not a cheap idle wait. That's an acceptable v1
+// trade-off at today's traffic, but if Eve's turn-concurrency limits or a
+// workflow-level step/turn timeout ever start to bite, THIS is the mechanism
+// to revisit (e.g. moving the wait outside the turn, or shortening
+// POLL_TTL_MS) — tracked under issue #1273.
 
 import { createHash } from "node:crypto";
 
@@ -102,6 +112,18 @@ export const INFRA_FAILURE_REASON =
 // lockstep against the console.
 const POLL_BACKOFF_SEQUENCE_MS = [2000, 5000, 10000];
 const POLL_JITTER_MS = 250;
+
+// A single transient GET failure (a dropped connection, a momentary 502)
+// shouldn't be enough to deny a 30-minute human approval outright — that's a
+// disproportionate outcome for one network blip that has nothing to do with
+// the approval decision itself. So a failed poll gets exactly ONE immediate
+// retry after this short, FIXED (unjittered, unrelated to the backoff
+// schedule above) delay; only if that retry ALSO fails do we fail closed as
+// before. Two consecutive failures in a row reads as genuine infrastructure
+// trouble rather than a blip, and the existing fail-closed denial still
+// applies at that point — this is a tolerance for one bad beat, not a
+// general retry-forever policy.
+const BLIP_RETRY_DELAY_MS = 500;
 
 // Overall poll budget: past this, an unresolved "pending" is treated as an
 // honest expiry, never a silent approval. This is the v1 mechanism (no
@@ -168,16 +190,40 @@ export function buildApprovalStatusUrl(baseUrl, approvalId) {
 }
 
 /**
+ * Canonicalize a value before hashing: recursively sort object keys so two
+ * objects with identical content but a different key-insertion order
+ * serialize identically. Arrays keep their own element order — order IS
+ * meaningful there, unlike an object's key order, which is not.
+ *
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+function canonicalize(value) {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    const sorted = {};
+    for (const key of Object.keys(value).sort()) sorted[key] = canonicalize(value[key]);
+    return sorted;
+  }
+  return value;
+}
+
+/**
  * Hash a tool's parsed input into a short, stable hex digest. Used only to
  * disambiguate the idempotency key (see the module comment above) — this is
  * NOT a security boundary, just a practical collision-avoidance measure, so
- * a short truncated digest is plenty.
+ * a short truncated digest is plenty. Canonicalizes first (recursively
+ * sorted object keys, arrays keep their order) so two logically-identical
+ * inputs whose keys just happened to be built/serialized in a different
+ * order — e.g. the model producing an equivalent object a second time, or a
+ * different JS engine's own enumeration order — still hash identically,
+ * rather than spuriously reading as a "different" call.
  *
  * @param {unknown} toolInput
  * @returns {string}
  */
 export function hashToolInput(toolInput) {
-  const json = JSON.stringify(toolInput ?? {});
+  const json = JSON.stringify(canonicalize(toolInput ?? {}));
   return createHash("sha256").update(json).digest("hex").slice(0, 16);
 }
 
@@ -261,8 +307,14 @@ async function postApprovalRequest({
     return { ok: false };
   }
 
+  // Number(undefined/null/garbage) is NaN, and NaN < 200 and NaN >= 300 are
+  // BOTH false — without the explicit finiteness check, a missing or
+  // malformed status would silently fall through as "in range" and this
+  // would go on to trust whatever body the transport handed back. Fail
+  // closed instead: anything that isn't a real HTTP status is treated as a
+  // failure, same as an explicit non-2xx.
   const httpStatus = Number(res && res.status);
-  if (httpStatus < 200 || httpStatus >= 300) return { ok: false };
+  if (!Number.isFinite(httpStatus) || httpStatus < 200 || httpStatus >= 300) return { ok: false };
 
   let body;
   try {
@@ -280,10 +332,11 @@ async function postApprovalRequest({
 }
 
 /**
- * GET one status poll. Single attempt, no retry: a failure here fails the
- * WHOLE poll closed immediately (denied, infra reason) rather than adding a
- * second retry layer on top of the backoff loop that calls this — see the
- * module comment on why "never throws" matters more than "never gives up".
+ * GET one status poll. This function itself makes a single attempt with no
+ * retry of its own; it's the CALLER, `pollApprovalStatus` below, that
+ * retries a failed call here exactly once (see BLIP_RETRY_DELAY_MS) before
+ * treating it as a fail-closed denial — see the module comment on why
+ * "never throws" matters more than "never gives up".
  */
 async function getApprovalStatus({ baseUrl, token, approvalId, transport }) {
   const url = buildApprovalStatusUrl(baseUrl, approvalId);
@@ -297,8 +350,12 @@ async function getApprovalStatus({ baseUrl, token, approvalId, transport }) {
     return { ok: false };
   }
 
+  // See postApprovalRequest's identical guard above: Number(undefined) is
+  // NaN, and NaN < 200 / NaN >= 300 are both false, so without the explicit
+  // finiteness check a missing/garbage status would silently read as
+  // "in range". Fail closed instead.
   const httpStatus = Number(res && res.status);
-  if (httpStatus < 200 || httpStatus >= 300) return { ok: false };
+  if (!Number.isFinite(httpStatus) || httpStatus < 200 || httpStatus >= 300) return { ok: false };
 
   let body;
   try {
@@ -316,7 +373,9 @@ async function getApprovalStatus({ baseUrl, token, approvalId, transport }) {
  * Poll GET .../approvals/[id] with backoff until a terminal status or the
  * overall TTL. Backoff happens BEFORE each GET (so the first poll doesn't
  * fire immediately after the POST, when no human has had time to react
- * yet); the TTL is checked once per iteration, before sleeping again.
+ * yet); the TTL is checked once per iteration, before sleeping again. A
+ * failed GET gets exactly one immediate retry (BLIP_RETRY_DELAY_MS) before
+ * this fails the poll closed — see that constant's own comment for why.
  */
 async function pollApprovalStatus({ baseUrl, token, approvalId, transport, sleep, now }) {
   const deadline = now() + POLL_TTL_MS;
@@ -328,8 +387,17 @@ async function pollApprovalStatus({ baseUrl, token, approvalId, transport, sleep
     await sleep(nextBackoffDelay(attempt));
     attempt += 1;
 
-    const polled = await getApprovalStatus({ baseUrl, token, approvalId, transport });
-    if (!polled.ok) return deniedStatus(INFRA_FAILURE_REASON);
+    let polled = await getApprovalStatus({ baseUrl, token, approvalId, transport });
+    if (!polled.ok) {
+      // One transient failure gets exactly one immediate retry (see
+      // BLIP_RETRY_DELAY_MS' own comment) — a 30-min human approval
+      // shouldn't die to a single network blip. A second consecutive
+      // failure right here IS treated as infrastructure trouble, same as
+      // before this retry existed: fail closed.
+      await sleep(BLIP_RETRY_DELAY_MS);
+      polled = await getApprovalStatus({ baseUrl, token, approvalId, transport });
+      if (!polled.ok) return deniedStatus(INFRA_FAILURE_REASON);
+    }
     if (polled.status !== "pending") return mapTerminalStatus(polled.status);
     // else still pending — loop back to the top and re-check the TTL.
   }

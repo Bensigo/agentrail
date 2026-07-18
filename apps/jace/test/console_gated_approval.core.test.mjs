@@ -120,10 +120,26 @@ test("buildApprovalStatusUrl encodes an approvalId that needs it", () => {
 // hashToolInput / deriveIdempotencyKey
 // ---------------------------------------------------------------------------
 
-test("hashToolInput is deterministic for the same logical input", () => {
-  const a = hashToolInput({ title: "Add dark mode", acceptanceCriteria: ["x"] });
-  const b = hashToolInput({ title: "Add dark mode", acceptanceCriteria: ["x"] });
-  assert.equal(a, b);
+test("hashToolInput is order-insensitive: identical content with reversed key insertion order hashes the same; different content hashes differently", () => {
+  const a = { title: "Add dark mode", acceptanceCriteria: ["x"], parent: "epic-1" };
+  const bReversedKeys = { parent: "epic-1", acceptanceCriteria: ["x"], title: "Add dark mode" };
+  // Sanity check that this is a REAL test, not the vacuous one it replaces:
+  // these two literals must actually have different key insertion order, or
+  // this would prove nothing about canonicalization.
+  assert.notDeepEqual(Object.keys(a), Object.keys(bReversedKeys));
+  assert.equal(hashToolInput(a), hashToolInput(bReversedKeys));
+
+  const differentContent = { title: "Add light mode", acceptanceCriteria: ["x"], parent: "epic-1" };
+  assert.notEqual(hashToolInput(a), hashToolInput(differentContent));
+});
+
+test("hashToolInput canonicalizes recursively — reversed key order at any nesting depth hashes the same, but array element order still matters", () => {
+  const a = { outer: { b: 2, a: 1 }, items: ["x", "y"] };
+  const nestedKeysReversed = { outer: { a: 1, b: 2 }, items: ["x", "y"] };
+  assert.equal(hashToolInput(a), hashToolInput(nestedKeysReversed));
+
+  const arrayReordered = { outer: { a: 1, b: 2 }, items: ["y", "x"] };
+  assert.notEqual(hashToolInput(a), hashToolInput(arrayReordered));
 });
 
 test("hashToolInput differs for different input", () => {
@@ -137,14 +153,26 @@ test("hashToolInput treats undefined/null the same as an empty object", () => {
   assert.equal(hashToolInput(null), hashToolInput({}));
 });
 
-test("deriveIdempotencyKey is STABLE across retries of the same logical call (same session/turn/tool/input)", () => {
-  const args = {
+test("deriveIdempotencyKey is STABLE across retries of the same logical call, even if toolInput's keys were built in a different order", () => {
+  // A bare `{ ...args }` spread would preserve toolInput's own key order
+  // unchanged (it's the same nested object by reference), proving nothing
+  // about order-insensitivity — the real retry case this guards is the
+  // model (or a client) re-serializing an equivalent object with its keys
+  // in a different order, so this test builds toolInput with genuinely
+  // reversed key insertion order instead.
+  const keyA = deriveIdempotencyKey({
     eveSessionId: "eve-session-1",
     turnId: "turn-1",
     toolName: "create_issue",
-    toolInput: { title: "Add dark mode" },
-  };
-  assert.equal(deriveIdempotencyKey(args), deriveIdempotencyKey({ ...args }));
+    toolInput: { title: "Add dark mode", parent: "epic-1" },
+  });
+  const keyB = deriveIdempotencyKey({
+    eveSessionId: "eve-session-1",
+    turnId: "turn-1",
+    toolName: "create_issue",
+    toolInput: { parent: "epic-1", title: "Add dark mode" },
+  });
+  assert.equal(keyA, keyB);
 });
 
 test("deriveIdempotencyKey is DISTINCT across a genuinely new call — different toolInput within the SAME turn", () => {
@@ -399,6 +427,25 @@ test("POST non-2xx -> denied", async () => {
   }
 });
 
+test("POST with a non-finite status (e.g. undefined) -> denied, fails closed instead of reading NaN as in-range", async () => {
+  // Regression test: Number(undefined) is NaN, and NaN < 200 / NaN >= 300 are
+  // BOTH false, so a naive range check would silently treat a missing status
+  // as "in range" and go on to trust the body below (here: an approved
+  // reply). The explicit Number.isFinite guard must catch this.
+  const transport = fakeTransport(async () => ({
+    status: undefined,
+    json: async () => ({ approvalId: "a1", status: "approved" }),
+  }));
+  const result = await runConsoleGatedApproval({
+    ...BASE_ARGS,
+    env: ENV,
+    transport,
+    sleep: fakeSleep(),
+    now: fakeClock(0, 1000),
+  });
+  assert.deepEqual(result, { type: "denied", reason: INFRA_FAILURE_REASON });
+});
+
 test("POST 200 with non-JSON body -> denied", async () => {
   const transport = fakeTransport(async () => ({
     status: 201,
@@ -428,7 +475,7 @@ test("POST 200 with a body missing approvalId/status -> denied", async () => {
   assert.deepEqual(result, { type: "denied", reason: INFRA_FAILURE_REASON });
 });
 
-test("GET transport throws mid-poll -> denied, does not keep retrying", async () => {
+test("GET transport throws TWICE in a row mid-poll -> denied after exactly one retry (two consecutive failures reads as infrastructure)", async () => {
   const transport = fakeTransport(
     async () => ({ status: 201, json: async () => ({ approvalId: "approval-1", status: "pending" }) }),
     async () => {
@@ -443,13 +490,49 @@ test("GET transport throws mid-poll -> denied, does not keep retrying", async ()
     now: fakeClock(0, 1000),
   });
   assert.deepEqual(result, { type: "denied", reason: INFRA_FAILURE_REASON });
-  assert.equal(transport.calls.length, 2); // POST + the one failing GET, no third call
+  // POST + the first failing GET + the one retry (also failing, since this
+  // transport throws on every call from the second one onward) — no third GET.
+  assert.equal(transport.calls.length, 3);
 });
 
-test("GET non-2xx mid-poll -> denied", async () => {
+test("GET transport throws ONCE then recovers mid-poll -> the one-retry blip tolerance avoids a denial", async () => {
+  const transport = fakeTransport(
+    async () => ({ status: 201, json: async () => ({ approvalId: "approval-1", status: "pending" }) }), // POST
+    async () => {
+      throw new Error("socket hang up — one-off blip");
+    }, // first GET: transient failure
+    async () => ({ status: 200, json: async () => ({ status: "approved" }) }) // retried GET: recovers
+  );
+  const result = await runConsoleGatedApproval({
+    ...BASE_ARGS,
+    env: ENV,
+    transport,
+    sleep: fakeSleep(),
+    now: fakeClock(0, 1000),
+  });
+  assert.deepEqual(result, { type: "approved", reason: APPROVED_REASON });
+  assert.equal(transport.calls.length, 3); // POST + failing GET + retried GET (recovered)
+});
+
+test("GET non-2xx mid-poll -> denied (after the one blip retry also comes back non-2xx)", async () => {
   const transport = fakeTransport(
     async () => ({ status: 201, json: async () => ({ approvalId: "approval-1", status: "pending" }) }),
     async () => ({ status: 500, json: async () => ({}) })
+  );
+  const result = await runConsoleGatedApproval({
+    ...BASE_ARGS,
+    env: ENV,
+    transport,
+    sleep: fakeSleep(),
+    now: fakeClock(0, 1000),
+  });
+  assert.deepEqual(result, { type: "denied", reason: INFRA_FAILURE_REASON });
+});
+
+test("GET with a non-finite status (e.g. undefined) mid-poll -> denied, fails closed instead of reading NaN as in-range", async () => {
+  const transport = fakeTransport(
+    async () => ({ status: 201, json: async () => ({ approvalId: "approval-1", status: "pending" }) }),
+    async () => ({ status: undefined, json: async () => ({ status: "approved" }) })
   );
   const result = await runConsoleGatedApproval({
     ...BASE_ARGS,

@@ -11,6 +11,7 @@ wire contract of ``push_onboard_items``.
 from __future__ import annotations
 
 import json
+import subprocess
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ from agentrail.runner.onboard import (
     MEMORY_TYPES,
     ONBOARD_CATEGORIES,
     _CATEGORY_TYPE,
+    _clone,
     _default_items,
     _postprocess_items,
     _repo_full_name,
@@ -65,6 +67,105 @@ def _no_freshness(*_a: Any, **_k: Any) -> Optional[datetime]:
     return None
 
 
+class _FakeProc:
+    """A minimal subprocess.CompletedProcess-alike (returncode/stdout/stderr)."""
+
+    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class _FakeGitRunner:
+    """The `runner` seam _clone (and native_runner) accept: a `.run(cmd, **kw)`
+    that either returns a fake completed process or raises a pre-set
+    exception. Captures every call's argv for structural assertions — never
+    touches the network or a real git binary.
+    """
+
+    def __init__(self, *, result: _FakeProc | None = None, raises: Exception | None = None) -> None:
+        self.calls: List[Dict[str, Any]] = []
+        self._result = result if result is not None else _FakeProc()
+        self._raises = raises
+
+    def run(self, cmd: List[str], **kwargs: Any) -> _FakeProc:
+        self.calls.append({"cmd": cmd, **kwargs})
+        if self._raises is not None:
+            raise self._raises
+        return self._result
+
+
+# ---------------------------------------------------------------------------
+# _clone: private-repo auth + token redaction (#1268)
+# ---------------------------------------------------------------------------
+
+class TestClonePrivateAuth:
+    def test_embeds_token_in_clone_url_when_present(self) -> None:
+        fake = _FakeGitRunner()
+
+        _clone("https://github.com/owner/repo", "main", "/tmp/dest", token="secret-tok", runner=fake)
+
+        cmd = fake.calls[0]["cmd"]
+        assert "https://x-access-token:secret-tok@github.com/owner/repo" in cmd
+
+    def test_no_token_leaves_the_clone_url_unchanged_public_path_byte_identical(self) -> None:
+        fake = _FakeGitRunner()
+
+        _clone("https://github.com/owner/repo", "main", "/tmp/dest", runner=fake)
+
+        cmd = fake.calls[0]["cmd"]
+        assert "https://github.com/owner/repo" in cmd
+        assert "x-access-token" not in " ".join(cmd)
+
+    def test_redacts_token_from_stderr_on_a_nonzero_exit(self) -> None:
+        """Simulates a git version that (unlike this host's) echoes the
+        credentialed URL verbatim in a failure message — redact_token must
+        still scrub it before it reaches the raised exception's text.
+        """
+        token = "super-secret-token"
+        leaky_stderr = (
+            f"fatal: could not read from 'https://x-access-token:{token}@github.com/owner/repo'"
+        )
+        fake = _FakeGitRunner(result=_FakeProc(returncode=128, stderr=leaky_stderr))
+
+        try:
+            _clone("https://github.com/owner/repo", "main", "/tmp/dest", token=token, runner=fake)
+            raise AssertionError("expected RuntimeError")
+        except RuntimeError as exc:
+            assert token not in str(exc)
+            assert "***" in str(exc)
+
+    def test_redacts_token_from_a_subprocess_timeout_exception(self) -> None:
+        """Ground-truth #1268 finding: subprocess.TimeoutExpired.__str__()
+        unconditionally embeds the raw argv it was constructed with —
+        including the credentialed clone URL — regardless of what git itself
+        printed. Verified empirically: a real subprocess.run(..., check=True)
+        failure's CalledProcessError.__str__() does exactly this. _clone must
+        catch and redact it, not let it propagate to run_onboard's
+        gate_reason unredacted.
+        """
+        token = "super-secret-token"
+        clone_url = f"https://x-access-token:{token}@github.com/owner/repo"
+        timeout_exc = subprocess.TimeoutExpired(cmd=["git", "clone", clone_url], timeout=300)
+        fake = _FakeGitRunner(raises=timeout_exc)
+
+        try:
+            _clone("https://github.com/owner/repo", "main", "/tmp/dest", token=token, runner=fake)
+            raise AssertionError("expected RuntimeError")
+        except RuntimeError as exc:
+            assert token not in str(exc)
+            assert "***" in str(exc)
+
+    def test_no_token_stderr_failure_message_is_unaffected_by_redaction(self) -> None:
+        fake = _FakeGitRunner(result=_FakeProc(returncode=128, stderr="fatal: repository not found"))
+
+        try:
+            _clone("https://github.com/owner/repo", "main", "/tmp/dest", runner=fake)
+            raise AssertionError("expected RuntimeError")
+        except RuntimeError as exc:
+            assert "repository not found" in str(exc)
+
+
 # ---------------------------------------------------------------------------
 # run_onboard: dispatch + branches
 # ---------------------------------------------------------------------------
@@ -72,11 +173,11 @@ def _no_freshness(*_a: Any, **_k: Any) -> Optional[datetime]:
 def test_run_onboard_happy_path_is_green():
     clone_calls: List[tuple] = []
 
-    def clone_fn(repo_url, ref, dest):
-        clone_calls.append((repo_url, ref, dest))
+    def clone_fn(repo_url, ref, dest, *, token=""):
+        clone_calls.append((repo_url, ref, dest, token))
 
     result = run_onboard(
-        _work_item(),
+        _work_item(github_token="wi-secret-token"),
         base_url="https://app.agentrail.dev",
         api_key="rt_secret",
         clone_fn=clone_fn,
@@ -91,6 +192,8 @@ def test_run_onboard_happy_path_is_green():
     assert "4" in result.gate_reason
     assert result.branch == "main"
     assert clone_calls, "clone_fn was invoked"
+    # #1268: the claim's github_token must reach clone_fn.
+    assert clone_calls[0][3] == "wi-secret-token"
 
 
 def test_run_onboard_missing_repository_id_is_red_and_skips_clone():
@@ -112,7 +215,7 @@ def test_run_onboard_missing_repository_id_is_red_and_skips_clone():
 
 
 def test_run_onboard_clone_failure_is_error():
-    def clone_fn(repo_url, ref, dest):
+    def clone_fn(repo_url, ref, dest, *, token=""):
         raise RuntimeError("remote branch not found")
 
     result = run_onboard(
@@ -129,6 +232,35 @@ def test_run_onboard_clone_failure_is_error():
 
     assert result.status == "error"
     assert "clone" in result.gate_reason
+
+
+def test_run_onboard_redacts_token_even_from_a_non_redacting_custom_clone_fn():
+    """Defense in depth: clone_fn is an injectable seam. The DEFAULT _clone
+    always redacts (TestClonePrivateAuth above), but a caller-supplied
+    clone_fn might not — run_onboard's own outer handler must redact
+    item.github_token from gate_reason regardless of what clone_fn raises.
+    """
+    token = "wi-secret-token"
+
+    def leaky_clone_fn(repo_url, ref, dest, *, token=""):
+        # Simulates a clone_fn that does NOT sanitize its own exception.
+        raise RuntimeError(f"git clone failed for https://x-access-token:{token}@github.com/o/r")
+
+    result = run_onboard(
+        _work_item(github_token=token),
+        base_url="https://app.agentrail.dev",
+        api_key="rt_secret",
+        clone_fn=leaky_clone_fn,
+        index_fn=lambda p: {},
+        brief_fn=lambda *a, **k: list(_FOUR_ITEMS),
+        push_fn=lambda *a, **k: (True, "ok"),
+        freshness_fn=_no_freshness,
+        work_dir_factory=lambda: _mkdtemp(),
+    )
+
+    assert result.status == "error"
+    assert token not in result.gate_reason
+    assert "***" in result.gate_reason
 
 
 def test_run_onboard_push_failure_is_red():
@@ -228,7 +360,7 @@ def test_run_onboard_none_freshness_proceeds_to_clone():
         _work_item(),
         base_url="https://app.agentrail.dev",
         api_key="rt_secret",
-        clone_fn=lambda repo_url, ref, dest: clone_calls.append((repo_url, ref, dest)),
+        clone_fn=lambda repo_url, ref, dest, **_kw: clone_calls.append((repo_url, ref, dest)),
         index_fn=lambda p: {"indexed": 1, "graphNodes": 0, "commitSha": "x"},
         brief_fn=lambda *a, **k: list(_FOUR_ITEMS),
         push_fn=lambda *a, **k: (True, "ok"),
@@ -250,7 +382,7 @@ def test_run_onboard_stale_onboarding_proceeds_to_clone():
         _work_item(),
         base_url="https://app.agentrail.dev",
         api_key="rt_secret",
-        clone_fn=lambda repo_url, ref, dest: clone_calls.append((repo_url, ref, dest)),
+        clone_fn=lambda repo_url, ref, dest, **_kw: clone_calls.append((repo_url, ref, dest)),
         index_fn=lambda p: {"indexed": 1, "graphNodes": 0, "commitSha": "x"},
         brief_fn=lambda *a, **k: list(_FOUR_ITEMS),
         push_fn=lambda *a, **k: (True, "ok"),

@@ -1,6 +1,7 @@
 import {
   getConnector,
-  hasActiveRunner,
+  getWorkspace,
+  hasActiveSelfHostedRunner,
   listInvites,
   listWorkspaceMembers,
 } from "@agentrail/db-postgres";
@@ -41,21 +42,39 @@ export interface OnboardingData {
     count: number;
   };
   runner: {
+    /** True whenever the workspace has ANY execution path — hosted (the
+     * default) or an active self-hosted runner. Drives the "Attach a runner"
+     * step's completion (#1268, workspaceHasExecutionPath). */
     connected: boolean;
+    /** Specifically whether a self-hosted runner (not hosted-fleet
+     * execution) is live — lets the UI say something honest instead of
+     * calling hosted-fleet execution "your runner" (#1268). */
+    selfHosted: boolean;
   };
 }
 
 export async function loadOnboardingData(
   workspaceId: string
 ): Promise<OnboardingData> {
-  const [githubConnector, telegramConnector, pendingInvites, members, runnerConnected] =
+  const [githubConnector, telegramConnector, pendingInvites, members, workspace, selfHostedActive] =
     await Promise.all([
       getConnector(workspaceId, "github"),
       getConnector(workspaceId, "telegram"),
       listInvites(workspaceId), // pending, unexpired only
       listWorkspaceMembers(workspaceId),
-      hasActiveRunner(workspaceId),
+      getWorkspace(workspaceId),
+      hasActiveSelfHostedRunner(workspaceId),
     ]);
+
+  // Same disjunct as `workspaceHasExecutionPath` (the named onboard-enqueue
+  // gate the connect-time routes use — see its doc-comment in
+  // packages/db-postgres/src/queries/index.ts), derived LOCALLY here instead
+  // of calling it: this loader also needs the bare `selfHosted` signal for
+  // honest wizard copy, and the predicate internally runs the same two reads
+  // — calling both on the wizard's 4-second poll loop would query
+  // hasActiveSelfHostedRunner twice per tick for no reason. Keep this line in
+  // lockstep with workspaceHasExecutionPath if that predicate ever changes.
+  const hasExecutionPath = Boolean(workspace?.hostedExecution) || selfHostedActive;
 
   const repos = githubConnector?.config.repos ?? [];
   const webhookSecret = githubConnector?.config.webhookSecret ?? null;
@@ -72,7 +91,7 @@ export async function loadOnboardingData(
     github: { repoCount: repos.length, hasWebhookSecret: Boolean(webhookSecret) },
     channel: { connected: channelConnected, skipped: channelSkipped },
     invites: { count: invitesCount },
-    runner: { connected: runnerConnected },
+    runner: { connected: hasExecutionPath },
   };
 
   return {
@@ -89,6 +108,6 @@ export async function loadOnboardingData(
       chatId: telegramConnector?.config.chatId ?? null,
     },
     invites: { count: invitesCount },
-    runner: { connected: runnerConnected },
+    runner: { connected: hasExecutionPath, selfHosted: selfHostedActive },
   };
 }

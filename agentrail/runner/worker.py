@@ -99,6 +99,14 @@ def _run_slot(
         try:
             result = execute(item)
         except Exception as exc:  # noqa: BLE001 — one issue must not kill the loop
+            # str(exc) lands in gate_reason (reported to the backend), so this
+            # relies on an invariant the executors uphold: any exception that
+            # could carry a secret is redacted BEFORE it can escape execute().
+            # Concretely, run_onboard's _clone redacts the github token from
+            # both stderr tails and subprocess exception text at raise time,
+            # and run_onboard's own handler redacts again (#1268); the
+            # issue-path sandbox runners never raise token-bearing errors
+            # (they return RunResults with _redact_token-scrubbed fields).
             _log.warning("execution failed for %s: %s", item.id, exc)
             result = RunResult(status="error", gate_reason=str(exc))
         try:

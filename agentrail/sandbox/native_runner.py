@@ -45,6 +45,16 @@ from agentrail.sandbox.docker_runner import (
     RunResult,
     sum_cost_ledger,
 )
+# _authenticated_clone_url / _redact_token used to be defined in this module.
+# #1268 extracted them into agentrail.sandbox.clone_auth as the ONE shared
+# implementation (the onboard work-kind handler needed the exact same
+# mechanism and a duplicate would drift) — re-imported under their original
+# names so every existing call site below, and this module's own test suite
+# (agentrail/tests/sandbox/test_native_runner.py), is unchanged.
+from agentrail.sandbox.clone_auth import (
+    authenticated_clone_url as _authenticated_clone_url,
+    redact_token as _redact_token,
+)
 
 DEFAULT_TIMEOUT = 3600  # seconds — hard ceiling on the whole host run.
 DEFAULT_AGENT = "claude"  # host login + claude's native bash sandbox.
@@ -199,36 +209,6 @@ _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 def _ref_is_commit_sha(ref: str) -> bool:
     """True when ``ref`` looks like a bare commit SHA (not a branch/tag name)."""
     return bool(_SHA_RE.match(ref))
-
-
-def _authenticated_clone_url(repo_url: str, token: str) -> str:
-    """Embed ``token`` as HTTP Basic auth (``x-access-token``) in an ``https://``
-    clone URL, so ``git clone`` (and, since the cloned ``origin`` remote then
-    carries it, every later ``git push``) authenticates as the workspace's
-    connected GitHub OAuth token / a locally configured PAT — the SAME
-    substitution the Docker sandbox's entrypoint already does
-    (``agentrail/docker/runner/entrypoint.sh``), so both sandbox paths
-    authenticate identically.
-
-    A no-op when there is no token, or the URL isn't ``https://`` (SSH remotes
-    are unaffected — git's credential subsystem is HTTP(S)-only, so an SSH clone
-    keeps relying on the host's own SSH keys exactly as before this fix).
-    """
-    if not token or not repo_url.startswith("https://"):
-        return repo_url
-    return repo_url.replace("https://", f"https://x-access-token:{token}@", 1)
-
-
-def _redact_token(text: str, token: str) -> str:
-    """Strip a raw secret out of captured process output before it can leave this
-    host as ``logs_tail``/``gate_reason`` (``report_result``/``report_telemetry``
-    upload both to the backend). Defense in depth: git/gh diagnostics don't
-    always redact credentials embedded in a URL on their own, and this makes it
-    impossible for the token to survive into anything this runner reports back.
-    """
-    if not token:
-        return text
-    return text.replace(token, "***")
 
 
 def _clone_command(repo_url: str, ref: str, dest: str) -> List[str]:

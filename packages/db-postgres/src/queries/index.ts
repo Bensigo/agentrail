@@ -1007,12 +1007,16 @@ export async function hasActiveRunner(
  * `last_used_at` touches (which `hasActiveRunner` above, being kind-agnostic,
  * would count).
  *
- * `hasActiveRunner` itself is UNCHANGED and still kind-agnostic — its existing
- * callers (onboard-enqueue gating in `runner/repos/route.ts` and
- * `workspaces/[workspaceId]/repos/route.ts`, plus the onboarding-steps UI read
- * in `onboarding-data.ts`) keep counting either kind as "a runner is here".
- * Narrowing THOSE call sites to self-hosted-only is #1268's job, not this
- * PR's — noted here rather than silently done.
+ * `hasActiveRunner` itself is UNCHANGED and still kind-agnostic. Its three
+ * former callers were swapped off it (#1268): the two onboard-enqueue gates
+ * (`runner/repos/route.ts`, `workspaces/[workspaceId]/repos/route.ts`) now
+ * call {@link workspaceHasExecutionPath} below, which composes THIS function
+ * with `workspaces.hostedExecution` rather than narrowing to self-hosted
+ * alone — see that function's own doc-comment for why. The third
+ * (`onboarding-data.ts`, a 4-second wizard poll) needs the bare self-hosted
+ * signal too, so it calls THIS function once plus `getWorkspace` and derives
+ * the same disjunct locally rather than paying for the presence probe twice
+ * per tick.
  */
 export async function hasActiveSelfHostedRunner(
   workspaceId: string,
@@ -1032,6 +1036,46 @@ export async function hasActiveSelfHostedRunner(
     )
     .limit(1);
   return rows.length > 0;
+}
+
+/**
+ * The race-free onboard-enqueue gate (#1268): true when the workspace has ANY
+ * path to execution — `workspaces.hostedExecution` (a static column,
+ * defaulting `true` for every workspace, see its own doc-comment) OR a
+ * currently-live self-hosted runner ({@link hasActiveSelfHostedRunner}).
+ *
+ * Composed from the two existing reads (one `getWorkspace` lookup, one
+ * `hasActiveSelfHostedRunner` presence check), run concurrently, rather than
+ * a single fused query with a correlated EXISTS: this predicate only runs at
+ * repo-connect time (not a hot loop), so the second round trip is immaterial,
+ * while composition reuses `hasActiveSelfHostedRunner`'s window/kind logic
+ * verbatim instead of re-deriving it inline — one source of truth for "is a
+ * self-hosted runner active right now" rather than two copies that could
+ * drift apart.
+ *
+ * Why not `hasActiveRunner` / `hasActiveSelfHostedRunner` alone: both require
+ * a PRIOR claim to have already touched `last_used_at`. For a brand-new
+ * workspace at the exact instant its first repo is connected, no runner has
+ * claimed anything yet — the hosted fleet mints/rotates `kind: 'fleet'` keys
+ * on its own sync schedule (boot + every `FLEET_SYNC_INTERVAL_SECONDS`,
+ * sweeping every workspace in the deployment), not triggered by repo-connect
+ * — so that heuristic is essentially always false at the one moment
+ * `enqueueOnboard` needs it to be true. `enqueueOnboard` is called
+ * synchronously, exactly once, with no retry path (idempotent via a
+ * deterministic id + `onConflictDoNothing` — see its own doc-comment): miss
+ * this one instant and the repo is never onboarded, ever. `hostedExecution`
+ * is a plain column on `workspaces`, readable synchronously with zero
+ * dependency on fleet timing, so ORing it in closes that race outright for
+ * every hosted-eligible workspace (the default for all of them).
+ */
+export async function workspaceHasExecutionPath(
+  workspaceId: string,
+): Promise<boolean> {
+  const [workspace, selfHostedActive] = await Promise.all([
+    getWorkspace(workspaceId),
+    hasActiveSelfHostedRunner(workspaceId),
+  ]);
+  return Boolean(workspace?.hostedExecution) || selfHostedActive;
 }
 
 export interface FleetProvisionStateRow {

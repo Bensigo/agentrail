@@ -13,7 +13,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   getRepositoryByName: vi.fn(),
   createRepository: vi.fn(),
   enqueueOnboard: vi.fn(),
-  hasActiveRunner: vi.fn(),
+  workspaceHasExecutionPath: vi.fn(),
 }));
 
 vi.mock("@agentrail/db-clickhouse", () => ({
@@ -26,7 +26,7 @@ import {
   getRepositoryByName,
   createRepository,
   enqueueOnboard,
-  hasActiveRunner,
+  workspaceHasExecutionPath,
 } from "@agentrail/db-postgres";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -99,7 +99,15 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
     expect(json.repository.last_indexed_at).toBeNull();
   });
 
-  it("enqueues an onboard entry when flag is ON and an active runner exists", async () => {
+  // The gate is workspaceHasExecutionPath (#1268, swapped in from the former
+  // kind-agnostic hasActiveRunner) — this route only ever sees its single
+  // boolean result, so "true → enqueues" below covers BOTH the hosted-only
+  // case and the pre-existing active-self-hosted case identically (the
+  // route can't and needn't distinguish which sub-condition made it true).
+  // The sub-cases behind that boolean are unit-tested directly on the
+  // predicate itself in
+  // packages/db-postgres/src/__tests__/workspace-has-execution-path.test.ts.
+  it("#1268: enqueues an onboard entry for a hosted-only workspace (no runner has EVER claimed anything)", async () => {
     process.env.AGENTRAIL_ONBOARD_ON_CONNECT = "1";
     vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
     vi.mocked(getWorkspaceMembership).mockResolvedValue({
@@ -109,11 +117,15 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
     } as never);
     vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
     vi.mocked(createRepository).mockResolvedValue(createdRepo as never);
-    vi.mocked(hasActiveRunner).mockResolvedValue(true);
+    // Stands in for the exact regression #1268 fixes: hostedExecution=true,
+    // zero api_keys rows ever touched — the old hasActiveRunner gate would
+    // have read false forever for a workspace like this.
+    vi.mocked(workspaceHasExecutionPath).mockResolvedValue(true);
 
     const res = await POST(makeRequest(validBody), makeParams());
 
     expect(res.status).toBe(201);
+    expect(workspaceHasExecutionPath).toHaveBeenCalledWith(WORKSPACE_ID);
     expect(enqueueOnboard).toHaveBeenCalledTimes(1);
     expect(enqueueOnboard).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_ID,
@@ -134,11 +146,11 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
     const res = await POST(makeRequest(validBody), makeParams());
 
     expect(res.status).toBe(201);
-    expect(hasActiveRunner).not.toHaveBeenCalled();
+    expect(workspaceHasExecutionPath).not.toHaveBeenCalled();
     expect(enqueueOnboard).not.toHaveBeenCalled();
   });
 
-  it("does not enqueue an onboard entry when flag is ON but no active runner exists", async () => {
+  it("stays gated when workspaceHasExecutionPath is false (hostedExecution=false + no active self-hosted runner)", async () => {
     process.env.AGENTRAIL_ONBOARD_ON_CONNECT = "1";
     vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
     vi.mocked(getWorkspaceMembership).mockResolvedValue({
@@ -148,7 +160,7 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
     } as never);
     vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
     vi.mocked(createRepository).mockResolvedValue(createdRepo as never);
-    vi.mocked(hasActiveRunner).mockResolvedValue(false);
+    vi.mocked(workspaceHasExecutionPath).mockResolvedValue(false);
 
     const res = await POST(makeRequest(validBody), makeParams());
 
@@ -166,7 +178,7 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
     } as never);
     vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
     vi.mocked(createRepository).mockResolvedValue(createdRepo as never);
-    vi.mocked(hasActiveRunner).mockResolvedValue(true);
+    vi.mocked(workspaceHasExecutionPath).mockResolvedValue(true);
     vi.mocked(enqueueOnboard).mockRejectedValue(new Error("db down"));
 
     const res = await POST(makeRequest(validBody), makeParams());

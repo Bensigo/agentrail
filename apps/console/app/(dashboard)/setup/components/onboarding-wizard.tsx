@@ -19,7 +19,7 @@ interface OnboardingData {
   github: { repoCount: number; repos: string[]; hasWebhookSecret: boolean };
   channel: { connected: boolean; skipped: boolean; chatId: string | null };
   invites: { count: number };
-  runner: { connected: boolean };
+  runner: { connected: boolean; selfHosted: boolean };
 }
 
 // Poll cadence while the wizard is open — fast enough that the runner step
@@ -163,7 +163,10 @@ export function OnboardingWizard({ workspaceId }: { workspaceId: string }) {
                 />
               )}
               {id === "attach-runner" && (
-                <RunnerStep connected={data.runner.connected} />
+                <RunnerStep
+                  connected={data.runner.connected}
+                  selfHosted={data.runner.selfHosted}
+                />
               )}
             </StepCard>
           );

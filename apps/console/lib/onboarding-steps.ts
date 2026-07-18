@@ -16,8 +16,13 @@
  *      the telegram connector row's jsonb config — see `onboarding-data.ts`).
  *   4. Invite your team  — complete once the workspace has reached at least
  *      one teammate beyond the owner (a pending invite or an accepted one).
- *   5. Attach a runner   — complete when a runner is actively polling
- *      (`hasActiveRunner`).
+ *   5. Attach a runner   — complete when the workspace has an execution path:
+ *      hosted execution is enabled (the default for every workspace) or a
+ *      self-hosted runner is actively polling (#1268,
+ *      `workspaceHasExecutionPath`). The caller (`onboarding-data.ts`) also
+ *      passes a `selfHosted` flag alongside this signal so the UI can say
+ *      something honest about WHICH path is active — this pure module only
+ *      needs the OR'd boolean to decide completion.
  */
 
 export type OnboardingStepId =
@@ -67,7 +72,8 @@ export interface OnboardingStepsInput {
     count: number;
   };
   runner: {
-    /** A self-hosted runner is actively polling this workspace. */
+    /** The workspace has an execution path: hosted execution enabled, or a
+     * self-hosted runner actively polling (#1268). */
     connected: boolean;
   };
 }

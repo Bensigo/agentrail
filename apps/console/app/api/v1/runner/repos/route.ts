@@ -8,7 +8,7 @@ import {
   getConnector,
   upsertConnector,
   enqueueOnboard,
-  hasActiveRunner,
+  workspaceHasExecutionPath,
 } from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 
@@ -24,16 +24,18 @@ const GITHUB_FETCH_TIMEOUT_MS = 8000;
 
 // Onboard-on-connect: the SAME default-OFF rollout flag the manual "connect
 // an existing repo" flow already gates on
-// (apps/console/app/api/v1/workspaces/[workspaceId]/repos/route.ts). Scouted
-// 2026-07-18 (`git grep -n "onboard" apps/console packages/db-postgres`):
-// the flag, the `hasActiveRunner` gate, and `enqueueOnboard` (kind='onboard',
-// packages/db-postgres/src/queries/github_intake.ts, fully wired with its own
-// dedupe/idempotency and a claim-side reader in queries/runner.ts) all
-// already exist in merged code — this is NOT a stub standing in for #1268.
-// #1268 is the onboard EXECUTOR question (whether/how a runner processes a
-// claimed kind='onboard' row); that is orthogonal to whether a row can be
-// enqueued, which this flow reuses verbatim rather than inventing a new gate
-// or a new queue kind.
+// (apps/console/app/api/v1/workspaces/[workspaceId]/repos/route.ts).
+// `enqueueOnboard` (kind='onboard', packages/db-postgres/src/queries/
+// github_intake.ts) is fully wired with its own dedupe/idempotency and a
+// claim-side reader in queries/runner.ts — this flow reuses it verbatim
+// rather than inventing a new gate or a new queue kind. The gate itself is
+// `workspaceHasExecutionPath` (#1268 PR①, swapped in from the former
+// kind-agnostic `hasActiveRunner`, which required a PRIOR claim to have
+// touched `last_used_at` — essentially always false for a brand-new
+// workspace at the exact instant it connects its first repo; see that
+// predicate's own doc-comment for the race it closes). #1268's OTHER half is
+// the onboard EXECUTOR question (whether/how a runner processes a claimed
+// kind='onboard' row) — orthogonal to this gate, covered elsewhere.
 const ONBOARD_ON_CONNECT_FLAG = "AGENTRAIL_ONBOARD_ON_CONNECT";
 
 interface RawBody {
@@ -230,8 +232,12 @@ async function createRepoWebhook(
  *      webhook at all. `webhookCreated` reports the real outcome either way
  *      and a human-readable entry always lands in `warnings` on failure.
  *  (3) onboard enqueue — see `ONBOARD_ON_CONNECT_FLAG`'s comment above:
- *      reuses the existing flag + `hasActiveRunner` gate + `enqueueOnboard`
- *      verbatim (best-effort). No new queue kind invented.
+ *      reuses the existing flag + `enqueueOnboard` verbatim (best-effort),
+ *      gated on `workspaceHasExecutionPath` (#1268) rather than
+ *      `hasActiveRunner` — see that predicate's own doc-comment for why a
+ *      kind-agnostic "has a runner ever claimed" check is race-prone for a
+ *      brand-new, runner-less (hosted) workspace at connect time. No new
+ *      queue kind invented.
  *
  * RESPONSE 201: `{ repo: { fullName, url, private }, connected: true,
  * webhookCreated, onboardQueued, warnings }`. `connected` is always `true`
@@ -416,7 +422,7 @@ export async function POST(request: NextRequest) {
   let onboardQueued = false;
   if (process.env[ONBOARD_ON_CONNECT_FLAG] === "1") {
     try {
-      if (await hasActiveRunner(workspaceId)) {
+      if (await workspaceHasExecutionPath(workspaceId)) {
         const result = await enqueueOnboard({ workspaceId, repoFullName: fullName });
         onboardQueued = result.enqueued;
       }

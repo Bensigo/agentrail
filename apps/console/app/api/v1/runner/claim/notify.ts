@@ -49,8 +49,21 @@ export async function notifyWorkspaceBudgetExhausted(
 ): Promise<void> {
   const session = await latestTelegramSessionForWorkspace(workspaceId);
   if (!session) return;
-  await sendSystemTelegramMessage(
+  const result = await sendSystemTelegramMessage(
     session.conversationKey,
     buildBudgetExhaustedMessage(spendUsd, ceilingUsd)
   );
+  if (!result.ok) {
+    // sendSystemTelegramMessage NEVER throws for a known failure (missing
+    // TELEGRAM_BOT_TOKEN, a blocked bot, a network error) — it resolves a
+    // typed { ok: false, error }, so the route's try/catch can never see it.
+    // The CAS already flipped budget_exhausted_notified_period BEFORE this
+    // send, so a swallowed typed failure would permanently mark the period
+    // notified with zero trace — log it here (the route's catch only covers
+    // contract-violating throws).
+    console.error(
+      "[runner/claim] budget-exhausted notice send failed:",
+      result.error
+    );
+  }
 }

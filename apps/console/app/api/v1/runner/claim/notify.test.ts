@@ -82,4 +82,45 @@ describe("notifyWorkspaceBudgetExhausted", () => {
     ).rejects.toThrow("db blip");
     expect(mockSend).not.toHaveBeenCalled();
   });
+
+  it("logs a TYPED send failure ({ok:false}) and still resolves — the sender never throws, so without this log the failure would vanish (CAS already flipped)", async () => {
+    mockLatestSession.mockResolvedValue(SESSION as never);
+    mockSend.mockResolvedValue({
+      ok: false,
+      error: "telegram: bot blocked by the user",
+    } as never);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      // Resolves (never rejects) on a typed failure — so the route's plain
+      // flow proceeds to its 204 + X-Agentrail-Claim-Blocked exactly as its
+      // own suite proves for a resolving notify; the route's try/catch only
+      // exists for contract-violating throws.
+      await expect(
+        notifyWorkspaceBudgetExhausted(WS, 12.5, 10)
+      ).resolves.toBeUndefined();
+
+      // Assert BEFORE mockRestore(): vitest 4's restore also resets the
+      // spy's recorded calls.
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[runner/claim] budget-exhausted notice send failed:",
+        "telegram: bot blocked by the user"
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("does NOT log on a successful ({ok:true}) send", async () => {
+    mockLatestSession.mockResolvedValue(SESSION as never);
+    mockSend.mockResolvedValue({ ok: true } as never);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await notifyWorkspaceBudgetExhausted(WS, 12.5, 10);
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 });

@@ -2072,3 +2072,13 @@ export {
   markBudgetExhaustedNotified,
   type WorkspaceBudgetState,
 } from "./workspace_budget.js";
+
+// Per-workspace cost aggregation reads (issue #1272 PR ①; see
+// `queries/workspace_costs.ts` for the honesty caveats these all inherit
+// from #1269's budget helpers above). listWorkspaceRunCosts is the per-task
+// detail list the console workspace-costs page reads.
+export {
+  DEFAULT_RUN_COST_LIST_LIMIT,
+  listWorkspaceRunCosts,
+  type WorkspaceRunCostRow,
+} from "./workspace_costs.js";

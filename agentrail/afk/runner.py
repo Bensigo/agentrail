@@ -133,12 +133,17 @@ class Runner:
     def __init__(self, target: Path, *, engine: str, base: str,
                  concurrency: int, afk_label: str, queue_labels: List[str],
                  run_dir: Path, store: Store, model: str = "",
-                 budget_per_issue: float = 0.0) -> None:
+                 budget_per_issue: float = 0.0,
+                 budget_source: str = "flag") -> None:
         self.target = target
         self.engine = engine
         self.base = base
         self.model = model
         self.budget_per_issue = budget_per_issue
+        # "flag" | "config" | "default" (agentrail.cli.commands.afk.run_afk
+        # resolves this before construction). Only "default" changes what
+        # _implement forwards below — see the comment there.
+        self.budget_source = budget_source
         self.concurrency = concurrency
         self.afk_label = afk_label
         self.queue_labels = queue_labels
@@ -274,6 +279,18 @@ class Runner:
         # flag would let `run issue` re-apply budgets.per_issue_usd from config
         # even when the user disabled the cap with --budget-per-issue 0.
         cmd += ["--budget-usd", str(self.budget_per_issue)]
+        # Honesty relay (#1269 follow-up, 2026-07-18): forwarding --budget-usd
+        # unconditionally (above) makes `run issue`'s own parser infer
+        # source="flag" — as if an operator had chosen this ceiling. That's
+        # right when budget_source is genuinely "flag" or "config" (both read
+        # as a deliberate choice; `run issue`'s default inference already
+        # lands on "flag", which is close enough that neither changes the
+        # stop message). It's wrong when run_afk fell all the way back to the
+        # product default: relay that explicitly so a budget-stopped run
+        # reads as the resumable estimate-absent check-in it is, not a limit
+        # nobody set.
+        if self.budget_source == "default":
+            cmd += ["--budget-source", "default"]
         sid = getattr(self, "session_id", None)
         if sid:
             from agentrail.afk.run_register import run_uuid

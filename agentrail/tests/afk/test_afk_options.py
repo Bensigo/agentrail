@@ -75,17 +75,28 @@ class RunAfkBudgetPrecedenceTests(unittest.TestCase):
     def _runner_budget(self, runner_mock: MagicMock) -> float:
         return runner_mock.call_args.kwargs["budget_per_issue"]
 
+    def _runner_budget_source(self, runner_mock: MagicMock) -> str:
+        """#1269 follow-up (2026-07-18): run_afk must also tell the Runner
+        WHICH tier resolved the budget, not just the number — "flag" |
+        "config" | "default". Only "default" changes what the Runner relays
+        to `run issue` (see RunnerForwardsBudgetSourceTests below), but
+        run_afk must compute the honest label in every case."""
+        return runner_mock.call_args.kwargs["budget_source"]
+
     def test_config_default_applied_when_no_flag(self) -> None:
         runner_mock = self._run([])
         self.assertEqual(self._runner_budget(runner_mock), 5.0)
+        self.assertEqual(self._runner_budget_source(runner_mock), "config")
 
     def test_flag_overrides_config_default(self) -> None:
         runner_mock = self._run(["--budget-per-issue", "2"])
         self.assertEqual(self._runner_budget(runner_mock), 2.0)
+        self.assertEqual(self._runner_budget_source(runner_mock), "flag")
 
     def test_flag_zero_disables_cap_despite_config(self) -> None:
         runner_mock = self._run(["--budget-per-issue", "0"])
         self.assertEqual(self._runner_budget(runner_mock), 0.0)
+        self.assertEqual(self._runner_budget_source(runner_mock), "flag")
 
     def test_bad_config_value_is_ignored(self) -> None:
         """#1269: an invalid config value falls back to the product default,
@@ -95,13 +106,47 @@ class RunAfkBudgetPrecedenceTests(unittest.TestCase):
             json.dumps({"budgets": {"per_issue_usd": "lots"}}))
         runner_mock = self._run([])
         self.assertEqual(self._runner_budget(runner_mock), DEFAULT_PER_ISSUE_BUDGET_USD)
+        self.assertEqual(self._runner_budget_source(runner_mock), "default")
+
+
+class RunAfkBudgetSourceNoConfigTests(unittest.TestCase):
+    """Same precedence as RunAfkBudgetPrecedenceTests, but starting from a
+    target with NO .agentrail/config.json at all — the genuinely-nothing-set
+    case that setUp's always-present config (per_issue_usd: 5.0) never
+    exercises."""
+
+    def setUp(self) -> None:
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        self.target = Path(self.td.name)
+        (self.target / ".agentrail").mkdir()
+
+    def test_no_config_no_flag_is_default_source(self) -> None:
+        issues = [{"number": 1, "title": "t", "url": ""}]
+        with patch("agentrail.cli.commands.afk.gh") as gh_mock, \
+                patch("agentrail.cli.commands.afk.subprocess.run") as sp_mock, \
+                patch("agentrail.cli.commands.afk.build_store"), \
+                patch("agentrail.cli.commands.afk.Runner") as runner_mock, \
+                patch("agentrail.cli.commands.afk.asyncio.run",
+                      return_value=MagicMock(completed=1, failed=0)), \
+                patch("agentrail.afk.hosted_repo_guard.resolve_foreign_workspaces",
+                      return_value=([], None)):
+            gh_mock.list_queue_issues.return_value = issues
+            sp_mock.return_value = MagicMock(returncode=0, stdout="")
+            rc = run_afk(["--target", str(self.target)])
+            self.assertEqual(rc, 0)
+
+        self.assertEqual(
+            runner_mock.call_args.kwargs["budget_per_issue"], DEFAULT_PER_ISSUE_BUDGET_USD,
+        )
+        self.assertEqual(runner_mock.call_args.kwargs["budget_source"], "default")
 
 
 class RunnerForwardsBudgetTests(unittest.TestCase):
     """_implement always forwards --budget-usd (even 0) so an explicit zero
     overrides any budgets.per_issue_usd in the worktree's config copy."""
 
-    def _implement_cmd(self, budget: float) -> list:
+    def _implement_cmd(self, budget: float, budget_source: str = "flag") -> list:
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
         tmp = Path(td.name)
@@ -115,7 +160,7 @@ class RunnerForwardsBudgetTests(unittest.TestCase):
         runner = Runner(
             target=tmp / "main", engine="claude", base="main", concurrency=1,
             afk_label="afk", queue_labels=["ready"], run_dir=tmp / "run",
-            store=store, budget_per_issue=budget,
+            store=store, budget_per_issue=budget, budget_source=budget_source,
         )
         sh_mock = AsyncMock(return_value=0)
         with patch.object(Runner, "_setup_worktree"), \
@@ -134,6 +179,62 @@ class RunnerForwardsBudgetTests(unittest.TestCase):
         cmd = self._implement_cmd(0.0)
         self.assertIn("--budget-usd", cmd)
         self.assertEqual(cmd[cmd.index("--budget-usd") + 1], "0.0")
+
+
+class RunnerForwardsBudgetSourceTests(unittest.TestCase):
+    """#1269 follow-up (2026-07-18): the honesty relay. --budget-usd is
+    ALWAYS forwarded (by design — see RunnerForwardsBudgetTests above), which
+    would make `run issue`'s own parser infer source="flag" regardless of
+    where AFK's number actually came from. Only the "default" case needs a
+    correction: "flag" and "config" both already read, downstream, as a
+    deliberate ceiling (same unembellished stop-message phrasing either way),
+    so only "default" is worth the extra flag."""
+
+    def _implement_cmd(self, budget_source: str) -> list:
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        tmp = Path(td.name)
+        (tmp / "main").mkdir()
+        store = Store(AfkState(concurrency=1, max_retries=1,
+                               max_review_rounds=1, slots={0: None}))
+        store.dispatch(EnqueueIssue(number=1, title="t", url="http://x/1"))
+        runner = Runner(
+            target=tmp / "main", engine="claude", base="main", concurrency=1,
+            afk_label="afk", queue_labels=["ready"], run_dir=tmp / "run",
+            store=store, budget_per_issue=3.0, budget_source=budget_source,
+        )
+        sh_mock = AsyncMock(return_value=0)
+        with patch.object(Runner, "_setup_worktree"), \
+                patch("agentrail.afk.runner._sh", sh_mock), \
+                patch("agentrail.context.snapshot_push.load_link", return_value=None):
+            ok = asyncio.run(runner._implement(0, 1))
+        self.assertTrue(ok)
+        return sh_mock.call_args.args[0]
+
+    def test_default_source_forwards_budget_source_flag(self) -> None:
+        cmd = self._implement_cmd("default")
+        self.assertIn("--budget-source", cmd)
+        self.assertEqual(cmd[cmd.index("--budget-source") + 1], "default")
+
+    def test_flag_source_omits_budget_source_flag(self) -> None:
+        cmd = self._implement_cmd("flag")
+        self.assertNotIn("--budget-source", cmd)
+
+    def test_config_source_omits_budget_source_flag(self) -> None:
+        """"config" is also a deliberate choice — same stop-message phrasing
+        as "flag" downstream, so AFK doesn't bother relaying it either."""
+        cmd = self._implement_cmd("config")
+        self.assertNotIn("--budget-source", cmd)
+
+    def test_runner_default_budget_source_is_flag(self) -> None:
+        """Runner's own constructor default (when run_afk's caller omits the
+        kwarg) is "flag" — matching pre-#1269-follow-up behavior byte for
+        byte: --budget-source was never forwarded before this feature
+        existed."""
+        from agentrail.afk.runner import Runner as _Runner
+        import inspect
+        sig = inspect.signature(_Runner.__init__)
+        self.assertEqual(sig.parameters["budget_source"].default, "flag")
 
 
 if __name__ == "__main__":

@@ -69,6 +69,11 @@ Budget: when --budget-usd is omitted, the default cap is read from
 the product default (${DEFAULT_PER_ISSUE_BUDGET_USD:.2f}) applies. Explicit 0
 — either --budget-usd 0 or budgets.per_issue_usd: 0 in config — always means
 deliberately uncapped, at whichever tier it is set.
+
+--budget-source {{flag,config,default}} (internal use — `agentrail afk` relays
+this) overrides the flag/config/default label recorded for THIS run's
+budget-stop message and run.json, so a --budget-usd value AFK forwards from
+its own product-default fallback is never mislabeled as an operator override.
 """
 
 
@@ -95,6 +100,14 @@ class RunOptions:
     budget_usd: float = 0.0
     budget_explicit: bool = False
     label: str = ""
+    # "" (unset, the default) = compute the source normally, via
+    # effective_budget_source's own flag > config > default precedence. A
+    # caller may set this directly to override that computed label — the ONE
+    # consumer today is `agentrail afk`, which always forwards a resolved
+    # --budget-usd (even when IT fell back to the product default) and needs
+    # a way to say so honestly instead of this run inferring "flag" just
+    # because a --budget-usd value showed up on argv.
+    budget_source: str = ""
 
 
 def _need_value(args: List[str], i: int, flag: str) -> str:
@@ -136,6 +149,9 @@ def parse_run_options(args: List[str]) -> RunOptions:
             if opts.budget_usd < 0:
                 raise UsageError("--budget-usd must be a non-negative number")
             opts.budget_explicit = True
+            i += 2
+        elif a == "--budget-source":
+            opts.budget_source = _need_value(args, i, "--budget-source")
             i += 2
         elif a in ("-h", "--help"):
             print(_usage()); raise UsageError("", code=0)
@@ -187,6 +203,31 @@ def resolve_default_budget(target: str) -> float:
     return value
 
 
+def resolve_budget_source(target: str) -> str:
+    """Which tier :func:`resolve_default_budget` would draw its VALUE from for
+    ``target``: ``"config"`` when ``budgets.per_issue_usd`` in
+    ``.agentrail/config.json`` is present and valid (a non-negative number,
+    booleans excluded — the exact same validity check ``resolve_default_budget``
+    applies); ``"default"`` otherwise (key absent, null, non-numeric, boolean,
+    or negative — every case ``resolve_default_budget`` treats identically:
+    fall back to :data:`~agentrail.run.budget_leash.DEFAULT_PER_ISSUE_BUDGET_USD`).
+
+    Deliberately silent: this exists to compute a ``--budget-source`` label
+    ALONGSIDE a real ``resolve_default_budget`` call, never as a substitute for
+    it, so it must never duplicate that function's stderr warning for the same
+    bad config value.
+    """
+    cfg = _read_config(target)
+    raw = (cfg.get("budgets") or {}).get("per_issue_usd") if cfg else None
+    if raw is None or isinstance(raw, bool):
+        return "default"
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return "default"
+    return "default" if value < 0 else "config"
+
+
 def effective_budget(opts: RunOptions) -> float:
     """Effective per-issue budget: explicit --budget-usd (0 disables the cap,
     overriding any config default) > budgets.per_issue_usd (0 disables the
@@ -194,6 +235,28 @@ def effective_budget(opts: RunOptions) -> float:
     if opts.budget_explicit:
         return opts.budget_usd
     return resolve_default_budget(opts.target)
+
+
+def effective_budget_source(opts: RunOptions) -> str:
+    """Which tier :func:`effective_budget` actually drew ITS value from for
+    THIS run: ``"flag"`` (explicit --budget-usd) > ``"config"``
+    (budgets.per_issue_usd) > ``"default"`` (neither tier said anything —
+    the product's flat backstop, issue #1269/#1274/#1275). Mirrors
+    ``effective_budget``'s own precedence exactly so the two can never
+    disagree about SOURCE while agreeing on VALUE.
+
+    ``opts.budget_source`` — set only via the ``--budget-source`` CLI flag —
+    overrides this computation when present. That flag exists for exactly one
+    caller, ``agentrail afk``: it always forwards a resolved --budget-usd to
+    `run issue`/`run prompt` (even when ITS OWN resolution fell back to the
+    default), which would otherwise make THIS function report "flag" for a
+    number nobody actually chose. See ``agentrail.cli.commands.afk.run_afk``.
+    """
+    if opts.budget_source:
+        return opts.budget_source
+    if opts.budget_explicit:
+        return "flag"
+    return resolve_budget_source(opts.target)
 
 
 def resolve_agent_name(target: str, fallback: str) -> str:
@@ -594,6 +657,7 @@ def exec_issue(issue: int, opts: RunOptions, *, allow_source: bool = False) -> i
                      repo_dir=_repo_dir(), log_dir=log_dir,
                      run_id=opts.run_id, phase_commands=phase_commands,
                      budget_usd=effective_budget(opts),
+                     budget_source=effective_budget_source(opts),
                      independent_review_status=review_status)
 
 
@@ -664,6 +728,7 @@ def exec_prompt(prompt: str, opts: RunOptions) -> int:
                       repo_dir=_repo_dir(), log_dir=log_dir,
                       run_id=opts.run_id, phase_commands=phase_commands,
                       budget_usd=effective_budget(opts),
+                      budget_source=effective_budget_source(opts),
                       independent_review_status=review_status)
 
 

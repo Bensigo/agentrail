@@ -49,6 +49,10 @@ from `budgets.per_issue_usd` in .agentrail/config.json; when THAT is also
 unset, the product default (see `agentrail run --help`) applies. Explicit
 0 — either --budget-per-issue 0 or budgets.per_issue_usd: 0 in config —
 always means deliberately uncapped, at whichever tier it is set.
+AFK always forwards the resolved number as `run issue`'s --budget-usd; when
+that number came from the product default (not a flag or config), AFK also
+relays --budget-source default so the run's stop message reads as a resumable
+check-in, not as if an operator had chosen that ceiling.
 
 Hosted-repo quarantine: AFK refuses to start against a repo connected to a
 hosted customer workspace other than this operator's own (AGENTRAIL_WORKSPACE_ID)
@@ -73,6 +77,10 @@ def _parse(args: List[str]) -> dict:
         "model": "",
         "budget_per_issue": 0.0,
         "budget_explicit": False,
+        # Resolved in run_afk (not here — that needs a filesystem config read,
+        # which _parse deliberately never does): "flag" | "config" |
+        # "default". Seeded here only so the key always exists.
+        "budget_source": "flag",
         "allow_hosted_repo": False,
     }
     i = 0
@@ -201,8 +209,13 @@ def run_afk(args: List[str]) -> int:
     # .agentrail/config.json. An explicit 0 disables the cap even when the
     # config sets a default.
     if not opts["budget_explicit"]:
-        from agentrail.cli.commands.run import resolve_default_budget
+        from agentrail.cli.commands.run import resolve_budget_source, resolve_default_budget
         opts["budget_per_issue"] = resolve_default_budget(str(target))
+        # Honesty relay (#1269 follow-up): distinguish "the config actually
+        # set a number" from "nothing did, so the product default filled the
+        # gap" — Runner._implement only needs to say something to `run issue`
+        # in the latter case (see budget_source use below).
+        opts["budget_source"] = resolve_budget_source(str(target))
 
     if opts["engine"] not in ("claude", "codex"):
         print(f"unsupported engine: {opts['engine']}"); return 1
@@ -269,6 +282,7 @@ def run_afk(args: List[str]) -> int:
         store=store,
         model=opts["model"],
         budget_per_issue=opts["budget_per_issue"],
+        budget_source=opts["budget_source"],
     )
 
     print(f"AFK: {len(issues)} issue(s), concurrency {opts['concurrency']}, "

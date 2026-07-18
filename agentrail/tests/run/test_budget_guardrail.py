@@ -7,9 +7,11 @@ AC2: Under-budget run runs both phases unaffected.
 """
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -618,6 +620,246 @@ class TestBudgetDoesNotSuppressGenuinePhaseFailure(unittest.TestCase):
             run_data = json.loads(metadata_file.read_text())
             self.assertTrue(run_data.get("budgetCeilingCrossed"))
             self.assertNotIn("blockedReason", run_data)
+
+
+# ---------------------------------------------------------------------------
+# Budget-source visibility (#1269 follow-up / #1274 / #1275, 2026-07-18):
+# resolve_budget_source / effective_budget_source truth table. Mirrors
+# resolve_default_budget / effective_budget's own precedence and validity
+# rules exactly — the two pairs must never disagree about SOURCE while
+# agreeing on VALUE.
+# ---------------------------------------------------------------------------
+
+class TestResolveBudgetSource(unittest.TestCase):
+    """"config" only when budgets.per_issue_usd is a genuinely valid, usable
+    number; every other case (absent, null, non-numeric, boolean, negative)
+    is "default" — the exact validity split resolve_default_budget applies
+    before it falls back to DEFAULT_PER_ISSUE_BUDGET_USD."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.target = Path(self.tmp.name) / "target"
+        self.target.mkdir(parents=True)
+
+    def test_no_config_file_is_default(self) -> None:
+        from agentrail.cli.commands.run import resolve_budget_source
+        self.assertEqual(resolve_budget_source(str(self.target)), "default")
+
+    def test_config_without_budgets_key_is_default(self) -> None:
+        from agentrail.cli.commands.run import resolve_budget_source
+        _write_config(self.target, {"runner": {"name": "claude"}})
+        self.assertEqual(resolve_budget_source(str(self.target)), "default")
+
+    def test_valid_config_value_is_config(self) -> None:
+        from agentrail.cli.commands.run import resolve_budget_source
+        _write_config(self.target, {"budgets": {"per_issue_usd": 5.0}})
+        self.assertEqual(resolve_budget_source(str(self.target)), "config")
+
+    def test_numeric_string_config_value_is_config(self) -> None:
+        from agentrail.cli.commands.run import resolve_budget_source
+        _write_config(self.target, {"budgets": {"per_issue_usd": "3.5"}})
+        self.assertEqual(resolve_budget_source(str(self.target)), "config")
+
+    def test_explicit_zero_config_value_is_config(self) -> None:
+        """0 is a deliberate, honored "uncapped" choice from config — still
+        "config", not "default" (resolve_default_budget returns 0.0 here,
+        not the product default)."""
+        from agentrail.cli.commands.run import resolve_budget_source
+        _write_config(self.target, {"budgets": {"per_issue_usd": 0}})
+        self.assertEqual(resolve_budget_source(str(self.target)), "config")
+
+    def test_negative_config_value_is_default(self) -> None:
+        from agentrail.cli.commands.run import resolve_budget_source
+        _write_config(self.target, {"budgets": {"per_issue_usd": -3}})
+        self.assertEqual(resolve_budget_source(str(self.target)), "default")
+
+    def test_non_numeric_config_value_is_default(self) -> None:
+        from agentrail.cli.commands.run import resolve_budget_source
+        _write_config(self.target, {"budgets": {"per_issue_usd": "lots"}})
+        self.assertEqual(resolve_budget_source(str(self.target)), "default")
+
+    def test_boolean_config_value_is_default(self) -> None:
+        from agentrail.cli.commands.run import resolve_budget_source
+        _write_config(self.target, {"budgets": {"per_issue_usd": True}})
+        self.assertEqual(resolve_budget_source(str(self.target)), "default")
+
+    def test_null_config_value_is_default(self) -> None:
+        from agentrail.cli.commands.run import resolve_budget_source
+        _write_config(self.target, {"budgets": {"per_issue_usd": None}})
+        self.assertEqual(resolve_budget_source(str(self.target)), "default")
+
+    def test_silent_no_warning_on_invalid_value(self) -> None:
+        """Unlike resolve_default_budget, this function never warns to
+        stderr — the warning stays resolve_default_budget's job alone, so a
+        call site that consults BOTH (effective_budget_source alongside
+        effective_budget) never prints it twice for the same bad value."""
+        from agentrail.cli.commands.run import resolve_budget_source
+        _write_config(self.target, {"budgets": {"per_issue_usd": "lots"}})
+        err = io.StringIO()
+        with redirect_stderr(err):
+            resolve_budget_source(str(self.target))
+        self.assertEqual(err.getvalue(), "")
+
+
+class TestEffectiveBudgetSource(unittest.TestCase):
+    """effective_budget_source: flag > config > default — same precedence as
+    effective_budget — plus the opts.budget_source override channel that lets
+    a caller (agentrail afk) state the real source honestly even when
+    --budget-usd is also present."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.target = Path(self.tmp.name) / "target"
+        self.target.mkdir(parents=True)
+
+    def test_explicit_flag_is_flag(self) -> None:
+        from agentrail.cli.commands.run import effective_budget_source, parse_run_options
+        opts = parse_run_options(["--target", str(self.target), "--budget-usd", "2"])
+        self.assertEqual(effective_budget_source(opts), "flag")
+
+    def test_explicit_flag_zero_is_still_flag(self) -> None:
+        from agentrail.cli.commands.run import effective_budget_source, parse_run_options
+        opts = parse_run_options(["--target", str(self.target), "--budget-usd", "0"])
+        self.assertEqual(effective_budget_source(opts), "flag")
+
+    def test_config_only_is_config(self) -> None:
+        from agentrail.cli.commands.run import RunOptions, effective_budget_source
+        _write_config(self.target, {"budgets": {"per_issue_usd": 5.0}})
+        opts = RunOptions(target=str(self.target))
+        self.assertEqual(effective_budget_source(opts), "config")
+
+    def test_neither_flag_nor_config_is_default(self) -> None:
+        from agentrail.cli.commands.run import RunOptions, effective_budget_source
+        opts = RunOptions(target=str(self.target))
+        self.assertEqual(effective_budget_source(opts), "default")
+
+    def test_override_wins_over_explicit_flag(self) -> None:
+        """The AFK-relay case: --budget-usd is present (would otherwise infer
+        "flag") but --budget-source explicitly says the real source was the
+        product default — the override must win."""
+        from agentrail.cli.commands.run import effective_budget_source, parse_run_options
+        opts = parse_run_options([
+            "--target", str(self.target),
+            "--budget-usd", "3",
+            "--budget-source", "default",
+        ])
+        self.assertEqual(effective_budget_source(opts), "default")
+
+    def test_override_wins_over_config(self) -> None:
+        from agentrail.cli.commands.run import effective_budget_source, parse_run_options
+        _write_config(self.target, {"budgets": {"per_issue_usd": 5.0}})
+        opts = parse_run_options(["--target", str(self.target), "--budget-source", "config"])
+        self.assertEqual(effective_budget_source(opts), "config")
+
+
+class TestParseRunOptionsBudgetSourceFlag(unittest.TestCase):
+    """--budget-source is optional and, when absent, leaves RunOptions in the
+    "not overridden" state ("") that effective_budget_source computes normally
+    from — a tiny, additive parser change."""
+
+    def test_flag_absent_leaves_budget_source_empty(self) -> None:
+        from agentrail.cli.commands.run import parse_run_options
+        opts = parse_run_options([])
+        self.assertEqual(opts.budget_source, "")
+
+    def test_flag_sets_budget_source_verbatim(self) -> None:
+        from agentrail.cli.commands.run import parse_run_options
+        opts = parse_run_options(["--budget-source", "default"])
+        self.assertEqual(opts.budget_source, "default")
+
+    def test_flag_requires_a_value(self) -> None:
+        from agentrail.cli.commands.run import UsageError, parse_run_options
+        with self.assertRaises(UsageError):
+            parse_run_options(["--budget-source"])
+
+
+# ---------------------------------------------------------------------------
+# Budget-source visibility: the stop message (stderr) / run.json blockedReason
+# gain the resume guidance ONLY when budget_source == "default" (the
+# estimate-absent backstop) — a flag or config ceiling was a deliberate
+# choice someone made, so those keep the original, unembellished phrasing.
+# check()'s own inputs/semantics are untouched by any of this (verified above
+# by the pre-existing TestPerPhaseBudgetBreach etc., which still pass).
+# ---------------------------------------------------------------------------
+
+class TestBudgetStopMessageSourceGuidance(unittest.TestCase):
+
+    def _run_with_source(self, tmp: str, target: Path, run_id: str, budget_source):
+        stub = _stub_run_with_timeout(0)
+        mock_usage = MagicMock()
+        err = io.StringIO()
+        kwargs = {} if budget_source is None else {"budget_source": budget_source}
+
+        with patch("agentrail.run.pipeline.run_with_timeout", stub), \
+             patch("agentrail.run.pipeline.capture_usage", return_value=mock_usage), \
+             patch("agentrail.run.pipeline.cost_usd", return_value=1.50), \
+             patch("agentrail.run.pipeline.push_failure_event"), \
+             redirect_stderr(err):
+            run_issue(
+                target, 42,
+                agent="claude", command="claude -p",
+                repo_dir=target,
+                log_dir=Path(tmp) / "runs",
+                run_id=run_id,
+                budget_usd=1.00,
+                **kwargs,
+            )
+
+        metadata_file = Path(tmp) / "runs" / run_id / "run.json"
+        data = json.loads(metadata_file.read_text())
+        return data.get("blockedReason", ""), err.getvalue()
+
+    def test_default_source_stop_message_carries_resume_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            reason, err = self._run_with_source(tmp, target, "test-run-src-default", "default")
+
+        for text in (reason, err):
+            self.assertIn("estimate-absent backstop", text)
+            self.assertIn("not a hard limit", text)
+            self.assertIn("--budget-usd", text)
+            self.assertIn("budgets.per_issue_usd", text)
+            self.assertIn("#1274/#1275", text)
+        # the original, unembellished phrasing is still the message's prefix.
+        self.assertIn("budget exceeded after test-author phase", reason)
+
+    def test_omitted_kwarg_behaves_like_default_source(self) -> None:
+        """RunContext/run_issue's own default ("default") is the same honest,
+        conservative assumption as passing budget_source="default"
+        explicitly — a caller that never says otherwise gets the resumable
+        estimate-absent framing, not silence about the source."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            reason, err = self._run_with_source(tmp, target, "test-run-src-omitted", None)
+
+        self.assertIn("estimate-absent backstop", reason)
+        self.assertIn("estimate-absent backstop", err)
+
+    def test_flag_source_stop_message_omits_resume_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            reason, err = self._run_with_source(tmp, target, "test-run-src-flag", "flag")
+
+        for text in (reason, err):
+            self.assertNotIn("estimate-absent backstop", text)
+            self.assertNotIn("#1274/#1275", text)
+        self.assertIn("budget exceeded after test-author phase", reason)
+
+    def test_config_source_stop_message_omits_resume_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            reason, err = self._run_with_source(tmp, target, "test-run-src-config", "config")
+
+        for text in (reason, err):
+            self.assertNotIn("estimate-absent backstop", text)
+            self.assertNotIn("#1274/#1275", text)
+        self.assertIn("budget exceeded after test-author phase", reason)
 
 
 if __name__ == "__main__":

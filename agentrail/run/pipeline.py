@@ -212,6 +212,19 @@ class RunContext:
     context_retrieval: Dict[str, Any] = field(default_factory=dict)
     phase_commands: Dict[str, str] = field(default_factory=dict)
     budget_usd: float = 0.0
+    # Budget-source visibility (#1269 follow-up, 2026-07-18): which tier
+    # actually set budget_usd above — "flag" (explicit --budget-usd),
+    # "config" (budgets.per_issue_usd), or "default" (neither said anything,
+    # so the flat DEFAULT_PER_ISSUE_BUDGET_USD estimate-absent backstop
+    # applied — see budget_leash.py). Computed by
+    # `agentrail.cli.commands.run.effective_budget_source` and threaded
+    # through unchanged. Consulted ONLY where the budget-stop message is
+    # built below, to decide whether this run's stop reads as a deliberate
+    # ceiling (flag/config: unembellished phrasing, unchanged) or as the
+    # resumable estimate-absent check-in (default: resume guidance appended).
+    # Defaults to "default" — the honest, conservative assumption for any
+    # direct `RunContext(...)` construction (tests) that never sets this.
+    budget_source: str = "default"
     # Independent Review visibility (#1270): the status token computed by
     # `agentrail.cli.commands.run.independent_review_status` and threaded
     # through unchanged, so `finalize_objective_gate` can record WHY the
@@ -449,6 +462,22 @@ def _record_live_context_metrics(
     push_live_context_metrics(
         target_dir, run_id, metrics, pack_file=run_context_pack_file
     )
+
+
+# Budget-source visibility (#1269 follow-up / #1274 / #1275, 2026-07-18):
+# appended to the budget-stop message ONLY when rc.budget_source == "default"
+# — i.e. neither an explicit --budget-usd/--budget-per-issue flag NOR a
+# configured budgets.per_issue_usd set the ceiling, so DEFAULT_PER_ISSUE_
+# BUDGET_USD (budget_leash.py) is an estimate-absent BACKSTOP, not a
+# deliberate limit. A flag/config ceiling is a real choice someone made —
+# those stop messages keep their original, unembellished phrasing. This one
+# is a resumable check-in, never a hard kill: say so, and say how to resume.
+_BUDGET_DEFAULT_SOURCE_GUIDANCE = (
+    "this run hit the estimate-absent backstop, not a hard limit — it can "
+    "resume with a real budget: re-run with --budget-usd <n>, set "
+    "budgets.per_issue_usd, or let the alignment brief estimate it "
+    "(#1274/#1275)"
+)
 
 
 def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
@@ -719,6 +748,14 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
                     rc.budget_stop_reason = (
                         f"budget exceeded after {phase} phase: {budget_msg}"
                     )
+                    # Budget-source visibility: only the estimate-absent
+                    # backstop gets the resume guidance appended — a flag or
+                    # config ceiling was a deliberate choice, so those keep
+                    # the plain message above unchanged.
+                    if rc.budget_source == "default":
+                        rc.budget_stop_reason += (
+                            f"; {_BUDGET_DEFAULT_SOURCE_GUIDANCE}"
+                        )
                     print(rc.budget_stop_reason, file=sys.stderr)
                     budget_marker_pending = True
                     try:
@@ -1251,6 +1288,7 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
               run_id: str = "",
               phase_commands: Optional[Dict[str, str]] = None,
               budget_usd: float = 0.0,
+              budget_source: str = "default",
               independent_review_status: str = "active") -> int:
     """Native port of legacy run_issue (scripts/agentrail-legacy:6376-6566).
     Assumes guards (source-run, active-run conflict, command availability) were
@@ -1285,6 +1323,7 @@ def run_issue(target_dir: Path, issue: int, *, agent: str, command: str,
         run_id=run_id,
         phase_commands=phase_commands,
         budget_usd=budget_usd,
+        budget_source=budget_source,
         independent_review_status=independent_review_status,
         run_id_stem=f"issue-{issue}",
         context_query=f"issue #{issue}",
@@ -1296,6 +1335,7 @@ def run_prompt(target_dir: Path, prompt: str, *, label: str, agent: str,
                run_id: str = "",
                phase_commands: Optional[Dict[str, str]] = None,
                budget_usd: float = 0.0,
+               budget_source: str = "default",
                independent_review_status: str = "active") -> int:
     """Prompt-driven run mode (#968) — run the pipeline off a raw prompt.
 
@@ -1327,6 +1367,7 @@ def run_prompt(target_dir: Path, prompt: str, *, label: str, agent: str,
         run_id=run_id,
         phase_commands=phase_commands,
         budget_usd=budget_usd,
+        budget_source=budget_source,
         independent_review_status=independent_review_status,
         run_id_stem=f"prompt-{safe_label}",
         context_query=f"prompt {label}",
@@ -1338,6 +1379,7 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
                   log_dir: Optional[Path] = None, run_id: str = "",
                   phase_commands: Optional[Dict[str, str]] = None,
                   budget_usd: float = 0.0,
+                  budget_source: str = "default",
                   independent_review_status: str = "active",
                   run_id_stem: str = "",
                   context_query: str = "") -> int:
@@ -1499,6 +1541,7 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         context_retrieval=run_context_retrieval,
         phase_commands=phase_commands or {},
         budget_usd=budget_usd,
+        budget_source=budget_source,
         independent_review_status=independent_review_status,
     )
 

@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ShieldCheck,
   DollarSign,
+  Wallet,
   Database,
   Brain,
   Key,
@@ -44,6 +45,15 @@ export const YOUR_ENGINEER_ZONE: NavZone = {
 
 // Demoted, existing evidence pages — collapsed by default, reached primarily
 // by drilling into a work item (spec §3).
+//
+// "Budget" (#1272 PR ②) is deliberately a separate item from "Costs", not a
+// tab folded into it: "Costs" is the ClickHouse-backed granular meter
+// (cost-per-issue-to-green, cache ratio, anomalies — ADR 0009), a real,
+// already-shipped, unrelated surface. "Budget" is the Postgres-backed
+// workspace-level view (this month's per-task costs, the trailing monthly
+// rollup, and the #1269 monthly $ ceiling's cap status) — same zone, same
+// "operational depth" category, different data source and question ("is
+// this workspace blocked right now" vs "where did the tokens go").
 export const ENGINE_ROOM_ZONE: NavZone = {
   id: "engine-room",
   label: "Engine room",
@@ -52,6 +62,7 @@ export const ENGINE_ROOM_ZONE: NavZone = {
     { label: "Runs", href: "runs", icon: Play },
     { label: "Review Gates", href: "review-gates", icon: ShieldCheck },
     { label: "Costs", href: "costs", icon: DollarSign },
+    { label: "Budget", href: "budget", icon: Wallet },
     { label: "Memory", href: "memory", icon: Brain },
     { label: "Failures", href: "failures", icon: AlertTriangle },
   ],

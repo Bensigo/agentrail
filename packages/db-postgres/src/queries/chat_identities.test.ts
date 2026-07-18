@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { and, eq, gt, inArray } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 
 // Mocked db chain: each db.<verb>() call returns a chainable mock object
@@ -27,6 +27,7 @@ import {
   bindChatIdentityUser,
   setChatIdentityLinkToken,
   getChatIdentityByLinkToken,
+  consumeChatIdentityLinkToken,
   resolveInboundChatIdentity,
   listWorkspacesForChatIdentity,
 } from "./chat_identities.js";
@@ -206,6 +207,72 @@ describe("getChatIdentityByLinkToken", () => {
     mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
 
     const result = await getChatIdentityByLinkToken("nonexistent-token");
+
+    expect(result).toBeNull();
+  });
+});
+
+describe("consumeChatIdentityLinkToken", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("nulls link_token/link_token_expires_at and touches updatedAt, guarded by BOTH token equality and expiry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const consumedRow = {
+      ...MOCK_IDENTITY,
+      linkToken: null,
+      linkTokenExpiresAt: null,
+      updatedAt: NOW,
+    };
+    const updateChain = makeChain("returning", [consumedRow]);
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+
+    const result = await consumeChatIdentityLinkToken("tok-abc");
+
+    expect(mockDb.update).toHaveBeenCalled();
+
+    // .set shape: both link columns nulled, updatedAt touched to the SAME
+    // "now" the WHERE guard below is checked against (one shared clock read,
+    // matching the claimInvitesForUser/resolveApproval idiom elsewhere in
+    // this package).
+    const setCalls = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls;
+    expect(setCalls[0]?.[0]).toEqual({
+      linkToken: null,
+      linkTokenExpiresAt: null,
+      updatedAt: NOW,
+    });
+
+    // Argument-level condition assertion (see jace_sessions-intro-anchor.test.ts
+    // for the rationale): render the ACTUAL captured `.where(...)` argument
+    // and compare it to the literal SQL text of the guard this call must
+    // encode. A mutation that drops the expiry half of the `and(...)` (e.g.
+    // collapsing WHERE to bare `link_token = $token`, which would let an
+    // EXPIRED token still be consumed) changes the rendered text and fails
+    // this comparison, even though the mocked `.returning()` value above
+    // would stay green regardless.
+    const whereArgs = (updateChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(whereArgs)).toEqual(
+      renderCondition(
+        and(
+          eq(chatIdentities.linkToken, "tok-abc"),
+          gt(chatIdentities.linkTokenExpiresAt, NOW)
+        )
+      )
+    );
+
+    expect(result).toEqual(consumedRow);
+  });
+
+  it("returns null when the UPDATE matches no row (expired, already-used, or unknown token — indistinguishable by design)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const updateChain = makeChain("returning", []);
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+
+    const result = await consumeChatIdentityLinkToken("expired-or-unknown-token");
 
     expect(result).toBeNull();
   });

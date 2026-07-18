@@ -45,9 +45,10 @@ of truth). Slot claiming is synchronous, so two workers never take the same
 issue.
 
 Budget: when --budget-per-issue is omitted, the default per-issue cap is read
-from `budgets.per_issue_usd` in .agentrail/config.json (0 or unset = uncapped).
-Passing --budget-per-issue 0 explicitly disables the cap even when the config
-sets a default.
+from `budgets.per_issue_usd` in .agentrail/config.json; when THAT is also
+unset, the product default (see `agentrail run --help`) applies. Explicit
+0 — either --budget-per-issue 0 or budgets.per_issue_usd: 0 in config —
+always means deliberately uncapped, at whichever tier it is set.
 
 Hosted-repo quarantine: AFK refuses to start against a repo connected to a
 hosted customer workspace other than this operator's own (AGENTRAIL_WORKSPACE_ID)

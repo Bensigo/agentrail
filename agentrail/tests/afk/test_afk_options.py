@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from agentrail.afk.runner import Runner
 from agentrail.afk.state import AfkState, EnqueueIssue, Store
 from agentrail.cli.commands.afk import _parse, run_afk
+from agentrail.run.budget_leash import DEFAULT_PER_ISSUE_BUDGET_USD
 
 
 class ParseBudgetTests(unittest.TestCase):
@@ -87,10 +88,13 @@ class RunAfkBudgetPrecedenceTests(unittest.TestCase):
         self.assertEqual(self._runner_budget(runner_mock), 0.0)
 
     def test_bad_config_value_is_ignored(self) -> None:
+        """#1269: an invalid config value falls back to the product default,
+        not to uncapped — same fallback `resolve_default_budget` uses when
+        the config sets nothing at all (the one shared resolution site)."""
         (self.target / ".agentrail" / "config.json").write_text(
             json.dumps({"budgets": {"per_issue_usd": "lots"}}))
         runner_mock = self._run([])
-        self.assertEqual(self._runner_budget(runner_mock), 0.0)
+        self.assertEqual(self._runner_budget(runner_mock), DEFAULT_PER_ISSUE_BUDGET_USD)
 
 
 class RunnerForwardsBudgetTests(unittest.TestCase):

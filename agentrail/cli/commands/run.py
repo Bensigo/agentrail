@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
 
+from agentrail.run.budget_leash import DEFAULT_PER_ISSUE_BUDGET_USD
 from agentrail.run.pipeline import jit_gather_enabled, layer_enabled
 
 AGENTS = {"codex", "claude", "cursor", "hermes", "custom"}
@@ -44,7 +45,7 @@ class UsageError(Exception):
 
 
 def _usage() -> str:
-    return """Usage:
+    return f"""Usage:
   agentrail run [--agent NAME] [--target DIR] [--command CMD] [--model MODEL]
                 [--log-dir DIR]
   agentrail run issue N [--agent NAME] [--target DIR] [--command CMD]
@@ -64,9 +65,10 @@ Objective Gate) on a raw prompt instead of a numbered issue. `run batch` runs
 several issues in parallel, each in its own git worktree.
 
 Budget: when --budget-usd is omitted, the default cap is read from
-`budgets.per_issue_usd` in .agentrail/config.json (0 or unset = uncapped).
-Passing --budget-usd 0 explicitly disables the cap even when the config
-sets a default.
+`budgets.per_issue_usd` in .agentrail/config.json; when THAT is also unset,
+the product default (${DEFAULT_PER_ISSUE_BUDGET_USD:.2f}) applies. Explicit 0
+— either --budget-usd 0 or budgets.per_issue_usd: 0 in config — always means
+deliberately uncapped, at whichever tier it is set.
 """
 
 
@@ -153,15 +155,21 @@ def _read_config(target: str) -> dict:
 
 
 def resolve_default_budget(target: str) -> float:
-    """Return `budgets.per_issue_usd` from .agentrail/config.json, or 0.0.
+    """Return `budgets.per_issue_usd` from .agentrail/config.json, defaulting
+    to :data:`~agentrail.run.budget_leash.DEFAULT_PER_ISSUE_BUDGET_USD` when
+    the key is unset (issue #1269 — a real run must never end up uncapped
+    just because nobody configured a number).
 
-    A bad value (non-numeric, negative) warns to stderr and is ignored — a
-    broken config must never crash or silently cap a run.
+    A bad value (non-numeric, negative, boolean) warns to stderr and falls
+    back to the SAME product default as "unset" — a broken config must never
+    crash a run, and must never silently revert to uncapped either (that
+    would defeat the budget leash on exactly the config that failed to set
+    one). An explicit ``0`` is still honored as deliberately uncapped.
     """
     cfg = _read_config(target)
     raw = (cfg.get("budgets") or {}).get("per_issue_usd") if cfg else None
     if raw is None:
-        return 0.0
+        return DEFAULT_PER_ISSUE_BUDGET_USD
     # JSON true/false would float() to 1.0/0.0 — treat booleans as non-numeric.
     if isinstance(raw, bool):
         value = None
@@ -172,15 +180,17 @@ def resolve_default_budget(target: str) -> float:
             value = None
     if value is None or value < 0:
         print(f"warning: ignoring invalid budgets.per_issue_usd in "
-              f".agentrail/config.json: {raw!r} (must be a non-negative number)",
+              f".agentrail/config.json: {raw!r} (must be a non-negative number); "
+              f"using the product default ${DEFAULT_PER_ISSUE_BUDGET_USD:.2f}",
               file=sys.stderr)
-        return 0.0
+        return DEFAULT_PER_ISSUE_BUDGET_USD
     return value
 
 
 def effective_budget(opts: RunOptions) -> float:
     """Effective per-issue budget: explicit --budget-usd (0 disables the cap,
-    overriding any config default) > budgets.per_issue_usd > 0 (uncapped)."""
+    overriding any config default) > budgets.per_issue_usd (0 disables the
+    cap) > DEFAULT_PER_ISSUE_BUDGET_USD (neither tier said anything at all)."""
     if opts.budget_explicit:
         return opts.budget_usd
     return resolve_default_budget(opts.target)

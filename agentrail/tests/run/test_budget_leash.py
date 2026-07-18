@@ -16,7 +16,7 @@ spend is the caller's job (thin orchestration).
 """
 from __future__ import annotations
 
-from agentrail.run.budget_leash import Decision, check
+from agentrail.run.budget_leash import DEFAULT_PER_ISSUE_BUDGET_USD, Decision, check
 
 
 # ---------------------------------------------------------------------------
@@ -188,3 +188,24 @@ def test_negative_spend_is_rejected() -> None:
 
     with pytest.raises(ValueError):
         check(spent=-1.0, attempts=0, ceiling=2.0, attempt_limit=3, gate_red=False)
+
+
+# ---------------------------------------------------------------------------
+# Product default (issue #1269 PR 1): the constant the product path (CLI
+# `effective_budget`) falls back to when NEITHER an explicit flag NOR
+# .agentrail/config.json's budgets.per_issue_usd says anything at all.
+# ---------------------------------------------------------------------------
+
+def test_default_per_issue_budget_usd_is_ten_dollars() -> None:
+    assert DEFAULT_PER_ISSUE_BUDGET_USD == 10.0
+
+
+def test_default_per_issue_budget_usd_actually_caps_via_check() -> None:
+    # Sanity: the constant is a real, positive ceiling as far as `check` is
+    # concerned — spend at/over it stops, under it continues.
+    assert check(spent=DEFAULT_PER_ISSUE_BUDGET_USD, attempts=0,
+                 ceiling=DEFAULT_PER_ISSUE_BUDGET_USD, attempt_limit=1,
+                 gate_red=False) is Decision.STOP_TO_HUMAN
+    assert check(spent=DEFAULT_PER_ISSUE_BUDGET_USD - 0.01, attempts=0,
+                 ceiling=DEFAULT_PER_ISSUE_BUDGET_USD, attempt_limit=1,
+                 gate_red=False) is Decision.CONTINUE

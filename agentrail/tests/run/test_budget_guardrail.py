@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
+from agentrail.run.budget_leash import DEFAULT_PER_ISSUE_BUDGET_USD
 from agentrail.run.pipeline import run_issue
 
 
@@ -43,6 +44,26 @@ def _stub_run_with_timeout(return_code: int, output_text: str = "agent output",
     def _stub(argv, *, cwd, timeout, output_file, stdin_text=None, env=None):
         _stub.calls.append(argv)
         output_file.write_text(output_text)
+        if sentinel is not None and len(_stub.calls) == 2:
+            sentinel.write_text("x")
+        return return_code
+    _stub.calls = []
+    return _stub
+
+
+def _stub_run_with_timeout_verify_accepts(return_code: int, sentinel: Path | None = None):
+    """Like :func:`_stub_run_with_timeout`, but the verify phase's OWN output is
+    a structured ACCEPT verdict. The Independent Verifier's ``parse_verdict``
+    is fail-closed (no recognized verdict → REJECT), so a test that actually
+    schedules a verify phase and still expects the Objective Gate to reach
+    GREEN must give it something acceptable — plain "agent output" would
+    fail-closed the gate for a reason unrelated to the budget guardrail."""
+    def _stub(argv, *, cwd, timeout, output_file, stdin_text=None, env=None):
+        _stub.calls.append(argv)
+        if output_file.parent.name == "verify":
+            output_file.write_text('VERDICT: {"verdict": "accept", "reason": "ok"}')
+        else:
+            output_file.write_text("agent output")
         if sentinel is not None and len(_stub.calls) == 2:
             sentinel.write_text("x")
         return return_code
@@ -270,10 +291,13 @@ class TestDefaultBudgetFromConfig(unittest.TestCase):
         opts = parse_run_options(["--target", str(self.target), "--budget-usd", "0"])
         self.assertEqual(effective_budget(opts), 0.0)
 
-    def test_no_flag_no_config_is_uncapped(self) -> None:
+    def test_no_flag_no_config_uses_product_default(self) -> None:
+        """#1269: neither an explicit flag nor a config value → the product
+        default cap applies (NOT uncapped — that was the bug: a real run left
+        with the product's own defaults had no budget leash at all)."""
         from agentrail.cli.commands.run import RunOptions, effective_budget
         opts = RunOptions(target=str(self.target))
-        self.assertEqual(effective_budget(opts), 0.0)
+        self.assertEqual(effective_budget(opts), DEFAULT_PER_ISSUE_BUDGET_USD)
 
     def test_numeric_string_in_config_is_accepted(self) -> None:
         from agentrail.cli.commands.run import resolve_default_budget
@@ -282,8 +306,10 @@ class TestDefaultBudgetFromConfig(unittest.TestCase):
 
 
 class TestBadConfigBudgetIgnoredWithWarning(unittest.TestCase):
-    """Non-numeric or negative budgets.per_issue_usd warns to stderr and is
-    treated as uncapped — a bad config must never crash a run."""
+    """Non-numeric or negative budgets.per_issue_usd warns to stderr and falls
+    back to the product default — a bad config must never crash a run, and
+    (#1269) must never silently revert to UNCAPPED either: that would defeat
+    the budget leash on exactly the config that couldn't specify one."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -301,25 +327,150 @@ class TestBadConfigBudgetIgnoredWithWarning(unittest.TestCase):
             value = resolve_default_budget(str(self.target))
         return value, err.getvalue()
 
-    def test_non_numeric_value_warns_and_is_ignored(self) -> None:
+    def test_non_numeric_value_warns_and_uses_product_default(self) -> None:
         value, err = self._resolve("five dollars")
-        self.assertEqual(value, 0.0)
+        self.assertEqual(value, DEFAULT_PER_ISSUE_BUDGET_USD)
         self.assertIn("budgets.per_issue_usd", err)
 
-    def test_negative_value_warns_and_is_ignored(self) -> None:
+    def test_negative_value_warns_and_uses_product_default(self) -> None:
         value, err = self._resolve(-3)
-        self.assertEqual(value, 0.0)
+        self.assertEqual(value, DEFAULT_PER_ISSUE_BUDGET_USD)
         self.assertIn("budgets.per_issue_usd", err)
 
-    def test_boolean_value_warns_and_is_ignored(self) -> None:
+    def test_boolean_value_warns_and_uses_product_default(self) -> None:
         value, err = self._resolve(True)
-        self.assertEqual(value, 0.0)
+        self.assertEqual(value, DEFAULT_PER_ISSUE_BUDGET_USD)
         self.assertIn("budgets.per_issue_usd", err)
 
-    def test_null_value_is_silently_uncapped(self) -> None:
+    def test_null_value_is_silently_treated_as_unset(self) -> None:
+        """Explicit JSON null is indistinguishable from the key being absent
+        entirely (both parse to Python None) — same silent product-default
+        fallback, no warning (it isn't a malformed value, just not set)."""
         value, err = self._resolve(None)
-        self.assertEqual(value, 0.0)
+        self.assertEqual(value, DEFAULT_PER_ISSUE_BUDGET_USD)
         self.assertEqual(err, "")
+
+
+# ---------------------------------------------------------------------------
+# #1269 PR 1: the per-phase mechanism — a breach is checked after EVERY
+# phase's cost is known, not just once after test-author. The old single
+# checkpoint (pipeline.py:1417, pre-#1269) only ever looked right after
+# test-author; a breach that only became visible after EXECUTE's own cost
+# posted would previously sail straight through to verify. These tests pin
+# the breach to the EXECUTE phase specifically, so they only pass under the
+# new per-phase mechanism.
+# ---------------------------------------------------------------------------
+
+class TestPerPhaseBudgetBreach(unittest.TestCase):
+
+    def test_breach_after_execute_stops_before_verify(self):
+        """Budget is fine after test-author, but execute's OWN cost tips it over
+        the cap — verify (configured here, unlike the other tests in this file)
+        must NEVER run, and the failure event must name the EXECUTE phase, not
+        test-author."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            mocks = _apply_common_patches(self, target)
+
+            # test-author costs 0.6 (under the 1.0 cap); execute costs another
+            # 0.6, taking cumulative spend to 1.2 — over the cap. A third value
+            # is provided defensively so a wrongly-run verify phase does not
+            # raise StopIteration and mask the real assertion failures below.
+            stub = _stub_run_with_timeout(0)
+            mock_usage = MagicMock()
+
+            with patch("agentrail.run.pipeline.run_with_timeout", stub), \
+                 patch("agentrail.run.pipeline.capture_usage", return_value=mock_usage), \
+                 patch("agentrail.run.pipeline.cost_usd", side_effect=[0.6, 0.6, 0.6]), \
+                 patch("agentrail.run.pipeline.push_failure_event") as mock_push:
+
+                rc = run_issue(
+                    target, 42,
+                    agent="claude", command="claude -p",
+                    repo_dir=target,
+                    log_dir=Path(tmp) / "runs",
+                    run_id="test-run-budget-execute",
+                    # A configured verify phase — the other tests in this file
+                    # never set one, so they cannot prove verify was actually
+                    # skipped BECAUSE of the budget (there'd be nothing to run
+                    # either way). This one can.
+                    phase_commands={"verify": "claude -p --model strong"},
+                    budget_usd=1.00,
+                )
+
+            self.assertNotEqual(rc, 0)
+            # test-author + execute ran; verify must not have.
+            self.assertEqual(len(stub.calls), 2)
+            mock_push.assert_called_once()
+            args = mock_push.call_args
+            failure_type = args[1]["failure_type"] if args[1] else args[0][2]
+            phase = args[1]["phase"] if args[1] else args[0][3]
+            self.assertEqual(failure_type, "budget_exceeded")
+            self.assertEqual(phase, "execute")
+
+    def test_uncapped_runs_configured_verify_phase_too(self):
+        """budget_usd=0 (explicitly uncapped) must not stop the run even with a
+        verify phase configured and costs that would blow any real cap — the
+        stronger version of the existing zero-budget test, which never
+        configures a verify phase so it can't show verify surviving too."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+
+            stub = _stub_run_with_timeout_verify_accepts(0, sentinel=target / "impl_done")
+            mock_usage = MagicMock()
+
+            with patch("agentrail.run.pipeline.run_with_timeout", stub), \
+                 patch("agentrail.run.pipeline.capture_usage", return_value=mock_usage), \
+                 patch("agentrail.run.pipeline.cost_usd", return_value=999.99), \
+                 patch("agentrail.run.pipeline.push_failure_event") as mock_push:
+
+                rc = run_issue(
+                    target, 42,
+                    agent="claude", command="claude -p",
+                    repo_dir=target,
+                    log_dir=Path(tmp) / "runs",
+                    phase_commands={"verify": "claude -p --model strong"},
+                    budget_usd=0.0,
+                )
+
+            self.assertEqual(rc, 0)
+            # test-author + execute + verify all ran.
+            self.assertEqual(len(stub.calls), 3)
+            mock_push.assert_not_called()
+
+    def test_breach_reason_recorded_in_run_metadata(self):
+        """#1269 AC1 'reason recorded': run.json's blockedReason carries the
+        phase, spend, and ceiling — not just the (non-fatal, best-effort)
+        server-side failure-event push."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+
+            stub = _stub_run_with_timeout(0)
+            mock_usage = MagicMock()
+            run_id = "test-run-budget-metadata"
+
+            with patch("agentrail.run.pipeline.run_with_timeout", stub), \
+                 patch("agentrail.run.pipeline.capture_usage", return_value=mock_usage), \
+                 patch("agentrail.run.pipeline.cost_usd", return_value=1.50), \
+                 patch("agentrail.run.pipeline.push_failure_event"):
+
+                run_issue(
+                    target, 42,
+                    agent="claude", command="claude -p",
+                    repo_dir=target,
+                    log_dir=Path(tmp) / "runs",
+                    run_id=run_id,
+                    budget_usd=1.00,
+                )
+
+            metadata_file = Path(tmp) / "runs" / run_id / "run.json"
+            data = json.loads(metadata_file.read_text())
+            reason = data.get("blockedReason", "")
+            self.assertIn("test-author", reason)
+            self.assertIn("1.50", reason)
+            self.assertIn("1.00", reason)
 
 
 if __name__ == "__main__":

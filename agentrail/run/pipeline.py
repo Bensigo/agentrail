@@ -12,7 +12,7 @@ from datetime import timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from agentrail.run import artifacts, context as ctx, prompts, skills, state as state_mod
+from agentrail.run import artifacts, budget_leash, context as ctx, prompts, skills, state as state_mod
 from agentrail.guardrails.policies.input_contract import screen_injection
 from agentrail.observability.tracer import RunTracer
 from agentrail.run.check_runner import (
@@ -219,6 +219,18 @@ class RunContext:
     # direct `RunContext(...)` construction in existing tests byte-identical.
     independent_review_status: str = "active"
     cumulative_cost_usd: float = 0.0
+    # #1269: sticky, run-scoped signal set (once) by the per-phase Budget
+    # Leash check inside run_issue_phase's cost-capture block, the moment
+    # cumulative_cost_usd crosses budget_usd. Every phase-gating "if status ==
+    # 0" check in _run_pipeline below already stops on its own once this
+    # trips, because the tripping call's OWN returned status is forced
+    # non-zero (see run_issue_phase) — these two fields exist for the ONE
+    # call site that treats a non-zero phase status as advisory-only (the
+    # gather phase, #1049) and needs to tell "budget stop" apart from
+    # "gather itself just failed", and for surfacing the reason in run
+    # metadata at finalize.
+    budget_exceeded: bool = False
+    budget_stop_reason: str = ""
     # #1049: deterministic context manifest captured ONCE from the gather
     # phase's output artifact and injected VERBATIM into every later phase's
     # shared task context (one set of bytes = one shared cache key). "" = no
@@ -647,6 +659,41 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
             # Cost accounting FIRST — the budget guardrail depends on this, so it
             # must never be skipped by a later ledger/push failure.
             rc.cumulative_cost_usd += cost
+
+            # Budget Leash (#1269): the hard per-issue spend backstop, evaluated
+            # right after EVERY phase's cost is known — not just once after
+            # test-author (the old single checkpoint this replaces) — so a
+            # breach mid-run stops the run at THIS phase; no later phase
+            # (verify, critic, another best-of-n candidate, ...) ever starts.
+            # attempts/attempt_limit are inert placeholders: this call site has
+            # no escalation-attempt counter to feed the leash (that concept
+            # belongs to the heartbeat dispatcher's own tiered escalation, a
+            # separate consumer), so attempts is fixed at 0 against the
+            # smallest valid attempt_limit (1) — that combination can never
+            # itself satisfy `attempts >= attempt_limit`, so only ceiling vs.
+            # spent can trip STOP_TO_HUMAN here.
+            if (not rc.budget_exceeded
+                    and budget_leash.check(
+                        spent=rc.cumulative_cost_usd,
+                        attempts=0,
+                        ceiling=rc.budget_usd,
+                        attempt_limit=1,
+                        gate_red=False,
+                    ) is budget_leash.Decision.STOP_TO_HUMAN):
+                rc.budget_exceeded = True
+                budget_msg = (f"${rc.cumulative_cost_usd:.2f} spent of "
+                              f"${rc.budget_usd:.2f} budget")
+                rc.budget_stop_reason = f"budget exceeded after {phase} phase: {budget_msg}"
+                print(rc.budget_stop_reason, file=sys.stderr)
+                try:
+                    push_failure_event(
+                        rc.target_dir, rc.run_id, "budget_exceeded", phase, budget_msg,
+                    )
+                except Exception as _exc:
+                    _log.debug("budget failure push skipped: %s", _exc)
+                if status == 0:
+                    status = 1
+
             push_cost_event(rc.target_dir, rc.run_id, phase, usage, cost)
             # Local append-only ledger for `agentrail context savings` — isolated
             # in its own try/except so a write failure cannot disable the cost
@@ -773,7 +820,14 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
             _log.debug("index snapshot push skipped: %s", _exc)
 
     # 17c. Failure telemetry — non-fatal
-    if status != 0:
+    # #1269: skip this GENERIC failure push when the Budget Leash (just above)
+    # already forced `status` non-zero — it already pushed its OWN specific
+    # "budget_exceeded" event for this phase, and this phase's own agent
+    # invocation may well have succeeded (the budget, not the agent, is why
+    # the run is stopping). Without this guard every budget-triggered stop
+    # would ALSO get a second, misleading "phase_failure" event for the same
+    # phase.
+    if status != 0 and not rc.budget_exceeded:
         try:
             failure_type = "timeout" if status == 124 else "phase_failure"
             # Attach the phase's captured output as evidence. push_failure_event
@@ -1519,8 +1573,15 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
     if status == 0 and "gather" in rc.phase_commands and jit_gather_enabled():
         gather_status, _ = run_issue_phase(rc, "gather", 1, plan_output=plan_output)
         if gather_status != 0:
-            print("gather phase failed; continuing without gathered context",
-                  file=sys.stderr)
+            if rc.budget_exceeded:
+                # #1269: a budget breach during gather is a hard stop, unlike a
+                # genuine gather failure (advisory-only, below) — propagate so
+                # test-author (and every later phase) never starts having
+                # already blown the per-issue cap.
+                status = gather_status
+            else:
+                print("gather phase failed; continuing without gathered context",
+                      file=sys.stderr)
         else:
             # Manifest handoff (#1049): capture the gather output artifact ONCE
             # and pin it on the RunContext, so test-author/execute/verify all
@@ -1545,15 +1606,13 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         status, _ = run_issue_phase(rc, "test-author", 1, plan_output=plan_output)
         last_phase = "test-author"
 
-    if status == 0 and rc.budget_usd > 0 and rc.cumulative_cost_usd >= rc.budget_usd:
-        msg = (f"run stopped: ${rc.cumulative_cost_usd:.2f} spent of "
-               f"${rc.budget_usd:.2f} budget")
-        print(f"budget exceeded after {last_phase} phase: {msg}", file=sys.stderr)
-        try:
-            push_failure_event(rc.target_dir, rc.run_id, "budget_exceeded", last_phase, msg)
-        except Exception as _exc:
-            _log.debug("budget failure push skipped: %s", _exc)
-        status = 1
+    # Budget Leash enforcement itself now lives INSIDE run_issue_phase (#1269),
+    # evaluated per-phase right after each phase's own cost is known — this
+    # single post-test-author checkpoint (the ONLY one that existed before)
+    # is fully subsumed by that mechanism: run_issue_phase already forces a
+    # non-zero status the moment cumulative_cost_usd crosses budget_usd, which
+    # the `status == 0` gates throughout this function (including the ones
+    # below) already respect.
 
     # Red-Green Proof baseline (ADR 0008, #772): observe the declared acceptance
     # checks BEFORE implementation. With the Test-Author phase above, this
@@ -1765,13 +1824,19 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
 
     # 13. Finalize
     finished_at = _utc_now_iso()
+    # #1269 AC1 "reason recorded": when the Budget Leash stopped this run,
+    # rc.budget_stop_reason carries the phase, spend, and ceiling — the same
+    # blocked_reason vehicle the read-side injection park (above) uses, so run
+    # metadata and .agentrail/state.json both surface WHY, not just THAT.
+    # "" (the default, unless the leash tripped) writes no blockedReason at
+    # all — both callees only set the field when it is truthy.
     artifacts.update_run_metadata_attempts(
         metadata_file,
         execution_attempt=1,
         max_execution_attempts=max_execution_attempts,
         failed_verification_attempts=0,
         verifier_findings_file="",
-        blocked_reason="",
+        blocked_reason=rc.budget_stop_reason,
     )
     state_mod.update_run_state(
         target_dir, "finish",
@@ -1789,7 +1854,7 @@ def _run_pipeline(target_dir: Path, *, resolution_text: str, label,
         max_execution_attempts=max_execution_attempts,
         failed_verification_attempts=0,
         verifier_findings_file="",
-        blocked_reason="",
+        blocked_reason=rc.budget_stop_reason,
         issue_context=resolution_text,
         context_pack_file=run_context_pack_file or "",
     )

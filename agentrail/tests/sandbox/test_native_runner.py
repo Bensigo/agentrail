@@ -720,6 +720,38 @@ class TestHostedRefusalEndToEnd:
             assert d.exists()
 
 
+class TestHostedRefusalPrefixCrossLanguageLockstep:
+    """Drift guard for the cross-process contract: the TS queue-transition side
+    (packages/db-postgres/src/queries/runner.ts) keys on the byte-identical
+    ``HOSTED_REFUSAL_PREFIX`` constant. A silent mismatch would turn every
+    refusal back into an ordinary retried gate failure — so this regex-over-
+    source test (same style as apps/jace/test's source-scanning tests) reads
+    the TS definition line and pins it to the Python constant BY CONSTRUCTION:
+    change either side alone and this fails.
+    """
+
+    def test_ts_constant_definition_matches_python_constant(self) -> None:
+        import re
+
+        repo_root = Path(__file__).resolve().parents[3]
+        ts_source = (
+            repo_root / "packages" / "db-postgres" / "src" / "queries" / "runner.ts"
+        ).read_text(encoding="utf-8")
+        # Whitespace-tolerant on the declaration, exact on the VALUE (built
+        # from the Python constant, double-quoted like the TS source).
+        pattern = (
+            r"export\s+const\s+HOSTED_REFUSAL_PREFIX\s*=\s*"
+            + re.escape(f'"{HOSTED_REFUSAL_PREFIX}"')
+        )
+        assert re.search(pattern, ts_source), (
+            "packages/db-postgres/src/queries/runner.ts must define "
+            f"HOSTED_REFUSAL_PREFIX = \"{HOSTED_REFUSAL_PREFIX}\" byte-identically "
+            "to agentrail.sandbox.native_runner.HOSTED_REFUSAL_PREFIX — a "
+            "mismatch silently turns every hosted refusal back into an "
+            "ordinary retried gate failure (#1267 PR3)."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Cost fault-tolerance — the per-phase cost ledger is written INCREMENTALLY by
 # the pipeline into ``<clone>/.agentrail/run/cost-events.jsonl`` during the run.

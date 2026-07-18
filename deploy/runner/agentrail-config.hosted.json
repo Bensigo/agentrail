@@ -8,7 +8,7 @@
       "models": {
         "execute": "anthropic/claude-sonnet-5",
         "verify": "z-ai/glm-5.2",
-        "critic": "~anthropic/claude-haiku-latest"
+        "critic": "anthropic/claude-haiku-4.5"
       }
     }
   }

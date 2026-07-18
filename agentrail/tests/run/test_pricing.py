@@ -504,3 +504,63 @@ def test_cost_breakdown_unknown_model_emits_warning() -> None:
     usage = _Usage(model=model_name, input_tokens=100, output_tokens=50, cache_tokens=0)
     with pytest.warns(UserWarning, match=model_name):
         cost_breakdown(usage)
+
+
+# ---------------------------------------------------------------------------
+# AI-gateway slug resolution (fix/fleet-model-pricing): the hosted fleet passes
+# OpenRouter slugs ("anthropic/claude-sonnet-5", "z-ai/glm-5.2",
+# "anthropic/claude-haiku-4.5") — before the provider-prefix + dot-to-dash
+# normalization steps, every one of these priced as $0 with only a warning,
+# silently zeroing hosted-run cost metering.
+# ---------------------------------------------------------------------------
+
+
+def test_cost_usd_openrouter_anthropic_prefix_resolves() -> None:
+    """"anthropic/claude-sonnet-5" prices identically to "claude-sonnet-5"."""
+    bare = _Usage(model="claude-sonnet-5", input_tokens=1_000_000, output_tokens=1_000_000, cache_tokens=0)
+    slug = _Usage(model="anthropic/claude-sonnet-5", input_tokens=1_000_000, output_tokens=1_000_000, cache_tokens=0)
+    assert cost_usd(bare) == cost_usd(slug)
+    assert cost_usd(slug) == pytest.approx(3.0 + 15.0)
+
+
+def test_cost_usd_openrouter_dotted_version_resolves() -> None:
+    """"anthropic/claude-haiku-4.5" (OpenRouter dots) → canonical claude-haiku-4-5."""
+    slug = _Usage(model="anthropic/claude-haiku-4.5", input_tokens=1_000_000, output_tokens=0, cache_tokens=0)
+    assert cost_usd(slug) == pytest.approx(1.0)
+
+
+def test_cost_usd_glm_verify_seat_resolves_nonzero() -> None:
+    """"z-ai/glm-5.2" — the hosted verify seat — must never price as $0."""
+    slug = _Usage(model="z-ai/glm-5.2", input_tokens=1_000_000, output_tokens=1_000_000, cache_tokens=0)
+    assert cost_usd(slug) == pytest.approx(0.30 + 0.94)
+
+
+def test_cost_usd_unknown_prefixed_model_still_zero_with_warning() -> None:
+    """Normalization must not invent rates: unknown slugs still warn + $0."""
+    usage = _Usage(model="acme/unknown-model-9", input_tokens=100, output_tokens=50, cache_tokens=0)
+    with pytest.warns(UserWarning, match="acme/unknown-model-9"):
+        assert cost_usd(usage) == 0.0
+
+
+def test_hosted_config_template_models_all_price_nonzero() -> None:
+    """Every model in the SHIPPED hosted config resolves to real rates.
+
+    Coupling test between deploy/runner/agentrail-config.hosted.json and the
+    canonical price table: a template slug the resolver can't price means every
+    hosted run on that seat records $0 cost (the exact false green this branch
+    fixes — the old critic slug "~anthropic/claude-haiku-latest" was both an
+    invalid OpenRouter model AND unpriceable). Parses the real shipped file so
+    template edits that break pricing fail CI here.
+    """
+    import json
+    from pathlib import Path
+
+    template = Path(__file__).resolve().parents[3] / "deploy" / "runner" / "agentrail-config.hosted.json"
+    config = json.loads(template.read_text())
+    models = config["runners"]["claude"]["models"]
+    assert set(models) >= {"execute", "verify", "critic"}
+    for seat, slug in models.items():
+        usage = _Usage(model=slug, input_tokens=1_000_000, output_tokens=1_000_000, cache_tokens=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any unknown-model warning fails the test
+            assert cost_usd(usage) > 0.0, f"hosted config {seat} seat {slug!r} prices as $0"

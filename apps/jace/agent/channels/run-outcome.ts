@@ -47,7 +47,12 @@ function json(body: unknown, status = 200): Response {
 
 export default defineChannel({
   routes: [
-    POST("/", async (req, args) => {
+    // The path must be spelled out in full: Eve mounts defineChannel routes at
+    // their LITERAL declared path — the /eve/v1/<id> convention is a default
+    // parameter inside the built-in adapters (telegramChannel etc.), not a
+    // framework rewrite. POST("/") here left this channel unreachable at the
+    // documented URL in every environment.
+    POST("/eve/v1/run-outcome", async (req, args) => {
       let raw: unknown;
       try {
         raw = await req.json();

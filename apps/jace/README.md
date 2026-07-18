@@ -28,9 +28,12 @@ or triggers builds.
 ## Channels
 
 Jace's platform channels are native Eve channels — files under
-`agent/channels/`, auto-discovered by Eve (the filename is the channel id, and
-Eve mounts each inbound webhook at `/eve/v1/<id>`). We do NOT hand-roll platform
-HTTP or token handling; Eve owns inbound + outbound + threading + credentials.
+`agent/channels/`, auto-discovered by Eve (the filename is the channel id). The
+built-in adapters (`telegramChannel()`, `discordChannel()`, …) default their
+webhook route to `/eve/v1/<id>`; hand-rolled `defineChannel` files must declare
+the FULL path themselves — Eve mounts their routes at the literal declared path,
+with no prefixing. We do NOT hand-roll platform HTTP or token handling; Eve owns
+inbound + outbound + threading + credentials.
 
 - `agent/channels/telegram.ts` — `telegramChannel({ botUsername })`. Inbound at
   `/eve/v1/telegram`; register it once with Telegram's `setWebhook`:

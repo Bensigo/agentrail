@@ -55,6 +55,7 @@ describe("completeConnectOwnerElect", () => {
       updatedAt: new Date("2026-07-18T00:00:00Z"),
       baselineWindowDays: 30,
       discordWebhookUrl: null,
+      hostedExecution: true,
     });
 
     const result = await completeConnectOwnerElect({ workspaceId: "ws-1", userId: "user-1" });

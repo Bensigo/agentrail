@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   claimQueueEntry,
   touchApiKeyLastUsed,
+  hasActiveSelfHostedRunner,
   getMcpConnectorKeys,
   getGithubToken,
 } from "@agentrail/db-postgres";
@@ -12,6 +13,21 @@ import { requireBearer } from "../../../../../lib/bearer-auth";
  * Runner work-claim. Bearer-authenticated with the runner token (an api_key).
  * Atomically claims the oldest `queued` queue entry for the workspace and flips
  * it to `running`, returning it as a WorkItem. 204 (empty) when nothing queued.
+ *
+ * Self-hosted precedence (#1267 PR ①, Locked-5): a `kind: 'fleet'` bearer (the
+ * hosted fleet, minted by POST /api/v1/fleet/workspace-tokens/sync) backs off
+ * with a plain 204 whenever the workspace has an active self-hosted runner —
+ * a live self-hosted runner always wins its own workspace's queue; the fleet
+ * only serves workspaces with none (or a gone-stale one). "Active" is the
+ * same `hasActiveRunner` heuristic used elsewhere, narrowed to
+ * kind='self_hosted' (see hasActiveSelfHostedRunner's own doc-comment): a
+ * non-revoked key whose `last_used_at` is within the last hour. A self-hosted
+ * runner that died without revoking its key still shadows the workspace from
+ * the fleet for up to that window — accepted v1 behavior; an operator who
+ * wants the fleet to pick up slack immediately would need to revoke the dead
+ * key rather than wait it out. `kind: 'self_hosted'` bearers (and any future
+ * non-'fleet' kind) are byte-identical to pre-#1267 behavior: this guard runs
+ * ONLY when `auth.kind === 'fleet'`.
  */
 export async function GET(request: NextRequest) {
   const auth = await requireBearer(request);
@@ -35,6 +51,10 @@ export async function GET(request: NextRequest) {
   }
 
   await touchApiKeyLastUsed(auth.apiKeyId);
+
+  if (auth.kind === "fleet" && (await hasActiveSelfHostedRunner(workspaceId))) {
+    return new NextResponse(null, { status: 204 });
+  }
 
   const item = await claimQueueEntry(workspaceId);
   if (!item) {

@@ -10,11 +10,16 @@
 import { createHash } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { lookupApiKeyByHash } from "@agentrail/db-postgres";
+import type { ApiKeyKind } from "@agentrail/db-postgres";
 
 export interface BearerAuthResult {
   apiKeyId: string;
   workspaceId: string;
   teamId: string | null;
+  /** 'self_hosted' (default — an operator's own runner) or 'fleet' (minted by
+   * POST /api/v1/fleet/workspace-tokens/sync, #1267 PR ①). Additive: every
+   * pre-#1267 caller that ignores this field is unaffected. */
+  kind: ApiKeyKind;
 }
 
 /**
@@ -52,5 +57,6 @@ export async function requireBearer(
     apiKeyId: row.id,
     workspaceId: row.workspaceId,
     teamId: row.teamId ?? null,
+    kind: row.kind,
   };
 }

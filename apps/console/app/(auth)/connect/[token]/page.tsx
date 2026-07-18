@@ -6,6 +6,7 @@ import {
   listWorkspacesForUser,
 } from "@agentrail/db-postgres";
 import { decideConnectIdentityBind } from "../../../../lib/connect-bind-decision";
+import { sendConnectBindConfirmation } from "../../../../lib/connect-bind-confirmation";
 
 interface Props {
   params: Promise<{ token: string }>;
@@ -137,6 +138,19 @@ export default async function ConnectPage({ params }: Props) {
     name?: string;
   };
   const accountLabel = user.name ?? user.email ?? "your GitHub account";
+
+  // Fire-and-forget: Jace's in-thread confirmation (issue #1263 PR ②) is
+  // best-effort and must never fail or delay this page's own render. Never
+  // awaited by this render path; the trailing `.catch` is a second,
+  // belt-and-suspenders guard on top of the helper's own internal catch (see
+  // connect-bind-confirmation.ts) — a rejection here should be structurally
+  // impossible already, but nothing about rendering this page may ever
+  // depend on that promise settling.
+  void sendConnectBindConfirmation({
+    chatIdentityId: identity.id,
+    decision,
+    accountLabel,
+  }).catch(() => {});
 
   return (
     <main

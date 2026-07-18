@@ -1,19 +1,38 @@
-// AC3 — no second WRITE path into the factory (the "enumerated-tools" test).
+// AC3 — the enumerated-tools test.
 //
-// Jace's model can only act on the outside world through the Eve tools
-// registered under `agent/tools/`. This test enumerates that directory and the
-// app's runtime source to PROVE the factory's mutating write path is reachable
-// only through the single, human-gated `create_issue` tool, while allowing
-// additional READ-ONLY tools to exist (and, where genuinely needed, to shell
-// out via `child_process`) without weakening that guarantee:
+// The name of this file overstates the invariant it actually enforces: it is
+// NOT "no second write path" full stop — an ungated write path exists here by
+// design (`send_connect_link`, issue #1263 PR ②). What this test actually
+// proves is narrower and precise:
+//
+//   - Exactly ONE tool may be GATED/mutating: authored with `defineTool` and
+//     `approval: always()`, so every invocation pauses for a human before it
+//     runs. That tool is `create_issue` — Jace's only path into the factory
+//     (GitHub issues, workspaces, builds).
+//   - Any OTHER tool is allowed to write something only if it is
+//     UNGATED-but-self-scoped: every target of its write must be derived
+//     from the tool's OWN session context (e.g. `ctx.session.id`), never
+//     from a model-chosen argument, so its blast radius is provably confined
+//     to "the identity/session already talking to Jace right now" — never
+//     another tenant, another user, or the factory. `send_connect_link` is
+//     the sanctioned example: it takes NO model input and only ever
+//     overwrites the CALLING conversation's own chat-identity link-token
+//     slot, never GitHub or a workspace. See its own file doc-comment for
+//     the full argument.
+//   - Additional READ-ONLY tools may exist freely (and, where genuinely
+//     needed, may shell out via `child_process`) without weakening either
+//     guarantee above.
+//
+// Mechanically, this test proves the above by checking:
 //
 //   1. `agent/tools/` contains exactly the known, reviewed tool set:
-//      `create_issue` (mutating), `standup` and `codebase_query` (read-only).
-//      Adding/removing a tool file requires updating EXPECTED_TOOL_FILES below
-//      — that edit IS the human review this test exists to force.
-//   2. Of those, exactly ONE is mutating — authored with `defineTool` and
-//      `approval: always()`, so every invocation pauses for a human. The
-//      read-only tools set no `approval` field and cannot write anything.
+//      `create_issue` (gated/mutating), `send_connect_link` (ungated but
+//      self-scoped), and `standup` / `codebase_query` / `fetch_workspace_memory`
+//      (read-only). Adding/removing a tool file requires updating
+//      EXPECTED_TOOL_FILES below — that edit IS the human review this test
+//      exists to force.
+//   2. Of those, exactly ONE is GATED — authored with `defineTool` and
+//      `approval: always()`. Every other tool sets no `approval` field.
 //   3. `node:child_process` is imported ONLY by the expected, reviewed sites:
 //      the gated `create_issue` tool, and the read-only `codebase_query` tool
 //      (which shells out via `execFile` — never a shell string — to the
@@ -55,6 +74,7 @@ const EXPECTED_TOOL_FILES = [
   "codebase_query.ts",
   "create_issue.ts",
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
+  "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process
   "standup.ts",
 ].sort();
 const EXPECTED_MUTATING_TOOL = "create_issue.ts";

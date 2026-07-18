@@ -1797,6 +1797,11 @@ export {
 // complete the spine: deciding which workspace a conversation belongs to when
 // an identity reaches more than one, and pinning that decision to the
 // (channel, conversationKey) session row.
+// getJaceSessionByEveSessionId + latestTelegramSessionForChatIdentity (issue
+// #1263 PR ②) round out the connect-GitHub flow: the former resolves the
+// mint endpoint's calling conversation (ctx.session.id) down to its chat
+// identity server-side; the latter finds which Telegram chat to post the
+// post-bind confirmation into.
 export {
   getOrCreateJaceSession,
   bindEveSession,
@@ -1805,6 +1810,8 @@ export {
   bindJaceSessionWorkspace,
   resolveConversationWorkspace,
   pinConversationWorkspace,
+  getJaceSessionByEveSessionId,
+  latestTelegramSessionForChatIdentity,
   recordApprovalRequest,
   findApprovalByCallbackToken,
   resolveApproval,
@@ -1831,6 +1838,7 @@ export {
 export {
   insertChatIdentity,
   getChatIdentity,
+  getChatIdentityById,
   bindChatIdentityWorkspace,
   bindChatIdentityUser,
   setChatIdentityLinkToken,

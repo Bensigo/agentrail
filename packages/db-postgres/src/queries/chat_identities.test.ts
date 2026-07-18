@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { eq, inArray } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 // Mocked db chain: each db.<verb>() call returns a chainable mock object
 // where every intermediate method returns the same chain (so any call order
@@ -15,6 +17,9 @@ vi.mock("../db.js", () => ({
 }));
 
 import { db } from "../db.js";
+import { chatIdentities } from "../schema/chat_identities.js";
+import { workspaceMemberships } from "../schema/workspace_memberships.js";
+import { workspaces } from "../schema/workspaces.js";
 import {
   insertChatIdentity,
   getChatIdentity,
@@ -23,6 +28,7 @@ import {
   setChatIdentityLinkToken,
   getChatIdentityByLinkToken,
   resolveInboundChatIdentity,
+  listWorkspacesForChatIdentity,
 } from "./chat_identities.js";
 
 const mockDb = vi.mocked(db);
@@ -30,12 +36,31 @@ const mockDb = vi.mocked(db);
 /** A chainable mock: every method returns the chain except `terminalMethod`, which resolves `finalValue`. */
 function makeChain(terminalMethod: string, finalValue: unknown) {
   const chain: Record<string, unknown> = {};
-  const methods = ["from", "where", "limit", "values", "set", "onConflictDoNothing"];
+  const methods = [
+    "from",
+    "where",
+    "limit",
+    "values",
+    "set",
+    "onConflictDoNothing",
+    "leftJoin",
+    "orderBy",
+  ];
   for (const m of methods) {
     chain[m] = vi.fn(() => chain);
   }
   chain[terminalMethod] = vi.fn(() => Promise.resolve(finalValue));
   return chain;
+}
+
+// Argument-level condition assertions (see jace_sessions-intro-anchor.test.ts
+// for the full rationale): render both the actual captured `.where`/join
+// condition and an expected one — built with the same drizzle operators
+// against the real schema columns — to literal {sql, params} text via
+// PgDialect.sqlToQuery, and compare THAT rather than the call-presence alone.
+const dialect = new PgDialect();
+function renderCondition(condition: unknown) {
+  return dialect.sqlToQuery(condition as Parameters<typeof dialect.sqlToQuery>[0]);
 }
 
 const NOW = new Date("2026-07-18T00:00:00Z");
@@ -312,5 +337,100 @@ describe("resolveInboundChatIdentity", () => {
     ).rejects.toThrow(
       /resolveInboundChatIdentity: no row found for telegram\/tg-123/
     );
+  });
+});
+
+describe("listWorkspacesForChatIdentity", () => {
+  it("dedupes overlap between the own workspace_id binding and workspace_memberships", async () => {
+    // Simulates: identity bound to ws-1, and its linked user is ALSO a member
+    // of ws-1 (overlap) and ws-2 (distinct) — the LEFT JOIN emits one row per
+    // membership match, so ws-1 appears twice in the raw rows.
+    const joinChain = makeChain("where", [
+      { ownWorkspaceId: "ws-1", membershipWorkspaceId: "ws-1" },
+      { ownWorkspaceId: "ws-1", membershipWorkspaceId: "ws-2" },
+    ]);
+    const workspacesChain = makeChain("orderBy", [
+      { id: "ws-2", name: "Alpha" },
+      { id: "ws-1", name: "Beta" },
+    ]);
+    mockDb.select = vi
+      .fn()
+      .mockReturnValueOnce(joinChain as ReturnType<typeof db.select>)
+      .mockReturnValueOnce(workspacesChain as ReturnType<typeof db.select>);
+
+    const result = await listWorkspacesForChatIdentity("chat-identity-1");
+
+    // First query: chatIdentities LEFT JOIN workspaceMemberships on
+    // membership.userId = identity.userId, filtered to this one identity.
+    const joinArgs = (joinChain.leftJoin as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(joinArgs?.[0]).toBe(workspaceMemberships);
+    expect(renderCondition(joinArgs?.[1])).toEqual(
+      renderCondition(eq(workspaceMemberships.userId, chatIdentities.userId))
+    );
+    const joinWhereArgs = (joinChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(joinWhereArgs)).toEqual(
+      renderCondition(eq(chatIdentities.id, "chat-identity-1"))
+    );
+
+    // Second query: deduped ids passed to inArray, in first-seen order.
+    const wsWhereArgs = (workspacesChain.where as ReturnType<typeof vi.fn>)
+      .mock.calls[0]?.[0];
+    expect(renderCondition(wsWhereArgs)).toEqual(
+      renderCondition(inArray(workspaces.id, ["ws-1", "ws-2"]))
+    );
+
+    expect(result).toEqual([
+      { id: "ws-2", name: "Alpha" },
+      { id: "ws-1", name: "Beta" },
+    ]);
+  });
+
+  it("returns an empty array when the identity has neither a workspace_id binding nor any memberships", async () => {
+    // LEFT JOIN still emits exactly one row for the identity itself, with
+    // membershipWorkspaceId null (no matching membership row).
+    const joinChain = makeChain("where", [
+      { ownWorkspaceId: null, membershipWorkspaceId: null },
+    ]);
+    mockDb.select = vi.fn(() => joinChain as ReturnType<typeof db.select>);
+
+    const result = await listWorkspacesForChatIdentity("chat-identity-2");
+
+    expect(result).toEqual([]);
+    // No workspace ids to look up — the second query must never fire.
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns an empty array when no chat identity matches the given id", async () => {
+    const joinChain = makeChain("where", []);
+    mockDb.select = vi.fn(() => joinChain as ReturnType<typeof db.select>);
+
+    const result = await listWorkspacesForChatIdentity("nonexistent-identity");
+
+    expect(result).toEqual([]);
+    expect(mockDb.select).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves the own workspace_id binding alone when the identity has no linked user", async () => {
+    const joinChain = makeChain("where", [
+      { ownWorkspaceId: "ws-1", membershipWorkspaceId: null },
+    ]);
+    const workspacesChain = makeChain("orderBy", [
+      { id: "ws-1", name: "Beta" },
+    ]);
+    mockDb.select = vi
+      .fn()
+      .mockReturnValueOnce(joinChain as ReturnType<typeof db.select>)
+      .mockReturnValueOnce(workspacesChain as ReturnType<typeof db.select>);
+
+    const result = await listWorkspacesForChatIdentity("chat-identity-3");
+
+    const wsWhereArgs = (workspacesChain.where as ReturnType<typeof vi.fn>)
+      .mock.calls[0]?.[0];
+    expect(renderCondition(wsWhereArgs)).toEqual(
+      renderCondition(inArray(workspaces.id, ["ws-1"]))
+    );
+    expect(result).toEqual([{ id: "ws-1", name: "Beta" }]);
   });
 });

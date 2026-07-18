@@ -1793,18 +1793,28 @@ export {
 // getOrCreateIntroJaceSession + bindJaceSessionWorkspace (issue #1261 PR ②)
 // are the workspace-less counterpart: a session anchored to chat_identity_id
 // for a sender with no resolved workspace yet, that graduates in place.
+// resolveConversationWorkspace + pinConversationWorkspace (issue #1261 PR ③)
+// complete the spine: deciding which workspace a conversation belongs to when
+// an identity reaches more than one, and pinning that decision to the
+// (channel, conversationKey) session row.
 export {
   getOrCreateJaceSession,
   bindEveSession,
   setJaceSessionStatus,
   getOrCreateIntroJaceSession,
   bindJaceSessionWorkspace,
+  resolveConversationWorkspace,
+  pinConversationWorkspace,
   recordApprovalRequest,
   findApprovalByCallbackToken,
   resolveApproval,
   pendingApprovalsForWorkspace,
   type RecordApprovalRequestInput,
   type PendingApprovalRow,
+  type ResolveConversationWorkspaceInput,
+  type ResolveConversationWorkspaceResult,
+  type PinConversationWorkspaceInput,
+  type PinConversationWorkspaceResult,
 } from "./jace_sessions.js";
 
 // Chat identities — the identity spine for every inbound chat message (spec
@@ -1814,6 +1824,8 @@ export {
 // ②) is the composed entry point the shared-bot webhook door (#1262) and
 // #1264's create_workspace (graduation) call; issue #1263 owns link-token
 // issuance/expiry on top of the storage primitives here.
+// listWorkspacesForChatIdentity (PR ③) is every workspace an identity can
+// reach — the input to the multi-workspace disambiguation above.
 export {
   insertChatIdentity,
   getChatIdentity,
@@ -1822,6 +1834,8 @@ export {
   setChatIdentityLinkToken,
   getChatIdentityByLinkToken,
   resolveInboundChatIdentity,
+  listWorkspacesForChatIdentity,
   type ResolveInboundChatIdentityInput,
   type ResolveInboundChatIdentityResult,
+  type ReachableWorkspace,
 } from "./chat_identities.js";

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, desc, eq, isNull, or } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, or } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   jaceSessions,
@@ -7,6 +7,10 @@ import {
   type JaceSessionRow,
   type JaceApprovalRow,
 } from "../schema/jace_sessions.js";
+import {
+  listWorkspacesForChatIdentity,
+  type ReachableWorkspace,
+} from "./chat_identities.js";
 
 /**
  * Jace session + approval queries (spec §4; see `schema/jace_sessions.ts` for
@@ -117,6 +121,23 @@ export async function setJaceSessionStatus(
  * second identity racing the same conversation key resolves to the session
  * the first one created (matches the workspace-anchored session's own
  * one-row-per-conversation-key invariant).
+ *
+ * CALLER CONTRACT: callers MUST call `resolveConversationWorkspace` (below)
+ * first and only reach this function on its `kind: "intro"` result. Calling
+ * this directly for a conversation that already has a workspace-anchored
+ * `jace_sessions` row does NOT fail — the partial unique index above only
+ * polices the `workspace_id IS NULL` universe, so an out-of-contract call
+ * silently FORKS the conversation: a shadow intro row is inserted beside the
+ * already-anchored row, and both live on undetected. The loud failure mode
+ * (a unique-constraint violation) only shows up later, and only if the
+ * shadow row is graduated (`bindJaceSessionWorkspace`) to the SAME workspace
+ * as the existing anchor — that UPDATE collides with
+ * `jace_sessions_conversation_unique`. Graduating the shadow row to a
+ * DIFFERENT workspace never errors at all: it silently produces two
+ * workspace-anchored sessions for one (channel, conversationKey), the exact
+ * dual-anchored ambiguity `resolveConversationWorkspace`'s `ambiguous` flag
+ * exists to detect after the fact. Resolve-first is the contract; this
+ * function is not safe to call speculatively.
  */
 export async function getOrCreateIntroJaceSession(
   chatIdentityId: string,
@@ -189,6 +210,202 @@ export async function bindJaceSessionWorkspace(
     .returning({ id: jaceSessions.id });
 
   return result.length > 0;
+}
+
+// --- multi-workspace disambiguation (spec §4.2, issue #1261 PR ③) ----------
+
+export interface ResolveConversationWorkspaceInput {
+  chatIdentityId: string;
+  channel: string;
+  conversationKey: string;
+}
+
+export type ResolveConversationWorkspaceResult =
+  | {
+      kind: "pinned";
+      workspaceId: string;
+      sessionId: string;
+      /** True when 2+ workspace-anchored sessions share this (channel,
+       * conversationKey) — legal under the (workspace, channel,
+       * conversation_key) unique (a historic ambiguity, since that
+       * constraint scopes uniqueness PER workspace, not across them). The
+       * most recently active session wins; a true value tells the door to
+       * re-confirm with the user rather than silently trust the pick. */
+      ambiguous: boolean;
+    }
+  | { kind: "ask"; options: ReachableWorkspace[] }
+  | { kind: "single"; workspaceId: string }
+  | { kind: "intro" };
+
+/**
+ * Decide which workspace a conversation belongs to — spec §4.2's "Jace asks
+ * once per conversation and pins the answer to the conversation key." Purely
+ * read-only (no inserts/updates): the door (issue #1262) calls this on every
+ * inbound turn and only calls `pinConversationWorkspace` below when a
+ * decision needs recording.
+ *
+ * Precedence, checked in this exact order:
+ *  1. `pinned` — a workspace-anchored `jace_sessions` row already exists for
+ *     (channel, conversationKey), found with NO `chatIdentityId` filter
+ *     (deliberately: a channel/thread's pin does not depend on which
+ *     identity is currently speaking in it). See `ambiguous` above for the
+ *     2+ row case.
+ *  2. `ask` — no pinned session, and the identity reaches 2+ workspaces
+ *     (via `listWorkspacesForChatIdentity`).
+ *  3. `single` — no pinned session, exactly 1 reachable workspace.
+ *  4. `intro` — no pinned session, 0 reachable workspaces (unknown/unbound
+ *     identity; the door continues the intro conversation per PR ②).
+ *
+ * SECURITY: the `pinned` path's entire security rests on (channel,
+ * conversationKey) being platform-authoritative — taken from the webhook
+ * payload's own routing fields (e.g. chat/thread id), never derived from
+ * message content or model output. `conversationKey` is the sole match key
+ * for `pinned` (deliberately, with no `chatIdentityId` filter — see point 1
+ * above); a caller-supplied or model-guessed key that happens to collide
+ * with another conversation's key rides that conversation's existing pin
+ * straight into a foreign workspace. Consequence worth calling out: in a
+ * group chat, every participant sharing the (channel, conversationKey)
+ * inherits the SAME pin once one is set, including identities that reach
+ * zero workspaces of their own — the pin belongs to the conversation, not to
+ * any one identity in it.
+ */
+export async function resolveConversationWorkspace(
+  input: ResolveConversationWorkspaceInput
+): Promise<ResolveConversationWorkspaceResult> {
+  const { chatIdentityId, channel, conversationKey } = input;
+
+  const pinnedSessions = await db
+    .select()
+    .from(jaceSessions)
+    .where(
+      and(
+        eq(jaceSessions.channel, channel),
+        eq(jaceSessions.conversationKey, conversationKey),
+        isNotNull(jaceSessions.workspaceId)
+      )
+    )
+    .orderBy(desc(jaceSessions.lastActivityAt));
+
+  if (pinnedSessions.length > 0) {
+    const top = pinnedSessions[0]!;
+    return {
+      kind: "pinned",
+      workspaceId: top.workspaceId!,
+      sessionId: top.id,
+      ambiguous: pinnedSessions.length > 1,
+    };
+  }
+
+  const reachable = await listWorkspacesForChatIdentity(chatIdentityId);
+  if (reachable.length === 0) {
+    return { kind: "intro" };
+  }
+  if (reachable.length === 1) {
+    return { kind: "single", workspaceId: reachable[0]!.id };
+  }
+  return { kind: "ask", options: reachable };
+}
+
+export interface PinConversationWorkspaceInput {
+  chatIdentityId: string;
+  channel: string;
+  conversationKey: string;
+  workspaceId: string;
+}
+
+export type PinConversationWorkspaceResult =
+  | { ok: true; sessionId: string }
+  | { ok: false; reason: "not_reachable" | "already_pinned_elsewhere" };
+
+/**
+ * Pin a conversation to a workspace — "ask once, pin to conversation key"
+ * (spec §4.2). The pin IS the `jace_sessions` row's workspace binding; there
+ * is no separate pin table. Re-asking (when `resolveConversationWorkspace`
+ * returns `ambiguous: true`) is entirely the door's choice — this function
+ * only ever records one decision per call.
+ *
+ * `workspaceId` must be one `listWorkspacesForChatIdentity` already reaches,
+ * checked FIRST, before any write: the tenant-isolation guard, since an
+ * identity must never pin a conversation to a workspace it cannot reach.
+ *
+ * Then, in order:
+ *  - ANY existing `jace_sessions` row for (channel, conversationKey) — intro
+ *    (workspace-less) OR already workspace-anchored, and the most recently
+ *    active one when the historic multi-row ambiguity applies (same tie-break
+ *    as `resolveConversationWorkspace`) — is bound via `bindJaceSessionWorkspace`
+ *    (PR ②'s atomic guard). That ONE guard covers every outcome this
+ *    function needs: an intro row graduates in place; a row already pinned
+ *    to this SAME workspace is a harmless idempotent no-op; a row already
+ *    pinned to a DIFFERENT workspace — whether that happened moments ago
+ *    (a plain earlier pin) or via a concurrent call racing this one — is
+ *    refused, surfaced here as `already_pinned_elsewhere`. This is a
+ *    deliberate generalization of "graduate the intro session": treating
+ *    "pin conversation X to workspace W" uniformly regardless of whether a
+ *    prior session row already existed as intro or as a (different) pin is
+ *    what makes a same-conversation re-pin attempt behave the same as a
+ *    race — both are "someone already decided this conversation's workspace,
+ *    and it wasn't W".
+ *  - Otherwise (no session at all exists yet for this conversation) a fresh
+ *    workspace-anchored session is created (`getOrCreateJaceSession`) and
+ *    `chat_identity_id` is set on it with one small UPDATE, so the identity
+ *    link is kept even though this path never touches a pre-existing row.
+ *
+ * CONCURRENCY: a returned `ok: true` is NOT mutually exclusive across
+ * racing callers. Two concurrent calls for the same brand-new (channel,
+ * conversationKey) but DIFFERENT workspaces can both pass the "no existing
+ * session" branch above before either write lands (`getOrCreateJaceSession`'s
+ * own conflict target includes `workspaceId`, so two different workspace ids
+ * never collide with each other) — each call then returns `ok: true`,
+ * leaving two dual-anchored rows for the one conversation. This is the
+ * designed recovery path, not a gap left open here: the next
+ * `resolveConversationWorkspace` call surfaces exactly this outcome as
+ * `pinned` with `ambiguous: true`. Callers must treat `ok: true` as "this
+ * call's write landed," never as "this workspace is now the exclusive
+ * answer" — re-resolve rather than trust a cached pin.
+ */
+export async function pinConversationWorkspace(
+  input: PinConversationWorkspaceInput
+): Promise<PinConversationWorkspaceResult> {
+  const { chatIdentityId, channel, conversationKey, workspaceId } = input;
+
+  const reachable = await listWorkspacesForChatIdentity(chatIdentityId);
+  if (!reachable.some((workspace) => workspace.id === workspaceId)) {
+    return { ok: false, reason: "not_reachable" };
+  }
+
+  const [existingSession] = await db
+    .select()
+    .from(jaceSessions)
+    .where(
+      and(
+        eq(jaceSessions.channel, channel),
+        eq(jaceSessions.conversationKey, conversationKey)
+      )
+    )
+    .orderBy(desc(jaceSessions.lastActivityAt))
+    .limit(1);
+
+  if (existingSession) {
+    const bound = await bindJaceSessionWorkspace(existingSession.id, workspaceId);
+    if (!bound) {
+      return { ok: false, reason: "already_pinned_elsewhere" };
+    }
+    return { ok: true, sessionId: existingSession.id };
+  }
+
+  const session = await getOrCreateJaceSession(
+    workspaceId,
+    channel,
+    conversationKey
+  );
+  await db
+    .update(jaceSessions)
+    .set({ chatIdentityId, updatedAt: new Date() })
+    .where(
+      and(eq(jaceSessions.id, session.id), isNull(jaceSessions.chatIdentityId))
+    );
+
+  return { ok: true, sessionId: session.id };
 }
 
 // --- approvals --------------------------------------------------------------

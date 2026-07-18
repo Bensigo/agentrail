@@ -1,4 +1,4 @@
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, gt, inArray } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   chatIdentities,
@@ -146,6 +146,43 @@ export async function getChatIdentityByLinkToken(
     .from(chatIdentities)
     .where(eq(chatIdentities.linkToken, linkToken))
     .limit(1);
+  return row ?? null;
+}
+
+/**
+ * Atomically consume a one-time connect-GitHub link token (issue #1263): a
+ * single UPDATE ... RETURNING that both matches the token AND enforces the
+ * expiry (`link_token_expires_at > now`) in the SAME statement — no
+ * read-then-write window where a token could be validated and then raced by
+ * a second consumer before the clear lands. The UPDATE also nulls both
+ * `link_token` and `link_token_expires_at`, which is what makes the token
+ * single-use: a second call with the same token matches zero rows. `now` is
+ * read once and reused for both the expiry guard and `updatedAt` (the same
+ * one-clock-read idiom as `claimInvitesForUser`/`resolveApproval` elsewhere
+ * in this package).
+ *
+ * Returns the row on success, or `null` when the WHERE clause matches
+ * nothing — which covers an expired token, an already-consumed (reused)
+ * token, and a token that never existed, ALL THREE indistinguishably by
+ * design. Callers must not try to tell these apart (spec §4.2 AC3): the
+ * remedy is identical either way ("ask Jace for a fresh link"), so leaking
+ * which case it was would only help an attacker probe for valid-but-expired
+ * tokens.
+ */
+export async function consumeChatIdentityLinkToken(
+  linkToken: string
+): Promise<ChatIdentityRow | null> {
+  const now = new Date();
+  const [row] = await db
+    .update(chatIdentities)
+    .set({ linkToken: null, linkTokenExpiresAt: null, updatedAt: now })
+    .where(
+      and(
+        eq(chatIdentities.linkToken, linkToken),
+        gt(chatIdentities.linkTokenExpiresAt, now)
+      )
+    )
+    .returning();
   return row ?? null;
 }
 

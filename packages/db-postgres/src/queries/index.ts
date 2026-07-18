@@ -1822,10 +1822,12 @@ export {
 // the WHY behind the design). Maps (platform, platform_user_id) -> at most
 // one linked user and one resolved workspace. resolveInboundChatIdentity (PR
 // ②) is the composed entry point the shared-bot webhook door (#1262) and
-// #1264's create_workspace (graduation) call; issue #1263 owns link-token
-// issuance/expiry on top of the storage primitives here.
-// listWorkspacesForChatIdentity (PR ③) is every workspace an identity can
-// reach — the input to the multi-workspace disambiguation above.
+// #1264's create_workspace (graduation) call. listWorkspacesForChatIdentity
+// (PR ③) is every workspace an identity can reach — the input to the
+// multi-workspace disambiguation above. consumeChatIdentityLinkToken (issue
+// #1263) is the single-use, expiry-checked consume primitive the
+// /connect/[token] bind flow calls after `setChatIdentityLinkToken` mints a
+// link.
 export {
   insertChatIdentity,
   getChatIdentity,
@@ -1833,6 +1835,7 @@ export {
   bindChatIdentityUser,
   setChatIdentityLinkToken,
   getChatIdentityByLinkToken,
+  consumeChatIdentityLinkToken,
   resolveInboundChatIdentity,
   listWorkspacesForChatIdentity,
   type ResolveInboundChatIdentityInput,

@@ -92,26 +92,34 @@ because this runner clones arbitrary target repos — it must never execute
 whatever hooks/CLAUDE.md a cloned repo happens to carry
 (`code.claude.com/docs/en/headless.md`, "Start faster with bare mode").
 
-## `agentrail-config.hosted.json` — a template, not an auto-injected file
+## `agentrail-config.hosted.json` — the default config auto-injected into a fresh, unconfigured clone
 
-This file is **not** copied into a clone by the runner. Read
-`agentrail/sandbox/native_runner.py:run_issue_on_host`'s own docstring: the
-`post_checkout` seeding hook that writes a `.agentrail/config.json` into a
-fresh clone is described there as "eval-only... the production loop is
-byte-identical [without it]." The real hosted-runner path
-(`agentrail/cli/commands/run.py:_read_config`) reads
-`<target>/.agentrail/config.json` straight from whatever the **target repo
-itself** has committed — there is no code path today that bootstraps or
-generates that file for a freshly connected repo (`agentrail init` wires
-MCP/hooks for a *local* dev agent; it does not touch `runners.*.models`).
+**Updated by #1267 PR②** — this section previously said this file was "not
+copied into a clone by the runner." That gap is now closed:
+`agentrail/sandbox/native_runner.py:_inject_hosted_config` writes it into a
+freshly cloned repo whenever BOTH are true: this container is hosted
+(`AGENTRAIL_HOSTED=1`, baked below) AND the clone has no
+`.agentrail/config.json` of its own. A repo that already commits its own
+config is left **completely untouched** — BYO config always wins, regardless
+of its content. This Dockerfile `COPY`s the file into the image at
+`/opt/agentrail/agentrail-config.hosted.json` and points
+`AGENTRAIL_HOSTED_CONFIG` at that exact path; the two must move together (a
+Dockerfile change here without the matching `COPY`/`ENV` pair breaks the
+seam). If the template is somehow missing or unreadable at run time, the
+runner prints a loud stderr warning and proceeds WITHOUT injecting anything —
+never a silent half-config — so the run reaches whatever verdict it would
+have reached anyway (see `_inject_hosted_config`'s own docstring for the full
+three-way no-op contract).
 
-So `agentrail-config.hosted.json` is the **reference `.agentrail/config.json`
-content a target repo should commit** to get Claude Code + OpenRouter routing
-with this image. PR② will commit a copy of it (or one modeled closely on it)
-into its test repo. A production onboarding flow that auto-writes this file
-into newly connected repos is a real gap but is out of scope for this PR (no
-factory Python changes) — flagging it here rather than silently building
-around it.
+Without this, a freshly connected repo with no committed config was
+permanently refused by #1270's independent-review assert (no distinct
+verify-phase model to resolve) — every claim, forever, burning retry budget
+with an identical instant failure each time (see `annex-1267-recon.md` §6 for
+the full mechanics of that gap). This closes the common case: the repo still
+needs to declare its OWN test/verify command for the Objective Gate to have
+any checks at all (see the last paragraph below) — no generic template can
+supply that — but it no longer needs to hand-author the model-routing half
+just to get past the hosted assert.
 
 Fields, and why:
 
@@ -234,3 +242,22 @@ entrypoint's env-to-env mapping copies a value across; it never leaves the
 container and nothing was sent over the network. The actual authenticated
 call to OpenRouter is PR②'s
 job.
+
+## Smoke-tested for #1267 PR② (config-injection wiring; offline, no OpenRouter calls)
+
+PR② changed this image (the hosted-config template `COPY` + the
+`AGENTRAIL_HOSTED_CONFIG` env, and a new `agentrail fleet` CLI in the vendored
+package), so the build was re-verified the same way — a real
+`docker build -f deploy/runner/Dockerfile .` from repo root (clean end to end,
+same single pre-existing `SecretsUsedInArgOrEnv` linter warning), then inside
+the built image:
+
+| Check | Result |
+|---|---|
+| `docker run --rm <image> env` | now additionally carries `AGENTRAIL_HOSTED_CONFIG=/opt/agentrail/agentrail-config.hosted.json`; all previously verified vars unchanged |
+| `cat /opt/agentrail/agentrail-config.hosted.json` in the image | byte-identical to the committed `deploy/runner/agentrail-config.hosted.json` (models.execute/verify/critic intact, verify distinct from execute) |
+| `agentrail fleet --help` in the image | prints the fleet daemon's full env-var contract (the new CLI is wired through the vendored package) |
+| `agentrail fleet` in the image with no env set | exits 1 with `missing required env var(s): AGENTRAIL_SERVER_BASE_URL, FLEET_CONSOLE_TOKEN` — fails loud and early, does not start half-configured |
+
+Same posture as the #1266 table above: no OpenRouter call, no real secret
+anywhere near the build.

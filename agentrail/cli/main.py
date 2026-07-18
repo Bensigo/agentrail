@@ -10,6 +10,7 @@ from agentrail.cli.commands.cleanup import run_cleanup
 from agentrail.cli.commands.doctor import run_doctor
 from agentrail.cli.commands.grill import run_grill
 from agentrail.cli.commands.evals import run_evals
+from agentrail.cli.commands.fleet import run_fleet
 from agentrail.cli.commands.guardrails import run_guardrails
 from agentrail.cli.commands.heartbeat import run_heartbeat
 from agentrail.cli.commands.issue import run_issue
@@ -83,6 +84,7 @@ def _usage() -> str:
         "  agentrail logout\n"
         "  agentrail whoami\n"
         "  agentrail runner [--idle SECONDS] [--once] [--concurrency N]\n"
+        "  agentrail fleet\n"
         "  agentrail timeline [--target DIR]\n"
         "  agentrail cost [--target DIR] [--run ID] [--since REF] [--json]\n"
         "  agentrail cost [RUN_ID] --recommend [--json]\n"
@@ -118,6 +120,7 @@ def _usage() -> str:
         "  logout      Sign out (remove saved credentials)\n"
         "  whoami      Show the logged-in workspace\n"
         "  runner      Run the local worker that executes queued issues\n"
+        "  fleet       Run the hosted multi-workspace runner daemon (#1267)\n"
         "  timeline    Show session timeline\n"
         "  cost        Per-issue real-dollar cost from the AFK journal\n"
         "  langfuse    Langfuse integration operator commands (price sync)\n"
@@ -148,6 +151,13 @@ def main(argv: List[str] | None = None) -> int:
         "run-records",                 # local read-only run-record assembly (#1178)
         "link", "console",             # local worktree↔session / TUI
         "langfuse",                    # talks to Langfuse, not the AgentRail server
+        "fleet",                       # multi-workspace daemon; authenticates itself
+                                        # via FLEET_CONSOLE_TOKEN + per-workspace
+                                        # tokens from the sync route, never via
+                                        # `agentrail login`/credentials.json — this
+                                        # gate would otherwise wrongly print "Not
+                                        # logged in" before fleet's own env-var
+                                        # check ever runs (#1267 PR②).
     }
     if args[0] not in _OFFLINE_COMMANDS:
         if load_credentials() is None and not os.environ.get("AGENTRAIL_SERVER_API_KEY"):
@@ -183,6 +193,8 @@ def main(argv: List[str] | None = None) -> int:
         return run_whoami(args[1:])
     if args[0] == "runner":
         return run_runner(args[1:])
+    if args[0] == "fleet":
+        return run_fleet(args[1:])
     if args[0] == "timeline":
         return run_timeline(args[1:])
     if args[0] == "cost":

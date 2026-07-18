@@ -154,7 +154,7 @@ class TestAuthGate(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_offline_commands_allowed_without_credentials(self):
-        """init/install/upgrade/doctor/context/memory/cleanup/status/timeline/cost/link/console are not gated."""
+        """init/install/upgrade/doctor/context/memory/cleanup/status/timeline/cost/link/console/fleet are not gated."""
         cases = {
             "init": "run_install",  # bare `init` routes to install
             "install": "run_install",
@@ -168,6 +168,10 @@ class TestAuthGate(unittest.TestCase):
             "cost": "run_cost",
             "link": "run_link",
             "console": "run_console",
+            # fleet authenticates itself via FLEET_CONSOLE_TOKEN, never via
+            # `agentrail login` — must not be blocked by the generic
+            # credentials-file gate (#1267 PR②).
+            "fleet": "run_fleet",
         }
         for command, target in cases.items():
             with self.subTest(command=command):

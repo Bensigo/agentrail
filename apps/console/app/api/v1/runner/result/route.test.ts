@@ -1,14 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 
-vi.mock("@agentrail/db-postgres", () => ({
-  recordRunnerResult: vi.fn(),
-  touchApiKeyLastUsed: vi.fn(),
-  // #1268 PR②: onboard-notify.ts's real implementation runs in this suite
-  // (NOT mocked away as a module — see the onboard-kind describe block below),
-  // so its one db-postgres dependency must be mockable here too.
-  latestTelegramSessionForWorkspace: vi.fn(),
-}));
+// Closed factory (an unlisted query fn stays undefined → loud crash), EXCEPT
+// ONBOARD_EXTERNAL_ID_PREFIX which is picked from the REAL module: it is the
+// single-source prefix constant (#1268 fix round) onboard-notify.ts routes on,
+// and a literal copy here would be exactly the drift-prone duplication the
+// constant exists to kill.
+vi.mock("@agentrail/db-postgres", async (importActual) => {
+  const actual =
+    await importActual<typeof import("@agentrail/db-postgres")>();
+  return {
+    ONBOARD_EXTERNAL_ID_PREFIX: actual.ONBOARD_EXTERNAL_ID_PREFIX,
+    recordRunnerResult: vi.fn(),
+    touchApiKeyLastUsed: vi.fn(),
+    // #1268 PR②: onboard-notify.ts's real implementation runs in this suite
+    // (NOT mocked away as a module — see the onboard-kind describe block below),
+    // so its one db-postgres dependency must be mockable here too.
+    latestTelegramSessionForWorkspace: vi.fn(),
+  };
+});
 vi.mock("@agentrail/db-clickhouse", () => ({
   insertFailureEvents: vi.fn(),
   recordRunLifecycleEvent: vi.fn(),

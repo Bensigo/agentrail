@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("@agentrail/db-postgres", () => ({
-  latestTelegramSessionForWorkspace: vi.fn(),
-}));
+// Closed factory (an unlisted query fn stays undefined → loud crash), EXCEPT
+// ONBOARD_EXTERNAL_ID_PREFIX which is picked from the REAL module: it is the
+// single-source prefix constant (#1268 fix round), and a literal copy here
+// would be exactly the drift-prone duplication the constant exists to kill.
+vi.mock("@agentrail/db-postgres", async (importActual) => {
+  const actual =
+    await importActual<typeof import("@agentrail/db-postgres")>();
+  return {
+    ONBOARD_EXTERNAL_ID_PREFIX: actual.ONBOARD_EXTERNAL_ID_PREFIX,
+    latestTelegramSessionForWorkspace: vi.fn(),
+  };
+});
 vi.mock("../../../../../lib/telegram-system-message", () => ({
   sendSystemTelegramMessage: vi.fn(),
 }));

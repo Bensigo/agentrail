@@ -32,24 +32,28 @@
  * No bound conversation is a LOGGED no-op — never an error — since silence
  * here would otherwise be invisible.
  */
-import { latestTelegramSessionForWorkspace } from "@agentrail/db-postgres";
+import {
+  latestTelegramSessionForWorkspace,
+  ONBOARD_EXTERNAL_ID_PREFIX,
+} from "@agentrail/db-postgres";
 import { sendSystemTelegramMessage } from "../../../../../lib/telegram-system-message";
 import type { NotifyOutcome } from "./notify";
 
-const ONBOARD_PREFIX = "onboard:";
-
 /**
- * Onboard entries encode their repo as `onboard:<owner/name>` (see
- * `enqueueOnboard`'s doc-comment in `@agentrail/db-postgres`). This is the
- * SINGLE detection point the route branches on: no `kind` column read, no
- * extra query — the queue entry's own `external_id`, already in hand from
+ * Onboard entries encode their repo as `onboard:<owner/name>` — the prefix is
+ * NOT a local literal but the writer's own `ONBOARD_EXTERNAL_ID_PREFIX`
+ * (exported next to `enqueueOnboard` in `@agentrail/db-postgres`), so this
+ * reader can never silently drift from what the enqueue actually writes; the
+ * round-trip test beside this file pins the composed pair. This is the SINGLE
+ * detection point the route branches on: no `kind` column read, no extra
+ * query — the queue entry's own `external_id`, already in hand from
  * `recordRunnerResult`'s return, is sufficient. Returns the repo full name
  * for an onboard-kind external id, else `null` (an issue-kind external id —
  * a full issue URL or `owner/name#123`).
  */
 export function onboardRepoFullName(externalId: string): string | null {
-  return externalId.startsWith(ONBOARD_PREFIX)
-    ? externalId.slice(ONBOARD_PREFIX.length)
+  return externalId.startsWith(ONBOARD_EXTERNAL_ID_PREFIX)
+    ? externalId.slice(ONBOARD_EXTERNAL_ID_PREFIX.length)
     : null;
 }
 

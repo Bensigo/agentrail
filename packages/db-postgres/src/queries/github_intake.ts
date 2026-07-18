@@ -696,6 +696,19 @@ export async function enqueueGithubIssue(data: {
 }
 
 /**
+ * The external-id prefix that marks a queue entry as an onboard job
+ * (`onboard:<owner/name>`). SINGLE SOURCE OF TRUTH (#1268 PR②): the writer
+ * (`enqueueOnboard` below), the claim-side reader (`deriveRepoSlug` in
+ * runner.ts), and the console's completion-notify reader
+ * (`onboardRepoFullName` in the result route) all import THIS constant, so
+ * the prefix a row is written with can never drift from the prefix its
+ * readers route on. Change it here and every site follows; the round-trip
+ * test in the console suite (real enqueueOnboard → onboardRepoFullName)
+ * additionally pins that the composed pair keeps agreeing.
+ */
+export const ONBOARD_EXTERNAL_ID_PREFIX = "onboard:";
+
+/**
  * Admit a one-shot `onboard` job into the durable queue for a freshly connected
  * repo. Unlike an issue, this carries no AC gate, no blockers, and no v2 screen —
  * it is workspace-owned indexing work, not user-authored content. The runner
@@ -715,7 +728,7 @@ export async function enqueueOnboard(data: {
   // The onboard externalId is repo-scoped (not issue-scoped) so there is one
   // durable onboard row per repo. `deriveRepoSlug` (claim side) reads the repo
   // slug back off this same `onboard:<owner/name>` shape.
-  const externalId = `onboard:${data.repoFullName}`;
+  const externalId = `${ONBOARD_EXTERNAL_ID_PREFIX}${data.repoFullName}`;
   const id = entryId(data.workspaceId, "github", externalId);
 
   const inserted = await db

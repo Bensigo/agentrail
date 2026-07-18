@@ -9,7 +9,10 @@ import { apiKeys } from "../schema/api_keys.js";
 import type { ApiKeyKind } from "../schema/api_keys.js";
 import { runs } from "../schema/runs.js";
 import { repositories } from "../schema/repositories.js";
-import { unparkDependents } from "./github_intake.js";
+import {
+  unparkDependents,
+  ONBOARD_EXTERNAL_ID_PREFIX,
+} from "./github_intake.js";
 
 // ---------------------------------------------------------------------------
 // API-key minting (runner token)
@@ -274,13 +277,15 @@ async function deriveRepoSlug(
   workspaceId: string,
   externalId: string
 ): Promise<string> {
-  // Onboard entries encode their repo as `onboard:owner/name` (no issue number).
+  // Onboard entries encode their repo as `onboard:owner/name` (no issue number,
+  // shared ONBOARD_EXTERNAL_ID_PREFIX — the writer's own constant, so this
+  // reader can never drift from what enqueueOnboard actually writes).
   // Strip the prefix so the slug match below resolves the repo from the entry
   // itself; otherwise the colon fails both patterns and we'd fall back to the
   // workspace's first configured repo — onboarding the wrong repo on a
   // multi-repo workspace (#1149).
-  const id = externalId.startsWith("onboard:")
-    ? externalId.slice("onboard:".length)
+  const id = externalId.startsWith(ONBOARD_EXTERNAL_ID_PREFIX)
+    ? externalId.slice(ONBOARD_EXTERNAL_ID_PREFIX.length)
     : externalId;
 
   const urlMatch = id.match(/^https?:\/\/github\.com\/([^/]+\/[^/#]+)/i);

@@ -34,6 +34,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -48,6 +49,9 @@ DEFAULT_TIMEOUT = 3600  # seconds — hard ceiling on the whole host run.
 DEFAULT_AGENT = "claude"  # host login + claude's native bash sandbox.
 ENV_AGENT = "AGENTRAIL_AGENT"
 ENV_SANDBOX_RUNTIME = "AGENTRAIL_SANDBOX_RUNTIME"
+# Hosted default config injection (#1267 PR②) — see _inject_hosted_config below.
+ENV_HOSTED = "AGENTRAIL_HOSTED"  # same marker agentrail.run.pipeline.is_hosted_run() checks.
+ENV_HOSTED_CONFIG = "AGENTRAIL_HOSTED_CONFIG"  # path to the baked default-config template.
 SANDBOX_RUNTIME_PKG = "@anthropic-ai/sandbox-runtime"
 
 # #1267 PR③: the deterministic prefix a hosted-refusal ``gate_reason`` always
@@ -294,6 +298,83 @@ def _build_run_command(
 
 
 # ---------------------------------------------------------------------------
+# Hosted default config injection (#1267 PR②) — closes the AC1 gap: a
+# fleet-claimed customer repo commonly has NO .agentrail/config.json of its
+# own, so the Objective Gate has zero declared verify checks (always red) and
+# #1270's independent-review assert refuses the run outright before any phase
+# runs — every single claim, forever, silently burning retry budget (see
+# annex-1267-recon.md §6). Seeding a distinct-execute/verify-model template
+# into the clone (only when hosted, only when the repo has none of its own)
+# turns that permanent refusal into a real run for the common case.
+# ---------------------------------------------------------------------------
+
+def _inject_hosted_config(repo_dir: Path, env: Dict[str, str]) -> None:
+    """Seed the baked hosted-default ``.agentrail/config.json`` into a fresh
+    clone that doesn't already commit one of its own — hosted mode only.
+
+    See ``deploy/runner/agentrail-config.hosted.json`` (the shipped template,
+    with ``models.verify`` distinct from ``models.execute`` — required by
+    #1270's assert) and ``deploy/runner/Dockerfile`` (bakes it into the image
+    and sets ``AGENTRAIL_HOSTED_CONFIG`` to its path).
+
+    Reads the hosted marker off ``env`` — the SAME merged dict this
+    function's caller already consults for every other feature flag
+    (``AGENTRAIL_AGENT``, ``AGENTRAIL_SANDBOX_RUNTIME``) — rather than
+    re-reading ``os.environ`` directly the way
+    ``agentrail.run.pipeline.is_hosted_run()`` does. Same marker, same
+    ``"1"`` convention; reading it off ``env`` just keeps this function
+    hermetic in tests and consistent with the rest of this module. In the
+    real container ``AGENTRAIL_HOSTED=1`` is baked as an image ENV, so it is
+    already present in ``os.environ`` (and therefore in the merged ``env``)
+    for every run.
+
+    Three no-op cases, all deliberate — never a silent half-config:
+
+    - Not hosted (``AGENTRAIL_HOSTED`` unset / not ``"1"``) — never touches a
+      local developer's own run.
+    - The clone ALREADY has ``.agentrail/config.json`` — BYO config always
+      wins; a repo that has done its own setup is never overwritten.
+    - The template path is unset, or unreadable — a LOUD stderr warning, no
+      injection, and the run proceeds to hit the SAME honest refusal it
+      would have hit without this function. Writing an empty/partial file
+      instead would be worse than the refusal it's trying to avoid, so this
+      never happens.
+    """
+    if (env.get(ENV_HOSTED) or "").strip() != "1":
+        return
+
+    config_path = repo_dir / ".agentrail" / "config.json"
+    if config_path.exists():
+        return  # BYO config wins — respected untouched.
+
+    template_path = (env.get(ENV_HOSTED_CONFIG) or "").strip()
+    if not template_path:
+        print(
+            "agentrail: hosted run with no .agentrail/config.json in this repo "
+            f"and {ENV_HOSTED_CONFIG} is unset — proceeding without injecting a "
+            "default config (the run may be honestly refused by the "
+            "independent review assert).",
+            file=sys.stderr,
+        )
+        return
+
+    try:
+        template_text = Path(template_path).read_text()
+    except OSError as exc:
+        print(
+            f"agentrail: hosted config template at {template_path!r} could not "
+            f"be read ({exc}) — proceeding without injecting a default config "
+            "(the run may be honestly refused by the independent review "
+            "assert).",
+            file=sys.stderr,
+        )
+        return
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(template_text)
+
+
+# ---------------------------------------------------------------------------
 # The seam
 # ---------------------------------------------------------------------------
 
@@ -468,6 +549,13 @@ def run_issue_on_host(
                 post_checkout(repo_dir)
             except Exception:  # noqa: BLE001 - seeding is best-effort
                 pass
+
+        # 1a-ter. Hosted default config injection (#1267 PR②) — see
+        # _inject_hosted_config's own docstring for the full contract (BYO
+        # config always wins; missing/unreadable template while hosted is a
+        # loud warning, never a silent half-config). A no-op whenever this
+        # process isn't hosted (AGENTRAIL_HOSTED != "1" in child_env).
+        _inject_hosted_config(repo_dir, child_env)
 
         # 1b. Materialize connected MCP connectors into the codebase: write the
         # agent-correct MCP config into the clone from AGENTRAIL_MCP_<PROVIDER>_KEY

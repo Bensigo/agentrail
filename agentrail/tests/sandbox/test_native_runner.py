@@ -23,11 +23,14 @@ from typing import List, Optional
 import pytest
 
 from agentrail.sandbox.native_runner import (
+    ENV_HOSTED,
+    ENV_HOSTED_CONFIG,
     HOSTED_REFUSAL_PREFIX,
     HostError,
     HostTimeout,
     _authenticated_clone_url,
     _build_run_command,
+    _inject_hosted_config,
     _redact_token,
     _result_from_run_json,
     run_issue_on_host,
@@ -1108,3 +1111,180 @@ def _extract_run_id(cmd: List[str]) -> Optional[str]:
     if "--run-id" in cmd:
         return cmd[cmd.index("--run-id") + 1]
     return None
+
+
+# ---------------------------------------------------------------------------
+# #1267 PR② — hosted default config injection: closes the AC1 gap where a
+# fleet-claimed customer repo with no .agentrail/config.json of its own gets
+# permanently refused by #1270's independent-review assert. Unit tests on
+# _inject_hosted_config directly (no clone, no subprocess), plus one
+# end-to-end test proving it runs at the right point in run_issue_on_host
+# (after checkout, before the agent command executes).
+# ---------------------------------------------------------------------------
+
+_TEMPLATE_TEXT = (
+    '{"schemaVersion": 1, "runners": {"claude": '
+    '{"models": {"execute": "anthropic/claude-sonnet-5", "verify": "z-ai/glm-5.2"}}}}'
+)
+
+
+class TestInjectHostedConfigUnit:
+    def _hosted_env(self, template_path) -> dict:
+        return {ENV_HOSTED: "1", ENV_HOSTED_CONFIG: str(template_path)}
+
+    def _write_template(self, tmp_path: Path, text: str = _TEMPLATE_TEXT) -> Path:
+        template = tmp_path / "agentrail-config.hosted.json"
+        template.write_text(text)
+        return template
+
+    def test_not_hosted_never_injects(self, tmp_path: Path) -> None:
+        template = self._write_template(tmp_path)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        _inject_hosted_config(repo_dir, {ENV_HOSTED_CONFIG: str(template)})  # AGENTRAIL_HOSTED absent
+        assert not (repo_dir / ".agentrail" / "config.json").exists()
+
+    def test_hosted_flag_value_other_than_one_is_not_hosted(self, tmp_path: Path) -> None:
+        template = self._write_template(tmp_path)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        _inject_hosted_config(
+            repo_dir, {ENV_HOSTED: "true", ENV_HOSTED_CONFIG: str(template)}
+        )
+        assert not (repo_dir / ".agentrail" / "config.json").exists()
+
+    def test_hosted_with_no_existing_config_injects_byte_identically(self, tmp_path: Path) -> None:
+        template = self._write_template(tmp_path)
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        _inject_hosted_config(repo_dir, self._hosted_env(template))
+        written = (repo_dir / ".agentrail" / "config.json").read_text()
+        assert written == _TEMPLATE_TEXT
+
+    def test_hosted_with_existing_config_leaves_it_untouched(self, tmp_path: Path) -> None:
+        template = self._write_template(tmp_path)
+        repo_dir = tmp_path / "repo"
+        existing_dir = repo_dir / ".agentrail"
+        existing_dir.mkdir(parents=True)
+        own_config = '{"runners": {"claude": {"models": {"execute": "x", "verify": "y"}}}}'
+        (existing_dir / "config.json").write_text(own_config)
+
+        _inject_hosted_config(repo_dir, self._hosted_env(template))
+
+        assert (existing_dir / "config.json").read_text() == own_config
+
+    def test_hosted_but_template_path_unset_warns_and_does_not_inject(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        _inject_hosted_config(repo_dir, {ENV_HOSTED: "1"})  # no AGENTRAIL_HOSTED_CONFIG
+        assert not (repo_dir / ".agentrail" / "config.json").exists()
+        err = capsys.readouterr().err
+        assert "AGENTRAIL_HOSTED_CONFIG" in err
+
+    def test_hosted_but_template_unreadable_warns_and_does_not_inject(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        missing_template = tmp_path / "does-not-exist.json"
+        _inject_hosted_config(
+            repo_dir, {ENV_HOSTED: "1", ENV_HOSTED_CONFIG: str(missing_template)}
+        )
+        assert not (repo_dir / ".agentrail" / "config.json").exists()
+        err = capsys.readouterr().err
+        assert str(missing_template) in err
+
+    def test_missing_template_never_raises_and_run_proceeds(self, tmp_path: Path, capsys) -> None:
+        # The honest-refusal contract: this must never crash the run — it
+        # degrades to a warning so the run proceeds to whatever verdict it
+        # would have reached anyway (possibly the independent-review refusal).
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        _inject_hosted_config(
+            repo_dir, {ENV_HOSTED: "1", ENV_HOSTED_CONFIG: str(tmp_path / "nope.json")}
+        )  # must not raise
+
+
+class TestInjectHostedConfigEndToEnd:
+    """Proves the injection actually runs inside run_issue_on_host, after
+    checkout and before the agent command executes."""
+
+    def _run(self, tmp_path, runner, template_path, **over):
+        dirs = _RunDirs(tmp_path)
+        kwargs = dict(
+            repo_url="https://github.com/acme/widgets.git",
+            ref="main",
+            issue_ref="7",
+            workspace_id="ws-123",
+            env={ENV_HOSTED: "1", ENV_HOSTED_CONFIG: str(template_path)},
+            run_dir_factory=dirs,
+            runner=runner,
+        )
+        kwargs.update(over)
+        return run_issue_on_host(**kwargs), dirs
+
+    def test_config_exists_by_the_time_the_agent_command_runs(self, tmp_path: Path) -> None:
+        template = tmp_path / "agentrail-config.hosted.json"
+        template.write_text(_TEMPLATE_TEXT)
+        run_dir = tmp_path / "run-1"
+        seen_config_at_run_time = {}
+
+        def _do_run(cmd, cwd, env):
+            # By the time "agentrail run issue" would execute, the clone must
+            # already carry the injected config.
+            config_path = Path(cwd) / ".agentrail" / "config.json"
+            seen_config_at_run_time["exists"] = config_path.exists()
+            seen_config_at_run_time["text"] = (
+                config_path.read_text() if config_path.exists() else None
+            )
+            log_dir = _extract_log_dir(cmd, run_dir)
+            run_id = _extract_run_id(cmd) or "host-run"
+            _write_run_json(Path(log_dir) / run_id, _green_run_json())
+            return _Completed(0, stdout="ran")
+
+        runner = FakeRunner([_Completed(0, stdout="cloned"), _do_run])
+        self._run(tmp_path, runner, template, publish_pr=False)
+
+        assert seen_config_at_run_time["exists"] is True
+        assert seen_config_at_run_time["text"] == _TEMPLATE_TEXT
+
+    def test_not_hosted_end_to_end_never_injects(self, tmp_path: Path) -> None:
+        template = tmp_path / "agentrail-config.hosted.json"
+        template.write_text(_TEMPLATE_TEXT)
+        run_dir = tmp_path / "run-1"
+
+        def _do_run(cmd, cwd, env):
+            assert not (Path(cwd) / ".agentrail" / "config.json").exists()
+            log_dir = _extract_log_dir(cmd, run_dir)
+            run_id = _extract_run_id(cmd) or "host-run"
+            _write_run_json(Path(log_dir) / run_id, _green_run_json())
+            return _Completed(0, stdout="ran")
+
+        runner = FakeRunner([_Completed(0, stdout="cloned"), _do_run])
+        dirs = _RunDirs(tmp_path)
+        run_issue_on_host(
+            repo_url="https://github.com/acme/widgets.git", ref="main", issue_ref="7",
+            workspace_id="ws-123", env={}, run_dir_factory=dirs, runner=runner,
+            publish_pr=False,
+        )
+
+
+class TestHostedConfigTemplateShape:
+    """Ties the SHIPPED template to #1270's assert: the run.py verifier-skip
+    logic (see annex-factory-recon.md §2) resolves NO verify phase when every
+    candidate model equals the implementer's — so if this template's
+    verify/execute models ever collapsed to the same value, a hosted fleet
+    would silently regress into refusing every single run again."""
+
+    def test_shipped_template_verify_model_is_distinct_from_execute(self) -> None:
+        template_path = (
+            Path(__file__).resolve().parents[3]
+            / "deploy" / "runner" / "agentrail-config.hosted.json"
+        )
+        data = json.loads(template_path.read_text())
+        models = data["runners"]["claude"]["models"]
+        assert models["execute"]
+        assert models["verify"]
+        assert models["execute"] != models["verify"]

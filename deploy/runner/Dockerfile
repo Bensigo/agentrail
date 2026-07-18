@@ -87,12 +87,18 @@
 #   `ANTHROPIC_AUTH_TOKEN`, and drop the empty-string override — not a
 #   re-architecture.
 #
-# Model routing is per-target-repo, not baked into this image:
-# `.agentrail/config.json`'s `runners.claude.models.{execute,verify,critic}`
-# (see deploy/runner/agentrail-config.hosted.json, the reference template —
-# and deploy/runner/README.md for why the image does not auto-inject this
-# file into a clone). `--model` is appended per-phase, already shell-quoted,
-# by agentrail/cli/commands/run.py's `append_model_to_command`.
+# Model routing is per-target-repo: `.agentrail/config.json`'s
+# `runners.claude.models.{execute,verify,critic}` (see
+# deploy/runner/agentrail-config.hosted.json, the shipped template — and
+# deploy/runner/README.md for the full contract). A repo that commits its own
+# config keeps it untouched (BYO always wins); a freshly claimed repo with
+# none is seeded from this template, baked into the image below and pointed
+# to by AGENTRAIL_HOSTED_CONFIG — see
+# agentrail/sandbox/native_runner.py:_inject_hosted_config (#1267 PR②). Before
+# that seam existed this template was reference-only and nothing copied it
+# into a clone; that gap is now closed. `--model` is appended per-phase,
+# already shell-quoted, by agentrail/cli/commands/run.py's
+# `append_model_to_command`.
 #
 # `--bare` is wired via the AGENTRAIL_CLAUDE_COMMAND env override baked below
 # — NOT by changing DEFAULT_COMMANDS["claude"] in
@@ -163,6 +169,18 @@ RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code@2.1.214 \
 COPY deploy/runner/entrypoint.sh /usr/local/bin/runner-entrypoint
 RUN chmod +x /usr/local/bin/runner-entrypoint
 
+# ---- Hosted default config template (#1267 PR②) ------------------------------
+# Baked at a FIXED path so agentrail/sandbox/native_runner.py's
+# _inject_hosted_config can seed it into a freshly claimed repo that has no
+# .agentrail/config.json of its own — without this, every such repo is
+# permanently refused by #1270's independent-review assert (no distinct
+# verify-phase model to resolve). AGENTRAIL_HOSTED_CONFIG (below) points at
+# this exact path; the two must move together. Previously this template
+# existed only as a reference file nothing copied into an image — see
+# agentrail-config.hosted.json's own header and deploy/runner/README.md's
+# now-superseded "not auto-injected" section.
+COPY deploy/runner/agentrail-config.hosted.json /opt/agentrail/agentrail-config.hosted.json
+
 # ---- Env baked into the image (all non-secret) -------------------------------
 # ANTHROPIC_AUTH_TOKEN — the actual OpenRouter credential — is deliberately
 # NOT here. runner-entrypoint maps it in at container start from
@@ -178,6 +196,7 @@ ENV ANTHROPIC_BASE_URL="https://openrouter.ai/api" \
     ANTHROPIC_API_KEY="" \
     CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1 \
     AGENTRAIL_HOSTED=1 \
+    AGENTRAIL_HOSTED_CONFIG=/opt/agentrail/agentrail-config.hosted.json \
     AGENTRAIL_AGENT=claude \
     AGENTRAIL_CLAUDE_COMMAND="claude --bare -p --dangerously-skip-permissions"
 

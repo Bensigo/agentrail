@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from agentrail.run.proc import sanitized_env
+from agentrail.sandbox.clone_auth import authenticated_clone_url, redact_token
 from agentrail.sandbox.docker_runner import RunResult
 
 _log = logging.getLogger(__name__)
@@ -95,21 +96,50 @@ _FRESHNESS_TIMEOUT_SECONDS = 10
 # Clone
 # ---------------------------------------------------------------------------
 
-def _clone(repo_url: str, ref: str, dest: str, *, runner=subprocess, timeout: int = _CLONE_TIMEOUT_SECONDS) -> None:
+def _clone(
+    repo_url: str,
+    ref: str,
+    dest: str,
+    *,
+    token: str = "",
+    runner=subprocess,
+    timeout: int = _CLONE_TIMEOUT_SECONDS,
+) -> None:
     """Shallow-clone ``repo_url`` at ``ref`` into ``dest``.
 
+    ``token`` (a workspace's connected GitHub OAuth token, or a locally
+    configured PAT) is embedded as HTTP Basic auth in the clone URL when
+    present, via :func:`agentrail.sandbox.clone_auth.authenticated_clone_url`
+    — the SAME mechanism ``native_runner``'s host-sandbox clone uses. Before
+    #1268 this handler never authenticated at all, so any private-repo
+    onboard burned all its retries on an identical clone failure, every time,
+    on every runner.
+
     ``runner`` is injected (default :mod:`subprocess`) so tests never touch the
-    network. Raises :class:`RuntimeError` (carrying the stderr tail) on a
-    non-zero exit so the caller can classify it as a clone failure.
+    network. Raises :class:`RuntimeError` on a non-zero exit or on a
+    subprocess-level error (e.g. a timeout) — carrying the stderr tail /
+    exception text, always with ``token`` redacted first via
+    :func:`agentrail.sandbox.clone_auth.redact_token`. Redaction happens here
+    regardless of what git itself printed: git's own diagnostics don't
+    reliably omit an embedded credential across every version/failure mode,
+    and — the concrete risk — ``subprocess.CalledProcessError`` /
+    ``TimeoutExpired.__str__()`` unconditionally embed the raw argv they were
+    constructed with (i.e. the credentialed clone URL) regardless of what the
+    child process printed, so an unredacted exception message is a real
+    token-leak path into ``gate_reason``.
     """
-    proc = runner.run(
-        ["git", "clone", "--depth", "1", "--branch", ref, repo_url, dest],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    clone_url = authenticated_clone_url(repo_url, token)
+    try:
+        proc = runner.run(
+            ["git", "clone", "--depth", "1", "--branch", ref, clone_url, dest],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise RuntimeError(redact_token(f"git clone failed: {exc}", token)) from None
     if getattr(proc, "returncode", 1) != 0:
-        stderr = (getattr(proc, "stderr", "") or "")[-500:].strip()
+        stderr = redact_token((getattr(proc, "stderr", "") or "")[-500:].strip(), token)
         raise RuntimeError(f"git clone failed: {stderr or '(no output)'}")
 
 
@@ -603,11 +633,19 @@ def run_onboard(
     repo_dir = Path(work_dir) / "repo"
     try:
         try:
-            clone_fn(item.repo_url, item.ref or "main", str(repo_dir))
+            # item already carries github_token (WorkItem.from_dict parses it
+            # unconditionally, same as issue-kind items) — threaded straight
+            # through rather than via env, since clone_fn is plain Python
+            # here, not a shelled-out contract (#1268).
+            clone_fn(item.repo_url, item.ref or "main", str(repo_dir), token=item.github_token)
         except Exception as exc:  # noqa: BLE001 - clone failure is a run error
+            # Defense in depth: _clone (the default clone_fn) already redacts
+            # the token from anything it raises, but clone_fn is an
+            # injectable seam — a caller-supplied one might not, so redact
+            # again here with the one token this handler actually knows.
             return RunResult(
                 status="error",
-                gate_reason=f"clone failed: {exc}",
+                gate_reason=redact_token(f"clone failed: {exc}", item.github_token),
                 branch=item.ref,
             )
 

@@ -42,6 +42,14 @@ def _make_execute(creds):
 
     def execute(item: WorkItem) -> RunResult:
         if item.kind == "onboard":
+            # This early return fires BEFORE the GIT_TOKEN wiring below ever
+            # runs — but that wiring is for `run_env` (the issue-kind path's
+            # subprocess env), which `run_onboard` doesn't use at all. `item`
+            # itself already carries `github_token` (parsed unconditionally
+            # by WorkItem.from_dict, same as any issue-kind item), and
+            # run_onboard reads it directly and threads it into its own
+            # clone step (agentrail/runner/onboard.py, #1268) — nothing is
+            # dropped here.
             from agentrail.runner.onboard import run_onboard
             return run_onboard(item, base_url=creds.base_url, api_key=creds.token)
         run_env = dict(os.environ)

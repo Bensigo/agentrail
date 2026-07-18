@@ -3,7 +3,7 @@
 // console (issue #1265 PR ①: apps/console/app/api/v1/runner/repos/route.ts)
 // — Jace's THIRD gated write action on the outside world, alongside
 // create_issue and create_workspace (see agent/tools/create_repo.ts's
-// doc-comment for why this carries approval: always(), same gate class).
+// doc-comment for why this carries the console-gated approval, same gate class).
 // No SDK, no network primitives of its own: the single HTTP call is an
 // injected `transport` seam (real `fetch` with a timeout in the thin tool
 // wrapper, a fake in tests), so every branch is unit-testable without a live
@@ -18,7 +18,7 @@
 // supplied: the tool wrapper reads it off `ctx.session.id` — Eve's own
 // session id for the conversation actually invoking this tool. `name` (and,
 // optionally, `private`) ARE model-supplied, but that's fine: the human
-// approves the EXACT call before this ever runs (approval: always()).
+// approves the EXACT call before this ever runs (console-gated approval).
 // `private`, when omitted, is left out of the request body entirely so the
 // console's own default (private) wins — this core never invents its own
 // default, that would be a second source of truth for it.

@@ -23,7 +23,7 @@
 //      connection_search sentinel either.
 //
 // The ONE authored tool, fetch_run_evidence, is read-only: it sets NO approval
-// (approval: always() is reserved for root's single mutating create_issue) and
+// (approval gates are reserved for root's gated write tools) and
 // reaches exactly one configured console endpoint via the global fetch.
 //
 // The complementary guarantee — that root's write surface is UNCHANGED and that
@@ -31,7 +31,7 @@
 // (its agent/tools scan is non-recursive, so a subagent cannot expand the
 // enumerated tool set; its child_process scan is recursive over agent/, so a
 // subagent cannot smuggle one in; and it asserts no subagent file sets
-// approval: always()).
+// an approval gate).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -167,15 +167,16 @@ test("triage authors exactly ONE tool — the read-only fetch_run_evidence", () 
     `triage must author exactly one tool (tools/${AUTHORED_TOOL}); found: ${authored.join(", ") || "(none)"}`,
   );
 
-  // That one tool is READ-ONLY: it must NOT carry an approval gate (approval:
-  // always()/once() is a write-path signal reserved for root's create_issue).
+  // That one tool is READ-ONLY: it must NOT carry an approval gate (an
+  // approval gate — always()/once() or consoleGatedApproval — is a write-path
+  // signal reserved for root's gated write tools).
   const toolSrc = stripComments(
     readFileSync(`${triageDir}/tools/${AUTHORED_TOOL}`, "utf8"),
   );
   assert.doesNotMatch(
     toolSrc,
-    /approval:\s*(always|once)\(/,
-    "the read-only fetch_run_evidence tool must not carry an approval gate",
+    /approval:\s*(always|once)\(|consoleGatedApproval/,
+    "the read-only fetch_run_evidence tool must not carry an approval gate (always/once or consoleGatedApproval)",
   );
 });
 

@@ -11,8 +11,9 @@
 //      shell:true (AC4). The user's question is a single argv element, so shell
 //      metacharacters in it are inert.
 //
-// It writes nothing, so — unlike the single gated create_issue tool — it does NOT
-// set `approval: always()`. Human approval is reserved for the one mutating tool.
+// It writes nothing, so — unlike the gated write tools (create_issue,
+// create_workspace, create_repo) — it sets NO `approval`. Human approval is
+// reserved for the mutating tools.
 
 import { defineTool } from "eve/tools";
 import { z } from "zod";

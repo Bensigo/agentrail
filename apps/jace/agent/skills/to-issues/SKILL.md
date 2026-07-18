@@ -13,7 +13,7 @@ through the single gated `create_issue` tool — there is no other write path.
 ## The one write path
 
 Every issue is created by ONE call to the `create_issue` tool, and every call is
-human-approved before it runs (`approval: always()`). You never batch, never
+human-approved before it runs (approve/deny buttons in chat). You never batch, never
 create issues any other way, and never apply labels — the factory applies its
 `ready-for-agent` trigger label server-side. Use the `emit-issue-brief` skill to
 shape each brief into the house format before you call the tool.

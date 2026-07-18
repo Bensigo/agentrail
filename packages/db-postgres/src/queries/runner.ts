@@ -229,6 +229,37 @@ export interface WorkItem {
   // runner maps this to a model override so a re-queued (previously red/error)
   // attempt actually escalates instead of re-running at the same failing model.
   tier: number;
+  // #1275: the alignment brief's confirmed per-issue $ ceiling (owner rule:
+  // "confirming the brief = sanctioning the ceiling"). The runner passes this
+  // straight through as `--budget-usd <value> --budget-source brief`, which
+  // wins over every other budget tier (see
+  // agentrail.cli.commands.run.effective_budget). Null when no brief has
+  // priced this entry yet — true for every entry today; #1274's
+  // brief-generation lane is what starts writing a value here.
+  estimated_budget_usd: number | null;
+  // #1275: the coding-phase model chosen when confirming the alignment
+  // brief. Null when no brief/no override (true for every entry today).
+  // CONTROLLER-DECIDED precedence (see _make_execute in
+  // agentrail/cli/commands/runner.py): a tier >= 1 escalation always wins
+  // over this value — a re-queued failing attempt escalates as designed
+  // (#890), it does not keep re-running a user's pick that already failed.
+  model_override: string | null;
+}
+
+/**
+ * Defensively coerce a raw SQL `numeric` column value to a JS number, or
+ * `null`. A manual `RETURNING` clause (this file does not use Drizzle's typed
+ * query builder for `claimQueueEntry`) hands back whatever the driver returns
+ * for `numeric` — typically a string, to avoid float-precision surprises — so
+ * this must parse it explicitly; unlike `tier` elsewhere in this file, a
+ * missing/malformed value falls back to `null` (a MEANINGFUL "no estimate"),
+ * never to `0` (a real, if unusual, $0 estimate), and a value that fails to
+ * parse to a finite number is never forwarded as `NaN` on the wire.
+ */
+function parseNullableNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 /** Find (or create) the repositories row for a repo slug; returns its id. */
@@ -467,7 +498,8 @@ export async function claimQueueEntry(
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING id, workspace_id, source, kind, external_id, title, body, tier
+    RETURNING id, workspace_id, source, kind, external_id, title, body, tier,
+              estimated_budget_usd, model_override
   `);
 
   const claimed = Array.from(result) as Array<{
@@ -479,6 +511,10 @@ export async function claimQueueEntry(
     title: string;
     body: string;
     tier: number;
+    // Raw driver value for a `numeric` column — string (or null) in practice;
+    // typed loosely here since parseNullableNumber accepts any input.
+    estimated_budget_usd: unknown;
+    model_override: string | null;
   }>;
   const row = claimed[0];
   if (!row) return null;
@@ -531,6 +567,11 @@ export async function claimQueueEntry(
     // Coerce to a number; a malformed/absent column must never become NaN on
     // the wire (the runner defaults to tier 0 = config model when it can't read it).
     tier: Number(row.tier) || 0,
+    // #1275: dormant — null on every entry until #1274's brief-generation
+    // lane starts writing values. See parseNullableNumber's own doc-comment
+    // for why this defaults to null (not 0) on a malformed/absent value.
+    estimated_budget_usd: parseNullableNumber(row.estimated_budget_usd),
+    model_override: row.model_override || null,
   };
 }
 

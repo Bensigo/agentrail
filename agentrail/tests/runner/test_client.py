@@ -571,3 +571,79 @@ def test_workitem_defaults_kind_to_issue():
         external_id="42", repo_url="", ref="main", title="", body="",
     )
     assert item.kind == "issue"
+
+
+# --- WorkItem.from_dict: alignment-brief estimate + model override (#1275) ---
+
+
+def test_from_dict_parses_estimated_budget_usd():
+    item = WorkItem.from_dict(_claim_payload(estimated_budget_usd=12.5))
+    assert item.estimated_budget_usd == 12.5
+
+
+def test_from_dict_defaults_estimated_budget_usd_to_none_when_absent():
+    # No brief has priced this entry — true for every claim payload today.
+    item = WorkItem.from_dict(_claim_payload())  # no `estimated_budget_usd` key at all
+    assert item.estimated_budget_usd is None
+
+
+def test_from_dict_coerces_null_estimated_budget_usd_to_none():
+    item = WorkItem.from_dict(_claim_payload(estimated_budget_usd=None))
+    assert item.estimated_budget_usd is None
+
+
+def test_from_dict_coerces_numeric_string_estimated_budget_usd():
+    # A raw pg `numeric` column typically arrives as a JSON string.
+    item = WorkItem.from_dict(_claim_payload(estimated_budget_usd="12.50"))
+    assert item.estimated_budget_usd == 12.5
+
+
+def test_from_dict_defaults_estimated_budget_usd_to_none_when_non_numeric():
+    # A malformed value must never crash the loop nor become a real $0
+    # ceiling by accident — None (absent), not 0.0.
+    item = WorkItem.from_dict(_claim_payload(estimated_budget_usd="garbage"))
+    assert item.estimated_budget_usd is None
+
+
+def test_from_dict_preserves_explicit_zero_estimated_budget_usd():
+    # 0 is a real, if unusual, deliberately-uncapped estimate elsewhere in
+    # this codebase (agentrail.cli.commands.run.effective_budget) — it must
+    # NOT be coerced away to None the way an absent/malformed value is.
+    item = WorkItem.from_dict(_claim_payload(estimated_budget_usd=0))
+    assert item.estimated_budget_usd == 0.0
+
+
+def test_from_dict_parses_model_override():
+    item = WorkItem.from_dict(_claim_payload(model_override="anthropic/claude-opus-4-8"))
+    assert item.model_override == "anthropic/claude-opus-4-8"
+
+
+def test_from_dict_defaults_model_override_to_none_when_absent():
+    item = WorkItem.from_dict(_claim_payload())  # no `model_override` key at all
+    assert item.model_override is None
+
+
+def test_from_dict_coerces_null_model_override_to_none():
+    item = WorkItem.from_dict(_claim_payload(model_override=None))
+    assert item.model_override is None
+
+
+def test_from_dict_coerces_blank_model_override_to_none():
+    item = WorkItem.from_dict(_claim_payload(model_override="   "))
+    assert item.model_override is None
+
+
+def test_workitem_defaults_estimated_budget_usd_to_none():
+    item = WorkItem(
+        id="x", workspace_id="w", source="github",
+        external_id="42", repo_url="", ref="main", title="", body="",
+    )
+    assert item.estimated_budget_usd is None
+
+
+def test_workitem_defaults_model_override_to_none():
+    item = WorkItem(
+        id="x", workspace_id="w", source="github",
+        external_id="42", repo_url="", ref="main", title="", body="",
+    )
+    assert item.model_override is None

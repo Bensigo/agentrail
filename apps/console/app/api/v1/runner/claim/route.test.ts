@@ -165,6 +165,36 @@ describe("GET /api/v1/runner/claim — baseline (pre-#1267 behavior)", () => {
     );
   });
 
+  it("#1275: carries estimated_budget_usd/model_override through when the claimed WorkItem has them", async () => {
+    mockClaim.mockResolvedValue({
+      ...WORK_ITEM,
+      estimated_budget_usd: 12.5,
+      model_override: "anthropic/claude-opus-4-8",
+    } as never);
+
+    const res = await GET(req(WS));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.estimated_budget_usd).toBe(12.5);
+    expect(body.model_override).toBe("anthropic/claude-opus-4-8");
+  });
+
+  it("#1275: still 200s with both fields null — the dormant case every entry is in today", async () => {
+    mockClaim.mockResolvedValue({
+      ...WORK_ITEM,
+      estimated_budget_usd: null,
+      model_override: null,
+    } as never);
+
+    const res = await GET(req(WS));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.estimated_budget_usd).toBeNull();
+    expect(body.model_override).toBeNull();
+  });
+
   it("still returns 200 (mcp_keys: {}) when getMcpConnectorKeys throws — best-effort, never fails the claim", async () => {
     mockClaim.mockResolvedValue(WORK_ITEM as never);
     mockGetMcpKeys.mockRejectedValue(new Error("decrypt failed"));

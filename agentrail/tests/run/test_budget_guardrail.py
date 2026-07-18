@@ -774,6 +774,25 @@ class TestParseRunOptionsBudgetSourceFlag(unittest.TestCase):
         with self.assertRaises(UsageError):
             parse_run_options(["--budget-source"])
 
+    def test_rejects_garbage_value(self) -> None:
+        """#1269 PR2b item 3: --budget-source was silently permissive — any
+        string parsed clean and just behaved as "not default" downstream
+        (effective_budget_source). A typo must now raise, not silently
+        degrade."""
+        from agentrail.cli.commands.run import UsageError, parse_run_options
+        with self.assertRaises(UsageError) as ctx:
+            parse_run_options(["--budget-source", "lol"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("--budget-source must be flag, config, or default",
+                      str(ctx.exception))
+
+    def test_accepts_all_three_valid_sources(self) -> None:
+        from agentrail.cli.commands.run import parse_run_options
+        for value in ("flag", "config", "default"):
+            with self.subTest(value=value):
+                opts = parse_run_options(["--budget-source", value])
+                self.assertEqual(opts.budget_source, value)
+
 
 # ---------------------------------------------------------------------------
 # Budget-source visibility: the stop message (stderr) / run.json blockedReason
@@ -860,6 +879,87 @@ class TestBudgetStopMessageSourceGuidance(unittest.TestCase):
             self.assertNotIn("estimate-absent backstop", text)
             self.assertNotIn("#1274/#1275", text)
         self.assertIn("budget exceeded after test-author phase", reason)
+
+
+# ---------------------------------------------------------------------------
+# #1269 PR2b item 2: the pushed budget_exceeded failure event's message must
+# be the SAME rc.budget_stop_reason string run.json's blockedReason gets — not
+# the old plain dollar-figure budget_msg, which never named the phase and
+# never carried the resume guidance. failure_type must stay "budget_exceeded"
+# unconditionally (downstream consumers key on it) — only message changes.
+# ---------------------------------------------------------------------------
+
+class TestBudgetExceededPushCarriesResumeGuidance(unittest.TestCase):
+
+    def _run_and_capture_push(self, tmp: str, target: Path, run_id: str, budget_source):
+        stub = _stub_run_with_timeout(0)
+        mock_usage = MagicMock()
+        kwargs = {} if budget_source is None else {"budget_source": budget_source}
+
+        with patch("agentrail.run.pipeline.run_with_timeout", stub), \
+             patch("agentrail.run.pipeline.capture_usage", return_value=mock_usage), \
+             patch("agentrail.run.pipeline.cost_usd", return_value=1.50), \
+             patch("agentrail.run.pipeline.push_failure_event") as mock_push, \
+             redirect_stderr(io.StringIO()):
+            run_issue(
+                target, 42,
+                agent="claude", command="claude -p",
+                repo_dir=target,
+                log_dir=Path(tmp) / "runs",
+                run_id=run_id,
+                budget_usd=1.00,
+                **kwargs,
+            )
+
+        metadata_file = Path(tmp) / "runs" / run_id / "run.json"
+        blocked_reason = json.loads(metadata_file.read_text()).get("blockedReason", "")
+        return blocked_reason, mock_push
+
+    def test_default_source_push_message_matches_blocked_reason_with_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            blocked_reason, mock_push = self._run_and_capture_push(
+                tmp, target, "test-run-push-default", "default"
+            )
+
+        mock_push.assert_called_once()
+        call = mock_push.call_args
+        # positional: (target_dir, run_id, failure_type, phase, message)
+        self.assertEqual(call.args[2], "budget_exceeded")  # failure_type stable
+        pushed_message = call.args[4]
+        self.assertEqual(pushed_message, blocked_reason)
+        self.assertIn("estimate-absent backstop", pushed_message)
+        self.assertIn("budget exceeded after test-author phase", pushed_message)
+
+    def test_flag_source_push_message_matches_blocked_reason_without_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            blocked_reason, mock_push = self._run_and_capture_push(
+                tmp, target, "test-run-push-flag", "flag"
+            )
+
+        call = mock_push.call_args
+        self.assertEqual(call.args[2], "budget_exceeded")
+        pushed_message = call.args[4]
+        self.assertEqual(pushed_message, blocked_reason)
+        self.assertNotIn("estimate-absent backstop", pushed_message)
+        self.assertIn("budget exceeded after test-author phase", pushed_message)
+
+    def test_config_source_push_message_matches_blocked_reason_without_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = _make_target(tmp)
+            _apply_common_patches(self, target)
+            blocked_reason, mock_push = self._run_and_capture_push(
+                tmp, target, "test-run-push-config", "config"
+            )
+
+        call = mock_push.call_args
+        self.assertEqual(call.args[2], "budget_exceeded")
+        pushed_message = call.args[4]
+        self.assertEqual(pushed_message, blocked_reason)
+        self.assertNotIn("estimate-absent backstop", pushed_message)
 
 
 if __name__ == "__main__":

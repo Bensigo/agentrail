@@ -42,15 +42,30 @@ class RunnerAuthError(RunnerError):
 
 @dataclass(frozen=True)
 class Response:
-    """A minimal HTTP response: the status code and the raw body bytes."""
+    """A minimal HTTP response: the status code, raw body bytes, and headers.
+
+    ``headers`` keys are lower-cased by whatever populates this (the default
+    transport, or a test fake) so lookups are case-insensitive without
+    depending on ``email.message.Message``'s own case-folding. Defaults to
+    ``{}`` so every existing ``Response(status=..., body=...)`` call site
+    (production and tests) keeps working unchanged.
+    """
 
     status: int
     body: bytes
+    headers: Dict[str, str] = field(default_factory=dict)
 
 
 # A transport performs exactly one HTTP request and returns a Response. This is
 # the injectable seam (default: urllib); tests pass a fake.
 Transport = Callable[..., Response]
+
+# Set by the backend's claim route (console/db lane, #1269 PR2a) on a 204 when
+# the workspace's spend ceiling — not an empty queue — is why nothing was
+# claimable. The runner-side half of that signal (this module) only READS it;
+# it never decides when the header is sent.
+CLAIM_BLOCKED_HEADER = "x-agentrail-claim-blocked"
+CLAIM_BLOCKED_WORKSPACE_BUDGET = "workspace-budget"
 
 
 @dataclass(frozen=True)
@@ -156,9 +171,15 @@ def _urllib_transport(
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return Response(status=int(resp.status), body=resp.read())
+            return Response(
+                status=int(resp.status), body=resp.read(),
+                headers={k.lower(): v for k, v in resp.headers.items()},
+            )
     except urllib.error.HTTPError as exc:  # treat HTTP errors as responses
-        return Response(status=int(exc.code), body=exc.read())
+        return Response(
+            status=int(exc.code), body=exc.read(),
+            headers={k.lower(): v for k, v in exc.headers.items()} if exc.headers else {},
+        )
 
 
 class RunnerClient:
@@ -176,6 +197,15 @@ class RunnerClient:
         self._token = token
         self._workspace_id = workspace_id
         self._transport = transport or _urllib_transport
+        # The blocked reason (e.g. CLAIM_BLOCKED_WORKSPACE_BUDGET) from the
+        # MOST RECENT claim_next() call, or None. This is the smallest honest
+        # shape for surfacing "the cap bit" without breaking the
+        # None-means-idle contract every existing claim_next() caller relies
+        # on: the return value is untouched (still Optional[WorkItem]), and a
+        # caller that wants the reason reads this attribute right after
+        # calling claim_next() — one poll's answer, overwritten (not
+        # accumulated) on every call, so it never goes stale across polls.
+        self.last_claim_blocked: Optional[str] = None
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -187,10 +217,19 @@ class RunnerClient:
         """Claim the next dispatched issue for this workspace, or ``None``.
 
         ``200`` → a WorkItem to run. ``204`` (or any empty body) → nothing
-        grabbable right now.
+        grabbable right now — this is ALSO what a blocked claim looks like
+        (the backend's workspace-budget ceiling, #1269 PR2a), so the return
+        value alone cannot distinguish the two. ``last_claim_blocked`` is
+        refreshed on every call: the header's value when THIS poll's 204
+        carried ``CLAIM_BLOCKED_HEADER``, else ``None`` — never left over
+        from a previous poll.
         """
         url = f"{self._base}/api/v1/runner/claim?workspace_id={self._workspace_id}"
         resp = self._transport("GET", url, headers=self._headers())
+        self.last_claim_blocked = (
+            resp.headers.get(CLAIM_BLOCKED_HEADER) or None
+            if resp.status == 204 else None
+        )
         if resp.status == 204:
             return None
         if resp.status in (401, 403):

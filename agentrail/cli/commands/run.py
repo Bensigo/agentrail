@@ -24,6 +24,7 @@ from agentrail.run.budget_leash import DEFAULT_PER_ISSUE_BUDGET_USD
 from agentrail.run.pipeline import jit_gather_enabled, layer_enabled
 
 AGENTS = {"codex", "claude", "cursor", "hermes", "custom"}
+BUDGET_SOURCES = {"flag", "config", "default"}
 
 DEFAULT_COMMANDS = {
     "codex": "codex exec --sandbox danger-full-access -",
@@ -151,7 +152,10 @@ def parse_run_options(args: List[str]) -> RunOptions:
             opts.budget_explicit = True
             i += 2
         elif a == "--budget-source":
-            opts.budget_source = _need_value(args, i, "--budget-source")
+            value = _need_value(args, i, "--budget-source")
+            if value not in BUDGET_SOURCES:
+                raise UsageError("--budget-source must be flag, config, or default")
+            opts.budget_source = value
             i += 2
         elif a in ("-h", "--help"):
             print(_usage()); raise UsageError("", code=0)

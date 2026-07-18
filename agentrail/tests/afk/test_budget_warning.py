@@ -278,7 +278,7 @@ class TestBudgetWarningSilentWhenZeroOrAbsent(unittest.TestCase):
 
 class TestBudgetWarningDecoupledFromRunBudgetDefault(unittest.TestCase):
     """#1269 review Fix 3: agentrail.cli.commands.run.resolve_default_budget
-    now falls back to DEFAULT_PER_ISSUE_BUDGET_USD ($10, issue #1269) when
+    now falls back to DEFAULT_PER_ISSUE_BUDGET_USD ($3, issue #1269) when
     .agentrail/config.json is unset — a deliberate change for the run/afk
     PRODUCT PATH's enforcement backstop. ``agentrail cost``'s advisory
     warning (issue #698) must NOT inherit that default: it stays disabled

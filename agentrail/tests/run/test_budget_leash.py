@@ -196,8 +196,8 @@ def test_negative_spend_is_rejected() -> None:
 # .agentrail/config.json's budgets.per_issue_usd says anything at all.
 # ---------------------------------------------------------------------------
 
-def test_default_per_issue_budget_usd_is_ten_dollars() -> None:
-    assert DEFAULT_PER_ISSUE_BUDGET_USD == 10.0
+def test_default_per_issue_budget_usd_is_three_dollars() -> None:
+    assert DEFAULT_PER_ISSUE_BUDGET_USD == 3.0
 
 
 def test_default_per_issue_budget_usd_actually_caps_via_check() -> None:

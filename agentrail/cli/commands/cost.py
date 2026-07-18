@@ -295,12 +295,12 @@ def _cost_warning_threshold(target: str) -> float:
     Reads ``budgets.per_issue_usd`` from ``.agentrail/config.json`` DIRECTLY —
     deliberately NOT routed through ``agentrail.cli.commands.run.
     resolve_default_budget``, which (issue #1269) falls back to
-    ``DEFAULT_PER_ISSUE_BUDGET_USD`` ($10) when the key is absent. That
+    ``DEFAULT_PER_ISSUE_BUDGET_USD`` when the key is absent. That
     default is the hard spend backstop for the run/afk PRODUCT PATH — an
     enforcement decision the loop itself acts on when nobody configured a
     number. Reusing it here would silently flip #698's deliberately-disabled-
     by-default advisory warning ON for every unconfigured project (any run
-    over $10 would now warn with no config change) and would start appending
+    over the product default would now warn with no config change) and would start appending
     ``budget_warning`` events — a WRITE — from what is meant to be a read-only
     report command. So this threshold gets its own, decoupled fallback:
     absent, non-numeric, boolean, or negative config means disabled (0.0),

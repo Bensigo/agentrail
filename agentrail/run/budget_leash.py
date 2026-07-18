@@ -46,7 +46,29 @@ from enum import Enum
 # constant only fills the gap when NEITHER tier says anything at all — before
 # this, the product default was silently 0.0 (uncapped), which defeated the
 # whole point of the Budget Leash on the one path real runs actually take.
-DEFAULT_PER_ISSUE_BUDGET_USD = 10.0
+#
+# WHY $3, and why flat: this is an ESTIMATE-ABSENT CHECK-IN THRESHOLD, not the
+# product's real per-task budget. The estimate IS the budget — Jace's
+# alignment brief prices each task (task-type-aware, shown to the user,
+# overridable — issues #1274/#1275) and that number arrives through the
+# flag/config tiers above, which always win over this constant. This constant
+# only ever fires when NO estimate reached the run at all, and it is tight ON
+# PURPOSE for a price-sensitive product: a silent runaway burns real money, so
+# an un-estimated task checks in at $3 rather than being trusted to self-limit.
+#
+# That check-in is RESUMABLE by design: the run stops with a visible reason
+# (blockedReason + phase marker + resume guidance in the stop message) and a
+# re-run with a real budget picks the work back up wherever the working tree
+# survives (in-place `run issue`: yes; AFK keeps its implement worktree too,
+# though its issue status today reads as a generic failure — see #1269 PR ②;
+# `run batch` tears down worktrees unconditionally, a pre-existing behavior).
+# The resume path is a bigger --budget-usd/--budget-per-issue, a configured
+# budgets.per_issue_usd, or a future alignment-brief estimate. A huge task with no estimate is
+# expected to hit this and check in; that is the design working, not a
+# failure mode — never describe or message it as a hard death (owner call,
+# 2026-07-18: $10 was judged too generous a silent runway for an
+# un-estimated run).
+DEFAULT_PER_ISSUE_BUDGET_USD = 3.0
 
 
 class Decision(str, Enum):

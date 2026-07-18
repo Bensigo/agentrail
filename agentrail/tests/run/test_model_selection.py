@@ -184,6 +184,7 @@ class ModelFlagOnRunIssueTests(unittest.TestCase):
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
                            log_dir=None, run_id="", phase_commands=None, budget_usd=0.0,
+                           budget_source="default",
                            independent_review_status="active"):
             captured.append({"phase_commands": phase_commands or {}})
             return 0
@@ -215,6 +216,7 @@ class ModelFlagOnRunIssueTests(unittest.TestCase):
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
                            log_dir=None, run_id="", phase_commands=None, budget_usd=0.0,
+                           budget_source="default",
                            independent_review_status="active"):
             captured.append({"phase_commands": phase_commands or {}})
             return 0
@@ -249,6 +251,7 @@ class PerPhaseConfigTests(unittest.TestCase):
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
                            log_dir=None, run_id="", phase_commands=None, budget_usd=0.0,
+                           budget_source="default",
                            independent_review_status="active"):
             captured.append({"command": command, "phase_commands": phase_commands or {}})
             return 0
@@ -294,6 +297,7 @@ class ExplicitCommandNotMutatedTests(unittest.TestCase):
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
                            log_dir=None, run_id="", phase_commands=None, budget_usd=0.0,
+                           budget_source="default",
                            independent_review_status="active"):
             captured.append({"command": command, "phase_commands": phase_commands or {}})
             return 0
@@ -330,6 +334,7 @@ class NoModelPassthroughTests(unittest.TestCase):
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
                            log_dir=None, run_id="", phase_commands=None, budget_usd=0.0,
+                           budget_source="default",
                            independent_review_status="active"):
             captured.append({"phase_commands": phase_commands or {}})
             return 0
@@ -445,6 +450,7 @@ class VerifierCommandOnExecIssueTests(unittest.TestCase):
 
         def fake_run_issue(target_dir, issue, *, agent, command, repo_dir,
                            log_dir=None, run_id="", phase_commands=None, budget_usd=0.0,
+                           budget_source="default",
                            independent_review_status="active"):
             captured.append({"phase_commands": phase_commands or {}})
             return 0

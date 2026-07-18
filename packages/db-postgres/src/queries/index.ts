@@ -1905,7 +1905,9 @@ export {
 // getApprovalByCallbackToken (issue #1273 PR ①) is the console-gated approval
 // seam's own lookup: a Telegram button callback carries only the opaque
 // callback_data token, with no workspace to scope by yet, unlike the
-// workspace-scoped findApprovalByCallbackToken above.
+// workspace-scoped findApprovalByCallbackToken above. getApprovalById is the
+// GET /api/v1/runner/approvals/[id] poller's own read, scoped by the
+// console-minted uuid alone.
 export {
   getOrCreateJaceSession,
   bindEveSession,
@@ -1919,6 +1921,7 @@ export {
   recordApprovalRequest,
   findApprovalByCallbackToken,
   getApprovalByCallbackToken,
+  getApprovalById,
   resolveApproval,
   pendingApprovalsForWorkspace,
   type RecordApprovalRequestInput,

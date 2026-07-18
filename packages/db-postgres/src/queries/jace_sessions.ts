@@ -586,6 +586,25 @@ export async function getApprovalByCallbackToken(
 }
 
 /**
+ * Look up an approval by its own primary key — the read behind
+ * `GET /api/v1/runner/approvals/[id]` (issue #1273), the poller's status
+ * check. `id` is a uuid the console itself minted and handed back in the
+ * POST response, never caller-guessable, so no further scoping is needed
+ * here (mirrors `getApprovalByCallbackToken`'s own no-workspace-scope
+ * rationale: the id IS the security boundary).
+ */
+export async function getApprovalById(
+  id: string
+): Promise<JaceApprovalRow | null> {
+  const [row] = await db
+    .select()
+    .from(jaceApprovals)
+    .where(eq(jaceApprovals.id, id))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
  * Resolve a pending approval to `approved` or `denied`.
  *
  * Returns `true` ONLY on the pending→resolved flip: the UPDATE carries

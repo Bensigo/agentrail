@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { validateOverride } from "./validator";
 import { MODEL_CATALOG } from "./catalog";
 
-const OPUS = MODEL_CATALOG.refactor.slug; // anthropic/claude-opus-4-8
-const HAIKU = MODEL_CATALOG.mechanical.slug; // anthropic/claude-haiku-4-5
+const OPUS = MODEL_CATALOG.refactor.slug; // anthropic/claude-opus-4.8
+const HAIKU = MODEL_CATALOG.mechanical.slug; // anthropic/claude-haiku-4.5
 const SONNET = MODEL_CATALOG.ui.slug; // anthropic/claude-sonnet-5 (== general's slug)
 const VERIFY_MODEL = "z-ai/glm-5.2"; // matches deploy/runner/agentrail-config.hosted.json's verify seat
 

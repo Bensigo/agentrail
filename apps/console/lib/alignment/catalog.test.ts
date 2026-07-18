@@ -89,23 +89,20 @@ describe("drift guard vs agentrail/context/pricing.py::PRICE_TABLE", () => {
     expect(dated, "PRICE_TABLE should still carry the dated id too").not.toBeNull();
   });
 
-  it("mirrors claude-sonnet-4-6 exactly (the ui/general stand-in — see catalog.ts KNOWN GAP)", () => {
-    const entry = extractPriceTableEntry(pricingSource, "claude-sonnet-4-6");
-    expect(entry, "PRICE_TABLE has no 'claude-sonnet-4-6' entry").not.toBeNull();
+  it("mirrors claude-sonnet-5 exactly (ui + general seats)", () => {
+    // History: this test began life as a mirror against claude-sonnet-4-6 —
+    // a documented stand-in, because PRICE_TABLE had no claude-sonnet-5
+    // entry yet — guarded by a canary asserting the entry's continued
+    // ABSENCE. #1334 added the real entry (sticker $3/$15; see catalog.ts's
+    // intro-pricing note), the canary fired exactly as designed, and per its
+    // own instruction the mapping was repointed at the real entry and the
+    // canary replaced with this direct positive assertion.
+    const entry = extractPriceTableEntry(pricingSource, "claude-sonnet-5");
+    expect(entry, "PRICE_TABLE has no 'claude-sonnet-5' entry").not.toBeNull();
     expect(MODEL_CATALOG.ui.inUsdPerMTok).toBe(entry!.input);
     expect(MODEL_CATALOG.ui.outUsdPerMTok).toBe(entry!.output);
     expect(MODEL_CATALOG.general.inUsdPerMTok).toBe(entry!.input);
     expect(MODEL_CATALOG.general.outUsdPerMTok).toBe(entry!.output);
-  });
-
-  it("CANARY: claude-sonnet-5 itself still has no dedicated PRICE_TABLE entry", () => {
-    // If this starts failing, someone added a real `claude-sonnet-5` entry to
-    // PRICE_TABLE — that is GOOD NEWS, but it means catalog.ts's stand-in
-    // mapping (CATALOG_PRICE_TABLE_MAPPING["anthropic/claude-sonnet-5"] ->
-    // "claude-sonnet-4-6") is now stale and must be repointed at the real
-    // entry. Do not silently delete this test when it fails — fix the
-    // mapping first.
-    expect(extractPriceTableEntry(pricingSource, "claude-sonnet-5")).toBeNull();
   });
 
   it("fails loudly — never $0 — for every name this catalog actually depends on", () => {

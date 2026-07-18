@@ -50,8 +50,8 @@ describe("bucketVolume: boundary cases", () => {
 // ---------------------------------------------------------------------------
 // estimateBrief: exact math pinned per seat x bucket.
 //
-// rates ($/MTok in, out): mechanical 1.00/5.00, ui&general 3.00/15.00 (the
-// claude-sonnet-4-6 stand-in — see catalog.ts), refactor 5.00/25.00.
+// rates ($/MTok in, out): mechanical 1.00/5.00, ui&general 3.00/15.00
+// (claude-sonnet-5 sticker rates — see catalog.ts), refactor 5.00/25.00.
 // tokens per bucket: S 40_000/4_000, M 120_000/12_000, L 300_000/30_000.
 // estimateUsd = inTokens/1e6*inRate + outTokens/1e6*outRate, rounded to cents.
 // ---------------------------------------------------------------------------

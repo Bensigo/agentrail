@@ -4,16 +4,19 @@ import {
   resolveInboundChatIdentity,
   enqueueChannelMessage,
 } from "@agentrail/db-postgres";
+import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 
 /**
  * Shared Telegram webhook — the ingestion half of the hosted Jace door
- * (issue #1262 PR ①, spec §4.1). ONE hosted bot multiplexes every workspace,
- * so unlike a per-workspace connector this route never looks up a
+ * (issue #1262, spec §4.1). ONE hosted bot multiplexes every workspace, so
+ * unlike a per-workspace connector this route never looks up a
  * workspace-scoped secret: it verifies the ONE shared-bot secret, ensures the
- * sender's chat identity (issue #1261), and enqueues into `channel_inbox` for
- * the dispatcher (PR ②) to claim. Does exactly three things — verify,
- * ensure-identity, INSERT — then returns 200. No Eve call, no reply, no
- * dispatch: that is PR ②'s job.
+ * sender's chat identity (issue #1261), and enqueues into `channel_inbox`
+ * (PR ①) — then (PR ②) fires a fire-and-forget kick at the dispatcher
+ * (`lib/channel-dispatch.ts`) before returning 200. The route itself still
+ * does no Eve call and no reply inline; the kick only asks the dispatcher to
+ * drain, and never affects this route's response (`.catch`-swallowed — a
+ * drain failure is not this request's failure).
  *
  * FAIL CLOSED: unlike the github webhook route (`../github/webhook/route.ts`,
  * flagged as a defect for skipping verification when its secret env is
@@ -160,6 +163,16 @@ export async function POST(request: NextRequest) {
       messageId: message.message_id,
       date: message.date,
     },
+  });
+
+  // Fire-and-forget kick (issue #1262 PR ②): ask the dispatcher to drain
+  // channel_inbox. Never awaited, never allowed to affect this route's
+  // response — a drain failure is the dispatcher's problem, not this
+  // webhook delivery's; Telegram only cares that we ACKed the update.
+  // A real worker process replaces this kick in Wave 2 (see
+  // lib/channel-dispatch.ts's header comment).
+  void dispatchQueuedChannelMessages().catch((err) => {
+    console.error("[telegram/webhook] dispatch kick failed:", err);
   });
 
   if (result.deduped) {

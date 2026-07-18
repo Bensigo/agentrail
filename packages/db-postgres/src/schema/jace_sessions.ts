@@ -42,6 +42,20 @@ import { chatIdentities } from "./chat_identities.js";
  * idempotency guard: publish happens exactly once per approval because the
  * approve path flips status pending→approved atomically (UPDATE … WHERE
  * status='pending') before publishing.
+ *
+ * `workspace_id` may be null for the SAME reason `jace_sessions.workspace_id`
+ * can be (spec §4.1): the `create_workspace` tool's own approval is requested
+ * from an intro (workspace-less) conversation — there is no workspace to
+ * reference yet at the moment the approval is recorded. `chat_identity_id`
+ * anchors such a row instead; the CHECK below mirrors `jace_sessions`'s own
+ * (see that constraint's comment above for the full rationale). Unlike
+ * `jace_sessions`/`channel_inbox`, this is NOT a strict either/or anchor pair:
+ * `chat_identity_id` is populated whenever the owning session has one bound
+ * (issue #1273), regardless of whether `workspace_id` is ALSO set, because it
+ * is also what the Telegram callback's SENDER CHECK verifies against (the
+ * tapper must be the conversation's own chat identity) — a graduated
+ * session's approval still needs that identity on hand, not just an intro
+ * one's.
  */
 export const jaceSessions = pgTable(
   "jace_sessions",
@@ -98,9 +112,18 @@ export const jaceApprovals = pgTable(
   "jace_approvals",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    workspaceId: uuid("workspace_id")
-      .notNull()
-      .references(() => workspaces.id, { onDelete: "cascade" }),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, {
+      onDelete: "cascade",
+    }),
+    // Anchor for an approval recorded from an intro (workspace-less)
+    // conversation — see the table doc-comment above. Also carried for a
+    // workspace-anchored approval whenever known (not exclusive with
+    // workspace_id here), since it doubles as the Telegram callback's SENDER
+    // CHECK target.
+    chatIdentityId: uuid("chat_identity_id").references(
+      () => chatIdentities.id,
+      { onDelete: "cascade" }
+    ),
     sessionId: uuid("session_id")
       .notNull()
       .references(() => jaceSessions.id, { onDelete: "cascade" }),
@@ -128,6 +151,10 @@ export const jaceApprovals = pgTable(
     ),
     callbackTokenUnique: unique("jace_approvals_callback_token_unique").on(
       t.callbackToken
+    ),
+    workspaceOrIdentityCheck: check(
+      "jace_approvals_workspace_or_identity_check",
+      sql`${t.workspaceId} IS NOT NULL OR ${t.chatIdentityId} IS NOT NULL`
     ),
   })
 );

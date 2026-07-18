@@ -1902,6 +1902,10 @@ export {
 // mint endpoint's calling conversation (ctx.session.id) down to its chat
 // identity server-side; the latter finds which Telegram chat to post the
 // post-bind confirmation into.
+// getApprovalByCallbackToken (issue #1273 PR ①) is the console-gated approval
+// seam's own lookup: a Telegram button callback carries only the opaque
+// callback_data token, with no workspace to scope by yet, unlike the
+// workspace-scoped findApprovalByCallbackToken above.
 export {
   getOrCreateJaceSession,
   bindEveSession,
@@ -1914,6 +1918,7 @@ export {
   latestTelegramSessionForChatIdentity,
   recordApprovalRequest,
   findApprovalByCallbackToken,
+  getApprovalByCallbackToken,
   resolveApproval,
   pendingApprovalsForWorkspace,
   type RecordApprovalRequestInput,

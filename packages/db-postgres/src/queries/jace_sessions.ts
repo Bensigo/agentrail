@@ -473,7 +473,14 @@ export async function latestTelegramSessionForChatIdentity(
 // --- approvals --------------------------------------------------------------
 
 export interface RecordApprovalRequestInput {
-  workspaceId: string;
+  workspaceId?: string;
+  // Anchor for an approval recorded from an intro (workspace-less)
+  // conversation (issue #1273, mirrors `jace_sessions`'s own intro anchor —
+  // see `schema/jace_sessions.ts`'s `jaceApprovals` doc-comment). NOT an
+  // either/or pair with `workspaceId` here: pass it whenever the owning
+  // session has one bound, even alongside a `workspaceId`, since it also
+  // doubles as the Telegram callback's SENDER CHECK target.
+  chatIdentityId?: string;
   sessionId: string;
   eveSessionId: string;
   requestId: string;
@@ -490,16 +497,30 @@ export interface RecordApprovalRequestInput {
  * `callbackToken` is `randomBytes(8).toString("hex")` — 16 hex chars, well
  * under Telegram's 64-byte callback_data limit alongside a prefix, and
  * unguessable enough that a stranger can't forge an approve/deny click.
+ *
+ * `workspaceId`/`chatIdentityId` mirror `enqueueChannelMessage`'s own anchor
+ * guard (`queries/channel_inbox.ts`): at least one is required — checked here
+ * and thrown before the INSERT, rather than letting the table's CHECK
+ * constraint reject it — but unlike that guard this is NOT strictly
+ * either/or; a caller with both on hand (a graduated session whose identity
+ * is still known) should pass both.
  */
 export async function recordApprovalRequest(
   input: RecordApprovalRequestInput
 ): Promise<JaceApprovalRow> {
+  if (!input.workspaceId && !input.chatIdentityId) {
+    throw new Error(
+      "recordApprovalRequest: requires either workspaceId or chatIdentityId"
+    );
+  }
+
   const callbackToken = randomBytes(8).toString("hex");
 
   const [row] = await db
     .insert(jaceApprovals)
     .values({
       workspaceId: input.workspaceId,
+      chatIdentityId: input.chatIdentityId,
       sessionId: input.sessionId,
       eveSessionId: input.eveSessionId,
       requestId: input.requestId,
@@ -536,6 +557,30 @@ export async function findApprovalByCallbackToken(
         eq(jaceApprovals.callbackToken, callbackToken)
       )
     )
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * Look up an approval by its callback token ALONE — no workspace scope,
+ * unlike {@link findApprovalByCallbackToken} above. The Telegram webhook
+ * (issue #1273) receives a button tap carrying only `callback_data`
+ * (`ar:<token>`); at that point the caller does not yet know which
+ * workspace/tenant the approval belongs to — resolving that IS the point of
+ * this lookup. Scoping it by workspace would be circular (nothing to scope
+ * by yet), and the token itself is already the whole security boundary here:
+ * it is globally unique (`jace_approvals_callback_token_unique`) and
+ * unguessable (`randomBytes(8)`, see `recordApprovalRequest`'s doc-comment).
+ * `findApprovalByCallbackToken` stays for callers that already know their
+ * tenant and want the extra belt-and-suspenders scope.
+ */
+export async function getApprovalByCallbackToken(
+  callbackToken: string
+): Promise<JaceApprovalRow | null> {
+  const [row] = await db
+    .select()
+    .from(jaceApprovals)
+    .where(eq(jaceApprovals.callbackToken, callbackToken))
     .limit(1);
   return row ?? null;
 }

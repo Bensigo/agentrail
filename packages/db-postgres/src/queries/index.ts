@@ -1989,7 +1989,9 @@ export {
 // #1263 PR ②) round out the connect-GitHub flow: the former resolves the
 // mint endpoint's calling conversation (ctx.session.id) down to its chat
 // identity server-side; the latter finds which Telegram chat to post the
-// post-bind confirmation into.
+// post-bind confirmation into. latestTelegramSessionForWorkspace (issue
+// #1269 PR ②a) is the same lookup keyed by workspace instead of chat
+// identity — the monthly-budget-ceiling notify's destination resolver.
 // getApprovalByCallbackToken (issue #1273 PR ①) is the console-gated approval
 // seam's own lookup: a Telegram button callback carries only the opaque
 // callback_data token, with no workspace to scope by yet, unlike the
@@ -2013,6 +2015,7 @@ export {
   getJaceSessionByEveSessionId,
   getJaceSessionById,
   latestTelegramSessionForChatIdentity,
+  latestTelegramSessionForWorkspace,
   recordApprovalRequest,
   findApprovalByCallbackToken,
   getApprovalByCallbackToken,
@@ -2056,3 +2059,16 @@ export {
   type ResolveInboundChatIdentityResult,
   type ReachableWorkspace,
 } from "./chat_identities.js";
+
+// Workspace monthly-budget-ceiling queries (issue #1269 PR ②a; see
+// `queries/workspace_budget.ts` for the full WHY behind the design).
+// getWorkspaceBudgetState + sumWorkspaceSpendSince are the claim route's read
+// path — the SUM only ever runs when the ceiling is non-null.
+// markBudgetExhaustedNotified is the atomic compare-and-set that makes the
+// once-per-period chat notice race-safe with no advisory lock.
+export {
+  getWorkspaceBudgetState,
+  sumWorkspaceSpendSince,
+  markBudgetExhaustedNotified,
+  type WorkspaceBudgetState,
+} from "./workspace_budget.js";

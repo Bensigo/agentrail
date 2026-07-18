@@ -90,6 +90,15 @@ def _read_phase(phase_dir: Path, missing: List[str]) -> Dict[str, Any]:
         "started_at": status.get("startedAt"),
         "finished_at": status.get("finishedAt"),
         "verdict": status.get("verdict"),
+        # Budget-stop marker (issue #1269 review, agentrail.run.artifacts.
+        # write_phase_budget_marker): a phase the Budget Leash stopped writes
+        # status="failed" indistinguishably from a genuine agent failure —
+        # this structured field is the only thing that tells them apart, same
+        # disambiguator shape as "verdict" above (#1181). None when the phase
+        # never had a budget stop (predates the write-back, or never tripped).
+        "budget_exceeded": status.get("budgetExceeded"),
+        "budget_spent_usd": status.get("budgetSpentUsd"),
+        "budget_ceiling_usd": status.get("budgetCeilingUsd"),
         "output_file": output_file,
         "tokens": None,
         "cost_usd": None,

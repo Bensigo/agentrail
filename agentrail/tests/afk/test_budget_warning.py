@@ -52,6 +52,16 @@ _FIXED_USAGE = Usage(
 )
 _EXPECTED_COST = (1000 * 3.00 + 200 * 15.00 + 100 * 0.30) / 1_000_000  # ~0.00603
 
+# A REALISTIC (>$10) per-issue cost — pins the #1269-review decoupling (Fix 3):
+# cost per issue: (2_000_000*3.00 + 500_000*15.00) / 1_000_000 = 13.50
+_BIG_USAGE = Usage(
+    model="claude-sonnet-4-6",
+    input_tokens=2_000_000,
+    output_tokens=500_000,
+    cache_tokens=0,
+)
+_BIG_EXPECTED_COST = (2_000_000 * 3.00 + 500_000 * 15.00) / 1_000_000  # $13.50
+
 
 def _write_journal(tmp_dir: Path, events: list) -> None:
     path = tmp_dir / ".agentrail" / "afk" / "events.jsonl"
@@ -264,6 +274,68 @@ class TestBudgetWarningSilentWhenZeroOrAbsent(unittest.TestCase):
                 cost_mod.run_cost(["--target", str(self._target)])
 
         self.assertNotIn("WARNING budget exceeded", err.getvalue())
+
+
+class TestBudgetWarningDecoupledFromRunBudgetDefault(unittest.TestCase):
+    """#1269 review Fix 3: agentrail.cli.commands.run.resolve_default_budget
+    now falls back to DEFAULT_PER_ISSUE_BUDGET_USD ($10, issue #1269) when
+    .agentrail/config.json is unset — a deliberate change for the run/afk
+    PRODUCT PATH's enforcement backstop. ``agentrail cost``'s advisory
+    warning (issue #698) must NOT inherit that default: it stays disabled
+    absent explicit config, even when the real cost is well over $10 — a
+    report command must not start silently warning (and writing
+    budget_warning events) just because #1269 changed a DIFFERENT resolver's
+    fallback."""
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self._target = Path(self._td.name)
+        _write_journal(self._target, _EVENTS)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def test_no_warning_or_event_write_when_no_config_despite_over_ten_dollar_cost(self) -> None:
+        from agentrail.cli.commands import cost as cost_mod
+
+        events_path = self._target / ".agentrail" / "afk" / "events.jsonl"
+        lines_before = events_path.read_text().splitlines()
+
+        with patch.object(cost_mod, "capture_usage", return_value=_BIG_USAGE), \
+             patch.object(cost_mod, "resolve_agent_name", return_value="claude"):
+            err = StringIO()
+            with patch("sys.stderr", err):
+                rc = cost_mod.run_cost(["--target", str(self._target)])
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn("WARNING budget exceeded", err.getvalue())
+        lines_after = events_path.read_text().splitlines()
+        self.assertEqual(lines_after, lines_before, "events.jsonl must gain no lines")
+        self.assertFalse(any("budget_warning" in line for line in lines_after))
+
+    def test_explicit_config_still_warns_with_a_realistic_cost(self) -> None:
+        """Belt-and-suspenders on the OTHER side of the decoupling: an
+        explicit budgets.per_issue_usd must keep working exactly as #698
+        shipped it, cost size notwithstanding."""
+        from agentrail.cli.commands import cost as cost_mod
+
+        _write_config(self._target, {"budgets": {"per_issue_usd": 10.0}})
+
+        with patch.object(cost_mod, "capture_usage", return_value=_BIG_USAGE), \
+             patch.object(cost_mod, "resolve_agent_name", return_value="claude"):
+            err = StringIO()
+            with patch("sys.stderr", err):
+                rc = cost_mod.run_cost(["--target", str(self._target)])
+
+        self.assertEqual(rc, 0)
+        msg = err.getvalue()
+        self.assertIn("WARNING budget exceeded", msg)
+        self.assertIn("13.50", msg)
+        events_path = self._target / ".agentrail" / "afk" / "events.jsonl"
+        budget_events = [
+            l for l in events_path.read_text().splitlines() if "budget_warning" in l
+        ]
+        self.assertEqual(len(budget_events), 2)  # both issues exceed the $10 threshold
 
 
 if __name__ == "__main__":

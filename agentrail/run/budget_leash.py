@@ -35,6 +35,19 @@ from __future__ import annotations
 
 from enum import Enum
 
+# Product default per-issue spend ceiling in dollars (issue #1269, PR ①).
+#
+# Applies ONLY when neither an explicit --budget-usd/--budget-per-issue flag
+# NOR `.agentrail/config.json`'s `budgets.per_issue_usd` sets a value at all —
+# see `agentrail.cli.commands.run.effective_budget`, the single resolution
+# site both `agentrail run` and `agentrail afk` funnel through
+# (`resolve_default_budget` is the shared fallback both call). An explicit
+# ``0`` at either of those tiers still means deliberately uncapped; this
+# constant only fills the gap when NEITHER tier says anything at all — before
+# this, the product default was silently 0.0 (uncapped), which defeated the
+# whole point of the Budget Leash on the one path real runs actually take.
+DEFAULT_PER_ISSUE_BUDGET_USD = 10.0
+
 
 class Decision(str, Enum):
     """The single decision the Budget Leash returns. Vocabulary from CONTEXT.md."""

@@ -72,7 +72,7 @@ def _run_recommend(target: Path, extra_args: list[str] | None = None) -> tuple[s
 
     with patch.object(cost_mod, "capture_usage", return_value=_FIXED_USAGE), \
          patch.object(cost_mod, "resolve_agent_name", return_value="claude"), \
-         patch.object(cost_mod, "resolve_default_budget", return_value=0.0):
+         patch.object(cost_mod, "_cost_warning_threshold", return_value=0.0):
         captured = StringIO()
         with patch("sys.stdout", captured):
             rc = cost_mod.run_cost(args)

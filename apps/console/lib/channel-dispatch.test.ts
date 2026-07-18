@@ -14,17 +14,18 @@ vi.mock("@agentrail/db-postgres", () => ({
   bindEveSession: vi.fn(),
 }));
 
-vi.mock("./telegram-system-message", () => ({
-  sendSystemTelegramMessage: vi.fn(),
-  buildWorkspaceChoiceMessage: (options: { name: string }[]) =>
-    [
-      `You're in ${options.length} workspaces. Which one is this about?`,
-      ...options.map((o, i) => `${i + 1}. ${o.name}`),
-      "Reply with a number or the name.",
-    ].join("\n"),
-  buildPinConfirmationMessage: (name: string) =>
-    `Got it — this conversation is now about ${name}.`,
-}));
+// Stub ONLY the network-performing send; keep the REAL pure message
+// builders via importActual so wording changes can't silently drift
+// between this mock and the actual implementation (test-hygiene fix).
+vi.mock("./telegram-system-message", async () => {
+  const actual = await vi.importActual<typeof import("./telegram-system-message")>(
+    "./telegram-system-message"
+  );
+  return {
+    ...actual,
+    sendSystemTelegramMessage: vi.fn(),
+  };
+});
 
 import {
   reclaimStaleChannelMessages,

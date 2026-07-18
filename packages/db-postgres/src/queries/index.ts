@@ -1909,7 +1909,11 @@ export {
 // GET /api/v1/runner/approvals/[id] poller's own read, scoped by the
 // console-minted uuid alone. getJaceSessionById (issue #1273 review fix)
 // resolves a session by its own PK — the null-chatIdentityId SENDER CHECK
-// fallback's read of the owning session's conversationKey.
+// fallback's read of the owning session's conversationKey. recordApprovalRequest
+// (issue #1273 PR ②) is now idempotent on the (eveSessionId, requestId)
+// unique: a caller composes requestId from its own idempotency key, and a
+// retried call returns the EXISTING row (created: false) instead of
+// throwing or minting a second one.
 export {
   getOrCreateJaceSession,
   bindEveSession,
@@ -1928,6 +1932,7 @@ export {
   resolveApproval,
   pendingApprovalsForWorkspace,
   type RecordApprovalRequestInput,
+  type RecordApprovalRequestResult,
   type PendingApprovalRow,
   type ResolveConversationWorkspaceInput,
   type ResolveConversationWorkspaceResult,

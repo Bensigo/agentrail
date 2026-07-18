@@ -5,8 +5,10 @@ import {
   formatCostUsd,
   formatMonthLabel,
   formatRelativeTime,
+  isRunListTruncated,
   runStatusLabel,
   spendRatio,
+  truncatedRunListNote,
 } from "./budget-helpers";
 
 describe("formatCostUsd", () => {
@@ -128,6 +130,29 @@ describe("runStatusLabel", () => {
 
   it("falls back to the raw string for an unrecognized status (stays total, never throws)", () => {
     expect(runStatusLabel("weird")).toBe("weird");
+  });
+});
+
+describe("isRunListTruncated", () => {
+  it("is true when the returned row count fills the limit (list may be cut off)", () => {
+    expect(isRunListTruncated(50, 50)).toBe(true);
+  });
+
+  it("is false when fewer rows came back than the limit (the list is complete)", () => {
+    expect(isRunListTruncated(49, 50)).toBe(false);
+    expect(isRunListTruncated(0, 50)).toBe(false);
+  });
+
+  it("is false for a degenerate non-positive limit (never claims truncation)", () => {
+    expect(isRunListTruncated(0, 0)).toBe(false);
+  });
+});
+
+describe("truncatedRunListNote", () => {
+  it("names the limit and says the monthly total still covers everything", () => {
+    expect(truncatedRunListNote(50)).toBe(
+      "Showing the 50 most recent runs — the monthly total covers all runs."
+    );
   });
 });
 

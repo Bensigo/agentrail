@@ -146,6 +146,25 @@ export function runStatusLabel(status: string): string {
   return RUN_STATUS_LABEL[status as RunStatus] ?? status;
 }
 
+/**
+ * Whether the per-task list may be cut off: `listWorkspaceRunCosts` can never
+ * return MORE than its limit, so a full page (`rowCount >= limit`) means the
+ * month may hold more runs than shown — and the overview's monthly total (a
+ * SQL SUM over ALL the month's runs) would then not reconcile with the sum of
+ * visible rows. The page renders `truncatedRunListNote` exactly when this is
+ * true so the mismatch is explained, not silent. A non-positive limit never
+ * claims truncation (degenerate guard, mirrors the query's own clamp style).
+ */
+export function isRunListTruncated(rowCount: number, limit: number): boolean {
+  return limit > 0 && rowCount >= limit;
+}
+
+/** The honesty note shown when `isRunListTruncated` — names the cap and says
+ * the monthly total still covers everything. */
+export function truncatedRunListNote(limit: number): string {
+  return `Showing the ${limit} most recent runs — the monthly total covers all runs.`;
+}
+
 export interface RelativeTime {
   label: string;
   title: string;

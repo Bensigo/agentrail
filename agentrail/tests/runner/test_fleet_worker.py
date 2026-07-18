@@ -174,6 +174,24 @@ def test_all_workspaces_failing_leaves_rotation_empty_but_loop_survives():
     assert rotation.is_empty()
 
 
+def test_default_auth_drop_message_gives_fleet_guidance_not_login_advice(capsys):
+    # RunnerAuthError's own message says "run `agentrail login` again" — right
+    # for the single-workspace CLI, wrong for a fleet workspace (no human ever
+    # logs one in). The default drop handler must give the fleet-correct
+    # recovery (revoke in console -> next sync re-mints) and never surface the
+    # login advice.
+    from agentrail.runner.fleet_worker import _default_on_auth_drop
+
+    _default_on_auth_drop("ws-9", RunnerAuthError(
+        "runner token was rejected — run `agentrail login` again"
+    ))
+    err = capsys.readouterr().err
+    assert "agentrail login" not in err
+    assert "ws-9" in err
+    assert "revoke" in err.lower()
+    assert "next sync" in err.lower()
+
+
 def test_transient_claim_error_does_not_drop_the_workspace():
     class FlakyClient(FakeClient):
         def claim_next(self):
@@ -264,12 +282,104 @@ def test_execution_error_is_reported_as_error_and_loop_continues():
     assert statuses["ws1-2"] == "green"
 
 
-def test_idle_sleeps_when_nothing_queued_anywhere():
-    clients = {ws: FakeClient(ws) for ws in ("ws1", "ws2")}  # no items -> always None
+# --- Per-pass idle semantics (#1267 PR② review fix) --------------------------
+# The idle sleep fires once per FULLY-EMPTY rotation pass, never per empty
+# claim — otherwise per-workspace poll latency would scale with fleet size
+# (ceil(workspaces/concurrency) * idle_seconds).
+
+
+def test_idle_sleeps_once_per_full_empty_pass_not_per_empty_claim():
+    clients = {ws: FakeClient(ws) for ws in ("ws1", "ws2", "ws3")}  # always empty
     rotation = WorkspaceRotation([_slot(ws, c) for ws, c in clients.items()])
+    sleeps: List[float] = []
+    # 8 loop turns at concurrency=1: sweep of 3 empties -> 1 sleep turn ->
+    # sweep of 3 empties -> 1 sleep turn. Per-empty-claim sleeping would have
+    # produced 6+ sleeps here; per-pass produces exactly 2.
+    run_fleet_worker(
+        rotation, sleep=sleeps.append, idle_seconds=7,
+        should_continue=_stop_after(8), concurrency=1,
+    )
+    assert sleeps == [7, 7]
+    # Both sweeps really did visit every workspace back-to-back (no sleeps
+    # between individual empty claims).
+    assert [c.claim_calls for c in clients.values()] == [2, 2, 2]
+
+
+def test_a_claim_anywhere_in_the_pass_resets_the_idle_streak():
+    # ws2 has one item; the pass containing that claim must NOT sleep — only
+    # once a full pass of consecutive empties completes does one sleep fire.
+    clients = {
+        "ws1": FakeClient("ws1"),
+        "ws2": FakeClient("ws2", items=[_item("ws2", "1")]),
+        "ws3": FakeClient("ws3"),
+    }
+    rotation = WorkspaceRotation([_slot(ws, c) for ws, c in clients.items()])
+    sleeps: List[float] = []
+    # Turns: ws1 empty(streak 1), ws2 CLAIM(reset), ws3 empty(1), ws1 empty(2),
+    # ws2 empty(3 -> full empty pass, gen bump), sleep turn. 6 turns, 1 sleep.
+    run_fleet_worker(
+        rotation, sleep=sleeps.append, idle_seconds=5,
+        should_continue=_stop_after(6), concurrency=1,
+    )
+    assert sleeps == [5]
+    assert [r["id"] for r in clients["ws2"].reported] == ["ws2-1"]
+
+
+def test_transient_claim_errors_count_toward_the_empty_pass():
+    # A console outage (every claim raising) must reach a fully-empty pass and
+    # idle between sweeps — not spin through error turns forever.
+    class AlwaysErrorClient(FakeClient):
+        def claim_next(self):
+            self.claim_calls += 1
+            raise RunnerError("503 service unavailable")
+
+    clients = {ws: AlwaysErrorClient(ws) for ws in ("ws1", "ws2")}
+    rotation = WorkspaceRotation([_slot(ws, c) for ws, c in clients.items()])
+    sleeps: List[float] = []
+    # Turns: ws1 error(1), ws2 error(2 -> gen bump), sleep turn.
+    run_fleet_worker(
+        rotation, sleep=sleeps.append, idle_seconds=9,
+        should_continue=_stop_after(3), concurrency=1,
+    )
+    assert sleeps == [9]
+    assert "ws1" in rotation.workspace_ids()  # transient errors never drop
+
+
+def test_empty_rotation_still_idles_without_pass_accounting():
+    rotation = WorkspaceRotation([])
     sleeps: List[float] = []
     run_fleet_worker(
         rotation, sleep=sleeps.append, idle_seconds=7,
         should_continue=_stop_after(2), concurrency=1,
     )
-    assert sleeps == [7, 7]
+    assert sleeps == [7, 7]  # nothing to sweep at all -> plain idle each turn
+
+
+def test_rotation_pass_accounting_unit():
+    rotation = WorkspaceRotation(
+        [_slot("ws1", FakeClient("ws1")), _slot("ws2", FakeClient("ws2"))]
+    )
+    assert rotation.idle_generation() == 0
+    rotation.note_empty()
+    assert rotation.idle_generation() == 0  # 1 of 2 — pass not complete
+    rotation.note_empty()
+    assert rotation.idle_generation() == 1  # full empty pass
+    rotation.note_empty()
+    rotation.note_claim()  # claim resets the streak mid-pass
+    rotation.note_empty()
+    assert rotation.idle_generation() == 1  # streak never re-reached 2
+    rotation.note_empty()
+    assert rotation.idle_generation() == 2
+
+
+def test_rotation_drop_and_refresh_reset_the_streak():
+    rotation = WorkspaceRotation(
+        [_slot("ws1", FakeClient("ws1")), _slot("ws2", FakeClient("ws2"))]
+    )
+    rotation.note_empty()  # streak 1 of 2
+    rotation.drop("ws1")   # membership changed -> streak reset (size now 1)
+    rotation.note_empty()
+    assert rotation.idle_generation() == 1  # needed a FULL fresh pass of the new size
+    rotation.refresh([_slot("ws3", FakeClient("ws3")), _slot("ws4", FakeClient("ws4"))])
+    rotation.note_empty()
+    assert rotation.idle_generation() == 1  # refresh reset the streak too

@@ -74,6 +74,21 @@ class WorkspaceRotation:
         self._lock = threading.Lock()
         self._slots: List[WorkspaceSlot] = list(slots)
         self._i = 0
+        # Per-PASS idle accounting (#1267 PR② review fix). The naive shape —
+        # sleep idle_seconds after EVERY empty claim, as worker.py does for
+        # its single workspace — multiplies across a fleet: per-workspace
+        # poll latency becomes ceil(workspaces/concurrency) * idle_seconds
+        # (~100s at 20 workspaces, concurrency 2). Instead the fleet sweeps
+        # the WHOLE rotation back-to-back and idles once per fully-empty
+        # pass: `_empty_streak` counts consecutive empty claims fleet-wide
+        # (any claim resets it), and when it reaches the rotation's size —
+        # every workspace seen empty in a row, i.e. one full empty pass —
+        # `_idle_gen` is bumped. Each slot sleeps once per generation (see
+        # `_fleet_slot`), so per-workspace poll latency when idle is one
+        # sweep of cheap claim calls + idle_seconds, independent of fleet
+        # size.
+        self._empty_streak = 0
+        self._idle_gen = 0
 
     def next(self) -> Optional[WorkspaceSlot]:
         """The next workspace slot in rotation, or ``None`` if none are active."""
@@ -84,10 +99,40 @@ class WorkspaceRotation:
             self._i += 1
             return slot
 
+    def note_empty(self) -> None:
+        """Record an empty (or transiently failed) claim turn.
+
+        When the streak of consecutive empty turns reaches the rotation's
+        size — one full pass with nothing claimed anywhere — a new idle
+        generation opens and the streak resets. Transient claim ERRORS count
+        as empty turns too: a fleet whose console is down must idle between
+        sweeps exactly like a fleet with no work, not spin.
+        """
+        with self._lock:
+            if not self._slots:
+                return
+            self._empty_streak += 1
+            if self._empty_streak >= len(self._slots):
+                self._empty_streak = 0
+                self._idle_gen += 1
+
+    def note_claim(self) -> None:
+        """Record a successful claim: the current pass is not empty."""
+        with self._lock:
+            self._empty_streak = 0
+
+    def idle_generation(self) -> int:
+        """The current idle generation (bumped once per fully-empty pass)."""
+        with self._lock:
+            return self._idle_gen
+
     def drop(self, workspace_id: str) -> None:
         """Remove a workspace from rotation (its token was rejected). Idempotent."""
         with self._lock:
             self._slots = [s for s in self._slots if s.workspace_id != workspace_id]
+            # The pass is redefined by the membership change; a stale streak
+            # could otherwise compare against the wrong rotation size.
+            self._empty_streak = 0
 
     def refresh(self, slots: List[WorkspaceSlot]) -> None:
         """Swap in a wholly new workspace list (called after each sync cycle).
@@ -99,6 +144,7 @@ class WorkspaceRotation:
         with self._lock:
             self._slots = list(slots)
             self._i = 0
+            self._empty_streak = 0
 
     def workspace_ids(self) -> List[str]:
         with self._lock:
@@ -113,8 +159,22 @@ OnAuthDrop = Callable[[str, Exception], None]
 
 
 def _default_on_auth_drop(workspace_id: str, exc: Exception) -> None:
-    _log.error("workspace %s dropped from rotation: %s", workspace_id, exc)
-    print(f"\nFleet: workspace {workspace_id} dropped from rotation — {exc}", file=sys.stderr)
+    # Deliberately does NOT print str(exc): RunnerAuthError's message is
+    # written for the single-workspace CLI ("run `agentrail login` again"),
+    # which is exactly wrong here — no human ever logs a fleet workspace in.
+    # The fleet-correct story: this one workspace is out of rotation; if its
+    # key was revoked on purpose, nothing to do; if not, the operator revokes
+    # the (now dead) fleet key in the console so the next sync mints a fresh
+    # one and the workspace rejoins the rotation automatically.
+    message = (
+        f"workspace {workspace_id} dropped from rotation: its fleet token was "
+        "rejected (revoked or invalid). Other workspaces are unaffected. If "
+        "this workspace should still be served, revoke its fleet key in the "
+        "console — the next sync will mint a fresh one and the workspace "
+        "rejoins automatically."
+    )
+    _log.error("%s", message)
+    print(f"\nFleet: {message}", file=sys.stderr)
 
 
 def _fleet_slot(
@@ -129,12 +189,33 @@ def _fleet_slot(
     report — forever (until ``should_continue()`` is false). Mirrors
     ``worker.py:_run_slot`` turn for turn, with the single-client claim swapped
     for "the next workspace in the shared rotation."
+
+    Idle semantics are PER PASS, not per empty claim: empty turns advance the
+    rotation immediately (a sweep of N workspaces is N cheap back-to-back
+    claim calls), and only a FULLY empty pass — every workspace seen empty
+    consecutively, tracked fleet-wide by the rotation — makes each slot sleep
+    ``idle_seconds`` once (the idle-generation check at the top of the loop)
+    before the next sweep. Any claim anywhere in the pass resets the streak,
+    so a busy fleet never idles mid-pass. This keeps per-workspace poll
+    latency at roughly sweep-time + idle_seconds regardless of how many
+    workspaces the fleet serves, where sleeping per empty claim would have
+    made it ceil(workspaces/concurrency) * idle_seconds.
     """
+    seen_idle_gen = rotation.idle_generation()
     while should_continue():
+        current_gen = rotation.idle_generation()
+        if current_gen != seen_idle_gen:
+            # A fully-empty pass completed somewhere in the fleet — honor it
+            # once per slot, so every slot pauses and the console gets a real
+            # quiet window instead of C-1 threads continuing to sweep.
+            seen_idle_gen = current_gen
+            sleep(idle_seconds)
+            continue
         slot = rotation.next()
         if slot is None:
             # Every workspace has been dropped (all tokens rejected, or the
-            # store started empty) — nothing to do until the next sync.
+            # store started empty) — nothing to sweep until the next sync
+            # refreshes the rotation; plain idle, no pass accounting.
             sleep(idle_seconds)
             continue
         try:
@@ -149,14 +230,17 @@ def _fleet_slot(
             _log.warning(
                 "claim failed for workspace %s (will retry): %s", slot.workspace_id, exc
             )
-            sleep(idle_seconds)
+            # Counts as an empty turn: an all-workspaces-erroring sweep (the
+            # console is down) must reach a fully-empty pass and idle, not spin.
+            rotation.note_empty()
             continue
         if item is None:
-            # Nothing queued for this workspace right now — move on to the
-            # next workspace in rotation after the same idle pause worker.py
-            # uses for a single workspace.
-            sleep(idle_seconds)
+            # Nothing queued for THIS workspace — move straight on to the next
+            # workspace in rotation; the sleep happens once per fully-empty
+            # pass (see the idle-generation check above), not here.
+            rotation.note_empty()
             continue
+        rotation.note_claim()
         try:
             result = slot.execute(item)
         except Exception as exc:  # noqa: BLE001 - one issue must not kill the loop
@@ -189,8 +273,11 @@ def run_fleet_worker(
 ) -> None:
     """Run ``concurrency`` fleet slots against the shared ``rotation`` until
     ``should_continue()`` is false. ``idle_seconds`` reuses
-    ``agentrail.runner.worker``'s own default (10.0s) — same meaning: how long
-    a slot waits before its next claim attempt when there was nothing to do.
+    ``agentrail.runner.worker``'s own default (10.0s), but fires once per
+    FULLY-EMPTY rotation pass rather than per empty claim (see
+    ``_fleet_slot``'s docstring) — per-workspace poll latency when the fleet
+    is idle is therefore ~(one sweep of claim calls + idle_seconds),
+    independent of how many workspaces the fleet serves.
     """
     concurrency = max(1, int(concurrency))
 

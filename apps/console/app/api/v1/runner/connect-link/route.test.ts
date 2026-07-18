@@ -64,6 +64,23 @@ describe("POST /api/v1/runner/connect-link", () => {
     expect(getChatIdentity).not.toHaveBeenCalled();
   });
 
+  it("400 when the request body is invalid JSON", async () => {
+    const request = new NextRequest("http://localhost/api/v1/runner/connect-link", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: "Bearer ar_test",
+      },
+      body: "{not valid json",
+    });
+
+    const res = await POST(request);
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Invalid JSON" });
+    expect(getChatIdentity).not.toHaveBeenCalled();
+  });
+
   it("404 when no chat identity exists for (platform, platformUserId) — mints only for identities that already messaged", async () => {
     vi.mocked(getChatIdentity).mockResolvedValue(null as never);
 
@@ -74,6 +91,102 @@ describe("POST /api/v1/runner/connect-link", () => {
     expect(res.status).toBe(404);
     expect(getChatIdentity).toHaveBeenCalledWith("telegram", "unknown-user");
     expect(setChatIdentityLinkToken).not.toHaveBeenCalled();
+  });
+
+  it("404 when the identity is already linked to a user — refuses to re-mint/hijack, body byte-identical to the unknown-identity 404", async () => {
+    vi.mocked(getChatIdentity).mockResolvedValueOnce({
+      id: "chat-identity-1",
+      platform: "telegram",
+      platformUserId: "tg-123",
+      displayName: "Ada",
+      userId: "user-already-linked",
+      workspaceId: null,
+      linkToken: null,
+      linkTokenExpiresAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    } as never);
+
+    const res = await POST(
+      req({ platform: "telegram", platformUserId: "tg-123" })
+    );
+    const text = await res.text();
+
+    expect(res.status).toBe(404);
+    expect(getChatIdentity).toHaveBeenCalledWith("telegram", "tg-123");
+    expect(setChatIdentityLinkToken).not.toHaveBeenCalled();
+    expect(JSON.parse(text)).toEqual({ error: "Chat identity not found" });
+
+    // Prove it byte-for-byte, not just structurally: same code path as the
+    // genuinely-unknown-identity 404 above.
+    vi.mocked(getChatIdentity).mockResolvedValueOnce(null as never);
+    const unknownRes = await POST(
+      req({ platform: "telegram", platformUserId: "unknown-user" })
+    );
+    const unknownText = await unknownRes.text();
+
+    expect(text).toBe(unknownText);
+  });
+
+  it("404 when the identity has a workspace_id that differs from the bearer's own workspace — tenant scoping, body byte-identical to the unknown-identity 404", async () => {
+    vi.mocked(getChatIdentity).mockResolvedValueOnce({
+      id: "chat-identity-1",
+      platform: "telegram",
+      platformUserId: "tg-123",
+      displayName: "Ada",
+      userId: null,
+      workspaceId: "ws-some-other-tenant",
+      linkToken: null,
+      linkTokenExpiresAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    } as never);
+
+    // beforeEach mocks requireBearer's workspaceId as "ws-1" — deliberately
+    // different from "ws-some-other-tenant" above.
+    const res = await POST(
+      req({ platform: "telegram", platformUserId: "tg-123" })
+    );
+    const text = await res.text();
+
+    expect(res.status).toBe(404);
+    expect(getChatIdentity).toHaveBeenCalledWith("telegram", "tg-123");
+    expect(setChatIdentityLinkToken).not.toHaveBeenCalled();
+    expect(JSON.parse(text)).toEqual({ error: "Chat identity not found" });
+
+    vi.mocked(getChatIdentity).mockResolvedValueOnce(null as never);
+    const unknownRes = await POST(
+      req({ platform: "telegram", platformUserId: "unknown-user" })
+    );
+    const unknownText = await unknownRes.text();
+
+    expect(text).toBe(unknownText);
+  });
+
+  it("200: mints when the identity's workspace_id matches the bearer's OWN workspace (same tenant, not yet user-linked)", async () => {
+    vi.mocked(getChatIdentity).mockResolvedValue({
+      id: "chat-identity-1",
+      platform: "telegram",
+      platformUserId: "tg-123",
+      displayName: "Ada",
+      userId: null,
+      workspaceId: "ws-1", // same as requireBearer's mocked workspaceId
+      linkToken: null,
+      linkTokenExpiresAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    } as never);
+
+    const res = await POST(
+      req({ platform: "telegram", platformUserId: "tg-123" })
+    );
+
+    expect(res.status).toBe(200);
+    expect(setChatIdentityLinkToken).toHaveBeenCalledWith(
+      "chat-identity-1",
+      expect.any(String),
+      expect.any(Date)
+    );
   });
 
   it("200: mints a 32+ hex char token, stores it with a 30-minute expiry, and returns the connect URL built from the request origin", async () => {

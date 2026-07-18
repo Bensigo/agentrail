@@ -35,22 +35,44 @@ function isRawBody(v: unknown): v is RawBody {
  * sends in-chat (the send moment + in-thread confirmation are PR ②, not
  * built here).
  *
- * Auth mirrors GET /api/v1/runner/workspace-memory exactly: a bearer
- * AgentRail API key via `requireBearer`. The mint is deliberately NOT scoped
- * to the caller's own workspace — the whole point of this flow is binding an
- * identity that may not have a resolved workspace yet, so there is nothing
- * workspace-shaped to check the bearer's workspace against.
+ * Auth mirrors GET /api/v1/runner/workspace-memory: a bearer AgentRail API
+ * key via `requireBearer`, which exposes the caller's own `workspaceId` —
+ * used below to scope who this endpoint will mint a link for.
  *
  * Body: { platform, platformUserId } — the same natural key
- * `resolveInboundChatIdentity` anchors chat identities on. 404 when no
- * identity exists yet: this endpoint mints only for senders who have
- * actually messaged Jace before; it never inserts one.
+ * `resolveInboundChatIdentity` anchors chat identities on.
  *
- * Re-minting for an identity that already carries an unexpired token simply
- * overwrites it (`setChatIdentityLinkToken` is last-write-wins) — the old
- * link silently stops working the moment a new one is minted. This is
- * intended: at most one live link per identity, and Jace always wants its
- * most recent send to be the one that works.
+ * Refuses to mint (404, the SAME body as the unknown-identity 404 below —
+ * never a distinguishable status or message) when EITHER:
+ *  - the identity already has a linked user (`userId` non-null). Re-linking
+ *    an already-bound identity is a deliberate future flow, not this
+ *    endpoint's job: minting here would hand out a redeemable token that
+ *    silently rebinds someone else's identity to whoever redeems it.
+ *  - the identity has a resolved `workspaceId` that DIFFERS from the
+ *    bearer's own `workspaceId` (tenant scoping). A pre-workspace "intro"
+ *    identity (`workspaceId` NULL) has no tenant yet, so minting for it
+ *    stays allowed for any valid bearer — that's the intended cold-start
+ *    flow this endpoint exists for. An identity already resolved to the
+ *    SAME workspace as the bearer is allowed through too.
+ * Without both checks, any workspace's valid bearer could pass in the
+ * (platform, platformUserId) of an identity already bound to a different
+ * user/workspace, mint it a valid link, and have an unrelated signed-in
+ * GitHub account silently rebind that identity on redemption — a
+ * cross-tenant account takeover (the vulnerability this fix closes). The two
+ * refusals collapse into the same 404 as "identity not found" on purpose: a
+ * distinguishable response would let any valid bearer enumerate which
+ * (platform, platformUserId) pairs exist and which tenant/user they already
+ * belong to, just by reading the status code.
+ *
+ * 404 when no identity exists yet, or when refused for either reason above —
+ * this endpoint mints only for senders who both messaged Jace before AND are
+ * still eligible to be linked by THIS bearer; it never inserts a row.
+ *
+ * Re-minting for a still-eligible identity that already carries an
+ * unexpired token simply overwrites it (`setChatIdentityLinkToken` is
+ * last-write-wins) — the old link silently stops working the moment a new
+ * one is minted. This is intended: at most one live link per identity, and
+ * Jace always wants its most recent send to be the one that works.
  *
  * Response: 200 { url, expiresAt } — url is `<request origin>/connect/<token>`,
  * built from the incoming request the same way
@@ -62,6 +84,7 @@ export async function POST(request: NextRequest) {
   if (auth instanceof NextResponse) {
     return auth;
   }
+  const { workspaceId: bearerWorkspaceId } = auth;
 
   let body: unknown;
   try {
@@ -78,7 +101,11 @@ export async function POST(request: NextRequest) {
   }
 
   const identity = await getChatIdentity(body.platform, body.platformUserId);
-  if (!identity) {
+  const ineligible =
+    !identity ||
+    identity.userId != null ||
+    (identity.workspaceId != null && identity.workspaceId !== bearerWorkspaceId);
+  if (ineligible) {
     return NextResponse.json({ error: "Chat identity not found" }, { status: 404 });
   }
 

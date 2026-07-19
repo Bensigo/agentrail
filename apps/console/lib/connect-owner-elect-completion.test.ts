@@ -58,6 +58,7 @@ describe("completeConnectOwnerElect", () => {
       hostedExecution: true,
       monthlyBudgetUsd: null,
       budgetExhaustedNotifiedPeriod: null,
+      mergePermission: false,
       requireAlignment: true,
     });
 

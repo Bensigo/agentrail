@@ -267,6 +267,13 @@
       "when": 1784418616208,
       "tag": "0036_alignment_gate",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1784423227454,
+      "tag": "0037_merge_permission",
+      "breakpoints": true
     }
   ]
 }

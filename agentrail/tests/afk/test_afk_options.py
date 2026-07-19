@@ -237,5 +237,67 @@ class RunnerForwardsBudgetSourceTests(unittest.TestCase):
         self.assertEqual(sig.parameters["budget_source"].default, "flag")
 
 
+# ---------------------------------------------------------------------------
+# #1278: --auto-merge CLI flag parsing + run_afk's threading into Runner.
+# Mirrors ParseBudgetTests / RunAfkBudgetPrecedenceTests above exactly.
+# ---------------------------------------------------------------------------
+
+
+class ParseAutoMergeTests(unittest.TestCase):
+    def test_no_flag_defaults_false(self) -> None:
+        opts = _parse([])
+        self.assertFalse(opts["auto_merge"])
+
+    def test_flag_sets_true(self) -> None:
+        opts = _parse(["--auto-merge"])
+        self.assertTrue(opts["auto_merge"])
+
+
+class RunAfkAutoMergeThreadingTests(unittest.TestCase):
+    """run_afk threads --auto-merge straight into the Runner constructor —
+    no config-file mirror (unlike --budget-per-issue): --auto-merge follows
+    the simpler CLI-only-boolean precedent of --dry-run/--allow-dirty/
+    --allow-hosted-repo instead."""
+
+    def setUp(self) -> None:
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        self.target = Path(self.td.name)
+        (self.target / ".agentrail").mkdir()
+
+    def _run(self, extra_args: list) -> MagicMock:
+        issues = [{"number": 1, "title": "t", "url": ""}]
+        with patch("agentrail.cli.commands.afk.gh") as gh_mock, \
+                patch("agentrail.cli.commands.afk.subprocess.run") as sp_mock, \
+                patch("agentrail.cli.commands.afk.build_store"), \
+                patch("agentrail.cli.commands.afk.Runner") as runner_mock, \
+                patch("agentrail.cli.commands.afk.asyncio.run",
+                      return_value=MagicMock(completed=1, failed=0)), \
+                patch("agentrail.afk.hosted_repo_guard.resolve_foreign_workspaces",
+                      return_value=([], None)):
+            gh_mock.list_queue_issues.return_value = issues
+            sp_mock.return_value = MagicMock(returncode=0, stdout="")
+            rc = run_afk(["--target", str(self.target)] + extra_args)
+            self.assertEqual(rc, 0)
+        return runner_mock
+
+    def test_no_flag_threads_false(self) -> None:
+        runner_mock = self._run([])
+        self.assertFalse(runner_mock.call_args.kwargs["auto_merge"])
+
+    def test_flag_threads_true(self) -> None:
+        runner_mock = self._run(["--auto-merge"])
+        self.assertTrue(runner_mock.call_args.kwargs["auto_merge"])
+
+    def test_runner_default_auto_merge_is_false(self) -> None:
+        """Runner's own constructor default (when a caller omits the kwarg
+        entirely, e.g. an older test or script) is False — the correct
+        fail-safe default independent of run_afk's own wiring."""
+        from agentrail.afk.runner import Runner as _Runner
+        import inspect
+        sig = inspect.signature(_Runner.__init__)
+        self.assertEqual(sig.parameters["auto_merge"].default, False)
+
+
 if __name__ == "__main__":
     unittest.main()

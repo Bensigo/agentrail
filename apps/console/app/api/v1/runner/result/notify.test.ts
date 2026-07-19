@@ -85,6 +85,42 @@ describe("buildOutcomeMessage", () => {
     const msg = buildOutcomeMessage({ issueNumber: "7", outcome: "green" });
     expect(msg).toBe("AgentRail: PR ready — issue #7");
   });
+
+  // #1278 PR②: merged swaps ONLY the headline word — the smallest honest
+  // change (everything else about the line is unchanged).
+  it("green + merged:true → 'Merged' headline, PR link/cost still present", () => {
+    const msg = buildOutcomeMessage({
+      issueNumber: "42",
+      outcome: "green",
+      prUrl: "https://github.com/o/r/pull/9",
+      costUsd: 1.2,
+      merged: true,
+    });
+    expect(msg).toContain("Merged");
+    expect(msg).not.toContain("PR ready");
+    expect(msg).toContain("#42");
+    expect(msg).toContain("https://github.com/o/r/pull/9");
+    expect(msg).toContain("$1.20");
+  });
+
+  it("green + merged:false (or omitted) stays 'PR ready' — byte-identical to before merged existed", () => {
+    expect(
+      buildOutcomeMessage({ issueNumber: "42", outcome: "green", merged: false })
+    ).toBe(buildOutcomeMessage({ issueNumber: "42", outcome: "green" }));
+    expect(buildOutcomeMessage({ issueNumber: "42", outcome: "green" })).toContain(
+      "PR ready"
+    );
+  });
+
+  it("merged:true on a non-green outcome is ignored — headline still follows the real outcome", () => {
+    const msg = buildOutcomeMessage({
+      issueNumber: "1",
+      outcome: "escalated-to-human",
+      merged: true,
+    });
+    expect(msg).toContain("Escalated to human");
+    expect(msg).not.toContain("Merged");
+  });
 });
 
 describe("notifyRunOutcome", () => {

@@ -56,6 +56,21 @@ import { requireBearer } from "../../../../../../../lib/bearer-auth";
  * or an approval that isn't approved, is a 409 conflict, logged loudly —
  * one approval produces at most one issue, so either case is treated as
  * suspicious rather than silently overwritten or silently accepted.
+ *
+ * ONLY a `create_issue` approval can be stamped at all (#1274 PR ② fix
+ * round, finding I1) — see the check below for the posture rationale, and
+ * `findConfirmedAlignmentBriefApproval` (`@agentrail/db-postgres`,
+ * github_intake.ts) for the read-side half of the same belt-and-braces
+ * fix.
+ *
+ * ACCEPTED RESIDUAL (reviewer-named, documented not fixed): a bearer
+ * holder redirecting a GENUINE create_issue approval's stamp to a
+ * DIFFERENT issue in the same workspace is inherent to the bearer-trust
+ * contract — the console has no independent way to verify which issue the
+ * CLI actually created for this approval (the CLI talks straight to
+ * GitHub; nothing flows back through the console except this very stamp).
+ * The bearer IS the workspace's trusted runner credential; a compromised
+ * bearer can already do strictly worse things (claim work, post results).
  */
 
 const GITHUB_ISSUE_URL_RE = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/issues\/\d+$/;
@@ -108,10 +123,40 @@ export async function POST(
     return NextResponse.json({ error: "Approval not found" }, { status: 404 });
   }
 
+  // #1274 PR ② fix round (I1): this endpoint's resource space is
+  // create_issue approvals ONLY. Any other tool's approval — an
+  // alignment_brief row (whose sanction rides queue_entry_id ->
+  // confirmAlignmentBrief, never a URL), create_workspace, create_repo —
+  // is treated as NOT FOUND, folded into the same indistinguishable 404 as
+  // an unknown id rather than the 409 family: the 409s below are for a row
+  // this endpoint COULD stamp in some state (a pending row can still be
+  // approved), whereas a wrong-toolName row can NEVER become stampable,
+  // and revealing row-type to a bearer probing ids has no legitimate use
+  // (same anti-enumeration posture as the tenant check below). Checked
+  // BEFORE the session resolution so a non-create_issue id doesn't even
+  // exercise that lookup.
+  if (approval.toolName !== "create_issue") {
+    console.error(
+      `[runner/approvals/published] approval ${id} has toolName ${approval.toolName}, not create_issue; refusing to stamp (returned as 404)`
+    );
+    return NextResponse.json({ error: "Approval not found" }, { status: 404 });
+  }
+
   // Same resolution chain as POST /api/v1/runner/approvals — sourced from
   // the approval's OWN stored eveSessionId (already known once fetched by
   // id) rather than a caller-supplied one, since `id` plus this row-owned
   // value is enough to reproduce that exact bearer+session cross-check.
+  //
+  // NULL-workspace note (#1274 PR ② fix round, M3): an approval anchored
+  // to an intro (chat-identity-only) session passes this check — with
+  // `workspaceId` null, `hasNoAnchor` is false (chatIdentityId present)
+  // and `crossTenant` is false — so ANY valid bearer can stamp such a row.
+  // ACCEPTED, because it is defacement-grade only: the admission lookup
+  // (`findConfirmedAlignmentBriefApproval`) requires
+  // `jace_approvals.workspace_id = <the ENQUEUING workspace>`, and SQL
+  // `NULL = <uuid>` is never true — a workspace-less approval can
+  // therefore never satisfy admission for ANY workspace, no matter what
+  // gets stamped onto it.
   const session = await getJaceSessionByEveSessionId(approval.eveSessionId);
   const hasNoAnchor =
     !session || (session.workspaceId == null && session.chatIdentityId == null);
@@ -125,14 +170,22 @@ export async function POST(
   switch (outcome) {
     case "stamped":
       return NextResponse.json({ ok: true }, { status: 200 });
+    // M4 (#1274 PR ② fix round): neither 409 log echoes row state read
+    // BEFORE stampPublishedIssueUrl ran — `approval.status`/`approval.
+    // publishedIssueUrl` here are the PRE-UPDATE snapshot, and the outcome
+    // was decided on that function's own FRESH post-UPDATE read, so a
+    // concurrent flip between the two reads could make a stale echo
+    // contradict the outcome it annotates. The outcome string itself is
+    // the accurate fact; `incoming` (the request body) is not a row read
+    // and stays.
     case "not_approved":
       console.error(
-        `[runner/approvals/published] approval ${id} is not approved (status=${approval.status}); refusing to stamp published_issue_url`
+        `[runner/approvals/published] approval ${id} is not approved; refusing to stamp published_issue_url`
       );
       return NextResponse.json({ error: "Approval is not approved" }, { status: 409 });
     case "conflict":
       console.error(
-        `[runner/approvals/published] approval ${id} is already stamped with a DIFFERENT published_issue_url (existing=${approval.publishedIssueUrl ?? "null"}, incoming=${body.url}); refusing to overwrite`
+        `[runner/approvals/published] approval ${id} is already stamped with a DIFFERENT published_issue_url (incoming=${body.url}); refusing to overwrite`
       );
       return NextResponse.json(
         { error: "Already stamped with a different url" },

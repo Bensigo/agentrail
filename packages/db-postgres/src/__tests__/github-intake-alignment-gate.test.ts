@@ -37,12 +37,20 @@ let mockConfirmedApprovalToolInput: Record<string, unknown> | undefined; // unde
 let mockUnmetBlockerRows: unknown[]; // rows unmetBlockers' own select resolves to
 let mockConfirmRowLookup: unknown[]; // rows confirmAlignmentBrief's own row-lookup select resolves to
 let updateMatches: boolean; // simulates the WHERE state='parked' guard matching (or not)
+// #1274 PR ② fix round (I1): the WHERE expression the confirmed-brief lookup
+// (`toolInput`-keyed select) was called with, captured raw so a test can
+// assert the `tool_name = 'create_issue'` condition is actually composed —
+// this mock cannot SIMULATE where-filtering (it returns rows regardless), so
+// the filter's presence in the built expression is the argument-level pin;
+// the behavioral half (a stamped non-create_issue row really parks) lives in
+// the live-DB proof, which runs the real SQL.
+let lastConfirmedLookupWhere: unknown;
 
 vi.mock("../db.js", () => {
   const dbMock = {
     select: (cols?: Record<string, unknown>) => ({
       from: () => ({
-        where: async () => {
+        where: async (whereExpr?: unknown) => {
           if (cols && Object.prototype.hasOwnProperty.call(cols, "requireAlignment")) {
             return mockRequireAlignment === undefined
               ? []
@@ -52,6 +60,7 @@ vi.mock("../db.js", () => {
             return mockConfirmRowLookup;
           }
           if (cols && Object.prototype.hasOwnProperty.call(cols, "toolInput")) {
+            lastConfirmedLookupWhere = whereExpr;
             return mockConfirmedApprovalToolInput === undefined
               ? []
               : [{ toolInput: mockConfirmedApprovalToolInput }];
@@ -99,11 +108,33 @@ import {
 
 const GOOD_BODY = "## Acceptance criteria\n- [ ] it works\n";
 
+/**
+ * Recursively walk a drizzle SQL expression, collecting every column name
+ * and every bound parameter value it references. Loose on purpose (checks
+ * shapes, not drizzle classes) so it survives minor drizzle-internal
+ * changes; used only by the I1 where-composition pin below.
+ */
+function collectWhereParts(expr: unknown, cols: string[], vals: unknown[]): void {
+  if (!expr || typeof expr !== "object") return;
+  const anyExpr = expr as Record<string, unknown>;
+  if (typeof anyExpr["name"] === "string" && "table" in anyExpr) {
+    cols.push(anyExpr["name"] as string);
+  }
+  if ("value" in anyExpr && "encoder" in anyExpr) {
+    vals.push(anyExpr["value"]);
+  }
+  const chunks = anyExpr["queryChunks"];
+  if (Array.isArray(chunks)) {
+    for (const chunk of chunks) collectWhereParts(chunk, cols, vals);
+  }
+}
+
 beforeEach(() => {
   insertedValues = [];
   updateCalls = [];
   mockRequireAlignment = undefined;
   mockConfirmedApprovalToolInput = undefined;
+  lastConfirmedLookupWhere = undefined;
   mockUnmetBlockerRows = [];
   mockConfirmRowLookup = [
     { workspaceId: "ws-1", externalId: "owner/repo#1", blockedBy: [] },
@@ -251,6 +282,38 @@ describe("enqueueGithubIssue: alignment gating matrix (requireAlignment x confir
     expect(insertedValues[0]?.["parkReason"]).toBe("Waiting on #9"); // still the dependency's own reason
     expect(insertedValues[0]?.["estimatedBudgetUsd"]).toBeNull();
     expect(insertedValues[0]?.["modelOverride"]).toBeNull();
+  });
+
+  it("#1274 PR② fix round I1: the confirmed-brief lookup's WHERE composes tool_name = 'create_issue' — a stamped approval of any OTHER tool can never satisfy admission", async () => {
+    // This mock returns rows regardless of the WHERE (it cannot simulate
+    // SQL filtering), so the pin here is on the COMPOSED expression itself:
+    // the lookup must ask for status/workspace/tool_name/published_issue_url
+    // together, with the exact 'create_issue' literal bound. The behavioral
+    // proof (a direct-SQL-stamped approved `alignment_brief` row really
+    // still parks the issue) runs against real Postgres in the live-DB
+    // proof script (Section E), where the WHERE actually executes.
+    mockRequireAlignment = true;
+    mockConfirmedApprovalToolInput = undefined;
+    await enqueueGithubIssue({
+      workspaceId: "ws-1",
+      repoFullName: "owner/repo",
+      number: 9,
+      title: "t",
+      body: GOOD_BODY,
+    });
+
+    expect(lastConfirmedLookupWhere).toBeDefined();
+    const cols: string[] = [];
+    const vals: unknown[] = [];
+    collectWhereParts(lastConfirmedLookupWhere, cols, vals);
+    expect(cols).toContain("tool_name");
+    expect(vals).toContain("create_issue");
+    // The pre-existing conditions must still be composed alongside it.
+    expect(cols).toContain("workspace_id");
+    expect(cols).toContain("status");
+    expect(cols).toContain("published_issue_url");
+    expect(vals).toContain("approved");
+    expect(vals).toContain("https://github.com/owner/repo/issues/9");
   });
 
   it("forged-title negative: a crafted title containing a GitHub-issue-URL-shaped string never influences the confirmed-brief lookup (the compared URL is built ONLY from repoFullName+number)", async () => {

@@ -786,6 +786,20 @@ async function workspaceRequiresAlignment(workspaceId: string): Promise<boolean>
  * matching in practice — and once it does, `enqueueGithubIssue` needs the
  * matched row's `toolInput` (specifically its `_brief`, see
  * `extractBriefBudgetAndModel` below), not just a boolean.
+ *
+ * `toolName = 'create_issue'` (#1274 PR ② fix round, finding I1): ONLY a
+ * create_issue approval can confirm via URL match. An `alignment_brief`
+ * approval sanctions its work-item through `queue_entry_id` ->
+ * `confirmAlignmentBrief` (values written directly on the parked row); it
+ * never legitimately carries `published_issue_url` — and no other tool's
+ * approval (create_workspace/create_repo) is about an issue at all.
+ * Without this filter, a stale APPROVED row of ANY tool, stamped with a
+ * target issue's URL, would satisfy this lookup — and via the no-`_brief`
+ * fallback below, admit that issue straight to `queued` with NO values and
+ * NO human ever having confirmed THAT work. Belt-and-braces with the stamp
+ * endpoint's own route-level create_issue-only refusal (the write side of
+ * the same fix) — either alone closes the hole; both together mean neither
+ * a bypassed route nor a future lookup caller can silently reopen it.
  */
 async function findConfirmedAlignmentBriefApproval(
   workspaceId: string,
@@ -798,6 +812,7 @@ async function findConfirmedAlignmentBriefApproval(
       and(
         eq(jaceApprovals.workspaceId, workspaceId),
         eq(jaceApprovals.status, "approved"),
+        eq(jaceApprovals.toolName, "create_issue"),
         eq(jaceApprovals.publishedIssueUrl, issueUrl)
       )
     );

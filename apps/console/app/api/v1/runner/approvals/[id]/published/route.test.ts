@@ -172,6 +172,46 @@ describe("POST /api/v1/runner/approvals/[id]/published — auth + body validatio
   });
 });
 
+describe("POST /api/v1/runner/approvals/[id]/published — create_issue-only (#1274 PR ② fix round, I1)", () => {
+  it("404 (byte-identical to unknown-id) for an APPROVED alignment_brief approval — the reviewer's exact attack row; session lookup and stamp never touched", async () => {
+    mockGetById.mockResolvedValue({
+      ...MOCK_APPROVAL,
+      toolName: "alignment_brief",
+      status: "approved",
+    } as never);
+
+    const res = await POST(req({ url: REAL_URL }), params("approval-1"));
+    const text = await res.text();
+
+    expect(res.status).toBe(404);
+    expect(mockGetSession).not.toHaveBeenCalled();
+    expect(mockStamp).not.toHaveBeenCalled();
+
+    mockGetById.mockResolvedValue(null);
+    const unknownRes = await POST(req({ url: REAL_URL }), params("unknown-id"));
+    expect(await unknownRes.text()).toBe(text);
+  });
+
+  it("404 for every other non-create_issue tool (create_repo, create_workspace) regardless of status", async () => {
+    for (const toolName of ["create_repo", "create_workspace"]) {
+      mockGetById.mockResolvedValue({
+        ...MOCK_APPROVAL,
+        toolName,
+        status: "approved",
+      } as never);
+      const res = await POST(req({ url: REAL_URL }), params("approval-1"));
+      expect(res.status).toBe(404);
+      expect(mockStamp).not.toHaveBeenCalled();
+    }
+  });
+
+  it("positive control: a create_issue approval still stamps (200) — the toolName gate isn't over-broad", async () => {
+    const res = await POST(req({ url: REAL_URL }), params("approval-1"));
+    expect(res.status).toBe(200);
+    expect(mockStamp).toHaveBeenCalledWith("approval-1", REAL_URL);
+  });
+});
+
 describe("POST /api/v1/runner/approvals/[id]/published — resolution chain (404-indistinguishable)", () => {
   it("404 when no approval exists for this id", async () => {
     mockGetById.mockResolvedValue(null);

@@ -69,6 +69,28 @@ export async function getRun(
   return (rows[0] as RunRow) ?? null;
 }
 
+/**
+ * Look up a run by its own primary key, with NO workspace scope — the read
+ * behind `GET /api/v1/runner/failure-bundle` under the central-secret auth
+ * model (JACE_CONSOLE_TOKEN, no per-workspace bearer to scope by). `id` is
+ * `runs.id`, `uuid("id").primaryKey().defaultRandom()`
+ * (`schema/runs.ts`) — server-minted, never caller-guessable — so no further
+ * scoping is needed here (mirrors `getApprovalById`'s and
+ * `getJaceSessionById`'s own no-workspace-scope rationale:
+ * `queries/jace_sessions.ts`, "the id IS the security boundary").
+ *
+ * The caller MUST read `.workspaceId` off the returned row and use THAT
+ * value — never a caller-supplied one — to scope every subsequent
+ * workspace-filtered read (review gates, ClickHouse failure events / run
+ * events): this is what lets `failure-bundle`'s route resolve its own tenant
+ * from `run_id` alone without trusting anything the request itself claims
+ * about which workspace it belongs to.
+ */
+export async function getRunById(runId: string): Promise<RunRow | null> {
+  const rows = await db.select().from(runs).where(eq(runs.id, runId)).limit(1);
+  return (rows[0] as RunRow) ?? null;
+}
+
 export async function getReviewGatesForRun(workspaceId: string, runId: string) {
   return db
     .select()

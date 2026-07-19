@@ -273,17 +273,26 @@ describe("POST /api/v1/runner/approvals — session resolution + tenant scoping"
 });
 
 describe("POST /api/v1/runner/approvals — recordApprovalRequest arguments + response shape", () => {
-  it("passes eveSessionId/toolName/toolInput straight through, vestigial literal approve/deny option ids, and requestId = the caller's idempotencyKey verbatim", async () => {
+  it("passes eveSessionId/toolName/toolInput straight through for a tool #1274 PR ② does NOT enrich, vestigial literal approve/deny option ids, and requestId = the caller's idempotencyKey verbatim", async () => {
+    // create_workspace (not create_issue): proves the "straight through" claim
+    // for every OTHER tool. create_issue's own toolInput is now enriched with
+    // a `_brief` before recording — see the dedicated "#1274 PR ② chat-born
+    // enrichment" describe block below for that tool's specific contract.
     mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
     mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+    const body = {
+      ...MOCK_BODY,
+      toolName: "create_workspace",
+      toolInput: { name: "Acme Corp" },
+    };
 
-    await POST(req(MOCK_BODY));
+    await POST(req(body));
 
     expect(mockRecord).toHaveBeenCalledWith(
       expect.objectContaining({
         eveSessionId: "eve-session-1",
-        toolName: "create_issue",
-        toolInput: MOCK_BODY.toolInput,
+        toolName: "create_workspace",
+        toolInput: body.toolInput,
         approveOptionId: "approve",
         denyOptionId: "deny",
         requestId: MOCK_BODY.idempotencyKey,
@@ -356,6 +365,146 @@ describe("POST /api/v1/runner/approvals — idempotent replay (created: false, i
   });
 });
 
+describe("POST /api/v1/runner/approvals — #1274 PR ② chat-born enrichment (create_issue only)", () => {
+  it("enriches a create_issue toolInput with a _brief computed from its own title/whatToBuild/acceptanceCriteria", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: {
+          title: "Add dark mode toggle",
+          whatToBuild: "A settings toggle that persists across reload.",
+          acceptanceCriteria: ["Toggle in settings", "Persists across reload"],
+        },
+      })
+    );
+
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    const brief = (recordArgs?.toolInput as Record<string, unknown>)?._brief as
+      | Record<string, unknown>
+      | undefined;
+    expect(brief).toBeDefined();
+    expect(typeof brief?.taskType).toBe("string");
+    expect(typeof brief?.estimateUsd).toBe("number");
+    expect((brief?.estimateUsd as number)).toBeGreaterThan(0);
+    expect(brief?.suggestedModel).toMatchObject({ slug: expect.any(String), displayName: expect.any(String) });
+    // Original create_issue fields survive untouched alongside _brief.
+    expect(recordArgs?.toolInput).toMatchObject({
+      title: "Add dark mode toggle",
+      whatToBuild: "A settings toggle that persists across reload.",
+      acceptanceCriteria: ["Toggle in settings", "Persists across reload"],
+    });
+  });
+
+  it("INJECTION GUARD: a caller-supplied _brief is overwritten with the server-computed one, never passed through", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: {
+          title: "Add dark mode toggle",
+          whatToBuild: "A settings toggle that persists across reload.",
+          acceptanceCriteria: ["Toggle in settings"],
+          _brief: { evil: true, estimateUsd: 0, suggestedModel: { slug: "attacker/free-model" } },
+        },
+      })
+    );
+
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    const brief = (recordArgs?.toolInput as Record<string, unknown>)?._brief as
+      | Record<string, unknown>
+      | undefined;
+    expect(brief).not.toHaveProperty("evil");
+    expect(brief?.estimateUsd).not.toBe(0);
+    expect((brief?.suggestedModel as Record<string, unknown>)?.slug).not.toBe(
+      "attacker/free-model"
+    );
+  });
+
+  it("INJECTION GUARD: an attacker-cheap _brief attempting to undercut the real estimate is discarded — the recorded estimate always matches the server's own computation for the SAME content", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    const honestToolInput = {
+      title: "Add dark mode toggle",
+      whatToBuild: "A settings toggle that persists across reload.",
+      acceptanceCriteria: ["Toggle in settings"],
+    };
+    await POST(
+      req({ ...MOCK_BODY, toolInput: honestToolInput })
+    );
+    const honestBrief = (mockRecord.mock.calls[0]?.[0]?.toolInput as Record<string, unknown>)
+      ?._brief as Record<string, unknown>;
+
+    mockRecord.mockClear();
+    await POST(
+      req({
+        ...MOCK_BODY,
+        idempotencyKey: "different-key-same-content",
+        toolInput: {
+          ...honestToolInput,
+          _brief: { estimateUsd: 0.01, suggestedModel: { slug: "attacker/free-model", displayName: "Free" } },
+        },
+      })
+    );
+    const attackerAttemptBrief = (
+      mockRecord.mock.calls[0]?.[0]?.toolInput as Record<string, unknown>
+    )?._brief as Record<string, unknown>;
+
+    expect(attackerAttemptBrief).toEqual(honestBrief);
+  });
+
+  it("does NOT enrich other tools' toolInput — passes through unchanged, no _brief added", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        eveSessionId: "eve-session-1",
+        toolName: "create_workspace",
+        toolInput: { name: "Acme Corp" },
+        idempotencyKey: "k-workspace",
+      })
+    );
+
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    expect(recordArgs?.toolInput).toEqual({ name: "Acme Corp" });
+  });
+
+  it("sends the ENRICHED toolInput to renderApprovalMessage, not the raw request body", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: { title: "x", whatToBuild: "y", acceptanceCriteria: ["ac1"] },
+      })
+    );
+
+    const renderedInput = mockRender.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(renderedInput).toHaveProperty("_brief");
+  });
+
+  it("a malformed create_issue toolInput (missing whatToBuild, non-array acceptanceCriteria) never throws — degrades gracefully, still 201", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    const res = await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: { title: "only a title", acceptanceCriteria: "not-an-array" },
+      })
+    );
+
+    expect(res.status).toBe(201);
+  });
+});
+
 describe("POST /api/v1/runner/approvals — rich Telegram send (best-effort)", () => {
   it("renders the message from toolName/toolInput and sends it with an Approve/Deny keyboard to the session's conversation", async () => {
     mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
@@ -363,7 +512,15 @@ describe("POST /api/v1/runner/approvals — rich Telegram send (best-effort)", (
 
     await POST(req(MOCK_BODY));
 
-    expect(mockRender).toHaveBeenCalledWith("create_issue", MOCK_BODY.toolInput);
+    // MOCK_BODY.toolName is create_issue, so the RENDERED toolInput is the
+    // #1274 PR ② enriched one (carries an extra `_brief` on top of the
+    // original fields) — objectContaining proves the original fields still
+    // reach the renderer; the enrichment's own contract is covered by the
+    // dedicated "#1274 PR ② chat-born enrichment" describe block above.
+    expect(mockRender).toHaveBeenCalledWith(
+      "create_issue",
+      expect.objectContaining(MOCK_BODY.toolInput)
+    );
     expect(mockBuildKeyboard).toHaveBeenCalledWith("cbtoken123456");
     expect(mockSend).toHaveBeenCalledWith(
       "test-bot-token",

@@ -75,6 +75,87 @@ describe("renderApprovalMessage — create_issue", () => {
   });
 });
 
+describe("renderApprovalMessage — create_issue WITH _brief (#1274 PR ②, chat-born one-confirm collapse)", () => {
+  const ENRICHED_INPUT = {
+    title: "Add dark mode toggle",
+    parent: "",
+    requiredContext: "",
+    whatToBuild: "Add a settings toggle that persists across reload.",
+    acceptanceCriteria: ["Toggle in settings", "Persists across reload"],
+    verification: "",
+    _brief: {
+      taskType: "ui",
+      suggestedModel: { slug: "anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5" },
+      estimateUsd: 1.35,
+      assumptions: ["Classified as \"ui\" from the title."],
+    },
+  };
+
+  it("renders via the SAME shape as the alignment_brief render — task type, suggested model DISPLAY NAME, AC, and the sanction line", () => {
+    const text = renderApprovalMessage("create_issue", ENRICHED_INPUT);
+    // The alignment_brief render expects taskType/suggestedModel/etc. at the
+    // TOP level (not nested under _brief) — this is the exact flattening
+    // renderCreateIssue itself performs before delegating.
+    const flattened = {
+      ...ENRICHED_INPUT._brief,
+      title: ENRICHED_INPUT.title,
+      whatToBuild: ENRICHED_INPUT.whatToBuild,
+      acceptanceCriteria: ENRICHED_INPUT.acceptanceCriteria,
+    };
+    expect(text).toBe(renderApprovalMessage("alignment_brief", flattened));
+    expect(text).toContain("Add dark mode toggle");
+    expect(text).toContain("ui");
+    expect(text).toContain("Claude Sonnet 5");
+    expect(text).not.toContain("anthropic/claude-sonnet-5");
+    expect(text).toContain("- Toggle in settings");
+    expect(text).toContain("- Persists across reload");
+    expect(text).toContain("Approving sets this run's budget: ~$1.35");
+  });
+
+  it("never throws when _brief is present but malformed", () => {
+    expect(() =>
+      renderApprovalMessage("create_issue", { title: "x", _brief: "not-an-object" })
+    ).not.toThrow();
+    expect(() =>
+      renderApprovalMessage("create_issue", { title: "x", _brief: ["array", "not", "object"] })
+    ).not.toThrow();
+    expect(() =>
+      renderApprovalMessage("create_issue", { title: "x", _brief: null })
+    ).not.toThrow();
+  });
+
+  it("_brief: null or _brief absent both fall back to the ORIGINAL create_issue render, not the brief shape", () => {
+    const withNull = renderApprovalMessage("create_issue", { ...ENRICHED_INPUT, _brief: null });
+    const withoutKey = renderApprovalMessage("create_issue", {
+      title: ENRICHED_INPUT.title,
+      acceptanceCriteria: ENRICHED_INPUT.acceptanceCriteria,
+    });
+    expect(withNull).toContain("Approve creating this issue?");
+    expect(withNull).not.toContain("Approve this alignment brief?");
+    expect(withoutKey).toContain("Approve creating this issue?");
+  });
+});
+
+describe("renderApprovalMessage — create_issue WITHOUT _brief renders byte-identical to before #1274 PR ② (regression-pin)", () => {
+  it("renders the title and every acceptance criterion as a bullet, exactly as the original create_issue render did", () => {
+    const text = renderApprovalMessage("create_issue", {
+      title: "Add dark mode",
+      acceptanceCriteria: ["Toggle in settings", "Persists across reload"],
+    });
+    expect(text).toBe(
+      [
+        "Approve creating this issue?",
+        "",
+        "Title: Add dark mode",
+        "",
+        "Acceptance criteria:",
+        "- Toggle in settings",
+        "- Persists across reload",
+      ].join("\n")
+    );
+  });
+});
+
 describe("renderApprovalMessage — create_workspace", () => {
   it("renders the workspace name", () => {
     const text = renderApprovalMessage("create_workspace", { name: "Acme Corp" });

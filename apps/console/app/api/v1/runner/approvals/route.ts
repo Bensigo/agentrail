@@ -5,6 +5,7 @@ import {
 } from "@agentrail/db-postgres";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 import { renderApprovalMessage } from "../../../../../lib/approval-message";
+import { composeChatBornBrief } from "../../../../../lib/alignment-brief";
 import {
   sendTelegramMessage,
   buildApprovalKeyboard,
@@ -73,6 +74,63 @@ import {
  * `expired` in this PR — that "the poller's TTL times out to an honest
  * denial" flow is PR ②'s deny path, not this route's.
  */
+
+/**
+ * #1274 PR ②, locked design point 1 — chat-born one-confirm collapse: when
+ * `toolName === "create_issue"`, this route enriches the STORED `toolInput`
+ * with a reserved `_brief` key (`composeChatBornBrief`, computed from
+ * fields ALREADY on create_issue's own toolInput — title/whatToBuild/
+ * acceptanceCriteria) BEFORE `recordApprovalRequest`. `renderCreateIssue`
+ * (`../../../../../lib/approval-message.ts`) then upgrades to the full
+ * alignment-brief render whenever `_brief` is present, and
+ * `enqueueGithubIssue`'s confirmed-brief lookup (`@agentrail/db-postgres`)
+ * reads the sanctioned budget/model back out of it once the label webhook
+ * redelivers the same issue — collapsing what would otherwise be TWO
+ * confirms (approve creating the issue, then a second alignment confirm)
+ * into ONE.
+ *
+ * INJECTION GUARD (locked design, non-negotiable): any incoming `_brief`
+ * key is unconditionally stripped/overwritten — Jace/the model can never
+ * author brief fields; only this server-computed value may ever occupy
+ * that key. This holds EVEN IF the enrichment computation below fails: the
+ * catch branch still returns the STRIPPED `rest`, never the caller's own
+ * `_brief`.
+ *
+ * Defensive against a malformed create_issue payload (this route accepts
+ * `toolInput` as an arbitrary object for every tool, not specifically
+ * validated against create_issue's own zod schema): a missing/wrong-typed
+ * title/whatToBuild/acceptanceCriteria degrades to `""`/`[]` rather than
+ * throwing, and `composeChatBornBrief` itself is wrapped so ANY unexpected
+ * throw still records the approval — just without `_brief` — rather than
+ * failing the whole POST. This is the SAME fail-safe direction the whole
+ * alignment gate always takes: a create_issue approval with no `_brief`
+ * falls back to the pre-#1274-PR② render, and the label webhook will later
+ * park it for a separate (redundant, but safe) alignment confirm.
+ */
+function enrichCreateIssueToolInput(
+  toolInput: Record<string, unknown>
+): Record<string, unknown> {
+  const { _brief: _ignoredCallerSuppliedBrief, ...rest } = toolInput;
+
+  try {
+    const title = typeof rest["title"] === "string" ? rest["title"] : "";
+    const whatToBuild =
+      typeof rest["whatToBuild"] === "string" ? rest["whatToBuild"] : "";
+    const rawCriteria = rest["acceptanceCriteria"];
+    const acceptanceCriteria = Array.isArray(rawCriteria)
+      ? rawCriteria.filter((c): c is string => typeof c === "string")
+      : [];
+
+    const brief = composeChatBornBrief({ title, whatToBuild, acceptanceCriteria });
+    return { ...rest, _brief: brief };
+  } catch (err) {
+    console.error(
+      "[runner/approvals] composeChatBornBrief failed; recording this create_issue approval WITHOUT an alignment brief (falls back to the pre-#1274-PR② render + a later redundant alignment confirm):",
+      err
+    );
+    return rest;
+  }
+}
 
 interface RawBody {
   eveSessionId: string;
@@ -174,6 +232,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
+  // #1274 PR②: enrich create_issue's toolInput into the alignment brief
+  // BEFORE recording — see enrichCreateIssueToolInput's own doc-comment.
+  // Every other tool's toolInput passes through completely unchanged.
+  const toolInput =
+    body.toolName === "create_issue"
+      ? enrichCreateIssueToolInput(body.toolInput)
+      : body.toolInput;
+
   const { approval, created } = await recordApprovalRequest({
     workspaceId: session.workspaceId ?? undefined,
     chatIdentityId: session.chatIdentityId ?? undefined,
@@ -181,7 +247,7 @@ export async function POST(request: NextRequest) {
     eveSessionId: body.eveSessionId,
     requestId: body.idempotencyKey,
     toolName: body.toolName,
-    toolInput: body.toolInput,
+    toolInput,
     approveOptionId: "approve",
     denyOptionId: "deny",
   });
@@ -191,7 +257,7 @@ export async function POST(request: NextRequest) {
       session,
       approval.callbackToken,
       body.toolName,
-      body.toolInput
+      toolInput
     );
   }
 

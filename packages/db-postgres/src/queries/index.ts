@@ -2075,7 +2075,11 @@ export {
 // (issue #1273 PR ②) is now idempotent on the (eveSessionId, requestId)
 // unique: a caller composes requestId from its own idempotency key, and a
 // retried call returns the EXISTING row (created: false) instead of
-// throwing or minting a second one.
+// throwing or minting a second one. stampPublishedIssueUrl (#1274 PR ②) is
+// the chat-born one-confirm collapse's own write: it stamps the real GitHub
+// issue URL a create_issue tool call produced onto its own approved
+// approval row, which github_intake.ts's confirmed-brief lookup then
+// recognizes to admit the label-webhook redelivery straight to queued.
 export {
   getOrCreateJaceSession,
   bindEveSession,
@@ -2093,10 +2097,12 @@ export {
   getApprovalByCallbackToken,
   getApprovalById,
   resolveApproval,
+  stampPublishedIssueUrl,
   pendingApprovalsForWorkspace,
   type RecordApprovalRequestInput,
   type RecordApprovalRequestResult,
   type PendingApprovalRow,
+  type StampPublishedIssueUrlOutcome,
   type ResolveConversationWorkspaceInput,
   type ResolveConversationWorkspaceResult,
   type PinConversationWorkspaceInput,

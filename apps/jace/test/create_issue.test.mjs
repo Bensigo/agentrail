@@ -7,6 +7,9 @@ import {
   runCreateIssue,
   notConnectedGuidance,
   NOT_CONNECTED_MARKER,
+  buildPublishedStampUrl,
+  stampCreatedIssueUrl,
+  resolveStampUrl,
 } from "../agent/lib/create_issue.core.mjs";
 
 test("buildIssueBody renders the house-format sections in order", () => {
@@ -345,4 +348,379 @@ test("runCreateIssue hardens the title before it reaches argv", async () => {
   assert.ok(!/​/u.test(seenTitle), "zero-width stripped from title");
   assert.ok(seenTitle.includes("＠everyone"), "@everyone defanged in title");
   assert.ok(!/@everyone/.test(seenTitle), "no live @everyone in title");
+});
+
+// ---------------------------------------------------------------------------
+// #1274 PR ② — the chat-born one-confirm collapse's own write: stamp the
+// real GitHub issue URL onto the create_issue approval that gated this
+// call, so the label webhook's later redelivery recognizes it as already
+// confirmed instead of parking for a second alignment confirm.
+//
+// THE SAFETY LINE this file exists to prove (mirrors
+// console_gated_approval.core.test.mjs's own framing): a failed stamp —
+// any transport throw (timeout/network), any non-2xx, a malformed relearn
+// response, or missing session context — must NEVER affect
+// runCreateIssue's own return value, and stampCreatedIssueUrl itself must
+// NEVER throw.
+// ---------------------------------------------------------------------------
+
+// A fake transport that records every call and replies from a queue of
+// responders — mirrors console_gated_approval.core.test.mjs's own idiom.
+function fakeTransport(...responders) {
+  const calls = [];
+  let i = 0;
+  const fn = async (url, init) => {
+    calls.push({ url, init });
+    const responder = responders[Math.min(i, responders.length - 1)];
+    i += 1;
+    return responder(url, init);
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+const STAMP_ENV = {
+  JACE_CONSOLE_BASE_URL: "https://console.example.com",
+  JACE_CONSOLE_TOKEN: "tok-secret-123",
+  JACE_TARGET_REPO: "Bensigo/agentrail",
+};
+
+const SUCCESS_STDOUT =
+  "Created Bensigo/agentrail#1042 (label ready-for-agent): https://github.com/Bensigo/agentrail/issues/1042\n";
+
+function fakeExecSuccess() {
+  return async () => ({ stdout: SUCCESS_STDOUT, stderr: "" });
+}
+
+const APPROVED_RELEARN_RESPONDER = async () => ({
+  status: 200,
+  json: async () => ({ approvalId: "approval-1", status: "approved" }),
+});
+const OK_STAMP_RESPONDER = async () => ({ status: 200, json: async () => ({ ok: true }) });
+
+test("buildPublishedStampUrl joins the base url, the approvals path, the approvalId, and /published", () => {
+  const url = buildPublishedStampUrl("https://console.example.com", "approval-123");
+  assert.equal(
+    url,
+    "https://console.example.com/api/v1/runner/approvals/approval-123/published",
+  );
+});
+
+test("buildPublishedStampUrl encodes an approvalId that needs it", () => {
+  const url = buildPublishedStampUrl("https://console.example.com", "a b/c");
+  assert.equal(
+    url,
+    "https://console.example.com/api/v1/runner/approvals/a%20b%2Fc/published",
+  );
+});
+
+test("stampCreatedIssueUrl: relearns the approval id via a replay POST, then stamps — both calls made with the right shape", async () => {
+  const transport = fakeTransport(APPROVED_RELEARN_RESPONDER, OK_STAMP_RESPONDER);
+
+  await stampCreatedIssueUrl({
+    eveSessionId: "eve-session-1",
+    turnId: "turn-1",
+    toolInput: { title: "x" },
+    url: "https://github.com/a/b/issues/1",
+    env: STAMP_ENV,
+    transport,
+  });
+
+  assert.equal(transport.calls.length, 2);
+  const [relearnCall, stampCall] = transport.calls;
+  assert.equal(relearnCall.url, "https://console.example.com/api/v1/runner/approvals");
+  const relearnBody = JSON.parse(relearnCall.init.body);
+  assert.equal(relearnBody.eveSessionId, "eve-session-1");
+  assert.equal(relearnBody.toolName, "create_issue");
+  assert.deepEqual(relearnBody.toolInput, { title: "x" });
+  assert.equal(relearnCall.init.headers.Authorization, "Bearer tok-secret-123");
+
+  assert.equal(
+    stampCall.url,
+    "https://console.example.com/api/v1/runner/approvals/approval-1/published",
+  );
+  const stampBody = JSON.parse(stampCall.init.body);
+  assert.deepEqual(stampBody, { url: "https://github.com/a/b/issues/1" });
+});
+
+test("stampCreatedIssueUrl: the relearn call THROWS (timeout/network) -> never throws, the stamp call is never attempted", async () => {
+  let stampAttempted = false;
+  const throwingTransport = async (url) => {
+    if (url.endsWith("/published")) stampAttempted = true;
+    throw new Error("ETIMEDOUT");
+  };
+  await assert.doesNotReject(() =>
+    stampCreatedIssueUrl({
+      eveSessionId: "eve-session-1",
+      toolInput: { title: "x" },
+      url: "https://github.com/a/b/issues/1",
+      env: STAMP_ENV,
+      transport: throwingTransport,
+    }),
+  );
+  assert.equal(stampAttempted, false);
+});
+
+test("stampCreatedIssueUrl: relearn succeeds but the STAMP call itself THROWS (timeout) -> never throws", async () => {
+  const transport = fakeTransport(APPROVED_RELEARN_RESPONDER, async () => {
+    throw new Error("ETIMEDOUT");
+  });
+  await assert.doesNotReject(() =>
+    stampCreatedIssueUrl({
+      eveSessionId: "eve-session-1",
+      toolInput: { title: "x" },
+      url: "https://github.com/a/b/issues/1",
+      env: STAMP_ENV,
+      transport,
+    }),
+  );
+  assert.equal(transport.calls.length, 2);
+});
+
+test("stampCreatedIssueUrl: the relearn POST returns a non-2xx -> never throws, the stamp call is never attempted", async () => {
+  const transport = fakeTransport(async () => ({ status: 500, json: async () => ({}) }));
+  await assert.doesNotReject(() =>
+    stampCreatedIssueUrl({
+      eveSessionId: "eve-session-1",
+      toolInput: { title: "x" },
+      url: "https://github.com/a/b/issues/1",
+      env: STAMP_ENV,
+      transport,
+    }),
+  );
+  assert.equal(transport.calls.length, 1);
+});
+
+test("stampCreatedIssueUrl: the STAMP call itself returns a non-2xx (e.g. 409 conflict) -> never throws", async () => {
+  const transport = fakeTransport(APPROVED_RELEARN_RESPONDER, async () => ({
+    status: 409,
+    json: async () => ({ error: "conflict" }),
+  }));
+  await assert.doesNotReject(() =>
+    stampCreatedIssueUrl({
+      eveSessionId: "eve-session-1",
+      toolInput: { title: "x" },
+      url: "https://github.com/a/b/issues/1",
+      env: STAMP_ENV,
+      transport,
+    }),
+  );
+  assert.equal(transport.calls.length, 2);
+});
+
+test("stampCreatedIssueUrl: relearn POST 200 with a malformed body (no approvalId) -> never throws, the stamp call is never attempted", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 200,
+    json: async () => ({ status: "approved" }),
+  }));
+  await assert.doesNotReject(() =>
+    stampCreatedIssueUrl({
+      eveSessionId: "eve-session-1",
+      toolInput: { title: "x" },
+      url: "https://github.com/a/b/issues/1",
+      env: STAMP_ENV,
+      transport,
+    }),
+  );
+  assert.equal(transport.calls.length, 1);
+});
+
+test("stampCreatedIssueUrl: skips entirely (transport never called at all) when eveSessionId is missing", async () => {
+  const transport = fakeTransport();
+  await stampCreatedIssueUrl({
+    toolInput: { title: "x" },
+    url: "https://github.com/a/b/issues/1",
+    env: STAMP_ENV,
+    transport,
+  });
+  assert.equal(transport.calls.length, 0);
+});
+
+test("stampCreatedIssueUrl: skips entirely when the console config is missing (JACE_CONSOLE_BASE_URL/TOKEN unset)", async () => {
+  const transport = fakeTransport();
+  await stampCreatedIssueUrl({
+    eveSessionId: "eve-session-1",
+    toolInput: { title: "x" },
+    url: "https://github.com/a/b/issues/1",
+    env: {},
+    transport,
+  });
+  assert.equal(transport.calls.length, 0);
+});
+
+test("runCreateIssue: successful creation + successful stamp -> returns the parsed ref, unaffected by the stamp", async () => {
+  const transport = fakeTransport(APPROVED_RELEARN_RESPONDER, OK_STAMP_RESPONDER);
+  const ref = await runCreateIssue({
+    execFileFn: fakeExecSuccess(),
+    env: STAMP_ENV,
+    title: "Add a health endpoint",
+    acceptanceCriteria: ["GET /health returns 200"],
+    eveSessionId: "eve-session-1",
+    turnId: "turn-1",
+    toolInput: {
+      title: "Add a health endpoint",
+      acceptanceCriteria: ["GET /health returns 200"],
+    },
+    stampTransport: transport,
+  });
+  assert.deepEqual(ref, {
+    repo: "Bensigo/agentrail",
+    number: 1042,
+    label: "ready-for-agent",
+    url: "https://github.com/Bensigo/agentrail/issues/1042",
+  });
+  assert.equal(transport.calls.length, 2);
+});
+
+test("runCreateIssue: the stamp transport TIMES OUT (throws) -> the tool result is still returned intact, no throw", async () => {
+  const timingOutTransport = async () => {
+    throw new Error("ETIMEDOUT");
+  };
+  const ref = await runCreateIssue({
+    execFileFn: fakeExecSuccess(),
+    env: STAMP_ENV,
+    title: "Add a health endpoint",
+    acceptanceCriteria: ["GET /health returns 200"],
+    eveSessionId: "eve-session-1",
+    toolInput: { title: "x" },
+    stampTransport: timingOutTransport,
+  });
+  assert.deepEqual(ref, {
+    repo: "Bensigo/agentrail",
+    number: 1042,
+    label: "ready-for-agent",
+    url: "https://github.com/Bensigo/agentrail/issues/1042",
+  });
+});
+
+test("runCreateIssue: the stamp gets a non-2xx from the console -> the tool result is still returned intact", async () => {
+  const transport = fakeTransport(APPROVED_RELEARN_RESPONDER, async () => ({
+    status: 409,
+    json: async () => ({ error: "conflict" }),
+  }));
+  const ref = await runCreateIssue({
+    execFileFn: fakeExecSuccess(),
+    env: STAMP_ENV,
+    title: "Add a health endpoint",
+    acceptanceCriteria: ["GET /health returns 200"],
+    eveSessionId: "eve-session-1",
+    toolInput: { title: "x" },
+    stampTransport: transport,
+  });
+  assert.equal(ref.number, 1042);
+});
+
+test("runCreateIssue: no eveSessionId at all (e.g. ctx was absent/malformed) -> the stamp is skipped, the tool result is still returned intact", async () => {
+  const transport = fakeTransport();
+  const ref = await runCreateIssue({
+    execFileFn: fakeExecSuccess(),
+    env: STAMP_ENV,
+    title: "Add a health endpoint",
+    acceptanceCriteria: ["GET /health returns 200"],
+    stampTransport: transport,
+  });
+  assert.equal(ref.number, 1042);
+  assert.equal(transport.calls.length, 0);
+});
+
+// --- fix round M1: prefer GitHub's canonical html_url over the input-cased
+// reconstruction ------------------------------------------------------------
+
+test("resolveStampUrl prefers ref.url (GitHub's canonical html_url) over the repo+number reconstruction", () => {
+  // The CLI's printed line carries the INPUT repo casing in the `owner/repo#N`
+  // token but GitHub's own canonical casing in the URL (html_url) — the url
+  // must win, or a mis-cased configured repo silently never matches the
+  // webhook side's exact-string lookup (redundant second confirm forever).
+  const url = resolveStampUrl({
+    repo: "bensigo/AGENTRAIL", // input casing, as the connector echoes it
+    number: 7,
+    url: "https://github.com/Bensigo/agentrail/issues/7", // GitHub's canonical html_url
+  });
+  assert.equal(url, "https://github.com/Bensigo/agentrail/issues/7");
+});
+
+test("resolveStampUrl falls back to the repo+number reconstruction ONLY when ref.url is absent or empty", () => {
+  assert.equal(
+    resolveStampUrl({ repo: "owner/repo", number: 7 }),
+    "https://github.com/owner/repo/issues/7",
+  );
+  assert.equal(
+    resolveStampUrl({ repo: "owner/repo", number: 7, url: "" }),
+    "https://github.com/owner/repo/issues/7",
+  );
+});
+
+test("runCreateIssue: stamps ref.url VERBATIM (the canonical html_url), not a reconstruction from the input-cased repo token", async () => {
+  const transport = fakeTransport(APPROVED_RELEARN_RESPONDER, OK_STAMP_RESPONDER);
+  // repo token mis-cased (input casing), URL canonical — the real M1 shape.
+  const misCasedRepoStdout =
+    "Created bensigo/AGENTRAIL#7 (label ready-for-agent): https://github.com/Bensigo/agentrail/issues/7\n";
+  await runCreateIssue({
+    execFileFn: async () => ({ stdout: misCasedRepoStdout, stderr: "" }),
+    env: STAMP_ENV,
+    title: "t",
+    acceptanceCriteria: ["ac"],
+    eveSessionId: "eve-session-1",
+    toolInput: { title: "t" },
+    stampTransport: transport,
+  });
+  const stampBody = JSON.parse(transport.calls[1].init.body);
+  assert.equal(stampBody.url, "https://github.com/Bensigo/agentrail/issues/7");
+});
+
+test("runCreateIssue: an off-shape ref.url is passed through verbatim — the /published endpoint's regex guard is what refuses it (fail-safe: redundant confirm)", async () => {
+  const transport = fakeTransport(APPROVED_RELEARN_RESPONDER, async () => ({
+    status: 400, // what the endpoint's GITHUB_ISSUE_URL_RE guard would return
+    json: async () => ({ error: "url must be a canonical GitHub issue URL" }),
+  }));
+  const weirdStdout =
+    "Created owner/repo#7 (label ready-for-agent): https://GITHUB.com/owner/repo/issues/7/\n";
+  const ref = await runCreateIssue({
+    execFileFn: async () => ({ stdout: weirdStdout, stderr: "" }),
+    env: STAMP_ENV,
+    title: "t",
+    acceptanceCriteria: ["ac"],
+    eveSessionId: "eve-session-1",
+    toolInput: { title: "t" },
+    stampTransport: transport,
+  });
+  // The raw value went out (server-side guard owns the shape decision) and
+  // the refused stamp never affected the tool result.
+  const stampBody = JSON.parse(transport.calls[1].init.body);
+  assert.equal(stampBody.url, "https://GITHUB.com/owner/repo/issues/7/");
+  assert.equal(ref.number, 7);
+});
+
+// --- fix round M2: the relearn replay's status gates the stamp -------------
+
+test("stampCreatedIssueUrl: relearn replay reports status 'pending' (a ghost/fresh row, no human approval) -> the stamp call is never attempted", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201, // created:true shape — a FRESH row, exactly the ghost case
+    json: async () => ({ approvalId: "ghost-approval", status: "pending" }),
+  }));
+  await stampCreatedIssueUrl({
+    eveSessionId: "eve-session-1",
+    toolInput: { title: "x" },
+    url: "https://github.com/a/b/issues/1",
+    env: STAMP_ENV,
+    transport,
+  });
+  assert.equal(transport.calls.length, 1, "only the relearn POST — never the stamp");
+});
+
+test("stampCreatedIssueUrl: relearn replay reports status 'denied' or a missing status -> the stamp call is never attempted", async () => {
+  for (const body of [
+    { approvalId: "approval-1", status: "denied" },
+    { approvalId: "approval-1" }, // status absent entirely
+  ]) {
+    const transport = fakeTransport(async () => ({ status: 200, json: async () => body }));
+    await stampCreatedIssueUrl({
+      eveSessionId: "eve-session-1",
+      toolInput: { title: "x" },
+      url: "https://github.com/a/b/issues/1",
+      env: STAMP_ENV,
+      transport,
+    });
+    assert.equal(transport.calls.length, 1, `no stamp for replay body ${JSON.stringify(body)}`);
+  }
 });

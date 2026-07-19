@@ -80,7 +80,7 @@ export default defineTool({
           "something a user should ever need to configure.",
       ),
   }),
-  async execute(input) {
+  async execute(input, ctx) {
     // The trigger label is applied server-side by the CLI; we never pass labels.
     return runCreateIssue({
       execFileFn: execFileAsync,
@@ -92,6 +92,18 @@ export default defineTool({
       whatToBuild: input.whatToBuild,
       acceptanceCriteria: input.acceptanceCriteria,
       verification: input.verification,
+      // #1274 PR②: session context for the best-effort post-creation stamp
+      // (agent/lib/create_issue.core.mjs::stampCreatedIssueUrl — collapses
+      // the chat-born create_issue approval + the alignment gate's separate
+      // confirm into ONE). Defensive optional chaining even though
+      // ToolContext types `session`/`session.turn` as required: this must
+      // never THROW past execute() on an unexpected shape — a missing
+      // eveSessionId just means stampCreatedIssueUrl skips the stamp
+      // attempt (its own doc-comment covers the fail-safe direction), it
+      // must never break issue creation itself.
+      eveSessionId: ctx?.session?.id,
+      turnId: ctx?.session?.turn?.id,
+      toolInput: input,
     });
   },
 });

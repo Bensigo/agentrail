@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, desc, eq, isNotNull, isNull, or } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   jaceSessions,
@@ -737,6 +737,71 @@ export async function resolveApproval(
     .returning({ id: jaceApprovals.id });
 
   return result.length > 0;
+}
+
+/**
+ * Outcome of {@link stampPublishedIssueUrl}:
+ *  - `"stamped"`: this call wrote it — either the FIRST stamp, or an
+ *    idempotent replay of the exact same url (a retried tool-side call, or a
+ *    network blip after a stamp that actually landed).
+ *  - `"not_approved"`: the approval doesn't exist, or its `status` is not
+ *    `"approved"` (still pending, denied, or expired) — an approval can only
+ *    ever be stamped once a human has actually approved it.
+ *  - `"conflict"`: the approval IS approved, but `published_issue_url`
+ *    already holds a DIFFERENT non-null value. Should never legitimately
+ *    happen (one approval produces at most one issue) — never silently
+ *    overwritten; the caller logs this loudly.
+ */
+export type StampPublishedIssueUrlOutcome = "stamped" | "not_approved" | "conflict";
+
+/**
+ * Atomically stamp the REAL GitHub issue URL a `create_issue` tool call
+ * produced onto its own (already-approved) approval row (#1274 PR ②'s
+ * chat-born one-confirm collapse). This is what lets `github_intake.ts`'s
+ * confirmed-brief lookup recognize the SAME issue arriving later via the
+ * label webhook and admit it straight to `queued` with the sanctioned
+ * budget/model, instead of parking it for a second, redundant alignment
+ * confirm.
+ *
+ * Guarded `WHERE status = 'approved'`: an approval that was never approved
+ * (still pending, denied, or expired) can never be stamped — mirrors every
+ * other approval-lifecycle write in this file (`confirmAlignmentBrief`/
+ * `denyAlignmentBrief` in `github_intake.ts` guard `WHERE state = 'parked'`
+ * the same way). The `published_issue_url IS NULL OR = publishedIssueUrl`
+ * half of the guard makes a re-stamp of the IDENTICAL value a no-op success
+ * (idempotent replay) while refusing to silently overwrite a DIFFERENT
+ * already-stamped value — the zero-rows-matched case is then disambiguated
+ * with a follow-up read (rather than trusting a caller's possibly-stale
+ * pre-check) so the two distinct failure reasons — never approved vs. a real
+ * conflict — are reported accurately even under a race.
+ */
+export async function stampPublishedIssueUrl(
+  id: string,
+  publishedIssueUrl: string
+): Promise<StampPublishedIssueUrlOutcome> {
+  const updated = await db
+    .update(jaceApprovals)
+    .set({ publishedIssueUrl })
+    .where(
+      and(
+        eq(jaceApprovals.id, id),
+        eq(jaceApprovals.status, "approved"),
+        sql`(${jaceApprovals.publishedIssueUrl} IS NULL OR ${jaceApprovals.publishedIssueUrl} = ${publishedIssueUrl})`
+      )
+    )
+    .returning({ id: jaceApprovals.id });
+  if (updated.length > 0) return "stamped";
+
+  const [row] = await db
+    .select({
+      status: jaceApprovals.status,
+      publishedIssueUrl: jaceApprovals.publishedIssueUrl,
+    })
+    .from(jaceApprovals)
+    .where(eq(jaceApprovals.id, id))
+    .limit(1);
+  if (!row || row.status !== "approved") return "not_approved";
+  return "conflict";
 }
 
 /** A pending approval joined with its session's channel/conversation, for the console approvals inbox (issue #1234). */

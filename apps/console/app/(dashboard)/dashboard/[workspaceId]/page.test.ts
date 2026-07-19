@@ -31,6 +31,17 @@ import { CopyId } from "../../../components/copy-id";
 // can walk via `.type`/`.props` without a renderer. This is the render
 // assertion this repo's test infra actually supports.
 
+interface ReactElementLike {
+  type: unknown;
+  props: Record<string, unknown>;
+}
+
+/** Narrows an opaque React element return value for `.type`/`.props` access,
+ * without an `any` cast (forbidden by this repo's eslint config). */
+function asElement(node: unknown): ReactElementLike {
+  return node as ReactElementLike;
+}
+
 const WORKSPACE_ID = "00000000-0000-0000-0000-000000000001";
 const USER_ID = "00000000-0000-0000-0000-000000000002";
 
@@ -51,11 +62,14 @@ function mockHappyPath() {
   } as Awaited<ReturnType<typeof getWorkspace>>);
 }
 
-async function renderHeader() {
-  const element = (await WorkspaceDashboardPage({
-    params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
-  })) as { props: { children: Array<{ type: unknown; props: any }> } };
-  return element.props.children[0]; // the PageHeader element
+async function renderHeader(): Promise<ReactElementLike> {
+  const element = asElement(
+    await WorkspaceDashboardPage({
+      params: Promise.resolve({ workspaceId: WORKSPACE_ID }),
+    })
+  );
+  const children = element.props.children as ReactElementLike[];
+  return children[0]; // the PageHeader element
 }
 
 describe("WorkspaceDashboardPage header (#1283 names over ids)", () => {
@@ -74,8 +88,8 @@ describe("WorkspaceDashboardPage header (#1283 names over ids)", () => {
 
   it("moves the raw workspace id behind a CopyId affordance in actions, not literal text", async () => {
     const header = await renderHeader();
-    const actionsRoot = header.props.actions as { props: { children: any[] } };
-    const [copyIdEl, roleBadgeEl] = actionsRoot.props.children;
+    const actionsRoot = asElement(header.props.actions);
+    const [copyIdEl, roleBadgeEl] = actionsRoot.props.children as ReactElementLike[];
 
     expect(copyIdEl.type).toBe(CopyId);
     // The full id is a prop feeding the copy affordance (clipboard + title

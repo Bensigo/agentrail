@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowUpRight, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowUpRight, ChevronLeft, ChevronRight, MessageCircle } from "lucide-react";
 import { Skeleton } from "../../../../components/loading-skeleton";
 import { EmptyState } from "../../../components/empty-state";
+import { messageJaceTarget } from "../../../setup/components/channel-step-helpers";
 import {
   formatCostUsd,
   formatNeedsYouBreakdown,
@@ -146,6 +147,44 @@ function CostBlock({ cost }: { cost: DigestData["cost"] }) {
   );
 }
 
+/**
+ * "Give Jace a task" (#1281 AC2 — Home dead-end copy dies): one persistent
+ * affordance in the digest area, always visible (not gated on the digest
+ * having anything to show), pointing the same way as Work's empty-state
+ * "Message Jace" action (`messageJaceTarget`, shared helper).
+ */
+function GiveJaceATaskCard({ workspaceId }: { workspaceId: string }) {
+  const target = messageJaceTarget(
+    process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME,
+    workspaceId
+  );
+  return (
+    <section className="flex items-center justify-between gap-3 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-4 py-3">
+      <div className="flex items-center gap-2.5">
+        <MessageCircle className="h-4 w-4 shrink-0 text-[var(--gray-09)]" />
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium text-[var(--gray-12)]">
+            Give Jace a task
+          </span>
+          <span className="text-xs text-[var(--gray-09)]">
+            {target.external
+              ? "Message Jace on Telegram — describe what you need done."
+              : "Connect a channel to message Jace directly."}
+          </span>
+        </div>
+      </div>
+      <a
+        href={target.href}
+        target={target.external ? "_blank" : undefined}
+        rel={target.external ? "noreferrer" : undefined}
+        className="inline-flex h-8 shrink-0 items-center rounded bg-[var(--brand-accent)] px-3 text-xs font-medium text-black transition-colors hover:opacity-90"
+      >
+        Message Jace
+      </a>
+    </section>
+  );
+}
+
 export function DigestPanel({ workspaceId }: DigestPanelProps) {
   const [weekParam, setWeekParam] = useState<string | null>(null);
   const [data, setData] = useState<DigestData | null>(null);
@@ -183,6 +222,8 @@ export function DigestPanel({ workspaceId }: DigestPanelProps) {
 
   return (
     <section className="flex flex-col gap-3">
+      <GiveJaceATaskCard workspaceId={workspaceId} />
+
       <div className="flex items-center justify-between gap-4">
         <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
           This week from Jace

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ONBOARDING_STEP_LABELS,
   ONBOARDING_STEP_ORDER,
   deriveOnboardingSteps,
   onboardingProgress,
@@ -17,6 +18,28 @@ function baseInput(): OnboardingStepsInput {
     runner: { connected: false },
   };
 }
+
+describe("ONBOARDING_STEP_LABELS (#1281 chat-first relabel)", () => {
+  it("still has exactly one label per step, in ONBOARDING_STEP_ORDER, with no step added/removed", () => {
+    expect(Object.keys(ONBOARDING_STEP_LABELS).sort()).toEqual(
+      [...ONBOARDING_STEP_ORDER].sort()
+    );
+  });
+
+  it("relabels connect-channel to the chat-first 'Talk to Jace'", () => {
+    expect(ONBOARDING_STEP_LABELS["connect-channel"]).toBe("Talk to Jace");
+  });
+
+  it("relabels attach-runner to 'Execution', not the old install-first wording", () => {
+    expect(ONBOARDING_STEP_LABELS["attach-runner"]).toBe("Execution");
+    expect(ONBOARDING_STEP_LABELS["attach-runner"]).not.toMatch(/runner/i);
+  });
+
+  it("attach-runner (now 'Execution') stays 4th — no steps added or removed", () => {
+    expect(ONBOARDING_STEP_ORDER[3]).toBe("attach-runner");
+    expect(ONBOARDING_STEP_ORDER).toHaveLength(4);
+  });
+});
 
 describe("deriveOnboardingSteps", () => {
   it("returns all four steps, in the fixed render order, incomplete on a fresh workspace", () => {

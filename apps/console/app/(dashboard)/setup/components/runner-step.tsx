@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { CheckCircle2, Loader2 } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { runnerStepMode } from "./runner-step-helpers";
 
 export function RunnerStep({
   connected,
@@ -14,6 +15,9 @@ export function RunnerStep({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [approved, setApproved] = useState(false);
+  // Hidden by default (#1281 AC1) — hosted-default mode (every fresh
+  // workspace) never shows the install form unless explicitly opened here.
+  const [selfHostOpen, setSelfHostOpen] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -38,28 +42,12 @@ export function RunnerStep({
     }
   }
 
-  if (selfHosted) {
-    return (
-      <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
-        <CheckCircle2 size={13} className="text-[var(--green-11)]" />
-        A self-hosted runner is connected and polling for work.
-      </p>
-    );
-  }
-
-  return (
+  // The device-code form itself — unchanged from before #1281, just no
+  // longer greeted every fresh workspace unconditionally. Rendered either
+  // directly (no-execution-path) or behind the self-host disclosure below
+  // (hosted-default).
+  const deviceCodeForm = (
     <div className="flex flex-col gap-3">
-      {connected && (
-        // hostedExecution covers this workspace even with no self-hosted
-        // runner attached (#1268) — say so honestly rather than implying "a
-        // runner" is what's actually polling (execution comes from
-        // AgentRail's managed fleet instead).
-        <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
-          <CheckCircle2 size={13} className="text-[var(--green-11)]" />
-          Execution is hosted — AgentRail&apos;s managed fleet runs your work
-          here, no runner required.
-        </p>
-      )}
       <p className="text-xs leading-relaxed text-[var(--gray-09)]">
         {connected
           ? "Prefer to run on your own machine instead? Sign it in:"
@@ -102,4 +90,49 @@ export function RunnerStep({
       {error && <p className="text-xs text-[var(--red-11)]">{error}</p>}
     </div>
   );
+
+  const mode = runnerStepMode(connected, selfHosted);
+
+  if (mode === "self-hosted-connected") {
+    return (
+      <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
+        <CheckCircle2 size={13} className="text-[var(--green-11)]" />
+        A self-hosted runner is connected and polling for work.
+      </p>
+    );
+  }
+
+  if (mode === "hosted-default") {
+    // hostedExecution covers this workspace with no self-hosted runner
+    // attached (#1268) — say so honestly rather than implying "a runner" is
+    // what's actually polling. The form below is real self-host wiring, not
+    // dead code — it just no longer greets a fresh workspace unconditionally
+    // (#1281 AC1: never see an install form without asking for it).
+    return (
+      <div className="flex flex-col gap-2.5">
+        <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
+          <CheckCircle2 size={13} className="text-[var(--green-11)]" />
+          Done — hosted execution is on. AgentRail&apos;s managed fleet runs
+          your work here, no runner required.
+        </p>
+        <button
+          type="button"
+          onClick={() => setSelfHostOpen((v) => !v)}
+          aria-expanded={selfHostOpen}
+          className="flex w-fit items-center gap-1 text-xs text-[var(--blue-11)] hover:underline"
+        >
+          {selfHostOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          Self-hosting? Attach your own runner
+        </button>
+        {selfHostOpen && deviceCodeForm}
+      </div>
+    );
+  }
+
+  // mode === "no-execution-path": no hosted execution and no self-hosted
+  // runner — nothing is "done" to collapse behind a disclosure, so the form
+  // renders directly. Unreachable for a fresh workspace today
+  // (hostedExecution defaults true); reachable only if hosted execution is
+  // explicitly disabled before a runner is attached.
+  return deviceCodeForm;
 }

@@ -1063,7 +1063,7 @@ describe("POST /api/v1/connectors/telegram/webhook — reply_to_message -> reply
     expect(enqueueArgs.payload).not.toHaveProperty("replyContext");
   });
 
-  it("still 400s on a completely malformed reply_to_message value (e.g. a bare string) — tolerant, not permissive of garbage types", async () => {
+  it("still 200s on a completely malformed reply_to_message value (e.g. a bare string) — the garbage is ignored, the outer message processes normally", async () => {
     // reply_to_message being a string rather than an object is exactly the
     // kind of malformed shape isTelegramReplyToMessage rejects; it must NOT
     // crash the route, and the outer message still processes normally.

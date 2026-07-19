@@ -410,10 +410,11 @@ export interface LatestRunForIssue {
  * `outcome-format.ts`'s `parseOutcomeIssueNumber`), so the interpolated
  * pattern can never carry a stray `%`/`_` LIKE metacharacter.
  *
- * "Latest" = newest `runs.createdAt`, since one issue can have accumulated
- * several runs over retries/re-queues (the durable queue_entries row is
- * reused across retries — see `claimQueueEntry` — but each claim registers
- * its own `runs` row).
+ * "Latest" = newest `runs.createdAt`. Today this is at most ONE row per
+ * issue: `claimQueueEntry` upserts the `runs` row keyed by the queue entry
+ * id (`onConflictDoUpdate`), so retries reuse the same row rather than
+ * accumulating history. The ORDER BY/LIMIT is future-proofing for a
+ * multi-run-per-entry world, not a description of current data.
  *
  * WORKSPACE-SCOPED on both sides of the join (defense in depth) — the only
  * caller (`apps/console/lib/channel-dispatch.ts`'s reply-context injection)

@@ -2,6 +2,7 @@ import { auth, signIn } from "@agentrail/auth";
 import { listWorkspacesForUser, claimInvitesForUser } from "@agentrail/db-postgres";
 import { redirect } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 import type { CSSProperties } from "react";
 import { Send } from "lucide-react";
 import { Reveal } from "./_motion";
@@ -138,16 +139,30 @@ export default async function LandingPage() {
         </form>
       </header>
 
-      {/* 2 — Hero: conversational, first person, one CTA, lots of air */}
-      <section className="px-6 pt-24 pb-16 text-center sm:pt-32 sm:pb-24">
+      {/* 2 — Hero: conversational, first person, one CTA, lots of air.
+          The mascot IS Jace (TASTE.md, owner-supplied) — his resume opens
+          with his face. */}
+      <section className="px-6 pt-20 pb-16 text-center sm:pt-24 sm:pb-24">
         <div className="mx-auto max-w-[760px]">
-          <h1 className="ar-rise text-heading-1 mx-auto max-w-[16ch] text-balance font-bold">
+          <Image
+            src="/jace.png"
+            alt="Jace"
+            width={112}
+            height={112}
+            priority
+            className="ar-rise mx-auto mb-7 rounded-full"
+          />
+
+          <h1
+            className="ar-rise text-heading-1 mx-auto max-w-[16ch] text-balance font-bold"
+            style={{ animationDelay: "60ms" }}
+          >
             Hi, I&apos;m Jace. I clear your backlog while you sleep.
           </h1>
 
           <p
-            className="ar-rise mx-auto mt-6 max-w-[52ch] text-[var(--gray-10)]"
-            style={{ animationDelay: "90ms" }}
+            className="ar-rise mx-auto mt-6 max-w-[52ch] text-[var(--gray-11)]"
+            style={{ animationDelay: "120ms" }}
           >
             Hire me as a fractional engineer. I triage your issues, write the
             code, and open a pull request. Then I wait for your review before
@@ -156,7 +171,7 @@ export default async function LandingPage() {
 
           <div
             className="ar-rise mt-9 flex flex-col items-center gap-3"
-            style={{ animationDelay: "170ms" }}
+            style={{ animationDelay: "190ms" }}
           >
             <PrimaryCta cta={cta} />
             <FreePreviewChip />
@@ -166,7 +181,7 @@ export default async function LandingPage() {
 
       {/* 3 — Trust strip: one honest credibility line (no fabricated logos) */}
       <section className="px-6 pb-20">
-        <p className="mx-auto max-w-[64ch] text-balance text-center text-[var(--gray-10)]">
+        <p className="mx-auto max-w-[64ch] text-balance text-center text-[var(--gray-11)]">
           I&apos;ve taken{" "}
           <span className="font-mono font-bold text-[var(--gray-12)]">
             {TRACK_RECORD.shipped}
@@ -245,7 +260,7 @@ export default async function LandingPage() {
       <section className="px-6 pb-24 text-center">
         <Reveal className="mx-auto max-w-[620px]">
           <h2 className="text-heading-2 font-bold">Point me at a repo.</h2>
-          <p className="mx-auto mt-4 max-w-[44ch] text-[var(--gray-10)]">
+          <p className="mx-auto mt-4 max-w-[44ch] text-[var(--gray-11)]">
             Connect a repo, hand me an issue, and wake up to a reviewed PR.
           </p>
           <div className="mt-8 flex flex-col items-center gap-3">
@@ -261,7 +276,7 @@ export default async function LandingPage() {
             <RailMark />
             <span className="font-bold tracking-tight">Jace</span>
           </div>
-          <nav className="text-body-sm flex items-center gap-6 text-[var(--gray-10)]">
+          <nav className="text-body-sm flex items-center gap-6 text-[var(--gray-11)]">
             <Link href="/docs" className="transition-colors hover:text-[var(--accent-text)]">
               Docs
             </Link>
@@ -280,7 +295,7 @@ export default async function LandingPage() {
             <form action={signInWithGithub}>
               <button
                 type="submit"
-                className="text-body-sm text-[var(--gray-10)] transition-colors hover:text-[var(--accent-text)]"
+                className="text-body-sm text-[var(--gray-11)] transition-colors hover:text-[var(--accent-text)]"
               >
                 Sign in
               </button>

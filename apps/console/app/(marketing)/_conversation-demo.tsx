@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { CheckCircle2 } from "lucide-react";
 import {
   DEMO_TASK_INPUT,
@@ -42,12 +43,17 @@ export function ConversationDemo() {
         </p>
       </div>
 
-      {/* Jace's alignment brief */}
+      {/* Jace's alignment brief — the mascot avatar is decorative here
+          (alt="") because the visible "Jace" sender label already names
+          him; screen readers shouldn't hear "Jace Jace". */}
       <div className="flex flex-col items-start gap-1.5">
-        <span className="text-label px-1 text-[var(--gray-09)]">Jace</span>
+        <span className="text-label flex items-center gap-1.5 px-1 text-[var(--gray-09)]">
+          <Image src="/jace.png" alt="" width={20} height={20} className="rounded-full" />
+          Jace
+        </span>
         <div className="w-full max-w-[92%] rounded-2xl rounded-tl-sm border border-[var(--gray-05)] bg-[var(--gray-00)] px-4 py-3.5 sm:max-w-[80%]">
           <p className="font-bold text-[var(--gray-12)]">{DEMO_TASK_INPUT.title}</p>
-          <p className="text-mono-data mt-2 font-mono text-[var(--gray-10)]">
+          <p className="text-mono-data mt-2 font-mono text-[var(--gray-11)]">
             Task type: {brief.taskType} → suggested model: {brief.suggestedModel.displayName}
           </p>
           <p className="text-mono-data mt-1.5 font-mono text-[var(--gray-11)]">
@@ -77,8 +83,15 @@ export function ConversationDemo() {
           appears after the Approve click. */}
       <div aria-live="polite">
         {approved ? (
-          <div className="ar-rise-fast flex justify-start">
-            <p className="text-mono-data max-w-[92%] rounded-2xl rounded-tl-sm border border-[var(--green-11)] bg-[var(--gray-00)] px-4 py-2.5 font-mono text-[var(--gray-12)] sm:max-w-[80%]">
+          <div className="ar-rise-fast flex items-end justify-start gap-2">
+            <Image
+              src="/jace.png"
+              alt=""
+              width={20}
+              height={20}
+              className="mb-0.5 shrink-0 rounded-full"
+            />
+            <p className="text-mono-data max-w-[92%] rounded-2xl rounded-bl-sm border border-[var(--green-11)] bg-[var(--gray-00)] px-4 py-2.5 font-mono text-[var(--gray-12)] sm:max-w-[80%]">
               {getDemoOutcomeMessage()}
             </p>
           </div>

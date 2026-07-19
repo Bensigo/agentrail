@@ -55,28 +55,67 @@ describe("(marketing) craft pins — type scale (no ad-hoc sizes)", () => {
   });
 });
 
-describe("(marketing) craft pins — accent system", () => {
-  it("amber accent (--brand-accent / --yellow-11) is used as a real accent, not just defined", () => {
-    const source = readSibling("page.tsx");
-    // More than the two `LIGHT_SURFACE` custom-property *definitions* —
-    // i.e. it's actually applied somewhere (step markers, links, dots, logo).
-    const usages = source.match(/var\(--brand-accent\)/g) ?? [];
-    expect(usages.length).toBeGreaterThan(2);
-  });
-
-  it("lemon fill (--yellow-09) is used with dark text (--gray-13) — the fill-with-dark-text rule", () => {
+describe("(marketing) craft pins — accent system (lemon family, #1357/#1359)", () => {
+  it("lemon fill pairs with the dark fill-text token on every filled element — never text-white", () => {
     for (const file of STYLED_FILES) {
       const source = readSibling(file);
-      expect(source).toMatch(/bg-\[var\(--yellow-09\)\]/);
-      expect(source).toMatch(/text-\[var\(--gray-13\)\]/);
-    }
-  });
-
-  it("no bg-[var(--brand-accent)] + text-white pairing remains (the old low-contrast button)", () => {
-    for (const file of STYLED_FILES) {
-      const source = readSibling(file);
+      expect(source).toMatch(/bg-\[var\(--accent-fill\)\]/);
+      expect(source).toMatch(/text-\[var\(--accent-fill-text\)\]/);
+      expect(source).not.toMatch(/bg-\[var\(--accent-(?:fill|text)\)\][^"]*text-white/);
       expect(source).not.toMatch(/bg-\[var\(--brand-accent\)\][^"]*text-white/);
     }
+  });
+
+  it("filled buttons hover via the hover token, not an opacity fade", () => {
+    const page = readSibling("page.tsx");
+    const demo = readSibling("_conversation-demo.tsx");
+    expect(page).toMatch(/hover:bg-\[var\(--accent-fill-hover\)\]/);
+    expect(demo).toMatch(/hover:bg-\[var\(--accent-fill-hover\)\]/);
+  });
+
+  it("the text accent (--accent-text) carries markers and link hovers", () => {
+    const source = readSibling("page.tsx");
+    const usages = source.match(/var\(--accent-text\)/g) ?? [];
+    // More than the one `LIGHT_SURFACE` custom-property *definition* —
+    // i.e. it's actually applied (step markers, bullet dots, link hovers).
+    expect(usages.length).toBeGreaterThan(1);
+  });
+
+  it("lemon is NEVER text on light — no text-[var(--accent-fill)] / text-[var(--brand-accent)]", () => {
+    for (const file of STYLED_FILES) {
+      const source = readSibling(file);
+      expect(source).not.toMatch(/text-\[var\(--accent-fill\)\]/);
+      expect(source).not.toMatch(/text-\[var\(--brand-accent\)\]/);
+    }
+  });
+
+  it("semantic caution yellow is not used as brand: zero var(--yellow-09/-11) usages", () => {
+    // The LIGHT_SURFACE block DEFINES --yellow-11 (semantic token mirror,
+    // `["--yellow-11" as string]`) — that is not a usage. A usage is
+    // `var(--yellow-…)` in a className/fill.
+    for (const file of STYLED_FILES) {
+      const source = readSibling(file);
+      expect(source).not.toMatch(/var\(--yellow-09\)/);
+      expect(source).not.toMatch(/var\(--yellow-11\)/);
+    }
+  });
+
+  it("the landing sits on the faint-lemon paper token", () => {
+    const source = readSibling("page.tsx");
+    expect(source).toMatch(/bg-\[var\(--paper\)\]/);
+  });
+});
+
+describe("(marketing) craft pins — the mascot IS Jace (TASTE.md canon)", () => {
+  it("the hero opens with the canonical mascot, named for assistive tech", () => {
+    const source = readSibling("page.tsx");
+    expect(source).toMatch(/src="\/jace\.png"[\s\S]{0,40}alt="Jace"/);
+  });
+
+  it("Jace's demo bubbles carry the mascot avatar (decorative alt, name text adjacent)", () => {
+    const source = readSibling("_conversation-demo.tsx");
+    const avatars = source.match(/src="\/jace\.png"/g) ?? [];
+    expect(avatars.length).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -121,11 +160,37 @@ describe("(marketing) craft pins — mono on data moments", () => {
 });
 
 describe("(marketing) craft pins — font stack", () => {
-  it("no third display font (e.g. next/font/google) is loaded — Inter + Berkeley Mono only, per TASTE.md", () => {
+  it("page/demo load no fonts of their own — the display serif lives in layout.tsx only", () => {
     for (const file of STYLED_FILES) {
       const source = readSibling(file);
       expect(source).not.toMatch(/next\/font\/google/);
     }
+  });
+
+  it("layout.tsx loads exactly the sanctioned display serif (Source Serif 4), nothing else", () => {
+    const layout = readSibling("layout.tsx");
+    // The ONE sanctioned next/font/google load in (marketing)/ — the
+    // round-2/3 ruling: upright serif display voice, landing-scoped.
+    expect(layout).toMatch(/Source_Serif_4/);
+    // The rejected font stays rejected (round-1 owner feedback), and no
+    // second font sneaks in beside the serif. Matches the import
+    // IDENTIFIER (underscore form) so a prose mention of the ban in a
+    // comment doesn't trip it.
+    const fontImports = layout.match(/from "next\/font\/google"/g) ?? [];
+    expect(fontImports.length).toBe(1);
+    expect(layout).not.toMatch(/Bricolage_Grotesque/);
+  });
+
+  it("the serif applies through the display heading classes (h1 + section h2s), not body text", () => {
+    const layout = readSibling("layout.tsx");
+    expect(layout).toMatch(/\.text-heading-1,\s*\n\s*\.text-heading-2 \{\s*\n\s*font-family: var\(--font-display\)/);
+  });
+
+  it("no italic serif display — the hero serif stays upright (slop-catalog TY-3)", () => {
+    const layout = readSibling("layout.tsx");
+    const page = readSibling("page.tsx");
+    expect(layout).not.toMatch(/font-style:\s*italic/);
+    expect(page).not.toMatch(/\bitalic\b/);
   });
 });
 

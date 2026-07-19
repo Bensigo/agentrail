@@ -1,14 +1,19 @@
 """Hosted-repo quarantine (#1271) — refuse to run AFK against a repo that
 belongs to a HOSTED CUSTOMER workspace.
 
-``agentrail afk`` auto-merges unconditionally once its review gate passes
-(``Runner._merge`` -> ``gh.merge_pr_squash``, ``afk/runner.py``). That is the
-correct behaviour for our own dogfood repo, but there is no grantable merge
-permission yet (#1278) — so until that ships, AFK must never even START
-against a repo connected to somebody else's hosted workspace. This module is
-the read-only lookup that answers "does this repo belong to a FOREIGN hosted
-workspace?"; ``agentrail/cli/commands/afk.py`` is the caller that turns the
-answer into a refusal (or an explicit, logged override).
+``agentrail afk`` can auto-merge once its review gate passes, but only
+opt-in: grantable merge permission (#1278) shipped as the ``--auto-merge``
+CLI flag, default OFF (``Runner.auto_merge`` / ``Runner._review_and_gate``
+-> ``Runner._merge`` -> ``gh.merge_pr_squash``, ``afk/runner.py``). That
+default-OFF gate is a SEPARATE, per-invocation trust decision — it does not
+change whether AFK should be allowed to touch a repo it doesn't own at all.
+This module's job is unchanged by #1278 shipping: AFK must never even START
+against a repo connected to somebody else's hosted workspace, ``--auto-merge``
+on or off — a foreign hosted repo is out of bounds for ANY AFK activity, not
+just merging. This module is the read-only lookup that answers "does this
+repo belong to a FOREIGN hosted workspace?"; ``agentrail/cli/commands/afk.py``
+is the caller that turns the answer into a refusal (or an explicit, logged
+override).
 
 Two independent places record "this repo is connected to workspace X", and a
 repo can show up in either one depending on how it was connected, so both are

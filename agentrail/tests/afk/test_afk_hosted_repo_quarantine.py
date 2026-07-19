@@ -1,9 +1,11 @@
 """run_afk's hosted-repo quarantine guard (#1271).
 
-AFK auto-merges unconditionally once its review gate passes, so it must
-refuse to even START against a repo connected to a hosted customer workspace
-other than the operator's own, until grantable merge permission ships
-(#1278). These tests exercise the guard entirely through run_afk: git's
+AFK can auto-merge once its review gate passes (opt-in, `--auto-merge`,
+#1278, default OFF), so it must refuse to even START against a repo
+connected to a hosted customer workspace other than the operator's own —
+regardless of `--auto-merge`, since this guard is about which repo AFK may
+touch at all, a separate question from whether a merge is permitted once
+it's running. These tests exercise the guard entirely through run_afk: git's
 `origin` remote lookup and the dirty-tree check both go through the same
 patched `subprocess.run` seam (routed by inspecting argv, since both git
 subcommands share it); the hosted-workspace DB lookup is patched at

@@ -52,6 +52,11 @@ describe("parseOutcomeIssueNumber — round-trip drift guard (#1277)", () => {
     { prUrl: "https://github.com/o/r/pull/9" },
     { costUsd: 1.2 },
     { prUrl: "https://github.com/o/r/pull/9", costUsd: 3.45 },
+    // #1278: the console-merged headline ("Merged") must round-trip too —
+    // merged is only meaningful on green, but the builder must stay
+    // parseable for every combination it can emit.
+    { merged: true },
+    { merged: true, prUrl: "https://github.com/o/r/pull/9", costUsd: 3.45 },
   ];
 
   for (const outcome of OUTCOMES) {

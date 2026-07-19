@@ -34,11 +34,12 @@ def _usage() -> str:
                 [--afk-label LABEL] [--queue-labels a,b] [--max-retries N]
                 [--max-review-rounds N] [--dry-run] [--allow-dirty]
                 [--model MODEL] [--budget-per-issue FLOAT]
-                [--allow-hosted-repo]
+                [--allow-hosted-repo] [--auto-merge]
 
 Runs the AFK workflow: pick approved GitHub issues, implement each in an
-isolated worktree, open a PR, review it, and either merge, auto-fix P0/P1
-findings in place, or comment P2/P3 findings for the engineer to decide.
+isolated worktree, open a PR, review it, and either merge (only with
+--auto-merge), auto-fix P0/P1 findings in place, or comment P2/P3 findings
+for the engineer to decide.
 
 State is a single JSON snapshot at .agentrail/afk/state.json (the single source
 of truth). Slot claiming is synchronous, so two workers never take the same
@@ -54,11 +55,18 @@ that number came from the product default (not a flag or config), AFK also
 relays --budget-source default so the run's stop message reads as a resumable
 check-in, not as if an operator had chosen that ceiling.
 
+Merge permission (#1278): default OFF — a green objective gate leaves the PR
+open with an explanatory comment; nothing merges on its own. --auto-merge
+restores AFK's prior behavior (merge immediately once the gate passes).
+This is an intentional default-behavior change from earlier AFK versions,
+which merged unconditionally; --auto-merge is the explicit, per-invocation
+opt back in.
+
 Hosted-repo quarantine: AFK refuses to start against a repo connected to a
-hosted customer workspace other than this operator's own (AGENTRAIL_WORKSPACE_ID)
-— AFK auto-merges once its review gate passes, and must not touch a customer's
-repo until grantable merge permission ships (#1278). --allow-hosted-repo
-overrides this refusal (the override is logged).
+hosted customer workspace other than this operator's own (AGENTRAIL_WORKSPACE_ID),
+REGARDLESS of --auto-merge — this guard is about which repo AFK may even run
+against, not whether it may merge. --allow-hosted-repo overrides this
+refusal (the override is logged).
 """
 
 
@@ -82,6 +90,12 @@ def _parse(args: List[str]) -> dict:
         # "default". Seeded here only so the key always exists.
         "budget_source": "flag",
         "allow_hosted_repo": False,
+        # #1278: default OFF — a green gate leaves the PR open instead of
+        # merging. Sibling booleans in this parser (--dry-run, --allow-dirty,
+        # --allow-hosted-repo) are all plain CLI-only flags with no
+        # .agentrail/config.json mirror; --auto-merge follows that simpler
+        # precedent rather than --budget-per-issue's config-cascading one.
+        "auto_merge": False,
     }
     i = 0
     while i < len(args):
@@ -113,6 +127,8 @@ def _parse(args: List[str]) -> dict:
             opts["budget_explicit"] = True; i += 2
         elif a == "--allow-hosted-repo":
             opts["allow_hosted_repo"] = True; i += 1
+        elif a == "--auto-merge":
+            opts["auto_merge"] = True; i += 1
         elif a in ("-h", "--help"):
             print(_usage()); raise SystemExit(0)
         else:
@@ -149,13 +165,15 @@ def run_afk(args: List[str]) -> int:
     opts = _parse(args)
     target = opts["target"].resolve()
 
-    # Guard (#1271): AFK auto-merges unconditionally once its review gate
-    # passes (Runner._merge -> gh.merge_pr_squash, afk/runner.py:548-550). Fine
-    # against our own dogfood repo; must never fire against a repo connected to
-    # a HOSTED CUSTOMER workspace until grantable merge permission ships
-    # (#1278). This is the fence until then — placed at the very first entry
-    # point, before ANY queue/worktree work (including --dry-run's read-only
-    # issue listing below).
+    # Guard (#1271): AFK can auto-merge once its review gate passes (opt-in,
+    # #1278's --auto-merge — see Runner._review_and_gate / Runner._merge ->
+    # gh.merge_pr_squash). Fine against our own dogfood repo; must never even
+    # START against a repo connected to a HOSTED CUSTOMER workspace, whether
+    # or not --auto-merge is set — this guard is about which repo AFK may
+    # touch AT ALL, a strictly separate question from whether a merge is
+    # permitted once it's running. Placed at the very first entry point,
+    # before ANY queue/worktree work (including --dry-run's read-only issue
+    # listing below).
     hosted_override_banner = ""
     repo_slug, origin_url = _origin_repo_slug(target)
     if repo_slug is None:
@@ -186,9 +204,10 @@ def run_afk(args: List[str]) -> int:
                     "hosted customer workspace, not this operator's own"
                     + (f" ({own_workspace_id})" if own_workspace_id else "")
                     + ".\n"
-                    "AFK auto-merges once its review gate passes and must not "
-                    "touch a hosted customer's repo until grantable merge "
-                    "permission ships (#1278).\n"
+                    "AFK must not touch a hosted customer's repo at all, "
+                    "regardless of --auto-merge (#1278) — that flag only "
+                    "controls whether a green gate merges once AFK is "
+                    "already running against a repo it's allowed to be in.\n"
                     "Use --allow-hosted-repo to override (the override is "
                     "logged).",
                     file=sys.stderr,
@@ -283,6 +302,7 @@ def run_afk(args: List[str]) -> int:
         model=opts["model"],
         budget_per_issue=opts["budget_per_issue"],
         budget_source=opts["budget_source"],
+        auto_merge=opts["auto_merge"],
     )
 
     print(f"AFK: {len(issues)} issue(s), concurrency {opts['concurrency']}, "

@@ -10,7 +10,8 @@ writes are confirmation side effects layered on top.
 Per-worker pipeline (ADR 0007):
   implement issue -> find PR -> advisory review (once, never blocks)
     -> objective gate (CI checks + security):
-       -> pass : merge
+       -> pass : merge if permitted (--auto-merge, #1278, default OFF),
+                 else leave the PR open with an explanatory comment
        -> fail : bounded agent fix (max 2) in place, re-run gate
        -> still failing after the fix budget : escalate to human review
 """
@@ -47,6 +48,17 @@ from agentrail.run.push_guardrail import guard_push, make_server_emitter
 HUMAN_REVIEW_LABEL = "human-review-needed"
 IN_PROGRESS_LABEL = "afk-in-progress"
 REVIEWED_LABEL = "pr-reviewed"
+
+# Issue #1278: the honest PR comment posted when the objective gate passes
+# but merge permission is OFF (the default, ``--auto-merge`` not given) — the
+# PR stays open for a human to merge; nothing else about the pipeline
+# changes (still exactly one advisory review, still no extra fix round).
+MERGE_PERMISSION_OFF_COMMENT = (
+    "## Objective gate passed\n\n"
+    "This PR is green and ready to merge, but merge permission is OFF for "
+    "this run (`agentrail afk` without `--auto-merge`) — merge it yourself "
+    "when you're ready."
+)
 
 
 def _agent_command(engine: str, model: str = "") -> str:
@@ -185,7 +197,8 @@ class Runner:
                  concurrency: int, afk_label: str, queue_labels: List[str],
                  run_dir: Path, store: Store, model: str = "",
                  budget_per_issue: float = 0.0,
-                 budget_source: str = "flag") -> None:
+                 budget_source: str = "flag",
+                 auto_merge: bool = False) -> None:
         self.target = target
         self.engine = engine
         self.base = base
@@ -195,6 +208,15 @@ class Runner:
         # resolves this before construction). Only "default" changes what
         # _implement forwards below — see the comment there.
         self.budget_source = budget_source
+        # Issue #1278: grantable merge permission — default OFF (dogfood-only
+        # tool, correct default trust posture; this INTENTIONALLY changes
+        # AFK's prior unconditional-merge-on-green behavior). ON reproduces
+        # the exact prior behavior (_review_and_gate merges once the gate
+        # passes); OFF leaves the PR open with MERGE_PERMISSION_OFF_COMMENT
+        # instead. Set only by cli.commands.afk.run_afk's --auto-merge flag
+        # (the sole production setter) — see that module for the CLI/config
+        # plumbing precedent this follows.
+        self.auto_merge = auto_merge
         self.concurrency = concurrency
         self.afk_label = afk_label
         self.queue_labels = queue_labels
@@ -625,6 +647,16 @@ class Runner:
             self._push_gate(issue, pr, gate, review_text, round_no=attempts + 1)
 
             if gate.passed:
+                # #1278: merge permission gate. OFF (the default) leaves the
+                # PR open — an honest comment + the (currently-dead-code,
+                # now revived) COMMENTED terminal, no merge, no
+                # SetStatus(MERGED). ON reproduces AFK's prior unconditional
+                # behavior exactly.
+                if not self.auto_merge:
+                    gh.comment_on_pr(pr, MERGE_PERMISSION_OFF_COMMENT)
+                    self.store.dispatch(SetStatus(issue, IssueStatus.COMMENTED))
+                    self._cleanup_issue_labels(issue)
+                    return
                 if await self._merge(pr):
                     self.store.dispatch(SetStatus(issue, IssueStatus.MERGED))
                     self._cleanup_issue_labels(issue)

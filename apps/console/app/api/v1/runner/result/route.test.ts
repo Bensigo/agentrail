@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 // Closed factory (an unlisted query fn stays undefined → loud crash), EXCEPT
@@ -17,6 +17,9 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     // (NOT mocked away as a module — see the onboard-kind describe block below),
     // so its one db-postgres dependency must be mockable here too.
     latestTelegramSessionForWorkspace: vi.fn(),
+    // #1278 PR②: merge enforcement's two DB reads.
+    getMergePermission: vi.fn(),
+    getGithubToken: vi.fn(),
   };
 });
 vi.mock("@agentrail/db-clickhouse", () => ({
@@ -35,12 +38,19 @@ vi.mock("../../../../../lib/telegram-system-message", () => ({
 }));
 // NOTE: lib/evidence is intentionally NOT mocked so the route exercises the real
 // bound + secret-scrub path (AC5). It only depends on the pure secret-scan util.
+// NOTE: lib/github-merge is intentionally NOT mocked as a module (#1278 PR②)
+// — its pure parse/match functions and mergePullRequestSquash run for REAL,
+// so the security gate (pr_url vs. queue-entry-repo matching) is exercised
+// end-to-end through this route. Only the network edge (global.fetch) is
+// mocked, matching runner/repos/route.test.ts's own convention.
 
 import { POST } from "./route";
 import {
   recordRunnerResult,
   touchApiKeyLastUsed,
   latestTelegramSessionForWorkspace,
+  getMergePermission,
+  getGithubToken,
 } from "@agentrail/db-postgres";
 import { insertFailureEvents, recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
@@ -90,6 +100,16 @@ beforeEach(() => {
     terminalState: null,
     externalId: "owner/name#42",
   } as never);
+  // #1278 PR②: default OFF — every pre-existing test in this file (and any
+  // new test that doesn't explicitly opt in) gets the byte-identical-to-
+  // before behavior: zero GitHub calls, merged always false.
+  vi.mocked(getMergePermission).mockResolvedValue(false);
+  vi.mocked(getGithubToken).mockResolvedValue(null);
+});
+
+const ORIGINAL_FETCH = global.fetch;
+afterEach(() => {
+  global.fetch = ORIGINAL_FETCH;
 });
 
 describe("POST /api/v1/runner/result — failure evidence (#1146 AC2)", () => {
@@ -391,6 +411,9 @@ describe("POST /api/v1/runner/result — onboard-kind vs issue-kind notify branc
       outcome: "green",
       prUrl: "https://github.com/o/r/pull/9",
       costUsd: 1.2,
+      // #1278 PR②: merge permission defaults OFF in this suite's beforeEach
+      // — merged is always false here, the byte-identical-to-before value.
+      merged: false,
     });
     expect(latestTelegramSessionForWorkspace).not.toHaveBeenCalled();
     expect(sendSystemTelegramMessage).not.toHaveBeenCalled();
@@ -413,5 +436,263 @@ describe("POST /api/v1/runner/result — onboard-kind vs issue-kind notify branc
     } finally {
       logSpy.mockRestore();
     }
+  });
+});
+
+/**
+ * #1278 PR② — merge enforcement at the publish step. The CONSOLE-SIDE
+ * decision at result time: workspace.merge_permission is read FRESH inside
+ * THIS handler call (never cached, never threaded through the WorkItem), so
+ * a revoke between claim and result is honored immediately.
+ *
+ * lib/github-merge is deliberately NOT mocked as a module (see the top-of-
+ * file note) — its pure parse/match functions and mergePullRequestSquash run
+ * for REAL here, exercising the security gate (pr_url vs. the queue entry's
+ * OWN repo, from external_id) end-to-end through this route. Only
+ * global.fetch (the network edge) and the two DB reads (getMergePermission,
+ * getGithubToken) are mocked.
+ */
+describe("POST /api/v1/runner/result — merge enforcement (#1278 PR②)", () => {
+  const PR_URL = "https://github.com/octocat/hello-world/pull/42";
+  const TOKEN = "gho_test_token_1234567890abcdef";
+
+  function greenResult(externalId = "octocat/hello-world#42") {
+    return { updated: true, terminalState: "green", externalId } as never;
+  }
+
+  function githubMergeSuccess() {
+    return { ok: true, status: 200, json: async () => ({ merged: true }) };
+  }
+  function githubMergeFailure(status: number) {
+    return { ok: false, status, json: async () => ({ message: "nope" }) };
+  }
+
+  it("permission ON: squash-merges via the exact REST call — token in the Authorization header, never the URL or body", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(greenResult());
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    vi.mocked(getGithubToken).mockResolvedValue(TOKEN);
+    const fetchMock = vi.fn().mockResolvedValue(githubMergeSuccess());
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await POST(
+      req({ ...base, status: "green", pr_url: PR_URL, cost_usd: 1.2 })
+    );
+
+    expect(res.status).toBe(202);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "https://api.github.com/repos/octocat/hello-world/pulls/42/merge"
+    );
+    expect(url).not.toContain(TOKEN);
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(init.body as string).not.toContain(TOKEN);
+    expect(JSON.parse(init.body as string).merge_method).toBe("squash");
+  });
+
+  it("permission ON success: records a `merged` ClickHouse lifecycle event and notify says merged", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(greenResult());
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    vi.mocked(getGithubToken).mockResolvedValue(TOKEN);
+    global.fetch = vi.fn().mockResolvedValue(githubMergeSuccess()) as unknown as typeof fetch;
+
+    await POST(req({ ...base, status: "green", pr_url: PR_URL, cost_usd: 1.2 }));
+
+    expect(recordRunLifecycleEvent).toHaveBeenCalledWith(
+      WS,
+      base.id,
+      "merged",
+      expect.stringContaining(PR_URL),
+      expect.any(Number)
+    );
+    expect(notifyRunOutcome).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({ outcome: "green", prUrl: PR_URL, merged: true })
+    );
+  });
+
+  it("permission OFF: zero GitHub calls at all (regression-pin) — no token fetch, no merge lifecycle event, notify says merged:false", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(greenResult());
+    vi.mocked(getMergePermission).mockResolvedValue(false);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await POST(req({ ...base, status: "green", pr_url: PR_URL }));
+
+    expect(res.status).toBe(202);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getGithubToken).not.toHaveBeenCalled();
+    expect(recordRunLifecycleEvent).not.toHaveBeenCalledWith(
+      WS,
+      base.id,
+      "merged",
+      expect.anything(),
+      expect.anything()
+    );
+    expect(recordRunLifecycleEvent).not.toHaveBeenCalledWith(
+      WS,
+      base.id,
+      "merge_failed",
+      expect.anything(),
+      expect.anything()
+    );
+    expect(notifyRunOutcome).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({ merged: false })
+    );
+  });
+
+  it("revoke-between-claim-and-result: permission is read FRESH exactly once per result, never cached across the call", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(greenResult());
+    // Simulates the operator having revoked after this run claimed —
+    // whatever was true at claim time is irrelevant; this handler call only
+    // ever consults the CURRENT (now false) value.
+    vi.mocked(getMergePermission).mockResolvedValue(false);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await POST(req({ ...base, status: "green", pr_url: PR_URL }));
+
+    expect(getMergePermission).toHaveBeenCalledTimes(1);
+    expect(getMergePermission).toHaveBeenCalledWith(WS);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("pr_url forgery — wrong repo than the queue entry's own: no merge attempted, loud log, notify still carries the (unmerged) PR link", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(greenResult("octocat/hello-world#42"));
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    vi.mocked(getGithubToken).mockResolvedValue(TOKEN);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const forgedUrl = "https://github.com/attacker/evil-repo/pull/1";
+    const res = await POST(req({ ...base, status: "green", pr_url: forgedUrl }));
+
+    expect(res.status).toBe(202);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
+    expect(notifyRunOutcome).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({ prUrl: forgedUrl, merged: false })
+    );
+    errorSpy.mockRestore();
+  });
+
+  it("pr_url forgery — lookalike host: no merge attempted", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(greenResult("octocat/hello-world#42"));
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    vi.mocked(getGithubToken).mockResolvedValue(TOKEN);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await POST(
+      req({
+        ...base,
+        status: "green",
+        pr_url: "https://github.com.evil.com/octocat/hello-world/pull/42",
+      })
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("pr_url forgery — junk value: no merge attempted, no throw, 202 still returned", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(greenResult("octocat/hello-world#42"));
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    vi.mocked(getGithubToken).mockResolvedValue(TOKEN);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await POST(req({ ...base, status: "green", pr_url: "not a url" }));
+
+    expect(res.status).toBe(202);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("merge-failure path (GitHub rejects, e.g. not-mergeable 405): result stays recorded, notify still carries the PR link, merge_failed event, exactly one attempt (never retry-loops)", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(greenResult());
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    vi.mocked(getGithubToken).mockResolvedValue(TOKEN);
+    const fetchMock = vi.fn().mockResolvedValue(githubMergeFailure(405));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await POST(req({ ...base, status: "green", pr_url: PR_URL }));
+
+    expect(res.status).toBe(202);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(notifyRunOutcome).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({ prUrl: PR_URL, merged: false })
+    );
+    expect(recordRunLifecycleEvent).toHaveBeenCalledWith(
+      WS,
+      base.id,
+      "merge_failed",
+      expect.stringContaining(PR_URL),
+      expect.any(Number)
+    );
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("no merge attempt for a non-green terminal (escalated-to-human), even with a pr_url present", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue({
+      updated: true,
+      terminalState: "escalated-to-human",
+      externalId: "octocat/hello-world#42",
+    } as never);
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await POST(req({ ...base, status: "error", pr_url: PR_URL }));
+
+    expect(getMergePermission).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("no merge attempt when the terminal is green but no pr_url was reported", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(greenResult());
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await POST(req({ ...base, status: "green" }));
+
+    expect(getMergePermission).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("no merge attempt for an onboard-kind result, even green with a pr_url present", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(
+      greenResult("onboard:acme/widgets")
+    );
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.mocked(latestTelegramSessionForWorkspace).mockResolvedValue(null);
+
+    await POST(req({ ...base, status: "green", pr_url: PR_URL }));
+
+    expect(getMergePermission).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a getMergePermission DB blip is swallowed — result still records 202, merge just never happens", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(greenResult());
+    vi.mocked(getMergePermission).mockRejectedValue(new Error("db down"));
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await POST(req({ ...base, status: "green", pr_url: PR_URL }));
+
+    expect(res.status).toBe(202);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

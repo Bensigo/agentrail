@@ -18,3 +18,4 @@ export * from "./eval_arm_metrics.js";
 export * from "./channel_inbox.js";
 export * from "./jace_sessions.js";
 export * from "./chat_identities.js";
+export * from "./workspace_grant_events.js";

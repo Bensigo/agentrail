@@ -37,22 +37,20 @@ export function ConversationDemo() {
     <div className="flex flex-col gap-5 bg-[var(--gray-01)] px-5 py-6 sm:px-8 sm:py-8">
       {/* The user's message */}
       <div className="flex justify-end">
-        <p className="max-w-[85%] rounded-2xl rounded-tr-sm bg-[var(--gray-05)] px-4 py-2.5 text-[13px] leading-relaxed text-[var(--gray-12)]">
+        <p className="max-w-[85%] rounded-2xl rounded-tr-sm bg-[var(--gray-05)] px-4 py-2.5 text-[var(--gray-12)]">
           {DEMO_USER_MESSAGE}
         </p>
       </div>
 
       {/* Jace's alignment brief */}
       <div className="flex flex-col items-start gap-1.5">
-        <span className="px-1 text-[11px] font-medium text-[var(--gray-09)]">Jace</span>
+        <span className="text-label px-1 text-[var(--gray-09)]">Jace</span>
         <div className="w-full max-w-[92%] rounded-2xl rounded-tl-sm border border-[var(--gray-05)] bg-[var(--gray-00)] px-4 py-3.5 sm:max-w-[80%]">
-          <p className="text-[13.5px] font-semibold leading-snug text-[var(--gray-12)]">
-            {DEMO_TASK_INPUT.title}
-          </p>
-          <p className="mt-2 font-mono text-[12px] text-[var(--gray-10)]">
+          <p className="font-bold text-[var(--gray-12)]">{DEMO_TASK_INPUT.title}</p>
+          <p className="text-mono-data mt-2 font-mono text-[var(--gray-10)]">
             Task type: {brief.taskType} → suggested model: {brief.suggestedModel.displayName}
           </p>
-          <p className="mt-1.5 font-mono text-[12px] text-[var(--gray-11)]">
+          <p className="text-mono-data mt-1.5 font-mono text-[var(--gray-11)]">
             Approving sets this run&apos;s budget: ~${brief.estimateUsd.toFixed(2)}
           </p>
 
@@ -60,12 +58,12 @@ export function ConversationDemo() {
             <button
               type="button"
               onClick={() => setApproved(true)}
-              className="mt-3.5 inline-flex items-center gap-1.5 rounded-md bg-[var(--brand-accent)] px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-transform duration-150 ease-out hover:opacity-90 active:scale-[0.97]"
+              className="text-label mt-3.5 inline-flex items-center gap-1.5 rounded-md bg-[var(--yellow-09)] px-3.5 py-1.5 font-bold text-[var(--gray-13)] transition-transform duration-150 ease-out hover:opacity-90 active:scale-[0.97]"
             >
               ✅ Approve
             </button>
           ) : (
-            <p className="mt-3.5 flex items-center gap-1.5 text-[12.5px] font-medium text-[var(--green-11)]">
+            <p className="text-label mt-3.5 flex items-center gap-1.5 text-[var(--green-11)]">
               <CheckCircle2 size={13} aria-hidden />
               Approved by you
             </p>
@@ -80,7 +78,7 @@ export function ConversationDemo() {
       <div aria-live="polite">
         {approved ? (
           <div className="ar-rise-fast flex justify-start">
-            <p className="max-w-[92%] rounded-2xl rounded-tl-sm border border-[var(--green-11)] bg-[var(--gray-00)] px-4 py-2.5 font-mono text-[12px] leading-relaxed text-[var(--gray-12)] sm:max-w-[80%]">
+            <p className="text-mono-data max-w-[92%] rounded-2xl rounded-tl-sm border border-[var(--green-11)] bg-[var(--gray-00)] px-4 py-2.5 font-mono text-[var(--gray-12)] sm:max-w-[80%]">
               {getDemoOutcomeMessage()}
             </p>
           </div>

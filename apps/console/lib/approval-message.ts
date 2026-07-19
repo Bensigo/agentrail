@@ -101,7 +101,33 @@ function sanitizeField(value: unknown, maxLen: number): string {
   return cleaned.length > maxLen ? `${cleaned.slice(0, maxLen)}...` : cleaned;
 }
 
+/**
+ * #1274 PR ②'s chat-born one-confirm collapse: when the approvals POST
+ * route has enriched this `create_issue` toolInput with a `_brief` (the
+ * reserved key `composeChatBornBrief` writes — see `../lib/alignment-brief.ts`
+ * — never present on a caller-supplied payload, the route strips/overwrites
+ * any incoming `_brief` before recording), THIS approval IS the alignment
+ * brief: render it via `renderAlignmentBrief` itself — reusing that
+ * function's copy verbatim rather than duplicating it — by flattening
+ * create_issue's own `{title, whatToBuild, acceptanceCriteria}` together
+ * with `_brief`'s `{taskType, suggestedModel, estimateUsd, assumptions}`
+ * into the one shape it expects.
+ *
+ * Without `_brief` (a pre-#1274-PR② row, or any other caller) this renders
+ * BYTE-IDENTICAL to the original create_issue message — regression-pinned
+ * in `approval-message.test.ts`.
+ */
 function renderCreateIssue(input: Record<string, unknown>): string {
+  const brief = input["_brief"];
+  if (brief && typeof brief === "object" && !Array.isArray(brief)) {
+    return renderAlignmentBrief({
+      ...(brief as Record<string, unknown>),
+      title: input["title"],
+      whatToBuild: input["whatToBuild"],
+      acceptanceCriteria: input["acceptanceCriteria"],
+    });
+  }
+
   const title = sanitizeField(input["title"], 200) || "(untitled)";
   const rawCriteria = input["acceptanceCriteria"];
   const criteria = Array.isArray(rawCriteria)

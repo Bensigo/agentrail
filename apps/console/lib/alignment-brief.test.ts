@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseAcceptanceCriteriaForBrief,
   composeAlignmentBrief,
+  composeChatBornBrief,
   extractConfirmedBudgetAndModel,
 } from "./alignment-brief";
 import { estimateBrief } from "./alignment";
@@ -91,6 +92,71 @@ describe("composeAlignmentBrief", () => {
     expect(brief.taskType).toBe("ui");
     expect(brief.suggestedModel.slug).toBeTruthy();
     expect(brief.suggestedModel.displayName).toBeTruthy();
+  });
+});
+
+describe("composeChatBornBrief (#1274 PR ②)", () => {
+  const CHAT_BORN = {
+    title: "Add dark mode toggle",
+    whatToBuild: "Add a settings toggle that persists across reload.",
+    acceptanceCriteria: ["Toggle in settings", "Persists across reload"],
+  };
+
+  it("matches estimateBrief's own output exactly for the same input (no drift between the two)", () => {
+    const brief = composeChatBornBrief(CHAT_BORN);
+    const directEstimate = estimateBrief(CHAT_BORN);
+    expect(brief.taskType).toBe(directEstimate.taskType);
+    expect(brief.estimateUsd).toBe(directEstimate.estimateUsd);
+    expect(brief.suggestedModel).toEqual({
+      slug: directEstimate.suggestedModel.slug,
+      displayName: directEstimate.suggestedModel.displayName,
+    });
+    expect(brief.assumptions).toEqual(directEstimate.assumptions);
+  });
+
+  it("never includes title/whatToBuild/acceptanceCriteria — those already live on create_issue's own toolInput", () => {
+    const brief = composeChatBornBrief(CHAT_BORN);
+    expect(brief).not.toHaveProperty("title");
+    expect(brief).not.toHaveProperty("whatToBuild");
+    expect(brief).not.toHaveProperty("acceptanceCriteria");
+  });
+
+  it("never includes repoFullName/issueNumber/issueUrl — no issue exists yet at approval-record time", () => {
+    const brief = composeChatBornBrief(CHAT_BORN);
+    expect(brief).not.toHaveProperty("repoFullName");
+    expect(brief).not.toHaveProperty("issueNumber");
+    expect(brief).not.toHaveProperty("issueUrl");
+  });
+
+  it("estimateUsd is always > 0 for a well-formed input (never a silent 0)", () => {
+    const brief = composeChatBornBrief(CHAT_BORN);
+    expect(brief.estimateUsd).toBeGreaterThan(0);
+  });
+
+  it("classifies a mechanical-shaped task distinctly from a UI-shaped one", () => {
+    const ui = composeChatBornBrief({ ...CHAT_BORN, title: "Build a new settings page" });
+    const mechanical = composeChatBornBrief({
+      ...CHAT_BORN,
+      title: "Rename a variable across the codebase",
+      whatToBuild: "Simple find-and-replace rename, no logic change.",
+    });
+    expect(ui.taskType).toBe("ui");
+    expect(mechanical.taskType).not.toBe("ui");
+  });
+
+  it("degrades gracefully (no throw) with an empty acceptanceCriteria array", () => {
+    expect(() =>
+      composeChatBornBrief({ title: "x", whatToBuild: "y", acceptanceCriteria: [] })
+    ).not.toThrow();
+  });
+
+  it("the output round-trips through extractConfirmedBudgetAndModel (the shape the confirm side-effect reads back)", () => {
+    const brief = composeChatBornBrief(CHAT_BORN);
+    const extracted = extractConfirmedBudgetAndModel(brief as unknown as Record<string, unknown>);
+    expect(extracted).toEqual({
+      estimatedBudgetUsd: brief.estimateUsd,
+      modelOverride: brief.suggestedModel.slug,
+    });
   });
 });
 

@@ -97,6 +97,56 @@ export function composeAlignmentBrief(input: {
   };
 }
 
+/**
+ * The `_brief` shape (#1274 PR ②) the approvals POST route computes and
+ * merges onto a `create_issue` approval's OWN `toolInput` at record time —
+ * the "enrichment" half of the chat-born one-confirm collapse. Deliberately
+ * NARROWER than {@link AlignmentBriefToolInput}: `title`/`whatToBuild`/
+ * `acceptanceCriteria` already live at the top level of create_issue's own
+ * `toolInput` (no need to duplicate them under `_brief`), and `repoFullName`/
+ * `issueNumber`/`issueUrl` don't exist yet at approval-record time — no
+ * GitHub issue has been created. `renderCreateIssue`
+ * (`./approval-message.ts`) reuses `renderAlignmentBrief`'s own render by
+ * flattening a create_issue toolInput's own fields together with `_brief`'s
+ * fields back into the full shape — see that file's own comment.
+ */
+export interface ChatBornBrief {
+  taskType: TaskType;
+  suggestedModel: { slug: string; displayName: string };
+  estimateUsd: number;
+  assumptions: string[];
+}
+
+/**
+ * Compute the `_brief` fields for a chat-born `create_issue` call — the
+ * SAME estimate-lib computation {@link composeAlignmentBrief} runs for a
+ * GitHub-issue-shaped brief, just fed straight from create_issue's OWN
+ * `{title, whatToBuild, acceptanceCriteria}` fields (already discrete on
+ * that tool's toolInput — no AC-parsing needed, unlike a raw issue body).
+ *
+ * Pure — never throws for a well-shaped input (mirrors `estimateBrief`'s own
+ * "never 0" guarantee); the caller (the approvals POST route) is
+ * responsible for coercing a possibly-malformed `toolInput` into this
+ * well-shaped input BEFORE calling this, and for catching/logging if it
+ * still somehow throws (defense in depth — see that route's own comment).
+ */
+export function composeChatBornBrief(input: {
+  title: string;
+  whatToBuild: string;
+  acceptanceCriteria: string[];
+}): ChatBornBrief {
+  const estimate = estimateBrief(input);
+  return {
+    taskType: estimate.taskType,
+    suggestedModel: {
+      slug: estimate.suggestedModel.slug,
+      displayName: estimate.suggestedModel.displayName,
+    },
+    estimateUsd: estimate.estimateUsd,
+    assumptions: estimate.assumptions,
+  };
+}
+
 export interface ConfirmedBudgetAndModel {
   estimatedBudgetUsd: number;
   modelOverride: string;

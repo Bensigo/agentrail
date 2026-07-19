@@ -49,6 +49,16 @@ export const workspaces = pgTable("workspaces", {
   // only for an earlier period — this column tracks the latest notified
   // period only, not a history).
   budgetExhaustedNotifiedPeriod: text("budget_exhausted_notified_period"),
+  // Alignment gate (#1274, spec §4.4; owner rule 2026-07-18: "confirming the
+  // brief = sanctioning the ceiling"). Default ON per spec: true means every
+  // 'issue'-kind queue entry admitted for this workspace holds `parked`
+  // ("awaiting alignment") until a human confirms Jace's alignment brief —
+  // see `github_intake.ts::enqueueGithubIssue`'s hold. false restores today's
+  // byte-identical admit-straight-to-queued behavior (regression-pinned).
+  // Never applies to kind='onboard' rows (`enqueueOnboard` never checks this
+  // column). No UI toggle yet — same "ship the column + enforcement" posture
+  // as `hostedExecution`/`monthlyBudgetUsd` above.
+  requireAlignment: boolean("require_alignment").notNull().default(true),
 });
 
 export type Workspace = typeof workspaces.$inferSelect;

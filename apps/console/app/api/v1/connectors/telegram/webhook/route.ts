@@ -7,9 +7,13 @@ import {
   getChatIdentityById,
   getJaceSessionById,
   resolveApproval,
+  confirmAlignmentBrief,
+  denyAlignmentBrief,
+  type JaceApprovalRow,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 import { renderApprovalMessage } from "../../../../../../lib/approval-message";
+import { extractConfirmedBudgetAndModel } from "../../../../../../lib/alignment-brief";
 import {
   parseOutcomeIssueNumber,
   type RunOutcomeReplyContext,
@@ -310,6 +314,69 @@ async function forwardCallbackQueryToEve(
 }
 
 /**
+ * The #1274 alignment-gate confirm/deny side-effect. Called ONLY after
+ * `resolveApproval`'s own atomic pending->resolved flip has already
+ * succeeded (that guard IS this function's idempotency: a duplicate tap
+ * never reaches here a second time — see the call site) and ONLY when the
+ * approval carries a `queueEntryId` — every other tool approval
+ * (create_issue/create_workspace/create_repo) has `queueEntryId: null` and
+ * this function is never invoked for them (regression-pinned at the call
+ * site, not inside here).
+ *
+ * approved: reads estimateUsd/suggestedModel.slug back out of the approval's
+ * OWN STORED toolInput (never the callback — owner rule: server-derived) and
+ * writes them atomically via `confirmAlignmentBrief` — this write is what
+ * activates #1333's dormant estimated_budget_usd/model_override threading,
+ * REGARDLESS of the resulting state. `confirmAlignmentBrief` no longer
+ * unconditionally flips parked->queued (#1274 finding-1 fix): it re-checks
+ * the row's own declared blockers at confirm time and only queues it when
+ * none are still unmet, otherwise it stays parked with the dependency's own
+ * reason — see that function's doc-comment for the full matrix.
+ * denied: `denyAlignmentBrief` — the entry stays parked with an honest
+ * denial notice; the revise flow is PR ③.
+ *
+ * Both db-postgres calls guard `WHERE state = 'parked'` and return `false`
+ * (never throw) when they match no row; this function only logs that case —
+ * it never surfaces as a caller-visible error, matching every other
+ * best-effort side-effect in this handler.
+ */
+async function applyAlignmentDecision(
+  approval: JaceApprovalRow,
+  decision: "approved" | "denied"
+): Promise<void> {
+  if (!approval.queueEntryId) return;
+
+  if (decision === "denied") {
+    const denied = await denyAlignmentBrief(approval.queueEntryId);
+    if (!denied) {
+      console.error(
+        `[telegram/webhook] denyAlignmentBrief found no parked queue entry ${approval.queueEntryId} for approval ${approval.id} — already left the parked state, left untouched`
+      );
+    }
+    return;
+  }
+
+  const confirmed = extractConfirmedBudgetAndModel(approval.toolInput);
+  if (!confirmed) {
+    console.error(
+      `[telegram/webhook] approval ${approval.id} carries queueEntryId ${approval.queueEntryId} but its stored toolInput has no usable estimateUsd/suggestedModel.slug — cannot confirm the alignment hold; queue entry stays parked`
+    );
+    return;
+  }
+
+  const flippedQueueEntry = await confirmAlignmentBrief({
+    queueEntryId: approval.queueEntryId,
+    estimatedBudgetUsd: confirmed.estimatedBudgetUsd,
+    modelOverride: confirmed.modelOverride,
+  });
+  if (!flippedQueueEntry) {
+    console.error(
+      `[telegram/webhook] confirmAlignmentBrief found no parked queue entry ${approval.queueEntryId} for approval ${approval.id} — already left the parked state, left untouched`
+    );
+  }
+}
+
+/**
  * Handle an `ar:`-prefixed callback_query — this seam's own Approve/Deny
  * button (issue #1273). Every branch answers the callback_query (Telegram
  * requires SOME response or the tapper's client shows a permanent loading
@@ -376,10 +443,17 @@ async function handleApprovalCallback(
     // Duplicate tap (a redelivered callback_query, or two taps racing each
     // other): resolveApproval's atomic pending->resolved guard already
     // matched zero rows, so this is a no-op — the FIRST resolution already
-    // answered and edited the message; do not do either again.
+    // answered and edited the message; do not do either again. This is also
+    // what makes applyAlignmentDecision below idempotent: it is never
+    // reached a second time for the same approval.
     await answerCallbackQuery(token, cq.id, "Already resolved.");
     return NextResponse.json({ ok: true });
   }
+
+  // #1274: only an "alignment_brief" approval carries queueEntryId — every
+  // other tool's approval has it null and this is a no-op for them
+  // (regression-pinned).
+  await applyAlignmentDecision(approval, parsed.decision);
 
   const label = parsed.decision === "approved" ? "✅ Approved" : "❌ Denied";
   const who = callbackFromName(cq.from);

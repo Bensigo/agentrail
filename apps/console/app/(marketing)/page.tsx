@@ -2,15 +2,13 @@ import { auth, signIn } from "@agentrail/auth";
 import { listWorkspacesForUser, claimInvitesForUser } from "@agentrail/db-postgres";
 import { redirect } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 import type { CSSProperties } from "react";
-import { Bricolage_Grotesque } from "next/font/google";
 import { Send } from "lucide-react";
 import { Reveal } from "./_motion";
 import { ConversationDemo } from "./_conversation-demo";
 import { resolveMessageJaceCta } from "./_cta";
 import type { MessageJaceCta } from "./_cta";
-
-const display = Bricolage_Grotesque({ subsets: ["latin"], display: "swap" });
 
 /** Real dogfood track record — full autonomous runs of AgentRail on its own
  *  backlog (issue → implementation → review → PR), not a retrieval benchmark.
@@ -62,9 +60,9 @@ const LIGHT_SURFACE: CSSProperties = {
 
 /** What Jace does — three plain-spoken lines, first person, no mechanism sprawl. */
 const JACE_DOES = [
-  "I work your GitHub and Linear issues overnight — you wake up to pull requests, not a running agent to babysit.",
+  "I work your GitHub and Linear issues overnight. You wake up to pull requests, not a running agent to babysit.",
   "I never grade my own work: nothing counts as done until a second model and your own tests both agree, and nothing merges without you.",
-  "I run under a hard budget — cheap models first, escalating only when I must — so your spend never runs away.",
+  "I run under a hard budget: cheap models first, and I escalate only when a task earns it. Your spend never runs away.",
 ];
 
 /**
@@ -78,10 +76,10 @@ const JACE_DOES = [
  */
 const HOW_WE_WORK = [
   "You message me a task, or hand me a GitHub issue.",
-  "I reply with a brief — task type, model, and a dollar estimate — before I touch any code.",
+  "I reply with a brief before I touch any code: task type, model, and a dollar estimate.",
   "You approve. That confirms the run's budget.",
   "I open a pull request against your repo.",
-  "You merge it — or turn on merge permission in Settings and I'll merge it myself once the gate is green.",
+  "You merge it, or turn on merge permission in Settings so I can merge it myself once the gate is green.",
 ];
 
 /**
@@ -123,63 +121,77 @@ export default async function LandingPage() {
     <main
       id="top"
       style={LIGHT_SURFACE}
-      className="relative min-h-screen bg-[var(--gray-00)] text-[var(--gray-12)]"
+      className="relative min-h-screen bg-[var(--paper)] text-[var(--gray-12)]"
     >
       {/* 1 — Minimal nav: wordmark left, one primary CTA right */}
       <header className="mx-auto flex h-16 max-w-[1120px] items-center justify-between px-6">
         <a href="#top" className="flex items-center gap-2.5">
           <RailMark />
-          <span className={`${display.className} text-[15px] font-extrabold tracking-tight`}>
-            Jace
-          </span>
+          <span className="font-bold tracking-tight">Jace</span>
         </a>
         <form action={signInWithGithub}>
           <button
             type="submit"
-            className="rounded-md border border-[var(--gray-06)] bg-[var(--gray-02)] px-3.5 py-1.5 text-[13px] font-medium text-[var(--gray-11)] transition-colors hover:border-[var(--gray-08)] hover:text-[var(--gray-12)]"
+            className="text-body-sm rounded-md border border-[var(--gray-06)] bg-[var(--gray-02)] px-3.5 py-1.5 text-[var(--gray-11)] transition-colors hover:border-[var(--gray-08)] hover:text-[var(--gray-12)]"
           >
             Sign in
           </button>
         </form>
       </header>
 
-      {/* 2 — Hero: conversational, first person, one CTA, lots of air */}
-      <section className="px-6 pt-24 pb-16 text-center sm:pt-32 sm:pb-24">
+      {/* 2 — Hero: conversational, first person, one CTA, lots of air.
+          The mascot IS Jace (TASTE.md, owner-supplied) — his resume opens
+          with his face. */}
+      <section className="px-6 pt-20 pb-16 text-center sm:pt-24 sm:pb-24">
         <div className="mx-auto max-w-[760px]">
+          <Image
+            src="/jace.png"
+            alt="Jace"
+            width={112}
+            height={112}
+            priority
+            className="ar-rise mx-auto mb-7 rounded-full"
+          />
+
           <h1
-            className={`${display.className} ar-rise mx-auto max-w-[16ch] text-balance text-[clamp(2.2rem,5.2vw,3.6rem)] font-extrabold leading-[1.03] tracking-[-0.035em]`}
+            className="ar-rise text-heading-1 mx-auto max-w-[16ch] text-balance"
+            style={{ animationDelay: "60ms" }}
           >
             Hi, I&apos;m Jace. I clear your backlog while you sleep.
           </h1>
 
           <p
-            className="ar-rise mx-auto mt-6 max-w-[52ch] text-[clamp(1rem,1.6vw,1.2rem)] leading-relaxed text-[var(--gray-10)]"
-            style={{ animationDelay: "90ms" }}
+            className="ar-rise mx-auto mt-6 max-w-[52ch] text-[var(--gray-11)]"
+            style={{ animationDelay: "120ms" }}
           >
             Hire me as a fractional engineer. I triage your issues, write the
-            code, and open a pull request — then wait for your review before
+            code, and open a pull request. Then I wait for your review before
             anything ships.
           </p>
 
           <div
             className="ar-rise mt-9 flex flex-col items-center gap-3"
-            style={{ animationDelay: "170ms" }}
+            style={{ animationDelay: "190ms" }}
           >
             <PrimaryCta cta={cta} />
-            <p className="text-[12px] text-[var(--gray-09)]">Free while in preview</p>
+            <FreePreviewChip />
           </div>
         </div>
       </section>
 
       {/* 3 — Trust strip: one honest credibility line (no fabricated logos) */}
       <section className="px-6 pb-20">
-        <p className="mx-auto max-w-[64ch] text-balance text-center text-[14px] leading-relaxed text-[var(--gray-10)]">
+        <p className="mx-auto max-w-[64ch] text-balance text-center text-[var(--gray-11)]">
           I&apos;ve taken{" "}
-          <span className="font-semibold text-[var(--gray-12)]">
-            {TRACK_RECORD.shipped} issues
+          <span className="font-mono font-bold text-[var(--gray-12)]">
+            {TRACK_RECORD.shipped}
           </span>{" "}
-          from open to a reviewed PR on my own backlog — unattended. I count
-          the {TRACK_RECORD.failed} that didn&apos;t land, too.
+          issues from open to a reviewed PR on my own backlog, unattended. I
+          count the{" "}
+          <span className="font-mono font-bold text-[var(--gray-12)]">
+            {TRACK_RECORD.failed}
+          </span>{" "}
+          that didn&apos;t land, too.
         </p>
       </section>
 
@@ -187,11 +199,7 @@ export default async function LandingPage() {
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[720px]">
           <Reveal>
-            <h2
-              className={`${display.className} text-center text-[clamp(1.6rem,3vw,2.2rem)] font-extrabold tracking-[-0.03em]`}
-            >
-              What I do
-            </h2>
+            <h2 className="text-heading-2 text-center">What I do</h2>
           </Reveal>
           <ul className="mt-12 flex flex-col gap-8">
             {JACE_DOES.map((line, i) => (
@@ -199,11 +207,9 @@ export default async function LandingPage() {
                 <li className="flex items-start gap-4">
                   <span
                     aria-hidden
-                    className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--brand-accent)]"
+                    className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-text)]"
                   />
-                  <p className="text-[clamp(1rem,1.5vw,1.15rem)] leading-relaxed text-[var(--gray-11)]">
-                    {line}
-                  </p>
+                  <p className="text-[var(--gray-11)]">{line}</p>
                 </li>
               </Reveal>
             ))}
@@ -216,9 +222,9 @@ export default async function LandingPage() {
           model, the $ estimate — is computed live by the real estimate lib,
           and the outcome ping is byte-identical to what the product actually
           sends. See _conversation-demo-data.ts. */}
-      <section className="px-6 pb-24 sm:pb-32">
+      <section className="px-6 pb-28 sm:pb-36">
         <Reveal className="mx-auto max-w-[1080px]">
-          <div className="overflow-hidden rounded-xl border border-[var(--gray-05)] shadow-[0_30px_80px_-40px_rgba(0,0,0,0.35)]">
+          <div className="overflow-hidden rounded-xl border border-[var(--gray-05)] shadow-[0_25px_50px_-12px_rgba(0,0,0,0.25)]">
             <ConversationDemo />
           </div>
         </Reveal>
@@ -230,11 +236,7 @@ export default async function LandingPage() {
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[640px]">
           <Reveal>
-            <h2
-              className={`${display.className} text-center text-[clamp(1.6rem,3vw,2.2rem)] font-extrabold tracking-[-0.03em]`}
-            >
-              How we work together
-            </h2>
+            <h2 className="text-heading-2 text-center">How we work together</h2>
           </Reveal>
           <ol className="mt-12 flex flex-col gap-6">
             {HOW_WE_WORK.map((line, i) => (
@@ -242,11 +244,11 @@ export default async function LandingPage() {
                 <li className="flex items-start gap-4">
                   <span
                     aria-hidden
-                    className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--gray-06)] font-mono text-[11px] font-medium text-[var(--gray-10)]"
+                    className="text-label mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--accent-text)] font-mono text-[var(--accent-text)]"
                   >
                     {i + 1}
                   </span>
-                  <p className="text-[14px] leading-relaxed text-[var(--gray-11)]">{line}</p>
+                  <p className="text-[var(--gray-11)]">{line}</p>
                 </li>
               </Reveal>
             ))}
@@ -257,17 +259,13 @@ export default async function LandingPage() {
       {/* 7 — Closing CTA + minimal footer */}
       <section className="px-6 pb-24 text-center">
         <Reveal className="mx-auto max-w-[620px]">
-          <h2
-            className={`${display.className} text-[clamp(1.9rem,3.6vw,2.8rem)] font-extrabold tracking-[-0.03em]`}
-          >
-            Point me at a repo.
-          </h2>
-          <p className="mx-auto mt-4 max-w-[44ch] text-[15px] leading-relaxed text-[var(--gray-10)]">
+          <h2 className="text-heading-2">Point me at a repo.</h2>
+          <p className="mx-auto mt-4 max-w-[44ch] text-[var(--gray-11)]">
             Connect a repo, hand me an issue, and wake up to a reviewed PR.
           </p>
           <div className="mt-8 flex flex-col items-center gap-3">
             <PrimaryCta cta={cta} />
-            <p className="text-[12px] text-[var(--gray-09)]">Free while in preview</p>
+            <FreePreviewChip />
           </div>
         </Reveal>
       </section>
@@ -276,36 +274,34 @@ export default async function LandingPage() {
         <div className="mx-auto flex max-w-[1120px] flex-col items-center justify-between gap-4 sm:flex-row">
           <div className="flex items-center gap-2.5">
             <RailMark />
-            <span className={`${display.className} text-[14px] font-extrabold tracking-tight`}>
-              Jace
-            </span>
+            <span className="font-bold tracking-tight">Jace</span>
           </div>
-          <nav className="flex items-center gap-6 text-[13px] text-[var(--gray-10)]">
-            <Link href="/docs" className="transition-colors hover:text-[var(--gray-12)]">
+          <nav className="text-body-sm flex items-center gap-6 text-[var(--gray-11)]">
+            <Link href="/docs" className="transition-colors hover:text-[var(--accent-text)]">
               Docs
             </Link>
             <a
               href="https://github.com/Bensigo/agentrail"
-              className="transition-colors hover:text-[var(--gray-12)]"
+              className="transition-colors hover:text-[var(--accent-text)]"
             >
               GitHub
             </a>
             <a
               href="https://github.com/Bensigo/agentrail#cli"
-              className="transition-colors hover:text-[var(--gray-12)]"
+              className="transition-colors hover:text-[var(--accent-text)]"
             >
               CLI
             </a>
             <form action={signInWithGithub}>
               <button
                 type="submit"
-                className="text-[13px] text-[var(--gray-10)] transition-colors hover:text-[var(--gray-12)]"
+                className="text-body-sm text-[var(--gray-11)] transition-colors hover:text-[var(--accent-text)]"
               >
                 Sign in
               </button>
             </form>
           </nav>
-          <span className="text-[12px] text-[var(--gray-09)]">
+          <span className="text-label text-[var(--gray-09)]">
             © {new Date().getFullYear()} AgentRail
           </span>
         </div>
@@ -329,7 +325,7 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
         href={cta.href}
         target="_blank"
         rel="noreferrer"
-        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--brand-accent)] px-7 py-3.5 text-[15px] font-semibold text-[var(--accent-fill-text)] transition-all duration-200 hover:-translate-y-0.5 hover:opacity-95"
+        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-200 hover:-translate-y-0.5 hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
       >
         <Send size={17} aria-hidden />
         Message Jace on Telegram
@@ -340,12 +336,24 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
     <form action={signInWithGithub}>
       <button
         type="submit"
-        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--brand-accent)] px-7 py-3.5 text-[15px] font-semibold text-[var(--accent-fill-text)] transition-all duration-200 hover:-translate-y-0.5 hover:opacity-95"
+        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-200 hover:-translate-y-0.5 hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
       >
         <GitHubIcon />
         Sign in with GitHub
       </button>
     </form>
+  );
+}
+
+/** The "Free while in preview" highlight — a golden-fill chip (the
+ *  fill-with-dark-text rule, on the owner-directed #1357 accent family),
+ *  not a plain caption. Shared by the hero and closing CTA rows so both
+ *  stay byte-identical. */
+function FreePreviewChip() {
+  return (
+    <span className="text-label inline-flex items-center rounded-full bg-[var(--accent-fill)] px-3 py-1 text-[var(--accent-fill-text)]">
+      Free while in preview
+    </span>
   );
 }
 

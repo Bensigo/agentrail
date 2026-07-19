@@ -21,7 +21,7 @@ import { buildOutcomeMessage } from "../../lib/outcome-format";
 
 /** The illustrative task a visitor might message Jace about. */
 export const DEMO_USER_MESSAGE =
-  "Webhook deliveries are dropping silently on a transient 5xx — can you add a retry with backoff?";
+  "Webhook deliveries are dropping silently on a transient 5xx. Can you add a retry with backoff?";
 
 /**
  * The `{title, whatToBuild, acceptanceCriteria}` shape `estimateBrief` (and,

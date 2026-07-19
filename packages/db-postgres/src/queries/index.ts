@@ -1786,6 +1786,7 @@ export {
   listQueueEntries,
   recordRunnerResult,
   reconcileStaleRuns,
+  latestRunForIssue,
   STALE_RUN_MINUTES,
   DEVICE_CODE_TTL_MS,
   type StartedDeviceCode,
@@ -1794,6 +1795,7 @@ export {
   type WorkItem,
   type QueueEntryListItem,
   type RunnerStatus,
+  type LatestRunForIssue,
 } from "./runner.js";
 
 // CI reconciliation (#891b) — reconcile a run's DISPLAYED status against the

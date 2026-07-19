@@ -15,6 +15,10 @@ import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dis
 import { renderApprovalMessage } from "../../../../../../lib/approval-message";
 import { extractConfirmedBudgetAndModel } from "../../../../../../lib/alignment-brief";
 import {
+  parseOutcomeIssueNumber,
+  type RunOutcomeReplyContext,
+} from "../../../../../../lib/outcome-format";
+import {
   answerCallbackQuery,
   editMessageText,
   parseApprovalCallbackData,
@@ -56,6 +60,14 @@ import {
  * landing page deep-links it), so "secret unset" must never mean "open".
  * Mirrors Eve's own native /eve/v1/telegram verify idiom (the self-host path,
  * apps/jace/agent/channels/telegram.ts) so both doors share one bar.
+ *
+ * `reply_to_message` (issue #1277 — replyable run-outcome threads):
+ * `resolveReplyContext` below tolerantly checks whether an inbound
+ * message/edited_message is a reply whose QUOTED text parses as our own
+ * run-outcome format (`outcome-format.ts`), and if so attaches a
+ * `replyContext` onto the enqueued payload — no new storage, no new
+ * endpoint. `apps/console/lib/channel-dispatch.ts` is what turns that into a
+ * workspace-scoped run lookup and a bracketed preface for Jace.
  */
 
 const SECRET_HEADER = "x-telegram-bot-api-secret-token";
@@ -89,6 +101,13 @@ interface TelegramMessage {
   date: number;
   text?: string;
   caption?: string;
+  // #1277 (replyable run-outcome threads): Telegram self-contains the
+  // replied-to message on every reply. Typed `unknown` here on purpose — its
+  // shape is validated TOLERANTLY and separately by
+  // `isTelegramReplyToMessage`/`resolveReplyContext` below, so a
+  // malformed/absent value never fails THIS message's shape check (today's
+  // behavior, unchanged).
+  reply_to_message?: unknown;
 }
 
 function isTelegramMessage(value: unknown): value is TelegramMessage {
@@ -112,6 +131,66 @@ function isTelegramMessage(value: unknown): value is TelegramMessage {
 // "" rather than the string "undefined".
 function displayNameFor(from: TelegramFrom): string {
   return from.username ?? [from.first_name, from.last_name].join(" ").trim();
+}
+
+// --- reply-to-message → run-outcome reply context (issue #1277) ------------
+
+interface TelegramReplyToMessage {
+  message_id: number;
+  text?: string;
+  from?: { id: number; is_bot?: boolean };
+}
+
+/**
+ * TOLERANT shape check — absent or malformed all resolve `false`, never an
+ * error. Telegram's real `reply_to_message` always carries these fields when
+ * present at all; anything that doesn't match this shape is simply not
+ * treated as one.
+ */
+function isTelegramReplyToMessage(
+  value: unknown
+): value is TelegramReplyToMessage {
+  if (!value || typeof value !== "object") return false;
+  const r = value as Record<string, unknown>;
+  if (typeof r["message_id"] !== "number") return false;
+  if (r["text"] !== undefined && typeof r["text"] !== "string") return false;
+  if (r["from"] !== undefined) {
+    if (!r["from"] || typeof r["from"] !== "object") return false;
+    const from = r["from"] as Record<string, unknown>;
+    if (typeof from["id"] !== "number") return false;
+    if (from["is_bot"] !== undefined && typeof from["is_bot"] !== "boolean") {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Resolve a #1277 run-outcome reply context from a message's
+ * `reply_to_message` — TOLERANT: absent, malformed, or quoted text that
+ * doesn't parse as OUR outcome-message format all resolve to `undefined`,
+ * identical to today's behavior (no reply_to_message handling at all) rather
+ * than rejecting the inbound message.
+ *
+ * THREAT MODEL: this reads NOTHING from the quoted text except the one
+ * parsed issue number (`parseOutcomeIssueNumber`, format-only — see
+ * outcome-format.ts's doc comment) — no sender/message_id/anything else ever
+ * crosses this boundary. Anyone can type a lookalike "AgentRail: ... — issue
+ * #N" message and reply to it; that's fine BECAUSE the number only ever
+ * drives a WORKSPACE-SCOPED run lookup downstream
+ * (`channel-dispatch.ts`'s reply-context injection, `latestRunForIssue`) —
+ * the same thing a human asking "why did issue #N fail?" in plain chat can
+ * already do. A forged reply just resolves an honest "no matching run found"
+ * in the caller's own workspace.
+ */
+function resolveReplyContext(
+  message: TelegramMessage
+): RunOutcomeReplyContext | undefined {
+  if (!isTelegramReplyToMessage(message.reply_to_message)) return undefined;
+  const replyText = message.reply_to_message.text;
+  if (typeof replyText !== "string") return undefined;
+  const issueNumber = parseOutcomeIssueNumber(replyText);
+  return issueNumber === null ? undefined : { kind: "run_outcome", issueNumber };
 }
 
 // --- callback_query (issue #1273) -------------------------------------------
@@ -502,6 +581,12 @@ export async function POST(request: NextRequest) {
     ? { workspaceId: identity.workspaceId }
     : { chatIdentityId: identity.id };
 
+  // #1277: present only when this message is a reply whose quoted text
+  // parses as OUR run-outcome format — see resolveReplyContext's threat-model
+  // note. Absent for the overwhelming majority of messages (today's
+  // behavior, byte-unchanged).
+  const replyContext = resolveReplyContext(message);
+
   const result = await enqueueChannelMessage({
     ...anchor,
     channel: "telegram",
@@ -520,6 +605,7 @@ export async function POST(request: NextRequest) {
       text,
       messageId: message.message_id,
       date: message.date,
+      ...(replyContext ? { replyContext } : {}),
     },
   });
 

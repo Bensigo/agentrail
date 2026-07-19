@@ -6,7 +6,8 @@ import Image from "next/image";
 import type { CSSProperties } from "react";
 import { Send } from "lucide-react";
 import { Reveal } from "./_motion";
-import { ConversationDemo } from "./_conversation-demo";
+import { MarketingNav } from "./_nav";
+import { PinnedConversationScene } from "./_scroll-narrative";
 import { resolveMessageJaceCta } from "./_cta";
 import type { MessageJaceCta } from "./_cta";
 
@@ -123,26 +124,15 @@ export default async function LandingPage() {
       style={LIGHT_SURFACE}
       className="relative min-h-screen bg-[var(--paper)] text-[var(--gray-12)]"
     >
-      {/* 1 — Minimal nav: wordmark left, one primary CTA right */}
-      <header className="mx-auto flex h-16 max-w-[1120px] items-center justify-between px-6">
-        <a href="#top" className="flex items-center gap-2.5">
-          <RailMark />
-          <span className="font-bold tracking-tight">Jace</span>
-        </a>
-        <form action={signInWithGithub}>
-          <button
-            type="submit"
-            className="text-body-sm rounded-md border border-[var(--gray-06)] bg-[var(--gray-02)] px-3.5 py-1.5 text-[var(--gray-11)] transition-colors hover:border-[var(--gray-08)] hover:text-[var(--gray-12)]"
-          >
-            Sign in
-          </button>
-        </form>
-      </header>
+      {/* 1 — Nav: plain wordmark + Sign in at the top; condenses into a
+          floating pill with the primary Message-Jace CTA once the visitor
+          scrolls into the story. See _nav.tsx. */}
+      <MarketingNav cta={cta} signInAction={signInWithGithub} />
 
       {/* 2 — Hero: conversational, first person, one CTA, lots of air.
           The mascot IS Jace (TASTE.md, owner-supplied) — his resume opens
-          with his face. */}
-      <section className="px-6 pt-20 pb-16 text-center sm:pt-24 sm:pb-24">
+          with his face. Mascot appearance 1 of 2. */}
+      <section className="px-6 pt-16 pb-16 text-center sm:pt-20 sm:pb-24">
         <div className="mx-auto max-w-[760px]">
           <Image
             src="/jace.png"
@@ -179,24 +169,8 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 3 — Trust strip: one honest credibility line (no fabricated logos) */}
-      <section className="px-6 pb-20">
-        <p className="mx-auto max-w-[64ch] text-balance text-center text-[var(--gray-11)]">
-          I&apos;ve taken{" "}
-          <span className="font-mono font-bold text-[var(--gray-12)]">
-            {TRACK_RECORD.shipped}
-          </span>{" "}
-          issues from open to a reviewed PR on my own backlog, unattended. I
-          count the{" "}
-          <span className="font-mono font-bold text-[var(--gray-12)]">
-            {TRACK_RECORD.failed}
-          </span>{" "}
-          that didn&apos;t land, too.
-        </p>
-      </section>
-
-      {/* 4 — What Jace does: three one-line value points */}
-      <section className="px-6 pb-24 sm:pb-32">
+      {/* 3 — What Jace does: three one-line value points */}
+      <section className="px-6 pb-24 sm:pb-28">
         <div className="mx-auto max-w-[720px]">
           <Reveal>
             <h2 className="text-heading-2 text-center">What I do</h2>
@@ -217,38 +191,44 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 5 — One product visual: a real Jace conversation, not a dashboard
-          mockup. Every field Jace's reply shows — task type, suggested
-          model, the $ estimate — is computed live by the real estimate lib,
-          and the outcome ping is byte-identical to what the product actually
-          sends. See _conversation-demo-data.ts. */}
-      <section className="px-6 pb-28 sm:pb-36">
-        <Reveal className="mx-auto max-w-[1080px]">
-          <div className="overflow-hidden rounded-xl border border-[var(--gray-05)] shadow-[0_25px_50px_-12px_rgba(0,0,0,0.25)]">
-            <ConversationDemo />
-          </div>
-        </Reveal>
+      {/* 4 — ACT 1: the pinned conversation. A real Jace conversation, not
+          a dashboard mockup, now staged as the page's own "Macintosh" — a
+          screen the story plays out on as you scroll: the message types
+          out, then Jace's brief rises in. Every field the brief shows —
+          task type, suggested model, the $ estimate — is computed live by
+          the real estimate lib, and the outcome ping is byte-identical to
+          what the product actually sends; the Approve tap stays a real,
+          required click even here. See _scroll-narrative.tsx and
+          _conversation-demo-data.ts. */}
+      <section className="pb-28 sm:pb-36">
+        <PinnedConversationScene />
       </section>
 
-      {/* 6 — How we work together: the exact loop, in order. See HOW_WE_WORK's
-          own comment above for why step 5 phrases merge permission as an
-          opt-in rather than the default. */}
-      <section className="px-6 pb-24 sm:pb-32">
-        <div className="mx-auto max-w-[640px]">
+      {/* 5 — ACT 2: how we work together, as one loud full-bleed lemon
+          scene — the page's one moment of scale. Content is the exact same
+          5-step loop as before; see HOW_WE_WORK's own comment above for why
+          step 5 phrases merge permission as an opt-in rather than the
+          default. */}
+      <section className="w-full bg-[var(--accent-fill)] px-6 py-24 sm:py-32">
+        <div className="mx-auto max-w-[760px]">
           <Reveal>
-            <h2 className="text-heading-2 text-center">How we work together</h2>
+            <h2 className="text-heading-2 text-[var(--accent-fill-text)]">
+              How we work together
+            </h2>
           </Reveal>
-          <ol className="mt-12 flex flex-col gap-6">
+          <ol className="mt-14 flex flex-col gap-10 sm:mt-20 sm:gap-14">
             {HOW_WE_WORK.map((line, i) => (
               <Reveal key={i} delay={i * 70}>
-                <li className="flex items-start gap-4">
+                <li className="flex flex-col gap-2 sm:flex-row sm:items-baseline sm:gap-8">
                   <span
                     aria-hidden
-                    className="text-label mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--accent-text)] font-mono text-[var(--accent-text)]"
+                    className="text-5xl leading-none font-mono font-bold text-[var(--accent-fill-text)] sm:w-16 sm:shrink-0 sm:text-6xl"
                   >
                     {i + 1}
                   </span>
-                  <p className="text-[var(--gray-11)]">{line}</p>
+                  <p className="text-lg leading-relaxed text-[var(--accent-fill-text)] sm:text-xl">
+                    {line}
+                  </p>
                 </li>
               </Reveal>
             ))}
@@ -256,9 +236,68 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 7 — Closing CTA + minimal footer */}
+      {/* 6 — ACT 3: track record as tilted paper-scrap captions — the real
+          numbers, editorial rather than a stats grid. Same claim as before
+          (real dogfood runs, failures counted, not hidden), now also
+          surfacing TRACK_RECORD.attempted, which existed in code but was
+          never rendered. */}
+      <section className="px-6 py-24 sm:py-32">
+        <div className="mx-auto max-w-[760px]">
+          <Reveal>
+            <h2 className="text-heading-2 text-center">Track record</h2>
+          </Reveal>
+          <p className="ar-rise mx-auto mt-4 max-w-[56ch] text-center text-[var(--gray-11)]">
+            Full autonomous runs on my own backlog, issue to reviewed PR,
+            unattended. I count what didn&apos;t land, too.
+          </p>
+          <div className="mt-14 flex flex-wrap items-start justify-center gap-6 sm:gap-8">
+            {/* Cards are inlined rather than extracted into a shared
+                component: the mono-on-data craft pin scans 300 chars
+                BACKWARD from each literal {TRACK_RECORD.x} marker for a
+                mono class, so the class has to sit in the same JSX block
+                as the value, not inside a separately-defined component
+                function elsewhere in the file. */}
+            <Reveal>
+              <div className="w-[168px] -rotate-2 rounded-lg border border-[var(--gray-06)] bg-[var(--paper)] px-5 py-6 text-center shadow-sm sm:w-[188px]">
+                <p className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl">
+                  {TRACK_RECORD.shipped}
+                </p>
+                <p className="text-body-sm mt-2 text-[var(--gray-10)]">shipped</p>
+              </div>
+            </Reveal>
+            <Reveal delay={70}>
+              <div className="w-[168px] translate-y-3 rotate-1 rounded-lg border border-[var(--gray-06)] bg-[var(--paper)] px-5 py-6 text-center shadow-sm sm:w-[188px]">
+                <p className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl">
+                  {TRACK_RECORD.attempted}
+                </p>
+                <p className="text-body-sm mt-2 text-[var(--gray-10)]">attempted</p>
+              </div>
+            </Reveal>
+            <Reveal delay={140}>
+              <div className="w-[168px] -rotate-1 rounded-lg border border-[var(--gray-06)] bg-[var(--paper)] px-5 py-6 text-center shadow-sm sm:w-[188px]">
+                <p className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl">
+                  {TRACK_RECORD.failed}
+                </p>
+                <p className="text-body-sm mt-2 text-[var(--gray-10)]">
+                  didn&apos;t land — counted, not hidden
+                </p>
+              </div>
+            </Reveal>
+          </div>
+        </div>
+      </section>
+
+      {/* 7 — Closing CTA + minimal footer. Mascot appearance 2 of 2 — Jace
+          beside his own ask, angled toward the button below. */}
       <section className="px-6 pb-24 text-center">
         <Reveal className="mx-auto max-w-[620px]">
+          <Image
+            src="/jace.png"
+            alt=""
+            width={64}
+            height={64}
+            className="-rotate-3 mx-auto mb-6 rounded-full"
+          />
           <h2 className="text-heading-2">Point me at a repo.</h2>
           <p className="mx-auto mt-4 max-w-[44ch] text-[var(--gray-11)]">
             Connect a repo, hand me an issue, and wake up to a reviewed PR.

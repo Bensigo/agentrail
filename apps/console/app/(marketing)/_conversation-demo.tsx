@@ -29,53 +29,88 @@ import {
  * outcome ping's entrance uses `.ar-rise-fast` (<300ms, ease-out) — a state
  * change, not a scroll reveal, so it's deliberately faster than the page's
  * `<Reveal>` wrapper around this whole component.
+ *
+ * Two optional choreography props (owner-directed narrative-flow redo, wave
+ * 4): `typedChars` and `briefRevealed`, driven by `_scroll-narrative.tsx`'s
+ * pinned scroll scene. Both default to "show everything immediately" — the
+ * exact behavior this component always had — so `<ConversationDemo />` with
+ * no props (the reduced-motion and mobile-static fallback) renders
+ * byte-for-byte what shipped before this change. The Approve tap itself is
+ * deliberately NOT choreographed or auto-fired by scroll: the page's own
+ * claim is "nothing ships without you," so the one place a visitor could
+ * mistake a scripted animation for their own action is exactly the one beat
+ * that stays a real, required click.
  */
-export function ConversationDemo() {
+export function ConversationDemo({
+  typedChars,
+  briefRevealed = true,
+}: {
+  /** Reveals the user message character-by-character. Omit for the full
+   *  message immediately. */
+  typedChars?: number;
+  /** Gates Jace's brief bubble's entrance so it rises in after the message
+   *  finishes typing rather than alongside it. Omit (default) to show it
+   *  immediately. */
+  briefRevealed?: boolean;
+} = {}) {
   const [approved, setApproved] = useState(false);
   const brief = getDemoBrief();
+  const isTyping = typedChars !== undefined && typedChars < DEMO_USER_MESSAGE.length;
+  const shownMessage = DEMO_USER_MESSAGE.slice(0, typedChars ?? DEMO_USER_MESSAGE.length);
 
   return (
     <div className="flex flex-col gap-5 bg-[var(--gray-01)] px-5 py-6 sm:px-8 sm:py-8">
-      {/* The user's message */}
+      {/* The user's message — typed out character-by-character when
+          `typedChars` is provided (the pinned scroll scene's typewriter
+          beat); the full message immediately otherwise. */}
       <div className="flex justify-end">
         <p className="max-w-[85%] rounded-2xl rounded-tr-sm bg-[var(--gray-05)] px-4 py-2.5 text-[var(--gray-12)]">
-          {DEMO_USER_MESSAGE}
+          {shownMessage}
+          {isTyping ? (
+            <span aria-hidden className="animate-pulse">
+              ▍
+            </span>
+          ) : null}
         </p>
       </div>
 
-      {/* Jace's alignment brief — the mascot avatar is decorative here
-          (alt="") because the visible "Jace" sender label already names
-          him; screen readers shouldn't hear "Jace Jace". */}
-      <div className="flex flex-col items-start gap-1.5">
-        <span className="text-label flex items-center gap-1.5 px-1 text-[var(--gray-09)]">
-          <Image src="/jace.png" alt="" width={20} height={20} className="rounded-full" />
-          Jace
-        </span>
-        <div className="w-full max-w-[92%] rounded-2xl rounded-tl-sm border border-[var(--gray-05)] bg-[var(--gray-00)] px-4 py-3.5 sm:max-w-[80%]">
-          <p className="font-bold text-[var(--gray-12)]">{DEMO_TASK_INPUT.title}</p>
-          <p className="text-mono-data mt-2 font-mono text-[var(--gray-11)]">
-            Task type: {brief.taskType} → suggested model: {brief.suggestedModel.displayName}
-          </p>
-          <p className="text-mono-data mt-1.5 font-mono text-[var(--gray-11)]">
-            Approving sets this run&apos;s budget: ~${brief.estimateUsd.toFixed(2)}
-          </p>
-
-          {!approved ? (
-            <button
-              type="button"
-              onClick={() => setApproved(true)}
-              className="text-label mt-3.5 inline-flex items-center gap-1.5 rounded-md bg-[var(--accent-fill)] px-3.5 py-1.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-150 ease-out hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
-            >
-              ✅ Approve
-            </button>
-          ) : (
-            <p className="text-label mt-3.5 flex items-center gap-1.5 text-[var(--green-11)]">
-              <CheckCircle2 size={13} aria-hidden />
-              Approved by you
+      {/* Jace's alignment brief — gated by `briefRevealed` so it rises in
+          after the message finishes typing, not alongside it. The mascot
+          avatar is decorative here (alt="") because the visible "Jace"
+          sender label already names him; screen readers shouldn't hear
+          "Jace Jace". */}
+      {briefRevealed ? (
+        <div className="ar-rise-fast flex flex-col items-start gap-1.5">
+          <span className="text-label flex items-center gap-1.5 px-1 text-[var(--gray-09)]">
+            <Image src="/jace.png" alt="" width={20} height={20} className="rounded-full" />
+            Jace
+          </span>
+          <div className="w-full max-w-[92%] rounded-2xl rounded-tl-sm border border-[var(--gray-05)] bg-[var(--gray-00)] px-4 py-3.5 sm:max-w-[80%]">
+            <p className="font-bold text-[var(--gray-12)]">{DEMO_TASK_INPUT.title}</p>
+            <p className="text-mono-data mt-2 font-mono text-[var(--gray-11)]">
+              Task type: {brief.taskType} → suggested model: {brief.suggestedModel.displayName}
             </p>
-          )}
+            <p className="text-mono-data mt-1.5 font-mono text-[var(--gray-11)]">
+              Approving sets this run&apos;s budget: ~${brief.estimateUsd.toFixed(2)}
+            </p>
+
+            {!approved ? (
+              <button
+                type="button"
+                onClick={() => setApproved(true)}
+                className="text-label mt-3.5 inline-flex items-center gap-1.5 rounded-md bg-[var(--accent-fill)] px-3.5 py-1.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-150 ease-out hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
+              >
+                ✅ Approve
+              </button>
+            ) : (
+              <p className="text-label mt-3.5 flex items-center gap-1.5 text-[var(--green-11)]">
+                <CheckCircle2 size={13} aria-hidden />
+                Approved by you
+              </p>
+            )}
+          </div>
         </div>
-      </div>
+      ) : null}
 
       {/* Run-outcome ping — the real wire format, once approved. The
           aria-live wrapper stays mounted from first render (not inside the

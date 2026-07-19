@@ -38,6 +38,8 @@
   --teal-11: #008573;
 
   --brand-accent: #9e6c00;
+
+  color-scheme: light;
 }
 
 .dark {
@@ -65,9 +67,7 @@
   --teal-11: #0bd8b6;
 
   --brand-accent: #ffe629;
-}
 
-html {
   color-scheme: dark;
 }
 

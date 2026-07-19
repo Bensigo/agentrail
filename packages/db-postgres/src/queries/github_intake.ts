@@ -653,7 +653,7 @@ export async function unparkDependents(
 
   // Fixed for this whole call (every row in `parked` shares one
   // workspaceId) — hoisted out of the loop rather than re-fetched per entry.
-  const requireAlignment = await workspaceRequiresAlignment(workspaceId);
+  const requireAlignment = await workspaceRequiresAlignment(db, workspaceId);
 
   const released: string[] = [];
   for (const entry of parked) {
@@ -743,9 +743,12 @@ export function githubIssueUrl(repoFullName: string, number: number): string {
   return `https://github.com/${repoFullName}/issues/${number}`;
 }
 
-/** Read a workspace's `require_alignment` flag. Defaults to `true` (the spec default, and this column's own NOT NULL DEFAULT) if the workspace row is somehow missing — fails toward the safer "still gate" direction rather than silently admitting unaligned work. No `.limit()` — matches `unmetBlockers`'s own chain shape in this file (a plain `.select().from().where()` awaited directly), since `workspace_id` is already unique. */
-async function workspaceRequiresAlignment(workspaceId: string): Promise<boolean> {
-  const rows = await db
+/** Read a workspace's `require_alignment` flag. Defaults to `true` (the spec default, and this column's own NOT NULL DEFAULT) if the workspace row is somehow missing — fails toward the safer "still gate" direction rather than silently admitting unaligned work. No `.limit()` — matches `unmetBlockers`'s own chain shape in this file (a plain `.select().from().where()` awaited directly), since `workspace_id` is already unique. Takes a `QueryExecutor` (same idiom as `unmetBlockers`) so `requeueParkedQueueEntry` can read it INSIDE its own transaction; plain callers pass `db`. */
+async function workspaceRequiresAlignment(
+  exec: QueryExecutor,
+  workspaceId: string
+): Promise<boolean> {
+  const rows = await exec
     .select({ requireAlignment: workspaces.requireAlignment })
     .from(workspaces)
     .where(eq(workspaces.id, workspaceId));
@@ -996,6 +999,124 @@ export async function denyAlignmentBrief(queueEntryId: string): Promise<boolean>
   return result.length > 0;
 }
 
+/**
+ * Outcome of a {@link requeueParkedQueueEntry} call — discriminated so the
+ * console (#1276 PR ②) can show an honest, specific reason rather than a
+ * bare boolean. `alignment_locked` is the load-bearing case: an
+ * alignment-held row resolves EXCLUSIVELY through the posted brief's own
+ * Approve/Deny — a raw requeue bypassing it would let unpriced work back
+ * onto the queue, reintroducing the exact bug #1274 closed.
+ */
+export type RequeueParkedQueueEntryResult =
+  | "requeued"
+  | "not_found"
+  | "not_parked"
+  | "alignment_locked";
+
+/**
+ * Requeue a single parked `queue_entries` row — the console approvals page's
+ * Requeue action (#1276 PR ②) for a guardrail (duplicate content / rate
+ * limit / injection screen) or dependency ("Waiting on #N") park.
+ *
+ * ALIGNMENT GATE (adversarial-review fix, #1276 fix round): "is this row
+ * alignment-held?" is NOT a `parkReason` string match — a dependency- or
+ * guardrail-parked issue under `require_alignment` carries the dependency/
+ * guardrail reason while its brief is still pending (`estimatedBudgetUsd`
+ * NULL), and the original string-only check flipped exactly such a row
+ * straight to claimable/unpriced, silently orphaning the brief (its later
+ * approve matches no parked row). This mirrors {@link unparkDependents}'
+ * aligned check EXACTLY, on the same rationale documented there
+ * (`estimatedBudgetUsd IS NOT NULL` is the only trustworthy "confirmed"
+ * marker):
+ *   - a DENIED row ({@link ALIGNMENT_DENIED_PARK_REASON}) is refused
+ *     unconditionally — a denial is a stronger hold than anything a requeue
+ *     could say, exactly as `unparkDependents` refuses to touch one.
+ *   - otherwise aligned = `kind !== 'issue'` OR `estimatedBudgetUsd IS NOT
+ *     NULL` OR NOT `workspace.require_alignment`. Aligned -> requeue
+ *     (`queued`, reason cleared). NOT aligned -> the row STAYS parked and
+ *     its `parkReason` flips to {@link ALIGNMENT_PARK_REASON} — turning the
+ *     now-stale dependency/guardrail reason honest (the brief is what it's
+ *     actually waiting on; #1274 PR ③'s reconciler is what posts a missing
+ *     brief) — and the caller gets `alignment_locked` to render.
+ *
+ * Read-then-write in ONE `db.transaction`, mirroring
+ * {@link confirmAlignmentBrief}'s own rationale for that shape: the read
+ * distinguishes WHY a requeue didn't happen so the caller can render a
+ * specific, honest reason — while the actual enforcement is the final
+ * UPDATE's own `WHERE` clause, which re-asserts the full aligned predicate
+ * (never trust a pre-check alone for a security property, the same posture
+ * `resolveApproval`/`requeueDeadChannelMessage` take with their guarded
+ * `WHERE`). Workspace-scoped: `id` alone is never enough (an id from another
+ * workspace resolves `not_found`, matching `getApiKey`'s scoped-lookup
+ * idiom elsewhere in this package).
+ */
+export async function requeueParkedQueueEntry(
+  workspaceId: string,
+  id: string
+): Promise<RequeueParkedQueueEntryResult> {
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .select({
+        state: queueEntries.state,
+        parkReason: queueEntries.parkReason,
+        kind: queueEntries.kind,
+        estimatedBudgetUsd: queueEntries.estimatedBudgetUsd,
+      })
+      .from(queueEntries)
+      .where(and(eq(queueEntries.id, id), eq(queueEntries.workspaceId, workspaceId)));
+    const row = rows[0];
+    if (!row) return "not_found";
+    if (row.state !== "parked") return "not_parked";
+
+    // A denial always wins — refused regardless of the gate flag, mirroring
+    // unparkDependents' own denied-rows-are-untouchable rule.
+    if (row.parkReason === ALIGNMENT_DENIED_PARK_REASON) return "alignment_locked";
+
+    const requireAlignment = await workspaceRequiresAlignment(tx, workspaceId);
+    const aligned =
+      row.kind !== "issue" ||
+      row.estimatedBudgetUsd !== null ||
+      !requireAlignment;
+
+    if (!aligned) {
+      // Stays parked; the stored reason flips to the TRUE hold (the brief),
+      // replacing a now-misleading dependency/guardrail reason. Guarded the
+      // same way every parked-row write in this file is.
+      await tx
+        .update(queueEntries)
+        .set({ parkReason: ALIGNMENT_PARK_REASON, updatedAt: new Date() })
+        .where(
+          and(
+            eq(queueEntries.id, id),
+            eq(queueEntries.workspaceId, workspaceId),
+            eq(queueEntries.state, "parked")
+          )
+        );
+      return "alignment_locked";
+    }
+
+    const result = await tx
+      .update(queueEntries)
+      .set({ state: "queued", parkReason: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(queueEntries.id, id),
+          eq(queueEntries.workspaceId, workspaceId),
+          eq(queueEntries.state, "parked"),
+          // Belt-and-suspenders: the WHERE re-asserts the FULL aligned
+          // predicate (denial + the unparkDependents-mirrored check), so a
+          // row that changed between the read above and this write can never
+          // slip through on stale read data. `requireAlignment` was read in
+          // this same transaction.
+          sql`${queueEntries.parkReason} IS DISTINCT FROM ${ALIGNMENT_DENIED_PARK_REASON}`,
+          sql`(${queueEntries.kind} <> 'issue' OR ${queueEntries.estimatedBudgetUsd} IS NOT NULL OR ${!requireAlignment})`
+        )
+      )
+      .returning({ id: queueEntries.id });
+    return result.length > 0 ? "requeued" : "not_parked";
+  });
+}
+
 export async function enqueueGithubIssue(data: {
   workspaceId: string;
   repoFullName: string;
@@ -1101,7 +1222,7 @@ export async function enqueueGithubIssue(data: {
   let estimatedBudgetUsd: number | null = null;
   let modelOverride: string | null = null;
   if (!v2Parked) {
-    const requireAlignment = await workspaceRequiresAlignment(data.workspaceId);
+    const requireAlignment = await workspaceRequiresAlignment(db, data.workspaceId);
     if (requireAlignment) {
       const issueUrl = githubIssueUrl(data.repoFullName, data.number);
       const matched = await findConfirmedAlignmentBriefApproval(data.workspaceId, issueUrl);

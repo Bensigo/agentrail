@@ -458,6 +458,14 @@ export interface QueueEntryListItem {
    * legacy/reasonless row — `formatParkReason` in the console falls back to
    * formatting `blockedBy` in that case. */
   parkReason: string | null;
+  /** 'issue' | 'onboard' — see the schema's `kind` column. Added (#1276 fix
+   * round) with `estimatedBudgetUsd` so the approvals page can compute the
+   * SAME "alignment-held" predicate `requeueParkedQueueEntry` enforces
+   * server-side, instead of guessing from `parkReason` strings. */
+  kind: string;
+  /** The alignment brief's confirmed ceiling (#1275); null until a brief is
+   * confirmed. Non-null IS the "aligned" marker — see `unparkDependents`. */
+  estimatedBudgetUsd: number | null;
   updatedAt: string;
 }
 
@@ -506,6 +514,8 @@ export async function listQueueEntries(
       state: queueEntries.state,
       blockedBy: queueEntries.blockedBy,
       parkReason: queueEntries.parkReason,
+      kind: queueEntries.kind,
+      estimatedBudgetUsd: queueEntries.estimatedBudgetUsd,
       updatedAt: queueEntries.updatedAt,
     })
     .from(queueEntries)
@@ -521,6 +531,8 @@ export async function listQueueEntries(
     state: r.state,
     blockedBy: (r.blockedBy ?? []) as number[],
     parkReason: r.parkReason ?? null,
+    kind: r.kind,
+    estimatedBudgetUsd: r.estimatedBudgetUsd ?? null,
     updatedAt:
       r.updatedAt instanceof Date ? r.updatedAt.toISOString() : String(r.updatedAt),
   }));

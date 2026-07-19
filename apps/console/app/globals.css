@@ -37,7 +37,17 @@
   --teal-09: #12a594;
   --teal-11: #008573;
 
-  --brand-accent: #9e6c00;
+  /* Brand accent — owner-directed retire of the agent-invented mustard
+     #9e6c00 (2026-07-19; guide: heyparker.ai's palette executed through our
+     tokens). --brand-accent stays a FILL color (consumers pair it with dark
+     text); --accent-text is the text/link/ring accent. Semantic yellow
+     (caution/stale) is a different ramp and is untouched. */
+  --brand-accent: #eebf12;
+  --accent-text: #194d15;
+  --accent-fill: #eebf12;
+  --accent-fill-text: #0a3007;
+  --accent-fill-hover: #d9ad0e;
+  --paper: #fcf5e2; /* warm paper — landing-only surface (always light) */
 
   /* Straggler tokens (#1282 PR②) — one-off hex literals promoted to tokens.
      Dark values below and in .dark are copied verbatim from the hardcoded
@@ -103,7 +113,11 @@
   --purple-11: #baa7ff;
   --teal-11: #0bd8b6;
 
-  --brand-accent: #ffe629;
+  --brand-accent: #eebf12;
+  --accent-text: #72d184;
+  --accent-fill: #eebf12;
+  --accent-fill-text: #0a3007;
+  --accent-fill-hover: #f4cf3f;
 
   /* Straggler tokens (#1282 PR②) — dark values are the exact literals being
      replaced; see the :root block above for what each pairs with in light

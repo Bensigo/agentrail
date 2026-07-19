@@ -49,7 +49,12 @@ const LIGHT_SURFACE: CSSProperties = {
   ["--yellow-11" as string]: "#9e6c00",
   ["--purple-11" as string]: "#6550b9",
   ["--teal-11" as string]: "#008573",
-  ["--brand-accent" as string]: "#9e6c00",
+  ["--brand-accent" as string]: "#eebf12",
+  ["--accent-text" as string]: "#194d15",
+  ["--accent-fill" as string]: "#eebf12",
+  ["--accent-fill-text" as string]: "#0a3007",
+  ["--accent-fill-hover" as string]: "#d9ad0e",
+  ["--paper" as string]: "#fcf5e2",
 } as CSSProperties;
 
 /** What Jace does — three plain-spoken lines, first person, no mechanism sprawl. */
@@ -115,7 +120,7 @@ export default async function LandingPage() {
     <main
       id="top"
       style={LIGHT_SURFACE}
-      className="relative min-h-screen bg-[var(--gray-00)] text-[var(--gray-12)]"
+      className="relative min-h-screen bg-[var(--paper)] text-[var(--gray-12)]"
     >
       {/* 1 — Minimal nav: wordmark left, one primary CTA right */}
       <header className="mx-auto flex h-16 max-w-[1120px] items-center justify-between px-6">
@@ -187,7 +192,7 @@ export default async function LandingPage() {
                 <li className="flex items-start gap-4">
                   <span
                     aria-hidden
-                    className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--brand-accent)]"
+                    className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-text)]"
                   />
                   <p className="text-[var(--gray-11)]">{line}</p>
                 </li>
@@ -224,7 +229,7 @@ export default async function LandingPage() {
                 <li className="flex items-start gap-4">
                   <span
                     aria-hidden
-                    className="text-label mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--brand-accent)] font-mono text-[var(--brand-accent)]"
+                    className="text-label mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--accent-text)] font-mono text-[var(--accent-text)]"
                   >
                     {i + 1}
                   </span>
@@ -257,25 +262,25 @@ export default async function LandingPage() {
             <span className="font-bold tracking-tight">Jace</span>
           </div>
           <nav className="text-body-sm flex items-center gap-6 text-[var(--gray-10)]">
-            <Link href="/docs" className="transition-colors hover:text-[var(--brand-accent)]">
+            <Link href="/docs" className="transition-colors hover:text-[var(--accent-text)]">
               Docs
             </Link>
             <a
               href="https://github.com/Bensigo/agentrail"
-              className="transition-colors hover:text-[var(--brand-accent)]"
+              className="transition-colors hover:text-[var(--accent-text)]"
             >
               GitHub
             </a>
             <a
               href="https://github.com/Bensigo/agentrail#cli"
-              className="transition-colors hover:text-[var(--brand-accent)]"
+              className="transition-colors hover:text-[var(--accent-text)]"
             >
               CLI
             </a>
             <form action={signInWithGithub}>
               <button
                 type="submit"
-                className="text-body-sm text-[var(--gray-10)] transition-colors hover:text-[var(--brand-accent)]"
+                className="text-body-sm text-[var(--gray-10)] transition-colors hover:text-[var(--accent-text)]"
               >
                 Sign in
               </button>
@@ -305,7 +310,7 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
         href={cta.href}
         target="_blank"
         rel="noreferrer"
-        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--yellow-09)] px-7 py-3.5 font-bold text-[var(--gray-13)] transition-all duration-200 hover:-translate-y-0.5 hover:opacity-95 active:scale-[0.97]"
+        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
       >
         <Send size={17} aria-hidden />
         Message Jace on Telegram
@@ -316,7 +321,7 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
     <form action={signInWithGithub}>
       <button
         type="submit"
-        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--yellow-09)] px-7 py-3.5 font-bold text-[var(--gray-13)] transition-all duration-200 hover:-translate-y-0.5 hover:opacity-95 active:scale-[0.97]"
+        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
       >
         <GitHubIcon />
         Sign in with GitHub
@@ -325,12 +330,13 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
   );
 }
 
-/** The "Free while in preview" highlight — a lemon-fill chip (TASTE.md's
- *  fill-with-dark-text rule), not a plain caption. Shared by the hero and
- *  closing CTA rows so both stay byte-identical. */
+/** The "Free while in preview" highlight — a golden-fill chip (the
+ *  fill-with-dark-text rule, on the owner-directed #1357 accent family),
+ *  not a plain caption. Shared by the hero and closing CTA rows so both
+ *  stay byte-identical. */
 function FreePreviewChip() {
   return (
-    <span className="text-label inline-flex items-center rounded-full bg-[var(--yellow-09)] px-3 py-1 text-[var(--gray-13)]">
+    <span className="text-label inline-flex items-center rounded-full bg-[var(--accent-fill)] px-3 py-1 text-[var(--accent-fill-text)]">
       Free while in preview
     </span>
   );

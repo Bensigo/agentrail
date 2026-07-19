@@ -73,7 +73,7 @@ agentrail runner
 
 The runner polls the console for issues labelled `ready-for-agent`, executes
 them locally, opens PRs, and reports back. See
-[Getting Started](https://heyjace.com/docs/getting-started/quickstart)
+[Self-hosting](https://heyjace.com/docs/getting-started/self-hosting)
 for the full sign-up → connect GitHub → runner flow.
 
 Initialize in a project (for local index and workflow files):

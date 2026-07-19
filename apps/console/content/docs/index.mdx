@@ -9,12 +9,12 @@ gives the agent you already use durable repo context, bounded execution,
 independent review, and verification gates, so its work is cheaper, inspectable,
 and safe to leave unattended.
 
-The primary flow is the **hosted dashboard + self-hosted runner**: sign in to
-the dashboard, connect your GitHub repos, then run `agentrail login` and
-`agentrail runner` on your machine. The runner claims queued issues over HTTP,
-executes them locally with your own LLM keys, opens PRs, and reports back.
-Login is required to use the CLI (only `login`, `logout`, `whoami`, and
-`--help` are exempt).
+The default path is message-first: sign up, connect GitHub, and message Jace
+on Telegram — hosted execution runs the work in the cloud, nothing to
+install. Prefer to run the worker yourself? Self-hosting is fully supported:
+install the CLI, then run `agentrail login` and `agentrail runner` on your
+own machine with your own LLM keys. Login is required to use the CLI (only
+`login`, `logout`, `whoami`, and `--help` are exempt).
 
 ## Start here
 
@@ -31,3 +31,5 @@ Login is required to use the CLI (only `login`, `logout`, `whoami`, and
   an agent, and bringing your own LLM keys.
 - **[Dashboard & hosted runner](/docs/dashboard)** — sign in, connect GitHub,
   queue issues, and run the local worker.
+- **[Self-hosting](/docs/getting-started/self-hosting)** — run the worker
+  yourself, or deploy the whole stack on infrastructure you control.

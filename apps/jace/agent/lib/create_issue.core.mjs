@@ -274,7 +274,53 @@ async function relearnApprovalId({ baseUrl, token, eveSessionId, turnId, toolInp
   }
 
   const approvalId = body && typeof body === "object" ? body.approvalId : undefined;
-  return typeof approvalId === "string" && approvalId.length > 0 ? approvalId : null;
+  if (typeof approvalId !== "string" || approvalId.length === 0) return null;
+
+  // M2 (#1274 PR ② fix round): the replay response also carries the
+  // existing row's actual status — require it to be "approved" before ever
+  // attempting a stamp. In the genuine flow this is always true (execute()
+  // only runs after the approval resolved approved, and the replay returns
+  // the EXISTING row via the console's (eveSessionId, requestId)
+  // idempotency), so this is pure defense-in-depth: if the replay ever
+  // matched a different/fresh row instead (a "ghost row" — some future
+  // change to the idempotency-key derivation or the console's conflict
+  // handling), its status would be "pending" and this guard turns the whole
+  // stamp attempt into the honest skip (-> a later redundant confirm, the
+  // fail-safe direction) rather than a stamp request against a row no human
+  // approved. The console's own approved-only guard on the /published
+  // endpoint would refuse that request anyway — this just avoids relying on
+  // a single layer.
+  const status = body && typeof body === "object" ? body.status : undefined;
+  if (status !== "approved") return null;
+
+  return approvalId;
+}
+
+/**
+ * Resolve the url to stamp for a just-created issue (#1274 PR ② fix round,
+ * M1). PREFERS the CLI-printed `ref.url` VERBATIM: that value is GitHub's
+ * own canonical `html_url` (the connector returns `created.get("html_url")`
+ * — see `agentrail/connectors/github.py::create_issue`), which carries
+ * GitHub's canonical owner/repo CASING. The reconstruction from
+ * `ref.repo`+`ref.number` is only the ABSENT-url fallback: `ref.repo` echoes
+ * the INPUT repo casing (the connector passes the caller's `repo` through
+ * unchanged), while the webhook side's confirmed-brief lookup compares
+ * against `githubIssueUrl(payload.repository.full_name, n)` — GitHub's
+ * canonical casing — with EXACT string equality. A mis-cased configured
+ * repo would therefore make the reconstruction silently never match
+ * (redundant second confirm forever); `html_url` always matches.
+ *
+ * An off-shape `ref.url` (should not happen for a real GitHub html_url) is
+ * still passed through verbatim — the /published endpoint's own regex
+ * guard refuses it, which fails the stamp toward the same safe redundant
+ * confirm. Both directions preserve the fail-safe.
+ *
+ * @param {{ repo?: string, number?: number, url?: string }} ref
+ * @returns {string}
+ */
+export function resolveStampUrl(ref = {}) {
+  if (typeof ref.url === "string" && ref.url.length > 0) return ref.url;
+  return `https://github.com/${ref.repo}/issues/${ref.number}`;
 }
 
 /**
@@ -449,12 +495,15 @@ export async function runCreateIssue({
   // times out) before this function returns, rather than a fire-and-forget
   // that could be torn down mid-flight; see stampCreatedIssueUrl's own
   // "NEVER affects the caller's own result" doc-comment for why this can
-  // never turn a successful issue creation into a failed tool call.
+  // never turn a successful issue creation into a failed tool call. The
+  // url is GitHub's own canonical html_url whenever the CLI printed one —
+  // see resolveStampUrl for why the repo+number reconstruction is only the
+  // absent-url fallback (fix round M1).
   await stampCreatedIssueUrl({
     eveSessionId,
     turnId,
     toolInput,
-    url: `https://github.com/${ref.repo}/issues/${ref.number}`,
+    url: resolveStampUrl(ref),
     env: resolvedEnv,
     transport: stampTransport,
   });

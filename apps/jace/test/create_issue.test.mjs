@@ -9,6 +9,7 @@ import {
   NOT_CONNECTED_MARKER,
   buildPublishedStampUrl,
   stampCreatedIssueUrl,
+  resolveStampUrl,
 } from "../agent/lib/create_issue.core.mjs";
 
 test("buildIssueBody renders the house-format sections in order", () => {
@@ -622,17 +623,40 @@ test("runCreateIssue: no eveSessionId at all (e.g. ctx was absent/malformed) -> 
   assert.equal(transport.calls.length, 0);
 });
 
-test("runCreateIssue: stamps the CANONICAL url reconstructed from repo+number, not the CLI's own raw printed url substring", async () => {
-  // Guards the #1274 PR② URL-normalization tighten: enqueueGithubIssue's
-  // confirmed-brief lookup is an EXACT STRING match, so the stamped value
-  // must always be built the SAME way githubIssueUrl() builds it
-  // server-side — never trusted verbatim off the CLI's own stdout, which
-  // could differ in host case / trailing slash / etc.
+// --- fix round M1: prefer GitHub's canonical html_url over the input-cased
+// reconstruction ------------------------------------------------------------
+
+test("resolveStampUrl prefers ref.url (GitHub's canonical html_url) over the repo+number reconstruction", () => {
+  // The CLI's printed line carries the INPUT repo casing in the `owner/repo#N`
+  // token but GitHub's own canonical casing in the URL (html_url) — the url
+  // must win, or a mis-cased configured repo silently never matches the
+  // webhook side's exact-string lookup (redundant second confirm forever).
+  const url = resolveStampUrl({
+    repo: "bensigo/AGENTRAIL", // input casing, as the connector echoes it
+    number: 7,
+    url: "https://github.com/Bensigo/agentrail/issues/7", // GitHub's canonical html_url
+  });
+  assert.equal(url, "https://github.com/Bensigo/agentrail/issues/7");
+});
+
+test("resolveStampUrl falls back to the repo+number reconstruction ONLY when ref.url is absent or empty", () => {
+  assert.equal(
+    resolveStampUrl({ repo: "owner/repo", number: 7 }),
+    "https://github.com/owner/repo/issues/7",
+  );
+  assert.equal(
+    resolveStampUrl({ repo: "owner/repo", number: 7, url: "" }),
+    "https://github.com/owner/repo/issues/7",
+  );
+});
+
+test("runCreateIssue: stamps ref.url VERBATIM (the canonical html_url), not a reconstruction from the input-cased repo token", async () => {
   const transport = fakeTransport(APPROVED_RELEARN_RESPONDER, OK_STAMP_RESPONDER);
-  const weirdCasingStdout =
-    "Created owner/repo#7 (label ready-for-agent): https://GITHUB.com/owner/repo/issues/7/\n";
+  // repo token mis-cased (input casing), URL canonical — the real M1 shape.
+  const misCasedRepoStdout =
+    "Created bensigo/AGENTRAIL#7 (label ready-for-agent): https://github.com/Bensigo/agentrail/issues/7\n";
   await runCreateIssue({
-    execFileFn: async () => ({ stdout: weirdCasingStdout, stderr: "" }),
+    execFileFn: async () => ({ stdout: misCasedRepoStdout, stderr: "" }),
     env: STAMP_ENV,
     title: "t",
     acceptanceCriteria: ["ac"],
@@ -641,5 +665,62 @@ test("runCreateIssue: stamps the CANONICAL url reconstructed from repo+number, n
     stampTransport: transport,
   });
   const stampBody = JSON.parse(transport.calls[1].init.body);
-  assert.equal(stampBody.url, "https://github.com/owner/repo/issues/7");
+  assert.equal(stampBody.url, "https://github.com/Bensigo/agentrail/issues/7");
+});
+
+test("runCreateIssue: an off-shape ref.url is passed through verbatim — the /published endpoint's regex guard is what refuses it (fail-safe: redundant confirm)", async () => {
+  const transport = fakeTransport(APPROVED_RELEARN_RESPONDER, async () => ({
+    status: 400, // what the endpoint's GITHUB_ISSUE_URL_RE guard would return
+    json: async () => ({ error: "url must be a canonical GitHub issue URL" }),
+  }));
+  const weirdStdout =
+    "Created owner/repo#7 (label ready-for-agent): https://GITHUB.com/owner/repo/issues/7/\n";
+  const ref = await runCreateIssue({
+    execFileFn: async () => ({ stdout: weirdStdout, stderr: "" }),
+    env: STAMP_ENV,
+    title: "t",
+    acceptanceCriteria: ["ac"],
+    eveSessionId: "eve-session-1",
+    toolInput: { title: "t" },
+    stampTransport: transport,
+  });
+  // The raw value went out (server-side guard owns the shape decision) and
+  // the refused stamp never affected the tool result.
+  const stampBody = JSON.parse(transport.calls[1].init.body);
+  assert.equal(stampBody.url, "https://GITHUB.com/owner/repo/issues/7/");
+  assert.equal(ref.number, 7);
+});
+
+// --- fix round M2: the relearn replay's status gates the stamp -------------
+
+test("stampCreatedIssueUrl: relearn replay reports status 'pending' (a ghost/fresh row, no human approval) -> the stamp call is never attempted", async () => {
+  const transport = fakeTransport(async () => ({
+    status: 201, // created:true shape — a FRESH row, exactly the ghost case
+    json: async () => ({ approvalId: "ghost-approval", status: "pending" }),
+  }));
+  await stampCreatedIssueUrl({
+    eveSessionId: "eve-session-1",
+    toolInput: { title: "x" },
+    url: "https://github.com/a/b/issues/1",
+    env: STAMP_ENV,
+    transport,
+  });
+  assert.equal(transport.calls.length, 1, "only the relearn POST — never the stamp");
+});
+
+test("stampCreatedIssueUrl: relearn replay reports status 'denied' or a missing status -> the stamp call is never attempted", async () => {
+  for (const body of [
+    { approvalId: "approval-1", status: "denied" },
+    { approvalId: "approval-1" }, // status absent entirely
+  ]) {
+    const transport = fakeTransport(async () => ({ status: 200, json: async () => body }));
+    await stampCreatedIssueUrl({
+      eveSessionId: "eve-session-1",
+      toolInput: { title: "x" },
+      url: "https://github.com/a/b/issues/1",
+      env: STAMP_ENV,
+      transport,
+    });
+    assert.equal(transport.calls.length, 1, `no stamp for replay body ${JSON.stringify(body)}`);
+  }
 });

@@ -49,6 +49,18 @@ export const workspaces = pgTable("workspaces", {
   // only for an earlier period — this column tracks the latest notified
   // period only, not a history).
   budgetExhaustedNotifiedPeriod: text("budget_exhausted_notified_period"),
+  // Grantable merge permission (#1278): the trust ceiling between "green gate
+  // -> PR opened, Jace waits for you" (default) and "green gate -> merges
+  // itself". Default false so every existing AND future workspace starts
+  // PR-only — the inverse polarity of hostedExecution above (that one
+  // defaults true; this one must default false, since merging is the one
+  // action this product never takes without an explicit grant). Read fresh
+  // at result-time (apps/console/app/api/v1/runner/result/route.ts) so a
+  // revoke is truly immediate — no caching, no WorkItem threading. Every
+  // flip is paired with a workspace_grant_events row in the SAME transaction
+  // (queries/workspace_grants.ts) so "who granted/when" always has a durable
+  // answer, not just this boolean.
+  mergePermission: boolean("merge_permission").notNull().default(false),
 });
 
 export type Workspace = typeof workspaces.$inferSelect;

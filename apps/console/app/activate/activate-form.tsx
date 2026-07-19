@@ -81,7 +81,7 @@ export function ActivateForm() {
           <button
             type="submit"
             disabled={loading || !code.trim()}
-            className="h-9 px-4 rounded bg-[var(--yellow-09)] text-black text-sm font-medium hover:bg-[#ffdc00] disabled:opacity-50 transition-colors"
+            className="h-9 px-4 rounded bg-[var(--yellow-09)] text-black text-sm font-medium hover:bg-[var(--yellow-09-hover)] disabled:opacity-50 transition-colors"
           >
             {loading ? "Authorizing…" : "Authorize runner"}
           </button>

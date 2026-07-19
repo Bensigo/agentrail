@@ -10,7 +10,7 @@ import {
   enqueueOnboard,
   workspaceHasExecutionPath,
 } from "@agentrail/db-postgres";
-import { requireBearer } from "../../../../../lib/bearer-auth";
+import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 
 const NAME_MAX = 100;
 const GITHUB_REPO_NAME_RE = /^[A-Za-z0-9._-]+$/;
@@ -171,21 +171,25 @@ async function createRepoWebhook(
  * gate lives entirely Eve-side, same class as `create_workspace` (#1264).
  *
  * SECURITY POSTURE
- * Auth + resolution mirror `runner/workspaces/route.ts` (#1264) EXACTLY: a
- * bearer AgentRail API key via `requireBearer`, then `{ eveSessionId, name,
- * private? }` resolved through the session ledger
+ * Auth + resolution mirror `runner/workspaces/route.ts` (#1264) EXACTLY: the
+ * central Jace-coordinator secret via `requireJaceConsoleSecret` (see that
+ * helper's own doc-comment — it replaced a per-workspace bearer AgentRail API
+ * key, `requireBearer`, once prod's api_keys table went to zero rows), then
+ * `{ eveSessionId, name, private? }` resolved through the session ledger
  * (`getJaceSessionByEveSessionId` -> `getChatIdentityById`) — never a
- * caller-supplied `(platform, platformUserId)` pair, and never the bearer's
- * OWN `workspaceId` (there is nothing to cross-check it against: a valid
- * bearer could in principle invoke this for an arbitrary `eveSessionId`
- * unrelated to its own traffic, the same residual #1264 accepts, offset by
- * the same compensating controls — `create_repo` never lets the model choose
- * `eveSessionId`, and every call is human-approved in the context of one
- * specific conversation). A session row with a null `chat_identity_id`, or no
- * session row at all, collapses into the SAME 404 as "chat identity not
- * found" — a distinguishable response would let any valid bearer enumerate
- * which sessions exist. The GitHub token is the WORKSPACE OWNER's stored
- * OAuth `access_token` (`getGithubToken`), read fresh at the point of use and
+ * caller-supplied `(platform, platformUserId)` pair. There has never been a
+ * caller-specific `workspaceId` to cross-check here (unchanged by the
+ * auth-model swap: even back when this route's guard was a per-workspace
+ * bearer, this route never compared against it — a valid bearer could in
+ * principle invoke this for an arbitrary `eveSessionId` unrelated to its own
+ * traffic, a residual #1264 accepts, offset by the same compensating
+ * controls — `create_repo` never lets the model choose `eveSessionId`, and
+ * every call is human-approved in the context of one specific conversation).
+ * A session row with a null `chat_identity_id`, or no session row at all,
+ * collapses into the SAME 404 as "chat identity not found" — a
+ * distinguishable response would let any valid caller enumerate which
+ * sessions exist. The GitHub token is the WORKSPACE OWNER's stored OAuth
+ * `access_token` (`getGithubToken`), read fresh at the point of use and
  * never returned to the caller or logged.
  *
  * WORKSPACE + TOKEN
@@ -248,9 +252,9 @@ async function createRepoWebhook(
  * never has to branch on its existence.
  */
 export async function POST(request: NextRequest) {
-  const auth = await requireBearer(request);
-  if (auth instanceof NextResponse) {
-    return auth;
+  const authError = requireJaceConsoleSecret(request);
+  if (authError) {
+    return authError;
   }
 
   let body: unknown;

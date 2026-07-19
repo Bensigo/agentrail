@@ -5,7 +5,7 @@ import {
   getChatIdentityById,
   setChatIdentityLinkToken,
 } from "@agentrail/db-postgres";
-import { requireBearer } from "../../../../../lib/bearer-auth";
+import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 
 // 24 bytes -> 48 hex chars, comfortably over the 32-char floor. Same
 // randomBytes(...).toString("hex") idiom as `recordApprovalRequest`'s
@@ -34,9 +34,13 @@ function isRawBody(v: unknown): v is RawBody {
  * moment + in-thread confirmation are issue #1263 PR ②, built alongside this
  * route rewrite).
  *
- * Auth mirrors GET /api/v1/runner/workspace-memory: a bearer AgentRail API
- * key via `requireBearer`, which exposes the caller's own `workspaceId` —
- * used below to scope who this endpoint will mint a link for.
+ * AUTH (updated for the central-secret fix, 2026-07-20): the central
+ * `JACE_CONSOLE_TOKEN` secret via `requireJaceConsoleSecret` — see that
+ * helper's own doc-comment. Pre-fix this was a per-workspace bearer AgentRail
+ * API key via `requireBearer`, which exposed the caller's own `workspaceId`
+ * and was used to scope who this endpoint would mint a link for (the two
+ * `bearerWorkspaceId` comparisons below are gone — see "What remains" below
+ * for what replaces that scoping).
  *
  * ### Body: `{ eveSessionId }` — NOT `{ platform, platformUserId }` (#1263
  * PR ① review's accepted residual, closed here)
@@ -66,57 +70,44 @@ function isRawBody(v: unknown): v is RawBody {
  * What this closes, precisely: the GUESSABLE `(platform, platformUserId)`
  * input above — a pair a caller could pick and iterate — is gone;
  * `eveSessionId` is an opaque runtime identifier Eve mints, never a value a
- * caller chooses. And the tenant cross-check that follows now runs on BOTH
- * halves of the resolution chain: the resolved identity's `workspaceId`
- * (PR ①'s original check) and, new in this PR, the session row's OWN
- * `workspaceId` (a session graduates its `workspaceId` independently of its
- * identity's — see `jace_sessions.ts`'s schema comment — so the two can
- * diverge). This does NOT mean the endpoint can only ever mint for "the
- * identity behind the conversation actually asking" — see the residual
- * immediately below.
+ * caller chooses.
  *
- * What remains, an accepted and narrowed residual: a valid bearer can still
- * mint a link for a never-connected "intro" identity/session (both
- * `workspaceId`s null) that has nothing to do with its own conversation —
- * with no tenant on either side yet, there is nothing left here to scope
- * against. Two things keep this from being exploitable in practice: the
- * minted URL is only ever delivered in-thread by Jace's own reply — there is
- * no separate "send to an address" step (see `send_connect_link`'s own
- * doc-comment) — and the redemption-side `foreign_user` guard from PR ①
- * (`connect-bind-decision.ts`'s `decideConnectIdentityBind`) backstops a
- * stale or otherwise-misdirected link by refusing to rebind an identity
- * already linked to someone else.
+ * What remains, an accepted and — under the central-secret model — WIDENED
+ * residual (originally "narrowed" when this route still had a per-workspace
+ * bearer to cross-check the resolved identity/session against; that
+ * cross-check is gone now for the same reason `runner/approvals/route.ts`
+ * dropped its own `crossTenant` check — there is no longer a caller-specific
+ * `workspaceId` to compare against, since `JACE_CONSOLE_TOKEN` is ONE shared
+ * secret for the whole deployment): a valid caller can mint a link for ANY
+ * identity/session this endpoint doesn't otherwise refuse — not just a
+ * never-connected "intro" one. Three things keep this from being
+ * exploitable: (1) the secret is held only by Jace's own shared coordinator,
+ * which legitimately serves every workspace's conversations — the same trust
+ * boundary `FLEET_CONSOLE_TOKEN` already accepts for the fleet's own
+ * deployment-wide reach; (2) the minted URL is only ever delivered in-thread
+ * by Jace's own reply — there is no separate "send to an address" step (see
+ * `send_connect_link`'s own doc-comment); (3) the redemption-side
+ * `foreign_user` guard from PR ① (`connect-bind-decision.ts`'s
+ * `decideConnectIdentityBind`) backstops a stale or otherwise-misdirected
+ * link by refusing to rebind an identity already linked to someone else.
  *
- * Open and unconfirmed, tracked as a follow-up under #1295: how much entropy
- * `eveSessionId` actually carries, and whether `JACE_CONSOLE_TOKEN` is
- * per-workspace or one bearer shared across workspaces — both bound how
- * narrow the residual above really is.
+ * #1295's "is JACE_CONSOLE_TOKEN per-workspace or one bearer shared across
+ * workspaces" question is now settled (shared, deployment-wide — see
+ * `jace-console-auth.ts`). How much entropy `eveSessionId` itself carries
+ * remains open and unconfirmed, and still bounds how narrow the residual
+ * above really is.
  *
- * The PR ① eligibility rules below are otherwise unchanged; this PR adds
- * only the session-side tenant check alongside them. Refuses to mint (404,
- * the SAME body as the unknown-identity 404 — never a distinguishable status
- * or message) when ANY of:
+ * The PR ① eligibility rule below is otherwise unchanged. Refuses to mint
+ * (404, the SAME body as the unknown-identity 404 — never a distinguishable
+ * status or message) when:
  *  - the identity already has a linked user (`userId` non-null). Re-linking
  *    an already-bound identity is a deliberate future flow, not this
  *    endpoint's job: minting here would hand out a redeemable token that
  *    silently rebinds someone else's identity to whoever redeems it.
- *  - the identity has a resolved `workspaceId` that DIFFERS from the
- *    bearer's own `workspaceId` (tenant scoping). A pre-workspace "intro"
- *    identity (`workspaceId` NULL) has no tenant yet, so minting for it
- *    stays allowed for any valid bearer — that's the intended cold-start
- *    flow this endpoint exists for. An identity already resolved to the
- *    SAME workspace as the bearer is allowed through too.
- *  - the SESSION row itself has a resolved `workspaceId` that DIFFERS from
- *    the bearer's own `workspaceId`. A session's `workspaceId` graduates
- *    independently of its identity's (`bindJaceSessionWorkspace` vs
- *    `bindChatIdentityWorkspace`), so this catches a cross-tenant mint the
- *    identity-side check alone could miss. An intro session (`workspaceId`
- *    NULL) has no tenant yet and stays mintable, same rationale as the
- *    identity case above.
- * All three refusals collapse into the same 404 as "identity not found" on
- * purpose: a distinguishable response would let any valid bearer enumerate
- * which sessions/identities exist and which tenant/user they already belong
- * to, just by reading the status code.
+ * This refusal collapses into the same 404 as "identity not found" on
+ * purpose: a distinguishable response would let any valid caller enumerate
+ * which sessions/identities exist and which user they already belong to,
+ * just by reading the status code.
  *
  * Re-minting for a still-eligible identity that already carries an
  * unexpired token simply overwrites it (`setChatIdentityLinkToken` is
@@ -130,11 +121,10 @@ function isRawBody(v: unknown): v is RawBody {
  * (no NEXTAUTH_URL/AUTH_URL/APP_URL env exists in this deploy).
  */
 export async function POST(request: NextRequest) {
-  const auth = await requireBearer(request);
-  if (auth instanceof NextResponse) {
-    return auth;
+  const authError = requireJaceConsoleSecret(request);
+  if (authError) {
+    return authError;
   }
-  const { workspaceId: bearerWorkspaceId } = auth;
 
   let body: unknown;
   try {
@@ -156,11 +146,7 @@ export async function POST(request: NextRequest) {
     ? await getChatIdentityById(chatIdentityId)
     : null;
 
-  const ineligible =
-    !identity ||
-    identity.userId != null ||
-    (identity.workspaceId != null && identity.workspaceId !== bearerWorkspaceId) ||
-    (session?.workspaceId != null && session.workspaceId !== bearerWorkspaceId);
+  const ineligible = !identity || identity.userId != null;
   if (ineligible) {
     return NextResponse.json({ error: "Chat identity not found" }, { status: 404 });
   }

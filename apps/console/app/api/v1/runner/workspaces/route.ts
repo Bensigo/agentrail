@@ -7,7 +7,7 @@ import {
   createWorkspaceOwnerElect,
   pinConversationWorkspace,
 } from "@agentrail/db-postgres";
-import { requireBearer } from "../../../../../lib/bearer-auth";
+import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 
 const NAME_MAX = 80;
 // Random hex size: 3 bytes -> 6 hex chars. Used both to break a slug
@@ -139,15 +139,17 @@ async function createWorkspaceWithSlugRetry(input: {
  * `approval: always()` gate, same class as `create_issue`) — this route
  * itself performs no further approval; the gate lives entirely Eve-side.
  *
- * Auth + resolution mirror `connect-link/route.ts` EXACTLY: a bearer
- * AgentRail API key via `requireBearer`, then `{ eveSessionId }` resolved
+ * Auth + resolution mirror `connect-link/route.ts` EXACTLY: the central
+ * Jace-coordinator secret via `requireJaceConsoleSecret` (that helper's own
+ * doc-comment covers the auth-model swap from a per-workspace bearer
+ * AgentRail API key, `requireBearer`), then `{ eveSessionId }` resolved
  * through the session ledger (`getJaceSessionByEveSessionId` ->
  * `getChatIdentityById`) — never a caller-supplied `(platform,
  * platformUserId)` pair. A session row with a null `chat_identity_id`, or no
  * session row at all for this `eveSessionId`, collapses into the SAME 404 as
  * "chat identity not found" — the same indistinguishable-by-design posture
  * connect-link uses for this exact resolution boundary, for the same reason
- * (a distinguishable response would let any valid bearer enumerate which
+ * (a distinguishable response would let any valid caller enumerate which
  * sessions exist).
  *
  * Past that resolution boundary, this route's refusals are deliberately
@@ -165,17 +167,19 @@ async function createWorkspaceWithSlugRetry(input: {
  *    to a workspace (independent of this session's own pin; see
  *    `jace_sessions.ts`'s schema comment on the two graduating separately).
  *
- * Unlike connect-link, this route never cross-checks the bearer's OWN
- * `workspaceId` against anything: there is no existing tenant to protect
- * here (the whole point is creating a brand-new one), so that check would
- * have nothing to compare against. The same residual connect-link's
- * doc-comment accepts therefore applies here too — a valid bearer could
- * invoke this for an arbitrary `eveSessionId` unrelated to its own traffic —
- * with the same compensating controls: `create_workspace` never lets the
- * model choose `eveSessionId` (it reads `ctx.session.id` off ToolContext),
- * and every call is human-approved in the context of one specific
- * conversation. See connect-link/route.ts's doc-comment and issue #1295 for
- * the open confirmations this shares.
+ * This route never cross-checks a caller-specific `workspaceId` against
+ * anything — there is no existing tenant to protect here (the whole point is
+ * creating a brand-new one), so that check would have nothing to compare
+ * against even under the old per-workspace-bearer auth model. The same
+ * residual connect-link's doc-comment accepts therefore applies here too — a
+ * valid caller could invoke this for an arbitrary `eveSessionId` unrelated to
+ * its own traffic — with the same compensating controls: `create_workspace`
+ * never lets the model choose `eveSessionId` (it reads `ctx.session.id` off
+ * ToolContext), and every call is human-approved in the context of one
+ * specific conversation. See connect-link/route.ts's doc-comment for the
+ * shared resolution pattern; #1295's "is JACE_CONSOLE_TOKEN per-workspace or
+ * shared" question is now settled (shared, deployment-wide — see
+ * `jace-console-auth.ts`).
  *
  * Validation: `name` must be a non-empty string, trimmed, 1-80 characters,
  * else 400 — checked before any DB call. `slug` is derived from `name`
@@ -214,9 +218,9 @@ async function createWorkspaceWithSlugRetry(input: {
  * NEXTAUTH_URL/AUTH_URL/APP_URL env exists in this deploy).
  */
 export async function POST(request: NextRequest) {
-  const auth = await requireBearer(request);
-  if (auth instanceof NextResponse) {
-    return auth;
+  const authError = requireJaceConsoleSecret(request);
+  if (authError) {
+    return authError;
   }
 
   let body: unknown;

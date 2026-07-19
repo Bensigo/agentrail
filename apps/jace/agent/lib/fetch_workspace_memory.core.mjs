@@ -6,18 +6,26 @@
 // (real `fetch` in the thin tool wrapper, a fake in tests), so every branch —
 // including the degraded ones — is unit-testable without a live server.
 //
-// Auth model: Jace is a separate app from the runner and does NOT read the
-// runner's ~/.agentrail/credentials.json. It resolves its own console endpoint +
-// bearer from the environment (JACE_CONSOLE_BASE_URL / JACE_CONSOLE_TOKEN). The
-// workspace is derived from the token server-side, so this NEVER takes a
-// workspaceId argument. The only thing the model supplies is `query` — a short
-// natural-language description of what it's looking for — sent as a URL query
-// param so the console can rank + trim the result (retrieveMemory) instead of
-// dumping the whole memory table. When either config var is unset, or the
-// endpoint is unreachable, or the console returns a non-2xx, this returns a
-// DEGRADED result (never throws, never retries) so the coordinator can honestly
-// report "workspace memory unavailable" instead of crashing or storming the
-// endpoint.
+// Auth model (updated for the central-secret fix, 2026-07-20): Jace is a
+// separate app from the runner and does NOT read the runner's
+// ~/.agentrail/credentials.json. It resolves its own console endpoint + the
+// shared JACE_CONSOLE_TOKEN secret from the environment
+// (JACE_CONSOLE_BASE_URL / JACE_CONSOLE_TOKEN) — a single deployment-wide
+// secret, not a per-workspace bearer, so the console can no longer derive
+// "which workspace" from the token the way it used to. This module now ALSO
+// takes `eveSessionId` — Eve's own session id for the conversation actually
+// asking (`ctx.session.id`, read server-side by the tool wrapper, never
+// model-supplied) — which the console resolves through the `jace_sessions`
+// ledger to the real tenant. This is still NEVER a workspaceId argument: the
+// caller supplies an opaque session id, not a workspace to read from
+// directly. The other thing the model supplies is `query` — a short
+// natural-language description of what it's looking for — sent as a URL
+// query param so the console can rank + trim the result (retrieveMemory)
+// instead of dumping the whole memory table. When either config var is
+// unset, `eveSessionId` is blank, the endpoint is unreachable, or the
+// console returns a non-2xx, this returns a DEGRADED result (never throws,
+// never retries) so the coordinator can honestly report "workspace memory
+// unavailable" instead of crashing or storming the endpoint.
 
 import { hardenUntrusted } from "./sanitize-untrusted.core.mjs";
 
@@ -51,7 +59,7 @@ const DEGRADED_NOTES = {
   config_missing:
     "The console workspace-memory endpoint is not configured for this Jace deployment (JACE_CONSOLE_BASE_URL / JACE_CONSOLE_TOKEN); no workspace memory could be fetched.",
   bad_request:
-    "The workspace-memory request was rejected as malformed (400); no workspace memory could be fetched.",
+    "The workspace-memory request was rejected as malformed (400, or a missing eveSessionId caught before the request was even sent); no workspace memory could be fetched.",
   unreachable:
     "The console workspace-memory endpoint could not be reached (network error); no workspace memory could be fetched. Do not retry from here.",
   unauthorized:
@@ -83,20 +91,28 @@ export function resolveConsoleConfig(env = {}) {
 }
 
 /**
- * Build the workspace-memory URL. The workspace is derived from the bearer
- * token server-side, so it is NEVER a param here. `query` — the search text —
- * is sent as a URL-encoded `query` param when non-empty; an empty/whitespace
- * query is omitted entirely (the endpoint treats a missing query the same as
- * an empty one, falling back to its pinned-decision/recency default).
+ * Build the workspace-memory URL. `eveSessionId` — Eve's own opaque session
+ * id for the calling conversation — is what the console resolves the real
+ * tenant from server-side (via the jace_sessions ledger); this is NEVER a
+ * workspaceId param. `query` — the search text — is sent as a URL-encoded
+ * `query` param when non-empty; an empty/whitespace query is omitted
+ * entirely (the endpoint treats a missing query the same as an empty one,
+ * falling back to its pinned-decision/recency default).
  *
  * @param {string} baseUrl — already trimmed + de-slashed
+ * @param {string} eveSessionId — already trimmed, expected non-empty (the
+ *   caller, fetchWorkspaceMemory, guards blank before this is ever called)
  * @param {string} [query]
  * @returns {string}
  */
-export function buildMemoryUrl(baseUrl, query = "") {
-  const trimmed = typeof query === "string" ? query.trim() : "";
-  if (!trimmed) return `${baseUrl}${MEMORY_PATH}`;
-  return `${baseUrl}${MEMORY_PATH}?query=${encodeURIComponent(trimmed)}`;
+export function buildMemoryUrl(baseUrl, eveSessionId, query = "") {
+  const parts = [];
+  const trimmedSession = typeof eveSessionId === "string" ? eveSessionId.trim() : "";
+  if (trimmedSession) parts.push(`eveSessionId=${encodeURIComponent(trimmedSession)}`);
+  const trimmedQuery = typeof query === "string" ? query.trim() : "";
+  if (trimmedQuery) parts.push(`query=${encodeURIComponent(trimmedQuery)}`);
+  if (!parts.length) return `${baseUrl}${MEMORY_PATH}`;
+  return `${baseUrl}${MEMORY_PATH}?${parts.join("&")}`;
 }
 
 /**
@@ -168,24 +184,29 @@ export function projectItems(body) {
  * Fetch a ranked, budget-capped slice of the workspace's durable memory for a
  * `query`, or a degraded result. Single attempt, no retry, never throws:
  *
- *   1. unset console config    → degraded("config_missing", { missing })
- *   2. transport throws        → degraded("unreachable")
- *   3. non-2xx status          → degraded(<mapped reason>, { status })
- *   4. non-JSON body           → degraded("bad_body", { status })
- *   5. success                 → { ok:true, items, count }
+ *   1. blank eveSessionId      → degraded("bad_request")
+ *   2. unset console config    → degraded("config_missing", { missing })
+ *   3. transport throws        → degraded("unreachable")
+ *   4. non-2xx status          → degraded(<mapped reason>, { status })
+ *   5. non-JSON body           → degraded("bad_body", { status })
+ *   6. success                 → { ok:true, items, count }
  *
- * The workspace is derived from the bearer token server-side; this NEVER takes a
- * workspaceId argument. `query` (the model's search text) rides as a URL param.
+ * `eveSessionId` (Eve's own opaque session id) is what the console resolves
+ * the real tenant from server-side; this NEVER takes a workspaceId argument.
+ * `query` (the model's search text) rides as a URL param.
  *
- * @param {{ query?: string, env?: Record<string, string|undefined>,
+ * @param {{ eveSessionId: string, query?: string, env?: Record<string, string|undefined>,
  *           transport: (url: string, init: { headers: Record<string,string> }) =>
  *             Promise<{ status: number, json: () => Promise<unknown> }> }} args
  */
-export async function fetchWorkspaceMemory({ query = "", env = {}, transport }) {
+export async function fetchWorkspaceMemory({ eveSessionId, query = "", env = {}, transport }) {
+  const sessionId = String(eveSessionId ?? "").trim();
+  if (!sessionId) return degraded("bad_request");
+
   const cfg = resolveConsoleConfig(env);
   if (!cfg.ok) return degraded("config_missing", { missing: cfg.missing });
 
-  const url = buildMemoryUrl(cfg.baseUrl, query);
+  const url = buildMemoryUrl(cfg.baseUrl, sessionId, query);
 
   let res;
   try {

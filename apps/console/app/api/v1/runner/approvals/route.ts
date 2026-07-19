@@ -3,7 +3,7 @@ import {
   getJaceSessionByEveSessionId,
   recordApprovalRequest,
 } from "@agentrail/db-postgres";
-import { requireBearer } from "../../../../../lib/bearer-auth";
+import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 import { renderApprovalMessage } from "../../../../../lib/approval-message";
 import { composeChatBornBrief } from "../../../../../lib/alignment-brief";
 import {
@@ -21,27 +21,31 @@ import {
  * composes the RICH per-tool message (`renderApprovalMessage`), and sends it
  * with an Approve/Deny inline keyboard to the requesting conversation.
  *
- * Auth mirrors `POST /api/v1/runner/connect-link` (issue #1263 PR ②, the
- * "#1264 route auth idiom"): a bearer AgentRail API key via `requireBearer`
- * resolves `bearerWorkspaceId`, but the REAL tenant is resolved server-side
- * from `eveSessionId` through the `jace_sessions` ledger
- * (`getJaceSessionByEveSessionId`) — never from caller input. The bearer's
- * own workspace is used only as a cross-tenant SAFETY NET (refuse when the
- * ledgered session already belongs to a DIFFERENT workspace), with the same
- * accepted residual connect-link documents: an intro (workspace-less)
- * session — the create_workspace cold-start case this seam exists for — has
- * no tenant yet, so it is mintable by any valid bearer. Whether
- * `JACE_CONSOLE_TOKEN` (this route's caller) is per-workspace or one bearer
- * shared across the whole hosted deployment is the SAME open, unconfirmed
- * question connect-link's doc-comment tracks under #1295 — this route
- * inherits that posture rather than re-litigating it.
+ * AUTH (updated for the central-secret fix, 2026-07-20): authenticated via
+ * the shared `JACE_CONSOLE_TOKEN` secret (`requireJaceConsoleSecret` — see
+ * that helper's own doc-comment) rather than a per-workspace bearer AgentRail
+ * API key. The REAL tenant is resolved server-side from `eveSessionId`
+ * through the `jace_sessions` ledger (`getJaceSessionByEveSessionId`) —
+ * never from caller input, unchanged. What DID change: the old
+ * `requireBearer`-based guard additionally cross-checked the bearer's OWN
+ * `workspaceId` against the ledgered session's as a defense-in-depth safety
+ * net; that check is gone because there is no longer a caller-specific
+ * workspace to compare against — `JACE_CONSOLE_TOKEN` is ONE shared secret
+ * for the whole deployment (settling #1295's "per-workspace or shared"
+ * question: shared, exactly mirroring `FLEET_CONSOLE_TOKEN`), held only by
+ * Jace's own shared coordinator, which legitimately serves every workspace's
+ * conversations. The invariant that survives is the one that actually
+ * matters: a caller can never DIRECT this route at an arbitrary workspace —
+ * it only ever supplies an opaque `eveSessionId`, and the workspace used
+ * below is whatever the session ledger already resolved it to server-side,
+ * same as before.
  *
  * Body: `{ eveSessionId, toolName, toolInput, idempotencyKey }`. Every
  * failure to resolve a usable session — absent, or a defensive (unreachable
- * in practice) row with neither anchor, or a cross-tenant mismatch —
- * collapses into the SAME 404 body (house anti-enumeration posture,
- * matching connect-link): a caller cannot distinguish "no such session"
- * from "wrong tenant" from a data anomaly by reading the response.
+ * in practice) row with neither anchor (no `workspaceId` AND no
+ * `chatIdentityId`) — collapses into the SAME 404 body (house
+ * anti-enumeration posture, matching connect-link): a caller cannot
+ * distinguish "no such session" from a data anomaly by reading the response.
  *
  * `chatIdentityId`/`workspaceId` are both passed through to
  * `recordApprovalRequest` whenever the session has them (NOT an either/or
@@ -199,11 +203,10 @@ async function sendApprovalMessage(
 }
 
 export async function POST(request: NextRequest) {
-  const auth = await requireBearer(request);
-  if (auth instanceof NextResponse) {
-    return auth;
+  const authError = requireJaceConsoleSecret(request);
+  if (authError) {
+    return authError;
   }
-  const { workspaceId: bearerWorkspaceId } = auth;
 
   let body: unknown;
   try {
@@ -224,11 +227,7 @@ export async function POST(request: NextRequest) {
   const session = await getJaceSessionByEveSessionId(body.eveSessionId);
   const hasNoAnchor =
     !session || (session.workspaceId == null && session.chatIdentityId == null);
-  const crossTenant =
-    !!session &&
-    session.workspaceId != null &&
-    session.workspaceId !== bearerWorkspaceId;
-  if (hasNoAnchor || crossTenant) {
+  if (hasNoAnchor) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 

@@ -4,7 +4,7 @@ import {
   getJaceSessionByEveSessionId,
   stampPublishedIssueUrl,
 } from "@agentrail/db-postgres";
-import { requireBearer } from "../../../../../../../lib/bearer-auth";
+import { requireJaceConsoleSecret } from "../../../../../../../lib/jace-console-auth";
 
 /**
  * POST /api/v1/runner/approvals/[id]/published
@@ -26,15 +26,21 @@ import { requireBearer } from "../../../../../../../lib/bearer-auth";
  *
  * AUTH mirrors POST /api/v1/runner/approvals' own resolution chain (this
  * route's sibling, the ONLY other route in this seam that resolves tenant
- * via an eveSessionId rather than trusting an opaque id alone): bearer ->
- * `bearerWorkspaceId`, PLUS the target approval's OWN `eveSessionId`
- * resolved through the `jace_sessions` ledger and cross-checked against
- * that workspace — collapsed to the SAME indistinguishable 404 that route
- * uses (an unknown id, and an id whose owning session has no anchor or
- * belongs to a different workspace, all read identically to the caller).
- * Unlike `GET .../approvals/[id]` (which trusts the opaque uuid ALONE,
- * documented there as sufficient for a READ), this is a WRITE — `id` alone
- * is not treated as a sufficient security boundary here.
+ * via an eveSessionId rather than trusting an opaque id alone): the central
+ * `JACE_CONSOLE_TOKEN` secret via `requireJaceConsoleSecret` (see that
+ * helper's own doc-comment for the auth-model swap from a per-workspace
+ * bearer), PLUS the target approval's OWN `eveSessionId` resolved through
+ * the `jace_sessions` ledger — collapsed to the SAME indistinguishable 404
+ * that route uses (an unknown id, or an id whose owning session has no
+ * anchor, read identically to the caller). Pre-central-secret this also
+ * cross-checked the bearer's own workspace; that check is gone for the same
+ * reason `runner/approvals/route.ts` dropped it (see that route's
+ * doc-comment) — there is no longer a caller-specific workspace to compare
+ * against. Unlike `GET .../approvals/[id]` (which trusts the opaque uuid
+ * ALONE, documented there as sufficient for a READ), this is a WRITE — `id`
+ * alone is not treated as a sufficient security boundary here, which is why
+ * the session/anchor check below still runs even though the cross-tenant
+ * half of it fell away.
  *
  * Body: `{ url }`. `url` MUST match the EXACT shape
  * `githubIssueUrl()` (`@agentrail/db-postgres`) produces —
@@ -89,11 +95,10 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = await requireBearer(request);
-  if (auth instanceof NextResponse) {
-    return auth;
+  const authError = requireJaceConsoleSecret(request);
+  if (authError) {
+    return authError;
   }
-  const { workspaceId: bearerWorkspaceId } = auth;
 
   let body: unknown;
   try {
@@ -144,25 +149,34 @@ export async function POST(
 
   // Same resolution chain as POST /api/v1/runner/approvals — sourced from
   // the approval's OWN stored eveSessionId (already known once fetched by
-  // id) rather than a caller-supplied one, since `id` plus this row-owned
-  // value is enough to reproduce that exact bearer+session cross-check.
+  // id) rather than a caller-supplied one.
   //
-  // NULL-workspace note (#1274 PR ② fix round, M3): an approval anchored
-  // to an intro (chat-identity-only) session passes this check — with
-  // `workspaceId` null, `hasNoAnchor` is false (chatIdentityId present)
-  // and `crossTenant` is false — so ANY valid bearer can stamp such a row.
-  // ACCEPTED, because it is defacement-grade only: the admission lookup
-  // (`findConfirmedAlignmentBriefApproval`) requires
-  // `jace_approvals.workspace_id = <the ENQUEUING workspace>`, and SQL
-  // `NULL = <uuid>` is never true — a workspace-less approval can
-  // therefore never satisfy admission for ANY workspace, no matter what
-  // gets stamped onto it.
+  // NULL-workspace note (#1274 PR ② fix round, M3 — UPDATED for the
+  // central-secret auth model): an approval anchored to an intro
+  // (chat-identity-only) session passes this check — `workspaceId` null,
+  // `chatIdentityId` present, so `hasNoAnchor` is false. M3 originally
+  // accepted this as defacement-grade-only under the OLD per-workspace-bearer
+  // model, reasoning that a mismatched bearer could stamp a workspace-less
+  // row but never a resolved-workspace one (that case was blocked by a
+  // `crossTenant` check compared against the bearer's own `workspaceId`).
+  // That `crossTenant` check is gone now — there is no longer a
+  // caller-specific workspace to compare against (`JACE_CONSOLE_TOKEN` is
+  // ONE shared secret for the whole deployment, same as
+  // `runner/approvals/route.ts` — see that route's doc-comment) — so the M3
+  // reasoning now extends to EVERY approval, not just workspace-less ones:
+  // any valid caller of the shared secret can stamp any create_issue
+  // approval's `published_issue_url`, constrained only by the URL-shape
+  // regex above. Still safe for the same downstream reason M3 relied on:
+  // `findConfirmedAlignmentBriefApproval` requires an EXACT match on
+  // `jace_approvals.workspace_id = <the ENQUEUING workspace>` AND the exact
+  // stamped URL string, so a stamp on the wrong row can misdirect at most
+  // ONE issue's one-confirm collapse to fall back to a redundant (but safe)
+  // second alignment confirm — never grant admission for a workspace the
+  // stamped approval doesn't itself, genuinely, belong to.
   const session = await getJaceSessionByEveSessionId(approval.eveSessionId);
   const hasNoAnchor =
     !session || (session.workspaceId == null && session.chatIdentityId == null);
-  const crossTenant =
-    !!session && session.workspaceId != null && session.workspaceId !== bearerWorkspaceId;
-  if (hasNoAnchor || crossTenant) {
+  if (hasNoAnchor) {
     return NextResponse.json({ error: "Approval not found" }, { status: 404 });
   }
 

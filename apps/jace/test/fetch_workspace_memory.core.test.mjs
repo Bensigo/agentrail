@@ -7,9 +7,12 @@
 // a cause-free note (never the workspace's content, never transport error text,
 // never the bearer token).
 //
-// The workspace is still NEVER a param (derived from the bearer token
-// server-side) — but the model-supplied `query` now IS, so the console can rank
-// + trim via `retrieveMemory` instead of dumping the whole memory table.
+// The workspace is still NEVER a param — under the central-secret auth model
+// (2026-07-20) it's derived server-side from the REQUIRED `eveSessionId` via
+// the console's jace_sessions ledger, not from the (now deployment-wide,
+// non-per-workspace) bearer token. The model-supplied `query` rides as a URL
+// param so the console can rank + trim via `retrieveMemory` instead of
+// dumping the whole memory table.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -27,6 +30,7 @@ const ENV = {
   JACE_CONSOLE_BASE_URL: "https://console.example.com",
   JACE_CONSOLE_TOKEN: "tok-secret-123",
 };
+const EVE_SESSION_ID = "eve-session-abc";
 
 // A fake transport that records how many times it was called and with what, so
 // we can assert single-attempt (no-retry) behaviour and header shape.
@@ -76,22 +80,40 @@ test("resolveConsoleConfig reports exactly which vars are missing", () => {
 // buildMemoryUrl / classifyStatus
 // ---------------------------------------------------------------------------
 
-test("buildMemoryUrl omits the query param when the query is empty/whitespace", () => {
-  assert.equal(buildMemoryUrl("https://c.example.com"), `https://c.example.com${MEMORY_PATH}`);
-  assert.equal(buildMemoryUrl("https://c.example.com", ""), `https://c.example.com${MEMORY_PATH}`);
-  assert.equal(buildMemoryUrl("https://c.example.com", "   "), `https://c.example.com${MEMORY_PATH}`);
-});
-
-test("buildMemoryUrl carries the (trimmed, URL-encoded) query as a query param", () => {
-  const url = buildMemoryUrl("https://c.example.com", "  test commands & conventions  ");
+test("buildMemoryUrl carries the (trimmed, URL-encoded) eveSessionId as a query param", () => {
+  const url = buildMemoryUrl("https://c.example.com", `  ${EVE_SESSION_ID}  `);
   assert.equal(
     url,
-    `https://c.example.com${MEMORY_PATH}?query=${encodeURIComponent("test commands & conventions")}`
+    `https://c.example.com${MEMORY_PATH}?eveSessionId=${encodeURIComponent(EVE_SESSION_ID)}`
   );
 });
 
-test("buildMemoryUrl NEVER carries a workspace param — the workspace comes from the token", () => {
-  const url = buildMemoryUrl("https://c.example.com", "workspaceId=evil-tenant");
+test("buildMemoryUrl omits the query param when the query is empty/whitespace, but keeps eveSessionId", () => {
+  const expected = `https://c.example.com${MEMORY_PATH}?eveSessionId=${encodeURIComponent(EVE_SESSION_ID)}`;
+  assert.equal(buildMemoryUrl("https://c.example.com", EVE_SESSION_ID), expected);
+  assert.equal(buildMemoryUrl("https://c.example.com", EVE_SESSION_ID, ""), expected);
+  assert.equal(buildMemoryUrl("https://c.example.com", EVE_SESSION_ID, "   "), expected);
+});
+
+test("buildMemoryUrl carries both the (trimmed, URL-encoded) eveSessionId and query as query params", () => {
+  const url = buildMemoryUrl(
+    "https://c.example.com",
+    EVE_SESSION_ID,
+    "  test commands & conventions  "
+  );
+  assert.equal(
+    url,
+    `https://c.example.com${MEMORY_PATH}?eveSessionId=${encodeURIComponent(EVE_SESSION_ID)}&query=${encodeURIComponent("test commands & conventions")}`
+  );
+});
+
+test("buildMemoryUrl returns the bare path when both eveSessionId and query are blank (defensive — the real caller, fetchWorkspaceMemory, never reaches here with a blank eveSessionId)", () => {
+  assert.equal(buildMemoryUrl("https://c.example.com", ""), `https://c.example.com${MEMORY_PATH}`);
+  assert.equal(buildMemoryUrl("https://c.example.com"), `https://c.example.com${MEMORY_PATH}`);
+});
+
+test("buildMemoryUrl NEVER carries a workspace param — the workspace is resolved server-side from eveSessionId", () => {
+  const url = buildMemoryUrl("https://c.example.com", EVE_SESSION_ID, "workspaceId=evil-tenant");
   // The (attacker-controlled) query text is URL-encoded as the VALUE of `query`,
   // never parsed as its own param name.
   assert.doesNotMatch(url, /[?&]workspaceId=/);
@@ -213,31 +235,45 @@ test("fetchWorkspaceMemory returns projected items + count on 200 (ok path)", as
     ],
   };
   const transport = fakeTransport(() => ({ status: 200, json: async () => body }));
-  const res = await fetchWorkspaceMemory({ query: "build and test commands", env: ENV, transport });
+  const res = await fetchWorkspaceMemory({
+    eveSessionId: EVE_SESSION_ID,
+    query: "build and test commands",
+    env: ENV,
+    transport,
+  });
   assert.equal(res.ok, true);
   assert.equal(res.count, 2);
   assert.equal(res.items.length, 2);
   assert.equal(res.items[0].id, "m1");
   assert.equal(res.items[1].content, "node --test");
-  // Exactly one attempt, with the bearer + accept headers, to a URL carrying the query.
+  // Exactly one attempt, with the bearer + accept headers, to a URL carrying
+  // both the eveSessionId and the query.
   assert.equal(transport.calls.length, 1);
   assert.equal(transport.calls[0].init.headers.Authorization, "Bearer tok-secret-123");
   assert.equal(transport.calls[0].init.headers.Accept, "application/json");
   assert.equal(
     transport.calls[0].url,
-    `https://console.example.com${MEMORY_PATH}?query=${encodeURIComponent("build and test commands")}`
+    `https://console.example.com${MEMORY_PATH}?eveSessionId=${encodeURIComponent(EVE_SESSION_ID)}&query=${encodeURIComponent("build and test commands")}`
   );
 });
 
-test("fetchWorkspaceMemory sends no query param when query is omitted/empty", async () => {
+test("fetchWorkspaceMemory sends no query param when query is omitted/empty, but always sends eveSessionId", async () => {
   const transport = fakeTransport(() => ({ status: 200, json: async () => ({ items: [] }) }));
-  await fetchWorkspaceMemory({ env: ENV, transport });
-  assert.equal(transport.calls[0].url, `https://console.example.com${MEMORY_PATH}`);
+  await fetchWorkspaceMemory({ eveSessionId: EVE_SESSION_ID, env: ENV, transport });
+  assert.equal(
+    transport.calls[0].url,
+    `https://console.example.com${MEMORY_PATH}?eveSessionId=${encodeURIComponent(EVE_SESSION_ID)}`
+  );
 });
 
 test("fetchWorkspaceMemory returns an empty list (not degraded) when the workspace has no memory", async () => {
   const transport = fakeTransport(() => ({ status: 200, json: async () => ({ items: [] }) }));
-  const res = await fetchWorkspaceMemory({ query: "anything", env: ENV, transport });
+  const res = await fetchWorkspaceMemory({
+    eveSessionId: EVE_SESSION_ID,
+    query: "anything",
+    env: ENV,
+    transport,
+  });
   assert.equal(res.ok, true);
   assert.equal(res.count, 0);
   assert.deepEqual(res.items, []);
@@ -247,9 +283,19 @@ test("fetchWorkspaceMemory returns an empty list (not degraded) when the workspa
 // fetchWorkspaceMemory — degraded outcomes, never throws, never retries
 // ---------------------------------------------------------------------------
 
+test("degraded(bad_request) when eveSessionId is blank/whitespace/absent — checked BEFORE config, no wasted call", async () => {
+  const transport = fakeTransport(() => ({ status: 200, json: async () => ({ items: [] }) }));
+  for (const badId of [undefined, "", "   "]) {
+    const res = await fetchWorkspaceMemory({ eveSessionId: badId, env: ENV, transport });
+    assert.equal(res.degraded, true);
+    assert.equal(res.reason, "bad_request");
+  }
+  assert.equal(transport.calls.length, 0); // no wasted call
+});
+
 test("degraded(config_missing) with the missing vars when console is unconfigured", async () => {
   const transport = fakeTransport(() => ({ status: 200, json: async () => ({ items: [] }) }));
-  const res = await fetchWorkspaceMemory({ env: {}, transport });
+  const res = await fetchWorkspaceMemory({ eveSessionId: EVE_SESSION_ID, env: {}, transport });
   assert.equal(res.degraded, true);
   assert.equal(res.reason, "config_missing");
   assert.deepEqual(res.missing, ["JACE_CONSOLE_BASE_URL", "JACE_CONSOLE_TOKEN"]);
@@ -260,7 +306,7 @@ test("degraded(unreachable) when the transport throws — one attempt, no retry"
   const transport = fakeTransport(() => {
     throw new Error("ECONNREFUSED 10.0.0.1:443 — secret-looking internal detail");
   });
-  const res = await fetchWorkspaceMemory({ env: ENV, transport });
+  const res = await fetchWorkspaceMemory({ eveSessionId: EVE_SESSION_ID, env: ENV, transport });
   assert.equal(res.degraded, true);
   assert.equal(res.reason, "unreachable");
   assert.equal(transport.calls.length, 1); // exactly one attempt, not retried
@@ -279,7 +325,7 @@ test("degraded maps each non-2xx status and carries the status, without the toke
   ];
   for (const [status, reason] of cases) {
     const transport = fakeTransport(() => ({ status, json: async () => ({}) }));
-    const res = await fetchWorkspaceMemory({ env: ENV, transport });
+    const res = await fetchWorkspaceMemory({ eveSessionId: EVE_SESSION_ID, env: ENV, transport });
     assert.equal(res.degraded, true, `status ${status} must degrade`);
     assert.equal(res.reason, reason, `status ${status} → ${reason}`);
     assert.equal(res.status, status);
@@ -296,7 +342,7 @@ test("degraded(bad_body) when the console responds 200 with non-JSON", async () 
       throw new SyntaxError("Unexpected token < in JSON");
     },
   }));
-  const res = await fetchWorkspaceMemory({ env: ENV, transport });
+  const res = await fetchWorkspaceMemory({ eveSessionId: EVE_SESSION_ID, env: ENV, transport });
   assert.equal(res.degraded, true);
   assert.equal(res.reason, "bad_body");
   assert.equal(res.status, 200);

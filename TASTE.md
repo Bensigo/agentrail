@@ -106,7 +106,7 @@ All colors use CSS custom properties with **light-first values — light mode is
 | Purple | #6e56cf | #6550b9 (light) / #baa7ff (dark) | Context, enrichment |
 | Teal | #12a594 | #008573 (light) / #0bd8b6 (dark) | Telemetry, events |
 
-**Brand accent:** amber `#9e6c00` on light backgrounds (the default) for accents and active indicators; lemon `#ffe629` is **fill-with-dark-text only** (primary CTA buttons, highlights) — never text on white. On dark surfaces (opt-in mode) full `#ffe629` works as an accent.
+**Brand accent (owner-directed, 2026-07-19 — guide: heyparker.ai's palette through our tokens; the previous amber `#9e6c00` was agent-invented and is retired as brand):** golden `--accent-fill` `#eebf12` is **fill-with-dark-text only** (primary CTA buttons, chips — pair with `--accent-fill-text` `#0a3007`, hover `--accent-fill-hover`); deep green `--accent-text` `#194d15` (dark mode `#72d184`) is the text/link/ring/marker accent. `--brand-accent` aliases the golden fill for existing consumers. The landing may sit on warm paper `--paper` `#fcf5e2` with an upright serif display voice (landing-scoped). Semantic yellow (`--yellow-*`, caution/stale status) is unchanged and is NOT a brand color.
 
 ### Spacing
 
@@ -271,8 +271,7 @@ who I am → how I work → track record (real numbers, failures counted) → ho
 we work together → **Message me** (primary CTA) with a secondary
 sign-up/sign-in button. The centerpiece demo is a real chat conversation
 with Jace — never a dashboard mockup, and never surfaces the product no
-longer has. Same font stack (Inter + Berkeley Mono); amber `#9e6c00` accent
-on light, lemon `#ffe629` as fill-with-dark-text only — never decorative
+longer has. Inter body + Berkeley Mono data, plus a landing-scoped upright serif display voice; `--accent-text` deep green accents on the `--paper` warm surface, golden `--accent-fill` as fill-with-dark-text only — never decorative
 glow blobs, pulsing-dot pill badges, or an uppercase-mono eyebrow on every
 section (those read as AI-generated). Voice stays direct, concrete, no hype.
 The page claims only what the live flow does.

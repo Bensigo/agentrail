@@ -10,6 +10,7 @@ import {
 } from "@tanstack/react-table";
 import { StatusBadge } from "./status-badge";
 import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
+import { shortId, nameOrShortId } from "../../../../../components/id-display";
 
 export interface RunRecord {
   id: string;
@@ -101,18 +102,27 @@ const columns = [
   columnHelper.accessor("id", {
     header: "Run ID",
     cell: (info) => (
-      <span className="font-mono text-[var(--gray-12)]">
-        {info.getValue().slice(0, 8)}
+      <span
+        className="font-mono text-[var(--gray-12)]"
+        title={info.getValue()}
+      >
+        {shortId(info.getValue())}
       </span>
     ),
   }),
   columnHelper.accessor("repository_name", {
     header: "Repo",
-    cell: (info) => (
-      <span className="text-[var(--gray-11)]">
-        {info.getValue() ?? info.row.original.repositoryId}
-      </span>
-    ),
+    cell: (info) => {
+      const { text, title } = nameOrShortId(
+        info.getValue(),
+        info.row.original.repositoryId
+      );
+      return (
+        <span className="text-[var(--gray-11)]" title={title}>
+          {text}
+        </span>
+      );
+    },
   }),
   columnHelper.accessor("branch", {
     header: "Branch",

@@ -2,6 +2,7 @@ import { getWorkspace } from "@agentrail/db-postgres";
 import { notFound } from "next/navigation";
 import { getMembership, getSession } from "../../../../lib/cached";
 import { PageHeader } from "../../../components/page-header";
+import { CopyId } from "../../../components/copy-id";
 import { DigestPanel } from "./components/digest-panel";
 import { OnboardingBanner } from "./components/onboarding-banner";
 
@@ -25,11 +26,14 @@ export default async function WorkspaceDashboardPage({
     <div className="mx-auto max-w-[1440px]">
       <PageHeader
         title={workspace.name}
-        subtitle={`${workspace.slug} · ${workspace.id}`}
+        subtitle={workspace.slug}
         actions={
-          <span className="rounded-sm bg-[var(--gray-03)] px-1.5 py-0.5 text-xs font-medium text-[var(--gray-09)]">
-            {membership.role}
-          </span>
+          <div className="flex items-center gap-2">
+            <CopyId id={workspace.id} label="ID" />
+            <span className="rounded-sm bg-[var(--gray-03)] px-1.5 py-0.5 text-xs font-medium text-[var(--gray-09)]">
+              {membership.role}
+            </span>
+          </div>
         }
       />
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { StatusBadge } from "../../components/status-badge";
+import { nameOrShortId } from "../../../../../../components/id-display";
 
 export interface RunDetail {
   id: string;
@@ -43,14 +44,18 @@ function useLiveElapsed(run: RunDetail): number | null {
 
 export function RunDetailHeader({ run }: { run: RunDetail }) {
   const liveElapsed = useLiveElapsed(run);
+  const repo = nameOrShortId(run.repository_name, run.repositoryId);
   return (
     <div className="flex flex-wrap items-start gap-6 py-4 border-b border-[var(--gray-05)]">
       <div className="flex flex-col gap-0.5 min-w-[140px]">
         <span className="text-xs text-[var(--gray-09)] uppercase tracking-wide">
           Repo
         </span>
-        <span className="text-sm text-[var(--gray-12)] truncate max-w-[260px]">
-          {run.repository_name ?? run.repositoryId}
+        <span
+          className="text-sm text-[var(--gray-12)] truncate max-w-[260px]"
+          title={repo.title}
+        >
+          {repo.text}
         </span>
       </div>
 

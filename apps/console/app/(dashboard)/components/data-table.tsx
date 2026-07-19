@@ -43,7 +43,7 @@ interface DataTableProps<T> {
 function SortIcon({ dir }: { dir: "asc" | "desc" | false }) {
   if (!dir) return <span className="ml-0.5 text-[var(--gray-07)]">↕</span>;
   return (
-    <span className="ml-0.5 text-[var(--brand-accent)]">{dir === "asc" ? "↑" : "↓"}</span>
+    <span className="ml-0.5 text-[var(--accent-text)]">{dir === "asc" ? "↑" : "↓"}</span>
   );
 }
 
@@ -126,7 +126,9 @@ export function DataTable<T>({
               <tr>
                 <td colSpan={colSpan} className="px-3 py-8 text-center">
                   <div className="flex flex-col items-center gap-2">
-                    <span className="text-sm text-[var(--red-11)]">{error}</span>
+                    {/* font-mono: matches the sitewide fetch-error treatment
+                        (digest-panel, health-rates-panel, ErrorState). */}
+                    <span className="font-mono text-sm text-[var(--red-11)]">{error}</span>
                     {onRetry && (
                       <button
                         onClick={onRetry}

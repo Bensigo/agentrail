@@ -55,11 +55,12 @@ function MessageJaceAction({ workspaceId }: { workspaceId: string }) {
     workspaceId
   );
   return (
+    // font-bold: primary CTA (colored fill) — the emphasis case.
     <a
       href={target.href}
       target={target.external ? "_blank" : undefined}
       rel={target.external ? "noreferrer" : undefined}
-      className="inline-flex h-8 items-center rounded bg-[var(--brand-accent)] px-3 text-xs font-medium text-black transition-colors hover:opacity-90"
+      className="inline-flex h-8 items-center rounded bg-[var(--brand-accent)] px-3 text-xs font-bold text-black transition-colors hover:opacity-90"
     >
       Message Jace
     </a>
@@ -74,7 +75,11 @@ function buildColumns(): ColumnDef<QueueEntryView, unknown>[] {
       accessorKey: "title",
       cell: ({ row }) => (
         <div className="flex items-center gap-2 min-w-0">
-          <span className="truncate text-sm font-medium text-[var(--gray-12)]">
+          {/* font-normal: table-cell data, not a heading — matches the
+              plain-weight item-title treatment used for Shipped/WorkCard
+              titles elsewhere (size + full-contrast color already carry
+              the emphasis). */}
+          <span className="truncate text-sm font-normal text-[var(--gray-12)]">
             {row.original.title || "Untitled task"}
           </span>
           <span className="shrink-0 font-mono text-xs text-[var(--gray-09)]">
@@ -157,14 +162,21 @@ export default function WorkPage() {
 
   const toolbar = (
     <div className="flex flex-wrap items-center gap-2">
+      {/* font-normal on both toolbar controls below: active/selected state is
+          already carried by background + text color, matching the plain-
+          weight "Refresh" button beside them — weight isn't the
+          differentiator here. */}
       <div className="flex items-center gap-1 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-0.5">
         {(["table", "board"] as ViewMode[]).map((mode) => (
           <button
             key={mode}
             onClick={() => setViewMode(mode)}
-            className={`h-7 px-3 rounded text-xs font-medium capitalize transition-colors ${
+            className={`h-7 px-3 rounded text-xs font-normal capitalize transition-colors ${
               viewMode === mode
-                ? "bg-[var(--brand-accent)] text-[var(--gray-00)]"
+                ? // golden fill needs its paired dark-green text, not
+                  // gray-00 (white in light mode) — white fails contrast on
+                  // golden (2026-07-19 accent-token ruling).
+                  "bg-[var(--brand-accent)] text-[var(--accent-fill-text)]"
                 : "text-[var(--gray-11)] hover:text-[var(--gray-12)]"
             }`}
           >
@@ -174,7 +186,7 @@ export default function WorkPage() {
       </div>
       <button
         onClick={() => setHideShipped((v) => !v)}
-        className={`h-8 px-3 rounded text-xs font-medium border transition-colors ${
+        className={`h-8 px-3 rounded text-xs font-normal border transition-colors ${
           hideShipped
             ? "bg-[var(--gray-04)] text-[var(--gray-12)] border-[var(--gray-08)]"
             : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
@@ -194,7 +206,7 @@ export default function WorkPage() {
   return (
     <div className="mx-auto max-w-[1440px] flex flex-col gap-4">
       <div>
-        <h1 className="text-sm font-semibold text-[var(--gray-12)]">Work</h1>
+        <h1 className="text-sm font-bold text-[var(--gray-12)]">Work</h1>
         <p className="mt-1 max-w-[80ch] text-xs leading-relaxed text-[var(--gray-09)]">
           Everything assigned to Jace, from newly assigned to shipped. A
           blocked task shows why — waiting on another task or a person.

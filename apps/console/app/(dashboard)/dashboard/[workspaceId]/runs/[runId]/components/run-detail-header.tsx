@@ -72,7 +72,9 @@ export function RunDetailHeader({ run }: { run: RunDetail }) {
         <span className="text-xs text-[var(--gray-09)] uppercase tracking-wide">
           Agent
         </span>
-        <span className="text-sm text-[var(--gray-11)]">{run.agent}</span>
+        {/* font-mono: agent is the executor engine slug, same field shown
+            font-mono on the context-pack page's engine tag. */}
+        <span className="text-sm font-mono text-[var(--gray-11)]">{run.agent}</span>
       </div>
 
       <div className="flex flex-col gap-0.5">

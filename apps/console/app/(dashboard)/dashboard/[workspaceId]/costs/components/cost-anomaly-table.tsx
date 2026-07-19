@@ -82,7 +82,8 @@ export function CostAnomalyTable({
   return (
     <section className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+        {/* Panel heading, not a th — bold per TASTE weight rule */}
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Cost anomalies
         </h2>
         {baseline && (
@@ -159,10 +160,11 @@ export function CostAnomalyTable({
                   <td className="px-3 py-1.5 font-mono text-xs text-[var(--gray-11)]">
                     {row.repository_id || "—"}
                   </td>
-                  <td className="px-3 py-1.5 font-mono text-xs font-medium text-[var(--gray-12)]">
+                  {/* data values; color (gray-12 / orange-09) carries emphasis, not weight */}
+                  <td className="px-3 py-1.5 font-mono text-xs font-normal text-[var(--gray-12)]">
                     {formatCostUsd(row.cost_usd)}
                   </td>
-                  <td className="px-3 py-1.5 font-mono text-xs font-medium text-[var(--orange-09)]">
+                  <td className="px-3 py-1.5 font-mono text-xs font-normal text-[var(--orange-09)]">
                     {formatDeviationSigma(row.deviation_sigmas)}
                   </td>
                   <td className="px-3 py-1.5 font-mono text-xs text-[var(--gray-10)]">

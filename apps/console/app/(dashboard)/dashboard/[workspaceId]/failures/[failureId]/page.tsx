@@ -96,7 +96,8 @@ function FailureDbError({ workspaceId }: { workspaceId: string }) {
       <div className="rounded border border-[var(--red-09)]/30 bg-[var(--red-09)]/10 px-4 py-4 flex flex-col gap-3">
         <div className="flex items-center gap-2">
           <AlertTriangle className="h-4 w-4 text-[var(--red-11)] shrink-0" />
-          <span className="text-sm font-medium text-[var(--red-11)]">
+          {/* error banner headline, icon-paired emphasis → bold */}
+          <span className="text-sm font-bold text-[var(--red-11)]">
             Unable to load failure details — ClickHouse unavailable
           </span>
         </div>
@@ -105,15 +106,16 @@ function FailureDbError({ workspaceId }: { workspaceId: string }) {
           temporarily unavailable. Try again or go back to the failures list.
         </p>
         <div className="flex items-center gap-2">
+          {/* regular actions, not toggles → normal weight */}
           <a
             href=""
-            className="inline-flex items-center px-3 py-1.5 rounded text-xs font-medium bg-[var(--gray-03)] border border-[var(--gray-06)] text-[var(--gray-12)] hover:bg-[var(--gray-04)] transition-colors"
+            className="inline-flex items-center px-3 py-1.5 rounded text-xs font-normal bg-[var(--gray-03)] border border-[var(--gray-06)] text-[var(--gray-12)] hover:bg-[var(--gray-04)] transition-colors"
           >
             Retry
           </a>
           <Link
             href={`/dashboard/${workspaceId}/failures`}
-            className="inline-flex items-center px-3 py-1.5 rounded text-xs font-medium text-[var(--gray-11)] hover:text-[var(--gray-12)] transition-colors"
+            className="inline-flex items-center px-3 py-1.5 rounded text-xs font-normal text-[var(--gray-11)] hover:text-[var(--gray-12)] transition-colors"
           >
             Back to Failures
           </Link>
@@ -126,7 +128,8 @@ function FailureDbError({ workspaceId }: { workspaceId: string }) {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+      {/* field label caption, not heading/data → normal */}
+      <span className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
         {label}
       </span>
       <div className="text-sm text-[var(--gray-12)]">{children}</div>
@@ -241,7 +244,7 @@ export default async function FailureDetailPage({
       <div className="flex items-start justify-between gap-4 mb-2">
         <div className="flex items-center gap-2.5">
           <AlertTriangle className="h-5 w-5 text-[var(--red-11)] shrink-0" />
-          <h1 className="text-lg font-semibold text-[var(--gray-12)] leading-tight">
+          <h1 className="text-lg font-bold text-[var(--gray-12)] leading-tight">
             {explanation.title}
           </h1>
         </div>
@@ -347,7 +350,8 @@ export default async function FailureDetailPage({
           </p>
         </Field>
         <div className="mt-3">
-          <span className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+          {/* field label caption, not heading/data → normal */}
+          <span className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
             Evidence
           </span>
           <pre className="mt-2 overflow-x-auto rounded bg-[var(--gray-02)] border border-[var(--gray-04)] p-3 text-xs font-mono text-[var(--gray-11)] leading-relaxed whitespace-pre-wrap break-words">
@@ -372,7 +376,8 @@ function Section({
     <section className="mb-5 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-4">
       <div className="flex items-center gap-2 mb-3">
         {icon}
-        <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+        {/* section heading, not a th — bold per TASTE weight rule */}
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           {title}
         </h2>
       </div>

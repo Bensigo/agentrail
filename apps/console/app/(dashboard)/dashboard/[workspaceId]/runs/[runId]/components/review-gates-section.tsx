@@ -103,7 +103,10 @@ function SeverityBadge({
 function FindingsList({ findings }: { findings: ReviewGateFinding[] }) {
   return (
     <div>
-      <p className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] mb-1">
+      {/* font-normal: a field label above one block of data, not a heading —
+          matches run-detail-header.tsx's unweighted field labels. Applies to
+          every field label of this shape in this file. */}
+      <p className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] mb-1">
         Bugs found
       </p>
       <ul className="space-y-2">
@@ -120,7 +123,10 @@ function FindingsList({ findings }: { findings: ReviewGateFinding[] }) {
             </div>
             {finding.suggested_fix && (
               <p className="text-xs text-[var(--gray-10)]">
-                <span className="font-medium text-[var(--gray-09)]">
+                {/* font-bold: inline term-label emphasis within running
+                    prose (a run-in "term: text" pair), unlike the
+                    block-level field labels above — different role. */}
+                <span className="font-bold text-[var(--gray-09)]">
                   How to fix:
                 </span>{" "}
                 {finding.suggested_fix}
@@ -157,7 +163,7 @@ function GateRow({ gate }: { gate: ReviewGate }) {
         <div className="px-4 pb-4 pt-1 space-y-3">
           {gate.conditions.length > 0 && (
             <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] mb-1">
+              <p className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] mb-1">
                 Conditions
               </p>
               <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3 overflow-x-auto">
@@ -172,7 +178,7 @@ function GateRow({ gate }: { gate: ReviewGate }) {
 
           {gate.blockingReasons.length > 0 && (
             <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] mb-1">
+              <p className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] mb-1">
                 Blocking reasons
               </p>
               <ul className="space-y-1">
@@ -191,7 +197,7 @@ function GateRow({ gate }: { gate: ReviewGate }) {
 
           {gate.evidenceRefs.length > 0 && (
             <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] mb-1">
+              <p className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] mb-1">
                 Evidence
               </p>
               <div className="flex flex-wrap gap-2">

@@ -57,7 +57,9 @@ function FailureRow({ failure }: { failure: FailureEvent }) {
 
           {failure.evidence && (
             <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] mb-1">
+              {/* font-normal: a field label above one value, not a heading —
+                  matches run-detail-header.tsx's unweighted field labels. */}
+              <p className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] mb-1">
                 Evidence
               </p>
               <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-3 overflow-x-auto">
@@ -128,7 +130,7 @@ export function FailuresSection({ workspaceId, runId }: FailuresSectionProps) {
   return (
     <div className="mt-8">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Failures
         </h2>
         <a

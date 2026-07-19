@@ -86,7 +86,10 @@ export function WorkBoard({
             className={`flex min-w-[220px] flex-col gap-2 rounded border border-[var(--gray-05)] border-t-2 bg-[var(--gray-01)] p-2.5 ${GROUP_ACCENT[group]}`}
           >
             <div className="flex items-center justify-between px-0.5">
-              <span className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+              {/* font-normal: card-title label idiom (matches StatHeader's
+                  clean text-xs/uppercase/gray-09 pattern), not a Data Table
+                  header or a heading. */}
+              <span className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
                 {group}
               </span>
               <span className="font-mono text-xs text-[var(--gray-09)]">

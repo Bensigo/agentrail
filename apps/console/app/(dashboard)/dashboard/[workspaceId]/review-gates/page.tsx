@@ -87,7 +87,10 @@ function GateSubRow({
     <div className="space-y-3">
       {gate.conditions.length > 0 && (
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] mb-1">
+          {/* font-normal: a field label above one block of data, not a
+              heading — matches run-detail-header.tsx's unweighted field
+              labels. Applies to every field label of this shape below. */}
+          <p className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] mb-1">
             Criteria checked
           </p>
           <div className="space-y-1.5">
@@ -112,7 +115,7 @@ function GateSubRow({
 
       {gate.blockingReasons.length > 0 && (
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] mb-1">
+          <p className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] mb-1">
             Why merge was blocked
           </p>
           <ul className="space-y-1">
@@ -127,7 +130,11 @@ function GateSubRow({
                   <span className="mt-0.5 shrink-0">✕</span>
                   <span className="flex-1">{label}</span>
                   {severity && (
-                    <span className="shrink-0 px-1 py-0.5 rounded text-[10px] font-medium bg-[color-mix(in_srgb,var(--red-11)_12%,transparent)] text-[var(--red-11)]">
+                    // text-xs + px-1.5 (not the ad-hoc 10px/px-1): matches
+                    // the canonical Status Badge scale and padding used by
+                    // every other badge in this codebase — px-1 fell under
+                    // the 8px cramped-padding floor.
+                    <span className="shrink-0 px-1.5 py-0.5 rounded text-xs font-medium bg-[color-mix(in_srgb,var(--red-11)_12%,transparent)] text-[var(--red-11)]">
                       {severity}
                     </span>
                   )}
@@ -140,7 +147,7 @@ function GateSubRow({
 
       {gate.evidenceRefs.length > 0 && (
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] mb-1">
+          <p className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] mb-1">
             Evidence
           </p>
           <div className="flex flex-wrap gap-2">
@@ -159,7 +166,7 @@ function GateSubRow({
 
       {findings.length > 0 && (
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)] mb-1">
+          <p className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] mb-1">
             Findings
           </p>
           <ul className="space-y-1">
@@ -257,7 +264,14 @@ function buildColumns(): ColumnDef<ReviewGate, unknown>[] {
       meta: { mono: true },
       cell: ({ row }) =>
         row.original.evaluatedAt ? (
-          <span className="text-[13px] text-[var(--gray-09)]" title={relTime(row.original.evaluatedAt).title}>
+          // No font-mono/size override needed here: this column already
+          // declares meta: { mono: true } above, so DataTable's shared <td>
+          // (apps/console/app/(dashboard)/components/data-table.tsx) already
+          // applies "font-mono text-[13px]" — TASTE.md's literal mono-data
+          // scale token. The old text-[13px] on this span was a redundant,
+          // ad-hoc duplicate of that; dropping it lets the cell inherit
+          // cleanly instead of re-asserting the same value two ways.
+          <span className="text-[var(--gray-09)]" title={relTime(row.original.evaluatedAt).title}>
             {relTime(row.original.evaluatedAt).label}
           </span>
         ) : (
@@ -345,7 +359,7 @@ export default function ReviewGatesPage() {
         value={runIdInput}
         onChange={(e) => setRunIdInput(e.target.value)}
         placeholder="Filter by run ID…"
-        className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 text-sm font-mono text-[var(--gray-12)] placeholder-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)] focus:ring-offset-2 focus:ring-offset-[var(--gray-00)]"
+        className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 text-sm font-mono text-[var(--gray-12)] placeholder-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)] focus:ring-offset-2 focus:ring-offset-[var(--gray-00)]"
         style={{ minWidth: "260px" }}
       />
       <button
@@ -368,7 +382,7 @@ export default function ReviewGatesPage() {
   return (
     <div className="mx-auto max-w-[1440px] flex flex-col gap-4">
       <div>
-        <h1 className="text-sm font-semibold text-[var(--gray-12)]">
+        <h1 className="text-sm font-bold text-[var(--gray-12)]">
           Review Gates
         </h1>
         <p className="mt-1 text-xs text-[var(--gray-09)]">

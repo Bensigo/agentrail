@@ -150,7 +150,10 @@ export function BehaviorLintSection({
                   {finding.severity}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <span className="font-medium text-[var(--gray-12)]">{info.label}</span>
+                  {/* font-bold, not font-normal: unlike a flat table-row
+                      cell, this label heads its own nested detects/why text
+                      directly below it — functions as this entry's title. */}
+                  <span className="font-bold text-[var(--gray-12)]">{info.label}</span>
                   {info.detects && (
                     <p className="mt-0.5 text-[var(--gray-10)]">{info.detects}</p>
                   )}

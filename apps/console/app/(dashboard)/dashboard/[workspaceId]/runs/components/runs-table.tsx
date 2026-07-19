@@ -95,8 +95,11 @@ const columnHelper = createColumnHelper<RunRecord>();
 const columns = [
   columnHelper.accessor("title", {
     header: "Feature",
+    // font-normal: this cell is a peer among equals in a dense row (Repo,
+    // Branch, Agent, etc. are all unweighted) — no single column earns
+    // emphasis over another per TASTE.md's Data Table pattern.
     cell: (info) => (
-      <span className="font-medium">{info.getValue() || "—"}</span>
+      <span className="font-normal">{info.getValue() || "—"}</span>
     ),
   }),
   columnHelper.accessor("id", {
@@ -148,7 +151,7 @@ const columns = [
           href={url}
           target="_blank"
           rel="noreferrer"
-          className="text-[var(--blue-11)] hover:underline"
+          className="font-mono text-[var(--blue-11)] hover:underline"
           onClick={(e) => e.stopPropagation()}
         >
           {label}
@@ -158,8 +161,10 @@ const columns = [
   }),
   columnHelper.accessor("agent", {
     header: "Agent",
+    // font-mono: agent is the executor engine slug (e.g. "claude"), same
+    // field rendered font-mono on the context-pack page's engine tag.
     cell: (info) => (
-      <span className="text-[var(--gray-11)]">{info.getValue()}</span>
+      <span className="font-mono text-xs text-[var(--gray-11)]">{info.getValue()}</span>
     ),
   }),
   columnHelper.accessor("startedAt", {
@@ -306,13 +311,17 @@ export function RunsTable({ workspaceId, repositories }: RunsTableProps) {
         </select>
 
         <div className="flex items-center gap-1">
+          {/* font-normal: weight is uniform across active/inactive states
+              here (color carries the "active" signal), so this isn't a
+              font-medium active-state case — matches the sibling
+              Apply/Load-more buttons, which use no weight override. */}
           {TIME_RANGES.map(({ label, value }) => (
             <button
               key={value}
               onClick={() =>
                 setTimeRange((prev) => (prev === value ? "" : value))
               }
-              className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
+              className={`h-8 px-2.5 rounded text-xs font-normal border transition-colors ${
                 timeRange === value
                   ? "bg-[var(--yellow-09)] text-black border-[var(--yellow-09)]"
                   : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"

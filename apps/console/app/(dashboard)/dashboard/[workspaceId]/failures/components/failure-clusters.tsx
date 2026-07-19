@@ -66,7 +66,7 @@ export function FailureClusters({ workspaceId }: FailureClustersProps) {
   return (
     <section className="mb-4">
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-[var(--gray-12)]">
+        <h2 className="text-sm font-bold text-[var(--gray-12)]">
           Failure Clusters
         </h2>
         <span className="font-mono text-xs text-[var(--gray-09)]">

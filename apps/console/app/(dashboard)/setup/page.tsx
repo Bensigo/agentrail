@@ -123,9 +123,14 @@ function SetupPageContent() {
 
         <form onSubmit={handleSubmit} className="mt-8 space-y-5">
           <div>
+            {/* font-normal on both field labels below: microlabel idiom
+                (matches StatHeader's text-xs/uppercase/gray-09 "label"
+                pattern), not the guide's Inputs spec (which is about the
+                input's own value text — text-sm plain / font-mono for
+                code-path values, both already correct below). */}
             <label
               htmlFor="name"
-              className="block text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]"
+              className="block text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]"
             >
               Name
             </label>
@@ -139,7 +144,7 @@ function SetupPageContent() {
               autoFocus
               className={[
                 "mt-1.5 block w-full rounded border bg-[var(--gray-02)] px-3 py-2 text-sm text-[var(--gray-12)] placeholder:text-[var(--gray-08)]",
-                "focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)] focus:ring-offset-2 focus:ring-offset-[var(--gray-00)]",
+                "focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)] focus:ring-offset-2 focus:ring-offset-[var(--gray-00)]",
                 "transition-colors duration-150",
                 errors.name
                   ? "border-[var(--red-09)]"
@@ -152,7 +157,7 @@ function SetupPageContent() {
           <div>
             <label
               htmlFor="slug"
-              className="block text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]"
+              className="block text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]"
             >
               Slug
             </label>
@@ -164,7 +169,7 @@ function SetupPageContent() {
               placeholder="my-workspace"
               className={[
                 "mt-1.5 block w-full rounded border bg-[var(--gray-02)] px-3 py-2 font-mono text-sm text-[var(--gray-12)] placeholder:text-[var(--gray-08)]",
-                "focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)] focus:ring-offset-2 focus:ring-offset-[var(--gray-00)]",
+                "focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)] focus:ring-offset-2 focus:ring-offset-[var(--gray-00)]",
                 "transition-colors duration-150",
                 errors.slug
                   ? "border-[var(--red-09)]"
@@ -179,10 +184,11 @@ function SetupPageContent() {
 
           {errors.general && <p className="text-xs text-[var(--red-11)]">{errors.general}</p>}
 
+          {/* font-bold: primary CTA (colored fill) — the emphasis case. */}
           <button
             type="submit"
             disabled={submitting}
-            className="w-full rounded bg-[var(--brand-accent)] px-4 py-2 text-sm font-medium text-black transition-colors duration-150 hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-[var(--brand-accent)] focus:ring-offset-2 focus:ring-offset-[var(--gray-00)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="w-full rounded bg-[var(--brand-accent)] px-4 py-2 text-sm font-bold text-black transition-colors duration-150 hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)] focus:ring-offset-2 focus:ring-offset-[var(--gray-00)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? "Creating…" : "Create workspace"}
           </button>

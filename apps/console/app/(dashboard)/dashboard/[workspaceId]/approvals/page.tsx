@@ -84,22 +84,26 @@ export default async function ApprovalsPage({
       />
 
       <div className="flex flex-col gap-6">
+        {/* font-normal on all three section titles below: card-title label
+            idiom (matches StatHeader's clean text-xs/uppercase/gray-09
+            "label" pattern) — not the Data Table header exception (these
+            aren't <th>s) and not a true heading. */}
         <section className="flex flex-col gap-2">
-          <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+          <h2 className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
             Pending approvals
           </h2>
           <PendingApprovalsList rows={pending} workspaceId={workspaceId} canManage={canManage} />
         </section>
 
         <section className="flex flex-col gap-2">
-          <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+          <h2 className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
             Parked work
           </h2>
           <ParkedWorkList rows={parkedRows} workspaceId={workspaceId} canManage={canManage} />
         </section>
 
         <section className="flex flex-col gap-2">
-          <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+          <h2 className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
             Dead letters
           </h2>
           <DeadLettersList rows={deadLetters} workspaceId={workspaceId} canManage={canManage} />

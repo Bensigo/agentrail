@@ -52,7 +52,12 @@ const LIGHT_SURFACE: CSSProperties = {
   ["--yellow-11" as string]: "#9e6c00",
   ["--purple-11" as string]: "#6550b9",
   ["--teal-11" as string]: "#008573",
-  ["--brand-accent" as string]: "#9e6c00",
+  ["--brand-accent" as string]: "#eebf12",
+  ["--accent-text" as string]: "#194d15",
+  ["--accent-fill" as string]: "#eebf12",
+  ["--accent-fill-text" as string]: "#0a3007",
+  ["--accent-fill-hover" as string]: "#d9ad0e",
+  ["--paper" as string]: "#fcf5e2",
 } as CSSProperties;
 
 /** What Jace does — three plain-spoken lines, first person, no mechanism sprawl. */
@@ -324,7 +329,7 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
         href={cta.href}
         target="_blank"
         rel="noreferrer"
-        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--brand-accent)] px-7 py-3.5 text-[15px] font-semibold text-white transition-all duration-200 hover:-translate-y-0.5 hover:opacity-95"
+        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--brand-accent)] px-7 py-3.5 text-[15px] font-semibold text-[var(--accent-fill-text)] transition-all duration-200 hover:-translate-y-0.5 hover:opacity-95"
       >
         <Send size={17} aria-hidden />
         Message Jace on Telegram
@@ -335,7 +340,7 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
     <form action={signInWithGithub}>
       <button
         type="submit"
-        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--brand-accent)] px-7 py-3.5 text-[15px] font-semibold text-white transition-all duration-200 hover:-translate-y-0.5 hover:opacity-95"
+        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--brand-accent)] px-7 py-3.5 text-[15px] font-semibold text-[var(--accent-fill-text)] transition-all duration-200 hover:-translate-y-0.5 hover:opacity-95"
       >
         <GitHubIcon />
         Sign in with GitHub

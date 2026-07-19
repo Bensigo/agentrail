@@ -5,13 +5,16 @@ import { useRouter } from "next/navigation";
 import type { DeadLetterChannelMessageRow } from "@agentrail/db-postgres";
 import { MailWarning } from "lucide-react";
 import { EmptyState } from "../../../../components/empty-state";
-import { channelLabel, formatRelativeTime, truncate } from "../approvals-helpers";
-
-const LAST_ERROR_MAX_LEN = 160;
+import { sanitizeField } from "../../../../../../lib/approval-message";
+import { channelLabel, formatRelativeTime, LAST_ERROR_MAX_LEN } from "../approvals-helpers";
 
 /**
  * Dead letters — `channel_inbox` rows that exhausted their retry budget
  * (`state='dead'`, issue #1276; see `channel_inbox.ts::deadLettersForWorkspace`).
+ * `lastError` renders through the chat renderer's own `sanitizeField`
+ * (#1276 fix round, I1) — an exception message can carry control characters
+ * and arbitrary length, so it gets the same strip+cap as every other
+ * untrusted field on this page.
  *
  * Requeue (PR ②) POSTs to
  * `/api/v1/workspaces/:workspaceId/channel-inbox/:id/requeue`, wired to the
@@ -103,7 +106,7 @@ export function DeadLettersList({
                 <td className="px-3 py-2 text-[var(--gray-10)]">{channelLabel(row.channel)}</td>
                 <td className="px-3 py-2 text-[var(--gray-10)]">{row.kind}</td>
                 <td className="px-3 py-2 text-[var(--gray-10)]">
-                  {row.lastError ? truncate(row.lastError, LAST_ERROR_MAX_LEN) : "—"}
+                  {row.lastError ? sanitizeField(row.lastError, LAST_ERROR_MAX_LEN) : "—"}
                   {rowError && <p className="mt-1 text-[var(--red-11)]">{rowError}</p>}
                 </td>
                 <td className="px-3 py-2 text-right font-mono text-[var(--gray-11)]">

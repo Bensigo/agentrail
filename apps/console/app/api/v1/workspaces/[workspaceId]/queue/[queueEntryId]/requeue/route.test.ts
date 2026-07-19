@@ -48,6 +48,14 @@ describe("POST /api/v1/workspaces/:workspaceId/queue/:queueEntryId/requeue", () 
     expect(res.status).toBe(401);
   });
 
+  it("returns 403 for a non-member", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue(null as never);
+    const res = await POST(makeRequest(), makeParams());
+    expect(res.status).toBe(403);
+    expect(requeueParkedQueueEntry).not.toHaveBeenCalled();
+  });
+
   it("returns 403 for a member role", async () => {
     mockMember("member");
     const res = await POST(makeRequest(), makeParams());

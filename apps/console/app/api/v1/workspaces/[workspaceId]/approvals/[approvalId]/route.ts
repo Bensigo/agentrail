@@ -78,9 +78,10 @@ export async function POST(
   }
 
   // #1274: only an "alignment_brief" approval carries queueEntryId — every
-  // other tool's approval has it null and this is a no-op for them
-  // (regression-pinned in lib/approval-decision.test.ts and the Telegram
-  // webhook's own suite).
+  // other tool's approval has it null and this is a no-op for them.
+  // Regression-pinned by the Telegram webhook route's own suite (which
+  // exercises the shared applyAlignmentDecision end-to-end, including the
+  // no-queueEntryId no-op) and by this route's tests alongside this file.
   await applyAlignmentDecision(approval, decision);
 
   return NextResponse.json({ success: true });

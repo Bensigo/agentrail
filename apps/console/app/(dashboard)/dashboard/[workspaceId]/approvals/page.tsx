@@ -1,18 +1,12 @@
 import { notFound } from "next/navigation";
 import {
   ALIGNMENT_DENIED_PARK_REASON,
-  ALIGNMENT_PARK_REASON,
   deadLettersForWorkspace,
+  getWorkspace,
   listQueueEntries,
   pendingApprovalsForWorkspace,
 } from "@agentrail/db-postgres";
-
-// The two alignment park-reason constants, imported ONCE here (a server
-// component — `@agentrail/db-postgres` is safe to import server-side) and
-// passed down as plain strings to the client `ParkedWorkList` below, which
-// must NOT import that package directly (see `approvals-helpers.ts`'s
-// header comment for why: it broke the client bundle on `node:crypto`).
-const ALIGNMENT_PARK_REASONS = [ALIGNMENT_PARK_REASON, ALIGNMENT_DENIED_PARK_REASON] as const;
+import { isAlignmentLocked } from "./approvals-helpers";
 import { getMembership, getSession } from "../../../../../lib/cached";
 import { PageHeader } from "../../../../components/page-header";
 import { PendingApprovalsList } from "./components/pending-approvals-list";
@@ -59,11 +53,28 @@ export default async function ApprovalsPage({
   // here — see this page's own doc-comment).
   const canManage = membership.role === "owner" || membership.role === "admin";
 
-  const [pending, parked, deadLetters] = await Promise.all([
+  const [pending, parked, deadLetters, workspace] = await Promise.all([
     pendingApprovalsForWorkspace(workspaceId),
     listQueueEntries(workspaceId, { states: ["parked"] }),
     deadLettersForWorkspace(workspaceId),
+    getWorkspace(workspaceId),
   ]);
+
+  // #1276 fix round (review C1): per-row "alignment-held" is computed HERE,
+  // server-side, with the SAME predicate `requeueParkedQueueEntry` enforces
+  // (kind / estimatedBudgetUsd / require_alignment, denial unconditional —
+  // NOT a parkReason string match), so the UI renders those rows' Requeue
+  // disabled instead of offering a button whose request would 409. A missing
+  // workspace row fails toward gating (`?? true`), mirroring
+  // `workspaceRequiresAlignment`'s own default. The client component can't
+  // compute this itself: the denied-reason constant lives in
+  // `@agentrail/db-postgres`, which must not enter the client bundle (see
+  // `approvals-helpers.ts`'s header comment).
+  const requireAlignment = workspace?.requireAlignment ?? true;
+  const parkedRows = parked.map((row) => ({
+    ...row,
+    alignmentLocked: isAlignmentLocked(row, requireAlignment, ALIGNMENT_DENIED_PARK_REASON),
+  }));
 
   return (
     <div className="mx-auto max-w-[1440px]">
@@ -84,12 +95,7 @@ export default async function ApprovalsPage({
           <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
             Parked work
           </h2>
-          <ParkedWorkList
-            rows={parked}
-            workspaceId={workspaceId}
-            canManage={canManage}
-            alignmentParkReasons={ALIGNMENT_PARK_REASONS}
-          />
+          <ParkedWorkList rows={parkedRows} workspaceId={workspaceId} canManage={canManage} />
         </section>
 
         <section className="flex flex-col gap-2">

@@ -6,7 +6,10 @@ import type { QueueEntryListItem } from "@agentrail/db-postgres";
 import { PauseCircle } from "lucide-react";
 import { EmptyState } from "../../../../components/empty-state";
 import { formatParkReason } from "../../../../../../lib/work-vocabulary";
-import { formatRelativeTime, isAlignmentParkReason } from "../approvals-helpers";
+import { formatRelativeTime } from "../approvals-helpers";
+
+/** A parked queue entry plus the SERVER-computed alignment-lock flag (#1276 fix round, review C1): `page.tsx` derives it with `isAlignmentLocked` — the same kind/estimatedBudgetUsd/require_alignment predicate `requeueParkedQueueEntry` enforces — because this client component can neither read the workspace's gate flag nor import the db-postgres constants (see `approvals-helpers.ts`'s header comment). */
+export type ParkedWorkRow = QueueEntryListItem & { alignmentLocked: boolean };
 
 /**
  * Parked work — queue entries currently `state='parked'` (issue #1276),
@@ -16,11 +19,12 @@ import { formatRelativeTime, isAlignmentParkReason } from "../approvals-helpers"
  *
  * Requeue (PR ②) POSTs to
  * `/api/v1/workspaces/:workspaceId/queue/:queueEntryId/requeue`, which wraps
- * `requeueParkedQueueEntry` — NEVER offered for an alignment hold
- * (`isAlignmentParkReason`): that resolves exclusively through the posted
- * brief's own Approve/Deny in the Pending approvals list above. This is
- * belt-and-suspenders UI — the route's own query enforces the same
- * exclusion server-side regardless of what this component renders.
+ * `requeueParkedQueueEntry` — rendered DISABLED for an alignment-held row
+ * (`row.alignmentLocked`, server-computed): that hold resolves exclusively
+ * through the posted brief's own Approve/Deny in the Pending approvals list
+ * above. This is belt-and-suspenders UI — the route's own guarded query
+ * enforces the same exclusion server-side regardless of what this component
+ * renders.
  *
  * These rows have no expiry (annex §1a-ii: nothing ever times a park out), so
  * age is rendered honestly rather than pretending there's a TTL.
@@ -29,13 +33,10 @@ export function ParkedWorkList({
   rows,
   workspaceId,
   canManage,
-  alignmentParkReasons,
 }: {
-  rows: QueueEntryListItem[];
+  rows: ParkedWorkRow[];
   workspaceId: string;
   canManage: boolean;
-  /** The two real ALIGNMENT_PARK_REASON/ALIGNMENT_DENIED_PARK_REASON strings, passed down from the server page — see `approvals-helpers.ts`'s header comment for why this client component can't import them itself. */
-  alignmentParkReasons: readonly string[];
 }) {
   const router = useRouter();
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -101,7 +102,6 @@ export function ParkedWorkList({
           {rows.map((row) => {
             const age = formatRelativeTime(row.updatedAt);
             const reason = formatParkReason(row.parkReason, row.blockedBy) ?? "—";
-            const alignmentLocked = isAlignmentParkReason(row.parkReason, alignmentParkReasons);
             const busy = pendingId === row.id;
             const rowError = errorById[row.id];
             return (
@@ -118,13 +118,19 @@ export function ParkedWorkList({
                 </td>
                 {canManage && (
                   <td className="px-3 py-2 text-right">
-                    {alignmentLocked ? (
-                      <span
-                        className="text-[10px] text-[var(--gray-08)]"
-                        title="Resolved via Approve/Deny on its alignment brief, not a raw requeue."
+                    {row.alignmentLocked ? (
+                      // Disabled with the reason, not hidden — an honest UI
+                      // for a server-enforced refusal (review C1's locked
+                      // design). No onClick: this can never fire the 409 the
+                      // route would return anyway.
+                      <button
+                        type="button"
+                        disabled
+                        title="Held by the alignment gate — resolve it via Approve/Deny on its brief, not Requeue."
+                        className="h-7 px-2.5 rounded bg-[var(--gray-03)] border border-[var(--gray-06)] text-xs text-[var(--gray-08)] opacity-50 cursor-not-allowed"
                       >
-                        Awaiting brief
-                      </span>
+                        Requeue
+                      </button>
                     ) : (
                       <button
                         type="button"

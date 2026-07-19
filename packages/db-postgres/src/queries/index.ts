@@ -1830,9 +1830,11 @@ export {
 // (and, #1276 PR ②, the console approvals page's) confirm/deny side-effect
 // once a human answers the posted brief. requeueParkedQueueEntry (#1276
 // PR ②) is the approvals page's Requeue action for a guardrail/dependency
-// park — it refuses an alignment-locked row server-side by construction,
-// reusing these same two constants so the exclusion can never drift from the
-// vocabulary that actually marks a row alignment-held.
+// park — it refuses an alignment-held row server-side by construction,
+// mirroring unparkDependents' aligned check (kind/estimatedBudgetUsd/
+// require_alignment, denial unconditional) rather than any parkReason
+// string match, so the exclusion can never drift from what actually marks a
+// row aligned (#1276 fix round).
 export {
   validateAcceptanceCriteria,
   findWorkspaceByRepo,

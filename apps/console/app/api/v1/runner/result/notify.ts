@@ -50,6 +50,17 @@ export interface NotifyParams {
   outcome: NotifyOutcome;
   prUrl?: string;
   costUsd?: number;
+  /**
+   * #1278 PR②: true when merge permission was ON and the console actually
+   * squash-merged this PR (route.ts, after a successful
+   * `mergePullRequestSquash`). Only ever meaningful alongside
+   * `outcome === "green"` (a merge only happens after the gate is green) —
+   * changes ONLY the headline word ("Merged" vs "PR ready"); everything
+   * else about the message (issue #, PR link, cost) is unchanged, so a
+   * permission-OFF or non-green outcome is byte-identical to before this
+   * field existed.
+   */
+  merged?: boolean;
 }
 
 /** Run-Outcome headline for each terminal state (operator-facing wording). */
@@ -70,9 +81,17 @@ function fmtCost(costUsd: number | undefined): string {
  * provider-agnostic (every gateway speaks the same Run-Outcome vocabulary).
  *
  * e.g. `AgentRail: PR ready — issue #42 (https://github.com/o/r/pull/9 · $1.20)`
+ *
+ * #1278 PR②: `params.merged` swaps the headline to "Merged" — the smallest
+ * honest change (everything else about the line is unchanged). Coordinate
+ * with the #1277 lane's format module if/when it lands; this stays the
+ * inline template until then.
  */
 export function buildOutcomeMessage(params: NotifyParams): string {
-  const headline = OUTCOME_HEADLINE[params.outcome];
+  const headline =
+    params.outcome === "green" && params.merged
+      ? "Merged"
+      : OUTCOME_HEADLINE[params.outcome];
   let line = `AgentRail: ${headline} — issue #${params.issueNumber}`;
   const extras: string[] = [];
   if (params.prUrl) extras.push(params.prUrl);

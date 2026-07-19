@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   recordRunnerResult,
   touchApiKeyLastUsed,
+  getMergePermission,
+  getGithubToken,
   type RunnerStatus,
 } from "@agentrail/db-postgres";
 import {
@@ -11,6 +13,11 @@ import {
 } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 import { boundEvidence } from "../../../../../lib/evidence";
+import {
+  parseGithubPrUrl,
+  prUrlMatchesQueueEntryRepo,
+  mergePullRequestSquash,
+} from "../../../../../lib/github-merge";
 import { notifyRunOutcome } from "./notify";
 import { notifyOnboardOutcome, onboardRepoFullName } from "./onboard-notify";
 
@@ -108,6 +115,78 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Merge enforcement (#1278 PR②): the CONSOLE-SIDE decision, at result time.
+  // workspace.merge_permission is read FRESH here (never cached, never
+  // threaded through the WorkItem/claim) — a revoke between claim and this
+  // result is honored immediately. Only ever attempted on the issue-kind
+  // path (an onboard row never carries a real pr_url); scoped by the SAME
+  // onboardRepoFullName detection the notify branch below uses.
+  //
+  // Permission OFF is the byte-identical-to-before path: getGithubToken and
+  // mergePullRequestSquash are only ever called inside the `permitted`
+  // branch, so an OFF workspace makes ZERO GitHub calls here, exactly as
+  // before this feature existed.
+  //
+  // SECURITY (non-negotiable): the runner self-reports pr_url, so before
+  // spending the workspace's GitHub token on a merge, prUrlMatchesQueueEntryRepo
+  // proves the PR's owner/repo EXACTLY matches the repo this queue entry was
+  // admitted under (queue_entries.external_id, server-controlled — never
+  // something the runner sets). A mismatch (forged/wrong-repo/wrong-host
+  // pr_url) never merges — loud log, no throw, the PR link still goes out
+  // in the notification below.
+  //
+  // Whole block is best-effort, matching this route's existing convention
+  // for notify/lifecycle/failure-evidence: any failure here (a DB blip
+  // reading the permission/token, the merge call itself failing) is logged
+  // and turned into an honest `merge_failed` outcome — it NEVER retries and
+  // NEVER changes the 202 response below (AC3-equivalent for this feature).
+  let mergeOutcome: "merged" | "merge_failed" | "not_attempted" = "not_attempted";
+  if (
+    result.terminalState === "green" &&
+    typeof body.pr_url === "string" &&
+    body.pr_url &&
+    !onboardRepoFullName(result.externalId)
+  ) {
+    try {
+      const permitted = await getMergePermission(workspace_id);
+      if (permitted) {
+        const parsedPr = parseGithubPrUrl(body.pr_url);
+        const repoMatches = prUrlMatchesQueueEntryRepo(
+          body.pr_url,
+          result.externalId
+        );
+        if (!parsedPr || !repoMatches) {
+          console.error(
+            `[runner/result] merge SKIPPED — pr_url does not match this queue entry's own repo (id=${id})`
+          );
+          mergeOutcome = "merge_failed";
+        } else {
+          const token = await getGithubToken(workspace_id);
+          if (!token) {
+            console.error(
+              `[runner/result] merge SKIPPED — workspace ${workspace_id} has no GitHub token`
+            );
+            mergeOutcome = "merge_failed";
+          } else {
+            const mergeResult = await mergePullRequestSquash(token, parsedPr);
+            if (mergeResult.ok) {
+              mergeOutcome = "merged";
+            } else {
+              console.error(
+                `[runner/result] merge FAILED (id=${id}): ${mergeResult.reason}` +
+                  (mergeResult.status ? ` (status ${mergeResult.status})` : "")
+              );
+              mergeOutcome = "merge_failed";
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[runner/result] merge attempt threw:", err);
+      mergeOutcome = "merge_failed";
+    }
+  }
+
   // Gateway notify (#888): fire ONLY on a TERMINAL outcome. A red/error that
   // re-queues for retry (and a `running` heartbeat) yields terminalState=null,
   // so we never spam a message on every attempt (the correctness trap). The
@@ -131,6 +210,7 @@ export async function POST(request: NextRequest) {
           outcome: result.terminalState,
           prUrl: typeof body.pr_url === "string" ? body.pr_url : undefined,
           costUsd: typeof body.cost_usd === "number" ? body.cost_usd : undefined,
+          merged: mergeOutcome === "merged",
         });
       }
     } catch {
@@ -158,6 +238,27 @@ export async function POST(request: NextRequest) {
       "pr_opened",
       `Pull request opened: ${body.pr_url}`,
       now + 1
+    );
+  }
+  // #1278 PR②: the merge outcome, same idiom as pr_opened above (a labeled
+  // dot on the run-detail timeline). Only fires when a merge was actually
+  // attempted (mergeOutcome stays "not_attempted" — no event — for every
+  // permission-OFF run, byte-identical to before this feature existed).
+  if (mergeOutcome === "merged") {
+    await recordRunLifecycleEvent(
+      workspace_id,
+      id,
+      "merged",
+      `Pull request merged: ${body.pr_url}`,
+      now + 2
+    );
+  } else if (mergeOutcome === "merge_failed") {
+    await recordRunLifecycleEvent(
+      workspace_id,
+      id,
+      "merge_failed",
+      `Merge attempt failed — PR left open: ${body.pr_url}`,
+      now + 2
     );
   }
 

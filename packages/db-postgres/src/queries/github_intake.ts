@@ -1412,3 +1412,103 @@ export async function enqueueOnboard(data: {
   }
   return { enqueued: true, id, state: "queued", blockedBy: [] };
 }
+
+// --- reconciler seam (#1274 PR③) ----------------------------------------------
+//
+// The find-side of `apps/console/lib/alignment-reconciler.ts::reconcileAlignmentBriefs`.
+// Every other write in this file lives here (db-postgres owns all raw drizzle
+// access; the console layer only ever calls exported functions like this one
+// — see `findWorkspaceByRepo` above for the same raw-SQL idiom this mirrors),
+// so this read lives here too even though its caller is console-side.
+
+export interface AlignmentBriefCandidate {
+  id: string;
+  workspaceId: string;
+  source: string;
+  externalId: string;
+  title: string;
+  body: string;
+}
+
+/**
+ * Find `queue_entries` rows genuinely stuck with no recovery path for an
+ * alignment brief (#1274 PR③): PARKED, issue-kind, in a workspace that
+ * requires alignment, carrying no sanctioned budget yet, AND — the
+ * discriminant that matters — no `jace_approvals` row references them at
+ * all. This single criterion covers every case named in the task brief:
+ *
+ *  - Python-admitted rows (`agentrail/afk/queue_store.py`'s new admission
+ *    hold): Python posts no brief itself, so every such row has zero
+ *    approval rows by construction.
+ *  - `postAlignmentBrief`'s `no_session`/`compose_failed`/
+ *    `session_lookup_failed`/`record_failed` outcomes: all four leave
+ *    genuinely zero approval rows (the failure happens BEFORE
+ *    `recordApprovalRequest` succeeds, or that call itself is what failed).
+ *  - A v2-guardrail-parked entry whose reason `unparkDependents` later
+ *    overwrote to `ALIGNMENT_PARK_REASON` once an UNRELATED dependency
+ *    cleared (the case the #1274 PR② reviewer flagged) — it never went
+ *    through the alignment admission gate at all, so it too has zero
+ *    approval rows.
+ *
+ * EXCLUDED by the `park_reason NOT LIKE '%parked for human review%'` guard:
+ * a v2-guardrail park that STILL carries its OWN, not-yet-overwritten
+ * guardrail reason (injection / duplicate-content / rate-limit — every one
+ * of those reason strings, in BOTH `github_intake.ts`'s `screenV2` and
+ * Python's `input_contract.py`, contains this exact phrase; neither the
+ * alignment reason nor any dependency ("Waiting on #N" /
+ * "blocked-by unmet dependency: #N") reason ever does). That park needs a
+ * human's Requeue/Deny on the guardrail itself, not an alignment brief.
+ * `park_reason IS NULL` is treated as "needs a brief" (the safe direction —
+ * a parked row should never legitimately have a null reason, but if one
+ * somehow does, silently never reconciling it is worse than one maybe-
+ * redundant brief).
+ *
+ * DELIBERATELY OUT OF SCOPE (a real, narrower residual gap, documented
+ * rather than guessed at — see this PR's report): `postAlignmentBrief`'s
+ * `send_failed` outcome runs AFTER `recordApprovalRequest` already
+ * succeeded (the approval row exists, status='pending', just never
+ * delivered) — such a row has an approval row and so is NOT found here.
+ * Recovering it would need a "was this ever actually delivered" signal this
+ * schema doesn't carry today.
+ *
+ * A DENIED entry always has an approval row (the one that was denied) — the
+ * "no approval row" criterion alone already keeps it out of scope, matching
+ * the task brief's explicit exclusion.
+ *
+ * Oldest-first, bounded by `limit` — the caller's bound, not a constant
+ * here, so the choice stays visible at the call site.
+ */
+export async function findAlignmentBriefCandidates(
+  limit: number
+): Promise<AlignmentBriefCandidate[]> {
+  const rows = (await db.execute(sql`
+    SELECT qe.id, qe.workspace_id, qe.source, qe.external_id, qe.title, qe.body
+    FROM queue_entries qe
+    JOIN workspaces w ON w.id = qe.workspace_id
+    WHERE qe.state = 'parked'
+      AND qe.kind = 'issue'
+      AND w.require_alignment = true
+      AND qe.estimated_budget_usd IS NULL
+      AND (qe.park_reason IS NULL OR qe.park_reason NOT LIKE '%parked for human review%')
+      AND NOT EXISTS (
+        SELECT 1 FROM jace_approvals ja WHERE ja.queue_entry_id = qe.id
+      )
+    ORDER BY qe.created_at ASC
+    LIMIT ${limit}
+  `)) as unknown as Array<{
+    id: string;
+    workspace_id: string;
+    source: string;
+    external_id: string;
+    title: string;
+    body: string;
+  }>;
+  return Array.from(rows).map((r) => ({
+    id: r.id,
+    workspaceId: r.workspace_id,
+    source: r.source,
+    externalId: r.external_id,
+    title: r.title,
+    body: r.body,
+  }));
+}

@@ -32,6 +32,7 @@ Seam consumed by the dispatcher (exact signatures):
 """
 from __future__ import annotations
 
+import json
 import os
 import uuid
 import zlib
@@ -508,6 +509,29 @@ def _parse_state(value: str) -> object:
 
 # --- Real Postgres executor (the production edge) -----------------------------
 
+# Params whose SQL placeholder now casts ``::jsonb`` (see ``_SQL``'s own
+# comment): pre-serialize them to a JSON string here, driver-agnostically,
+# rather than relying on psycopg2's default Python-list adapter — which
+# targets Postgres ARRAY syntax, not JSON, and either mis-stores an empty
+# list as ``{}`` (a jsonb OBJECT, not ``[]``) or outright fails to cast a
+# non-empty one (``cannot cast type integer[] to jsonb``). Found and fixed
+# while building #1274 PR③'s live dev-DB proof — this class was previously
+# `# pragma: no cover` end to end, so nothing had ever round-tripped a real
+# ``blocked_by`` value through a genuine Postgres connection before.
+_JSONB_PARAMS = ("blocked_by",)
+
+
+def _jsonb_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of ``params`` with every jsonb-bound value pre-serialized
+    to a JSON string, ready for a ``%(name)s::jsonb`` placeholder. Only
+    touches the params dict; leaves the caller's own dict (and the
+    ``FakeExecutor``s in tests, which never call this) untouched."""
+    out = dict(params)
+    for key in _JSONB_PARAMS:
+        if key in out:
+            out[key] = json.dumps(out[key])
+    return out
+
 
 _SQL = {
     # ON CONFLICT DO NOTHING — re-enqueuing an issue that already has a row is a
@@ -520,19 +544,24 @@ _SQL = {
     # Lifecycle columns (state/remaining_budget/tier) are owned by the dispatcher's
     # transitions, never by re-enqueue. Mirrors the TS path's onConflictDoNothing
     # (packages/db-postgres .../github_intake.ts).
+    # ``blocked_by`` casts an explicit ``::jsonb`` (issue found + fixed while
+    # building #1274 PR③'s live dev-DB proof — see PostgresExecutor.execute's
+    # own comment): the param arrives pre-serialized to a JSON string, so this
+    # cast is what turns it back into the column's real ``jsonb`` type,
+    # driver-agnostically (no psycopg-version-specific wrapper needed).
     "insert_entry": (
         "INSERT INTO queue_entries "
         "(id, workspace_id, source, external_id, title, body, tier, "
         " remaining_budget, state, blocked_by, park_reason, created_at, updated_at) "
         "VALUES (%(id)s, %(workspace_id)s, %(source)s, %(external_id)s, "
         " %(title)s, %(body)s, %(tier)s, %(remaining_budget)s, %(state)s, "
-        " %(blocked_by)s, %(park_reason)s, %(created_at)s, %(updated_at)s) "
+        " %(blocked_by)s::jsonb, %(park_reason)s, %(created_at)s, %(updated_at)s) "
         "ON CONFLICT (id) DO NOTHING"
     ),
     "update_entry": (
         "UPDATE queue_entries SET tier = %(tier)s, "
         " remaining_budget = %(remaining_budget)s, state = %(state)s, "
-        " blocked_by = %(blocked_by)s, park_reason = %(park_reason)s, "
+        " blocked_by = %(blocked_by)s::jsonb, park_reason = %(park_reason)s, "
         " updated_at = %(updated_at)s "
         "WHERE id = %(id)s"
     ),
@@ -593,7 +622,7 @@ class PostgresExecutor:
     def execute(self, op: str, params: Dict[str, Any]) -> None:  # pragma: no cover
         conn = self._connection()
         with conn.cursor() as cur:
-            cur.execute(_SQL[op], params)
+            cur.execute(_SQL[op], _jsonb_params(params))
         conn.commit()
 
     def query(self, op: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:  # pragma: no cover

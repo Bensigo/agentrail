@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
+import { shortId } from "../../../../../components/id-display";
 
 type ReviewGateStatus = "passed" | "failed" | "pending";
 type Category = "tests" | "visual" | "citations" | "ac" | "blocked";
@@ -194,9 +195,10 @@ export default function ReviewGateDetailPage() {
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--gray-09)]">
             <a
               href={`/dashboard/${workspaceId}/runs/${gate.runId}`}
+              title={gate.runId}
               className="font-mono text-[var(--blue-11)] hover:underline"
             >
-              run:{gate.runId}
+              run:{shortId(gate.runId)}
             </a>
             <span className="font-mono">{formatEvaluatedAt(gate.evaluatedAt)}</span>
           </div>

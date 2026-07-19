@@ -22,6 +22,8 @@ import {
 } from "./failure-explanations";
 import { parseGithubSlug } from "./github-slug";
 import { FailureActions } from "./failure-actions";
+import { CopyId } from "../../../../../components/copy-id";
+import { nameOrShortId } from "../../../../../components/id-display";
 
 const severityBadgeClass: Record<SeverityMeaning["level"], string> = {
   critical: "bg-[var(--red-09)]/20 text-[var(--red-11)] border border-[var(--red-09)]/30",
@@ -206,9 +208,12 @@ export default async function FailureDetailPage({
   // Which trackers this failure can be filed to. GitHub when the repo resolves
   // to a github slug and a token exists; Linear when its connector is on.
   const issueTargets: ("github" | "linear")[] = [];
-  // Default the repo label to the raw id, but prefer the human repo name when
-  // we can resolve it — "which repo" should read as a name, not a uuid.
-  let repoLabel = failure.repository_id || "—";
+  // Default the repo display to a short hash of the raw id — never the full
+  // id as visible text — but prefer the human repo name when we can resolve
+  // it. "Which repo" should read as a name, not a uuid.
+  let repoDisplay: { text: string; title?: string } = failure.repository_id
+    ? nameOrShortId(null, failure.repository_id)
+    : { text: "—" };
   try {
     const [resolution, repo, token, linear] = await Promise.all([
       getFailureResolution(workspaceId, failureKey),
@@ -219,7 +224,9 @@ export default async function FailureDetailPage({
       getConnector(workspaceId, "linear"),
     ]);
     if (resolution?.status === "fixed") initialStatus = "fixed";
-    if (repo?.name) repoLabel = repo.name;
+    if (repo?.name && failure.repository_id) {
+      repoDisplay = nameOrShortId(repo.name, failure.repository_id);
+    }
     if (token && repo && parseGithubSlug(repo.url)) issueTargets.push("github");
     if (linear?.enabled && linear.hasSecret) issueTargets.push("linear");
   } catch {
@@ -302,7 +309,12 @@ export default async function FailureDetailPage({
       <Section icon={<MapPin className="h-4 w-4 text-[var(--gray-09)]" />} title="Where it happened">
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
           <Field label="Repository">
-            <span className="font-mono text-[var(--gray-12)]">{repoLabel}</span>
+            <span
+              className="font-mono text-[var(--gray-12)]"
+              title={repoDisplay.title}
+            >
+              {repoDisplay.text}
+            </span>
           </Field>
           <Field label="Phase">
             <span className="font-mono">{failure.phase || "—"}</span>
@@ -322,9 +334,7 @@ export default async function FailureDetailPage({
             <span className="font-mono">{formatOccurredAt(failure.occurred_at)}</span>
           </Field>
           <Field label="Event ID">
-            <span className="font-mono text-xs text-[var(--gray-10)]">
-              {failure.event_id}
-            </span>
+            <CopyId id={failure.event_id} />
           </Field>
         </div>
       </Section>

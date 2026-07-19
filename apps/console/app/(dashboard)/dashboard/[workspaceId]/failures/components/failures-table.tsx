@@ -9,6 +9,7 @@ import {
   createColumnHelper,
 } from "@tanstack/react-table";
 import { SkeletonTableRows } from "../../../../../components/loading-skeleton";
+import { nameOrShortId } from "../../../../../components/id-display";
 
 export interface FailureRecord {
   event_id: string;
@@ -130,9 +131,10 @@ function buildColumns(
       header: "Repo",
       cell: (info) => {
         const id = info.getValue();
+        const { text, title } = nameOrShortId(repoNames[id], id);
         return (
-          <span className="text-[var(--gray-11)] text-xs" title={id}>
-            {repoNames[id] ?? id}
+          <span className="text-[var(--gray-11)] text-xs" title={title}>
+            {text}
           </span>
         );
       },

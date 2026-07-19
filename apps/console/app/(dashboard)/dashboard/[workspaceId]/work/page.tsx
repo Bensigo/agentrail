@@ -13,6 +13,7 @@ import {
   groupWorkEntries,
   type QueueEntryView,
 } from "../../../../../lib/work-vocabulary";
+import { messageJaceTarget } from "../../../setup/components/channel-step-helpers";
 
 /**
  * Work — the task list (spec §4 "Work"). `queue_entries` rendered through the
@@ -39,6 +40,30 @@ function formatUpdatedAt(iso: string): string {
     minute: "2-digit",
     hour12: false,
   });
+}
+
+/**
+ * The "Message Jace" affordance for Work's empty state (#1281 AC2 —
+ * dead-end copy dies). Deep-links the hosted shared bot when
+ * NEXT_PUBLIC_TELEGRAM_BOT_USERNAME is set, else falls back to the setup
+ * wizard's channel step (`messageJaceTarget`, shared with Home's digest
+ * card so both point the same way).
+ */
+function MessageJaceAction({ workspaceId }: { workspaceId: string }) {
+  const target = messageJaceTarget(
+    process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME,
+    workspaceId
+  );
+  return (
+    <a
+      href={target.href}
+      target={target.external ? "_blank" : undefined}
+      rel={target.external ? "noreferrer" : undefined}
+      className="inline-flex h-8 items-center rounded bg-[var(--brand-accent)] px-3 text-xs font-medium text-black transition-colors hover:opacity-90"
+    >
+      Message Jace
+    </a>
+  );
 }
 
 function buildColumns(): ColumnDef<QueueEntryView, unknown>[] {
@@ -189,9 +214,16 @@ export default function WorkPage() {
       ) : visible.length === 0 ? (
         <>
           {toolbar}
-          <EmptyState message="No work yet. Assign Jace a task to get started." />
+          <EmptyState
+            message="No work yet."
+            action={<MessageJaceAction workspaceId={workspaceId} />}
+          />
         </>
       ) : viewMode === "table" ? (
+        // No emptyMessage here: `visible.length === 0` is handled above, so
+        // DataTable never receives empty data at this call site — passing a
+        // second copy of the same dead-end text would just duplicate it
+        // (#1281 AC2 dedupe, was data-table.tsx's unreachable branch).
         <DataTable
           columns={columns}
           data={visible}
@@ -200,7 +232,6 @@ export default function WorkPage() {
           onRowClick={(entry) =>
             router.push(`/dashboard/${workspaceId}/runs/${entry.id}`)
           }
-          emptyMessage="No work yet. Assign Jace a task to get started."
         />
       ) : (
         <>

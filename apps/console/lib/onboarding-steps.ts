@@ -8,7 +8,10 @@
  * without a database.
  *
  * Steps (spec §5, step 3 "Say hi to Jace" ships with ⑦ console chat — omitted
- * here):
+ * here). Step ids below name the underlying mechanic; `ONBOARDING_STEP_LABELS`
+ * is what the wizard/banner actually display and reads chat-first (#1281) —
+ * the two are allowed to diverge (e.g. id `connect-channel` / label "Talk to
+ * Jace", id `attach-runner` / label "Execution"):
  *   1. Connect GitHub    — complete when the github connector has ≥1 repo AND
  *      a stored webhook secret (`connectors.config.webhookSecret`).
  *   2. Connect a channel — complete when Telegram has a stored credential;
@@ -22,7 +25,10 @@
  *      `workspaceHasExecutionPath`). The caller (`onboarding-data.ts`) also
  *      passes a `selfHosted` flag alongside this signal so the UI can say
  *      something honest about WHICH path is active — this pure module only
- *      needs the OR'd boolean to decide completion.
+ *      needs the OR'd boolean to decide completion. The step's UI
+ *      (`runner-step.tsx`) relocates the device-code form behind a
+ *      "Self-hosting?" disclosure whenever hosted execution alone satisfies
+ *      it, so a fresh workspace never sees an install form (#1281 AC1).
  */
 
 export type OnboardingStepId =
@@ -48,9 +54,16 @@ export const ONBOARDING_STEP_ORDER: readonly OnboardingStepId[] = [
 
 export const ONBOARDING_STEP_LABELS: Record<OnboardingStepId, string> = {
   "connect-github": "Connect GitHub",
-  "connect-channel": "Connect a channel",
+  // Chat-first relabel (#1281): this step's own body already leads with the
+  // shared-bot deep link, not a form — the label should say what the user
+  // is doing (message Jace), not the plumbing underneath.
+  "connect-channel": "Talk to Jace",
   "invite-team": "Invite your team",
-  "attach-runner": "Attach a runner",
+  // Chat-first relabel (#1281): hosted execution is the default for every
+  // fresh workspace (see runner-step.tsx) — "Attach a runner" implied an
+  // install step that most workspaces never need. "Execution" covers both
+  // the hosted-done state and the self-host disclosure underneath it.
+  "attach-runner": "Execution",
 };
 
 /** The signals every step's completion is derived from. Pure input — no I/O. */

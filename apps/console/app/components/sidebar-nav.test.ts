@@ -26,10 +26,11 @@ describe("NAV_ZONES data structure", () => {
     expect(SETTINGS_ZONE.collapsible).toBe(false);
   });
 
-  it("Your engineer zone: Home (root href) then Work (href renamed from queue, #1231)", () => {
+  it("Your engineer zone: Home (root href), Work (href renamed from queue, #1231), then Approvals (#1276)", () => {
     expect(YOUR_ENGINEER_ZONE.items.map((i) => [i.label, i.href])).toEqual([
       ["Home", ""],
       ["Work", "work"],
+      ["Approvals", "approvals"],
     ]);
   });
 
@@ -81,6 +82,11 @@ describe("NAV_ZONES data structure", () => {
     expect(allHrefs.filter((h) => h === "budget")).toHaveLength(1);
   });
 
+  it("approvals is present exactly once (#1276: pending approvals, parked work, dead letters)", () => {
+    const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
+    expect(allHrefs.filter((h) => h === "approvals")).toHaveLength(1);
+  });
+
   it("permissions is present exactly once, in the Settings zone (#1278: owner-only merge-permission toggle)", () => {
     const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
     expect(allHrefs.filter((h) => h === "permissions")).toHaveLength(1);
@@ -93,7 +99,7 @@ describe("NAV_ZONES data structure", () => {
     expect(allHrefs.filter((h) => h === "work")).toHaveLength(1);
   });
 
-  it("adds no new hrefs beyond the legacy set plus work, budget and permissions (teams stays a redirect stub to /members)", () => {
+  it("adds no new hrefs beyond the legacy set plus work, budget, approvals, and permissions (teams stays a redirect stub to /members)", () => {
     const legacyHrefs = new Set([
       "",
       "runs",
@@ -103,6 +109,7 @@ describe("NAV_ZONES data structure", () => {
       "review-gates",
       "costs",
       "budget", // #1272: new workspace $ ceiling + per-task/monthly spend page
+      "approvals", // #1276: pending approvals, parked work, dead letters
       "repos",
       "memory",
       "api-keys",

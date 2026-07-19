@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   Play,
   ListChecks,
+  Inbox,
   AlertTriangle,
   ShieldCheck,
   DollarSign,
@@ -34,6 +35,10 @@ export interface NavZone {
 // (#1231) renames Issue Queue to "Work" and moves its href from `queue` to
 // `work` (spec §3/§4): `/work` is the new task-list page and `/queue`
 // redirects to it, so old deep links keep working without staying in the nav.
+// "Approvals" (#1276) is an action surface, not evidence — it's where a
+// human resolves pending tool-call approvals, parked work, and dead-lettered
+// channel messages, so it belongs here rather than in the demoted Engine
+// room zone below (that zone is explicitly for "existing evidence" pages).
 export const YOUR_ENGINEER_ZONE: NavZone = {
   id: "your-engineer",
   label: "Your engineer",
@@ -41,6 +46,7 @@ export const YOUR_ENGINEER_ZONE: NavZone = {
   items: [
     { label: "Home", href: "", icon: LayoutDashboard },
     { label: "Work", href: "work", icon: ListChecks },
+    { label: "Approvals", href: "approvals", icon: Inbox },
   ],
 };
 

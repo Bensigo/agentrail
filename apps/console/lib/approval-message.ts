@@ -85,8 +85,17 @@ function safeJsonStringify(value: unknown): string {
  * many terminal/chat renderers, so both are flattened individually rather
  * than only the \r\n/\n pair), trim, and cap to `maxLen` with an ellipsis
  * marker. Never throws.
+ *
+ * Exported (#1276 fix round, review finding I1): the console approvals
+ * page's summaries (`approvals/approvals-helpers.ts`) render the SAME
+ * model-authored toolInput fields on the exact surface where a human decides
+ * Approve/Deny, so they must run through this exact sanitizer — a second
+ * hand-rolled copy would drift. This module stays pure (no imports), so the
+ * client bundle importing it is safe; the chat renderers below are
+ * byte-identical to before the export (regression-pinned by this file's own
+ * test suite).
  */
-function sanitizeField(value: unknown, maxLen: number): string {
+export function sanitizeField(value: unknown, maxLen: number): string {
   const raw =
     typeof value === "string"
       ? value

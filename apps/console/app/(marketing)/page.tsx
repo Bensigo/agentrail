@@ -4,8 +4,11 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import type { CSSProperties } from "react";
 import { Bricolage_Grotesque } from "next/font/google";
+import { Send } from "lucide-react";
 import { Reveal } from "./_motion";
-import { DashboardDemo } from "./_dashboard-demo";
+import { ConversationDemo } from "./_conversation-demo";
+import { resolveMessageJaceCta } from "./_cta";
+import type { MessageJaceCta } from "./_cta";
 
 const display = Bricolage_Grotesque({ subsets: ["latin"], display: "swap" });
 
@@ -21,7 +24,7 @@ const TRACK_RECORD = { shipped: 33, attempted: 53, failed: 20 };
  *  light (white background, dark text, single amber accent). Rather than touch
  *  globals.css or the root layout, we re-establish the documented `:root`
  *  token values on this subtree only — these are the exact light values from
- *  globals.css, not new colors. Everything below (including <DashboardDemo/>)
+ *  globals.css, not new colors. Everything below (including <ConversationDemo/>)
  *  inherits them via the CSS custom-property cascade. */
 const LIGHT_SURFACE: CSSProperties = {
   colorScheme: "light",
@@ -56,6 +59,18 @@ const JACE_DOES = [
   "I run under a hard budget — cheap models first, escalating only when I must — so your spend never runs away.",
 ];
 
+/**
+ * The secondary sign-in path (controller ruling, #1279 PR ①: "GitHub sign-in
+ * demoted to nav + footer secondary"). Also the honest fallback for the
+ * primary CTA itself when no hosted Telegram bot is configured — see
+ * {@link PrimaryCta}. One named server action, referenced from every call
+ * site, rather than four separate inline closures.
+ */
+async function signInWithGithub() {
+  "use server";
+  await signIn("github", { redirectTo: "/" });
+}
+
 export default async function LandingPage() {
   const session = await auth();
   if (session?.user?.id) {
@@ -71,6 +86,14 @@ export default async function LandingPage() {
     redirect(workspaces.length > 0 ? `/dashboard/${workspaces[0].id}` : "/setup");
   }
 
+  // Telegram is the only open chat door today (#1262/#1263 shipped). A
+  // multi-channel picker (Discord/Slack/iMessage) arrives with W5 — see
+  // docs/superpowers/plans/2026-07-17-jace-e2e-arc-issues.md. Until then this
+  // resolves one plain path, no picker component: Message Jace on Telegram
+  // when the hosted bot is configured, else the honest sign-in fallback
+  // (never a dead link) — see `./_cta.ts`.
+  const cta = resolveMessageJaceCta(process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME);
+
   return (
     <main
       id="top"
@@ -85,17 +108,12 @@ export default async function LandingPage() {
             AgentRail
           </span>
         </a>
-        <form
-          action={async () => {
-            "use server";
-            await signIn("github", { redirectTo: "/" });
-          }}
-        >
+        <form action={signInWithGithub}>
           <button
             type="submit"
-            className="rounded-md bg-[var(--brand-accent)] px-4 py-2 text-[13px] font-semibold text-white transition-opacity hover:opacity-90"
+            className="rounded-md border border-[var(--gray-06)] bg-[var(--gray-02)] px-3.5 py-1.5 text-[13px] font-medium text-[var(--gray-11)] transition-colors hover:border-[var(--gray-08)] hover:text-[var(--gray-12)]"
           >
-            Start free
+            Sign in
           </button>
         </form>
       </header>
@@ -122,20 +140,7 @@ export default async function LandingPage() {
             className="ar-rise mt-9 flex flex-col items-center gap-3"
             style={{ animationDelay: "170ms" }}
           >
-            <form
-              action={async () => {
-                "use server";
-                await signIn("github", { redirectTo: "/" });
-              }}
-            >
-              <button
-                type="submit"
-                className="inline-flex items-center gap-2.5 rounded-md bg-[var(--brand-accent)] px-7 py-3.5 text-[15px] font-semibold text-white transition-all duration-200 hover:-translate-y-0.5 hover:opacity-95"
-              >
-                <GitHubIcon />
-                Start free
-              </button>
-            </form>
+            <PrimaryCta cta={cta} />
             <p className="text-[12px] text-[var(--gray-09)]">Free while in preview</p>
           </div>
         </div>
@@ -154,11 +159,15 @@ export default async function LandingPage() {
         </p>
       </section>
 
-      {/* 4 — One product visual: the real console, reused (not a screenshot) */}
+      {/* 4 — One product visual: a real Jace conversation, not a dashboard
+          mockup. Every field Jace's reply shows — task type, suggested
+          model, the $ estimate — is computed live by the real estimate lib,
+          and the outcome ping is byte-identical to what the product actually
+          sends. See _conversation-demo-data.ts. */}
       <section className="px-6 pb-24 sm:pb-32">
         <Reveal className="mx-auto max-w-[1080px]">
           <div className="overflow-hidden rounded-xl border border-[var(--gray-05)] shadow-[0_30px_80px_-40px_rgba(0,0,0,0.35)]">
-            <DashboardDemo />
+            <ConversationDemo />
           </div>
         </Reveal>
       </section>
@@ -202,22 +211,10 @@ export default async function LandingPage() {
           <p className="mx-auto mt-4 max-w-[44ch] text-[15px] leading-relaxed text-[var(--gray-10)]">
             Connect a repo, hand me an issue, and wake up to a reviewed PR.
           </p>
-          <form
-            className="mt-8 inline-block"
-            action={async () => {
-              "use server";
-              await signIn("github", { redirectTo: "/" });
-            }}
-          >
-            <button
-              type="submit"
-              className="inline-flex items-center gap-2.5 rounded-md bg-[var(--brand-accent)] px-7 py-3.5 text-[15px] font-semibold text-white transition-all duration-200 hover:-translate-y-0.5 hover:opacity-95"
-            >
-              <GitHubIcon />
-              Start free
-            </button>
-          </form>
-          <p className="mt-4 text-[12px] text-[var(--gray-09)]">Free while in preview</p>
+          <div className="mt-8 flex flex-col items-center gap-3">
+            <PrimaryCta cta={cta} />
+            <p className="text-[12px] text-[var(--gray-09)]">Free while in preview</p>
+          </div>
         </Reveal>
       </section>
 
@@ -245,6 +242,14 @@ export default async function LandingPage() {
             >
               CLI
             </a>
+            <form action={signInWithGithub}>
+              <button
+                type="submit"
+                className="text-[13px] text-[var(--gray-10)] transition-colors hover:text-[var(--gray-12)]"
+              >
+                Sign in
+              </button>
+            </form>
           </nav>
           <span className="text-[12px] text-[var(--gray-09)]">
             © {new Date().getFullYear()} AgentRail
@@ -252,6 +257,41 @@ export default async function LandingPage() {
         </div>
       </footer>
     </main>
+  );
+}
+
+/* ------------------------------------------------------------------ CTA */
+
+/**
+ * The hero + closing primary CTA (controller ruling, #1279 PR ①: "REPLACE").
+ * Message Jace on Telegram when the hosted bot is configured; otherwise the
+ * honest sign-in fallback — same visual weight either way, never a dead
+ * link. See `./_cta.ts` for the resolution logic and its drift-guard tests.
+ */
+function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
+  if (cta.kind === "telegram") {
+    return (
+      <a
+        href={cta.href}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--brand-accent)] px-7 py-3.5 text-[15px] font-semibold text-white transition-all duration-200 hover:-translate-y-0.5 hover:opacity-95"
+      >
+        <Send size={17} aria-hidden />
+        Message Jace on Telegram
+      </a>
+    );
+  }
+  return (
+    <form action={signInWithGithub}>
+      <button
+        type="submit"
+        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--brand-accent)] px-7 py-3.5 text-[15px] font-semibold text-white transition-all duration-200 hover:-translate-y-0.5 hover:opacity-95"
+      >
+        <GitHubIcon />
+        Sign in with GitHub
+      </button>
+    </form>
   );
 }
 

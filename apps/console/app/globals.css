@@ -108,6 +108,25 @@ body {
   animation: ar-rise 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
 }
 
+/* Fast rise for click-triggered reveals inside marketing components (e.g.
+   the conversation demo's outcome ping, after "Approve" is tapped) — a state
+   change, not a scroll reveal, so it stays under 300ms per house motion
+   rules (see TASTE.md's Animation & Transitions section). Same easing
+   family as ar-rise, just quicker. */
+@keyframes ar-rise-fast {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ar-rise-fast {
+  animation: ar-rise-fast 220ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+}
+
 /* Horizontal bar grow */
 @keyframes ar-grow {
   from {
@@ -214,6 +233,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .ar-rise,
+  .ar-rise-fast,
   .ar-bar,
   .ar-scan,
   .ar-pulse,

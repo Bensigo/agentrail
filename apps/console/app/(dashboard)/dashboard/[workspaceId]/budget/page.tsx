@@ -24,7 +24,7 @@ import { MonthlyRollupTable } from "./components/monthly-rollup-table";
  * (no client fetch, no new API route).
  *
  * Auth mirrors the sibling workspace pages exactly (e.g.
- * `dashboard/[workspaceId]/page.tsx`, `api-keys/page.tsx`): the workspace
+ * `dashboard/[workspaceId]/page.tsx`, `permissions/page.tsx`): the workspace
  * layout already guards session + membership, this re-checks defensively
  * rather than trusting that every future caller of this component goes
  * through that layout.

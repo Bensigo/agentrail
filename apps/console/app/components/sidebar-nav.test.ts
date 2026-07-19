@@ -45,17 +45,16 @@ describe("NAV_ZONES data structure", () => {
     ]);
   });
 
-  it("Settings zone: Connectors, Repos & Health, Team, API Keys, Permissions (#1278)", () => {
+  it("Settings zone: Connectors, Repos & Health, Team, Permissions (#1278; api-keys removed 2026-07-19)", () => {
     expect(SETTINGS_ZONE.items.map((i) => [i.label, i.href])).toEqual([
       ["Connectors", "connectors"],
       ["Repos & Health", "repos"],
       ["Team", "members"],
-      ["API Keys", "api-keys"],
       ["Permissions", "permissions"],
     ]);
   });
 
-  it("every pre-existing href except queue (renamed to work, #1231) is still present exactly once", () => {
+  it("every pre-existing href except queue (renamed to work, #1231) and api-keys (removed 2026-07-19) is still present exactly once", () => {
     const legacyHrefs = [
       "", // Overview -> Home
       "runs",
@@ -68,7 +67,9 @@ describe("NAV_ZONES data structure", () => {
       "costs",
       "repos",
       "memory",
-      "api-keys",
+      // "api-keys" intentionally excluded: the in-console key list/create/
+      // revoke UI was removed (owner ruling, 2026-07-19) — see the dedicated
+      // "api-keys is gone from the nav" test below.
       "members",
     ];
     const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
@@ -99,7 +100,12 @@ describe("NAV_ZONES data structure", () => {
     expect(allHrefs.filter((h) => h === "work")).toHaveLength(1);
   });
 
-  it("adds no new hrefs beyond the legacy set plus work, budget, approvals, and permissions (teams stays a redirect stub to /members)", () => {
+  it("api-keys is gone from the nav (owner ruling, 2026-07-19 — in-console key UI removed; the api_keys table and its /api/v1 routes are untouched)", () => {
+    const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
+    expect(allHrefs).not.toContain("api-keys");
+  });
+
+  it("adds no new hrefs beyond the legacy set plus work, budget, approvals, and permissions (teams stays a redirect stub to /members; api-keys removed 2026-07-19)", () => {
     const legacyHrefs = new Set([
       "",
       "runs",
@@ -112,9 +118,10 @@ describe("NAV_ZONES data structure", () => {
       "approvals", // #1276: pending approvals, parked work, dead letters
       "repos",
       "memory",
-      "api-keys",
       "members",
       "permissions", // #1278: owner-only grantable merge-permission toggle
+      // "api-keys" intentionally excluded: removed from the nav (owner
+      // ruling, 2026-07-19) — see the dedicated test below.
     ]);
     const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
     const newHrefs = allHrefs.filter((h) => !legacyHrefs.has(h));

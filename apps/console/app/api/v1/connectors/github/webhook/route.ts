@@ -118,30 +118,16 @@ export async function POST(request: NextRequest) {
     body,
   });
 
-  // #1274 PR③: this admission attempt is a "next queue activity" trigger to
-  // sweep for OTHER stale, brief-less parked entries in this workspace —
-  // Python-admitted rows, a prior postAlignmentBrief failure, a v2-guardrail
-  // park unparkDependents relabeled — bounded, best-effort, and NON-FATAL:
-  // a reconciler failure must never fail this webhook's response, so it is
-  // caught here regardless of what caused it (findAlignmentBriefCandidates
-  // itself is also defensive, but this is the outer belt-and-suspenders).
-  try {
-    await reconcileAlignmentBriefs(5);
-  } catch (err) {
-    console.error("[github/webhook] alignment-reconciler sweep failed:", err);
-  }
-
+  let responseBody: Record<string, unknown>;
   if (!result.enqueued) {
-    return NextResponse.json({ matched: true, enqueued: 0, reason: result.reason });
-  }
-
-  // #1274: this enqueue parked the entry via the alignment hold (not a
-  // dependency/guardrail park — those never set parkedFor) — compose+post
-  // Jace's alignment brief. The entry is ALREADY durably parked at this
-  // point (enqueueGithubIssue's insert already committed), so any failure
-  // below is caught inside postAlignmentBrief itself and never turns into a
-  // silently-queued row.
-  if (result.state === "parked" && result.parkedFor === "awaiting_alignment") {
+    responseBody = { matched: true, enqueued: 0, reason: result.reason };
+  } else if (result.state === "parked" && result.parkedFor === "awaiting_alignment") {
+    // #1274: this enqueue parked the entry via the alignment hold (not a
+    // dependency/guardrail park — those never set parkedFor) — compose+post
+    // Jace's alignment brief. The entry is ALREADY durably parked at this
+    // point (enqueueGithubIssue's insert already committed), so any failure
+    // below is caught inside postAlignmentBrief itself and never turns into a
+    // silently-queued row.
     const alignmentBrief = await postAlignmentBrief({
       workspaceId,
       queueEntryId: result.id,
@@ -150,13 +136,32 @@ export async function POST(request: NextRequest) {
       title,
       body,
     });
-    return NextResponse.json({
-      matched: true,
-      enqueued: 1,
-      id: result.id,
-      alignmentBrief,
-    });
+    responseBody = { matched: true, enqueued: 1, id: result.id, alignmentBrief };
+  } else {
+    responseBody = { matched: true, enqueued: 1, id: result.id };
   }
 
-  return NextResponse.json({ matched: true, enqueued: 1, id: result.id });
+  // #1274 PR③: this admission attempt is a "next queue activity" trigger to
+  // sweep for OTHER stale, brief-less parked entries in this workspace —
+  // Python-admitted rows, a prior postAlignmentBrief failure, a v2-guardrail
+  // park unparkDependents relabeled. Runs AFTER the branch above, not
+  // before: the branch above already gave the row THIS request just
+  // admitted its own explicit postAlignmentBrief attempt (recording its
+  // approval row on success, or leaving it genuinely absent on failure so a
+  // LATER sweep can retry it) — running the sweep first would let it race
+  // that same call for the SAME entry (same requestId, so no duplicate DB
+  // row — recordApprovalRequest's onConflictDoNothing prevents that — but
+  // postAlignmentBrief sends the Telegram message unconditionally after
+  // recording, with no created-vs-found check, so a same-request race would
+  // send the SAME brief twice). Bounded, best-effort, and NON-FATAL: a
+  // reconciler failure must never fail this webhook's response, so it is
+  // caught here regardless of what caused it (findAlignmentBriefCandidates
+  // itself is also defensive, but this is the outer belt-and-suspenders).
+  try {
+    await reconcileAlignmentBriefs(5);
+  } catch (err) {
+    console.error("[github/webhook] alignment-reconciler sweep failed:", err);
+  }
+
+  return NextResponse.json(responseBody);
 }

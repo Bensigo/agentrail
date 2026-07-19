@@ -260,6 +260,18 @@ export interface ReconcileEntryOutcome {
  * carries the approval that denied it, so `findAlignmentBriefCandidates`'s
  * own "no approval row" criterion already excludes them — no separate
  * denied-status check is needed here.
+ *
+ * CALL-ORDER WARNING for any caller that ALSO calls `postAlignmentBrief`
+ * directly for a specific entry within the SAME request (as the
+ * github-webhook route does, for the entry it just admitted): call THIS
+ * function AFTER that direct call, never before. Before the direct call
+ * resolves, the just-admitted entry has no approval row yet and would
+ * match this sweep's own candidate query — `postAlignmentBrief`'s own
+ * `recordApprovalRequest` is idempotent (same deterministic `requestId`),
+ * so a same-request race can't create a second DB row, but it sends the
+ * Telegram message unconditionally after recording (no created-vs-found
+ * check) — so racing the two would send the identical brief twice. See the
+ * github-webhook route's own comment at its call site.
  */
 export async function reconcileAlignmentBriefs(
   limit: number

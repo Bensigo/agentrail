@@ -114,9 +114,40 @@ describe("POST /api/v1/connectors/github/webhook — alignment-reconciler trigge
     expect(res.status).toBe(200);
     // postAlignmentBrief is mocked in this file too (module-level mock) —
     // its own behavior is proven in route.test.ts; here we only need the
-    // response shape to prove the route reached that branch at all, even
-    // though the (unrelated) reconciler call earlier in the SAME request
-    // just threw.
+    // response shape to prove the route reached that branch and returned
+    // its result, even though the (unrelated) reconciler call LATER in the
+    // SAME request just threw.
     expect(body).toEqual({ matched: true, enqueued: 1, id: "entry-1", alignmentBrief: "posted" });
+  });
+
+  it("ORDERING (self-collision fix): the reconciler sweep runs AFTER this request's own postAlignmentBrief call, never before it", async () => {
+    // If the sweep ran BEFORE the explicit postAlignmentBrief call below, it
+    // would find THIS SAME just-admitted parked/no-approval-row entry and
+    // process it itself — recordApprovalRequest's idempotency prevents a
+    // duplicate DB row (same requestId), but postAlignmentBrief sends the
+    // Telegram message unconditionally after recording, with no
+    // created-vs-found check — so a same-request race would send the
+    // identical brief twice. Proven here by call ORDER, not just call
+    // COUNT: mock invocation order is captured on a shared array.
+    mockEnqueue.mockResolvedValue({
+      enqueued: true,
+      id: "entry-1",
+      state: "parked",
+      blockedBy: [],
+      parkedFor: "awaiting_alignment",
+    } as never);
+    const order: string[] = [];
+    mockPostBrief.mockImplementation(async () => {
+      order.push("postAlignmentBrief");
+      return "posted";
+    });
+    mockReconcile.mockImplementation(async () => {
+      order.push("reconcileAlignmentBriefs");
+      return [];
+    });
+
+    await POST(req(ISSUE_PAYLOAD));
+
+    expect(order).toEqual(["postAlignmentBrief", "reconcileAlignmentBriefs"]);
   });
 });

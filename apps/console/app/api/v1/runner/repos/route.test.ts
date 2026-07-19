@@ -11,10 +11,6 @@ vi.mock("@agentrail/db-postgres", () => ({
   enqueueOnboard: vi.fn(),
   workspaceHasExecutionPath: vi.fn(),
 }));
-vi.mock("../../../../../lib/bearer-auth", () => ({
-  requireBearer: vi.fn(),
-}));
-
 import { POST } from "./route";
 import {
   getJaceSessionByEveSessionId,
@@ -26,17 +22,27 @@ import {
   enqueueOnboard,
   workspaceHasExecutionPath,
 } from "@agentrail/db-postgres";
-import { requireBearer } from "../../../../../lib/bearer-auth";
 
 const NOW = new Date("2026-07-18T00:00:00.000Z");
 const MOCK_TOKEN = "gho_mock_token_abc123";
+
+// Central-secret auth (2026-07-20 fix): the route now authenticates via
+// requireJaceConsoleSecret / JACE_CONSOLE_TOKEN instead of a per-workspace
+// bearer api_key — this route never used the bearer's own workspaceId for
+// anything (see the route's own doc-comment), so this is a pure auth-guard
+// swap; every non-auth test below is unchanged. Real helper, real env var,
+// real header — same idiom as fleet/workspace-tokens/sync/route.test.ts uses
+// for its own shared secret.
+const ENV_KEY = "JACE_CONSOLE_TOKEN";
+const SECRET = "jace-shared-secret-abc123";
+const ORIGINAL_ENV = process.env[ENV_KEY];
 
 function req(body?: unknown, withAuth = true): NextRequest {
   return new NextRequest("http://localhost/api/v1/runner/repos", {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(withAuth ? { Authorization: "Bearer ar_test" } : {}),
+      ...(withAuth ? { Authorization: `Bearer ${SECRET}` } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -100,11 +106,7 @@ function githubHookResponse(ok = true, status = 201) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(requireBearer).mockResolvedValue({
-    apiKeyId: "key-1",
-    workspaceId: "ws-bearer",
-    teamId: null,
-  } as never);
+  process.env[ENV_KEY] = SECRET;
   vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(PINNED_SESSION as never);
   vi.mocked(getChatIdentityById).mockResolvedValue(BOUND_IDENTITY as never);
   vi.mocked(getGithubToken).mockResolvedValue(MOCK_TOKEN);
@@ -134,6 +136,8 @@ const originalFetch = global.fetch;
 afterEach(() => {
   global.fetch = originalFetch;
   delete process.env.AGENTRAIL_ONBOARD_ON_CONNECT;
+  if (ORIGINAL_ENV === undefined) delete process.env[ENV_KEY];
+  else process.env[ENV_KEY] = ORIGINAL_ENV;
 });
 
 /** Wire global.fetch to answer the repo-create call then the webhook call, in order. */
@@ -149,11 +153,7 @@ describe("POST /api/v1/runner/repos", () => {
   // auth
   // ---------------------------------------------------------------------
 
-  it("401 when requireBearer rejects, and never touches session/identity/GitHub/db", async () => {
-    const { NextResponse } = await import("next/server");
-    vi.mocked(requireBearer).mockResolvedValue(
-      NextResponse.json({ error: "Unauthorized" }, { status: 401 }) as never
-    );
+  it("401 when no Authorization header is sent, and never touches session/identity/GitHub/db", async () => {
     const fetchMock = mockFetchSequence();
 
     const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }, false));
@@ -166,6 +166,28 @@ describe("POST /api/v1/runner/repos", () => {
     expect(createRepository).not.toHaveBeenCalled();
   });
 
+  it("401 when JACE_CONSOLE_TOKEN is unset (fail closed, never 'open') — even the objectively correct secret is rejected", async () => {
+    delete process.env[ENV_KEY];
+
+    const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }, true));
+
+    expect(res.status).toBe(401);
+    expect(getJaceSessionByEveSessionId).not.toHaveBeenCalled();
+  });
+
+  it("401 on a wrong secret", async () => {
+    const res = await POST(
+      new NextRequest("http://localhost/api/v1/runner/repos", {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: "Bearer wrong-secret" },
+        body: JSON.stringify({ eveSessionId: "eve-session-1", name: "widgets" }),
+      })
+    );
+
+    expect(res.status).toBe(401);
+    expect(getJaceSessionByEveSessionId).not.toHaveBeenCalled();
+  });
+
   // ---------------------------------------------------------------------
   // body / name validation (400) — cheap checks, before any DB call
   // ---------------------------------------------------------------------
@@ -173,7 +195,7 @@ describe("POST /api/v1/runner/repos", () => {
   it("400 on invalid JSON", async () => {
     const request = new NextRequest("http://localhost/api/v1/runner/repos", {
       method: "POST",
-      headers: { "content-type": "application/json", Authorization: "Bearer ar_test" },
+      headers: { "content-type": "application/json", Authorization: `Bearer ${SECRET}` },
       body: "{not valid json",
     });
 

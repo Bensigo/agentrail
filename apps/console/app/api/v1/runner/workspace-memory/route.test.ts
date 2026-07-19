@@ -1,54 +1,151 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   retrieveMemory: vi.fn(),
-}));
-vi.mock("../../../../../lib/bearer-auth", () => ({
-  requireBearer: vi.fn(),
+  getJaceSessionByEveSessionId: vi.fn(),
 }));
 
 import { GET } from "./route";
-import { retrieveMemory } from "@agentrail/db-postgres";
-import { requireBearer } from "../../../../../lib/bearer-auth";
+import { retrieveMemory, getJaceSessionByEveSessionId } from "@agentrail/db-postgres";
+
+const mockRetrieve = vi.mocked(retrieveMemory);
+const mockGetSession = vi.mocked(getJaceSessionByEveSessionId);
 
 const WS = "00000000-0000-0000-0000-000000000001";
-const KEY = "k1";
-const TEAM = "t1";
+const EVE_SESSION_ID = "eve-session-1";
 
-function req(query?: string, withAuth = true): NextRequest {
-  const qs = query === undefined ? "" : `?query=${encodeURIComponent(query)}`;
-  return new NextRequest(`http://localhost/api/v1/runner/workspace-memory${qs}`, {
-    method: "GET",
-    headers: withAuth ? { Authorization: "Bearer ar_test" } : {},
-  });
+// Central-secret auth (2026-07-20 fix): the route now authenticates via
+// requireJaceConsoleSecret / JACE_CONSOLE_TOKEN instead of a per-workspace
+// bearer api_key — the workspace it used to read straight off that bearer is
+// now resolved server-side from a required `eveSessionId` query param via
+// the jace_sessions ledger, same resolution chain the other Jace-coordinator
+// routes use. Real helper, real env var, real header — same idiom as
+// fleet/workspace-tokens/sync/route.test.ts uses for its own shared secret.
+const ENV_KEY = "JACE_CONSOLE_TOKEN";
+const SECRET = "jace-shared-secret-abc123";
+const ORIGINAL_ENV = process.env[ENV_KEY];
+
+// No default value on `eveSessionId` (same reasoning as the `token` param
+// below): a default would NOT distinguish "explicitly omitted, to test the
+// missing-param 400" from "caller didn't bother passing it" (JS applies a
+// default to an explicit `undefined` property too). Every call site below
+// passes `eveSessionId: EVE_SESSION_ID` explicitly except the one test that
+// means to omit it.
+function req(opts: {
+  query?: string;
+  eveSessionId?: string;
+  token?: string;
+} = {}): NextRequest {
+  const { query, eveSessionId, token } = opts;
+  const params = new URLSearchParams();
+  if (eveSessionId !== undefined) params.set("eveSessionId", eveSessionId);
+  if (query !== undefined) params.set("query", query);
+  const qs = params.toString();
+  const headers: Record<string, string> = {};
+  if (token !== undefined) headers["Authorization"] = `Bearer ${token}`;
+  return new NextRequest(
+    `http://localhost/api/v1/runner/workspace-memory${qs ? `?${qs}` : ""}`,
+    { method: "GET", headers }
+  );
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(requireBearer).mockResolvedValue({
-    workspaceId: WS,
-    apiKeyId: KEY,
-    teamId: TEAM,
-  } as never);
-  vi.mocked(retrieveMemory).mockResolvedValue([] as never);
+  process.env[ENV_KEY] = SECRET;
+  mockGetSession.mockResolvedValue({ workspaceId: WS } as never);
+  mockRetrieve.mockResolvedValue([] as never);
+});
+
+afterEach(() => {
+  if (ORIGINAL_ENV === undefined) delete process.env[ENV_KEY];
+  else process.env[ENV_KEY] = ORIGINAL_ENV;
 });
 
 describe("GET /api/v1/runner/workspace-memory", () => {
-  it("returns 200 with retrieveMemory's ranked items, scoped to the key's workspace + the query", async () => {
+  describe("auth (central JACE_CONSOLE_TOKEN secret, 2026-07-20)", () => {
+    it("401 when JACE_CONSOLE_TOKEN is unset (fail closed, never 'open') — even the objectively correct secret is rejected, and never touches the db", async () => {
+      delete process.env[ENV_KEY];
+
+      const res = await GET(req({ token: SECRET }));
+
+      expect(res.status).toBe(401);
+      expect(mockGetSession).not.toHaveBeenCalled();
+      expect(mockRetrieve).not.toHaveBeenCalled();
+    });
+
+    it("401 when no Authorization header is sent, and never touches the db", async () => {
+      const res = await GET(req({ token: undefined }));
+
+      expect(res.status).toBe(401);
+      expect(mockGetSession).not.toHaveBeenCalled();
+    });
+
+    it("401 on a wrong secret, and never touches the db", async () => {
+      const res = await GET(req({ token: "wrong-secret" }));
+
+      expect(res.status).toBe(401);
+      expect(mockGetSession).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("tenant resolution (eveSessionId -> jace_sessions ledger, never a caller-supplied workspaceId)", () => {
+    it("400 when eveSessionId is missing", async () => {
+      const res = await GET(req({ token: SECRET }));
+
+      expect(res.status).toBe(400);
+      expect(mockGetSession).not.toHaveBeenCalled();
+    });
+
+    it("400 when eveSessionId is blank/whitespace", async () => {
+      const res = await GET(req({ token: SECRET, eveSessionId: "   " }));
+
+      expect(res.status).toBe(400);
+    });
+
+    it("404 when no session exists for this eveSessionId", async () => {
+      mockGetSession.mockResolvedValue(null);
+
+      const res = await GET(req({ token: SECRET, eveSessionId: EVE_SESSION_ID }));
+
+      expect(res.status).toBe(404);
+      expect(mockRetrieve).not.toHaveBeenCalled();
+    });
+
+    it("404 when the session has no resolved workspace yet (intro session, cold-start)", async () => {
+      mockGetSession.mockResolvedValue({ workspaceId: null } as never);
+
+      const res = await GET(req({ token: SECRET, eveSessionId: EVE_SESSION_ID }));
+
+      expect(res.status).toBe(404);
+      expect(mockRetrieve).not.toHaveBeenCalled();
+    });
+
+    it("resolves the workspace from the session ledger, never trusting a caller-supplied workspaceId directly (there is no such input at all)", async () => {
+      mockGetSession.mockResolvedValue({ workspaceId: WS } as never);
+
+      await GET(req({ token: SECRET, eveSessionId: EVE_SESSION_ID }));
+
+      expect(mockGetSession).toHaveBeenCalledWith(EVE_SESSION_ID);
+      expect(mockRetrieve).toHaveBeenCalledWith(WS, "", expect.any(Object));
+    });
+  });
+
+  it("returns 200 with retrieveMemory's ranked items, scoped to the ledgered workspace + the query", async () => {
     const rows = [
       { id: "m1", source: "human", content: "prefer squash merges", type: "preference" },
       { id: "m2", source: "jace", content: "flag defaults OFF", type: "decision" },
     ];
-    vi.mocked(retrieveMemory).mockResolvedValue(rows as never);
+    mockRetrieve.mockResolvedValue(rows as never);
 
-    const res = await GET(req("merge strategy"));
+    const res = await GET(
+      req({ token: SECRET, eveSessionId: EVE_SESSION_ID, query: "merge strategy" })
+    );
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.items).toHaveLength(2);
     expect(body.items[0]).toMatchObject({ id: "m1" });
-    // workspace comes from the token, never from input; the query rides through.
-    expect(retrieveMemory).toHaveBeenCalledWith(
+    expect(mockRetrieve).toHaveBeenCalledWith(
       WS,
       "merge strategy",
       expect.objectContaining({ k: expect.any(Number) })
@@ -56,25 +153,16 @@ describe("GET /api/v1/runner/workspace-memory", () => {
   });
 
   it("passes an empty string to retrieveMemory when query is missing", async () => {
-    const res = await GET(req(undefined));
+    const res = await GET(req({ token: SECRET, eveSessionId: EVE_SESSION_ID }));
     expect(res.status).toBe(200);
-    expect(retrieveMemory).toHaveBeenCalledWith(WS, "", expect.any(Object));
+    expect(mockRetrieve).toHaveBeenCalledWith(WS, "", expect.any(Object));
   });
 
-  it("401 when requireBearer rejects, and never touches the DB", async () => {
-    const { NextResponse } = await import("next/server");
-    vi.mocked(requireBearer).mockResolvedValue(
-      NextResponse.json({ error: "Unauthorized" }, { status: 401 }) as never
+  it("502 when the memory store errors", async () => {
+    mockRetrieve.mockRejectedValue(new Error("pg down"));
+    const res = await GET(
+      req({ token: SECRET, eveSessionId: EVE_SESSION_ID, query: "merge strategy" })
     );
-
-    const res = await GET(req("anything", false));
-    expect(res.status).toBe(401);
-    expect(retrieveMemory).not.toHaveBeenCalled();
-  });
-
-  it("502 when the store errors", async () => {
-    vi.mocked(retrieveMemory).mockRejectedValue(new Error("pg down"));
-    const res = await GET(req("merge strategy"));
     expect(res.status).toBe(502);
   });
 });

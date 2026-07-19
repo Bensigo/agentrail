@@ -754,9 +754,21 @@ async function workspaceRequiresAlignment(workspaceId: string): Promise<boolean>
 
 /**
  * Has this issue already been through a CONFIRMED alignment brief, IN THIS
- * WORKSPACE? The lookup: an `approved` `jace_approvals` row SCOPED TO
- * `workspaceId` whose `published_issue_url` matches this issue's URL
- * exactly.
+ * WORKSPACE — and if so, return the MATCHED approval's `toolInput` (#1274
+ * PR ②) so the caller can pull the sanctioned budget/model out of it. The
+ * lookup: an `approved` `jace_approvals` row SCOPED TO `workspaceId` whose
+ * `published_issue_url` matches this issue's URL EXACTLY (full string
+ * equality on `https://github.com/<owner>/<repo>/issues/<n>` —
+ * host+owner+repo+number, never a substring/fragment match, and NEVER
+ * derived from the issue's title — see {@link githubIssueUrl}, which this
+ * function's caller computes `issueUrl` from and which never accepts a
+ * title in the first place. A crafted issue title containing what LOOKS
+ * like a GitHub issue URL therefore has zero effect on this lookup: the
+ * compared value is always server-computed from `repoFullName`+`number`
+ * alone, on both the write side — PR ②'s stamp endpoint additionally
+ * regex-validates the shape of any url it ever writes, see
+ * `apps/console/app/api/v1/runner/approvals/[id]/published/route.ts` — and
+ * this read side).
  *
  * Workspace-scoped (adversarial review finding 3 of #1274 PR ①): the
  * original version of this lookup matched on `(status, publishedIssueUrl)`
@@ -767,20 +779,20 @@ async function workspaceRequiresAlignment(workspaceId: string): Promise<boolean>
  * direct-column idiom), so adding `eq(jaceApprovals.workspaceId,
  * workspaceId)` closes it with one extra `and()` clause.
  *
- * Nothing populates `publishedIssueUrl` for an `alignment_brief` approval
- * yet — PR ②'s chat-born one-confirm collapse is what will start stamping it
- * once a `create_issue` approval's resulting issue is known — so this always
- * returns `false` today. That is the CORRECT direction to fail in until PR ②
- * lands: a chat-born issue re-delivered through the label-webhook path parks
- * for a second (redundant, but safe) confirm rather than silently skipping
- * alignment.
+ * Renamed from the PR ① boolean-returning `hasConfirmedAlignmentBrief`:
+ * PR ②'s `apps/jace/agent/lib/create_issue.core.mjs` now stamps
+ * `published_issue_url` (via the new `/published` endpoint) once a
+ * `create_issue` approval's resulting issue is known, so this can start
+ * matching in practice — and once it does, `enqueueGithubIssue` needs the
+ * matched row's `toolInput` (specifically its `_brief`, see
+ * `extractBriefBudgetAndModel` below), not just a boolean.
  */
-async function hasConfirmedAlignmentBrief(
+async function findConfirmedAlignmentBriefApproval(
   workspaceId: string,
   issueUrl: string
-): Promise<boolean> {
+): Promise<{ toolInput: Record<string, unknown> } | null> {
   const rows = await db
-    .select({ id: jaceApprovals.id })
+    .select({ toolInput: jaceApprovals.toolInput })
     .from(jaceApprovals)
     .where(
       and(
@@ -789,7 +801,47 @@ async function hasConfirmedAlignmentBrief(
         eq(jaceApprovals.publishedIssueUrl, issueUrl)
       )
     );
-  return rows.length > 0;
+  return rows[0] ?? null;
+}
+
+/**
+ * Extract the sanctioned budget/model from a MATCHED confirmed-brief
+ * approval's own stored `toolInput._brief` (#1274 PR ②) — the console
+ * approvals POST route's enrichment writes this reserved key onto a
+ * `create_issue` approval's `toolInput` at record time (see
+ * `apps/console/app/api/v1/runner/approvals/route.ts` and
+ * `apps/console/lib/alignment-brief.ts::composeChatBornBrief`); this is the
+ * db-postgres-side mirror of `extractConfirmedBudgetAndModel`
+ * (`apps/console/lib/alignment-brief.ts`) — DELIBERATELY DUPLICATED rather
+ * than imported (confirmed layering rule from #1274 PR ①'s own review: zero
+ * db-postgres -> console-lib imports either direction) — same defensive
+ * shape, `null` on anything malformed so the caller can fall back rather
+ * than write a bogus budget/model.
+ *
+ * `null` when `_brief` is absent entirely — a PRE-#1274-PR② row (recorded
+ * before this enrichment existed) that nonetheless got approved and later
+ * stamped is a real, if narrow, deploy-ordering edge case (see
+ * `enqueueGithubIssue`'s own comment on the caller side for how that case
+ * is handled — the "no-`_brief` fallback restriction").
+ */
+function extractBriefBudgetAndModel(
+  toolInput: Record<string, unknown>
+): { estimatedBudgetUsd: number; modelOverride: string } | null {
+  const brief = toolInput["_brief"];
+  if (!brief || typeof brief !== "object" || Array.isArray(brief)) return null;
+  const b = brief as Record<string, unknown>;
+
+  const estimateUsd = b["estimateUsd"];
+  if (typeof estimateUsd !== "number" || !Number.isFinite(estimateUsd)) return null;
+
+  const suggestedModel = b["suggestedModel"];
+  if (!suggestedModel || typeof suggestedModel !== "object" || Array.isArray(suggestedModel)) {
+    return null;
+  }
+  const slug = (suggestedModel as Record<string, unknown>)["slug"];
+  if (typeof slug !== "string" || slug.length === 0) return null;
+
+  return { estimatedBudgetUsd: estimateUsd, modelOverride: slug };
 }
 
 /**
@@ -1026,12 +1078,67 @@ export async function enqueueGithubIssue(data: {
   // through this check at all: requireAlignment=true never parks an onboard
   // row, regression-pinned).
   let parkedFor: "awaiting_alignment" | undefined;
+  // #1274 PR ②: written from a MATCHED confirmed-brief approval's own
+  // `_brief` (chat-born one-confirm collapse) — see the block below. `null`
+  // (the column's own default) unless that match succeeds; explicit here
+  // rather than omitted so this is always the SAME insert shape regardless
+  // of which branch below ran.
+  let estimatedBudgetUsd: number | null = null;
+  let modelOverride: string | null = null;
   if (!v2Parked) {
     const requireAlignment = await workspaceRequiresAlignment(data.workspaceId);
     if (requireAlignment) {
       const issueUrl = githubIssueUrl(data.repoFullName, data.number);
-      const confirmed = await hasConfirmedAlignmentBrief(data.workspaceId, issueUrl);
-      if (!confirmed) {
+      const matched = await findConfirmedAlignmentBriefApproval(data.workspaceId, issueUrl);
+
+      if (matched) {
+        const briefValues = extractBriefBudgetAndModel(matched.toolInput);
+        if (briefValues) {
+          // #1274 PR ②, BOLDED PIN 1: the sanctioned values are written
+          // onto the entry HERE, AT ADMISSION, REGARDLESS of whether the
+          // entry lands `queued` or dependency-`parked` below — `state`/
+          // `parkReason` are left completely untouched by this branch (a
+          // dependency park keeps its own "Waiting on #N" reason exactly
+          // as the pre-#1274 behaviour did; a clean admit stays `queued`).
+          // This is load-bearing, not cosmetic: `unparkDependents` (this
+          // file) gates release on `estimatedBudgetUsd IS NOT NULL` as its
+          // sole "aligned" signal. A chat-born entry that admits into a
+          // "Waiting on #N" park WITHOUT its values written here would
+          // read as never-aligned once the blocker clears, and
+          // unparkDependents would WRONGLY flip its park reason back to
+          // "awaiting alignment" — even though the brief genuinely WAS
+          // confirmed via the one-confirm collapse before this row was
+          // ever inserted. No brief posting is needed either way — it was
+          // already confirmed — so `parkedFor` is left unset in this
+          // branch (unlike the unmatched branch below).
+          estimatedBudgetUsd = briefValues.estimatedBudgetUsd;
+          modelOverride = briefValues.modelOverride;
+        } else if (state !== "queued") {
+          // #1274 PR ②, BOLDED PIN 2 ("the no-`_brief` fallback
+          // restriction"): `matched` but no usable `_brief` — a
+          // pre-#1274-PR② approval row (recorded before this enrichment
+          // existed; a narrow deploy-ordering window, see
+          // `extractBriefBudgetAndModel`'s doc-comment) that nonetheless
+          // got approved and later stamped. PR ①'s original "admit clean,
+          // no values" fallback (the `else` branch just below) is safe
+          // ONLY for a row landing cleanly `queued`. It is NOT safe here,
+          // where the entry would otherwise land dependency-`parked`: a
+          // values-less "confirmed" park would wedge at unpark forever
+          // (unparkDependents reads `estimatedBudgetUsd === null` as
+          // never-aligned and would re-park it "awaiting alignment" once
+          // the blocker clears, with no brief left to confirm against — a
+          // dead end). So for THIS landing, treat the lookup as NOT
+          // confirmed and fall through to the normal brief-needed path
+          // instead: `parkedFor` fires so the console route composes+posts
+          // a FRESH brief, exactly like the unmatched branch below. A
+          // redundant second confirm is the correct fail-safe direction —
+          // the same one this whole gate always fails toward.
+          parkedFor = "awaiting_alignment";
+        }
+        // else (no `_brief`, but `state === "queued"`): PR①'s original
+        // no-values fallback — admit clean, `parkedFor` stays unset,
+        // byte-identical to the pre-#1274-PR② behaviour.
+      } else {
         parkedFor = "awaiting_alignment";
         if (state === "queued") {
           state = "parked";
@@ -1061,6 +1168,8 @@ export async function enqueueGithubIssue(data: {
       state,
       blockedBy,
       parkReason,
+      estimatedBudgetUsd,
+      modelOverride,
     })
     .onConflictDoNothing({ target: queueEntries.id })
     .returning({ id: queueEntries.id });

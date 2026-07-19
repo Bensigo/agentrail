@@ -262,7 +262,7 @@ export function FailuresTable({
         <select
           value={repoId}
           onChange={(e) => setRepoId(e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
+          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)]"
         >
           <option value="">All repos</option>
           {repositories.map((r) => (
@@ -275,7 +275,7 @@ export function FailuresTable({
         <select
           value={severity}
           onChange={(e) => setSeverity(e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
+          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)]"
         >
           <option value="">All severities</option>
           <option value="critical">Critical</option>
@@ -287,7 +287,7 @@ export function FailuresTable({
         <select
           value={failureType}
           onChange={(e) => setFailureType(e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
+          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)]"
         >
           <option value="">All types</option>
           <option value="tool_error">tool_error</option>

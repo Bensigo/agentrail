@@ -62,7 +62,7 @@ export function EngineRoomGroup({
         onClick={toggle}
         aria-expanded={open}
         title={zone.label}
-        className="flex w-full items-center justify-between rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)] transition-colors duration-150 hover:text-[var(--gray-12)] max-md:justify-center"
+        className="flex w-full items-center justify-between rounded px-2 py-1 text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] transition-colors duration-150 hover:text-[var(--gray-12)] max-md:justify-center"
       >
         <span className="max-md:hidden">{zone.label}</span>
         <ChevronDown

@@ -288,7 +288,7 @@ export function RunsTable({ workspaceId, repositories }: RunsTableProps) {
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
+          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)]"
         >
           <option value="">All statuses</option>
           <option value="queued">Queued</option>
@@ -300,7 +300,7 @@ export function RunsTable({ workspaceId, repositories }: RunsTableProps) {
         <select
           value={repoId}
           onChange={(e) => setRepoId(e.target.value)}
-          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)]"
+          className="h-8 rounded bg-[var(--gray-02)] border border-[var(--gray-05)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)]"
         >
           <option value="">All repos</option>
           {repositories.map((r) => (

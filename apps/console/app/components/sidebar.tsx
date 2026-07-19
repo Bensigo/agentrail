@@ -33,7 +33,7 @@ export function Sidebar({ workspaces, workspaceId, user, signOutAction }: Sideba
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2 py-2">
-        <p className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)] max-md:hidden">
+        <p className="px-2 py-1 text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] max-md:hidden">
           {YOUR_ENGINEER_ZONE.label}
         </p>
         {YOUR_ENGINEER_ZONE.items.map((item) => (
@@ -42,7 +42,7 @@ export function Sidebar({ workspaces, workspaceId, user, signOutAction }: Sideba
 
         <EngineRoomGroup zone={ENGINE_ROOM_ZONE} pathname={pathname} basePath={basePath} />
 
-        <p className="mt-3 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)] max-md:hidden">
+        <p className="mt-3 px-2 py-1 text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] max-md:hidden">
           {SETTINGS_ZONE.label}
         </p>
         {SETTINGS_ZONE.items.map((item) => (
@@ -56,7 +56,7 @@ export function Sidebar({ workspaces, workspaceId, user, signOutAction }: Sideba
             {(user.name?.[0] ?? user.email?.[0] ?? "U").toUpperCase()}
           </div>
           <div className="flex-1 overflow-hidden max-md:hidden">
-            <p className="truncate text-xs font-medium text-[var(--gray-12)]">
+            <p className="truncate text-xs font-normal text-[var(--gray-12)]">
               {user.name ?? "User"}
             </p>
             <form action={signOutAction}>

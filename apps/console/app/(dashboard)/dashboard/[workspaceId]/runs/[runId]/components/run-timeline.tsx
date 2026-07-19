@@ -137,7 +137,7 @@ function TimelineEntry({
         >
           <div className="flex flex-col gap-0.5">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm text-[var(--gray-12)] group-hover:text-white transition-colors">
+              <span className="text-sm text-[var(--gray-12)] group-hover:text-[var(--gray-13)] transition-colors">
                 {displayLabel}
               </span>
               {event.kind && (
@@ -233,7 +233,7 @@ function ActivityGroup({ phase, events, isLast }: ActivityGroupProps) {
         >
           <div className="flex flex-col gap-0.5">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm text-[var(--gray-12)] group-hover:text-white transition-colors">
+              <span className="text-sm text-[var(--gray-12)] group-hover:text-[var(--gray-13)] transition-colors">
                 Agent activity ({events.length})
               </span>
               {phase && (

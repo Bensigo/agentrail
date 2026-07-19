@@ -106,7 +106,9 @@ All colors use CSS custom properties with **light-first values — light mode is
 | Purple | #6e56cf | #6550b9 (light) / #baa7ff (dark) | Context, enrichment |
 | Teal | #12a594 | #008573 (light) / #0bd8b6 (dark) | Telemetry, events |
 
-**Brand accent:** amber `#9e6c00` on light backgrounds (the default) for accents and active indicators; lemon `#ffe629` is **fill-with-dark-text only** (primary CTA buttons, highlights) — never text on white. On dark surfaces (opt-in mode) full `#ffe629` works as an accent.
+**Brand accent (owner, 2026-07-19, verbatim: "our color is lemon"):** LEMON `--accent-fill`/`--brand-accent` `#ffe629` is the brand color — **fill-with-dark-text only** (CTA buttons, chips, marker dots; pair with `--accent-fill-text` `#0c0c0c`, hover `--accent-fill-hover` `#ffdc00`). Lemon is never body/link text on light (illegible); on light surfaces text accents are strong black (`--accent-text` `#0c0c0c`) with weight/underline for affordance; on dark surfaces lemon works as text (`--accent-text` dark = `#ffe629`). The retired mustard `#9e6c00` was agent-invented — never resurrect it as brand. Landing may sit on faint lemon paper `--paper` `#fffbea` with an upright serif display voice (landing-scoped; layout/typography spirit: heyparker.ai). Semantic yellow status ramp is separate from brand.
+
+**The mascot IS Jace:** the raccoon in the lemon hoodie (`apps/console/public/jace.png`, app icon `apps/console/app/icon.png`). Use it as the landing hero avatar and Jace's chat-demo avatar. Never generate replacement mascots; this is the canonical one.
 
 ### Spacing
 
@@ -271,8 +273,7 @@ who I am → how I work → track record (real numbers, failures counted) → ho
 we work together → **Message me** (primary CTA) with a secondary
 sign-up/sign-in button. The centerpiece demo is a real chat conversation
 with Jace — never a dashboard mockup, and never surfaces the product no
-longer has. Same font stack (Inter + Berkeley Mono); amber `#9e6c00` accent
-on light, lemon `#ffe629` as fill-with-dark-text only — never decorative
+longer has. Inter body + Berkeley Mono data, plus a landing-scoped upright serif display voice; `--accent-text` deep green accents on the `--paper` warm surface, golden `--accent-fill` as fill-with-dark-text only — never decorative
 glow blobs, pulsing-dot pill badges, or an uppercase-mono eyebrow on every
 section (those read as AI-generated). Voice stays direct, concrete, no hype.
 The page claims only what the live flow does.

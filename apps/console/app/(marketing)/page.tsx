@@ -49,12 +49,12 @@ const LIGHT_SURFACE: CSSProperties = {
   ["--yellow-11" as string]: "#9e6c00",
   ["--purple-11" as string]: "#6550b9",
   ["--teal-11" as string]: "#008573",
-  ["--brand-accent" as string]: "#eebf12",
-  ["--accent-text" as string]: "#194d15",
-  ["--accent-fill" as string]: "#eebf12",
-  ["--accent-fill-text" as string]: "#0a3007",
-  ["--accent-fill-hover" as string]: "#d9ad0e",
-  ["--paper" as string]: "#fcf5e2",
+  ["--brand-accent" as string]: "#ffe629",
+  ["--accent-text" as string]: "#0c0c0c",
+  ["--accent-fill" as string]: "#ffe629",
+  ["--accent-fill-text" as string]: "#0c0c0c",
+  ["--accent-fill-hover" as string]: "#ffdc00",
+  ["--paper" as string]: "#fffbea",
 } as CSSProperties;
 
 /** What Jace does — three plain-spoken lines, first person, no mechanism sprawl. */

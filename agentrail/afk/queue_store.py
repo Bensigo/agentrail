@@ -46,9 +46,12 @@ from agentrail.afk.input_contract import (
     Rejected,
     WriterClass,
 )
+# NOTE (#1274 PR③ fix round, M3): only `apply_admission_alignment` is
+# imported here — `release_if_aligned` and the ALIGNMENT_* constants stay in
+# queue_state (with their tests); importing them here would imply release
+# wiring that deliberately does not exist yet (no live Python parked→queued
+# path exists to wire it into — reviewer-verified).
 from agentrail.afk.queue_state import (
-    ALIGNMENT_DENIED_PARK_REASON,
-    ALIGNMENT_PARK_REASON,
     Event,
     QueueEntry,
     QueueState,
@@ -56,7 +59,6 @@ from agentrail.afk.queue_state import (
     Tier,
     admit,
     apply_admission_alignment,
-    release_if_aligned,
 )
 
 # Sources an entry can come from (mirrors the schema CHECK / drizzle enum).
@@ -299,6 +301,19 @@ class QueueStore:
         # estimated_budget_usd/model_override on insert (no equivalent of
         # TS's confirmed-brief URL-match lookup — out of this PR's scope), so
         # `aligned` reduces to exactly "workspace does not require it".
+        #
+        # KNOWN LIMITATION (#1274 PR③ fix round, M5 — disclosed, accepted):
+        # because there is no confirmed-brief URL-match branch here, a
+        # CHAT-CONFIRMED issue (one-confirm collapse, #1274 PR②) that the
+        # legacy Python poller happens to admit FIRST parks "awaiting
+        # alignment" and gets a redundant SECOND confirm via the reconciler's
+        # brief — fail-closed (an extra confirm, never a skipped one). In
+        # practice TS-first admission absorbs this: both writers mint the
+        # SAME deterministic uuid5 row id (`_entry_uuid` here ==
+        # `entryId` in github_intake.ts, byte-compatible — verified), so
+        # whichever path admits first owns the row and the other's insert is
+        # an ON CONFLICT no-op; only a Python-first race hits the redundant
+        # confirm.
         if not v2_parked:
             aligned = not self._workspace_requires_alignment(workspace_id)
             entry = apply_admission_alignment(entry, aligned=aligned)

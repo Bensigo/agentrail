@@ -142,23 +142,23 @@ export async function POST(request: NextRequest) {
   }
 
   // #1274 PR③: this admission attempt is a "next queue activity" trigger to
-  // sweep for OTHER stale, brief-less parked entries in this workspace —
-  // Python-admitted rows, a prior postAlignmentBrief failure, a v2-guardrail
-  // park unparkDependents relabeled. Runs AFTER the branch above, not
-  // before: the branch above already gave the row THIS request just
-  // admitted its own explicit postAlignmentBrief attempt (recording its
-  // approval row on success, or leaving it genuinely absent on failure so a
-  // LATER sweep can retry it) — running the sweep first would let it race
-  // that same call for the SAME entry (same requestId, so no duplicate DB
-  // row — recordApprovalRequest's onConflictDoNothing prevents that — but
-  // postAlignmentBrief sends the Telegram message unconditionally after
-  // recording, with no created-vs-found check, so a same-request race would
-  // send the SAME brief twice). Bounded, best-effort, and NON-FATAL: a
-  // reconciler failure must never fail this webhook's response, so it is
-  // caught here regardless of what caused it (findAlignmentBriefCandidates
-  // itself is also defensive, but this is the outer belt-and-suspenders).
+  // sweep for OTHER stale, brief-less parked entries IN THIS WORKSPACE
+  // (workspace-scoped by the sweep itself — I2 fix round; see
+  // findAlignmentBriefCandidates' own doc-comment) — Python-admitted rows,
+  // a prior postAlignmentBrief failure, a v2-guardrail park
+  // unparkDependents relabeled. Runs AFTER the branch above, not before:
+  // the branch above already gave the row THIS request just admitted its
+  // own explicit postAlignmentBrief attempt — running the sweep first would
+  // let it race that same call for the SAME entry within this one request
+  // (the I1 created-gate now ALSO covers cross-request races at the send
+  // itself, but keeping this request's own two calls ordered stays the
+  // cleaner geometry: one obvious owner per entry per request). Bounded,
+  // best-effort, and NON-FATAL: a reconciler failure must never fail this
+  // webhook's response, so it is caught here regardless of what caused it
+  // (findAlignmentBriefCandidates itself is also defensive, but this is
+  // the outer belt-and-suspenders).
   try {
-    await reconcileAlignmentBriefs(5);
+    await reconcileAlignmentBriefs(workspaceId, 5);
   } catch (err) {
     console.error("[github/webhook] alignment-reconciler sweep failed:", err);
   }

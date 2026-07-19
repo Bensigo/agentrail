@@ -53,7 +53,7 @@ beforeEach(() => {
 
 describe("findAlignmentBriefCandidates: SQL shape", () => {
   it("selects parked, issue-kind rows in a workspace that requires alignment, with no sanctioned budget", async () => {
-    await findAlignmentBriefCandidates(5);
+    await findAlignmentBriefCandidates("ws-1", 5);
     const text = literalText(capturedQuery);
     expect(text).toContain("qe.state = 'parked'");
     expect(text).toContain("qe.kind = 'issue'");
@@ -61,15 +61,25 @@ describe("findAlignmentBriefCandidates: SQL shape", () => {
     expect(text).toContain("qe.estimated_budget_usd IS NULL");
   });
 
+  it("I2 fix round: is WORKSPACE-SCOPED — composes a qe.workspace_id predicate binding the caller's workspaceId (the mock can't simulate WHERE filtering; the behavioral cross-tenant isolation + starvation negative run against real Postgres in the live-DB proof)", async () => {
+    await findAlignmentBriefCandidates("ws-tenant-a", 5);
+    const text = literalText(capturedQuery);
+    expect(text).toContain("qe.workspace_id = ");
+    const values = ((capturedQuery as { queryChunks?: unknown[] }).queryChunks ?? []).filter(
+      (c) => typeof c === "string"
+    );
+    expect(values).toContain("ws-tenant-a");
+  });
+
   it("excludes any row whose park_reason is a v2-guardrail reason (contains 'parked for human review') — every injection/duplicate/rate-limit/errored reason, in BOTH writers, carries this exact phrase", async () => {
-    await findAlignmentBriefCandidates(5);
+    await findAlignmentBriefCandidates("ws-1", 5);
     const text = literalText(capturedQuery);
     expect(text).toContain("park_reason IS NULL OR qe.park_reason NOT LIKE");
     expect(text).toContain("parked for human review");
   });
 
   it("excludes any row that already has a jace_approvals row (covers denied entries, which always carry one)", async () => {
-    await findAlignmentBriefCandidates(5);
+    await findAlignmentBriefCandidates("ws-1", 5);
     const text = literalText(capturedQuery);
     expect(text).toContain("NOT EXISTS");
     expect(text).toContain("jace_approvals");
@@ -77,13 +87,13 @@ describe("findAlignmentBriefCandidates: SQL shape", () => {
   });
 
   it("passes the caller's limit through as a bound parameter, not a hardcoded constant", async () => {
-    await findAlignmentBriefCandidates(7);
+    await findAlignmentBriefCandidates("ws-1", 7);
     const values = ((capturedQuery as { queryChunks?: unknown[] }).queryChunks ?? []).filter(
       (c) => typeof c === "number"
     );
     expect(values).toContain(7);
 
-    await findAlignmentBriefCandidates(1);
+    await findAlignmentBriefCandidates("ws-1", 1);
     const valuesAgain = (
       (capturedQuery as { queryChunks?: unknown[] }).queryChunks ?? []
     ).filter((c) => typeof c === "number");
@@ -91,7 +101,7 @@ describe("findAlignmentBriefCandidates: SQL shape", () => {
   });
 
   it("orders oldest-first", async () => {
-    await findAlignmentBriefCandidates(5);
+    await findAlignmentBriefCandidates("ws-1", 5);
     const text = literalText(capturedQuery);
     expect(text).toContain("ORDER BY qe.created_at ASC");
   });

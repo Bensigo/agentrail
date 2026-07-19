@@ -117,15 +117,16 @@ export async function POST(request: NextRequest) {
   }
 
   // #1274 PR③: a runner result is genuine "next queue activity" — use it to
-  // sweep for OTHER stale, brief-less parked entries in this workspace
-  // (Python-admitted rows, a prior postAlignmentBrief failure, a
-  // v2-guardrail park unparkDependents relabeled once ITS unrelated
-  // dependency happened to clear via THIS result). Bounded, best-effort,
-  // NON-FATAL — a reconciler failure must never fail this route's 202,
-  // matching every other best-effort block below (notify/merge/failure
-  // evidence).
+  // sweep for OTHER stale, brief-less parked entries IN THIS WORKSPACE
+  // (workspace-scoped by the sweep itself — I2 fix round; see
+  // findAlignmentBriefCandidates' own doc-comment): Python-admitted rows, a
+  // prior postAlignmentBrief failure, a v2-guardrail park unparkDependents
+  // relabeled once ITS unrelated dependency happened to clear via THIS
+  // result. Bounded, best-effort, NON-FATAL — a reconciler failure must
+  // never fail this route's 202, matching every other best-effort block
+  // below (notify/merge/failure evidence).
   try {
-    await reconcileAlignmentBriefs(5);
+    await reconcileAlignmentBriefs(workspace_id, 5);
   } catch (err) {
     console.error("[runner/result] alignment-reconciler sweep failed:", err);
   }

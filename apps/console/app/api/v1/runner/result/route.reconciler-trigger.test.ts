@@ -81,10 +81,10 @@ afterEach(() => {
 });
 
 describe("POST /api/v1/runner/result — alignment-reconciler trigger (#1274 PR③)", () => {
-  it("calls reconcileAlignmentBriefs with a bounded limit after a successful recordRunnerResult", async () => {
+  it("calls reconcileAlignmentBriefs workspace-scoped (I2) with a bounded limit after a successful recordRunnerResult", async () => {
     await POST(req({ id: "run-1", workspace_id: WS, status: "green" }));
     expect(mockReconcile).toHaveBeenCalledTimes(1);
-    expect(mockReconcile).toHaveBeenCalledWith(5);
+    expect(mockReconcile).toHaveBeenCalledWith(WS, 5);
   });
 
   it("does NOT fire when the queue entry was not found (recordRunnerResult.updated=false) — no real result was recorded", async () => {

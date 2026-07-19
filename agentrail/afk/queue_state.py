@@ -217,9 +217,18 @@ def release_if_aligned(
       dependency clearing alone is never enough to release an entry into a
       claimable, unpriced state.
     - If a blocker is still unmet, :func:`admit` parks it for the dependency
-      reason exactly as before — alignment is not even consulted (mirrors
-      ``unparkDependents``'s own "still blocked: parkReason is left exactly
-      as-is" short-circuit).
+      reason and alignment is not even consulted — the same DECISION as
+      ``unparkDependents``'s still-blocked short-circuit, but honestly NOT
+      op-for-op on the reason STRING (#1274 PR③ fix round, M4): TS leaves the
+      stored ``parkReason`` byte-untouched (it never refreshes a
+      partially-shrunk "Waiting on #N, #M" list — documented there as out of
+      scope), while this path re-derives the reason FRESH from the
+      currently-unmet set via :func:`admit` (a shrunk list DOES get
+      rewritten, e.g. "#42, #43" → "#43"). Pinned by
+      ``test_release_still_blocked_never_even_consults_alignment``, which
+      asserts the regenerated string. Arguably fresher-is-better, but it is
+      a real Python/TS text divergence on this corner and is named here
+      rather than papered over with a "mirrors exactly" claim.
 
     NOTE (verified while building this PR): Python's live heartbeat/webhook
     loop (``agentrail/heartbeat/runtime.py``) has no caller that re-admits a

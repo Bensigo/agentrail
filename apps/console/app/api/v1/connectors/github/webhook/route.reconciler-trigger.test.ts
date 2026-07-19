@@ -65,10 +65,10 @@ afterEach(() => {
 });
 
 describe("POST /api/v1/connectors/github/webhook — alignment-reconciler trigger (#1274 PR③)", () => {
-  it("calls reconcileAlignmentBriefs with a bounded limit after a real admission attempt", async () => {
+  it("calls reconcileAlignmentBriefs workspace-scoped (I2) with a bounded limit after a real admission attempt", async () => {
     await POST(req(ISSUE_PAYLOAD));
     expect(mockReconcile).toHaveBeenCalledTimes(1);
-    expect(mockReconcile).toHaveBeenCalledWith(5);
+    expect(mockReconcile).toHaveBeenCalledWith("ws-1", 5);
   });
 
   it("fires for a not-enqueued (deduped) result too — any real admission attempt is 'queue activity'", async () => {

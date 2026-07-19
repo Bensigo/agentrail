@@ -109,18 +109,18 @@ function candidate(overrides: Partial<{
 }
 
 describe("reconcileAlignmentBriefs: orchestration", () => {
-  it("passes the caller's limit through to findAlignmentBriefCandidates unchanged", async () => {
+  it("passes the caller's workspaceId AND limit through to findAlignmentBriefCandidates unchanged (I2: the sweep is workspace-scoped, never global)", async () => {
     mockFindCandidates.mockResolvedValue([]);
-    await reconcileAlignmentBriefs(5);
-    expect(mockFindCandidates).toHaveBeenCalledWith(5);
+    await reconcileAlignmentBriefs("ws-1", 5);
+    expect(mockFindCandidates).toHaveBeenCalledWith("ws-1", 5);
 
-    await reconcileAlignmentBriefs(1);
-    expect(mockFindCandidates).toHaveBeenCalledWith(1);
+    await reconcileAlignmentBriefs("ws-other", 1);
+    expect(mockFindCandidates).toHaveBeenCalledWith("ws-other", 1);
   });
 
   it("returns an empty outcome list when there are no candidates", async () => {
     mockFindCandidates.mockResolvedValue([]);
-    const outcomes = await reconcileAlignmentBriefs(5);
+    const outcomes = await reconcileAlignmentBriefs("ws-1", 5);
     expect(outcomes).toEqual([]);
     expect(mockLatestSession).not.toHaveBeenCalled();
   });
@@ -131,7 +131,7 @@ describe("reconcileAlignmentBriefs: orchestration", () => {
     ]);
     mockLatestSession.mockResolvedValue(null);
 
-    const outcomes = await reconcileAlignmentBriefs(5);
+    const outcomes = await reconcileAlignmentBriefs("ws-1", 5);
 
     expect(mockCompose).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -148,7 +148,7 @@ describe("reconcileAlignmentBriefs: orchestration", () => {
       candidate({ id: "q-2", source: "cli", externalId: "cli-local-id-9" }),
     ]);
 
-    await reconcileAlignmentBriefs(5);
+    await reconcileAlignmentBriefs("ws-1", 5);
 
     expect(mockCompose).toHaveBeenCalledWith(
       expect.objectContaining({ repoFullName: "", issueNumber: 0, issueUrl: "" })
@@ -164,7 +164,7 @@ describe("reconcileAlignmentBriefs: orchestration", () => {
       .mockRejectedValueOnce(new Error("boom"))
       .mockResolvedValueOnce(null);
 
-    const outcomes = await reconcileAlignmentBriefs(5);
+    const outcomes = await reconcileAlignmentBriefs("ws-1", 5);
 
     expect(outcomes).toEqual([
       { id: "q-throws", outcome: "session_lookup_failed" },
@@ -185,7 +185,7 @@ describe("reconcileAlignmentBriefs: orchestration", () => {
       throw new Error("malformed body");
     });
 
-    const outcomes = await reconcileAlignmentBriefs(5);
+    const outcomes = await reconcileAlignmentBriefs("ws-1", 5);
 
     expect(outcomes).toEqual([
       { id: "q-a", outcome: "compose_failed" },
@@ -195,7 +195,7 @@ describe("reconcileAlignmentBriefs: orchestration", () => {
 
   it("logs a per-entry outcome line for observability", async () => {
     mockFindCandidates.mockResolvedValue([candidate({ id: "q-1" })]);
-    await reconcileAlignmentBriefs(5);
+    await reconcileAlignmentBriefs("ws-1", 5);
     expect(console.log).toHaveBeenCalledWith(
       expect.stringContaining("q-1"),
     );
@@ -266,5 +266,70 @@ describe("postAlignmentBrief: widened optional repoFullName/number (#1274 PR③)
       issueNumber: 42,
       issueUrl: "https://github.com/acme/widgets/issues/42",
     });
+  });
+});
+
+describe("postAlignmentBrief: created-gate on the send (#1274 PR③ fix round, I1)", () => {
+  const SESSION = {
+    id: "s-1",
+    workspaceId: "ws-1",
+    chatIdentityId: "c-1",
+    channel: "telegram",
+    conversationKey: "-100",
+    eveSessionId: "eve-1",
+  };
+
+  it("sends ONLY when recordApprovalRequest created the row: two sequential calls for the same entry -> the second (created:false) sends nothing, exactly one send total", async () => {
+    // Two CONCURRENT triggers (webhook + result route) can both pass the
+    // sweep's NOT-EXISTS check and both reach record; onConflictDoNothing
+    // converges them on ONE row — this gate makes exactly one of them the
+    // sender. Sequential calls with created:true then created:false model
+    // the exact record-level outcome that race produces.
+    mockLatestSession.mockResolvedValue(SESSION as never);
+    mockRecord
+      .mockResolvedValueOnce({
+        approval: { id: "a-1", callbackToken: "tok" },
+        created: true,
+      } as never)
+      .mockResolvedValueOnce({
+        approval: { id: "a-1", callbackToken: "tok" },
+        created: false, // the racer/replay: converged on the existing row
+      } as never);
+
+    const first = await postAlignmentBrief({
+      workspaceId: "ws-1",
+      queueEntryId: "q-1",
+      title: "t",
+      body: "b",
+    });
+    const second = await postAlignmentBrief({
+      workspaceId: "ws-1",
+      queueEntryId: "q-1",
+      title: "t",
+      body: "b",
+    });
+
+    expect(first).toBe("posted");
+    expect(second).toBe("posted"); // the brief IS recorded; the creator owned the send
+    expect(mockSend).toHaveBeenCalledTimes(1); // exactly one Telegram message, ever
+  });
+
+  it("created:false short-circuits BEFORE the token check — a missing TELEGRAM_BOT_TOKEN can no longer misreport a converged replay as send_failed", async () => {
+    delete process.env["TELEGRAM_BOT_TOKEN"];
+    mockLatestSession.mockResolvedValue(SESSION as never);
+    mockRecord.mockResolvedValue({
+      approval: { id: "a-1", callbackToken: "tok" },
+      created: false,
+    } as never);
+
+    const outcome = await postAlignmentBrief({
+      workspaceId: "ws-1",
+      queueEntryId: "q-1",
+      title: "t",
+      body: "b",
+    });
+
+    expect(outcome).toBe("posted");
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

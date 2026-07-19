@@ -1432,10 +1432,10 @@ export interface AlignmentBriefCandidate {
 
 /**
  * Find `queue_entries` rows genuinely stuck with no recovery path for an
- * alignment brief (#1274 PR③): PARKED, issue-kind, in a workspace that
- * requires alignment, carrying no sanctioned budget yet, AND — the
- * discriminant that matters — no `jace_approvals` row references them at
- * all. This single criterion covers every case named in the task brief:
+ * alignment brief (#1274 PR③): PARKED, issue-kind, IN THE GIVEN WORKSPACE
+ * (which must require alignment), carrying no sanctioned budget yet, AND —
+ * the discriminant that matters — no `jace_approvals` row references them
+ * at all. This single criterion covers every case named in the task brief:
  *
  *  - Python-admitted rows (`agentrail/afk/queue_store.py`'s new admission
  *    hold): Python posts no brief itself, so every such row has zero
@@ -1475,17 +1475,31 @@ export interface AlignmentBriefCandidate {
  * "no approval row" criterion alone already keeps it out of scope, matching
  * the task brief's explicit exclusion.
  *
+ * WORKSPACE-SCOPED (#1274 PR③ fix round, review finding I2): the original
+ * version had no `workspace_id` predicate — a GLOBAL oldest-first
+ * `LIMIT n` across all tenants. Two failure modes: (a) starvation — a
+ * `no_session` failure leaves no approval row BY DESIGN (so the sweep can
+ * retry it later), which means one Telegram-less tenant's n oldest,
+ * permanently-unrecoverable candidates re-match every sweep forever and
+ * starve every other workspace's recovery; (b) cross-tenant coupling —
+ * workspace A's queue activity drives brief sends for idle workspace B.
+ * Both call sites (the github-webhook and runner-result routes) already
+ * hold the workspaceId of the activity that triggered the sweep, so the
+ * scope costs nothing. `limit` now bounds candidates WITHIN the workspace.
+ *
  * Oldest-first, bounded by `limit` — the caller's bound, not a constant
  * here, so the choice stays visible at the call site.
  */
 export async function findAlignmentBriefCandidates(
+  workspaceId: string,
   limit: number
 ): Promise<AlignmentBriefCandidate[]> {
   const rows = (await db.execute(sql`
     SELECT qe.id, qe.workspace_id, qe.source, qe.external_id, qe.title, qe.body
     FROM queue_entries qe
     JOIN workspaces w ON w.id = qe.workspace_id
-    WHERE qe.state = 'parked'
+    WHERE qe.workspace_id = ${workspaceId}
+      AND qe.state = 'parked'
       AND qe.kind = 'issue'
       AND w.require_alignment = true
       AND qe.estimated_budget_usd IS NULL

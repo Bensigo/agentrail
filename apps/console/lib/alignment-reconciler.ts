@@ -144,8 +144,9 @@ export async function postAlignmentBrief(params: {
   }
 
   let approval: { id: string; callbackToken: string };
+  let created: boolean;
   try {
-    const { approval: recorded } = await recordApprovalRequest({
+    const recorded = await recordApprovalRequest({
       workspaceId: params.workspaceId,
       chatIdentityId: session.chatIdentityId ?? undefined,
       sessionId: session.id,
@@ -161,13 +162,29 @@ export async function postAlignmentBrief(params: {
       denyOptionId: "deny",
       queueEntryId: params.queueEntryId,
     });
-    approval = recorded;
+    approval = recorded.approval;
+    created = recorded.created;
   } catch (err) {
     console.error(
       `[alignment-reconciler] recordApprovalRequest failed while posting the alignment brief for queue entry ${params.queueEntryId}; entry stays parked ("awaiting alignment"):`,
       err
     );
     return "record_failed";
+  }
+
+  // #1274 PR③ fix round, review finding I1: send ONLY when THIS call
+  // actually created the row (the house pattern — the approvals POST route
+  // gates its send on `created:true` the same way). Two CONCURRENT triggers
+  // (webhook + result route, or two results) can both pass the sweep's
+  // NOT-EXISTS check and both reach this record call; onConflictDoNothing
+  // converges them on ONE row, and this gate makes exactly ONE of them the
+  // sender — without it, both sent the identical Telegram brief (the
+  // same-request call-order fix in the webhook route covers only
+  // single-request geometry, not cross-request races). `created:false` here
+  // means a racer/replay: the creator owns the send, so this caller is done
+  // — the brief IS recorded, which is what "posted" reports.
+  if (!created) {
+    return "posted";
   }
 
   if (session.channel !== "telegram") {
@@ -239,14 +256,16 @@ export interface ReconcileEntryOutcome {
 }
 
 /**
- * Find entries parked awaiting alignment with no recovery path and post a
- * fresh brief for each (#1274 PR③) — the recovery for: Python-admitted rows
- * (the Python admission funnel never posts a brief itself, by design — see
- * `agentrail/afk/queue_store.py`), PR①'s no-session/compose-failed/
- * record-failed paths, and a v2-guardrail park whose reason
- * `unparkDependents` later overwrote to `ALIGNMENT_PARK_REASON` (the case
- * the #1274 PR② reviewer flagged — see `findAlignmentBriefCandidates`'s own
- * doc-comment in `github_intake.ts` for the full criterion).
+ * Find entries parked awaiting alignment with no recovery path IN THE GIVEN
+ * WORKSPACE and post a fresh brief for each (#1274 PR③) — the recovery for:
+ * Python-admitted rows (the Python admission funnel never posts a brief
+ * itself, by design — see `agentrail/afk/queue_store.py`), PR①'s
+ * no-session/compose-failed/record-failed paths, and a v2-guardrail park
+ * whose reason `unparkDependents` later overwrote to
+ * `ALIGNMENT_PARK_REASON` (the case the #1274 PR② reviewer flagged — see
+ * `findAlignmentBriefCandidates`'s own doc-comment in `github_intake.ts`
+ * for the full criterion, and its I2 fix-round note for why the sweep is
+ * workspace-scoped, never global).
  *
  * Bounded (`limit`), oldest-first, and per-entry failure-isolated: one
  * entry throwing (from `postAlignmentBrief` itself, or from the surrounding
@@ -274,9 +293,10 @@ export interface ReconcileEntryOutcome {
  * github-webhook route's own comment at its call site.
  */
 export async function reconcileAlignmentBriefs(
+  workspaceId: string,
   limit: number
 ): Promise<ReconcileEntryOutcome[]> {
-  const candidates = await findAlignmentBriefCandidates(limit);
+  const candidates = await findAlignmentBriefCandidates(workspaceId, limit);
 
   const outcomes: ReconcileEntryOutcome[] = [];
   for (const row of candidates) {

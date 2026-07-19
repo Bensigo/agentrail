@@ -113,16 +113,22 @@ RUN pnpm --filter @agentrail/console exec fumadocs-mdx
 # renders instead.
 RUN pnpm --filter @agentrail/console build
 # Self-contained migrator (#owner rule 2026-07-19: migrations ALWAYS run on
-# deploy). `pnpm deploy` materializes db-postgres with REAL node_modules (its
-# only prod deps are the pure-JS `postgres` + `drizzle-orm`) so the runner can
-# execute `node migrator/dist/migrate.js` without pnpm, the workspace, or the
-# Next trace. dist/migrate.js resolves its SQL as `__dirname/../drizzle/
-# migrations`, and db-postgres has no `files` allowlist, so the deployed folder
-# carries drizzle/ (journal + SQL) alongside dist/ — the belt-and-suspenders
-# `test -f` lines fail the BUILD (not the deploy) if either half ever goes
-# missing. Wired to Railway's preDeployCommand on the console service: a
-# failed migration aborts the rollout and the old build keeps serving.
-RUN pnpm --filter @agentrail/db-postgres deploy --prod /migrator \
+# deploy). Hand-assembled with plain npm (NOT `pnpm deploy`, which mis-splits
+# its virtual store across /app/packages and the target dir under pnpm 9 —
+# observed failing on Railway's builder): copy dist + drizzle + package.json,
+# then npm-install the ONLY two prod deps (pure-JS `postgres` + `drizzle-orm`)
+# into a flat node_modules the runner can execute without pnpm, the workspace,
+# or the Next trace. dist/migrate.js resolves its SQL as `__dirname/../drizzle/
+# migrations` and package.json's `"type": "module"` makes plain `node` run it
+# as ESM. The `test -f` lines fail the BUILD (not the deploy) if either half
+# ever goes missing. Wired to Railway's preDeployCommand on the console
+# service (`node migrator/dist/migrate.js`): a failed migration aborts the
+# rollout and the old build keeps serving.
+RUN mkdir -p /migrator/dist /migrator/drizzle \
+  && cp -r packages/db-postgres/dist/. /migrator/dist/ \
+  && cp -r packages/db-postgres/drizzle/. /migrator/drizzle/ \
+  && cp packages/db-postgres/package.json /migrator/package.json \
+  && cd /migrator && npm install --omit=dev --no-audit --no-fund \
   && test -f /migrator/dist/migrate.js \
   && test -f /migrator/drizzle/migrations/meta/_journal.json
 

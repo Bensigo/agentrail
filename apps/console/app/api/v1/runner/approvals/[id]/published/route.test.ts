@@ -1,13 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 vi.mock("@agentrail/db-postgres", () => ({
   getApprovalById: vi.fn(),
   getJaceSessionByEveSessionId: vi.fn(),
   stampPublishedIssueUrl: vi.fn(),
-}));
-vi.mock("../../../../../../../lib/bearer-auth", () => ({
-  requireBearer: vi.fn(),
 }));
 
 import { POST } from "./route";
@@ -16,20 +13,26 @@ import {
   getJaceSessionByEveSessionId,
   stampPublishedIssueUrl,
 } from "@agentrail/db-postgres";
-import { requireBearer } from "../../../../../../../lib/bearer-auth";
 
 const mockGetById = vi.mocked(getApprovalById);
 const mockGetSession = vi.mocked(getJaceSessionByEveSessionId);
 const mockStamp = vi.mocked(stampPublishedIssueUrl);
-const mockRequireBearer = vi.mocked(requireBearer);
 
 const NOW = new Date("2026-07-19T00:00:00.000Z");
 const REAL_URL = "https://github.com/acme/widgets/issues/42";
 
+// Central-secret auth (2026-07-20 fix): the route now authenticates via
+// requireJaceConsoleSecret / JACE_CONSOLE_TOKEN instead of a per-workspace
+// bearer api_key. Real helper, real env var, real header — same idiom as
+// fleet/workspace-tokens/sync/route.test.ts uses for its own shared secret.
+const ENV_KEY = "JACE_CONSOLE_TOKEN";
+const SECRET = "jace-shared-secret-abc123";
+const ORIGINAL_ENV = process.env[ENV_KEY];
+
 function req(body?: unknown): NextRequest {
   return new NextRequest("http://localhost/api/v1/runner/approvals/approval-1/published", {
     method: "POST",
-    headers: { "content-type": "application/json", Authorization: "Bearer ar_test" },
+    headers: { "content-type": "application/json", Authorization: `Bearer ${SECRET}` },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
@@ -71,28 +74,56 @@ const MOCK_SESSION_WS = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockRequireBearer.mockResolvedValue({
-    apiKeyId: "key-1",
-    workspaceId: "ws-1",
-    teamId: null,
-  } as never);
+  process.env[ENV_KEY] = SECRET;
   mockGetById.mockResolvedValue(MOCK_APPROVAL as never);
   mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
   mockStamp.mockResolvedValue("stamped" as never);
 });
 
+afterEach(() => {
+  if (ORIGINAL_ENV === undefined) delete process.env[ENV_KEY];
+  else process.env[ENV_KEY] = ORIGINAL_ENV;
+});
+
 describe("POST /api/v1/runner/approvals/[id]/published — auth + body validation", () => {
-  it("401 when requireBearer rejects, and never touches the db", async () => {
-    const { NextResponse } = await import("next/server");
-    mockRequireBearer.mockResolvedValue(
-      NextResponse.json({ error: "Unauthorized" }, { status: 401 }) as never
+  it("401 when no Authorization header is sent, and never touches the db", async () => {
+    const request = new NextRequest(
+      "http://localhost/api/v1/runner/approvals/approval-1/published",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: REAL_URL }),
+      }
     );
+    const res = await POST(request, params("approval-1"));
+
+    expect(res.status).toBe(401);
+    expect(mockGetById).not.toHaveBeenCalled();
+    expect(mockStamp).not.toHaveBeenCalled();
+  });
+
+  it("401 when JACE_CONSOLE_TOKEN is unset (fail closed, never 'open') — even the objectively correct secret is rejected", async () => {
+    delete process.env[ENV_KEY];
 
     const res = await POST(req({ url: REAL_URL }), params("approval-1"));
 
     expect(res.status).toBe(401);
     expect(mockGetById).not.toHaveBeenCalled();
-    expect(mockStamp).not.toHaveBeenCalled();
+  });
+
+  it("401 on a wrong secret", async () => {
+    const request = new NextRequest(
+      "http://localhost/api/v1/runner/approvals/approval-1/published",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: "Bearer wrong-secret" },
+        body: JSON.stringify({ url: REAL_URL }),
+      }
+    );
+    const res = await POST(request, params("approval-1"));
+
+    expect(res.status).toBe(401);
+    expect(mockGetById).not.toHaveBeenCalled();
   });
 
   it("400 on invalid JSON body", async () => {
@@ -100,7 +131,7 @@ describe("POST /api/v1/runner/approvals/[id]/published — auth + body validatio
       "http://localhost/api/v1/runner/approvals/approval-1/published",
       {
         method: "POST",
-        headers: { "content-type": "application/json", Authorization: "Bearer ar_test" },
+        headers: { "content-type": "application/json", Authorization: `Bearer ${SECRET}` },
         body: "{not valid json",
       }
     );
@@ -241,21 +272,16 @@ describe("POST /api/v1/runner/approvals/[id]/published — resolution chain (404
     expect(await unknownRes.text()).toBe(text);
   });
 
-  it("404 when the approval's session belongs to a DIFFERENT workspace than the bearer's own — cross-tenant refusal, byte-identical to the unknown-id 404", async () => {
+  it("BEHAVIOR CHANGE (accepted, central-secret model, M3 update — see route doc-comment): the approval's session workspace no longer needs to match anything — there is no bearer-own workspace left to cross-check against (JACE_CONSOLE_TOKEN is ONE shared secret for the whole deployment). A resolved-workspace session that differs from some other value now stamps successfully (200), where the old per-workspace-bearer model would have refused it (404).", async () => {
     mockGetSession.mockResolvedValue({
       ...MOCK_SESSION_WS,
-      workspaceId: "ws-other-tenant",
+      workspaceId: "ws-some-other-tenant",
     } as never);
 
     const res = await POST(req({ url: REAL_URL }), params("approval-1"));
-    const text = await res.text();
 
-    expect(res.status).toBe(404);
-    expect(mockStamp).not.toHaveBeenCalled();
-
-    mockGetById.mockResolvedValue(null);
-    const unknownRes = await POST(req({ url: REAL_URL }), params("unknown-id"));
-    expect(await unknownRes.text()).toBe(text);
+    expect(res.status).toBe(200);
+    expect(mockStamp).toHaveBeenCalledWith("approval-1", REAL_URL);
   });
 
   it("resolves the session via the APPROVAL's OWN stored eveSessionId, not any caller-supplied value", async () => {
@@ -263,7 +289,7 @@ describe("POST /api/v1/runner/approvals/[id]/published — resolution chain (404
     expect(mockGetSession).toHaveBeenCalledWith(MOCK_APPROVAL.eveSessionId);
   });
 
-  it("200 when the approval's session workspace matches the bearer's own", async () => {
+  it("200 for the common case — the approval's session has a normal resolved workspace", async () => {
     const res = await POST(req({ url: REAL_URL }), params("approval-1"));
     expect(res.status).toBe(200);
   });

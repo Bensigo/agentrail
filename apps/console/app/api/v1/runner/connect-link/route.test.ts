@@ -6,9 +6,6 @@ vi.mock("@agentrail/db-postgres", () => ({
   getChatIdentityById: vi.fn(),
   setChatIdentityLinkToken: vi.fn(),
 }));
-vi.mock("../../../../../lib/bearer-auth", () => ({
-  requireBearer: vi.fn(),
-}));
 
 import { POST } from "./route";
 import {
@@ -16,16 +13,23 @@ import {
   getChatIdentityById,
   setChatIdentityLinkToken,
 } from "@agentrail/db-postgres";
-import { requireBearer } from "../../../../../lib/bearer-auth";
 
 const NOW = new Date("2026-07-18T00:00:00.000Z");
+
+// Central-secret auth (2026-07-20 fix): the route now authenticates via
+// requireJaceConsoleSecret / JACE_CONSOLE_TOKEN instead of a per-workspace
+// bearer api_key. Real helper, real env var, real header — same idiom as
+// fleet/workspace-tokens/sync/route.test.ts uses for its own shared secret.
+const ENV_KEY = "JACE_CONSOLE_TOKEN";
+const SECRET = "jace-shared-secret-abc123";
+const ORIGINAL_ENV = process.env[ENV_KEY];
 
 function req(body?: unknown, withAuth = true): NextRequest {
   return new NextRequest("http://localhost/api/v1/runner/connect-link", {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(withAuth ? { Authorization: "Bearer ar_test" } : {}),
+      ...(withAuth ? { Authorization: `Bearer ${SECRET}` } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -48,31 +52,46 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
-  vi.mocked(requireBearer).mockResolvedValue({
-    apiKeyId: "key-1",
-    workspaceId: "ws-1",
-    teamId: null,
-  } as never);
+  process.env[ENV_KEY] = SECRET;
   vi.mocked(setChatIdentityLinkToken).mockResolvedValue(undefined as never);
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  if (ORIGINAL_ENV === undefined) delete process.env[ENV_KEY];
+  else process.env[ENV_KEY] = ORIGINAL_ENV;
 });
 
 describe("POST /api/v1/runner/connect-link", () => {
-  it("401 when requireBearer rejects, and never touches session/identity lookups", async () => {
-    const { NextResponse } = await import("next/server");
-    vi.mocked(requireBearer).mockResolvedValue(
-      NextResponse.json({ error: "Unauthorized" }, { status: 401 }) as never
-    );
-
+  it("401 when no Authorization header is sent, and never touches session/identity lookups", async () => {
     const res = await POST(req({ eveSessionId: "eve-session-1" }, false));
 
     expect(res.status).toBe(401);
     expect(getJaceSessionByEveSessionId).not.toHaveBeenCalled();
     expect(getChatIdentityById).not.toHaveBeenCalled();
     expect(setChatIdentityLinkToken).not.toHaveBeenCalled();
+  });
+
+  it("401 when JACE_CONSOLE_TOKEN is unset (fail closed, never 'open') — even the objectively correct secret is rejected", async () => {
+    delete process.env[ENV_KEY];
+
+    const res = await POST(req({ eveSessionId: "eve-session-1" }, true));
+
+    expect(res.status).toBe(401);
+    expect(getJaceSessionByEveSessionId).not.toHaveBeenCalled();
+  });
+
+  it("401 on a wrong secret", async () => {
+    const request = new NextRequest("http://localhost/api/v1/runner/connect-link", {
+      method: "POST",
+      headers: { "content-type": "application/json", Authorization: "Bearer wrong-secret" },
+      body: JSON.stringify({ eveSessionId: "eve-session-1" }),
+    });
+
+    const res = await POST(request);
+
+    expect(res.status).toBe(401);
+    expect(getJaceSessionByEveSessionId).not.toHaveBeenCalled();
   });
 
   it("400 when the body is missing eveSessionId", async () => {
@@ -92,7 +111,7 @@ describe("POST /api/v1/runner/connect-link", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        Authorization: "Bearer ar_test",
+        Authorization: `Bearer ${SECRET}`,
       },
       body: "{not valid json",
     });
@@ -163,7 +182,7 @@ describe("POST /api/v1/runner/connect-link", () => {
     expect(await unknownRes.text()).toBe(text);
   });
 
-  it("404 when the resolved chat identity has a workspace_id that differs from the bearer's own — tenant scoping, byte-identical to the unknown-session 404", async () => {
+  it("BEHAVIOR CHANGE (accepted, central-secret model — see route doc-comment): the resolved chat identity's workspace_id no longer needs to match anything — there is no bearer-own workspace left to cross-check against (JACE_CONSOLE_TOKEN is ONE shared secret for the whole deployment). An identity already resolved to SOME workspace now mints successfully (200), where the old per-workspace-bearer model would have refused a mismatch (404).", async () => {
     vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(
       MOCK_SESSION_ROW as never
     );
@@ -180,58 +199,20 @@ describe("POST /api/v1/runner/connect-link", () => {
       updatedAt: NOW,
     } as never);
 
-    // beforeEach mocks requireBearer's workspaceId as "ws-1" — deliberately
-    // different from "ws-some-other-tenant" above.
     const res = await POST(req({ eveSessionId: "eve-session-1" }));
-    const text = await res.text();
 
-    expect(res.status).toBe(404);
-    expect(setChatIdentityLinkToken).not.toHaveBeenCalled();
-    expect(JSON.parse(text)).toEqual({ error: "Chat identity not found" });
-
-    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(null as never);
-    const unknownRes = await POST(req({ eveSessionId: "unknown-eve-session" }));
-    expect(await unknownRes.text()).toBe(text);
+    expect(res.status).toBe(200);
+    expect(setChatIdentityLinkToken).toHaveBeenCalledWith(
+      "chat-identity-1",
+      expect.any(String),
+      expect.any(Date)
+    );
   });
 
-  it("404 when the ledgered session row's workspace_id differs from the bearer's own — tenant cross-check on the SESSION, byte-identical to the unknown-session 404", async () => {
+  it("BEHAVIOR CHANGE (accepted, central-secret model — see route doc-comment): the ledgered session row's workspace_id no longer needs to match anything either, same reasoning as the identity-side case above. Mints successfully (200) where the old per-workspace-bearer model would have refused it (404).", async () => {
     vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({
       ...MOCK_SESSION_ROW,
       workspaceId: "ws-other",
-    } as never);
-    vi.mocked(getChatIdentityById).mockResolvedValue({
-      id: "chat-identity-1",
-      platform: "telegram",
-      platformUserId: "tg-123",
-      displayName: "Ada",
-      userId: null,
-      workspaceId: null,
-      linkToken: null,
-      linkTokenExpiresAt: null,
-      createdAt: NOW,
-      updatedAt: NOW,
-    } as never);
-
-    // beforeEach mocks requireBearer's workspaceId as "ws-1" — deliberately
-    // different from the session's "ws-other" above. The identity itself is
-    // otherwise eligible (no linked user, no workspace of its own), so this
-    // isolates the session-side check as the sole reason for the refusal.
-    const res = await POST(req({ eveSessionId: "eve-session-1" }));
-    const text = await res.text();
-
-    expect(res.status).toBe(404);
-    expect(setChatIdentityLinkToken).not.toHaveBeenCalled();
-    expect(JSON.parse(text)).toEqual({ error: "Chat identity not found" });
-
-    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(null as never);
-    const unknownRes = await POST(req({ eveSessionId: "unknown-eve-session" }));
-    expect(await unknownRes.text()).toBe(text);
-  });
-
-  it("200: mints when the ledgered session row's workspace_id matches the bearer's OWN workspace (same tenant)", async () => {
-    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({
-      ...MOCK_SESSION_ROW,
-      workspaceId: "ws-1", // same as requireBearer's mocked workspaceId
     } as never);
     vi.mocked(getChatIdentityById).mockResolvedValue({
       id: "chat-identity-1",
@@ -256,7 +237,35 @@ describe("POST /api/v1/runner/connect-link", () => {
     );
   });
 
-  it("200: mints when the resolved identity's workspace_id matches the bearer's OWN workspace (same tenant, not yet user-linked)", async () => {
+  it("200: mints for the common case — a normal resolved-workspace session", async () => {
+    vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue({
+      ...MOCK_SESSION_ROW,
+      workspaceId: "ws-1",
+    } as never);
+    vi.mocked(getChatIdentityById).mockResolvedValue({
+      id: "chat-identity-1",
+      platform: "telegram",
+      platformUserId: "tg-123",
+      displayName: "Ada",
+      userId: null,
+      workspaceId: null,
+      linkToken: null,
+      linkTokenExpiresAt: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    } as never);
+
+    const res = await POST(req({ eveSessionId: "eve-session-1" }));
+
+    expect(res.status).toBe(200);
+    expect(setChatIdentityLinkToken).toHaveBeenCalledWith(
+      "chat-identity-1",
+      expect.any(String),
+      expect.any(Date)
+    );
+  });
+
+  it("200: mints for the common case — a normal resolved-workspace identity, not yet user-linked", async () => {
     vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(
       MOCK_SESSION_ROW as never
     );
@@ -266,7 +275,7 @@ describe("POST /api/v1/runner/connect-link", () => {
       platformUserId: "tg-123",
       displayName: "Ada",
       userId: null,
-      workspaceId: "ws-1", // same as requireBearer's mocked workspaceId
+      workspaceId: "ws-1",
       linkToken: null,
       linkTokenExpiresAt: null,
       createdAt: NOW,

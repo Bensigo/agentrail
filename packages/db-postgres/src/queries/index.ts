@@ -1824,10 +1824,15 @@ export {
 // admission-time confirmed-lookup (hasConfirmedAlignmentBrief, internal to
 // enqueueGithubIssue) and the console github-webhook route's brief
 // composition key off — so the two can never drift on formatting.
-// ALIGNMENT_PARK_REASON is the exact vocabulary the console's
-// formatParkReason renders verbatim. confirmAlignmentBrief/
+// ALIGNMENT_PARK_REASON/ALIGNMENT_DENIED_PARK_REASON are the exact vocabulary
+// the console's formatParkReason renders verbatim. confirmAlignmentBrief/
 // denyAlignmentBrief are the OTHER half of the gate: the Telegram webhook's
-// confirm/deny side-effect once a human answers the posted brief.
+// (and, #1276 PR ②, the console approvals page's) confirm/deny side-effect
+// once a human answers the posted brief. requeueParkedQueueEntry (#1276
+// PR ②) is the approvals page's Requeue action for a guardrail/dependency
+// park — it refuses an alignment-locked row server-side by construction,
+// reusing these same two constants so the exclusion can never drift from the
+// vocabulary that actually marks a row alignment-held.
 export {
   validateAcceptanceCriteria,
   findWorkspaceByRepo,
@@ -1836,10 +1841,13 @@ export {
   ONBOARD_EXTERNAL_ID_PREFIX,
   githubIssueUrl,
   ALIGNMENT_PARK_REASON,
+  ALIGNMENT_DENIED_PARK_REASON,
   confirmAlignmentBrief,
   denyAlignmentBrief,
+  requeueParkedQueueEntry,
   type AcGateResult,
   type EnqueueResult,
+  type RequeueParkedQueueEntryResult,
 } from "./github_intake.js";
 
 // Jace inbound intake — the coordinator's kill switch: a pure allow/deny gate on

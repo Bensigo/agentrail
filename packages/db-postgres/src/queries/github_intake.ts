@@ -929,6 +929,76 @@ export async function denyAlignmentBrief(queueEntryId: string): Promise<boolean>
   return result.length > 0;
 }
 
+/**
+ * Outcome of a {@link requeueParkedQueueEntry} call — discriminated so the
+ * console (#1276 PR ②) can show an honest, specific reason rather than a
+ * bare boolean. `alignment_locked` is the load-bearing case: an alignment
+ * hold (`ALIGNMENT_PARK_REASON`/`ALIGNMENT_DENIED_PARK_REASON`) resolves
+ * EXCLUSIVELY through the posted brief's own Approve/Deny — a raw requeue
+ * bypassing it would let unpriced work back onto the queue, reintroducing the
+ * exact bug #1274 closed.
+ */
+export type RequeueParkedQueueEntryResult =
+  | "requeued"
+  | "not_found"
+  | "not_parked"
+  | "alignment_locked";
+
+/**
+ * Requeue a single parked `queue_entries` row for a guardrail (duplicate
+ * content / rate limit / injection screen) or dependency ("Waiting on #N")
+ * park — the console approvals page's Requeue action (#1276 PR ②).
+ *
+ * Read-then-write in ONE `db.transaction`, mirroring
+ * {@link confirmAlignmentBrief}'s own rationale for that shape: the read
+ * distinguishes WHY a requeue didn't happen (not found / wrong workspace /
+ * not currently parked / alignment-locked) so the caller can render a
+ * specific, honest reason instead of a bare no-op — while the actual
+ * enforcement is the final UPDATE's own `WHERE` clause, not the read (never
+ * trust a pre-check alone for a security property, the same posture
+ * `resolveApproval`/`requeueDeadChannelMessage` take with their guarded
+ * `WHERE`). Workspace-scoped: `id` alone is never enough (an id from another
+ * workspace resolves `not_found`, matching `getApiKey`'s scoped-lookup
+ * idiom elsewhere in this package).
+ */
+export async function requeueParkedQueueEntry(
+  workspaceId: string,
+  id: string
+): Promise<RequeueParkedQueueEntryResult> {
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .select({ state: queueEntries.state, parkReason: queueEntries.parkReason })
+      .from(queueEntries)
+      .where(and(eq(queueEntries.id, id), eq(queueEntries.workspaceId, workspaceId)));
+    const row = rows[0];
+    if (!row) return "not_found";
+    if (row.state !== "parked") return "not_parked";
+    if (
+      row.parkReason === ALIGNMENT_PARK_REASON ||
+      row.parkReason === ALIGNMENT_DENIED_PARK_REASON
+    ) {
+      return "alignment_locked";
+    }
+
+    const result = await tx
+      .update(queueEntries)
+      .set({ state: "queued", parkReason: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(queueEntries.id, id),
+          eq(queueEntries.workspaceId, workspaceId),
+          eq(queueEntries.state, "parked"),
+          // Belt-and-suspenders (matches this function's own doc-comment):
+          // the actual gate is HERE, not the read above.
+          sql`${queueEntries.parkReason} IS DISTINCT FROM ${ALIGNMENT_PARK_REASON}`,
+          sql`${queueEntries.parkReason} IS DISTINCT FROM ${ALIGNMENT_DENIED_PARK_REASON}`
+        )
+      )
+      .returning({ id: queueEntries.id });
+    return result.length > 0 ? "requeued" : "not_parked";
+  });
+}
+
 export async function enqueueGithubIssue(data: {
   workspaceId: string;
   repoFullName: string;

@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
+import { ALIGNMENT_DENIED_PARK_REASON, ALIGNMENT_PARK_REASON } from "@agentrail/db-postgres";
 import {
   formatRelativeTime,
   truncate,
   summarizeApprovalToolInput,
   toolLabel,
   channelLabel,
+  isAlignmentParkReason,
 } from "./approvals-helpers";
 
 describe("formatRelativeTime", () => {
@@ -185,6 +187,30 @@ describe("toolLabel", () => {
 
   it("falls back to the raw name for an unknown tool", () => {
     expect(toolLabel("mystery_tool")).toBe("mystery_tool");
+  });
+});
+
+describe("isAlignmentParkReason", () => {
+  const REASONS = [ALIGNMENT_PARK_REASON, ALIGNMENT_DENIED_PARK_REASON] as const;
+
+  it("is true for the awaiting-alignment park reason", () => {
+    expect(isAlignmentParkReason(ALIGNMENT_PARK_REASON, REASONS)).toBe(true);
+  });
+
+  it("is true for the alignment-denied park reason", () => {
+    expect(isAlignmentParkReason(ALIGNMENT_DENIED_PARK_REASON, REASONS)).toBe(true);
+  });
+
+  it("is false for a guardrail park reason", () => {
+    expect(isAlignmentParkReason("duplicate content: ...", REASONS)).toBe(false);
+  });
+
+  it("is false for a dependency park reason", () => {
+    expect(isAlignmentParkReason("Waiting on #9", REASONS)).toBe(false);
+  });
+
+  it("is false for null (not parked, or a reasonless legacy row)", () => {
+    expect(isAlignmentParkReason(null, REASONS)).toBe(false);
   });
 });
 

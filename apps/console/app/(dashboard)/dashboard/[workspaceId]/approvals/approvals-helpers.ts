@@ -1,10 +1,42 @@
 /**
- * Pure formatting/derivation helpers for the workspace Approvals page (#1276
- * PR ①). Kept in a plain `.ts` file (no JSX) so it's unit-testable — console
- * vitest has no react plugin, mirrors the sibling convention
+ * Pure formatting/derivation helpers for the workspace Approvals page
+ * (#1276). Kept in a plain `.ts` file (no JSX) so it's unit-testable —
+ * console vitest has no react plugin, mirrors the sibling convention
  * (`budget/budget-helpers.ts`, `review-gates/blocking-reason.ts`). The page
  * and its list components stay thin, reading from here.
+ *
+ * DELIBERATELY carries no import from `@agentrail/db-postgres` (or any other
+ * server-only package): every list component that imports this file is
+ * `"use client"` (PR ②'s action buttons), so this module is bundled for the
+ * BROWSER. `@agentrail/db-postgres` transitively pulls in Node builtins
+ * (`node:crypto`, for `recordApprovalRequest`'s token generation) that
+ * webpack cannot bundle for the browser — importing it here broke the page
+ * with a hard build error during PR ② verification. Where a value needs to
+ * come from that package (the two alignment park-reason constants below),
+ * the SERVER component (`page.tsx`) imports the real constant and passes it
+ * down as a plain string/array prop instead.
  */
+
+/**
+ * Whether a parked queue entry's `parkReason` is an alignment hold — the
+ * ONE park kind that must never offer a raw Requeue action (#1276 PR ②): it
+ * resolves EXCLUSIVELY through the posted brief's own Approve/Deny, never a
+ * requeue, or the alignment gate #1274 built would be bypassed.
+ * Parameterized on `alignmentParkReasons` rather than importing
+ * `ALIGNMENT_PARK_REASON`/`ALIGNMENT_DENIED_PARK_REASON` directly (see this
+ * file's header comment for why) — `page.tsx` is the single place that
+ * actually imports those two real constants and passes them down, so this
+ * can still never drift from what the gate itself writes, just via a prop
+ * instead of a module import. This is UI-side belt-and-suspenders only —
+ * `requeueParkedQueueEntry`'s own `WHERE` clause is the real,
+ * server-enforced gate (see that function's doc-comment).
+ */
+export function isAlignmentParkReason(
+  parkReason: string | null,
+  alignmentParkReasons: readonly string[]
+): boolean {
+  return parkReason !== null && alignmentParkReasons.includes(parkReason);
+}
 
 export interface RelativeTime {
   label: string;

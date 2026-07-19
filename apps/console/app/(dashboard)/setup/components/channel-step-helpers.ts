@@ -3,23 +3,14 @@
  * self-host Telegram rendering. Split out of `channel-step.tsx` so the
  * env-driven branch decision is unit-testable without a DOM, mirroring how
  * `connector-helpers.ts` keeps its pure model separate from the client form.
+ *
+ * `resolveHostedBotUsername`/`telegramDeepLink` themselves now live in
+ * `apps/console/lib/telegram-bot.ts` (#1279 PR ①) — lifted so the landing
+ * page's Message-Jace CTA can share the exact same env-driven logic instead
+ * of a second hand-rolled copy. Re-exported here unchanged so this file's
+ * import path, and every existing caller/test, needs zero changes.
  */
-
-/**
- * Whether the hosted shared-bot flow should render, and its username.
- * `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` unset or blank (self-host default)
- * means the existing bring-your-own-bot form renders instead — see
- * `channel-step.tsx`.
- */
-export function resolveHostedBotUsername(raw: string | undefined): string | null {
-  const trimmed = raw?.trim();
-  return trimmed ? trimmed : null;
-}
-
-/** The shared bot's Telegram deep link, e.g. `https://t.me/jace_bot`. */
-export function telegramDeepLink(botUsername: string): string {
-  return `https://t.me/${botUsername}`;
-}
+export { resolveHostedBotUsername, telegramDeepLink } from "../../../../lib/telegram-bot";
 
 /**
  * Self-host BYO-bot docs — the jace README's Channels section, where the

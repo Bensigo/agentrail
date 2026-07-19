@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Tuple
 
 from agentrail.afk.input_contract import Rejected
 from agentrail.afk.queue_state import (
+    ALIGNMENT_PARK_REASON,
     Event,
     QueueEntry,
     QueueState,
@@ -40,6 +41,19 @@ class FakeExecutor:
         self.entries: Dict[str, Dict[str, Any]] = {}
         # runs rows keyed by id (resumable run registration)
         self.runs: Dict[str, Dict[str, Any]] = {}
+        # #1274 PR③: workspace_id -> require_alignment, for the new
+        # "workspace_require_alignment" query op. TEST-ONLY convenience
+        # default: an unconfigured workspace reads as "does not require
+        # alignment" (False) so every pre-existing test in this file — none
+        # of which set up a workspaces table — keeps its exact QUEUED/PARKED
+        # outcome unchanged. This is DELIBERATELY the opposite of the real
+        # PostgresExecutor's fail-closed default (True on a missing row,
+        # QueueStore._workspace_requires_alignment) — that fail-closed
+        # posture is exercised directly in its own dedicated test via a
+        # purpose-built fake that returns zero rows, not through this shared
+        # default. Call `require_alignment[workspace_id] = True` to opt a
+        # test into the alignment gate.
+        self.require_alignment: Dict[str, bool] = {}
 
     # The store calls this for writes (no return needed).
     def execute(self, op: str, params: Dict[str, Any]) -> None:
@@ -74,6 +88,14 @@ class FakeExecutor:
             ]
             rows.sort(key=lambda r: r["created_at"])
             return rows[:1]
+        if op == "workspace_require_alignment":
+            return [
+                {
+                    "require_alignment": self.require_alignment.get(
+                        params["workspace_id"], False
+                    )
+                }
+            ]
         raise AssertionError(f"unexpected query {op!r}")  # pragma: no cover
 
 
@@ -549,6 +571,195 @@ def test_v2_flag_on_legit_issue_tripping_injection_is_parked_not_dropped(monkeyp
     # just held on the in-memory entry.
     assert row["park_reason"] == result.reason
     assert "prompt-injection" in row["park_reason"]
+
+
+def test_workspace_require_alignment_sql_shape():
+    """Guard the raw SQL against drift: the alignment lookup must select the
+    single column from the single-row-by-id shape both writers agree on."""
+    from agentrail.afk.queue_store import _SQL
+
+    sql = _SQL["workspace_require_alignment"]
+    assert "require_alignment" in sql
+    assert "FROM workspaces" in sql
+    assert "%(workspace_id)s" in sql
+
+
+# --- #1274 PR③: the Python admission hold — mirrors enqueueGithubIssue's ------
+# post-fix semantics exactly. Matrix: source x requireAlignment x
+# dependency-park x v2-guardrail-park, with exact state/reason assertions.
+# "values-present" (the 4th matrix dimension named in the task brief) is
+# ALWAYS "absent" for a fresh Python admission — enqueue() has no parameter
+# for estimated_budget_usd/model_override and insert_entry never sets them
+# (see the module's own comment on this), so `aligned` reduces to exactly
+# "workspace does not require it" here; this is asserted explicitly below
+# rather than silently assumed.
+
+
+def test_alignment_requireAlignment_false_admits_queued_regression_pin():
+    """requireAlignment=false -> byte-identical to pre-#1274 behaviour, for
+    EVERY source (cli/github/linear) — the gate does not care which source
+    delivered the issue."""
+    for source in ("cli", "github", "linear"):
+        store, fake = _store()
+        fake.require_alignment["ws1"] = False
+        entry = store.enqueue(
+            workspace_id="ws1", source=source, external_id=f"{source}-1",
+            title="t", body=_GOOD_BODY,
+        )
+        assert isinstance(entry, QueueEntry)
+        assert entry.state is QueueState.QUEUED
+        assert entry.reason == ""
+        row = fake.entries[store.entry_id(entry)]
+        assert row["state"] == QueueState.QUEUED.value
+        assert row["park_reason"] is None
+
+
+def test_alignment_requireAlignment_true_clean_admit_parks_awaiting_alignment():
+    """requireAlignment=true + no dependency + no v2 park -> parks with the
+    EXACT ALIGNMENT_PARK_REASON string, for every source."""
+    for source in ("cli", "github", "linear"):
+        store, fake = _store()
+        fake.require_alignment["ws1"] = True
+        entry = store.enqueue(
+            workspace_id="ws1", source=source, external_id=f"{source}-2",
+            title="t", body=_GOOD_BODY,
+        )
+        assert isinstance(entry, QueueEntry)
+        assert entry.state is QueueState.PARKED
+        assert entry.reason == ALIGNMENT_PARK_REASON
+        row = fake.entries[store.entry_id(entry)]
+        assert row["state"] == QueueState.PARKED.value
+        assert row["park_reason"] == "awaiting alignment"
+        # estimated_budget_usd/model_override are not columns this store
+        # writes at all today (see insert_entry's SQL) — "values-present" is
+        # structurally always false for a fresh Python admission.
+        assert "estimated_budget_usd" not in row
+        assert "model_override" not in row
+
+
+def test_alignment_requireAlignment_true_dependency_park_keeps_dependency_reason():
+    """#1274 finding-1 fix mirror: a dependency-parked entry is NOT
+    overwritten by the alignment overlay — the dependency reason (the more
+    specific, currently-true one) is kept. There is no Python `parkedFor`
+    signal (Python posts no brief itself, see the module's own comment) —
+    the console reconciler discovers this row generically (state='parked',
+    estimated_budget_usd IS NULL, no jace_approvals row), regardless of
+    which exact reason string it carries."""
+    store, fake = _store()
+    fake.require_alignment["ws1"] = True
+    entry = store.enqueue(
+        workspace_id="ws1", source="github", external_id="7",
+        title="t", body=_GOOD_BODY, blocked_by=frozenset({9}),
+    )
+    assert isinstance(entry, QueueEntry)
+    assert entry.state is QueueState.PARKED
+    assert "9" in entry.reason
+    assert entry.reason != ALIGNMENT_PARK_REASON
+    row = fake.entries[store.entry_id(entry)]
+    assert row["park_reason"] == entry.reason
+
+
+def test_alignment_requireAlignment_false_dependency_park_unaffected():
+    """requireAlignment=false + a dependency park -> the dependency reason,
+    completely untouched by the (skipped) alignment overlay."""
+    store, fake = _store()
+    fake.require_alignment["ws1"] = False
+    entry = store.enqueue(
+        workspace_id="ws1", source="github", external_id="7",
+        title="t", body=_GOOD_BODY, blocked_by=frozenset({9}),
+    )
+    assert entry.state is QueueState.PARKED
+    assert "9" in entry.reason
+
+
+def test_alignment_does_not_fire_when_a_v2_guardrail_already_parked_the_entry(monkeypatch):
+    """Mirrors enqueueGithubIssue: a v2-guardrail park (injection/dup/rate
+    limit) is left completely alone by the alignment overlay — its own
+    reason is what gets persisted, never ALIGNMENT_PARK_REASON."""
+    monkeypatch.setenv(_V2_FLAG, "1")
+    store, fake = _store()
+    fake.require_alignment["ws1"] = True
+    entry = store.enqueue(
+        workspace_id="ws1", source="github", external_id="500",
+        title="t", body=_INJECTION_BODY,
+    )
+    assert isinstance(entry, QueueEntry)
+    assert entry.state is QueueState.PARKED
+    assert "prompt-injection" in entry.reason
+    assert entry.reason != ALIGNMENT_PARK_REASON
+    row = fake.entries[store.entry_id(entry)]
+    assert "prompt-injection" in row["park_reason"]
+
+
+def test_alignment_v2_guardrail_park_with_also_unmet_dependency_skips_alignment_either_way(monkeypatch):
+    """Both a v2 guardrail AND a dependency would park this entry.
+
+    DISCOVERED PRE-EXISTING DIVERGENCE (out of this PR's scope — this is
+    `queue_state.admit`'s own dependency-vs-v2-guardrail precedence, entirely
+    unrelated to the alignment gate, and unmodified by this PR): Python's
+    `admit()` lets an UNMET DEPENDENCY overwrite an already-set v2-guardrail
+    park reason (`admit`'s "unmet" branch replaces state+reason
+    unconditionally, before ever checking whether the entry arrived already
+    parked) — the OPPOSITE of the TS `github_intake.ts` behaviour, where
+    "a guardrail park overrides a dependency park when both would apply"
+    (`github-intake-park-reason.test.ts`). Pinned here as an honest
+    regression test of ACTUAL Python behaviour, not the (different) TS
+    behaviour — see this PR's report for the full writeup.
+
+    What DOES stay correct in both languages: the alignment overlay is
+    skipped either way (`v2_parked` is captured from `gated.state`, BEFORE
+    `admit()` runs — the correct thing to gate on) — the entry never ends up
+    ALIGNMENT_PARK_REASON, regardless of which of the other two reasons wins.
+    """
+    monkeypatch.setenv(_V2_FLAG, "1")
+    store, fake = _store()
+    fake.require_alignment["ws1"] = True
+    entry = store.enqueue(
+        workspace_id="ws1", source="github", external_id="501",
+        title="t", body=_INJECTION_BODY, blocked_by=frozenset({9}),
+    )
+    assert entry.state is QueueState.PARKED
+    assert entry.reason != ALIGNMENT_PARK_REASON
+    # Actual Python precedence today: the dependency reason wins (unlike TS).
+    assert "blocked-by unmet dependency" in entry.reason
+
+
+def test_alignment_workspace_row_missing_fails_toward_requiring_alignment():
+    """The REAL PostgresExecutor's fail-closed default (missing workspace row
+    -> True), exercised directly against `_workspace_requires_alignment` via
+    a purpose-built executor that returns ZERO rows for the op — distinct
+    from FakeExecutor's own TEST-ONLY "unconfigured -> False" convenience
+    default (see that class's doc comment), which exists only to keep
+    ~30 pre-existing, alignment-unrelated tests in this file passing
+    unchanged. Mirrors the TS test of the same name in
+    github-intake-alignment-gate.test.ts exactly."""
+
+    class _NoWorkspaceRowExecutor:
+        def __init__(self) -> None:
+            self.entries: Dict[str, Dict[str, Any]] = {}
+
+        def execute(self, op: str, params: Dict[str, Any]) -> None:
+            if op == "insert_entry":
+                self.entries.setdefault(params["id"], dict(params))
+            else:  # pragma: no cover - defensive
+                raise AssertionError(f"unexpected op {op!r}")
+
+        def query(self, op: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+            if op == "workspace_require_alignment":
+                return []  # no workspace row at all
+            raise AssertionError(f"unexpected query {op!r}")  # pragma: no cover
+
+    exec_ = _NoWorkspaceRowExecutor()
+    store = QueueStore(executor=exec_)
+    assert store._workspace_requires_alignment("ws-missing") is True
+
+    entry = store.enqueue(
+        workspace_id="ws-missing", source="github", external_id="4",
+        title="t", body=_GOOD_BODY,
+    )
+    assert isinstance(entry, QueueEntry)
+    assert entry.state is QueueState.PARKED
+    assert entry.reason == ALIGNMENT_PARK_REASON
 
 
 def test_v2_flag_off_intake_is_unchanged(monkeypatch):

@@ -76,7 +76,7 @@ const severityConfig: Record<Severity, { label: string; className: string }> = {
   },
   medium: {
     label: "medium",
-    className: "bg-[var(--yellow-09)]/20 text-[#f5d90a] border border-[var(--yellow-09)]/30",
+    className: "bg-[var(--yellow-09)]/20 text-[var(--severity-medium-text)] border border-[var(--yellow-09)]/30",
   },
   low: {
     label: "low",

@@ -578,7 +578,7 @@ describe("denyAlignmentBrief: the entry stays parked with an honest denial reaso
     const flipped = await denyAlignmentBrief("q-1");
     expect(flipped).toBe(true);
     expect(ALIGNMENT_DENIED_PARK_REASON).toBe(
-      "alignment denied — ask Jace to revise the brief"
+      "alignment denied — open a new issue to try again"
     );
     expect(updateCalls[0]).toMatchObject({
       parkReason: ALIGNMENT_DENIED_PARK_REASON,

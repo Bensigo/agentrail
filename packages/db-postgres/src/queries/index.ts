@@ -1835,6 +1835,11 @@ export {
 // require_alignment, denial unconditional) rather than any parkReason
 // string match, so the exclusion can never drift from what actually marks a
 // row aligned (#1276 fix round).
+// findAlignmentBriefCandidates (#1274 PR③) is the find-side of
+// apps/console/lib/alignment-reconciler.ts::reconcileAlignmentBriefs — every
+// raw drizzle/SQL access stays in this package (see findWorkspaceByRepo's own
+// raw-SQL idiom this mirrors); the console layer only ever calls this
+// exported function.
 export {
   validateAcceptanceCriteria,
   findWorkspaceByRepo,
@@ -1847,9 +1852,11 @@ export {
   confirmAlignmentBrief,
   denyAlignmentBrief,
   requeueParkedQueueEntry,
+  findAlignmentBriefCandidates,
   type AcGateResult,
   type EnqueueResult,
   type RequeueParkedQueueEntryResult,
+  type AlignmentBriefCandidate,
 } from "./github_intake.js";
 
 // Jace inbound intake — the coordinator's kill switch: a pure allow/deny gate on

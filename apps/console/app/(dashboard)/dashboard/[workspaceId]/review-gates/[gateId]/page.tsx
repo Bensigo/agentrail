@@ -26,9 +26,9 @@ const CATEGORY_ORDER: Category[] = ["tests", "visual", "citations", "ac", "block
 
 function StatusBadge({ status }: { status: ReviewGateStatus }) {
   const styles: Record<ReviewGateStatus, string> = {
-    passed: "bg-[#1a3d33] text-[var(--green-11)]",
-    failed: "bg-[#3d1a1a] text-[var(--red-11)]",
-    pending: "bg-[#3d3a1a] text-[var(--yellow-11)]",
+    passed: "bg-[var(--gate-pass-bg)] text-[var(--green-11)]",
+    failed: "bg-[var(--gate-fail-bg)] text-[var(--red-11)]",
+    pending: "bg-[var(--gate-pending-bg)] text-[var(--yellow-11)]",
   };
   return (
     <span className={`px-1.5 py-0.5 rounded-sm text-xs font-medium ${styles[status]}`}>
@@ -42,8 +42,8 @@ function EvidenceBadge({ present }: { present: boolean }) {
     <span
       className={
         present
-          ? "px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[#1a3d33] text-[var(--green-11)]"
-          : "px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[#3d1a1a] text-[var(--red-11)]"
+          ? "px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[var(--gate-pass-bg)] text-[var(--green-11)]"
+          : "px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[var(--gate-fail-bg)] text-[var(--red-11)]"
       }
     >
       {present ? "present" : "missing"}

@@ -68,9 +68,9 @@ function StatusIcon({ status }: { status: ReviewGate["status"] }) {
 
 function StatusBadge({ status }: { status: ReviewGate["status"] }) {
   const styles: Record<ReviewGate["status"], string> = {
-    passed: "bg-[#1a3d33] text-[var(--green-11)]",
-    failed: "bg-[#3d1a1a] text-[var(--red-11)]",
-    pending: "bg-[#3d3a1a] text-[var(--yellow-11)]",
+    passed: "bg-[var(--gate-pass-bg)] text-[var(--green-11)]",
+    failed: "bg-[var(--gate-fail-bg)] text-[var(--red-11)]",
+    pending: "bg-[var(--gate-pending-bg)] text-[var(--yellow-11)]",
   };
   return (
     <span
@@ -87,8 +87,8 @@ function SeverityBadge({
   severity: ReviewGateFinding["severity"];
 }) {
   const styles: Record<ReviewGateFinding["severity"], string> = {
-    critical: "bg-[#3d1a1a] text-[var(--red-11)]",
-    major: "bg-[#3d2a1a] text-[#ffb077]",
+    critical: "bg-[var(--gate-fail-bg)] text-[var(--red-11)]",
+    major: "bg-[var(--gate-major-bg)] text-[var(--gate-major-text)]",
     minor: "bg-[var(--gray-04)] text-[var(--gray-10)]",
   };
   return (

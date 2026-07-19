@@ -7,9 +7,10 @@
 // NEVER narrates why a run failed — the runs table has no error/reason column,
 // so a "why did it fail" question is answered honestly with no source (AC1/AC2).
 //
-// It performs NO write of any kind, so — unlike the single gated create_issue
-// tool — it does NOT set `approval: always()`. Human approval is reserved for the
-// one mutating tool; making a read-only report pause for approval would be noise.
+// It performs NO write of any kind, so — unlike the gated write tools
+// (create_issue, create_workspace, create_repo) — it sets NO `approval`. Human
+// approval is reserved for the mutating tools; making a read-only report pause
+// for approval would be noise.
 
 import { defineTool } from "eve/tools";
 import { z } from "zod";
@@ -17,8 +18,9 @@ import { z } from "zod";
 //  - `defineTool` from "eve/tools" is the tool-authoring helper; the tool is the
 //    file's DEFAULT export and its runtime name is the filename slug (`standup`),
 //    so there is no `name` field.
-//  - This tool sets NO `approval` — it is read-only. `approval: always()` is
-//    reserved for the single mutating tool (create_issue).
+//  - This tool sets NO `approval` — it is read-only. Approval gates are
+//    reserved for the mutating tools (create_issue, create_workspace,
+//    create_repo).
 import { openReadOnlyDb } from "../lib/standup.db.mjs";
 import {
   buildStandup,

@@ -112,6 +112,19 @@ RUN pnpm --filter @agentrail/console exec fumadocs-mdx
 # deploy/telegram-shared-bot-cutover.md) and the bring-your-own-bot form
 # renders instead.
 RUN pnpm --filter @agentrail/console build
+# Self-contained migrator (#owner rule 2026-07-19: migrations ALWAYS run on
+# deploy). `pnpm deploy` materializes db-postgres with REAL node_modules (its
+# only prod deps are the pure-JS `postgres` + `drizzle-orm`) so the runner can
+# execute `node migrator/dist/migrate.js` without pnpm, the workspace, or the
+# Next trace. dist/migrate.js resolves its SQL as `__dirname/../drizzle/
+# migrations`, and db-postgres has no `files` allowlist, so the deployed folder
+# carries drizzle/ (journal + SQL) alongside dist/ — the belt-and-suspenders
+# `test -f` lines fail the BUILD (not the deploy) if either half ever goes
+# missing. Wired to Railway's preDeployCommand on the console service: a
+# failed migration aborts the rollout and the old build keeps serving.
+RUN pnpm --filter @agentrail/db-postgres deploy --prod /migrator \
+  && test -f /migrator/dist/migrate.js \
+  && test -f /migrator/drizzle/migrations/meta/_journal.json
 
 # ---- 4. runner — slim runtime, standalone server only ------------------------
 FROM node:24-slim AS runner
@@ -121,6 +134,11 @@ ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0
 RUN mkdir -p apps/console/.next && chown node:node apps/console/.next
 COPY --from=builder --chown=node:node /app/apps/console/.next/standalone ./
 COPY --from=builder --chown=node:node /app/apps/console/.next/static ./apps/console/.next/static
+# The self-contained migrator (see the builder stage note). Runs as Railway's
+# preDeployCommand (`node migrator/dist/migrate.js`) before every rollout;
+# harmless to ship for self-host too (compose users can `docker compose run
+# console node migrator/dist/migrate.js`).
+COPY --from=builder --chown=node:node /migrator ./migrator
 # apps/console has no public/ directory today (verified: `ls apps/console` has
 # no public/), so there is nothing to copy there — add a
 # `COPY --from=builder --chown=node:node /app/apps/console/public ./apps/console/public`

@@ -9,6 +9,10 @@ describe("breadcrumbLabel", () => {
     expect(breadcrumbLabel(`${BASE}/budget`)).toBe("Budget");
   });
 
+  it("labels the permissions page (#1278)", () => {
+    expect(breadcrumbLabel(`${BASE}/permissions`)).toBe("Permissions");
+  });
+
   it("labels an existing segment (review-gates)", () => {
     expect(breadcrumbLabel(`${BASE}/review-gates`)).toBe("Review Gates");
   });

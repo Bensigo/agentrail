@@ -12,6 +12,7 @@ import {
   Key,
   Users,
   Plug,
+  GitMerge,
 } from "lucide-react";
 
 export interface NavItem {
@@ -79,6 +80,11 @@ export const SETTINGS_ZONE: NavZone = {
     // the combined Team page covers the spec's Settings-zone "Teams" entry.
     { label: "Team", href: "members", icon: Users },
     { label: "API Keys", href: "api-keys", icon: Key },
+    // "Permissions" (#1278): the owner-only grantable-trust-setting surface —
+    // today just merge permission (green gate -> merges itself vs. PR-only).
+    // No prior "workspace settings" page existed to fold this into; this is
+    // the seed of one, sized to what's real today (v1 = one setting).
+    { label: "Permissions", href: "permissions", icon: GitMerge },
   ],
 };
 

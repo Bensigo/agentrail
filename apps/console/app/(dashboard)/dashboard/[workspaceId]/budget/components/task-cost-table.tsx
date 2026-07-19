@@ -69,7 +69,7 @@ export function TaskCostTable({ rows }: { rows: WorkspaceRunCostRow[] }) {
                 <td className="px-3 py-2">
                   <div className="flex min-w-0 items-center gap-2">
                     <span className="truncate text-[var(--gray-12)]">{row.taskIdentity}</span>
-                    <span className="shrink-0 font-mono text-[10px] text-[var(--gray-09)]">
+                    <span className="shrink-0 font-mono text-xs text-[var(--gray-09)]">
                       run:{row.runId.slice(0, 8)}
                     </span>
                   </div>
@@ -80,7 +80,8 @@ export function TaskCostTable({ rows }: { rows: WorkspaceRunCostRow[] }) {
                 <td className="px-3 py-2 text-right font-mono text-[var(--gray-11)]">
                   {formatCostUsd(row.costUsd)}
                 </td>
-                <td className="px-3 py-2 text-right text-[var(--gray-09)]" title={when.title}>
+                {/* relative time is a formatted timestamp → mono, per IA principle 7 */}
+                <td className="px-3 py-2 text-right font-mono text-[var(--gray-09)]" title={when.title}>
                   {when.label}
                 </td>
               </tr>

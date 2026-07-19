@@ -10,7 +10,6 @@ import {
   Wallet,
   Database,
   Brain,
-  Key,
   Users,
   Plug,
   GitMerge,
@@ -85,7 +84,11 @@ export const SETTINGS_ZONE: NavZone = {
     // No separate Teams item: teams/page.tsx is a redirect stub to /members —
     // the combined Team page covers the spec's Settings-zone "Teams" entry.
     { label: "Team", href: "members", icon: Users },
-    { label: "API Keys", href: "api-keys", icon: Key },
+    // No "API Keys" item: the in-console key list/create/revoke UI was
+    // removed (owner ruling, 2026-07-19) — self-hosters mint keys via
+    // `agentrail login` (device flow, browser half at /activate) per the
+    // docs' self-hosting page. The api_keys table and every /api/v1 route
+    // that reads it are untouched; this is a nav-only removal.
     // "Permissions" (#1278): the owner-only grantable-trust-setting surface —
     // today just merge permission (green gate -> merges itself vs. PR-only).
     // No prior "workspace settings" page existed to fold this into; this is

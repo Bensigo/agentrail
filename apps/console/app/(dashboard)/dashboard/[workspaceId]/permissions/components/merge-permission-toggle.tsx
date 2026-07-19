@@ -58,7 +58,8 @@ export function MergePermissionToggle({
     <div className="flex flex-col gap-3 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-4">
       <div className="flex items-center justify-between gap-4">
         <div className="flex flex-col gap-1">
-          <span className="text-sm font-medium text-[var(--gray-12)]">
+          {/* control's primary name/title, the only heading in this component → bold */}
+          <span className="text-sm font-bold text-[var(--gray-12)]">
             Merge permission
           </span>
           <span className="text-xs text-[var(--gray-09)]">
@@ -98,10 +99,13 @@ export function MergePermissionToggle({
         <p className="text-xs text-[var(--gray-09)]">
           Last {lastGrant.granted ? "granted" : "revoked"} by{" "}
           <span className="text-[var(--gray-11)]">{granterLabel(lastGrant)}</span> on{" "}
-          {new Date(lastGrant.createdAt).toLocaleString(undefined, {
-            dateStyle: "medium",
-            timeStyle: "short",
-          })}
+          {/* timestamp → mono, per IA principle 7 */}
+          <span className="font-mono">
+            {new Date(lastGrant.createdAt).toLocaleString(undefined, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}
+          </span>
           .
         </p>
       )}

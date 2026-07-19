@@ -113,7 +113,8 @@ export function ParkedWorkList({
                   <span className="text-[var(--gray-10)]">{reason}</span>
                   {rowError && <p className="mt-1 text-[var(--red-11)]">{rowError}</p>}
                 </td>
-                <td className="px-3 py-2 text-right text-[var(--gray-09)]" title={age.title}>
+                {/* font-mono: relative-time value. */}
+                <td className="px-3 py-2 text-right font-mono text-[var(--gray-09)]" title={age.title}>
                   {age.label}
                 </td>
                 {canManage && (

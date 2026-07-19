@@ -305,7 +305,8 @@ export function FailuresTable({
               onClick={() =>
                 setTimeRange((prev) => (prev === value ? "" : value))
               }
-              className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
+              // active-state toggle → bold per TASTE weight rule
+              className={`h-8 px-2.5 rounded text-xs font-bold border transition-colors ${
                 timeRange === value
                   ? "bg-[var(--yellow-09)] text-black border-[var(--yellow-09)]"
                   : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"

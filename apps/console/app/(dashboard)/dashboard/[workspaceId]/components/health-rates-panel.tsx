@@ -68,7 +68,9 @@ export function HealthRatesPanel({ workspaceId }: HealthRatesPanelProps) {
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+      {/* font-normal: card-title label idiom (matches StatHeader's clean
+          text-xs/uppercase/gray-09 "label" pattern, not a true heading). */}
+      <h2 className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
         System health
       </h2>
 
@@ -92,23 +94,31 @@ export function HealthRatesPanel({ workspaceId }: HealthRatesPanelProps) {
           <div className="flex flex-col gap-4">
             {/* Headline rate tiles. */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {/* Accept rate — falsifiable against the 50% health line. */}
+              {/* Accept rate — falsifiable against the 50% health line.
+                  Left rule, not a VD-1 side-tab card: no border-radius on
+                  this element (it's a bare stat tile, not a rounded card),
+                  and the color is the same semantic health mapping as
+                  everywhere else — same idiom as the guide's own Timeline
+                  "vertical line on left" pattern. */}
               <div
                 className={`flex flex-col gap-1 border-l-2 pl-3 ${
                   below ? "border-[var(--red-11)]" : "border-[var(--grass-09)]"
                 }`}
               >
-                <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)]">
+                {/* text-xs/font-normal: matches StatHeader's stat-label idiom
+                    (no genuine space constraint at this width for "Accept
+                    rate" / "Escalation rate"). */}
+                <span className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
                   Accept rate
                 </span>
                 <span
-                  className={`font-mono text-2xl font-semibold leading-none ${
+                  className={`font-mono text-2xl font-bold leading-none ${
                     below ? "text-[var(--red-11)]" : "text-[var(--gray-12)]"
                   }`}
                 >
                   {formatRate(rates.acceptRate)}
                 </span>
-                <span className="font-mono text-[11px] text-[var(--gray-09)]">
+                <span className="font-mono text-xs text-[var(--gray-09)]">
                   {rates.green} green / {rates.attempted} attempted
                   {below ? " · below 50% line" : ""}
                 </span>
@@ -116,13 +126,13 @@ export function HealthRatesPanel({ workspaceId }: HealthRatesPanelProps) {
 
               {/* Escalation rate. */}
               <div className="flex flex-col gap-1 border-l-2 border-[var(--gray-06)] pl-3">
-                <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)]">
+                <span className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
                   Escalation rate
                 </span>
-                <span className="font-mono text-2xl font-semibold leading-none text-[var(--gray-12)]">
+                <span className="font-mono text-2xl font-bold leading-none text-[var(--gray-12)]">
                   {formatRate(rates.escalationRate)}
                 </span>
-                <span className="font-mono text-[11px] text-[var(--gray-09)]">
+                <span className="font-mono text-xs text-[var(--gray-09)]">
                   {rates.escalated} escalated to human / {rates.attempted} attempted
                 </span>
               </div>
@@ -143,7 +153,7 @@ export function HealthRatesPanel({ workspaceId }: HealthRatesPanelProps) {
                   aria-hidden="true"
                 />
               </div>
-              <span className="font-mono text-[10px] text-[var(--gray-09)]">
+              <span className="font-mono text-xs text-[var(--gray-09)]">
                 Health line: accept rate &gt; 50% is winning; below is losing
               </span>
             </div>

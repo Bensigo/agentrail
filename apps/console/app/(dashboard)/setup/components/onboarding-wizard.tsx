@@ -96,7 +96,8 @@ export function OnboardingWizard({ workspaceId }: { workspaceId: string }) {
   if (error) {
     return (
       <div className="rounded border border-[var(--red-09)]/30 bg-[var(--red-09)]/10 px-4 py-3">
-        <p className="text-xs text-[var(--red-11)]">{error}</p>
+        {/* font-mono: matches the sitewide fetch-error treatment. */}
+        <p className="font-mono text-xs text-[var(--red-11)]">{error}</p>
       </div>
     );
   }

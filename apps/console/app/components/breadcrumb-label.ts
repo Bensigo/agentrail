@@ -5,7 +5,8 @@
 //
 // Duplicate of the sidebar's grouping in ./sidebar-nav — keep in sync when
 // the nav changes (#1229, renamed #1231, budget added #1272, approvals added
-// #1276, permissions added #1278; breadcrumb.test.ts now enforces the sync).
+// #1276, permissions added #1278, api-keys removed 2026-07-19 owner ruling;
+// breadcrumb.test.ts now enforces the sync).
 // "queue" stays mapped to its old label for the instant before its redirect
 // fires; "work" is the real nav destination now (spec §3).
 export const SEGMENT_LABELS: Record<string, string> = {
@@ -20,7 +21,6 @@ export const SEGMENT_LABELS: Record<string, string> = {
   budget: "Budget",
   repos: "Repos & Health",
   memory: "Memory",
-  "api-keys": "API Keys",
   members: "Team",
   teams: "Teams",
   permissions: "Permissions",

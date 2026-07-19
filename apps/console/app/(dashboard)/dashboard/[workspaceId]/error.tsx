@@ -52,7 +52,7 @@ export default function WorkspaceError({
             <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
           </svg>
         </span>
-        <h1 className="text-sm font-semibold text-[var(--gray-12)]">
+        <h1 className="text-sm font-bold text-[var(--gray-12)]">
           Something went wrong loading this view.
         </h1>
         <p className="text-xs text-[var(--gray-09)]">
@@ -60,14 +60,16 @@ export default function WorkspaceError({
           unreachable. Your workspace is fine; try again in a moment.
         </p>
         {error.digest && (
-          <p className="font-mono text-[10px] text-[var(--gray-08)]">
+          <p className="font-mono text-xs text-[var(--gray-08)]">
             Reference: {error.digest}
           </p>
         )}
         <div className="mt-2 flex items-center gap-4">
           <button
             onClick={reset}
-            className="h-8 rounded bg-[var(--brand-accent)] px-3 text-xs font-medium text-black transition-colors hover:opacity-90"
+            // font-bold: primary CTA (colored fill) — the emphasis case,
+            // matching every other bg-brand-accent button in this scope.
+            className="h-8 rounded bg-[var(--brand-accent)] px-3 text-xs font-bold text-black transition-colors hover:opacity-90"
           >
             Try again
           </button>

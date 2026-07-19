@@ -72,7 +72,7 @@ export function MemorySection({ workspaceId, runId }: MemorySectionProps) {
   return (
     <div className="mt-8">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+        <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Memory
         </h2>
         <a

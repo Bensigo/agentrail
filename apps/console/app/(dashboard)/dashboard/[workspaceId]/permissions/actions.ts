@@ -12,7 +12,7 @@ export type SetMergePermissionActionResult =
  * Owner-only server action backing the merge-permission toggle (#1278).
  *
  * Deliberately narrower than this repo's existing `ADMIN_ROLES` precedent
- * (owner OR admin — see repos/api-keys pages): granting merge is the trust
+ * (owner OR admin — see the repos page): granting merge is the trust
  * ceiling, the one setting that lets AgentRail push code to `main`
  * unattended, so only the workspace owner may flip it.
  *

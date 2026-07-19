@@ -70,7 +70,7 @@ export function OptimizationPanel({ workspaceId }: OptimizationPanelProps) {
   return (
     <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
       <div className="mb-3">
-        <h2 className="text-sm font-semibold text-[var(--gray-12)]">Cost optimization</h2>
+        <h2 className="text-sm font-bold text-[var(--gray-12)]">Cost optimization</h2>
         <p className="mt-0.5 text-xs text-[var(--gray-09)]">
           Where spend is going and where it can be cut — prompt caching, output
           tokens (priced ~5x input), and model right-sizing. {est}
@@ -99,7 +99,8 @@ export function OptimizationPanel({ workspaceId }: OptimizationPanelProps) {
 
       {data.routing.models.length > 0 && (
         <div className="mt-4">
-          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+          {/* label caption, not heading/data → normal */}
+          <p className="mb-1 text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
             By model
           </p>
           <div className="overflow-x-auto rounded border border-[var(--gray-05)]">
@@ -118,8 +119,9 @@ export function OptimizationPanel({ workspaceId }: OptimizationPanelProps) {
                   <tr key={m.model}>
                     <td className="px-3 py-1.5">
                       <span className="font-mono text-[var(--gray-12)]">{m.model}</span>
+                      {/* badge padding aligned to TASTE's Status Badge spec: px-1.5 py-0.5 text-xs */}
                       {m.premium && (
-                        <span className="ml-1.5 rounded-sm bg-[color-mix(in_srgb,var(--orange-11)_16%,transparent)] px-1 py-0.5 text-[10px] text-[var(--orange-11)]">
+                        <span className="ml-1.5 rounded-sm bg-[color-mix(in_srgb,var(--orange-11)_16%,transparent)] px-1.5 py-0.5 text-xs text-[var(--orange-11)]">
                           premium
                         </span>
                       )}
@@ -160,7 +162,7 @@ function Stat({
       >
         {value}
       </p>
-      <p className="mt-0.5 text-[11px] text-[var(--gray-09)]">{sub}</p>
+      <p className="mt-0.5 text-xs text-[var(--gray-09)]">{sub}</p>
     </div>
   );
 }

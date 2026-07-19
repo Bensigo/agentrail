@@ -189,7 +189,7 @@ export default function ReviewGateDetailPage() {
 
       <div className="mb-6 flex flex-col gap-3 border-b border-[var(--gray-05)] pb-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-sm font-semibold text-[var(--gray-12)]">
+          <h1 className="text-sm font-bold text-[var(--gray-12)]">
             {gate.gateName}
           </h1>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--gray-09)]">
@@ -208,7 +208,7 @@ export default function ReviewGateDetailPage() {
 
       <section className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)]">
         <div className="border-b border-[var(--gray-05)] px-4 py-3">
-          <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+          <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
             Gate Explainer
           </h2>
         </div>

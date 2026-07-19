@@ -127,11 +127,12 @@ export function ChannelStep({
           bot below once — that chat becomes your connection, no token to
           paste.
         </p>
+        {/* font-bold: primary CTA (colored fill) — the emphasis case. */}
         <a
           href={telegramDeepLink(hostedBotUsername)}
           target="_blank"
           rel="noreferrer"
-          className="flex h-8 w-full items-center justify-center rounded bg-[var(--brand-accent)] px-3 text-xs font-medium text-black transition-colors hover:opacity-90"
+          className="flex h-8 w-full items-center justify-center rounded bg-[var(--brand-accent)] px-3 text-xs font-bold text-black transition-colors hover:opacity-90"
         >
           Message @{hostedBotUsername} on Telegram
         </a>
@@ -147,11 +148,13 @@ export function ChannelStep({
               Bring your own bot
             </a>
           </p>
+          {/* font-normal: secondary button, matches the Deny/Refresh/Requeue
+              plain-weight convention used across the scope. */}
           <button
             type="button"
             onClick={handleSkip}
             disabled={skipping}
-            className="shrink-0 h-8 rounded border border-[var(--gray-06)] bg-[var(--gray-03)] px-3 text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+            className="shrink-0 h-8 rounded border border-[var(--gray-06)] bg-[var(--gray-03)] px-3 text-xs font-normal text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
           >
             {skipping ? "Skipping…" : "Skip for now"}
           </button>
@@ -186,10 +189,12 @@ export function ChannelStep({
       />
       {error && <p className="text-xs text-[var(--red-11)]">{error}</p>}
       <div className="flex gap-2">
+        {/* font-bold: primary CTA (colored fill); font-normal below:
+            secondary button — same pair as the hosted variant above. */}
         <button
           type="submit"
           disabled={connecting || !token.trim()}
-          className="h-8 flex-1 rounded bg-[var(--brand-accent)] px-3 text-xs font-medium text-black transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="h-8 flex-1 rounded bg-[var(--brand-accent)] px-3 text-xs font-bold text-black transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {connecting ? "Connecting…" : "Connect"}
         </button>
@@ -197,7 +202,7 @@ export function ChannelStep({
           type="button"
           onClick={handleSkip}
           disabled={skipping}
-          className="h-8 rounded border border-[var(--gray-06)] bg-[var(--gray-03)] px-3 text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+          className="h-8 rounded border border-[var(--gray-06)] bg-[var(--gray-03)] px-3 text-xs font-normal text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
         >
           {skipping ? "Skipping…" : "Skip for now"}
         </button>

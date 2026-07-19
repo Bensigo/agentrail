@@ -48,7 +48,9 @@ function CopyableSecret({ label, value }: { label: string; value: string }) {
 function ManualInstructions({ manual }: { manual: WebhookResponse["manual"] }) {
   return (
     <div className="flex flex-col gap-2.5 rounded border border-[var(--orange-09)]/30 bg-[var(--orange-09)]/5 p-3">
-      <p className="flex items-center gap-1.5 text-xs font-medium text-[var(--orange-11)]">
+      {/* font-bold: alert headline (colored + iconified emphasis), not the
+          muted microlabel idiom — this is titling the callout box. */}
+      <p className="flex items-center gap-1.5 text-xs font-bold text-[var(--orange-11)]">
         <AlertTriangle size={13} /> Couldn&apos;t auto-create the webhook — add it manually
       </p>
       <ol className="ml-3.5 list-decimal space-y-1 text-xs leading-relaxed text-[var(--gray-10)]">
@@ -116,7 +118,9 @@ export function GithubStep({
       </p>
 
       <div className="flex flex-col gap-1.5">
-        <span className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+        {/* font-normal: microlabel idiom (matches StatHeader's clean
+            text-xs/uppercase/gray-09 pattern). */}
+        <span className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
           Repositories
         </span>
         {repos.length === 0 ? (
@@ -133,10 +137,11 @@ export function GithubStep({
             ))}
           </ul>
         )}
+        {/* font-normal: secondary button convention. */}
         <button
           type="button"
           onClick={() => setShowAddDialog(true)}
-          className="mt-1 h-8 self-start rounded border border-[var(--gray-06)] bg-[var(--gray-03)] px-3 text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors"
+          className="mt-1 h-8 self-start rounded border border-[var(--gray-06)] bg-[var(--gray-03)] px-3 text-xs font-normal text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors"
         >
           Add repository
         </button>
@@ -149,11 +154,12 @@ export function GithubStep({
             Webhook secret already configured.
           </p>
         )}
+        {/* font-bold: primary CTA (colored fill) — the emphasis case. */}
         <button
           type="button"
           onClick={handleCreateWebhook}
           disabled={repos.length === 0 || creating}
-          className="h-8 self-start rounded bg-[var(--brand-accent)] px-3 text-xs font-medium text-black transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="h-8 self-start rounded bg-[var(--brand-accent)] px-3 text-xs font-bold text-black transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {creating
             ? "Creating…"
@@ -172,7 +178,9 @@ export function GithubStep({
           <>
             {failedRepos.map((r) => (
               <p key={r.repo} className="text-xs text-[var(--red-11)]">
-                {r.repo}: {r.error}
+                {/* font-mono: repo identifier, same treatment as the repo
+                    pills above. */}
+                <span className="font-mono">{r.repo}</span>: {r.error}
               </p>
             ))}
             <ManualInstructions manual={result.manual} />

@@ -24,7 +24,7 @@ import { MonthlyRollupTable } from "./components/monthly-rollup-table";
  * (no client fetch, no new API route).
  *
  * Auth mirrors the sibling workspace pages exactly (e.g.
- * `dashboard/[workspaceId]/page.tsx`, `api-keys/page.tsx`): the workspace
+ * `dashboard/[workspaceId]/page.tsx`, `permissions/page.tsx`): the workspace
  * layout already guards session + membership, this re-checks defensively
  * rather than trusting that every future caller of this component goes
  * through that layout.
@@ -69,7 +69,8 @@ export default async function BudgetPage({
         <OverviewStrip overview={overview} />
 
         <section className="flex flex-col gap-2">
-          <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+          {/* Panel heading, not a th — bold per TASTE weight rule */}
+          <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
             This month&apos;s runs
           </h2>
           <TaskCostTable rows={tasks} />
@@ -81,7 +82,8 @@ export default async function BudgetPage({
         </section>
 
         <section className="flex flex-col gap-2">
-          <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+          {/* Panel heading, not a th — bold per TASTE weight rule */}
+          <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
             Monthly trend
           </h2>
           <MonthlyRollupTable rows={monthly} />

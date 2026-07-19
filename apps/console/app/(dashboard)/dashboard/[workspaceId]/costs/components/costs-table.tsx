@@ -100,7 +100,8 @@ function buildColumns(groupBy: GroupBy): ColumnDef<CostRow, unknown>[] {
       id: "total_cost_usd",
       header: "Total cost",
       cell: (info) => (
-        <span className="font-mono text-xs text-[var(--gray-12)] font-medium">
+        // data value; color carries emphasis, not weight
+        <span className="font-mono text-xs text-[var(--gray-12)] font-normal">
           {fmtCost(info.getValue() as number)}
         </span>
       ),
@@ -242,7 +243,8 @@ export function CostsTable({
             <button
               key={value}
               onClick={() => setGroupBy(value)}
-              className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
+              // active-state toggle → bold per TASTE weight rule
+              className={`h-8 px-2.5 rounded text-xs font-bold border transition-colors ${
                 groupBy === value
                   ? "bg-[var(--yellow-09)] text-black border-[var(--yellow-09)]"
                   : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"
@@ -261,7 +263,8 @@ export function CostsTable({
             <button
               key={value}
               onClick={() => onTimeRangeToggle(value)}
-              className={`h-8 px-2.5 rounded text-xs font-medium border transition-colors ${
+              // active-state toggle → bold per TASTE weight rule
+              className={`h-8 px-2.5 rounded text-xs font-bold border transition-colors ${
                 timeRange === value
                   ? "bg-[var(--yellow-09)] text-black border-[var(--yellow-09)]"
                   : "bg-[var(--gray-02)] text-[var(--gray-11)] border-[var(--gray-05)] hover:border-[var(--gray-08)]"

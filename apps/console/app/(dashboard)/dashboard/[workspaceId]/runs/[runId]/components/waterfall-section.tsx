@@ -42,9 +42,12 @@ function fmtUsd(n: number): string {
 }
 
 function BottleneckBadge({ label }: { label: string }) {
+  // text-xs (not the ad-hoc 10px): matches the canonical Status Badge scale
+  // (rounded-sm px-1.5 py-0.5 text-xs font-medium) this badge otherwise
+  // already follows.
   return (
     <span
-      className="inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-medium"
+      className="inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-medium"
       style={{
         background: "rgba(255,230,41,0.15)",
         color: "var(--yellow-09)",
@@ -86,14 +89,18 @@ function PhaseBar({ phase }: { phase: WaterfallPhase }) {
 
       {/* Bar track */}
       <div
-        className="h-2 w-full rounded-sm"
+        className="h-2 w-full overflow-hidden rounded-sm"
         style={{ background: "var(--gray-04)" }}
       >
+        {/* transform: scaleX, not width — animating width causes layout
+            thrash (MO-2: only transform/opacity/color/shadow may animate).
+            scaleX + transition-transform gives the same growing-bar effect
+            on a compositor-only property; the 0.3%-share floor above still
+            keeps very small bars visible. */}
         <div
-          className="h-full rounded-sm transition-all"
+          className="h-full w-full origin-left rounded-sm transition-transform duration-150 ease-out"
           style={{
-            width: `${pct}%`,
-            minWidth: "2px",
+            transform: `scaleX(${pct / 100})`,
             background:
               phase.isSlowest || phase.isMostExpensive
                 ? "var(--yellow-09)"
@@ -163,8 +170,11 @@ export function WaterfallSection({
     <div
       className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4 space-y-3"
     >
-      {/* Column headers */}
-      <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-[var(--gray-09)] font-medium">
+      {/* Column headers — functionally the Data Table header pattern
+          (text-xs uppercase gray-09 font-medium) even though this is a bar
+          chart rather than a <table>; text-xs also matches the data row
+          scale directly below instead of running smaller than it. */}
+      <div className="flex items-center justify-between text-xs uppercase tracking-wide text-[var(--gray-09)] font-medium">
         <span>Phase</span>
         <div className="flex items-center gap-3">
           <span>Duration</span>

@@ -29,7 +29,8 @@ export function MonthlyRollupTable({ rows }: { rows: WorkspaceMonthlyCostRow[] }
         <tbody>
           {rows.map((row, i) => (
             <tr key={row.monthKey} className="border-b border-[var(--gray-04)] last:border-0">
-              <td className="px-3 py-2 text-[var(--gray-12)]">
+              {/* month label derives from a machine period key → mono, per IA principle 7 */}
+              <td className="px-3 py-2 font-mono text-[var(--gray-12)]">
                 {formatMonthLabel(row.monthKey, i === rows.length - 1)}
               </td>
               <td className="px-3 py-2 text-right font-mono text-[var(--gray-11)]">

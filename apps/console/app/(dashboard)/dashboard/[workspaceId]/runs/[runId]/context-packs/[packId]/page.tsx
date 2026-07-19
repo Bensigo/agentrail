@@ -114,7 +114,7 @@ export default async function ContextPackDetailPage({
 
       {/* Pack metadata */}
       <div className="mb-6 rounded border border-[var(--purple-09)]/40 bg-[var(--gray-02)] p-4">
-        <h1 className="mb-3 flex flex-wrap items-center gap-2 text-sm font-semibold text-[var(--gray-12)]">
+        <h1 className="mb-3 flex flex-wrap items-center gap-2 text-sm font-bold text-[var(--gray-12)]">
           Context Pack
           <span className="font-mono text-[var(--gray-09)] font-normal text-xs">
             {packId}
@@ -122,7 +122,7 @@ export default async function ContextPackDetailPage({
           {/* Engine tag (issue #1037): read-grounded metrics are only
               measurable for engines with a transcript vehicle. */}
           <span
-            className="rounded-sm bg-[var(--gray-03)] px-1.5 py-0.5 font-mono text-[10px] font-normal uppercase tracking-wide text-[var(--gray-11)]"
+            className="rounded-sm bg-[var(--gray-03)] px-1.5 py-0.5 font-mono text-xs font-normal uppercase tracking-wide text-[var(--gray-11)]"
             title="Executor engine for this run"
           >
             {engine || "engine n/a"}
@@ -165,13 +165,13 @@ export default async function ContextPackDetailPage({
       <div className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Precision waste — pack files the executor never opened. */}
         <section>
-          <h2 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--gray-09)]">
+          <h2 className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
             <span
               className="inline-block h-2 w-2 rounded-full"
               style={{ backgroundColor: "var(--diag-waste)" }}
             />
             Precision waste
-            <span className="rounded-sm bg-[var(--diag-waste-bg)] px-1.5 py-0.5 text-[10px] text-[var(--diag-waste)] font-mono">
+            <span className="rounded-sm bg-[var(--diag-waste-bg)] px-1.5 py-0.5 text-xs text-[var(--diag-waste)] font-mono">
               {readGrounded ? waste.length : "n/a"}
             </span>
           </h2>
@@ -223,13 +223,13 @@ export default async function ContextPackDetailPage({
 
         {/* Recall miss — files the executor fetched itself, absent from the pack. */}
         <section>
-          <h2 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--gray-09)]">
+          <h2 className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
             <span
               className="inline-block h-2 w-2 rounded-full"
               style={{ backgroundColor: "var(--diag-miss)" }}
             />
             Recall miss
-            <span className="rounded-sm bg-[var(--diag-miss-bg)] px-1.5 py-0.5 text-[10px] text-[var(--diag-miss)] font-mono">
+            <span className="rounded-sm bg-[var(--diag-miss-bg)] px-1.5 py-0.5 text-xs text-[var(--diag-miss)] font-mono">
               {readGrounded ? miss.length : "n/a"}
             </span>
           </h2>
@@ -283,13 +283,13 @@ export default async function ContextPackDetailPage({
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Included items */}
         <section>
-          <h2 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--gray-09)]">
+          <h2 className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
             <span
               className="inline-block h-2 w-2 rounded-full"
               style={{ backgroundColor: "var(--green-11)" }}
             />
             Included
-            <span className="rounded-sm bg-[var(--diag-included-bg)] px-1.5 py-0.5 text-[10px] text-[var(--green-11)] font-mono">
+            <span className="rounded-sm bg-[var(--diag-included-bg)] px-1.5 py-0.5 text-xs text-[var(--green-11)] font-mono">
               {included.length}
             </span>
           </h2>
@@ -371,13 +371,13 @@ export default async function ContextPackDetailPage({
 
         {/* Excluded items */}
         <section>
-          <h2 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--gray-09)]">
+          <h2 className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
             <span
               className="inline-block h-2 w-2 rounded-full"
               style={{ backgroundColor: "var(--red-11)" }}
             />
             Excluded
-            <span className="rounded-sm bg-[var(--diag-excluded-bg)] px-1.5 py-0.5 text-[10px] text-[var(--red-11)] font-mono">
+            <span className="rounded-sm bg-[var(--diag-excluded-bg)] px-1.5 py-0.5 text-xs text-[var(--red-11)] font-mono">
               {excluded.length}
             </span>
           </h2>

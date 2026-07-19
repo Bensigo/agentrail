@@ -34,7 +34,10 @@ function DigestCard({
   return (
     <section className="flex flex-col gap-3 rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+        {/* font-normal, not the guide's Data Table header exception: a bare
+            card-title label — matches StatHeader's clean text-xs/uppercase/
+            gray-09 "label" idiom (no weight override), not a true heading. */}
+        <h2 className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
           {title}
         </h2>
         {action}
@@ -163,7 +166,10 @@ function GiveJaceATaskCard({ workspaceId }: { workspaceId: string }) {
       <div className="flex items-center gap-2.5">
         <MessageCircle className="h-4 w-4 shrink-0 text-[var(--gray-09)]" />
         <div className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium text-[var(--gray-12)]">
+          {/* font-bold: this titles the card (heading role), matching the
+              text-sm + gray-12 recipe used for real headings elsewhere
+              (PageHeader's h1, work/page.tsx's h1). */}
+          <span className="text-sm font-bold text-[var(--gray-12)]">
             Give Jace a task
           </span>
           <span className="text-xs text-[var(--gray-09)]">
@@ -173,11 +179,13 @@ function GiveJaceATaskCard({ workspaceId }: { workspaceId: string }) {
           </span>
         </div>
       </div>
+      {/* font-bold: primary CTA (colored fill), the emphasis case — matches
+          Approve/Create-workspace-style filled buttons across the scope. */}
       <a
         href={target.href}
         target={target.external ? "_blank" : undefined}
         rel={target.external ? "noreferrer" : undefined}
-        className="inline-flex h-8 shrink-0 items-center rounded bg-[var(--brand-accent)] px-3 text-xs font-medium text-black transition-colors hover:opacity-90"
+        className="inline-flex h-8 shrink-0 items-center rounded bg-[var(--brand-accent)] px-3 text-xs font-bold text-black transition-colors hover:opacity-90"
       >
         Message Jace
       </a>
@@ -225,7 +233,8 @@ export function DigestPanel({ workspaceId }: DigestPanelProps) {
       <GiveJaceATaskCard workspaceId={workspaceId} />
 
       <div className="flex items-center justify-between gap-4">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+        {/* font-normal: same card-title label idiom as DigestCard above. */}
+        <h2 className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
           This week from Jace
         </h2>
         <div className="flex items-center gap-2">

@@ -200,7 +200,7 @@ def test_alignment_park_reason_matches_the_ts_constant():
 
 
 def test_alignment_denied_park_reason_matches_the_ts_constant():
-    assert ALIGNMENT_DENIED_PARK_REASON == "alignment denied — ask Jace to revise the brief"
+    assert ALIGNMENT_DENIED_PARK_REASON == "alignment denied — open a new issue to try again"
 
 
 # -- admission overlay (apply_admission_alignment) -----------------------------

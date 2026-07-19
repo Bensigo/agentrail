@@ -157,10 +157,14 @@ def admit(entry: QueueEntry, open_blockers: FrozenSet[int]) -> QueueEntry:
 ALIGNMENT_PARK_REASON = "awaiting alignment"
 
 #: The exact denial reason. Also must stay byte-identical to the TS constant
-#: of the same name. A row carrying this reason is NEVER touched by either
-#: writer's release path — a denial is a stronger hold than a resolved
-#: dependency or blocker.
-ALIGNMENT_DENIED_PARK_REASON = "alignment denied — ask Jace to revise the brief"
+#: of the same name (#1274 PR③ deny-copy honesty pass — see that constant's
+#: own doc-comment in github_intake.ts for why this wording, not the
+#: original "ask Jace to revise the brief": no revise flow exists anywhere,
+#: and a denied row's deterministic id means only a genuinely NEW issue
+#: produces a fresh admission). A row carrying this reason is NEVER touched
+#: by either writer's release path — a denial is a stronger hold than a
+#: resolved dependency or blocker.
+ALIGNMENT_DENIED_PARK_REASON = "alignment denied — open a new issue to try again"
 
 
 def apply_admission_alignment(entry: QueueEntry, *, aligned: bool) -> QueueEntry:

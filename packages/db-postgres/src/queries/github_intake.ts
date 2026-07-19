@@ -731,7 +731,7 @@ export async function unparkDependents(
 /**
  * Canonical GitHub issue URL, matching GitHub's own `html_url` shape
  * (`https://github.com/<owner>/<repo>/issues/<number>`). SINGLE SOURCE OF
- * TRUTH: {@link hasConfirmedAlignmentBrief} below reads this exact shape back
+ * TRUTH: {@link findConfirmedAlignmentBriefApproval} below reads this exact shape back
  * out of `jace_approvals.published_issue_url`, and the console route composing
  * the brief imports this same function for the `issueUrl` it stores on the
  * approval's `toolInput` — so the two sides can never drift on formatting.
@@ -878,9 +878,22 @@ export const ALIGNMENT_PARK_REASON = "awaiting alignment";
  * comparison. Extracted as a constant during the #1274 finding-1 fix review
  * (it was previously an inline literal only `denyAlignmentBrief` wrote —
  * `unparkDependents` now also needs to RECOGNIZE it).
+ *
+ * #1274 PR③ deny-copy honesty pass: the original wording ("ask Jace to
+ * revise the brief") promised a mechanism that does not exist — there is no
+ * revise/re-brief flow (deliberately out of scope, tracked as a backlog
+ * issue), and `requeueParkedQueueEntry` explicitly REFUSES a denied row
+ * (returns `"alignment_locked"`, never requeues it) regardless of channel.
+ * A denied entry's deterministic row id also means neither re-labeling nor
+ * re-opening the SAME issue produces a new admission (`ON CONFLICT DO
+ * NOTHING`). The one thing that genuinely works today: a DIFFERENT issue
+ * (a new external id) gets a fresh row and a fresh brief — so the copy
+ * points at that, the one true "try again" this product supports right now.
+ * Single source of truth (update it here only — every consumer imports this
+ * constant already; see this PR's report for the full grep).
  */
 export const ALIGNMENT_DENIED_PARK_REASON =
-  "alignment denied — ask Jace to revise the brief";
+  "alignment denied — open a new issue to try again";
 
 /**
  * Atomically confirm a parked alignment hold and write the two #1333

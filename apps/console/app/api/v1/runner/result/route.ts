@@ -18,6 +18,7 @@ import {
   prUrlMatchesQueueEntryRepo,
   mergePullRequestSquash,
 } from "../../../../../lib/github-merge";
+import { reconcileAlignmentBriefs } from "../../../../../lib/alignment-reconciler";
 import { notifyRunOutcome } from "./notify";
 import { notifyOnboardOutcome, onboardRepoFullName } from "./onboard-notify";
 
@@ -113,6 +114,20 @@ export async function POST(request: NextRequest) {
       { error: "Queue entry not found in this workspace" },
       { status: 404 }
     );
+  }
+
+  // #1274 PR③: a runner result is genuine "next queue activity" — use it to
+  // sweep for OTHER stale, brief-less parked entries in this workspace
+  // (Python-admitted rows, a prior postAlignmentBrief failure, a
+  // v2-guardrail park unparkDependents relabeled once ITS unrelated
+  // dependency happened to clear via THIS result). Bounded, best-effort,
+  // NON-FATAL — a reconciler failure must never fail this route's 202,
+  // matching every other best-effort block below (notify/merge/failure
+  // evidence).
+  try {
+    await reconcileAlignmentBriefs(5);
+  } catch (err) {
+    console.error("[runner/result] alignment-reconciler sweep failed:", err);
   }
 
   // Merge enforcement (#1278 PR②): the CONSOLE-SIDE decision, at result time.

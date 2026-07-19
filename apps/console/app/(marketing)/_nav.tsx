@@ -12,13 +12,19 @@ import type { MessageJaceCta } from "./_cta";
  * "Sign in" link for the primary Message-Jace CTA — the action worth
  * surfacing once someone has actually committed to reading the story.
  *
- * Scroll state comes from one IntersectionObserver watching a 1px sentinel
- * at the top of `<main>`, not a `scroll` event listener — no wheel
- * interception anywhere in this narrative redo, matching
- * `_scroll-narrative.tsx`'s own convention. The condensed/plain swap is an
- * instant className change (no width/padding transition — animating those
- * is a layout-thrash pattern the house motion rules ban); only color and
- * shadow cross-fade.
+ * Scroll state comes from one IntersectionObserver watching a 32px
+ * sentinel at the top of `<main>`, not a `scroll` event listener — no
+ * wheel interception anywhere in this narrative redo, matching
+ * `_scroll-narrative.tsx`'s own convention. The sentinel's height IS the
+ * hysteresis band (review fix M-3): the pill condenses only once the
+ * whole sentinel has scrolled past (`bottom < 0`) and expands only once
+ * it is fully back (`top >= 0`); in between, the state holds, so
+ * trackpad jitter at the boundary can't flicker the nav. Both states pin
+ * the same h-12, so the swap never changes the header's flow height and
+ * the document doesn't nudge at the boundary; the swap itself is an
+ * instant className change (no width/padding transition — animating
+ * those is a layout-thrash pattern the house motion rules ban); only
+ * color and shadow cross-fade.
  */
 export function MarketingNav({
   cta,
@@ -33,22 +39,28 @@ export function MarketingNav({
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
-    const io = new IntersectionObserver(([entry]) => setCondensed(!entry.isIntersecting), {
-      threshold: 0,
-    });
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        const rect = entry.boundingClientRect;
+        if (rect.bottom < 0) setCondensed(true);
+        else if (rect.top >= 0) setCondensed(false);
+        // Partially visible: hold the current state (the hysteresis band).
+      },
+      { threshold: [0, 1] }
+    );
     io.observe(el);
     return () => io.disconnect();
   }, []);
 
   return (
     <>
-      <div ref={sentinelRef} aria-hidden className="pointer-events-none absolute top-0 h-px w-full" />
+      <div ref={sentinelRef} aria-hidden className="pointer-events-none absolute top-0 h-8 w-full" />
       <header className="sticky top-3 z-40 px-6">
         <div
           className={
             condensed
-              ? "mx-auto flex max-w-[380px] items-center justify-between gap-4 rounded-full border border-[var(--gray-06)] bg-[var(--gray-00)] py-2 pl-4 pr-2 shadow-[0_10px_15px_-3px_rgb(0_0_0_/_0.1),0_4px_6px_-4px_rgb(0_0_0_/_0.1)] transition-[background-color,border-color,box-shadow] duration-200"
-              : "mx-auto flex h-10 max-w-[1120px] items-center justify-between transition-[background-color,border-color,box-shadow] duration-200"
+              ? "mx-auto flex h-12 max-w-[380px] items-center justify-between gap-4 rounded-full border border-[var(--gray-06)] bg-[var(--gray-00)] pl-4 pr-2 shadow-[0_10px_15px_-3px_rgb(0_0_0_/_0.1),0_4px_6px_-4px_rgb(0_0_0_/_0.1)] transition-[background-color,border-color,box-shadow] duration-200"
+              : "mx-auto flex h-12 max-w-[1120px] items-center justify-between transition-[background-color,border-color,box-shadow] duration-200"
           }
         >
           <a href="#top" className="flex shrink-0 items-center gap-2.5">

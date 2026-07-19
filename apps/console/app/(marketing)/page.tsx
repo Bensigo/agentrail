@@ -246,9 +246,11 @@ export default async function LandingPage() {
           <Reveal>
             <h2 className="text-heading-2 text-center">Track record</h2>
           </Reveal>
+          {/* One honesty rebuttal only (review fix M-5): the failed card's
+              own label carries it; the kicker stays factual. */}
           <p className="ar-rise mx-auto mt-4 max-w-[56ch] text-center text-[var(--gray-11)]">
             Full autonomous runs on my own backlog, issue to reviewed PR,
-            unattended. I count what didn&apos;t land, too.
+            unattended.
           </p>
           <div className="mt-14 flex flex-wrap items-start justify-center gap-6 sm:gap-8">
             {/* Cards are inlined rather than extracted into a shared

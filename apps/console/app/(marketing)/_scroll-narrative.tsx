@@ -39,7 +39,12 @@ function usePlaysScrollNarrative(): boolean {
 /** Fires once, the first time the returned ref's element scrolls into
  *  view — the same "reveal once" contract `<Reveal>` uses in `_motion.tsx`,
  *  applied to a zero-height scroll trigger instead of visible content.
- *  Never un-fires on scroll-up, so stages only ever move forward. */
+ *  Also latches when the sentinel is already ABOVE the viewport
+ *  (`boundingClientRect.top < 0`): scroll restoration or an anchor jump
+ *  can land the visitor mid-page past a sentinel that never intersected,
+ *  and the observer's initial callback must count that as reached rather
+ *  than wait for a scroll back up (review fix M-2). Never un-fires on
+ *  scroll-up, so stages only ever move forward. */
 function useScrollTrigger() {
   const ref = useRef<HTMLDivElement>(null);
   const [reached, setReached] = useState(false);
@@ -48,7 +53,7 @@ function useScrollTrigger() {
     if (!el) return;
     const io = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting) {
+        if (entry.isIntersecting || entry.boundingClientRect.top < 0) {
           setReached(true);
           io.disconnect();
         }
@@ -77,10 +82,13 @@ function useScrollTrigger() {
  * finished setup ("scroll past = complete"), and scrolling back up never
  * un-plays a beat.
  *
- * Below `md` or under `prefers-reduced-motion`, this renders the exact
- * unpinned `<ConversationDemo />` — today's shipped markup, full message,
- * brief, and Approve button all visible immediately, no scroll or motion
- * required.
+ * Below `md` or under `prefers-reduced-motion`, this renders the unpinned
+ * `<ConversationDemo />` — content-equivalent to the pre-redo render (same
+ * copy, same live-computed values, same Approve interaction), not
+ * byte-identical: the page-level `<Reveal>` fade wrapper is gone, and the
+ * choreographed entrance classes apply only when the scroll scene drives
+ * them. Full message, brief, and Approve button are all visible
+ * immediately, no scroll or motion required.
  */
 export function PinnedConversationScene() {
   const playsNarrative = usePlaysScrollNarrative();
@@ -106,8 +114,14 @@ export function PinnedConversationScene() {
 
   if (!playsNarrative) {
     return (
-      <div className={cardClassName}>
-        <ConversationDemo />
+      // The px-6 gutter matches the pinned branch's sticky container and
+      // the pre-redo section (review fix I-1) — without it the bordered
+      // card sat flush against the viewport edges for every mobile and
+      // reduced-motion visitor.
+      <div className="px-6">
+        <div className={cardClassName}>
+          <ConversationDemo />
+        </div>
       </div>
     );
   }

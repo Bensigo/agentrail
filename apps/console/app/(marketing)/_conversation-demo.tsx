@@ -32,14 +32,15 @@ import {
  *
  * Two optional choreography props (owner-directed narrative-flow redo, wave
  * 4): `typedChars` and `briefRevealed`, driven by `_scroll-narrative.tsx`'s
- * pinned scroll scene. Both default to "show everything immediately" — the
- * exact behavior this component always had — so `<ConversationDemo />` with
- * no props (the reduced-motion and mobile-static fallback) renders
- * byte-for-byte what shipped before this change. The Approve tap itself is
- * deliberately NOT choreographed or auto-fired by scroll: the page's own
- * claim is "nothing ships without you," so the one place a visitor could
- * mistake a scripted animation for their own action is exactly the one beat
- * that stays a real, required click.
+ * pinned scroll scene. Both default to "show everything immediately", so
+ * `<ConversationDemo />` with no props (the reduced-motion and
+ * mobile-static fallback) renders content-equivalent to what shipped
+ * before this change — same copy, values, and interaction; the entrance
+ * classes below apply only when the scroll scene drives them. The Approve
+ * tap itself is deliberately NOT choreographed or auto-fired by scroll:
+ * the page's own claim is "nothing ships without you," so the one place a
+ * visitor could mistake a scripted animation for their own action is
+ * exactly the one beat that stays a real, required click.
  */
 export function ConversationDemo({
   typedChars,
@@ -55,7 +56,8 @@ export function ConversationDemo({
 } = {}) {
   const [approved, setApproved] = useState(false);
   const brief = getDemoBrief();
-  const isTyping = typedChars !== undefined && typedChars < DEMO_USER_MESSAGE.length;
+  const choreographed = typedChars !== undefined;
+  const isTyping = choreographed && typedChars < DEMO_USER_MESSAGE.length;
   const shownMessage = DEMO_USER_MESSAGE.slice(0, typedChars ?? DEMO_USER_MESSAGE.length);
 
   return (
@@ -74,43 +76,59 @@ export function ConversationDemo({
         </p>
       </div>
 
-      {/* Jace's alignment brief — gated by `briefRevealed` so it rises in
-          after the message finishes typing, not alongside it. The mascot
-          avatar is decorative here (alt="") because the visible "Jace"
-          sender label already names him; screen readers shouldn't hear
+      {/* Jace's alignment brief — always in the DOM from first paint
+          (review fix I-2: heading navigation, End-key jumps, and
+          find-in-page must reach the page's centerpiece before the scroll
+          sentinel fires, so a conditional mount is not allowed here).
+          Visibility is gated exactly the way `_motion.tsx`'s <Reveal>
+          gates its children: mounted at opacity-0 + a small translate,
+          latched to shown — opacity/transform only, never a layout
+          property, and no aria-hidden (Reveal-wrapped content elsewhere
+          on this page is likewise exposed while visually pending). The
+          .ar-rise-fast entrance runs when the scroll scene latches
+          `briefRevealed`; outside the choreographed scene the block
+          renders plainly, matching the pre-redo markup. The mascot avatar
+          is decorative here (alt="") because the visible "Jace" sender
+          label already names him; screen readers shouldn't hear
           "Jace Jace". */}
-      {briefRevealed ? (
-        <div className="ar-rise-fast flex flex-col items-start gap-1.5">
-          <span className="text-label flex items-center gap-1.5 px-1 text-[var(--gray-09)]">
-            <Image src="/jace.png" alt="" width={20} height={20} className="rounded-full" />
-            Jace
-          </span>
-          <div className="w-full max-w-[92%] rounded-2xl rounded-tl-sm border border-[var(--gray-05)] bg-[var(--gray-00)] px-4 py-3.5 sm:max-w-[80%]">
-            <p className="font-bold text-[var(--gray-12)]">{DEMO_TASK_INPUT.title}</p>
-            <p className="text-mono-data mt-2 font-mono text-[var(--gray-11)]">
-              Task type: {brief.taskType} → suggested model: {brief.suggestedModel.displayName}
-            </p>
-            <p className="text-mono-data mt-1.5 font-mono text-[var(--gray-11)]">
-              Approving sets this run&apos;s budget: ~${brief.estimateUsd.toFixed(2)}
-            </p>
+      <div
+        className={
+          briefRevealed
+            ? choreographed
+              ? "ar-rise-fast flex flex-col items-start gap-1.5"
+              : "flex flex-col items-start gap-1.5"
+            : "flex translate-y-2.5 flex-col items-start gap-1.5 opacity-0"
+        }
+      >
+        <span className="text-label flex items-center gap-1.5 px-1 text-[var(--gray-09)]">
+          <Image src="/jace.png" alt="" width={20} height={20} className="rounded-full" />
+          Jace
+        </span>
+        <div className="w-full max-w-[92%] rounded-2xl rounded-tl-sm border border-[var(--gray-05)] bg-[var(--gray-00)] px-4 py-3.5 sm:max-w-[80%]">
+          <p className="font-bold text-[var(--gray-12)]">{DEMO_TASK_INPUT.title}</p>
+          <p className="text-mono-data mt-2 font-mono text-[var(--gray-11)]">
+            Task type: {brief.taskType} → suggested model: {brief.suggestedModel.displayName}
+          </p>
+          <p className="text-mono-data mt-1.5 font-mono text-[var(--gray-11)]">
+            Approving sets this run&apos;s budget: ~${brief.estimateUsd.toFixed(2)}
+          </p>
 
-            {!approved ? (
-              <button
-                type="button"
-                onClick={() => setApproved(true)}
-                className="text-label mt-3.5 inline-flex items-center gap-1.5 rounded-md bg-[var(--accent-fill)] px-3.5 py-1.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-150 ease-out hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
-              >
-                ✅ Approve
-              </button>
-            ) : (
-              <p className="text-label mt-3.5 flex items-center gap-1.5 text-[var(--green-11)]">
-                <CheckCircle2 size={13} aria-hidden />
-                Approved by you
-              </p>
-            )}
-          </div>
+          {!approved ? (
+            <button
+              type="button"
+              onClick={() => setApproved(true)}
+              className="text-label mt-3.5 inline-flex items-center gap-1.5 rounded-md bg-[var(--accent-fill)] px-3.5 py-1.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-150 ease-out hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
+            >
+              ✅ Approve
+            </button>
+          ) : (
+            <p className="text-label mt-3.5 flex items-center gap-1.5 text-[var(--green-11)]">
+              <CheckCircle2 size={13} aria-hidden />
+              Approved by you
+            </p>
+          )}
         </div>
-      ) : null}
+      </div>
 
       {/* Run-outcome ping — the real wire format, once approved. The
           aria-live wrapper stays mounted from first render (not inside the

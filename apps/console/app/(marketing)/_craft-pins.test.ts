@@ -13,10 +13,23 @@ import { describe, expect, it } from "vitest";
 // `_conversation-demo.tokens-only.test.ts` (no DOM/render harness in this
 // repo) — read the file as text, regex against it.
 
-// _nav.tsx joined the set with the wave-4 narrative-flow redo (owner-directed
-// — the floating pill nav now carries its own lemon-fill CTA button, so it's
-// held to the same weight/size/accent rules as the other two).
-const STYLED_FILES = ["page.tsx", "_conversation-demo.tsx", "_nav.tsx"] as const;
+// _nav.tsx and _scroll-narrative.tsx joined the set with the wave-4
+// narrative-flow redo (review fix M-4): every styled marketing file is held
+// to the BAN rules (weights, ad-hoc sizes, lemon-as-text, text-white on a
+// fill, semantic yellow) …
+const STYLED_FILES = [
+  "page.tsx",
+  "_conversation-demo.tsx",
+  "_nav.tsx",
+  "_scroll-narrative.tsx",
+] as const;
+
+// … while the EXISTENCE assertions (must actually carry the lemon fill +
+// dark fill-text pairing) apply only to the files that render a filled
+// element. _scroll-narrative.tsx is deliberately absent here: it styles
+// card chrome and scroll plumbing only, and demanding a lemon fill of it
+// would force decoration into a file that has no CTA.
+const LEMON_FILL_FILES = ["page.tsx", "_conversation-demo.tsx", "_nav.tsx"] as const;
 
 function readSibling(filename: string): string {
   return readFileSync(new URL(filename, import.meta.url), "utf8");
@@ -59,21 +72,26 @@ describe("(marketing) craft pins — type scale (no ad-hoc sizes)", () => {
 });
 
 describe("(marketing) craft pins — accent system (lemon family, #1357/#1359)", () => {
-  it("lemon fill pairs with the dark fill-text token on every filled element — never text-white", () => {
-    for (const file of STYLED_FILES) {
-      const source = readSibling(file);
-      expect(source).toMatch(/bg-\[var\(--accent-fill\)\]/);
-      expect(source).toMatch(/text-\[var\(--accent-fill-text\)\]/);
-      expect(source).not.toMatch(/bg-\[var\(--accent-(?:fill|text)\)\][^"]*text-white/);
-      expect(source).not.toMatch(/bg-\[var\(--brand-accent\)\][^"]*text-white/);
-    }
+  // Review fix M-4: the old single pin required EVERY styled file to
+  // contain a lemon fill, which breaks the moment a legitimately
+  // fill-free file (scroll plumbing) joins the set. Split: bans sweep all
+  // styled files; existence asserts only on the files that must carry it.
+  it.each(STYLED_FILES)("%s never pairs a lemon fill with text-white", (file) => {
+    const source = readSibling(file);
+    expect(source).not.toMatch(/bg-\[var\(--accent-(?:fill|text)\)\][^"]*text-white/);
+    expect(source).not.toMatch(/bg-\[var\(--brand-accent\)\][^"]*text-white/);
+  });
+
+  it.each(LEMON_FILL_FILES)("%s carries the lemon fill paired with the dark fill-text token", (file) => {
+    const source = readSibling(file);
+    expect(source).toMatch(/bg-\[var\(--accent-fill\)\]/);
+    expect(source).toMatch(/text-\[var\(--accent-fill-text\)\]/);
   });
 
   it("filled buttons hover via the hover token, not an opacity fade", () => {
-    const page = readSibling("page.tsx");
-    const demo = readSibling("_conversation-demo.tsx");
-    expect(page).toMatch(/hover:bg-\[var\(--accent-fill-hover\)\]/);
-    expect(demo).toMatch(/hover:bg-\[var\(--accent-fill-hover\)\]/);
+    for (const file of LEMON_FILL_FILES) {
+      expect(readSibling(file)).toMatch(/hover:bg-\[var\(--accent-fill-hover\)\]/);
+    }
   });
 
   it("the text accent (--accent-text) carries markers and link hovers", () => {

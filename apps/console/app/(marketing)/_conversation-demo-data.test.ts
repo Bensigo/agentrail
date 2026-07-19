@@ -36,14 +36,18 @@ describe("getDemoOutcomeMessage", () => {
         outcome: "green",
         prUrl: DEMO_PR_URL,
         costUsd: brief.estimateUsd,
-        merged: true,
+        merged: false,
       })
     );
   });
 
-  it("matches the real template shape: AgentRail: Merged — issue #N (pr-url · $X.XX)", () => {
+  // "PR ready", NOT "Merged": the demo shows the DEFAULT posture (merge
+  // permission off — `workspaces.merge_permission` defaults false), so the
+  // stranger's one Approve never implies merge-on-approve. See the data
+  // file's own comment (review fix round, 2026-07-19).
+  it("matches the real template shape: AgentRail: PR ready — issue #N (pr-url · $X.XX)", () => {
     expect(getDemoOutcomeMessage()).toMatch(
-      /^AgentRail: Merged — issue #482 \(https:\/\/github\.com\/acme\/webhooks\/pull\/128 · \$\d+\.\d{2}\)$/
+      /^AgentRail: PR ready — issue #482 \(https:\/\/github\.com\/acme\/webhooks\/pull\/128 · \$\d+\.\d{2}\)$/
     );
   });
 });

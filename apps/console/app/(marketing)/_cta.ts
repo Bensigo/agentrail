@@ -28,8 +28,11 @@ export interface MessageJaceCta {
 }
 
 /**
- * Resolve the landing page's primary CTA from the build-time-inlined
- * `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` env value. Deterministic, no I/O.
+ * Resolve the landing page's primary CTA from
+ * `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME`. The landing page is a dynamic server
+ * component, so its call site reads the server's env at REQUEST time — the
+ * `NEXT_PUBLIC_` build-time inlining applies only to client bundles (e.g.
+ * the setup wizard's `channel-step.tsx`), not here. Deterministic, no I/O.
  */
 export function resolveMessageJaceCta(envBotUsername: string | undefined): MessageJaceCta {
   const botUsername = resolveHostedBotUsername(envBotUsername);

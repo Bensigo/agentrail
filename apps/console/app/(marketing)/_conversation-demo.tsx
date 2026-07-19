@@ -73,14 +73,19 @@ export function ConversationDemo() {
         </div>
       </div>
 
-      {/* Run-outcome ping — the real wire format, once approved */}
-      {approved ? (
-        <div className="ar-rise-fast flex justify-start">
-          <p className="max-w-[92%] rounded-2xl rounded-tl-sm border border-[var(--green-11)] bg-[var(--gray-00)] px-4 py-2.5 font-mono text-[12px] leading-relaxed text-[var(--gray-12)] sm:max-w-[80%]">
-            {getDemoOutcomeMessage()}
-          </p>
-        </div>
-      ) : null}
+      {/* Run-outcome ping — the real wire format, once approved. The
+          aria-live wrapper stays mounted from first render (not inside the
+          conditional) so screen readers reliably announce the ping when it
+          appears after the Approve click. */}
+      <div aria-live="polite">
+        {approved ? (
+          <div className="ar-rise-fast flex justify-start">
+            <p className="max-w-[92%] rounded-2xl rounded-tl-sm border border-[var(--green-11)] bg-[var(--gray-00)] px-4 py-2.5 font-mono text-[12px] leading-relaxed text-[var(--gray-12)] sm:max-w-[80%]">
+              {getDemoOutcomeMessage()}
+            </p>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -52,10 +52,19 @@ export const DEMO_PR_URL = "https://github.com/acme/webhooks/pull/128";
 
 /**
  * The real run-outcome ping text, via the actual wire-format builder.
- * `merged: true` demonstrates the merge-permission opt-in (#1278 PR②, now
- * live — `apps/console/app/api/v1/runner/result/route.ts`): the console
- * squash-merged this PR itself once the gate went green. Cost reuses the
- * SAME estimate the brief quoted — this run landed within its own budget.
+ * `merged: false` deliberately shows the DEFAULT posture: merge permission
+ * is off unless the owner opts in (`workspaces.merge_permission` defaults
+ * `false`), so the ping reads "PR ready" and the human merges — matching
+ * the page's own "nothing merges without you". A `merged: true` variant
+ * exists (#1278 PR②, the opt-in the how-we-work-together section
+ * describes), but the demo must never imply merge-on-approve is the
+ * default (review fix round, 2026-07-19). Cost reuses the SAME estimate
+ * the brief quoted — this run landed within its own budget.
+ *
+ * CONTROLLER RULING (2026-07-19): the "AgentRail:" wire prefix this line
+ * renders is ACCEPTED on the otherwise Jace-branded page — the
+ * byte-identical-to-real-product rule wins over the branding rule for this
+ * one line. Do not "fix" it.
  */
 export function getDemoOutcomeMessage(): string {
   const brief = getDemoBrief();
@@ -64,6 +73,6 @@ export function getDemoOutcomeMessage(): string {
     outcome: "green",
     prUrl: DEMO_PR_URL,
     costUsd: brief.estimateUsd,
-    merged: true,
+    merged: false,
   });
 }

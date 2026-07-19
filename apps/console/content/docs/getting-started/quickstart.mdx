@@ -1,75 +1,56 @@
 ---
 title: Quickstart
-description: From sign-up to a reviewed PR in six steps.
+description: From sign-up to a reviewed PR — message Jace and approve the brief.
 ---
 
-This walks through the primary flow: sign up on the dashboard, connect GitHub,
-install the CLI, log in, start the runner, and label an issue to watch it run.
+This walks through the fastest path from nothing to a reviewed pull request:
+sign up, connect GitHub, and message Jace. No CLI, no runner to install —
+the work runs in the cloud. (Want to run the worker on your own machine
+instead? See [Self-hosting](/docs/getting-started/self-hosting).)
 
-## 1. Sign up on the dashboard
+## 1. Sign up
 
-Go to [heyjace.com](https://heyjace.com) and create an
-account (or sign in if you already have one).
+Go to [heyjace.com](https://heyjace.com) and sign in with GitHub. The first
+time in, you'll create a workspace — just a name and a slug.
 
 ## 2. Connect GitHub
 
-On the **Connectors** page, authorise GitHub and select the repos you want
-AgentRail to watch. Set the trigger label to `ready-for-agent` and choose a
-poll interval. AgentRail will enqueue any issue you label `ready-for-agent`.
+On the setup steps, connect GitHub: add the repo(s) you want Jace to work in.
+The workspace creates the GitHub webhook automatically — or gives you a
+payload URL and secret to add by hand if that fails — so issues can flow into
+your queue.
 
-## 3. Install the CLI
+## 3. Message Jace on Telegram
 
-```bash
-npm install -g @useagentrail/cli
-```
+Connect a channel: Telegram is the one open door today. Message the bot at
+the link shown once — that conversation becomes your connection to Jace, no
+token to paste.
 
-This installs the `agentrail` command globally. Verify your install:
+If you're on a self-hosted deploy with no shared bot configured, you'll see a
+form to bring your own bot instead — see
+[Self-hosting](/docs/getting-started/self-hosting).
 
-```bash
-agentrail doctor
-```
+## 4. Describe the work
 
-## 4. Log in
+Send Jace a message describing what you want done — a bug, a small feature,
+anything scoped enough to hand to an engineer. You can also just hand over a
+GitHub issue you've already written.
 
-```bash
-agentrail login
-```
+## 5. Approve the brief
 
-`login` runs an OAuth device flow that links this machine to your workspace and
-saves credentials to `~/.agentrail/credentials.json`. Login is required — the
-only exempt commands are `login`, `logout`, `whoami`, and `--help`.
+Before touching any code, Jace replies with a brief: the task type, the model
+it picked, and a dollar estimate. Approving is the one confirmation this flow
+needs — it's what sets the run's budget.
 
-Check who you're signed in as at any time:
+## 6. Get your PR
 
-```bash
-agentrail whoami
-```
-
-## 5. Start the runner
-
-```bash
-agentrail runner
-```
-
-The runner is the local worker that polls your workspace for queued issues,
-executes them on your machine with your own LLM keys, opens PRs, and reports
-outcomes back to the dashboard. Keep it running in a terminal (or as a
-background service) while you work.
-
-```bash
-agentrail runner --concurrency 2   # run up to 2 issues in parallel
-```
-
-## 6. Label an issue — get a reviewed PR
-
-On any connected GitHub repo, add the `ready-for-agent` label to an open issue.
-The dashboard enqueues it, the runner picks it up, runs a bounded
-plan → execute → verify loop, and opens a PR. Review the PR and merge.
+Jace opens a pull request against your repo and messages you when it's ready.
+You review and merge it — or turn on merge permission under **Settings →
+Permissions** and Jace will merge it itself once its review gate is green.
 
 ## Next steps
 
-- Understand what's happening under the hood in
-  [Core Concepts](/docs/concepts/context-engine).
-- See the full command surface in the [CLI Reference](/docs/cli/overview).
-- Explore the [Dashboard & hosted runner](/docs/dashboard) for queue management,
-  cost tracking, and team settings.
+- See what "green" actually means in [Review & Gates](/docs/concepts/review-and-gates).
+- [Dashboard](/docs/dashboard) — track runs and costs, and invite your team.
+- Want to run the worker on your own machine instead? See
+  [Self-hosting](/docs/getting-started/self-hosting).

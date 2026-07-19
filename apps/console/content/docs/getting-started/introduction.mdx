@@ -21,19 +21,25 @@ the agent can't justify.
 
 ## How it works
 
-The primary flow is the **hosted dashboard + self-hosted runner**:
+The default path is message-first:
 
-1. Sign up on the [console](https://heyjace.com) and connect your
-   GitHub repos on the Connectors page — pick the trigger label
-   (`ready-for-agent`) and poll interval.
-2. Install the CLI: `npm install -g @useagentrail/cli`
-3. `agentrail login` — links this machine to your workspace (OAuth device flow,
-   saves `~/.agentrail/credentials.json`). **Login is required** to use the CLI.
-   The only exempt commands are `login`, `logout`, `whoami`, and `--help`.
-4. `agentrail runner` — the local worker claims queued issues over HTTP, runs
-   them on your machine with your own LLM keys, opens PRs, and reports back.
-5. Label a GitHub issue `ready-for-agent` → the runner picks it up → a reviewed
-   PR comes back.
+1. Sign up on the [console](https://heyjace.com) and connect your GitHub repos.
+2. Message Jace — on Telegram, or hand it a GitHub issue — describing the
+   work you want done.
+3. Jace replies with a brief (task type, model, dollar estimate) before
+   touching any code. Approving it sets the run's budget.
+4. Hosted execution runs the work in the cloud and opens a pull request. You
+   review and merge it — or grant merge permission and Jace merges once its
+   gate is green.
 
-See [Quickstart](/docs/getting-started/quickstart) for a step-by-step walkthrough
-and [Dashboard & hosted runner](/docs/dashboard) for a deeper look at the console.
+Prefer to run the worker yourself? Self-hosting is fully supported: install
+the CLI, `agentrail login`, then `agentrail runner` on your own machine with
+your own LLM keys — labeling a GitHub issue `ready-for-agent` queues it for
+your runner the same way it queues for hosted execution. **Login is required**
+to use the CLI; the only exempt commands are `login`, `logout`, `whoami`, and
+`--help`.
+
+See [Quickstart](/docs/getting-started/quickstart) for a step-by-step
+walkthrough, [Self-hosting](/docs/getting-started/self-hosting) for running
+the worker yourself, and [Dashboard & hosted runner](/docs/dashboard) for a
+deeper look at the console.

@@ -35,8 +35,8 @@ export default async function PermissionsPage({
   ]);
 
   // Strictly owner-only for the mutation — deliberately narrower than the
-  // repo's ADMIN_ROLES precedent (owner OR admin, e.g. repos/api-keys
-  // pages): granting merge is the trust ceiling, the one setting that lets
+  // repo's ADMIN_ROLES precedent (owner OR admin, e.g. the repos page):
+  // granting merge is the trust ceiling, the one setting that lets
   // AgentRail push code to `main` unattended, so only the workspace owner
   // grants it. Admin/member/viewer see the current state read-only.
   const canManage = membership.role === "owner";

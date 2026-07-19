@@ -110,7 +110,11 @@ export function PendingApprovalsList({
                 <td className="px-3 py-2">
                   <div className="flex flex-col gap-1">
                     <div className="flex items-center gap-2">
-                      <span className="inline-flex shrink-0 items-center rounded-sm border border-[var(--gray-06)] bg-[var(--gray-03)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--gray-10)]">
+                      {/* text-xs: no genuine space constraint for these short
+                          tool labels (badge is shrink-0, sibling truncates).
+                          font-medium stays — Status Badge shape (rounded-sm +
+                          px-1.5 py-0.5), guide-sanctioned. */}
+                      <span className="inline-flex shrink-0 items-center rounded-sm border border-[var(--gray-06)] bg-[var(--gray-03)] px-1.5 py-0.5 text-xs font-medium uppercase tracking-wide text-[var(--gray-10)]">
                         {toolLabel(row.toolName)}
                       </span>
                       <span className="truncate text-[var(--gray-12)]">{summary.headline}</span>
@@ -120,7 +124,12 @@ export function PendingApprovalsList({
                         {summary.fields.map((field, i) => (
                           <div key={`${field.label}-${i}`} className="flex gap-1 text-[var(--gray-09)]">
                             {field.label && <dt className="shrink-0">{field.label}:</dt>}
-                            <dd className="truncate">{field.value}</dd>
+                            {/* font-mono: these values are frequently raw
+                                tool-input data ($ estimates, unknown-tool
+                                fallback key/value pairs) even where a known
+                                tool renders prose ("Private"/"Public") — one
+                                consistent treatment for the whole field. */}
+                            <dd className="truncate font-mono">{field.value}</dd>
                           </div>
                         ))}
                       </dl>
@@ -129,7 +138,8 @@ export function PendingApprovalsList({
                   </div>
                 </td>
                 <td className="px-3 py-2 text-[var(--gray-10)]">{channelLabel(row.channel)}</td>
-                <td className="px-3 py-2 text-right text-[var(--gray-09)]" title={age.title}>
+                {/* font-mono: relative-time value. */}
+                <td className="px-3 py-2 text-right font-mono text-[var(--gray-09)]" title={age.title}>
                   {age.label}
                 </td>
                 {canManage && (
@@ -143,11 +153,13 @@ export function PendingApprovalsList({
                       >
                         Deny
                       </button>
+                      {/* font-bold: primary action (colored fill), matches
+                          Deny's plain weight staying as the secondary case. */}
                       <button
                         type="button"
                         onClick={() => decide(row.id, "approved")}
                         disabled={busy}
-                        className="h-7 px-2.5 rounded bg-[var(--green-09)] text-white text-xs font-medium hover:bg-[var(--green-11)] disabled:opacity-50 transition-colors"
+                        className="h-7 px-2.5 rounded bg-[var(--green-09)] text-white text-xs font-bold hover:bg-[var(--green-11)] disabled:opacity-50 transition-colors"
                       >
                         {busy ? "Working…" : "Approve"}
                       </button>

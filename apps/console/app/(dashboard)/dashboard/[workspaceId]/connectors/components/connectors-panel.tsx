@@ -480,8 +480,8 @@ function GithubManage({ connector }: { connector: ConnectorView }) {
   }
   return (
     <p className="text-xs leading-relaxed text-[var(--gray-09)]">
-      Not connected. Sign in with GitHub and link a repository (API Keys → Connect
-      CLI) to ingest its labeled issues into the Issue Queue.
+      Not connected. Sign in with GitHub, then add a repository from Repos
+      &amp; Health to ingest its labeled issues into the Issue Queue.
     </p>
   );
 }

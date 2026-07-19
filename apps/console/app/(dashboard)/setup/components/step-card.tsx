@@ -52,7 +52,9 @@ export function StepCard({
         <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--gray-05)] bg-[var(--gray-02)] font-mono text-xs text-[var(--gray-10)]">
           {index}
         </span>
-        <span className="flex-1 text-sm font-medium text-[var(--gray-12)]">
+        {/* font-bold: this titles the step (heading role), matching the
+            text-sm + gray-12 recipe used for real headings elsewhere. */}
+        <span className="flex-1 text-sm font-bold text-[var(--gray-12)]">
           {title}
         </span>
         <StatusBadge status={status} />

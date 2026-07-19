@@ -112,10 +112,10 @@ export function CostSection({ workspaceId, runId, runStatus }: CostSectionProps)
   const tokensSavedCard = (
     <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 py-2">
       <p className="text-xs text-[var(--gray-09)] mb-0.5">Tokens saved</p>
-      <p className="text-sm font-mono font-semibold text-[var(--gray-12)]">
+      <p className="text-sm font-mono font-bold text-[var(--gray-12)]">
         {fmt(tokensSaved)}
       </p>
-      <p className="text-[11px] text-[var(--gray-09)]">
+      <p className="text-xs text-[var(--gray-09)]">
         context retrieval + cache reads
       </p>
     </div>
@@ -142,19 +142,19 @@ export function CostSection({ workspaceId, runId, runStatus }: CostSectionProps)
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 py-2">
           <p className="text-xs text-[var(--gray-09)] mb-0.5">Total cost</p>
-          <p className="text-sm font-mono font-semibold text-[var(--gray-12)]">
+          <p className="text-sm font-mono font-bold text-[var(--gray-12)]">
             {totals ? fmtUsd(totals.total_cost_usd) : "—"}
           </p>
         </div>
         <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 py-2">
           <p className="text-xs text-[var(--gray-09)] mb-0.5">Input tokens</p>
-          <p className="text-sm font-mono font-semibold text-[var(--gray-12)]">
+          <p className="text-sm font-mono font-bold text-[var(--gray-12)]">
             {totals ? fmt(totals.input_tokens) : "—"}
           </p>
         </div>
         <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 py-2">
           <p className="text-xs text-[var(--gray-09)] mb-0.5">Output tokens</p>
-          <p className="text-sm font-mono font-semibold text-[var(--gray-12)]">
+          <p className="text-sm font-mono font-bold text-[var(--gray-12)]">
             {totals ? fmt(totals.output_tokens) : "—"}
           </p>
         </div>
@@ -162,7 +162,7 @@ export function CostSection({ workspaceId, runId, runStatus }: CostSectionProps)
           <p className="text-xs text-[var(--gray-09)] mb-0.5">
             Tokens served from cache
           </p>
-          <p className="text-sm font-mono font-semibold text-[var(--gray-12)]">
+          <p className="text-sm font-mono font-bold text-[var(--gray-12)]">
             {totals ? fmt(totals.cache_tokens) : "—"}
           </p>
         </div>

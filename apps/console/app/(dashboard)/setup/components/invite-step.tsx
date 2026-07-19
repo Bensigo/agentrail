@@ -151,10 +151,11 @@ export function InviteStep({
       {generalError && <p className="text-xs text-[var(--red-11)]">{generalError}</p>}
       {sent && <p className="text-xs text-[var(--green-11)]">Invites sent.</p>}
 
+      {/* font-bold: primary CTA (colored fill) — the emphasis case. */}
       <button
         type="submit"
         disabled={sending || (chips.length === 0 && !chipInput.trim())}
-        className="h-8 self-start rounded bg-[var(--brand-accent)] px-3 text-xs font-medium text-black transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+        className="h-8 self-start rounded bg-[var(--brand-accent)] px-3 text-xs font-bold text-black transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {sending ? "Sending…" : "Send invites"}
       </button>

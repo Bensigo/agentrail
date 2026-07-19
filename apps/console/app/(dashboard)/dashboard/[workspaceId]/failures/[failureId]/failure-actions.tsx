@@ -130,7 +130,8 @@ export function FailureActions({
         <button
           onClick={toggleStatus}
           disabled={statusBusy}
-          className={`inline-flex items-center gap-1.5 h-8 px-3 rounded text-xs font-medium border transition-colors disabled:opacity-50 ${
+          // active-state toggle (open/fixed) → bold per TASTE weight rule
+          className={`inline-flex items-center gap-1.5 h-8 px-3 rounded text-xs font-bold border transition-colors disabled:opacity-50 ${
             isFixed
               ? "bg-[var(--gray-03)] border-[var(--gray-06)] text-[var(--gray-11)] hover:border-[var(--gray-08)]"
               : "bg-[var(--fixed-09)]/15 border-[var(--fixed-09)]/40 text-[var(--fixed-11)] hover:bg-[var(--fixed-09)]/25"
@@ -156,7 +157,8 @@ export function FailureActions({
           <button
             onClick={addToMemory}
             disabled={memoryState.kind === "busy" || memoryState.kind === "ok"}
-            className="inline-flex items-center gap-1.5 h-8 px-3 rounded text-xs font-medium bg-[var(--gray-03)] border border-[var(--gray-06)] text-[var(--gray-12)] hover:border-[var(--gray-08)] disabled:opacity-60 transition-colors"
+            // regular action, not a toggle → normal weight
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded text-xs font-normal bg-[var(--gray-03)] border border-[var(--gray-06)] text-[var(--gray-12)] hover:border-[var(--gray-08)] disabled:opacity-60 transition-colors"
           >
             <BookmarkPlus className="h-3.5 w-3.5" />
             {memoryState.kind === "busy"
@@ -189,7 +191,8 @@ export function FailureActions({
                   : `File this failure on ${TARGET_LABEL[issueTargets[0]!]}`
                 : "Connect GitHub (with repo scope) or Linear to file issues."
             }
-            className="inline-flex items-center gap-1.5 h-8 px-3 rounded text-xs font-medium bg-[var(--gray-03)] border border-[var(--gray-06)] text-[var(--gray-12)] hover:border-[var(--gray-08)] disabled:opacity-60 transition-colors"
+            // regular action, not a toggle → normal weight
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded text-xs font-normal bg-[var(--gray-03)] border border-[var(--gray-06)] text-[var(--gray-12)] hover:border-[var(--gray-08)] disabled:opacity-60 transition-colors"
           >
             <GitPullRequestArrow className="h-3.5 w-3.5" />
             {issueState.kind === "busy"

@@ -28,7 +28,7 @@ export function OverviewStrip({ overview }: { overview: WorkspaceCostOverview })
         <div className="flex items-start gap-3 rounded border border-[var(--red-09)]/50 bg-[color-mix(in_srgb,var(--red-11)_14%,transparent)] px-4 py-3">
           <AlertTriangle className="h-5 w-5 shrink-0 text-[var(--red-11)]" aria-hidden="true" />
           <div>
-            <p className="text-sm font-semibold text-[var(--red-11)]">{copy.headline}</p>
+            <p className="text-sm font-bold text-[var(--red-11)]">{copy.headline}</p>
             <p className="mt-0.5 text-xs text-[var(--red-11)]">{copy.detail}</p>
           </div>
         </div>
@@ -37,21 +37,21 @@ export function OverviewStrip({ overview }: { overview: WorkspaceCostOverview })
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
           <p className="mb-0.5 text-xs text-[var(--gray-09)]">Spent this month</p>
-          <p className="font-mono text-2xl font-semibold text-[var(--gray-12)]">
+          <p className="font-mono text-2xl font-bold text-[var(--gray-12)]">
             {formatCostUsd(currentMonthSpendUsd)}
           </p>
         </div>
 
         <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
           <p className="mb-0.5 text-xs text-[var(--gray-09)]">Monthly ceiling</p>
-          <p className="font-mono text-2xl font-semibold text-[var(--gray-12)]">
+          <p className="font-mono text-2xl font-bold text-[var(--gray-12)]">
             {monthlyBudgetUsd === null ? "Uncapped" : formatCostUsd(monthlyBudgetUsd)}
           </p>
         </div>
 
         <div className={`rounded border p-4 ${STATUS_CARD_CLASSES[copy.tone]}`}>
           <p className="mb-0.5 text-xs opacity-80">Status</p>
-          <p className="text-sm font-semibold">{copy.headline}</p>
+          <p className="text-sm font-bold">{copy.headline}</p>
           {ratio !== null && (
             <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[var(--gray-04)]">
               <div

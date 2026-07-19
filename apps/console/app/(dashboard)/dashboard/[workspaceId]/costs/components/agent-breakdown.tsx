@@ -69,7 +69,8 @@ export function AgentBreakdown({ workspaceId, timeRange }: AgentBreakdownProps) 
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+      {/* Panel heading, not a th — bold per TASTE weight rule */}
+      <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
         Agent breakdown
       </h2>
 
@@ -122,7 +123,7 @@ export function AgentBreakdown({ workspaceId, timeRange }: AgentBreakdownProps) 
                       className={`font-mono text-xs ${
                         row.muted
                           ? "text-[var(--gray-09)]"
-                          : "text-[var(--gray-12)] font-medium"
+                          : "text-[var(--gray-12)] font-normal" /* data value; color carries emphasis */
                       }`}
                     >
                       {row.cost}

@@ -66,7 +66,8 @@ export function CostMeterPanel({ workspaceId, timeRange }: CostMeterPanelProps) 
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+      {/* Panel heading, not a th — bold per TASTE weight rule */}
+      <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
         Cost meter
       </h2>
 
@@ -94,15 +95,16 @@ export function CostMeterPanel({ workspaceId, timeRange }: CostMeterPanelProps) 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {/* Cost-per-Issue-to-Green */}
               <div className="flex flex-col gap-1 border-l-2 border-[var(--yellow-09)] pl-3">
-                <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)]">
+                {/* stat label caption, not heading/data → normal, no room constraint at 12px */}
+                <span className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
                   Cost-per-Issue-to-Green
                 </span>
-                <span className="font-mono text-2xl font-semibold leading-none text-[var(--gray-12)]">
+                <span className="font-mono text-2xl font-bold leading-none text-[var(--gray-12)]">
                   {data.costPerIssueToGreen.avgCostUsd === null
                     ? "—"
                     : formatCostUsd(data.costPerIssueToGreen.avgCostUsd)}
                 </span>
-                <span className="font-mono text-[11px] text-[var(--gray-09)]">
+                <span className="font-mono text-xs text-[var(--gray-09)]">
                   avg over {data.costPerIssueToGreen.greenIssueCount}{" "}
                   {data.costPerIssueToGreen.greenIssueCount === 1
                     ? "green issue"
@@ -112,11 +114,12 @@ export function CostMeterPanel({ workspaceId, timeRange }: CostMeterPanelProps) 
 
               {/* Cache read-to-creation ratio */}
               <div className="flex flex-col gap-1 border-l-2 border-[var(--gray-06)] pl-3">
-                <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)]">
+                {/* stat label caption, not heading/data → normal, no room constraint at 12px */}
+                <span className="text-xs font-normal uppercase tracking-wide text-[var(--gray-09)]">
                   Cache read-to-creation ratio
                 </span>
                 <span
-                  className={`font-mono text-2xl font-semibold leading-none ${
+                  className={`font-mono text-2xl font-bold leading-none ${
                     data.cacheRatio.ratio !== null && data.cacheRatio.ratio < 1
                       ? "text-[var(--red-11)]"
                       : "text-[var(--gray-12)]"
@@ -124,7 +127,7 @@ export function CostMeterPanel({ workspaceId, timeRange }: CostMeterPanelProps) 
                 >
                   {formatCacheRatio(data.cacheRatio.ratio)}
                 </span>
-                <span className="font-mono text-[11px] text-[var(--gray-09)]">
+                <span className="font-mono text-xs text-[var(--gray-09)]">
                   {formatTokens(data.cacheRatio.cacheReadTokens)} read /{" "}
                   {formatTokens(data.cacheRatio.cacheCreationTokens)} created
                 </span>
@@ -137,10 +140,10 @@ export function CostMeterPanel({ workspaceId, timeRange }: CostMeterPanelProps) 
                 <table className="w-full text-sm border-collapse">
                   <thead>
                     <tr className="border-b border-[var(--gray-05)] bg-[var(--gray-01)]">
-                      <th className="px-3 py-1.5 text-left text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)]">
+                      <th className="px-3 py-1.5 text-left text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
                         Issue (branch)
                       </th>
-                      <th className="px-3 py-1.5 text-right text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)]">
+                      <th className="px-3 py-1.5 text-right text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
                         Cost to Green
                       </th>
                     </tr>
@@ -155,7 +158,8 @@ export function CostMeterPanel({ workspaceId, timeRange }: CostMeterPanelProps) 
                         <td className="px-3 py-1 font-mono text-xs text-[var(--gray-11)] truncate max-w-[280px]">
                           {issue.issueKey}
                         </td>
-                        <td className="px-3 py-1 text-right font-mono text-xs font-medium text-[var(--gray-12)]">
+                        {/* data value; color carries emphasis, not weight */}
+                        <td className="px-3 py-1 text-right font-mono text-xs font-normal text-[var(--gray-12)]">
                           {formatCostUsd(issue.costUsd)}
                         </td>
                       </tr>

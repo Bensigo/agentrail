@@ -133,8 +133,11 @@ export function TelemetryHealthSection({
                 </td>
                 <td className="px-2 py-2">
                   {present ? (
+                    // text-xs (not the ad-hoc 11px): matches the canonical
+                    // Status Badge scale (rounded px-1.5 py-0.5 text-xs
+                    // font-medium) this pill otherwise already follows.
                     <span
-                      className="inline-block rounded px-1.5 py-0.5 text-[11px] font-medium"
+                      className="inline-block rounded px-1.5 py-0.5 text-xs font-medium"
                       style={{
                         color: "var(--green-09)",
                         // #29a383 (--green-09, invariant) at the same 10.2%
@@ -149,7 +152,7 @@ export function TelemetryHealthSection({
                     </span>
                   ) : (
                     <span
-                      className="inline-block rounded px-1.5 py-0.5 text-[11px] font-medium"
+                      className="inline-block rounded px-1.5 py-0.5 text-xs font-medium"
                       style={{
                         color: "var(--red-09)",
                         // Same technique as the "Present" branch above: #e5484d

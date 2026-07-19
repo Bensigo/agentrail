@@ -150,28 +150,34 @@ export default function RunDetailPage() {
         </span>
       </div>
 
-      <h1 className="mb-4 text-sm font-semibold text-[var(--gray-12)]">
+      <h1 className="mb-4 text-sm font-bold text-[var(--gray-12)]">
         Run detail
       </h1>
 
       {run && <RunDetailHeader run={run} />}
 
       <div className="mt-6">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+        {/* font-bold, not font-medium: these h2s reuse the Data Table
+            header's label styling (text-xs uppercase gray-09) for a quiet
+            engine-room look, but TASTE.md's font-medium exception is scoped
+            to literal table headers and status badges — an <h2> is a
+            heading, so it takes the Bold-for-headings rule. Applies to
+            every h2 in this file. */}
+        <h2 className="mb-4 text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Cost &amp; tokens
         </h2>
         <CostSection workspaceId={workspaceId} runId={runId} runStatus={run?.status} />
       </div>
 
       <div className="mt-6">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+        <h2 className="mb-4 text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Telemetry Health
         </h2>
         <TelemetryHealthSection workspaceId={workspaceId} runId={runId} />
       </div>
 
       <div className="mt-6">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+        <h2 className="mb-4 text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Where the time went
         </h2>
         <WaterfallSection
@@ -183,14 +189,14 @@ export default function RunDetailPage() {
       </div>
 
       <div id="context" className="mt-6 scroll-mt-6">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+        <h2 className="mb-4 text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Context
         </h2>
         <ContextSection workspaceId={workspaceId} runId={runId} runStatus={run?.status} />
       </div>
 
       <div className="mt-6">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+        <h2 className="mb-4 text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Behavior
         </h2>
         <BehaviorLintSection
@@ -201,7 +207,7 @@ export default function RunDetailPage() {
       </div>
 
       <div className="mt-6">
-        <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+        <h2 className="mb-4 text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
           Timeline
         </h2>
         <RunTimeline
@@ -214,7 +220,7 @@ export default function RunDetailPage() {
 
       {run && (
         <div className="mt-6">
-          <h2 className="mb-4 text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+          <h2 className="mb-4 text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
             Replay
           </h2>
           <ReplaySection workspaceId={workspaceId} runId={runId} />
@@ -224,7 +230,7 @@ export default function RunDetailPage() {
       {run && (
         <div className="mt-8">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xs font-medium uppercase tracking-wide text-[var(--gray-09)]">
+            <h2 className="text-xs font-bold uppercase tracking-wide text-[var(--gray-09)]">
               Review Gates
             </h2>
             <a

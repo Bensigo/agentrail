@@ -167,7 +167,7 @@ export function ReplaySection({ workspaceId, runId }: ReplaySectionProps) {
         <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 py-2">
           <p className="mb-0.5 text-xs text-[var(--gray-09)]">Longest stall</p>
           <HighlightLink href={longestStallHref}>
-            <p className="font-mono text-sm font-semibold text-[var(--gray-12)]">
+            <p className="font-mono text-sm font-bold text-[var(--gray-12)]">
               {timeline.highlights.longest_stall_ms === null
                 ? "none"
                 : `${formatReplayDuration(timeline.highlights.longest_stall_ms)} · slot ${timeline.highlights.longest_stall_slot}`}
@@ -177,7 +177,7 @@ export function ReplaySection({ workspaceId, runId }: ReplaySectionProps) {
         <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 py-2">
           <p className="mb-0.5 text-xs text-[var(--gray-09)]">Retry loops</p>
           <HighlightLink href={retryHref}>
-            <p className="font-mono text-sm font-semibold text-[var(--yellow-11)]">
+            <p className="font-mono text-sm font-bold text-[var(--yellow-11)]">
               {timeline.highlights.retry_loops.length}
             </p>
           </HighlightLink>
@@ -185,7 +185,7 @@ export function ReplaySection({ workspaceId, runId }: ReplaySectionProps) {
         <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-3 py-2">
           <p className="mb-0.5 text-xs text-[var(--gray-09)]">Digest mismatches</p>
           <HighlightLink href={digestHref}>
-            <p className="font-mono text-sm font-semibold text-[var(--red-11)]">
+            <p className="font-mono text-sm font-bold text-[var(--red-11)]">
               {timeline.highlights.digest_mismatches.length}
             </p>
           </HighlightLink>
@@ -213,7 +213,9 @@ export function ReplaySection({ workspaceId, runId }: ReplaySectionProps) {
                 <span className="font-mono text-xs text-[var(--gray-09)]">
                   {formatTimestamp(event.ts)}
                 </span>
-                <span className="text-sm text-[var(--gray-12)]">
+                {/* font-mono: event_type is a raw flight-recorder token
+                    (e.g. "apply_patch", "bash"), not a prettified label. */}
+                <span className="font-mono text-sm text-[var(--gray-12)]">
                   {event.event_type}
                 </span>
                 <Badge>slot {event.slot}</Badge>

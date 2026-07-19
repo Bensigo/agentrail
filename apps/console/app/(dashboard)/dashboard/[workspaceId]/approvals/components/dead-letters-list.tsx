@@ -104,15 +104,24 @@ export function DeadLettersList({
             return (
               <tr key={row.id} className="border-b border-[var(--gray-04)] last:border-0 align-top">
                 <td className="px-3 py-2 text-[var(--gray-10)]">{channelLabel(row.channel)}</td>
-                <td className="px-3 py-2 text-[var(--gray-10)]">{row.kind}</td>
+                {/* font-mono: `kind` is a raw channel_inbox system token
+                    ("message" / "approval_response"), not a translated
+                    human label — same category as a model slug. */}
+                <td className="px-3 py-2 font-mono text-[var(--gray-10)]">{row.kind}</td>
                 <td className="px-3 py-2 text-[var(--gray-10)]">
-                  {row.lastError ? sanitizeField(row.lastError, LAST_ERROR_MAX_LEN) : "—"}
+                  {/* font-mono: a captured exception message, same evidence-
+                      style treatment as every other fetch/system error in
+                      this scope. */}
+                  <span className="font-mono">
+                    {row.lastError ? sanitizeField(row.lastError, LAST_ERROR_MAX_LEN) : "—"}
+                  </span>
                   {rowError && <p className="mt-1 text-[var(--red-11)]">{rowError}</p>}
                 </td>
                 <td className="px-3 py-2 text-right font-mono text-[var(--gray-11)]">
                   {row.attempts}
                 </td>
-                <td className="px-3 py-2 text-right text-[var(--gray-09)]" title={age.title}>
+                {/* font-mono: relative-time value. */}
+                <td className="px-3 py-2 text-right font-mono text-[var(--gray-09)]" title={age.title}>
                   {age.label}
                 </td>
                 {canManage && (

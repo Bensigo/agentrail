@@ -544,6 +544,10 @@ export interface RecordApprovalRequestInput {
   toolInput: Record<string, unknown>;
   approveOptionId: string;
   denyOptionId: string;
+  // #1274: set ONLY for a system-composed "alignment_brief" approval — the
+  // parked `queue_entries` row this brief is gating. Omitted (stays null) for
+  // every other tool, byte-identical to today.
+  queueEntryId?: string;
 }
 
 export interface RecordApprovalRequestResult {
@@ -609,6 +613,7 @@ export async function recordApprovalRequest(
       toolInput: input.toolInput,
       approveOptionId: input.approveOptionId,
       denyOptionId: input.denyOptionId,
+      queueEntryId: input.queueEntryId,
     })
     .onConflictDoNothing({
       target: [jaceApprovals.eveSessionId, jaceApprovals.requestId],

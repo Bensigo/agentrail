@@ -12,6 +12,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   getOrCreateIntroJaceSession: vi.fn(),
   getOrCreateJaceSession: vi.fn(),
   bindEveSession: vi.fn(),
+  latestRunForIssue: vi.fn(),
 }));
 
 // Stub ONLY the network-performing send; keep the REAL pure message
@@ -38,6 +39,7 @@ import {
   getOrCreateIntroJaceSession,
   getOrCreateJaceSession,
   bindEveSession,
+  latestRunForIssue,
 } from "@agentrail/db-postgres";
 import { sendSystemTelegramMessage } from "./telegram-system-message";
 import { dispatchQueuedChannelMessages } from "./channel-dispatch";
@@ -53,6 +55,7 @@ const mockGetOrCreateIntro = vi.mocked(getOrCreateIntroJaceSession);
 const mockGetOrCreateSession = vi.mocked(getOrCreateJaceSession);
 const mockBindEveSession = vi.mocked(bindEveSession);
 const mockSendSystem = vi.mocked(sendSystemTelegramMessage);
+const mockLatestRunForIssue = vi.mocked(latestRunForIssue);
 
 const mockFetch = vi.fn();
 
@@ -90,6 +93,9 @@ beforeEach(() => {
     status: 200,
     json: async () => ({ sessionId: "eve-sess-1", continuationToken: "tok-1" }),
   });
+  // #1277: unused by any row without a replyContext (the overwhelming
+  // majority of existing tests) — a harmless default for the few that do.
+  mockLatestRunForIssue.mockResolvedValue(null);
 });
 
 describe("dispatchQueuedChannelMessages — loop shape", () => {
@@ -527,5 +533,125 @@ describe("dispatchQueuedChannelMessages — in-process latch", () => {
     await dispatchQueuedChannelMessages();
 
     expect(mockReclaim).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("dispatchQueuedChannelMessages — reply-context injection (#1277 replyable run-outcome threads)", () => {
+  function rowWithReply(issueNumber: number, text = "why did this fail?") {
+    return row({
+      payload: {
+        chatId: -100123,
+        text,
+        replyContext: { kind: "run_outcome", issueNumber },
+      },
+    });
+  }
+
+  it("prepends the found-run preface and calls latestRunForIssue with the conversation's OWN resolved workspace", async () => {
+    mockClaim.mockResolvedValueOnce(rowWithReply(42)).mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({
+      kind: "pinned",
+      workspaceId: "ws-9",
+      sessionId: "pin-sess-9",
+      ambiguous: false,
+    } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-9" } as never);
+    mockLatestRunForIssue.mockResolvedValue({ runId: "run-abc", state: "failed" });
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockLatestRunForIssue).toHaveBeenCalledWith("ws-9", 42);
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.message).toBe(
+      "[reply to the run-outcome notification for issue #42 — latest run: run-abc, state: failed]\nwhy did this fail?"
+    );
+  });
+
+  it("prepends an HONEST not-found preface when no run matches, and the turn still proceeds as plain chat (not blocked)", async () => {
+    mockClaim.mockResolvedValueOnce(rowWithReply(42)).mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({
+      kind: "pinned",
+      workspaceId: "ws-9",
+      sessionId: "pin-sess-9",
+      ambiguous: false,
+    } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-9" } as never);
+    mockLatestRunForIssue.mockResolvedValue(null);
+
+    const result = await dispatchQueuedChannelMessages();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.message).toBe(
+      "[reply to the run-outcome notification for issue #42 — no matching run found]\nwhy did this fail?"
+    );
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+    expect(result).toEqual({ processed: 1, failed: 0 });
+  });
+
+  it("does NOT call latestRunForIssue and sends the message UNTOUCHED when there is no replyContext (regression: plain messages unaffected)", async () => {
+    mockClaim.mockResolvedValueOnce(row()).mockResolvedValueOnce(null); // default row(), no replyContext
+    mockResolve.mockResolvedValue({
+      kind: "pinned",
+      workspaceId: "ws-9",
+      sessionId: "pin-sess-9",
+      ambiguous: false,
+    } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-9" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockLatestRunForIssue).not.toHaveBeenCalled();
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.message).toBe("hello jace");
+  });
+
+  it("does NOT call latestRunForIssue when the conversation has no workspace yet ('intro' — nothing to scope the lookup to)", async () => {
+    mockClaim.mockResolvedValueOnce(rowWithReply(42)).mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-intro-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockLatestRunForIssue).not.toHaveBeenCalled();
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.message).toBe("why did this fail?");
+  });
+
+  it("THREAT MODEL: resolves a forged/lookalike reply within the caller's OWN workspace only, never a different one (ws-alpha case)", async () => {
+    mockClaim.mockResolvedValueOnce(rowWithReply(999999)).mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({
+      kind: "pinned",
+      workspaceId: "ws-alpha",
+      sessionId: "s1",
+      ambiguous: false,
+    } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-alpha" } as never);
+    mockLatestRunForIssue.mockResolvedValue(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockLatestRunForIssue).toHaveBeenCalledWith("ws-alpha", 999999);
+    expect(mockLatestRunForIssue).not.toHaveBeenCalledWith("ws-beta", 999999);
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.message).toContain("no matching run found");
+  });
+
+  it("THREAT MODEL: the SAME forged issue number resolves independently in a different workspace — no cross-tenant leak (ws-beta case)", async () => {
+    mockClaim.mockResolvedValueOnce(rowWithReply(999999)).mockResolvedValueOnce(null);
+    mockResolve.mockResolvedValue({
+      kind: "pinned",
+      workspaceId: "ws-beta",
+      sessionId: "s2",
+      ambiguous: false,
+    } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-beta" } as never);
+    mockLatestRunForIssue.mockResolvedValue({ runId: "run-beta-1", state: "success" });
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockLatestRunForIssue).toHaveBeenCalledWith("ws-beta", 999999);
+    expect(mockLatestRunForIssue).not.toHaveBeenCalledWith("ws-alpha", 999999);
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.message).toContain("run-beta-1");
   });
 });

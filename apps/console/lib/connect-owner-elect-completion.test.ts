@@ -59,6 +59,7 @@ describe("completeConnectOwnerElect", () => {
       monthlyBudgetUsd: null,
       budgetExhaustedNotifiedPeriod: null,
       mergePermission: false,
+      requireAlignment: true,
     });
 
     const result = await completeConnectOwnerElect({ workspaceId: "ws-1", userId: "user-1" });

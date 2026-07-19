@@ -11,6 +11,7 @@ import {
 import { sql } from "drizzle-orm";
 import { workspaces } from "./workspaces.js";
 import { chatIdentities } from "./chat_identities.js";
+import { queueEntries } from "./queue_entries.js";
 
 /**
  * Jace session map + pending approvals (spec §4).
@@ -139,6 +140,17 @@ export const jaceApprovals = pgTable(
     denyOptionId: text("deny_option_id").notNull(),
     status: text("status").notNull().default("pending"), // pending|approved|denied|expired
     publishedIssueUrl: text("published_issue_url"),
+    // Alignment gate (#1274): set ONLY for a system-composed "alignment_brief"
+    // approval (never for create_issue/create_workspace/create_repo — those
+    // stay null, byte-identical to today). Lets the Telegram webhook's confirm
+    // handler find the specific parked `queue_entries` row this brief was
+    // gating and flip it atomically once resolveApproval's own pending->
+    // resolved guard has already fired — see `github_intake.ts`'s
+    // confirmAlignmentBrief/denyAlignmentBrief. ON DELETE SET NULL: a deleted
+    // queue entry must never cascade-delete the approval audit trail.
+    queueEntryId: uuid("queue_entry_id").references(() => queueEntries.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

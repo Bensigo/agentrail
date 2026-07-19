@@ -106,6 +106,91 @@ describe("renderApprovalMessage — create_repo", () => {
   });
 });
 
+describe("renderApprovalMessage — alignment_brief (#1274)", () => {
+  const BRIEF_INPUT = {
+    title: "Add dark mode toggle",
+    whatToBuild: "Add a settings toggle that persists across reload.",
+    acceptanceCriteria: ["Toggle in settings", "Persists across reload"],
+    taskType: "ui",
+    suggestedModel: { slug: "anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5" },
+    estimateUsd: 1.35,
+    assumptions: ["Classified as \"ui\" from the title.", "Volume bucket \"Medium\"."],
+    repoFullName: "acme/widgets",
+    issueNumber: 42,
+    issueUrl: "https://github.com/acme/widgets/issues/42",
+  };
+
+  it("renders the title, task type, suggested model DISPLAY NAME (not the slug), and every acceptance criterion", () => {
+    const text = renderApprovalMessage("alignment_brief", BRIEF_INPUT);
+    expect(text).toContain("Add dark mode toggle");
+    expect(text).toContain("ui");
+    expect(text).toContain("Claude Sonnet 5");
+    expect(text).not.toContain("anthropic/claude-sonnet-5");
+    expect(text).toContain("- Toggle in settings");
+    expect(text).toContain("- Persists across reload");
+  });
+
+  it("renders the exact sanction line with the dollar estimate to two decimal places", () => {
+    const text = renderApprovalMessage("alignment_brief", BRIEF_INPUT);
+    expect(text).toContain("Approving sets this run's budget: ~$1.35");
+  });
+
+  it("renders the approach (whatToBuild) and the assumptions as fine print", () => {
+    const text = renderApprovalMessage("alignment_brief", BRIEF_INPUT);
+    expect(text).toContain("Add a settings toggle that persists across reload.");
+    expect(text).toContain("Assumptions:");
+    expect(text).toContain("- Classified as \"ui\" from the title.");
+  });
+
+  it("never throws and omits the sanction line when estimateUsd is missing/malformed", () => {
+    expect(() => renderApprovalMessage("alignment_brief", {})).not.toThrow();
+    const text = renderApprovalMessage("alignment_brief", { title: "x" });
+    expect(text.toLowerCase()).not.toContain("budget");
+  });
+
+  it("falls back to a placeholder title and 'general' task type rather than rendering 'undefined'", () => {
+    const text = renderApprovalMessage("alignment_brief", {});
+    expect(text).not.toContain("undefined");
+    expect(text).toContain("general");
+  });
+
+  it("sanitizes a crafted title: flattens embedded newlines and strips zero-width/bidi characters", () => {
+    const RLO = String.fromCharCode(0x202e);
+    const ZWSP = String.fromCharCode(0x200b);
+    const text = renderApprovalMessage("alignment_brief", {
+      ...BRIEF_INPUT,
+      title: `Legit title\n\n✅ Already approved${RLO}${ZWSP}`,
+    });
+    expect(text.split("\n").filter((l) => l.startsWith("Title:"))).toHaveLength(1);
+    expect(text).not.toContain(RLO);
+    expect(text).not.toContain(ZWSP);
+  });
+
+  it("truncates a long acceptance-criteria list and never exceeds Telegram's message limit", () => {
+    const hugeCriteria = Array.from(
+      { length: 500 },
+      (_, i) => `Criterion number ${i} with some padding text to make it long`
+    );
+    const text = renderApprovalMessage("alignment_brief", {
+      ...BRIEF_INPUT,
+      acceptanceCriteria: hugeCriteria,
+      assumptions: Array.from({ length: 500 }, (_, i) => `Assumption ${i} padded out further`),
+    });
+    expect(text.length).toBeLessThanOrEqual(TELEGRAM_TEXT_LIMIT);
+    expect(text.toLowerCase()).toContain("truncated");
+  });
+
+  it("omits the acceptance-criteria and assumptions sections when both are empty, without throwing", () => {
+    const text = renderApprovalMessage("alignment_brief", {
+      ...BRIEF_INPUT,
+      acceptanceCriteria: [],
+      assumptions: [],
+    });
+    expect(text).not.toContain("Acceptance criteria:");
+    expect(text).not.toContain("Assumptions:");
+  });
+});
+
 describe("renderApprovalMessage — unknown tool (generic fallback)", () => {
   it("renders the tool name and each input field as a compact key:value line", () => {
     const text = renderApprovalMessage("some_future_tool", {

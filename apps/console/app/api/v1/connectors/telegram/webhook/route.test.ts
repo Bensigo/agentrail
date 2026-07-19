@@ -8,6 +8,8 @@ vi.mock("@agentrail/db-postgres", () => ({
   getChatIdentityById: vi.fn(),
   getJaceSessionById: vi.fn(),
   resolveApproval: vi.fn(),
+  confirmAlignmentBrief: vi.fn(),
+  denyAlignmentBrief: vi.fn(),
 }));
 
 vi.mock("../../../../../../lib/channel-dispatch", () => ({
@@ -16,6 +18,10 @@ vi.mock("../../../../../../lib/channel-dispatch", () => ({
 
 vi.mock("../../../../../../lib/approval-message", () => ({
   renderApprovalMessage: vi.fn(),
+}));
+
+vi.mock("../../../../../../lib/alignment-brief", () => ({
+  extractConfirmedBudgetAndModel: vi.fn(),
 }));
 
 vi.mock("../../../workspaces/[workspaceId]/connectors/secret/telegram", () => ({
@@ -33,9 +39,17 @@ import {
   getChatIdentityById,
   getJaceSessionById,
   resolveApproval,
+  confirmAlignmentBrief,
+  denyAlignmentBrief,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 import { renderApprovalMessage } from "../../../../../../lib/approval-message";
+import { extractConfirmedBudgetAndModel } from "../../../../../../lib/alignment-brief";
+// #1277: the REAL (unmocked) outcome-format builder, used below to construct
+// realistic quoted reply texts — mirrors channel-dispatch.test.ts's "stub
+// only the network, keep the real pure builders" convention, so a template
+// drift there fails these tests too.
+import { buildOutcomeMessage } from "../../../../../../lib/outcome-format";
 import {
   answerCallbackQuery,
   editMessageText,
@@ -49,6 +63,9 @@ const mockGetApproval = vi.mocked(getApprovalByCallbackToken);
 const mockGetChatIdentity = vi.mocked(getChatIdentityById);
 const mockGetJaceSessionById = vi.mocked(getJaceSessionById);
 const mockResolveApproval = vi.mocked(resolveApproval);
+const mockConfirmAlignmentBrief = vi.mocked(confirmAlignmentBrief);
+const mockDenyAlignmentBrief = vi.mocked(denyAlignmentBrief);
+const mockExtractConfirmed = vi.mocked(extractConfirmedBudgetAndModel);
 const mockRender = vi.mocked(renderApprovalMessage);
 const mockAnswer = vi.mocked(answerCallbackQuery);
 const mockEdit = vi.mocked(editMessageText);
@@ -854,6 +871,143 @@ describe("POST /api/v1/connectors/telegram/webhook — ar: flow (issue #1273)", 
     expect(mockGetApproval).not.toHaveBeenCalled();
     expect(mockAnswer).not.toHaveBeenCalled();
   });
+
+  it("regression-pin: a non-alignment approval (no queueEntryId) never touches confirmAlignmentBrief/denyAlignmentBrief", async () => {
+    mockParse.mockReturnValue({ decision: "approved", callbackToken: "token123456" });
+    mockGetApproval.mockResolvedValue(MOCK_APPROVAL_ROW as never); // toolName: create_issue, no queueEntryId
+    mockGetChatIdentity.mockResolvedValue(MOCK_IDENTITY_ROW as never);
+    mockResolveApproval.mockResolvedValue(true);
+
+    const res = await POST(req(arCallbackUpdate({ fromId: 555 }), { header: SECRET }));
+
+    expect(res.status).toBe(200);
+    expect(mockConfirmAlignmentBrief).not.toHaveBeenCalled();
+    expect(mockDenyAlignmentBrief).not.toHaveBeenCalled();
+    expect(mockExtractConfirmed).not.toHaveBeenCalled();
+  });
+});
+
+// --- issue #1274: alignment-gate confirm/deny side-effects ------------------
+
+const MOCK_ALIGNMENT_APPROVAL_ROW = {
+  ...MOCK_APPROVAL_ROW,
+  id: "approval-brief-1",
+  toolName: "alignment_brief",
+  toolInput: {
+    title: "Add dark mode",
+    estimateUsd: 1.35,
+    suggestedModel: { slug: "anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5" },
+  },
+  queueEntryId: "queue-entry-1",
+};
+
+describe("POST /api/v1/connectors/telegram/webhook — alignment gate confirm/deny side-effects (#1274)", () => {
+  beforeEach(() => {
+    process.env["TELEGRAM_WEBHOOK_SECRET_TOKEN"] = SECRET;
+    process.env["TELEGRAM_BOT_TOKEN"] = "test-bot-token";
+    mockGetChatIdentity.mockResolvedValue(MOCK_IDENTITY_ROW as never);
+    mockResolveApproval.mockResolvedValue(true);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  it("approve: reads estimateUsd/suggestedModel.slug from the STORED toolInput (not the callback) and writes both via confirmAlignmentBrief", async () => {
+    mockParse.mockReturnValue({ decision: "approved", callbackToken: "token123456" });
+    mockGetApproval.mockResolvedValue(MOCK_ALIGNMENT_APPROVAL_ROW as never);
+    mockExtractConfirmed.mockReturnValue({
+      estimatedBudgetUsd: 1.35,
+      modelOverride: "anthropic/claude-sonnet-5",
+    });
+    mockConfirmAlignmentBrief.mockResolvedValue(true);
+
+    const res = await POST(req(arCallbackUpdate({ fromId: 555 }), { header: SECRET }));
+
+    expect(res.status).toBe(200);
+    expect(mockExtractConfirmed).toHaveBeenCalledWith(MOCK_ALIGNMENT_APPROVAL_ROW.toolInput);
+    expect(mockConfirmAlignmentBrief).toHaveBeenCalledWith({
+      queueEntryId: "queue-entry-1",
+      estimatedBudgetUsd: 1.35,
+      modelOverride: "anthropic/claude-sonnet-5",
+    });
+    expect(mockDenyAlignmentBrief).not.toHaveBeenCalled();
+    // The rest of the flow (answer/edit) is unaffected — same UX as any approval.
+    expect(mockAnswer).toHaveBeenCalledWith("test-bot-token", "cbq-1", "✅ Approved");
+  });
+
+  it("deny: calls denyAlignmentBrief with the queueEntryId, never confirmAlignmentBrief", async () => {
+    mockParse.mockReturnValue({ decision: "denied", callbackToken: "token123456" });
+    mockGetApproval.mockResolvedValue(MOCK_ALIGNMENT_APPROVAL_ROW as never);
+    mockDenyAlignmentBrief.mockResolvedValue(true);
+
+    const res = await POST(
+      req(arCallbackUpdate({ data: "ar:ntoken123456", fromId: 555 }), { header: SECRET })
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockDenyAlignmentBrief).toHaveBeenCalledWith("queue-entry-1");
+    expect(mockConfirmAlignmentBrief).not.toHaveBeenCalled();
+    expect(mockExtractConfirmed).not.toHaveBeenCalled();
+    expect(mockAnswer).toHaveBeenCalledWith("test-bot-token", "cbq-1", "❌ Denied");
+  });
+
+  it("approve + malformed stored toolInput (extraction fails): logs loudly, never calls confirmAlignmentBrief, still completes the normal approve UX", async () => {
+    mockParse.mockReturnValue({ decision: "approved", callbackToken: "token123456" });
+    mockGetApproval.mockResolvedValue(MOCK_ALIGNMENT_APPROVAL_ROW as never);
+    mockExtractConfirmed.mockReturnValue(null);
+
+    const res = await POST(req(arCallbackUpdate({ fromId: 555 }), { header: SECRET }));
+
+    expect(res.status).toBe(200);
+    expect(mockConfirmAlignmentBrief).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalled();
+    // The Telegram-facing UX still completes as a normal approval.
+    expect(mockAnswer).toHaveBeenCalledWith("test-bot-token", "cbq-1", "✅ Approved");
+  });
+
+  it("approve + confirmAlignmentBrief finds no parked row (already left 'parked'): logs loudly, never throws", async () => {
+    mockParse.mockReturnValue({ decision: "approved", callbackToken: "token123456" });
+    mockGetApproval.mockResolvedValue(MOCK_ALIGNMENT_APPROVAL_ROW as never);
+    mockExtractConfirmed.mockReturnValue({
+      estimatedBudgetUsd: 1.35,
+      modelOverride: "anthropic/claude-sonnet-5",
+    });
+    mockConfirmAlignmentBrief.mockResolvedValue(false);
+
+    const res = await POST(req(arCallbackUpdate({ fromId: 555 }), { header: SECRET }));
+
+    expect(res.status).toBe(200);
+    expect(console.error).toHaveBeenCalled();
+  });
+
+  it("deny + denyAlignmentBrief finds no parked row: logs loudly, never throws", async () => {
+    mockParse.mockReturnValue({ decision: "denied", callbackToken: "token123456" });
+    mockGetApproval.mockResolvedValue(MOCK_ALIGNMENT_APPROVAL_ROW as never);
+    mockDenyAlignmentBrief.mockResolvedValue(false);
+
+    const res = await POST(
+      req(arCallbackUpdate({ data: "ar:ntoken123456", fromId: 555 }), { header: SECRET })
+    );
+
+    expect(res.status).toBe(200);
+    expect(console.error).toHaveBeenCalled();
+  });
+
+  it("double-tap idempotency: when resolveApproval reports already-resolved (false), neither confirmAlignmentBrief nor denyAlignmentBrief is ever called", async () => {
+    mockParse.mockReturnValue({ decision: "approved", callbackToken: "token123456" });
+    mockGetApproval.mockResolvedValue(MOCK_ALIGNMENT_APPROVAL_ROW as never);
+    mockResolveApproval.mockResolvedValue(false);
+
+    const res = await POST(req(arCallbackUpdate({ fromId: 555 }), { header: SECRET }));
+
+    expect(res.status).toBe(200);
+    expect(mockAnswer).toHaveBeenCalledWith(
+      "test-bot-token",
+      "cbq-1",
+      expect.stringMatching(/already resolved/i)
+    );
+    expect(mockConfirmAlignmentBrief).not.toHaveBeenCalled();
+    expect(mockDenyAlignmentBrief).not.toHaveBeenCalled();
+    expect(mockExtractConfirmed).not.toHaveBeenCalled();
+  });
 });
 
 // --- issue #1273: forward path (the cutover bridge) -------------------------
@@ -956,5 +1110,159 @@ describe("POST /api/v1/connectors/telegram/webhook — forward path (issue #1273
     await POST(req(arCallbackUpdate({ data: "ar:ytoken123456" }), { header: SECRET }));
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// --- issue #1277: reply_to_message -> replyContext on the enqueue payload ---
+
+const REAL_OUTCOME_TEXT = buildOutcomeMessage({
+  issueNumber: "42",
+  outcome: "green",
+  prUrl: "https://github.com/o/r/pull/9",
+});
+
+function messageUpdate(overrides: Record<string, unknown> = {}) {
+  return {
+    update_id: 1,
+    message: {
+      message_id: 43,
+      date: 1752800000,
+      chat: { id: -100123, type: "private" },
+      from: { id: 555, username: "ada", first_name: "Ada" },
+      text: "why did this fail?",
+      ...overrides,
+    },
+  };
+}
+
+describe("POST /api/v1/connectors/telegram/webhook — reply_to_message -> replyContext (issue #1277)", () => {
+  beforeEach(() => {
+    process.env["TELEGRAM_WEBHOOK_SECRET_TOKEN"] = SECRET;
+    mockResolve.mockResolvedValue({
+      identity: { id: "chat-identity-1", workspaceId: "ws-1" } as never,
+      created: false,
+      disposition: "bound",
+    });
+    mockEnqueue.mockResolvedValue({ id: "row-1", deduped: false });
+  });
+
+  it("attaches replyContext when reply_to_message's quoted text parses as our run-outcome format", async () => {
+    const res = await POST(
+      req(
+        messageUpdate({
+          reply_to_message: { message_id: 42, text: REAL_OUTCOME_TEXT },
+        }),
+        { header: SECRET }
+      )
+    );
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload).toMatchObject({
+      text: "why did this fail?",
+      replyContext: { kind: "run_outcome", issueNumber: 42 },
+    });
+  });
+
+  it("omits replyContext entirely (not just null/undefined) when there is no reply at all — today's behavior, byte-unchanged", async () => {
+    const res = await POST(req(messageUpdate(), { header: SECRET }));
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload).not.toHaveProperty("replyContext");
+  });
+
+  it("omits replyContext when reply_to_message is malformed (no message_id) — never rejects the OUTER message", async () => {
+    const res = await POST(
+      req(
+        messageUpdate({ reply_to_message: { text: REAL_OUTCOME_TEXT } }),
+        { header: SECRET }
+      )
+    );
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload).not.toHaveProperty("replyContext");
+  });
+
+  it("omits replyContext when reply_to_message carries no text (e.g. a reply to a photo)", async () => {
+    const res = await POST(
+      req(messageUpdate({ reply_to_message: { message_id: 42 } }), {
+        header: SECRET,
+      })
+    );
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload).not.toHaveProperty("replyContext");
+  });
+
+  it("omits replyContext when the quoted text does not match our template at all", async () => {
+    const res = await POST(
+      req(
+        messageUpdate({
+          reply_to_message: { message_id: 42, text: "just a normal message" },
+        }),
+        { header: SECRET }
+      )
+    );
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload).not.toHaveProperty("replyContext");
+  });
+
+  it("still 200s on a completely malformed reply_to_message value (e.g. a bare string) — the garbage is ignored, the outer message processes normally", async () => {
+    // reply_to_message being a string rather than an object is exactly the
+    // kind of malformed shape isTelegramReplyToMessage rejects; it must NOT
+    // crash the route, and the outer message still processes normally.
+    const res = await POST(
+      req(messageUpdate({ reply_to_message: "not an object" }), {
+        header: SECRET,
+      })
+    );
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload).not.toHaveProperty("replyContext");
+  });
+
+  it("THREAT MODEL: a lookalike/forged reply in our exact format still attaches replyContext at the parse layer — parsing is format-only, not an authenticity check (safety comes from the workspace-scoped query downstream, see channel-dispatch.test.ts)", async () => {
+    const forged = buildOutcomeMessage({ issueNumber: "999999", outcome: "green" });
+    const res = await POST(
+      req(
+        messageUpdate({ reply_to_message: { message_id: 1, text: forged } }),
+        { header: SECRET }
+      )
+    );
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload).toMatchObject({
+      replyContext: { kind: "run_outcome", issueNumber: 999999 },
+    });
+  });
+
+  it("never reads/forwards anything from reply_to_message beyond the parsed issue number (no message_id/from/text leak onto the payload)", async () => {
+    const res = await POST(
+      req(
+        messageUpdate({
+          reply_to_message: {
+            message_id: 42,
+            text: REAL_OUTCOME_TEXT,
+            from: { id: 9999, is_bot: true },
+          },
+        }),
+        { header: SECRET }
+      )
+    );
+
+    expect(res.status).toBe(200);
+    const enqueueArgs = mockEnqueue.mock.calls[0]?.[0];
+    expect(enqueueArgs.payload.replyContext).toEqual({
+      kind: "run_outcome",
+      issueNumber: 42,
+    });
+    expect(JSON.stringify(enqueueArgs.payload)).not.toContain("9999");
   });
 });

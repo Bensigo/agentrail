@@ -116,6 +116,81 @@ function renderCreateIssue(input: Record<string, unknown>): string {
   return hardTruncate(lines.join("\n"));
 }
 
+/**
+ * The alignment brief (#1274 PR ①). Defensive against a malformed toolInput
+ * exactly like every renderer above — this is untyped JSONB by the time it
+ * round-trips through the db, even though `AlignmentBriefToolInput`
+ * (`../lib/alignment-brief.ts`) documents the shape `composeAlignmentBrief`
+ * actually writes.
+ *
+ * The sanction line's literal wording ("Approving sets this run's budget: ~$X")
+ * is the OWNER RULE made visible: confirming this message is what activates
+ * #1333's dormant estimated_budget_usd/model_override threading — see
+ * `github_intake.ts::confirmAlignmentBrief`.
+ */
+function renderAlignmentBrief(input: Record<string, unknown>): string {
+  const title = sanitizeField(input["title"], 200) || "(untitled)";
+  const taskType = sanitizeField(input["taskType"], 40);
+
+  const rawSuggestedModel = input["suggestedModel"];
+  const suggestedModelDisplayName =
+    rawSuggestedModel &&
+    typeof rawSuggestedModel === "object" &&
+    !Array.isArray(rawSuggestedModel)
+      ? sanitizeField(
+          (rawSuggestedModel as Record<string, unknown>)["displayName"],
+          60
+        )
+      : "";
+
+  const rawEstimateUsd = input["estimateUsd"];
+  const estimateUsd =
+    typeof rawEstimateUsd === "number" && Number.isFinite(rawEstimateUsd)
+      ? rawEstimateUsd
+      : null;
+
+  const whatToBuild = sanitizeField(input["whatToBuild"], 500);
+
+  const rawCriteria = input["acceptanceCriteria"];
+  const criteria = Array.isArray(rawCriteria)
+    ? rawCriteria.map((item) => sanitizeField(item, 300))
+    : [];
+
+  const rawAssumptions = input["assumptions"];
+  const assumptions = Array.isArray(rawAssumptions)
+    ? rawAssumptions.map((item) => sanitizeField(item, 300))
+    : [];
+
+  const lines = ["Approve this alignment brief?", "", `Title: ${title}`];
+
+  if (whatToBuild) {
+    lines.push("", `Approach: ${whatToBuild}`);
+  }
+
+  lines.push(
+    "",
+    suggestedModelDisplayName
+      ? `Task type: ${taskType || "general"} → suggested model: ${suggestedModelDisplayName}`
+      : `Task type: ${taskType || "general"}`
+  );
+
+  if (criteria.length > 0) {
+    lines.push("", "Acceptance criteria:");
+    for (const item of criteria) lines.push(`- ${item}`);
+  }
+
+  if (estimateUsd !== null) {
+    lines.push("", `Approving sets this run's budget: ~$${estimateUsd.toFixed(2)}`);
+  }
+
+  if (assumptions.length > 0) {
+    lines.push("", "Assumptions:");
+    for (const item of assumptions) lines.push(`- ${item}`);
+  }
+
+  return hardTruncate(lines.join("\n"));
+}
+
 function renderCreateWorkspace(input: Record<string, unknown>): string {
   const name = sanitizeField(input["name"], 80) || "(unnamed)";
   return hardTruncate(`Approve creating workspace "${name}"?`);
@@ -175,6 +250,8 @@ export function renderApprovalMessage(
       return renderCreateWorkspace(toolInput);
     case "create_repo":
       return renderCreateRepo(toolInput);
+    case "alignment_brief":
+      return renderAlignmentBrief(toolInput);
     default:
       return renderGenericFallback(toolName, toolInput);
   }

@@ -29,6 +29,13 @@
  *  - BEST-EFFORT: every send is isolated and swallowed. A notify failure must
  *    NEVER change the route's response (AC3) — callers additionally wrap the
  *    whole thing in try/catch, but we also never throw from here.
+ *  - The message TEMPLATE itself (`buildOutcomeMessage`) lives in
+ *    `apps/console/lib/outcome-format.ts` (#1277 — replyable run-outcome
+ *    threads), re-exported here unchanged. That module owns the format's
+ *    inverse too (`parseOutcomeIssueNumber`), so a Telegram reply to this
+ *    message can recover the issue number server-side. This file's own
+ *    behavior — what gets sent, when, and through which channel — is
+ *    untouched by that extraction.
  */
 import {
   getConnector,
@@ -41,46 +48,16 @@ import {
 } from "@agentrail/db-postgres";
 import { sendTelegramMessage } from "../../workspaces/[workspaceId]/connectors/secret/telegram";
 import { sendDiscordMessage } from "../../workspaces/[workspaceId]/connectors/secret/discord";
+import {
+  buildOutcomeMessage,
+  type NotifyOutcome,
+  type OutcomeMessageParams,
+} from "../../../../../lib/outcome-format";
 
 /** A terminal queue outcome, in the queue state-machine vocabulary. */
-export type NotifyOutcome = "green" | "escalated-to-human" | "blocked";
-
-export interface NotifyParams {
-  issueNumber: string;
-  outcome: NotifyOutcome;
-  prUrl?: string;
-  costUsd?: number;
-}
-
-/** Run-Outcome headline for each terminal state (operator-facing wording). */
-const OUTCOME_HEADLINE: Record<NotifyOutcome, string> = {
-  green: "PR ready",
-  "escalated-to-human": "Escalated to human",
-  blocked: "Blocked",
-};
-
-/** Format a dollar cost, or "" when absent/non-finite. Mirrors the Py `_fmt_cost`. */
-function fmtCost(costUsd: number | undefined): string {
-  if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return "";
-  return `$${costUsd.toFixed(2)}`;
-}
-
-/**
- * Build the one-line chat message. Pure + exported so it is unit-testable and
- * provider-agnostic (every gateway speaks the same Run-Outcome vocabulary).
- *
- * e.g. `AgentRail: PR ready — issue #42 (https://github.com/o/r/pull/9 · $1.20)`
- */
-export function buildOutcomeMessage(params: NotifyParams): string {
-  const headline = OUTCOME_HEADLINE[params.outcome];
-  let line = `AgentRail: ${headline} — issue #${params.issueNumber}`;
-  const extras: string[] = [];
-  if (params.prUrl) extras.push(params.prUrl);
-  const cost = fmtCost(params.costUsd);
-  if (cost) extras.push(cost);
-  if (extras.length) line = `${line} (${extras.join(" · ")})`;
-  return line;
-}
+export type { NotifyOutcome };
+export type NotifyParams = OutcomeMessageParams;
+export { buildOutcomeMessage };
 
 /**
  * Post `params` to the workspace's enabled Telegram gateway. No-op (returns

@@ -203,6 +203,12 @@ cause yourself.
 Plain chat can invoke triage on demand: a human asking why something failed is a
 triage call, not a standup call.
 
+A bracketed `[reply to the run-outcome notification for issue #N — latest run:
+<run_id>, state: ...]` preface on an inbound message means a human replied
+in-thread to a run-outcome ping — treat the quoted `run_id` as the run to
+triage, the same as any other on-demand ask (a "no matching run found" preface
+gets the same honest-gap treatment as a degraded triage call, above).
+
 ## QA-checking a shipped change (the qa subagent)
 
 When the user asks you to QA, verify, or smoke-test something that shipped —

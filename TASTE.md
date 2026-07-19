@@ -106,7 +106,9 @@ All colors use CSS custom properties with **light-first values — light mode is
 | Purple | #6e56cf | #6550b9 (light) / #baa7ff (dark) | Context, enrichment |
 | Teal | #12a594 | #008573 (light) / #0bd8b6 (dark) | Telemetry, events |
 
-**Brand accent (owner-directed, 2026-07-19 — guide: heyparker.ai's palette through our tokens; the previous amber `#9e6c00` was agent-invented and is retired as brand):** golden `--accent-fill` `#eebf12` is **fill-with-dark-text only** (primary CTA buttons, chips — pair with `--accent-fill-text` `#0a3007`, hover `--accent-fill-hover`); deep green `--accent-text` `#194d15` (dark mode `#72d184`) is the text/link/ring/marker accent. `--brand-accent` aliases the golden fill for existing consumers. The landing may sit on warm paper `--paper` `#fcf5e2` with an upright serif display voice (landing-scoped). Semantic yellow (`--yellow-*`, caution/stale status) is unchanged and is NOT a brand color.
+**Brand accent (owner, 2026-07-19, verbatim: "our color is lemon"):** LEMON `--accent-fill`/`--brand-accent` `#ffe629` is the brand color — **fill-with-dark-text only** (CTA buttons, chips, marker dots; pair with `--accent-fill-text` `#0c0c0c`, hover `--accent-fill-hover` `#ffdc00`). Lemon is never body/link text on light (illegible); on light surfaces text accents are strong black (`--accent-text` `#0c0c0c`) with weight/underline for affordance; on dark surfaces lemon works as text (`--accent-text` dark = `#ffe629`). The retired mustard `#9e6c00` was agent-invented — never resurrect it as brand. Landing may sit on faint lemon paper `--paper` `#fffbea` with an upright serif display voice (landing-scoped; layout/typography spirit: heyparker.ai). Semantic yellow status ramp is separate from brand.
+
+**The mascot IS Jace:** the raccoon in the lemon hoodie (`apps/console/public/jace.png`, app icon `apps/console/app/icon.png`). Use it as the landing hero avatar and Jace's chat-demo avatar. Never generate replacement mascots; this is the canonical one.
 
 ### Spacing
 

@@ -145,10 +145,9 @@ COPY --from=builder --chown=node:node /app/apps/console/.next/static ./apps/cons
 # harmless to ship for self-host too (compose users can `docker compose run
 # console node migrator/dist/migrate.js`).
 COPY --from=builder --chown=node:node /migrator ./migrator
-# apps/console has no public/ directory today (verified: `ls apps/console` has
-# no public/), so there is nothing to copy there — add a
-# `COPY --from=builder --chown=node:node /app/apps/console/public ./apps/console/public`
-# line if one is added later.
+# public/ carries the Jace mascot (jace.png) — served as static assets by the
+# standalone server.
+COPY --from=builder --chown=node:node /app/apps/console/public ./apps/console/public
 USER node
 EXPOSE 3000
 # Standalone output nests the entry at <tracingRoot>/<app-dir>/server.js

@@ -46,12 +46,16 @@ from agentrail.afk.input_contract import (
     WriterClass,
 )
 from agentrail.afk.queue_state import (
+    ALIGNMENT_DENIED_PARK_REASON,
+    ALIGNMENT_PARK_REASON,
     Event,
     QueueEntry,
     QueueState,
     Terminal,
     Tier,
     admit,
+    apply_admission_alignment,
+    release_if_aligned,
 )
 
 # Sources an entry can come from (mirrors the schema CHECK / drizzle enum).
@@ -258,10 +262,45 @@ class QueueStore:
             if isinstance(gated, Rejected):
                 return gated  # GATE: no row for an issue without machine-checkable AC
 
+        # Tracks ONLY a v2 guardrail park (injection/dup/rate-limit) — distinct
+        # from a dependency park, which ``admit`` below can ALSO produce. The
+        # alignment gate below (#1274 PR③) must still run for a dependency
+        # park (mirrors ``enqueueGithubIssue``'s finding-1 fix), just never
+        # for a v2-guardrail park — there is no automatic unpark for a
+        # guardrail park, so that interaction bug cannot occur the same way
+        # (out of this fix's scope, mirrors the TS ``v2Parked`` short-circuit
+        # exactly).
+        v2_parked = isinstance(gated, QueueEntry) and gated.state is QueueState.PARKED
+
         # Park if any blocked-by dependency is unmet (pure decision). ``admit``
         # preserves a gate park (dup/rate-limit/injection): it will not resurrect a
         # PARKED entry that already carries a reason to QUEUED.
         entry = admit(gated, open_blockers=blocked_by)
+
+        # Alignment gate (#1274 PR③ — the Python mirror of enqueueGithubIssue's
+        # admission hold). Evaluated INDEPENDENTLY of the dependency outcome
+        # above (a dependency park must NOT skip alignment), but skipped
+        # entirely for a v2-guardrail park (mirrors TS's ``!v2Parked`` guard).
+        #
+        # No brief posting from here (locked design point 1): this module has
+        # no Telegram/console access — parking honestly with the right
+        # reason/state is the whole job; the console reconciler
+        # (``apps/console/lib/alignment-reconciler.ts::reconcileAlignmentBriefs``)
+        # is what later finds this row (state='parked', estimated_budget_usd
+        # IS NULL, no jace_approvals row referencing it) and posts its brief.
+        #
+        # `kind` is always 'issue' for every Python-admitted row: this
+        # function has no `kind` parameter and `insert_entry` never sets that
+        # column, so the table's own DEFAULT 'issue' applies unconditionally
+        # (Python has no onboard-kind equivalent — that is TS-only, via
+        # `enqueueOnboard`). "No sanctioned values exist for it" is likewise
+        # always true for a FRESH row here: Python never writes
+        # estimated_budget_usd/model_override on insert (no equivalent of
+        # TS's confirmed-brief URL-match lookup — out of this PR's scope), so
+        # `aligned` reduces to exactly "workspace does not require it".
+        if not v2_parked:
+            aligned = not self._workspace_requires_alignment(workspace_id)
+            entry = apply_admission_alignment(entry, aligned=aligned)
 
         row_id = _entry_uuid(workspace_id, source, external_id)
         self._identity[entry.number] = {
@@ -375,6 +414,36 @@ class QueueStore:
         return [self._row_to_entry(r) for r in rows]
 
     # -- internals -------------------------------------------------------------
+
+    def _workspace_requires_alignment(self, workspace_id: str) -> bool:
+        """Read a workspace's ``require_alignment`` flag (#1274 PR③).
+
+        Mirrors ``github_intake.ts``'s ``workspaceRequiresAlignment`` exactly,
+        INCLUDING its fail-closed default: a missing workspace row (the
+        lookup returns zero rows) reads as ``True`` ("still gate"), not
+        ``False`` — the safer direction, and the Python/TS lockstep default.
+        A real Postgres row for a truly nonexistent workspace_id can never be
+        written in the first place (``queue_entries.workspace_id`` is a
+        ``NOT NULL`` FK onto ``workspaces.id`` — see the migration and
+        ``schema/workspaces.ts``), so this branch is defensive/moot in
+        practice for the real executor; it matters for keeping the two
+        writers' DEFAULT POSTURE identical, not for a reachable production
+        gap.
+
+        VERIFIED while building this PR (see the task report): both real
+        Python call sites (``agentrail/heartbeat/webhook.py``,
+        ``agentrail/heartbeat/runtime.py``) hard-require a non-empty
+        ``workspace_id`` (env/CLI-flag validated) before ``enqueue`` is ever
+        reached — there is no live path where a Python-admitted row carries
+        no workspace binding at all.
+        """
+        rows = self._exec.query(
+            "workspace_require_alignment", {"workspace_id": workspace_id}
+        )
+        if not rows:
+            return True
+        value = rows[0].get("require_alignment")
+        return True if value is None else bool(value)
 
     def _persist_state(self, entry: QueueEntry) -> None:
         ident = self._identity[entry.number]
@@ -491,6 +560,12 @@ _SQL = {
         " remaining_budget, state, blocked_by, park_reason, created_at, updated_at "
         "FROM queue_entries WHERE workspace_id = %(workspace_id)s "
         "AND state = 'queued' ORDER BY created_at ASC LIMIT 1"
+    ),
+    # #1274 PR③: the alignment gate's one new read. Mirrors the TS
+    # ``workspaceRequiresAlignment`` lookup exactly (same column, same
+    # single-row-by-id shape) so both writers resolve the identical fact.
+    "workspace_require_alignment": (
+        "SELECT require_alignment FROM workspaces WHERE id = %(workspace_id)s"
     ),
 }
 

@@ -133,6 +133,109 @@ def admit(entry: QueueEntry, open_blockers: FrozenSet[int]) -> QueueEntry:
     return replace(entry, state=QueueState.QUEUED, reason="")
 
 
+# --- Alignment gate overlay (#1274 PR ③) --------------------------------------
+#
+# This module has no DB/workspace access (its own "no I/O" charter, module
+# docstring above) — whether a workspace REQUIRES alignment, and whether THIS
+# entry already carries a sanctioned budget, are facts the impure persistence
+# edge (``queue_store.py``) resolves and passes in as a plain ``aligned: bool``.
+# These two functions apply ONLY the vocabulary/state overlay on top of that
+# already-resolved fact — the Python mirror of
+# ``packages/db-postgres/src/queries/github_intake.ts``'s ``enqueueGithubIssue``
+# (admission overlay, below) and ``unparkDependents`` (release overlay,
+# further below): same reason strings, same "dependency/v2-guardrail park
+# always wins the reason", same "a denial is never touched" rule — so the two
+# writers (Python heartbeat/webhook intake, TS console intake) leave rows the
+# console cannot tell apart.
+
+#: The exact, house-format park reason both writers use when an entry is
+#: withheld for alignment alone. MUST stay byte-identical to
+#: ``ALIGNMENT_PARK_REASON`` in
+#: ``packages/db-postgres/src/queries/github_intake.ts`` — the console's
+#: ``formatParkReason`` renders the stored reason verbatim, so a human sees
+#: this literal string regardless of which writer parked the row.
+ALIGNMENT_PARK_REASON = "awaiting alignment"
+
+#: The exact denial reason. Also must stay byte-identical to the TS constant
+#: of the same name. A row carrying this reason is NEVER touched by either
+#: writer's release path — a denial is a stronger hold than a resolved
+#: dependency or blocker.
+ALIGNMENT_DENIED_PARK_REASON = "alignment denied — ask Jace to revise the brief"
+
+
+def apply_admission_alignment(entry: QueueEntry, *, aligned: bool) -> QueueEntry:
+    """Admission-time alignment overlay — apply AFTER :func:`admit`, never woven
+    into it. Mirrors ``enqueueGithubIssue``'s inline overlay (the #1274
+    finding-1 fix): alignment is evaluated INDEPENDENTLY of the dependency
+    outcome, but the STORED reason only changes when the entry would
+    otherwise land QUEUED clean — an already-parked entry (an unmet
+    ``blocked_by`` dependency, or a v2 guardrail park the caller must skip
+    this for entirely — see ``queue_store.enqueue``'s own ``v2_parked`` guard)
+    keeps its own, currently-true reason. A future release re-check
+    (:func:`release_if_aligned`) is what surfaces the TRUE "awaiting
+    alignment" reason once that other park clears.
+
+    Pure. ``aligned=True`` is always a no-op (workspace does not require
+    alignment, or — not reachable from Python's own admission path today,
+    since it never writes a confirmed value at insert time — sanctioned
+    values already exist). ``aligned=False`` only ever touches a QUEUED entry.
+    """
+    if aligned or entry.state != QueueState.QUEUED:
+        return entry
+    return replace(entry, state=QueueState.PARKED, reason=ALIGNMENT_PARK_REASON)
+
+
+def release_if_aligned(
+    entry: QueueEntry, open_blockers: FrozenSet[int], *, aligned: bool
+) -> QueueEntry:
+    """Release-time alignment overlay — the Python mirror of ``unparkDependents``.
+
+    Re-admits ``entry`` via :func:`admit` (the pure dependency decision,
+    unchanged) and then alignment-gates the result EXACTLY like
+    ``unparkDependents`` gates its own release:
+
+    - A denied entry (``entry.reason == ALIGNMENT_DENIED_PARK_REASON``) is
+      NEVER touched — returned unchanged, before :func:`admit` even runs. A
+      denial is a stronger hold than a resolved dependency (mirrors
+      ``unparkDependents``'s own "a denial always wins" rule).
+    - Otherwise: if every declared blocker is now met (:func:`admit` would
+      return QUEUED) AND ``aligned`` is True, the entry is released to
+      QUEUED — the pre-existing dependency-only release behaviour,
+      byte-identical when alignment was never in the picture.
+    - If every blocker is met but ``aligned`` is False, the entry STAYS
+      PARKED but its reason flips to :data:`ALIGNMENT_PARK_REASON` — the
+      dependency is no longer why it's stuck, so the stale "blocked-by"
+      reason is replaced with the TRUE one (mirrors ``unparkDependents``'s
+      "the brief already exists... just make the stored reason honest"
+      comment). THIS is the exact bypass class closed here: the caller MUST
+      pass the row's real ``estimated_budget_usd IS NOT NULL`` (or
+      workspace-does-not-require-alignment) fact as ``aligned`` — a
+      dependency clearing alone is never enough to release an entry into a
+      claimable, unpriced state.
+    - If a blocker is still unmet, :func:`admit` parks it for the dependency
+      reason exactly as before — alignment is not even consulted (mirrors
+      ``unparkDependents``'s own "still blocked: parkReason is left exactly
+      as-is" short-circuit).
+
+    NOTE (verified while building this PR): Python's live heartbeat/webhook
+    loop (``agentrail/heartbeat/runtime.py``) has no caller that re-admits a
+    dependency-parked row once its blocker clears — ``queue_entries``
+    re-enqueue is ``ON CONFLICT DO NOTHING`` (never resurrects/updates an
+    existing row), and no live sweep re-invokes :func:`admit` against an
+    already-persisted PARKED row today. This function exists so that gap is
+    closed at the pure-decision layer NOW, before any live release trigger is
+    wired — mirroring the TS fix exactly, ready for the day a Python release
+    caller exists, rather than leaving the same bypass latent in the pure
+    state machine for a future caller to reintroduce.
+    """
+    if entry.reason == ALIGNMENT_DENIED_PARK_REASON:
+        return entry
+    released = admit(entry, open_blockers)
+    if released.state == QueueState.QUEUED and not aligned:
+        return replace(released, state=QueueState.PARKED, reason=ALIGNMENT_PARK_REASON)
+    return released
+
+
 def transition(entry: QueueEntry, event: Event) -> QueueEntry:
     """Apply one ``event`` to an entry, returning the next entry. Pure.
 

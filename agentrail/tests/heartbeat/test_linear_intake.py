@@ -108,6 +108,12 @@ class _FakeExecutor:
     def __init__(self) -> None:
         self.entries: Dict[str, Dict[str, Any]] = {}
         self.runs: Dict[str, Dict[str, Any]] = {}
+        # #1274 PR③: mirrors test_queue_store.FakeExecutor's own
+        # require_alignment map/default — see that file's comment. This
+        # suite is about connector wiring (Linear vs GitHub source), not
+        # alignment, so every workspace here defaults to "does not require
+        # alignment" unless a test opts in.
+        self.require_alignment: Dict[str, bool] = {}
 
     def execute(self, op: str, params: Dict[str, Any]) -> None:
         if op == "insert_entry":
@@ -136,6 +142,14 @@ class _FakeExecutor:
             ]
             rows.sort(key=lambda r: r["created_at"])
             return rows[:1]
+        if op == "workspace_require_alignment":
+            return [
+                {
+                    "require_alignment": self.require_alignment.get(
+                        params["workspace_id"], False
+                    )
+                }
+            ]
         raise AssertionError(f"unexpected query {op!r}")  # pragma: no cover
 
 

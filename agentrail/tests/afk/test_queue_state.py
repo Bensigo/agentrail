@@ -10,12 +10,16 @@ from dataclasses import replace
 import pytest
 
 from agentrail.afk.queue_state import (
+    ALIGNMENT_DENIED_PARK_REASON,
+    ALIGNMENT_PARK_REASON,
     Event,
     QueueEntry,
     QueueState,
     Terminal,
     Tier,
     admit,
+    apply_admission_alignment,
+    release_if_aligned,
     transition,
 )
 
@@ -176,3 +180,127 @@ def test_budget_exhaustion_terminates_at_top_tier():
     # First GATE_RED at the max tier hard-stops immediately (no infinite retry).
     assert e.state is Terminal.ESCALATED_TO_HUMAN
     assert len(budgets) == 1
+
+
+# --- #1274 PR③: the alignment gate overlay (Python mirror of github_intake.ts) -
+#
+# ``apply_admission_alignment``/``release_if_aligned`` are pure — this module
+# has no DB/workspace access, so "is alignment satisfied" always arrives as an
+# already-resolved ``aligned: bool``. Mirrors ``ALIGNMENT_PARK_REASON``/
+# ``ALIGNMENT_DENIED_PARK_REASON`` and the exact scenarios in
+# `packages/db-postgres/src/__tests__/github-intake-alignment-gate.test.ts`
+# and `github-intake-park-reason.test.ts` (the release-side "finding-1 fix"
+# describe block) — same test names/shapes, ported to the pure Python seam.
+
+
+def test_alignment_park_reason_matches_the_ts_constant():
+    # Lockstep pin: this literal string is what the console's
+    # formatParkReason renders verbatim, from EITHER writer.
+    assert ALIGNMENT_PARK_REASON == "awaiting alignment"
+
+
+def test_alignment_denied_park_reason_matches_the_ts_constant():
+    assert ALIGNMENT_DENIED_PARK_REASON == "alignment denied — ask Jace to revise the brief"
+
+
+# -- admission overlay (apply_admission_alignment) -----------------------------
+
+
+def test_admission_aligned_true_is_a_no_op_on_a_clean_queued_entry():
+    e = admit(_entry(), open_blockers=frozenset())
+    assert e.state is QueueState.QUEUED
+    result = apply_admission_alignment(e, aligned=True)
+    assert result == e
+
+
+def test_admission_aligned_false_parks_a_clean_queued_entry():
+    e = admit(_entry(), open_blockers=frozenset())
+    assert e.state is QueueState.QUEUED
+    result = apply_admission_alignment(e, aligned=False)
+    assert result.state is QueueState.PARKED
+    assert result.reason == ALIGNMENT_PARK_REASON
+
+
+def test_admission_aligned_false_keeps_the_dependency_reason_dependency_park_wins():
+    # #1274 finding-1 fix mirror: a dependency-parked entry is NOT
+    # double-parked or overwritten by the alignment overlay — the dependency
+    # reason is the more specific, currently-true one.
+    e = admit(_entry(blocked_by=frozenset({9})), open_blockers=frozenset({9}))
+    assert e.state is QueueState.PARKED
+    assert "9" in e.reason
+    dependency_reason = e.reason
+    result = apply_admission_alignment(e, aligned=False)
+    assert result.state is QueueState.PARKED
+    assert result.reason == dependency_reason  # unchanged, not ALIGNMENT_PARK_REASON
+
+
+def test_admission_aligned_true_passes_a_dependency_park_through_unchanged():
+    e = admit(_entry(blocked_by=frozenset({9})), open_blockers=frozenset({9}))
+    result = apply_admission_alignment(e, aligned=True)
+    assert result == e
+
+
+# -- release overlay (release_if_aligned) — mirrors unparkDependents exactly --
+
+
+def test_release_base_bypass_repro_blocker_clears_but_still_unaligned_stays_parked():
+    """THE bug this PR closes (Python side): a resolved dependency alone must
+    never be enough to release an entry into a claimable, unpriced state."""
+    parked = admit(_entry(blocked_by=frozenset({42})), open_blockers=frozenset({42}))
+    assert parked.state is QueueState.PARKED
+
+    released = release_if_aligned(parked, open_blockers=frozenset(), aligned=False)
+
+    assert released.state is QueueState.PARKED  # NOT queued
+    assert released.reason == ALIGNMENT_PARK_REASON  # the TRUE reason, not stale
+
+
+def test_release_confirm_then_release_aligned_before_blocker_clears_goes_queued():
+    """confirm-then-release: alignment was already satisfied (e.g. a human
+    confirmed the brief) before the dependency cleared — releasing goes
+    straight to QUEUED, values preserved by the caller (not this function's
+    concern — it only decides state/reason)."""
+    parked = admit(_entry(blocked_by=frozenset({42})), open_blockers=frozenset({42}))
+    released = release_if_aligned(parked, open_blockers=frozenset(), aligned=True)
+    assert released.state is QueueState.QUEUED
+    assert released.reason == ""
+
+
+def test_release_then_confirm_unaligned_release_then_a_later_aligned_recheck_queues():
+    """release-then-confirm: releasing first (still unaligned) leaves it
+    parked 'awaiting alignment'; a LATER re-check (now aligned=True, e.g.
+    confirmed after the fact) with the same cleared blockers goes queued."""
+    parked = admit(_entry(blocked_by=frozenset({42})), open_blockers=frozenset({42}))
+    first = release_if_aligned(parked, open_blockers=frozenset(), aligned=False)
+    assert first.state is QueueState.PARKED
+    assert first.reason == ALIGNMENT_PARK_REASON
+
+    second = release_if_aligned(first, open_blockers=frozenset(), aligned=True)
+    assert second.state is QueueState.QUEUED
+    assert second.reason == ""
+
+
+def test_release_denied_entry_is_never_touched_even_if_now_aligned():
+    """denied-then-release: a denial survives a later-resolved dependency AND
+    a later-aligned recheck, completely untouched — a denial is a stronger
+    hold than anything this overlay could say."""
+    denied = replace(
+        _entry(blocked_by=frozenset({42})),
+        state=QueueState.PARKED,
+        reason=ALIGNMENT_DENIED_PARK_REASON,
+    )
+    released = release_if_aligned(denied, open_blockers=frozenset(), aligned=True)
+    assert released == denied  # byte-identical, nothing changed
+
+
+def test_release_still_blocked_never_even_consults_alignment():
+    # Two blockers; only one clears. Dependency short-circuits before
+    # alignment is even consulted (mirrors unparkDependents' own
+    # stillUnmet.length > 0 -> continue).
+    parked = admit(
+        _entry(blocked_by=frozenset({42, 43})), open_blockers=frozenset({42, 43})
+    )
+    released = release_if_aligned(parked, open_blockers=frozenset({43}), aligned=False)
+    assert released.state is QueueState.PARKED
+    assert "43" in released.reason
+    assert released.reason != ALIGNMENT_PARK_REASON

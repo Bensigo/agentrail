@@ -425,6 +425,6 @@ export const WORK_STATE_CHIP_CLASSNAME: Record<QueueState, string> = {
   running: "bg-[var(--orange-09)]/20 text-[var(--orange-11)] border border-[var(--orange-09)]/30",
   "escalated-to-human": "bg-[var(--red-09)]/20 text-[var(--red-11)] border border-[var(--red-09)]/30",
   blocked: "bg-[var(--yellow-09)]/15 text-[var(--yellow-11)] border border-[var(--yellow-09)]/30",
-  parked: "bg-[#3b82f6]/15 text-[#7cc0ff] border border-[#3b82f6]/30",
+  parked: "bg-[var(--parked-09)]/15 text-[var(--parked-11)] border border-[var(--parked-09)]/30",
   queued: "bg-[var(--gray-04)] text-[var(--gray-10)] border border-[var(--gray-06)]",
 };

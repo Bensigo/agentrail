@@ -216,7 +216,7 @@ function SetupHelp({ connector }: { connector: ConnectorView }) {
             href={helpUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 self-start text-xs text-[#5b9dff] hover:underline"
+            className="inline-flex items-center gap-1 self-start text-xs text-[var(--blue-11-alt)] hover:underline"
           >
             Open {connector.label} docs
             <ExternalLink size={11} />

@@ -133,7 +133,7 @@ export function FailureActions({
           className={`inline-flex items-center gap-1.5 h-8 px-3 rounded text-xs font-medium border transition-colors disabled:opacity-50 ${
             isFixed
               ? "bg-[var(--gray-03)] border-[var(--gray-06)] text-[var(--gray-11)] hover:border-[var(--gray-08)]"
-              : "bg-[#30a46c]/15 border-[#30a46c]/40 text-[#3dd68c] hover:bg-[#30a46c]/25"
+              : "bg-[var(--fixed-09)]/15 border-[var(--fixed-09)]/40 text-[var(--fixed-11)] hover:bg-[var(--fixed-09)]/25"
           }`}
         >
           {isFixed ? (
@@ -166,7 +166,7 @@ export function FailureActions({
                 : "Add to memory"}
           </button>
           {memoryState.kind === "ok" && (
-            <span className="text-xs text-[#3dd68c]">{memoryState.message}</span>
+            <span className="text-xs text-[var(--fixed-11)]">{memoryState.message}</span>
           )}
           {memoryState.kind === "error" && (
             <span className="text-xs text-[var(--red-11)]">{memoryState.message}</span>
@@ -222,12 +222,12 @@ export function FailureActions({
                 href={issueState.url}
                 target="_blank"
                 rel="noreferrer"
-                className="text-xs text-[#3dd68c] hover:underline"
+                className="text-xs text-[var(--fixed-11)] hover:underline"
               >
                 {issueState.message} →
               </a>
             ) : (
-              <span className="text-xs text-[#3dd68c]">{issueState.message}</span>
+              <span className="text-xs text-[var(--fixed-11)]">{issueState.message}</span>
             ))}
           {issueState.kind === "error" && (
             <span className="text-xs text-[var(--red-11)]">{issueState.message}</span>
@@ -241,7 +241,7 @@ export function FailureActions({
 function StatusBadge({ status }: { status: Status }) {
   if (status === "fixed") {
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-xs font-medium bg-[#30a46c]/20 text-[#3dd68c] border border-[#30a46c]/30">
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-xs font-medium bg-[var(--fixed-09)]/20 text-[var(--fixed-11)] border border-[var(--fixed-09)]/30">
         <Check className="h-3 w-3" /> Fixed
       </span>
     );

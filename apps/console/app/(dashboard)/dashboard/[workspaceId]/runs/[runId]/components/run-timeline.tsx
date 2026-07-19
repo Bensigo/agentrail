@@ -24,12 +24,12 @@ export interface TimelineEvent {
 }
 
 const EVENT_TYPE_COLORS: Record<string, string> = {
-  context_event: "#7c66dc",
+  context_event: "var(--timeline-context)",
   failure_event: "var(--red-09)",
   review_gate: "var(--orange-09)",
   cost_event: "var(--blue-09)",
   audit_event: "var(--orange-11)",
-  agent_activity: "#b58df1",
+  agent_activity: "var(--timeline-activity)",
   // AFK action types map to teal / semantic colors
   EnqueueIssue: "var(--teal-09)",
   ClaimIssue: "var(--teal-09)",
@@ -44,7 +44,11 @@ const EVENT_TYPE_COLORS: Record<string, string> = {
 
 function dotColor(event_type: string, kind?: string): string {
   const key = kind ?? event_type;
-  return EVENT_TYPE_COLORS[key] ?? EVENT_TYPE_COLORS[event_type] ?? "#6f6f6f";
+  return (
+    EVENT_TYPE_COLORS[key] ??
+    EVENT_TYPE_COLORS[event_type] ??
+    "var(--timeline-neutral)"
+  );
 }
 
 function formatTimestamp(ts: string | Date): string {
@@ -168,7 +172,7 @@ function TimelineEntry({
             {link && (
               <Link
                 href={link}
-                className="inline-flex items-center gap-1 text-xs text-[#7c66dc] hover:underline"
+                className="inline-flex items-center gap-1 text-xs text-[var(--timeline-context)] hover:underline"
                 onClick={(e) => e.stopPropagation()}
               >
                 View {event.event_type.replace(/_/g, " ")} detail →

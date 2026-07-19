@@ -60,6 +60,23 @@ const JACE_DOES = [
 ];
 
 /**
+ * How we work together — the real loop, in order (controller ruling, #1279
+ * PR ②: "issue→brief→approve→PR→you merge; merge-permission opt-in is now
+ * TRUE and worth saying"). Merge permission is a real, live, owner-only
+ * toggle (Settings → Permissions), off by default — so "you merge" stays
+ * the honest default step, and step 5 states the opt-in without overclaiming
+ * it as automatic. See apps/console/app/api/v1/runner/result/route.ts for
+ * the actual enforcement this line describes.
+ */
+const HOW_WE_WORK = [
+  "You message me a task, or hand me a GitHub issue.",
+  "I reply with a brief — task type, model, and a dollar estimate — before I touch any code.",
+  "You approve. That confirms the run's budget.",
+  "I open a pull request against your repo.",
+  "You merge it — or turn on merge permission in Settings and I'll merge it myself once the gate is green.",
+];
+
+/**
  * The secondary sign-in path (controller ruling, #1279 PR ①: "GitHub sign-in
  * demoted to nav + footer secondary"). Also the honest fallback for the
  * primary CTA itself when no hosted Telegram bot is configured — see
@@ -105,7 +122,7 @@ export default async function LandingPage() {
         <a href="#top" className="flex items-center gap-2.5">
           <RailMark />
           <span className={`${display.className} text-[15px] font-extrabold tracking-tight`}>
-            AgentRail
+            Jace
           </span>
         </a>
         <form action={signInWithGithub}>
@@ -153,26 +170,12 @@ export default async function LandingPage() {
           <span className="font-semibold text-[var(--gray-12)]">
             {TRACK_RECORD.shipped} issues
           </span>{" "}
-          from open to a reviewed PR on AgentRail&apos;s own backlog —
-          unattended. I count the {TRACK_RECORD.failed} that didn&apos;t land,
-          too.
+          from open to a reviewed PR on my own backlog — unattended. I count
+          the {TRACK_RECORD.failed} that didn&apos;t land, too.
         </p>
       </section>
 
-      {/* 4 — One product visual: a real Jace conversation, not a dashboard
-          mockup. Every field Jace's reply shows — task type, suggested
-          model, the $ estimate — is computed live by the real estimate lib,
-          and the outcome ping is byte-identical to what the product actually
-          sends. See _conversation-demo-data.ts. */}
-      <section className="px-6 pb-24 sm:pb-32">
-        <Reveal className="mx-auto max-w-[1080px]">
-          <div className="overflow-hidden rounded-xl border border-[var(--gray-05)] shadow-[0_30px_80px_-40px_rgba(0,0,0,0.35)]">
-            <ConversationDemo />
-          </div>
-        </Reveal>
-      </section>
-
-      {/* 5 — What Jace does: three one-line value points */}
+      {/* 4 — What Jace does: three one-line value points */}
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[720px]">
           <Reveal>
@@ -200,7 +203,50 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 6 — Closing CTA + minimal footer */}
+      {/* 5 — One product visual: a real Jace conversation, not a dashboard
+          mockup. Every field Jace's reply shows — task type, suggested
+          model, the $ estimate — is computed live by the real estimate lib,
+          and the outcome ping is byte-identical to what the product actually
+          sends. See _conversation-demo-data.ts. */}
+      <section className="px-6 pb-24 sm:pb-32">
+        <Reveal className="mx-auto max-w-[1080px]">
+          <div className="overflow-hidden rounded-xl border border-[var(--gray-05)] shadow-[0_30px_80px_-40px_rgba(0,0,0,0.35)]">
+            <ConversationDemo />
+          </div>
+        </Reveal>
+      </section>
+
+      {/* 6 — How we work together: the exact loop, in order. See HOW_WE_WORK's
+          own comment above for why step 5 phrases merge permission as an
+          opt-in rather than the default. */}
+      <section className="px-6 pb-24 sm:pb-32">
+        <div className="mx-auto max-w-[640px]">
+          <Reveal>
+            <h2
+              className={`${display.className} text-center text-[clamp(1.6rem,3vw,2.2rem)] font-extrabold tracking-[-0.03em]`}
+            >
+              How we work together
+            </h2>
+          </Reveal>
+          <ol className="mt-12 flex flex-col gap-6">
+            {HOW_WE_WORK.map((line, i) => (
+              <Reveal key={i} delay={i * 70}>
+                <li className="flex items-start gap-4">
+                  <span
+                    aria-hidden
+                    className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--gray-06)] font-mono text-[11px] font-medium text-[var(--gray-10)]"
+                  >
+                    {i + 1}
+                  </span>
+                  <p className="text-[14px] leading-relaxed text-[var(--gray-11)]">{line}</p>
+                </li>
+              </Reveal>
+            ))}
+          </ol>
+        </div>
+      </section>
+
+      {/* 7 — Closing CTA + minimal footer */}
       <section className="px-6 pb-24 text-center">
         <Reveal className="mx-auto max-w-[620px]">
           <h2
@@ -223,7 +269,7 @@ export default async function LandingPage() {
           <div className="flex items-center gap-2.5">
             <RailMark />
             <span className={`${display.className} text-[14px] font-extrabold tracking-tight`}>
-              AgentRail
+              Jace
             </span>
           </div>
           <nav className="flex items-center gap-6 text-[13px] text-[var(--gray-10)]">

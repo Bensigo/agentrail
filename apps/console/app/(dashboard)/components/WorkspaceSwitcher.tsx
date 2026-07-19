@@ -97,7 +97,7 @@ export function WorkspaceSwitcher({ workspaces, activeId }: WorkspaceSwitcherPro
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors duration-150 hover:bg-[var(--gray-03)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-accent)]"
+        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors duration-150 hover:bg-[var(--gray-03)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-text)]"
       >
         <WorkspaceAvatar workspace={active} size={22} />
         <span className="min-w-0 flex-1">
@@ -137,7 +137,7 @@ export function WorkspaceSwitcher({ workspaces, activeId }: WorkspaceSwitcherPro
                     {w.name}
                   </span>
                   {isActive && (
-                    <Check className="h-3.5 w-3.5 shrink-0 text-[var(--brand-accent)]" />
+                    <Check className="h-3.5 w-3.5 shrink-0 text-[var(--gray-12)]" />
                   )}
                 </button>
               );

@@ -12,7 +12,7 @@ export function TopBarBreadcrumb() {
   const pathname = usePathname();
 
   return (
-    <p className="text-sm font-medium text-[var(--gray-12)]">
+    <p className="text-sm font-bold text-[var(--gray-12)]">
       {breadcrumbLabel(pathname)}
     </p>
   );

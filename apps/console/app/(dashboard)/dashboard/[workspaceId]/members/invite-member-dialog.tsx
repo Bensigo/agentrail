@@ -130,7 +130,7 @@ export function InviteMemberDialog({
               placeholder="name@example.com"
               className={[
                 "h-8 rounded bg-[var(--gray-01)] border px-3 font-mono text-sm text-[var(--gray-12)] placeholder:text-[var(--gray-08)]",
-                "focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)] transition-colors duration-150",
+                "focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)] transition-colors duration-150",
                 emailError
                   ? "border-[var(--red-09)]"
                   : "border-[var(--gray-05)] hover:border-[var(--gray-08)]",
@@ -148,7 +148,7 @@ export function InviteMemberDialog({
               id="invite-role"
               value={role}
               onChange={(e) => setRole(e.target.value as "member" | "admin")}
-              className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-3 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)] transition-colors duration-150"
+              className="h-8 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-3 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)] transition-colors duration-150"
             >
               <option value="member">Member</option>
               <option value="admin">Admin</option>

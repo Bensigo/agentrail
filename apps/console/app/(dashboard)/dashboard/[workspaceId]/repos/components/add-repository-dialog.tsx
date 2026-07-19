@@ -159,7 +159,7 @@ export function AddRepositoryDialog({
               onChange={(e) => handleNameChange(e.target.value)}
               onBlur={() => setTouched((t) => ({ ...t, name: true }))}
               placeholder="e.g. bensigo/agentrail"
-              className="h-8 rounded bg-[var(--gray-01)] border border-[var(--gray-05)] px-3 font-mono text-sm text-[var(--gray-12)] placeholder:text-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)]"
+              className="h-8 rounded bg-[var(--gray-01)] border border-[var(--gray-05)] px-3 font-mono text-sm text-[var(--gray-12)] placeholder:text-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)]"
               autoFocus
             />
             {touched.name && nameError && (
@@ -178,7 +178,7 @@ export function AddRepositoryDialog({
               onChange={(e) => setUrl(e.target.value)}
               onBlur={() => setTouched((t) => ({ ...t, url: true }))}
               placeholder="https://github.com/owner/repo"
-              className="h-8 rounded bg-[var(--gray-01)] border border-[var(--gray-05)] px-3 font-mono text-sm text-[var(--gray-12)] placeholder:text-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)]"
+              className="h-8 rounded bg-[var(--gray-01)] border border-[var(--gray-05)] px-3 font-mono text-sm text-[var(--gray-12)] placeholder:text-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)]"
             />
             {touched.url && urlError && (
               <p className="text-xs text-[var(--red-11)]">{urlError}</p>
@@ -196,7 +196,7 @@ export function AddRepositoryDialog({
               onChange={(e) => setDefaultBranch(e.target.value)}
               onBlur={() => setTouched((t) => ({ ...t, default_branch: true }))}
               placeholder="main"
-              className="h-8 rounded bg-[var(--gray-01)] border border-[var(--gray-05)] px-3 font-mono text-sm text-[var(--gray-12)] placeholder:text-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)]"
+              className="h-8 rounded bg-[var(--gray-01)] border border-[var(--gray-05)] px-3 font-mono text-sm text-[var(--gray-12)] placeholder:text-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)]"
             />
             {touched.default_branch && branchError && (
               <p className="text-xs text-[var(--red-11)]">{branchError}</p>

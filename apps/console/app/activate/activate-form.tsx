@@ -71,7 +71,7 @@ export function ActivateForm() {
               placeholder="WDJB-MJHT"
               autoComplete="off"
               spellCheck={false}
-              className="h-9 rounded bg-[var(--gray-01)] border border-[var(--gray-05)] px-3 font-mono text-sm tracking-widest text-[var(--gray-12)] placeholder:text-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[var(--yellow-09)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)]"
+              className="h-9 rounded bg-[var(--gray-01)] border border-[var(--gray-05)] px-3 font-mono text-sm tracking-widest text-[var(--gray-12)] placeholder:text-[var(--gray-08)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)] focus:ring-offset-2 focus:ring-offset-[var(--gray-02)]"
               autoFocus
             />
           </div>

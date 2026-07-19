@@ -39,6 +39,41 @@
 
   --brand-accent: #9e6c00;
 
+  /* Straggler tokens (#1282 PR②) — one-off hex literals promoted to tokens.
+     Dark values below and in .dark are copied verbatim from the hardcoded
+     literals they replace (zero visual diff in dark mode); light values are
+     newly chosen to read correctly on a light background. See the invariant
+     block right below for the handful that don't change between themes
+     (paired with an already-invariant -09 base, or a fixed decorative dot). */
+  --gate-pass-bg: #e3f5ec; /* review-gate "passed" badge bg (dark: #1a3d33) */
+  --gate-fail-bg: #fbe9e9; /* review-gate "failed"/"critical" badge bg (dark: #3d1a1a) */
+  --gate-pending-bg: #f7f1d9; /* review-gate "pending" badge bg (dark: #3d3a1a) */
+  --gate-major-bg: #faeade; /* review-gate "major" severity badge bg (dark: #3d2a1a) */
+  --gate-major-text: #cc4e00; /* review-gate "major" severity badge text (dark: #ffb077) */
+  --diag-waste: #cc4e00; /* context-pack precision-waste dot/badge text (dark: #ffb454) */
+  --diag-waste-bg: #fbeedb; /* context-pack precision-waste badge bg (dark: #3a2e12) */
+  --diag-miss: #0d74ce; /* context-pack recall-miss dot/badge text (dark: #7aa2ff) */
+  --diag-miss-bg: #e7f0fc; /* context-pack recall-miss badge bg (dark: #12233a) */
+  --diag-included-bg: #e3f5ec; /* context-pack included badge bg (dark: #1a3a2e) */
+  --diag-excluded-bg: #fbe9e9; /* context-pack excluded badge bg (dark: #3a1a1a) */
+  --fixed-11: #208368; /* failure "marked fixed" text (dark: #3dd68c) */
+  --severity-medium-text: #9e6c00; /* medium-severity badge text (dark: #f5d90a) */
+  --blue-11-alt: #0d74ce; /* connector setup-help link (dark: #5b9dff) */
+  --shadow-overlay: 0 25px 50px -12px rgb(0 0 0 / 0.25); /* modal dialogs (dark: 0.5 alpha, TASTE.md shadow-2xl/"Overlays") */
+  --shadow-dropdown: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1); /* dropdowns, TASTE.md shadow-lg (dark: single heavier layer) */
+
+  /* Theme-invariant stragglers — same value in light and dark, matching the
+     existing -09 scale's convention (not redefined in .dark below). Either
+     paired with an already-invariant -09 base (button hover-darken), or a
+     fixed decorative dot/wash that was never meant to react to the toggle. */
+  --grass-09: #46a758; /* health-rates-panel "healthy" accept-rate indicator */
+  --fixed-09: #30a46c; /* failure "marked fixed" bg/border base */
+  --timeline-context: #7c66dc; /* run timeline: context_event dot + link */
+  --timeline-activity: #b58df1; /* run timeline: agent_activity dot */
+  --timeline-neutral: #6f6f6f; /* run timeline: unknown-event-type fallback dot */
+  --yellow-09-hover: #ffdc00; /* hover-darken for filled yellow-09 buttons */
+  --red-09-hover: #ce2c31; /* hover-darken for filled red-09 buttons */
+
   color-scheme: light;
 }
 
@@ -67,6 +102,26 @@
   --teal-11: #0bd8b6;
 
   --brand-accent: #ffe629;
+
+  /* Straggler tokens (#1282 PR②) — dark values are the exact literals being
+     replaced; see the :root block above for what each pairs with in light
+     mode and which file/component it comes from. */
+  --gate-pass-bg: #1a3d33;
+  --gate-fail-bg: #3d1a1a;
+  --gate-pending-bg: #3d3a1a;
+  --gate-major-bg: #3d2a1a;
+  --gate-major-text: #ffb077;
+  --diag-waste: #ffb454;
+  --diag-waste-bg: #3a2e12;
+  --diag-miss: #7aa2ff;
+  --diag-miss-bg: #12233a;
+  --diag-included-bg: #1a3a2e;
+  --diag-excluded-bg: #3a1a1a;
+  --fixed-11: #3dd68c;
+  --severity-medium-text: #f5d90a;
+  --blue-11-alt: #5b9dff;
+  --shadow-overlay: 0 25px 50px -12px rgb(0 0 0 / 0.5);
+  --shadow-dropdown: 0 16px 40px -12px rgb(0 0 0 / 0.55);
 
   color-scheme: dark;
 }

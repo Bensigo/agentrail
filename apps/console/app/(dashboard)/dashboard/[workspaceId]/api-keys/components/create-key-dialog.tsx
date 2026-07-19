@@ -75,7 +75,7 @@ export function CreateKeyDialog({
     >
       <div
         className="relative w-full max-w-md rounded bg-[var(--gray-02)] border border-[var(--gray-05)] shadow-2xl p-6"
-        style={{ boxShadow: "0 25px 50px -12px rgb(0 0 0 / 0.5)" }}
+        style={{ boxShadow: "var(--shadow-overlay)" }}
       >
         <button
           onClick={onClose}
@@ -121,7 +121,7 @@ export function CreateKeyDialog({
               <button
                 type="submit"
                 disabled={loading || !name.trim()}
-                className="h-8 px-4 rounded bg-[var(--yellow-09)] text-black text-sm font-medium hover:bg-[#ffdc00] disabled:opacity-50 transition-colors"
+                className="h-8 px-4 rounded bg-[var(--yellow-09)] text-black text-sm font-medium hover:bg-[var(--yellow-09-hover)] disabled:opacity-50 transition-colors"
               >
                 {loading ? "Creating…" : "Create key"}
               </button>
@@ -157,7 +157,7 @@ export function CreateKeyDialog({
             <div className="flex justify-end">
               <button
                 onClick={onClose}
-                className="h-8 px-4 rounded bg-[var(--yellow-09)] text-black text-sm font-medium hover:bg-[#ffdc00] transition-colors"
+                className="h-8 px-4 rounded bg-[var(--yellow-09)] text-black text-sm font-medium hover:bg-[var(--yellow-09-hover)] transition-colors"
               >
                 Done
               </button>

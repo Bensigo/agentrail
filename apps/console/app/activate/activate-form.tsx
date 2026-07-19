@@ -47,7 +47,7 @@ export function ActivateForm() {
   return (
     <div
       className="w-full max-w-md rounded bg-[var(--gray-02)] border border-[var(--gray-05)] p-6"
-      style={{ boxShadow: "0 25px 50px -12px rgb(0 0 0 / 0.5)" }}
+      style={{ boxShadow: "var(--shadow-overlay)" }}
     >
       <h1 className="text-base font-semibold text-[var(--gray-12)] mb-1">
         Authorize a runner

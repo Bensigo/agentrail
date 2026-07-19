@@ -168,10 +168,10 @@ export default async function ContextPackDetailPage({
           <h2 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--gray-09)]">
             <span
               className="inline-block h-2 w-2 rounded-full"
-              style={{ backgroundColor: "#ffb454" }}
+              style={{ backgroundColor: "var(--diag-waste)" }}
             />
             Precision waste
-            <span className="rounded-sm bg-[#3a2e12] px-1.5 py-0.5 text-[10px] text-[#ffb454] font-mono">
+            <span className="rounded-sm bg-[var(--diag-waste-bg)] px-1.5 py-0.5 text-[10px] text-[var(--diag-waste)] font-mono">
               {readGrounded ? waste.length : "n/a"}
             </span>
           </h2>
@@ -226,10 +226,10 @@ export default async function ContextPackDetailPage({
           <h2 className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--gray-09)]">
             <span
               className="inline-block h-2 w-2 rounded-full"
-              style={{ backgroundColor: "#7aa2ff" }}
+              style={{ backgroundColor: "var(--diag-miss)" }}
             />
             Recall miss
-            <span className="rounded-sm bg-[#12233a] px-1.5 py-0.5 text-[10px] text-[#7aa2ff] font-mono">
+            <span className="rounded-sm bg-[var(--diag-miss-bg)] px-1.5 py-0.5 text-[10px] text-[var(--diag-miss)] font-mono">
               {readGrounded ? miss.length : "n/a"}
             </span>
           </h2>
@@ -289,7 +289,7 @@ export default async function ContextPackDetailPage({
               style={{ backgroundColor: "var(--green-11)" }}
             />
             Included
-            <span className="rounded-sm bg-[#1a3a2e] px-1.5 py-0.5 text-[10px] text-[var(--green-11)] font-mono">
+            <span className="rounded-sm bg-[var(--diag-included-bg)] px-1.5 py-0.5 text-[10px] text-[var(--green-11)] font-mono">
               {included.length}
             </span>
           </h2>
@@ -377,7 +377,7 @@ export default async function ContextPackDetailPage({
               style={{ backgroundColor: "var(--red-11)" }}
             />
             Excluded
-            <span className="rounded-sm bg-[#3a1a1a] px-1.5 py-0.5 text-[10px] text-[var(--red-11)] font-mono">
+            <span className="rounded-sm bg-[var(--diag-excluded-bg)] px-1.5 py-0.5 text-[10px] text-[var(--red-11)] font-mono">
               {excluded.length}
             </span>
           </h2>

@@ -72,7 +72,7 @@ export function ReposTable({ workspaceId, initialRows, canManage }: ReposTablePr
         <div className="flex justify-end">
           <button
             onClick={() => setShowAdd(true)}
-            className="flex items-center gap-1.5 h-8 px-3 rounded bg-[var(--yellow-09)] text-black text-sm font-medium hover:bg-[#ffdc00] transition-colors"
+            className="flex items-center gap-1.5 h-8 px-3 rounded bg-[var(--yellow-09)] text-black text-sm font-medium hover:bg-[var(--yellow-09-hover)] transition-colors"
           >
             <Plus size={14} />
             Add repository

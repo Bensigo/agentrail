@@ -95,7 +95,7 @@ export function HealthRatesPanel({ workspaceId }: HealthRatesPanelProps) {
               {/* Accept rate — falsifiable against the 50% health line. */}
               <div
                 className={`flex flex-col gap-1 border-l-2 pl-3 ${
-                  below ? "border-[var(--red-11)]" : "border-[#46a758]"
+                  below ? "border-[var(--red-11)]" : "border-[var(--grass-09)]"
                 }`}
               >
                 <span className="text-[10px] font-medium uppercase tracking-wide text-[var(--gray-09)]">
@@ -132,7 +132,7 @@ export function HealthRatesPanel({ workspaceId }: HealthRatesPanelProps) {
             <div className="flex flex-col gap-1">
               <div className="relative h-2.5 w-full overflow-hidden rounded-sm bg-[var(--gray-04)]">
                 <div
-                  className={`h-full ${below ? "bg-[var(--red-11)]" : "bg-[#46a758]"}`}
+                  className={`h-full ${below ? "bg-[var(--red-11)]" : "bg-[var(--grass-09)]"}`}
                   style={{ width: `${acceptPct}%` }}
                   aria-hidden="true"
                 />

@@ -389,6 +389,58 @@ export async function reconcileStaleRuns(workspaceId: string): Promise<number> {
   return Array.from(rows).length;
 }
 
+/** A run resolved for a specific issue — the shape a reply-context preface needs. */
+export interface LatestRunForIssue {
+  runId: string;
+  state: string;
+}
+
+/**
+ * Resolve the most recently created run for a workspace's issue number
+ * (#1277 — replyable run-outcome threads: a human replies to a run-outcome
+ * ping, and the reply's parsed issue number needs a run_id to hand triage).
+ *
+ * Joins `runs` back to its `queue_entries` row via `runs.queueEntryId` and
+ * matches `external_id` on an EXACT `#<issueNumber>` suffix. `LIKE '%#10'`
+ * (a leading wildcard, NO trailing one) is anchored to the very end of the
+ * string — Postgres LIKE requires the match to terminate exactly where the
+ * pattern does — so issue 10 can never match a stored `owner/repo#101` (whose
+ * last three characters are "101", not "#10"). `issueNumber` is always a
+ * validated positive integer by the time it reaches here (see
+ * `outcome-format.ts`'s `parseOutcomeIssueNumber`), so the interpolated
+ * pattern can never carry a stray `%`/`_` LIKE metacharacter.
+ *
+ * "Latest" = newest `runs.createdAt`, since one issue can have accumulated
+ * several runs over retries/re-queues (the durable queue_entries row is
+ * reused across retries — see `claimQueueEntry` — but each claim registers
+ * its own `runs` row).
+ *
+ * WORKSPACE-SCOPED on both sides of the join (defense in depth) — the only
+ * caller (`apps/console/lib/channel-dispatch.ts`'s reply-context injection)
+ * passes the conversation's own SERVER-RESOLVED workspace, never anything
+ * read out of a message. See that file's threat-model note.
+ */
+export async function latestRunForIssue(
+  workspaceId: string,
+  issueNumber: number
+): Promise<LatestRunForIssue | null> {
+  const rows = await db
+    .select({ runId: runs.id, state: runs.status })
+    .from(runs)
+    .innerJoin(queueEntries, eq(runs.queueEntryId, queueEntries.id))
+    .where(
+      and(
+        eq(runs.workspaceId, workspaceId),
+        eq(queueEntries.workspaceId, workspaceId),
+        sql`${queueEntries.externalId} LIKE ${`%#${issueNumber}`}`
+      )
+    )
+    .orderBy(sql`${runs.createdAt} DESC`)
+    .limit(1);
+  const row = rows[0];
+  return row ? { runId: row.runId, state: row.state } : null;
+}
+
 /** A durable queue entry as the console queue view consumes it. */
 export interface QueueEntryListItem {
   id: string;

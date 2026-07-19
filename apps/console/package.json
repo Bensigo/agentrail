@@ -11,7 +11,8 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "catalog:refresh": "tsx scripts/refresh-openrouter-catalog.ts"
   },
   "dependencies": {
     "@agentrail/auth": "workspace:*",

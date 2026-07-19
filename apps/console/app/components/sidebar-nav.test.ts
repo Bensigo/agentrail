@@ -45,12 +45,13 @@ describe("NAV_ZONES data structure", () => {
     ]);
   });
 
-  it("Settings zone: Connectors, Repos & Health, Team, API Keys", () => {
+  it("Settings zone: Connectors, Repos & Health, Team, API Keys, Permissions (#1278)", () => {
     expect(SETTINGS_ZONE.items.map((i) => [i.label, i.href])).toEqual([
       ["Connectors", "connectors"],
       ["Repos & Health", "repos"],
       ["Team", "members"],
       ["API Keys", "api-keys"],
+      ["Permissions", "permissions"],
     ]);
   });
 
@@ -86,13 +87,19 @@ describe("NAV_ZONES data structure", () => {
     expect(allHrefs.filter((h) => h === "approvals")).toHaveLength(1);
   });
 
+  it("permissions is present exactly once, in the Settings zone (#1278: owner-only merge-permission toggle)", () => {
+    const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
+    expect(allHrefs.filter((h) => h === "permissions")).toHaveLength(1);
+    expect(SETTINGS_ZONE.items.map((i) => i.href)).toContain("permissions");
+  });
+
   it("queue is gone from the nav; work is present exactly once (#1231 rename)", () => {
     const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
     expect(allHrefs).not.toContain("queue");
     expect(allHrefs.filter((h) => h === "work")).toHaveLength(1);
   });
 
-  it("adds no new hrefs beyond the legacy set plus work, budget, and approvals (teams stays a redirect stub to /members)", () => {
+  it("adds no new hrefs beyond the legacy set plus work, budget, approvals, and permissions (teams stays a redirect stub to /members)", () => {
     const legacyHrefs = new Set([
       "",
       "runs",
@@ -107,6 +114,7 @@ describe("NAV_ZONES data structure", () => {
       "memory",
       "api-keys",
       "members",
+      "permissions", // #1278: owner-only grantable merge-permission toggle
     ]);
     const allHrefs = NAV_ZONES.flatMap((z) => z.items.map((i) => i.href));
     const newHrefs = allHrefs.filter((h) => !legacyHrefs.has(h));

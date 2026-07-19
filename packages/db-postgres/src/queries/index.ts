@@ -2162,3 +2162,19 @@ export {
   type WorkspaceCostOverview,
   type WorkspaceCapStatus,
 } from "./workspace_costs.js";
+
+// Grantable workspace-trust-setting queries (issue #1278; see
+// `queries/workspace_grants.ts` for the full WHY). getMergePermission is the
+// fresh, uncached read the runner-result route gates a squash-merge on;
+// setMergePermission is the console owner-only toggle's transactional
+// write (column flip + audit row, one transaction); latestGrantEvent is the
+// "who granted / when" display read, joined to the granting user's
+// name/email.
+export {
+  MERGE_PERMISSION_SETTING,
+  getMergePermission,
+  setMergePermission,
+  type SetMergePermissionResult,
+  latestGrantEvent,
+  type LatestGrantEventRow,
+} from "./workspace_grants.js";

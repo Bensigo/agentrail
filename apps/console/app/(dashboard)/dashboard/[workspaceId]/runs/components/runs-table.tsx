@@ -138,7 +138,7 @@ const columns = [
           href={url}
           target="_blank"
           rel="noreferrer"
-          className="text-[var(--blue-11,#4a9eff)] hover:underline"
+          className="text-[var(--blue-11)] hover:underline"
           onClick={(e) => e.stopPropagation()}
         >
           {label}

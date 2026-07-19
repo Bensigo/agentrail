@@ -135,14 +135,28 @@ export function TelemetryHealthSection({
                   {present ? (
                     <span
                       className="inline-block rounded px-1.5 py-0.5 text-[11px] font-medium"
-                      style={{ color: "var(--green-09)", backgroundColor: "#29a3831a" }}
+                      style={{
+                        color: "var(--green-09)",
+                        // #29a383 (--green-09, invariant) at the same 10.2%
+                        // alpha the literal `#29a3831a` encoded — color-mix
+                        // toward `transparent` only scales alpha, so this is
+                        // pixel-identical to the hex8 literal it replaces.
+                        backgroundColor:
+                          "color-mix(in oklab, var(--green-09) 10.196%, transparent)",
+                      }}
                     >
                       Present
                     </span>
                   ) : (
                     <span
                       className="inline-block rounded px-1.5 py-0.5 text-[11px] font-medium"
-                      style={{ color: "var(--red-09)", backgroundColor: "#e5484d1a" }}
+                      style={{
+                        color: "var(--red-09)",
+                        // Same technique as the "Present" branch above: #e5484d
+                        // (--red-09, invariant) at the literal's 10.2% alpha.
+                        backgroundColor:
+                          "color-mix(in oklab, var(--red-09) 10.196%, transparent)",
+                      }}
                     >
                       Missing
                     </span>

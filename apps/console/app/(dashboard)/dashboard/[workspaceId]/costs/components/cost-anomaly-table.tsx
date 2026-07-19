@@ -87,7 +87,7 @@ export function CostAnomalyTable({
         </h2>
         {baseline && (
           <div className="flex min-w-[280px] items-center gap-2 text-xs text-[var(--gray-10)]">
-            <span className="h-px flex-1 border-t border-dashed border-[#ffe62999]" />
+            <span className="h-px flex-1 border-t border-dashed border-[var(--yellow-09)]/60" />
             <span className="font-mono">{baseline}</span>
           </div>
         )}
@@ -139,7 +139,7 @@ export function CostAnomalyTable({
                 >
                   <td className="px-3 py-1.5">
                     <div className="flex items-center gap-2">
-                      <span className="rounded-sm bg-[#f76b151f] px-1.5 py-0.5 text-xs font-medium text-[var(--orange-09)]">
+                      <span className="rounded-sm bg-[var(--orange-09)]/[12.157%] px-1.5 py-0.5 text-xs font-medium text-[var(--orange-09)]">
                         Anomaly
                       </span>
                       <a

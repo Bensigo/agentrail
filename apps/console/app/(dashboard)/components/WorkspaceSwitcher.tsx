@@ -115,7 +115,7 @@ export function WorkspaceSwitcher({ workspaces, activeId }: WorkspaceSwitcherPro
         <div
           role="listbox"
           className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border border-[var(--gray-05)] bg-[var(--gray-02)] py-1 shadow-2xl"
-          style={{ boxShadow: "0 16px 40px -12px rgb(0 0 0 / 0.55)" }}
+          style={{ boxShadow: "var(--shadow-dropdown)" }}
         >
           <div className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--gray-08)]">
             Workspaces

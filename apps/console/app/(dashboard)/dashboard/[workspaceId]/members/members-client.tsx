@@ -197,7 +197,7 @@ export default function MembersClient() {
           {isAdmin && (
             <button
               onClick={() => setInviteDialogOpen(true)}
-              className="flex h-8 items-center gap-1.5 rounded bg-[var(--yellow-09)] px-3 text-sm font-medium text-black transition-colors hover:bg-[#ffdc00]"
+              className="flex h-8 items-center gap-1.5 rounded bg-[var(--yellow-09)] px-3 text-sm font-medium text-black transition-colors hover:bg-[var(--yellow-09-hover)]"
             >
               <Plus size={14} />
               Invite member

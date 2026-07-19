@@ -26,7 +26,7 @@ import { FailureActions } from "./failure-actions";
 const severityBadgeClass: Record<SeverityMeaning["level"], string> = {
   critical: "bg-[var(--red-09)]/20 text-[var(--red-11)] border border-[var(--red-09)]/30",
   high: "bg-[var(--orange-09)]/20 text-[var(--orange-11)] border border-[var(--orange-09)]/30",
-  medium: "bg-[var(--yellow-09)]/20 text-[#f5d90a] border border-[var(--yellow-09)]/30",
+  medium: "bg-[var(--yellow-09)]/20 text-[var(--severity-medium-text)] border border-[var(--yellow-09)]/30",
   low: "bg-[var(--gray-04)] text-[var(--gray-10)] border border-[var(--gray-06)]",
 };
 
@@ -260,7 +260,7 @@ export default async function FailureDetailPage({
       </div>
 
       {/* Why this happens */}
-      <Section icon={<Lightbulb className="h-4 w-4 text-[#f5d90a]" />} title="Why this happens">
+      <Section icon={<Lightbulb className="h-4 w-4 text-[var(--severity-medium-text)]" />} title="Why this happens">
         <ul className="flex flex-col gap-1.5">
           {explanation.why.map((w, i) => (
             <li key={i} className="flex gap-2 text-sm text-[var(--gray-11)] leading-relaxed">

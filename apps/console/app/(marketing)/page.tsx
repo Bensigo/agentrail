@@ -19,11 +19,14 @@ const TRACK_RECORD = { shipped: 33, attempted: 53, failed: 20 };
 
 /** Light token surface scoped to the marketing page.
  *
- *  The app shell (app/layout.tsx) renders `<html class="dark">`, so at runtime
- *  the gray ramp resolves to the dark values. This landing is meant to read
- *  light (white background, dark text, single amber accent). Rather than touch
- *  globals.css or the root layout, we re-establish the documented `:root`
- *  token values on this subtree only — these are the exact light values from
+ *  The app shell (app/layout.tsx) now defaults `<html>` to light, but the
+ *  dashboard's theme toggle persists a "dark" preference to localStorage for
+ *  the whole app (one shared `<html>` element, see app/layout.tsx's inline
+ *  script). A visitor who toggled dark in the console and later lands back on
+ *  "/" would otherwise see a dark landing page. TASTE.md mandates the landing
+ *  always reads light — it's Jace's resume, not a themeable console surface —
+ *  so we re-establish the documented `:root` token values on this subtree
+ *  regardless of the toggle. These are the exact light values from
  *  globals.css, not new colors. Everything below (including <ConversationDemo/>)
  *  inherits them via the CSS custom-property cascade. */
 const LIGHT_SURFACE: CSSProperties = {

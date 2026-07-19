@@ -1,19 +1,10 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { findWorkspaceByRepo, getConnector, enqueueGithubIssue } from "@agentrail/db-postgres";
 import {
-  findWorkspaceByRepo,
-  getConnector,
-  enqueueGithubIssue,
-  githubIssueUrl,
-  latestTelegramSessionForWorkspace,
-  recordApprovalRequest,
-} from "@agentrail/db-postgres";
-import { renderApprovalMessage } from "../../../../../../lib/approval-message";
-import { composeAlignmentBrief } from "../../../../../../lib/alignment-brief";
-import {
-  sendTelegramMessage,
-  buildApprovalKeyboard,
-} from "../../../workspaces/[workspaceId]/connectors/secret/telegram";
+  postAlignmentBrief,
+  reconcileAlignmentBriefs,
+} from "../../../../../../lib/alignment-reconciler";
 
 /**
  * GitHub `issues` webhook receiver — the trigger that fills the queue.
@@ -59,163 +50,6 @@ function labelNames(issue: Record<string, unknown>): Set<string> {
     }
   }
   return names;
-}
-
-/**
- * The #1274 alignment-gate outcome, surfaced only for observability/tests —
- * the webhook response contract for a non-alignment enqueue is unchanged
- * (see the `matched: true, enqueued: 1, id` return below).
- *
- * `compose_failed`/`session_lookup_failed` (adversarial review finding 2 of
- * #1274 PR ①): `composeAlignmentBrief` and `latestTelegramSessionForWorkspace`
- * used to run OUTSIDE any try/catch below, contradicting `postAlignmentBrief`'s
- * own doc-comment ("never throws past this function") — an exception from
- * either would have propagated past this function into the route handler as
- * an unhandled 500. Distinct from the pre-existing `no_session` (a clean,
- * expected zero-result lookup, not a failure) so a real lookup error is never
- * mistaken for "this workspace legitimately has no Telegram session yet".
- */
-type AlignmentBriefOutcome =
-  | "posted"
-  | "no_session"
-  | "record_failed"
-  | "send_failed"
-  | "compose_failed"
-  | "session_lookup_failed";
-
-/**
- * Compose + record + (best-effort) send the alignment brief for a queue entry
- * `enqueueGithubIssue` just parked via the alignment hold.
- *
- * FAIL-SAFE ORDERING (locked design point 8): the queue entry is ALREADY
- * committed `parked` by the time this runs (enqueueGithubIssue's insert has
- * already happened) — every step below (compose, the session lookup, record,
- * send) is wrapped in its own try/catch and returns a specific outcome
- * string; NOTHING in this function is allowed to throw past it. This makes
- * the doc-comment's "never throws past this function" claim actually true
- * (finding 2 of the adversarial review: compose and the session lookup used
- * to run unguarded, unlike record/send below). A failure anywhere here
- * leaves an honestly-labeled parked entry, never a silently-queued one.
- */
-async function postAlignmentBrief(params: {
-  workspaceId: string;
-  queueEntryId: string;
-  repoFullName: string;
-  number: number;
-  title: string;
-  body: string;
-}): Promise<AlignmentBriefOutcome> {
-  let brief: ReturnType<typeof composeAlignmentBrief>;
-  try {
-    brief = composeAlignmentBrief({
-      title: params.title,
-      body: params.body,
-      repoFullName: params.repoFullName,
-      issueNumber: params.number,
-      issueUrl: githubIssueUrl(params.repoFullName, params.number),
-    });
-  } catch (err) {
-    console.error(
-      `[github/webhook] composeAlignmentBrief threw while posting the alignment brief for queue entry ${params.queueEntryId}; entry stays parked ("awaiting alignment"):`,
-      err
-    );
-    return "compose_failed";
-  }
-
-  // (b)-shaped posting (recon annex §6) needs an anchoring jace_sessions row.
-  // For label-born work there is no live Eve turn to own one, so this
-  // repurposes the (a)-side lookup (latestTelegramSessionForWorkspace) to
-  // find an EXISTING, possibly-idle session to anchor a NEW, system-initiated
-  // approval against — documented here rather than hidden, per the recon's
-  // own flag. `eveSessionId` is NOT NULL on jace_approvals, so a session that
-  // has never had a real Eve turn (eveSessionId still null) is just as
-  // unusable as no session at all.
-  let session: Awaited<ReturnType<typeof latestTelegramSessionForWorkspace>>;
-  try {
-    session = await latestTelegramSessionForWorkspace(params.workspaceId);
-  } catch (err) {
-    console.error(
-      `[github/webhook] latestTelegramSessionForWorkspace threw while posting the alignment brief for workspace ${params.workspaceId} (queue entry ${params.queueEntryId}); entry stays parked ("awaiting alignment"):`,
-      err
-    );
-    return "session_lookup_failed";
-  }
-  if (!session || !session.eveSessionId) {
-    console.error(
-      `[github/webhook] no usable Telegram session to anchor the alignment brief for workspace ${params.workspaceId} (queue entry ${params.queueEntryId}) — entry stays parked ("awaiting alignment"), no approval row created. Recovery is PR ③'s revise/re-post path.`
-    );
-    return "no_session";
-  }
-
-  let approval: { id: string; callbackToken: string };
-  try {
-    const { approval: recorded } = await recordApprovalRequest({
-      workspaceId: params.workspaceId,
-      chatIdentityId: session.chatIdentityId ?? undefined,
-      sessionId: session.id,
-      eveSessionId: session.eveSessionId,
-      // Deterministic per queue entry: a redelivered webhook is already
-      // deduped at the enqueue step (ON CONFLICT DO NOTHING never reaches
-      // this function twice for the same issue), so this mainly guards a
-      // hypothetical retry of THIS function itself.
-      requestId: `alignment-brief:${params.queueEntryId}`,
-      toolName: "alignment_brief",
-      toolInput: brief as unknown as Record<string, unknown>,
-      approveOptionId: "approve",
-      denyOptionId: "deny",
-      queueEntryId: params.queueEntryId,
-    });
-    approval = recorded;
-  } catch (err) {
-    console.error(
-      `[github/webhook] recordApprovalRequest failed while posting the alignment brief for queue entry ${params.queueEntryId}; entry stays parked ("awaiting alignment"):`,
-      err
-    );
-    return "record_failed";
-  }
-
-  if (session.channel !== "telegram") {
-    // Recorded, but v1 posting is Telegram-only (spec scope) — nothing to
-    // send on this channel yet.
-    return "posted";
-  }
-
-  const token = process.env["TELEGRAM_BOT_TOKEN"];
-  if (!token) {
-    console.error(
-      `[github/webhook] TELEGRAM_BOT_TOKEN is not configured; alignment brief approval ${approval.id} was recorded but no message was sent`
-    );
-    return "send_failed";
-  }
-
-  try {
-    const text = renderApprovalMessage(
-      "alignment_brief",
-      brief as unknown as Record<string, unknown>
-    );
-    const keyboard = buildApprovalKeyboard(approval.callbackToken);
-    const result = await sendTelegramMessage(
-      token,
-      session.conversationKey,
-      text,
-      keyboard
-    );
-    if (!result.ok) {
-      console.error(
-        `[github/webhook] Telegram send failed for alignment brief approval ${approval.id}:`,
-        result.error
-      );
-      return "send_failed";
-    }
-  } catch (err) {
-    console.error(
-      `[github/webhook] unexpected error sending the alignment brief for approval ${approval.id}:`,
-      err
-    );
-    return "send_failed";
-  }
-
-  return "posted";
 }
 
 export async function POST(request: NextRequest) {
@@ -284,17 +118,16 @@ export async function POST(request: NextRequest) {
     body,
   });
 
+  let responseBody: Record<string, unknown>;
   if (!result.enqueued) {
-    return NextResponse.json({ matched: true, enqueued: 0, reason: result.reason });
-  }
-
-  // #1274: this enqueue parked the entry via the alignment hold (not a
-  // dependency/guardrail park — those never set parkedFor) — compose+post
-  // Jace's alignment brief. The entry is ALREADY durably parked at this
-  // point (enqueueGithubIssue's insert already committed), so any failure
-  // below is caught inside postAlignmentBrief itself and never turns into a
-  // silently-queued row.
-  if (result.state === "parked" && result.parkedFor === "awaiting_alignment") {
+    responseBody = { matched: true, enqueued: 0, reason: result.reason };
+  } else if (result.state === "parked" && result.parkedFor === "awaiting_alignment") {
+    // #1274: this enqueue parked the entry via the alignment hold (not a
+    // dependency/guardrail park — those never set parkedFor) — compose+post
+    // Jace's alignment brief. The entry is ALREADY durably parked at this
+    // point (enqueueGithubIssue's insert already committed), so any failure
+    // below is caught inside postAlignmentBrief itself and never turns into a
+    // silently-queued row.
     const alignmentBrief = await postAlignmentBrief({
       workspaceId,
       queueEntryId: result.id,
@@ -303,13 +136,32 @@ export async function POST(request: NextRequest) {
       title,
       body,
     });
-    return NextResponse.json({
-      matched: true,
-      enqueued: 1,
-      id: result.id,
-      alignmentBrief,
-    });
+    responseBody = { matched: true, enqueued: 1, id: result.id, alignmentBrief };
+  } else {
+    responseBody = { matched: true, enqueued: 1, id: result.id };
   }
 
-  return NextResponse.json({ matched: true, enqueued: 1, id: result.id });
+  // #1274 PR③: this admission attempt is a "next queue activity" trigger to
+  // sweep for OTHER stale, brief-less parked entries IN THIS WORKSPACE
+  // (workspace-scoped by the sweep itself — I2 fix round; see
+  // findAlignmentBriefCandidates' own doc-comment) — Python-admitted rows,
+  // a prior postAlignmentBrief failure, a v2-guardrail park
+  // unparkDependents relabeled. Runs AFTER the branch above, not before:
+  // the branch above already gave the row THIS request just admitted its
+  // own explicit postAlignmentBrief attempt — running the sweep first would
+  // let it race that same call for the SAME entry within this one request
+  // (the I1 created-gate now ALSO covers cross-request races at the send
+  // itself, but keeping this request's own two calls ordered stays the
+  // cleaner geometry: one obvious owner per entry per request). Bounded,
+  // best-effort, and NON-FATAL: a reconciler failure must never fail this
+  // webhook's response, so it is caught here regardless of what caused it
+  // (findAlignmentBriefCandidates itself is also defensive, but this is
+  // the outer belt-and-suspenders).
+  try {
+    await reconcileAlignmentBriefs(workspaceId, 5);
+  } catch (err) {
+    console.error("[github/webhook] alignment-reconciler sweep failed:", err);
+  }
+
+  return NextResponse.json(responseBody);
 }

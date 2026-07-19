@@ -364,7 +364,7 @@ describe("WORK_STATE_CHIP_CLASSNAME", () => {
       "bg-[var(--yellow-09)]/15 text-[var(--yellow-11)] border border-[var(--yellow-09)]/30"
     );
     expect(WORK_STATE_CHIP_CLASSNAME.parked).toBe(
-      "bg-[#3b82f6]/15 text-[#7cc0ff] border border-[#3b82f6]/30"
+      "bg-[var(--parked-09)]/15 text-[var(--parked-11)] border border-[var(--parked-09)]/30"
     );
     expect(WORK_STATE_CHIP_CLASSNAME.queued).toBe(
       "bg-[var(--gray-04)] text-[var(--gray-10)] border border-[var(--gray-06)]"

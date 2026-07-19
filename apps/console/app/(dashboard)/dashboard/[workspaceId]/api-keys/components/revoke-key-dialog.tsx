@@ -50,7 +50,7 @@ export function RevokeKeyDialog({
     >
       <div
         className="relative w-full max-w-sm rounded bg-[var(--gray-02)] border border-[var(--gray-05)] shadow-2xl p-6"
-        style={{ boxShadow: "0 25px 50px -12px rgb(0 0 0 / 0.5)" }}
+        style={{ boxShadow: "var(--shadow-overlay)" }}
       >
         <button
           onClick={onClose}
@@ -86,7 +86,7 @@ export function RevokeKeyDialog({
             type="button"
             onClick={handleRevoke}
             disabled={loading}
-            className="h-8 px-4 rounded bg-[var(--red-09)] text-white text-sm font-medium hover:bg-[#ce2c31] disabled:opacity-50 transition-colors"
+            className="h-8 px-4 rounded bg-[var(--red-09)] text-white text-sm font-medium hover:bg-[var(--red-09-hover)] disabled:opacity-50 transition-colors"
           >
             {loading ? "Revoking…" : "Revoke key"}
           </button>

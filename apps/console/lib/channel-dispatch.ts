@@ -31,11 +31,13 @@ import {
   getOrCreateIntroJaceSession,
   getOrCreateJaceSession,
   bindEveSession,
+  latestRunForIssue,
   type ClaimedChannelInboxRow,
   type ReachableWorkspace,
   type ResolveConversationWorkspaceResult,
 } from "@agentrail/db-postgres";
 import { sendSystemTelegramMessage, buildWorkspaceChoiceMessage, buildPinConfirmationMessage } from "./telegram-system-message";
+import { buildRunOutcomeReplyPreface, type RunOutcomeReplyContext } from "./outcome-format";
 
 const EVE_HOST = process.env["EVE_HOST"] || "http://127.0.0.1:2000";
 
@@ -77,6 +79,33 @@ interface TelegramInboxPayload {
   chatId: number | string;
   text: string;
   messageThreadId?: number | string;
+  /** #1277 — set by the webhook route when this message replies to a
+   * parseable run-outcome notification. See `withReplyContextPreface`. */
+  replyContext?: RunOutcomeReplyContext;
+}
+
+/**
+ * TOLERANT extraction for the #1277 `replyContext` field — malformed shapes
+ * (wrong `kind`, non-integer/non-positive `issueNumber`) resolve to
+ * `undefined` rather than failing the whole row, same tolerance
+ * `messageThreadId` already gets below. This is internal, already-parsed
+ * data (the webhook route only ever writes a well-formed value via
+ * `parseOutcomeIssueNumber`), so this is belt-and-suspenders, not an
+ * attacker-input boundary.
+ */
+function extractReplyContext(value: unknown): RunOutcomeReplyContext | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const r = value as Record<string, unknown>;
+  if (r["kind"] !== "run_outcome") return undefined;
+  const issueNumber = r["issueNumber"];
+  if (
+    typeof issueNumber !== "number" ||
+    !Number.isSafeInteger(issueNumber) ||
+    issueNumber <= 0
+  ) {
+    return undefined;
+  }
+  return { kind: "run_outcome", issueNumber };
 }
 
 /**
@@ -103,6 +132,8 @@ function extractPayload(payload: unknown): TelegramInboxPayload | null {
   if (typeof messageThreadId === "number" || typeof messageThreadId === "string") {
     result.messageThreadId = messageThreadId;
   }
+  const replyContext = extractReplyContext(p["replyContext"]);
+  if (replyContext) result.replyContext = replyContext;
   return result;
 }
 
@@ -220,6 +251,32 @@ async function runEveTurn(params: {
     sessionId: body.sessionId,
     continuationToken: typeof body.continuationToken === "string" ? body.continuationToken : "",
   };
+}
+
+/**
+ * #1277 (replyable run-outcome threads) — when the inbound payload carries a
+ * run-outcome `replyContext` (the webhook parsed it out of a Telegram
+ * reply's quoted text), resolve the latest run for that issue
+ * WORKSPACE-SCOPED to the conversation's OWN server-resolved `workspaceId`
+ * — never anything read out of the payload/quoted text itself, see
+ * route.ts's `resolveReplyContext` threat-model note — and prepend a
+ * server-built bracketed preface to the message Jace receives.
+ *
+ * No workspace yet (an 'intro' conversation — `workspaceId` null) or no
+ * `replyContext` at all: the message is returned UNTOUCHED, byte-identical
+ * to before this feature existed. (An 'intro' conversation replying to a
+ * run-outcome ping is not a real scenario in practice — a ping is only ever
+ * sent to an already-connected/bound conversation — but the guard is here
+ * regardless: there is no workspace to scope a lookup to.)
+ */
+async function withReplyContextPreface(
+  workspaceId: string | null,
+  payload: TelegramInboxPayload
+): Promise<string> {
+  if (!workspaceId || !payload.replyContext) return payload.text;
+  const found = await latestRunForIssue(workspaceId, payload.replyContext.issueNumber);
+  const preface = buildRunOutcomeReplyPreface(payload.replyContext.issueNumber, found);
+  return `${preface}\n${payload.text}`;
 }
 
 /**
@@ -351,8 +408,10 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
       conversationKey: row.conversationKey,
     });
 
+    const message = await withReplyContextPreface(workspaceId, payload);
+
     const turn = await runEveTurn({
-      message: payload.text,
+      message,
       chatId: payload.chatId,
       messageThreadId: payload.messageThreadId,
       auth,
@@ -411,6 +470,13 @@ let inflightDrain: Promise<DispatchResult> | null = null;
  * `inflightDrain` is set), so two synchronous calls in the same tick always
  * observe it correctly. A real worker process replaces this whole function
  * in Wave 2.
+ *
+ * `withReplyContextPreface` (issue #1277): the ONE seam where an inbound
+ * payload's optional `replyContext` (a reply to a run-outcome ping, parsed
+ * server-side by the webhook route) turns into a workspace-scoped
+ * `latestRunForIssue` lookup and a bracketed preface prepended to the
+ * message Jace actually receives — see that function's own doc comment for
+ * the threat-model note.
  */
 export function dispatchQueuedChannelMessages(): Promise<DispatchResult> {
   if (inflightDrain) return inflightDrain;

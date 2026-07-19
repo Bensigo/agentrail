@@ -246,9 +246,13 @@ async function forwardCallbackQueryToEve(
  *
  * approved: reads estimateUsd/suggestedModel.slug back out of the approval's
  * OWN STORED toolInput (never the callback — owner rule: server-derived) and
- * writes them atomically with the parked->queued flip via
- * `confirmAlignmentBrief` — this write is what activates #1333's dormant
- * estimated_budget_usd/model_override threading.
+ * writes them atomically via `confirmAlignmentBrief` — this write is what
+ * activates #1333's dormant estimated_budget_usd/model_override threading,
+ * REGARDLESS of the resulting state. `confirmAlignmentBrief` no longer
+ * unconditionally flips parked->queued (#1274 finding-1 fix): it re-checks
+ * the row's own declared blockers at confirm time and only queues it when
+ * none are still unmet, otherwise it stays parked with the dependency's own
+ * reason — see that function's doc-comment for the full matrix.
  * denied: `denyAlignmentBrief` — the entry stays parked with an honest
  * denial notice; the revise flow is PR ③.
  *

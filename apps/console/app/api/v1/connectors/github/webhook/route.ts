@@ -65,8 +65,23 @@ function labelNames(issue: Record<string, unknown>): Set<string> {
  * The #1274 alignment-gate outcome, surfaced only for observability/tests —
  * the webhook response contract for a non-alignment enqueue is unchanged
  * (see the `matched: true, enqueued: 1, id` return below).
+ *
+ * `compose_failed`/`session_lookup_failed` (adversarial review finding 2 of
+ * #1274 PR ①): `composeAlignmentBrief` and `latestTelegramSessionForWorkspace`
+ * used to run OUTSIDE any try/catch below, contradicting `postAlignmentBrief`'s
+ * own doc-comment ("never throws past this function") — an exception from
+ * either would have propagated past this function into the route handler as
+ * an unhandled 500. Distinct from the pre-existing `no_session` (a clean,
+ * expected zero-result lookup, not a failure) so a real lookup error is never
+ * mistaken for "this workspace legitimately has no Telegram session yet".
  */
-type AlignmentBriefOutcome = "posted" | "no_session" | "record_failed" | "send_failed";
+type AlignmentBriefOutcome =
+  | "posted"
+  | "no_session"
+  | "record_failed"
+  | "send_failed"
+  | "compose_failed"
+  | "session_lookup_failed";
 
 /**
  * Compose + record + (best-effort) send the alignment brief for a queue entry
@@ -74,10 +89,13 @@ type AlignmentBriefOutcome = "posted" | "no_session" | "record_failed" | "send_f
  *
  * FAIL-SAFE ORDERING (locked design point 8): the queue entry is ALREADY
  * committed `parked` by the time this runs (enqueueGithubIssue's insert has
- * already happened) — every branch below either finishes the posting or logs
- * loudly and returns, but NEVER throws past this function and NEVER touches
- * `queue_entries` itself. A failure anywhere here leaves an honestly-labeled
- * parked entry, never a silently-queued one.
+ * already happened) — every step below (compose, the session lookup, record,
+ * send) is wrapped in its own try/catch and returns a specific outcome
+ * string; NOTHING in this function is allowed to throw past it. This makes
+ * the doc-comment's "never throws past this function" claim actually true
+ * (finding 2 of the adversarial review: compose and the session lookup used
+ * to run unguarded, unlike record/send below). A failure anywhere here
+ * leaves an honestly-labeled parked entry, never a silently-queued one.
  */
 async function postAlignmentBrief(params: {
   workspaceId: string;
@@ -87,13 +105,22 @@ async function postAlignmentBrief(params: {
   title: string;
   body: string;
 }): Promise<AlignmentBriefOutcome> {
-  const brief = composeAlignmentBrief({
-    title: params.title,
-    body: params.body,
-    repoFullName: params.repoFullName,
-    issueNumber: params.number,
-    issueUrl: githubIssueUrl(params.repoFullName, params.number),
-  });
+  let brief: ReturnType<typeof composeAlignmentBrief>;
+  try {
+    brief = composeAlignmentBrief({
+      title: params.title,
+      body: params.body,
+      repoFullName: params.repoFullName,
+      issueNumber: params.number,
+      issueUrl: githubIssueUrl(params.repoFullName, params.number),
+    });
+  } catch (err) {
+    console.error(
+      `[github/webhook] composeAlignmentBrief threw while posting the alignment brief for queue entry ${params.queueEntryId}; entry stays parked ("awaiting alignment"):`,
+      err
+    );
+    return "compose_failed";
+  }
 
   // (b)-shaped posting (recon annex §6) needs an anchoring jace_sessions row.
   // For label-born work there is no live Eve turn to own one, so this
@@ -103,7 +130,16 @@ async function postAlignmentBrief(params: {
   // own flag. `eveSessionId` is NOT NULL on jace_approvals, so a session that
   // has never had a real Eve turn (eveSessionId still null) is just as
   // unusable as no session at all.
-  const session = await latestTelegramSessionForWorkspace(params.workspaceId);
+  let session: Awaited<ReturnType<typeof latestTelegramSessionForWorkspace>>;
+  try {
+    session = await latestTelegramSessionForWorkspace(params.workspaceId);
+  } catch (err) {
+    console.error(
+      `[github/webhook] latestTelegramSessionForWorkspace threw while posting the alignment brief for workspace ${params.workspaceId} (queue entry ${params.queueEntryId}); entry stays parked ("awaiting alignment"):`,
+      err
+    );
+    return "session_lookup_failed";
+  }
   if (!session || !session.eveSessionId) {
     console.error(
       `[github/webhook] no usable Telegram session to anchor the alignment brief for workspace ${params.workspaceId} (queue entry ${params.queueEntryId}) — entry stays parked ("awaiting alignment"), no approval row created. Recovery is PR ③'s revise/re-post path.`

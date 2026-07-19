@@ -183,13 +183,18 @@ describe("POST /api/v1/connectors/github/webhook — clean admit (regression pin
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it("never touches the brief pipeline for a dependency/guardrail park (parkedFor absent)", async () => {
+  it("never touches the brief pipeline for a v2-guardrail park (parkedFor absent) — #1274 finding-1 fix leaves this path alone", async () => {
     mockEnqueue.mockResolvedValue({
       enqueued: true,
       id: "entry-1",
       state: "parked",
-      blockedBy: [12],
-      // no parkedFor — this is a dependency park, not the alignment hold.
+      blockedBy: [],
+      reason: "prompt-injection: 'ignore previous instructions' override directive",
+      // no parkedFor — a v2 guardrail park (injection/dup/rate-limit) never
+      // runs the alignment hold at all (no automatic unpark exists for a
+      // guardrail park, so the finding-1 interaction bug can't occur here
+      // the same way it did for a dependency park — see the next describe
+      // block for the corrected dependency-park behaviour).
     } as never);
 
     const res = await POST(req(ISSUE_PAYLOAD));
@@ -198,6 +203,44 @@ describe("POST /api/v1/connectors/github/webhook — clean admit (regression pin
     expect(body).toEqual({ matched: true, enqueued: 1, id: "entry-1" });
     expect(mockCompose).not.toHaveBeenCalled();
     expect(mockRecord).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/v1/connectors/github/webhook — #1274 finding-1 fix: dependency park DOES post the brief", () => {
+  it("composes+records+sends the brief for a dependency-parked admit (state stays 'parked' with the dependency's blockedBy, parkedFor now fires)", async () => {
+    mockEnqueue.mockResolvedValue({
+      enqueued: true,
+      id: "entry-1",
+      state: "parked", // dependency-parked, NOT alignment-parked
+      blockedBy: [12], // the unmet blocker that parked it
+      parkedFor: "awaiting_alignment", // the fix: fires independently of the dependency outcome
+    } as never);
+    mockLatestSession.mockResolvedValue(TELEGRAM_SESSION as never);
+    mockRecord.mockResolvedValue({
+      approval: { id: "approval-1", callbackToken: "cbtoken123" },
+      created: true,
+    } as never);
+
+    const res = await POST(req(ISSUE_PAYLOAD));
+    const body = await res.json();
+
+    expect(mockCompose).toHaveBeenCalledWith({
+      title: "Add dark mode",
+      body: "## Acceptance criteria\n- [ ] Toggle in settings\n",
+      repoFullName: "acme/widgets",
+      issueNumber: 42,
+      issueUrl: "https://github.com/acme/widgets/issues/42",
+    });
+    expect(mockRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ queueEntryId: "entry-1", toolName: "alignment_brief" })
+    );
+    expect(mockSend).toHaveBeenCalled();
+    expect(body).toEqual({
+      matched: true,
+      enqueued: 1,
+      id: "entry-1",
+      alignmentBrief: "posted",
+    });
   });
 });
 
@@ -373,6 +416,53 @@ describe("POST /api/v1/connectors/github/webhook — alignment hold: park -> com
 
     expect(res.status).toBe(200);
     expect(body.alignmentBrief).toBe("record_failed");
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalled();
+  });
+
+  // #1274 adversarial review finding 2: postAlignmentBrief's doc-comment
+  // promises "never throws past this function", but composeAlignmentBrief
+  // and latestTelegramSessionForWorkspace used to run OUTSIDE any try/catch
+  // (unlike record/send above) — an exception from either would have been an
+  // unhandled 500 instead of a caught, logged, honestly-parked outcome.
+
+  it("finding 2 fix: composeAlignmentBrief throwing is caught — 'compose_failed', never a 500, nothing downstream is touched", async () => {
+    mockEnqueue.mockResolvedValue(parkedResult());
+    mockCompose.mockImplementation(() => {
+      throw new Error("malformed issue body");
+    });
+
+    const res = await POST(req(ISSUE_PAYLOAD));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({
+      matched: true,
+      enqueued: 1,
+      id: "entry-1",
+      alignmentBrief: "compose_failed",
+    });
+    expect(mockLatestSession).not.toHaveBeenCalled();
+    expect(mockRecord).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalled();
+  });
+
+  it("finding 2 fix: latestTelegramSessionForWorkspace throwing is caught — 'session_lookup_failed', never a 500", async () => {
+    mockEnqueue.mockResolvedValue(parkedResult());
+    mockLatestSession.mockRejectedValue(new Error("connection reset"));
+
+    const res = await POST(req(ISSUE_PAYLOAD));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toEqual({
+      matched: true,
+      enqueued: 1,
+      id: "entry-1",
+      alignmentBrief: "session_lookup_failed",
+    });
+    expect(mockRecord).not.toHaveBeenCalled();
     expect(mockSend).not.toHaveBeenCalled();
     expect(console.error).toHaveBeenCalled();
   });

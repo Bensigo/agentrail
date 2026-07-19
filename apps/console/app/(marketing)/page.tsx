@@ -154,7 +154,7 @@ export default async function LandingPage() {
           />
 
           <h1
-            className="ar-rise text-heading-1 mx-auto max-w-[16ch] text-balance font-bold"
+            className="ar-rise text-heading-1 mx-auto max-w-[16ch] text-balance"
             style={{ animationDelay: "60ms" }}
           >
             Hi, I&apos;m Jace. I clear your backlog while you sleep.
@@ -199,7 +199,7 @@ export default async function LandingPage() {
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[720px]">
           <Reveal>
-            <h2 className="text-heading-2 text-center font-bold">What I do</h2>
+            <h2 className="text-heading-2 text-center">What I do</h2>
           </Reveal>
           <ul className="mt-12 flex flex-col gap-8">
             {JACE_DOES.map((line, i) => (
@@ -236,7 +236,7 @@ export default async function LandingPage() {
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[640px]">
           <Reveal>
-            <h2 className="text-heading-2 text-center font-bold">How we work together</h2>
+            <h2 className="text-heading-2 text-center">How we work together</h2>
           </Reveal>
           <ol className="mt-12 flex flex-col gap-6">
             {HOW_WE_WORK.map((line, i) => (
@@ -259,7 +259,7 @@ export default async function LandingPage() {
       {/* 7 — Closing CTA + minimal footer */}
       <section className="px-6 pb-24 text-center">
         <Reveal className="mx-auto max-w-[620px]">
-          <h2 className="text-heading-2 font-bold">Point me at a repo.</h2>
+          <h2 className="text-heading-2">Point me at a repo.</h2>
           <p className="mx-auto mt-4 max-w-[44ch] text-[var(--gray-11)]">
             Connect a repo, hand me an issue, and wake up to a reviewed PR.
           </p>
@@ -325,7 +325,7 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
         href={cta.href}
         target="_blank"
         rel="noreferrer"
-        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
+        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-200 hover:-translate-y-0.5 hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
       >
         <Send size={17} aria-hidden />
         Message Jace on Telegram
@@ -336,7 +336,7 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
     <form action={signInWithGithub}>
       <button
         type="submit"
-        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
+        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-200 hover:-translate-y-0.5 hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
       >
         <GitHubIcon />
         Sign in with GitHub

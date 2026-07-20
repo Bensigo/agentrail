@@ -13,6 +13,7 @@ import {
   Users,
   Plug,
   GitMerge,
+  Cpu,
 } from "lucide-react";
 
 export interface NavItem {
@@ -69,6 +70,10 @@ export const ENGINE_ROOM_ZONE: NavZone = {
     { label: "Review Gates", href: "review-gates", icon: ShieldCheck },
     { label: "Costs", href: "costs", icon: DollarSign },
     { label: "Budget", href: "budget", icon: Wallet },
+    // #1338 PR③ observe view: per-task-type "which execute model is
+    // winning on real run data" breakdown — read-only evidence, same
+    // category as Costs/Budget (spend/model economics), so it lands here.
+    { label: "Model selection", href: "model-selection", icon: Cpu },
     { label: "Memory", href: "memory", icon: Brain },
     { label: "Failures", href: "failures", icon: AlertTriangle },
   ],

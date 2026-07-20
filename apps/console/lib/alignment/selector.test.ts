@@ -7,13 +7,21 @@ import {
 } from "./selector";
 import type { ModelSelection } from "./selector";
 import { MODEL_CATALOG } from "./catalog";
+import { seedModel } from "./seeds";
 import { eligibleModelsForTaskType } from "./eligibility";
 import type { TaskType } from "./classifier";
 import type { ModelOutcomeStatsRow } from "@agentrail/db-postgres";
 
+// #1338 PR③ widened pool — see candidates.ts's CANDIDATES for the full,
+// confirmed spread this file exercises. Seeds: ui -> kimi-k2.7-code,
+// refactor -> opus-4.8, mechanical -> glm-4.7, general -> glm-5.2.
 const HAIKU = "anthropic/claude-haiku-4.5";
 const SONNET = "anthropic/claude-sonnet-5";
-const OPUS = "anthropic/claude-opus-4.8";
+const KIMI_CODE = "moonshotai/kimi-k2.7-code"; // ui's seed
+const KIMI_K3 = "moonshotai/kimi-k3";
+const GLM_5_2 = "z-ai/glm-5.2";
+const GLM_4_7 = "z-ai/glm-4.7"; // mechanical's seed
+const QWEN = "qwen/qwen3-coder-plus";
 
 /** Never explores — random() always returns a value >= any explorationRate used in these tests. */
 const NEVER_EXPLORE = () => 0.999;
@@ -39,24 +47,25 @@ function fetchStatsReturning(rows: ModelOutcomeStatsRow[]) {
 }
 
 describe("selectExecuteModel: no data -> the seed, reason 'seed'", () => {
-  it("empty stats -> returns MODEL_CATALOG[taskType] exactly (the seed), reason 'seed', no runCount", async () => {
+  it("empty stats -> returns seedModel(taskType) exactly (the seed), reason 'seed', no runCount", async () => {
     const result = await selectExecuteModel("ui", "ws-1", {
       random: NEVER_EXPLORE,
       fetchStats: fetchStatsReturning([]),
     });
-    expect(result.model).toBe(MODEL_CATALOG.ui);
+    expect(result.model).toBe(seedModel("ui"));
+    expect(result.model.slug).toBe(KIMI_CODE);
     expect(result.reason).toBe("seed");
     expect(result.runCount).toBeUndefined();
   });
 
-  it("every task type: no data -> seed matches MODEL_CATALOG[taskType]", async () => {
+  it("every task type: no data -> seed matches seedModel(taskType)", async () => {
     const taskTypes: TaskType[] = ["ui", "refactor", "mechanical", "general"];
     for (const taskType of taskTypes) {
       const result = await selectExecuteModel(taskType, "ws-1", {
         random: NEVER_EXPLORE,
         fetchStats: fetchStatsReturning([]),
       });
-      expect(result.model).toBe(MODEL_CATALOG[taskType]);
+      expect(result.model).toBe(seedModel(taskType));
       expect(result.reason).toBe("seed");
     }
   });
@@ -65,10 +74,10 @@ describe("selectExecuteModel: no data -> the seed, reason 'seed'", () => {
     const result = await selectExecuteModel("ui", "ws-1", {
       random: NEVER_EXPLORE,
       fetchStats: fetchStatsReturning([
-        row({ executeModel: OPUS, runCount: DEFAULT_MIN_RUNS - 1, successCount: DEFAULT_MIN_RUNS - 1 }), // 100% success, but under-sampled
+        row({ executeModel: GLM_5_2, runCount: DEFAULT_MIN_RUNS - 1, successCount: DEFAULT_MIN_RUNS - 1 }), // 100% success, but under-sampled
       ]),
     });
-    expect(result.model.slug).toBe(SONNET); // ui's seed
+    expect(result.model.slug).toBe(KIMI_CODE); // ui's seed
     expect(result.reason).toBe("seed");
   });
 
@@ -76,7 +85,7 @@ describe("selectExecuteModel: no data -> the seed, reason 'seed'", () => {
     const result = await selectExecuteModel("ui", "ws-1", {
       random: NEVER_EXPLORE,
       fetchStats: fetchStatsReturning([
-        row({ executeModel: SONNET, runCount: 2, successCount: 2 }), // ui's own seed, under-sampled
+        row({ executeModel: KIMI_CODE, runCount: 2, successCount: 2 }), // ui's own seed, under-sampled
       ]),
     });
     expect(result.reason).toBe("seed");
@@ -89,11 +98,11 @@ describe("selectExecuteModel: switches to best-from-data only after >= MIN_RUNS"
     const result = await selectExecuteModel("ui", "ws-1", {
       random: NEVER_EXPLORE,
       fetchStats: fetchStatsReturning([
-        row({ executeModel: SONNET, runCount: 10, successCount: 5, successRate: 0.5 }), // the seed, mediocre
-        row({ executeModel: OPUS, runCount: DEFAULT_MIN_RUNS, successCount: DEFAULT_MIN_RUNS, successRate: 1.0 }), // qualified, better
+        row({ executeModel: KIMI_CODE, runCount: 10, successCount: 5, successRate: 0.5 }), // the seed, mediocre
+        row({ executeModel: GLM_5_2, runCount: DEFAULT_MIN_RUNS, successCount: DEFAULT_MIN_RUNS, successRate: 1.0 }), // qualified, better
       ]),
     });
-    expect(result.model.slug).toBe(OPUS);
+    expect(result.model.slug).toBe(GLM_5_2);
     expect(result.reason).toBe("best-from-data");
     expect(result.runCount).toBe(DEFAULT_MIN_RUNS);
   });
@@ -102,11 +111,11 @@ describe("selectExecuteModel: switches to best-from-data only after >= MIN_RUNS"
     const result = await selectExecuteModel("ui", "ws-1", {
       random: NEVER_EXPLORE,
       fetchStats: fetchStatsReturning([
-        row({ executeModel: SONNET, runCount: 10, successCount: 5, successRate: 0.5 }),
-        row({ executeModel: OPUS, runCount: DEFAULT_MIN_RUNS - 1, successCount: DEFAULT_MIN_RUNS - 1, successRate: 1.0 }),
+        row({ executeModel: KIMI_CODE, runCount: 10, successCount: 5, successRate: 0.5 }),
+        row({ executeModel: GLM_5_2, runCount: DEFAULT_MIN_RUNS - 1, successCount: DEFAULT_MIN_RUNS - 1, successRate: 1.0 }),
       ]),
     });
-    expect(result.model.slug).toBe(SONNET);
+    expect(result.model.slug).toBe(KIMI_CODE);
     expect(result.reason).toBe("seed");
   });
 
@@ -114,11 +123,11 @@ describe("selectExecuteModel: switches to best-from-data only after >= MIN_RUNS"
     const result = await selectExecuteModel("ui", "ws-1", {
       random: NEVER_EXPLORE,
       fetchStats: fetchStatsReturning([
-        row({ executeModel: SONNET, runCount: 20, successCount: 19, successRate: 0.95 }), // seed, already great
-        row({ executeModel: OPUS, runCount: 10, successCount: 6, successRate: 0.6 }), // qualified but worse
+        row({ executeModel: KIMI_CODE, runCount: 20, successCount: 19, successRate: 0.95 }), // seed, already great
+        row({ executeModel: GLM_5_2, runCount: 10, successCount: 6, successRate: 0.6 }), // qualified but worse
       ]),
     });
-    expect(result.model.slug).toBe(SONNET);
+    expect(result.model.slug).toBe(KIMI_CODE);
     expect(result.reason).toBe("seed");
   });
 
@@ -127,36 +136,27 @@ describe("selectExecuteModel: switches to best-from-data only after >= MIN_RUNS"
       random: NEVER_EXPLORE,
       minRuns: 2,
       fetchStats: fetchStatsReturning([
-        row({ executeModel: SONNET, runCount: 10, successCount: 5, successRate: 0.5 }),
-        row({ executeModel: OPUS, runCount: 2, successCount: 2, successRate: 1.0 }),
+        row({ executeModel: KIMI_CODE, runCount: 10, successCount: 5, successRate: 0.5 }),
+        row({ executeModel: GLM_5_2, runCount: 2, successCount: 2, successRate: 1.0 }),
       ]),
     });
-    expect(result.model.slug).toBe(OPUS);
+    expect(result.model.slug).toBe(GLM_5_2);
     expect(result.reason).toBe("best-from-data");
   });
 
   it("tie on success rate: lower cost-per-success wins", async () => {
+    // ui now has 4 eligible slugs (PR③), enough to exercise seed + two tied
+    // qualified alternatives without borrowing another task type.
     const result = await selectExecuteModel("ui", "ws-1", {
       random: NEVER_EXPLORE,
       fetchStats: fetchStatsReturning([
-        row({ executeModel: SONNET, runCount: 10, successCount: 5, successRate: 0.5 }), // seed baseline
-        row({ executeModel: OPUS, runCount: 6, successCount: 6, successRate: 1.0, costPerSuccess: 4.0 }),
-        // A THIRD candidate can't exist for ui (only 2 eligible slugs), so
-        // exercise the tie-break with mechanical instead (3 eligible slugs).
+        row({ executeModel: KIMI_CODE, runCount: 10, successCount: 5, successRate: 0.5 }), // seed baseline
+        row({ executeModel: GLM_5_2, runCount: 6, successCount: 6, successRate: 1.0, costPerSuccess: 4.0 }),
+        row({ executeModel: KIMI_K3, runCount: 6, successCount: 6, successRate: 1.0, costPerSuccess: 2.0 }), // same rate, cheaper
       ]),
     });
-    expect(result.model.slug).toBe(OPUS);
-
-    const mechanicalResult = await selectExecuteModel("mechanical", "ws-1", {
-      random: NEVER_EXPLORE,
-      fetchStats: fetchStatsReturning([
-        row({ executeModel: HAIKU, runCount: 10, successCount: 5, successRate: 0.5 }), // mechanical's seed
-        row({ executeModel: SONNET, runCount: 8, successCount: 8, successRate: 1.0, costPerSuccess: 5.0 }),
-        row({ executeModel: OPUS, runCount: 8, successCount: 8, successRate: 1.0, costPerSuccess: 2.0 }), // same rate, cheaper
-      ]),
-    });
-    expect(mechanicalResult.model.slug).toBe(OPUS);
-    expect(mechanicalResult.reason).toBe("best-from-data");
+    expect(result.model.slug).toBe(KIMI_K3);
+    expect(result.reason).toBe("best-from-data");
   });
 
   it("a null cost-per-success (zero successes) never wins a tiebreak against a real number", async () => {
@@ -166,43 +166,45 @@ describe("selectExecuteModel: switches to best-from-data only after >= MIN_RUNS"
     const result = await selectExecuteModel("mechanical", "ws-1", {
       random: NEVER_EXPLORE,
       fetchStats: fetchStatsReturning([
-        row({ executeModel: HAIKU, runCount: 10, successCount: 0, successRate: 0, costPerSuccess: null }),
-        row({ executeModel: SONNET, runCount: 10, successCount: 0, successRate: 0, costPerSuccess: null }),
+        row({ executeModel: GLM_4_7, runCount: 10, successCount: 0, successRate: 0, costPerSuccess: null }), // mechanical's seed
+        row({ executeModel: QWEN, runCount: 10, successCount: 0, successRate: 0, costPerSuccess: null }),
       ]),
     });
     expect(result.reason).toBe("seed");
   });
 });
 
-describe("selectExecuteModel: HARD OWNER RULE — never returns haiku for ui, even under forced exploration", () => {
-  it("forced exploration on empty stats never returns haiku for ui", async () => {
+describe("selectExecuteModel: HARD OWNER RULE — never returns haiku for ui, in either the exploit or explore path", () => {
+  it("explore path: forced exploration on empty stats never returns haiku for ui", async () => {
     const result = await selectExecuteModel("ui", "ws-1", {
       random: ALWAYS_EXPLORE,
       explorationRate: 1,
       fetchStats: fetchStatsReturning([]),
     });
     expect(result.model.slug).not.toBe(HAIKU);
-    expect([SONNET, OPUS]).toContain(result.model.slug);
+    expect([KIMI_CODE, GLM_5_2, KIMI_K3, SONNET]).toContain(result.model.slug);
   });
 
-  it("forced exploration with rich stats (including an adversarial haiku-for-ui row) never returns haiku for ui", async () => {
+  it("explore path: forced exploration with rich stats (including an adversarial haiku-for-ui row) never returns haiku for ui", async () => {
     const result = await selectExecuteModel("ui", "ws-1", {
       random: ALWAYS_EXPLORE,
       explorationRate: 1,
       fetchStats: fetchStatsReturning([
-        row({ executeModel: SONNET, runCount: 20, successCount: 19, successRate: 0.95 }),
-        row({ executeModel: OPUS, runCount: 20, successCount: 2, successRate: 0.1 }),
+        row({ executeModel: KIMI_CODE, runCount: 20, successCount: 19, successRate: 0.95 }),
+        row({ executeModel: GLM_5_2, runCount: 20, successCount: 2, successRate: 0.1 }),
         // Adversarial: a haiku row for taskType 'ui' with a stellar record.
         // If eligibility filtering were ever bypassed, this row alone would
         // "win" on both success rate and volume — the selector must ignore
-        // it completely because haiku is excluded from ui's eligible set.
+        // it completely because haiku isn't even a candidate for ui under
+        // the widened pool (candidates.ts), and remains excluded as a
+        // defense-in-depth backstop (eligibility.ts's EXCLUDED_MODELS) too.
         row({ executeModel: HAIKU, runCount: 1000, successCount: 1000, successRate: 1.0, costPerSuccess: 0.01 }),
       ]),
     });
     expect(result.model.slug).not.toBe(HAIKU);
   });
 
-  it("exploit path (exploration disabled) with the same adversarial haiku row also never returns haiku for ui", async () => {
+  it("exploit path: exploration disabled, with the same adversarial haiku row, also never returns haiku for ui", async () => {
     const result = await selectExecuteModel("ui", "ws-1", {
       random: NEVER_EXPLORE,
       fetchStats: fetchStatsReturning([
@@ -210,7 +212,7 @@ describe("selectExecuteModel: HARD OWNER RULE — never returns haiku for ui, ev
       ]),
     });
     expect(result.model.slug).not.toBe(HAIKU);
-    expect(result.model.slug).toBe(SONNET); // ui's seed, since haiku's data is never considered at all
+    expect(result.model.slug).toBe(KIMI_CODE); // ui's seed, since haiku's data is never considered at all
     expect(result.reason).toBe("seed");
   });
 
@@ -220,8 +222,8 @@ describe("selectExecuteModel: HARD OWNER RULE — never returns haiku for ui, ev
       const result = await selectExecuteModel("ui", "ws-1", {
         random: () => d,
         fetchStats: fetchStatsReturning([
-          row({ executeModel: SONNET, runCount: 3, successCount: 3 }),
-          row({ executeModel: OPUS, runCount: 1, successCount: 1 }),
+          row({ executeModel: KIMI_CODE, runCount: 3, successCount: 3 }),
+          row({ executeModel: GLM_5_2, runCount: 1, successCount: 1 }),
         ]),
       });
       expect(result.model.slug).not.toBe(HAIKU);
@@ -246,16 +248,21 @@ describe("selectExecuteModel: exploration stays within the eligible set for ever
   }
 
   it("prefers the LEAST-sampled eligible alternative (excluding the exploit pick)", async () => {
-    // mechanical's seed is haiku. sonnet has 0 recorded runs, opus has 5 --
-    // exploration (excluding haiku, the exploit pick) should prefer sonnet.
-    const result = await selectExecuteModel("mechanical", "ws-1", {
+    // ui's seed is kimi-k2.7-code; give it no data so it stays the exploit
+    // pick (both alternative rows below are 0% success, so neither can beat
+    // the seed's own 0% baseline on the exploit side even though sonnet-5
+    // qualifies on run count). Among the three non-seed eligible candidates,
+    // kimi-k3 has the fewest recorded runs (0) -- exploration (excluding the
+    // seed) should prefer it over glm-5.2 (3 runs) and sonnet-5 (8 runs).
+    const result = await selectExecuteModel("ui", "ws-1", {
       random: ALWAYS_EXPLORE,
       explorationRate: 1,
       fetchStats: fetchStatsReturning([
-        row({ executeModel: OPUS, runCount: 5, successCount: 5 }),
+        row({ executeModel: GLM_5_2, runCount: 3, successCount: 0, successRate: 0 }),
+        row({ executeModel: SONNET, runCount: 8, successCount: 0, successRate: 0 }),
       ]),
     });
-    expect(result.model.slug).toBe(SONNET);
+    expect(result.model.slug).toBe(KIMI_K3);
     expect(result.reason).toBe("exploring");
   });
 

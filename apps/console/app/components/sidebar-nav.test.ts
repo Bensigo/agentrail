@@ -34,12 +34,13 @@ describe("NAV_ZONES data structure", () => {
     ]);
   });
 
-  it("Engine room zone contains exactly the demoted evidence pages, plus Budget (#1272)", () => {
+  it("Engine room zone contains exactly the demoted evidence pages, plus Budget (#1272) and Model selection (#1338 PR③)", () => {
     expect(ENGINE_ROOM_ZONE.items.map((i) => i.href)).toEqual([
       "runs",
       "review-gates",
       "costs",
       "budget",
+      "model-selection",
       "memory",
       "failures",
     ]);
@@ -105,7 +106,7 @@ describe("NAV_ZONES data structure", () => {
     expect(allHrefs).not.toContain("api-keys");
   });
 
-  it("adds no new hrefs beyond the legacy set plus work, budget, approvals, and permissions (teams stays a redirect stub to /members; api-keys removed 2026-07-19)", () => {
+  it("adds no new hrefs beyond the legacy set plus work, budget, approvals, permissions, and model-selection (teams stays a redirect stub to /members; api-keys removed 2026-07-19)", () => {
     const legacyHrefs = new Set([
       "",
       "runs",
@@ -120,6 +121,7 @@ describe("NAV_ZONES data structure", () => {
       "memory",
       "members",
       "permissions", // #1278: owner-only grantable merge-permission toggle
+      "model-selection", // #1338 PR③: per-task-type model-outcome observe view
       // "api-keys" intentionally excluded: removed from the nav (owner
       // ruling, 2026-07-19) — see the dedicated test below.
     ]);

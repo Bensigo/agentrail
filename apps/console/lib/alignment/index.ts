@@ -32,10 +32,14 @@ export type { ModelSeat } from "./catalog";
 export { bucketVolume, estimateBrief } from "./estimate";
 export type { VolumeBucket, BriefEstimate, EstimateBriefOptions } from "./estimate";
 
-// Model-selection learning loop (#1338 PR②), eligibility + seeds layers only
-// (DB-free — see module doc above for why selector.ts stays OUT of this
-// barrel). eligibility.ts's module doc has the HARD OWNER RULE (ui never
-// gets haiku); seeds.ts documents today's static default.
+// Model-selection learning loop (#1338 PR②, pool widened PR③) — candidates +
+// eligibility + seeds layers only (DB-free — see module doc above for why
+// selector.ts stays OUT of this barrel). candidates.ts's module doc explains
+// the widened, mostly-non-Claude per-task pool and why it's separate from
+// MODEL_CATALOG; eligibility.ts's module doc has the HARD OWNER RULE (ui
+// never gets haiku); seeds.ts documents today's per-task seed.
+export { CANDIDATES, MODEL_SEATS } from "./candidates";
+
 export {
   ALL_TASK_TYPES,
   eligibleModelsForTaskType,

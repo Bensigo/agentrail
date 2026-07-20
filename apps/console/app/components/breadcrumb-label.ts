@@ -19,6 +19,7 @@ export const SEGMENT_LABELS: Record<string, string> = {
   "review-gates": "Review Gates",
   costs: "Costs",
   budget: "Budget",
+  "model-selection": "Model selection",
   repos: "Repos & Health",
   memory: "Memory",
   members: "Team",

@@ -58,6 +58,53 @@ def test_phase_generation_carries_explicit_cost(capture):
     assert body["usageDetails"] == {"input": 100, "output": 20}
 
 
+def test_phase_generation_drops_non_numeric_breakdown_keys_from_cost_details(capture):
+    """#1337 PR②: `agentrail.run.pricing.cost_breakdown()` now returns a
+    non-numeric `"price_source"` key ("gateway" | "price_table" | None)
+    alongside its numeric `*_usd` components. Langfuse's ingestion schema
+    documents costDetails as "USD cost per usage type" — every value a
+    number (https://langfuse.com/docs/observability/features/token-and-cost-tracking,
+    confirmed 2026-07-20) — so forwarding a breakdown dict verbatim once it
+    carries a string/None value would put a non-numeric entry inside a
+    field Langfuse expects to be all-numeric. Numeric components must still
+    pass through unchanged; only the non-numeric key is dropped.
+    """
+    breakdown = {
+        "input_usd": 0.01,
+        "output_usd": 0.02,
+        "cache_read_usd": 0.001,
+        "cache_write_usd": 0.0,
+        "expansion_usd": 0.0,
+        "rerank_usd": 0.0,
+        "price_source": "gateway",  # the non-numeric field that must NOT reach costDetails
+    }
+    t = RunTracer.start("run-x")
+    t.phase_generation("execute", {"input": 100, "output": 20}, 0.031, breakdown, 1720000000.0, "sonnet")
+    gens = [e for batch in capture for e in batch if e["type"] == "generation-create"]
+    cost_details = gens[0]["body"]["costDetails"]
+
+    assert "price_source" not in cost_details
+    assert cost_details["input_usd"] == 0.01
+    assert cost_details["output_usd"] == 0.02
+    assert cost_details["cache_read_usd"] == 0.001
+    assert cost_details["total"] == 0.031
+    assert all(isinstance(v, (int, float)) for v in cost_details.values())
+
+
+def test_phase_generation_drops_none_valued_breakdown_keys_from_cost_details(capture):
+    """The unknown-model path of `cost_breakdown()` sets `price_source: None`
+    (there is no source to record) — `None` must be dropped the same way a
+    string value is, not forwarded as a literal null inside costDetails."""
+    breakdown = {"input_usd": 0.0, "output_usd": 0.0, "price_source": None}
+    t = RunTracer.start("run-x")
+    t.phase_generation("execute", {"input": 0, "output": 0}, 0.0, breakdown, 1720000000.0, "unknown-model")
+    gens = [e for batch in capture for e in batch if e["type"] == "generation-create"]
+    cost_details = gens[0]["body"]["costDetails"]
+
+    assert "price_source" not in cost_details
+    assert cost_details == {"input_usd": 0.0, "output_usd": 0.0, "total": 0.0}
+
+
 def test_phase_generation_body_carries_its_own_id(capture):
     # Confirmed against a live local Langfuse instance (v3.212.0): the real
     # ingestion endpoint 400s a generation-create body missing its own "id"

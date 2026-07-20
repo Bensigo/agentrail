@@ -14,7 +14,12 @@ include = ["agentrail*"]
 exclude = ["agentrail.tests", "agentrail.tests.*"]
 
 [tool.setuptools.package-data]
-agentrail = ["templates/**", "skills/**"]
+# context/openrouter-catalog.snapshot.json (#1337): the gateway price snapshot
+# agentrail/run/pricing.py reads at runtime — MUST be installed into the wheel
+# so it exists in the runner/fleet image's site-packages (the image installs
+# the package with `pip install .`, non-editable, so a source-tree-only file
+# would be absent there and every gateway-only model would silently price $0).
+agentrail = ["templates/**", "skills/**", "context/openrouter-catalog.snapshot.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["agentrail/tests"]

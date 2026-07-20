@@ -292,6 +292,13 @@ export const ALTER_COST_EVENTS_ADD_CACHE_CREATION_TOKENS = `
 ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS cache_creation_tokens UInt64 DEFAULT 0
 `;
 
+// #1337 PR②: which price tier resolved a cost event's rates ("gateway" |
+// "price_table" | "" when unknown/unset). Additive, idempotent, defaulted —
+// applied at migrate-on-deploy so existing rows read "" rather than breaking.
+export const ALTER_COST_EVENTS_ADD_PRICE_SOURCE = `
+ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS price_source String DEFAULT ''
+`;
+
 export interface CostEventRecord {
   workspace_id: string;
   run_id: string;
@@ -310,6 +317,8 @@ export interface CostEventRecord {
   cache_tokens: number;
   /** cache-WRITE / cache-creation tokens (priced at cached_write rate). */
   cache_creation_tokens: number;
+  /** #1337 PR②: price tier that resolved this cost ("gateway" | "price_table" | ""). */
+  price_source: string;
   occurred_at: Date;
   event_id: string;
 }

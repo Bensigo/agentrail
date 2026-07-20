@@ -483,7 +483,10 @@ def test_cost_breakdown_unknown_model_still_surfaces_supplied_rerank_usd() -> No
 
 
 def test_cost_breakdown_unknown_model_returns_zeros() -> None:
-    """Unknown model → all-zeros dict (mirrors cost_usd's non-fatal $0)."""
+    """Unknown model → all-zeros dict (mirrors cost_usd's non-fatal $0), plus
+    (#1337 PR②) a ``price_source: None`` — there is no source to record when
+    NEITHER the gateway snapshot nor PRICE_TABLE priced this usage at all.
+    """
     usage = _Usage(model="gpt-99-turbo-ultra", input_tokens=100, output_tokens=50, cache_tokens=10)
     with warnings.catch_warnings(record=True):
         bd = cost_breakdown(usage)
@@ -495,6 +498,7 @@ def test_cost_breakdown_unknown_model_returns_zeros() -> None:
         "expansion_usd": 0.0,
         "rerank_usd": 0.0,
         "total_usd": 0.0,
+        "price_source": None,
     }
 
 
@@ -511,16 +515,66 @@ def test_cost_breakdown_unknown_model_emits_warning() -> None:
 # OpenRouter slugs ("anthropic/claude-sonnet-5", "z-ai/glm-5.2",
 # "anthropic/claude-haiku-4.5") — before the provider-prefix + dot-to-dash
 # normalization steps, every one of these priced as $0 with only a warning,
-# silently zeroing hosted-run cost metering.
+# silently zeroing hosted-run cost metering. Since #1337 PR② these slugs
+# resolve via the GATEWAY tier first (an exact match against the committed
+# OpenRouter snapshot); the PRICE_TABLE prefix/dot-dash chain below still
+# exists as tier 2, for ids the snapshot doesn't carry.
 # ---------------------------------------------------------------------------
 
 
-def test_cost_usd_openrouter_anthropic_prefix_resolves() -> None:
-    """"anthropic/claude-sonnet-5" prices identically to "claude-sonnet-5"."""
-    bare = _Usage(model="claude-sonnet-5", input_tokens=1_000_000, output_tokens=1_000_000, cache_tokens=0)
+def test_cost_usd_openrouter_anthropic_prefix_resolves_via_gateway() -> None:
+    """"anthropic/claude-sonnet-5" resolves to a real, non-zero price via the
+    GATEWAY tier (#1337 PR②) — the committed snapshot's exact-match lookup.
+
+    Historically (pre-#1337) this test asserted the bare id "claude-sonnet-5"
+    and the prefixed "anthropic/claude-sonnet-5" price IDENTICALLY, because
+    both resolved through the same PRICE_TABLE chain. That equality no longer
+    generally holds BY DESIGN: the prefixed/gateway form now prices at
+    whatever the live OpenRouter snapshot says, which can legitimately differ
+    from PRICE_TABLE's deliberately-conservative sticker rate (see
+    catalog.ts's module doc on claude-sonnet-5's introductory pricing) — see
+    test_cost_usd_bare_claude_sonnet_5_still_resolves_via_price_table below
+    for the bare id's own (unchanged, PRICE_TABLE-pinned) coverage.
+    """
     slug = _Usage(model="anthropic/claude-sonnet-5", input_tokens=1_000_000, output_tokens=1_000_000, cache_tokens=0)
-    assert cost_usd(bare) == cost_usd(slug)
-    assert cost_usd(slug) == pytest.approx(3.0 + 15.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        breakdown = cost_breakdown(slug)
+    assert breakdown["price_source"] == "gateway"
+    assert breakdown["total_usd"] > 0.0
+
+
+def test_cost_usd_bare_claude_sonnet_5_still_resolves_via_price_table() -> None:
+    """The bare, non-gateway id "claude-sonnet-5" (a direct Anthropic API
+    call, never routed through OpenRouter) still resolves via PRICE_TABLE's
+    sticker rate exactly — gateway-first resolution doesn't change behaviour
+    for ids the gateway snapshot was never going to carry in the first place
+    (the snapshot only keys on full provider-prefixed slugs)."""
+    bare = _Usage(model="claude-sonnet-5", input_tokens=1_000_000, output_tokens=1_000_000, cache_tokens=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        breakdown = cost_breakdown(bare)
+    assert breakdown["price_source"] == "price_table"
+    assert breakdown["total_usd"] == pytest.approx(3.0 + 15.0)
+
+
+def test_cost_usd_gateway_tier_matches_committed_snapshot_rate_exactly() -> None:
+    """When the gateway tier resolves a model, cost_usd's math uses EXACTLY
+    the snapshot's own numbers. Reads the snapshot's rate directly (via the
+    module's own ``_GATEWAY_RATES``) rather than a hardcoded literal, which
+    would go stale on every `catalog:refresh` — an independent re-derivation
+    of the expected dollar figure, not a duplicate of the source code."""
+    from agentrail.run.pricing import _GATEWAY_RATES
+
+    model = "anthropic/claude-sonnet-5"
+    assert model in _GATEWAY_RATES, "fixture assumption broken: sonnet-5 missing from the committed snapshot"
+    in_rate, out_rate = _GATEWAY_RATES[model]
+
+    usage = _Usage(model=model, input_tokens=1_000_000, output_tokens=500_000, cache_tokens=0)
+    expected = (1_000_000 * in_rate + 500_000 * out_rate) / 1_000_000
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert cost_usd(usage) == pytest.approx(expected, rel=1e-9)
 
 
 def test_cost_usd_openrouter_dotted_version_resolves() -> None:
@@ -530,9 +584,16 @@ def test_cost_usd_openrouter_dotted_version_resolves() -> None:
 
 
 def test_cost_usd_glm_verify_seat_resolves_nonzero() -> None:
-    """"z-ai/glm-5.2" — the hosted verify seat — must never price as $0."""
+    """"z-ai/glm-5.2" — the hosted verify seat — must never price as $0, and
+    (#1337 PR②) resolves via the GATEWAY tier since it's a real, live
+    OpenRouter slug — more accurate than PRICE_TABLE's own entry, which is
+    explicitly documented there as "approximations, rounded up"."""
     slug = _Usage(model="z-ai/glm-5.2", input_tokens=1_000_000, output_tokens=1_000_000, cache_tokens=0)
-    assert cost_usd(slug) == pytest.approx(0.30 + 0.94)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        breakdown = cost_breakdown(slug)
+    assert breakdown["price_source"] == "gateway"
+    assert breakdown["total_usd"] > 0.0
 
 
 def test_cost_usd_unknown_prefixed_model_still_zero_with_warning() -> None:
@@ -543,14 +604,25 @@ def test_cost_usd_unknown_prefixed_model_still_zero_with_warning() -> None:
 
 
 def test_hosted_config_template_models_all_price_nonzero() -> None:
-    """Every model in the SHIPPED hosted config resolves to real rates.
+    """Every model in the SHIPPED hosted config resolves to real rates via
+    the LIVE gateway snapshot (#1337 PR②) — not just PRICE_TABLE's hand-mirror.
 
     Coupling test between deploy/runner/agentrail-config.hosted.json and the
-    canonical price table: a template slug the resolver can't price means every
-    hosted run on that seat records $0 cost (the exact false green this branch
-    fixes — the old critic slug "~anthropic/claude-haiku-latest" was both an
-    invalid OpenRouter model AND unpriceable). Parses the real shipped file so
-    template edits that break pricing fail CI here.
+    committed OpenRouter snapshot: a template slug the resolver can't price
+    (or that has fallen off the live gateway list since the snapshot was
+    last refreshed) means every hosted run on that seat records $0 cost or a
+    stale PRICE_TABLE guess — the exact false green this branch (and #1337's
+    AC3) fixes. The old critic slug "~anthropic/claude-haiku-latest" was the
+    historical incident this coupling test exists to catch. Parses the real
+    shipped file so template edits that break pricing fail CI here.
+
+    This SUPERSEDES the pre-#1337 PRICE_TABLE-only version of this test for
+    slug-validity purposes — see also the TypeScript-side coupling test,
+    apps/console/lib/alignment/slug-validation.test.ts, which checks the same
+    file against the same snapshot via isKnownModelSlug. PRICE_TABLE-fallback
+    correctness itself stays covered by
+    test_cost_usd_bare_claude_sonnet_5_still_resolves_via_price_table above
+    and by context/test_pricing.py's suite.
     """
     import json
     from pathlib import Path
@@ -563,4 +635,10 @@ def test_hosted_config_template_models_all_price_nonzero() -> None:
         usage = _Usage(model=slug, input_tokens=1_000_000, output_tokens=1_000_000, cache_tokens=0)
         with warnings.catch_warnings():
             warnings.simplefilter("error")  # any unknown-model warning fails the test
-            assert cost_usd(usage) > 0.0, f"hosted config {seat} seat {slug!r} prices as $0"
+            breakdown = cost_breakdown(usage)
+        assert breakdown["total_usd"] > 0.0, f"hosted config {seat} seat {slug!r} prices as $0"
+        assert breakdown["price_source"] == "gateway", (
+            f"hosted config {seat} seat {slug!r} did not resolve via the live gateway snapshot "
+            f"(got price_source={breakdown['price_source']!r}) — either the slug isn't a real "
+            f"OpenRouter model, or the snapshot needs `pnpm --filter @agentrail/console catalog:refresh`"
+        )

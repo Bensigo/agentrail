@@ -30,6 +30,14 @@ instance (v3.212.0). Every existing test mocked `_request` and asserted only on
 individual body fields, so this was never caught until a real E2E run: the
 tracer's own non-fatal design meant every phase_generation call silently failed
 in production while the run itself succeeded normally.
+
+`costDetails` is documented as "USD cost per usage type" — every value a
+number (https://langfuse.com/docs/observability/features/token-and-cost-tracking,
+confirmed 2026-07-20). `phase_generation` therefore filters its `breakdown`
+argument to numeric values only before folding it into `costDetails` (#1337
+PR②: `agentrail.run.pricing.cost_breakdown()` gained a non-numeric
+`price_source` field alongside its numeric `*_usd` components — forwarding
+it verbatim would put a string/None inside an all-numeric field).
 """
 from __future__ import annotations
 
@@ -131,7 +139,23 @@ class RunTracer:
                          breakdown: Optional[dict], start_ts: Optional[float],
                          model: Optional[str]) -> None:
         def build() -> dict:
-            cost_details = dict(breakdown) if breakdown else {}
+            # Langfuse's ingestion schema documents costDetails as "USD cost
+            # per usage type" — every value a number (see
+            # https://langfuse.com/docs/observability/features/token-and-cost-tracking,
+            # confirmed 2026-07-20). agentrail.run.pricing.cost_breakdown()
+            # gained a non-numeric "price_source" key (#1337 PR②: "gateway" |
+            # "price_table" | None) alongside its numeric *_usd components —
+            # forwarding that key verbatim here would put a string/None
+            # inside a field Langfuse expects to be all-numeric, risking a
+            # rejected/malformed generation-create body that _safe_emit would
+            # then silently swallow (exactly the failure mode this module's
+            # own docstring already warns about). Filter to numeric values
+            # only; a non-numeric breakdown field simply never reaches
+            # costDetails, it isn't lost — it's still on the breakdown dict
+            # the caller (pipeline.py) has directly, for its own use.
+            cost_details = {
+                k: v for k, v in (breakdown or {}).items() if isinstance(v, (int, float))
+            }
             cost_details["total"] = cost_usd
             return {
                 "id": str(uuid.uuid4()),

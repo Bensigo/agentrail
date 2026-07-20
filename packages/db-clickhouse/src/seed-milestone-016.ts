@@ -173,6 +173,7 @@ function costEvent({
     output_tokens: 1_000,
     cache_tokens: 250,
     cache_creation_tokens: 0,
+    price_source: "",
     tokens: 3_250,
     cost_usd: costUsd,
     model: MODEL,

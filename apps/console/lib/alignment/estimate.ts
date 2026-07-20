@@ -10,6 +10,15 @@
  * wiring (queue_entries column, WorkItem budget field, --budget-usd
  * passthrough) is explicitly out of scope for this PR; this module only
  * computes the number that wiring will eventually carry.
+ *
+ * Pricing (#1337 PR ②): the suggested seat's rate is resolved gateway-first
+ * via {@link resolveModelPrice} — the live OpenRouter snapshot wins when it
+ * knows the seat's slug, `suggestedModel`'s own PRICE_TABLE-mirrored
+ * constants otherwise. {@link BriefEstimate.priceSource} records which one
+ * won so a later persisted cost/estimate record stays auditable (AC1); the
+ * resolved numbers can legitimately differ from `suggestedModel`'s own
+ * constants (e.g. `claude-sonnet-5`'s live introductory rate vs. catalog.ts's
+ * deliberately-conservative sticker mirror — see catalog.ts's module doc).
  */
 
 import { classifyTaskType } from "./classifier";
@@ -17,6 +26,8 @@ import type { TaskInput } from "./classifier";
 import { MODEL_CATALOG } from "./catalog";
 import type { ModelSeat } from "./catalog";
 import type { TaskType } from "./classifier";
+import { resolveModelPrice } from "./resolve-price";
+import type { PriceSource } from "./resolve-price";
 
 export type VolumeBucket = "S" | "M" | "L";
 
@@ -85,18 +96,37 @@ export interface BriefEstimate {
   taskType: TaskType;
   suggestedModel: ModelSeat;
   volumeBucket: VolumeBucket;
+  /**
+   * The per-MTok rates actually used for `estimateUsd`'s math. Gateway-
+   * sourced when the live snapshot knows `suggestedModel.slug`, else
+   * `suggestedModel`'s own PRICE_TABLE-mirrored constants — see
+   * {@link priceSource}. Can differ from `suggestedModel.inUsdPerMTok` /
+   * `.outUsdPerMTok`; those are the seat's own hand-mirrored constants,
+   * these are what was actually resolved and priced.
+   */
+  resolvedInUsdPerMTok: number;
+  resolvedOutUsdPerMTok: number;
+  /** Which table produced the resolved rates above (AC1 — ledger auditability). */
+  priceSource: PriceSource;
   /** USD, rounded to cents. Never 0 for a valid catalog model (see estimate.test.ts). */
   estimateUsd: number;
   /** Honest, human-readable list the brief displays alongside the number. */
   assumptions: string[];
 }
 
+const PRICE_SOURCE_LABEL: Record<PriceSource, string> = {
+  gateway: "live OpenRouter gateway pricing",
+  price_table: "the canonical PRICE_TABLE mirror (gateway snapshot had no rate for this slug)",
+  fallback: "a neutral fallback rate (no known price for this model at all)",
+};
+
 /**
  * Compute the alignment brief's suggested model + cost estimate for a task.
  *
  * Pure: classification, bucketing, and pricing are all deterministic lookups
- * over the input plus the two constant tables above — no I/O, no clock, no
- * randomness.
+ * over the input plus the constant tables above and the committed gateway
+ * snapshot ({@link resolveModelPrice}) — no network I/O, no clock beyond
+ * `Date.now()`-free arithmetic, no randomness.
  */
 export function estimateBrief(input: TaskInput): BriefEstimate {
   const taskType = classifyTaskType(input);
@@ -104,15 +134,17 @@ export function estimateBrief(input: TaskInput): BriefEstimate {
   const volumeBucket = bucketVolume(input);
   const { inTokens, outTokens } = VOLUME_TOKEN_ASSUMPTIONS[volumeBucket];
 
-  const rawUsd =
-    (inTokens / 1_000_000) * suggestedModel.inUsdPerMTok +
-    (outTokens / 1_000_000) * suggestedModel.outUsdPerMTok;
+  const { inUsdPerMTok, outUsdPerMTok, priceSource } = resolveModelPrice(suggestedModel);
 
-  // Rounded to cents. Never 0 for a valid catalog model: every MODEL_CATALOG
-  // rate is > 0 (cheapest is mechanical's $1.00/$5.00 per MTok) and every
-  // VOLUME_TOKEN_ASSUMPTIONS bucket has > 0 tokens both directions, so rawUsd
-  // is always strictly positive before rounding (smallest possible value is
-  // mechanical x S = $0.06 — see estimate.test.ts's exact-math table).
+  const rawUsd = (inTokens / 1_000_000) * inUsdPerMTok + (outTokens / 1_000_000) * outUsdPerMTok;
+
+  // Rounded to cents. Never 0 for any of today's shipped seats: every
+  // resolved rate (gateway or PRICE_TABLE-mirrored fallback) is > 0 for the
+  // 4 real MODEL_CATALOG slugs, and every VOLUME_TOKEN_ASSUMPTIONS bucket has
+  // > 0 tokens both directions, so rawUsd is always strictly positive before
+  // rounding — see estimate.test.ts's exact-math table (computed against
+  // whatever resolveModelPrice actually resolves, not a hardcoded literal,
+  // since gateway rates can move between a `catalog:refresh` and the next).
   const estimateUsd = Math.round(rawUsd * 100) / 100;
 
   const bodyChars = bodyLength(input);
@@ -124,9 +156,18 @@ export function estimateBrief(input: TaskInput): BriefEstimate {
     `~${inTokens.toLocaleString("en-US")} input / ${outTokens.toLocaleString("en-US")} output ` +
       `tokens assumed for a ${BUCKET_LABEL[volumeBucket]} task (an assumption, not a ` +
       `measurement — see VOLUME_TOKEN_ASSUMPTIONS).`,
-    `Priced at ${suggestedModel.displayName} rates ($${suggestedModel.inUsdPerMTok}/` +
-      `$${suggestedModel.outUsdPerMTok} per MTok in/out).`,
+    `Priced at ${suggestedModel.displayName} rates ($${inUsdPerMTok}/` +
+      `$${outUsdPerMTok} per MTok in/out) from ${PRICE_SOURCE_LABEL[priceSource]}.`,
   ];
 
-  return { taskType, suggestedModel, volumeBucket, estimateUsd, assumptions };
+  return {
+    taskType,
+    suggestedModel,
+    volumeBucket,
+    resolvedInUsdPerMTok: inUsdPerMTok,
+    resolvedOutUsdPerMTok: outUsdPerMTok,
+    priceSource,
+    estimateUsd,
+    assumptions,
+  };
 }

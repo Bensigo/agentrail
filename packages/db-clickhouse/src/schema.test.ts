@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   ALTER_COST_EVENTS_ADD_CACHE_CREATION_TOKENS,
+  ALTER_COST_EVENTS_ADD_PRICE_SOURCE,
   ALTER_FAILURE_EVENTS_ADD_FINGERPRINT,
   ALTER_FAILURE_EVENTS_ADD_NORMALIZED_ERROR,
   CREATE_AFK_RUN_EVENTS_TABLE,
@@ -27,6 +28,14 @@ describe("cost_events cache_creation_tokens migration", () => {
   it("exports an additive idempotent ALTER for cache_creation_tokens", () => {
     expect(ALTER_COST_EVENTS_ADD_CACHE_CREATION_TOKENS).toContain(
       "ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS cache_creation_tokens UInt64 DEFAULT 0"
+    );
+  });
+});
+
+describe("cost_events price_source migration (#1337 PR②)", () => {
+  it("exports an additive idempotent ALTER for price_source (String DEFAULT '')", () => {
+    expect(ALTER_COST_EVENTS_ADD_PRICE_SOURCE).toContain(
+      "ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS price_source String DEFAULT ''"
     );
   });
 });

@@ -44,7 +44,7 @@ from agentrail.run.output_enforcer import (
     push_format_rejection_event,
 )
 from agentrail.run.layer_overrides import layer_override
-from agentrail.run.pricing import cost_breakdown, cost_usd
+from agentrail.run.pricing import cost_breakdown, cost_usd, resolve_price_source
 from agentrail.run.proc import run_with_timeout
 from agentrail.run import best_of_n as bestofn
 from agentrail.run import critic as critic_mod
@@ -802,12 +802,20 @@ def run_issue_phase(rc: RunContext, phase: str, execution_attempt: int,
                         "was already %s on its own: %s", phase, status, budget_msg,
                     )
 
-            push_cost_event(rc.target_dir, rc.run_id, phase, usage, cost)
+            # Which price tier resolved this cost (#1337 PR ②) — computed HERE,
+            # after the budget guardrail block above, precisely so it can never
+            # perturb the cost accounting / budget leash the run depends on. It
+            # is a ledger concern only (threaded into the durable cost-events
+            # record below so AC1 auditability holds), and resolve_price_source
+            # is non-fatal (returns None rather than raising), matching the
+            # non-fatal design of this whole telemetry block.
+            price_source = resolve_price_source(usage.model)
+            push_cost_event(rc.target_dir, rc.run_id, phase, usage, cost, price_source)
             # Local append-only ledger for `agentrail context savings` — isolated
             # in its own try/except so a write failure cannot disable the cost
             # accounting above (which would silently defeat the budget guardrail).
             try:
-                record = build_cost_record(rc.run_id, phase, usage, cost)
+                record = build_cost_record(rc.run_id, phase, usage, cost, price_source)
                 ledger = rc.target_dir / ".agentrail" / "run" / "cost-events.jsonl"
                 ledger.parent.mkdir(parents=True, exist_ok=True)
                 with ledger.open("a", encoding="utf-8") as _f:

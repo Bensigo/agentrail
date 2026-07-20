@@ -294,11 +294,21 @@ class RunnerClient:
         gate_reason: str = "",
         logs_tail: str = "",
         pr_url: str = "",
+        execute_model: str = "",
     ) -> bool:
         """POST a run outcome back to the backend. ``True`` only on a 2xx.
 
         ``status`` is the Run-Outcome vocabulary the dispatcher already speaks
         (green / red / error); the backend normalizes it to the durable enum.
+
+        ``execute_model`` (#1338 PR① fix round) is the FINAL execute-phase
+        model this attempt ran on, resolved by ``_make_execute`` at dispatch.
+        The backend writes it straight into the ``run_outcomes`` learning
+        signal — AUTHORITATIVE, so a dropped ClickHouse execute cost_event no
+        longer nulls the model on a genuine success. Defaults to "" (older
+        runner / a tier-0 config-default run), for which the backend keeps its
+        ClickHouse-reconstruction fallback. Mirrors ``cost_usd``'s
+        reported-value shape exactly — a plain payload field.
         """
         url = f"{self._base}/api/v1/runner/result"
         payload = json.dumps(
@@ -315,6 +325,7 @@ class RunnerClient:
                 "gate_reason": gate_reason,
                 "logs_tail": logs_tail,
                 "pr_url": pr_url,
+                "execute_model": execute_model,
             }
         ).encode("utf-8")
         resp = self._transport("POST", url, headers=self._headers(), body=payload)

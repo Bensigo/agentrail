@@ -69,6 +69,9 @@ export async function applyAlignmentDecision(
     queueEntryId: approval.queueEntryId,
     estimatedBudgetUsd: confirmed.estimatedBudgetUsd,
     modelOverride: confirmed.modelOverride,
+    // #1338 PR①: denormalize the classifier's task type onto the queue entry
+    // at the exact moment the ceiling itself gets sanctioned.
+    taskType: confirmed.taskType,
   });
   if (!flippedQueueEntry) {
     console.error(

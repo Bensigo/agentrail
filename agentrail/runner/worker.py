@@ -46,6 +46,11 @@ def _report(client, item: WorkItem, result: RunResult) -> None:
         gate_reason=result.gate_reason,
         logs_tail=result.logs_tail,
         pr_url=getattr(result, "pr_url", ""),
+        # #1338 PR① fix round: the FINAL execute model _make_execute resolved
+        # for this attempt (getattr-guarded so an older RunResult/test double
+        # without the field reports "" and the backend falls back to
+        # ClickHouse — the pre-existing behavior).
+        execute_model=getattr(result, "execute_model", ""),
     )
 
 

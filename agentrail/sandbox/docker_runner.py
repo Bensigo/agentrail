@@ -118,6 +118,16 @@ class RunResult:
     gate_reason: human-readable reason for a red/error outcome ('' when green).
     logs_tail  : last lines of the container output, for triage.
     pr_url     : the pull request opened for a green run ('' when none/not green).
+    execute_model: the FINAL execute-phase model this attempt ran on — the
+                 model ``_make_execute`` resolved (escalation model for a
+                 tier>=1 retry, else the brief-confirmed override), stamped
+                 onto the result at dispatch time so the backend records it
+                 AUTHORITATIVELY in ``run_outcomes`` (#1338 PR① fix round).
+                 '' when ``_make_execute`` passed no model (a tier-0 no-override
+                 run uses the pipeline's config default, unknown at dispatch) —
+                 the backend then falls back to reconstructing it from ClickHouse
+                 cost_events, so a dropped execute cost_event no longer silently
+                 nulls the model on a run whose model WAS decided up front.
     """
 
     status: str
@@ -126,6 +136,7 @@ class RunResult:
     gate_reason: str = ""
     logs_tail: str = ""
     pr_url: str = ""
+    execute_model: str = ""
 
 
 @dataclass

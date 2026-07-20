@@ -187,6 +187,31 @@ describe("enqueueGithubIssue: alignment gating matrix (requireAlignment x confir
     }
     expect(insertedValues[0]?.["estimatedBudgetUsd"]).toBeNull();
     expect(insertedValues[0]?.["modelOverride"]).toBeNull();
+    expect(insertedValues[0]?.["taskType"]).toBeNull();
+  });
+
+  it("#1338 PR①: a _brief with a malformed taskType (not a non-empty string) still admits normally with estimatedBudgetUsd/modelOverride written — taskType alone never gates the extraction", async () => {
+    mockRequireAlignment = true;
+    mockConfirmedApprovalToolInput = {
+      _brief: {
+        taskType: 42, // malformed — should degrade to null, not fail the whole extraction
+        suggestedModel: { slug: "anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5" },
+        estimateUsd: 2.5,
+        assumptions: [],
+      },
+    };
+    const result = await enqueueGithubIssue({
+      workspaceId: "ws-1",
+      repoFullName: "owner/repo",
+      number: 2,
+      title: "t",
+      body: GOOD_BODY,
+    });
+    expect(result.enqueued).toBe(true);
+    if (result.enqueued) expect(result.state).toBe("queued");
+    expect(insertedValues[0]?.["estimatedBudgetUsd"]).toBe(2.5);
+    expect(insertedValues[0]?.["modelOverride"]).toBe("anthropic/claude-sonnet-5");
+    expect(insertedValues[0]?.["taskType"]).toBeNull();
   });
 
   it("#1274 PR②: requireAlignment=true + a confirmed brief WITH a _brief -> admits queued AND writes estimated_budget_usd/model_override from that brief", async () => {
@@ -216,6 +241,8 @@ describe("enqueueGithubIssue: alignment gating matrix (requireAlignment x confir
     }
     expect(insertedValues[0]?.["estimatedBudgetUsd"]).toBe(2.5);
     expect(insertedValues[0]?.["modelOverride"]).toBe("anthropic/claude-sonnet-5");
+    // #1338 PR①: taskType is denormalized onto the row from the SAME _brief.
+    expect(insertedValues[0]?.["taskType"]).toBe("ui");
   });
 
   it("#1274 PR②, BOLDED PIN 1: a confirmed brief WITH a _brief that would ALSO land dependency-parked -> values are STILL written at admission, parkedFor stays unset, the dependency reason is kept", async () => {
@@ -256,6 +283,8 @@ describe("enqueueGithubIssue: alignment gating matrix (requireAlignment x confir
     expect(insertedValues[0]?.["parkReason"]).toBe("Waiting on #9"); // dependency reason kept, not overwritten
     expect(insertedValues[0]?.["estimatedBudgetUsd"]).toBe(0.42);
     expect(insertedValues[0]?.["modelOverride"]).toBe("anthropic/claude-haiku-4-5");
+    // #1338 PR①: taskType travels with the rest of the sanctioned values.
+    expect(insertedValues[0]?.["taskType"]).toBe("mechanical");
   });
 
   it("#1274 PR②, BOLDED PIN 2: a confirmed-but-no-_brief approval that would land dependency-parked is treated as NOT confirmed — parkedFor fires, dependency reason kept, no values written (the no-_brief fallback is restricted to a clean queued landing)", async () => {
@@ -282,6 +311,7 @@ describe("enqueueGithubIssue: alignment gating matrix (requireAlignment x confir
     expect(insertedValues[0]?.["parkReason"]).toBe("Waiting on #9"); // still the dependency's own reason
     expect(insertedValues[0]?.["estimatedBudgetUsd"]).toBeNull();
     expect(insertedValues[0]?.["modelOverride"]).toBeNull();
+    expect(insertedValues[0]?.["taskType"]).toBeNull();
   });
 
   it("#1274 PR② fix round I1: the confirmed-brief lookup's WHERE composes tool_name = 'create_issue' — a stamped approval of any OTHER tool can never satisfy admission", async () => {
@@ -496,6 +526,7 @@ describe("confirmAlignmentBrief: atomic approve-side flip (#1274 finding-1 fix: 
       queueEntryId: "q-1",
       estimatedBudgetUsd: 1.35,
       modelOverride: "anthropic/claude-sonnet-5",
+      taskType: "ui",
     });
     expect(flipped).toBe(true);
     expect(updateCalls).toHaveLength(1);
@@ -504,6 +535,8 @@ describe("confirmAlignmentBrief: atomic approve-side flip (#1274 finding-1 fix: 
       parkReason: null,
       estimatedBudgetUsd: 1.35,
       modelOverride: "anthropic/claude-sonnet-5",
+      // #1338 PR①: task_type is denormalized onto the row in the SAME update.
+      taskType: "ui",
     });
   });
 
@@ -517,6 +550,7 @@ describe("confirmAlignmentBrief: atomic approve-side flip (#1274 finding-1 fix: 
       queueEntryId: "q-1",
       estimatedBudgetUsd: 1.35,
       modelOverride: "anthropic/claude-sonnet-5",
+      taskType: null,
     });
     expect(flipped).toBe(true);
     expect(updateCalls[0]).toMatchObject({ state: "queued", parkReason: null });
@@ -532,6 +566,7 @@ describe("confirmAlignmentBrief: atomic approve-side flip (#1274 finding-1 fix: 
       queueEntryId: "q-1",
       estimatedBudgetUsd: 1.35,
       modelOverride: "anthropic/claude-sonnet-5",
+      taskType: null,
     });
     // Confirming still "succeeds" — the ceiling is sanctioned — it just
     // can't run yet because a real dependency remains.
@@ -550,6 +585,7 @@ describe("confirmAlignmentBrief: atomic approve-side flip (#1274 finding-1 fix: 
       queueEntryId: "q-1",
       estimatedBudgetUsd: 1.35,
       modelOverride: "anthropic/claude-sonnet-5",
+      taskType: null,
     });
     expect(flipped).toBe(false);
     expect(updateCalls).toHaveLength(0);
@@ -564,6 +600,7 @@ describe("confirmAlignmentBrief: atomic approve-side flip (#1274 finding-1 fix: 
       queueEntryId: "q-1",
       estimatedBudgetUsd: 1.35,
       modelOverride: "anthropic/claude-sonnet-5",
+      taskType: null,
     });
     expect(flipped).toBe(false);
     // The update was still attempted (this is a WHERE-clause guard, not a

@@ -150,15 +150,28 @@ export function composeChatBornBrief(input: {
 export interface ConfirmedBudgetAndModel {
   estimatedBudgetUsd: number;
   modelOverride: string;
+  /** #1338 PR① (model-selection learning loop — the FUEL): the classifier's
+   * output, read straight off the SAME stored `toolInput` (top-level on an
+   * `alignment_brief` approval — see `AlignmentBriefToolInput.taskType`).
+   * `null` when absent/malformed — independent of the two fields above, a
+   * missing task type never fails this extraction (see the function's own
+   * doc-comment). */
+  taskType: string | null;
 }
 
 /**
- * Defensively extract the two values the alignment gate's confirm side-effect
+ * Defensively extract the values the alignment gate's confirm side-effect
  * needs FROM THE STORED APPROVAL ROW's `toolInput` — never from the Telegram
  * callback itself (owner rule: server-derived, never caller-supplied). `null`
- * on anything malformed (a hand-edited row, a future toolInput-shape change)
- * so the caller can log loudly and leave the entry parked rather than write a
- * bogus budget/model.
+ * (the WHOLE result) on a malformed estimateUsd/suggestedModel (a hand-edited
+ * row, a future toolInput-shape change) so the caller can log loudly and
+ * leave the entry parked rather than write a bogus budget/model.
+ *
+ * `taskType` is extracted independently and never gates the result: a
+ * missing/malformed task type still yields a valid
+ * `{estimatedBudgetUsd, modelOverride, taskType: null}` — it's a
+ * denormalization nice-to-have for #1338's learning-loop capture, not a
+ * value the confirm flow itself depends on.
  */
 export function extractConfirmedBudgetAndModel(
   toolInput: Record<string, unknown>
@@ -177,5 +190,9 @@ export function extractConfirmedBudgetAndModel(
     return null;
   }
 
-  return { estimatedBudgetUsd: estimateUsd, modelOverride: slug };
+  const taskTypeValue = toolInput["taskType"];
+  const taskType =
+    typeof taskTypeValue === "string" && taskTypeValue.length > 0 ? taskTypeValue : null;
+
+  return { estimatedBudgetUsd: estimateUsd, modelOverride: slug, taskType };
 }

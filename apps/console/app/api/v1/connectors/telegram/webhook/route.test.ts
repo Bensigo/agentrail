@@ -916,6 +916,7 @@ describe("POST /api/v1/connectors/telegram/webhook — alignment gate confirm/de
     mockExtractConfirmed.mockReturnValue({
       estimatedBudgetUsd: 1.35,
       modelOverride: "anthropic/claude-sonnet-5",
+      taskType: "ui",
     });
     mockConfirmAlignmentBrief.mockResolvedValue(true);
 
@@ -927,6 +928,8 @@ describe("POST /api/v1/connectors/telegram/webhook — alignment gate confirm/de
       queueEntryId: "queue-entry-1",
       estimatedBudgetUsd: 1.35,
       modelOverride: "anthropic/claude-sonnet-5",
+      // #1338 PR①: taskType passes straight through from the extraction.
+      taskType: "ui",
     });
     expect(mockDenyAlignmentBrief).not.toHaveBeenCalled();
     // The rest of the flow (answer/edit) is unaffected — same UX as any approval.
@@ -969,6 +972,7 @@ describe("POST /api/v1/connectors/telegram/webhook — alignment gate confirm/de
     mockExtractConfirmed.mockReturnValue({
       estimatedBudgetUsd: 1.35,
       modelOverride: "anthropic/claude-sonnet-5",
+      taskType: null,
     });
     mockConfirmAlignmentBrief.mockResolvedValue(false);
 

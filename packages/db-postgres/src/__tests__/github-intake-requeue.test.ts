@@ -198,6 +198,7 @@ describe("requeueParkedQueueEntry", () => {
       queueEntryId: "entry-1",
       estimatedBudgetUsd: 7.25,
       modelOverride: "sonnet-5",
+      taskType: null,
     });
     expect(confirmed).toBe(true);
     const confirmWrite = updateCalls.at(-1);

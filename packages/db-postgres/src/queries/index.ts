@@ -1818,6 +1818,8 @@ export {
   type QueueEntryListItem,
   type RunnerStatus,
   type LatestRunForIssue,
+  type RecordRunnerResult,
+  type TerminalQueueState,
 } from "./runner.js";
 
 // CI reconciliation (#891b) — reconcile a run's DISPLAYED status against the
@@ -2199,6 +2201,20 @@ export {
   type WorkspaceCostOverview,
   type WorkspaceCapStatus,
 } from "./workspace_costs.js";
+
+// #1338 PR① — the model-selection learning loop's FUEL (capture only; see
+// `queries/run_outcomes.ts` for the full design/timing rationale).
+// recordRunOutcome is called by the runner-result route on every terminal
+// queue transition; mapTerminalStateToRunOutcome is its pure vocabulary
+// mapping (independently unit-testable); getModelOutcomeStats is the
+// aggregate read a LATER PR's selector will consume.
+export {
+  recordRunOutcome,
+  mapTerminalStateToRunOutcome,
+  getModelOutcomeStats,
+  type RunOutcomeValue,
+  type ModelOutcomeStatsRow,
+} from "./run_outcomes.js";
 
 // Grantable workspace-trust-setting queries (issue #1278; see
 // `queries/workspace_grants.ts` for the full WHY). getMergePermission is the

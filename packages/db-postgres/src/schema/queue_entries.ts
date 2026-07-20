@@ -112,6 +112,21 @@ export const queueEntries = pgTable("queue_entries", {
   // the same user pick would burn the bounded retry budget instead of ever
   // reaching the stronger escalation model.
   modelOverride: text("model_override"),
+  // #1338 PR① (model-selection learning loop — the FUEL): the classifier's
+  // TaskType ("ui"|"refactor"|"mechanical"|"general", see
+  // apps/console/lib/alignment/classifier.ts::classifyTaskType), denormalized
+  // off the alignment brief's own toolInput at brief-CONFIRM time — see
+  // `queries/github_intake.ts`'s `confirmAlignmentBrief` (existing parked row)
+  // and `enqueueGithubIssue` (a chat-born row admitted with an already-
+  // confirmed brief) — so it is a queryable column instead of buried in
+  // `jace_approvals.tool_input` jsonb. NULL for every row until a brief
+  // confirms one (forward-only, no backfill) and forever for kind='onboard'
+  // rows and any workspace that never required alignment (no brief is ever
+  // composed, so no task type is ever classified). Free text, not the pgEnum
+  // vocabulary itself, so a future classifier addition never needs a migration
+  // here. Read by `queries/run_outcomes.ts::getModelOutcomeStats` (via the
+  // denormalized copy on `run_outcomes`, not this column directly).
+  taskType: text("task_type"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

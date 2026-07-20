@@ -79,8 +79,33 @@ def test_worker_claims_runs_and_reports_one_item():
             "gate_reason": "",
             "logs_tail": "",
             "pr_url": "",
+            # #1338 PR① fix round: forwarded from RunResult.execute_model (""
+            # here — this result carries no decided model).
+            "execute_model": "",
         }
     ]
+
+
+def test_worker_forwards_execute_model_to_report_result():
+    """#1338 PR① fix round: RunResult.execute_model (the authoritative model
+    _make_execute stamped) is forwarded on the report_result call, so the
+    backend records it instead of reconstructing from lossy ClickHouse."""
+    client = FakeClient([_item("42")])
+
+    def execute(item: WorkItem) -> RunResult:
+        return RunResult(
+            status="green", cost_usd=0.5, execute_model="anthropic/claude-sonnet-5"
+        )
+
+    run_worker(
+        client,
+        execute=execute,
+        sleep=lambda _s: None,
+        idle_seconds=1,
+        should_continue=_stop_after(1),
+    )
+
+    assert client.reported[0]["execute_model"] == "anthropic/claude-sonnet-5"
 
 
 def test_worker_reports_telemetry_after_each_run():

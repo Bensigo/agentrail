@@ -17,11 +17,15 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     latestTelegramSessionForWorkspace: vi.fn(),
     getMergePermission: vi.fn(),
     getGithubToken: vi.fn(),
+    // #1338 PR① — see route.test.ts's own mock for the full rationale.
+    recordRunOutcome: vi.fn(),
+    mapTerminalStateToRunOutcome: actual.mapTerminalStateToRunOutcome,
   };
 });
 vi.mock("@agentrail/db-clickhouse", () => ({
   insertFailureEvents: vi.fn(),
   recordRunLifecycleEvent: vi.fn(),
+  getRunCosts: vi.fn(),
 }));
 vi.mock("../../../../../lib/bearer-auth", () => ({
   requireBearer: vi.fn(),

@@ -20,11 +20,22 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     // #1278 PR②: merge enforcement's two DB reads.
     getMergePermission: vi.fn(),
     getGithubToken: vi.fn(),
+    // #1338 PR①: recordRunOutcome is mocked (asserted on in its own dedicated
+    // suite, route.run-outcome-capture.test.ts). mapTerminalStateToRunOutcome
+    // is picked from the REAL module — same "harmless real value" precedent
+    // as ONBOARD_EXTERNAL_ID_PREFIX above: it's a pure 3-way switch, so using
+    // the real one means an assertion checks the ACTUAL mapped outcome
+    // string instead of a meaningless mock return.
+    recordRunOutcome: vi.fn(),
+    mapTerminalStateToRunOutcome: actual.mapTerminalStateToRunOutcome,
   };
 });
 vi.mock("@agentrail/db-clickhouse", () => ({
   insertFailureEvents: vi.fn(),
   recordRunLifecycleEvent: vi.fn(),
+  // #1338 PR①: resolved once per terminal result to find the execute-phase
+  // model + sum cost; see route.run-outcome-capture.test.ts for behavior.
+  getRunCosts: vi.fn(),
 }));
 vi.mock("../../../../../lib/bearer-auth", () => ({
   requireBearer: vi.fn(),
@@ -51,8 +62,13 @@ import {
   latestTelegramSessionForWorkspace,
   getMergePermission,
   getGithubToken,
+  recordRunOutcome,
 } from "@agentrail/db-postgres";
-import { insertFailureEvents, recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
+import {
+  insertFailureEvents,
+  recordRunLifecycleEvent,
+  getRunCosts,
+} from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 import { notifyRunOutcome } from "./notify";
 import { sendSystemTelegramMessage } from "../../../../../lib/telegram-system-message";
@@ -99,12 +115,18 @@ beforeEach(() => {
     updated: true,
     terminalState: null,
     externalId: "owner/name#42",
+    taskType: null,
   } as never);
   // #1278 PR②: default OFF — every pre-existing test in this file (and any
   // new test that doesn't explicitly opt in) gets the byte-identical-to-
   // before behavior: zero GitHub calls, merged always false.
   vi.mocked(getMergePermission).mockResolvedValue(false);
   vi.mocked(getGithubToken).mockResolvedValue(null);
+  // #1338 PR①: harmless defaults — terminalState is null by default above,
+  // so this block never fires for a pre-existing test unless it explicitly
+  // opts in (see route.run-outcome-capture.test.ts for the dedicated suite).
+  vi.mocked(getRunCosts).mockResolvedValue([]);
+  vi.mocked(recordRunOutcome).mockResolvedValue(undefined as never);
 });
 
 const ORIGINAL_FETCH = global.fetch;

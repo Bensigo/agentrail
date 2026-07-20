@@ -280,6 +280,7 @@ describe("#1274 finding-1 fix: the exact reviewer repro (unparkDependents × con
       queueEntryId: "q-7",
       estimatedBudgetUsd: 1.35,
       modelOverride: "anthropic/claude-sonnet-5",
+      taskType: null,
     });
     expect(confirmed).toBe(true); // the ceiling IS sanctioned...
     expect(updateCalls[0]).toMatchObject({
@@ -323,6 +324,7 @@ describe("#1274 finding-1 fix: the exact reviewer repro (unparkDependents × con
       queueEntryId: "q-7",
       estimatedBudgetUsd: 1.35,
       modelOverride: "anthropic/claude-sonnet-5",
+      taskType: null,
     });
     expect(confirmed).toBe(true);
     expect(updateCalls).toHaveLength(2);

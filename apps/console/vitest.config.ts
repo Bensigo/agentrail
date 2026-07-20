@@ -16,5 +16,8 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    // Prevents any test from making a real network call via the gateway
+    // catalog's lazy fetch (see vitest.setup.ts's own doc comment).
+    setupFiles: ["./vitest.setup.ts"],
   },
 });

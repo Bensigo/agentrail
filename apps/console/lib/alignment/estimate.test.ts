@@ -1,13 +1,38 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { bucketVolume, estimateBrief } from "./estimate";
 import type { VolumeBucket } from "./estimate";
 import type { TaskInput, TaskType } from "./classifier";
 import { MODEL_CATALOG } from "./catalog";
 import { resolveModelPrice } from "./resolve-price";
+import { _awaitCatalogLoadForTests, _resetCatalogForTests } from "./gateway-catalog";
+import type { RawOpenRouterModel } from "./openrouter-normalize";
 
 function acList(count: number): string[] {
   return Array.from({ length: count }, () => "a");
 }
+
+// Live catalog access is a fetch-once-and-cache (see gateway-catalog.ts's
+// module doc), not a committed file — describe blocks below that need
+// deterministic "gateway" resolution mock the fetch with a fixture covering
+// today's real MODEL_CATALOG slugs, then await the load before asserting.
+const KNOWN_SEATS_FIXTURE: RawOpenRouterModel[] = Object.values(MODEL_CATALOG).map((seat) => ({
+  id: seat.slug,
+  pricing: { prompt: String(seat.inUsdPerMTok / 1_000_000), completion: String(seat.outUsdPerMTok / 1_000_000) },
+  context_length: 1000000,
+  top_provider: { context_length: 1000000, max_completion_tokens: 128000, is_moderated: true },
+}));
+
+function fakeModelsResponse(models: RawOpenRouterModel[]): Response {
+  return new Response(JSON.stringify({ data: models }), { status: 200 });
+}
+
+beforeEach(() => {
+  _resetCatalogForTests();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 /** Titles guaranteed to classify as the given TaskType (mirrors classifier.test.ts's cases). */
 const TRIGGER_TITLE: Record<TaskType, string> = {
@@ -53,10 +78,11 @@ describe("bucketVolume: boundary cases", () => {
 //
 // Rates are resolved gateway-first (#1337 PR ②, see resolve-price.ts) rather
 // than pinned as literals here: `claude-sonnet-5`'s live rate can legitimately
-// move (its introductory pricing lapses 2026-08-31 — see catalog.ts), and a
-// `catalog:refresh` picks that up automatically. Hardcoding this test's
-// expected rates would make it fail on every such refresh for a reason that
-// has nothing to do with estimateBrief's own logic. Instead this test
+// move (its introductory pricing lapses 2026-08-31 — see catalog.ts), and the
+// next process restart's live catalog fetch picks that up automatically (see
+// gateway-catalog.ts's module doc). Hardcoding this test's expected rates
+// would make it fail for a reason that has nothing to do with estimateBrief's
+// own logic. Instead this test
 // independently re-derives the expected dollar figure from whatever
 // resolveModelPrice ACTUALLY resolves right now (the same function
 // estimateBrief itself calls) combined with the token-volume-bucket
@@ -116,17 +142,24 @@ describe("estimateBrief: exact math pinned per seat x bucket", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Current-state check: every shipped seat's slug is in the committed gateway
-// snapshot today, so estimateBrief should price ALL of them via "gateway",
-// never falling through to the price_table mirror. This is deliberately NOT
-// a tolerant check — if a future snapshot refresh ever drops one of these 4
-// slugs (retired model, typo'd catalog.ts edit, ...), THIS test should fail
-// loudly and immediately, the same "$0 hazard" discipline as the AC3
-// slug-validation coupling test (slug-validation.test.ts), applied to the
-// price-source dimension instead of the known/unknown dimension.
+// Current-state check: when the fetched catalog carries every shipped seat's
+// slug (mocked here via KNOWN_SEATS_FIXTURE — see the top of this file),
+// estimateBrief should price ALL of them via "gateway", never falling through
+// to the price_table mirror. This is deliberately NOT a tolerant check — if a
+// real slug ever gets dropped from OpenRouter's live catalog (retired model,
+// typo'd catalog.ts edit, ...), production degrades gracefully (PRICE_TABLE
+// fallback, `gateway-catalog.ts`'s `warnUnknownSeatSlugs` logs it), but THIS
+// test's fixture reflects "the catalog has every seat" on purpose, so a
+// regression in the resolution ORDER itself (gateway no longer preferred over
+// price_table when both know the slug) still fails loudly here.
 // ---------------------------------------------------------------------------
-describe("estimateBrief: today, every real seat prices from the gateway (not the price_table fallback)", () => {
+describe("estimateBrief: when the catalog has every seat, all price from the gateway (not the price_table fallback)", () => {
   const taskTypes: TaskType[] = ["ui", "refactor", "mechanical", "general"];
+
+  beforeEach(async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(fakeModelsResponse(KNOWN_SEATS_FIXTURE))));
+    await _awaitCatalogLoadForTests();
+  });
 
   for (const taskType of taskTypes) {
     it(`${taskType} (${MODEL_CATALOG[taskType].slug}): priceSource is "gateway"`, () => {

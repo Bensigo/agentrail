@@ -21,5 +21,11 @@ export type { VolumeBucket, BriefEstimate } from "./estimate";
 export { getModelFromCatalog, isKnownModelSlug, getSnapshotMeta } from "./gateway-catalog";
 export type { GatewayCatalogEntry, SnapshotMeta } from "./gateway-catalog";
 
+// Gateway-first / PRICE_TABLE-fallback pricing policy (#1337 PR ②) —
+// estimate.ts's own pricing now goes through this; exported so future
+// consumers (#1338/#1339) share the same source-of-truth ordering.
+export { resolveModelPrice } from "./resolve-price";
+export type { PriceSource, ResolvedPrice } from "./resolve-price";
+
 export { validateOverride } from "./validator";
 export type { OverrideValidation } from "./validator";

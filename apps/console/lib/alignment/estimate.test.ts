@@ -3,6 +3,7 @@ import { bucketVolume, estimateBrief } from "./estimate";
 import type { VolumeBucket } from "./estimate";
 import type { TaskInput, TaskType } from "./classifier";
 import { MODEL_CATALOG } from "./catalog";
+import { resolveModelPrice } from "./resolve-price";
 
 function acList(count: number): string[] {
   return Array.from({ length: count }, () => "a");
@@ -50,10 +51,23 @@ describe("bucketVolume: boundary cases", () => {
 // ---------------------------------------------------------------------------
 // estimateBrief: exact math pinned per seat x bucket.
 //
-// rates ($/MTok in, out): mechanical 1.00/5.00, ui&general 3.00/15.00
-// (claude-sonnet-5 sticker rates — see catalog.ts), refactor 5.00/25.00.
+// Rates are resolved gateway-first (#1337 PR ②, see resolve-price.ts) rather
+// than pinned as literals here: `claude-sonnet-5`'s live rate can legitimately
+// move (its introductory pricing lapses 2026-08-31 — see catalog.ts), and a
+// `catalog:refresh` picks that up automatically. Hardcoding this test's
+// expected rates would make it fail on every such refresh for a reason that
+// has nothing to do with estimateBrief's own logic. Instead this test
+// independently re-derives the expected dollar figure from whatever
+// resolveModelPrice ACTUALLY resolves right now (the same function
+// estimateBrief itself calls) combined with the token-volume-bucket
+// constants below, which — unlike prices — really are fixed source constants
+// (VOLUME_TOKEN_ASSUMPTIONS in estimate.ts) and are legitimately safe to pin.
+//
 // tokens per bucket: S 40_000/4_000, M 120_000/12_000, L 300_000/30_000.
 // estimateUsd = inTokens/1e6*inRate + outTokens/1e6*outRate, rounded to cents.
+// A separate, fully-literal pin of the price_table FALLBACK branch's math
+// lives in resolve-price.test.ts (a synthetic seat with fixed constants that
+// cannot drift).
 // ---------------------------------------------------------------------------
 describe("estimateBrief: exact math pinned per seat x bucket", () => {
   const BUCKET_FIXTURE: Record<VolumeBucket, { acCount: number; bodyLen: number }> = {
@@ -62,11 +76,10 @@ describe("estimateBrief: exact math pinned per seat x bucket", () => {
     L: { acCount: 6, bodyLen: 10 },
   };
 
-  const EXPECTED_USD: Record<TaskType, Record<VolumeBucket, number>> = {
-    mechanical: { S: 0.06, M: 0.18, L: 0.45 },
-    ui: { S: 0.18, M: 0.54, L: 1.35 },
-    general: { S: 0.18, M: 0.54, L: 1.35 },
-    refactor: { S: 0.3, M: 0.9, L: 2.25 },
+  const BUCKET_TOKENS: Record<VolumeBucket, { inTokens: number; outTokens: number }> = {
+    S: { inTokens: 40_000, outTokens: 4_000 },
+    M: { inTokens: 120_000, outTokens: 12_000 },
+    L: { inTokens: 300_000, outTokens: 30_000 },
   };
 
   const taskTypes: TaskType[] = ["ui", "refactor", "mechanical", "general"];
@@ -74,7 +87,7 @@ describe("estimateBrief: exact math pinned per seat x bucket", () => {
 
   for (const taskType of taskTypes) {
     for (const bucket of buckets) {
-      it(`${taskType} x ${bucket} -> $${EXPECTED_USD[taskType][bucket].toFixed(2)}`, () => {
+      it(`${taskType} x ${bucket}: matches inTokens/1e6*inRate + outTokens/1e6*outRate at the resolved rate`, () => {
         const { acCount, bodyLen } = BUCKET_FIXTURE[bucket];
         const input: TaskInput = {
           title: TRIGGER_TITLE[taskType],
@@ -85,9 +98,45 @@ describe("estimateBrief: exact math pinned per seat x bucket", () => {
         expect(result.taskType).toBe(taskType);
         expect(result.volumeBucket).toBe(bucket);
         expect(result.suggestedModel).toBe(MODEL_CATALOG[taskType]);
-        expect(result.estimateUsd).toBeCloseTo(EXPECTED_USD[taskType][bucket], 5);
+
+        const resolved = resolveModelPrice(MODEL_CATALOG[taskType]);
+        expect(result.priceSource).toBe(resolved.priceSource);
+        expect(result.resolvedInUsdPerMTok).toBe(resolved.inUsdPerMTok);
+        expect(result.resolvedOutUsdPerMTok).toBe(resolved.outUsdPerMTok);
+
+        const { inTokens, outTokens } = BUCKET_TOKENS[bucket];
+        const expectedUsd =
+          Math.round(
+            ((inTokens / 1_000_000) * resolved.inUsdPerMTok + (outTokens / 1_000_000) * resolved.outUsdPerMTok) * 100
+          ) / 100;
+        expect(result.estimateUsd).toBeCloseTo(expectedUsd, 5);
       });
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Current-state check: every shipped seat's slug is in the committed gateway
+// snapshot today, so estimateBrief should price ALL of them via "gateway",
+// never falling through to the price_table mirror. This is deliberately NOT
+// a tolerant check — if a future snapshot refresh ever drops one of these 4
+// slugs (retired model, typo'd catalog.ts edit, ...), THIS test should fail
+// loudly and immediately, the same "$0 hazard" discipline as the AC3
+// slug-validation coupling test (slug-validation.test.ts), applied to the
+// price-source dimension instead of the known/unknown dimension.
+// ---------------------------------------------------------------------------
+describe("estimateBrief: today, every real seat prices from the gateway (not the price_table fallback)", () => {
+  const taskTypes: TaskType[] = ["ui", "refactor", "mechanical", "general"];
+
+  for (const taskType of taskTypes) {
+    it(`${taskType} (${MODEL_CATALOG[taskType].slug}): priceSource is "gateway"`, () => {
+      const result = estimateBrief({
+        title: TRIGGER_TITLE[taskType],
+        whatToBuild: "x".repeat(10),
+        acceptanceCriteria: ["a"],
+      });
+      expect(result.priceSource).toBe("gateway");
+    });
   }
 });
 

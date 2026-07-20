@@ -1,26 +1,50 @@
-"""Acceptance test for issue #867 — docs rewritten to runner-first flow.
+"""Docs contract test — originally issue #867, reframed by #1280/#1356, retired
+by #1355.
 
-Pins the AC contract for the docs-narrative pivot: hosted dashboard +
-self-hosted runner is the PRIMARY (and required) path; the stale "repo-native
-primary / optional account" framing must be gone.
+History: #867 pinned "hosted dashboard + self-hosted runner is the PRIMARY
+(and required) path" as the AC contract for every doc surface (quickstart,
+install, index, introduction, README, npm-README). #1280/#1356 then rewrote
+quickstart.mdx to a message-first flow (sign up -> connect GitHub -> message
+Jace -> approve the brief -> reviewed PR, zero required CLI/runner) and moved
+all runner-install content to a standalone getting-started/self-hosting.mdx
+page, reversing #867's quickstart framing by design. #1355 tracked updating
+this file's stale pins for that reversal; PR #1367 already rewrote
+``TestQuickstartNewFlow`` to pin the shipped message-first contract instead
+of the deleted CLI steps, and this pass (#1355) adds
+``test_no_runner_install_markers_anywhere`` as a hard tripwire with no
+disclaimer-sentence escape hatch, verified via sabotage-test (see PR
+description).
 
-This test MUST FAIL before implementation (Red-Green Proof):
-  - Stale phrases are still present in the files right now.
-  - Required new phrases / steps are absent right now.
+What's still runner-first ON PURPOSE, because these surfaces genuinely
+document the self-hosting/CLI path rather than the hosted message-first
+entry point: installation.mdx (installing the CLI), README.md's
+"Self-hosting: install & quick start" section, and npm-README.md (the CLI
+package's own README). Those classes below (``test_installation_login_required``,
+``TestReadmesRunnerFirst``) intentionally still assert `agentrail login` /
+`agentrail runner` presence — dropping them would stop enforcing that
+self-hosting docs stay complete, which is a real regression, not stale
+framing.
 
-DO NOT edit production doc files to make this pass — that is the Implementer's job.
-
-Acceptance criteria covered (issue #867):
+Acceptance criteria now covered:
   AC1  No doc/README still says "works fully without an account" or frames
-       dashboard/runner as "optional / secondary / team layer".
-  AC2  quickstart.mdx documents the 6-step flow: sign-up → connect GitHub
-       (trigger label `ready-for-agent`) → install CLI → `agentrail login` →
-       `agentrail runner` → label issue → reviewed PR.
-  AC3  installation.mdx lists `agentrail login` as a required step after install.
-  AC4  index.mdx and introduction.mdx lead with runner-first flow; login required.
-  AC5  README.md and npm-README.md lead with dashboard + login + runner flow.
-  AC6  Only docs/README files changed (no .py/.ts source edits in this PR) —
-       validated by checking git diff in the repository.
+       dashboard/runner as "optional / secondary / team layer" (unchanged
+       from #867 — still true).
+  AC2  quickstart.mdx documents the message-first flow: sign-up -> connect
+       GitHub -> message Jace -> approve the brief -> reviewed PR, with ZERO
+       runner-install content (`agentrail login`, `agentrail runner`,
+       `npm install -g @useagentrail/cli`, `ready-for-agent`) anywhere in the
+       file — enforced unconditionally by
+       ``test_no_runner_install_markers_anywhere``, not just via a "no CLI"
+       disclaimer sentence.
+  AC3  installation.mdx (a self-hosting-CLI doc, not the hosted quickstart)
+       lists `agentrail login` as a required step after install.
+  AC4  index.mdx and introduction.mdx frame message-first as the default,
+       self-hosting as the supported alternative — no "primary and required"
+       runner framing.
+  AC5  README.md and npm-README.md — both self-hosting-oriented documents —
+       still document `agentrail login` / `agentrail runner` in full.
+  AC6  Self-hosting content (getting-started/self-hosting.mdx) stands alone:
+       a reader on the OSS/self-host path never needs the hosted quickstart.
 """
 from __future__ import annotations
 
@@ -164,6 +188,31 @@ class TestQuickstartNewFlow:
             "quickstart.mdx must present the cloud/message-first flow — no required "
             "`agentrail login` / `agentrail runner` steps (the runner-first #867 framing "
             "was reversed by the message-first pivot #1356)."
+        )
+
+    def test_no_runner_install_markers_anywhere(self) -> None:
+        """Hard tripwire (#1355 AC2): zero runner-install content, full stop.
+
+        ``test_no_required_cli_login_runner`` above lets these markers back in
+        as long as a "no CLI" disclaimer sentence survives elsewhere in the
+        doc — that's easy to defeat by *adding* a runner section without
+        touching the disclaimer. This assertion has no escape hatch: none of
+        these phrases may appear in quickstart.mdx at all. Runner-install
+        content belongs on the standalone self-hosting page instead (see
+        getting-started/self-hosting.mdx).
+        """
+        forbidden = (
+            "agentrail login",
+            "agentrail runner",
+            "npm install -g @useagentrail/cli",
+            "ready-for-agent",
+        )
+        found = [phrase for phrase in forbidden if phrase in self.lower]
+        assert not found, (
+            f"quickstart.mdx must contain zero runner-install content, but found: {found!r}. "
+            "Runner-install steps (CLI install, `agentrail login`, `agentrail runner`, "
+            "the `ready-for-agent` label) belong on the standalone self-hosting page "
+            "(getting-started/self-hosting.mdx), not the quickstart."
         )
 
     def test_message_before_pr_ordered(self) -> None:

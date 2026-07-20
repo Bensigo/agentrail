@@ -138,6 +138,70 @@ def test_runner_without_model_param_does_not_get_model(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# #1338 PR① fix round: the FINAL execute model _make_execute resolves is
+# stamped onto the returned RunResult (result.execute_model), so the worker
+# reports it to the backend AUTHORITATIVELY — the backend no longer has to
+# reconstruct it from lossy ClickHouse cost_events. The value must match the
+# `--model` decision EXACTLY (same precedence matrix as the kwargs tests above).
+# ---------------------------------------------------------------------------
+
+
+def test_execute_model_stamped_on_escalation(monkeypatch):
+    fake = _execute_with_fake(monkeypatch)
+    execute = runner_cmd._make_execute(_creds())
+    result = execute(_work_item(tier=1))
+    assert result.execute_model == DEFAULT_ESCALATION_MODEL
+    # And it is exactly the model the runner was actually invoked with.
+    assert fake.calls[0]["model"] == DEFAULT_ESCALATION_MODEL
+
+
+def test_execute_model_stamped_on_tier0_override(monkeypatch):
+    fake = _execute_with_fake(monkeypatch)
+    execute = runner_cmd._make_execute(_creds())
+    result = execute(_work_item(tier=0, model_override="anthropic/claude-opus-4-8"))
+    assert result.execute_model == "anthropic/claude-opus-4-8"
+    assert fake.calls[0]["model"] == "anthropic/claude-opus-4-8"
+
+
+def test_execute_model_empty_for_tier0_config_default(monkeypatch):
+    """No override, tier 0 -> no --model passed, so _make_execute has no
+    authoritative model to stamp: execute_model stays '' and the backend
+    keeps its ClickHouse fallback for exactly this run."""
+    _execute_with_fake(monkeypatch)
+    execute = runner_cmd._make_execute(_creds())
+    result = execute(_work_item(tier=0))
+    assert result.execute_model == ""
+
+
+def test_escalation_stamp_does_not_clobber_a_runner_supplied_model(monkeypatch):
+    """A runner that ALREADY populated execute_model (a future runner reading
+    the actually-run model from run.json) is more authoritative than the
+    dispatch-time decision — _make_execute must not overwrite it."""
+
+    def model_aware_runner(*, repo_url, ref, issue_ref, workspace_id, env, run_id="", model=None, pr_title="", budget_usd=None, budget_source=None):
+        # Reports a DIFFERENT model than the escalation ladder would decide.
+        return RunResult(status="green", execute_model="actually/ran-this")
+
+    monkeypatch.setattr(runner_cmd, "select_sandbox_runner", lambda env: model_aware_runner)
+    execute = runner_cmd._make_execute(_creds())
+    result = execute(_work_item(tier=1))  # tier 1 would otherwise stamp the escalation model
+    assert result.execute_model == "actually/ran-this"
+
+
+def test_runner_without_model_param_stamps_no_execute_model(monkeypatch):
+    """A runner whose signature can't take `model` never had one decided, so
+    execute_model stays '' even at an escalated tier (no crash, no bogus value)."""
+
+    def no_model_runner(*, repo_url, ref, issue_ref, workspace_id, env, run_id=""):
+        return RunResult(status="green", cost_usd=0.0)
+
+    monkeypatch.setattr(runner_cmd, "select_sandbox_runner", lambda env: no_model_runner)
+    execute = runner_cmd._make_execute(_creds())
+    result = execute(_work_item(tier=1))
+    assert result.execute_model == ""
+
+
+# ---------------------------------------------------------------------------
 # #1275: model_override vs. tier escalation — CONTROLLER-DECIDED precedence.
 # Precedence matrix: tier {0, 1, 2} x override {set, unset} -> exact model.
 # ---------------------------------------------------------------------------

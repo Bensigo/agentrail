@@ -841,10 +841,19 @@ async function findConfirmedAlignmentBriefApproval(
  * stamped is a real, if narrow, deploy-ordering edge case (see
  * `enqueueGithubIssue`'s own comment on the caller side for how that case
  * is handled — the "no-`_brief` fallback restriction").
+ *
+ * #1338 PR①: also extracts `taskType` (the classifier's output,
+ * `ChatBornBrief.taskType` on the console side) so `enqueueGithubIssue` can
+ * denormalize it onto the newly-admitted row. Independent/non-gating: unlike
+ * `estimateUsd`/`suggestedModel.slug`, a missing or malformed `taskType`
+ * does NOT fail the whole extraction (this function still returns the
+ * budget/model when they're valid) — it just yields `taskType: null`, since
+ * a task type is a nice-to-have denormalization, not a load-bearing value
+ * the brief-confirm flow depends on.
  */
 function extractBriefBudgetAndModel(
   toolInput: Record<string, unknown>
-): { estimatedBudgetUsd: number; modelOverride: string } | null {
+): { estimatedBudgetUsd: number; modelOverride: string; taskType: string | null } | null {
   const brief = toolInput["_brief"];
   if (!brief || typeof brief !== "object" || Array.isArray(brief)) return null;
   const b = brief as Record<string, unknown>;
@@ -859,7 +868,10 @@ function extractBriefBudgetAndModel(
   const slug = (suggestedModel as Record<string, unknown>)["slug"];
   if (typeof slug !== "string" || slug.length === 0) return null;
 
-  return { estimatedBudgetUsd: estimateUsd, modelOverride: slug };
+  const taskTypeValue = b["taskType"];
+  const taskType = typeof taskTypeValue === "string" && taskTypeValue.length > 0 ? taskTypeValue : null;
+
+  return { estimatedBudgetUsd: estimateUsd, modelOverride: slug, taskType };
 }
 
 /**
@@ -935,11 +947,22 @@ export const ALIGNMENT_DENIED_PARK_REASON =
  * left `parked` some other way between the approval being recorded and
  * being resolved. Returns `false` (no-op, never throws) when either the
  * initial read or the final write matches zero rows.
+ *
+ * `taskType` (#1338 PR①, required — not optional, so a call site can never
+ * silently forget to wire it): the classifier's output off the confirmed
+ * brief's own `toolInput.taskType` (top-level on an `alignment_brief`
+ * approval — see `AlignmentBriefToolInput` on the console side), denormalized
+ * onto the queue entry HERE, at confirm time, alongside the existing
+ * estimatedBudgetUsd/modelOverride threading. `null` when the caller has no
+ * usable task type (a malformed/pre-#1338 toolInput) — this never blocks the
+ * confirm itself, exactly like a missing task type never blocks
+ * `enqueueGithubIssue`'s own brief-values extraction.
  */
 export async function confirmAlignmentBrief(input: {
   queueEntryId: string;
   estimatedBudgetUsd: number;
   modelOverride: string;
+  taskType: string | null;
 }): Promise<boolean> {
   return db.transaction(async (tx) => {
     const rows = await tx
@@ -970,6 +993,7 @@ export async function confirmAlignmentBrief(input: {
         parkReason: unmet.length === 0 ? null : formatWaitingOnReason(unmet),
         estimatedBudgetUsd: input.estimatedBudgetUsd,
         modelOverride: input.modelOverride,
+        taskType: input.taskType,
         updatedAt: new Date(),
       })
       .where(
@@ -1234,6 +1258,10 @@ export async function enqueueGithubIssue(data: {
   // of which branch below ran.
   let estimatedBudgetUsd: number | null = null;
   let modelOverride: string | null = null;
+  // #1338 PR①: denormalized alongside estimatedBudgetUsd/modelOverride, from
+  // the SAME matched brief's `_brief.taskType` — same lifecycle, same
+  // "written regardless of queued vs dependency-parked" rule below.
+  let taskType: string | null = null;
   if (!v2Parked) {
     const requireAlignment = await workspaceRequiresAlignment(db, data.workspaceId);
     if (requireAlignment) {
@@ -1262,6 +1290,7 @@ export async function enqueueGithubIssue(data: {
           // branch (unlike the unmatched branch below).
           estimatedBudgetUsd = briefValues.estimatedBudgetUsd;
           modelOverride = briefValues.modelOverride;
+          taskType = briefValues.taskType;
         } else if (state !== "queued") {
           // #1274 PR ②, BOLDED PIN 2 ("the no-`_brief` fallback
           // restriction"): `matched` but no usable `_brief` — a
@@ -1319,6 +1348,7 @@ export async function enqueueGithubIssue(data: {
       parkReason,
       estimatedBudgetUsd,
       modelOverride,
+      taskType,
     })
     .onConflictDoNothing({ target: queueEntries.id })
     .returning({ id: queueEntries.id });

@@ -156,6 +156,7 @@ describe("composeChatBornBrief (#1274 PR ②)", () => {
     expect(extracted).toEqual({
       estimatedBudgetUsd: brief.estimateUsd,
       modelOverride: brief.suggestedModel.slug,
+      taskType: brief.taskType,
     });
   });
 });
@@ -166,7 +167,11 @@ describe("extractConfirmedBudgetAndModel", () => {
       estimateUsd: 1.35,
       suggestedModel: { slug: "anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5" },
     });
-    expect(result).toEqual({ estimatedBudgetUsd: 1.35, modelOverride: "anthropic/claude-sonnet-5" });
+    expect(result).toEqual({
+      estimatedBudgetUsd: 1.35,
+      modelOverride: "anthropic/claude-sonnet-5",
+      taskType: null,
+    });
   });
 
   it("returns null when estimateUsd is missing", () => {
@@ -215,5 +220,30 @@ describe("extractConfirmedBudgetAndModel", () => {
   it("never throws on a malformed/adversarial toolInput", () => {
     expect(() => extractConfirmedBudgetAndModel({})).not.toThrow();
     expect(() => extractConfirmedBudgetAndModel({ estimateUsd: {} })).not.toThrow();
+  });
+
+  // #1338 PR① — model-selection learning loop, the FUEL: taskType extraction.
+  describe("taskType (#1338 PR①)", () => {
+    const VALID_BASE = {
+      estimateUsd: 1.35,
+      suggestedModel: { slug: "anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5" },
+    };
+
+    it("extracts a well-formed taskType alongside the budget/model", () => {
+      const result = extractConfirmedBudgetAndModel({ ...VALID_BASE, taskType: "refactor" });
+      expect(result?.taskType).toBe("refactor");
+    });
+
+    it("is independent of budget/model: a missing taskType still yields a valid result with taskType null (not a whole-extraction failure)", () => {
+      const result = extractConfirmedBudgetAndModel(VALID_BASE);
+      expect(result).not.toBeNull();
+      expect(result?.taskType).toBeNull();
+    });
+
+    it("treats a non-string/empty taskType as null rather than throwing or failing the extraction", () => {
+      expect(extractConfirmedBudgetAndModel({ ...VALID_BASE, taskType: "" })?.taskType).toBeNull();
+      expect(extractConfirmedBudgetAndModel({ ...VALID_BASE, taskType: 42 })?.taskType).toBeNull();
+      expect(extractConfirmedBudgetAndModel({ ...VALID_BASE, taskType: null })?.taskType).toBeNull();
+    });
   });
 });

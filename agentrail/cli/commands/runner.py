@@ -122,13 +122,41 @@ def _make_execute(creds):
         # per-ATTEMPT precedence choice, not a deletion. No override and tier
         # 0 ⇒ neither branch fires ⇒ byte-identical to pre-#1275 behavior (no
         # model kwarg at all, local run uses the config default).
+        # `decided_model` (#1338 PR① fix round) is the FINAL execute model
+        # THIS attempt resolves to — the exact value that becomes `--model`
+        # below. Captured here, at dispatch, so it can be reported back to the
+        # backend AUTHORITATIVELY (stamped onto the RunResult after the run),
+        # instead of the backend reconstructing it from lossy ClickHouse
+        # cost_events (a dropped execute cost_event would otherwise null the
+        # model on a genuine success — see run_outcomes.ts / result/route.ts).
+        # "" when no model kwarg is passed (tier-0 no-override ⇒ the pipeline's
+        # config default, unknowable at dispatch without duplicating pipeline
+        # logic) — the backend keeps its ClickHouse fallback for exactly that
+        # case, so this is a strict improvement, never a regression.
+        decided_model = ""
         if accepts_model:
             escalated_model = model_for_tier(item.tier)
             if escalated_model:
                 kwargs["model"] = escalated_model
+                decided_model = escalated_model
             elif item.model_override:
                 kwargs["model"] = item.model_override
-        return runner(**kwargs)
+                decided_model = item.model_override
+        result = runner(**kwargs)
+        # Stamp the resolved model onto the outcome the worker reports back.
+        # Only when WE decided one AND the runner didn't already populate it
+        # (a future runner that reads the actually-run model from run.json is
+        # MORE authoritative than this dispatch-time decision — let it win).
+        if decided_model and not getattr(result, "execute_model", ""):
+            from dataclasses import replace
+
+            try:
+                result = replace(result, execute_model=decided_model)
+            except TypeError:
+                # A duck-typed/fake result without an execute_model field (older
+                # test double) — reporting the model is best-effort, never fatal.
+                pass
+        return result
 
     return execute
 

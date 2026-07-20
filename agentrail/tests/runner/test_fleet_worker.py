@@ -125,7 +125,10 @@ def test_loop_executes_claimed_items_and_reports_them(monkeypatch):
     assert executed == ["ws1-42"]
     assert client.reported == [
         {"id": "ws1-42", "status": "green", "cost_usd": 0.5, "branch": "agentrail/issue-42",
-         "gate_reason": "", "logs_tail": "", "pr_url": ""}
+         "gate_reason": "", "logs_tail": "", "pr_url": "",
+         # #1338 PR① fix round: the fleet reuses worker._report byte-for-byte,
+         # so it forwards execute_model too ("" — this result carries none).
+         "execute_model": ""}
     ]
     assert client.telemetry == [{"id": "ws1-42", "status": "green"}]
 

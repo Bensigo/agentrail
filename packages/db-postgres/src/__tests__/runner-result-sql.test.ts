@@ -64,7 +64,12 @@ describe("recordRunnerResult SQL (lockstep with nextQueueTransition)", () => {
   it("a red that RE-QUEUES (budget left) yields terminalState=null (no notify on retry)", async () => {
     returnedState = "queued"; // the CASE committed `queued` → not terminal
     const res = await recordRunnerResult({ id: "1", workspaceId: "w", status: "red" });
-    expect(res).toEqual({ updated: true, terminalState: null, externalId: "o/r#42" });
+    expect(res).toEqual({
+      updated: true,
+      terminalState: null,
+      externalId: "o/r#42",
+      taskType: null,
+    });
   });
 
   it("a red that EXHAUSTS budget yields terminalState='escalated-to-human'", async () => {

@@ -284,6 +284,7 @@ def test_report_result_posts_outcome_back_with_auth():
         branch="afk/github-42",
         gate_reason="all checks pass",
         logs_tail="...done",
+        execute_model="anthropic/claude-sonnet-5",
     )
     assert ok is True
 
@@ -298,6 +299,18 @@ def test_report_result_posts_outcome_back_with_auth():
     assert sent["cost_usd"] == 1.25
     assert sent["branch"] == "afk/github-42"
     assert sent["gate_reason"] == "all checks pass"
+    # #1338 PR① fix round: the authoritative execute model rides the payload.
+    assert sent["execute_model"] == "anthropic/claude-sonnet-5"
+
+
+def test_report_result_execute_model_defaults_empty():
+    """An older worker (or a run with no decided model) sends "" — the field is
+    always present so the backend can distinguish "reported, none" from a
+    genuinely absent field without a schema guess."""
+    transport = FakeTransport([Response(status=202, body=b"")])
+    _client(transport).report_result(_work_item(), status="green")
+    sent = _json.loads(transport.calls[0]["body"].decode())
+    assert sent["execute_model"] == ""
 
 
 def test_report_result_false_on_non_2xx():

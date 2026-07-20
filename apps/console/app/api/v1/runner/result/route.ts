@@ -4,11 +4,14 @@ import {
   touchApiKeyLastUsed,
   getMergePermission,
   getGithubToken,
+  recordRunOutcome,
+  mapTerminalStateToRunOutcome,
   type RunnerStatus,
 } from "@agentrail/db-postgres";
 import {
   insertFailureEvents,
   recordRunLifecycleEvent,
+  getRunCosts,
   type FailureEventInput,
 } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
@@ -70,6 +73,10 @@ export async function POST(request: NextRequest) {
     gate_reason?: string;
     logs_tail?: string;
     pr_url?: string;
+    // #1338 PR① fix round: the runner's AUTHORITATIVE final execute model
+    // (resolved by _make_execute at dispatch). Preferred over reconstructing
+    // it from ClickHouse cost_events below; absent on older runners.
+    execute_model?: string;
   };
 
   const { id, workspace_id, status } = body;
@@ -200,6 +207,71 @@ export async function POST(request: NextRequest) {
     } catch (err) {
       console.error("[runner/result] merge attempt threw:", err);
       mergeOutcome = "merge_failed";
+    }
+  }
+
+  // #1338 PR① — model-selection learning loop, the FUEL: capture
+  // (task_type, execute_model) -> outcome + cost on every terminal
+  // transition. Gated on `result.terminalState`, exactly like the notify/
+  // lifecycle-event blocks below — a `running` heartbeat or a
+  // still-has-budget red/error retry is NOT terminal, so it never queries
+  // ClickHouse or writes a row (see `run_outcomes.ts`'s own doc-comment for
+  // why this capture lives here rather than inside `recordRunnerResult`).
+  // CAPTURE ONLY: nothing here changes which model runs. Whole block is
+  // best-effort, matching every other side-effect in this route — a failure
+  // here never changes the 202 response below.
+  if (result.terminalState) {
+    try {
+      const costRows = await getRunCosts(workspace_id, id);
+      // Execute model — AUTHORITATIVE from the runner, ClickHouse as fallback
+      // ONLY (#1338 PR① fix round). The runner reports the FINAL execute model
+      // it resolved at dispatch (_make_execute: escalation model / brief
+      // override); we trust that first because it survives a dropped execute
+      // cost_event — cost_push.py's push is a best-effort, un-retried,
+      // un-outboxed network call, so a transient blip would otherwise leave
+      // ZERO execute cost_events and, via `ON CONFLICT DO NOTHING`,
+      // PERMANENTLY null the model on a genuine success. The ClickHouse
+      // reconstruction below is kept only for an older runner that doesn't
+      // report the field, or a tier-0 config-default run whose model
+      // _make_execute couldn't know at dispatch. getRunCosts orders ASC by
+      // occurred_at and a queue entry's run_id is stable across retries
+      // (claimQueueEntry reuses the same id), so the LAST execute-phase row is
+      // the model that produced THIS outcome. NOTE the direction differs from
+      // cost_usd just below on purpose: MODEL is reported-first (the value
+      // that gets permanently lost on a dropped event), COST is ClickHouse-
+      // first (its cross-attempt/cross-phase SUM is the more complete total,
+      // with reported cost_usd only the last resort) — both are
+      // reported-value + ClickHouse, just with the trust order that fits each.
+      const reportedModel =
+        typeof body.execute_model === "string" && body.execute_model
+          ? body.execute_model
+          : null;
+      const executeRows = costRows.filter((r) => r.phase === "execute" && r.model);
+      const clickhouseExecuteModel =
+        executeRows.length > 0 ? executeRows[executeRows.length - 1]!.model : null;
+      const executeModel = reportedModel ?? clickhouseExecuteModel;
+      // Prefer the ClickHouse-ingested total (every phase, every attempt) —
+      // the true cost incurred to reach this outcome. Fall back to the
+      // runner's self-reported cost_usd only when ClickHouse has nothing yet
+      // (e.g. a hosted-refusal error that never reached the execute phase).
+      const clickhouseCostUsd = costRows.reduce((sum, r) => sum + r.cost_usd, 0);
+      const costUsd =
+        clickhouseCostUsd > 0
+          ? clickhouseCostUsd
+          : typeof body.cost_usd === "number"
+            ? body.cost_usd
+            : 0;
+
+      await recordRunOutcome({
+        queueEntryId: id,
+        workspaceId: workspace_id,
+        taskType: result.taskType,
+        executeModel,
+        outcome: mapTerminalStateToRunOutcome(result.terminalState),
+        costUsd,
+      });
+    } catch (err) {
+      console.error("[runner/result] run-outcome capture failed:", err);
     }
   }
 

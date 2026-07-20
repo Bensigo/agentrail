@@ -764,6 +764,14 @@ export interface RecordRunnerResult {
   updated: boolean;
   terminalState: TerminalQueueState | null;
   externalId: string;
+  /** #1338 PR①: the queue entry's `task_type` (denormalized at brief-confirm
+   * time — see `github_intake.ts::confirmAlignmentBrief`/`enqueueGithubIssue`),
+   * read back from the SAME UPDATE...RETURNING this function already runs —
+   * no extra query. Null for a brief-less entry. The caller (the
+   * runner-result route) threads this straight into
+   * `run_outcomes.ts::recordRunOutcome` on a terminal transition; it is
+   * inert (never read) otherwise. */
+  taskType: string | null;
 }
 
 export async function recordRunnerResult(data: {
@@ -796,6 +804,10 @@ export async function recordRunnerResult(data: {
   // retry and `escalated-to-human` once budget is exhausted; for green/running it
   // is the state we set directly.
   let resultingState = "";
+  // #1338 PR①: the entry's task_type, read back from the SAME RETURNING
+  // clause as state/external_id (no second query) so recordRunOutcome's
+  // caller has it for free on a terminal transition.
+  let resultingTaskType: string | null = null;
   if (data.status === "red" || data.status === "error") {
     if (isHostedRefusal(data.status, data.gateReason)) {
       // Hosted refusal (#1267 PR③): jump straight to escalated-to-human,
@@ -812,13 +824,14 @@ export async function recordRunnerResult(data: {
             park_reason = ${data.gateReason ?? null},
             updated_at = now()
         WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
-        RETURNING id, state, external_id
+        RETURNING id, state, external_id, task_type
       `)
-      ) as Array<{ id: string; state: string; external_id: string }>;
+      ) as Array<{ id: string; state: string; external_id: string; task_type: string | null }>;
       updated = rows.length > 0;
       if (updated) {
         resultingState = rows[0]!.state;
         completedExternalId = rows[0]!.external_id;
+        resultingTaskType = rows[0]!.task_type ?? null;
       }
     } else {
       // Single conditional UPDATE so two concurrent results never double-decrement.
@@ -833,13 +846,14 @@ export async function recordRunnerResult(data: {
             tier = ${tierExpr},
             updated_at = now()
         WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
-        RETURNING id, state, external_id
+        RETURNING id, state, external_id, task_type
       `)
-      ) as Array<{ id: string; state: string; external_id: string }>;
+      ) as Array<{ id: string; state: string; external_id: string; task_type: string | null }>;
       updated = rows.length > 0;
       if (updated) {
         resultingState = rows[0]!.state;
         completedExternalId = rows[0]!.external_id;
+        resultingTaskType = rows[0]!.task_type ?? null;
       }
     }
   } else {
@@ -862,15 +876,17 @@ export async function recordRunnerResult(data: {
         id: queueEntries.id,
         state: queueEntries.state,
         externalId: queueEntries.externalId,
+        taskType: queueEntries.taskType,
       });
     updated = rows.length > 0;
     if (updated) {
       resultingState = rows[0]!.state;
       completedExternalId = rows[0]!.externalId;
+      resultingTaskType = rows[0]!.taskType ?? null;
     }
   }
   if (!updated) {
-    return { updated: false, terminalState: null, externalId: "" };
+    return { updated: false, terminalState: null, externalId: "", taskType: null };
   }
 
   // Notify ONLY on a terminal: a red/error that re-queued committed `queued`
@@ -917,5 +933,10 @@ export async function recordRunnerResult(data: {
     })
     .where(and(eq(runs.id, data.id), eq(runs.workspaceId, data.workspaceId)));
 
-  return { updated: true, terminalState, externalId: completedExternalId };
+  return {
+    updated: true,
+    terminalState,
+    externalId: completedExternalId,
+    taskType: resultingTaskType,
+  };
 }

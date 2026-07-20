@@ -11,6 +11,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from agentrail.context.snapshot_push import load_link
 from agentrail.run.pricing import cache_savings
@@ -21,8 +22,24 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def build_cost_record(run_id: str, phase: str, usage: Usage, cost: float) -> dict:
-    """Build a cost event record dict (for both local ledger and remote push)."""
+def build_cost_record(
+    run_id: str,
+    phase: str,
+    usage: Usage,
+    cost: float,
+    price_source: Optional[str] = None,
+) -> dict:
+    """Build a cost event record dict (for both local ledger and remote push).
+
+    ``price_source`` (#1337 PR ②) records WHICH price tier resolved this
+    usage's rates — ``"gateway"`` | ``"price_table"`` | ``None`` (unknown
+    model) — carried into both the local JSONL ledger and the remote
+    ``POST /api/v1/ingest/cost-events`` payload so the durable ledger is
+    auditable (AC1). Defaults to ``None`` so callers that don't yet have a
+    source (and existing tests) still build a valid record. The value comes
+    from ``agentrail.run.pricing.resolve_price_source`` /
+    ``cost_breakdown(...)["price_source"]`` at the call site.
+    """
     return {
         "run_id": run_id,
         "cost_type": "model_call",
@@ -41,6 +58,7 @@ def build_cost_record(run_id: str, phase: str, usage: Usage, cost: float) -> dic
         "output_tokens": usage.output_tokens,
         "cache_tokens": usage.cache_tokens,
         "cache_creation_tokens": usage.cache_creation_tokens,
+        "price_source": price_source,
         "cache_savings": cache_savings(usage),
     }
 
@@ -51,17 +69,21 @@ def push_cost_event(
     phase: str,
     usage: Usage,
     cost: float,
+    price_source: Optional[str] = None,
 ) -> bool:
     """POST one cost event to the linked server. Returns True only on HTTP 202.
 
     Non-fatal: any exception → False, never raises.
     Not linked → False (no network call).
+
+    ``price_source`` (#1337 PR ②) is threaded into the posted payload — see
+    ``build_cost_record``.
     """
     link = load_link(target)
     if link is None:
         return False
     payload = {
-        **build_cost_record(run_id, phase, usage, cost),
+        **build_cost_record(run_id, phase, usage, cost, price_source),
         "repository_id": link["repository_id"],
     }
     body = json.dumps(payload).encode("utf-8")

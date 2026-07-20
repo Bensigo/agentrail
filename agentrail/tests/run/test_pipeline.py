@@ -1412,8 +1412,11 @@ class CostCaptureHappyPathTests(unittest.TestCase):
         self.assertEqual(exit_status, 0)
         mock_capture.assert_called_once_with(self.rc.agent, self.rc.target_dir, unittest.mock.ANY)
         mock_cost.assert_called_once_with(fake_usage)
+        # #1337 PR②: push now carries the resolved price source. fake_usage's
+        # model "claude-sonnet-4-6" is a bare (non-gateway) id → resolves via
+        # the PRICE_TABLE tier.
         mock_push.assert_called_once_with(
-            self.rc.target_dir, self.rc.run_id, "plan", fake_usage, 0.042
+            self.rc.target_dir, self.rc.run_id, "plan", fake_usage, 0.042, "price_table"
         )
 
     @patch("agentrail.run.pipeline.ctx.build_issue_context_pack", return_value=None)

@@ -1,16 +1,27 @@
 /**
- * Refreshes the committed OpenRouter model catalog snapshot
- * (`lib/alignment/openrouter-catalog.snapshot.json`) from the live
+ * Refreshes the committed OpenRouter model catalog snapshot from the live
  * `GET https://openrouter.ai/api/v1/models` endpoint (#1337).
  *
- * This is the ONLY place in the console that makes this network call. Every
+ * Writes BOTH byte-identical committed copies (the snapshot is hand-mirrored,
+ * the same #1334/#1335 drift-guard convention PRICE_TABLE uses, because the
+ * console image and the runner/fleet image have disjoint file sets — see
+ * `agentrail/run/pricing.py`'s `_SNAPSHOT_PATH` comment):
+ *   - `lib/alignment/openrouter-catalog.snapshot.json`  (console reader:
+ *     `gateway-catalog.ts`)
+ *   - `../../agentrail/context/openrouter-catalog.snapshot.json`  (Python
+ *     reader: `agentrail/run/pricing.py`, ships in the runner image)
+ * `test_gateway_snapshot_parity` (Python) fails CI if they ever diverge, so a
+ * refresh that forgets one copy is caught — but this script writing both is
+ * the primary guard.
+ *
+ * This is the ONLY place in the repo that makes this network call. Every
  * runtime lookup (`getModelFromCatalog`, `isKnownModelSlug`,
- * `getSnapshotMeta` in `../lib/alignment/gateway-catalog.ts`) reads the
- * committed snapshot file — never the network, never on any request hot
- * path. `openrouter-normalize.ts` (imported here) does the actual field
- * mapping and is unit-tested against real captured entries in
- * `openrouter-normalize.test.ts`; this script is deliberately thin — fetch,
- * normalize, write.
+ * `getSnapshotMeta` in `../lib/alignment/gateway-catalog.ts`, and the Python
+ * `_resolve_rates`) reads a committed snapshot file — never the network,
+ * never on any request hot path. `openrouter-normalize.ts` (imported here)
+ * does the actual field mapping and is unit-tested against real captured
+ * entries in `openrouter-normalize.test.ts`; this script is deliberately
+ * thin — fetch, normalize, write both.
  *
  * Refresh cadence: MANUAL, v1. Run this before a release, when validating a
  * newly-shipped model slug, or whenever OpenRouter pricing is suspected to
@@ -35,7 +46,12 @@ const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const SNAPSHOT_PATH = resolve(__dirname, "../lib/alignment/openrouter-catalog.snapshot.json");
+// apps/console/scripts -> the two committed copies (see module doc for why two).
+const CONSOLE_SNAPSHOT_PATH = resolve(__dirname, "../lib/alignment/openrouter-catalog.snapshot.json");
+const PACKAGE_SNAPSHOT_PATH = resolve(
+  __dirname,
+  "../../../agentrail/context/openrouter-catalog.snapshot.json"
+);
 
 async function main(): Promise<void> {
   console.log(`Fetching ${OPENROUTER_MODELS_URL} ...`);
@@ -62,10 +78,17 @@ async function main(): Promise<void> {
     models,
   };
 
-  writeFileSync(SNAPSHOT_PATH, JSON.stringify(snapshot, null, 2) + "\n", "utf8");
+  // The SAME serialized bytes go to both copies so they stay byte-identical
+  // (test_gateway_snapshot_parity enforces it); a single `fetchedAt` computed
+  // once above guarantees the two files can't differ by even a timestamp.
+  const serialized = JSON.stringify(snapshot, null, 2) + "\n";
+  writeFileSync(CONSOLE_SNAPSHOT_PATH, serialized, "utf8");
+  writeFileSync(PACKAGE_SNAPSHOT_PATH, serialized, "utf8");
   console.log(
-    `Wrote ${models.length} models to ${SNAPSHOT_PATH} ` +
-      `(${skippedCount} skipped: missing/unparseable pricing or context fields).`
+    `Wrote ${models.length} models to both snapshot copies ` +
+      `(${skippedCount} skipped: missing/unparseable pricing or context fields):\n` +
+      `  console: ${CONSOLE_SNAPSHOT_PATH}\n` +
+      `  package: ${PACKAGE_SNAPSHOT_PATH}`
   );
 }
 

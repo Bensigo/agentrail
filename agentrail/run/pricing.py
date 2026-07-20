@@ -67,29 +67,39 @@ PRICES: dict[str, _Rates] = {
 
 # ---------------------------------------------------------------------------
 # Gateway snapshot (#1337 PR ②) — the committed OpenRouter model-catalog
-# snapshot the console app maintains and refreshes
-# (``apps/console/lib/alignment/openrouter-catalog.snapshot.json``;
-# ``apps/console/lib/alignment/gateway-catalog.ts`` is its TypeScript
-# reader). The JSON file is the deliberately language-neutral shared source
-# of truth for this PR: this module reads the SAME committed file directly
-# rather than maintaining a second, Python-only mirror of gateway prices.
+# snapshot. It is hand-mirrored into TWO byte-identical committed copies, the
+# same cross-language drift-guard convention #1334/#1335 use for PRICE_TABLE:
+#
+#   - ``agentrail/context/openrouter-catalog.snapshot.json`` — THIS module's
+#     source (a package-local file under the ``agentrail`` package, so it
+#     ships inside the runner/fleet image automatically: the Docker images
+#     ``COPY agentrail ./agentrail`` and ``pip install .`` it, and
+#     pyproject.toml's ``[tool.setuptools.package-data]`` lists this exact
+#     file so it lands in site-packages — NOT stripped by the images'
+#     ``rm -rf ./agentrail/tests ./agentrail/docker``. NEITHER image ships
+#     ``apps/console/``, which is why the Python side canNOT read the console
+#     copy below.)
+#   - ``apps/console/lib/alignment/openrouter-catalog.snapshot.json`` — the
+#     console's own copy, read by ``gateway-catalog.ts`` via a bundler JSON
+#     import; ships in the console image (``apps/console`` + ``packages/*``),
+#     which conversely does NOT ship the ``agentrail`` package.
+#
+# The refresh script (``apps/console/scripts/refresh-openrouter-catalog.ts``)
+# writes BOTH; ``test_gateway_snapshot_parity`` asserts they stay
+# byte-identical so drift fails CI. The two images have DISJOINT file sets,
+# so one path cannot serve both — hence the mirror rather than a single
+# shared file.
 #
 # Loaded ONCE at import time and cached in ``_GATEWAY_RATES`` — a plain
 # local-disk read, not a network call (no live fetch on any request hot
 # path; the file itself is refreshed offline, see the TS script's module
-# doc). A missing/unreadable/malformed file degrades to an EMPTY gateway
-# table rather than raising, which matters in practice, not just in theory:
-# the hosted runner's Docker images (``deploy/runner/Dockerfile``,
-# ``agentrail/docker/runner/Dockerfile``) ``COPY`` only ``pyproject.toml``
-# and ``agentrail/`` — neither ships ``apps/console/`` — so this file does
-# NOT exist on disk in that deployment until the image build is updated to
-# include it (a deploy-layer change, out of scope for this PR). Until then,
-# resolution here degrades gracefully to PRICE_TABLE-only behaviour, exactly
-# as this module worked before #1337.
+# doc). A missing/unreadable/malformed file still degrades to an EMPTY
+# gateway table rather than raising (resolution then falls through to
+# PRICE_TABLE-only, exactly as before #1337) — a defensive backstop, no
+# longer the expected deployed state now that the package-local copy ships.
 # ---------------------------------------------------------------------------
 _SNAPSHOT_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "apps" / "console" / "lib" / "alignment" / "openrouter-catalog.snapshot.json"
+    Path(__file__).resolve().parents[1] / "context" / "openrouter-catalog.snapshot.json"
 )
 
 
@@ -254,6 +264,31 @@ def _exact_or_dated(model: str) -> Optional[_Rates]:
     return None
 
 
+def resolve_price_source(model: str) -> Optional[PriceSource]:
+    """Return WHICH tier priced *model* — ``"gateway"`` | ``"price_table"`` —
+    or ``None`` if neither did (#1337 PR ②).
+
+    This is the same value ``cost_breakdown`` records as its ``price_source``
+    key, exposed on its own so a caller that already holds the scalar
+    ``cost_usd`` (the run pipeline's cost/budget block, which computes ``cost``
+    from ``cost_usd(usage)`` and must not have that line perturbed) can stamp
+    the price source onto its durable ledger record without recomputing the
+    full breakdown dict. Determinism guarantees consistency: ``_resolve_rates``
+    reads only the two module-level tables (``_GATEWAY_RATES``, ``PRICES``),
+    neither of which changes at runtime, so this and the ``cost_usd`` call in
+    the same block always agree on the tier.
+
+    Non-fatal by contract: a non-string / unresolvable *model* yields ``None``
+    rather than raising, so stamping the price source onto a ledger record can
+    never break the run's cost/telemetry path (which is non-fatal end to end —
+    mirrors ``cost_usd``'s own tolerance of unknown models).
+    """
+    if not isinstance(model, str):
+        return None
+    resolved = _resolve_rates(model)
+    return resolved.source if resolved is not None else None
+
+
 def cost_usd(usage: object) -> float:
     """Return cost in USD for *usage*.
 
@@ -323,13 +358,21 @@ def cost_breakdown(usage: object, *, rerank_usd: float = 0.0) -> Dict[str, Any]:
                             exactly; when a real rerank cost is supplied the total
                             is the agent's token cost PLUS the rerank layer's
                             spend (the rerank tokens are not part of ``usage``).
-    - ``price_source``    — (#1337 PR ② — AC1: ledger auditability) which tier
-                            ``_resolve_rates`` resolved this usage's rates from:
-                            ``"gateway"`` (the committed OpenRouter snapshot) or
-                            ``"price_table"`` (the canonical PRICE_TABLE chain).
-                            ``None`` on the unknown-model path below — there is
-                            no source to record when nothing priced this usage
-                            at all.
+    - ``price_source``    — (#1337 PR ②) which tier ``_resolve_rates`` resolved
+                            this usage's rates from: ``"gateway"`` (the
+                            committed OpenRouter snapshot) or ``"price_table"``
+                            (the canonical PRICE_TABLE chain); ``None`` on the
+                            unknown-model path below (nothing priced this usage,
+                            so there is no source to record). This field is what
+                            the run pipeline threads through ``build_cost_record``
+                            into the durable cost-events ledger (local JSONL +
+                            the ClickHouse ``cost_events.price_source`` column)
+                            to make ledgers auditable per AC1 — the same value
+                            is available standalone via ``resolve_price_source``
+                            for callers that don't need the full breakdown.
+                            (It is deliberately NOT forwarded into Langfuse
+                            ``costDetails``, which must stay all-numeric — see
+                            ``tracer.py``.)
 
     Uses the SAME ``_resolve_rates`` + ``/1_000_000`` math as ``cost_usd`` for the
     token components, so with no rerank cost the components sum to ``cost_usd``

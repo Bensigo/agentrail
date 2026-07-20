@@ -80,7 +80,27 @@ describe("POST /api/v1/ingest/cost-events", () => {
         output_tokens: 0,
         cache_tokens: 0,
         cache_creation_tokens: 0,
+        // #1337 PR②: absent price_source in the request defaults to "".
+        price_source: "",
       },
+    ]);
+  });
+
+  it("202 + passes through price_source when present (#1337 PR②)", async () => {
+    const withSource = { ...valid, price_source: "gateway" };
+    const res = await POST(req(withSource));
+    expect(res.status).toBe(202);
+    expect(insertCostEvents).toHaveBeenCalledWith([
+      expect.objectContaining({ price_source: "gateway" }),
+    ]);
+  });
+
+  it("null price_source (Python None) defaults to \"\" rather than breaking validation", async () => {
+    const withNull = { ...valid, price_source: null };
+    const res = await POST(req(withNull));
+    expect(res.status).toBe(202);
+    expect(insertCostEvents).toHaveBeenCalledWith([
+      expect.objectContaining({ price_source: "" }),
     ]);
   });
 

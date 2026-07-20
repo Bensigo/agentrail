@@ -26,6 +26,8 @@ interface RawCostEvent {
   output_tokens?: number;
   cache_tokens?: number;
   cache_creation_tokens?: number;
+  /** #1337 PR②: which price tier resolved this cost ("gateway" | "price_table"), for ledger auditability. */
+  price_source?: string;
 }
 
 function isRawCostEvent(v: unknown): v is RawCostEvent {
@@ -102,6 +104,7 @@ export async function POST(req: NextRequest) {
     output_tokens: e.output_tokens ?? 0,
     cache_tokens: e.cache_tokens ?? 0,
     cache_creation_tokens: e.cache_creation_tokens ?? 0,
+    price_source: e.price_source ?? "",
   }));
 
   let accepted = 0;

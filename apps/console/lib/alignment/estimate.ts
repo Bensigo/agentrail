@@ -19,6 +19,20 @@
  * resolved numbers can legitimately differ from `suggestedModel`'s own
  * constants (e.g. `claude-sonnet-5`'s live introductory rate vs. catalog.ts's
  * deliberately-conservative sticker mirror — see catalog.ts's module doc).
+ *
+ * Model override (#1338 PR②): {@link estimateBrief}'s second, OPTIONAL
+ * argument accepts a pre-resolved `modelOverride` seat that, when given, is
+ * used INSTEAD of `MODEL_CATALOG[taskType]`. This is how the model-selection
+ * learning loop's selector (`selector.ts`'s `selectExecuteModel`) reaches
+ * this function's math WITHOUT this function itself becoming async or
+ * touching the database: the selector's own `run_outcomes` read is async
+ * and happens, if at all, entirely BEFORE `estimateBrief` is ever called —
+ * see `alignment-brief.ts`'s `resolveModelSelectionForBrief`, the one place
+ * that decision is made. Omitting the option (every call site before
+ * #1338, and every call site today when the model-selection-learning
+ * feature flag is off) leaves this function's behavior completely
+ * unchanged: `MODEL_CATALOG[taskType]` is used, byte-identical to the
+ * pre-#1338 static pick (pinned in estimate.test.ts).
  */
 
 import { classifyTaskType } from "./classifier";
@@ -120,6 +134,15 @@ const PRICE_SOURCE_LABEL: Record<PriceSource, string> = {
   fallback: "a neutral fallback rate (no known price for this model at all)",
 };
 
+export interface EstimateBriefOptions {
+  /**
+   * #1338 PR② — see this module's own doc comment ("Model override"
+   * section) for the full rationale. Omitted (the default) -> behavior is
+   * completely unchanged from before #1338.
+   */
+  modelOverride?: ModelSeat;
+}
+
 /**
  * Compute the alignment brief's suggested model + cost estimate for a task.
  *
@@ -133,9 +156,9 @@ const PRICE_SOURCE_LABEL: Record<PriceSource, string> = {
  * and never awaited here, so THIS function's own execution stays
  * synchronous and side-effect-free either way.)
  */
-export function estimateBrief(input: TaskInput): BriefEstimate {
+export function estimateBrief(input: TaskInput, opts: EstimateBriefOptions = {}): BriefEstimate {
   const taskType = classifyTaskType(input);
-  const suggestedModel = MODEL_CATALOG[taskType];
+  const suggestedModel = opts.modelOverride ?? MODEL_CATALOG[taskType];
   const volumeBucket = bucketVolume(input);
   const { inTokens, outTokens } = VOLUME_TOKEN_ASSUMPTIONS[volumeBucket];
 

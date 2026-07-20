@@ -25,6 +25,23 @@ vi.mock("./approval-message", () => ({
 
 vi.mock("./alignment-brief", () => ({
   composeAlignmentBrief: vi.fn(),
+  // #1338 PR② — postAlignmentBrief now calls these two BEFORE composing.
+  // parseAcceptanceCriteriaForBrief has a real, trivial implementation here
+  // (not vi.fn()) since it's pure and several tests pass bodies through it;
+  // resolveModelSelectionForBrief defaults to "flag off" (undefined) so
+  // every existing assertion here — which predates #1338 and expects
+  // composeAlignmentBrief's call args to have NO modelSelection key at all —
+  // stays valid unchanged. See the dedicated "#1338 PR② model selection"
+  // describe block below for the flag-on behavior.
+  parseAcceptanceCriteriaForBrief: vi.fn((body: string) => {
+    const match = /## Acceptance criteria\n([\s\S]*)/.exec(body);
+    if (!match) return [];
+    return match[1]!
+      .split("\n")
+      .map((line) => /^- \[[ x]\]\s*(.+)$/.exec(line.trim())?.[1])
+      .filter((s): s is string => !!s);
+  }),
+  resolveModelSelectionForBrief: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../app/api/v1/workspaces/[workspaceId]/connectors/secret/telegram", () => ({
@@ -41,7 +58,7 @@ import {
   latestTelegramSessionForWorkspace,
   recordApprovalRequest,
 } from "@agentrail/db-postgres";
-import { composeAlignmentBrief } from "./alignment-brief";
+import { composeAlignmentBrief, resolveModelSelectionForBrief } from "./alignment-brief";
 import { renderApprovalMessage } from "./approval-message";
 import {
   sendTelegramMessage,
@@ -52,6 +69,7 @@ const mockFindCandidates = vi.mocked(findAlignmentBriefCandidates);
 const mockLatestSession = vi.mocked(latestTelegramSessionForWorkspace);
 const mockRecord = vi.mocked(recordApprovalRequest);
 const mockCompose = vi.mocked(composeAlignmentBrief);
+const mockResolveModelSelection = vi.mocked(resolveModelSelectionForBrief);
 const mockRender = vi.mocked(renderApprovalMessage);
 const mockSend = vi.mocked(sendTelegramMessage);
 const mockBuildKeyboard = vi.mocked(buildApprovalKeyboard);
@@ -331,5 +349,42 @@ describe("postAlignmentBrief: created-gate on the send (#1274 PR③ fix round, I
 
     expect(outcome).toBe("posted");
     expect(mockSend).not.toHaveBeenCalled();
+  });
+});
+
+describe("postAlignmentBrief: model-selection wiring (#1338 PR②)", () => {
+  it("calls resolveModelSelectionForBrief with the classification-shaped input and the workspaceId, BEFORE composeAlignmentBrief", async () => {
+    await postAlignmentBrief({
+      workspaceId: "ws-1",
+      queueEntryId: "q-1",
+      title: "t",
+      body: "## Acceptance criteria\n- [ ] a\n",
+    });
+
+    expect(mockResolveModelSelection).toHaveBeenCalledWith(
+      { title: "t", whatToBuild: "## Acceptance criteria\n- [ ] a\n", acceptanceCriteria: ["a"] },
+      "ws-1"
+    );
+  });
+
+  it("flag off (the default mock): composeAlignmentBrief is called with NO modelSelection key at all — byte-identical to pre-#1338", async () => {
+    await postAlignmentBrief({ workspaceId: "ws-1", queueEntryId: "q-1", title: "t", body: "b" });
+
+    const callArgs = mockCompose.mock.calls[0]?.[0];
+    expect(callArgs).not.toHaveProperty("modelSelection");
+  });
+
+  it("flag on (resolveModelSelectionForBrief resolves a selection): composeAlignmentBrief receives it as modelSelection", async () => {
+    const selection = {
+      model: { slug: "anthropic/claude-opus-4.8", displayName: "Claude Opus 4.8", inUsdPerMTok: 5, outUsdPerMTok: 25 },
+      reasonText: "Claude Opus 4.8 — best success rate for refactor (7 runs)",
+    };
+    mockResolveModelSelection.mockResolvedValueOnce(selection);
+
+    await postAlignmentBrief({ workspaceId: "ws-1", queueEntryId: "q-1", title: "t", body: "b" });
+
+    expect(mockCompose).toHaveBeenCalledWith(
+      expect.objectContaining({ modelSelection: selection })
+    );
   });
 });

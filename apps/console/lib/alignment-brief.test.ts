@@ -4,8 +4,9 @@ import {
   composeAlignmentBrief,
   composeChatBornBrief,
   extractConfirmedBudgetAndModel,
+  resolveModelSelectionForBrief,
 } from "./alignment-brief";
-import { estimateBrief } from "./alignment";
+import { estimateBrief, MODEL_CATALOG } from "./alignment";
 
 describe("parseAcceptanceCriteriaForBrief: tolerant AC extraction", () => {
   it("extracts checkbox criteria from a house-format '## Acceptance criteria' section", () => {
@@ -245,5 +246,104 @@ describe("extractConfirmedBudgetAndModel", () => {
       expect(extractConfirmedBudgetAndModel({ ...VALID_BASE, taskType: 42 })?.taskType).toBeNull();
       expect(extractConfirmedBudgetAndModel({ ...VALID_BASE, taskType: null })?.taskType).toBeNull();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1338 PR② — composeAlignmentBrief / composeChatBornBrief's new OPTIONAL
+// modelSelection param. No database is touched by anything in this block:
+// modelSelection is a plain, already-resolved value the caller constructs —
+// exactly the contract resolveModelSelectionForBrief's own doc-comment
+// describes. resolveModelSelectionForBrief's flag-ON wiring (which DOES call
+// the async, DB-touching selector) is covered separately, with the selector
+// mocked, in alignment-brief.model-selection.test.ts.
+// ---------------------------------------------------------------------------
+describe("composeAlignmentBrief: modelSelection param (#1338 PR②)", () => {
+  const BASE = {
+    title: "Add dark mode toggle",
+    body: "## Acceptance criteria\n- [ ] Toggle in settings\n",
+    repoFullName: "acme/widgets",
+    issueNumber: 42,
+    issueUrl: "https://github.com/acme/widgets/issues/42",
+  };
+
+  it("omitted: no modelSelectionReason key on the output at all — byte-identical to pre-#1338", () => {
+    const brief = composeAlignmentBrief(BASE);
+    expect(brief).not.toHaveProperty("modelSelectionReason");
+    expect(brief.suggestedModel.slug).toBe(MODEL_CATALOG.general.slug); // this title/body classify as "general"
+  });
+
+  it("supplied: suggestedModel reflects the override, and modelSelectionReason is stored verbatim", () => {
+    const brief = composeAlignmentBrief({
+      ...BASE,
+      modelSelection: {
+        model: MODEL_CATALOG.refactor,
+        reasonText: "Claude Opus 4.8 — best success rate for general (9 runs)",
+      },
+    });
+    expect(brief.suggestedModel).toEqual({
+      slug: MODEL_CATALOG.refactor.slug,
+      displayName: MODEL_CATALOG.refactor.displayName,
+    });
+    expect(brief.modelSelectionReason).toBe(
+      "Claude Opus 4.8 — best success rate for general (9 runs)"
+    );
+  });
+
+  it("a supplied modelSelection does not change taskType or acceptanceCriteria (only the model pick)", () => {
+    const withOverride = composeAlignmentBrief({
+      ...BASE,
+      modelSelection: { model: MODEL_CATALOG.mechanical, reasonText: "why" },
+    });
+    const withoutOverride = composeAlignmentBrief(BASE);
+    expect(withOverride.taskType).toBe(withoutOverride.taskType);
+    expect(withOverride.acceptanceCriteria).toEqual(withoutOverride.acceptanceCriteria);
+  });
+});
+
+describe("composeChatBornBrief: modelSelection param (#1338 PR②)", () => {
+  const CHAT_BORN = {
+    title: "Add dark mode toggle",
+    whatToBuild: "Add a settings toggle that persists across reload.",
+    acceptanceCriteria: ["Toggle in settings"],
+  };
+
+  it("omitted: no modelSelectionReason key at all — byte-identical to pre-#1338", () => {
+    const brief = composeChatBornBrief(CHAT_BORN);
+    expect(brief).not.toHaveProperty("modelSelectionReason");
+  });
+
+  it("supplied: suggestedModel reflects the override, and modelSelectionReason is stored verbatim", () => {
+    const brief = composeChatBornBrief({
+      ...CHAT_BORN,
+      modelSelection: { model: MODEL_CATALOG.refactor, reasonText: "Trying opus-4.8 to compare" },
+    });
+    expect(brief.suggestedModel.slug).toBe(MODEL_CATALOG.refactor.slug);
+    expect(brief.modelSelectionReason).toBe("Trying opus-4.8 to compare");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveModelSelectionForBrief — the flag-gated entry point. Only the
+// flag-OFF short-circuit paths are exercised here (no database touched,
+// exactly as documented): an absent/false flag and an absent workspaceId
+// both return undefined WITHOUT ever calling the (DB-backed) selector. The
+// flag-ON path (which awaits selectExecuteModel for real) is covered in
+// alignment-brief.model-selection.test.ts, with the selector mocked.
+// ---------------------------------------------------------------------------
+describe("resolveModelSelectionForBrief: flag-off short-circuit (#1338 PR②)", () => {
+  const TASK_INPUT = { title: "t", whatToBuild: "w", acceptanceCriteria: [] };
+
+  it("no MODEL_SELECTION_LEARNING_* env set (the out-of-the-box default): resolves undefined for a normal workspace", async () => {
+    expect(await resolveModelSelectionForBrief(TASK_INPUT, "ws-1")).toBeUndefined();
+  });
+
+  it("resolves undefined when workspaceId is absent, even if somehow flagged (defensive — no workspace to scope stats to)", async () => {
+    expect(await resolveModelSelectionForBrief(TASK_INPUT, undefined)).toBeUndefined();
+    expect(await resolveModelSelectionForBrief(TASK_INPUT, null)).toBeUndefined();
+  });
+
+  it("never throws for a well-formed input", async () => {
+    await expect(resolveModelSelectionForBrief(TASK_INPUT, "ws-1")).resolves.toBeUndefined();
   });
 });

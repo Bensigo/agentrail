@@ -162,6 +162,15 @@ function renderCreateIssue(input: Record<string, unknown>): string {
  * is the OWNER RULE made visible: confirming this message is what activates
  * #1333's dormant estimated_budget_usd/model_override threading — see
  * `github_intake.ts::confirmAlignmentBrief`.
+ *
+ * `Why: ...` line (#1338 PR②): renders `input["modelSelectionReason"]` —
+ * the model-selection learning loop's precomputed one-line rationale
+ * (`alignment/selector.ts`'s `describeModelSelection`, threaded through
+ * `alignment-brief.ts`'s `resolveModelSelectionForBrief`) — right under the
+ * task-type/suggested-model line, ONLY when present and non-empty. Absent
+ * whenever the model-selection-learning feature flag was off at compose
+ * time (the default, everywhere, until PR③), which renders byte-identical
+ * to every pre-#1338 brief.
  */
 function renderAlignmentBrief(input: Record<string, unknown>): string {
   const title = sanitizeField(input["title"], 200) || "(untitled)";
@@ -208,6 +217,15 @@ function renderAlignmentBrief(input: Record<string, unknown>): string {
       ? `Task type: ${taskType || "general"} → suggested model: ${suggestedModelDisplayName}`
       : `Task type: ${taskType || "general"}`
   );
+
+  // #1338 PR② — present only when the model-selection-learning flag was on
+  // at compose time (`alignment-brief.ts`'s `resolveModelSelectionForBrief`);
+  // absent for every flag-off brief, which renders byte-identical to before
+  // #1338 (see approval-message.test.ts's regression pin).
+  const modelSelectionReason = sanitizeField(input["modelSelectionReason"], 200);
+  if (modelSelectionReason) {
+    lines.push(`Why: ${modelSelectionReason}`);
+  }
 
   if (criteria.length > 0) {
     lines.push("", "Acceptance criteria:");

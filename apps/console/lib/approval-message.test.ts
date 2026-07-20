@@ -112,6 +112,17 @@ describe("renderApprovalMessage — create_issue WITH _brief (#1274 PR ②, chat
     expect(text).toContain("Approving sets this run's budget: ~$1.35");
   });
 
+  it("#1338 PR②: a modelSelectionReason inside _brief flattens through and renders the 'Why:' line", () => {
+    const text = renderApprovalMessage("create_issue", {
+      ...ENRICHED_INPUT,
+      _brief: {
+        ...ENRICHED_INPUT._brief,
+        modelSelectionReason: "Claude Sonnet 5 — best success rate for ui (12 runs)",
+      },
+    });
+    expect(text).toContain("Why: Claude Sonnet 5 — best success rate for ui (12 runs)");
+  });
+
   it("never throws when _brief is present but malformed", () => {
     expect(() =>
       renderApprovalMessage("create_issue", { title: "x", _brief: "not-an-object" })
@@ -269,6 +280,42 @@ describe("renderApprovalMessage — alignment_brief (#1274)", () => {
     });
     expect(text).not.toContain("Acceptance criteria:");
     expect(text).not.toContain("Assumptions:");
+  });
+
+  // #1338 PR② — the model-selection learning loop's precomputed "why" line.
+  describe("modelSelectionReason 'Why:' line (#1338 PR②)", () => {
+    it("renders a 'Why: ...' line right after the task-type/model line when modelSelectionReason is present", () => {
+      const text = renderApprovalMessage("alignment_brief", {
+        ...BRIEF_INPUT,
+        modelSelectionReason: "Claude Sonnet 5 — best success rate for ui (12 runs)",
+      });
+      expect(text).toContain("Why: Claude Sonnet 5 — best success rate for ui (12 runs)");
+      const lines = text.split("\n");
+      const taskTypeLineIdx = lines.findIndex((l) => l.startsWith("Task type:"));
+      expect(lines[taskTypeLineIdx + 1]).toBe(
+        "Why: Claude Sonnet 5 — best success rate for ui (12 runs)"
+      );
+    });
+
+    it("omits the 'Why:' line entirely when modelSelectionReason is absent — byte-identical to pre-#1338", () => {
+      const text = renderApprovalMessage("alignment_brief", BRIEF_INPUT);
+      expect(text).not.toContain("Why:");
+    });
+
+    it("sanitizes the reason text (control/bidi characters, length cap) exactly like every other field", () => {
+      const RLO = String.fromCharCode(0x202e);
+      const text = renderApprovalMessage("alignment_brief", {
+        ...BRIEF_INPUT,
+        modelSelectionReason: `evil${RLO}reason`,
+      });
+      expect(text).not.toContain(RLO);
+    });
+
+    it("never throws when modelSelectionReason is malformed (not a string)", () => {
+      expect(() =>
+        renderApprovalMessage("alignment_brief", { ...BRIEF_INPUT, modelSelectionReason: { evil: true } })
+      ).not.toThrow();
+    });
   });
 });
 

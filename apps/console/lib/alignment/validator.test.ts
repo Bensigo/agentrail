@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { validateOverride } from "./validator";
 import { MODEL_CATALOG } from "./catalog";
+import { allEligibleModelSlugs, isModelEligibleForTaskType } from "./eligibility";
 
 const OPUS = MODEL_CATALOG.refactor.slug; // anthropic/claude-opus-4.8
 const HAIKU = MODEL_CATALOG.mechanical.slug; // anthropic/claude-haiku-4.5
@@ -61,5 +62,30 @@ describe("validateOverride: catalog-only refusal (v1 has no additional allowlist
     expect(result.reason).toContain(OPUS);
     expect(result.reason).toContain(HAIKU);
     expect(result.reason).toContain(SONNET);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1338 PR② — allowlist widened to eligibility.ts's allEligibleModelSlugs
+// union (source-of-truth change; see validator.ts's own module doc for why
+// this is numerically identical to the old MODEL_CATALOG-derived set today).
+// ---------------------------------------------------------------------------
+describe("validateOverride: allowlist == eligibility.ts's allEligibleModelSlugs union (#1338 PR②)", () => {
+  it("accepts exactly the slugs allEligibleModelSlugs() returns, nothing more or less", () => {
+    const eligible = allEligibleModelSlugs();
+    for (const slug of eligible) {
+      expect(validateOverride(slug, VERIFY_MODEL).ok).toBe(true);
+    }
+    expect(validateOverride("totally-unknown/model", VERIFY_MODEL).ok).toBe(false);
+  });
+
+  it("HARD OWNER RULE check: haiku is excluded from ui's AUTO-picker eligibility, but an explicit override to haiku is still ALLOWED (eligibility constrains the auto picker, not a user's explicit choice)", () => {
+    // Confirms the premise this describe block is testing: haiku really is
+    // ineligible for ui's auto picker...
+    expect(isModelEligibleForTaskType(HAIKU, "ui")).toBe(false);
+    // ...yet validateOverride (which is task-type-agnostic by design) still
+    // accepts it as a valid override, because it's eligible for AT LEAST ONE
+    // task type (mechanical/refactor/general) and thus in the union.
+    expect(validateOverride(HAIKU, VERIFY_MODEL)).toEqual({ ok: true });
   });
 });

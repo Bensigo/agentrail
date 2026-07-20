@@ -508,6 +508,26 @@ describe("POST /api/v1/runner/approvals — #1274 PR ② chat-born enrichment (c
     expect(renderedInput).toHaveProperty("_brief");
   });
 
+  it("#1338 PR②: with the model-selection-learning flag off (the default — no MODEL_SELECTION_LEARNING_* env set), the enriched _brief carries NO modelSelectionReason key at all — byte-identical to before #1338", async () => {
+    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
+    mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);
+
+    await POST(
+      req({
+        ...MOCK_BODY,
+        toolInput: {
+          title: "Add dark mode toggle",
+          whatToBuild: "A settings toggle that persists across reload.",
+          acceptanceCriteria: ["Toggle in settings"],
+        },
+      })
+    );
+
+    const recordArgs = mockRecord.mock.calls[0]?.[0];
+    const brief = (recordArgs?.toolInput as Record<string, unknown>)?._brief as Record<string, unknown>;
+    expect(brief).not.toHaveProperty("modelSelectionReason");
+  });
+
   it("a malformed create_issue toolInput (missing whatToBuild, non-array acceptanceCriteria) never throws — degrades gracefully, still 201", async () => {
     mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
     mockRecord.mockResolvedValue({ approval: MOCK_APPROVAL, created: true } as never);

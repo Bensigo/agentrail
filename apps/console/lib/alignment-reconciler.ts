@@ -4,7 +4,11 @@ import {
   latestTelegramSessionForWorkspace,
   recordApprovalRequest,
 } from "@agentrail/db-postgres";
-import { composeAlignmentBrief } from "./alignment-brief";
+import {
+  composeAlignmentBrief,
+  parseAcceptanceCriteriaForBrief,
+  resolveModelSelectionForBrief,
+} from "./alignment-brief";
 import { renderApprovalMessage } from "./approval-message";
 import {
   sendTelegramMessage,
@@ -86,12 +90,27 @@ export async function postAlignmentBrief(params: {
 
   let brief: ReturnType<typeof composeAlignmentBrief>;
   try {
+    // #1338 PR② — resolve the model-selection override (undefined when the
+    // flag is off, the default) BEFORE composing: composeAlignmentBrief
+    // itself stays synchronous and never touches the database (see
+    // alignment-brief.ts's own module doc). resolveModelSelectionForBrief
+    // never throws (it catches its own selectExecuteModel failures and
+    // returns undefined) — it's inside this try/catch purely defensively.
+    const modelSelection = await resolveModelSelectionForBrief(
+      {
+        title: params.title,
+        whatToBuild: params.body,
+        acceptanceCriteria: parseAcceptanceCriteriaForBrief(params.body),
+      },
+      params.workspaceId
+    );
     brief = composeAlignmentBrief({
       title: params.title,
       body: params.body,
       repoFullName,
       issueNumber: number,
       issueUrl: repoFullName ? githubIssueUrl(repoFullName, number) : "",
+      ...(modelSelection ? { modelSelection } : {}),
     });
     if (!repoFullName) {
       // #1274 PR③ locked design point 3: "say so in the brief's assumptions
@@ -111,7 +130,9 @@ export async function postAlignmentBrief(params: {
     }
   } catch (err) {
     console.error(
-      `[alignment-reconciler] composeAlignmentBrief threw while posting the alignment brief for queue entry ${params.queueEntryId}; entry stays parked ("awaiting alignment"):`,
+      `[alignment-reconciler] composeAlignmentBrief (or, defensively, resolveModelSelectionForBrief — ` +
+        `it shouldn't throw on its own) threw while posting the alignment brief for queue entry ` +
+        `${params.queueEntryId}; entry stays parked ("awaiting alignment"):`,
       err
     );
     return "compose_failed";

@@ -139,7 +139,7 @@ function summarizeCreateRepo(input: Record<string, unknown>): ApprovalSummary {
   };
 }
 
-/** Mirrors `approval-message.ts`'s `renderAlignmentBrief` field selection (task type, suggested model, estimate) — same content, same caps, React-structured. */
+/** Mirrors `approval-message.ts`'s `renderAlignmentBrief` field selection (task type, suggested model, why, estimate) — same content, same caps, React-structured. */
 function summarizeAlignmentBrief(input: Record<string, unknown>): ApprovalSummary {
   const headline = sanitizeField(input["title"], 200) || "(untitled)";
   const fields: ApprovalSummaryField[] = [];
@@ -156,6 +156,15 @@ function summarizeAlignmentBrief(input: Record<string, unknown>): ApprovalSummar
         ? `${taskType || "general"} → ${suggestedModelDisplayName}`
         : taskType || "general",
     });
+  }
+
+  // #1338 PR② — the model-selection learning loop's precomputed one-line
+  // rationale (see approval-message.ts's own "Why:" line for the full
+  // provenance); present only when the feature flag was on at compose time,
+  // absent (byte-identical to pre-#1338) otherwise.
+  const modelSelectionReason = sanitizeField(input["modelSelectionReason"], 200);
+  if (modelSelectionReason) {
+    fields.push({ label: "Why", value: modelSelectionReason });
   }
 
   const estimateUsd = input["estimateUsd"];

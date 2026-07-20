@@ -232,3 +232,66 @@ describe("estimateBrief: assumptions content", () => {
     expect(large.assumptions.join(" ")).toContain("Large");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1338 PR② — the optional modelOverride param (the model-selection learning
+// loop's ONE integration point into this otherwise-pure/sync function). See
+// this file's own module doc ("Model override" section) for the full
+// rationale: estimateBrief itself never imports or calls the selector.
+// ---------------------------------------------------------------------------
+describe("estimateBrief: modelOverride option (#1338 PR②)", () => {
+  const taskTypes: TaskType[] = ["ui", "refactor", "mechanical", "general"];
+
+  it("omitted (every pre-#1338 call site, and every call when the feature flag is off): byte-identical to MODEL_CATALOG[taskType] — pins the flag-off guarantee at this layer", () => {
+    for (const taskType of taskTypes) {
+      const input: TaskInput = {
+        title: TRIGGER_TITLE[taskType],
+        whatToBuild: "x".repeat(50),
+        acceptanceCriteria: ["a"],
+      };
+      const withNoOpts = estimateBrief(input);
+      const withEmptyOpts = estimateBrief(input, {});
+      expect(withNoOpts.suggestedModel).toBe(MODEL_CATALOG[taskType]);
+      expect(withEmptyOpts).toEqual(withNoOpts);
+    }
+  });
+
+  it("a supplied modelOverride is used INSTEAD of MODEL_CATALOG[taskType], even though classification is unaffected", () => {
+    const input: TaskInput = {
+      title: TRIGGER_TITLE.mechanical, // classifies as "mechanical" -> seed would be haiku
+      whatToBuild: "x".repeat(50),
+      acceptanceCriteria: ["a"],
+    };
+    const result = estimateBrief(input, { modelOverride: MODEL_CATALOG.refactor });
+
+    expect(result.taskType).toBe("mechanical"); // classification is untouched
+    expect(result.suggestedModel).toBe(MODEL_CATALOG.refactor); // but the seat used is the override
+    expect(result.suggestedModel).not.toBe(MODEL_CATALOG.mechanical);
+  });
+
+  it("the override's rate (via resolveModelPrice) drives estimateUsd, not the default seat's rate", () => {
+    const input: TaskInput = {
+      title: TRIGGER_TITLE.mechanical,
+      whatToBuild: "x".repeat(50),
+      acceptanceCriteria: ["a"],
+    };
+    const overridden = estimateBrief(input, { modelOverride: MODEL_CATALOG.refactor });
+    const defaulted = estimateBrief(input);
+
+    // opus-4.8 (refactor's seat) is strictly pricier than haiku-4.5
+    // (mechanical's own seat) on both legs, so the override MUST produce a
+    // higher estimate for the identical input.
+    expect(overridden.estimateUsd).toBeGreaterThan(defaulted.estimateUsd);
+  });
+
+  it("the assumptions text names the OVERRIDE model's displayName, not the default seat's", () => {
+    const input: TaskInput = {
+      title: TRIGGER_TITLE.mechanical,
+      whatToBuild: "x".repeat(50),
+      acceptanceCriteria: ["a"],
+    };
+    const result = estimateBrief(input, { modelOverride: MODEL_CATALOG.refactor });
+    expect(result.assumptions.join(" ")).toContain(MODEL_CATALOG.refactor.displayName);
+    expect(result.assumptions.join(" ")).not.toContain(MODEL_CATALOG.mechanical.displayName);
+  });
+});

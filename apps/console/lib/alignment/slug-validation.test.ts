@@ -25,6 +25,7 @@ import { dirname, resolve } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { isKnownModelSlug, _awaitCatalogLoadForTests, _resetCatalogForTests } from "./gateway-catalog";
 import { MODEL_CATALOG } from "./catalog";
+import { MODEL_SEATS } from "./candidates";
 import type { RawOpenRouterModel } from "./openrouter-normalize";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -50,7 +51,10 @@ function loadHostedConfig(): HostedRunnerConfig {
 
 // Every slug BOTH shipped configs use today: deploy/runner/agentrail-config.hosted.json's
 // execute/verify/critic seats (sonnet-5/glm-5.2/haiku-4.5) plus catalog.ts's
-// MODEL_CATALOG "refactor" seat (opus-4.8, not otherwise covered above).
+// MODEL_CATALOG "refactor" seat (opus-4.8, not otherwise covered above), PLUS
+// (#1338 PR③) every slug candidates.ts's widened execute-candidate pool adds:
+// moonshotai/kimi-k2.7-code, moonshotai/kimi-k3, z-ai/glm-4.7,
+// deepseek/deepseek-v4-pro, qwen/qwen3-coder-plus, openai/gpt-5.1-codex.
 const KNOWN_SLUGS_FIXTURE: RawOpenRouterModel[] = [
   {
     id: "anthropic/claude-sonnet-5",
@@ -75,6 +79,48 @@ const KNOWN_SLUGS_FIXTURE: RawOpenRouterModel[] = [
     pricing: { prompt: "0.0000003", completion: "0.00000094" },
     context_length: 1048576,
     top_provider: { context_length: 1048576, max_completion_tokens: 131072, is_moderated: false },
+  },
+  // #1338 PR③ widened execute-candidate pool (candidates.ts) — plausible
+  // OpenRouter-shaped fixtures; this AC3 check only asserts the SLUG is known
+  // to the (mocked) live catalog, not that the price matches
+  // candidates.ts's own MODEL_SEATS constants (see candidates.test.ts for the
+  // pool's own pricing/structure guard, and that file's module doc for why
+  // pricing isn't cross-checked against a Python source here).
+  {
+    id: "moonshotai/kimi-k2.7-code",
+    pricing: { prompt: "0.00000085", completion: "0.0000038" },
+    context_length: 262144,
+    top_provider: { context_length: 262144, max_completion_tokens: 65536, is_moderated: false },
+  },
+  {
+    id: "moonshotai/kimi-k3",
+    pricing: { prompt: "0.000003", completion: "0.000015" },
+    context_length: 262144,
+    top_provider: { context_length: 262144, max_completion_tokens: 65536, is_moderated: false },
+  },
+  {
+    id: "z-ai/glm-4.7",
+    pricing: { prompt: "0.0000004", completion: "0.00000175" },
+    context_length: 1048576,
+    top_provider: { context_length: 1048576, max_completion_tokens: 131072, is_moderated: false },
+  },
+  {
+    id: "deepseek/deepseek-v4-pro",
+    pricing: { prompt: "0.00000043", completion: "0.00000087" },
+    context_length: 128000,
+    top_provider: { context_length: 128000, max_completion_tokens: 32000, is_moderated: false },
+  },
+  {
+    id: "qwen/qwen3-coder-plus",
+    pricing: { prompt: "0.00000065", completion: "0.00000325" },
+    context_length: 1000000,
+    top_provider: { context_length: 1000000, max_completion_tokens: 65536, is_moderated: false },
+  },
+  {
+    id: "openai/gpt-5.1-codex",
+    pricing: { prompt: "0.00000125", completion: "0.00001" },
+    context_length: 400000,
+    top_provider: { context_length: 400000, max_completion_tokens: 128000, is_moderated: true },
   },
 ];
 
@@ -126,6 +172,22 @@ describe("AC3: shipped alignment-brief catalog (catalog.ts MODEL_CATALOG) slugs 
       `MODEL_CATALOG seat(s) not found in the fetched catalog: ${unresolved
         .map(([taskType, seat]) => `${taskType}="${seat.slug}"`)
         .join(", ")}`
+    ).toEqual([]);
+  });
+});
+
+describe("AC3: widened execute-candidate pool (candidates.ts MODEL_SEATS, #1338 PR③) slugs resolve against the (mocked) catalog", () => {
+  it("every MODEL_SEATS slug resolves once the catalog loads", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(fakeModelsResponse(KNOWN_SLUGS_FIXTURE))));
+    await _awaitCatalogLoadForTests();
+
+    const unresolved = Object.entries(MODEL_SEATS).filter(([, seat]) => !isKnownModelSlug(seat.slug));
+    expect(
+      unresolved,
+      `candidates.ts MODEL_SEATS entr(y/ies) not found in the fetched catalog: ${unresolved
+        .map(([key, seat]) => `${key}="${seat.slug}"`)
+        .join(", ")} — either the slug is wrong, or this test's KNOWN_SLUGS_FIXTURE needs updating ` +
+        "to match a real candidates.ts pool change."
     ).toEqual([]);
   });
 });

@@ -56,7 +56,7 @@
 import { getModelOutcomeStats } from "@agentrail/db-postgres";
 import type { ModelOutcomeStatsRow } from "@agentrail/db-postgres";
 import type { ModelSeat } from "./catalog";
-import { MODEL_CATALOG } from "./catalog";
+import { MODEL_SEATS } from "./candidates";
 import type { TaskType } from "./classifier";
 import { eligibleModelsForTaskType } from "./eligibility";
 import { seedModel } from "./seeds";
@@ -100,18 +100,18 @@ export interface SelectExecuteModelOptions {
   }) => Promise<ModelOutcomeStatsRow[]>;
 }
 
-/** `MODEL_CATALOG`'s slug -> seat lookup — every eligible slug is, by construction (`eligibility.ts`'s `candidateModelSlugs`), one of this catalog's own values. */
+/** `candidates.ts`'s `MODEL_SEATS` slug -> seat lookup (#1338 PR③ — every eligible slug is, by construction (`eligibility.ts`'s `candidateModelSlugs`, `candidates.ts`'s `CANDIDATES`), one of that registry's own keys). */
 function seatForSlug(slug: string): ModelSeat {
-  const seat = Object.values(MODEL_CATALOG).find((s) => s.slug === slug);
+  const seat = MODEL_SEATS[slug];
   if (!seat) {
     // Unreachable in practice: eligible slugs are always drawn from
-    // MODEL_CATALOG's own values (eligibility.ts's candidateModelSlugs). A
-    // loud throw here (rather than a silent fallback) surfaces a future
-    // eligibility.ts/catalog.ts drift immediately instead of shipping a
-    // priceless/nameless seat.
+    // candidates.ts's CANDIDATES, and every CANDIDATES entry has a matching
+    // MODEL_SEATS entry (candidates.test.ts pins this). A loud throw here
+    // (rather than a silent fallback) surfaces a future candidates.ts drift
+    // immediately instead of shipping a priceless/nameless seat.
     throw new Error(
       `[selector] no ModelSeat found for eligible slug "${slug}" — eligible slugs must always be ` +
-        `drawn from MODEL_CATALOG's own values (see eligibility.ts's candidateModelSlugs).`
+        `drawn from candidates.ts's MODEL_SEATS registry (see eligibility.ts's candidateModelSlugs).`
     );
   }
   return seat;

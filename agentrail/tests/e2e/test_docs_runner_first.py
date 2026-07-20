@@ -112,46 +112,68 @@ class TestStaleLanguageRemoved:
 
 
 class TestQuickstartNewFlow:
-    """Asserts the 6-step runner-first onboarding is present in quickstart.mdx."""
+    """Asserts the message-first onboarding is present in quickstart.mdx.
+
+    The runner-first CLI framing this class originally pinned (#867 —
+    ``agentrail login`` → ``agentrail runner``, the ``ready-for-agent`` label)
+    was deliberately reversed by the message-first pivot (#1356): the shipped
+    quickstart is now sign up → connect GitHub → message Jace → describe the
+    work → approve the brief → get a reviewed PR, with the worker running in
+    the cloud (no required local CLI login/runner). These assertions pin THAT
+    contract. (Self-hosting still documents the CLI — see self-hosting.mdx —
+    so the README/self-host tests below intentionally keep the CLI steps.)
+    """
 
     @pytest.fixture(autouse=True)
     def _content(self) -> None:
         self.content = _docs("getting-started/quickstart.mdx")
+        self.lower = self.content.lower()
 
     def test_step_signup_mentioned(self) -> None:
-        assert any(
-            phrase in self.content.lower()
-            for phrase in ("sign up", "sign in", "dashboard")
-        ), "quickstart.mdx must open with sign-up / dashboard step."
+        assert any(phrase in self.lower for phrase in ("sign up", "sign in")), (
+            "quickstart.mdx must open with a sign-up / sign-in step."
+        )
 
     def test_connect_github_mentioned(self) -> None:
-        assert "github" in self.content.lower(), (
+        assert "github" in self.lower, (
             "quickstart.mdx must mention connecting GitHub."
         )
 
-    def test_trigger_label_ready_for_agent(self) -> None:
-        assert "ready-for-agent" in self.content, (
-            "quickstart.mdx must document the `ready-for-agent` trigger label."
+    def test_message_jace_present(self) -> None:
+        assert "message jace" in self.lower or "message the bot" in self.lower, (
+            "quickstart.mdx must document messaging Jace as the core step."
         )
 
-    def test_agentrail_login_present(self) -> None:
-        assert "agentrail login" in self.content, (
-            "quickstart.mdx must include `agentrail login` as a step."
+    def test_approve_brief_present(self) -> None:
+        assert "brief" in self.lower and "approv" in self.lower, (
+            "quickstart.mdx must document approving the brief — the one confirmation."
         )
 
-    def test_agentrail_runner_present(self) -> None:
-        assert "agentrail runner" in self.content, (
-            "quickstart.mdx must include `agentrail runner` as a step."
+    def test_pull_request_outcome_present(self) -> None:
+        assert "pull request" in self.lower, (
+            "quickstart.mdx must document that the outcome is a reviewed pull request."
         )
 
-    def test_login_before_runner_ordered(self) -> None:
-        """login must appear before runner in the document."""
-        login_pos = self.content.find("agentrail login")
-        runner_pos = self.content.find("agentrail runner")
-        assert login_pos != -1, "agentrail login not found in quickstart.mdx"
-        assert runner_pos != -1, "agentrail runner not found in quickstart.mdx"
-        assert login_pos < runner_pos, (
-            "`agentrail login` must come before `agentrail runner` in quickstart.mdx."
+    def test_no_required_cli_login_runner(self) -> None:
+        """Message-first: the primary flow needs no local CLI login/runner."""
+        assert (
+            "no cli" in self.lower
+            or "no runner to install" in self.lower
+            or ("agentrail login" not in self.content and "agentrail runner" not in self.content)
+        ), (
+            "quickstart.mdx must present the cloud/message-first flow — no required "
+            "`agentrail login` / `agentrail runner` steps (the runner-first #867 framing "
+            "was reversed by the message-first pivot #1356)."
+        )
+
+    def test_message_before_pr_ordered(self) -> None:
+        """Messaging Jace must come before the resulting PR in the document."""
+        msg_pos = self.lower.find("message jace")
+        pr_pos = self.lower.find("pull request")
+        assert msg_pos != -1, "message Jace step not found in quickstart.mdx"
+        assert pr_pos != -1, "pull request outcome not found in quickstart.mdx"
+        assert msg_pos < pr_pos, (
+            "messaging Jace must come before the PR outcome in quickstart.mdx."
         )
 
 

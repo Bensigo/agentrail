@@ -14,7 +14,13 @@
 //     no-key path has to be explicitly inert, not merely "processor errors out".
 //  2. Resolve the per-step runtime context merged onto AI SDK telemetry spans
 //     (`events["step.started"]`), carrying the root session id so every turn —
-//     root and delegated subagent alike — groups into one Langfuse session.
+//     root and delegated subagent alike — groups into one Langfuse session,
+//     plus (#1339 PR②) the classified chat intent as a trace tag, reusing the
+//     SAME canonical `classifyIntent` #1339 PR① uses for routing — so the
+//     tag Langfuse groups spend by can never silently drift from the
+//     boundary root's own delegation policy actually enforces.
+
+import { classifyIntent } from "./intent-classifier.core.mjs";
 
 /**
  * True iff all three Langfuse env vars are set to a non-blank value.
@@ -94,6 +100,26 @@ export const LANGFUSE_SESSION_ID_ATTRIBUTE = "session.id";
 export const LANGFUSE_TRACE_NAME_ATTRIBUTE = "langfuse.trace.name";
 /** @type {string} */
 export const LANGFUSE_TRACE_INPUT_ATTRIBUTE = "langfuse.trace.input";
+
+/**
+ * The current (v5) canonical Langfuse OTel span attribute for TRACE-level
+ * tags — `LangfuseOtelSpanAttributes.TRACE_TAGS` in `@langfuse/core`
+ * (`"langfuse.trace.tags"`), value type `string[]` (a genuine array
+ * attribute, not a JSON/comma-separated string — verified against Langfuse's
+ * OpenTelemetry integration docs, 2026-07-20, and empirically against eve's
+ * own compiled runtime-context flattener: an array value assigned to a
+ * `step.started` runtimeContext key is copied verbatim onto the span
+ * attribute, never stringified — see `@ai-sdk/otel`'s context-flattening
+ * function in eve's bundle). #1339 PR② uses this to carry the classified
+ * chat intent (`["intent:chit-chat"]` / `["intent:capable"]`) so Langfuse's
+ * Metrics API v2 can group `totalCost` by `tags` for the spend-by-intent
+ * view. Exported only as the DEFAULT so this module needs no SDK import; the
+ * real wrapper passes the live enum value explicitly so a future SDK rename
+ * can't silently drift (same convention as session id / name / input above).
+ *
+ * @type {string}
+ */
+export const LANGFUSE_TRACE_TAGS_ATTRIBUTE = "langfuse.trace.tags";
 
 /**
  * Extract concatenated text from a `ModelMessage`'s content. A user
@@ -189,6 +215,17 @@ export function resolveRootSessionId(session) {
  * worst). INPUT is emitted only when there IS user text, length-capped to bound
  * payload duplication across the turn's spans.
  *
+ * #1339 PR②: also stamps a TAGS array (single element, `"intent:<class>"`)
+ * from `classifyIntent(userText)` — the SAME classifier PR①'s routing policy
+ * is written against, so the tag Langfuse groups spend by is never a second,
+ * independently-drifting definition of "chit-chat". This is the classifier's
+ * PREDICTION for the turn's initiating message, not a confirmation that root
+ * actually delegated to the smalltalk subagent — for a smalltalk subagent
+ * step this is the same text root relayed in, so it correctly reads
+ * "intent:chit-chat" there too. Always present (never conditional on
+ * userText, unlike INPUT): an attachments-only/no-text turn still gets
+ * `classifyIntent("")` → `"capable"`, consistent with AC2's fail-safe.
+ *
  * @param {{
  *   configured: boolean,
  *   session: { id?: string, parent?: { rootSessionId?: string } } | undefined,
@@ -197,9 +234,10 @@ export function resolveRootSessionId(session) {
  *   sessionIdAttribute?: string,
  *   traceNameAttribute?: string,
  *   traceInputAttribute?: string,
+ *   tagsAttribute?: string,
  *   inputMaxLength?: number,
  * }} params
- * @returns {{ runtimeContext: Record<string, string|boolean|undefined> } | undefined}
+ * @returns {{ runtimeContext: Record<string, string|boolean|readonly string[]|undefined> } | undefined}
  */
 export function buildStepStartedResult({
   configured,
@@ -209,6 +247,7 @@ export function buildStepStartedResult({
   sessionIdAttribute = LANGFUSE_SESSION_ID_ATTRIBUTE,
   traceNameAttribute = LANGFUSE_TRACE_NAME_ATTRIBUTE,
   traceInputAttribute = LANGFUSE_TRACE_INPUT_ATTRIBUTE,
+  tagsAttribute = LANGFUSE_TRACE_TAGS_ATTRIBUTE,
   inputMaxLength = 8000,
 }) {
   if (!configured) return undefined;
@@ -216,6 +255,7 @@ export function buildStepStartedResult({
   const runtimeContext = {
     [sessionIdAttribute]: resolveRootSessionId(session),
     "jace.subagent": channel?.kind === "subagent",
+    [tagsAttribute]: [`intent:${classifyIntent(userText)}`],
   };
   // NAME (guaranteed): user text, else channel kind (worst case "unknown").
   const name = deriveTraceName(userText) ?? deriveTraceName(channel?.kind);
@@ -279,9 +319,13 @@ export function sessionIdFromSpanAttributes(
 /**
  * Promote one AI-SDK-namespaced context attribute (`ai.settings.context.<bareKey>`)
  * to the bare top-level key Langfuse reads. No-op if the bare key is already set
- * (never clobber) or the source is not a non-blank string. Mutates `attributes`
- * in place. Used for trace name/input, which — unlike session id — have no
- * `eve.*` framework fallback, so a plain namespaced→bare lift is all they need.
+ * (never clobber) or the source is neither a non-blank string NOR a non-empty
+ * array (#1339 PR②: `langfuse.trace.tags` is a genuine `string[]` attribute,
+ * not a string — see `LANGFUSE_TRACE_TAGS_ATTRIBUTE`'s own doc for why an
+ * array survives this lift intact rather than needing to be joined/parsed).
+ * Mutates `attributes` in place. Used for trace name/input/tags, which —
+ * unlike session id — have no `eve.*` framework fallback, so a plain
+ * namespaced→bare lift is all they need.
  *
  * @param {Record<string, unknown>|undefined} attributes
  * @param {string} bareKey the un-prefixed key Langfuse reads (e.g. "langfuse.trace.name")
@@ -290,7 +334,11 @@ export function sessionIdFromSpanAttributes(
 export function promoteContextAttribute(attributes, bareKey) {
   if (!attributes || attributes[bareKey]) return;
   const value = attributes[`${AI_SDK_CONTEXT_PREFIX}${bareKey}`];
-  if (typeof value === "string" && value.trim()) attributes[bareKey] = value;
+  if (typeof value === "string" && value.trim()) {
+    attributes[bareKey] = value;
+  } else if (Array.isArray(value) && value.length > 0) {
+    attributes[bareKey] = value;
+  }
 }
 
 /**
@@ -312,7 +360,7 @@ export function promoteContextAttribute(attributes, bareKey) {
  * convention as `buildSpanProcessors`' `createSpanProcessor`).
  *
  * @param {{ onStart?: Function, onEnd?: Function, forceFlush?: Function, shutdown?: Function }} inner
- * @param {{ sessionIdAttribute?: string, traceNameAttribute?: string, traceInputAttribute?: string }} [opts]
+ * @param {{ sessionIdAttribute?: string, traceNameAttribute?: string, traceInputAttribute?: string, tagsAttribute?: string }} [opts]
  * @returns {{ onStart: Function, onEnd: Function, forceFlush: Function, shutdown: Function }}
  */
 export function createSessionPromotingProcessor(
@@ -321,6 +369,7 @@ export function createSessionPromotingProcessor(
     sessionIdAttribute = LANGFUSE_SESSION_ID_ATTRIBUTE,
     traceNameAttribute = LANGFUSE_TRACE_NAME_ATTRIBUTE,
     traceInputAttribute = LANGFUSE_TRACE_INPUT_ATTRIBUTE,
+    tagsAttribute = LANGFUSE_TRACE_TAGS_ATTRIBUTE,
   } = {},
 ) {
   return {
@@ -340,9 +389,10 @@ export function createSessionPromotingProcessor(
             const sessionId = sessionIdFromSpanAttributes(attributes, sessionIdAttribute);
             if (sessionId) attributes[sessionIdAttribute] = sessionId;
           }
-          // Trace name/input: plain namespaced→bare lift (no eve.* fallback).
+          // Trace name/input/tags: plain namespaced→bare lift (no eve.* fallback).
           promoteContextAttribute(attributes, traceNameAttribute);
           promoteContextAttribute(attributes, traceInputAttribute);
+          promoteContextAttribute(attributes, tagsAttribute);
         }
       } catch {
         // no-op: never let attribute promotion break span export

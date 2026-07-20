@@ -60,3 +60,38 @@ test("an unrecognized word (not in the chit-chat list) fails toward capable", ()
   assert.equal(classifyIntent("congratulations"), "capable");
   assert.equal(classifyIntent("Bensigo"), "capable");
 });
+
+// Code-review regression tests: a raw substring scan for CAPABLE_SIGNAL_KEYWORDS
+// previously made these chit-chat words permanently unreachable ("how" inside
+// "howdy", "what" inside "whats", "pr" inside "appreciate"/"appreciated").
+test("chit-chat words that contain a capable-signal SUBSTRING still classify as chit-chat (word-boundary fix)", () => {
+  assert.equal(classifyIntent("howdy"), "chit-chat");
+  assert.equal(classifyIntent("whats up"), "chit-chat");
+  assert.equal(classifyIntent("appreciate it"), "chit-chat");
+  assert.equal(classifyIntent("appreciated"), "chit-chat");
+});
+
+// A capable-signal keyword must still fire as a WHOLE word/phrase, not just
+// stop matching entirely now that it's word-boundary-anchored.
+test("capable-signal keywords still fire as whole words after the word-boundary fix", () => {
+  assert.equal(classifyIntent("how do I deploy this"), "capable");
+  assert.equal(classifyIntent("what is the status"), "capable");
+  assert.equal(classifyIntent("can you open a pr"), "capable");
+});
+
+// Code-review regression tests: treating every chit-chat word as a
+// free-floating token in one bag let "yes"/"ok"/"great" + "do" + "it" combine
+// into what reads as a real confirmation/directive ("should I go ahead?" →
+// "yes do it"), not small talk. "do" is removed from the word list entirely.
+test("a directive-shaped confirmation ('<ack> do it') fails toward capable, not chit-chat", () => {
+  assert.equal(classifyIntent("yes do it"), "capable");
+  assert.equal(classifyIntent("ok do it"), "capable");
+  assert.equal(classifyIntent("great, do it"), "capable");
+});
+
+// "it" stays in the word list — it's load-bearing for the legitimate "got it"
+// ack, which was never part of the reported false-positive class.
+test("'got it' (the legitimate ack 'it' supports) still classifies as chit-chat", () => {
+  assert.equal(classifyIntent("got it"), "chit-chat");
+  assert.equal(classifyIntent("got it, thanks"), "chit-chat");
+});

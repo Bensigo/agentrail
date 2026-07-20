@@ -69,7 +69,6 @@ const CHITCHAT_WORDS = [
   "sounds",
   "got",
   "will",
-  "do",
   "bye",
   "goodbye",
   "goodnight",
@@ -86,11 +85,20 @@ const CHITCHAT_WORDS = [
   "lol",
 ];
 
-/** ASSUMPTION: any of these appearing ANYWHERE forces "capable", even inside
+/** ASSUMPTION: any of these appearing ANYWHERE (as a whole word/phrase, not a
+ * substring — see {@link containsAnyKeyword}) forces "capable", even inside
  * an otherwise short/greeting-shaped message — a real question or a mention
- * of substantive work is never chit-chat, no matter how it's phrased. */
+ * of substantive work is never chit-chat, no matter how it's phrased.
+ *
+ * Code-review finding (verified, fixed): a plain `.includes()` substring scan
+ * here previously made several {@link CHITCHAT_WORDS} entries permanently
+ * unreachable dead code — `"howdy"` contains `"how"`, `"whats"` contains
+ * `"what"`, `"appreciate"`/`"appreciated"` contain `"pr"` — so
+ * `classifyIntent("howdy")` returned `"capable"` despite `"howdy"` being a
+ * listed chit-chat word. Word-boundary matching (mirroring #1338's
+ * `classifyTaskType`'s own `containsAnyKeyword`) fixes this: `"how"` no
+ * longer matches inside `"howdy"`. */
 const CAPABLE_SIGNAL_KEYWORDS = [
-  "?",
   "issue",
   "issues",
   "repo",
@@ -126,13 +134,45 @@ function normalize(text) {
     .toLowerCase();
 }
 
+/**
+ * Whole-word/whole-phrase, case-caller's-responsibility match (the caller
+ * already lowercases). Mirrors #1338's `classifyTaskType`'s own
+ * `containsAnyKeyword` exactly, for the same reason: a naive substring
+ * `.includes()` false-positives constantly (`"how"` inside `"howdy"`, `"what"`
+ * inside `"whats"`, `"pr"` inside `"appreciate"`) — `\b...\b` anchors each
+ * keyword to real word boundaries while still matching multi-word phrases
+ * like `"pull request"` / `"can you"` as a whole.
+ */
+function containsAnyKeyword(haystack, keywords) {
+  return keywords.some((keyword) => {
+    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`\\b${escaped}\\b`).test(haystack);
+  });
+}
+
 function containsAnyCapableSignal(normalized) {
-  return CAPABLE_SIGNAL_KEYWORDS.some((signal) => normalized.includes(signal));
+  // "?" is punctuation, not a word — \b boundaries don't apply to it the same
+  // way, so it stays a plain substring check, separate from the word-boundary
+  // keyword scan.
+  if (normalized.includes("?")) return true;
+  return containsAnyKeyword(normalized, CAPABLE_SIGNAL_KEYWORDS);
 }
 
 /** True only when EVERY word in the normalized text is a known chit-chat
  * word — one unrecognized word (e.g. "issue", a person's name, a real
- * question) fails the whole message out of chit-chat. */
+ * question) fails the whole message out of chit-chat.
+ *
+ * Code-review finding (verified, fixed): treating every {@link
+ * CHITCHAT_WORDS} entry as a free-floating token in one shared bag let
+ * unrelated words combine into something that reads as a real confirmation
+ * or directive, not small talk — `"yes"` + `"do"` + `"it"` (all
+ * independently listed) passed as `"yes do it"` / `"ok do it"` / `"great, do
+ * it"`, which plausibly answers a real question ("should I go ahead?") and
+ * is not "confidently, unambiguously chit-chat" per this module's own AC2
+ * contract. `"do"` — the common thread across every reported case, and
+ * genuinely content-free on its own — is removed from the list entirely
+ * rather than patched around; `"it"` stays (needed for the legitimate `"got
+ * it"` ack) since `"it"` alone was never the reported failure mode. */
 function containsOnlyChitchatWords(normalized) {
   const words = normalized.split(/[^a-z]+/).filter((w) => w.length > 0);
   if (words.length === 0) return false;

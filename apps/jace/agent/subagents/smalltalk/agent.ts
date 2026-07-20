@@ -12,12 +12,13 @@ import { chooseModel, HAIKU_GATEWAY_MODEL_ID } from "../../lib/model.core.mjs";
 // section for why the description below IS the routing mechanism, same as
 // every other subagent in this repo).
 //
-// Deliberately narrower than even `triage` (this repo's previous minimum):
-// ZERO authored tools, and every disableable default-harness tool is
-// disabled, INCLUDING web_search (triage left that one enabled since it had
-// no reason to touch it either way; smalltalk has no legitimate use for it
-// at all, so it's stripped too — see this directory's tools/ sentinels).
-// Combined with Eve's isolation boundary (a declared subagent inherits
+// Matches `triage`'s own precedent (this repo's previous minimum), not
+// narrower than it — code-review correction: `triage` ALREADY disables
+// web_search too (apps/jace/agent/subagents/triage/tools/web_search.ts,
+// pre-existing), so smalltalk's isolation is equivalent, not stricter. ZERO
+// authored tools, and every disableable default-harness tool is disabled —
+// see this directory's tools/ sentinels. Combined with Eve's isolation
+// boundary (a declared subagent inherits
 // NOTHING from root — no create_issue, no create_workspace, no skills), a
 // chit-chat turn delegated here cannot reach a gated write tool even if a
 // hostile or malformed prompt tried to steer it there.

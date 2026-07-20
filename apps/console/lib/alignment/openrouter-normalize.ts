@@ -1,7 +1,11 @@
 /**
  * Pure normalizer: one raw OpenRouter `GET /api/v1/models` list entry ->
- * one snapshot row (#1337 — the gateway catalog substrate #1338/#1339 build
- * on).
+ * one normalized catalog row (#1337 — the gateway catalog substrate
+ * #1338/#1339 build on). Consumed by `gateway-catalog.ts`'s live
+ * fetch-once-and-cache loader (owner-directed simplification, 2026-07-20,
+ * replacing #1337's original committed-snapshot + refresh-script design —
+ * this normalizer's own field mapping is unchanged, it now runs against the
+ * live response directly instead of a file written by an offline script).
  *
  * Field mapping, pinned against a real captured response
  * (`GET https://openrouter.ai/api/v1/models`, verified 2026-07-20, no auth
@@ -32,11 +36,11 @@
  * deliberately NOT read — "pin the exact fields you depend on" (task brief).
  *
  * `null` in, `null` out: a raw entry missing/unparseable on any field this
- * module depends on returns `null` rather than inventing a rate — the
- * refresh script (`scripts/refresh-openrouter-catalog.ts`) skips it and logs
- * a count, it never becomes a silent $0 entry in the committed snapshot (the
- * same "$0 hazard" discipline `catalog.ts`/`catalog.test.ts` already apply to
- * the 3-seat mirror). A genuinely free model (OpenRouter really does list
+ * module depends on returns `null` rather than inventing a rate —
+ * `normalizeOpenRouterModelsResponse` below skips it and counts it via
+ * `skippedCount`, it never becomes a silent $0 entry in the cached catalog
+ * (the same "$0 hazard" discipline `catalog.ts`/`catalog.test.ts` already
+ * apply to the 3-seat mirror). A genuinely free model (OpenRouter really does list
  * some at "0" per-token) is NOT rejected — `0` is a value, only a
  * missing/non-numeric field is a rejection. Those are different failure
  * modes and this function tells them apart on purpose.
@@ -132,8 +136,8 @@ export function normalizeOpenRouterModel(raw: RawOpenRouterModel): NormalizedCat
 /**
  * Normalize a full `/api/v1/models` response body: extracts `data`, drops
  * (and counts) entries `normalizeOpenRouterModel` rejects, and sorts the
- * survivors by `id` so the committed snapshot's diffs are stable across
- * refreshes regardless of the order OpenRouter happens to return.
+ * survivors by `id` so the resulting list (and any test/log built on it) is
+ * deterministic regardless of the order OpenRouter happens to return.
  */
 export function normalizeOpenRouterModelsResponse(body: RawOpenRouterModelsResponse): {
   models: NormalizedCatalogModel[];

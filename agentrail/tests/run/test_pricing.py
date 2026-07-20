@@ -516,21 +516,23 @@ def test_cost_breakdown_unknown_model_emits_warning() -> None:
 # "anthropic/claude-haiku-4.5") — before the provider-prefix + dot-to-dash
 # normalization steps, every one of these priced as $0 with only a warning,
 # silently zeroing hosted-run cost metering. Since #1337 PR② these slugs
-# resolve via the GATEWAY tier first (an exact match against the committed
-# OpenRouter snapshot); the PRICE_TABLE prefix/dot-dash chain below still
-# exists as tier 2, for ids the snapshot doesn't carry.
+# resolve via the GATEWAY tier first (an exact match against the live-fetched
+# OpenRouter catalog, mocked deterministically for this whole test session —
+# see agentrail/tests/conftest.py's `_mock_gateway_rates`); the PRICE_TABLE
+# prefix/dot-dash chain below still exists as tier 2, for ids the catalog
+# doesn't carry.
 # ---------------------------------------------------------------------------
 
 
 def test_cost_usd_openrouter_anthropic_prefix_resolves_via_gateway() -> None:
     """"anthropic/claude-sonnet-5" resolves to a real, non-zero price via the
-    GATEWAY tier (#1337 PR②) — the committed snapshot's exact-match lookup.
+    GATEWAY tier (#1337 PR②) — the live catalog's exact-match lookup.
 
     Historically (pre-#1337) this test asserted the bare id "claude-sonnet-5"
     and the prefixed "anthropic/claude-sonnet-5" price IDENTICALLY, because
     both resolved through the same PRICE_TABLE chain. That equality no longer
     generally holds BY DESIGN: the prefixed/gateway form now prices at
-    whatever the live OpenRouter snapshot says, which can legitimately differ
+    whatever the live OpenRouter catalog says, which can legitimately differ
     from PRICE_TABLE's deliberately-conservative sticker rate (see
     catalog.ts's module doc on claude-sonnet-5's introductory pricing) — see
     test_cost_usd_bare_claude_sonnet_5_still_resolves_via_price_table below
@@ -548,8 +550,8 @@ def test_cost_usd_bare_claude_sonnet_5_still_resolves_via_price_table() -> None:
     """The bare, non-gateway id "claude-sonnet-5" (a direct Anthropic API
     call, never routed through OpenRouter) still resolves via PRICE_TABLE's
     sticker rate exactly — gateway-first resolution doesn't change behaviour
-    for ids the gateway snapshot was never going to carry in the first place
-    (the snapshot only keys on full provider-prefixed slugs)."""
+    for ids the gateway catalog was never going to carry in the first place
+    (the catalog only keys on full provider-prefixed slugs)."""
     bare = _Usage(model="claude-sonnet-5", input_tokens=1_000_000, output_tokens=1_000_000, cache_tokens=0)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -558,16 +560,18 @@ def test_cost_usd_bare_claude_sonnet_5_still_resolves_via_price_table() -> None:
     assert breakdown["total_usd"] == pytest.approx(3.0 + 15.0)
 
 
-def test_cost_usd_gateway_tier_matches_committed_snapshot_rate_exactly() -> None:
+def test_cost_usd_gateway_tier_matches_fetched_rate_exactly() -> None:
     """When the gateway tier resolves a model, cost_usd's math uses EXACTLY
-    the snapshot's own numbers. Reads the snapshot's rate directly (via the
-    module's own ``_GATEWAY_RATES``) rather than a hardcoded literal, which
-    would go stale on every `catalog:refresh` — an independent re-derivation
-    of the expected dollar figure, not a duplicate of the source code."""
+    the fetched catalog's own numbers. Reads the rate directly (via the
+    module's own ``_GATEWAY_RATES``, populated for this whole test session by
+    the mocked fetch — see agentrail/tests/conftest.py's
+    `_mock_gateway_rates`) rather than a hardcoded literal — an independent
+    re-derivation of the expected dollar figure, not a duplicate of the
+    source code."""
     from agentrail.run.pricing import _GATEWAY_RATES
 
     model = "anthropic/claude-sonnet-5"
-    assert model in _GATEWAY_RATES, "fixture assumption broken: sonnet-5 missing from the committed snapshot"
+    assert model in _GATEWAY_RATES, "fixture assumption broken: sonnet-5 missing from the mocked gateway rates"
     in_rate, out_rate = _GATEWAY_RATES[model]
 
     usage = _Usage(model=model, input_tokens=1_000_000, output_tokens=500_000, cache_tokens=0)
@@ -575,6 +579,38 @@ def test_cost_usd_gateway_tier_matches_committed_snapshot_rate_exactly() -> None
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert cost_usd(usage) == pytest.approx(expected, rel=1e-9)
+
+
+def test_gateway_fetch_failure_falls_back_to_price_table_without_throwing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1337 simplified (owner-directed 2026-07-20): the live catalog fetch is
+    NON-FATAL by construction. Simulates the gateway being completely
+    unreachable (``_fetch_gateway_rates`` itself raises, worse than its own
+    normal "any exception -> {}" contract) and asserts every consumer still
+    resolves a real slug via tier 2 (PRICE_TABLE) with no exception anywhere
+    in the call chain — never a silent $0, never a crash."""
+    import agentrail.run.pricing as pricing
+
+    def _boom() -> dict:
+        raise RuntimeError("simulated total gateway outage")
+
+    monkeypatch.setattr(pricing, "_gateway_rates_loaded", False)
+    pricing._GATEWAY_RATES.clear()
+    monkeypatch.setattr(pricing, "_fetch_gateway_rates", _boom)
+
+    # _ensure_gateway_rates_loaded must swallow the failure, not propagate it.
+    pricing._ensure_gateway_rates_loaded()
+    assert pricing._GATEWAY_RATES == {}
+
+    # A real gateway-shaped slug now has nothing to resolve at tier 1, so it
+    # falls through to PRICE_TABLE's own prefix/dot-dash normalization chain.
+    usage = _Usage(model="anthropic/claude-sonnet-5", input_tokens=1_000_000, output_tokens=1_000_000, cache_tokens=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no UserWarning either — this slug IS priced, just via tier 2
+        breakdown = cost_breakdown(usage)
+    assert breakdown["price_source"] == "price_table"
+    assert breakdown["total_usd"] == pytest.approx(3.0 + 15.0)
+
+    assert pricing.resolve_price_source("anthropic/claude-sonnet-5") == "price_table"
 
 
 def test_cost_usd_openrouter_dotted_version_resolves() -> None:
@@ -605,24 +641,28 @@ def test_cost_usd_unknown_prefixed_model_still_zero_with_warning() -> None:
 
 def test_hosted_config_template_models_all_price_nonzero() -> None:
     """Every model in the SHIPPED hosted config resolves to real rates via
-    the LIVE gateway snapshot (#1337 PR②) — not just PRICE_TABLE's hand-mirror.
+    the LIVE gateway catalog (#1337 PR②) — not just PRICE_TABLE's hand-mirror.
 
     Coupling test between deploy/runner/agentrail-config.hosted.json and the
-    committed OpenRouter snapshot: a template slug the resolver can't price
-    (or that has fallen off the live gateway list since the snapshot was
-    last refreshed) means every hosted run on that seat records $0 cost or a
-    stale PRICE_TABLE guess — the exact false green this branch (and #1337's
-    AC3) fixes. The old critic slug "~anthropic/claude-haiku-latest" was the
-    historical incident this coupling test exists to catch. Parses the real
-    shipped file so template edits that break pricing fail CI here.
+    (mocked, for this test session — see agentrail/tests/conftest.py's
+    `_mock_gateway_rates`) live OpenRouter catalog: a template slug the
+    resolver can't price means every hosted run on that seat would record $0
+    cost or a stale PRICE_TABLE guess in production — the exact false green
+    this branch (and #1337's AC3) fixes. The old critic slug
+    "~anthropic/claude-haiku-latest" was the historical incident this
+    coupling test exists to catch. Parses the real shipped file so template
+    edits that break pricing fail CI here.
 
     This SUPERSEDES the pre-#1337 PRICE_TABLE-only version of this test for
     slug-validity purposes — see also the TypeScript-side coupling test,
     apps/console/lib/alignment/slug-validation.test.ts, which checks the same
-    file against the same snapshot via isKnownModelSlug. PRICE_TABLE-fallback
-    correctness itself stays covered by
+    file against a (separately) mocked catalog via isKnownModelSlug.
+    PRICE_TABLE-fallback correctness itself stays covered by
     test_cost_usd_bare_claude_sonnet_5_still_resolves_via_price_table above
-    and by context/test_pricing.py's suite.
+    and by context/test_pricing.py's suite. Production's OWN, non-mocked
+    equivalent of this coupling check is `gateway-catalog.ts`'s
+    `warnUnknownSeatSlugs` (non-fatal `console.warn`, not a hard CI gate —
+    see that module's own doc comment for why).
     """
     import json
     from pathlib import Path
@@ -638,7 +678,8 @@ def test_hosted_config_template_models_all_price_nonzero() -> None:
             breakdown = cost_breakdown(usage)
         assert breakdown["total_usd"] > 0.0, f"hosted config {seat} seat {slug!r} prices as $0"
         assert breakdown["price_source"] == "gateway", (
-            f"hosted config {seat} seat {slug!r} did not resolve via the live gateway snapshot "
+            f"hosted config {seat} seat {slug!r} did not resolve via the live gateway catalog "
             f"(got price_source={breakdown['price_source']!r}) — either the slug isn't a real "
-            f"OpenRouter model, or the snapshot needs `pnpm --filter @agentrail/console catalog:refresh`"
+            f"OpenRouter model, or this test's mocked _FAKE_GATEWAY_RATES fixture "
+            f"(agentrail/tests/conftest.py) needs updating to match a real shipped-config change"
         )

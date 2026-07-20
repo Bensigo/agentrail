@@ -12,8 +12,8 @@
  * computes the number that wiring will eventually carry.
  *
  * Pricing (#1337 PR ②): the suggested seat's rate is resolved gateway-first
- * via {@link resolveModelPrice} — the live OpenRouter snapshot wins when it
- * knows the seat's slug, `suggestedModel`'s own PRICE_TABLE-mirrored
+ * via {@link resolveModelPrice} — the live-fetched OpenRouter catalog wins
+ * when it knows the seat's slug, `suggestedModel`'s own PRICE_TABLE-mirrored
  * constants otherwise. {@link BriefEstimate.priceSource} records which one
  * won so a later persisted cost/estimate record stays auditable (AC1); the
  * resolved numbers can legitimately differ from `suggestedModel`'s own
@@ -98,7 +98,7 @@ export interface BriefEstimate {
   volumeBucket: VolumeBucket;
   /**
    * The per-MTok rates actually used for `estimateUsd`'s math. Gateway-
-   * sourced when the live snapshot knows `suggestedModel.slug`, else
+   * sourced when the live catalog knows `suggestedModel.slug`, else
    * `suggestedModel`'s own PRICE_TABLE-mirrored constants — see
    * {@link priceSource}. Can differ from `suggestedModel.inUsdPerMTok` /
    * `.outUsdPerMTok`; those are the seat's own hand-mirrored constants,
@@ -116,17 +116,22 @@ export interface BriefEstimate {
 
 const PRICE_SOURCE_LABEL: Record<PriceSource, string> = {
   gateway: "live OpenRouter gateway pricing",
-  price_table: "the canonical PRICE_TABLE mirror (gateway snapshot had no rate for this slug)",
+  price_table: "the canonical PRICE_TABLE mirror (gateway catalog had no rate for this slug)",
   fallback: "a neutral fallback rate (no known price for this model at all)",
 };
 
 /**
  * Compute the alignment brief's suggested model + cost estimate for a task.
  *
- * Pure: classification, bucketing, and pricing are all deterministic lookups
- * over the input plus the constant tables above and the committed gateway
- * snapshot ({@link resolveModelPrice}) — no network I/O, no clock beyond
- * `Date.now()`-free arithmetic, no randomness.
+ * Pure from this function's own point of view: classification, bucketing,
+ * and pricing are all deterministic lookups over the input plus the constant
+ * tables above and the gateway catalog ({@link resolveModelPrice}) — this
+ * function itself performs no I/O, no clock reads beyond `Date.now()`-free
+ * arithmetic, no randomness. (`resolveModelPrice` -> `getModelFromCatalog`
+ * does lazily trigger a background network fetch on a process's first call —
+ * see `gateway-catalog.ts`'s module doc — but that fetch is fire-and-forget
+ * and never awaited here, so THIS function's own execution stays
+ * synchronous and side-effect-free either way.)
  */
 export function estimateBrief(input: TaskInput): BriefEstimate {
   const taskType = classifyTaskType(input);
@@ -144,7 +149,8 @@ export function estimateBrief(input: TaskInput): BriefEstimate {
   // > 0 tokens both directions, so rawUsd is always strictly positive before
   // rounding — see estimate.test.ts's exact-math table (computed against
   // whatever resolveModelPrice actually resolves, not a hardcoded literal,
-  // since gateway rates can move between a `catalog:refresh` and the next).
+  // since gateway rates can move between one process's live catalog fetch
+  // and the next).
   const estimateUsd = Math.round(rawUsd * 100) / 100;
 
   const bodyChars = bodyLength(input);

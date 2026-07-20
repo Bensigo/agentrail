@@ -1,10 +1,11 @@
 /**
  * Gateway-first pricing policy (#1337 PR ②): given a model seat, resolve its
- * per-MTok rates from the live OpenRouter gateway snapshot FIRST, the
- * catalog's own PRICE_TABLE-mirrored constants SECOND — and record which one
- * won, so every cost/estimate record built on top of this stays auditable
- * (AC1: "any OpenRouter model id resolves to a real price... for both
- * estimates and metering").
+ * per-MTok rates from the live-fetched OpenRouter catalog FIRST (see
+ * `gateway-catalog.ts`'s module doc for the fetch-once-and-cache design),
+ * the catalog's own PRICE_TABLE-mirrored constants SECOND — and record which
+ * one won, so every cost/estimate record built on top of this stays
+ * auditable (AC1: "any OpenRouter model id resolves to a real price... for
+ * both estimates and metering").
  *
  * This is deliberately the ONE place TypeScript consumers ask "what does
  * this seat cost" — `estimate.ts` uses it today; #1338/#1339 (tiers/routing)
@@ -17,7 +18,7 @@ import type { ModelSeat } from "./catalog";
 /**
  * Shared vocabulary with the Python resolver
  * (`agentrail/run/pricing.py::_resolve_rates`): `"gateway"` = the live
- * OpenRouter snapshot had this slug; `"price_table"` = the canonical
+ * OpenRouter catalog had this slug; `"price_table"` = the canonical
  * PRICE_TABLE (mirrored here via a seat's own constants — see catalog.ts's
  * module doc) had it instead; `"fallback"` = neither did — the Python side's
  * neutral last-resort rate (`agentrail/context/pricing.py::_FALLBACK_RATE`).
@@ -40,8 +41,8 @@ export interface ResolvedPrice {
 }
 
 /**
- * Resolve a seat's rates: the live gateway snapshot wins when it knows the
- * seat's slug; otherwise fall back to the seat's own PRICE_TABLE-mirrored
+ * Resolve a seat's rates: the live-fetched gateway catalog wins when it
+ * knows the seat's slug; otherwise fall back to the seat's own PRICE_TABLE-mirrored
  * constants. Never a silent $0 — a seat's constants are always real,
  * positive, drift-guarded rates (see catalog.ts's "$0 hazard" note), so
  * there is no code path here that invents or defaults to zero.

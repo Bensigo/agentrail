@@ -7,15 +7,16 @@ input, output, cache.
 Cache rate covers input-cache-read tokens uniformly (per PRD #451 §2).
 
 Pricing is resolved gateway-first as of #1337 PR ② — see ``_resolve_rates``'s
-own docstring below for the two-tier (gateway snapshot, then PRICE_TABLE)
+own docstring below for the two-tier (live gateway catalog, then PRICE_TABLE)
 resolution order and ``PriceSource`` for the recorded-source vocabulary.
 """
 from __future__ import annotations
 
 import json
 import re
+import urllib.error
+import urllib.request
 import warnings
-from pathlib import Path
 from typing import Any, Dict, Literal, NamedTuple, Optional, Tuple, Union
 
 from agentrail.context.pricing import PRICE_TABLE as _PRICE_TABLE
@@ -31,7 +32,7 @@ class _Rates(NamedTuple):
 # ---------------------------------------------------------------------------
 # Price source vocabulary (#1337 PR ②), shared with the TypeScript resolver
 # (``apps/console/lib/alignment/resolve-price.ts``): ``"gateway"`` = the
-# committed OpenRouter snapshot had this model; ``"price_table"`` = the
+# live-fetched OpenRouter catalog had this model; ``"price_table"`` = the
 # canonical ``PRICE_TABLE`` resolution chain had it instead. ``"fallback"``
 # is NOT produced by ``_resolve_rates`` below — it names
 # ``agentrail.context.pricing.cost_for``'s pre-existing, separate
@@ -66,54 +67,54 @@ PRICES: dict[str, _Rates] = {
 
 
 # ---------------------------------------------------------------------------
-# Gateway snapshot (#1337 PR ②) — the committed OpenRouter model-catalog
-# snapshot. It is hand-mirrored into TWO byte-identical committed copies, the
-# same cross-language drift-guard convention #1334/#1335 use for PRICE_TABLE:
+# Live gateway catalog (#1337 PR ②, simplified per owner direction 2026-07-20).
 #
-#   - ``agentrail/context/openrouter-catalog.snapshot.json`` — THIS module's
-#     source (a package-local file under the ``agentrail`` package, so it
-#     ships inside the runner/fleet image automatically: the Docker images
-#     ``COPY agentrail ./agentrail`` and ``pip install .`` it, and
-#     pyproject.toml's ``[tool.setuptools.package-data]`` lists this exact
-#     file so it lands in site-packages — NOT stripped by the images'
-#     ``rm -rf ./agentrail/tests ./agentrail/docker``. NEITHER image ships
-#     ``apps/console/``, which is why the Python side canNOT read the console
-#     copy below.)
-#   - ``apps/console/lib/alignment/openrouter-catalog.snapshot.json`` — the
-#     console's own copy, read by ``gateway-catalog.ts`` via a bundler JSON
-#     import; ships in the console image (``apps/console`` + ``packages/*``),
-#     which conversely does NOT ship the ``agentrail`` package.
+# #1337 originally shipped this as a committed OpenRouter model-catalog
+# snapshot, hand-mirrored into TWO byte-identical copies (one package-local
+# here, one under ``apps/console/lib/alignment/`` for the TypeScript reader)
+# because the console image and the runner/fleet image have disjoint file
+# sets. No measured latency ever justified serving a stale committed file
+# over a live call, and the two-copy/parity machinery existed only to keep
+# those two files in sync — so this now fetches the live catalog instead,
+# lazily, once per process: the first call to ``_resolve_rates`` triggers
+# ``_ensure_gateway_rates_loaded``, everything after that reads the same
+# cached ``_GATEWAY_RATES`` dict. There is no TTL and no retry after a
+# failure — a process restart is the only refresh mechanism, same as the old
+# design's manual refresh-script + redeploy.
 #
-# The refresh script (``apps/console/scripts/refresh-openrouter-catalog.ts``)
-# writes BOTH; ``test_gateway_snapshot_parity`` asserts they stay
-# byte-identical so drift fails CI. The two images have DISJOINT file sets,
-# so one path cannot serve both — hence the mirror rather than a single
-# shared file.
-#
-# Loaded ONCE at import time and cached in ``_GATEWAY_RATES`` — a plain
-# local-disk read, not a network call (no live fetch on any request hot
-# path; the file itself is refreshed offline, see the TS script's module
-# doc). A missing/unreadable/malformed file still degrades to an EMPTY
-# gateway table rather than raising (resolution then falls through to
-# PRICE_TABLE-only, exactly as before #1337) — a defensive backstop, no
-# longer the expected deployed state now that the package-local copy ships.
+# ``_GATEWAY_RATES`` starts empty and is populated IN PLACE (``.update(...)``,
+# never reassigned) so any existing reference to this dict object — including
+# a test's ``from agentrail.run.pricing import _GATEWAY_RATES`` — observes
+# the populated rates once loading completes, with no re-import needed.
 # ---------------------------------------------------------------------------
-_SNAPSHOT_PATH = (
-    Path(__file__).resolve().parents[1] / "context" / "openrouter-catalog.snapshot.json"
-)
+_OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+_FETCH_TIMEOUT_SECONDS = 5
+_USD_PER_TOKEN_TO_USD_PER_MTOK = 1_000_000.0
 
 
-def _load_gateway_snapshot(path: Path) -> Dict[str, Tuple[float, float]]:
-    """Read the committed OpenRouter snapshot into a ``slug -> (input, output)``
-    $/MTok map. Never raises — see the module-level note above for why a
-    missing file is an expected, gracefully-handled case, not an error.
+def _fetch_gateway_rates() -> Dict[str, Tuple[float, float]]:
+    """Live-fetch ``GET https://openrouter.ai/api/v1/models`` (no auth
+    required) and normalize it into a ``slug -> (input, output)`` $/MTok map.
+
+    Never raises: ANY failure (network error, non-2xx, unparseable JSON,
+    unexpected shape, a bad individual entry) is swallowed and either skips
+    that entry or returns ``{}`` for the whole fetch. The caller
+    (``_ensure_gateway_rates_loaded``) then leaves ``_GATEWAY_RATES`` empty,
+    so every ``_resolve_rates`` call falls through to tier 2 (PRICE_TABLE)
+    exactly as if the gateway had never been consulted — the same
+    "non-fatal, pricing must never block a run" contract ``cost_push.py``'s
+    own HTTP calls already follow.
     """
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        req = urllib.request.Request(_OPENROUTER_MODELS_URL, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
+            if int(resp.status) != 200:
+                return {}
+            raw = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, ValueError, json.JSONDecodeError):
         return {}
 
-    models = raw.get("models") if isinstance(raw, dict) else None
+    models = raw.get("data") if isinstance(raw, dict) else None
     if not isinstance(models, list):
         return {}
 
@@ -122,14 +123,42 @@ def _load_gateway_snapshot(path: Path) -> Dict[str, Tuple[float, float]]:
         if not isinstance(entry, dict):
             continue
         slug = entry.get("id")
-        in_rate = entry.get("inUsdPerMTok")
-        out_rate = entry.get("outUsdPerMTok")
-        if isinstance(slug, str) and isinstance(in_rate, (int, float)) and isinstance(out_rate, (int, float)):
-            rates[slug] = (float(in_rate), float(out_rate))
+        pricing = entry.get("pricing")
+        if not isinstance(slug, str) or not slug or not isinstance(pricing, dict):
+            continue
+        try:
+            in_rate = float(pricing.get("prompt")) * _USD_PER_TOKEN_TO_USD_PER_MTOK
+            out_rate = float(pricing.get("completion")) * _USD_PER_TOKEN_TO_USD_PER_MTOK
+        except (TypeError, ValueError):
+            continue
+        rates[slug] = (in_rate, out_rate)
     return rates
 
 
-_GATEWAY_RATES: Dict[str, Tuple[float, float]] = _load_gateway_snapshot(_SNAPSHOT_PATH)
+_GATEWAY_RATES: Dict[str, Tuple[float, float]] = {}
+_gateway_rates_loaded = False
+
+
+def _ensure_gateway_rates_loaded() -> None:
+    """Lazily populate ``_GATEWAY_RATES`` from the live catalog, exactly once
+    per process. Mutates the dict IN PLACE (see the module-level note above)
+    rather than reassigning it. Idempotent and cheap after the first call —
+    every subsequent call is a single boolean check.
+
+    Defense in depth: ``_fetch_gateway_rates`` already never raises by its
+    own contract, but this wraps the call anyway — pricing must NEVER throw
+    on this path, even against a hypothetical bug in that function, so a run
+    is never blocked by a gateway-catalog problem of any kind.
+    """
+    global _gateway_rates_loaded
+    if _gateway_rates_loaded:
+        return
+    _gateway_rates_loaded = True
+    try:
+        fetched = _fetch_gateway_rates()
+    except Exception:  # noqa: BLE001 — non-fatal by design, see docstring
+        return
+    _GATEWAY_RATES.update(fetched)
 
 
 # ---------------------------------------------------------------------------
@@ -158,20 +187,25 @@ def _resolve_rates(model: str) -> Optional[_ResolvedRates]:
 
     Resolution order:
 
-    1. GATEWAY — exact match against the committed OpenRouter snapshot
-       (``_GATEWAY_RATES``). The snapshot's keys are already full, dot-form,
-       provider-prefixed OpenRouter slugs (e.g. ``"anthropic/claude-sonnet-5"``,
-       ``"z-ai/glm-5.2"``) — exactly the form a real hosted-fleet run's
-       ``model`` string already takes, so no prefix-strip/dot-dash
-       normalization is needed on this side. A bare id like
-       ``"claude-sonnet-4-5"`` (a direct, non-gateway Anthropic API call)
-       correctly misses here and falls through to tier 2.
+    1. GATEWAY — exact match against the live-fetched OpenRouter catalog
+       (``_GATEWAY_RATES``, lazily loaded — see ``_ensure_gateway_rates_loaded``
+       and `gateway-catalog.ts`'s TypeScript-side module doc for the same
+       fetch-once-and-cache design). The catalog's keys are already full,
+       dot-form, provider-prefixed OpenRouter slugs (e.g.
+       ``"anthropic/claude-sonnet-5"``, ``"z-ai/glm-5.2"``) — exactly the form
+       a real hosted-fleet run's ``model`` string already takes, so no
+       prefix-strip/dot-dash normalization is needed on this side. A bare id
+       like ``"claude-sonnet-4-5"`` (a direct, non-gateway Anthropic API call)
+       correctly misses here and falls through to tier 2. If the live fetch
+       hasn't completed yet or failed, ``_GATEWAY_RATES`` is simply empty and
+       every model misses tier 1 — indistinguishable from "not in the
+       catalog" and handled identically (tier 2 takes over).
     2. PRICE_TABLE — ``_resolve_price_table_rates``, the pre-#1337
        exact/dated/prefix/dot-dash normalization chain, unchanged.
 
     ``cache``/``cache_write`` ALWAYS prefer PRICE_TABLE's own rates when it
     has an entry for *model*, even when the gateway tier won input/output —
-    the gateway snapshot carries no cache-rate fields (see
+    the gateway catalog carries no cache-rate fields (see
     ``openrouter-normalize.ts``'s field mapping), and every one of today's
     real gateway-priced hosted-fleet seats already has a PRICE_TABLE entry
     to borrow them from. Only when NEITHER tier has any entry for *model* do
@@ -184,6 +218,7 @@ def _resolve_rates(model: str) -> Optional[_ResolvedRates]:
     then warns and treats the model as fully unpriced, exactly as before
     this PR (no behaviour change on the fully-unknown path).
     """
+    _ensure_gateway_rates_loaded()
     gateway_io = _GATEWAY_RATES.get(model)
     table_rates = _resolve_price_table_rates(model)
 
@@ -274,9 +309,14 @@ def resolve_price_source(model: str) -> Optional[PriceSource]:
     from ``cost_usd(usage)`` and must not have that line perturbed) can stamp
     the price source onto its durable ledger record without recomputing the
     full breakdown dict. Determinism guarantees consistency: ``_resolve_rates``
-    reads only the two module-level tables (``_GATEWAY_RATES``, ``PRICES``),
-    neither of which changes at runtime, so this and the ``cost_usd`` call in
-    the same block always agree on the tier.
+    reads only the two module-level tables (``_GATEWAY_RATES``, ``PRICES``).
+    ``PRICES`` never changes at runtime; ``_GATEWAY_RATES`` is lazily
+    populated but SYNCHRONOUSLY (``_ensure_gateway_rates_loaded`` blocks on
+    the live fetch, unlike the TypeScript side's fire-and-forget — see that
+    function's own doc) and only once per process, so by the time either this
+    call or the ``cost_usd`` call in the same block returns, ``_GATEWAY_RATES``
+    is already in its final, stable state — the two calls always agree on
+    the tier regardless of which one happens to run first.
 
     Non-fatal by contract: a non-string / unresolvable *model* yields ``None``
     rather than raising, so stamping the price source onto a ledger record can
@@ -360,7 +400,7 @@ def cost_breakdown(usage: object, *, rerank_usd: float = 0.0) -> Dict[str, Any]:
                             spend (the rerank tokens are not part of ``usage``).
     - ``price_source``    — (#1337 PR ②) which tier ``_resolve_rates`` resolved
                             this usage's rates from: ``"gateway"`` (the
-                            committed OpenRouter snapshot) or ``"price_table"``
+                            live-fetched OpenRouter catalog) or ``"price_table"``
                             (the canonical PRICE_TABLE chain); ``None`` on the
                             unknown-model path below (nothing priced this usage,
                             so there is no source to record). This field is what

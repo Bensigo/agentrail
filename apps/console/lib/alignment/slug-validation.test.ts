@@ -1,22 +1,31 @@
 /**
- * AC3 (#1337): "An invalid slug in any shipped config fails CI against the
- * snapshot."
+ * AC3 (#1337), SIMPLIFIED per owner direction (2026-07-20): "an invalid slug
+ * in any shipped config is checkable against the catalog."
  *
- * This is the coupling test in the spirit of the historical invalid-
- * critic-slug bug referenced in `agentrail/tests/run/test_pricing.py`
- * (`test_hosted_config_template_models_all_price_nonzero`'s docstring): every
- * model slug this repo hardcodes anywhere — the hosted runner template AND
- * the alignment brief's 3-seat catalog — must resolve in the committed
- * OpenRouter snapshot. An unresolvable slug fails this test loudly, in CI,
- * not silently at $0 or as a gateway 404 discovered only when a real run
- * tries to use it.
+ * #1337 originally made this a hard CI gate: every shipped slug had to
+ * resolve in the COMMITTED snapshot file or CI failed. That machinery (the
+ * snapshot file + refresh script + parity test) is gone — the catalog is now
+ * a live fetch, cached once per process (see `gateway-catalog.ts`'s module
+ * doc). The real safety net stays `getModelFromCatalog`'s null-on-unknown +
+ * `resolveModelPrice`'s PRICE_TABLE fallback (never a silent $0); production
+ * additionally logs a non-fatal `console.warn` once the catalog first loads
+ * if a `MODEL_CATALOG` seat is missing (see `gateway-catalog.ts`'s
+ * `warnUnknownSeatSlugs`, exercised in `gateway-catalog.test.ts`).
+ *
+ * This file keeps the coupling to the actual shipped hosted-runner config
+ * (parses the real file, same as before) but resolves slugs against a
+ * MOCKED catalog response instead of a committed file or live network — see
+ * `KNOWN_SLUGS_FIXTURE` below. If either shipped config ever adds a
+ * genuinely new real slug, this fixture needs a matching update (the same
+ * pinned-fixture trade-off `openrouter-normalize.test.ts` already documents).
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { describe, it, expect } from "vitest";
-import { isKnownModelSlug } from "./gateway-catalog";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { isKnownModelSlug, _awaitCatalogLoadForTests, _resetCatalogForTests } from "./gateway-catalog";
 import { MODEL_CATALOG } from "./catalog";
+import type { RawOpenRouterModel } from "./openrouter-normalize";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -24,7 +33,7 @@ const __dirname = dirname(__filename);
 const HOSTED_CONFIG_PATH = resolve(__dirname, "../../../../deploy/runner/agentrail-config.hosted.json");
 
 // A slug that will never legitimately exist — the "deliberately-bad slug"
-// case the task's verification checklist calls for.
+// case (AC3's "an invalid/retired slug is caught, not silently priced").
 const DEFINITELY_FAKE_SLUG = "not-a-real-provider/definitely-fake-model-9999";
 
 interface HostedRunnerConfig {
@@ -39,57 +48,100 @@ function loadHostedConfig(): HostedRunnerConfig {
   return JSON.parse(readFileSync(HOSTED_CONFIG_PATH, "utf8")) as HostedRunnerConfig;
 }
 
-describe("AC3: shipped hosted-runner config slugs are all known to the gateway snapshot", () => {
+// Every slug BOTH shipped configs use today: deploy/runner/agentrail-config.hosted.json's
+// execute/verify/critic seats (sonnet-5/glm-5.2/haiku-4.5) plus catalog.ts's
+// MODEL_CATALOG "refactor" seat (opus-4.8, not otherwise covered above).
+const KNOWN_SLUGS_FIXTURE: RawOpenRouterModel[] = [
+  {
+    id: "anthropic/claude-sonnet-5",
+    pricing: { prompt: "0.000003", completion: "0.000015" },
+    context_length: 1000000,
+    top_provider: { context_length: 1000000, max_completion_tokens: 128000, is_moderated: true },
+  },
+  {
+    id: "anthropic/claude-opus-4.8",
+    pricing: { prompt: "0.000005", completion: "0.000025" },
+    context_length: 1000000,
+    top_provider: { context_length: 1000000, max_completion_tokens: 128000, is_moderated: true },
+  },
+  {
+    id: "anthropic/claude-haiku-4.5",
+    pricing: { prompt: "0.000001", completion: "0.000005" },
+    context_length: 200000,
+    top_provider: { context_length: 200000, max_completion_tokens: 64000, is_moderated: true },
+  },
+  {
+    id: "z-ai/glm-5.2",
+    pricing: { prompt: "0.0000003", completion: "0.00000094" },
+    context_length: 1048576,
+    top_provider: { context_length: 1048576, max_completion_tokens: 131072, is_moderated: false },
+  },
+];
+
+function fakeModelsResponse(models: RawOpenRouterModel[]): Response {
+  return new Response(JSON.stringify({ data: models }), { status: 200 });
+}
+
+beforeEach(() => {
+  _resetCatalogForTests();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("AC3: shipped hosted-runner config slugs resolve against the (mocked) catalog", () => {
   const config = loadHostedConfig();
   const seats = config.runners.claude.models;
 
   it("deploy/runner/agentrail-config.hosted.json carries the expected execute/verify/critic seats", () => {
-    // Sanity check on the fixture itself — if this ever fails, the assertions
-    // below are iterating over the wrong (or an empty) set of seats.
+    // Sanity check on the fixture itself — if this ever fails, the assertion
+    // below is iterating over the wrong (or an empty) set of seats.
     expect(Object.keys(seats).sort()).toEqual(["critic", "execute", "verify"]);
   });
 
-  it("every hosted-runner seat slug resolves in the gateway snapshot", () => {
+  it("every hosted-runner seat slug resolves once the catalog loads", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(fakeModelsResponse(KNOWN_SLUGS_FIXTURE))));
+    await _awaitCatalogLoadForTests();
+
     const unresolved = Object.entries(seats).filter(([, slug]) => !isKnownModelSlug(slug));
     expect(
       unresolved,
-      `hosted config seat(s) not found in the OpenRouter snapshot: ${unresolved
+      `hosted config seat(s) not found in the fetched catalog: ${unresolved
         .map(([seat, slug]) => `${seat}="${slug}"`)
-        .join(", ")} — either the slug is wrong/retired, or the snapshot needs ` +
-        `\`pnpm --filter @agentrail/console catalog:refresh\``
+        .join(", ")} — either the slug is wrong/retired on OpenRouter, or this test's ` +
+        "KNOWN_SLUGS_FIXTURE needs updating to match a real shipped-config change"
     ).toEqual([]);
   });
 });
 
-describe("AC3: shipped alignment-brief catalog (catalog.ts MODEL_CATALOG) slugs are all known to the gateway snapshot", () => {
-  it("every MODEL_CATALOG seat's slug resolves in the gateway snapshot", () => {
+describe("AC3: shipped alignment-brief catalog (catalog.ts MODEL_CATALOG) slugs resolve against the (mocked) catalog", () => {
+  it("every MODEL_CATALOG seat's slug resolves once the catalog loads", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(fakeModelsResponse(KNOWN_SLUGS_FIXTURE))));
+    await _awaitCatalogLoadForTests();
+
     const unresolved = Object.entries(MODEL_CATALOG).filter(([, seat]) => !isKnownModelSlug(seat.slug));
     expect(
       unresolved,
-      `MODEL_CATALOG seat(s) not found in the OpenRouter snapshot: ${unresolved
+      `MODEL_CATALOG seat(s) not found in the fetched catalog: ${unresolved
         .map(([taskType, seat]) => `${taskType}="${seat.slug}"`)
         .join(", ")}`
     ).toEqual([]);
   });
 });
 
-describe("AC3 mechanism proof: a deliberately-bad slug actually fails this assertion style", () => {
-  // NOTE: this deliberately does NOT reuse the real historical bad slug
-  // ("~anthropic/claude-haiku-latest", named in test_pricing.py's docstring)
-  // as its example — a live fetch during this task (2026-07-20) found that
-  // exact id now present in OpenRouter's own `/api/v1/models` list (tilde-
-  // prefixed "latest" aliases, e.g. `~x-ai/grok-latest`, are real `id`
-  // values there today, whatever the case was when the original bug shipped).
-  // Asserting that specific string is invalid would make this test either
-  // wrong today or fragile against a future OpenRouter catalog change that
-  // has nothing to do with this repo. A slug that can never legitimately
-  // exist is the stable choice.
-  it("a synthetic config with one invalid slug is caught by the same check used above", () => {
+describe("AC3 mechanism proof: a deliberately-bad slug is caught by the same check, without throwing", () => {
+  it("a synthetic config with one invalid slug is flagged, non-fatally", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(fakeModelsResponse(KNOWN_SLUGS_FIXTURE))));
+    await _awaitCatalogLoadForTests();
+
     const syntheticSeats: Record<string, string> = {
       execute: "anthropic/claude-sonnet-5", // real — should pass
       critic: DEFINITELY_FAKE_SLUG,
     };
-    const unresolved = Object.entries(syntheticSeats).filter(([, slug]) => !isKnownModelSlug(slug));
-    expect(unresolved).toEqual([["critic", DEFINITELY_FAKE_SLUG]]);
+    expect(() => {
+      const unresolved = Object.entries(syntheticSeats).filter(([, slug]) => !isKnownModelSlug(slug));
+      expect(unresolved).toEqual([["critic", DEFINITELY_FAKE_SLUG]]);
+    }).not.toThrow();
   });
 });

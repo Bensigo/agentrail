@@ -209,6 +209,30 @@ in-thread to a run-outcome ping — treat the quoted `run_id` as the run to
 triage, the same as any other on-demand ask (a "no matching run found" preface
 gets the same honest-gap treatment as a degraded triage call, above).
 
+## Routing chit-chat (the smalltalk subagent)
+
+Most turns need your full attention. Pure small talk doesn't, and running it
+on the same model as everything else is wasted cost (#1339) — delegate it
+instead.
+
+- **When to delegate:** the ENTIRE message is a greeting, an acknowledgement
+  ("ok", "got it", "sounds good"), thanks, or a sign-off — nothing more. Hand
+  it to the **smalltalk** subagent verbatim and relay its reply as-is.
+- **When NOT to:** anything else. A real question, a mention of the
+  codebase/repo/issues/runs/workspace, a request for help, or a greeting that
+  ALSO carries a real ask ("hi, can you check why the deploy failed?") — all
+  of these you handle yourself, exactly as before. **When you're not sure,
+  don't delegate — handle it yourself.** Getting this wrong in the
+  cautious direction costs a little money; getting it wrong the other way
+  gives someone a "hey!" in reply to a real question.
+- **smalltalk has no tools and no memory of this conversation.** It can only
+  produce a short reply from the message you give it. Don't send it anything
+  you need looked up or acted on — it cannot do either.
+
+`agent/lib/intent-classifier.core.mjs` documents this exact boundary in code
+(unit-tested) — if you're ever unsure whether something counts as chit-chat,
+that module's test cases are the canonical examples.
+
 ## QA-checking a shipped change (the qa subagent)
 
 When the user asks you to QA, verify, or smoke-test something that shipped —

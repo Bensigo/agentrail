@@ -36,6 +36,7 @@ import {
   LANGFUSE_SESSION_ID_ATTRIBUTE,
   LANGFUSE_TRACE_INPUT_ATTRIBUTE,
   LANGFUSE_TRACE_NAME_ATTRIBUTE,
+  LANGFUSE_TRACE_TAGS_ATTRIBUTE,
   lastUserMessageText,
   promoteContextAttribute,
   resolveRootSessionId,
@@ -169,6 +170,7 @@ test("buildStepStartedResult carries the root session id under the current Langf
     runtimeContext: {
       [LANGFUSE_SESSION_ID_ATTRIBUTE]: "sess_root",
       "jace.subagent": false,
+      [LANGFUSE_TRACE_TAGS_ATTRIBUTE]: ["intent:capable"],
       [LANGFUSE_TRACE_NAME_ATTRIBUTE]: "Fix the login bug",
       [LANGFUSE_TRACE_INPUT_ATTRIBUTE]: "Fix the login bug",
     },
@@ -189,6 +191,7 @@ test("buildStepStartedResult groups a delegated subagent turn under the ROOT ses
     runtimeContext: {
       [LANGFUSE_SESSION_ID_ATTRIBUTE]: "sess_root",
       "jace.subagent": true,
+      [LANGFUSE_TRACE_TAGS_ATTRIBUTE]: ["intent:capable"],
       [LANGFUSE_TRACE_NAME_ATTRIBUTE]: "Add a test",
       [LANGFUSE_TRACE_INPUT_ATTRIBUTE]: "Add a test",
     },
@@ -207,6 +210,7 @@ test("buildStepStartedResult honors an explicit sessionIdAttribute override (the
     runtimeContext: {
       "langfuse.session.id": "sess_root",
       "jace.subagent": false,
+      [LANGFUSE_TRACE_TAGS_ATTRIBUTE]: ["intent:capable"],
       [LANGFUSE_TRACE_NAME_ATTRIBUTE]: "Ship it",
       [LANGFUSE_TRACE_INPUT_ATTRIBUTE]: "Ship it",
     },
@@ -341,6 +345,48 @@ test("buildStepStartedResult: attachments-only / no user text → NAME falls bac
   );
 });
 
+test("buildStepStartedResult: stamps intent:chit-chat for a pure greeting (#1339 PR②)", () => {
+  const result = buildStepStartedResult({
+    configured: true,
+    session: { id: "sess_root" },
+    channel: { kind: "http" },
+    modelInput: { messages: [{ role: "user", content: "hey!" }] },
+  });
+  assert.deepEqual(result.runtimeContext[LANGFUSE_TRACE_TAGS_ATTRIBUTE], ["intent:chit-chat"]);
+});
+
+test("buildStepStartedResult: stamps intent:capable for a real question, even if short", () => {
+  const result = buildStepStartedResult({
+    configured: true,
+    session: { id: "sess_root" },
+    channel: { kind: "http" },
+    modelInput: { messages: [{ role: "user", content: "why did it fail?" }] },
+  });
+  assert.deepEqual(result.runtimeContext[LANGFUSE_TRACE_TAGS_ATTRIBUTE], ["intent:capable"]);
+});
+
+test("buildStepStartedResult: no user text (attachments-only) still stamps intent:capable, never omits the tag", () => {
+  const result = buildStepStartedResult({
+    configured: true,
+    session: { id: "sess_root" },
+    channel: { kind: "http" },
+    modelInput: { messages: [{ role: "user", content: [{ type: "image", data: "..." }] }] },
+  });
+  assert.deepEqual(result.runtimeContext[LANGFUSE_TRACE_TAGS_ATTRIBUTE], ["intent:capable"]);
+});
+
+test("buildStepStartedResult: honors an explicit tagsAttribute override", () => {
+  const result = buildStepStartedResult({
+    configured: true,
+    session: { id: "sess_root" },
+    channel: { kind: "http" },
+    modelInput: { messages: [{ role: "user", content: "hey!" }] },
+    tagsAttribute: "custom.tags",
+  });
+  assert.deepEqual(result.runtimeContext["custom.tags"], ["intent:chit-chat"]);
+  assert.equal(LANGFUSE_TRACE_TAGS_ATTRIBUTE in result.runtimeContext, false);
+});
+
 test("buildStepStartedResult: none of the emitted NAME/INPUT keys begin with the reserved eve. prefix", () => {
   const result = buildStepStartedResult({
     configured: true,
@@ -464,7 +510,19 @@ test("promoteContextAttribute: no-op when the source is blank/whitespace/missing
   assert.doesNotThrow(() => promoteContextAttribute(undefined, LANGFUSE_TRACE_NAME_ATTRIBUTE));
 });
 
-test("createSessionPromotingProcessor: onEnd promotes session id, trace name AND trace input, then forwards the same span", () => {
+test("promoteContextAttribute: promotes a non-empty ARRAY value verbatim, not just strings (#1339 PR② tags)", () => {
+  const attrs = { [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_TRACE_TAGS_ATTRIBUTE}`]: ["intent:chit-chat"] };
+  promoteContextAttribute(attrs, LANGFUSE_TRACE_TAGS_ATTRIBUTE);
+  assert.deepEqual(attrs[LANGFUSE_TRACE_TAGS_ATTRIBUTE], ["intent:chit-chat"]);
+});
+
+test("promoteContextAttribute: no-op for an empty array", () => {
+  const attrs = { [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_TRACE_TAGS_ATTRIBUTE}`]: [] };
+  promoteContextAttribute(attrs, LANGFUSE_TRACE_TAGS_ATTRIBUTE);
+  assert.equal(attrs[LANGFUSE_TRACE_TAGS_ATTRIBUTE], undefined);
+});
+
+test("createSessionPromotingProcessor: onEnd promotes session id, trace name, trace input AND trace tags, then forwards the same span", () => {
   const seen = [];
   const inner = { onEnd: (s) => seen.push(s) };
   const proc = createSessionPromotingProcessor(inner);
@@ -473,12 +531,14 @@ test("createSessionPromotingProcessor: onEnd promotes session id, trace name AND
       [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_SESSION_ID_ATTRIBUTE}`]: "wrun_root_1",
       [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_TRACE_NAME_ATTRIBUTE}`]: "Fix the login bug",
       [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_TRACE_INPUT_ATTRIBUTE}`]: "Fix the login bug in the header",
+      [`${AI_SDK_CONTEXT_PREFIX}${LANGFUSE_TRACE_TAGS_ATTRIBUTE}`]: ["intent:capable"],
     },
   };
   proc.onEnd(span);
   assert.equal(span.attributes[LANGFUSE_SESSION_ID_ATTRIBUTE], "wrun_root_1");
   assert.equal(span.attributes[LANGFUSE_TRACE_NAME_ATTRIBUTE], "Fix the login bug");
   assert.equal(span.attributes[LANGFUSE_TRACE_INPUT_ATTRIBUTE], "Fix the login bug in the header");
+  assert.deepEqual(span.attributes[LANGFUSE_TRACE_TAGS_ATTRIBUTE], ["intent:capable"]);
   assert.equal(seen.length, 1);
   assert.equal(seen[0], span, "the SAME mutated span is forwarded, so promoted attrs are exported");
 });

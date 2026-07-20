@@ -42,6 +42,14 @@
 //     but only as the legacy `TRACE_COMPAT_SESSION_ID` alias — this uses the
 //     current primary key, read live off the enum (not hard-coded) so a
 //     future SDK rename can't silently drift.
+//
+// (c) #1339 PR②: `TRACE_TAGS` ("langfuse.trace.tags") is added the same way,
+//     carrying the classified chat intent for the spend-by-intent Metrics API
+//     query. Verified this is a genuine `string[]` OTel attribute (Langfuse's
+//     OpenTelemetry integration docs), and, empirically, that eve's own
+//     compiled runtime-context flattener (`@ai-sdk/otel`) copies an array
+//     value onto the span attribute verbatim rather than stringifying it —
+//     see `instrumentation.core.mjs`'s `LANGFUSE_TRACE_TAGS_ATTRIBUTE` doc.
 import { defineInstrumentation } from "eve/instrumentation";
 import { registerOTel } from "@vercel/otel";
 import { LangfuseSpanProcessor } from "@langfuse/otel";
@@ -72,6 +80,7 @@ export default defineInstrumentation({
             sessionIdAttribute: LangfuseOtelSpanAttributes.TRACE_SESSION_ID,
             traceNameAttribute: LangfuseOtelSpanAttributes.TRACE_NAME,
             traceInputAttribute: LangfuseOtelSpanAttributes.TRACE_INPUT,
+            tagsAttribute: LangfuseOtelSpanAttributes.TRACE_TAGS,
           }),
       }),
     );
@@ -86,6 +95,7 @@ export default defineInstrumentation({
         sessionIdAttribute: LangfuseOtelSpanAttributes.TRACE_SESSION_ID,
         traceNameAttribute: LangfuseOtelSpanAttributes.TRACE_NAME,
         traceInputAttribute: LangfuseOtelSpanAttributes.TRACE_INPUT,
+        tagsAttribute: LangfuseOtelSpanAttributes.TRACE_TAGS,
       });
     },
   },

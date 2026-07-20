@@ -161,6 +161,42 @@ describe("summarizeApprovalToolInput — alignment_brief", () => {
       })
     ).not.toThrow();
   });
+
+  // #1338 PR② — the model-selection learning loop's precomputed "why" field.
+  describe("modelSelectionReason 'Why' field (#1338 PR②)", () => {
+    it("renders a 'Why' field when modelSelectionReason is present", () => {
+      const summary = summarizeApprovalToolInput("alignment_brief", {
+        title: "Add dark mode",
+        taskType: "ui",
+        suggestedModel: { slug: "sonnet-5", displayName: "Claude Sonnet 5" },
+        estimateUsd: 4.2,
+        modelSelectionReason: "Claude Sonnet 5 — best success rate for ui (12 runs)",
+      });
+      expect(summary.fields).toContainEqual({
+        label: "Why",
+        value: "Claude Sonnet 5 — best success rate for ui (12 runs)",
+      });
+    });
+
+    it("omits the 'Why' field entirely when modelSelectionReason is absent — byte-identical to pre-#1338", () => {
+      const summary = summarizeApprovalToolInput("alignment_brief", {
+        title: "Add dark mode",
+        taskType: "ui",
+        suggestedModel: { slug: "sonnet-5", displayName: "Claude Sonnet 5" },
+        estimateUsd: 4.2,
+      });
+      expect(summary.fields.some((f) => f.label === "Why")).toBe(false);
+    });
+
+    it("sanitizes and caps the reason text like every other field", () => {
+      const summary = summarizeApprovalToolInput("alignment_brief", {
+        title: "x",
+        modelSelectionReason: "z".repeat(500),
+      });
+      const why = summary.fields.find((f) => f.label === "Why");
+      expect(why?.value.length).toBeLessThanOrEqual(203); // 200 + "..."
+    });
+  });
 });
 
 describe("summarizeApprovalToolInput — unknown tool fallback", () => {

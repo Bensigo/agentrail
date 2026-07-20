@@ -9,11 +9,89 @@
  * a separate, NEW module that CONSUMES it (`estimateBrief`) rather than
  * extending it, per the #1274 PR ① brief's explicit "no changes to the
  * estimate lib" boundary.
+ *
+ * Model-selection learning loop (#1338 PR②): `composeAlignmentBrief` /
+ * `composeChatBornBrief` themselves stay exactly as pure/synchronous as
+ * before — they gained one new OPTIONAL input field (`modelSelection`) that,
+ * when supplied, is threaded into `estimateBrief`'s own new optional
+ * `modelOverride` param instead of letting it fall through to
+ * `MODEL_CATALOG[taskType]`. Neither function calls the database itself.
+ * The ONE new async, DB-touching function in this file is
+ * {@link resolveModelSelectionForBrief} — it decides (per the feature flag)
+ * whether to await the selector at all, and BOTH real call sites
+ * (`alignment-reconciler.ts`'s `postAlignmentBrief`, the runner/approvals
+ * POST route's `enrichCreateIssueToolInput`) call it BEFORE calling
+ * `composeAlignmentBrief`/`composeChatBornBrief`, never the other way
+ * around. This keeps every existing synchronous call site (including every
+ * pre-#1338 test that calls these two functions directly, with no `await`)
+ * completely unaffected.
  */
 
-import { estimateBrief } from "./alignment";
-import type { TaskType } from "./alignment";
+import { estimateBrief, classifyTaskType, isModelSelectionLearningEnabled } from "./alignment";
+import type { TaskType, ModelSeat } from "./alignment";
+// selectExecuteModel/describeModelSelection are imported directly from
+// ./alignment/selector, NOT the ./alignment barrel — that barrel is also
+// imported by client-rendered code and must stay free of anything that
+// transitively pulls in @agentrail/db-postgres (see index.ts's own module
+// doc for the build failure this avoids).
+import { selectExecuteModel, describeModelSelection } from "./alignment/selector";
 import { validateAcceptanceCriteria } from "@agentrail/db-postgres";
+
+/**
+ * An already-resolved execute-model pick to feed into
+ * `composeAlignmentBrief`/`composeChatBornBrief` instead of letting them
+ * fall through to `MODEL_CATALOG[taskType]`. Always built via
+ * {@link resolveModelSelectionForBrief} — never constructed ad hoc — so the
+ * two compose functions never need to know HOW the pick was made, only
+ * what it was and why.
+ */
+export interface ModelSelectionForBrief {
+  model: ModelSeat;
+  /** Precomputed human-readable one-line "why" (`selector.ts`'s `describeModelSelection`) — the compose functions store this verbatim; they never reformat it. */
+  reasonText: string;
+}
+
+/**
+ * #1338 PR② — resolve the model-selection override for a brief, if the
+ * feature flag (`feature-flags.ts`) is on for `workspaceId`. This is the
+ * ONE place in the whole alignment-brief compose path that touches the
+ * database (via `selectExecuteModel` -> `getModelOutcomeStats`) — isolated
+ * here so `estimateBrief` and `composeAlignmentBrief`/`composeChatBornBrief`
+ * all stay synchronous and side-effect-free, exactly as before #1338.
+ *
+ * Returns `undefined` (falling back to `MODEL_CATALOG[taskType]`,
+ * byte-identical to pre-#1338 behavior) when: the flag is off, `workspaceId`
+ * is absent (a chat-identity-only session that hasn't graduated to a
+ * workspace yet — there is no workspace to scope `run_outcomes` stats to
+ * anyway), or `selectExecuteModel` itself throws (fail-safe: a selector bug
+ * or a transient DB error must never block posting a brief — the caller
+ * still gets a usable static-catalog brief instead of an unhandled 500).
+ */
+export async function resolveModelSelectionForBrief(
+  taskInput: { title: string; whatToBuild: string; acceptanceCriteria: string[] },
+  workspaceId: string | null | undefined
+): Promise<ModelSelectionForBrief | undefined> {
+  if (!workspaceId || !isModelSelectionLearningEnabled(workspaceId)) {
+    return undefined;
+  }
+
+  const taskType = classifyTaskType(taskInput);
+  try {
+    const selection = await selectExecuteModel(taskType, workspaceId);
+    return {
+      model: selection.model,
+      reasonText: describeModelSelection(taskType, selection),
+    };
+  } catch (err) {
+    console.error(
+      `[alignment-brief] selectExecuteModel threw while resolving the model-selection override for ` +
+        `workspace ${workspaceId} (task type "${taskType}"); falling back to MODEL_CATALOG[taskType] ` +
+        `(byte-identical to the flag-off path):`,
+      err
+    );
+    return undefined;
+  }
+}
 
 /**
  * The shape stored on `jace_approvals.tool_input` for a `toolName:
@@ -40,6 +118,17 @@ export interface AlignmentBriefToolInput {
   repoFullName: string;
   issueNumber: number;
   issueUrl: string;
+  /**
+   * #1338 PR② — present ONLY when the model-selection-learning flag was on
+   * for this workspace at compose time (see `resolveModelSelectionForBrief`):
+   * the precomputed one-line "why" behind `suggestedModel`, e.g. "Claude
+   * Sonnet 5 — best success rate for ui (12 runs)". Absent (`undefined`,
+   * never serialized onto the stored jsonb row) when the flag was off — the
+   * pre-#1338-PR② shape, byte-identical. Rendered on both brief surfaces
+   * (`approval-message.ts`'s `renderAlignmentBrief`, `approvals-helpers.ts`'s
+   * `summarizeAlignmentBrief`) as a defensively-sanitized extra line/field.
+   */
+  modelSelectionReason?: string;
 }
 
 /**
@@ -65,6 +154,15 @@ export function parseAcceptanceCriteriaForBrief(body: string): string[] {
  * is a caller-supplied param (not recomputed here) — the caller imports
  * `githubIssueUrl` from `@agentrail/db-postgres` so the two sides can never
  * drift on URL formatting (see that function's own doc-comment).
+ *
+ * `modelSelection` (#1338 PR②, OPTIONAL): an already-resolved pick from
+ * {@link resolveModelSelectionForBrief} — the CALLER awaits that async,
+ * flag-gated function BEFORE calling this one; this function itself stays
+ * fully synchronous, exactly like `estimateBrief`. Omitted (every call site
+ * before #1338, and any call site when the flag is off) -> behavior is
+ * completely unchanged: `estimateBrief` falls through to
+ * `MODEL_CATALOG[taskType]`, and `modelSelectionReason` is absent from the
+ * returned shape.
  */
 export function composeAlignmentBrief(input: {
   title: string;
@@ -72,13 +170,17 @@ export function composeAlignmentBrief(input: {
   repoFullName: string;
   issueNumber: number;
   issueUrl: string;
+  modelSelection?: ModelSelectionForBrief;
 }): AlignmentBriefToolInput {
   const acceptanceCriteria = parseAcceptanceCriteriaForBrief(input.body);
-  const estimate = estimateBrief({
-    title: input.title,
-    whatToBuild: input.body,
-    acceptanceCriteria,
-  });
+  const estimate = estimateBrief(
+    {
+      title: input.title,
+      whatToBuild: input.body,
+      acceptanceCriteria,
+    },
+    input.modelSelection ? { modelOverride: input.modelSelection.model } : {}
+  );
 
   return {
     title: input.title,
@@ -94,6 +196,7 @@ export function composeAlignmentBrief(input: {
     repoFullName: input.repoFullName,
     issueNumber: input.issueNumber,
     issueUrl: input.issueUrl,
+    ...(input.modelSelection ? { modelSelectionReason: input.modelSelection.reasonText } : {}),
   };
 }
 
@@ -115,6 +218,8 @@ export interface ChatBornBrief {
   suggestedModel: { slug: string; displayName: string };
   estimateUsd: number;
   assumptions: string[];
+  /** #1338 PR② — see `AlignmentBriefToolInput.modelSelectionReason`'s own doc-comment; same presence rule, same content. */
+  modelSelectionReason?: string;
 }
 
 /**
@@ -129,13 +234,22 @@ export interface ChatBornBrief {
  * responsible for coercing a possibly-malformed `toolInput` into this
  * well-shaped input BEFORE calling this, and for catching/logging if it
  * still somehow throws (defense in depth — see that route's own comment).
+ *
+ * `modelSelection` (#1338 PR②, OPTIONAL): see `composeAlignmentBrief`'s own
+ * doc-comment — same contract, same caller-awaits-first posture
+ * (`resolveModelSelectionForBrief`), same byte-identical-when-omitted
+ * guarantee.
  */
 export function composeChatBornBrief(input: {
   title: string;
   whatToBuild: string;
   acceptanceCriteria: string[];
+  modelSelection?: ModelSelectionForBrief;
 }): ChatBornBrief {
-  const estimate = estimateBrief(input);
+  const estimate = estimateBrief(
+    input,
+    input.modelSelection ? { modelOverride: input.modelSelection.model } : {}
+  );
   return {
     taskType: estimate.taskType,
     suggestedModel: {
@@ -144,6 +258,7 @@ export function composeChatBornBrief(input: {
     },
     estimateUsd: estimate.estimateUsd,
     assumptions: estimate.assumptions,
+    ...(input.modelSelection ? { modelSelectionReason: input.modelSelection.reasonText } : {}),
   };
 }
 

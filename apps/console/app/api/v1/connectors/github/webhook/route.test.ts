@@ -17,6 +17,23 @@ vi.mock("../../../../../../lib/approval-message", () => ({
 
 vi.mock("../../../../../../lib/alignment-brief", () => ({
   composeAlignmentBrief: vi.fn(),
+  // #1338 PR② — postAlignmentBrief (alignment-reconciler.ts, which this
+  // route's handler calls) now calls these two BEFORE composing. Same
+  // rationale as alignment-reconciler.test.ts's own mock: a real, trivial
+  // AC parser (several tests here feed real issue bodies through it) and a
+  // resolveModelSelectionForBrief that defaults to "flag off" (undefined)
+  // so every existing assertion in this file — which predates #1338 and
+  // expects composeAlignmentBrief's call args to have NO modelSelection key
+  // — stays valid unchanged.
+  parseAcceptanceCriteriaForBrief: vi.fn((body: string) => {
+    const match = /## Acceptance criteria\n([\s\S]*)/.exec(body);
+    if (!match) return [];
+    return match[1]!
+      .split("\n")
+      .map((line) => /^- \[[ x]\]\s*(.+)$/.exec(line.trim())?.[1])
+      .filter((s): s is string => !!s);
+  }),
+  resolveModelSelectionForBrief: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../../workspaces/[workspaceId]/connectors/secret/telegram", () => ({

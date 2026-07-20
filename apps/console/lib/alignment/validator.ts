@@ -7,9 +7,30 @@
  * axis a plain string equality check can catch before any run starts:
  * refusing an override that would collide with the workspace's configured
  * verify-phase model.
+ *
+ * Allowlist widened for #1338 PR②: the valid-slugs check below now reads
+ * `eligibility.ts`'s {@link allEligibleModelSlugs} (the union of every task
+ * type's eligible set) instead of reading `MODEL_CATALOG`'s values
+ * directly. Today these are numerically the same 3 slugs (haiku is only
+ * excluded from `ui`, and stays eligible for the other three task types, so
+ * the union still covers every catalog seat) — the widening is about the
+ * SOURCE OF TRUTH, not today's actual set: a future eligibility exclusion
+ * that removes a model from EVERY task type now correctly shrinks this
+ * allowlist too, without a second hand-maintained list to keep in sync.
+ *
+ * IMPORTANT — this allowlist is intentionally NOT scoped to the specific
+ * task type an override applies to. Eligibility (`eligibility.ts`)
+ * constrains the AUTO picker (`selector.ts`'s `selectExecuteModel`) only —
+ * an explicit user override is a deliberate, informed human choice, and is
+ * allowed even for a model `isModelEligibleForTaskType` would refuse to
+ * auto-pick for that task (e.g. a user who explicitly wants haiku for a
+ * `ui`-classified task can still say so; the auto picker just never
+ * volunteers it). The two collision-with-verify-model and
+ * not-a-known-model checks below are the full extent of what this
+ * validator refuses.
  */
 
-import { MODEL_CATALOG } from "./catalog";
+import { allEligibleModelSlugs } from "./eligibility";
 
 export interface OverrideValidation {
   ok: boolean;
@@ -18,7 +39,7 @@ export interface OverrideValidation {
 }
 
 function catalogSlugs(): string[] {
-  return Array.from(new Set(Object.values(MODEL_CATALOG).map((seat) => seat.slug)));
+  return allEligibleModelSlugs();
 }
 
 /**
@@ -37,15 +58,19 @@ function catalogSlugs(): string[] {
  *    and prevent, so this refusal's `reason` says so by name rather than
  *    hiding behind a generic "invalid model" message.
  *
- * 2. **Catalog-only in v1**: refuse any slug that isn't one of the three
- *    catalog seats (ui/general share one slug, so effectively 3 distinct
- *    choices). Locked design point 6 calls for "the catalog ∪ a documented
- *    allowlist of additional priced models" but keeps v1 tight: the
+ * 2. **Known-model-only**: refuse any slug that isn't in
+ *    `allEligibleModelSlugs()` — the union, across every task type, of
+ *    models this system knows how to run at all (#1338 PR② widened this
+ *    from a direct read of `MODEL_CATALOG`'s three seats to this
+ *    eligibility-derived union; see this file's module doc for why they're
+ *    numerically identical today and why the source-of-truth change still
+ *    matters). Locked design point 6 calls for "the catalog ∪ a documented
+ *    allowlist of additional priced models" but keeps v1 tight: the extra
  *    allowlist is intentionally EMPTY. Widening the override surface to
  *    arbitrary PRICE_TABLE-priced models would let a user pick something the
  *    task-type taxonomy never validated for cost/capability fit, and only
  *    increases the chance of an unnoticed future collision with whatever the
- *    verify phase is configured to — the catalog's 3 seats already span
+ *    verify phase is configured to — today's known models already span
  *    cheap/mid/strong, which is enough choice for v1. Revisit if a real
  *    request for a non-catalog override shows up.
  */

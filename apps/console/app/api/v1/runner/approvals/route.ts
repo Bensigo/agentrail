@@ -5,7 +5,10 @@ import {
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 import { renderApprovalMessage } from "../../../../../lib/approval-message";
-import { composeChatBornBrief } from "../../../../../lib/alignment-brief";
+import {
+  composeChatBornBrief,
+  resolveModelSelectionForBrief,
+} from "../../../../../lib/alignment-brief";
 import {
   sendTelegramMessage,
   buildApprovalKeyboard,
@@ -110,10 +113,22 @@ import {
  * alignment gate always takes: a create_issue approval with no `_brief`
  * falls back to the pre-#1274-PR② render, and the label webhook will later
  * park it for a separate (redundant, but safe) alignment confirm.
+ *
+ * `workspaceId` (#1338 PR②, new param): threaded through to
+ * `resolveModelSelectionForBrief` so the model-selection learning loop's
+ * selector can be scoped to this session's workspace when the feature flag
+ * is on for it. `undefined` for a session that hasn't graduated to a
+ * workspace yet (an intro/chat-identity-only session) — that function
+ * treats a missing workspaceId as "flag off" (there is no workspace to
+ * scope `run_outcomes` stats to anyway), falling back to
+ * `MODEL_CATALOG[taskType]` exactly as before #1338. This function is now
+ * async purely because of that one awaited call — `composeChatBornBrief`
+ * itself remains synchronous.
  */
-function enrichCreateIssueToolInput(
-  toolInput: Record<string, unknown>
-): Record<string, unknown> {
+async function enrichCreateIssueToolInput(
+  toolInput: Record<string, unknown>,
+  workspaceId: string | null | undefined
+): Promise<Record<string, unknown>> {
   const { _brief: _ignoredCallerSuppliedBrief, ...rest } = toolInput;
 
   try {
@@ -125,7 +140,16 @@ function enrichCreateIssueToolInput(
       ? rawCriteria.filter((c): c is string => typeof c === "string")
       : [];
 
-    const brief = composeChatBornBrief({ title, whatToBuild, acceptanceCriteria });
+    const modelSelection = await resolveModelSelectionForBrief(
+      { title, whatToBuild, acceptanceCriteria },
+      workspaceId
+    );
+    const brief = composeChatBornBrief({
+      title,
+      whatToBuild,
+      acceptanceCriteria,
+      ...(modelSelection ? { modelSelection } : {}),
+    });
     return { ...rest, _brief: brief };
   } catch (err) {
     console.error(
@@ -234,9 +258,12 @@ export async function POST(request: NextRequest) {
   // #1274 PR②: enrich create_issue's toolInput into the alignment brief
   // BEFORE recording — see enrichCreateIssueToolInput's own doc-comment.
   // Every other tool's toolInput passes through completely unchanged.
+  // session.workspaceId (#1338 PR②) may be null for an intro/chat-identity
+  // -only session — enrichCreateIssueToolInput/resolveModelSelectionForBrief
+  // both treat that as "no workspace to scope model-selection learning to."
   const toolInput =
     body.toolName === "create_issue"
-      ? enrichCreateIssueToolInput(body.toolInput)
+      ? await enrichCreateIssueToolInput(body.toolInput, session.workspaceId ?? undefined)
       : body.toolInput;
 
   const { approval, created } = await recordApprovalRequest({

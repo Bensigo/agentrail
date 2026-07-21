@@ -142,11 +142,19 @@ export async function POST(request: NextRequest) {
   if (!result.enqueued) {
     responseBody = { matched: true, enqueued: 0, reason: result.reason };
   } else if (result.state === "parked" && result.parkedFor === "awaiting_alignment") {
-    // #1274: this enqueue parked the entry via the alignment hold (not a
-    // dependency/guardrail park — those never set parkedFor) — compose+post
-    // Jace's alignment brief. The entry is ALREADY durably parked at this
-    // point (enqueueGithubIssue's insert already committed), so any failure
-    // below is caught inside postAlignmentBrief itself and never turns into a
+    // #1274 finding-1 fix (STALE COMMENT CORRECTED, #1341): `parkedFor` fires
+    // whenever alignment IS required and unconfirmed for this issue,
+    // REGARDLESS of whether this same enqueue ALSO parked the row for an
+    // unmet dependency — a dependency park keeps its own "Waiting on #N"
+    // `state`/reason in the DB while STILL carrying `parkedFor` here (see
+    // `EnqueueResult.parkedFor`'s own doc-comment in github_intake.ts). Only a
+    // v2-guardrail park (injection/dup/rate-limit) never sets `parkedFor` —
+    // that path has no automatic unpark and is out of the alignment gate's
+    // scope entirely. So this branch composes+posts Jace's alignment brief
+    // for BOTH a clean alignment-only park and a dependency-park-that-also-
+    // needs-a-brief. The entry is ALREADY durably parked at this point
+    // (enqueueGithubIssue's insert already committed), so any failure below
+    // is caught inside postAlignmentBrief itself and never turns into a
     // silently-queued row.
     const alignmentBrief = await postAlignmentBrief({
       workspaceId,

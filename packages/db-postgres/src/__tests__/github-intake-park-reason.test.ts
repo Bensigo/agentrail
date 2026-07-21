@@ -22,6 +22,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 let insertedValues: Array<Record<string, unknown>> = [];
 let updateCalls: Array<Record<string, unknown>> = [];
 let selectQueue: unknown[][] = [];
+// #1341: `confirmAlignmentBrief` no longer issues any `db.select()` calls (see
+// that function's doc-comment — it's now a single `db.execute(sql\`...\`)`
+// UPDATE), so it can't be driven through this file's positional
+// `selectQueue` the way `unmetBlockers`/`unparkDependents` still are. These
+// two variables are its OWN, dedicated mock inputs: `mockConfirmRow`
+// (undefined = no parked row matches this id — the CTE's WHERE finds
+// nothing) and `mockGreenExternalIds` (which of the row's declared
+// `blockedBy` numbers currently resolve to a 'green' sibling row).
+let mockConfirmRow: { workspaceId: string; externalId: string; blockedBy: number[] } | undefined;
+let mockGreenExternalIds: string[] = [];
+
+function extractSqlParams(query: unknown): unknown[] {
+  const chunks = (query as { queryChunks?: unknown[] })?.queryChunks ?? [];
+  return chunks.filter(
+    (c) => !(c && typeof c === "object" && Array.isArray((c as { value?: unknown[] }).value))
+  );
+}
 
 vi.mock("../db.js", () => {
   const dbMock = {
@@ -50,6 +67,33 @@ vi.mock("../db.js", () => {
         };
       }),
     })),
+    execute: vi.fn(async (query: unknown) => {
+      // #1341 mock — see the shared explanation on the same idiom in
+      // github-intake-alignment-gate.test.ts. Extracts the four bound values
+      // (queueEntryId, estimatedBudgetUsd, modelOverride, taskType, in the
+      // production query's own template order) and re-derives the same
+      // green-blocker decision against `mockConfirmRow`/`mockGreenExternalIds`.
+      const [queueEntryId, estimatedBudgetUsd, modelOverride, taskType] =
+        extractSqlParams(query) as [string, number, string, string | null];
+      if (!mockConfirmRow) return [];
+
+      const hash = mockConfirmRow.externalId.lastIndexOf("#");
+      const repoFullName =
+        hash >= 0 ? mockConfirmRow.externalId.slice(0, hash) : mockConfirmRow.externalId;
+      const green = new Set(mockGreenExternalIds);
+      const unmet = (mockConfirmRow.blockedBy ?? []).filter(
+        (n) => !green.has(`${repoFullName}#${n}`)
+      );
+      updateCalls.push({
+        state: unmet.length === 0 ? "queued" : "parked",
+        parkReason:
+          unmet.length === 0 ? null : `Waiting on ${unmet.map((n) => `#${n}`).join(", ")}`,
+        estimatedBudgetUsd,
+        modelOverride,
+        taskType,
+      });
+      return [{ id: queueEntryId }];
+    }),
     transaction: async (cb: (tx: typeof dbMock) => unknown) => cb(dbMock),
   };
   return { db: dbMock };
@@ -72,6 +116,8 @@ beforeEach(() => {
   insertedValues = [];
   updateCalls = [];
   selectQueue = [];
+  mockConfirmRow = undefined;
+  mockGreenExternalIds = [];
   __resetProcessLedger();
 });
 
@@ -272,10 +318,8 @@ describe("#1274 finding-1 fix: the exact reviewer repro (unparkDependents × con
 
   it("confirm-then-release: confirming while still dependency-parked writes the ceiling but keeps the dependency reason; releasing later goes queued WITH the values preserved", async () => {
     // Step 1: a human confirms the brief while #42 is still open.
-    selectQueue = [
-      [{ workspaceId: "ws-1", externalId: "owner/repo#7", blockedBy: [42] }], // confirmAlignmentBrief's row lookup
-      [], // unmetBlockers' green-check: #42 NOT green yet -> stillUnmet = [42]
-    ];
+    mockConfirmRow = { workspaceId: "ws-1", externalId: "owner/repo#7", blockedBy: [42] };
+    mockGreenExternalIds = []; // #42 NOT green yet -> stillUnmet = [42]
     const confirmed = await confirmAlignmentBrief({
       queueEntryId: "q-7",
       estimatedBudgetUsd: 1.35,
@@ -316,10 +360,8 @@ describe("#1274 finding-1 fix: the exact reviewer repro (unparkDependents × con
 
     // Step 2: the human confirms afterwards — the row's `blockedBy` still
     // lists #42 (unpark never clears it), but #42 is ALREADY green by now.
-    selectQueue = [
-      [{ workspaceId: "ws-1", externalId: "owner/repo#7", blockedBy: [42] }],
-      [{ externalId: "owner/repo#42" }], // still green -> stillUnmet = []
-    ];
+    mockConfirmRow = { workspaceId: "ws-1", externalId: "owner/repo#7", blockedBy: [42] };
+    mockGreenExternalIds = ["owner/repo#42"]; // still green -> stillUnmet = []
     const confirmed = await confirmAlignmentBrief({
       queueEntryId: "q-7",
       estimatedBudgetUsd: 1.35,
@@ -354,5 +396,59 @@ describe("#1274 finding-1 fix: the exact reviewer repro (unparkDependents × con
     expect(released).toEqual([]);
     expect(updateCalls).toHaveLength(1); // unchanged from step 1 — unpark touched nothing
     expect(updateCalls[0]).toMatchObject({ parkReason: ALIGNMENT_DENIED_PARK_REASON });
+  });
+
+  // #1341 item 4 — the requireAlignment-flip edge (#1274 PR① review, item 6):
+  // an operator flips `workspaces.require_alignment` OFF mid-flight while a
+  // brief is still pending; the dependency then clears and `unparkDependents`
+  // releases the row via its OWN `!requireAlignment` escape (never touching
+  // `estimated_budget_usd` — that column is ONLY ever written by
+  // `confirmAlignmentBrief`); later, a human who never saw the flag flip taps
+  // Approve on the now-orphaned brief, which calls `confirmAlignmentBrief` on
+  // a queue entry that is no longer `parked`. DECISION (pinned here, not
+  // implemented differently): option (a) from the issue — accept the current
+  // logged no-op rather than option (b) (loosening confirmAlignmentBrief's
+  // `state = 'parked'` guard to also match a `queued`/running row). Rationale:
+  // this edge is operator-initiated (the flag flip is a deliberate admin
+  // action) and already logged by the caller (the Telegram webhook route);
+  // the alternative (writing budget/model onto a row regardless of its
+  // current state) cannot retroactively enforce a ceiling on work that may
+  // already be running, and would risk a confirm landing on a row a
+  // DIFFERENT mechanism (a denial, a later requeue) has since taken over —
+  // narrower-but-provably-safe beats reaching further for a purely cosmetic
+  // backfill. The entry simply runs on whatever default budget applies,
+  // exactly as documented in `confirmAlignmentBrief`'s own doc-comment.
+  it("requireAlignment-flip edge (#1341 item 4, option (a) pinned): flag flips off mid-flight -> dependency clears -> unpark releases WITHOUT ever touching estimated_budget_usd -> a later stale Approve tap finds no parked row and no-ops (budget/model never land, safely)", async () => {
+    // Step 1: the operator has already flipped require_alignment to false by
+    // the time the blocker (#42) goes green. unparkDependents' own aligned
+    // check reads `!requireAlignment` as true regardless of the (still null)
+    // estimatedBudgetUsd, and releases straight to queued.
+    selectQueue = [
+      [DEPENDENT_ROW()], // estimatedBudgetUsd still null, parkReason "Waiting on #42"
+      [{ requireAlignment: false }], // the flip
+      [{ externalId: "owner/repo#42" }], // #42 is green
+    ];
+    const released = await unparkDependents("ws-1", "owner/repo#42");
+    expect(released).toEqual(["owner/repo#7"]);
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0]).toMatchObject({ state: "queued", parkReason: null });
+    // The release path NEVER writes estimated_budget_usd — only
+    // confirmAlignmentBrief does. It stays null; the entry will run on the
+    // product default budget, not the (never-sanctioned) brief ceiling.
+    expect(updateCalls[0]?.["estimatedBudgetUsd"]).toBeUndefined();
+
+    // Step 2: a human, unaware the row already released, taps Approve on the
+    // stale pending brief. confirmAlignmentBrief's single UPDATE targets
+    // `state = 'parked'` — the row is `queued` now, so the CTE (mocked here
+    // via `mockConfirmRow`) matches nothing.
+    mockConfirmRow = undefined; // simulates "no parked row with this id" — it's already queued
+    const confirmed = await confirmAlignmentBrief({
+      queueEntryId: "q-7",
+      estimatedBudgetUsd: 1.35,
+      modelOverride: "anthropic/claude-sonnet-5",
+      taskType: null,
+    });
+    expect(confirmed).toBe(false); // no-op — the caller logs this and moves on
+    expect(updateCalls).toHaveLength(1); // unchanged from step 1 — confirm wrote nothing
   });
 });

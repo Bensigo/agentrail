@@ -26,6 +26,19 @@ export async function setMergePermissionAction(
   workspaceId: string,
   granted: boolean
 ): Promise<SetMergePermissionActionResult> {
+  // #1343 minor (d): a Server Action is a real network endpoint — the
+  // `boolean` type above is a compile-time contract for THIS app's own
+  // client, not a runtime guarantee for whatever a raw POST to the action's
+  // wire endpoint sends. Validate `granted` at runtime before it reaches
+  // `setMergePermission`/Postgres. This is a robustness nit, not a live bug:
+  // the action is owner-only reachable (checked below) and the
+  // `boolean("granted")` column already rejects non-boolean garbage today —
+  // this just fails fast with an honest error instead of relying on a DB
+  // constraint error surfacing sensibly to the caller.
+  if (typeof granted !== "boolean") {
+    return { ok: false, error: "granted must be a boolean." };
+  }
+
   const session = await getSession();
   const userId = session?.user?.id;
   if (!userId) {

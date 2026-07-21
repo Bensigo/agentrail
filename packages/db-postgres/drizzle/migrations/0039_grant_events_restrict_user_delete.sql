@@ -1,0 +1,24 @@
+-- #1343 minor (a): workspace_grant_events.granted_by_user_id previously
+-- cascaded on user delete, silently erasing merge-permission grant/revoke
+-- audit history the moment the granting user's row was deleted. Audit rows
+-- must outlive the actor: switch the FK to ON DELETE RESTRICT so a user who
+-- has ever granted/revoked a workspace setting cannot be deleted while that
+-- audit trail still references them (deleting the user would first require
+-- dealing with their audit history explicitly, not silently losing it).
+-- RESTRICT (not SET NULL) is chosen because it preserves full attribution
+-- ("who granted this") rather than merely the row's existence — this
+-- codebase has no user-deletion flow today (verified: no caller issues a
+-- DELETE against `users`), so there is nothing this restricts in practice
+-- yet; it only forecloses a FUTURE user-deletion feature from silently
+-- eating audit history, forcing that feature to make an explicit choice
+-- (e.g. anonymize first) instead.
+--
+-- The live constraint name is Postgres's own default-generated one
+-- (`<table>_<column>_fkey`) because migration 0037 created it via an inline
+-- `REFERENCES ... ON DELETE CASCADE` clause rather than a named
+-- `ADD CONSTRAINT` — confirmed against the actual schema
+-- (`pg_constraint`/`\d workspace_grant_events`), not assumed from Drizzle's
+-- own (differently-named) internal FK-naming convention.
+ALTER TABLE "workspace_grant_events" DROP CONSTRAINT IF EXISTS "workspace_grant_events_granted_by_user_id_fkey";
+--> statement-breakpoint
+ALTER TABLE "workspace_grant_events" ADD CONSTRAINT "workspace_grant_events_granted_by_user_id_fkey" FOREIGN KEY ("granted_by_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;

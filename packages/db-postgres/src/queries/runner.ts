@@ -772,6 +772,33 @@ export interface RecordRunnerResult {
    * `run_outcomes.ts::recordRunOutcome` on a terminal transition; it is
    * inert (never read) otherwise. */
   taskType: string | null;
+  /**
+   * #1343: true iff THIS call's UPDATE actually moved `queue_entries.state`
+   * away from what it already was — i.e. a genuinely NEW transition, not a
+   * duplicate/replayed report of an outcome that was already committed.
+   *
+   * Only the green/running branch computes this for real: the prior state is
+   * captured ATOMICALLY alongside the UPDATE (a `SELECT ... FOR UPDATE` CTE
+   * feeding the UPDATE, so a concurrent second call blocks on the row lock
+   * and always observes the post-update state rather than racing to the same
+   * "yes, transitioned" answer twice). `false` there means the row was
+   * ALREADY in that exact state — the textbook duplicate-green replay this
+   * field exists to catch (operator replay / infra retry re-POSTing the same
+   * result, issue #1343).
+   *
+   * The red/error retry branch always reports `true` when `updated` — left
+   * unconditional/byte-identical on purpose: every red/error call legitimately
+   * spends one unit of budget (see `nextQueueTransition`), so unlike green
+   * there is no "duplicate of the same fact" to detect there without changing
+   * retry semantics, which is out of scope for #1343.
+   *
+   * `false` when `updated` is `false` (nothing to have transitioned).
+   *
+   * The caller (the runner-result route) uses this to skip the redundant
+   * merge attempt AND the redundant chat notify on a replayed green result —
+   * see that route's own doc-comment.
+   */
+  transitioned: boolean;
 }
 
 export async function recordRunnerResult(data: {
@@ -808,6 +835,12 @@ export async function recordRunnerResult(data: {
   // clause as state/external_id (no second query) so recordRunOutcome's
   // caller has it for free on a terminal transition.
   let resultingTaskType: string | null = null;
+  // #1343: see RecordRunnerResult.transitioned's own doc-comment. Defaults to
+  // false (matches `updated`'s default); the red/error branches below set it
+  // unconditionally true on any successful update (byte-identical retry
+  // semantics — out of scope for this fix), while the green/running branch
+  // computes it for real from the prior-vs-committed state comparison.
+  let transitioned = false;
   if (data.status === "red" || data.status === "error") {
     if (isHostedRefusal(data.status, data.gateReason)) {
       // Hosted refusal (#1267 PR③): jump straight to escalated-to-human,
@@ -832,6 +865,7 @@ export async function recordRunnerResult(data: {
         resultingState = rows[0]!.state;
         completedExternalId = rows[0]!.external_id;
         resultingTaskType = rows[0]!.task_type ?? null;
+        transitioned = true;
       }
     } else {
       // Single conditional UPDATE so two concurrent results never double-decrement.
@@ -854,6 +888,7 @@ export async function recordRunnerResult(data: {
         resultingState = rows[0]!.state;
         completedExternalId = rows[0]!.external_id;
         resultingTaskType = rows[0]!.task_type ?? null;
+        transitioned = true;
       }
     }
   } else {
@@ -863,30 +898,51 @@ export async function recordRunnerResult(data: {
       remainingBudget: 0,
       tier: 0,
     });
-    const rows = await db
-      .update(queueEntries)
-      .set({ state: nextState, updatedAt: new Date() })
-      .where(
-        and(
-          eq(queueEntries.id, data.id),
-          eq(queueEntries.workspaceId, data.workspaceId)
+    // #1343: raw SQL (not the fluent `.update()` this branch used before) so
+    // the row's PRIOR state can be captured atomically alongside the write —
+    // the `prior` CTE's `FOR UPDATE` locks the row, so a concurrent second
+    // call for the SAME id blocks until the first commits and then correctly
+    // observes the ALREADY-committed state, never racing to "transitioned"
+    // twice. This is what distinguishes a genuine green transition from a
+    // duplicate/replayed report of one that already happened (the queue
+    // entry was already green) — see RecordRunnerResult.transitioned.
+    const rows = Array.from(
+      await db.execute(sql`
+        WITH prior AS (
+          SELECT state FROM queue_entries
+          WHERE id = ${data.id} AND workspace_id = ${data.workspaceId}
+          FOR UPDATE
         )
-      )
-      .returning({
-        id: queueEntries.id,
-        state: queueEntries.state,
-        externalId: queueEntries.externalId,
-        taskType: queueEntries.taskType,
-      });
+        UPDATE queue_entries
+        SET state = ${nextState}, updated_at = now()
+        FROM prior
+        WHERE queue_entries.id = ${data.id} AND queue_entries.workspace_id = ${data.workspaceId}
+        RETURNING queue_entries.id, queue_entries.state, queue_entries.external_id,
+                  queue_entries.task_type, prior.state AS prior_state
+      `)
+    ) as Array<{
+      id: string;
+      state: string;
+      external_id: string;
+      task_type: string | null;
+      prior_state: string;
+    }>;
     updated = rows.length > 0;
     if (updated) {
       resultingState = rows[0]!.state;
-      completedExternalId = rows[0]!.externalId;
-      resultingTaskType = rows[0]!.taskType ?? null;
+      completedExternalId = rows[0]!.external_id;
+      resultingTaskType = rows[0]!.task_type ?? null;
+      transitioned = rows[0]!.prior_state !== rows[0]!.state;
     }
   }
   if (!updated) {
-    return { updated: false, terminalState: null, externalId: "", taskType: null };
+    return {
+      updated: false,
+      terminalState: null,
+      externalId: "",
+      taskType: null,
+      transitioned: false,
+    };
   }
 
   // Notify ONLY on a terminal: a red/error that re-queued committed `queued`
@@ -938,5 +994,6 @@ export async function recordRunnerResult(data: {
     terminalState,
     externalId: completedExternalId,
     taskType: resultingTaskType,
+    transitioned,
   };
 }

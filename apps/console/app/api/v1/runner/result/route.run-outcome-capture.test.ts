@@ -97,6 +97,12 @@ function recordRunnerResultOf(
     terminalState: null,
     externalId: "acme/widgets#7",
     taskType: null,
+    // #1343: every test in this suite is a genuine (non-duplicate) terminal —
+    // the run-outcome capture block this file tests is unaffected by the
+    // #1343 duplicate-green guard (only the merge-attempt/notify blocks in
+    // route.ts are gated on it), so `true` keeps this suite's fixture
+    // byte-identical to a real first-time result unless a test overrides it.
+    transitioned: true,
     ...overrides,
   };
 }

@@ -24,9 +24,20 @@ export const workspaceGrantEvents = pgTable(
       .references(() => workspaces.id, { onDelete: "cascade" }),
     setting: text("setting").notNull(),
     granted: boolean("granted").notNull(),
+    // #1343 minor (a): RESTRICT, not CASCADE — this is an audit trail, so a
+    // deleted user must not silently take their grant/revoke history down
+    // with them (migration 0039_grant_events_restrict_user_delete). RESTRICT
+    // over SET NULL: it preserves full attribution ("who granted this"), not
+    // merely the row's existence, and this codebase has no user-deletion
+    // flow today (verified: nothing issues a DELETE against `users`) — this
+    // FK forecloses a FUTURE deletion feature from silently eating audit
+    // history rather than restricting anything in practice right now. A
+    // user-deletion feature added later must make an explicit choice for a
+    // user with grant history (e.g. reassign/anonymize first) instead of
+    // this table quietly losing rows underneath it.
     grantedByUserId: uuid("granted_by_user_id")
       .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+      .references(() => users.id, { onDelete: "restrict" }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

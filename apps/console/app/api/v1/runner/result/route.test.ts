@@ -718,3 +718,144 @@ describe("POST /api/v1/runner/result — merge enforcement (#1278 PR②)", () =>
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * #1343 — duplicate-green honesty. Before this fix, a replayed/duplicate
+ * green result (recordRunnerResult reports `terminalState: "green"` again
+ * because the row was ALREADY green — see that function's own
+ * `transitioned` doc-comment) re-fired the merge block: GitHub refuses
+ * (405 → not_mergeable, since the PR is already merged) → a FALSE
+ * `merge_failed` lifecycle event ("PR left open") plus a contradictory
+ * second chat ping ("PR ready"/merged:false right after "Merged"). The fix:
+ * `recordRunnerResult` now reports `transitioned: false` on a duplicate, and
+ * the route skips BOTH the merge attempt and the chat notify when that's the
+ * case — proven here with a mocked `fetch` asserted at ZERO calls (AC1).
+ */
+describe("POST /api/v1/runner/result — duplicate-green honesty (#1343)", () => {
+  const PR_URL = "https://github.com/octocat/hello-world/pull/42";
+  const TOKEN = "gho_test_token_1234567890abcdef";
+
+  function duplicateGreenResult(externalId = "octocat/hello-world#42") {
+    return {
+      updated: true,
+      terminalState: "green",
+      externalId,
+      taskType: null,
+      transitioned: false,
+    } as never;
+  }
+
+  it("permission ON: replayed green makes ZERO GitHub API calls (AC1) — no merge attempt at all", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(duplicateGreenResult());
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    vi.mocked(getGithubToken).mockResolvedValue(TOKEN);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await POST(
+      req({ ...base, status: "green", pr_url: PR_URL, cost_usd: 1.2 })
+    );
+
+    expect(res.status).toBe(202);
+    expect(fetchMock).not.toHaveBeenCalled();
+    // The permission read (a DB call, not a GitHub call) is skipped too —
+    // there is nothing left to gate once the merge attempt itself is skipped.
+    expect(getMergePermission).not.toHaveBeenCalled();
+    expect(getGithubToken).not.toHaveBeenCalled();
+  });
+
+  it("no false `merge_failed` lifecycle event on a replay (AC1)", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(duplicateGreenResult());
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    vi.mocked(getGithubToken).mockResolvedValue(TOKEN);
+    global.fetch = vi.fn() as unknown as typeof fetch;
+
+    await POST(req({ ...base, status: "green", pr_url: PR_URL }));
+
+    expect(recordRunLifecycleEvent).not.toHaveBeenCalledWith(
+      WS,
+      base.id,
+      "merge_failed",
+      expect.anything(),
+      expect.anything()
+    );
+    expect(recordRunLifecycleEvent).not.toHaveBeenCalledWith(
+      WS,
+      base.id,
+      "merged",
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  it("no contradictory second chat ping on a replay (AC1) — notifyRunOutcome is never called", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(duplicateGreenResult());
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    vi.mocked(getGithubToken).mockResolvedValue(TOKEN);
+    global.fetch = vi.fn() as unknown as typeof fetch;
+
+    const res = await POST(req({ ...base, status: "green", pr_url: PR_URL }));
+
+    expect(res.status).toBe(202);
+    expect(notifyRunOutcome).not.toHaveBeenCalled();
+  });
+
+  it("permission OFF: a replay is still a no-GitHub-call no-op (regression alongside the permission-OFF gate)", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue(duplicateGreenResult());
+    vi.mocked(getMergePermission).mockResolvedValue(false);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await POST(req({ ...base, status: "green", pr_url: PR_URL }));
+
+    expect(res.status).toBe(202);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(notifyRunOutcome).not.toHaveBeenCalled();
+  });
+
+  it("a GENUINE (non-duplicate) green result is unaffected — merge attempt and notify both still fire (regression)", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue({
+      updated: true,
+      terminalState: "green",
+      externalId: "octocat/hello-world#42",
+      taskType: null,
+      transitioned: true,
+    } as never);
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    vi.mocked(getGithubToken).mockResolvedValue(TOKEN);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ merged: true }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await POST(req({ ...base, status: "green", pr_url: PR_URL }));
+
+    expect(res.status).toBe(202);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(notifyRunOutcome).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({ merged: true })
+    );
+  });
+
+  it("backward-compatible default: a RecordRunnerResult with no `transitioned` field at all behaves as a genuine transition (not a silent regression for an un-migrated caller)", async () => {
+    vi.mocked(recordRunnerResult).mockResolvedValue({
+      updated: true,
+      terminalState: "green",
+      externalId: "octocat/hello-world#42",
+      taskType: null,
+      // deliberately omitted — simulates a caller/mock that predates #1343
+    } as never);
+    vi.mocked(getMergePermission).mockResolvedValue(true);
+    vi.mocked(getGithubToken).mockResolvedValue(TOKEN);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ merged: true }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await POST(req({ ...base, status: "green", pr_url: PR_URL }));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(notifyRunOutcome).toHaveBeenCalled();
+  });
+});

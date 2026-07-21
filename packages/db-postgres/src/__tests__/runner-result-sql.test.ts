@@ -69,6 +69,11 @@ describe("recordRunnerResult SQL (lockstep with nextQueueTransition)", () => {
       terminalState: null,
       externalId: "o/r#42",
       taskType: null,
+      // #1343: the red/error branch always reports `transitioned: true` on a
+      // successful update — unconditional/byte-identical, see
+      // RecordRunnerResult.transitioned's own doc-comment for why (every
+      // red/error call legitimately spends budget, unlike green).
+      transitioned: true,
     });
   });
 

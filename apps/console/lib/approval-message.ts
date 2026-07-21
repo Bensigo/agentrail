@@ -152,6 +152,40 @@ function renderCreateIssue(input: Record<string, unknown>): string {
 }
 
 /**
+ * update_issue (#1345 PR①): the revise loop's write tool. Renders the
+ * EXISTING issue number being edited plus the NEW title/acceptance criteria,
+ * so an approver reviewing this in chat sees exactly what is about to change
+ * before approving the edit — this approval is about the GitHub edit itself,
+ * not about the alignment gate's budget/model (that is a SEPARATE
+ * `alignment_brief` approval the console posts afterward, once the edit has
+ * actually landed — see `apps/jace/agent/lib/update_issue.core.mjs`
+ * ::triggerReviseAlignmentBrief`).
+ */
+function renderUpdateIssue(input: Record<string, unknown>): string {
+  const rawIssueNumber = input["issueNumber"];
+  const issueNumber =
+    typeof rawIssueNumber === "number" && Number.isFinite(rawIssueNumber)
+      ? String(rawIssueNumber)
+      : sanitizeField(rawIssueNumber, 20) || "?";
+  const title = sanitizeField(input["title"], 200) || "(untitled)";
+  const rawCriteria = input["acceptanceCriteria"];
+  const criteria = Array.isArray(rawCriteria)
+    ? rawCriteria.map((item) => sanitizeField(item, 300))
+    : [];
+
+  const lines = [
+    `Approve editing issue #${issueNumber}?`,
+    "",
+    `New title: ${title}`,
+  ];
+  if (criteria.length > 0) {
+    lines.push("", "New acceptance criteria:");
+    for (const item of criteria) lines.push(`- ${item}`);
+  }
+  return hardTruncate(lines.join("\n"));
+}
+
+/**
  * The alignment brief (#1274 PR ①). Defensive against a malformed toolInput
  * exactly like every renderer above — this is untyped JSONB by the time it
  * round-trips through the db, even though `AlignmentBriefToolInput`
@@ -303,6 +337,8 @@ export function renderApprovalMessage(
       return renderCreateWorkspace(toolInput);
     case "create_repo":
       return renderCreateRepo(toolInput);
+    case "update_issue":
+      return renderUpdateIssue(toolInput);
     case "alignment_brief":
       return renderAlignmentBrief(toolInput);
     default:

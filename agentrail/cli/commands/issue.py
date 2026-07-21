@@ -77,6 +77,8 @@ Usage:
                          [--target DIR] [--headless|--yes] [--dry-run]
   agentrail issue create --connector github [--repo <owner/name>]
                          --title <t> --body <b>
+  agentrail issue update --connector github [--repo <owner/name>]
+                         --number <n> --title <t> --body <b>
 
 Skill mode (default): launches the configured agent seeded with the to-issues
 skill + CONTEXT.md + TASTE.md + triage-labels.md to break a milestone or PRD into
@@ -93,6 +95,10 @@ AGENTRAIL_WORKSPACE_ID has connected on the AgentRail console (read from
 Postgres via DATABASE_URL) — connecting a repo on the console is enough on its
 own, no env vars required. Fails with a clear "connect a repo" error if
 neither source resolves both.
+
+``issue update --connector github``: edits an EXISTING issue's title/body in
+place (house-format body edits only — no label/state/comment changes). --repo
+and the token resolve identically to ``issue create``'s connector mode.
 """
 
 # Env vars the connector path reads the user's GitHub OAuth access token from.
@@ -337,6 +343,63 @@ def _create_via_connector(
     return 0
 
 
+def _update_via_connector(
+    *, connector: str, repo: Optional[str], number: Optional[int],
+    title: Optional[str], body: Optional[str]
+) -> int:
+    """Edit an EXISTING issue's title/body directly via OAuth (issue #1345).
+
+    House-format body edits only — no label/state/comment changes. Token and
+    repo resolve in the EXACT SAME order as :func:`_create_via_connector`
+    (explicit --repo / GITHUB_OAUTH_TOKEN|GITHUB_TOKEN first, falling back to
+    the workspace's Postgres-stored connection); see that function's own
+    doc-comment for the full rationale. Raises the same
+    :data:`NOT_CONNECTED_MARKER`-carrying :class:`UsageError` when neither
+    source resolves both, so Jace's ``update_issue`` tool can show the same
+    friendly "connect a repo first" guidance it already shows for create.
+    """
+    if connector != "github":
+        raise UsageError(f"--connector must be 'github' (got {connector!r})")
+    if not number:
+        raise UsageError("--connector github requires --number")
+    if not title:
+        raise UsageError("--connector github requires --title")
+    if body is None:
+        raise UsageError("--connector github requires --body")
+
+    token = _github_oauth_token()
+    resolved_repo = repo
+
+    workspace_id = os.environ.get(_WORKSPACE_ID_ENV) or None
+    if workspace_id and (not token or not resolved_repo):
+        db_token, db_repo = _resolve_workspace_connection(workspace_id)
+        token = token or db_token
+        resolved_repo = resolved_repo or db_repo
+
+    if not resolved_repo:
+        raise UsageError(
+            f"{NOT_CONNECTED_MARKER}: no GitHub repo is connected for this "
+            "workspace (and no --repo was given). Connect a repo on the "
+            "AgentRail console (Settings → Connectors → GitHub), or pass "
+            "--repo <owner/name> explicitly.",
+            code=NOT_CONNECTED_EXIT_CODE,
+        )
+    if not token:
+        raise UsageError(
+            f"{NOT_CONNECTED_MARKER}: no GitHub OAuth token is available for "
+            "this workspace. Connect (or re-connect) GitHub on the AgentRail "
+            "console, then try again — re-login grants the 'repo' scope. "
+            "(GITHUB_OAUTH_TOKEN/GITHUB_TOKEN env also works, e.g. a manually "
+            "configured PAT.)",
+            code=NOT_CONNECTED_EXIT_CODE,
+        )
+
+    client = _build_github_client(token, resolved_repo)
+    ref = client.update_issue(repo=resolved_repo, number=number, title=title, body=body)
+    print(f"Updated {ref.repo}#{ref.number}: {ref.url}")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -350,6 +413,14 @@ def run_issue(args: List[str]) -> int:
     if args[0] == "create":
         try:
             return _dispatch_create(args[1:])
+        except UsageError as exc:
+            msg = str(exc)
+            if msg:
+                print(msg, file=sys.stderr)
+            return exc.code
+    if args[0] == "update":
+        try:
+            return _dispatch_update(args[1:])
         except UsageError as exc:
             msg = str(exc)
             if msg:
@@ -464,6 +535,58 @@ def _dispatch_create(args: List[str]) -> int:
         target=target,
         input_refs=input_refs,
         dry_run=dry_run,
+    )
+
+
+def _dispatch_update(args: List[str]) -> int:
+    """Parse ``agentrail issue update ...``.
+
+    Connector mode ONLY — unlike ``create``, there is no skill/agent mode for
+    update (issue #1345's scope: a direct connector edit is all Jace's
+    ``update_issue`` tool needs). ``--connector github`` is required.
+    """
+    connector: Optional[str] = None
+    repo: Optional[str] = None
+    number: Optional[int] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--connector":
+            connector = _need_value(args, i, "--connector")
+            i += 2
+        elif a == "--repo":
+            repo = _need_value(args, i, "--repo")
+            i += 2
+        elif a == "--number":
+            raw_number = _need_value(args, i, "--number")
+            try:
+                number = int(raw_number)
+            except ValueError:
+                raise UsageError(f"--number must be an integer (got {raw_number!r})")
+            i += 2
+        elif a == "--title":
+            title = _need_value(args, i, "--title")
+            i += 2
+        elif a == "--body":
+            # --body may legitimately be empty/start with markdown; take the
+            # next token verbatim rather than the strict _need_value guard.
+            if i + 1 >= len(args):
+                raise UsageError("--body requires a value")
+            body = args[i + 1]
+            i += 2
+        elif a.startswith("--"):
+            raise UsageError(f"Unknown option: {a}")
+        else:
+            raise UsageError(f"Unknown argument: {a}")
+
+    if connector is None:
+        raise UsageError("issue update requires --connector github")
+
+    return _update_via_connector(
+        connector=connector, repo=repo, number=number, title=title, body=body
     )
 
 

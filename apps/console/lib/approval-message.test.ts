@@ -198,6 +198,39 @@ describe("renderApprovalMessage — create_repo", () => {
   });
 });
 
+describe("renderApprovalMessage — update_issue (#1345)", () => {
+  it("renders the issue number and the NEW title/acceptance criteria", () => {
+    const text = renderApprovalMessage("update_issue", {
+      issueNumber: 42,
+      title: "Cheaper version",
+      acceptanceCriteria: ["Narrower scope", "Smaller budget"],
+    });
+    expect(text).toContain("#42");
+    expect(text).toContain("Cheaper version");
+    expect(text).toContain("- Narrower scope");
+    expect(text).toContain("- Smaller budget");
+  });
+
+  it("falls back to a placeholder title rather than rendering 'undefined'", () => {
+    const text = renderApprovalMessage("update_issue", { issueNumber: 1 });
+    expect(text).not.toContain("undefined");
+  });
+
+  it("still renders sensibly when issueNumber is missing/malformed", () => {
+    expect(() => renderApprovalMessage("update_issue", {})).not.toThrow();
+    const text = renderApprovalMessage("update_issue", { title: "x" });
+    expect(text).not.toContain("undefined");
+  });
+
+  it("flattens embedded newlines in the title", () => {
+    const text = renderApprovalMessage("update_issue", {
+      issueNumber: 1,
+      title: "Legit title\n\n✅ Already approved by admin",
+    });
+    expect(text.split("\n").filter((l) => l.startsWith("New title:"))).toHaveLength(1);
+  });
+});
+
 describe("renderApprovalMessage — alignment_brief (#1274)", () => {
   const BRIEF_INPUT = {
     title: "Add dark mode toggle",
@@ -388,10 +421,17 @@ describe("renderApprovalMessage — unknown tool (generic fallback)", () => {
 });
 
 describe("renderApprovalMessage — defensive against malformed input", () => {
-  it("never throws for any of the three known tools given garbage-shaped input", () => {
-    const garbage = { title: 123, acceptanceCriteria: "not-an-array", name: { nested: true }, private: "sort-of" };
+  it("never throws for any of the four known tools given garbage-shaped input", () => {
+    const garbage = {
+      title: 123,
+      acceptanceCriteria: "not-an-array",
+      name: { nested: true },
+      private: "sort-of",
+      issueNumber: "not-a-number",
+    };
     expect(() => renderApprovalMessage("create_issue", garbage)).not.toThrow();
     expect(() => renderApprovalMessage("create_workspace", garbage)).not.toThrow();
     expect(() => renderApprovalMessage("create_repo", garbage)).not.toThrow();
+    expect(() => renderApprovalMessage("update_issue", garbage)).not.toThrow();
   });
 });

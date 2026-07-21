@@ -651,5 +651,126 @@ class ConnectorCreateTests(unittest.TestCase):
         self.assertIsNone(repo)
 
 
+class ConnectorUpdateTests(unittest.TestCase):
+    """`agentrail issue update --connector github` edits an existing issue's body.
+
+    Mirrors ConnectorCreateTests's own conventions (mocked REST transport, no
+    network) for the #1345 revise-loop's write path.
+    """
+
+    def _fake_transport(self, updated):
+        calls = []
+
+        def _t(method, url, headers=None, body=None):
+            calls.append({"method": method, "url": url, "headers": headers, "body": body})
+            return (200, updated)
+
+        _t.calls = calls
+        return _t
+
+    def test_update_via_github_connector_injected_client(self):
+        import agentrail.cli.commands.issue as mod
+        from agentrail.connectors.github import GitHubOAuthClient
+
+        updated = {
+            "number": 11,
+            "title": "Cheaper thing",
+            "html_url": "https://github.com/acme/widgets/issues/11",
+        }
+        transport = self._fake_transport(updated)
+        client = GitHubOAuthClient(
+            token="gho_x", repos=["acme/widgets"], transport=transport
+        )
+
+        out = StringIO()
+        with patch.dict("os.environ", {"GITHUB_OAUTH_TOKEN": "gho_x"}, clear=False), \
+            patch.object(mod, "_build_github_client", lambda token, repo: client), \
+            patch("sys.stdout", out):
+            rc = mod.run_issue([
+                "update", "--connector", "github",
+                "--repo", "acme/widgets",
+                "--number", "11",
+                "--title", "Cheaper thing",
+                "--body", "## Acceptance criteria\n- [ ] AC1\n",
+            ])
+
+        self.assertEqual(rc, 0)
+        patches = [c for c in transport.calls if c["method"] == "PATCH"]
+        self.assertEqual(len(patches), 1)
+        self.assertTrue(patches[0]["url"].endswith("/repos/acme/widgets/issues/11"))
+        import json as _json
+        sent = _json.loads(patches[0]["body"])
+        self.assertEqual(sent["title"], "Cheaper thing")
+        self.assertNotIn("labels", sent)
+        self.assertIn("11", out.getvalue())
+
+    def test_update_via_github_connector_requires_number(self):
+        err = StringIO()
+        with patch.dict("os.environ", {"GITHUB_OAUTH_TOKEN": "gho_x"}, clear=False), \
+            patch("sys.stderr", err):
+            rc = run_issue([
+                "update", "--connector", "github",
+                "--repo", "acme/widgets",
+                "--title", "T", "--body", "B",
+            ])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("--number", err.getvalue())
+
+    def test_update_via_github_connector_requires_token(self):
+        out = StringIO()
+        err = StringIO()
+        with patch.dict("os.environ", {}, clear=True), \
+            patch("sys.stdout", out), patch("sys.stderr", err):
+            rc = run_issue([
+                "update", "--connector", "github",
+                "--repo", "acme/widgets",
+                "--number", "11",
+                "--title", "T", "--body", "B",
+            ])
+        self.assertNotEqual(rc, 0)
+        self.assertIn(issue_mod.NOT_CONNECTED_MARKER, err.getvalue())
+        self.assertEqual(rc, issue_mod.NOT_CONNECTED_EXIT_CODE)
+
+    def test_update_via_github_connector_resolves_token_and_repo_from_workspace(self):
+        import agentrail.cli.commands.issue as mod
+        from agentrail.connectors.github import GitHubOAuthClient
+
+        updated = {
+            "number": 12,
+            "title": "Cheaper thing",
+            "html_url": "https://github.com/acme/widgets/issues/12",
+        }
+        transport = self._fake_transport(updated)
+        client = GitHubOAuthClient(
+            token="gho_from_db", repos=["acme/widgets"], transport=transport
+        )
+
+        out = StringIO()
+        env = {"AGENTRAIL_WORKSPACE_ID": "ws-1", "GITHUB_OAUTH_TOKEN": ""}
+        with patch.dict("os.environ", env, clear=False), \
+            patch.object(
+                mod, "_resolve_workspace_connection",
+                lambda workspace_id, **kw: ("gho_from_db", "acme/widgets"),
+            ), \
+            patch.object(mod, "_build_github_client", lambda token, repo: client), \
+            patch("sys.stdout", out):
+            rc = mod.run_issue([
+                "update", "--connector", "github",
+                "--number", "12",
+                "--title", "Cheaper thing",
+                "--body", "## Acceptance criteria\n- [ ] AC1\n",
+            ])
+
+        self.assertEqual(rc, 0)
+        self.assertIn("12", out.getvalue())
+
+    def test_dispatch_update_requires_connector_flag(self):
+        err = StringIO()
+        with patch("sys.stderr", err):
+            rc = run_issue(["update", "--number", "1", "--title", "T", "--body", "B"])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("--connector github", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

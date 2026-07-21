@@ -208,5 +208,51 @@ class CreateIssueTests(unittest.TestCase):
         self.assertEqual(ref.url, "https://github.com/acme/widgets/issues/7")
 
 
+class UpdateIssueTests(unittest.TestCase):
+    def test_update_issue_patches_title_and_body(self):
+        updated = {
+            "number": 7,
+            "title": "Cheaper task",
+            "html_url": "https://github.com/acme/widgets/issues/7",
+        }
+        transport = _fake_transport(
+            {"PATCH /repos/acme/widgets/issues/7": (200, updated)}
+        )
+        client = GitHubOAuthClient(token="t", repos=["acme/widgets"], transport=transport)
+        ref = client.update_issue(
+            repo="acme/widgets", number=7, title="Cheaper task", body=_GOOD_BODY
+        )
+
+        patches = [
+            c for c in transport.calls
+            if c["method"] == "PATCH" and c["url"].endswith("/repos/acme/widgets/issues/7")
+        ]
+        self.assertEqual(len(patches), 1)
+        sent = json.loads(patches[0]["body"])
+        self.assertEqual(sent["title"], "Cheaper task")
+        self.assertEqual(sent["body"], _GOOD_BODY)
+        # Narrow scope: never sends a labels key — update_issue must never
+        # touch labels (mirrors create_issue's own single-purpose scope, just
+        # inverted: create sets the trigger label, update never does).
+        self.assertNotIn("labels", sent)
+        self.assertEqual(patches[0]["headers"].get("Authorization"), "Bearer t")
+
+        self.assertIsInstance(ref, IssueRef)
+        self.assertEqual(ref.repo, "acme/widgets")
+        self.assertEqual(ref.number, 7)
+        self.assertEqual(ref.title, "Cheaper task")
+        self.assertEqual(ref.url, "https://github.com/acme/widgets/issues/7")
+
+    def test_update_issue_falls_back_to_the_input_number_when_response_omits_it(self):
+        transport = _fake_transport(
+            {"PATCH /repos/acme/widgets/issues/9": (200, {})}
+        )
+        client = GitHubOAuthClient(token="t", repos=["acme/widgets"], transport=transport)
+        ref = client.update_issue(
+            repo="acme/widgets", number=9, title="T", body=_GOOD_BODY
+        )
+        self.assertEqual(ref.number, 9)
+
+
 if __name__ == "__main__":
     unittest.main()

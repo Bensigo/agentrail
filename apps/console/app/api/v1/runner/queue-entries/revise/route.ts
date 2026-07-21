@@ -2,10 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getJaceSessionByEveSessionId,
   findQueueEntryByExternalId,
-  reviseAlignmentBrief,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../../lib/jace-console-auth";
-import { postAlignmentBrief } from "../../../../../../lib/alignment-reconciler";
+import { reviseAndRepostAlignmentBrief } from "../../../../../../lib/alignment-reconciler";
 
 /**
  * POST /api/v1/runner/queue-entries/revise
@@ -24,18 +23,21 @@ import { postAlignmentBrief } from "../../../../../../lib/alignment-reconciler";
  *      caller-supplied).
  *   2. Look up the queue entry this (repoFullName, number) address maps to
  *      in THAT workspace (`findQueueEntryByExternalId`).
- *   3. Ask `reviseAlignmentBrief` to supersede the denial — it is the ONLY
- *      function that performs the state transition, and it is a guarded,
- *      idempotent no-op unless the entry is CURRENTLY denied (see its own
- *      doc-comment in `@agentrail/db-postgres`).
- *   4. Only when that transition actually happened (`ok: true`) does this
- *      route compose+post a FRESH alignment brief — reusing
- *      `postAlignmentBrief`, the EXACT SAME composer/record/send path
- *      admission-time briefs and the PR③ reconciler already use — with a
- *      request id derived from the transition's own `updatedAt` so this
- *      NEW brief lands on a NEW `jace_approvals` row rather than colliding
- *      with the denied one (see `postAlignmentBrief`'s own `requestId`
- *      param doc for why that matters).
+ *   3. Ask `reviseAndRepostAlignmentBrief` (`lib/alignment-reconciler.ts`) to
+ *      supersede the denial and, on success, compose+post a FRESH alignment
+ *      brief — the SAME shared helper the GitHub-webhook `issues.edited`
+ *      branch uses (#1345 PR③) for a human hand-editing the issue directly
+ *      on GitHub instead of asking Jace. Internally it calls
+ *      `reviseAlignmentBrief` (the ONLY function that performs the state
+ *      transition — a guarded, idempotent no-op unless the entry is
+ *      CURRENTLY denied) and, only on `ok: true`, `postAlignmentBrief` (the
+ *      EXACT SAME composer/record/send path admission-time briefs and the
+ *      PR③ reconciler already use) with a request id derived from the
+ *      transition's own `updatedAt` so the NEW brief lands on a NEW
+ *      `jace_approvals` row rather than colliding with the denied one — see
+ *      that helper's own doc-comment for the full rationale, including how
+ *      its request id derivation converges with the reconciler's
+ *      revise-recovery sweep.
  *
  * EVERY non-actionable outcome (no workspace resolved, no matching queue
  * entry, entry not currently denied) responds 200 `{ revised: false, reason
@@ -120,32 +122,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ revised: false, reason: "not_found" });
   }
 
-  const result = await reviseAlignmentBrief({
-    queueEntryId: entry.id,
-    title: raw.title,
-    body: raw.body,
-  });
-  if (!result.ok) {
-    // Either genuinely not denied (the common case for a plain house-format
-    // edit) or a race that already resolved — either way, honest and
-    // non-fatal.
-    return NextResponse.json({ revised: false, reason: result.reason });
-  }
-
-  const outcome = await postAlignmentBrief({
+  const result = await reviseAndRepostAlignmentBrief({
     workspaceId: session.workspaceId,
     queueEntryId: entry.id,
     title: raw.title,
     body: raw.body,
     repoFullName: raw.repoFullName,
     number: raw.number,
-    // Distinct per revise transition (this transition's own updatedAt), so
-    // it can never collide with the denied approval's own deterministic
-    // `alignment-brief:${queueEntryId}` request id, or with an EARLIER
-    // revise round's request id for the SAME entry (deny -> revise -> deny
-    // -> revise again produces a fresh timestamp each time).
-    requestId: `alignment-brief:${entry.id}:revise-${result.updatedAt.getTime()}`,
   });
 
-  return NextResponse.json({ revised: true, outcome });
+  // `result` is already the exact { revised, outcome } | { revised, reason }
+  // shape this route has always responded with — either genuinely not
+  // denied (the common case for a plain house-format edit) or a race that
+  // already resolved is honest and non-fatal either way.
+  return NextResponse.json(result);
 }

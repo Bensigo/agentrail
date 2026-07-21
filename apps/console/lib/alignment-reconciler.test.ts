@@ -13,6 +13,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
  */
 vi.mock("@agentrail/db-postgres", () => ({
   findAlignmentBriefCandidates: vi.fn(),
+  findRevisedBriefRecoveryCandidates: vi.fn(),
+  reviseAlignmentBrief: vi.fn(),
   githubIssueUrl: (repoFullName: string, number: number) =>
     `https://github.com/${repoFullName}/issues/${number}`,
   latestTelegramSessionForWorkspace: vi.fn(),
@@ -52,11 +54,14 @@ vi.mock("../app/api/v1/workspaces/[workspaceId]/connectors/secret/telegram", () 
 import {
   postAlignmentBrief,
   reconcileAlignmentBriefs,
+  reviseAndRepostAlignmentBrief,
 } from "./alignment-reconciler";
 import {
   findAlignmentBriefCandidates,
+  findRevisedBriefRecoveryCandidates,
   latestTelegramSessionForWorkspace,
   recordApprovalRequest,
+  reviseAlignmentBrief,
 } from "@agentrail/db-postgres";
 import { composeAlignmentBrief, resolveModelSelectionForBrief } from "./alignment-brief";
 import { renderApprovalMessage } from "./approval-message";
@@ -66,6 +71,8 @@ import {
 } from "../app/api/v1/workspaces/[workspaceId]/connectors/secret/telegram";
 
 const mockFindCandidates = vi.mocked(findAlignmentBriefCandidates);
+const mockFindRevisedCandidates = vi.mocked(findRevisedBriefRecoveryCandidates);
+const mockReviseAlignmentBrief = vi.mocked(reviseAlignmentBrief);
 const mockLatestSession = vi.mocked(latestTelegramSessionForWorkspace);
 const mockRecord = vi.mocked(recordApprovalRequest);
 const mockCompose = vi.mocked(composeAlignmentBrief);
@@ -97,6 +104,10 @@ beforeEach(() => {
   mockBuildKeyboard.mockReturnValue({ inline_keyboard: [[]] } as never);
   mockSend.mockResolvedValue({ ok: true } as never);
   mockLatestSession.mockResolvedValue(null); // default: no session -> "no_session"
+  // Default: no revise-recovery candidates, so every pre-existing
+  // reconcileAlignmentBriefs test (which predates this sweep) stays valid
+  // unchanged.
+  mockFindRevisedCandidates.mockResolvedValue([]);
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -386,5 +397,238 @@ describe("postAlignmentBrief: model-selection wiring (#1338 PR②)", () => {
     expect(mockCompose).toHaveBeenCalledWith(
       expect.objectContaining({ modelSelection: selection })
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1345 PR③ — reviseAndRepostAlignmentBrief: the "revise an entry + post the
+// fresh brief" shared core, factored out of the PR② console revise route so
+// the github-webhook `issues.edited` branch can reuse it verbatim instead of
+// duplicating the revise->requestId->repost sequence.
+// ---------------------------------------------------------------------------
+describe("reviseAndRepostAlignmentBrief: the shared revise+repost core (#1345 PR③)", () => {
+  const REVISED_UPDATED_AT = new Date("2026-07-21T00:05:00.000Z");
+
+  it("not_found: reviseAlignmentBrief's own no-op is forwarded verbatim, never posts a brief", async () => {
+    mockReviseAlignmentBrief.mockResolvedValue({ ok: false, reason: "not_found" });
+
+    const result = await reviseAndRepostAlignmentBrief({
+      workspaceId: "ws-1",
+      queueEntryId: "q-1",
+      title: "t",
+      body: "b",
+    });
+
+    expect(result).toEqual({ revised: false, reason: "not_found" });
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
+  it("not_denied: forwarded verbatim, never posts a brief", async () => {
+    mockReviseAlignmentBrief.mockResolvedValue({ ok: false, reason: "not_denied" });
+
+    const result = await reviseAndRepostAlignmentBrief({
+      workspaceId: "ws-1",
+      queueEntryId: "q-1",
+      title: "t",
+      body: "b",
+    });
+
+    expect(result).toEqual({ revised: false, reason: "not_denied" });
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
+  it("ok:true: calls reviseAlignmentBrief with queueEntryId/title/body, then posts a FRESH brief with a request id derived from the transition's own updatedAt", async () => {
+    mockReviseAlignmentBrief.mockResolvedValue({ ok: true, updatedAt: REVISED_UPDATED_AT });
+    mockLatestSession.mockResolvedValue({
+      id: "s-1",
+      workspaceId: "ws-1",
+      chatIdentityId: "c-1",
+      channel: "telegram",
+      conversationKey: "-100",
+      eveSessionId: "eve-1",
+    } as never);
+    mockRecord.mockResolvedValue({
+      approval: { id: "a-1", callbackToken: "tok" },
+      created: true,
+    } as never);
+
+    const result = await reviseAndRepostAlignmentBrief({
+      workspaceId: "ws-1",
+      queueEntryId: "q-1",
+      title: "Cheaper version",
+      body: "new body",
+      repoFullName: "acme/widgets",
+      number: 42,
+    });
+
+    expect(mockReviseAlignmentBrief).toHaveBeenCalledWith({
+      queueEntryId: "q-1",
+      title: "Cheaper version",
+      body: "new body",
+    });
+    expect(result).toEqual({ revised: true, outcome: "posted" });
+    expect(mockRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: `alignment-brief:q-1:revise-${REVISED_UPDATED_AT.getTime()}`,
+      })
+    );
+  });
+
+  it("two separate revise rounds for the SAME queue entry get DIFFERENT request ids (never collide)", async () => {
+    mockLatestSession.mockResolvedValue({
+      id: "s-1",
+      workspaceId: "ws-1",
+      chatIdentityId: "c-1",
+      channel: "telegram",
+      conversationKey: "-100",
+      eveSessionId: "eve-1",
+    } as never);
+    mockRecord.mockResolvedValue({
+      approval: { id: "a-1", callbackToken: "tok" },
+      created: true,
+    } as never);
+
+    mockReviseAlignmentBrief.mockResolvedValueOnce({
+      ok: true,
+      updatedAt: new Date("2026-07-21T00:00:00.000Z"),
+    });
+    await reviseAndRepostAlignmentBrief({
+      workspaceId: "ws-1",
+      queueEntryId: "q-1",
+      title: "t1",
+      body: "b1",
+    });
+    const firstRequestId = mockRecord.mock.calls[0]![0].requestId;
+
+    mockReviseAlignmentBrief.mockResolvedValueOnce({ ok: true, updatedAt: REVISED_UPDATED_AT });
+    await reviseAndRepostAlignmentBrief({
+      workspaceId: "ws-1",
+      queueEntryId: "q-1",
+      title: "t2",
+      body: "b2",
+    });
+    const secondRequestId = mockRecord.mock.calls[1]![0].requestId;
+
+    expect(firstRequestId).not.toBe(secondRequestId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1345 (crash-window liveness gap) — reconcileAlignmentBriefs' SECOND,
+// additive revise-recovery sweep over findRevisedBriefRecoveryCandidates.
+// ---------------------------------------------------------------------------
+describe("reconcileAlignmentBriefs: revise-recovery sweep (#1345 crash-window liveness gap)", () => {
+  const RECOVERY_ROW = {
+    id: "q-recovered",
+    workspaceId: "ws-1",
+    source: "github",
+    externalId: "acme/widgets#9",
+    title: "Recovered title",
+    body: "recovered body",
+    updatedAt: new Date("2026-07-21T00:05:00.000Z"),
+  };
+
+  it("calls findRevisedBriefRecoveryCandidates workspace-scoped with the same limit as the admission sweep", async () => {
+    mockFindCandidates.mockResolvedValue([]);
+    mockFindRevisedCandidates.mockResolvedValue([]);
+
+    await reconcileAlignmentBriefs("ws-1", 5);
+
+    expect(mockFindRevisedCandidates).toHaveBeenCalledWith("ws-1", 5);
+  });
+
+  it("posts a fresh brief for each revise-recovery candidate with a request id derived from ITS OWN updatedAt", async () => {
+    mockFindCandidates.mockResolvedValue([]);
+    mockFindRevisedCandidates.mockResolvedValue([RECOVERY_ROW]);
+    mockLatestSession.mockResolvedValue(null); // -> "no_session", still proves the requestId shape
+
+    const outcomes = await reconcileAlignmentBriefs("ws-1", 5);
+
+    expect(mockCompose).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repoFullName: "acme/widgets",
+        issueNumber: 9,
+        issueUrl: "https://github.com/acme/widgets/issues/9",
+      })
+    );
+    expect(outcomes).toEqual([{ id: "q-recovered", outcome: "no_session" }]);
+  });
+
+  it("bounded + per-entry failure isolation: the revise-recovery sweep isolates failures exactly like the admission sweep does, and combines outcomes from BOTH sweeps", async () => {
+    mockFindCandidates.mockResolvedValue([
+      { id: "q-admission", workspaceId: "ws-1", source: "github", externalId: "acme/widgets#1", title: "t", body: "b" },
+    ]);
+    mockFindRevisedCandidates.mockResolvedValue([RECOVERY_ROW]);
+    mockLatestSession.mockResolvedValue(null);
+
+    const outcomes = await reconcileAlignmentBriefs("ws-1", 5);
+
+    expect(outcomes).toEqual([
+      { id: "q-admission", outcome: "no_session" },
+      { id: "q-recovered", outcome: "no_session" },
+    ]);
+  });
+
+  it("a revise-recovery candidate throwing does not stop the sweep", async () => {
+    mockFindCandidates.mockResolvedValue([]);
+    mockFindRevisedCandidates.mockResolvedValue([
+      RECOVERY_ROW,
+      { ...RECOVERY_ROW, id: "q-recovered-2", externalId: "acme/widgets#10" },
+    ]);
+    mockLatestSession.mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce(null);
+
+    const outcomes = await reconcileAlignmentBriefs("ws-1", 5);
+
+    expect(outcomes).toEqual([
+      { id: "q-recovered", outcome: "session_lookup_failed" },
+      { id: "q-recovered-2", outcome: "no_session" },
+    ]);
+  });
+
+  it("CONVERGENCE: a direct reviseAndRepostAlignmentBrief post and a LATER reconciler revise-recovery sweep for the SAME entry+updatedAt derive the IDENTICAL request id, so recordApprovalRequest's own onConflictDoNothing converges them onto exactly ONE pending row — never two sends", async () => {
+    const updatedAt = new Date("2026-07-21T00:05:00.000Z");
+
+    mockLatestSession.mockResolvedValue({
+      id: "s-1",
+      workspaceId: "ws-1",
+      chatIdentityId: "c-1",
+      channel: "telegram",
+      conversationKey: "-100",
+      eveSessionId: "eve-1",
+    } as never);
+    // First call (the direct post) creates the row; the SECOND call (the
+    // reconciler's own recovery attempt, racing or retrying the same
+    // transition) converges on the SAME row via onConflictDoNothing — modeled
+    // here exactly as `recordApprovalRequest`'s real unique-constraint
+    // semantics would resolve it (created:false the second time).
+    mockRecord
+      .mockResolvedValueOnce({ approval: { id: "a-1", callbackToken: "tok" }, created: true } as never)
+      .mockResolvedValueOnce({ approval: { id: "a-1", callbackToken: "tok" }, created: false } as never);
+
+    mockReviseAlignmentBrief.mockResolvedValue({ ok: true, updatedAt });
+    const direct = await reviseAndRepostAlignmentBrief({
+      workspaceId: "ws-1",
+      queueEntryId: "q-1",
+      title: "t",
+      body: "b",
+      repoFullName: "acme/widgets",
+      number: 9,
+    });
+
+    mockFindCandidates.mockResolvedValue([]);
+    mockFindRevisedCandidates.mockResolvedValue([
+      { id: "q-1", workspaceId: "ws-1", source: "github", externalId: "acme/widgets#9", title: "t", body: "b", updatedAt },
+    ]);
+    const swept = await reconcileAlignmentBriefs("ws-1", 5);
+
+    expect(direct).toEqual({ revised: true, outcome: "posted" });
+    expect(swept).toEqual([{ id: "q-1", outcome: "posted" }]);
+
+    // Both calls to recordApprovalRequest used the IDENTICAL requestId.
+    const requestIds = mockRecord.mock.calls.map((c) => c[0]!.requestId);
+    expect(requestIds[0]).toBe(`alignment-brief:q-1:revise-${updatedAt.getTime()}`);
+    expect(requestIds[1]).toBe(requestIds[0]);
+    // Exactly ONE Telegram send across both the direct post and the sweep.
+    expect(mockSend).toHaveBeenCalledTimes(1);
   });
 });

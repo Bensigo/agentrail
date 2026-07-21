@@ -1789,3 +1789,113 @@ export async function findAlignmentBriefCandidates(
     body: r.body,
   }));
 }
+
+// --- revise-recovery seam (#1345 PR③ / AC2 follow-up: crash-window liveness gap) ---
+//
+// `reviseAlignmentBrief` commits DENIED -> `ALIGNMENT_PARK_REASON` (clearing
+// the denial) as its OWN transaction, and the caller (the console revise
+// route, or the webhook's `edited` branch) then calls `postAlignmentBrief` as
+// a SEPARATE step right after. If the process dies in between — after the
+// revise commits, before the fresh brief posts — the entry is left sitting
+// "awaiting alignment" with NO pending brief and NO recovery path:
+// `findAlignmentBriefCandidates` above requires `NOT EXISTS (any
+// jace_approvals row)`, but this entry still carries its OLD *denied*
+// approval row (kept forever, by design, as an audit trail — see
+// `reviseAlignmentBrief`'s own doc-comment) — so it can never match that
+// query. `postAlignmentBrief`'s own doc-comment promises "the next
+// reconciler sweep retries"; this closes the gap in that promise the revise
+// path opened.
+//
+// Deliberately a SEPARATE query rather than a loosened
+// `findAlignmentBriefCandidates`: that function's `NOT EXISTS (any approval
+// row)` criterion is exactly what keeps a genuinely-still-denied entry (whose
+// only approval row is the denial itself) OUT of the admission-recovery
+// sweep — loosening it to admit this case would also admit every denied row
+// that was never revised, silently spamming a fresh brief for entries a human
+// deliberately denied and has not touched since. This query's criterion is
+// therefore the narrow, positive proof of "this row WAS denied, then WAS
+// revised, and has no live brief yet" — never a superset of the existing one.
+
+export interface RevisedBriefRecoveryCandidate {
+  id: string;
+  workspaceId: string;
+  source: string;
+  externalId: string;
+  title: string;
+  body: string;
+  // The revise transition's own `updated_at` — the caller derives the
+  // recovery post's request id from this EXACT value
+  // (`alignment-brief:${id}:revise-${updatedAt.getTime()}`), which is what
+  // makes it converge with a same-entry direct post: both sides read this
+  // same column, set once by `reviseAlignmentBrief`'s UPDATE and untouched by
+  // anything else while the row waits for its fresh brief.
+  updatedAt: Date;
+}
+
+/**
+ * Find `queue_entries` rows stuck in the #1345 revise-loop's crash window:
+ * PARKED, issue-kind, IN THE GIVEN WORKSPACE (which must require alignment),
+ * carrying no sanctioned budget, currently parked for
+ * {@link ALIGNMENT_PARK_REASON} (i.e. NOT still denied — a prior
+ * {@link reviseAlignmentBrief} call already cleared the denial), WITH a
+ * `jace_approvals` row proving that clearing really happened (a `denied` row
+ * for this entry — the audit trail {@link reviseAlignmentBrief} leaves
+ * behind), and WITHOUT any `pending` `jace_approvals` row (no live brief
+ * exists to answer yet).
+ *
+ * This is additive and disjoint from {@link findAlignmentBriefCandidates}:
+ * that query's `NOT EXISTS (any approval row at all)` criterion already
+ * excludes every row this one matches (a revised-then-recovered row always
+ * has at least the old denied row), so the two candidate sets never overlap
+ * and this function can never re-admit something the admission-recovery
+ * sweep already owns.
+ *
+ * Oldest-first BY THE REVISE TRANSITION'S OWN `updated_at` (not
+ * `created_at` — the entry may have been admitted long ago; what matters
+ * here is how long it's been stuck since the revise cleared the denial),
+ * bounded by `limit` — mirrors {@link findAlignmentBriefCandidates}'s own
+ * "caller's bound, not a constant here" rule.
+ */
+export async function findRevisedBriefRecoveryCandidates(
+  workspaceId: string,
+  limit: number
+): Promise<RevisedBriefRecoveryCandidate[]> {
+  const rows = (await db.execute(sql`
+    SELECT qe.id, qe.workspace_id, qe.source, qe.external_id, qe.title, qe.body, qe.updated_at
+    FROM queue_entries qe
+    JOIN workspaces w ON w.id = qe.workspace_id
+    WHERE qe.workspace_id = ${workspaceId}
+      AND qe.state = 'parked'
+      AND qe.kind = 'issue'
+      AND w.require_alignment = true
+      AND qe.estimated_budget_usd IS NULL
+      AND qe.park_reason = ${ALIGNMENT_PARK_REASON}
+      AND EXISTS (
+        SELECT 1 FROM jace_approvals ja
+        WHERE ja.queue_entry_id = qe.id AND ja.status = 'denied'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM jace_approvals ja
+        WHERE ja.queue_entry_id = qe.id AND ja.status = 'pending'
+      )
+    ORDER BY qe.updated_at ASC
+    LIMIT ${limit}
+  `)) as unknown as Array<{
+    id: string;
+    workspace_id: string;
+    source: string;
+    external_id: string;
+    title: string;
+    body: string;
+    updated_at: Date;
+  }>;
+  return Array.from(rows).map((r) => ({
+    id: r.id,
+    workspaceId: r.workspace_id,
+    source: r.source,
+    externalId: r.external_id,
+    title: r.title,
+    body: r.body,
+    updatedAt: new Date(r.updated_at),
+  }));
+}

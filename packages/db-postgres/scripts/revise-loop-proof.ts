@@ -34,6 +34,21 @@
  *   6. `findQueueEntryByExternalId` is workspace-scoped: the SAME
  *      `repoFullName#number` in two different workspaces resolves to each
  *      workspace's OWN row, never cross-tenant.
+ *   7. (#1345 PR③, the crash-window liveness gap) `reviseAlignmentBrief`
+ *      commits the denial-clearing transition, but the direct
+ *      `postAlignmentBrief` call the caller normally makes right after never
+ *      runs (a simulated process crash in between): proves
+ *      `findRevisedBriefRecoveryCandidates` — NOT
+ *      `findAlignmentBriefCandidates`, which still can't see this row, since
+ *      it still carries the OLD denied approval row — finds it, that a
+ *      recovery post (`recordApprovalRequest` with the SAME derived request
+ *      id `reviseAndRepostAlignmentBrief` would have used) creates exactly
+ *      one fresh PENDING approval, and that a SECOND attempt at the
+ *      IDENTICAL derived request id (modeling a direct post racing/
+ *      following the recovery sweep) converges onto the SAME row
+ *      (`created:false`) rather than ever creating two — exactly ONE
+ *      pending approval for the entry throughout, and `state` never leaves
+ *      `parked`.
  */
 import { sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
@@ -45,9 +60,16 @@ import {
   confirmAlignmentBrief,
   requeueParkedQueueEntry,
   unparkDependents,
+  findAlignmentBriefCandidates,
+  findRevisedBriefRecoveryCandidates,
   ALIGNMENT_PARK_REASON,
   ALIGNMENT_DENIED_PARK_REASON,
 } from "../src/queries/github_intake.js";
+import {
+  getOrCreateJaceSession,
+  bindEveSession,
+  recordApprovalRequest,
+} from "../src/queries/jace_sessions.js";
 
 const DATABASE_URL =
   process.env["DATABASE_URL"] ?? "postgres://agentrail:agentrail@localhost:5434/agentrail";
@@ -343,6 +365,189 @@ async function section6WorkspaceScopedLookup() {
   }
 }
 
+/** A real jace_sessions row with a bound eveSessionId, so
+ * `recordApprovalRequest` (which requires a non-null `eveSessionId`) can be
+ * called directly — mirrors what a real Telegram session looks like once the
+ * first turn creates it, without needing a live Telegram bot for this proof. */
+async function makeJaceSession(
+  workspaceId: string
+): Promise<{ sessionId: string; eveSessionId: string }> {
+  const session = await getOrCreateJaceSession(
+    workspaceId,
+    "telegram",
+    `revise-proof-${randomUUID()}`
+  );
+  const eveSessionId = `eve-${randomUUID()}`;
+  await bindEveSession(session.id, eveSessionId);
+  return { sessionId: session.id, eveSessionId };
+}
+
+async function countPendingApprovals(queueEntryId: string): Promise<number> {
+  const rows = (await db.execute(sql`
+    SELECT count(*)::int AS n FROM jace_approvals
+    WHERE queue_entry_id = ${queueEntryId} AND status = 'pending'
+  `)) as unknown as Array<{ n: number }>;
+  return rows[0]?.n ?? 0;
+}
+
+async function countApprovalsWithRequestId(
+  eveSessionId: string,
+  requestId: string
+): Promise<number> {
+  const rows = (await db.execute(sql`
+    SELECT count(*)::int AS n FROM jace_approvals
+    WHERE eve_session_id = ${eveSessionId} AND request_id = ${requestId}
+  `)) as unknown as Array<{ n: number }>;
+  return rows[0]?.n ?? 0;
+}
+
+async function section7CrashWindowRecoveryAndConvergence() {
+  console.log(
+    "\n=== 7. crash-window liveness gap: recovery sweep finds a revised-but-unposted entry, and converges with a racing/repeated post onto exactly ONE pending row ==="
+  );
+  const ws = await makeWorkspace(true);
+  try {
+    const id = await insertRow({
+      workspaceId: ws,
+      externalId: "acme/revise#7",
+      state: "parked",
+      parkReason: ALIGNMENT_DENIED_PARK_REASON,
+    });
+
+    // Seed the original denial's own audit-trail approval row (status =
+    // 'denied') — exactly what a real deny -> revise cycle leaves behind
+    // (reviseAlignmentBrief NEVER deletes it; see that function's own
+    // doc-comment). `recordApprovalRequest` always inserts 'pending'; flip it
+    // to 'denied' with a direct UPDATE to model the post-denial state this
+    // section starts from.
+    const { sessionId, eveSessionId } = await makeJaceSession(ws);
+    const deniedRequestId = `alignment-brief:${id}`;
+    const recordedDenied = await recordApprovalRequest({
+      workspaceId: ws,
+      sessionId,
+      eveSessionId,
+      requestId: deniedRequestId,
+      toolName: "alignment_brief",
+      toolInput: {},
+      approveOptionId: "approve",
+      denyOptionId: "deny",
+      queueEntryId: id,
+    });
+    await db.execute(
+      sql`UPDATE jace_approvals SET status = 'denied' WHERE id = ${recordedDenied.approval.id}`
+    );
+
+    // 7a. reviseAlignmentBrief clears the denial. In production the caller
+    // (the console revise route, or the webhook's edited branch) would call
+    // postAlignmentBrief IMMEDIATELY after this — simulate a crash right
+    // here: that direct post never happens.
+    const revised = await reviseAlignmentBrief({
+      queueEntryId: id,
+      title: "Cheaper version",
+      body: "## Acceptance criteria\n- [ ] narrower scope\n",
+    });
+    check("7a: revise succeeds", revised.ok === true, revised);
+    if (!revised.ok) return;
+
+    // 7b. WITHOUT this PR's fix, this entry would now be invisible to
+    // findAlignmentBriefCandidates FOREVER (it still carries the denied
+    // approval row) — but findRevisedBriefRecoveryCandidates DOES see it.
+    const admissionCandidates = await findAlignmentBriefCandidates(ws, 50);
+    check(
+      "7b: findAlignmentBriefCandidates does NOT see it (still has an approval row — the denied one)",
+      !admissionCandidates.some((c) => c.id === id),
+      admissionCandidates.map((c) => c.id)
+    );
+    const recoveryCandidates = await findRevisedBriefRecoveryCandidates(ws, 50);
+    const recovered = recoveryCandidates.find((c) => c.id === id);
+    check(
+      "7b: findRevisedBriefRecoveryCandidates DOES see it (cleared denial + denied row + no pending row)",
+      recovered !== undefined,
+      recoveryCandidates.map((c) => c.id)
+    );
+    check(
+      "7b: the recovery candidate's own updatedAt matches the revise transition's updatedAt (both derive the SAME request id from it)",
+      recovered !== undefined && recovered.updatedAt.getTime() === revised.updatedAt.getTime(),
+      { candidate: recovered?.updatedAt, revised: revised.updatedAt }
+    );
+
+    // 7c. The reconciler's recovery post — derives the SAME request id
+    // `reviseAndRepostAlignmentBrief` (apps/console/lib/alignment-reconciler.ts)
+    // would have used for a DIRECT post of this exact revise transition.
+    const recoveryRequestId = `alignment-brief:${id}:revise-${revised.updatedAt.getTime()}`;
+    const firstPost = await recordApprovalRequest({
+      workspaceId: ws,
+      sessionId,
+      eveSessionId,
+      requestId: recoveryRequestId,
+      toolName: "alignment_brief",
+      toolInput: { title: "Cheaper version" },
+      approveOptionId: "approve",
+      denyOptionId: "deny",
+      queueEntryId: id,
+    });
+    check("7c: recovery post creates a NEW row (created:true)", firstPost.created === true, firstPost);
+    check(
+      "7c: exactly ONE pending approval row for this entry now",
+      (await countPendingApprovals(id)) === 1,
+      await countPendingApprovals(id)
+    );
+
+    // 7d. Recovered: findRevisedBriefRecoveryCandidates no longer sees it —
+    // a pending row now exists, so a later sweep won't re-post it again.
+    const afterRecovery = await findRevisedBriefRecoveryCandidates(ws, 50);
+    check(
+      "7d: no longer a recovery candidate once a pending row exists",
+      !afterRecovery.some((c) => c.id === id),
+      afterRecovery.map((c) => c.id)
+    );
+
+    // 7e. CONVERGENCE: a second attempt at the IDENTICAL derived request id
+    // — modeling a direct post racing (or following) this same recovery, or
+    // the reconciler sweep simply running twice — converges onto the SAME
+    // row via `recordApprovalRequest`'s own `onConflictDoNothing`
+    // (created:false), never creating a second pending brief.
+    const secondPost = await recordApprovalRequest({
+      workspaceId: ws,
+      sessionId,
+      eveSessionId,
+      requestId: recoveryRequestId,
+      toolName: "alignment_brief",
+      toolInput: { title: "Cheaper version" },
+      approveOptionId: "approve",
+      denyOptionId: "deny",
+      queueEntryId: id,
+    });
+    check(
+      "7e: a second post at the SAME derived request id converges (created:false)",
+      secondPost.created === false,
+      secondPost
+    );
+    check(
+      "7e: both posts resolve the SAME approval row",
+      secondPost.approval.id === firstPost.approval.id,
+      { first: firstPost.approval.id, second: secondPost.approval.id }
+    );
+    check(
+      "7e: STILL exactly ONE row for (eveSessionId, requestId) — never two",
+      (await countApprovalsWithRequestId(eveSessionId, recoveryRequestId)) === 1,
+      await countApprovalsWithRequestId(eveSessionId, recoveryRequestId)
+    );
+    check(
+      "7e: STILL exactly ONE pending approval for this entry — a racing/repeated post never double-briefs",
+      (await countPendingApprovals(id)) === 1,
+      await countPendingApprovals(id)
+    );
+
+    // 7f. AC3 still holds throughout recovery: the entry never became
+    // claimable — only a fresh confirmAlignmentBrief could do that.
+    const row = await readRow(id);
+    check("7f: state STILL parked throughout recovery", row.state === "parked", row.state);
+  } finally {
+    await dropWorkspace(ws);
+  }
+}
+
 async function main() {
   console.log(`Connecting to ${DATABASE_URL.replace(/:[^:@]+@/, ":***@")}`);
   await section1DenyThenRevise();
@@ -351,6 +556,7 @@ async function main() {
   await section4NotDeniedIsSafeNoOp();
   await section5RepeatedDenyReviseRounds();
   await section6WorkspaceScopedLookup();
+  await section7CrashWindowRecoveryAndConvergence();
 
   console.log(`\n=== SUMMARY: ${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`} ===`);
   process.exit(failures === 0 ? 0 : 1);

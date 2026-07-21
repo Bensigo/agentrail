@@ -16,8 +16,12 @@ import {
  * `/api/v1/runner/claim`. Mirrors `agentrail/heartbeat/webhook.py`.
  *
  * Locally, point a tunnel (smee.io / `gh webhook forward`) at this route; when
- * deployed it's the public webhook URL configured on the repo. Optional HMAC
- * verification via `GITHUB_WEBHOOK_SECRET`.
+ * deployed it's the public webhook URL configured on the repo. HMAC
+ * verification uses the delivering workspace's per-connector secret
+ * (`connectors.config.webhookSecret`, written by the /setup wizard — #1233),
+ * falling back to the global `GITHUB_WEBHOOK_SECRET` env var for local
+ * dev/testing. Because the secret is per-workspace, the payload is parsed and
+ * the workspace resolved BEFORE the signature check.
  */
 
 // Actions that (re)admit work; others (closed, edited, assigned, …) are ignored.
@@ -54,14 +58,38 @@ function labelNames(issue: Record<string, unknown>): Set<string> {
 
 export async function POST(request: NextRequest) {
   const raw = await request.text();
+  const signature = request.headers.get(SIGNATURE_HEADER);
 
-  if (
-    !verifySignature(
-      raw,
-      request.headers.get(SIGNATURE_HEADER),
-      process.env["GITHUB_WEBHOOK_SECRET"]
-    )
-  ) {
+  // Parse FIRST: the signing secret is per-workspace (#1233), resolvable only
+  // from `repository.full_name` in the payload. An unparseable body still gets
+  // signature-checked against the global fallback below.
+  let payload: Record<string, unknown> | null = null;
+  try {
+    payload = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    payload = null;
+  }
+
+  const repository = payload?.repository;
+  const repoFullName =
+    repository && typeof repository === "object"
+      ? (repository as Record<string, unknown>).full_name
+      : undefined;
+
+  // Resolve which workspace owns this repo (via its GitHub connector).
+  let workspaceId: string | null = null;
+  let connector: Awaited<ReturnType<typeof getConnector>> = null;
+  if (typeof repoFullName === "string") {
+    workspaceId = await findWorkspaceByRepo(repoFullName);
+    if (workspaceId) {
+      connector = await getConnector(workspaceId, "github");
+    }
+  }
+
+  // Per-workspace secret wins; the global env var is the local-dev fallback.
+  const secret =
+    connector?.config.webhookSecret ?? process.env["GITHUB_WEBHOOK_SECRET"];
+  if (!verifySignature(raw, signature, secret)) {
     return NextResponse.json({ error: "invalid signature" }, { status: 401 });
   }
 
@@ -71,10 +99,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ignored: event || "unknown" });
   }
 
-  let payload: Record<string, unknown>;
-  try {
-    payload = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
+  if (!payload) {
     return NextResponse.json({ error: "invalid json" }, { status: 400 });
   }
 
@@ -84,24 +109,19 @@ export async function POST(request: NextRequest) {
   }
 
   const issue = payload.issue;
-  const repository = payload.repository;
   if (!issue || typeof issue !== "object" || !repository || typeof repository !== "object") {
     return NextResponse.json({ matched: false, reason: "missing issue or repository" });
   }
   const issueObj = issue as Record<string, unknown>;
-  const repoFullName = (repository as Record<string, unknown>).full_name;
   if (typeof repoFullName !== "string") {
     return NextResponse.json({ matched: false, reason: "missing repository.full_name" });
   }
 
-  // Resolve which workspace owns this repo (via its GitHub connector).
-  const workspaceId = await findWorkspaceByRepo(repoFullName);
   if (!workspaceId) {
     return NextResponse.json({ matched: false, reason: "no workspace owns this repo" });
   }
 
   // The trigger label is the connector's configured label.
-  const connector = await getConnector(workspaceId, "github");
   const triggerLabel = connector?.config.triggerLabel;
   if (!triggerLabel || !labelNames(issueObj).has(triggerLabel)) {
     return NextResponse.json({ matched: false, reason: "trigger label not on issue" });

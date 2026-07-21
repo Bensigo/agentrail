@@ -84,6 +84,23 @@ export async function postAlignmentBrief(params: {
   body: string;
   repoFullName?: string;
   number?: number;
+  /**
+   * #1345 PR② (the alignment-gate revise loop) — override the deterministic
+   * admission-time request id (`alignment-brief:${queueEntryId}`) with a
+   * DIFFERENT one, so `recordApprovalRequest`'s `(eveSessionId, requestId)`
+   * idempotency can never match the DENIED approval row this call means to
+   * supersede. The "supersede" mechanism is a NEW `jace_approvals` row, not a
+   * reset of the old (denied) one — the old row stays exactly as it is,
+   * forever, as an audit trail; only a NEW row is ever pending/actionable.
+   * See `apps/console/app/api/v1/runner/queue-entries/revise/route.ts` (the
+   * caller) and `@agentrail/db-postgres`'s `reviseAlignmentBrief` (why the
+   * queue entry's OWN state — untouched `state`, reset-to-null budget/model —
+   * makes it safe regardless of how many approval rows accumulate for one
+   * entry across repeated deny→revise rounds). Omitted for every existing
+   * call site (admission's own compose+post, and the PR③ reconciler sweep)
+   * -> byte-identical to before this param existed.
+   */
+  requestId?: string;
 }): Promise<AlignmentBriefOutcome> {
   const repoFullName = params.repoFullName ?? "";
   const number = params.number ?? 0;
@@ -175,8 +192,11 @@ export async function postAlignmentBrief(params: {
       // Deterministic per queue entry: idempotent on
       // (eveSessionId, requestId) — a redelivered webhook, or a repeat
       // reconciler sweep over the SAME still-unresolved entry, converges on
-      // the SAME approval row rather than creating a duplicate.
-      requestId: `alignment-brief:${params.queueEntryId}`,
+      // the SAME approval row rather than creating a duplicate. #1345 PR②:
+      // `params.requestId`, when supplied, overrides this default so the
+      // revise loop's fresh brief lands on a NEW row instead of colliding
+      // with a denied one (see this function's own `requestId` param doc).
+      requestId: params.requestId ?? `alignment-brief:${params.queueEntryId}`,
       toolName: "alignment_brief",
       toolInput: brief as unknown as Record<string, unknown>,
       approveOptionId: "approve",

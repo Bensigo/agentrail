@@ -6,8 +6,8 @@ Auto-compaction is tuned in `.claude/settings.json` (the `env` block) — **not 
 
 ```json
 "env": {
-  "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "40",
-  "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "200000"
+  "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "65",
+  
 }
 ```
 

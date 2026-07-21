@@ -54,12 +54,17 @@ export interface ParsedPrUrl {
 
 /**
  * Parse a GitHub PR URL into `{owner, repo, number}`, or `null` for anything
- * that is not EXACTLY `https://github.com/{owner}/{repo}/pull/{n}` — https
- * only, host must be literally `github.com` (no lookalike/subdomain), a
- * well-formed positive integer PR number, no extra path segments/query/hash
- * tolerance beyond what `URL` itself normalizes. This is the FIRST half of
- * the pr_url security gate (see the module doc-comment) — a permissive
- * parse here would undermine the owner/repo check that follows it.
+ * that is not EXACTLY `https://github.com/{owner}/{repo}/pull/{n}` in its
+ * PATH — https only, host must be literally `github.com` (no lookalike/
+ * subdomain), a well-formed positive integer PR number that also fits a
+ * JS safe integer (see below), no extra PATH segments beyond the pull
+ * number. The match is against `URL#pathname` only, so a query string or
+ * hash fragment (`?tab=files`, `#discussion_r1`) IS tolerated — those never
+ * reach GitHub's merge endpoint (only `owner`/`repo`/`number` are used to
+ * build that request URL), so their presence doesn't weaken the gate. This
+ * is the FIRST half of the pr_url security gate (see the module
+ * doc-comment) — a permissive parse of the PATH itself would undermine the
+ * owner/repo check that follows it.
  */
 export function parseGithubPrUrl(prUrl: string): ParsedPrUrl | null {
   let parsed: URL;
@@ -74,7 +79,14 @@ export function parseGithubPrUrl(prUrl: string): ParsedPrUrl | null {
   const m = parsed.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)$/);
   if (!m) return null;
   const number = Number(m[3]);
-  if (!Number.isInteger(number) || number <= 0) return null;
+  // #1343: bound to a JS safe integer, mirroring `parseOutcomeIssueNumber`
+  // (`apps/console/lib/outcome-format.ts`) — the regex's `\d+` alone accepts
+  // an unbounded digit run (e.g. a 24-digit "PR number"), which would
+  // otherwise interpolate a huge/imprecise numeric literal straight into the
+  // GitHub API path URL `mergePullRequestSquash` builds. GitHub would 404 on
+  // it (fail-closed even before this bound existed), but rejecting it here —
+  // before it ever reaches a request — is the honest, no-surprises parse.
+  if (!Number.isSafeInteger(number) || number <= 0) return null;
   return { owner: m[1]!, repo: m[2]!, number };
 }
 

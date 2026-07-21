@@ -80,6 +80,48 @@ describe("parseGithubPrUrl", () => {
     expect(parseGithubPrUrl("")).toBeNull();
     expect(parseGithubPrUrl("javascript:alert(1)")).toBeNull();
   });
+
+  // #1343 minor (b): bound the PR number to a JS safe integer, mirroring
+  // parseOutcomeIssueNumber (apps/console/lib/outcome-format.ts) — an
+  // unbounded `\d+` run would otherwise interpolate a huge/imprecise number
+  // into the GitHub API path URL mergePullRequestSquash builds.
+  it("rejects a PR number beyond Number.MAX_SAFE_INTEGER (a 24-digit run)", () => {
+    expect(
+      parseGithubPrUrl(
+        "https://github.com/octocat/hello-world/pull/123456789012345678901234"
+      )
+    ).toBeNull();
+  });
+
+  it("accepts a PR number AT the safe-integer boundary", () => {
+    expect(
+      parseGithubPrUrl(
+        `https://github.com/octocat/hello-world/pull/${Number.MAX_SAFE_INTEGER}`
+      )
+    ).toEqual({ owner: "octocat", repo: "hello-world", number: Number.MAX_SAFE_INTEGER });
+  });
+
+  it("rejects a PR number one past the safe-integer boundary", () => {
+    expect(
+      parseGithubPrUrl(
+        `https://github.com/octocat/hello-world/pull/${Number.MAX_SAFE_INTEGER + 2}`
+      )
+    ).toBeNull();
+  });
+
+  // #1343 minor (c): the doc-comment now says query/hash ARE tolerated (the
+  // match is against pathname only) — pin that actual, intentional behavior.
+  it("tolerates a query string after the PR number (matches pathname only, per the doc-comment)", () => {
+    expect(
+      parseGithubPrUrl("https://github.com/octocat/hello-world/pull/42?tab=files")
+    ).toEqual({ owner: "octocat", repo: "hello-world", number: 42 });
+  });
+
+  it("tolerates a hash fragment after the PR number (matches pathname only, per the doc-comment)", () => {
+    expect(
+      parseGithubPrUrl("https://github.com/octocat/hello-world/pull/42#discussion_r1")
+    ).toEqual({ owner: "octocat", repo: "hello-world", number: 42 });
+  });
 });
 
 describe("repoSlugFromExternalId", () => {

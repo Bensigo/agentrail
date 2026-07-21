@@ -138,6 +138,32 @@ export async function POST(request: NextRequest) {
     console.error("[runner/result] alignment-reconciler sweep failed:", err);
   }
 
+  // Duplicate-green honesty (#1343): recordRunnerResult reports `transitioned:
+  // false` when the queue entry was ALREADY green before this call — i.e. this
+  // POST is a replay/duplicate of an outcome already committed (operator
+  // replay, infra retry; today's runner client posts exactly once, so this is
+  // a defense-in-depth guard against a redelivery, not a routine path). On a
+  // genuine first-time green, `transitioned` is true and nothing below changes.
+  //
+  // Two things a duplicate must NOT do:
+  //   1. Re-attempt the merge: the PR was already handled by the FIRST call
+  //      (merged, or not — either way GitHub's real state hasn't changed just
+  //      because we got POSTed again); re-attempting only earns a GitHub 405
+  //      (not_mergeable, since it is already merged) that would otherwise be
+  //      recorded as a FALSE `merge_failed` lifecycle event ("PR left open")
+  //      when the PR is in fact already merged.
+  //   2. Re-send the chat notify: a second ping cannot correctly say "Merged"
+  //      (this call attempts no merge, so it has no evidence the PR merged)
+  //      and would otherwise read as "PR ready"/merged:false RIGHT AFTER a
+  //      first ping that said "Merged" — a contradictory pair for the same PR.
+  //
+  // `!== false` (not `result.transitioned === true`) so a `RecordRunnerResult`
+  // that never set the field (any not-yet-updated caller/test double) defaults
+  // to the pre-#1343 behavior — a genuine transition — never a silent
+  // behavior change for code this fix didn't touch.
+  const isDuplicateGreen =
+    result.terminalState === "green" && result.transitioned === false;
+
   // Merge enforcement (#1278 PR②): the CONSOLE-SIDE decision, at result time.
   // workspace.merge_permission is read FRESH here (never cached, never
   // threaded through the WorkItem/claim) — a revoke between claim and this
@@ -166,6 +192,7 @@ export async function POST(request: NextRequest) {
   let mergeOutcome: "merged" | "merge_failed" | "not_attempted" = "not_attempted";
   if (
     result.terminalState === "green" &&
+    !isDuplicateGreen &&
     typeof body.pr_url === "string" &&
     body.pr_url &&
     !onboardRepoFullName(result.externalId)
@@ -287,7 +314,14 @@ export async function POST(request: NextRequest) {
   // (onboard-notify.ts) instead of notifyRunOutcome, whose issue-shaped
   // message ("PR ready — issue #", empty number) is wrong for onboarding.
   // Everything else (the issue-kind path) is byte-identical to before.
-  if (result.terminalState) {
+  //
+  // #1343: `!isDuplicateGreen` skips this on a replayed green (see that
+  // constant's doc-comment above) — a second ping here could never correctly
+  // say "Merged" (this call attempted no merge) and would read as a
+  // contradiction of the first, real ping. Every other terminal (a genuine
+  // green, or escalated-to-human/blocked) is unaffected — isDuplicateGreen is
+  // only ever true for the green case.
+  if (result.terminalState && !isDuplicateGreen) {
     const repoFullName = onboardRepoFullName(result.externalId);
     try {
       if (repoFullName) {

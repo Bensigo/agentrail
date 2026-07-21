@@ -55,6 +55,28 @@ describe("setMergePermissionAction", () => {
     });
   });
 
+  // #1343 minor (d): a Server Action is a real wire endpoint, not just a
+  // typed function call — a raw POST can send anything regardless of the
+  // `boolean` TS signature. This must be rejected BEFORE the session/
+  // membership checks even run (it's a payload-shape problem, not an authz
+  // one) and, critically, before setMergePermission/Postgres ever sees it.
+  it.each([
+    ["a string", "true" as unknown as boolean],
+    ["a number", 1 as unknown as boolean],
+    ["null", null as unknown as boolean],
+    ["undefined", undefined as unknown as boolean],
+    ["an object", {} as unknown as boolean],
+  ])("rejects granted = %s — never reaches setMergePermission", async (_label, badGranted) => {
+    mockSession(OWNER_USER_ID);
+    mockMembership("owner");
+
+    const result = await setMergePermissionAction(WORKSPACE_ID, badGranted);
+
+    expect(result).toEqual({ ok: false, error: "granted must be a boolean." });
+    expect(setMergePermission).not.toHaveBeenCalled();
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
   it("rejects when not signed in, and never calls setMergePermission", async () => {
     mockSession(null);
 

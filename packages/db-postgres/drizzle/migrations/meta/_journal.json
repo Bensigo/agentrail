@@ -281,6 +281,13 @@
       "when": 1784538771938,
       "tag": "0038_run_outcomes",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1784594423709,
+      "tag": "0039_grant_events_restrict_user_delete",
+      "breakpoints": true
     }
   ]
 }

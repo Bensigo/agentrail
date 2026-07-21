@@ -987,8 +987,18 @@ export const ALIGNMENT_DENIED_PARK_REASON =
  * `handleApprovalCallback`) already gates this on `resolveApproval`'s own
  * atomic pending->approved flip, so a double-tap never reaches this function
  * twice; the guard covers the (still theoretical) case where the row left
- * `parked` some other way first. Returns `false` (no-op, never throws) when
- * no row matches `id` + `state = 'parked'` at statement-execution time —
+ * `parked` some other way first. The `state = 'parked'` predicate is repeated
+ * on the final UPDATE's OWN `WHERE` (`qe.state = 'parked'`), NOT left solely
+ * in the `target` CTE: under READ COMMITTED a CTE qualifier is evaluated once
+ * at the statement snapshot and is NOT re-checked when the row lock is finally
+ * taken, but a predicate on the UPDATE's target relation IS re-evaluated by
+ * Postgres's EvalPlanQual against the freshly-locked row version. Keeping it
+ * on the UPDATE is therefore what actually makes the no-op below true "at
+ * lock time" rather than merely "at snapshot time" — a concurrent writer that
+ * moves the row out of `parked` inside the confirm window causes zero rows to
+ * match instead of this statement clobbering it. Do NOT fold this back into
+ * the CTE. Returns `false` (no-op, never throws) when no row matches `id` +
+ * `state = 'parked'` at lock time —
  * including the #1341 requireAlignment-flip edge (operator flips
  * `require_alignment` off mid-flight -> a dependency clears -> the row
  * releases to `queued` via `unparkDependents`'s own `!requireAlignment`
@@ -1062,7 +1072,7 @@ export async function confirmAlignmentBrief(input: {
       task_type = ${input.taskType},
       updated_at = now()
     FROM agg
-    WHERE qe.id = agg.id
+    WHERE qe.id = agg.id AND qe.state = 'parked'
     RETURNING qe.id
   `)) as unknown as Array<{ id: string }>;
   return Array.from(rows).length > 0;

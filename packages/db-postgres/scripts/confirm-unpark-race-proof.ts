@@ -32,6 +32,9 @@
  *   4. The requireAlignment-flip edge (#1341 item 4) end-to-end.
  *   5. Belt-and-suspenders guard: unpark's re-park UPDATE is a genuine no-op
  *      once a budget is already written.
+ *   6. confirm's OWN `state = 'parked'` guard is re-checked at lock time
+ *      (EvalPlanQual), not snapshot-only: a row that leaves `parked` while
+ *      confirm is blocked on its row lock is NOT clobbered with a budget.
  */
 import postgres from "postgres";
 import { sql } from "drizzle-orm";
@@ -491,6 +494,67 @@ async function section5BeltAndSuspenders() {
   }
 }
 
+/**
+ * Section 6 (added in #1341 review): proves confirm's OWN `state = 'parked'`
+ * guard lives on the final UPDATE, not just the `target` CTE — so it is
+ * re-checked at LOCK time (EvalPlanQual), not merely at snapshot time. This is
+ * the case the mocked flip-edge test structurally CANNOT cover: there the row
+ * has already left `parked` before confirm even reads it (snapshot excludes
+ * it). Here the row is genuinely `parked` when confirm's statement takes its
+ * snapshot (so the CTE DOES pick it up), and only transitions to `queued`
+ * while confirm is blocked on the row lock. If the guard were left solely in
+ * the CTE, EvalPlanQual would re-check only `qe.id = agg.id` and confirm would
+ * clobber the now-`queued` row with a budget; with the guard on the UPDATE the
+ * re-check sees `state = 'queued'` and matches zero rows.
+ */
+async function section6ConfirmGuardRecheckedAtLockTime() {
+  console.log(
+    "\n=== 6. confirm's state='parked' guard is EvalPlanQual-re-checked at lock time (not snapshot-only) ==="
+  );
+  const ws = await makeWorkspace(true);
+  const raw = postgres(DATABASE_URL, { max: 1 });
+  try {
+    // No blockers: absent any race, confirm WOULD release this to
+    // queued-with-budget — so a wrongly-unguarded write is unmistakable
+    // (budget lands where it must not).
+    const dep = await insertRow({ workspaceId: ws, externalId: "acme/guard#1", state: "parked" });
+
+    // Connection L: transition the row OUT of `parked` and hold the txn open so
+    // its row lock blocks confirm's UPDATE.
+    const held = raw.begin(async (l) => {
+      await l`UPDATE queue_entries SET state = 'queued' WHERE id = ${dep}`;
+      await new Promise<void>((resolve) => {
+        releaseLockResolvers.push(resolve);
+      });
+    });
+    // Let L acquire the lock and apply its (uncommitted) change first.
+    await new Promise((r) => setTimeout(r, 150));
+
+    // confirm's statement snapshot is taken NOW (row still `parked` to it,
+    // since L is uncommitted) — the CTE picks the row up — then its UPDATE
+    // blocks on L's lock.
+    const confirmPromise = confirmAlignmentBrief({
+      queueEntryId: dep,
+      estimatedBudgetUsd: 9.99,
+      modelOverride: "anthropic/claude-sonnet-5",
+      taskType: null,
+    });
+    await new Promise((r) => setTimeout(r, 150)); // confirm reaches + blocks on the lock
+    releaseLock(); // L commits state='queued'; confirm wakes and re-checks
+    await held;
+
+    const confirmed = await confirmPromise;
+    const row = await readRow(dep);
+    console.log(`  [guard] confirmed=${confirmed} -> state=${row.state} budget=${row.estimated_budget_usd}`);
+    check("guard: confirm no-ops once the row left parked (lock-time re-check)", confirmed === false, confirmed);
+    check("guard: budget NEVER written onto the no-longer-parked row", row.estimated_budget_usd === null, row.estimated_budget_usd);
+    check("guard: state untouched (stays queued from L's commit)", row.state === "queued", row.state);
+  } finally {
+    await raw.end({ timeout: 5 });
+    await dropWorkspace(ws);
+  }
+}
+
 async function main() {
   console.log(`Connecting to ${DATABASE_URL.replace(/:[^:@]+@/, ":***@")}`);
   await section1FourOrderingMatrix();
@@ -498,6 +562,7 @@ async function main() {
   await section3StressTrials(20);
   await section4RequireAlignmentFlip();
   await section5BeltAndSuspenders();
+  await section6ConfirmGuardRecheckedAtLockTime();
 
   console.log(`\n=== SUMMARY: ${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`} ===`);
   process.exit(failures === 0 ? 0 : 1);

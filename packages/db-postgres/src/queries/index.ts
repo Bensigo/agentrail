@@ -2273,3 +2273,38 @@ export {
   hasAnyJaceReply,
   type AppendJaceMessageInput,
 } from "./jace_messages.js";
+// Jace goal loop (issue #1289; see `queries/goal_rules.ts` for the pure
+// leash+stuck-rule decision engine this all wraps, and `queries/goals.ts`
+// for the full design). `isGoalLoopEnabled` is the workspace-flag gate
+// every entry point must check first (default OFF); `createGoal` is the
+// gated create_goal tool's own write; `findActiveGoalForIssue` +
+// `recordIssueFiled` + `recordOutcomeAndTransition` are the issue<->goal
+// mapping and the evaluate-on-outcome path; `pauseGoal`/`abandonGoal`/
+// `markGoalReached` are the human-only manual controls.
+export {
+  isGoalLoopEnabled,
+  createGoal,
+  type CreateGoalInput,
+  getGoalById,
+  listActiveGoalsForWorkspace,
+  findActiveGoalForIssue,
+  recordIssueFiled,
+  recordOutcomeAndTransition,
+  type RecordOutcomeInput,
+  type RecordOutcomeResult,
+  goalCanFileNextIssue,
+  pauseGoal,
+  abandonGoal,
+  markGoalReached,
+  type GoalOutcome,
+  type GoalAction,
+  type GoalCheckType,
+} from "./goals.js";
+export {
+  decideGoalTransition,
+  canFileNextIssue,
+  type GoalStatus,
+  type GoalLeashState,
+  type GoalOutcomeEvent,
+  type GoalTransitionResult,
+} from "./goal_rules.js";

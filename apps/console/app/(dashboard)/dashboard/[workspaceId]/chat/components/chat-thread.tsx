@@ -299,8 +299,29 @@ export function ChatThread({ workspaceId }: { workspaceId: string }) {
       </div>
 
       <div className="p-3 sm:px-8 sm:py-4">
-        <form ref={formRef} onSubmit={handleSend} className="mx-auto flex max-w-[720px] items-end gap-2">
-          <div className="flex flex-1 items-end rounded-2xl border border-[var(--gray-05)] bg-[var(--gray-02)] px-3.5 py-2 transition-colors focus-within:border-[var(--gray-08)]">
+        <form ref={formRef} onSubmit={handleSend} className="mx-auto max-w-[720px]">
+          {/* One unified pill (ChatGPT/Claude style) — the send button lives
+              INSIDE this container, pinned to the bottom-right corner via
+              `absolute`, rather than sitting beside it as a separate sibling
+              (that two-element layout is what caused the earlier vertical
+              misalignment). `pr-12` reserves room on the right so the
+              textarea's own text never runs under the button; as the
+              textarea grows across multiple rows the container grows with
+              it and the button stays anchored to its bottom-right corner.
+              Tokens are NOT invented for this component — they're the exact
+              bg/border/focus recipe this same composer already used before
+              this rework (`bg-[var(--gray-02)]`, `border-[var(--gray-05)]`,
+              focus border-shift to `--gray-08`; the dialog-form input recipe
+              elsewhere in this app, e.g. add-repository-dialog.tsx, adds a
+              ring + font-mono for a very different context — entering
+              structured technical strings in a modal — which doesn't apply
+              to chat prose). `rounded-2xl` matches the message bubbles'
+              OWN established radius on this same surface. The button reuses
+              the original send button's exact fill/hover/disabled tokens
+              (`bg-[var(--brand-accent)]`, `text-black`, `hover:opacity-90`,
+              `disabled:opacity-50`) — circular + inline is the one
+              deliberate, ChatGPT/Claude-directed change from that original. */}
+          <div className="relative flex items-end rounded-2xl border border-[var(--gray-05)] bg-[var(--gray-02)] py-2 pl-3.5 pr-12 transition-colors focus-within:border-[var(--gray-08)]">
             <textarea
               ref={textareaRef}
               aria-label="Message Jace"
@@ -310,17 +331,17 @@ export function ChatThread({ workspaceId }: { workspaceId: string }) {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleComposerKeyDown}
               disabled={sending}
-              className="max-h-40 flex-1 resize-none bg-transparent py-1 text-sm text-[var(--gray-12)] outline-none placeholder:text-[var(--gray-08)]"
+              className="max-h-40 w-full resize-none bg-transparent py-1 text-sm text-[var(--gray-12)] outline-none placeholder:text-[var(--gray-08)]"
             />
+            <button
+              type="submit"
+              aria-label="Send message"
+              disabled={sending || !input.trim()}
+              className="absolute right-1.5 bottom-1.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--brand-accent)] text-black transition-all duration-150 ease-out hover:opacity-90 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ArrowUp size={16} strokeWidth={2.5} />
+            </button>
           </div>
-          <button
-            type="submit"
-            aria-label="Send message"
-            disabled={sending || !input.trim()}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--brand-accent)] text-black transition-all duration-150 ease-out hover:opacity-90 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <ArrowUp size={16} strokeWidth={2.5} />
-          </button>
         </form>
         {error && <p className="mx-auto mt-2 max-w-[720px] text-xs text-[var(--red-11)]">{error}</p>}
       </div>

@@ -1864,6 +1864,15 @@ export {
 // raw drizzle/SQL access stays in this package (see findWorkspaceByRepo's own
 // raw-SQL idiom this mirrors); the console layer only ever calls this
 // exported function.
+// findQueueEntryByExternalId/reviseAlignmentBrief (#1345 PR②) are the revise
+// loop's state-transition half: a denied alignment brief today parks its
+// queue entry PERMANENTLY (no mechanized way to reshape scope and try
+// again). reviseAlignmentBrief supersedes that denial back to "awaiting
+// alignment" (NEVER touching `state` or writing anything but `null` into
+// estimatedBudgetUsd/modelOverride/taskType — the ONLY function that can
+// ever flip a row to `queued` remains confirmAlignmentBrief, untouched by
+// this PR); findQueueEntryByExternalId is how the console's revise route
+// resolves WHICH queue entry an edited GitHub issue maps to.
 export {
   validateAcceptanceCriteria,
   findWorkspaceByRepo,
@@ -1877,10 +1886,14 @@ export {
   denyAlignmentBrief,
   requeueParkedQueueEntry,
   findAlignmentBriefCandidates,
+  findQueueEntryByExternalId,
+  reviseAlignmentBrief,
   type AcGateResult,
   type EnqueueResult,
   type RequeueParkedQueueEntryResult,
   type AlignmentBriefCandidate,
+  type QueueEntryLookup,
+  type ReviseAlignmentBriefResult,
 } from "./github_intake.js";
 
 // Jace inbound intake — the coordinator's kill switch: a pure allow/deny gate on

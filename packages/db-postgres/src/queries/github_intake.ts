@@ -1107,6 +1107,167 @@ export async function denyAlignmentBrief(queueEntryId: string): Promise<boolean>
   return result.length > 0;
 }
 
+// --- revise loop (#1345 PR②) --------------------------------------------------
+//
+// Today, a denied alignment brief parks its queue entry with
+// ALIGNMENT_DENIED_PARK_REASON PERMANENTLY: neither unparkDependents nor
+// requeueParkedQueueEntry below will ever touch a row carrying it, and there
+// is no mechanized way to reshape the ask and try again (only a human
+// hand-editing the GitHub issue). The two functions below are the state-
+// transition half of the fix: `findQueueEntryByExternalId` is how the
+// console's revise route (apps/console/app/api/v1/runner/queue-entries/
+// revise/route.ts) finds WHICH queue entry a `update_issue` tool call's
+// edited issue maps to, and `reviseAlignmentBrief` is what actually
+// supersedes the denial — clearing it back to "awaiting alignment" so a
+// FRESH brief can be composed+posted (via `alignment-reconciler.ts`'s
+// `postAlignmentBrief`, reusing the exact same composer, with a request id
+// distinct from the denied approval's own so a NEW `jace_approvals` row is
+// created rather than colliding with the resolved one — see that function's
+// own `requestId` param).
+//
+// AC3 (the gate invariant, CRITICAL): `reviseAlignmentBrief` NEVER touches
+// `state` (the row stays 'parked' the entire time, before/during/after this
+// call) and NEVER writes `estimatedBudgetUsd`/`modelOverride`/`taskType` to
+// anything but `null`. The ONLY function that can ever flip `state` to
+// `queued` is {@link confirmAlignmentBrief} above — completely untouched by
+// this PR — which requires a fresh `approved` `alignment_brief` approval to
+// have been resolved first (via `applyAlignmentDecision`,
+// `apps/console/lib/approval-decision.ts`). A revised-but-not-yet-confirmed
+// row is therefore indistinguishable, to every other reader in this file
+// (`unparkDependents`'s `aligned` check, `requeueParkedQueueEntry`'s
+// `aligned` check, a runner `claim` — which only ever grabs `state =
+// 'queued'` rows), from any other not-yet-confirmed alignment hold: it
+// cannot be released by a resolved dependency, cannot be Requeue-button'd
+// past the gate, and cannot be claimed. A denied entry can go through this
+// revise→re-brief cycle any number of times (deny → revise → deny → revise
+// → ...) — each cycle is symmetric with the very first admission-time
+// brief, just re-entered from a different starting park reason.
+
+/**
+ * Read-only lookup: find a GitHub-sourced queue entry by its (workspace,
+ * repo, issue number) address — the deterministic `owner/repo#N` external id
+ * {@link enqueueGithubIssue} writes. Exported (rather than exporting
+ * `entryId`'s internal uuid5-hashing helper itself) so the console's revise
+ * route can find WHICH parked entry an `update_issue` tool call's edited
+ * issue corresponds to without needing to know how that id is derived.
+ */
+export interface QueueEntryLookup {
+  id: string;
+  state: string;
+  parkReason: string | null;
+  title: string;
+  body: string;
+}
+
+export async function findQueueEntryByExternalId(
+  workspaceId: string,
+  repoFullName: string,
+  number: number
+): Promise<QueueEntryLookup | null> {
+  const externalId = `${repoFullName}#${number}`;
+  const rows = await db
+    .select({
+      id: queueEntries.id,
+      state: queueEntries.state,
+      parkReason: queueEntries.parkReason,
+      title: queueEntries.title,
+      body: queueEntries.body,
+    })
+    .from(queueEntries)
+    .where(
+      and(
+        eq(queueEntries.workspaceId, workspaceId),
+        eq(queueEntries.source, "github"),
+        eq(queueEntries.externalId, externalId)
+      )
+    );
+  return rows[0] ?? null;
+}
+
+/**
+ * Outcome of {@link reviseAlignmentBrief} — discriminated (not a bare
+ * boolean) so the caller (the console revise route) can log/respond with an
+ * honest, specific reason. `updatedAt` on success is what the caller folds
+ * into the fresh brief's request id (see that route's own comment) so two
+ * separate revise rounds for the SAME queue entry never collide on the same
+ * `jace_approvals` request id.
+ */
+export type ReviseAlignmentBriefResult =
+  | { ok: true; updatedAt: Date }
+  | { ok: false; reason: "not_found" | "not_denied" };
+
+/**
+ * Supersede a DENIED alignment hold with the user's revised title/body,
+ * clearing the denial back to {@link ALIGNMENT_PARK_REASON} ("awaiting
+ * alignment") so a fresh brief can be posted — the state-transition half of
+ * the #1345 revise loop.
+ *
+ * Guarded exactly like {@link denyAlignmentBrief}/{@link confirmAlignmentBrief}:
+ * a read-then-write in one transaction so the caller gets an HONEST reason
+ * (`not_found` vs `not_denied`) rather than a bare boolean, while the actual
+ * enforcement is the final UPDATE's own `WHERE` — re-asserting `state =
+ * 'parked' AND park_reason = ALIGNMENT_DENIED_PARK_REASON` at write time,
+ * never trusted from the initial read alone (mirrors
+ * `requeueParkedQueueEntry`'s own rationale for the same shape). Returns
+ * `not_denied` for ANY entry not currently in the denied state — including
+ * one that raced to a different state between the read and the write, or a
+ * SECOND call for a revise that already succeeded (the first call already
+ * cleared the denial, so `park_reason` no longer matches and this is a safe
+ * no-op). That idempotency is also what makes the CALLER's own re-brief-post
+ * safe to gate on this function's result: it only ever composes+posts a
+ * fresh brief when this returns `ok: true`, so a retried HTTP call can never
+ * post two briefs for one genuine revise.
+ *
+ * NEVER writes `state` (stays `parked` throughout — see this section's own
+ * "AC3" note above) and explicitly resets `estimatedBudgetUsd`/
+ * `modelOverride`/`taskType` to `null` — not just "leaves them alone": a
+ * denied entry never had them set in the first place (only
+ * `confirmAlignmentBrief` ever writes those three columns, and it never ran
+ * for a denied entry), but spelling it out here is defense-in-depth against
+ * this function ever being reused for a row that somehow did carry stale
+ * values.
+ */
+export async function reviseAlignmentBrief(input: {
+  queueEntryId: string;
+  title: string;
+  body: string;
+}): Promise<ReviseAlignmentBriefResult> {
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .select({ state: queueEntries.state, parkReason: queueEntries.parkReason })
+      .from(queueEntries)
+      .where(eq(queueEntries.id, input.queueEntryId));
+    const row = rows[0];
+    if (!row) return { ok: false, reason: "not_found" as const };
+    if (row.state !== "parked" || row.parkReason !== ALIGNMENT_DENIED_PARK_REASON) {
+      return { ok: false, reason: "not_denied" as const };
+    }
+
+    const updated = await tx
+      .update(queueEntries)
+      .set({
+        title: input.title,
+        body: input.body,
+        parkReason: ALIGNMENT_PARK_REASON,
+        estimatedBudgetUsd: null,
+        modelOverride: null,
+        taskType: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(queueEntries.id, input.queueEntryId),
+          eq(queueEntries.state, "parked"),
+          eq(queueEntries.parkReason, ALIGNMENT_DENIED_PARK_REASON)
+        )
+      )
+      .returning({ updatedAt: queueEntries.updatedAt });
+
+    if (updated.length === 0) return { ok: false, reason: "not_denied" as const };
+    return { ok: true, updatedAt: updated[0]!.updatedAt };
+  });
+}
+
 /**
  * Outcome of a {@link requeueParkedQueueEntry} call — discriminated so the
  * console (#1276 PR ②) can show an honest, specific reason rather than a

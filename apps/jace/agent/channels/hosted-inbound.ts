@@ -1,13 +1,16 @@
-// Jace's hosted-inbound DOOR channel (#1262 PR ②) — the AgentRail console's
-// dispatcher target. A stranger's DM to the shared Telegram bot lands in
-// `channel_inbox` via the console's webhook (PR ①); the console's dispatcher
-// then claims that row, resolves conversation -> workspace via the #1261
-// identity spine, and POSTs here so the message becomes a real Eve turn.
+// Jace's hosted-inbound DOOR channel (#1262 PR ②; generalized to every
+// hosted-shared-bot channel by #1284/#1285) — the AgentRail console's
+// dispatcher target. A stranger's DM/message to a shared bot (Telegram,
+// Discord, Slack) lands in `channel_inbox` via the console's webhook (PR ①
+// per channel); the console's dispatcher then claims that row, resolves
+// conversation -> workspace via the #1261 identity spine, and POSTs here so
+// the message becomes a real Eve turn.
 //
 // This is a CUSTOM Eve channel (`defineChannel`) whose single route hands the
-// message to the native `telegram` channel via `args.receive(channel,
-// { message, target, auth })` — the documented cross-channel hand-off (the
-// same primitive `run-outcome.ts` uses for the OUTBOUND direction). The
+// message to the native channel module (telegram/discord/slack, selected by
+// the normalized `channel` field — same CHANNELS-map convention as
+// `run-outcome.ts` uses for the OUTBOUND direction) via `args.receive(module,
+// { message, target, auth })` — the documented cross-channel hand-off. The
 // route below is declared at the literal path `/eve/v1/hosted-inbound` —
 // routes mount at the literal declared path; /eve/v1/<id> is an adapter
 // default, not a framework rewrite, so the channel id alone does NOT
@@ -29,8 +32,8 @@
 // hardening this boundary is explicitly deferred to a later wave.
 //
 // Kept thin on purpose: no DB, no parsing beyond validation, no
-// telegram-specific logic besides passing `target` through. All
-// validation/normalization is in the pure, unit-tested
+// channel-specific logic besides selecting the module and passing `target`
+// through. All validation/normalization is in the pure, unit-tested
 // `agent/lib/hosted_inbound.core.mjs`; this wrapper only calls `receive`.
 //
 // NOTE: `defineChannel`/`POST`/`args.receive` shape follows the eve@0.19.0
@@ -46,6 +49,20 @@
 import { defineChannel, POST } from "eve/channels";
 import { normalizeHostedInbound } from "../lib/hosted_inbound.core.mjs";
 import telegram from "./telegram.js";
+import discord from "./discord.js";
+import slack from "./slack.js";
+
+/**
+ * Channel id -> Eve channel module — the SAME set `normalizeHostedInbound`
+ * validates against (`HOSTED_INBOUND_CHANNELS`), mirroring run-outcome.ts's
+ * own `CHANNELS` map for the outbound direction. iMessage is deliberately
+ * absent: it has no inbound HTTP surface (LoopMessage is outbound-only, see
+ * run_outcome.core.mjs's doc-comment) — normalizeHostedInbound would accept
+ * `channel: "imessage"` (it shares run_outcome's TARGET_KEY set), but no
+ * webhook route ever sends it, so this map staying telegram/discord/slack is
+ * not a gap.
+ */
+const CHANNELS: Record<string, unknown> = { telegram, discord, slack };
 
 /** Small JSON responder (the route contract is machine-to-machine, not a page). */
 function json(body: unknown, status = 200): Response {
@@ -77,9 +94,21 @@ export default defineChannel({
         );
       }
 
+      const channelModule = CHANNELS[normalized.channel];
+      if (!channelModule) {
+        return json(
+          { error: `hosted-inbound: channel '${normalized.channel}' is not wired.` },
+          400,
+        );
+      }
+
       // AWAIT, not waitUntil: the dispatcher needs sessionId synchronously to
       // write its ledger (bindEveSession) — see the header comment above.
-      const session = await args.receive(telegram, normalized);
+      const session = await args.receive(channelModule, {
+        message: normalized.message,
+        target: normalized.target,
+        auth: normalized.auth,
+      });
 
       return json({
         ok: true,

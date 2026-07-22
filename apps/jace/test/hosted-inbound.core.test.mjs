@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeHostedInbound } from "../agent/lib/hosted_inbound.core.mjs";
+import {
+  normalizeHostedInbound,
+  HOSTED_INBOUND_CHANNELS,
+} from "../agent/lib/hosted_inbound.core.mjs";
 
 test("normalizeHostedInbound accepts a valid minimal payload", () => {
   const out = normalizeHostedInbound({
@@ -9,10 +12,68 @@ test("normalizeHostedInbound accepts a valid minimal payload", () => {
     auth: { authenticator: "agentrail", principalType: "service", principalId: "chat-identity-1" },
   });
   assert.deepEqual(out, {
+    channel: "telegram",
     message: "hello jace",
     target: { chatId: 555 },
     auth: { authenticator: "agentrail", principalType: "service", principalId: "chat-identity-1" },
   });
+});
+
+// --- #1284/#1285: multi-channel generalization ------------------------------
+
+test("`channel` absent defaults to 'telegram' — every pre-#1284 caller never sent this field", () => {
+  const out = normalizeHostedInbound({ message: "hi", target: { chatId: 1 }, auth: {} });
+  assert.equal(out.channel, "telegram");
+});
+
+test("accepts an explicit channel: 'discord' with a channelId target", () => {
+  const out = normalizeHostedInbound({
+    channel: "discord",
+    message: "hi from discord",
+    target: { channelId: "123456789" },
+    auth: {},
+  });
+  assert.deepEqual(out, {
+    channel: "discord",
+    message: "hi from discord",
+    target: { channelId: "123456789" },
+    auth: {},
+  });
+});
+
+test("accepts an explicit channel: 'slack' with a channelId target", () => {
+  const out = normalizeHostedInbound({
+    channel: "slack",
+    message: "hi from slack",
+    target: { channelId: "D0PNCRP9N" },
+    auth: {},
+  });
+  assert.deepEqual(out, {
+    channel: "slack",
+    message: "hi from slack",
+    target: { channelId: "D0PNCRP9N" },
+    auth: {},
+  });
+});
+
+test("rejects an unknown channel", () => {
+  assert.throws(
+    () => normalizeHostedInbound({ channel: "carrier-pigeon", message: "hi", target: {}, auth: {} }),
+    /unknown channel 'carrier-pigeon'/,
+  );
+});
+
+test("a discord/slack payload keyed on chatId (the telegram field name) is rejected — the channel's OWN target key is required, not a generic one", () => {
+  assert.throws(
+    () => normalizeHostedInbound({ channel: "discord", message: "hi", target: { chatId: 1 }, auth: {} }),
+    /`target\.channelId` is required/,
+  );
+});
+
+test("HOSTED_INBOUND_CHANNELS includes telegram, discord, and slack", () => {
+  assert.ok(HOSTED_INBOUND_CHANNELS.includes("telegram"));
+  assert.ok(HOSTED_INBOUND_CHANNELS.includes("discord"));
+  assert.ok(HOSTED_INBOUND_CHANNELS.includes("slack"));
 });
 
 test("normalizeHostedInbound trims the message", () => {

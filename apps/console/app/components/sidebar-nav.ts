@@ -15,6 +15,7 @@ import {
   GitMerge,
   Cpu,
   MessageCircle,
+  Target,
 } from "lucide-react";
 
 export interface NavItem {
@@ -60,6 +61,15 @@ export const YOUR_ENGINEER_ZONE: NavZone = {
  * `dashboard/[workspaceId]/layout.tsx` via `isConsoleChatEnabled` — is true.
  */
 export const CHAT_NAV_ITEM: NavItem = { label: "Chat", href: "chat", icon: MessageCircle };
+
+/**
+ * The Goals nav item (#1289 AC2) — same deliberately-not-baked-in posture as
+ * `CHAT_NAV_ITEM` above, for the same reason: this must not appear at all
+ * for a workspace `jaceGoalLoop` is off for (default OFF). `sidebar.tsx`
+ * splices this in only when its `goalsEnabled` prop — computed server-side
+ * in `dashboard/[workspaceId]/layout.tsx` via `isGoalLoopEnabled` — is true.
+ */
+export const GOALS_NAV_ITEM: NavItem = { label: "Goals", href: "goals", icon: Target };
 
 // Demoted, existing evidence pages — collapsed by default, reached primarily
 // by drilling into a work item (spec §3).

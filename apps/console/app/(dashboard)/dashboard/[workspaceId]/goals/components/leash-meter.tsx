@@ -17,8 +17,10 @@ export function LeashMeter({
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between gap-2 text-xs">
-        <span className="text-[var(--gray-09)]">{label}</span>
-        <span className="font-mono text-[var(--gray-11)]">{display}</span>
+        <span className="min-w-0 truncate text-[var(--gray-09)]">{label}</span>
+        <span className="shrink-0 whitespace-nowrap font-mono text-[var(--gray-11)]">
+          {display}
+        </span>
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--gray-04)]">
         <div

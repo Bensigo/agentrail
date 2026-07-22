@@ -85,7 +85,7 @@ export function PhoneDemo() {
     <div
       ref={frameRef}
       style={TELEGRAM_SURFACE}
-      className="w-[340px] overflow-hidden rounded-[2rem] border-2 border-[var(--gray-13)] shadow-[6px_6px_0_0_var(--gray-13)] [background:var(--tg-wallpaper)] sm:w-[400px]"
+      className="w-[340px] overflow-hidden rounded-[2rem] border-2 border-[var(--gray-13)] shadow-[6px_6px_0_0_var(--gray-13)] sm:w-[400px]"
     >
       <div className="grid grid-cols-[2rem_1fr_2.5rem] items-center bg-[var(--gray-00)]/70 px-3 py-2 text-[var(--gray-13)] backdrop-blur-sm">
         <ChevronLeft size={22} aria-hidden className="shrink-0" />

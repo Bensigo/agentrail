@@ -288,6 +288,13 @@
       "when": 1784594423709,
       "tag": "0039_grant_events_restrict_user_delete",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1784703283388,
+      "tag": "0040_chat_identities_signup_token",
+      "breakpoints": true
     }
   ]
 }

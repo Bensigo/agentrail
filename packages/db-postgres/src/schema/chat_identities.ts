@@ -11,6 +11,18 @@ import { workspaces } from "./workspaces.js";
  * later PR), never an error. `link_token` is a one-time connect-GitHub token
  * slot — issuance, binding, and expiry are issue #1263; this table only
  * reserves the column.
+ *
+ * `signup_token` / `signup_token_expires_at` (issue #1364) are a SEPARATE
+ * one-time token slot for the sign-up seam — a plain account-creation magic
+ * link, deliberately distinct from `link_token` (GitHub-connect): the two
+ * complete different things (sign-up mints a bare console account with no
+ * GitHub involved; connect binds/upgrades to a GitHub-backed one) and a
+ * sender may legitimately have one pending while the other has already been
+ * consumed, so sharing a single column would let minting one silently
+ * invalidate the other. Same shape, same single-use/expiry contract as
+ * `link_token` — see `queries/chat_identities.ts`'s
+ * `setChatIdentitySignupToken` / `consumeChatIdentitySignupToken` for the
+ * atomic consume pattern this table only reserves storage for.
  */
 export const chatIdentities = pgTable(
   "chat_identities",
@@ -30,6 +42,10 @@ export const chatIdentities = pgTable(
     linkTokenExpiresAt: timestamp("link_token_expires_at", {
       withTimezone: true,
     }),
+    signupToken: text("signup_token"),
+    signupTokenExpiresAt: timestamp("signup_token_expires_at", {
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -44,6 +60,9 @@ export const chatIdentities = pgTable(
     ),
     linkTokenUnique: unique("chat_identities_link_token_unique").on(
       t.linkToken
+    ),
+    signupTokenUnique: unique("chat_identities_signup_token_unique").on(
+      t.signupToken
     ),
   })
 );

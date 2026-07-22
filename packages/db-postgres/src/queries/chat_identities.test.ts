@@ -29,6 +29,9 @@ import {
   setChatIdentityLinkToken,
   getChatIdentityByLinkToken,
   consumeChatIdentityLinkToken,
+  setChatIdentitySignupToken,
+  consumeChatIdentitySignupToken,
+  findChatIdentityBySignupToken,
   resolveInboundChatIdentity,
   listWorkspacesForChatIdentity,
 } from "./chat_identities.js";
@@ -76,6 +79,8 @@ const MOCK_IDENTITY = {
   workspaceId: null,
   linkToken: null,
   linkTokenExpiresAt: null,
+  signupToken: null,
+  signupTokenExpiresAt: null,
   createdAt: NOW,
   updatedAt: NOW,
 };
@@ -301,6 +306,181 @@ describe("consumeChatIdentityLinkToken", () => {
     const result = await consumeChatIdentityLinkToken("expired-or-unknown-token");
 
     expect(result).toBeNull();
+  });
+});
+
+describe("setChatIdentitySignupToken", () => {
+  it("sets signupToken, signupTokenExpiresAt, and touches updatedAt for the given identity id", async () => {
+    const updateChain = makeChain("where", undefined);
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+    const expiresAt = new Date("2026-08-01T00:00:00Z");
+
+    await setChatIdentitySignupToken("chat-identity-1", "signup-tok-abc", expiresAt);
+
+    const setCalls = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls;
+    expect(setCalls[0]?.[0]?.signupToken).toBe("signup-tok-abc");
+    expect(setCalls[0]?.[0]?.signupTokenExpiresAt).toBe(expiresAt);
+    expect(setCalls[0]?.[0]?.updatedAt).toBeInstanceOf(Date);
+    expect(updateChain.where).toHaveBeenCalled();
+  });
+});
+
+describe("consumeChatIdentitySignupToken", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("nulls signup_token/signup_token_expires_at and touches updatedAt, guarded by BOTH token equality and expiry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const consumedRow = {
+      ...MOCK_IDENTITY,
+      signupToken: null,
+      signupTokenExpiresAt: null,
+      updatedAt: NOW,
+    };
+    const updateChain = makeChain("returning", [consumedRow]);
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+
+    const result = await consumeChatIdentitySignupToken("signup-tok-abc");
+
+    expect(mockDb.update).toHaveBeenCalled();
+
+    // .set shape: both signup columns nulled, updatedAt touched to the SAME
+    // "now" the WHERE guard below is checked against — same one-clock-read
+    // idiom as consumeChatIdentityLinkToken above.
+    const setCalls = (updateChain.set as ReturnType<typeof vi.fn>).mock.calls;
+    expect(setCalls[0]?.[0]).toEqual({
+      signupToken: null,
+      signupTokenExpiresAt: null,
+      updatedAt: NOW,
+    });
+
+    // Argument-level condition assertion (see consumeChatIdentityLinkToken's
+    // own test above for the rationale): a mutation that drops the expiry
+    // half of the `and(...)` — letting an EXPIRED signup token still be
+    // consumed (AC3) — changes the rendered SQL text and fails this
+    // comparison even though the mocked `.returning()` value would stay
+    // green regardless.
+    const whereArgs = (updateChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(whereArgs)).toEqual(
+      renderCondition(
+        and(
+          eq(chatIdentities.signupToken, "signup-tok-abc"),
+          gt(chatIdentities.signupTokenExpiresAt, NOW)
+        )
+      )
+    );
+
+    expect(result).toEqual(consumedRow);
+  });
+
+  it("returns null when the UPDATE matches no row (expired, already-used, or unknown token — indistinguishable by design, AC3)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const updateChain = makeChain("returning", []);
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+
+    const result = await consumeChatIdentitySignupToken("expired-or-unknown-signup-token");
+
+    expect(result).toBeNull();
+  });
+
+  it("a SECOND concurrent consume of the same token gets null — single-use even under a race (AC3): the WHERE clause only matches the row while the token column is still non-null, and this update already nulled it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    // First caller: UPDATE matches the row (token still set), returns it.
+    const firstChain = makeChain("returning", [
+      { ...MOCK_IDENTITY, signupToken: null, signupTokenExpiresAt: null, updatedAt: NOW },
+    ]);
+    mockDb.update = vi.fn(() => firstChain as ReturnType<typeof db.update>);
+    const first = await consumeChatIdentitySignupToken("race-tok");
+    expect(first).not.toBeNull();
+
+    // Second (concurrent) caller: same token, but the column is already null
+    // in the real DB by the time this WHERE evaluates — modeled here by the
+    // second UPDATE's own WHERE simply matching zero rows.
+    const secondChain = makeChain("returning", []);
+    mockDb.update = vi.fn(() => secondChain as ReturnType<typeof db.update>);
+    const second = await consumeChatIdentitySignupToken("race-tok");
+    expect(second).toBeNull();
+  });
+});
+
+describe("findChatIdentityBySignupToken (anti-unfurl fix, issue #1364)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("READ-ONLY: never touches db.update — a bare lookup can never consume the token", async () => {
+    const selectChain = makeChain("limit", [MOCK_IDENTITY]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+    const updateSpy = vi.fn();
+    mockDb.update = updateSpy as unknown as typeof db.update;
+
+    await findChatIdentityBySignupToken("tok-abc");
+
+    expect(mockDb.select).toHaveBeenCalled();
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns the row for a matching, unexpired token, guarded by BOTH token equality and expiry (same guard shape as the atomic consume)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const selectChain = makeChain("limit", [MOCK_IDENTITY]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await findChatIdentityBySignupToken("tok-abc");
+
+    expect(result).toEqual(MOCK_IDENTITY);
+    const whereArgs = (selectChain.where as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(renderCondition(whereArgs)).toEqual(
+      renderCondition(
+        and(
+          eq(chatIdentities.signupToken, "tok-abc"),
+          gt(chatIdentities.signupTokenExpiresAt, NOW)
+        )
+      )
+    );
+  });
+
+  it("returns null for an expired token — never renders the form for a link that's already dead", async () => {
+    const selectChain = makeChain("limit", []);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await findChatIdentityBySignupToken("expired-token");
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null for an unknown token", async () => {
+    const selectChain = makeChain("limit", []);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await findChatIdentityBySignupToken("never-existed");
+
+    expect(result).toBeNull();
+  });
+
+  it("ANTI-UNFURL REGRESSION: repeated non-consuming lookups (simulating link-preview bots hitting the page's GET) never disturb a token that a subsequent atomic consume can still redeem", async () => {
+    // Three "unfurl bot" reads in a row, all read-only.
+    const selectChain = makeChain("limit", [MOCK_IDENTITY]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+    await findChatIdentityBySignupToken("tok-survives-unfurl");
+    await findChatIdentityBySignupToken("tok-survives-unfurl");
+    await findChatIdentityBySignupToken("tok-survives-unfurl");
+    expect(mockDb.update).not.toHaveBeenCalled();
+
+    // THEN the human clicks: the real atomic consume still succeeds, because
+    // none of the reads above ever touched the token columns.
+    const updateChain = makeChain("returning", [
+      { ...MOCK_IDENTITY, signupToken: null, signupTokenExpiresAt: null },
+    ]);
+    mockDb.update = vi.fn(() => updateChain as ReturnType<typeof db.update>);
+    const consumed = await consumeChatIdentitySignupToken("tok-survives-unfurl");
+
+    expect(consumed).not.toBeNull();
   });
 });
 

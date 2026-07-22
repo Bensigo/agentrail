@@ -2181,12 +2181,21 @@ export {
   setChatIdentityLinkToken,
   getChatIdentityByLinkToken,
   consumeChatIdentityLinkToken,
+  setChatIdentitySignupToken,
+  consumeChatIdentitySignupToken,
+  findChatIdentityBySignupToken,
   resolveInboundChatIdentity,
   listWorkspacesForChatIdentity,
   type ResolveInboundChatIdentityInput,
   type ResolveInboundChatIdentityResult,
   type ReachableWorkspace,
 } from "./chat_identities.js";
+
+// Sign-up account primitives (issue #1364; see `queries/signup_account.ts`
+// for the full WHY). createUserForSignup + createConsoleSession are the two
+// writes the magic-link sign-up redemption flow needs that a GitHub-OAuth
+// sign-in normally gets for free from NextAuth's own DrizzleAdapter.
+export { createUserForSignup, createConsoleSession } from "./signup_account.js";
 
 // Workspace monthly-budget-ceiling queries (issue #1269 PR ②a; see
 // `queries/workspace_budget.ts` for the full WHY behind the design).

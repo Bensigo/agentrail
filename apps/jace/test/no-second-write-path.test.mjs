@@ -3,15 +3,16 @@
 // The name of this file overstates the invariant it actually enforces: it is
 // NOT "no second write path" full stop — an ungated write path exists here by
 // design (`send_connect_link`, issue #1263 PR ②), and the gated set has grown
-// to FIVE (`create_workspace`, issue #1264 PR ①; `create_repo`, issue #1265
-// PR ②; `update_issue`, issue #1345 PR ①; `create_goal`, issue #1289). What
-// this test actually proves is narrower and precise: every mutating tool is
-// gated, and every ungated tool is self-scoped.
+// to SIX (`create_workspace`, issue #1264 PR ①; `create_repo`, issue #1265
+// PR ②; `update_issue`, issue #1345 PR ①; `create_goal`, issue #1289;
+// `post_pr_review`, the reviewer subagent's gated write path). What this test
+// actually proves is narrower and precise: every mutating tool is gated, and
+// every ungated tool is self-scoped.
 //
 //   - Every GATED/mutating tool — authored with `defineTool` and
 //     `approval: (ctx) => consoleGatedApproval(ctx)` (issue #1273 PR ②;
 //     before that, `approval: always()` — Eve's stock HITL gate is now
-//     fully retired for these five), so every invocation pauses for a
+//     fully retired for these six), so every invocation pauses for a
 //     human before it runs — must be in the enumerated
 //     `EXPECTED_MUTATING_TOOLS` set below. Today that set is `create_issue`
 //     (Jace's only path into the factory: GitHub issues, workspaces,
@@ -19,14 +20,17 @@
 //     state), `create_repo` (creates a real GitHub repository under the
 //     user's own account and connects it to the workspace), `update_issue`
 //     (edits an EXISTING issue's title/body — the #1345 revise loop's write
-//     path), and `create_goal` (issue #1289: creates a real workspace goal
+//     path), `create_goal` (issue #1289: creates a real workspace goal
 //     the Jace goal loop then pursues — the goal's OWN issue filing still
-//     goes through `create_issue`, never a second path into the factory) —
-//     all five are the same gate class, see each tool's own file
-//     doc-comment. The set is enumerated, not open-ended: adding a SIXTH
-//     gated tool requires deliberately editing EXPECTED_MUTATING_TOOLS
-//     below — that edit IS the human review this test exists to force, same
-//     as EXPECTED_TOOL_FILES below it.
+//     goes through `create_issue`, never a second path into the factory),
+//     and `post_pr_review` (posts an ADVISORY, COMMENT-only PR review the
+//     `reviewer` subagent's findings inform — the console hardcodes the
+//     GitHub review event server-side, so this can never approve or
+//     request changes) — all six are the same gate class, see each tool's
+//     own file doc-comment. The set is enumerated, not open-ended: adding a
+//     SEVENTH gated tool requires deliberately editing
+//     EXPECTED_MUTATING_TOOLS below — that edit IS the human review this
+//     test exists to force, same as EXPECTED_TOOL_FILES below it.
 //   - Any OTHER tool is allowed to write something only if it is
 //     UNGATED-but-self-scoped: every target of its write must be derived
 //     from the tool's OWN session context (e.g. `ctx.session.id`), never
@@ -114,6 +118,7 @@ const EXPECTED_TOOL_FILES = [
   "create_repo.ts", // gated: creates a real GitHub repo under the user's own account + connects it to the workspace — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
+  "post_pr_review.ts", // gated: posts an ADVISORY, COMMENT-only PR review (the console hardcodes the GitHub review event server-side) — same gate class as create_issue; no child_process (HTTP to the console, like create_repo/create_goal)
   "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process
   "standup.ts",
   "update_issue.ts", // gated (issue #1345): edits an EXISTING issue's title/body in the house format — same gate class as create_issue, via the SAME consoleGatedApproval seam; shells out to `agentrail issue update` (child_process, like create_issue)
@@ -121,7 +126,7 @@ const EXPECTED_TOOL_FILES = [
 // The enumerated set of gated/mutating tools. Every tool named here must
 // wire `approval: (ctx) => consoleGatedApproval(ctx)`; the test below also
 // asserts no OTHER tool does — so this list is a ceiling as well as a floor.
-// Adding a fifth entry is a deliberate human edit, not something a maker
+// Adding a sixth entry is a deliberate human edit, not something a maker
 // should do silently.
 const EXPECTED_MUTATING_TOOLS = [
   "create_issue.ts",
@@ -129,6 +134,7 @@ const EXPECTED_MUTATING_TOOLS = [
   "create_repo.ts",
   "update_issue.ts",
   "create_goal.ts",
+  "post_pr_review.ts",
 ].sort();
 const EXPECTED_CHILD_PROCESS_SITES = [
   "agent/tools/codebase_query.ts",

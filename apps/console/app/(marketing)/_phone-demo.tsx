@@ -85,30 +85,34 @@ export function PhoneDemo() {
     <div
       ref={frameRef}
       style={TELEGRAM_SURFACE}
-      className="w-[340px] overflow-hidden rounded-[2rem] border-2 border-[var(--gray-13)] shadow-[6px_6px_0_0_var(--gray-13)] sm:w-[400px]"
+      className="w-[320px] overflow-hidden rounded-[2rem] border-2 border-[var(--gray-13)] shadow-[6px_6px_0_0_var(--gray-13)] sm:w-[350px]"
     >
-      {/* iOS floating header (owner reference, round 2): not a solid bar —
-          three translucent islands over the wallpaper: chevron pill left,
-          name pill truly centered, BIG avatar right. */}
-      <div className="flex items-center justify-between px-2.5 pt-2.5 pb-1">
-        {/* w-11 slot mirrors the 44px avatar so the name pill centers
+      {/* iOS floating header (owner reference, round 3): three LIQUID-GLASS
+          islands over the wallpaper — translucent fill, bright glass edge,
+          soft depth — chevron pill left, name pill truly centered, avatar
+          in its own glass ring right. Cluster sits 10px lower per the
+          reference. */}
+      <div className="flex items-center justify-between px-3 pt-5 pb-1">
+        {/* 50px slot mirrors the ringed avatar so the name pill centers
             EXACTLY on the frame axis (justify-between math). */}
-        <span aria-hidden className="flex w-11 shrink-0 justify-start">
-          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--gray-00)]/60 text-[var(--gray-13)] backdrop-blur-sm">
+        <span aria-hidden className="flex w-[50px] shrink-0 justify-start">
+          <span className="flex h-9 w-9 items-center justify-center rounded-full border border-[var(--gray-00)]/70 bg-[var(--gray-00)]/55 text-[var(--gray-13)] shadow-[0_4px_14px_rgba(30,70,50,0.16)] backdrop-blur-md">
             <ChevronLeft size={22} />
           </span>
         </span>
-        <span className="flex flex-col items-center rounded-full bg-[var(--gray-00)]/55 px-7 py-1 leading-tight backdrop-blur-sm">
+        <span className="flex flex-col items-center rounded-full border border-[var(--gray-00)]/70 bg-[var(--gray-00)]/55 px-7 py-1 leading-tight shadow-[0_4px_14px_rgba(30,70,50,0.16)] backdrop-blur-md">
           <span className="font-bold text-[var(--gray-13)]">Jace</span>
           <span className="text-label text-[var(--gray-11)]">bot</span>
         </span>
-        <Image
-          src="/jace-avatar.png"
-          alt=""
-          width={44}
-          height={44}
-          className="shrink-0 rounded-full"
-        />
+        <span className="shrink-0 rounded-full border border-[var(--gray-00)]/70 bg-[var(--gray-00)]/45 p-[3px] shadow-[0_4px_14px_rgba(30,70,50,0.16)] backdrop-blur-md">
+          <Image
+            src="/jace-avatar.png"
+            alt=""
+            width={44}
+            height={44}
+            className="rounded-full"
+          />
+        </span>
       </div>
 
       {/* Fixed conversation height (owner fix 2026-07-22): the frame is

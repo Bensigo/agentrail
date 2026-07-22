@@ -46,17 +46,19 @@ The console is the evidence room behind Jace — a tool for someone who employs 
 
 ### Typography
 
-**Sans-serif (UI chrome, headings, labels, body):**
-
-```
-font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
-```
-
-**Monospace (data values, event IDs, file paths, code, timestamps, JSON):**
+**THE platform face — one voice for UI, headings, body, and data alike
+(owner ruling 2026-07-22: Berkeley Mono platform-wide; Inter and the
+landing's Source Serif display voice are both retired):**
 
 ```
 font-family: "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 ```
+
+Set on `body` in globals.css and re-stated by the landing's
+`.marketing-root` (16px base there; console keeps 14px). No webfont loads
+anywhere — the stack resolves locally. `.font-mono`/`text-mono-data`
+remain as explicit markers on data moments even though they now match the
+inherited face.
 
 **Type Scale (responsive — mobile / tablet / desktop):**
 

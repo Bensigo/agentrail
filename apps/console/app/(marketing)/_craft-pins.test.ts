@@ -215,26 +215,26 @@ describe("(marketing) craft pins — font stack", () => {
     }
   });
 
-  it("layout.tsx loads exactly the sanctioned display serif (Source Serif 4), nothing else", () => {
+  it("layout.tsx loads NO webfont at all — Berkeley Mono is the platform face and resolves from the local stack (owner ruling 2026-07-22)", () => {
     const layout = readSibling("layout.tsx");
-    // The ONE sanctioned next/font/google load in (marketing)/ — the
-    // round-2/3 ruling: upright serif display voice, landing-scoped.
-    expect(layout).toMatch(/Source_Serif_4/);
-    // The rejected font stays rejected (round-1 owner feedback), and no
-    // second font sneaks in beside the serif. Matches the import
-    // IDENTIFIER (underscore form) so a prose mention of the ban in a
-    // comment doesn't trip it.
     const fontImports = layout.match(/from "next\/font\/google"/g) ?? [];
-    expect(fontImports.length).toBe(1);
-    expect(layout).not.toMatch(/Bricolage_Grotesque/);
+    expect(fontImports.length).toBe(0);
+    // The retired faces stay retired in CODE (comments may narrate the
+    // retirement): strip comments, then no serif revival, no Inter, and
+    // the round-1 Bricolage rejection holds.
+    const code = layout
+      .replace(/\/\*\*[\s\S]*?\*\//g, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(code).not.toMatch(/Source_Serif_4|Bricolage_Grotesque|Inter/);
   });
 
-  it("the serif applies through the display heading classes (h1 + section h2s), not body text", () => {
+  it("the marketing root carries the Berkeley Mono stack (one voice for the whole landing)", () => {
     const layout = readSibling("layout.tsx");
-    expect(layout).toMatch(/\.text-heading-1,\s*\n\s*\.text-heading-2 \{\s*\n\s*font-family: var\(--font-display\)/);
+    expect(layout).toMatch(/\.marketing-root \{\s*\n\s*font-family: "Berkeley Mono"/);
   });
 
-  it("no italic serif display — the hero serif stays upright (slop-catalog TY-3)", () => {
+  it("no italic display — the mono display stays upright (slop-catalog TY-3 spirit)", () => {
     const layout = readSibling("layout.tsx");
     const page = readSibling("page.tsx");
     expect(layout).not.toMatch(/font-style:\s*italic/);

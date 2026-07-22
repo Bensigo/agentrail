@@ -154,8 +154,8 @@ export default async function LandingPage() {
           in the hero"). The display line carries the serif at full scale;
           the role line drops one step (slop-audit TY-6). The mascot beats
           live elsewhere — closing wave, use-case beanbag, nav/phone avatar. */}
-      <section className="px-6 pt-16 pb-10 sm:pt-24 sm:pb-12">
-        <div className="mx-auto flex max-w-[1120px] flex-col items-center gap-12 text-center lg:grid lg:grid-cols-[1.1fr_auto] lg:items-center lg:gap-16 lg:text-left">
+      <section className="px-6 pt-24 pb-16 sm:pt-32 sm:pb-20">
+        <div className="mx-auto flex max-w-[1120px] flex-col items-center gap-14 text-center lg:grid lg:grid-cols-[1.1fr_auto] lg:items-center lg:gap-20 lg:text-left">
           <div className="flex flex-col items-center lg:items-start">
             <h1 className="ar-rise" style={{ animationDelay: "60ms" }}>
               <span className="text-heading-1 block">
@@ -164,7 +164,7 @@ export default async function LandingPage() {
                   _
                 </span>
               </span>
-              <span className="text-heading-2 mt-3 block text-balance">
+              <span className="text-heading-2 mt-5 block text-balance">
                 Your{" "}
                 <span className="rounded-sm bg-[var(--accent-fill)] px-1.5 text-[var(--accent-fill-text)]">
                   fractional
@@ -174,7 +174,7 @@ export default async function LandingPage() {
             </h1>
 
             <p
-              className="ar-rise mt-6 max-w-[52ch] text-[var(--gray-11)]"
+              className="ar-rise mt-8 max-w-[46ch] leading-relaxed text-[var(--gray-11)]"
               style={{ animationDelay: "120ms" }}
             >
               I take the issues you never get to. I triage them, write the
@@ -182,7 +182,7 @@ export default async function LandingPage() {
             </p>
 
             <div
-              className="ar-rise mt-9 flex flex-col items-center gap-3 lg:items-start"
+              className="ar-rise mt-10 flex flex-col items-center gap-3.5 lg:items-start"
               style={{ animationDelay: "190ms" }}
             >
               <PrimaryCta cta={cta} />

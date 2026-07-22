@@ -137,7 +137,7 @@ describe("(marketing) craft pins — accent system (lemon family, #1357/#1359)",
 });
 
 describe("(marketing) craft pins — the mascot IS Jace (TASTE.md canon)", () => {
-  it("the hero opens with the canonical wave render, named for assistive tech", () => {
+  it("the closing carries the canonical wave render, named for assistive tech (hero stays mascot-free — owner pass 2026-07-22)", () => {
     const source = readSibling("page.tsx");
     expect(source).toMatch(/src="\/jace-wave\.png"[\s\S]{0,40}alt="Jace"/);
   });
@@ -319,12 +319,12 @@ describe("(marketing) craft pins — narrative flow (wave 4)", () => {
     expect(sectionOpenTag).not.toMatch(/max-w-/);
   });
 
-  it("page.tsx renders exactly three mascot beats (wave hero + closing + footer mark), all from the owner-supplied canon set", () => {
+  it("page.tsx renders exactly two mascot beats (closing wave + footer mark) — the hero stays mascot-free, all renders from the canon set", () => {
     const source = readSibling("page.tsx");
     // Canon renders (TASTE.md): jace.png, jace-avatar.png, jace-wave.png,
     // jace-working.png — owner-supplied, never generated substitutes.
     const canon = source.match(/src="\/jace(?:-avatar|-wave|-working)?\.png"/g) ?? [];
-    expect(canon.length).toBe(3);
+    expect(canon.length).toBe(2);
     const anyJaceImage = source.match(/src="\/jace[^"]*"/g) ?? [];
     expect(anyJaceImage.length).toBe(canon.length);
   });

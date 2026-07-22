@@ -115,15 +115,17 @@ export function Channels({
     return discord?.href ?? null;
   };
 
+  // No white boxes (owner personality pass 2026-07-22): channels sit
+  // straight on the paper, separated by ink rules.
   const staticStack = (
-    <div className={reducedMotion ? "flex flex-col gap-6" : "flex flex-col gap-6 sm:hidden"}>
+    <div className={reducedMotion ? "flex flex-col" : "flex flex-col sm:hidden"}>
       {PANELS.map((panel) => (
         <div
           key={panel.id}
-          className="flex flex-col items-start gap-4 rounded-xl border border-[var(--gray-06)] bg-[var(--gray-00)] p-6 sm:p-8"
+          className="flex flex-col items-start gap-4 border-t-2 border-[var(--gray-13)] py-8 first:border-t-0"
         >
           <div className="flex items-center gap-3">
-            <PanelIcon id={panel.id} size={28} />
+            <PanelIcon id={panel.id} size={30} />
             <span className="font-bold text-[var(--gray-12)]">{panel.name}</span>
           </div>
           <p className="max-w-[46ch] text-[var(--gray-11)]">{panel.line}</p>
@@ -141,24 +143,26 @@ export function Channels({
       <div ref={containerRef} className="relative hidden h-[280vh] sm:block">
         <div className="sticky top-24 flex h-[calc(100vh-8rem)] items-center">
           <div className="grid w-full grid-cols-[auto_1fr] items-center gap-16">
-            {/* Channel rail — where you are in the story. */}
+            {/* Channel rail — the active stop is a lemon ink-bordered chip
+                (no white cards, owner personality pass 2026-07-22). */}
             <div className="flex flex-col gap-3">
               {PANELS.map((panel, i) => (
                 <div
                   key={panel.id}
                   className={
                     i === active
-                      ? "flex items-center gap-3 rounded-lg border border-[var(--gray-06)] bg-[var(--gray-00)] px-4 py-3 shadow-sm transition-colors duration-200"
-                      : "flex items-center gap-3 rounded-lg border border-transparent px-4 py-3 opacity-50 transition-[opacity,background-color] duration-200"
+                      ? "flex items-center gap-3 rounded-lg border-2 border-[var(--gray-13)] bg-[var(--accent-fill)] px-4 py-3 text-[var(--accent-fill-text)] shadow-[3px_3px_0_0_var(--gray-13)] transition-colors duration-200"
+                      : "flex items-center gap-3 rounded-lg border-2 border-transparent px-4 py-3 opacity-50 transition-[opacity,background-color] duration-200"
                   }
                 >
                   <PanelIcon id={panel.id} size={22} />
-                  <span className="font-bold text-[var(--gray-12)]">{panel.name}</span>
+                  <span className="font-bold">{panel.name}</span>
                 </div>
               ))}
             </div>
 
-            {/* Active panel — opacity/translate swap only. */}
+            {/* Active panel — straight on the paper, no box; opacity/
+                translate swap only. */}
             <div className="relative h-[320px]">
               {PANELS.map((panel, i) => (
                 <div
@@ -166,12 +170,14 @@ export function Channels({
                   aria-hidden={i !== active}
                   className={
                     i === active
-                      ? "absolute inset-0 flex translate-y-0 flex-col items-center justify-center gap-5 rounded-xl border border-[var(--gray-06)] bg-[var(--gray-00)] p-10 opacity-100 shadow-sm transition-[opacity,transform] duration-200 ease-out"
-                      : "pointer-events-none absolute inset-0 flex translate-y-2 flex-col items-center justify-center gap-5 rounded-xl border border-[var(--gray-06)] bg-[var(--gray-00)] p-10 opacity-0 transition-[opacity,transform] duration-200 ease-out"
+                      ? "absolute inset-0 flex translate-y-0 flex-col items-center justify-center gap-6 opacity-100 transition-[opacity,transform] duration-200 ease-out"
+                      : "pointer-events-none absolute inset-0 flex translate-y-2 flex-col items-center justify-center gap-6 opacity-0 transition-[opacity,transform] duration-200 ease-out"
                   }
                 >
-                  <PanelIcon id={panel.id} size={56} />
-                  <p className="max-w-[40ch] text-center text-[var(--gray-11)]">{panel.line}</p>
+                  <PanelIcon id={panel.id} size={96} />
+                  <p className="max-w-[36ch] text-center text-lg text-[var(--gray-12)]">
+                    {panel.line}
+                  </p>
                   <ChannelButton label={panel.buttonLabel} href={hrefFor(panel.id)} signInAction={signInAction} />
                 </div>
               ))}
@@ -196,7 +202,7 @@ function ChannelButton({
   signInAction: () => Promise<void>;
 }) {
   const classes =
-    "inline-flex items-center gap-2 rounded-md bg-[var(--accent-fill)] px-5 py-2.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-200 hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]";
+    "inline-flex items-center gap-2 rounded-md border-2 border-[var(--gray-13)] bg-[var(--accent-fill)] px-5 py-2.5 font-bold text-[var(--accent-fill-text)] shadow-[3px_3px_0_0_var(--gray-13)] transition-[transform,background-color,box-shadow] duration-150 ease-out hover:translate-x-[1px] hover:translate-y-[1px] hover:bg-[var(--accent-fill-hover)] hover:shadow-[2px_2px_0_0_var(--gray-13)] active:translate-x-[3px] active:translate-y-[3px] active:shadow-none";
   if (href) {
     return (
       <a href={href} target="_blank" rel="noreferrer" className={classes}>

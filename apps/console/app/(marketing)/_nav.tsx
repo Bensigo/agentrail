@@ -60,7 +60,7 @@ export function MarketingNav({
         <div
           className={
             condensed
-              ? "mx-auto flex h-12 max-w-[380px] items-center justify-between gap-4 rounded-full border border-[var(--gray-06)] bg-[var(--gray-00)] pl-4 pr-2 shadow-[0_10px_15px_-3px_rgb(0_0_0_/_0.1),0_4px_6px_-4px_rgb(0_0_0_/_0.1)] transition-[background-color,border-color,box-shadow] duration-200"
+              ? "mx-auto flex h-12 max-w-[380px] items-center justify-between gap-4 rounded-full border-2 border-[var(--gray-13)] bg-[var(--gray-00)] pl-4 pr-2 shadow-[4px_4px_0_0_var(--gray-13)] transition-[background-color,border-color,box-shadow] duration-200"
               : "mx-auto flex h-12 max-w-[1120px] items-center justify-between transition-[background-color,border-color,box-shadow] duration-200"
           }
         >

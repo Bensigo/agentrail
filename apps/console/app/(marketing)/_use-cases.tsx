@@ -61,7 +61,7 @@ export function UseCases() {
       {USE_CASES.map((useCase, i) => (
         <div
           key={useCase.visual}
-          className="sticky rounded-xl border border-[var(--gray-06)] bg-[var(--gray-00)] p-6 shadow-sm sm:p-10"
+          className="sticky rounded-xl border-2 border-[var(--gray-13)] bg-[var(--gray-00)] p-6 shadow-[5px_5px_0_0_var(--gray-13)] sm:p-10"
           style={{ top: 88 + i * 16 }}
         >
           <div className="flex flex-col items-start gap-6 sm:flex-row sm:items-center sm:justify-between sm:gap-10">
@@ -92,7 +92,7 @@ function CaseVisual({ visual }: { visual: UseCase["visual"] }) {
   if (visual === "chat") {
     return (
       <div className="flex shrink-0 flex-col items-start gap-2.5">
-        <span className="text-mono-data rounded-md border border-dashed border-[var(--gray-08)] px-2.5 py-1 font-mono text-[var(--gray-12)]">
+        <span className="text-mono-data rounded-md border-2 border-dashed border-[var(--gray-13)] px-2.5 py-1 font-mono text-[var(--gray-12)]">
           {DEMO_TASK_INPUT.title}
         </span>
         <span className="text-mono-data px-1 font-mono text-[var(--gray-11)]">

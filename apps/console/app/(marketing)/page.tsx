@@ -149,26 +149,14 @@ export default async function LandingPage() {
           scrolls into the story. See _nav.tsx. */}
       <MarketingNav cta={cta} signInAction={signInWithGithub} />
 
-      {/* 2 — Hero: two columns on desktop (intro left, live phone demo
-          right), stacked and centered below lg. The display line carries the
-          serif at full scale; the role line drops one step (slop-audit TY-6:
-          no long sentence at 72px). The mascot IS Jace (TASTE.md canon) —
-          the owner-supplied wave render opens his page. */}
-      <section className="px-6 pt-14 pb-20 sm:pt-16 sm:pb-24">
+      {/* 2 — Hero: words + one CTA on the left, the live phone demo on the
+          right, nothing else (owner feedback 2026-07-22: "too many things
+          in the hero"). The display line carries the serif at full scale;
+          the role line drops one step (slop-audit TY-6). The mascot beats
+          live elsewhere — closing wave, use-case beanbag, nav/phone avatar. */}
+      <section className="px-6 pt-16 pb-20 sm:pt-24 sm:pb-24">
         <div className="mx-auto flex max-w-[1120px] flex-col items-center gap-12 text-center lg:grid lg:grid-cols-[1.1fr_auto] lg:items-center lg:gap-16 lg:text-left">
           <div className="flex flex-col items-center lg:items-start">
-            {/* True-alpha cutout (white matte stripped from the PNG itself,
-                owner feedback 2026-07-22) at real presence — the renders
-                are the brand, not a favicon. */}
-            <Image
-              src="/jace-wave.png"
-              alt="Jace"
-              width={240}
-              height={240}
-              priority
-              className="ar-rise mb-6"
-            />
-
             <h1 className="ar-rise" style={{ animationDelay: "60ms" }}>
               <span className="text-heading-1 block">
                 Hey, I&apos;m Jace
@@ -242,10 +230,18 @@ export default async function LandingPage() {
               How I work
             </h2>
           </Reveal>
-          <ol className="mt-14 grid grid-cols-1 gap-10 sm:mt-20 sm:grid-cols-2 sm:gap-x-8 sm:gap-y-14 lg:grid-cols-5 lg:gap-6">
+          {/* Comic-panel bento (owner personality pass 2026-07-22 — "make
+              use of grid"): paper panels with ink borders and hard offset
+              shadows on the lemon, 2-2-2 / 3-3 spans. All panel text uses
+              --accent-fill-text — the scene's ink token. */}
+          <ol className="mt-14 grid grid-cols-1 gap-6 sm:mt-20 sm:grid-cols-2 lg:grid-cols-6">
             {HOW_WE_WORK.map((step, i) => (
-              <Reveal key={step.name} delay={i * 70}>
-                <li className="flex h-full flex-col border-t-2 border-[var(--accent-fill-text)] pt-5">
+              <Reveal
+                key={step.name}
+                delay={i * 70}
+                className={i < 3 ? "lg:col-span-2" : "lg:col-span-3"}
+              >
+                <li className="flex h-full flex-col rounded-xl border-2 border-[var(--accent-fill-text)] bg-[var(--paper)] p-6 shadow-[5px_5px_0_0_var(--accent-fill-text)] sm:p-8">
                   <span
                     aria-hidden
                     className="text-7xl leading-none font-mono font-bold text-[var(--accent-fill-text)]"
@@ -309,7 +305,7 @@ export default async function LandingPage() {
                 chars BACKWARD from each literal {stats.x} marker for a mono
                 class, so the class must sit in the same JSX block. */}
             <Reveal>
-              <div className="w-[168px] -rotate-2 rounded-lg border border-[var(--gray-06)] bg-[var(--paper)] px-5 py-6 text-center shadow-sm sm:w-[188px]">
+              <div className="w-[168px] -rotate-2 rounded-lg border-2 border-[var(--gray-13)] bg-[var(--paper)] px-5 py-6 text-center shadow-[4px_4px_0_0_var(--gray-13)] sm:w-[188px]">
                 <CountUp
                   className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
                   value={stats.shipped}
@@ -318,7 +314,7 @@ export default async function LandingPage() {
               </div>
             </Reveal>
             <Reveal delay={70}>
-              <div className="w-[168px] translate-y-3 rotate-1 rounded-lg border border-[var(--gray-06)] bg-[var(--paper)] px-5 py-6 text-center shadow-sm sm:w-[188px]">
+              <div className="w-[168px] translate-y-3 rotate-1 rounded-lg border-2 border-[var(--gray-13)] bg-[var(--paper)] px-5 py-6 text-center shadow-[4px_4px_0_0_var(--gray-13)] sm:w-[188px]">
                 <CountUp
                   className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
                   value={stats.workedOn}
@@ -327,7 +323,7 @@ export default async function LandingPage() {
               </div>
             </Reveal>
             <Reveal delay={140}>
-              <div className="w-[240px] rounded-lg border border-[var(--gray-06)] bg-[var(--gray-00)] px-6 py-6 text-center shadow-sm sm:w-[260px]">
+              <div className="w-[240px] rounded-lg border-2 border-[var(--gray-13)] bg-[var(--gray-00)] px-6 py-6 text-center shadow-[4px_4px_0_0_var(--gray-13)] sm:w-[260px]">
                 <CountUp
                   className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
                   value={stats.didntLand}
@@ -395,12 +391,14 @@ export default async function LandingPage() {
           beside his own ask, angled toward the button below. */}
       <section className="px-6 pb-24 text-center">
         <Reveal className="mx-auto max-w-[620px]">
+          {/* The wave render's home (moved out of the hero, owner feedback
+              2026-07-22) — Jace waving beside his own closing ask. */}
           <Image
-            src="/jace.png"
-            alt=""
-            width={96}
-            height={96}
-            className="-rotate-3 mx-auto mb-6 rounded-full"
+            src="/jace-wave.png"
+            alt="Jace"
+            width={180}
+            height={180}
+            className="-rotate-3 mx-auto mb-6"
           />
           <h2 className="text-heading-2">
             Point me at a repo
@@ -496,15 +494,16 @@ export default async function LandingPage() {
  * honest sign-in fallback — same visual weight either way, never a dead
  * link. See `./_cta.ts` for the resolution logic and its drift-guard tests.
  */
+/** The cartoon-ink press recipe (owner personality pass 2026-07-22): ink
+ *  border + hard offset shadow; hover nudges into the shadow, active lands
+ *  flat — a button that feels drawn, then pressed. */
+const INK_BUTTON =
+  "inline-flex items-center gap-2.5 rounded-md border-2 border-[var(--gray-13)] bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] shadow-[4px_4px_0_0_var(--gray-13)] transition-[transform,background-color,box-shadow] duration-150 ease-out hover:translate-x-[2px] hover:translate-y-[2px] hover:bg-[var(--accent-fill-hover)] hover:shadow-[2px_2px_0_0_var(--gray-13)] active:translate-x-[4px] active:translate-y-[4px] active:shadow-none";
+
 function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
   if (cta.kind === "telegram") {
     return (
-      <a
-        href={cta.href}
-        target="_blank"
-        rel="noreferrer"
-        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-200 hover:-translate-y-0.5 hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
-      >
+      <a href={cta.href} target="_blank" rel="noreferrer" className={INK_BUTTON}>
         <Send size={17} aria-hidden />
         Message Jace on Telegram
       </a>
@@ -516,10 +515,7 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
   // the action stays the same honest server action either way.
   return (
     <form action={signInWithGithub}>
-      <button
-        type="submit"
-        className="inline-flex items-center gap-2.5 rounded-md bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-200 hover:-translate-y-0.5 hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
-      >
+      <button type="submit" className={INK_BUTTON}>
         <Send size={17} aria-hidden />
         Message Jace
       </button>
@@ -533,7 +529,7 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
  *  stay byte-identical. */
 function FreePreviewChip() {
   return (
-    <span className="text-label inline-flex items-center rounded-full bg-[var(--accent-fill)] px-3 py-1 text-[var(--accent-fill-text)]">
+    <span className="text-label inline-flex items-center rounded-full border-2 border-[var(--gray-13)] bg-[var(--accent-fill)] px-3 py-1 font-bold text-[var(--accent-fill-text)]">
       Free while in preview
     </span>
   );

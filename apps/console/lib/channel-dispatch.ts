@@ -37,7 +37,43 @@ import {
   type ResolveConversationWorkspaceResult,
 } from "@agentrail/db-postgres";
 import { sendSystemTelegramMessage, buildWorkspaceChoiceMessage, buildPinConfirmationMessage } from "./telegram-system-message";
+import { sendSystemDiscordMessage } from "./discord-system-message";
 import { buildRunOutcomeReplyPreface, type RunOutcomeReplyContext } from "./outcome-format";
+
+/**
+ * The NON-SECRET destination key each channel's hosted-inbound `target`
+ * carries — the SAME mapping `apps/jace/agent/lib/run_outcome.core.mjs`
+ * (outbound) and its generalized `hosted_inbound.core.mjs` (inbound) use, so
+ * this door and that one can never drift apart. Telegram `chatId`; Discord
+ * (and, once #1285 lands, Slack) `channelId` — every webhook route for those
+ * channels enqueues its conversation id under the SAME internal `chatId`
+ * payload field Telegram already uses (see `extractPayload` below, left
+ * byte-unchanged), and this map only renames it at the LAST moment, when
+ * building the outgoing hosted-inbound request.
+ */
+const HOSTED_INBOUND_TARGET_KEY: Record<string, "chatId" | "channelId"> = {
+  telegram: "chatId",
+  discord: "channelId",
+};
+
+/**
+ * Dispatch a system (non-model) message to the right channel's own sender —
+ * additive: Telegram's `sendSystemTelegramMessage` import above and every
+ * one of its call sites in `processRow`'s 'ask' branch are UNCHANGED by this
+ * (#1284); this only adds the discord case alongside it (issue #1364 is in
+ * flight on the same Telegram 'ask'/signup path — keeping that code
+ * untouched minimizes the eventual merge conflict). #1285 (Slack) appends its
+ * own case here the same way.
+ */
+async function sendSystemChannelMessage(
+  channel: string,
+  targetId: string,
+  text: string,
+  messageThreadId?: string
+) {
+  if (channel === "discord") return sendSystemDiscordMessage(targetId, text);
+  return sendSystemTelegramMessage(targetId, text, messageThreadId);
+}
 
 const EVE_HOST = process.env["EVE_HOST"] || "http://127.0.0.1:2000";
 
@@ -209,10 +245,21 @@ type EveTurnOutcome =
  */
 async function runEveTurn(params: {
   message: string;
+  /** Which hosted-inbound channel module receives this turn (#1284/#1285 —
+   * default "telegram" so every pre-existing call site, which never set
+   * this, is byte-unchanged). */
+  channel?: string;
   chatId: number | string;
   messageThreadId?: number | string;
   auth: Record<string, unknown>;
 }): Promise<EveTurnOutcome> {
+  const channel = params.channel ?? "telegram";
+  // The wire-level target key is channel-specific (Telegram `chatId`;
+  // Discord/Slack `channelId` — see HOSTED_INBOUND_TARGET_KEY above); the
+  // VALUE is always `params.chatId` regardless of channel, since every
+  // webhook route (telegram/discord/slack) enqueues its conversation id
+  // under that same internal payload field.
+  const targetKey = HOSTED_INBOUND_TARGET_KEY[channel] ?? "chatId";
   let response: Response;
   try {
     response = await fetchWithTimeout(HOSTED_INBOUND_URL, {
@@ -220,8 +267,9 @@ async function runEveTurn(params: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message: params.message,
+        channel,
         target: {
-          chatId: params.chatId,
+          [targetKey]: params.chatId,
           ...(params.messageThreadId !== undefined
             ? { messageThreadId: params.messageThreadId }
             : {}),
@@ -338,7 +386,8 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
           workspaceId: chosen.id,
         });
         if (pin.ok) {
-          await sendSystemTelegramMessage(
+          await sendSystemChannelMessage(
+            row.channel,
             String(payload.chatId),
             buildPinConfirmationMessage(chosen.name),
             payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined
@@ -350,7 +399,8 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
         // to the same "invalid choice" handling below. A concurrent pin
         // means the NEXT message resolves as 'pinned' on its own.
       }
-      await sendSystemTelegramMessage(
+      await sendSystemChannelMessage(
+        row.channel,
         String(payload.chatId),
         buildWorkspaceChoiceMessage(decision.options),
         payload.messageThreadId !== undefined ? String(payload.messageThreadId) : undefined
@@ -412,6 +462,7 @@ async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "f
 
     const turn = await runEveTurn({
       message,
+      channel: row.channel,
       chatId: payload.chatId,
       messageThreadId: payload.messageThreadId,
       auth,

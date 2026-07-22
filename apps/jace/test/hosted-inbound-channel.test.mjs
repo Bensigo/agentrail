@@ -30,8 +30,10 @@ test("imports the pure validator from agent/lib", () => {
   );
 });
 
-test("imports the telegram channel module as the sole receive target", () => {
+test("imports telegram/discord/slack channel modules (#1284/#1285: multi-channel CHANNELS map, mirroring run-outcome.ts)", () => {
   assert.match(code, /import\s+telegram\s+from\s*["']\.\/telegram\.js["']/);
+  assert.match(code, /import\s+discord\s+from\s*["']\.\/discord\.js["']/);
+  assert.match(code, /import\s+slack\s+from\s*["']\.\/slack\.js["']/);
 });
 
 test("declares exactly one POST(\"/eve/v1/hosted-inbound\") route — the LITERAL mount path (Eve mounts defineChannel routes at their literal declared path; /eve/v1/<id> is a built-in-adapter default, not a framework rewrite)", () => {
@@ -56,8 +58,13 @@ test("returns 400 on a JSON parse failure and on a normalize failure", () => {
   );
 });
 
-test("AWAITS args.receive(telegram, ...) — the whole point is a synchronous sessionId in the response", () => {
-  assert.match(code, /await\s+args\.receive\(\s*telegram\s*,/);
+test("AWAITS args.receive(channelModule, ...) — the whole point is a synchronous sessionId in the response", () => {
+  assert.match(code, /await\s+args\.receive\(\s*channelModule\s*,/);
+});
+
+test("selects the channel module from a CHANNELS map by normalized.channel, rejecting an unwired channel with 400", () => {
+  assert.match(code, /CHANNELS\[\s*normalized\.channel\s*\]/);
+  assert.match(code, /is not wired/);
 });
 
 test("does NOT call args.waitUntil (no fire-and-forget — annex-eve-internals.md consequence 1)", () => {

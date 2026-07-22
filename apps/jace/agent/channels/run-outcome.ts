@@ -21,8 +21,30 @@
 // receive-vs-post delivery semantics and threading are verified against the
 // running sidecar (#1038/#1101). The route stays inert in practice until a
 // workspace opts in via `jaceOwns<Channel>Notify` (default OFF).
+//
+// #1289 (Jace goal loop, PRD design point 4: "extend the run-outcome
+// hand-off") — AFTER the existing platform notification above is forwarded
+// UNCHANGED, this route ALSO best-effort evaluates the outcome against any
+// goal the issue was filed for. This needs no console-side change: the
+// console's `notify.ts::notifyViaJace` has sent `workspaceId`/`outcome`/
+// `issueNumber`/`costUsd` in this exact POST body since before this feature
+// existed (#1338) — `normalizeRunOutcome` now optionally reads them (see
+// that module's own comment). When present, `evaluateGoalOutcome`
+// (`agent/lib/goal_outcome_dispatch.core.mjs`) POSTs to the console's
+// `/api/v1/runner/goals/evaluate` (which itself checks the `jaceGoalLoop`
+// flag FIRST and no-ops when off/unmatched) and, for a real decision,
+// produces a synthetic message delivered into the SAME conversation via the
+// SAME `args.receive` primitive already used above. THE SAFETY LINE: this
+// never calls create_issue directly — a "refill" decision only ever
+// produces a MESSAGE, so the model is the one that decides to call
+// create_issue in response, through the exact same consoleGatedApproval
+// seam as any human-initiated issue. This whole block is wrapped in its own
+// `waitUntil` and every one of its own failure modes resolves to a no-op
+// (see goal_outcome_dispatch.core.mjs's own "never throws" contract) — it
+// can never block or alter the platform-notify response above.
 import { defineChannel, POST } from "eve/channels";
 import { normalizeRunOutcome } from "../lib/run_outcome.core.mjs";
+import { evaluateGoalOutcome, realTransport as goalEvaluateTransport } from "../lib/goal_outcome_dispatch.core.mjs";
 import telegram from "./telegram.js";
 import discord from "./discord.js";
 import slack from "./slack.js";
@@ -88,6 +110,38 @@ export default defineChannel({
           ...(outcome.auth ? { auth: outcome.auth } : {}),
         }),
       );
+
+      // #1289 goal-loop evaluation — see the file header comment for the
+      // full contract. Only attempted when the console's payload carried
+      // ALL THREE enrichment fields this needs (workspaceId, issueExternalId,
+      // outcome); a payload without them (any pre-#1289 caller, or a
+      // deliberately minimal test payload) skips this block entirely — the
+      // platform notification above is completely unaffected either way.
+      if (outcome.workspaceId && outcome.issueExternalId && outcome.outcome) {
+        const workspaceId = outcome.workspaceId;
+        const issueExternalId = outcome.issueExternalId;
+        const goalOutcome = outcome.outcome;
+        const costUsd = outcome.costUsd;
+        args.waitUntil(
+          (async () => {
+            const dispatch = await evaluateGoalOutcome({
+              workspaceId,
+              issueExternalId,
+              outcome: goalOutcome,
+              costUsd,
+              env: process.env,
+              transport: goalEvaluateTransport,
+            });
+            if (dispatch.action === "message") {
+              await args.receive(channel, {
+                message: dispatch.message,
+                target: outcome.target,
+                ...(outcome.auth ? { auth: outcome.auth } : {}),
+              });
+            }
+          })(),
+        );
+      }
 
       return json({ ok: true, channel: outcome.channel });
     }),

@@ -87,18 +87,27 @@ export function PhoneDemo() {
       style={TELEGRAM_SURFACE}
       className="w-[340px] overflow-hidden rounded-[2rem] border-2 border-[var(--gray-13)] shadow-[6px_6px_0_0_var(--gray-13)] sm:w-[400px]"
     >
-      <div className="grid grid-cols-[2rem_1fr_2.5rem] items-center bg-[var(--gray-00)]/70 px-3 py-2 text-[var(--gray-13)] backdrop-blur-sm">
-        <ChevronLeft size={22} aria-hidden className="shrink-0" />
-        <div className="flex min-w-0 flex-col items-center leading-tight">
-          <span className="font-bold">Jace</span>
+      {/* iOS floating header (owner reference, round 2): not a solid bar —
+          three translucent islands over the wallpaper: chevron pill left,
+          name pill truly centered, BIG avatar right. */}
+      <div className="flex items-center justify-between px-2.5 pt-2.5 pb-1">
+        {/* w-11 slot mirrors the 44px avatar so the name pill centers
+            EXACTLY on the frame axis (justify-between math). */}
+        <span aria-hidden className="flex w-11 shrink-0 justify-start">
+          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--gray-00)]/60 text-[var(--gray-13)] backdrop-blur-sm">
+            <ChevronLeft size={22} />
+          </span>
+        </span>
+        <span className="flex flex-col items-center rounded-full bg-[var(--gray-00)]/55 px-7 py-1 leading-tight backdrop-blur-sm">
+          <span className="font-bold text-[var(--gray-13)]">Jace</span>
           <span className="text-label text-[var(--gray-11)]">bot</span>
-        </div>
+        </span>
         <Image
           src="/jace-avatar.png"
           alt=""
-          width={34}
-          height={34}
-          className="justify-self-end rounded-full"
+          width={44}
+          height={44}
+          className="shrink-0 rounded-full"
         />
       </div>
 

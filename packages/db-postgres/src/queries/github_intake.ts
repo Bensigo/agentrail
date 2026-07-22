@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { sql, and, eq, inArray } from "drizzle-orm";
+import { sql, and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../db.js";
 import { queueEntries } from "../schema/queue_entries.js";
 import { workspaces } from "../schema/workspaces.js";
@@ -544,9 +544,12 @@ function formatWaitingOnReason(unmet: number[]): string {
  * query function inside and outside a transaction" case (see "Reusing query
  * functions in and outside transactions", orm.drizzle.team) — `Pick<typeof
  * db, "select">` is the typed version of that same idiom.
- * {@link confirmAlignmentBrief} below is the caller that needs the `tx`
+ * {@link requeueParkedQueueEntry} below is the caller that needs the `tx`
  * variant: it must read this INSIDE its own transaction so the
- * read-then-write stays atomic (#1274 finding-1 fix).
+ * read-then-write stays atomic. ({@link confirmAlignmentBrief} used to be a
+ * `tx` caller too, pre-#1341 — that function is now a single raw UPDATE with
+ * the blocker recheck inlined as a SQL subquery instead, precisely so it no
+ * longer needs a read-then-write transaction at all; see its own doc-comment.)
  */
 type QueryExecutor = Pick<typeof db, "select">;
 
@@ -704,6 +707,18 @@ export async function unparkDependents(
       // Dependency satisfied, alignment isn't: the brief already exists
       // from admission time — nothing to (re)post, just make the stored
       // reason honest instead of the now-stale "Waiting on #N".
+      //
+      // #1341 belt-and-suspenders: `entry.estimatedBudgetUsd` above came from
+      // the batch SELECT at the top of this function — by the time this
+      // statement actually runs, `confirmAlignmentBrief` (now a single atomic
+      // UPDATE, see its own #1341 doc-comment) may have ALREADY committed a
+      // budget for this exact row using a fresher read. Without the extra
+      // `estimated_budget_usd IS NULL` guard below, this UPDATE would re-stamp
+      // "awaiting alignment" over a row that just got genuinely sanctioned —
+      // stale parkReason wedged next to a real budget, one of the two
+      // #1341-closed wedge shapes. The guard makes THIS write a no-op the
+      // instant that happens (0 rows matched), same idempotent-WHERE posture
+      // every parked-row write in this file already takes.
       await db
         .update(queueEntries)
         .set({ parkReason: ALIGNMENT_PARK_REASON, updatedAt: new Date() })
@@ -711,7 +726,8 @@ export async function unparkDependents(
           and(
             eq(queueEntries.workspaceId, workspaceId),
             eq(queueEntries.externalId, entry.externalId),
-            eq(queueEntries.state, "parked")
+            eq(queueEntries.state, "parked"),
+            isNull(queueEntries.estimatedBudgetUsd)
           )
         );
     }
@@ -919,34 +935,83 @@ export const ALIGNMENT_DENIED_PARK_REASON =
  * while its row sits DEPENDENCY-parked (see `enqueueGithubIssue`'s
  * `parkedFor` signal firing independently of the dependency outcome), so
  * confirming it must not silently skip that still-unmet blocker. This
- * re-derives the blocker state from the row's own `blockedBy` at confirm
- * time and picks the resulting `state`/`parkReason` accordingly:
+ * re-derives the blocker state from the row's own `blockedBy` and picks the
+ * resulting `state`/`parkReason` accordingly:
  *   - no blockers declared, or all green -> `state: 'queued'`, `parkReason: null`
  *     (the pre-#1274 behaviour, byte-identical when dependency was never a
  *     factor).
  *   - blockers still unmet -> stays `state: 'parked'` with the DEPENDENCY
- *     reason (`formatWaitingOnReason`) — NOT `ALIGNMENT_PARK_REASON`: the
- *     brief is now answered, so the TRUE reason the row is still stuck is
- *     the dependency, and `unparkDependents` will take it from here once
- *     the blocker clears (reading the now-non-null `estimatedBudgetUsd` as
- *     its "aligned" signal).
+ *     reason (`formatWaitingOnReason`-shaped, built in SQL below) — NOT
+ *     `ALIGNMENT_PARK_REASON`: the brief is now answered, so the TRUE reason
+ *     the row is still stuck is the dependency, and `unparkDependents` will
+ *     take it from here once the blocker clears (reading the now-non-null
+ *     `estimatedBudgetUsd` as its "aligned" signal).
  *
- * Read-then-write in ONE `db.transaction` (locked design point (b)'s
- * "two-step within the same statement/tx" option) rather than a single raw
- * UPDATE with an embedded CASE: the blocker recheck reuses the exact same
- * `unmetBlockers` logic `enqueueGithubIssue`/`unparkDependents` already use
- * (single source of truth for "what counts as unmet"), which a hand-rolled
- * SQL CASE/subquery would have to reimplement and could drift from.
+ * #1341 fast-follow (liveness fix — SAFETY was never violated, this closes an
+ * over-hold): the pre-#1341 version did this as a read-then-decide-then-write
+ * `db.transaction` — a SELECT (this function's own row lookup), an `await`
+ * into `unmetBlockers` (a SECOND round trip), THEN a final UPDATE. That is
+ * three separate statements with real wall-clock time between the blocker
+ * read and the write, and `unparkDependents` (below) is NOT wrapped in any
+ * transaction at all (each of ITS selects/updates auto-commits independently)
+ * — so the two could interleave: `unparkDependents` reads this row's
+ * pre-confirm state (`estimated_budget_usd` still NULL) WHILE this function's
+ * blocker-read has already decided "still unmet" from an equally-stale
+ * snapshot, and by the time BOTH finally write, the row wedges parked with a
+ * stale "Waiting on #N" reason, a written budget, and an ALREADY-GREEN
+ * dependency — over-held forever (both one-shot release paths consumed; see
+ * issue #1341 for the full two-connection repro of both orderings).
  *
- * The final UPDATE keeps the SAME `WHERE state = 'parked'` belt-and-
- * suspenders idempotency guard the pre-#1274 version used (see the original
+ * THE FIX: collapse the read-then-decide-then-write into ONE UPDATE
+ * statement. The blocker recheck is now a correlated subquery evaluated BY
+ * POSTGRES as part of the SAME statement that performs the write — under
+ * READ COMMITTED, that one statement gets one snapshot, and Postgres's own
+ * row-level locking + EvalPlanQual re-check means a concurrent racer can
+ * never observe (or leave behind) a "decided but not yet written" half-state
+ * for THIS statement, because there isn't one: the decision and the write are
+ * now the same atomic operation. This intentionally reimplements
+ * `unmetBlockers`'s "is a declared blocker green" check as SQL (a `jsonb_
+ * array_elements_text(...) WITH ORDINALITY` walk over this row's own
+ * `blocked_by`, matched against sibling rows in the same repo+workspace) —
+ * the drift risk the pre-#1341 doc-comment warned about is accepted here on
+ * purpose (the alternative, a multi-statement transaction, is exactly the
+ * shape that wedges); `formatWaitingOnReason`'s ordering (declared-array
+ * order, not numeric order) is preserved via `ORDER BY` on the array's own
+ * ordinality, and covered by a live-Postgres proof (see this PR's report) —
+ * any future change to `formatWaitingOnReason`'s wording must be mirrored
+ * here.
+ *
+ * The final UPDATE keeps the SAME `state = 'parked'` belt-and-suspenders
+ * idempotency guard the pre-#1274/#1341 versions used (see the original
  * doc-comment's rationale, preserved): the CALLER (the Telegram webhook's
  * `handleApprovalCallback`) already gates this on `resolveApproval`'s own
  * atomic pending->approved flip, so a double-tap never reaches this function
- * twice; the WHERE clause guards the (still theoretical) case where the row
- * left `parked` some other way between the approval being recorded and
- * being resolved. Returns `false` (no-op, never throws) when either the
- * initial read or the final write matches zero rows.
+ * twice; the guard covers the (still theoretical) case where the row left
+ * `parked` some other way first. The `state = 'parked'` predicate is repeated
+ * on the final UPDATE's OWN `WHERE` (`qe.state = 'parked'`), NOT left solely
+ * in the `target` CTE: under READ COMMITTED a CTE qualifier is evaluated once
+ * at the statement snapshot and is NOT re-checked when the row lock is finally
+ * taken, but a predicate on the UPDATE's target relation IS re-evaluated by
+ * Postgres's EvalPlanQual against the freshly-locked row version. Keeping it
+ * on the UPDATE is therefore what actually makes the no-op below true "at
+ * lock time" rather than merely "at snapshot time" — a concurrent writer that
+ * moves the row out of `parked` inside the confirm window causes zero rows to
+ * match instead of this statement clobbering it. Do NOT fold this back into
+ * the CTE. Returns `false` (no-op, never throws) when no row matches `id` +
+ * `state = 'parked'` at lock time —
+ * including the #1341 requireAlignment-flip edge (operator flips
+ * `require_alignment` off mid-flight -> a dependency clears -> the row
+ * releases to `queued` via `unparkDependents`'s own `!requireAlignment`
+ * escape -> a stale Approve tap lands here afterward and finds no parked row
+ * -> `false`, logged by the caller). This is DELIBERATELY left a no-op rather
+ * than widened to also match a `queued`/`running`/terminal row: the ceiling
+ * this function exists to sanction cannot retroactively enforce anything once
+ * the entry is already running unparked, and loosening the guard would risk
+ * writing budget/model onto a row a DIFFERENT mechanism (a denial, a later
+ * requeue) has since taken responsibility for — narrower and provably safe
+ * beats reaching further for a purely cosmetic backfill. Operator-initiated,
+ * logged, and pinned by an explicit test (see this PR's report for the
+ * chosen option and rationale).
  *
  * `taskType` (#1338 PR①, required — not optional, so a call site can never
  * silently forget to wire it): the classifier's output off the confirmed
@@ -964,47 +1029,53 @@ export async function confirmAlignmentBrief(input: {
   modelOverride: string;
   taskType: string | null;
 }): Promise<boolean> {
-  return db.transaction(async (tx) => {
-    const rows = await tx
-      .select({
-        workspaceId: queueEntries.workspaceId,
-        externalId: queueEntries.externalId,
-        blockedBy: queueEntries.blockedBy,
-      })
-      .from(queueEntries)
-      .where(
-        and(
-          eq(queueEntries.id, input.queueEntryId),
-          eq(queueEntries.state, "parked")
-        )
-      );
-    const row = rows[0];
-    if (!row) return false;
-
-    const blockedBy = (row.blockedBy ?? []) as number[];
-    const hash = row.externalId.lastIndexOf("#");
-    const repoFullName = hash >= 0 ? row.externalId.slice(0, hash) : row.externalId;
-    const unmet = await unmetBlockers(tx, row.workspaceId, repoFullName, blockedBy);
-
-    const result = await tx
-      .update(queueEntries)
-      .set({
-        state: unmet.length === 0 ? "queued" : "parked",
-        parkReason: unmet.length === 0 ? null : formatWaitingOnReason(unmet),
-        estimatedBudgetUsd: input.estimatedBudgetUsd,
-        modelOverride: input.modelOverride,
-        taskType: input.taskType,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(queueEntries.id, input.queueEntryId),
-          eq(queueEntries.state, "parked")
-        )
-      )
-      .returning({ id: queueEntries.id });
-    return result.length > 0;
-  });
+  const rows = (await db.execute(sql`
+    WITH target AS (
+      SELECT id, workspace_id, external_id, blocked_by
+      FROM queue_entries
+      WHERE id = ${input.queueEntryId} AND state = 'parked'
+    ),
+    blockers AS (
+      SELECT
+        t.id,
+        b.ord,
+        b.num,
+        EXISTS (
+          SELECT 1 FROM queue_entries g
+          WHERE g.workspace_id = t.workspace_id
+            AND g.external_id = split_part(t.external_id, '#', 1) || '#' || b.num
+            AND g.state = 'green'
+        ) AS is_green
+      FROM target t
+      CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(t.blocked_by, '[]'::jsonb))
+        WITH ORDINALITY AS b(num, ord)
+    ),
+    agg AS (
+      SELECT
+        t.id,
+        COUNT(*) FILTER (WHERE bl.id IS NOT NULL AND NOT bl.is_green) AS unmet_count,
+        string_agg('#' || bl.num, ', ' ORDER BY bl.ord)
+          FILTER (WHERE bl.id IS NOT NULL AND NOT bl.is_green) AS waiting_on
+      FROM target t
+      LEFT JOIN blockers bl ON bl.id = t.id
+      GROUP BY t.id
+    )
+    UPDATE queue_entries qe
+    SET
+      state = CASE WHEN agg.unmet_count = 0 THEN 'queued' ELSE 'parked' END,
+      park_reason = CASE
+        WHEN agg.unmet_count = 0 THEN NULL
+        ELSE 'Waiting on ' || agg.waiting_on
+      END,
+      estimated_budget_usd = ${input.estimatedBudgetUsd},
+      model_override = ${input.modelOverride},
+      task_type = ${input.taskType},
+      updated_at = now()
+    FROM agg
+    WHERE qe.id = agg.id AND qe.state = 'parked'
+    RETURNING qe.id
+  `)) as unknown as Array<{ id: string }>;
+  return Array.from(rows).length > 0;
 }
 
 /**
@@ -1076,9 +1147,10 @@ export type RequeueParkedQueueEntryResult =
  *     actually waiting on; #1274 PR ③'s reconciler is what posts a missing
  *     brief) — and the caller gets `alignment_locked` to render.
  *
- * Read-then-write in ONE `db.transaction`, mirroring
- * {@link confirmAlignmentBrief}'s own rationale for that shape: the read
- * distinguishes WHY a requeue didn't happen so the caller can render a
+ * Read-then-write in ONE `db.transaction` (this function's OWN read-then-
+ * write stays a transaction, unlike the post-#1341 {@link confirmAlignmentBrief}
+ * — see that function's doc-comment for why it moved off this shape): the
+ * read distinguishes WHY a requeue didn't happen so the caller can render a
  * specific, honest reason — while the actual enforcement is the final
  * UPDATE's own `WHERE` clause, which re-asserts the full aligned predicate
  * (never trust a pre-check alone for a security property, the same posture

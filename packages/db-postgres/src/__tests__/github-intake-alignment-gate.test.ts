@@ -34,8 +34,8 @@ let insertedValues: Array<Record<string, unknown>> = [];
 let updateCalls: Array<Record<string, unknown>> = [];
 let mockRequireAlignment: boolean | undefined; // undefined = "no workspace row" (select returns [])
 let mockConfirmedApprovalToolInput: Record<string, unknown> | undefined; // undefined = no confirmed-brief approval matches
-let mockUnmetBlockerRows: unknown[]; // rows unmetBlockers' own select resolves to
-let mockConfirmRowLookup: unknown[]; // rows confirmAlignmentBrief's own row-lookup select resolves to
+let mockUnmetBlockerRows: unknown[]; // rows unmetBlockers' own select resolves to, AND (#1341) the "green" rows confirmAlignmentBrief's own db.execute mock checks against
+let mockConfirmRowLookup: unknown[]; // (#1341) the parked row confirmAlignmentBrief's single UPDATE should match — [] simulates "no parked row with this id"
 let updateMatches: boolean; // simulates the WHERE state='parked' guard matching (or not)
 // #1274 PR ② fix round (I1): the WHERE expression the confirmed-brief lookup
 // (`toolInput`-keyed select) was called with, captured raw so a test can
@@ -46,6 +46,38 @@ let updateMatches: boolean; // simulates the WHERE state='parked' guard matching
 // the live-DB proof, which runs the real SQL.
 let lastConfirmedLookupWhere: unknown;
 
+/**
+ * #1341: `confirmAlignmentBrief` is now a single raw `db.execute(sql\`...\`)`
+ * UPDATE (see that function's own doc-comment) instead of a
+ * select-then-transaction-update, so it no longer makes any `db.select()`
+ * calls of its own. This mock re-derives the SAME decision the real CASE
+ * subquery makes — equivalence with the actual SQL is proven separately
+ * against a live Postgres (see this PR's report), not re-derived here — by:
+ *  1. extracting the four bound values drizzle's `sql` tag records, in
+ *     template order (queueEntryId, estimatedBudgetUsd, modelOverride,
+ *     taskType — see the production query's own interpolation order). A
+ *     `sql` template's `.queryChunks` is a flat array alternating
+ *     string-literal chunks (`{ value: [...] }`) and the RAW interpolated
+ *     values themselves (unlike `eq()`/`and()`'s wrapped `Column`/`Param`
+ *     objects `collectWhereParts` above walks) — filtering out the
+ *     string-literal chunks leaves exactly the four bound params, in order.
+ *  2. matching `mockConfirmRowLookup[0]` (kept as the SAME
+ *     `{ workspaceId, externalId, blockedBy }` shape confirmAlignmentBrief's
+ *     pre-#1341 row-lookup select used, so every test below keeps working
+ *     unchanged) against the extracted `queueEntryId` — an empty
+ *     `mockConfirmRowLookup` (or a mismatched id) simulates the CTE matching
+ *     zero rows, exactly like the old "not found parked" test.
+ *  3. reusing `mockUnmetBlockerRows` (already `{ externalId }` rows for
+ *     "green" blockers, the SAME shape `unmetBlockers`'s old select used) to
+ *     decide which of the row's `blockedBy` numbers are still unmet.
+ */
+function extractSqlParams(query: unknown): unknown[] {
+  const chunks = (query as { queryChunks?: unknown[] })?.queryChunks ?? [];
+  return chunks.filter(
+    (c) => !(c && typeof c === "object" && Array.isArray((c as { value?: unknown[] }).value))
+  );
+}
+
 vi.mock("../db.js", () => {
   const dbMock = {
     select: (cols?: Record<string, unknown>) => ({
@@ -55,9 +87,6 @@ vi.mock("../db.js", () => {
             return mockRequireAlignment === undefined
               ? []
               : [{ requireAlignment: mockRequireAlignment }];
-          }
-          if (cols && Object.prototype.hasOwnProperty.call(cols, "workspaceId")) {
-            return mockConfirmRowLookup;
           }
           if (cols && Object.prototype.hasOwnProperty.call(cols, "toolInput")) {
             lastConfirmedLookupWhere = whereExpr;
@@ -89,6 +118,32 @@ vi.mock("../db.js", () => {
         };
       }),
     })),
+    execute: vi.fn(async (query: unknown) => {
+      const [queueEntryId, estimatedBudgetUsd, modelOverride, taskType] =
+        extractSqlParams(query) as [string, number, string, string | null];
+      const row = mockConfirmRowLookup[0] as
+        | { workspaceId: string; externalId: string; blockedBy: number[] }
+        | undefined;
+      if (!row) return [];
+
+      const hash = row.externalId.lastIndexOf("#");
+      const repoFullName = hash >= 0 ? row.externalId.slice(0, hash) : row.externalId;
+      const greenExternalIds = new Set(
+        (mockUnmetBlockerRows as Array<{ externalId: string }>).map((r) => r.externalId)
+      );
+      const unmet = (row.blockedBy ?? []).filter(
+        (n) => !greenExternalIds.has(`${repoFullName}#${n}`)
+      );
+      updateCalls.push({
+        state: unmet.length === 0 ? "queued" : "parked",
+        parkReason:
+          unmet.length === 0 ? null : `Waiting on ${unmet.map((n) => `#${n}`).join(", ")}`,
+        estimatedBudgetUsd,
+        modelOverride,
+        taskType,
+      });
+      return updateMatches ? [{ id: queueEntryId }] : [];
+    }),
     transaction: async (cb: (tx: typeof dbMock) => unknown) => cb(dbMock),
   };
   return { db: dbMock };

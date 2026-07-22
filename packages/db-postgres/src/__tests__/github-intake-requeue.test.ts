@@ -31,6 +31,23 @@ let mockUnmetBlockerRows: unknown[];
 let updateCalls: Array<Record<string, unknown>> = [];
 let updateMatches: boolean;
 
+// #1341: `confirmAlignmentBrief` is now a single raw `db.execute(sql\`...\`)`
+// UPDATE (see that function's own doc-comment) instead of a
+// select-then-transaction-update — it no longer issues the `workspaceId`-keyed
+// select this mock used to route to `mockConfirmRowLookup`. This re-derives
+// the same decision (see the identical idiom's fuller explanation in
+// github-intake-alignment-gate.test.ts) by extracting the four bound values
+// off the `sql` template (in the production query's own interpolation order)
+// and checking them against `mockConfirmRowLookup[0]`/`mockUnmetBlockerRows`
+// — kept as the SAME shapes the pre-#1341 select-based lookup used, so the
+// "confirm-after-flip" test below keeps working unchanged.
+function extractSqlParams(query: unknown): unknown[] {
+  const chunks = (query as { queryChunks?: unknown[] })?.queryChunks ?? [];
+  return chunks.filter(
+    (c) => !(c && typeof c === "object" && Array.isArray((c as { value?: unknown[] }).value))
+  );
+}
+
 vi.mock("../db.js", () => {
   const dbMock = {
     select: (cols?: Record<string, unknown>) => ({
@@ -42,9 +59,6 @@ vi.mock("../db.js", () => {
           if (cols && Object.prototype.hasOwnProperty.call(cols, "state")) {
             return mockRow ? [mockRow] : [];
           }
-          if (cols && Object.prototype.hasOwnProperty.call(cols, "workspaceId")) {
-            return mockConfirmRowLookup;
-          }
           return mockUnmetBlockerRows;
         },
       }),
@@ -54,9 +68,9 @@ vi.mock("../db.js", () => {
         updateCalls.push(s);
         return {
           // requeue's alignment-flip UPDATE is awaited WITHOUT `.returning()`,
-          // its final UPDATE (and confirmAlignmentBrief's) chains `.returning()`
-          // — so `where()`'s result must be BOTH awaitable and carry
-          // `.returning`, exactly like drizzle's own thenable builder.
+          // its final UPDATE chains `.returning()` — so `where()`'s result
+          // must be BOTH awaitable and carry `.returning`, exactly like
+          // drizzle's own thenable builder.
           where: () =>
             Object.assign(Promise.resolve(updateMatches ? [{ id: "row-id" }] : []), {
               returning: async () => (updateMatches ? [{ id: "row-id" }] : []),
@@ -64,6 +78,32 @@ vi.mock("../db.js", () => {
         };
       }),
     })),
+    execute: vi.fn(async (query: unknown) => {
+      const [queueEntryId, estimatedBudgetUsd, modelOverride, taskType] =
+        extractSqlParams(query) as [string, number, string, string | null];
+      const row = mockConfirmRowLookup[0] as
+        | { workspaceId: string; externalId: string; blockedBy: number[] }
+        | undefined;
+      if (!row) return [];
+
+      const hash = row.externalId.lastIndexOf("#");
+      const repoFullName = hash >= 0 ? row.externalId.slice(0, hash) : row.externalId;
+      const greenExternalIds = new Set(
+        (mockUnmetBlockerRows as Array<{ externalId: string }>).map((r) => r.externalId)
+      );
+      const unmet = (row.blockedBy ?? []).filter(
+        (n) => !greenExternalIds.has(`${repoFullName}#${n}`)
+      );
+      updateCalls.push({
+        state: unmet.length === 0 ? "queued" : "parked",
+        parkReason:
+          unmet.length === 0 ? null : `Waiting on ${unmet.map((n) => `#${n}`).join(", ")}`,
+        estimatedBudgetUsd,
+        modelOverride,
+        taskType,
+      });
+      return [{ id: queueEntryId }];
+    }),
     transaction: async (cb: (tx: typeof dbMock) => unknown) => cb(dbMock),
   };
   return { db: dbMock };

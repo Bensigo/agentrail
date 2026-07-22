@@ -173,17 +173,9 @@ export default async function LandingPage() {
               </span>
             </h1>
 
-            <p
-              className="ar-rise mt-8 max-w-[46ch] leading-relaxed text-[var(--gray-11)]"
-              style={{ animationDelay: "120ms" }}
-            >
-              I take the issues you never get to. I triage them, write the
-              code, and open a pull request. Nothing merges without you.
-            </p>
-
             <div
               className="ar-rise mt-10 flex flex-col items-center gap-3.5 lg:items-start"
-              style={{ animationDelay: "190ms" }}
+              style={{ animationDelay: "150ms" }}
             >
               <PrimaryCta cta={cta} />
               <FreePreviewChip />

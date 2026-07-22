@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Jace — your AI engineer",
+  title: "Jace — the AI fractional software engineer",
   description:
     "Jace is an AI engineer you talk to in chat. He turns ideas into issues, aligns with you before building, and ships pull requests — nothing merges without your review.",
 };

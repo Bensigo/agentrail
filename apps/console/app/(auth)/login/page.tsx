@@ -11,12 +11,7 @@ export default function LoginPage() {
     <main style={LIGHT_SURFACE} className={AUTH_MAIN}>
       <AuthCard>
         <JaceAvatar />
-        <h1 className="text-2xl font-bold sm:text-3xl">
-          Sign in to Jace
-          <span aria-hidden className="animate-pulse font-mono">
-            _
-          </span>
-        </h1>
+        <h1 className="text-2xl font-bold sm:text-3xl">Sign in to Jace</h1>
         <p className="max-w-[34ch] text-[var(--gray-11)]">
           Connect GitHub and pick up where you left off.
         </p>

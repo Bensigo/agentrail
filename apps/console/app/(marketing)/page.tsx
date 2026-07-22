@@ -34,7 +34,10 @@ const HOW_WE_WORK = [
     line: "Before I touch code you get a brief: task type, model, and a dollar estimate.",
   },
   { name: "Approve", line: "Your approval sets the run's budget. That number is the cap." },
-  { name: "Pull request", line: "I write the code and open a PR against your repo." },
+  {
+    name: "Pull request",
+    line: "I write the code, a second model reviews it, and your own tests have to pass. Then the PR opens.",
+  },
   {
     name: "Merge",
     line: "You merge it. Or turn on merge permission in Settings and I'll merge once the gate is green.",
@@ -120,18 +123,13 @@ export default async function LandingPage() {
             className="ar-rise rounded-full"
           />
           <h1 className="ar-rise mt-8" style={{ animationDelay: "60ms" }}>
-            <span className="text-heading-1 block">
-              Hey, I&apos;m Jace
-              <span aria-hidden className="ar-cursor animate-pulse font-mono">
-                _
-              </span>
-            </span>
+            <span className="text-heading-1 block">Hey, I&apos;m Jace</span>
             <span className="text-heading-2 mt-5 block text-balance">
-              Your{" "}
+              The AI{" "}
               <span className="rounded-sm bg-[var(--accent-fill)] px-1.5 text-[var(--accent-fill-text)]">
                 fractional
               </span>{" "}
-              AI software engineer.
+              software engineer.
             </span>
           </h1>
           <div className="ar-rise mt-10" style={{ animationDelay: "150ms" }}>

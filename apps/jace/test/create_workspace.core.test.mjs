@@ -184,6 +184,94 @@ test("on 409 with non-JSON body, falls back to the generic message rather than t
 });
 
 // ---------------------------------------------------------------------------
+// runCreateWorkspace — issue #1364 PR②: the sign-up-gate 409 shape returns a
+// STRUCTURED object, not a string, so the model can relay a real link.
+// ---------------------------------------------------------------------------
+
+test("on 409 with a signupUrl: returns { signupRequired: true, url, expiresAt } instead of a plain string", async () => {
+  const transport = fakeTransport(() => ({
+    status: 409,
+    json: async () => ({
+      error: "sign up to create a workspace",
+      signupUrl: "https://console.example.com/signup/abc123",
+      expiresAt: "2026-07-22T12:30:00.000Z",
+    }),
+  }));
+
+  const result = await runCreateWorkspace({
+    eveSessionId: "eve-session-1",
+    name: "Acme",
+    env: ENV,
+    transport,
+  });
+
+  assert.deepEqual(result, {
+    signupRequired: true,
+    url: "https://console.example.com/signup/abc123",
+    expiresAt: "2026-07-22T12:30:00.000Z",
+  });
+});
+
+test("on 409 with a signupUrl but a missing/malformed expiresAt: still returns the structured shape, with an empty expiresAt rather than throwing", async () => {
+  const transport = fakeTransport(() => ({
+    status: 409,
+    json: async () => ({
+      error: "sign up to create a workspace",
+      signupUrl: "https://console.example.com/signup/abc123",
+    }),
+  }));
+
+  const result = await runCreateWorkspace({
+    eveSessionId: "eve-session-1",
+    name: "Acme",
+    env: ENV,
+    transport,
+  });
+
+  assert.deepEqual(result, {
+    signupRequired: true,
+    url: "https://console.example.com/signup/abc123",
+    expiresAt: "",
+  });
+});
+
+test("on 409 with an EMPTY signupUrl string: does NOT take the structured path — falls back to the verbatim error string (empty string is falsy, same treatment as a missing field)", async () => {
+  const transport = fakeTransport(() => ({
+    status: 409,
+    json: async () => ({
+      error: "this conversation is already attached to a workspace",
+      signupUrl: "",
+    }),
+  }));
+
+  const result = await runCreateWorkspace({
+    eveSessionId: "eve-session-1",
+    name: "Acme",
+    env: ENV,
+    transport,
+  });
+
+  assert.equal(result, "this conversation is already attached to a workspace");
+});
+
+test("a 409 WITHOUT signupUrl (already-attached / slug-exhausted) still returns the plain verbatim string, unaffected", async () => {
+  const transport = fakeTransport(() => ({
+    status: 409,
+    json: async () => ({ error: "this conversation is already attached to a workspace" }),
+  }));
+
+  const result = await runCreateWorkspace({
+    eveSessionId: "eve-session-1",
+    name: "Acme",
+    env: ENV,
+    transport,
+  });
+
+  assert.equal(result, "this conversation is already attached to a workspace");
+  assert.equal(typeof result, "string");
+});
+
+// ---------------------------------------------------------------------------
 // runCreateWorkspace — every OTHER failure outcome collapses to ONE generic
 // message (same posture as send_connect_link)
 // ---------------------------------------------------------------------------

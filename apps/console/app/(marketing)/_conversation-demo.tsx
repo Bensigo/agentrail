@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, CheckCheck } from "lucide-react";
 import {
   DEMO_TASK_INPUT,
   DEMO_USER_MESSAGE,
@@ -60,19 +60,32 @@ export function ConversationDemo({
   const isTyping = choreographed && typedChars < DEMO_USER_MESSAGE.length;
   const shownMessage = DEMO_USER_MESSAGE.slice(0, typedChars ?? DEMO_USER_MESSAGE.length);
 
+  // Telegram bubble language (owner directive 2026-07-22): the outgoing
+  // message in the classic green with a bottom tail + read checks, incoming
+  // in white — colors via the frame's --tg-* vars (lib/telegram-surface.ts),
+  // never hex here (tokens-only pin).
   return (
-    <div className="flex flex-col gap-5 bg-[var(--gray-01)] px-5 py-6 sm:px-8 sm:py-8">
+    <div className="flex flex-col gap-5 px-5 py-6 sm:px-8 sm:py-8">
       {/* The user's message — typed out character-by-character when
-          `typedChars` is provided (the pinned scroll scene's typewriter
-          beat); the full message immediately otherwise. */}
+          `typedChars` is provided; the full message immediately otherwise.
+          The 18:02 + double-check trailer appears once the message has
+          fully "sent" (outgoing-only, like the real client). */}
       <div className="flex justify-end">
-        <p className="max-w-[85%] rounded-2xl rounded-tr-sm bg-[var(--gray-05)] px-4 py-2.5 text-[var(--gray-12)]">
+        <p className="max-w-[85%] rounded-2xl rounded-br-sm bg-[var(--tg-bubble-out)] px-4 py-2.5 text-[var(--gray-12)]">
           {shownMessage}
           {isTyping ? (
             <span aria-hidden className="animate-pulse">
               ▍
             </span>
-          ) : null}
+          ) : (
+            <span
+              aria-hidden
+              className="text-label ml-2 inline-flex translate-y-0.5 items-center gap-1 whitespace-nowrap text-[var(--gray-11)]"
+            >
+              18:02
+              <CheckCheck size={14} className="text-[var(--tg-check)]" />
+            </span>
+          )}
         </p>
       </div>
 
@@ -104,7 +117,7 @@ export function ConversationDemo({
           <Image src="/jace.png" alt="" width={20} height={20} className="rounded-full" />
           Jace
         </span>
-        <div className="w-full max-w-[92%] rounded-2xl rounded-tl-sm border border-[var(--gray-05)] bg-[var(--gray-00)] px-4 py-3.5 sm:max-w-[80%]">
+        <div className="w-full max-w-[92%] rounded-2xl rounded-bl-sm bg-[var(--gray-00)] px-4 py-3.5 sm:max-w-[80%]">
           <p className="font-bold text-[var(--gray-12)]">{DEMO_TASK_INPUT.title}</p>
           <p className="text-mono-data mt-2 font-mono text-[var(--gray-11)]">
             Task type: {brief.taskType} → suggested model: {brief.suggestedModel.displayName}
@@ -112,22 +125,26 @@ export function ConversationDemo({
           <p className="text-mono-data mt-1.5 font-mono text-[var(--gray-11)]">
             Approving sets this run&apos;s budget: ~${brief.estimateUsd.toFixed(2)}
           </p>
-
-          {!approved ? (
-            <button
-              type="button"
-              onClick={() => setApproved(true)}
-              className="text-label mt-3.5 inline-flex items-center gap-1.5 rounded-md bg-[var(--accent-fill)] px-3.5 py-1.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-150 ease-out hover:bg-[var(--accent-fill-hover)] active:scale-[0.97] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
-            >
-              ✅ Approve
-            </button>
-          ) : (
-            <p className="text-label mt-3.5 flex items-center gap-1.5 text-[var(--green-11)]">
-              <CheckCircle2 size={13} aria-hidden />
-              Approved by you
-            </p>
-          )}
         </div>
+
+        {/* The inline keyboard — how the REAL bot renders Approve
+            (.../connectors/secret/telegram.ts sends an inline keyboard):
+            a translucent full-width row BELOW the message, accent text.
+            Still the visitor's own real click, never auto-fired. */}
+        {!approved ? (
+          <button
+            type="button"
+            onClick={() => setApproved(true)}
+            className="mt-1 w-full max-w-[92%] rounded-lg bg-[var(--gray-00)]/85 py-2 text-center font-bold text-[var(--tg-accent)] transition-[transform,opacity] duration-150 ease-out hover:opacity-90 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--tg-accent)] sm:max-w-[80%]"
+          >
+            ✅ Approve
+          </button>
+        ) : (
+          <p className="text-label mt-1 flex w-full max-w-[92%] items-center justify-center gap-1.5 py-2 text-[var(--green-11)] sm:max-w-[80%]">
+            <CheckCircle2 size={13} aria-hidden />
+            Approved by you
+          </p>
+        )}
       </div>
 
       {/* Run-outcome ping — the real wire format, once approved. The
@@ -145,8 +162,10 @@ export function ConversationDemo({
               className="mb-0.5 shrink-0 rounded-full"
             />
             {/* break-all: the ping carries a full PR URL, which must wrap
-                inside the hero phone's narrow bubble instead of clipping. */}
-            <p className="text-mono-data max-w-[92%] break-all rounded-2xl rounded-bl-sm border border-[var(--green-11)] bg-[var(--gray-00)] px-4 py-2.5 font-mono text-[var(--gray-12)] sm:max-w-[80%]">
+                inside the hero phone's narrow bubble instead of clipping.
+                Plain incoming white bubble — Telegram doesn't color-border
+                messages; the mono wire text carries the moment. */}
+            <p className="text-mono-data max-w-[92%] break-all rounded-2xl rounded-bl-sm bg-[var(--gray-00)] px-4 py-2.5 font-mono text-[var(--gray-12)] sm:max-w-[80%]">
               {getDemoOutcomeMessage()}
             </p>
           </div>

@@ -30,12 +30,13 @@ const STYLED_FILES = [
 
 // … while the EXISTENCE assertions (must actually carry the lemon fill +
 // dark fill-text pairing) apply only to the files that render a filled
-// element. _phone-demo.tsx is deliberately absent here: it renders chrome
-// around `ConversationDemo` (whose Approve button carries the fill), and
-// demanding a second fill of the frame would force decoration into it.
+// element. _phone-demo.tsx and _conversation-demo.tsx are deliberately
+// absent: the demo wears TELEGRAM's chrome (owner directive 2026-07-22 —
+// the inline-keyboard Approve is the real bot's rendering, via --tg-*
+// vars from lib/telegram-surface.ts), so demanding a lemon fill of it
+// would force OUR brand into a faithful depiction of the channel.
 const LEMON_FILL_FILES = [
   "page.tsx",
-  "_conversation-demo.tsx",
   "_nav.tsx",
   "_channels.tsx",
 ] as const;

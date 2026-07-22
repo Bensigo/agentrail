@@ -20,3 +20,4 @@ export * from "./jace_sessions.js";
 export * from "./chat_identities.js";
 export * from "./workspace_grant_events.js";
 export * from "./run_outcomes.js";
+export * from "./jace_messages.js";

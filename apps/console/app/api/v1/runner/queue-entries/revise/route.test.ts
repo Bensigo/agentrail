@@ -4,24 +4,18 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   getJaceSessionByEveSessionId: vi.fn(),
   findQueueEntryByExternalId: vi.fn(),
-  reviseAlignmentBrief: vi.fn(),
 }));
 vi.mock("../../../../../../lib/alignment-reconciler", () => ({
-  postAlignmentBrief: vi.fn(),
+  reviseAndRepostAlignmentBrief: vi.fn(),
 }));
 
 import { POST } from "./route";
-import {
-  getJaceSessionByEveSessionId,
-  findQueueEntryByExternalId,
-  reviseAlignmentBrief,
-} from "@agentrail/db-postgres";
-import { postAlignmentBrief } from "../../../../../../lib/alignment-reconciler";
+import { getJaceSessionByEveSessionId, findQueueEntryByExternalId } from "@agentrail/db-postgres";
+import { reviseAndRepostAlignmentBrief } from "../../../../../../lib/alignment-reconciler";
 
 const mockGetSession = vi.mocked(getJaceSessionByEveSessionId);
 const mockFindEntry = vi.mocked(findQueueEntryByExternalId);
-const mockRevise = vi.mocked(reviseAlignmentBrief);
-const mockPostBrief = vi.mocked(postAlignmentBrief);
+const mockReviseAndRepost = vi.mocked(reviseAndRepostAlignmentBrief);
 
 const ENV_KEY = "JACE_CONSOLE_TOKEN";
 const SECRET = "jace-shared-secret-abc123";
@@ -47,7 +41,6 @@ const MOCK_BODY = {
 };
 
 const NOW = new Date("2026-07-21T00:00:00.000Z");
-const LATER = new Date("2026-07-21T00:05:00.000Z");
 
 const MOCK_SESSION_WS = {
   id: "session-1",
@@ -169,64 +162,37 @@ describe("POST /api/v1/runner/queue-entries/revise — resolution chain", () => 
     const json = await res.json();
     expect(json).toEqual({ revised: false, reason: "not_found" });
     expect(mockFindEntry).toHaveBeenCalledWith("ws-1", "acme/widgets", 42);
-    expect(mockRevise).not.toHaveBeenCalled();
+    expect(mockReviseAndRepost).not.toHaveBeenCalled();
   });
 
-  it("200 { revised: false, reason: 'not_denied' } when the entry exists but isn't currently denied — never posts a brief", async () => {
+  it("200 { revised: false, reason: 'not_denied' } when the entry exists but isn't currently denied — the shared helper's own no-op, forwarded verbatim", async () => {
     mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
     mockFindEntry.mockResolvedValue(MOCK_ENTRY as never);
-    mockRevise.mockResolvedValue({ ok: false, reason: "not_denied" });
+    mockReviseAndRepost.mockResolvedValue({ revised: false, reason: "not_denied" });
     const res = await POST(req(MOCK_BODY));
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json).toEqual({ revised: false, reason: "not_denied" });
-    expect(mockPostBrief).not.toHaveBeenCalled();
   });
 
-  it("200 { revised: true, outcome } and posts a FRESH brief with a request id derived from the transition's updatedAt when the entry WAS denied", async () => {
+  it("calls the shared reviseAndRepostAlignmentBrief helper with the resolved workspace/entry and the edited title/body, and forwards its result verbatim (#1345 PR③ refactor: the revise+repost core now lives in ONE shared helper, reused by the github-webhook edited branch too)", async () => {
     mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
     mockFindEntry.mockResolvedValue(MOCK_ENTRY as never);
-    mockRevise.mockResolvedValue({ ok: true, updatedAt: LATER });
-    mockPostBrief.mockResolvedValue("posted");
+    mockReviseAndRepost.mockResolvedValue({ revised: true, outcome: "posted" });
 
     const res = await POST(req(MOCK_BODY));
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json).toEqual({ revised: true, outcome: "posted" });
 
-    expect(mockRevise).toHaveBeenCalledWith({
+    expect(mockReviseAndRepost).toHaveBeenCalledTimes(1);
+    expect(mockReviseAndRepost).toHaveBeenCalledWith({
+      workspaceId: "ws-1",
       queueEntryId: "queue-entry-1",
       title: "Cheaper version",
       body: MOCK_BODY.body,
+      repoFullName: "acme/widgets",
+      number: 42,
     });
-
-    expect(mockPostBrief).toHaveBeenCalledTimes(1);
-    const call = mockPostBrief.mock.calls[0]![0];
-    expect(call.workspaceId).toBe("ws-1");
-    expect(call.queueEntryId).toBe("queue-entry-1");
-    expect(call.title).toBe("Cheaper version");
-    expect(call.body).toBe(MOCK_BODY.body);
-    expect(call.repoFullName).toBe("acme/widgets");
-    expect(call.number).toBe(42);
-    // The request id embeds the revision's own updatedAt timestamp — never
-    // the bare `alignment-brief:${queueEntryId}` the DENIED approval already
-    // used, so this creates a NEW jace_approvals row instead of colliding.
-    expect(call.requestId).toBe(`alignment-brief:queue-entry-1:revise-${LATER.getTime()}`);
-  });
-
-  it("two separate revise rounds for the SAME queue entry get DIFFERENT request ids (never collide)", async () => {
-    mockGetSession.mockResolvedValue(MOCK_SESSION_WS as never);
-    mockFindEntry.mockResolvedValue(MOCK_ENTRY as never);
-    mockPostBrief.mockResolvedValue("posted");
-
-    mockRevise.mockResolvedValueOnce({ ok: true, updatedAt: NOW });
-    await POST(req(MOCK_BODY));
-    const firstRequestId = mockPostBrief.mock.calls[0]![0].requestId;
-
-    mockRevise.mockResolvedValueOnce({ ok: true, updatedAt: LATER });
-    await POST(req(MOCK_BODY));
-    const secondRequestId = mockPostBrief.mock.calls[1]![0].requestId;
-
-    expect(firstRequestId).not.toBe(secondRequestId);
   });
 });

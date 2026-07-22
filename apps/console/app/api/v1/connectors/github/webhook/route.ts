@@ -1,9 +1,15 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { findWorkspaceByRepo, getConnector, enqueueGithubIssue } from "@agentrail/db-postgres";
+import {
+  findWorkspaceByRepo,
+  getConnector,
+  enqueueGithubIssue,
+  findQueueEntryByExternalId,
+} from "@agentrail/db-postgres";
 import {
   postAlignmentBrief,
   reconcileAlignmentBriefs,
+  reviseAndRepostAlignmentBrief,
 } from "../../../../../../lib/alignment-reconciler";
 
 /**
@@ -24,7 +30,9 @@ import {
  * the workspace resolved BEFORE the signature check.
  */
 
-// Actions that (re)admit work; others (closed, edited, assigned, …) are ignored.
+// Actions that (re)admit work. `edited` is handled separately below (#1345
+// PR③ / AC2 — it can re-brief a denied entry, never admit a new one); every
+// other action (closed, assigned, …) is ignored.
 const TRIGGER_ACTIONS = new Set(["opened", "reopened", "labeled"]);
 const SIGNATURE_HEADER = "x-hub-signature-256";
 
@@ -54,6 +62,102 @@ function labelNames(issue: Record<string, unknown>): Set<string> {
     }
   }
   return names;
+}
+
+/**
+ * #1345 PR③ / AC2 — has an `issues` `edited` delivery's `changes` object
+ * recorded an ACTUAL title or body edit? GitHub's payload for the `edited`
+ * action includes a `changes` object with a `title` and/or `body` key (each
+ * shaped `{ from: <previous value> }`) — but ONLY for the field(s) that
+ * genuinely changed. A label-only edit is its own `labeled`/`unlabeled`
+ * action (never `edited` with a `changes.title`/`changes.body` key at all),
+ * and an assignee change is its own `assigned`/`unassigned` action — so
+ * checking for the mere PRESENCE of either key on `changes` is sufficient
+ * to gate "did the content this brief was composed from actually change";
+ * this never reads the `.from` value itself, only whether the key exists.
+ */
+function issueContentChanged(payload: Record<string, unknown>): boolean {
+  const changes = payload.changes;
+  if (!changes || typeof changes !== "object") return false;
+  const c = changes as Record<string, unknown>;
+  return "title" in c || "body" in c;
+}
+
+/**
+ * #1345 PR③ / AC2 — a human hand-editing the GitHub issue's title/body
+ * DIRECTLY (no chat, no Jace tool call involved): if this issue maps to a
+ * queue entry CURRENTLY denied for alignment, supersede that denial with a
+ * fresh brief exactly like the tool-triggered console revise route does
+ * (`apps/console/app/api/v1/runner/queue-entries/revise/route.ts`, PR②) —
+ * reusing the SAME shared helper, `reviseAndRepostAlignmentBrief`
+ * (`lib/alignment-reconciler.ts`), so "revise an entry + post the fresh
+ * brief" has exactly one implementation regardless of which trigger fired it.
+ *
+ * Every non-actionable outcome — content unchanged (a label-only/assignee
+ * edit would never even reach this branch, but a title/body-unrelated
+ * `edited` delivery still can't be ruled out defensively), no workspace owns
+ * the repo, no matching queue entry, or the entry exists but isn't currently
+ * denied — is a benign 200 no-op, NEVER a 500: mirrors the admission
+ * branch's own non-fatal posture (see this route's header comment) for
+ * exactly the same reason — a GitHub webhook delivery that doesn't need
+ * action is the overwhelmingly common case, not a failure.
+ */
+async function handleIssuesEdited(
+  payload: Record<string, unknown>,
+  repoFullNameRaw: unknown,
+  workspaceId: string | null
+): Promise<NextResponse> {
+  if (!issueContentChanged(payload)) {
+    return NextResponse.json({ matched: false, reason: "edited but title/body unchanged" });
+  }
+
+  const issue = payload.issue;
+  if (!issue || typeof issue !== "object" || typeof repoFullNameRaw !== "string") {
+    return NextResponse.json({ matched: false, reason: "missing issue or repository" });
+  }
+  const repoFullName = repoFullNameRaw;
+  if (!workspaceId) {
+    return NextResponse.json({ matched: false, reason: "no workspace owns this repo" });
+  }
+
+  const issueObj = issue as Record<string, unknown>;
+  const number = Number(issueObj.number ?? 0);
+  const title = typeof issueObj.title === "string" ? issueObj.title : "";
+  const body = typeof issueObj.body === "string" ? issueObj.body : "";
+
+  let responseBody: Record<string, unknown>;
+  const entry = await findQueueEntryByExternalId(workspaceId, repoFullName, number);
+  if (!entry) {
+    responseBody = { matched: true, revised: false, reason: "not_found" };
+  } else {
+    const result = await reviseAndRepostAlignmentBrief({
+      workspaceId,
+      queueEntryId: entry.id,
+      title,
+      body,
+      repoFullName,
+      number,
+    });
+    responseBody = { matched: true, ...result };
+  }
+
+  // #1345 (crash-window liveness gap): treat this edit, too, as "next queue
+  // activity" and opportunistically sweep for OTHER stale entries in this
+  // workspace — both the admission-recovery candidates AND the revise-
+  // recovery ones (`reconcileAlignmentBriefs` sweeps both). Runs AFTER the
+  // direct attempt above, never before — same ordering rule the admission
+  // branch documents at its own call site below, for the same reason (a
+  // just-revised-and-reposted entry already carries a fresh pending approval
+  // row by the time this runs, so it can never double-match either
+  // candidate query — but keeping one obvious owner-per-entry-per-request is
+  // still the cleaner geometry). Bounded, best-effort, NON-FATAL.
+  try {
+    await reconcileAlignmentBriefs(workspaceId, 5);
+  } catch (err) {
+    console.error("[github/webhook] alignment-reconciler sweep failed:", err);
+  }
+
+  return NextResponse.json(responseBody);
 }
 
 export async function POST(request: NextRequest) {
@@ -104,6 +208,17 @@ export async function POST(request: NextRequest) {
   }
 
   const action = payload.action;
+
+  // #1345 PR③ / AC2: `edited` is not an admission trigger (it never enqueues
+  // — that's what `opened`/`reopened`/`labeled` are for) but it CAN re-brief
+  // a denied entry a human hand-edited directly on GitHub. Branches out
+  // BEFORE the trigger-action check below (which would otherwise just
+  // report it as "not a trigger" and drop it, exactly as it did before this
+  // PR) since it needs its own gating (content-changed) and response shape.
+  if (action === "edited") {
+    return handleIssuesEdited(payload, repoFullName, workspaceId);
+  }
+
   if (typeof action !== "string" || !TRIGGER_ACTIONS.has(action)) {
     return NextResponse.json({ matched: false, reason: `action ${String(action)} not a trigger` });
   }

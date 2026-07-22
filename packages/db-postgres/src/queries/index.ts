@@ -1873,6 +1873,10 @@ export {
 // ever flip a row to `queued` remains confirmAlignmentBrief, untouched by
 // this PR); findQueueEntryByExternalId is how the console's revise route
 // resolves WHICH queue entry an edited GitHub issue maps to.
+// findRevisedBriefRecoveryCandidates (#1345 PR③) is the ADDITIVE crash-window
+// recovery half: separate from, and never overlapping, findAlignmentBriefCandidates
+// above — see that function's own doc-comment for why it must stay a distinct
+// query rather than a loosened criterion.
 export {
   validateAcceptanceCriteria,
   findWorkspaceByRepo,
@@ -1888,12 +1892,14 @@ export {
   findAlignmentBriefCandidates,
   findQueueEntryByExternalId,
   reviseAlignmentBrief,
+  findRevisedBriefRecoveryCandidates,
   type AcGateResult,
   type EnqueueResult,
   type RequeueParkedQueueEntryResult,
   type AlignmentBriefCandidate,
   type QueueEntryLookup,
   type ReviseAlignmentBriefResult,
+  type RevisedBriefRecoveryCandidate,
 } from "./github_intake.js";
 
 // Jace inbound intake — the coordinator's kill switch: a pure allow/deny gate on

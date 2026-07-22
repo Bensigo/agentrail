@@ -1,8 +1,10 @@
 import {
   findAlignmentBriefCandidates,
+  findRevisedBriefRecoveryCandidates,
   githubIssueUrl,
   latestTelegramSessionForWorkspace,
   recordApprovalRequest,
+  reviseAlignmentBrief,
 } from "@agentrail/db-postgres";
 import {
   composeAlignmentBrief,
@@ -272,6 +274,87 @@ export async function postAlignmentBrief(params: {
   return "posted";
 }
 
+/**
+ * Outcome of {@link reviseAndRepostAlignmentBrief} — mirrors
+ * `reviseAlignmentBrief`'s own discriminated result for the "didn't happen"
+ * cases (`not_found`/`not_denied`), plus the posted brief's own
+ * {@link AlignmentBriefOutcome} on success.
+ */
+export type ReviseAndRepostResult =
+  | { revised: true; outcome: AlignmentBriefOutcome }
+  | { revised: false; reason: "not_found" | "not_denied" };
+
+/**
+ * The "revise an entry + post the fresh brief" core of the #1345 revise loop
+ * — shared by BOTH triggers that can supersede a denied alignment hold:
+ * the tool-triggered console route (`apps/console/app/api/v1/runner/
+ * queue-entries/revise/route.ts`, PR②) and the GitHub-webhook `issues.edited`
+ * branch (PR③, `apps/console/app/api/v1/connectors/github/webhook/route.ts`)
+ * — a human hand-editing the issue on GitHub directly, no chat involved.
+ * Factored out here (rather than duplicated across both call sites) so the
+ * revise->requestId->repost sequence has exactly ONE implementation to keep
+ * correct.
+ *
+ * Takes an ALREADY-RESOLVED `queueEntryId` (both callers look their entry up
+ * via `findQueueEntryByExternalId` first, keyed by whatever tenant-resolution
+ * chain is appropriate for THAT trigger — the console route via
+ * `eveSessionId`->session, the webhook via `repository.full_name`->connector
+ * — so that lookup stays with each caller, not here).
+ *
+ * `reviseAlignmentBrief` is the ONLY function that transitions the row
+ * (DENIED -> {@link ALIGNMENT_PARK_REASON exported by @agentrail/db-postgres},
+ * NEVER touching `state` — see that function's own doc-comment for the AC3
+ * invariant this preserves); this helper never repeats or second-guesses that
+ * check, it only reacts to the discriminated result. A NOT-denied entry
+ * (`not_denied`) or a nonexistent one (`not_found`) is a safe, honest no-op
+ * — never an error — exactly as both callers already treated it before this
+ * refactor.
+ *
+ * On a genuine revise (`ok: true`), posts a FRESH brief via
+ * {@link postAlignmentBrief} with a request id DERIVED from the transition's
+ * own `updatedAt` (`alignment-brief:${queueEntryId}:revise-${updatedAt.getTime()}`)
+ * — the same derivation {@link reconcileAlignmentBriefs}'s revise-recovery
+ * sweep below independently recomputes from the row's OWN `updated_at`
+ * column for the SAME entry, so a direct post here and a later recovery
+ * sweep converge on the identical `jace_approvals` row
+ * (`recordApprovalRequest`'s `onConflictDoNothing` on
+ * `(eveSessionId, requestId)`) rather than ever creating two.
+ */
+export async function reviseAndRepostAlignmentBrief(params: {
+  workspaceId: string;
+  queueEntryId: string;
+  title: string;
+  body: string;
+  repoFullName?: string;
+  number?: number;
+}): Promise<ReviseAndRepostResult> {
+  const result = await reviseAlignmentBrief({
+    queueEntryId: params.queueEntryId,
+    title: params.title,
+    body: params.body,
+  });
+  if (!result.ok) {
+    return { revised: false, reason: result.reason };
+  }
+
+  const outcome = await postAlignmentBrief({
+    workspaceId: params.workspaceId,
+    queueEntryId: params.queueEntryId,
+    title: params.title,
+    body: params.body,
+    repoFullName: params.repoFullName,
+    number: params.number,
+    // Distinct per revise transition (this transition's own updatedAt), so
+    // it can never collide with the denied approval's own deterministic
+    // `alignment-brief:${queueEntryId}` request id, or with an EARLIER
+    // revise round's request id for the SAME entry — see this function's own
+    // doc-comment for the convergence-with-the-recovery-sweep rationale.
+    requestId: `alignment-brief:${params.queueEntryId}:revise-${result.updatedAt.getTime()}`,
+  });
+
+  return { revised: true, outcome };
+}
+
 /** The stable `owner/repo` + issue number a GitHub-sourced entry's
  * `external_id` (`owner/repo#N`) encodes — mirrors `unparkDependents`'s own
  * parsing in `github_intake.ts`. Returns nulls for a non-GitHub source, or a
@@ -332,6 +415,24 @@ export interface ReconcileEntryOutcome {
  * Telegram message unconditionally after recording (no created-vs-found
  * check) — so racing the two would send the identical brief twice. See the
  * github-webhook route's own comment at its call site.
+ *
+ * SECOND, ADDITIVE SWEEP (#1345 PR③ — the crash-window liveness gap): after
+ * the admission-recovery sweep above, this ALSO sweeps
+ * `findRevisedBriefRecoveryCandidates` — entries stuck between
+ * `reviseAlignmentBrief` clearing a denial and a fresh brief actually being
+ * posted (a process crash in that narrow window). Entirely separate
+ * candidate set (see that query's own doc-comment for why it must stay
+ * disjoint from `findAlignmentBriefCandidates` above, never a loosening of
+ * it) — a row can match at most ONE of the two sweeps. Each recovered
+ * candidate reposts with the SAME derived request id
+ * (`alignment-brief:${id}:revise-${updatedAt.getTime()}`,
+ * `updatedAt` being the row's OWN `updated_at`) that
+ * `reviseAndRepostAlignmentBrief` (this module, above) would have used for a
+ * direct post of the SAME revise transition — so a direct post that
+ * eventually succeeds AFTER this sweep already recovered it, or a sweep that
+ * runs while a direct post is in flight, converge on the identical
+ * `jace_approvals` row via `recordApprovalRequest`'s
+ * `onConflictDoNothing` rather than ever creating two pending briefs.
  */
 export async function reconcileAlignmentBriefs(
   workspaceId: string,
@@ -363,5 +464,36 @@ export async function reconcileAlignmentBriefs(
       outcomes.push({ id: row.id, outcome: "error" });
     }
   }
+
+  // #1345 PR③: additive revise-recovery sweep — see this function's own
+  // doc-comment above for why this is a SEPARATE, disjoint candidate set and
+  // how its request id derivation converges with a direct post of the same
+  // revise transition instead of ever double-posting.
+  const revisedCandidates = await findRevisedBriefRecoveryCandidates(workspaceId, limit);
+  for (const row of revisedCandidates) {
+    try {
+      const ref = deriveGithubRef(row.source, row.externalId);
+      const outcome = await postAlignmentBrief({
+        workspaceId: row.workspaceId,
+        queueEntryId: row.id,
+        title: row.title,
+        body: row.body,
+        repoFullName: ref?.repoFullName,
+        number: ref?.number,
+        requestId: `alignment-brief:${row.id}:revise-${row.updatedAt.getTime()}`,
+      });
+      console.log(
+        `[alignment-reconciler] revise-recovery queue entry ${row.id} (source=${row.source}): ${outcome}`
+      );
+      outcomes.push({ id: row.id, outcome });
+    } catch (err) {
+      console.error(
+        `[alignment-reconciler] revise-recovery queue entry ${row.id} threw during reconciliation:`,
+        err
+      );
+      outcomes.push({ id: row.id, outcome: "error" });
+    }
+  }
+
   return outcomes;
 }

@@ -911,11 +911,14 @@ describe("dispatchQueuedChannelMessages — console rows (#1288)", () => {
     expect(mockResolve).not.toHaveBeenCalled();
     expect(mockPin).not.toHaveBeenCalled();
 
+    // Console always routes to the single default host (no per-model routing).
+    expect(mockFetch.mock.calls[0]?.[0]).toBe("http://127.0.0.1:2000/eve/v1/hosted-inbound");
     const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
     expect(body.channel).toBe("console");
     expect(body.target).toEqual({ workspaceId: "ws-console-1", conversationKey: "console:user-1:1" });
     expect(body.target).not.toHaveProperty("chatId");
     expect(body.target).not.toHaveProperty("channelId");
+    expect(body).not.toHaveProperty("model");
     expect(body.auth).toEqual({
       authenticator: "agentrail",
       principalType: "user",
@@ -926,52 +929,6 @@ describe("dispatchQueuedChannelMessages — console rows (#1288)", () => {
     expect(mockGetOrCreateSession).toHaveBeenCalledWith("ws-console-1", "console", "console:user-1:1");
     expect(mockBindEveSession).toHaveBeenCalledWith("ledger-console-1", "eve-sess-1");
     expect(mockComplete).toHaveBeenCalledWith("row-1");
-  });
-
-  it("routes the DEFAULT model to the default host and includes it in the body", async () => {
-    mockClaim
-      .mockResolvedValueOnce(consoleRow({ payload: { text: "hi", model: "anthropic/claude-sonnet-4.6" } }))
-      .mockResolvedValueOnce(null);
-    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-console-1" } as never);
-
-    await dispatchQueuedChannelMessages();
-
-    expect(mockFetch.mock.calls[0]?.[0]).toBe("http://127.0.0.1:2000/eve/v1/hosted-inbound");
-    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
-    expect(body.model).toBe("anthropic/claude-sonnet-4.6");
-    // model rides as a sibling — the console target stays the compound key.
-    expect(body.target).toEqual({ workspaceId: "ws-console-1", conversationKey: "console:user-1:1" });
-  });
-
-  it("routes a WIRED non-default model to its configured host (CONSOLE_MODEL_ENDPOINTS)", async () => {
-    const prev = process.env["CONSOLE_MODEL_ENDPOINTS"];
-    process.env["CONSOLE_MODEL_ENDPOINTS"] = "z-ai/glm-5.2=http://127.0.0.1:2099";
-    try {
-      mockClaim
-        .mockResolvedValueOnce(consoleRow({ payload: { text: "hi", model: "z-ai/glm-5.2" } }))
-        .mockResolvedValueOnce(null);
-      mockGetOrCreateSession.mockResolvedValue({ id: "ledger-console-1" } as never);
-
-      await dispatchQueuedChannelMessages();
-
-      expect(mockFetch.mock.calls[0]?.[0]).toBe("http://127.0.0.1:2099/eve/v1/hosted-inbound");
-      const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
-      expect(body.model).toBe("z-ai/glm-5.2");
-    } finally {
-      if (prev === undefined) delete process.env["CONSOLE_MODEL_ENDPOINTS"];
-      else process.env["CONSOLE_MODEL_ENDPOINTS"] = prev;
-    }
-  });
-
-  it("a payload with no model routes to the default host with no model field in the body", async () => {
-    mockClaim.mockResolvedValueOnce(consoleRow()).mockResolvedValueOnce(null);
-    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-console-1" } as never);
-
-    await dispatchQueuedChannelMessages();
-
-    expect(mockFetch.mock.calls[0]?.[0]).toBe("http://127.0.0.1:2000/eve/v1/hosted-inbound");
-    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
-    expect(body).not.toHaveProperty("model");
   });
 
   it("fails the row when workspaceId is somehow missing (invariant guard, never a crash)", async () => {

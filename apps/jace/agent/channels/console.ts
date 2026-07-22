@@ -63,7 +63,7 @@
 import { defineChannel, POST } from "eve/channels";
 import { postConsoleChatReply } from "../lib/console_chat_reply.core.mjs";
 
-type ConsoleState = { workspaceId: string; conversationKey: string; model?: string };
+type ConsoleState = { workspaceId: string; conversationKey: string };
 
 /** Trim a possibly-non-string value to a string ("" when not a string). */
 function readString(value: unknown): string {
@@ -111,12 +111,7 @@ export default defineChannel<ConsoleState>({
         "console.receive requires target.workspaceId and target.conversationKey.",
       );
     }
-    // The gateway model id the sender picked (#1288), merged onto the target by
-    // hosted-inbound.ts. Observational only — the turn runs on THIS instance's
-    // boot model; the console dispatcher routes to a differently-pinned Jace
-    // host to actually switch models. Optional; blank/absent => undefined.
-    const model = readString(input.target?.model) || undefined;
-    const state: ConsoleState = { workspaceId, conversationKey, ...(model ? { model } : {}) };
+    const state: ConsoleState = { workspaceId, conversationKey };
     return send(input.message, {
       auth: input.auth,
       continuationToken: conversationKey,

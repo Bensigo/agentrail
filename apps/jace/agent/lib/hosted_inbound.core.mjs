@@ -129,17 +129,5 @@ export function normalizeHostedInbound(raw) {
     throw new Error("hosted-inbound: `auth` is required and must be an object.");
   }
 
-  // Console (#1288) may carry the gateway model id the sender picked, a
-  // top-level sibling of `target` (NOT inside it — the console target stays
-  // exactly `{ workspaceId, conversationKey }`). It rides through so the
-  // console channel can observe which model was requested; the actual model a
-  // turn runs on is whatever THIS Jace instance was booted with (Eve has no
-  // per-turn model override — the console dispatcher does the real switch by
-  // routing to a differently-pinned Jace host). Included only when a non-empty
-  // string; absent for every other channel.
-  const model = typeof raw.model === "string" && raw.model.trim() ? raw.model.trim() : undefined;
-
-  const normalized = { channel, message, target: normalizedTarget, auth };
-  if (model) normalized.model = model;
-  return normalized;
+  return { channel, message, target: normalizedTarget, auth };
 }

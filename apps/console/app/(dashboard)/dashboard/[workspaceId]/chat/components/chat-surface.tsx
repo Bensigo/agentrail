@@ -3,22 +3,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { History, SquarePen } from "lucide-react";
 import { PageHeader } from "../../../../../components/page-header";
-import type { ChatModelOption } from "../../../../../../lib/chat/models";
 import { ChatThread } from "./chat-thread";
-import { ModelPicker } from "./model-picker";
 import { ChatHistoryPanel } from "./chat-history-panel";
 import { nextThreadN, type ChatThreadSummary } from "./chat-helpers";
 
 /**
- * The console chat surface shell (#1288 sessions + history + model picker) —
- * owns the cross-cutting state the header controls and the thread share:
+ * The console chat surface shell (#1288 sessions + history) — owns the
+ * cross-cutting state the header controls and the thread share:
  *   - `activeN` — which of this member's own threads (`console:<userId>:<n>`)
  *     is on screen. `ChatThread` is KEYED by it, so switching threads remounts
  *     the thread (fresh fetch + poll cursor) rather than trying to reconcile
  *     two conversations' message lists.
  *   - `threads` — the history list (`GET .../chat/threads`), refetched when a
  *     new thread materializes (its first message) so it joins history.
- *   - `selectedModel` — the header dropdown's pick, sent with each message.
  *
  * A brand-new "New chat" is pure client state: `activeN` jumps to
  * `nextThreadN(threads)` and the thread shows its empty state; no row exists
@@ -28,17 +25,12 @@ import { nextThreadN, type ChatThreadSummary } from "./chat-helpers";
  */
 export function ChatSurface({
   workspaceId,
-  models,
-  defaultModelId,
 }: {
   workspaceId: string;
-  models: readonly ChatModelOption[];
-  defaultModelId: string;
 }) {
   const [threads, setThreads] = useState<ChatThreadSummary[]>([]);
   const [loadingThreads, setLoadingThreads] = useState(true);
   const [activeN, setActiveN] = useState(1);
-  const [selectedModel, setSelectedModel] = useState(defaultModelId);
   const [historyOpen, setHistoryOpen] = useState(false);
   // Only the FIRST threads load may move `activeN` (to the most recent thread);
   // later refetches must never yank the user off the thread they're reading.
@@ -85,7 +77,6 @@ export function ChatSurface({
           subtitle="Talk to Jace right from the dashboard."
           actions={
             <>
-              <ModelPicker models={models} value={selectedModel} onChange={setSelectedModel} />
               <button
                 type="button"
                 aria-label="New chat"
@@ -114,7 +105,6 @@ export function ChatSurface({
         key={activeN}
         workspaceId={workspaceId}
         n={activeN}
-        model={selectedModel}
         onMaterialize={refreshThreads}
       />
 

@@ -107,18 +107,9 @@ export default defineChannel({
 
       // AWAIT, not waitUntil: the dispatcher needs sessionId synchronously to
       // write its ledger (bindEveSession) — see the header comment above.
-      //
-      // Console (#1288): when the payload carried a picked model, merge it onto
-      // the target so the console channel can observe it (`input.target.model`).
-      // The turn still runs on THIS instance's boot model — Eve has no per-turn
-      // model override; the console dispatcher does the real switch by routing
-      // to a differently-pinned Jace host (see hosted_inbound.core.mjs's note).
-      const target = normalized.model
-        ? { ...normalized.target, model: normalized.model }
-        : normalized.target;
       const session = await args.receive(channelModule, {
         message: normalized.message,
-        target,
+        target: normalized.target,
         auth: normalized.auth,
       });
 

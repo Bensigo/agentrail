@@ -4,8 +4,27 @@
     {
       "name": "console",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--filter", "@agentrail/console", "dev"],
+      "runtimeArgs": [
+        "--filter",
+        "@agentrail/console",
+        "dev"
+      ],
       "port": 3000,
+      "autoPort": false
+    },
+    {
+      "name": "console-3001",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "@agentrail/console",
+        "exec",
+        "next",
+        "dev",
+        "--port",
+        "3001"
+      ],
+      "port": 3001,
       "autoPort": false
     }
   ]

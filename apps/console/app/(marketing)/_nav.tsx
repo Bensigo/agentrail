@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { Send } from "lucide-react";
 import type { MessageJaceCta } from "./_cta";
 
@@ -64,7 +65,15 @@ export function MarketingNav({
           }
         >
           <a href="#top" className="flex shrink-0 items-center gap-2.5">
-            <RailMark />
+            {/* The mascot IS Jace (TASTE.md canon) — the wordmark beside it
+                carries the name, so the render stays decorative for AT. */}
+            <Image
+              src="/jace-avatar.png"
+              alt=""
+              width={24}
+              height={24}
+              className="rounded-full"
+            />
             <span className="font-bold tracking-tight">Jace</span>
           </a>
 
@@ -112,16 +121,5 @@ function CondensedCta({
         Sign in
       </button>
     </form>
-  );
-}
-
-function RailMark() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <rect x="3" y="2" width="2.4" height="16" rx="1.2" fill="var(--brand-accent)" />
-      <rect x="14.6" y="2" width="2.4" height="16" rx="1.2" fill="var(--brand-accent)" />
-      <rect x="2" y="6" width="16" height="1.6" rx="0.8" fill="var(--gray-08)" />
-      <rect x="2" y="12.4" width="16" height="1.6" rx="0.8" fill="var(--gray-08)" />
-    </svg>
   );
 }

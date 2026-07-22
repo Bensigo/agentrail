@@ -7,7 +7,7 @@ import type { CSSProperties } from "react";
 import { Send } from "lucide-react";
 import { Reveal } from "./_motion";
 import { MarketingNav } from "./_nav";
-import { PinnedConversationScene } from "./_scroll-narrative";
+import { PhoneDemo } from "./_phone-demo";
 import { resolveMessageJaceCta } from "./_cta";
 import type { MessageJaceCta } from "./_cta";
 import { resolveDiscordChannelCard, resolveSlackChannelCard } from "./_channel-cards";
@@ -145,42 +145,67 @@ export default async function LandingPage() {
           scrolls into the story. See _nav.tsx. */}
       <MarketingNav cta={cta} signInAction={signInWithGithub} />
 
-      {/* 2 — Hero: conversational, first person, one CTA, lots of air.
-          The mascot IS Jace (TASTE.md, owner-supplied) — his resume opens
-          with his face. Mascot appearance 1 of 2. */}
-      <section className="px-6 pt-16 pb-16 text-center sm:pt-20 sm:pb-24">
-        <div className="mx-auto max-w-[760px]">
-          <Image
-            src="/jace.png"
-            alt="Jace"
-            width={112}
-            height={112}
-            priority
-            className="ar-rise mx-auto mb-7 rounded-full"
-          />
+      {/* 2 — Hero: two columns on desktop (intro left, live phone demo
+          right), stacked and centered below lg. The display line carries the
+          serif at full scale; the role line drops one step (slop-audit TY-6:
+          no long sentence at 72px). The mascot IS Jace (TASTE.md canon) —
+          the owner-supplied wave render opens his page. */}
+      <section className="px-6 pt-14 pb-20 sm:pt-16 sm:pb-24">
+        <div className="mx-auto flex max-w-[1120px] flex-col items-center gap-12 text-center lg:grid lg:grid-cols-[1.1fr_auto] lg:items-center lg:gap-16 lg:text-left">
+          <div className="flex flex-col items-center lg:items-start">
+            {/* mix-blend-multiply drops the render's white matte into the
+                paper surface — a cutout, not a white box. */}
+            <Image
+              src="/jace-wave.png"
+              alt="Jace"
+              width={140}
+              height={140}
+              priority
+              className="ar-rise mb-6 mix-blend-multiply"
+            />
 
-          <h1
-            className="ar-rise text-heading-1 mx-auto max-w-[16ch] text-balance"
-            style={{ animationDelay: "60ms" }}
-          >
-            Hi, I&apos;m Jace. I clear your backlog while you sleep.
-          </h1>
+            <h1 className="ar-rise" style={{ animationDelay: "60ms" }}>
+              <span className="text-heading-1 block">
+                Hey, I&apos;m Jace
+                <span aria-hidden className="ar-cursor animate-pulse font-mono">
+                  _
+                </span>
+              </span>
+              <span className="text-heading-2 mt-3 block text-balance">
+                Your{" "}
+                <span className="rounded-sm bg-[var(--accent-fill)] px-1.5 text-[var(--accent-fill-text)]">
+                  fractional
+                </span>{" "}
+                AI software engineer.
+              </span>
+            </h1>
 
-          <p
-            className="ar-rise mx-auto mt-6 max-w-[52ch] text-[var(--gray-11)]"
-            style={{ animationDelay: "120ms" }}
-          >
-            Hire me as a fractional engineer. I triage your issues, write the
-            code, and open a pull request. Then I wait for your review before
-            anything ships.
-          </p>
+            <p
+              className="ar-rise mt-6 max-w-[52ch] text-[var(--gray-11)]"
+              style={{ animationDelay: "120ms" }}
+            >
+              I take the issues you never get to. I triage them, write the
+              code, and open a pull request. Nothing merges without you.
+            </p>
+
+            <div
+              className="ar-rise mt-9 flex flex-col items-center gap-3 lg:items-start"
+              style={{ animationDelay: "190ms" }}
+            >
+              <PrimaryCta cta={cta} />
+              <FreePreviewChip />
+            </div>
+          </div>
 
           <div
-            className="ar-rise mt-9 flex flex-col items-center gap-3"
-            style={{ animationDelay: "190ms" }}
+            className="ar-rise flex flex-col items-center gap-3"
+            style={{ animationDelay: "240ms" }}
           >
-            <PrimaryCta cta={cta} />
-            <FreePreviewChip />
+            <PhoneDemo />
+            <p className="text-body-sm max-w-[38ch] text-center text-[var(--gray-11)]">
+              The brief in this demo is computed by the same code that prices
+              real runs.
+            </p>
           </div>
         </div>
       </section>
@@ -205,19 +230,6 @@ export default async function LandingPage() {
             ))}
           </ul>
         </div>
-      </section>
-
-      {/* 4 — ACT 1: the pinned conversation. A real Jace conversation, not
-          a dashboard mockup, now staged as the page's own "Macintosh" — a
-          screen the story plays out on as you scroll: the message types
-          out, then Jace's brief rises in. Every field the brief shows —
-          task type, suggested model, the $ estimate — is computed live by
-          the real estimate lib, and the outcome ping is byte-identical to
-          what the product actually sends; the Approve tap stays a real,
-          required click even here. See _scroll-narrative.tsx and
-          _conversation-demo-data.ts. */}
-      <section className="pb-28 sm:pb-36">
-        <PinnedConversationScene />
       </section>
 
       {/* 5 — ACT 2: how we work together, as one loud full-bleed lemon

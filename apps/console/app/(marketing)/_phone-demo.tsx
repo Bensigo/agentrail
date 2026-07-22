@@ -85,7 +85,7 @@ export function PhoneDemo() {
     <div
       ref={frameRef}
       style={TELEGRAM_SURFACE}
-      className="w-[320px] overflow-hidden rounded-[2rem] border-2 border-[var(--gray-13)] shadow-[6px_6px_0_0_var(--gray-13)] sm:w-[350px]"
+      className="flex w-[320px] flex-col overflow-hidden rounded-[2rem] border-2 border-[var(--gray-13)] shadow-[6px_6px_0_0_var(--gray-13)] sm:aspect-[71.5/146.7] sm:w-[350px]"
     >
       {/* iOS floating header (owner reference, round 3): three LIQUID-GLASS
           islands over the wallpaper — translucent fill, bright glass edge,
@@ -115,10 +115,13 @@ export function PhoneDemo() {
         </span>
       </div>
 
-      {/* Fixed conversation height (owner fix 2026-07-22): the frame is
-          full-size from first paint — typing, the brief, and the outcome
-          ping all land INSIDE it instead of growing the phone stepwise. */}
-      <div className="min-h-[560px]">
+      {/* The conversation area flexes to fill the frame's TRUE-PHONE aspect
+          (owner spec 2026-07-22: 71.5mm x 146.7mm, iPhone Pro = 1:2.052,
+          enforced via sm:aspect above) — full-size from first paint, so
+          typing, the brief, and the outcome ping all land INSIDE it. The
+          560px floor keeps the narrow mobile variant from clipping the
+          transcript. */}
+      <div className="min-h-[560px] flex-1">
         {choreographed === null ? null : choreographed ? (
           <ConversationDemo typedChars={typed} briefRevealed={briefRevealed} />
         ) : (

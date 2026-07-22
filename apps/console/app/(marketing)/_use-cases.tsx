@@ -60,7 +60,7 @@ export function UseCases() {
       {USE_CASES.map((useCase, i) => (
         <div
           key={useCase.visual}
-          className="sticky rounded-xl border-2 border-[var(--gray-13)] bg-[var(--gray-00)] p-6 shadow-[5px_5px_0_0_var(--gray-13)] sm:p-10"
+          className="sticky rounded-xl border-2 border-[var(--gray-13)] bg-[var(--paper)] p-6 shadow-[5px_5px_0_0_var(--gray-13)] sm:p-10"
           style={{ top: 88 + i * 16 }}
         >
           <div className="flex flex-col items-start gap-6 sm:flex-row sm:items-center sm:justify-between sm:gap-10">

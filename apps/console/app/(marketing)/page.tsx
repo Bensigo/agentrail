@@ -154,7 +154,7 @@ export default async function LandingPage() {
           in the hero"). The display line carries the serif at full scale;
           the role line drops one step (slop-audit TY-6). The mascot beats
           live elsewhere — closing wave, use-case beanbag, nav/phone avatar. */}
-      <section className="px-6 pt-16 pb-20 sm:pt-24 sm:pb-24">
+      <section className="px-6 pt-16 pb-10 sm:pt-24 sm:pb-12">
         <div className="mx-auto flex max-w-[1120px] flex-col items-center gap-12 text-center lg:grid lg:grid-cols-[1.1fr_auto] lg:items-center lg:gap-16 lg:text-left">
           <div className="flex flex-col items-center lg:items-start">
             <h1 className="ar-rise" style={{ animationDelay: "60ms" }}>
@@ -223,7 +223,12 @@ export default async function LandingPage() {
           numerals at poster size. Content is the exact same 5-step loop;
           see HOW_WE_WORK's own comment above for why the Merge step phrases
           merge permission as an opt-in rather than the default. */}
-      <section className="w-full bg-[var(--accent-fill)] px-6 py-24 sm:py-32">
+      {/* The lemon band is the stack's NEXT CARD (owner feedback 2026-07-22:
+          sections must blend, one fabric): it slides OVER the pinned
+          use-case cards — rounded top, ink edge, later in flow so it paints
+          above the sticky deck. The whole page reads as sheets riding over
+          sheets from here on. */}
+      <section className="relative -mt-16 w-full rounded-t-[2.5rem] border-t-2 border-[var(--gray-13)] bg-[var(--accent-fill)] px-6 py-24 sm:py-32">
         <div className="mx-auto max-w-[1120px]">
           <Reveal>
             <h2 className="text-heading-2 text-[var(--accent-fill-text)]">
@@ -262,7 +267,9 @@ export default async function LandingPage() {
           three channels per the owner's 2026-07-22 ruling; every button
           resolves through the honesty-gated URL resolvers and falls back to
           sign-in — never a dead link. See _channels.tsx. */}
-      <section className="px-6 py-24 sm:py-28">
+      {/* The paper sheet rides over the lemon in turn — same sheet-over-
+          sheet seam, so the acts hand off instead of hard-cutting. */}
+      <section className="relative -mt-14 rounded-t-[2.5rem] border-t-2 border-[var(--gray-13)] bg-[var(--paper)] px-6 pt-20 pb-24 sm:pt-24 sm:pb-28">
         <div className="mx-auto max-w-[1120px]">
           <Reveal>
             <h2 className="text-heading-2 text-center">Where you&apos;ll find me</h2>
@@ -320,7 +327,7 @@ export default async function LandingPage() {
               </div>
             </Reveal>
             <Reveal delay={140}>
-              <div className="w-[240px] rounded-lg border-2 border-[var(--gray-13)] bg-[var(--gray-00)] px-6 py-6 text-center shadow-[4px_4px_0_0_var(--gray-13)] sm:w-[260px]">
+              <div className="w-[240px] rounded-lg border-2 border-[var(--gray-13)] bg-[var(--paper)] px-6 py-6 text-center shadow-[4px_4px_0_0_var(--gray-13)] sm:w-[260px]">
                 <CountUp
                   className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
                   value={stats.didntLand}

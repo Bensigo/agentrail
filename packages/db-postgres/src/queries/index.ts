@@ -2279,7 +2279,11 @@ export {
 // every entry point must check first (default OFF); `createGoal` is the
 // gated create_goal tool's own write; `findActiveGoalForIssue` +
 // `recordIssueFiled` + `recordOutcomeAndTransition` are the issue<->goal
-// mapping and the evaluate-on-outcome path; `pauseGoal`/`abandonGoal`/
+// mapping and the evaluate-on-outcome path; `findActiveGoalBySlug` is the
+// pre-file leash-check lookup (adversarial-review fix: the create_issue
+// write path resolves a goal-stamped body's slug through this BEFORE
+// filing, so `canFileNextIssue`/`recordIssueFiled` actually run on the real
+// filing path instead of being dead code); `pauseGoal`/`abandonGoal`/
 // `markGoalReached` are the human-only manual controls.
 export {
   isGoalLoopEnabled,
@@ -2288,6 +2292,7 @@ export {
   getGoalById,
   listActiveGoalsForWorkspace,
   findActiveGoalForIssue,
+  findActiveGoalBySlug,
   recordIssueFiled,
   recordOutcomeAndTransition,
   type RecordOutcomeInput,

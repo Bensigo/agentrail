@@ -123,6 +123,34 @@ export async function findActiveGoalForIssue(
 }
 
 /**
+ * Resolve an ACTIVE goal by its human-facing slug (adversarial-review fix,
+ * issue #1289) — the lookup the create_issue write path uses to recognize a
+ * goal-stamped issue body ("Goal: <objective> (goal:<slug>)") BEFORE ever
+ * shelling out to create it, so the leash can be enforced pre-file rather
+ * than only noticed retroactively. Only ever returns an `active` goal — a
+ * stamp that names an already-terminal goal (leashed/paused/reached/
+ * abandoned) resolves to `null` here, same fail-safe posture as
+ * `findActiveGoalForIssue`, and the caller (the console's
+ * `/api/v1/runner/goals/file-check` route) reads that as "refuse to file".
+ * Slugs are NOT unique (see schema/goals.ts's own comment — a slug
+ * collision is a cosmetic ambiguity, never enforced at the DB level); this
+ * takes the most recently created match, same tie-break idiom as
+ * `getJaceSessionByEveSessionId`.
+ */
+export async function findActiveGoalBySlug(
+  workspaceId: string,
+  slug: string
+): Promise<Goal | null> {
+  const [goal] = await db
+    .select()
+    .from(goals)
+    .where(and(eq(goals.workspaceId, workspaceId), eq(goals.slug, slug), eq(goals.status, "active")))
+    .orderBy(desc(goals.createdAt))
+    .limit(1);
+  return goal ?? null;
+}
+
+/**
  * Record that an issue was just filed toward `goalId` (the create_issue
  * tool's own best-effort post-creation side effect — see
  * apps/jace/agent/lib/create_issue.core.mjs's `stampCreatedIssueUrl` for the

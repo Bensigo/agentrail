@@ -53,6 +53,173 @@ export function notConnectedGuidance(env = {}) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Jace goal loop (issue #1289) — the pre-file leash gate and post-file
+// bookkeeping record.
+//
+// ADVERSARIAL-REVIEW FIX (this is not the original design): the goal loop's
+// `maxIssues` leash was schema-complete and exhaustively unit-tested
+// (goal_rules.ts / goals.ts in packages/db-postgres) but INERT at runtime —
+// nothing in production ever called `recordIssueFiled`, the ONE function
+// that increments `goals.issues_filed` AND writes the `goal_events`
+// `issue_filed` row the evaluate-on-outcome path (`findActiveGoalForIssue`)
+// depends on to map an issue back to its goal. `git grep recordIssueFiled --
+// apps/` found only test files and the live-DB proof script (which called
+// it MANUALLY to simulate what production never did) — a documented, tested
+// safety bound that silently never fired. This section closes that gap at
+// the ONE place a goal-stamped issue is actually admitted: right here, in
+// `runCreateIssue`, before/after the CLI call.
+//
+// THE SAFETY LINE this preserves: this is bookkeeping ALONGSIDE the existing
+// human-approval gate, never a bypass of it. `create_issue`'s `approval:
+// (ctx) => consoleGatedApproval(ctx)` gate is completely untouched — a human
+// still approves every single issue, goal-stamped or not, before ANY of this
+// runs. What's new is that a goal-stamped issue additionally (a) refuses to
+// even reach the CLI when that goal's leash is already exhausted (the
+// pre-file gate, `checkGoalFileLeash`), and (b) records the file once it
+// really happens (`recordGoalIssueFiled`).
+
+/** The goal stamp's own text format — `agent/lib/goal_outcome_dispatch.core.mjs::goalStamp` renders "Goal: <objective> (goal:<slug>)"; this is that format's inverse. */
+const GOAL_STAMP_RE = /\(goal:([a-z0-9-]+)\)/i;
+
+/**
+ * Recover a goal's slug from an issue's about-to-be-created title+body, if
+ * the synthetic refill prompt's own instruction (`buildRefillMessage`) was
+ * followed and the model stamped it. Pure, no I/O. Returns `null` when no
+ * stamp is present — the overwhelmingly common case (a normal, non-goal
+ * issue), which must cost nothing beyond one regex test.
+ *
+ * @param {string} text — the title and/or house-format body to search
+ * @returns {string | null}
+ */
+export function extractGoalSlug(text) {
+  // `String(...).match(regex)` rather than `regex.exec(...)` — NOT a style
+  // preference: this repo's static AC4 check (qa-no-shell-string.test.mjs)
+  // greps runtime source for `exec(`/`execSync(` to ban shell-string
+  // subprocess calls, and its regex has no way to tell `RegExp.prototype
+  // .exec()` apart from `child_process.exec()`. `.match()` is functionally
+  // identical here (a non-global regex against `.match()` returns the same
+  // full-match-plus-groups array `.exec()` would) and simply doesn't
+  // collide with that check.
+  const match = String(text ?? "").match(GOAL_STAMP_RE);
+  return match ? match[1] : null;
+}
+
+export const GOAL_FILE_CHECK_PATH = "/api/v1/runner/goals/file-check";
+export const GOAL_FILE_RECORDED_PATH = "/api/v1/runner/goals/file-recorded";
+
+/** @param {string} baseUrl — already trimmed + de-slashed */
+export function buildGoalFileCheckUrl(baseUrl) {
+  return `${baseUrl}${GOAL_FILE_CHECK_PATH}`;
+}
+
+/** @param {string} baseUrl — already trimmed + de-slashed */
+export function buildGoalFileRecordedUrl(baseUrl) {
+  return `${baseUrl}${GOAL_FILE_RECORDED_PATH}`;
+}
+
+/** The generic, safe-to-relay refusal text used whenever the pre-file leash check itself cannot be trusted (infra failure) — see `checkGoalFileLeash`'s own "fail CLOSED" contract for why this is a refusal, not a silent allow. */
+export const GOAL_CHECK_INFRA_FAILURE_MESSAGE =
+  "couldn't verify this goal's leash before filing — try again in a moment";
+
+/**
+ * THE pre-file leash gate. Called by `runCreateIssue` BEFORE it ever shells
+ * out to the CLI, whenever `extractGoalSlug` found a stamp in the
+ * about-to-be-created issue. POSTs to the console's
+ * `/api/v1/runner/goals/file-check` (which itself checks the workspace's
+ * `jaceGoalLoop` flag FIRST and returns `{allow:true}` unconditionally when
+ * off — see that route's own doc-comment), and returns its decision.
+ *
+ * FAILS CLOSED, unlike this file's other best-effort calls (stampCreatedIssueUrl):
+ * a missing console config, a transport error, a non-2xx, or a malformed
+ * body all resolve to `{ allow: false, reason: GOAL_CHECK_INFRA_FAILURE_MESSAGE }`
+ * — NEVER a silent allow. This is a genuine, deliberate posture difference
+ * from the rest of this file's "best-effort, never blocks" idiom: every
+ * OTHER side-effect here (the URL stamp) is pure bookkeeping whose failure
+ * only degrades to a redundant confirm later; THIS one is a safety bound
+ * (`maxIssues`) — the entire point of this fix is that the bound must
+ * actually fire, so an unreachable check must never be indistinguishable
+ * from "leash has room". Single attempt, no retry (matches this file's
+ * "one attempt, report don't retry" idiom for a single HTTP call).
+ *
+ * @param {{ eveSessionId?: string, slug: string, env?: Record<string, string|undefined>, transport: Function }} args
+ * @returns {Promise<{ allow: boolean, goalId?: string, reason?: string }>}
+ */
+export async function checkGoalFileLeash({ eveSessionId, slug, env = {}, transport }) {
+  const cfg = resolveConsoleConfig(env);
+  if (!cfg.ok) return { allow: false, reason: GOAL_CHECK_INFRA_FAILURE_MESSAGE };
+
+  const sessionId = String(eveSessionId ?? "").trim();
+  if (!sessionId) return { allow: false, reason: GOAL_CHECK_INFRA_FAILURE_MESSAGE };
+
+  let res;
+  try {
+    res = await transport(buildGoalFileCheckUrl(cfg.baseUrl), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${cfg.token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ eveSessionId: sessionId, slug }),
+    });
+  } catch {
+    return { allow: false, reason: GOAL_CHECK_INFRA_FAILURE_MESSAGE };
+  }
+
+  const status = Number(res && res.status);
+  if (!Number.isFinite(status) || status < 200 || status >= 300) {
+    return { allow: false, reason: GOAL_CHECK_INFRA_FAILURE_MESSAGE };
+  }
+
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    return { allow: false, reason: GOAL_CHECK_INFRA_FAILURE_MESSAGE };
+  }
+
+  if (!body || typeof body !== "object" || typeof body.allow !== "boolean") {
+    return { allow: false, reason: GOAL_CHECK_INFRA_FAILURE_MESSAGE };
+  }
+
+  const reason = typeof body.reason === "string" ? body.reason : undefined;
+  const goalId = typeof body.goalId === "string" && body.goalId ? body.goalId : undefined;
+  return { allow: body.allow, ...(goalId ? { goalId } : {}), ...(reason ? { reason } : {}) };
+}
+
+/**
+ * THE post-file bookkeeping record. Best-effort, mirrors
+ * `stampCreatedIssueUrl`'s own contract EXACTLY: a failure here must NEVER
+ * retroactively undo an already-created GitHub issue (not even possible)
+ * and must never be surfaced as a tool failure — awaited so the attempt is
+ * fully made before `runCreateIssue` returns, but its result is never
+ * inspected beyond that. POSTs to the console's
+ * `/api/v1/runner/goals/file-recorded`, which itself no-ops safely on an
+ * unresolvable `goalId`.
+ *
+ * @param {{ goalId: string, issueExternalId: string, env?: Record<string, string|undefined>, transport: Function }} args
+ * @returns {Promise<void>}
+ */
+export async function recordGoalIssueFiled({ goalId, issueExternalId, env = {}, transport }) {
+  try {
+    const cfg = resolveConsoleConfig(env);
+    if (!cfg.ok) return;
+
+    await transport(buildGoalFileRecordedUrl(cfg.baseUrl), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${cfg.token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ goalId, issueExternalId }),
+    });
+  } catch {
+    // Belt-and-suspenders: see this function's own "NEVER throws" doc-comment.
+  }
+}
+
 /**
  * Build the AgentRail "house format" issue body.
  *
@@ -432,11 +599,13 @@ export async function stampCreatedIssueUrl({
  * @param {string} [input.whatToBuild]
  * @param {string[]} input.acceptanceCriteria
  * @param {string} [input.verification]
- * @param {string} [input.eveSessionId] - #1274 PR②: the calling Eve session id, for the best-effort post-creation stamp (see stampCreatedIssueUrl). Absent -> the stamp attempt is skipped, never an error.
+ * @param {string} [input.eveSessionId] - #1274 PR②: the calling Eve session id, for the best-effort post-creation stamp (see stampCreatedIssueUrl). Absent -> the stamp attempt is skipped, never an error. ALSO used (#1289) as the pre-file goal-leash check's own tenant-resolution key when a goal stamp is present.
  * @param {string} [input.turnId] - #1274 PR②: the calling turn id, same purpose as eveSessionId above.
  * @param {unknown} [input.toolInput] - #1274 PR②: the FULL, unmodified tool input this call received (used to re-derive the SAME idempotency key consoleGatedApproval already used — see relearnApprovalId).
  * @param {Function} [input.stampTransport] - test-only: inject the stamp mechanism's HTTP transport.
- * @returns {Promise<{ repo: string, number: number, url: string, label: string } | { connected: false, message: string }>}
+ * @param {Function} [input.goalCheckTransport] - #1289 test-only: inject the pre-file leash-check's HTTP transport.
+ * @param {Function} [input.goalRecordTransport] - #1289 test-only: inject the post-file bookkeeping record's HTTP transport.
+ * @returns {Promise<{ repo: string, number: number, url: string, label: string } | { connected: false, message: string } | { blocked: true, message: string }>}
  */
 export async function runCreateIssue({
   execFileFn,
@@ -452,6 +621,8 @@ export async function runCreateIssue({
   turnId,
   toolInput,
   stampTransport,
+  goalCheckTransport,
+  goalRecordTransport,
 } = {}) {
   const resolvedEnv = env ?? {};
   const bin = resolvedEnv.JACE_AGENTRAIL_BIN || "agentrail";
@@ -474,6 +645,32 @@ export async function runCreateIssue({
   // — otherwise a mass-ping token or hidden channel in a researcher-tainted
   // title would reach GitHub unfiltered.
   const safeTitle = hardenUntrusted(title, { maxLen: FIELD_CAPS.title });
+
+  // #1289 (Jace goal loop, adversarial-review fix) — THE PRE-FILE LEASH
+  // GATE. Detect a goal stamp in the FINAL, already-hardened title+body
+  // (the exact text about to reach GitHub) BEFORE ever shelling out to the
+  // CLI. The overwhelmingly common case (no stamp — a normal, non-goal
+  // issue) costs nothing beyond one regex test and is byte-identical to
+  // before this fix: `goalId` stays undefined and neither new HTTP call
+  // below is ever made.
+  const goalSlug = extractGoalSlug(`${safeTitle}\n${body}`);
+  let goalId;
+  if (goalSlug) {
+    const check = await checkGoalFileLeash({
+      eveSessionId,
+      slug: goalSlug,
+      env: resolvedEnv,
+      transport: goalCheckTransport ?? realStampTransport,
+    });
+    if (!check.allow) {
+      // REFUSE — never reaches the CLI, never creates a GitHub issue. This
+      // is what makes canFileNextIssue's stated contract ("check this FIRST
+      // and only actually file when allow:true") real rather than dead code.
+      return { blocked: true, message: check.reason ?? GOAL_CHECK_INFRA_FAILURE_MESSAGE };
+    }
+    goalId = check.goalId;
+  }
+
   const argv = buildCreateArgv({ repo: resolvedRepo, title: safeTitle, body });
 
   let result;
@@ -507,6 +704,21 @@ export async function runCreateIssue({
     env: resolvedEnv,
     transport: stampTransport,
   });
+
+  // #1289 (Jace goal loop, adversarial-review fix) — THE POST-FILE
+  // BOOKKEEPING RECORD. Only when a goal stamp was found AND the pre-file
+  // check resolved a real goalId (never when the check failed closed —
+  // there is no goalId in that case, and execution never reaches here
+  // anyway since a blocked check returns early above). Best-effort, same
+  // "never affects the caller's own result" contract as the stamp above.
+  if (goalId) {
+    await recordGoalIssueFiled({
+      goalId,
+      issueExternalId: String(ref.number),
+      env: resolvedEnv,
+      transport: goalRecordTransport ?? realStampTransport,
+    });
+  }
 
   return ref;
 }

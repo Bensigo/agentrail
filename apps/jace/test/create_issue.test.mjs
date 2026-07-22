@@ -10,6 +10,12 @@ import {
   buildPublishedStampUrl,
   stampCreatedIssueUrl,
   resolveStampUrl,
+  extractGoalSlug,
+  checkGoalFileLeash,
+  recordGoalIssueFiled,
+  buildGoalFileCheckUrl,
+  buildGoalFileRecordedUrl,
+  GOAL_CHECK_INFRA_FAILURE_MESSAGE,
 } from "../agent/lib/create_issue.core.mjs";
 
 test("buildIssueBody renders the house-format sections in order", () => {
@@ -723,4 +729,342 @@ test("stampCreatedIssueUrl: relearn replay reports status 'denied' or a missing 
     });
     assert.equal(transport.calls.length, 1, `no stamp for replay body ${JSON.stringify(body)}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// #1289 (Jace goal loop) — adversarial-review fix: the maxIssues leash was
+// schema-complete but INERT at runtime because nothing in production ever
+// called recordIssueFiled. These tests drive the REAL production filing
+// path (runCreateIssue itself, with its actual pre-file check / post-file
+// record wiring) — never a manual recordIssueFiled call — and prove the
+// leash actually bites.
+// ---------------------------------------------------------------------------
+
+test("extractGoalSlug recovers the slug from a goal-stamped body", () => {
+  assert.equal(
+    extractGoalSlug("## Required context\nGoal: reach 80% coverage (goal:reach-80-coverage)\n"),
+    "reach-80-coverage",
+  );
+});
+
+test("extractGoalSlug finds the stamp regardless of which field it landed in (title vs body)", () => {
+  assert.equal(extractGoalSlug("Follow-up (goal:ship-2-prs)"), "ship-2-prs");
+});
+
+test("extractGoalSlug returns null for a normal, non-goal issue (the overwhelmingly common case)", () => {
+  assert.equal(extractGoalSlug("## Required context\nJust a normal issue, no goal here.\n"), null);
+  assert.equal(extractGoalSlug(""), null);
+  assert.equal(extractGoalSlug(undefined), null);
+});
+
+test("buildGoalFileCheckUrl / buildGoalFileRecordedUrl join the base url and the expected paths", () => {
+  assert.equal(
+    buildGoalFileCheckUrl("https://console.example.com"),
+    "https://console.example.com/api/v1/runner/goals/file-check",
+  );
+  assert.equal(
+    buildGoalFileRecordedUrl("https://console.example.com"),
+    "https://console.example.com/api/v1/runner/goals/file-recorded",
+  );
+});
+
+test("checkGoalFileLeash: config unset -> fails CLOSED (allow:false), never a silent allow", async () => {
+  const result = await checkGoalFileLeash({
+    eveSessionId: "eve-1",
+    slug: "reach-80-coverage",
+    env: {},
+    transport: async () => ({ status: 200, json: async () => ({ allow: true }) }),
+  });
+  assert.deepEqual(result, { allow: false, reason: GOAL_CHECK_INFRA_FAILURE_MESSAGE });
+});
+
+test("checkGoalFileLeash: transport throws -> fails CLOSED", async () => {
+  const result = await checkGoalFileLeash({
+    eveSessionId: "eve-1",
+    slug: "reach-80-coverage",
+    env: STAMP_ENV,
+    transport: async () => {
+      throw new Error("ECONNREFUSED");
+    },
+  });
+  assert.deepEqual(result, { allow: false, reason: GOAL_CHECK_INFRA_FAILURE_MESSAGE });
+});
+
+test("checkGoalFileLeash: non-2xx -> fails CLOSED", async () => {
+  const result = await checkGoalFileLeash({
+    eveSessionId: "eve-1",
+    slug: "reach-80-coverage",
+    env: STAMP_ENV,
+    transport: async () => ({ status: 500, json: async () => ({}) }),
+  });
+  assert.deepEqual(result, { allow: false, reason: GOAL_CHECK_INFRA_FAILURE_MESSAGE });
+});
+
+test("checkGoalFileLeash: malformed body (missing allow) -> fails CLOSED", async () => {
+  const result = await checkGoalFileLeash({
+    eveSessionId: "eve-1",
+    slug: "reach-80-coverage",
+    env: STAMP_ENV,
+    transport: async () => ({ status: 200, json: async () => ({}) }),
+  });
+  assert.deepEqual(result, { allow: false, reason: GOAL_CHECK_INFRA_FAILURE_MESSAGE });
+});
+
+test("checkGoalFileLeash: an honest allow:false from the console (leash exhausted) passes the goalId + reason straight through", async () => {
+  const result = await checkGoalFileLeash({
+    eveSessionId: "eve-1",
+    slug: "reach-80-coverage",
+    env: STAMP_ENV,
+    transport: async () => ({
+      status: 200,
+      json: async () => ({ allow: false, goalId: "goal-1", reason: "leash exhausted: issues filed 10/10" }),
+    }),
+  });
+  assert.deepEqual(result, { allow: false, goalId: "goal-1", reason: "leash exhausted: issues filed 10/10" });
+});
+
+test("checkGoalFileLeash: allow:true passes the goalId through", async () => {
+  const result = await checkGoalFileLeash({
+    eveSessionId: "eve-1",
+    slug: "reach-80-coverage",
+    env: STAMP_ENV,
+    transport: async () => ({ status: 200, json: async () => ({ allow: true, goalId: "goal-1" }) }),
+  });
+  assert.deepEqual(result, { allow: true, goalId: "goal-1" });
+});
+
+test("recordGoalIssueFiled: posts goalId + issueExternalId, never throws on failure (best-effort, mirrors stampCreatedIssueUrl)", async () => {
+  const transport = fakeTransport(async () => ({ status: 200, json: async () => ({ ok: true }) }));
+  await recordGoalIssueFiled({
+    goalId: "goal-1",
+    issueExternalId: "42",
+    env: STAMP_ENV,
+    transport,
+  });
+  assert.equal(transport.calls.length, 1);
+  const sent = JSON.parse(transport.calls[0].init.body);
+  assert.deepEqual(sent, { goalId: "goal-1", issueExternalId: "42" });
+});
+
+test("recordGoalIssueFiled: transport throws -> never throws past the caller", async () => {
+  await assert.doesNotReject(
+    recordGoalIssueFiled({
+      goalId: "goal-1",
+      issueExternalId: "42",
+      env: STAMP_ENV,
+      transport: async () => {
+        throw new Error("ETIMEDOUT");
+      },
+    }),
+  );
+});
+
+test("runCreateIssue: a normal, non-goal issue never touches the goal-check/goal-record transports at all", async () => {
+  let checkCalled = false;
+  let recordCalled = false;
+  const ref = await runCreateIssue({
+    execFileFn: fakeExecSuccess(),
+    env: STAMP_ENV,
+    title: "Add a health endpoint",
+    acceptanceCriteria: ["GET /health returns 200"],
+    goalCheckTransport: async () => {
+      checkCalled = true;
+      return { status: 200, json: async () => ({ allow: true }) };
+    },
+    goalRecordTransport: async () => {
+      recordCalled = true;
+      return { status: 200, json: async () => ({ ok: true }) };
+    },
+  });
+  assert.equal(ref.number, 1042);
+  assert.equal(checkCalled, false, "no goal stamp -> the pre-file check must never fire");
+  assert.equal(recordCalled, false, "no goal stamp -> the post-file record must never fire");
+});
+
+test("runCreateIssue: a goal-stamped issue that the console ALLOWS is filed AND recorded via recordGoalIssueFiled — the wiring the adversarial review found missing", async () => {
+  const checkTransport = fakeTransport(
+    async (url, init) => {
+      const sent = JSON.parse(init.body);
+      assert.equal(sent.slug, "reach-80-coverage");
+      return { status: 200, json: async () => ({ allow: true, goalId: "goal-1" }) };
+    },
+  );
+  const recordTransport = fakeTransport(async () => ({ status: 200, json: async () => ({ ok: true }) }));
+
+  const ref = await runCreateIssue({
+    execFileFn: fakeExecSuccess(),
+    env: STAMP_ENV,
+    title: "File the next issue toward the coverage goal",
+    requiredContext: "Goal: reach 80% coverage (goal:reach-80-coverage)",
+    acceptanceCriteria: ["raise coverage in module X"],
+    eveSessionId: "eve-session-1",
+    stampTransport: fakeTransport(APPROVED_RELEARN_RESPONDER, OK_STAMP_RESPONDER),
+    goalCheckTransport: checkTransport,
+    goalRecordTransport: recordTransport,
+  });
+
+  assert.equal(ref.number, 1042, "the issue is actually filed when the check allows it");
+  assert.equal(checkTransport.calls.length, 1, "the pre-file check runs exactly once");
+  assert.equal(recordTransport.calls.length, 1, "the post-file record runs exactly once — THIS is the call production was missing");
+  const recorded = JSON.parse(recordTransport.calls[0].init.body);
+  assert.deepEqual(recorded, { goalId: "goal-1", issueExternalId: "1042" });
+});
+
+test("runCreateIssue: a goal-stamped issue the console BLOCKS (leash exhausted) is REFUSED before the CLI ever runs — no GitHub issue is created", async () => {
+  let cliCalled = false;
+  const guardedExec = async () => {
+    cliCalled = true;
+    throw new Error("must never be called once the leash is exhausted");
+  };
+  const checkTransport = fakeTransport(async () => ({
+    status: 200,
+    json: async () => ({ allow: false, goalId: "goal-1", reason: "leash exhausted: issues filed 10/10" }),
+  }));
+  const recordTransport = fakeTransport(async () => ({ status: 200, json: async () => ({ ok: true }) }));
+
+  const result = await runCreateIssue({
+    execFileFn: guardedExec,
+    env: STAMP_ENV,
+    title: "One too many",
+    requiredContext: "Goal: reach 80% coverage (goal:reach-80-coverage)",
+    acceptanceCriteria: ["make progress"],
+    eveSessionId: "eve-session-1",
+    stampTransport: fakeTransport(APPROVED_RELEARN_RESPONDER, OK_STAMP_RESPONDER),
+    goalCheckTransport: checkTransport,
+    goalRecordTransport: recordTransport,
+  });
+
+  assert.deepEqual(result, { blocked: true, message: "leash exhausted: issues filed 10/10" });
+  assert.equal(cliCalled, false, "the CLI must never be invoked — the whole point of the pre-file gate");
+  assert.equal(recordTransport.calls.length, 0, "nothing was filed, so nothing is recorded");
+});
+
+test("runCreateIssue: the goal-check itself is unreachable (infra failure) -> fails CLOSED, never files, never a silent allow", async () => {
+  let cliCalled = false;
+  const guardedExec = async () => {
+    cliCalled = true;
+    return { stdout: SUCCESS_STDOUT, stderr: "" };
+  };
+  const failingCheckTransport = async () => {
+    throw new Error("ECONNREFUSED");
+  };
+
+  const result = await runCreateIssue({
+    execFileFn: guardedExec,
+    env: STAMP_ENV,
+    title: "Follow-up",
+    requiredContext: "Goal: reach 80% coverage (goal:reach-80-coverage)",
+    acceptanceCriteria: ["make progress"],
+    eveSessionId: "eve-session-1",
+    stampTransport: fakeTransport(APPROVED_RELEARN_RESPONDER, OK_STAMP_RESPONDER),
+    goalCheckTransport: failingCheckTransport,
+  });
+
+  assert.deepEqual(result, { blocked: true, message: GOAL_CHECK_INFRA_FAILURE_MESSAGE });
+  assert.equal(cliCalled, false, "a leash check we cannot trust must never be treated as 'leash has room'");
+});
+
+test("runCreateIssue: the post-file record transport fails -> the tool result is STILL returned intact (best-effort, mirrors the stamp's own tolerance)", async () => {
+  const ref = await runCreateIssue({
+    execFileFn: fakeExecSuccess(),
+    env: STAMP_ENV,
+    title: "Follow-up",
+    requiredContext: "Goal: reach 80% coverage (goal:reach-80-coverage)",
+    acceptanceCriteria: ["make progress"],
+    eveSessionId: "eve-session-1",
+    stampTransport: fakeTransport(APPROVED_RELEARN_RESPONDER, OK_STAMP_RESPONDER),
+    goalCheckTransport: async () => ({ status: 200, json: async () => ({ allow: true, goalId: "goal-1" }) }),
+    goalRecordTransport: async () => {
+      throw new Error("ETIMEDOUT");
+    },
+  });
+  assert.equal(ref.number, 1042);
+});
+
+test("runCreateIssue: driving the REAL production filing path across multiple calls reaches maxIssues and blocks the next file — never a manual recordIssueFiled call, only the check/record transports the wiring itself invokes", async () => {
+  const MAX_ISSUES = 3;
+  // An in-memory stand-in for the goal row packages/db-postgres actually
+  // owns. This test does not re-implement or re-verify the leash MATH
+  // (that is goal_rules.test.ts's job, exhaustively, at the db-postgres
+  // layer) — it proves the WIRING: that runCreateIssue's pre-file check and
+  // post-file record are the ONLY things that ever move this counter, via
+  // exactly the HTTP calls production makes.
+  const fakeGoal = { id: "goal-1", issuesFiled: 0, maxIssues: MAX_ISSUES, status: "active" };
+
+  const checkTransport = async (_url, init) => {
+    const sent = JSON.parse(init.body);
+    assert.equal(sent.slug, "reach-80-coverage");
+    if (fakeGoal.status !== "active" || fakeGoal.issuesFiled >= fakeGoal.maxIssues) {
+      return {
+        status: 200,
+        json: async () => ({
+          allow: false,
+          goalId: fakeGoal.id,
+          reason: `leash exhausted: issues filed ${fakeGoal.issuesFiled}/${fakeGoal.maxIssues}`,
+        }),
+      };
+    }
+    return { status: 200, json: async () => ({ allow: true, goalId: fakeGoal.id }) };
+  };
+  const recordTransport = async (_url, init) => {
+    const sent = JSON.parse(init.body);
+    assert.equal(sent.goalId, fakeGoal.id);
+    fakeGoal.issuesFiled += 1; // the ONE mutation recordIssueFiled performs in production
+    if (fakeGoal.issuesFiled >= fakeGoal.maxIssues) fakeGoal.status = "leashed";
+    return { status: 200, json: async () => ({ ok: true }) };
+  };
+
+  let issueNumber = 1000;
+  const fakeExec = async () => {
+    issueNumber += 1;
+    return {
+      stdout:
+        `Created Bensigo/agentrail#${issueNumber} (label ready-for-agent): ` +
+        `https://github.com/Bensigo/agentrail/issues/${issueNumber}\n`,
+      stderr: "",
+    };
+  };
+
+  for (let i = 0; i < MAX_ISSUES; i++) {
+    const ref = await runCreateIssue({
+      execFileFn: fakeExec,
+      env: STAMP_ENV,
+      title: `Follow-up ${i + 1}`,
+      requiredContext: "Goal: reach 80% coverage (goal:reach-80-coverage)",
+      acceptanceCriteria: ["make progress"],
+      eveSessionId: "eve-session-1",
+      stampTransport: fakeTransport(APPROVED_RELEARN_RESPONDER, OK_STAMP_RESPONDER),
+      goalCheckTransport: checkTransport,
+      goalRecordTransport: recordTransport,
+    });
+    assert.ok(ref.number, `issue ${i + 1} of ${MAX_ISSUES} should have been filed`);
+  }
+
+  assert.equal(
+    fakeGoal.issuesFiled,
+    MAX_ISSUES,
+    "issuesFiled actually incremented via the REAL production path — not a manually-invoked recordIssueFiled",
+  );
+  assert.equal(fakeGoal.status, "leashed", "the goal transitioned to leashed at maxIssues through that real path");
+
+  // The (maxIssues+1)-th goal-stamped attempt must be refused BEFORE the CLI.
+  let cliCalledAgain = false;
+  const guardedExec = async () => {
+    cliCalledAgain = true;
+    throw new Error("must never be called — the leash is exhausted");
+  };
+  const result = await runCreateIssue({
+    execFileFn: guardedExec,
+    env: STAMP_ENV,
+    title: "One too many",
+    requiredContext: "Goal: reach 80% coverage (goal:reach-80-coverage)",
+    acceptanceCriteria: ["make progress"],
+    eveSessionId: "eve-session-1",
+    stampTransport: fakeTransport(APPROVED_RELEARN_RESPONDER, OK_STAMP_RESPONDER),
+    goalCheckTransport: checkTransport,
+    goalRecordTransport: recordTransport,
+  });
+  assert.equal(result.blocked, true);
+  assert.equal(cliCalledAgain, false, "the CLI must never be invoked once the leash is exhausted");
+  assert.equal(fakeGoal.issuesFiled, MAX_ISSUES, "a blocked attempt must never increment the counter further");
 });

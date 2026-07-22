@@ -7,6 +7,23 @@
  * statements, real cascade deletes, real column defaults — everything a
  * mock can only assert the CONTRACT of.
  *
+ * SCOPE (adversarial-review correction): this script proves the STATE
+ * MACHINE — that `recordIssueFiled` + `recordOutcomeAndTransition`, WHEN
+ * CALLED, correctly enforce the leash and stuck rule, live, against real
+ * Postgres. It calls `recordIssueFiled` directly because this package has
+ * no HTTP layer of its own to drive — it is NOT a proof that production
+ * ever calls it. That was a real, separate gap this same review found:
+ * nothing in production called `recordIssueFiled` at all (`git grep
+ * recordIssueFiled -- apps/` found only tests + this script), so the leash
+ * was inert at runtime despite this script and the unit tests passing. THE
+ * PRODUCTION WIRING FIX lives in `apps/jace/agent/lib/create_issue.core.mjs`
+ * (`checkGoalFileLeash`/`recordGoalIssueFiled`, called from `runCreateIssue`
+ * itself) and two new console routes (`/api/v1/runner/goals/file-check` +
+ * `/file-recorded`); it is proven by `apps/jace/test/create_issue.test.mjs`
+ * — see that file's "driving the REAL production filing path across
+ * multiple calls" test, which drives `runCreateIssue` itself (never a
+ * manual `recordIssueFiled` call) and asserts the leash actually bites.
+ *
  * Usage:
  *   cd packages/db-postgres
  *   DATABASE_URL=postgres://agentrail:agentrail@localhost:5434/agentrail \

@@ -45,6 +45,17 @@ export const TARGET_KEY = Object.freeze({
 const HANDLE_OPTIONAL_CHANNELS = Object.freeze(["imessage"]);
 
 /**
+ * The terminal outcome vocabulary the console's `notify.ts` sends as its
+ * `outcome` field (`NotifyOutcome`, `apps/console/lib/outcome-format.ts`) —
+ * the queue state-machine's own terminal states, NOT the `run_outcomes`
+ * table's separate "success"|"human_review"|"failed" vocabulary (see
+ * `queries/run_outcomes.ts::mapTerminalStateToRunOutcome` for that mapping,
+ * which is a DIFFERENT, analytics-facing concern). #1289's goal loop reuses
+ * THIS vocabulary because it's what's actually on the wire here.
+ */
+export const GOAL_OUTCOME_VALUES = Object.freeze(["green", "escalated-to-human", "blocked"]);
+
+/**
  * Validate + normalize a run-outcome push into the exact `{ message, target,
  * auth }` shape `args.receive(channel, …)` expects. Throws a precise Error on any
  * malformed field so the route can answer `400` with a useful message (the
@@ -60,7 +71,8 @@ const HANDLE_OPTIONAL_CHANNELS = Object.freeze(["imessage"]);
  *   so Jace's tools can identify the initiating workspace); absent is allowed.
  *
  * @param {unknown} raw parsed JSON body from the console
- * @returns {{ channel: string, message: string, target: Record<string,string>, auth?: object }}
+ * @returns {{ channel: string, message: string, target: Record<string,string>, auth?: object,
+ *             workspaceId?: string, issueExternalId?: string, outcome?: string, costUsd?: number }}
  */
 export function normalizeRunOutcome(raw) {
   if (raw == null || typeof raw !== "object" || Array.isArray(raw)) {
@@ -109,5 +121,32 @@ export function normalizeRunOutcome(raw) {
     target: destGiven ? { [key]: String(dest).trim() } : {},
   };
   if (auth) normalized.auth = auth;
+
+  // #1289 (Jace goal loop) — OPTIONAL enrichment fields. The console's
+  // `notify.ts::notifyViaJace` has sent `workspaceId`/`outcome`/`issueNumber`/
+  // `costUsd` in this exact POST body since #1338's own capture-fuel work,
+  // long before this feature existed; this is the first CONSUMER of them.
+  // Every one of these is additive and best-effort: a missing or malformed
+  // value is simply OMITTED from the normalized result (never throws, never
+  // blocks the existing platform-notify path this function's callers already
+  // depend on) — so a payload with none of these fields (every pre-#1289
+  // caller and test) normalizes BYTE-IDENTICALLY to before this change.
+  const workspaceId = typeof raw.workspaceId === "string" ? raw.workspaceId.trim() : "";
+  if (workspaceId) normalized.workspaceId = workspaceId;
+
+  const issueExternalId =
+    typeof raw.issueNumber === "string" || typeof raw.issueNumber === "number"
+      ? String(raw.issueNumber).trim()
+      : "";
+  if (issueExternalId) normalized.issueExternalId = issueExternalId;
+
+  if (GOAL_OUTCOME_VALUES.includes(raw.outcome)) {
+    normalized.outcome = raw.outcome;
+  }
+
+  if (typeof raw.costUsd === "number" && Number.isFinite(raw.costUsd)) {
+    normalized.costUsd = raw.costUsd;
+  }
+
   return normalized;
 }

@@ -290,7 +290,8 @@ documented dogfood baseline + real platform outcomes, failures counted,
 the didn't-land card deliberately differentiated from the tilted scraps;
 billing — **owner ruling 2026-07-22: pay-for-what-you-use top-up model**
 (top up → the approved estimate is the cap → charged when the task is
-done) with the free-preview chip carrying today's truth; closing CTA +
+done — stated present-tense; the product is NOT free and no free-preview
+claim may appear, owner ruling 2026-07-22); closing CTA +
 avatar-marked footer. Inter body + Berkeley Mono data; golden
 `--accent-fill` as fill-with-dark-text only — never decorative glow
 blobs, pulsing-dot pill badges, or an uppercase-mono eyebrow on every

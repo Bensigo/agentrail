@@ -178,7 +178,6 @@ export default async function LandingPage() {
               style={{ animationDelay: "150ms" }}
             >
               <PrimaryCta cta={cta} />
-              <FreePreviewChip />
             </div>
           </div>
 
@@ -349,7 +348,7 @@ export default async function LandingPage() {
           </Reveal>
           <Reveal delay={70}>
             <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
-              When preview ends, pricing is pay-for-what-you-use.
+              Pricing is pay-for-what-you-use.
             </p>
           </Reveal>
           <ol className="mt-10 flex flex-col gap-6">
@@ -375,7 +374,6 @@ export default async function LandingPage() {
                 No seats. No subscription. Every run shows its cost next to
                 its PR.
               </p>
-              <FreePreviewChip />
             </div>
           </Reveal>
         </div>
@@ -405,7 +403,6 @@ export default async function LandingPage() {
           </p>
           <div className="mt-8 flex flex-col items-center gap-3">
             <PrimaryCta cta={cta} />
-            <FreePreviewChip />
           </div>
         </Reveal>
       </section>
@@ -517,15 +514,4 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
   );
 }
 
-/** The "Free while in preview" highlight — a golden-fill chip (the
- *  fill-with-dark-text rule, on the owner-directed #1357 accent family),
- *  not a plain caption. Shared by the hero and closing CTA rows so both
- *  stay byte-identical. */
-function FreePreviewChip() {
-  return (
-    <span className="text-label inline-flex items-center rounded-full border-2 border-[var(--gray-13)] bg-[var(--accent-fill)] px-3 py-1 font-bold text-[var(--accent-fill-text)]">
-      Free while in preview
-    </span>
-  );
-}
 

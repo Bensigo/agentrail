@@ -1,41 +1,37 @@
-import { DEMO_TASK_INPUT } from "./_conversation-demo-data";
-
 /**
- * Landing v2's use-case stack ("Use cases", heading + content per owner
- * feedback 2026-07-22) — sticky cards that deck on top of each other as the
- * visitor scrolls. Pure CSS (`position: sticky` + staggered top offsets):
- * no scroll listeners, nothing to degrade — reduced-motion and mobile get
- * the same markup, which simply reads as stacked cards.
+ * Landing v2's use-case stack — sticky cards that deck on top of each other
+ * as the visitor scrolls. Pure CSS (`position: sticky` + staggered top
+ * offsets): no scroll listeners, nothing to degrade — reduced-motion and
+ * mobile get the same markup, which simply reads as stacked cards.
  *
- * Every card maps to a REAL product surface, not marketing invention:
- * 1. overnight  — the work queue drains GitHub/Linear issues into PRs
- *    (dashboard → Work / Runs).
- * 2. chat       — chat-born tasks: message → alignment brief → approval →
- *    PR (the same DEMO_TASK_INPUT the hero phone prices).
- * 3. ideas      — Jace's ideation door: a rough goal becomes scoped,
- *    house-format GitHub issues (the coordinator's issue contract).
- * 4. gates      — the verify gate: second-model review + the repo's own
- *    tests; failures land in the console's Failures view, counted.
- * 5. budget     — budget caps + cheap-first model selection; every run's
- *    cost sits beside its PR (dashboard → Costs).
+ * Owner ruling 2026-07-23: the deck is the TOP FIVE differentiators, not a
+ * task-type catalog. Commodity work (issue lists, small features, tests,
+ * chores) is already told by the phone act + "How I work"; each card here
+ * must carry a mechanic competitors don't claim, and every card maps to a
+ * REAL product surface:
+ * 1. stacktrace — the verify gate's red-green rule: the failure is
+ *    reproduced as a failing test before the fix counts.
+ * 2. ideas      — Jace's ideation door (grill-me / to-issues skills): a
+ *    rough goal becomes scoped, house-format GitHub issues.
+ * 3. goal       — the goal loop (create_goal + console leash meter):
+ *    goal + repo in, scoped issues worked under a leash the owner sets.
+ * 4. qa         — the codebase-qa skill: answers cite the file + line range
+ *    the context CLI returned, or say "not found" — never model memory.
+ * 5. research   — the researcher subagent: every external-tech claim ships
+ *    as claim → source URL → version; unverified claims are dropped.
  */
 
 interface UseCase {
   title: string;
   line: string;
-  visual: "overnight" | "chat" | "ideas" | "gates" | "budget";
+  visual: "stacktrace" | "ideas" | "goal" | "qa" | "research";
 }
 
 const USE_CASES: UseCase[] = [
   {
-    title: "Clear the backlog overnight",
-    line: "Queue up GitHub or Linear issues before you log off. By morning each one is a pull request with a review trail.",
-    visual: "overnight",
-  },
-  {
-    title: "Text me a task",
-    line: "A message becomes a brief, a budget, and a PR after you approve.",
-    visual: "chat",
+    title: "Paste the stack trace",
+    line: "Hand me a bug report. I reproduce it with a failing test, then fix until it passes.",
+    visual: "stacktrace",
   },
   {
     title: "Turn an idea into scoped work",
@@ -43,14 +39,19 @@ const USE_CASES: UseCase[] = [
     visual: "ideas",
   },
   {
-    title: "Fixes that prove themselves",
-    line: "A second model reviews my work, and your own tests have to pass before anything counts as done.",
-    visual: "gates",
+    title: "Hand me a goal",
+    line: "Give me a goal and a repo. I break it into scoped issues and work through them, on a leash you set.",
+    visual: "goal",
   },
   {
-    title: "Chores under a hard budget",
-    line: "Dependency bumps, refactors, cleanups. I start on cheap models and escalate only when the task earns it.",
-    visual: "budget",
+    title: "Ask about your codebase",
+    line: "Answers come from the code and cite the file and line. If I can't find it, I say so.",
+    visual: "qa",
+  },
+  {
+    title: "Send me a research question",
+    line: "Which library, which version, what changed. I come back with the source and version for every claim.",
+    visual: "research",
   },
 ];
 
@@ -78,27 +79,15 @@ export function UseCases() {
 
 /** One visual grammar for every card (owner feedback 2026-07-22: no
  *  image-on-one-card-only inconsistency): each case gets a small mono ink
- *  panel. The mascot renders live outside the stack — hero-adjacent phone,
- *  channels background, closing wave. */
+ *  panel showing the card's mechanic. The mascot renders live outside the
+ *  stack — hero-adjacent phone, channels background, closing wave. */
 function CaseVisual({ visual }: { visual: UseCase["visual"] }) {
-  if (visual === "overnight") {
+  if (visual === "stacktrace") {
     return (
-      <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
-        <span>tonight: hand me issues</span>
-        <span>overnight: I work</span>
-        <span className="text-[var(--gray-12)]">morning: review my PRs</span>
-      </div>
-    );
-  }
-  if (visual === "chat") {
-    return (
-      <div className="flex shrink-0 flex-col items-start gap-2.5">
-        <span className="text-mono-data rounded-md border-2 border-dashed border-[var(--gray-13)] px-2.5 py-1 font-mono text-[var(--gray-12)]">
-          {DEMO_TASK_INPUT.title}
-        </span>
-        <span className="text-mono-data px-1 font-mono text-[var(--gray-11)]">
-          brief → approve → PR
-        </span>
+      <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono">
+        <span className="text-[var(--red-11)]">✗ repro test · red</span>
+        <span className="text-[var(--gray-11)]">fix: clamp retry spend</span>
+        <span className="text-[var(--green-11)]">✓ same test · green</span>
       </div>
     );
   }
@@ -111,18 +100,28 @@ function CaseVisual({ visual }: { visual: UseCase["visual"] }) {
       </div>
     );
   }
-  if (visual === "gates") {
+  if (visual === "goal") {
     return (
-      <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono">
-        <span className="text-[var(--green-11)]">✓ second-model review</span>
-        <span className="text-[var(--green-11)]">✓ your tests</span>
-        <span className="text-[var(--gray-11)]">• your merge: waits for you</span>
+      <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
+        <span>goal: retire the legacy queue</span>
+        <span className="text-[var(--gray-12)]">→ scoped into 6 issues</span>
+        <span className="text-[var(--gray-12)]">leash: set by you</span>
+      </div>
+    );
+  }
+  if (visual === "qa") {
+    return (
+      <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
+        <span>you: “where do retries get budgeted?”</span>
+        <span className="text-[var(--gray-12)]">→ run/pricing.py:41–63</span>
+        <span className="text-[var(--gray-12)]">cited, or “not found”</span>
       </div>
     );
   }
   return (
-    <span className="text-mono-data shrink-0 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
-      cheap model first → escalate only if earned
-    </span>
+    <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
+      <span>claim → source → version</span>
+      <span className="text-[var(--gray-12)]">no source, no claim</span>
+    </div>
   );
 }

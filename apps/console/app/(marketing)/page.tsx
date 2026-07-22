@@ -34,7 +34,10 @@ const HOW_WE_WORK = [
     line: "Before I touch code you get a brief: task type, model, and a dollar estimate.",
   },
   { name: "Approve", line: "Your approval sets the run's budget. That number is the cap." },
-  { name: "Pull request", line: "I write the code and open a PR against your repo." },
+  {
+    name: "Pull request",
+    line: "I write the code, a second model reviews it, and your own tests have to pass. Then the PR opens.",
+  },
   {
     name: "Merge",
     line: "You merge it. Or turn on merge permission in Settings and I'll merge once the gate is green.",

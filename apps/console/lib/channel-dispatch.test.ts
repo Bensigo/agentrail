@@ -875,3 +875,97 @@ describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
     expect(mockComplete).not.toHaveBeenCalled();
   });
 });
+
+// --- #1288: console rows skip the identity spine entirely -------------------
+//
+// A console row is enqueued by an already-authenticated, already-membership-
+// checked dashboard user (see app/api/v1/workspaces/[workspaceId]/chat/
+// route.ts), so unlike telegram/discord/slack it carries its OWN
+// `workspaceId` directly and there is no chat identity to resolve — these
+// tests prove `getChatIdentity`/`resolveConversationWorkspace`/`pinConversationWorkspace`
+// are never touched for `channel: "console"`, and that the hosted-inbound
+// wire shape is the compound `{ workspaceId, conversationKey }` target
+// (never chatId/channelId).
+
+function consoleRow(overrides: Partial<ClaimedChannelInboxRow> & { payload?: unknown } = {}): ClaimedChannelInboxRow {
+  return row({
+    channel: "console",
+    workspaceId: "ws-console-1",
+    conversationKey: "console:user-1:1",
+    senderId: "user-1",
+    senderDisplay: "Ada",
+    providerMessageId: "console-msg-1",
+    payload: { text: "hello jace" },
+    ...overrides,
+  });
+}
+
+describe("dispatchQueuedChannelMessages — console rows (#1288)", () => {
+  it("posts to hosted-inbound with channel: 'console' and a {workspaceId, conversationKey} target — never chatId/channelId", async () => {
+    mockClaim.mockResolvedValueOnce(consoleRow()).mockResolvedValueOnce(null);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-console-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockGetChatIdentity).not.toHaveBeenCalled();
+    expect(mockResolve).not.toHaveBeenCalled();
+    expect(mockPin).not.toHaveBeenCalled();
+
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.channel).toBe("console");
+    expect(body.target).toEqual({ workspaceId: "ws-console-1", conversationKey: "console:user-1:1" });
+    expect(body.target).not.toHaveProperty("chatId");
+    expect(body.target).not.toHaveProperty("channelId");
+    expect(body.auth).toEqual({
+      authenticator: "agentrail",
+      principalType: "user",
+      principalId: "user-1",
+      attributes: { workspaceId: "ws-console-1", channel: "console", conversationKey: "console:user-1:1" },
+    });
+
+    expect(mockGetOrCreateSession).toHaveBeenCalledWith("ws-console-1", "console", "console:user-1:1");
+    expect(mockBindEveSession).toHaveBeenCalledWith("ledger-console-1", "eve-sess-1");
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("fails the row when workspaceId is somehow missing (invariant guard, never a crash)", async () => {
+    mockClaim
+      .mockResolvedValueOnce(consoleRow({ workspaceId: null as unknown as string }))
+      .mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockFail).toHaveBeenCalledWith("row-1", expect.stringContaining("missing workspaceId"));
+    expect(mockComplete).not.toHaveBeenCalled();
+  });
+
+  it("fails the row on malformed payload (missing text) without touching the identity spine", async () => {
+    mockClaim.mockResolvedValueOnce(consoleRow({ payload: {} })).mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockGetChatIdentity).not.toHaveBeenCalled();
+    expect(mockFail).toHaveBeenCalledWith("row-1", expect.stringContaining("malformed console payload"));
+  });
+
+  it("a sidecar failure fails the row exactly like every other channel (channel-agnostic error handling)", async () => {
+    mockClaim.mockResolvedValueOnce(consoleRow()).mockResolvedValueOnce(null);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-console-1" } as never);
+    mockFetch.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockFail).toHaveBeenCalledWith("row-1", expect.stringContaining("hosted-inbound returned 500"));
+    expect(mockComplete).not.toHaveBeenCalled();
+  });
+
+  it("a non-message kind fails the row (approvals ride a different path, same as every other channel)", async () => {
+    mockClaim.mockResolvedValueOnce(consoleRow({ kind: "approval_response" })).mockResolvedValueOnce(null);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockFail).toHaveBeenCalledWith("row-1", expect.stringContaining("unsupported inbox kind"));
+  });
+});

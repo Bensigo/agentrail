@@ -3,6 +3,8 @@ import { cookies } from "next/headers";
 import { findChatIdentityBySignupToken } from "@agentrail/db-postgres";
 import { redeemSignupToken, buildSignupActionOutcome } from "../../../../lib/signup-redeem";
 import { resolveUseSecureCookiesFromHeaders } from "../../../../lib/session-cookie";
+import { LIGHT_SURFACE } from "../../../../lib/light-surface";
+import { AUTH_MAIN, AUTH_INK_BUTTON, AuthCard, JaceAvatar, BackToJace } from "../../_shell";
 
 interface Props {
   params: Promise<{ token: string }>;
@@ -72,64 +74,39 @@ export default async function SignupPage({ params }: Props) {
     redirect(outcome.redirectTo);
   }
 
+  // Auth-v2 restyle only: the <main> root, the single human-pressed form,
+  // and finishSignup's exclusivity are the tested anti-unfurl contract and
+  // stay exactly as they were.
   return (
-    <main
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        fontFamily: "system-ui, sans-serif",
-        gap: "1rem",
-        textAlign: "center",
-        padding: "2rem",
-      }}
-    >
-      <h1 style={{ fontSize: "1.5rem", marginBottom: "0.5rem" }}>
-        Jace sent you this link to finish signing up
-      </h1>
-      <p style={{ color: "#666", maxWidth: "40ch" }}>
-        Click below to create your account. Jace will pick up right where you left off in the chat.
-      </p>
-      <form action={finishSignup}>
-        <button
-          type="submit"
-          style={{
-            padding: "0.75rem 1.5rem",
-            fontSize: "1rem",
-            fontWeight: 500,
-            background: "#24292e",
-            color: "var(--gray-13)",
-            border: "none",
-            borderRadius: "6px",
-            cursor: "pointer",
-          }}
-        >
-          Finish signing up
-        </button>
-      </form>
+    <main style={LIGHT_SURFACE} className={AUTH_MAIN}>
+      <AuthCard>
+        <JaceAvatar />
+        <h1 className="text-2xl font-bold sm:text-3xl">
+          Jace sent you this link to finish signing up
+        </h1>
+        <p className="max-w-[36ch] text-[var(--gray-11)]">
+          Click below to create your account. Jace will pick up right where
+          you left off in the chat.
+        </p>
+        <form action={finishSignup}>
+          <button type="submit" className={AUTH_INK_BUTTON}>
+            Finish signing up
+          </button>
+        </form>
+      </AuthCard>
     </main>
   );
 }
 
 function SignupMessage({ title, body }: { title: string; body: string }) {
   return (
-    <main
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        fontFamily: "system-ui, sans-serif",
-        gap: "0.75rem",
-        textAlign: "center",
-        padding: "2rem",
-      }}
-    >
-      <h1 style={{ fontSize: "1.5rem" }}>{title}</h1>
-      <p style={{ color: "#666", maxWidth: "40ch" }}>{body}</p>
+    <main style={LIGHT_SURFACE} className={AUTH_MAIN}>
+      <AuthCard>
+        <JaceAvatar />
+        <h1 className="text-2xl font-bold sm:text-3xl">{title}</h1>
+        <p className="max-w-[36ch] text-[var(--gray-11)]">{body}</p>
+      </AuthCard>
+      <BackToJace />
     </main>
   );
 }

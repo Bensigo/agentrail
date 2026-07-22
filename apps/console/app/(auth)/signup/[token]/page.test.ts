@@ -91,10 +91,28 @@ async function renderPage() {
   return asElement(await SignupPage({ params: Promise.resolve({ token: TOKEN }) }));
 }
 
-/** Extract the `<form>` element from the "finish signing up" render. */
+/** Recursively extract the `<form>` element from the "finish signing up"
+ *  render. The auth-v2 shell nests the form inside the ink card, and this
+ *  is an UNRENDERED element tree (AuthCard stays a function element), so
+ *  walk `props.children` at every depth instead of assuming the form is a
+ *  direct child of <main>. The contract being tested is unchanged: exactly
+ *  one human-pressed form, whose action is the only consume path. */
 function findForm(root: ReactElementLike): ReactElementLike {
-  const children = root.props.children as ReactElementLike[];
-  const form = children.find((c) => c?.type === "form");
+  const search = (node: unknown): ReactElementLike | null => {
+    if (!node) return null;
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const found = search(child);
+        if (found) return found;
+      }
+      return null;
+    }
+    const el = node as ReactElementLike;
+    if (typeof el !== "object" || !("props" in el)) return null;
+    if (el.type === "form") return el;
+    return search(el.props?.children);
+  };
+  const form = search(root);
   if (!form) throw new Error("no <form> found in the rendered page — did the render branch change?");
   return form;
 }

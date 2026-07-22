@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { signOut } from "@agentrail/auth";
 import { notFound, redirect } from "next/navigation";
+import { isGoalLoopEnabled } from "@agentrail/db-postgres";
 import { Sidebar } from "../../../components/sidebar";
 import { ThemeToggle } from "../../../components/theme-toggle";
 import { TopBarBreadcrumb } from "../../../components/breadcrumb";
@@ -26,12 +27,14 @@ async function SidebarWithWorkspaces({
   user,
   signOutAction,
   chatEnabled,
+  goalsEnabled,
 }: {
   userId: string;
   workspaceId: string;
   user: SidebarUser;
   signOutAction: () => Promise<void>;
   chatEnabled: boolean;
+  goalsEnabled: boolean;
 }) {
   const workspaces = await getWorkspacesForUser(userId);
   return (
@@ -41,6 +44,7 @@ async function SidebarWithWorkspaces({
       user={user}
       signOutAction={signOutAction}
       chatEnabled={chatEnabled}
+      goalsEnabled={goalsEnabled}
     />
   );
 }
@@ -61,7 +65,12 @@ export default async function WorkspaceLayout({
   // THIS workspace. Without this guard any logged-in user could read another
   // workspace's data (failures, runs, costs…) by guessing its id. Cached, so the
   // pages this layout wraps reuse the same lookup rather than re-querying.
-  const membership = await getMembership(session.user.id, workspaceId);
+  // `isGoalLoopEnabled` runs alongside it — it only depends on workspaceId, not
+  // on membership having resolved, so there's no reason to serialize them.
+  const [membership, goalsEnabled] = await Promise.all([
+    getMembership(session.user.id, workspaceId),
+    isGoalLoopEnabled(workspaceId),
+  ]);
   if (!membership) {
     notFound();
   }
@@ -83,6 +92,7 @@ export default async function WorkspaceLayout({
             user={session.user}
             signOutAction={handleSignOut}
             chatEnabled={chatEnabled}
+            goalsEnabled={goalsEnabled}
           />
         }
       >
@@ -92,6 +102,7 @@ export default async function WorkspaceLayout({
           user={session.user}
           signOutAction={handleSignOut}
           chatEnabled={chatEnabled}
+          goalsEnabled={goalsEnabled}
         />
       </Suspense>
       <div className="flex-1 pl-[220px] max-md:pl-12">

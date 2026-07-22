@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CHAT_NAV_ITEM,
   ENGINE_ROOM_ZONE,
+  GOALS_NAV_ITEM,
   NAV_ZONES,
   SETTINGS_ZONE,
   YOUR_ENGINEER_ZONE,
@@ -40,6 +41,13 @@ describe("NAV_ZONES data structure", () => {
     expect(CHAT_NAV_ITEM.label).toBe("Chat");
     expect(CHAT_NAV_ITEM.href).toBe("chat");
     expect(CHAT_NAV_ITEM.icon).toBeDefined();
+  });
+
+  it("GOALS_NAV_ITEM (#1289 AC2) is NOT baked into YOUR_ENGINEER_ZONE.items — sidebar.tsx splices it in only when jaceGoalLoop is on, same posture as CHAT_NAV_ITEM", () => {
+    expect(YOUR_ENGINEER_ZONE.items.map((i) => i.href)).not.toContain("goals");
+    expect(GOALS_NAV_ITEM.label).toBe("Goals");
+    expect(GOALS_NAV_ITEM.href).toBe("goals");
+    expect(GOALS_NAV_ITEM.icon).toBeDefined();
   });
 
   it("Engine room zone contains exactly the demoted evidence pages, plus Budget (#1272) and Model selection (#1338 PR③)", () => {

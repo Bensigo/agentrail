@@ -4,7 +4,13 @@ import { usePathname } from "next/navigation";
 import { WorkspaceSwitcher } from "../(dashboard)/components/WorkspaceSwitcher";
 import { EngineRoomGroup } from "./nav-group";
 import { NavLink } from "./nav-link";
-import { CHAT_NAV_ITEM, ENGINE_ROOM_ZONE, SETTINGS_ZONE, YOUR_ENGINEER_ZONE } from "./sidebar-nav";
+import {
+  CHAT_NAV_ITEM,
+  ENGINE_ROOM_ZONE,
+  GOALS_NAV_ITEM,
+  SETTINGS_ZONE,
+  YOUR_ENGINEER_ZONE,
+} from "./sidebar-nav";
 
 interface SidebarProps {
   workspaces: { id: string; name: string; slug: string; role: string }[];
@@ -16,6 +22,10 @@ interface SidebarProps {
    * (the Suspense fallback's render, before the real value is known) reads
    * as off, so the item never flashes in then disappears. */
   chatEnabled?: boolean;
+  /** Goal loop (#1289 AC2), default OFF — computed server-side
+   * (`isGoalLoopEnabled`) by the layout that renders this, same "undefined
+   * reads as off" posture as `chatEnabled` above. */
+  goalsEnabled?: boolean;
 }
 
 export function Sidebar({
@@ -24,12 +34,15 @@ export function Sidebar({
   user,
   signOutAction,
   chatEnabled = false,
+  goalsEnabled = false,
 }: SidebarProps) {
   const pathname = usePathname();
   const basePath = `/dashboard/${workspaceId}`;
-  const engineerItems = chatEnabled
-    ? [...YOUR_ENGINEER_ZONE.items, CHAT_NAV_ITEM]
-    : YOUR_ENGINEER_ZONE.items;
+  const engineerItems = [
+    ...YOUR_ENGINEER_ZONE.items,
+    ...(goalsEnabled ? [GOALS_NAV_ITEM] : []),
+    ...(chatEnabled ? [CHAT_NAV_ITEM] : []),
+  ];
 
   return (
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-[220px] flex-col border-r border-[var(--gray-05)] bg-[var(--gray-01)] max-md:w-12">

@@ -100,6 +100,17 @@ describe("GET /api/v1/workspaces/[workspaceId]/chat", () => {
     expect(listJaceMessagesSince).toHaveBeenCalledWith(WS, `console:${USER}:1`, 7);
   });
 
+  it("scopes to the requested thread via ?n= (multi-thread)", async () => {
+    await GET(getReq("?n=3&after_seq=2"), { params: params() });
+    expect(listJaceMessagesSince).toHaveBeenCalledWith(WS, `console:${USER}:3`, 2);
+  });
+
+  it("400s on an invalid ?n=", async () => {
+    expect((await GET(getReq("?n=abc"), { params: params() })).status).toBe(400);
+    expect((await GET(getReq("?n=0"), { params: params() })).status).toBe(400);
+    expect((await GET(getReq("?n=-1"), { params: params() })).status).toBe(400);
+  });
+
   it("returns the mapped message list on a happy path", async () => {
     vi.mocked(listJaceMessagesSince).mockResolvedValue([
       {
@@ -225,7 +236,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/chat", () => {
     });
   });
 
-  it("enqueues the same message into channel_inbox with channel: 'console'", async () => {
+  it("enqueues the same message into channel_inbox with channel: 'console' and the default model", async () => {
     await POST(postReq({ text: "hello jace" }), { params: params() });
     expect(enqueueChannelMessage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -234,7 +245,43 @@ describe("POST /api/v1/workspaces/[workspaceId]/chat", () => {
         conversationKey: `console:${USER}:1`,
         kind: "message",
         senderId: USER,
-        payload: { text: "hello jace" },
+        payload: { text: "hello jace", model: "anthropic/claude-sonnet-4.6" },
+      })
+    );
+  });
+
+  it("scopes the write + enqueue to the requested thread via body.n", async () => {
+    await POST(postReq({ text: "hi", n: 4 }), { params: params() });
+    expect(appendJaceMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationKey: `console:${USER}:4` })
+    );
+    expect(enqueueChannelMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationKey: `console:${USER}:4` })
+    );
+  });
+
+  it("400s on an invalid body.n", async () => {
+    expect((await POST(postReq({ text: "hi", n: 0 }), { params: params() })).status).toBe(400);
+    expect((await POST(postReq({ text: "hi", n: "x" }), { params: params() })).status).toBe(400);
+  });
+
+  it("400s on an unknown model", async () => {
+    const res = await POST(postReq({ text: "hi", model: "made/up" }), { params: params() });
+    expect(res.status).toBe(400);
+  });
+
+  it("400s on a known-but-not-enabled model (no dead selection routes nowhere)", async () => {
+    // z-ai/glm-5.2 is a known option but has no endpoint wired in the test env,
+    // so it is not enabled — the route must reject it rather than enqueue it.
+    const res = await POST(postReq({ text: "hi", model: "z-ai/glm-5.2" }), { params: params() });
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts the default model explicitly and enqueues it", async () => {
+    await POST(postReq({ text: "hi", model: "anthropic/claude-sonnet-4.6" }), { params: params() });
+    expect(enqueueChannelMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: { text: "hi", model: "anthropic/claude-sonnet-4.6" },
       })
     );
   });

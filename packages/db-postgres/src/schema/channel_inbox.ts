@@ -46,6 +46,16 @@ export type ChannelInboxKind = "message" | "approval_response";
 /** Payload for kind="message". */
 export interface InboxMessagePayload {
   text: string;
+  /**
+   * Console chat (#1288) only — the gateway model id the sender picked in the
+   * chat header's model dropdown (e.g. `anthropic/claude-sonnet-4.6`). The
+   * console dispatcher (`lib/channel-dispatch.ts`) reads it to route the turn
+   * to the Jace instance pinned to that model (a single Jace process is bound
+   * to one model at boot — see `apps/console/lib/chat/models.ts`'s own note),
+   * falling back to the default endpoint when unset or unmapped. Absent for
+   * every other channel.
+   */
+  model?: string;
 }
 
 /** Payload for kind="approval_response" (Telegram button callback). */

@@ -2293,6 +2293,8 @@ export {
   type CreateGoalInput,
   getGoalById,
   listActiveGoalsForWorkspace,
+  listGoalsForWorkspace,
+  type WorkspaceGoalsView,
   findActiveGoalForIssue,
   findActiveGoalBySlug,
   recordIssueFiled,

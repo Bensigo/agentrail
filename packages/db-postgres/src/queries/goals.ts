@@ -1,4 +1,4 @@
-import { and, eq, desc } from "drizzle-orm";
+import { and, eq, desc, inArray } from "drizzle-orm";
 import { db } from "../db.js";
 import { goals, type Goal } from "../schema/goals.js";
 import { goalEvents } from "../schema/goal_events.js";
@@ -88,6 +88,51 @@ export async function listActiveGoalsForWorkspace(workspaceId: string): Promise<
     .from(goals)
     .where(and(eq(goals.workspaceId, workspaceId), eq(goals.status, "active")))
     .orderBy(desc(goals.createdAt));
+}
+
+/** Every non-`active` status (see `goalStatusEnum`'s own doc-comment in `schema/goals.ts` — TERMINAL by construction, `decideGoalTransition`'s guarantee). */
+const TERMINAL_GOAL_STATUSES = ["reached", "leashed", "paused", "abandoned"] as const;
+
+export interface WorkspaceGoalsView {
+  /** Newest-created first (mirrors `listActiveGoalsForWorkspace`'s own order). */
+  active: Goal[];
+  /** Most-recently-ended first. */
+  done: Goal[];
+}
+
+/**
+ * Full workspace goals view for the console dashboard (#1289 AC2 — the goal
+ * loop shipped with zero UI showing goals; this is the read side of that
+ * gap). `active` reuses `listActiveGoalsForWorkspace` verbatim (no
+ * duplicated query logic); `done` is every goal that has reached a TERMINAL
+ * status, most-recently-ended first.
+ *
+ * "Most-recently-ended" has no dedicated `endedAt` column to sort by —
+ * `updatedAt` is the faithful proxy: every single path that ever moves a
+ * goal OUT of `active` sets `updatedAt: new Date()` in the exact same write
+ * that flips `status` (`recordOutcomeAndTransition`'s persist above, and the
+ * manual `pauseGoal`/`abandonGoal`/`markGoalReached` escape hatches via
+ * `setGoalStatus`) — there is no code path that touches `status` without
+ * also touching `updatedAt` in the same statement, so ordering by it can
+ * never disagree with "when this goal actually went terminal".
+ *
+ * Callers (the goals dashboard page) MUST check `isGoalLoopEnabled` first —
+ * this function itself does not re-check the flag, same posture as every
+ * other read in this module (the flag gates ENTERING the feature, not each
+ * individual query).
+ */
+export async function listGoalsForWorkspace(workspaceId: string): Promise<WorkspaceGoalsView> {
+  const [active, done] = await Promise.all([
+    listActiveGoalsForWorkspace(workspaceId),
+    db
+      .select()
+      .from(goals)
+      .where(
+        and(eq(goals.workspaceId, workspaceId), inArray(goals.status, TERMINAL_GOAL_STATUSES))
+      )
+      .orderBy(desc(goals.updatedAt)),
+  ]);
+  return { active, done };
 }
 
 /**

@@ -10,6 +10,7 @@ import { MarketingNav } from "./_nav";
 import { PinnedConversationScene } from "./_scroll-narrative";
 import { resolveMessageJaceCta } from "./_cta";
 import type { MessageJaceCta } from "./_cta";
+import { resolveDiscordChannelCard } from "./_channel-cards";
 
 /** Real dogfood track record — full autonomous runs of AgentRail on its own
  *  backlog (issue → implementation → review → PR), not a retrieval benchmark.
@@ -117,6 +118,14 @@ export default async function LandingPage() {
   // when the hosted bot is configured, else the honest sign-in fallback
   // (never a dead link) — see `./_cta.ts`.
   const cta = resolveMessageJaceCta(process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME);
+
+  // #1284 AC2 (landing-honesty rule): resolves to null — rendering nothing
+  // extra — until BOTH a Discord invite URL is configured AND the channel is
+  // explicitly flagged live post-prod-verification. See `./_channel-cards.ts`.
+  const discordCard = resolveDiscordChannelCard({
+    live: process.env.NEXT_PUBLIC_DISCORD_CHANNEL_LIVE,
+    inviteUrl: process.env.NEXT_PUBLIC_DISCORD_INVITE_URL,
+  });
 
   return (
     <main
@@ -333,6 +342,18 @@ export default async function LandingPage() {
             >
               CLI
             </a>
+            {/* #1284 AC2: only renders once Discord is both configured AND
+                flagged live post-prod-verification — see _channel-cards.ts. */}
+            {discordCard ? (
+              <a
+                href={discordCard.href}
+                target="_blank"
+                rel="noreferrer"
+                className="transition-colors hover:text-[var(--accent-text)]"
+              >
+                Discord
+              </a>
+            ) : null}
             <form action={signInWithGithub}>
               <button
                 type="submit"

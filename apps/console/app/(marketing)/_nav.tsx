@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import { Send } from "lucide-react";
 import type { MessageJaceCta } from "./_cta";
@@ -13,19 +13,14 @@ import type { MessageJaceCta } from "./_cta";
  * "Sign in" link for the primary Message-Jace CTA — the action worth
  * surfacing once someone has actually committed to reading the story.
  *
- * Scroll state comes from one IntersectionObserver watching a 32px
- * sentinel at the top of `<main>`, not a `scroll` event listener — no
- * wheel interception anywhere in this narrative redo, matching
- * `_scroll-narrative.tsx`'s own convention. The sentinel's height IS the
- * hysteresis band (review fix M-3): the pill condenses only once the
- * whole sentinel has scrolled past (`bottom < 0`) and expands only once
- * it is fully back (`top >= 0`); in between, the state holds, so
- * trackpad jitter at the boundary can't flicker the nav. Both states pin
- * the same h-12, so the swap never changes the header's flow height and
- * the document doesn't nudge at the boundary; the swap itself is an
- * instant className change (no width/padding transition — animating
- * those is a layout-thrash pattern the house motion rules ban); only
- * color and shadow cross-fade.
+ * Scroll state: a passive scroll listener + rAF read with a hysteresis
+ * band (condense > 96px, expand < 64px) — see the effect's own comment
+ * for why this replaced the IO sentinel. Both states pin the same h-12,
+ * so the swap never changes the header's flow height; the container
+ * MORPHS between row and pill (max-width/padding over 200ms strong
+ * ease-out — a single small element, so the layout transition is
+ * imperceptible as work and reads as one shape changing instead of two
+ * layouts teleporting).
  */
 export function MarketingNav({
   cta,
@@ -35,33 +30,39 @@ export function MarketingNav({
   signInAction: () => Promise<void>;
 }) {
   const [condensed, setCondensed] = useState(false);
-  const sentinelRef = useRef<HTMLDivElement>(null);
 
+  // Deterministic scroll latch with a hysteresis band (owner glitch fix
+  // 2026-07-22): the old IntersectionObserver sentinel could miss a jump
+  // (restored scroll, programmatic jumps, HMR) and stick in the wrong
+  // state. A passive listener + rAF read self-corrects on every scroll
+  // AND on mount; condense past 96px, expand only back above 64px, so
+  // trackpad jitter at the boundary can't flicker the pill. Same
+  // rAF-scroll pattern as _channels.tsx.
   useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-    const io = new IntersectionObserver(
-      ([entry]) => {
-        const rect = entry.boundingClientRect;
-        if (rect.bottom < 0) setCondensed(true);
-        else if (rect.top >= 0) setCondensed(false);
-        // Partially visible: hold the current state (the hysteresis band).
-      },
-      { threshold: [0, 1] }
-    );
-    io.observe(el);
-    return () => io.disconnect();
+    // No rAF hop: scroll events are already frame-coalesced, React batches
+    // the functional set, and the latch flips at most twice per journey.
+    const onScroll = () => {
+      const y = window.scrollY;
+      setCondensed((prev) => (prev ? y > 64 : y > 96));
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
   return (
     <>
-      <div ref={sentinelRef} aria-hidden className="pointer-events-none absolute top-0 h-8 w-full" />
       <header className="sticky top-3 z-40 px-6">
+        {/* Both states share one morphing container (owner fix 2026-07-22:
+            the instant swap read as a glitch — elements teleported between
+            the full-width row and the pill). max-width/padding morph over
+            200ms strong ease-out; this is a single small element, so the
+            layout-property transition costs nothing perceptible. */}
         <div
           className={
             condensed
-              ? "mx-auto flex h-12 max-w-[380px] items-center justify-between gap-4 rounded-full border border-[var(--gray-06)] bg-[var(--gray-00)] pl-4 pr-2 shadow-[0_10px_15px_-3px_rgb(0_0_0_/_0.1),0_4px_6px_-4px_rgb(0_0_0_/_0.1)] transition-[background-color,border-color,box-shadow] duration-200"
-              : "mx-auto flex h-12 max-w-[1120px] items-center justify-between transition-[background-color,border-color,box-shadow] duration-200"
+              ? "mx-auto flex h-12 max-w-[380px] items-center justify-between gap-4 rounded-full border-2 border-[var(--gray-13)] bg-[var(--gray-00)] pl-4 pr-2 shadow-[4px_4px_0_0_var(--gray-13)] transition-[max-width,padding,background-color,border-color,box-shadow] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]"
+              : "mx-auto flex h-12 max-w-[1120px] items-center justify-between rounded-full border-2 border-transparent px-0 transition-[max-width,padding,background-color,border-color,box-shadow] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]"
           }
         >
           <a href="#top" className="flex shrink-0 items-center gap-2.5">
@@ -83,7 +84,7 @@ export function MarketingNav({
             <form action={signInAction}>
               <button
                 type="submit"
-                className="text-body-sm rounded-md border border-[var(--gray-06)] bg-[var(--gray-02)] px-3.5 py-1.5 text-[var(--gray-11)] transition-colors hover:border-[var(--gray-08)] hover:text-[var(--gray-12)]"
+                className="text-body-sm rounded-md border border-[var(--gray-06)] bg-[var(--gray-02)] px-3.5 py-1.5 text-[var(--gray-11)] transition-colors hover:border-[var(--gray-08)] hover:text-[var(--gray-12)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
               >
                 Sign in
               </button>
@@ -106,7 +107,7 @@ function CondensedCta({
   signInAction: () => Promise<void>;
 }) {
   const classes =
-    "inline-flex items-center gap-1.5 rounded-full bg-[var(--accent-fill)] px-3.5 py-1.5 font-bold text-[var(--accent-fill-text)] transition-colors hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]";
+    "inline-flex items-center gap-1.5 rounded-full bg-[var(--accent-fill)] px-3.5 py-1.5 font-bold text-[var(--accent-fill-text)] transition-colors hover:bg-[var(--accent-fill-hover)] active:scale-[0.97] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]";
   if (cta.kind === "telegram") {
     return (
       <a href={cta.href} target="_blank" rel="noreferrer" className={classes}>

@@ -72,7 +72,7 @@ export function PhoneDemo() {
   return (
     <div
       ref={frameRef}
-      className="w-[320px] overflow-hidden rounded-[2rem] border border-[var(--gray-06)] bg-[var(--gray-01)] shadow-lg sm:w-[340px]"
+      className="w-[340px] overflow-hidden rounded-[2rem] border-2 border-[var(--gray-13)] bg-[var(--gray-01)] shadow-[6px_6px_0_0_var(--gray-13)] sm:w-[400px]"
     >
       {/* Chat header — Jace's identity row, not a cloned Telegram chrome. */}
       <div className="flex items-center gap-2.5 border-b border-[var(--gray-04)] bg-[var(--gray-00)] px-4 py-3">
@@ -83,15 +83,16 @@ export function PhoneDemo() {
         </div>
       </div>
 
-      {choreographed === null ? (
-        // First client frame, pre-effect: keep the surface stable (the
-        // conversation mounts in the next tick with its choreography mode).
-        <div className="min-h-[280px] bg-[var(--gray-01)]" />
-      ) : choreographed ? (
-        <ConversationDemo typedChars={typed} briefRevealed={briefRevealed} />
-      ) : (
-        <ConversationDemo />
-      )}
+      {/* Fixed conversation height (owner fix 2026-07-22): the frame is
+          full-size from first paint — typing, the brief, and the outcome
+          ping all land INSIDE it instead of growing the phone stepwise. */}
+      <div className="min-h-[510px] bg-[var(--gray-01)]">
+        {choreographed === null ? null : choreographed ? (
+          <ConversationDemo typedChars={typed} briefRevealed={briefRevealed} />
+        ) : (
+          <ConversationDemo />
+        )}
+      </div>
     </div>
   );
 }

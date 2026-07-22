@@ -23,6 +23,9 @@ const STYLED_FILES = [
   "_conversation-demo.tsx",
   "_nav.tsx",
   "_phone-demo.tsx",
+  "_use-cases.tsx",
+  "_channels.tsx",
+  "_stats.tsx",
 ] as const;
 
 // … while the EXISTENCE assertions (must actually carry the lemon fill +
@@ -30,7 +33,12 @@ const STYLED_FILES = [
 // element. _phone-demo.tsx is deliberately absent here: it renders chrome
 // around `ConversationDemo` (whose Approve button carries the fill), and
 // demanding a second fill of the frame would force decoration into it.
-const LEMON_FILL_FILES = ["page.tsx", "_conversation-demo.tsx", "_nav.tsx"] as const;
+const LEMON_FILL_FILES = [
+  "page.tsx",
+  "_conversation-demo.tsx",
+  "_nav.tsx",
+  "_channels.tsx",
+] as const;
 
 function readSibling(filename: string): string {
   return readFileSync(new URL(filename, import.meta.url), "utf8");
@@ -129,7 +137,7 @@ describe("(marketing) craft pins — accent system (lemon family, #1357/#1359)",
 });
 
 describe("(marketing) craft pins — the mascot IS Jace (TASTE.md canon)", () => {
-  it("the hero opens with the canonical wave render, named for assistive tech", () => {
+  it("the closing carries the canonical wave render, named for assistive tech (hero stays mascot-free — owner pass 2026-07-22)", () => {
     const source = readSibling("page.tsx");
     expect(source).toMatch(/src="\/jace-wave\.png"[\s\S]{0,40}alt="Jace"/);
   });
@@ -142,6 +150,13 @@ describe("(marketing) craft pins — the mascot IS Jace (TASTE.md canon)", () =>
   it("the phone header carries the canonical avatar render", () => {
     const source = readSibling("_phone-demo.tsx");
     expect(source).toMatch(/src="\/jace-avatar\.png"/);
+  });
+
+  it("the channels scene carries the canonical working render as its background, exactly once (use-case cards stay image-free — one visual grammar)", () => {
+    const channels = readSibling("_channels.tsx");
+    expect((channels.match(/src="\/jace-working\.png"/g) ?? []).length).toBe(1);
+    const useCases = readSibling("_use-cases.tsx");
+    expect(useCases).not.toMatch(/src="\/jace/);
   });
 
   it("Jace's demo bubbles carry the mascot avatar (decorative alt, name text adjacent)", () => {
@@ -179,16 +194,16 @@ describe("(marketing) craft pins — mono on data moments", () => {
     expect(monoAppliesBefore(source, "{getDemoOutcomeMessage()}")).toBe(true);
   });
 
-  it("the track-record numbers render in font-mono, including 'attempted' (wave-4 addition — it existed in TRACK_RECORD but was never rendered before)", () => {
+  it("the live numbers render in font-mono (landing v2: CountUp carries the mono class beside each {stats.*} marker)", () => {
     const source = readSibling("page.tsx");
-    expect(monoAppliesBefore(source, "{TRACK_RECORD.shipped}")).toBe(true);
-    expect(monoAppliesBefore(source, "{TRACK_RECORD.attempted}")).toBe(true);
-    expect(monoAppliesBefore(source, "{TRACK_RECORD.failed}")).toBe(true);
+    expect(monoAppliesBefore(source, "{stats.shipped}")).toBe(true);
+    expect(monoAppliesBefore(source, "{stats.workedOn}")).toBe(true);
+    expect(monoAppliesBefore(source, "{stats.didntLand}")).toBe(true);
   });
 
-  it("the how-we-work step markers are mono", () => {
+  it("no decorative index numerals anywhere on the page (owner ruling 2026-07-22: rendered {i + 1} counters are slop-catalog LS-5)", () => {
     const source = readSibling("page.tsx");
-    expect(monoAppliesBefore(source, "{i + 1}")).toBe(true);
+    expect(source).not.toContain("{i + 1}");
   });
 });
 
@@ -200,26 +215,26 @@ describe("(marketing) craft pins — font stack", () => {
     }
   });
 
-  it("layout.tsx loads exactly the sanctioned display serif (Source Serif 4), nothing else", () => {
+  it("layout.tsx loads NO webfont at all — Berkeley Mono is the platform face and resolves from the local stack (owner ruling 2026-07-22)", () => {
     const layout = readSibling("layout.tsx");
-    // The ONE sanctioned next/font/google load in (marketing)/ — the
-    // round-2/3 ruling: upright serif display voice, landing-scoped.
-    expect(layout).toMatch(/Source_Serif_4/);
-    // The rejected font stays rejected (round-1 owner feedback), and no
-    // second font sneaks in beside the serif. Matches the import
-    // IDENTIFIER (underscore form) so a prose mention of the ban in a
-    // comment doesn't trip it.
     const fontImports = layout.match(/from "next\/font\/google"/g) ?? [];
-    expect(fontImports.length).toBe(1);
-    expect(layout).not.toMatch(/Bricolage_Grotesque/);
+    expect(fontImports.length).toBe(0);
+    // The retired faces stay retired in CODE (comments may narrate the
+    // retirement): strip comments, then no serif revival, no Inter, and
+    // the round-1 Bricolage rejection holds.
+    const code = layout
+      .replace(/\/\*\*[\s\S]*?\*\//g, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(code).not.toMatch(/Source_Serif_4|Bricolage_Grotesque|Inter/);
   });
 
-  it("the serif applies through the display heading classes (h1 + section h2s), not body text", () => {
+  it("the marketing root carries the Berkeley Mono stack (one voice for the whole landing)", () => {
     const layout = readSibling("layout.tsx");
-    expect(layout).toMatch(/\.text-heading-1,\s*\n\s*\.text-heading-2 \{\s*\n\s*font-family: var\(--font-display\)/);
+    expect(layout).toMatch(/\.marketing-root \{\s*\n\s*font-family: "Berkeley Mono"/);
   });
 
-  it("no italic serif display — the hero serif stays upright (slop-catalog TY-3)", () => {
+  it("no italic display — the mono display stays upright (slop-catalog TY-3 spirit)", () => {
     const layout = readSibling("layout.tsx");
     const page = readSibling("page.tsx");
     expect(layout).not.toMatch(/font-style:\s*italic/);
@@ -264,11 +279,13 @@ describe("(marketing) craft pins — narrative flow (wave 4)", () => {
   // examples: "allow the rotation utility, pin the lemon-scene text
   // pairing."
 
-  it("the static tilt uses Tailwind's named rotate scale (rotate-1/2/3, not arbitrary values) on the track-record cards and the closing mascot", () => {
+  it("the static tilt uses Tailwind's named rotate scale (rotate-1/2/3, not arbitrary values) on the stat scraps and the closing mascot", () => {
     const source = readSibling("page.tsx");
     const matches = source.match(/-?rotate-\d/g) ?? [];
-    // 3 track-record cards + 1 closing mascot = 4 static tilts.
-    expect(matches.length).toBeGreaterThanOrEqual(4);
+    // 2 tilted stat scraps + 1 closing mascot = 3 static tilts. The
+    // didn't-land card is DELIBERATELY untilted — its difference from the
+    // other two is the slop audit's LS-1/LS-2 fix; don't "even it up".
+    expect(matches.length).toBeGreaterThanOrEqual(3);
   });
 
   it("the rotation is a static transform, never animated or transitioned", () => {
@@ -303,14 +320,24 @@ describe("(marketing) craft pins — narrative flow (wave 4)", () => {
     expect(sectionOpenTag).not.toMatch(/max-w-/);
   });
 
-  it("page.tsx renders exactly two mascot beats (wave hero + closing), all from the owner-supplied canon set", () => {
+  it("page.tsx renders exactly three mascot beats (hero avatar disc + closing wave + footer mark), all from the canon set", () => {
     const source = readSibling("page.tsx");
     // Canon renders (TASTE.md): jace.png, jace-avatar.png, jace-wave.png,
     // jace-working.png — owner-supplied, never generated substitutes.
     const canon = source.match(/src="\/jace(?:-avatar|-wave|-working)?\.png"/g) ?? [];
-    expect(canon.length).toBe(2);
+    expect(canon.length).toBe(3);
     const anyJaceImage = source.match(/src="\/jace[^"]*"/g) ?? [];
     expect(anyJaceImage.length).toBe(canon.length);
+  });
+
+  it("sub-14px text never sits in --gray-09/--gray-10 on the landing (slop-audit GQ-1: 4.5:1 floor on --paper)", () => {
+    for (const file of STYLED_FILES) {
+      const source = readSibling(file);
+      const smallText = source.match(/className="[^"]*text-(?:body-sm|label)[^"]*"/g) ?? [];
+      for (const attr of smallText) {
+        expect(attr).not.toMatch(/--gray-(?:09|10)/);
+      }
+    }
   });
 });
 

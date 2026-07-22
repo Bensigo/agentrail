@@ -90,6 +90,30 @@ export async function recordRunOutcome(input: {
     .onConflictDoNothing({ target: runOutcomes.queueEntryId });
 }
 
+/** Platform-wide terminal-outcome counts for the landing page's live
+ *  numbers (landing v2, docs/superpowers/plans/2026-07-22-landing-v2.md).
+ *  One GROUP BY over the whole table — `run_outcomes` holds exactly one row
+ *  per terminal queue transition, so these ARE "runs worked" split by how
+ *  they ended. Aggregate counts only: no workspace data leaves this shape. */
+export interface RunOutcomeCounts {
+  success: number;
+  humanReview: number;
+  failed: number;
+}
+
+export async function countRunOutcomes(): Promise<RunOutcomeCounts> {
+  const rows = await db
+    .select({ outcome: runOutcomes.outcome, n: sql<number>`count(*)::int` })
+    .from(runOutcomes)
+    .groupBy(runOutcomes.outcome);
+  const byOutcome = new Map(rows.map((r) => [r.outcome, r.n]));
+  return {
+    success: byOutcome.get("success") ?? 0,
+    humanReview: byOutcome.get("human_review") ?? 0,
+    failed: byOutcome.get("failed") ?? 0,
+  };
+}
+
 /** Per-`(task_type, execute_model)` aggregate the model-selection learning
  * loop's LATER selector PR reads. Mirrors `eval_arm_metrics`' spirit
  * (solve-rate / $-per-solved per arm) — same idea, fed by PRODUCTION

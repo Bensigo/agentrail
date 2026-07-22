@@ -123,12 +123,7 @@ export default async function LandingPage() {
             className="ar-rise rounded-full"
           />
           <h1 className="ar-rise mt-8" style={{ animationDelay: "60ms" }}>
-            <span className="text-heading-1 block">
-              Hey, I&apos;m Jace
-              <span aria-hidden className="ar-cursor animate-pulse font-mono">
-                _
-              </span>
-            </span>
+            <span className="text-heading-1 block">Hey, I&apos;m Jace</span>
             <span className="text-heading-2 mt-5 block text-balance">
               The AI{" "}
               <span className="rounded-sm bg-[var(--accent-fill)] px-1.5 text-[var(--accent-fill-text)]">

@@ -83,6 +83,20 @@ export const workspaces = pgTable("workspaces", {
   // posture. No UI toggle yet — same "ship the column + enforcement first"
   // posture as hostedExecution/monthlyBudgetUsd above.
   jaceGoalLoop: boolean("jace_goal_loop").notNull().default(false),
+  // Prepaid wallet billing (#1290, Wave 5 / epic #1257; design locked
+  // 2026-07-22). Rollout-safety flag, not a demo gate: default false so the
+  // whole prepaid-wallet engine — the admission balance check at claim time
+  // and the completion charge at result time — is a strict no-op for every
+  // existing AND future workspace until a human explicitly opts one in. Read
+  // FRESH at the start of every wallet entry point (the runner claim +
+  // result routes) before any wallet-table read/write happens, so flipping it
+  // off mid-flight halts billing immediately — no caching, mirrors
+  // jaceGoalLoop/mergePermission's own fresh-read posture. No UI toggle yet —
+  // same "ship the column + enforcement first" posture as
+  // jaceGoalLoop/hostedExecution/monthlyBudgetUsd above; PR ③ (Stripe
+  // checkout + the public pricing page) is what actually funds a wallet and
+  // is where a workspace first gets flipped on.
+  billingEnabled: boolean("billing_enabled").notNull().default(false),
 });
 
 export type Workspace = typeof workspaces.$inferSelect;

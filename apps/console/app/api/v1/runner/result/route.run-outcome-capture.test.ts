@@ -24,6 +24,13 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     // Real+pure (a 3-way switch) — assertions below check the ACTUAL mapped
     // outcome string, not a meaningless mock return.
     mapTerminalStateToRunOutcome: actual.mapTerminalStateToRunOutcome,
+    // #1290 PR② — wallet completion charge. Defaults billing OFF (falsy
+    // isBillingEnabled) so this capture suite is byte-identical to pre-#1290;
+    // usdToCents is real+pure. The wallet charge has its own dedicated suite
+    // (route.wallet-charge.test.ts).
+    isBillingEnabled: vi.fn(),
+    chargeCompletedTask: vi.fn(),
+    usdToCents: actual.usdToCents,
   };
 });
 vi.mock("@agentrail/db-clickhouse", () => ({

@@ -10,6 +10,12 @@ vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceBudgetState: vi.fn(),
   sumWorkspaceSpendSince: vi.fn(),
   markBudgetExhaustedNotified: vi.fn(),
+  // #1290 PR① — prepaid wallet admission. Defaulted to billing OFF in
+  // beforeEach so every PRE-#1290 test above stays byte-identical (the wallet
+  // block short-circuits before any wallet read).
+  isBillingEnabled: vi.fn(),
+  peekNextClaimEstimateUsd: vi.fn(),
+  walletCanAdmit: vi.fn(),
 }));
 vi.mock("@agentrail/db-clickhouse", () => ({
   recordRunLifecycleEvent: vi.fn(),
@@ -31,6 +37,9 @@ import {
   getWorkspaceBudgetState,
   sumWorkspaceSpendSince,
   markBudgetExhaustedNotified,
+  isBillingEnabled,
+  peekNextClaimEstimateUsd,
+  walletCanAdmit,
 } from "@agentrail/db-postgres";
 import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
@@ -47,6 +56,9 @@ const mockGetBudgetState = vi.mocked(getWorkspaceBudgetState);
 const mockSumSpend = vi.mocked(sumWorkspaceSpendSince);
 const mockMarkNotified = vi.mocked(markBudgetExhaustedNotified);
 const mockNotifyBudgetExhausted = vi.mocked(notifyWorkspaceBudgetExhausted);
+const mockIsBillingEnabled = vi.mocked(isBillingEnabled);
+const mockPeekEstimate = vi.mocked(peekNextClaimEstimateUsd);
+const mockWalletCanAdmit = vi.mocked(walletCanAdmit);
 
 const CLAIM_BLOCKED_HEADER = "X-Agentrail-Claim-Blocked";
 
@@ -100,6 +112,13 @@ beforeEach(() => {
   mockSumSpend.mockResolvedValue(0);
   mockMarkNotified.mockResolvedValue(false);
   mockNotifyBudgetExhausted.mockResolvedValue(undefined);
+  // Billing OFF by default (the product default — see the #1290 suite below
+  // for the ON paths) so every PRE-#1290 test stays byte-identical: the
+  // wallet admission block short-circuits before touching
+  // peekNextClaimEstimateUsd / walletCanAdmit at all.
+  mockIsBillingEnabled.mockResolvedValue(false);
+  mockPeekEstimate.mockResolvedValue(null);
+  mockWalletCanAdmit.mockResolvedValue(true);
 });
 
 describe("GET /api/v1/runner/claim — baseline (pre-#1267 behavior)", () => {
@@ -466,5 +485,92 @@ describe("GET /api/v1/runner/claim — workspace monthly-budget ceiling (#1269 P
       "2026-02-01T00:00:00.000Z"
     );
     expect(mockMarkNotified).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/v1/runner/claim — prepaid wallet admission (#1290 PR ①)", () => {
+  it("billing OFF (the default) — never reads the wallet, claims normally, no header", async () => {
+    mockIsBillingEnabled.mockResolvedValue(false);
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    // The whole flag-OFF guarantee: not a single wallet read happens.
+    expect(mockPeekEstimate).not.toHaveBeenCalled();
+    expect(mockWalletCanAdmit).not.toHaveBeenCalled();
+    expect(mockClaim).toHaveBeenCalledWith(WS);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+  });
+
+  it("billing ON, balance covers the next entry's estimate — claims normally, no header", async () => {
+    mockIsBillingEnabled.mockResolvedValue(true);
+    mockPeekEstimate.mockResolvedValue(3.5);
+    mockWalletCanAdmit.mockResolvedValue(true);
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    expect(mockPeekEstimate).toHaveBeenCalledWith(WS);
+    expect(mockWalletCanAdmit).toHaveBeenCalledWith(WS, 3.5);
+    expect(mockClaim).toHaveBeenCalledWith(WS);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+  });
+
+  it("billing ON, balance cannot cover the estimate — 204 + wallet-balance header, claimQueueEntry never called (nothing killed, next claim blocks)", async () => {
+    mockIsBillingEnabled.mockResolvedValue(true);
+    mockPeekEstimate.mockResolvedValue(9.0);
+    mockWalletCanAdmit.mockResolvedValue(false);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("wallet-balance");
+    expect(mockClaim).not.toHaveBeenCalled();
+    expect(mockRecordLifecycle).not.toHaveBeenCalled();
+  });
+
+  it("billing ON, next queued entry has no estimate (null) — un-gateable, admits normally", async () => {
+    mockIsBillingEnabled.mockResolvedValue(true);
+    mockPeekEstimate.mockResolvedValue(null);
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    // A null estimate means we can't gate — walletCanAdmit is never consulted.
+    expect(mockWalletCanAdmit).not.toHaveBeenCalled();
+    expect(mockClaim).toHaveBeenCalledWith(WS);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+  });
+
+  it("billing ON but a wallet read throws — best-effort: falls through to a normal claim, never strands work", async () => {
+    mockIsBillingEnabled.mockResolvedValue(true);
+    mockPeekEstimate.mockRejectedValue(new Error("db blip"));
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(200);
+    expect(mockClaim).toHaveBeenCalledWith(WS);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBeNull();
+  });
+
+  it("the wallet gate sits AFTER the workspace-budget ceiling — a ceiling-blocked claim never reaches the wallet read", async () => {
+    mockIsBillingEnabled.mockResolvedValue(true);
+    mockGetBudgetState.mockResolvedValue({
+      monthlyBudgetUsd: 10,
+      budgetExhaustedNotifiedPeriod: null,
+    });
+    mockSumSpend.mockResolvedValue(10);
+
+    const res = await GET(req(WS));
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get(CLAIM_BLOCKED_HEADER)).toBe("workspace-budget");
+    // The budget gate returned first; the wallet block was never reached.
+    expect(mockPeekEstimate).not.toHaveBeenCalled();
+    expect(mockWalletCanAdmit).not.toHaveBeenCalled();
   });
 });

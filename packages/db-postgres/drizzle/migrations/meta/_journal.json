@@ -302,6 +302,13 @@
       "when": 1784711681168,
       "tag": "0041_jace_messages",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1784712292156,
+      "tag": "0042_goal_loop",
+      "breakpoints": true
     }
   ]
 }

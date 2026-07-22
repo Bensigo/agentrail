@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@agentrail/db-postgres", () => ({
   isGoalLoopEnabled: vi.fn(),
   listGoalsForWorkspace: vi.fn(),
+  listWorkspaceRepositories: vi.fn(),
 }));
 
 vi.mock("../../../../../lib/cached", () => ({
@@ -24,7 +25,13 @@ vi.mock("next/navigation", () => ({
   notFound: vi.fn(() => undefined),
 }));
 
-import { isGoalLoopEnabled, listGoalsForWorkspace } from "@agentrail/db-postgres";
+// NewGoalButton (a "use client" component) is never actually INVOKED by
+// this test style — GoalsPage's returned tree is inspected via `.type`/
+// `.props` without a render pass (same reasoning this file's header
+// comment already gives for ActiveGoalCard/DoneGoalCard, neither of which
+// is mocked either), so importing it for real here is safe: its hooks
+// (useState/useRouter) never run.
+import { isGoalLoopEnabled, listGoalsForWorkspace, listWorkspaceRepositories } from "@agentrail/db-postgres";
 import type { Goal } from "@agentrail/db-postgres";
 import { getSession, getMembership } from "../../../../../lib/cached";
 import { notFound } from "next/navigation";
@@ -46,7 +53,21 @@ const mockGetSession = vi.mocked(getSession);
 const mockGetMembership = vi.mocked(getMembership);
 const mockIsGoalLoopEnabled = vi.mocked(isGoalLoopEnabled);
 const mockListGoalsForWorkspace = vi.mocked(listGoalsForWorkspace);
+const mockListWorkspaceRepositories = vi.mocked(listWorkspaceRepositories);
 const mockNotFound = vi.mocked(notFound);
+
+function repoRow(overrides: Partial<{ id: string; name: string }> = {}) {
+  return {
+    id: "repo-1",
+    name: "bensigo/agentrail",
+    workspaceId: WORKSPACE_ID,
+    defaultBranch: "main",
+    url: "https://github.com/bensigo/agentrail",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
 
 function activeGoal(overrides: Partial<Goal> = {}): Goal {
   return {
@@ -145,6 +166,7 @@ describe("GoalsPage flag gating (jaceGoalLoop, default OFF)", () => {
     mockAuthedMember();
     mockIsGoalLoopEnabled.mockResolvedValue(true);
     mockListGoalsForWorkspace.mockResolvedValue({ active: [], done: [] });
+    mockListWorkspaceRepositories.mockResolvedValue([]);
 
     await GoalsPage({ params: Promise.resolve({ workspaceId: WORKSPACE_ID }) });
 
@@ -156,6 +178,11 @@ describe("GoalsPage content", () => {
   beforeEach(() => {
     mockAuthedMember();
     mockIsGoalLoopEnabled.mockResolvedValue(true);
+    // Default: one connected repo, so the pre-existing "goals" assertions
+    // below (written before the repo-required New-goal form existed)
+    // continue to exercise the SAME "has repos" branch they always did.
+    // Tests specifically about the zero-repo gate override this.
+    mockListWorkspaceRepositories.mockResolvedValue([repoRow()] as never);
   });
 
   it("renders the page-level empty state when there are no goals at all", async () => {
@@ -191,5 +218,76 @@ describe("GoalsPage content", () => {
     const doneCards = doneBody.props.children as ReactElementLike[];
     expect(doneCards).toHaveLength(1);
     expect((doneCards[0].props.goal as { id: string }).id).toBe("goal-done");
+  });
+});
+
+describe("GoalsPage 'New goal' — repo-required rule (UI half; the API route's getRepository check is the server-side half)", () => {
+  beforeEach(() => {
+    mockAuthedMember(); // role: "owner" by default
+    mockIsGoalLoopEnabled.mockResolvedValue(true);
+  });
+
+  it("shows a 'connect a repository' empty state (not the generic one) when the workspace has zero repos and zero goals", async () => {
+    mockListGoalsForWorkspace.mockResolvedValue({ active: [], done: [] });
+    mockListWorkspaceRepositories.mockResolvedValue([]);
+
+    const element = asElement(
+      await GoalsPage({ params: Promise.resolve({ workspaceId: WORKSPACE_ID }) })
+    );
+    const children = element.props.children as ReactElementLike[];
+    const connectState = asElement(children[1]);
+    const [, heading] = connectState.props.children as ReactElementLike[];
+
+    expect((heading.props.children as string)).toBe("Connect a repository first");
+  });
+
+  it("renders a 'connect a repository' link, NOT the New goal button, in the actions slot when there are no repos", async () => {
+    mockListGoalsForWorkspace.mockResolvedValue({ active: [activeGoal()], done: [] });
+    mockListWorkspaceRepositories.mockResolvedValue([]);
+
+    const element = asElement(
+      await GoalsPage({ params: Promise.resolve({ workspaceId: WORKSPACE_ID }) })
+    );
+    const wrapper = element.props.children as ReactElementLike[];
+    const pageHeader = asElement(wrapper[0]);
+    const actions = asElement(pageHeader.props.actions);
+
+    expect(actions.props.href).toBe(`/dashboard/${WORKSPACE_ID}/repos`);
+  });
+
+  it("renders the New goal button in the actions slot (with the workspace's repos) when repos exist and the caller can manage", async () => {
+    mockListGoalsForWorkspace.mockResolvedValue({ active: [activeGoal()], done: [] });
+    mockListWorkspaceRepositories.mockResolvedValue([
+      repoRow({ id: "repo-1", name: "bensigo/agentrail" }),
+    ] as never);
+
+    const element = asElement(
+      await GoalsPage({ params: Promise.resolve({ workspaceId: WORKSPACE_ID }) })
+    );
+    const wrapper = element.props.children as ReactElementLike[];
+    const pageHeader = asElement(wrapper[0]);
+    const actions = asElement(pageHeader.props.actions);
+
+    expect(actions.props.workspaceId).toBe(WORKSPACE_ID);
+    expect(actions.props.repositories).toEqual([{ id: "repo-1", name: "bensigo/agentrail" }]);
+  });
+
+  it("renders NO action at all for a member/viewer (canManage false) even when repos exist — mirrors the Repos page's own canManage gate", async () => {
+    mockGetMembership.mockResolvedValue({
+      userId: USER_ID,
+      workspaceId: WORKSPACE_ID,
+      role: "member",
+      createdAt: new Date(),
+    } as Awaited<ReturnType<typeof getMembership>>);
+    mockListGoalsForWorkspace.mockResolvedValue({ active: [activeGoal()], done: [] });
+    mockListWorkspaceRepositories.mockResolvedValue([repoRow()] as never);
+
+    const element = asElement(
+      await GoalsPage({ params: Promise.resolve({ workspaceId: WORKSPACE_ID }) })
+    );
+    const wrapper = element.props.children as ReactElementLike[];
+    const pageHeader = asElement(wrapper[0]);
+
+    expect(pageHeader.props.actions).toBeUndefined();
   });
 });

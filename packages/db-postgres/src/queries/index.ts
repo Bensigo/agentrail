@@ -2319,3 +2319,27 @@ export {
   type GoalOutcomeEvent,
   type GoalTransitionResult,
 } from "./goal_rules.js";
+
+// Prepaid per-task wallet (issue #1290, Wave 5 / epic #1257; see
+// `queries/wallet.ts` + `billing/pricing.ts` for the full design). Every one
+// of these is gated by the caller on `isBillingEnabled` (the workspace
+// rollout flag, default OFF) — flag off means none of them ever run and prod
+// behavior is unchanged. `getWalletBalanceCents` is the running-SUM balance
+// (never a mutable column); `recordWalletTransaction` is the append-only
+// writer AND the clean top-up seam PR ③'s Stripe webhook will call;
+// `walletCanAdmit` is the claim-route admission check (balance ≥ the
+// alignment brief's pre-task estimate); `chargeCompletedTask` is the
+// idempotent-per-run completion charge; `listWalletTransactions` is the
+// ledger read.
+export {
+  isBillingEnabled,
+  getWalletBalanceCents,
+  recordWalletTransaction,
+  listWalletTransactions,
+  walletCanAdmit,
+  peekNextClaimEstimateUsd,
+  chargeCompletedTask,
+  type RecordWalletTransactionInput,
+  type ChargeCompletedTaskInput,
+  type ChargeCompletedTaskResult,
+} from "./wallet.js";

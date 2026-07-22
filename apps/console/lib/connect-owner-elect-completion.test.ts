@@ -61,6 +61,7 @@ describe("completeConnectOwnerElect", () => {
       mergePermission: false,
       requireAlignment: true,
       jaceGoalLoop: false,
+      billingEnabled: false,
     });
 
     const result = await completeConnectOwnerElect({ workspaceId: "ws-1", userId: "user-1" });

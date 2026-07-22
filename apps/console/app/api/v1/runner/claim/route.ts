@@ -8,6 +8,9 @@ import {
   getWorkspaceBudgetState,
   sumWorkspaceSpendSince,
   markBudgetExhaustedNotified,
+  isBillingEnabled,
+  peekNextClaimEstimateUsd,
+  walletCanAdmit,
 } from "@agentrail/db-postgres";
 import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
@@ -127,6 +130,37 @@ export async function GET(request: NextRequest) {
         status: 204,
         headers: { [CLAIM_BLOCKED_HEADER]: "workspace-budget" },
       });
+    }
+  }
+
+  // Prepaid wallet admission (#1290 PR ①): when billing is enabled for this
+  // workspace, a task is handed to a runner ONLY when the wallet balance
+  // covers the alignment brief's pre-task estimate. Flag OFF (the default for
+  // every workspace) short-circuits BEFORE any wallet read — today's behavior
+  // byte-for-byte. When ON, peek the estimate of the entry this claim would
+  // take next (the oldest queued, matching claimQueueEntry's own pick): a
+  // NULL estimate (a brief-less / alignment-off row) is un-gateable and
+  // admits; a covered estimate admits; an uncovered one blocks with a plain
+  // 204 + the same X-Agentrail-Claim-Blocked header the budget gate uses
+  // (value "wallet-balance"), never killing anything mid-run. Best-effort: a
+  // wallet-read failure logs and falls through to a normal claim — a billing
+  // hiccup must never strand a funded workspace's work, and the completion
+  // charge (which may overrun into a negative balance) plus the NEXT
+  // admission are the real accounting either way.
+  if (await isBillingEnabled(workspaceId)) {
+    try {
+      const estimateUsd = await peekNextClaimEstimateUsd(workspaceId);
+      if (
+        estimateUsd !== null &&
+        !(await walletCanAdmit(workspaceId, estimateUsd))
+      ) {
+        return new NextResponse(null, {
+          status: 204,
+          headers: { [CLAIM_BLOCKED_HEADER]: "wallet-balance" },
+        });
+      }
+    } catch (err) {
+      console.error("[runner/claim] wallet admission check failed:", err);
     }
   }
 

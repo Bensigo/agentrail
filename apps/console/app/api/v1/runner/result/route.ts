@@ -6,6 +6,9 @@ import {
   getGithubToken,
   recordRunOutcome,
   mapTerminalStateToRunOutcome,
+  isBillingEnabled,
+  chargeCompletedTask,
+  usdToCents,
   type RunnerStatus,
 } from "@agentrail/db-postgres";
 import {
@@ -297,6 +300,34 @@ export async function POST(request: NextRequest) {
         outcome: mapTerminalStateToRunOutcome(result.terminalState),
         costUsd,
       });
+
+      // #1290 PR ② — prepaid wallet completion charge. Own try so a billing
+      // hiccup never disturbs the run-outcome capture just above or the 202
+      // below. Gated on the workspace billing flag: OFF (the default for
+      // every workspace) posts nothing and is byte-for-byte today's behavior.
+      // When ON, price the task's REAL token cost — the SAME ClickHouse-first
+      // `costUsd` just recorded, the actual cost incurred to reach this
+      // outcome (the #1272 ledger's own figure) — through taskPriceCents
+      // (actual_token_cost + FLAT_SERVER_FEE + FLAT_PROFIT, integer cents) and
+      // append ONE `task_charge`. Idempotent per run (ON CONFLICT on run_id):
+      // a duplicated/replayed terminal delivery never double-charges. Fires on
+      // EVERY terminal transition, the same gate recordRunOutcome uses — a
+      // task that ran consumed real compute regardless of green/human_review/
+      // blocked. OVERAGE is allowed: the charge posts in full even past the
+      // admission estimate, so the balance may go negative for this one task;
+      // nothing is killed for it, and the NEXT claim blocks until a top-up.
+      try {
+        if (await isBillingEnabled(workspace_id)) {
+          await chargeCompletedTask({
+            workspaceId: workspace_id,
+            runId: id,
+            taskRef: result.externalId,
+            actualTokenCostCents: usdToCents(costUsd),
+          });
+        }
+      } catch (err) {
+        console.error("[runner/result] wallet completion charge failed:", err);
+      }
     } catch (err) {
       console.error("[runner/result] run-outcome capture failed:", err);
     }

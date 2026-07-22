@@ -23,3 +23,4 @@ export * from "./run_outcomes.js";
 export * from "./jace_messages.js";
 export * from "./goals.js";
 export * from "./goal_events.js";
+export * from "./wallet_transactions.js";

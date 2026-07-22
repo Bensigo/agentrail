@@ -28,6 +28,12 @@ vi.mock("@agentrail/db-postgres", async (importActual) => {
     // string instead of a meaningless mock return.
     recordRunOutcome: vi.fn(),
     mapTerminalStateToRunOutcome: actual.mapTerminalStateToRunOutcome,
+    // #1290 PR② — wallet completion charge. isBillingEnabled defaults falsy
+    // (undefined) so the charge block short-circuits and every test in this
+    // suite stays byte-identical to pre-#1290; usdToCents is real+pure.
+    isBillingEnabled: vi.fn(),
+    chargeCompletedTask: vi.fn(),
+    usdToCents: actual.usdToCents,
   };
 });
 vi.mock("@agentrail/db-clickhouse", () => ({

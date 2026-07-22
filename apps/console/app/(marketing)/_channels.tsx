@@ -143,18 +143,19 @@ export function Channels({
       {staticStack}
       <div ref={containerRef} className="relative hidden h-[280vh] sm:block">
         <div className="sticky top-24 flex h-[calc(100vh-8rem)] items-center">
-          {/* Jace on his beanbag, working in the corner of the scene —
-              fills the paper (owner feedback 2026-07-22: section read as
-              empty) without competing with the interactive panel. */}
+          {/* Jace on his beanbag, working the corner of the scene at real
+              scale (owner feedback 2026-07-22 ×2: fill the section, don't
+              float a thumbnail). The grid reserves the right edge so the
+              interactive panel composes AROUND him instead of colliding. */}
           <Image
             src="/jace-working.png"
             alt=""
-            width={300}
-            height={300}
+            width={500}
+            height={500}
             aria-hidden
-            className="pointer-events-none absolute right-0 bottom-0 rotate-2 select-none"
+            className="pointer-events-none absolute right-0 bottom-0 w-[340px] rotate-2 select-none lg:w-[500px]"
           />
-          <div className="relative grid w-full grid-cols-[auto_1fr] items-center gap-16">
+          <div className="relative grid w-full grid-cols-[auto_1fr] items-center gap-16 sm:pr-[300px] lg:pr-[540px]">
             {/* Channel rail — the active stop is a lemon ink-bordered chip
                 (no white cards, owner personality pass 2026-07-22). */}
             <div className="flex flex-col gap-3">

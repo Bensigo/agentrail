@@ -263,7 +263,7 @@ export default async function LandingPage() {
           resolves through the honesty-gated URL resolvers and falls back to
           sign-in — never a dead link. See _channels.tsx. */}
       <section className="px-6 py-24 sm:py-28">
-        <div className="mx-auto max-w-[960px]">
+        <div className="mx-auto max-w-[1120px]">
           <Reveal>
             <h2 className="text-heading-2 text-center">Where you&apos;ll find me</h2>
           </Reveal>

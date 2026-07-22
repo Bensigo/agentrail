@@ -320,12 +320,12 @@ describe("(marketing) craft pins — narrative flow (wave 4)", () => {
     expect(sectionOpenTag).not.toMatch(/max-w-/);
   });
 
-  it("page.tsx renders exactly two mascot beats (closing wave + footer mark) — the hero stays mascot-free, all renders from the canon set", () => {
+  it("page.tsx renders exactly three mascot beats (hero avatar disc + closing wave + footer mark), all from the canon set", () => {
     const source = readSibling("page.tsx");
     // Canon renders (TASTE.md): jace.png, jace-avatar.png, jace-wave.png,
     // jace-working.png — owner-supplied, never generated substitutes.
     const canon = source.match(/src="\/jace(?:-avatar|-wave|-working)?\.png"/g) ?? [];
-    expect(canon.length).toBe(2);
+    expect(canon.length).toBe(3);
     const anyJaceImage = source.match(/src="\/jace[^"]*"/g) ?? [];
     expect(anyJaceImage.length).toBe(canon.length);
   });

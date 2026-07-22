@@ -72,7 +72,7 @@ export function PhoneDemo() {
   return (
     <div
       ref={frameRef}
-      className="w-[320px] overflow-hidden rounded-[2rem] border-2 border-[var(--gray-13)] bg-[var(--gray-01)] shadow-[6px_6px_0_0_var(--gray-13)] sm:w-[340px]"
+      className="w-[340px] overflow-hidden rounded-[2rem] border-2 border-[var(--gray-13)] bg-[var(--gray-01)] shadow-[6px_6px_0_0_var(--gray-13)] sm:w-[400px]"
     >
       {/* Chat header — Jace's identity row, not a cloned Telegram chrome. */}
       <div className="flex items-center gap-2.5 border-b border-[var(--gray-04)] bg-[var(--gray-00)] px-4 py-3">

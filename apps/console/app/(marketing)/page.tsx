@@ -149,48 +149,54 @@ export default async function LandingPage() {
           scrolls into the story. See _nav.tsx. */}
       <MarketingNav cta={cta} signInAction={signInWithGithub} />
 
-      {/* 2 — Hero: words + one CTA on the left, the live phone demo on the
-          right, nothing else (owner feedback 2026-07-22: "too many things
-          in the hero"). The display line carries the serif at full scale;
-          the role line drops one step (slop-audit TY-6). The mascot beats
-          live elsewhere — closing wave, use-case beanbag, nav/phone avatar. */}
-      <section className="px-6 pt-24 pb-16 sm:pt-32 sm:pb-20">
-        <div className="mx-auto flex max-w-[1120px] flex-col items-center gap-14 text-center lg:grid lg:grid-cols-[1.1fr_auto] lg:items-center lg:gap-20 lg:text-left">
-          <div className="flex flex-col items-center lg:items-start">
-            <h1 className="ar-rise" style={{ animationDelay: "60ms" }}>
-              <span className="text-heading-1 block">
-                Hey, I&apos;m Jace
-                <span aria-hidden className="ar-cursor animate-pulse font-mono">
-                  _
-                </span>
+      {/* 2 — Hero: the centered stage (owner-chosen 2026-07-22, boardy's
+          formula) — avatar disc, display headline, role line, ONE button.
+          Nothing competes; the phone gets its own act below. */}
+      <section className="px-6 pt-24 pb-16 text-center sm:pt-32 sm:pb-20">
+        <div className="mx-auto flex max-w-[720px] flex-col items-center">
+          <Image
+            src="/jace-avatar.png"
+            alt=""
+            width={88}
+            height={88}
+            priority
+            className="ar-rise rounded-full"
+          />
+          <h1 className="ar-rise mt-8" style={{ animationDelay: "60ms" }}>
+            <span className="text-heading-1 block">
+              Hey, I&apos;m Jace
+              <span aria-hidden className="ar-cursor animate-pulse font-mono">
+                _
               </span>
-              <span className="text-heading-2 mt-5 block text-balance">
-                Your{" "}
-                <span className="rounded-sm bg-[var(--accent-fill)] px-1.5 text-[var(--accent-fill-text)]">
-                  fractional
-                </span>{" "}
-                AI software engineer.
-              </span>
-            </h1>
-
-            <div
-              className="ar-rise mt-10 flex flex-col items-center gap-3.5 lg:items-start"
-              style={{ animationDelay: "150ms" }}
-            >
-              <PrimaryCta cta={cta} />
-            </div>
+            </span>
+            <span className="text-heading-2 mt-5 block text-balance">
+              Your{" "}
+              <span className="rounded-sm bg-[var(--accent-fill)] px-1.5 text-[var(--accent-fill-text)]">
+                fractional
+              </span>{" "}
+              AI software engineer.
+            </span>
+          </h1>
+          <div className="ar-rise mt-10" style={{ animationDelay: "150ms" }}>
+            <PrimaryCta cta={cta} />
           </div>
+        </div>
+      </section>
 
-          <div
-            className="ar-rise flex flex-col items-center gap-3"
-            style={{ animationDelay: "240ms" }}
-          >
+      {/* 2b — The conversation act: device-as-stage at full width (the
+          phone moved out of the hero, owner-chosen 2026-07-22). Its typing
+          choreography arms when it scrolls into view. */}
+      <section className="px-6 pb-20 sm:pb-24">
+        <div className="mx-auto flex max-w-[720px] flex-col items-center gap-4">
+          <Reveal>
             <PhoneDemo />
+          </Reveal>
+          <Reveal delay={80}>
             <p className="text-body-sm max-w-[38ch] text-center text-[var(--gray-11)]">
               The brief in this demo is computed by the same code that prices
               real runs.
             </p>
-          </div>
+          </Reveal>
         </div>
       </section>
 

@@ -33,6 +33,11 @@ vi.mock("./discord-system-message", () => ({
   sendSystemDiscordMessage: vi.fn(),
 }));
 
+// #1285: Slack's own system-message sender, stubbed the same way.
+vi.mock("./slack-system-message", () => ({
+  sendSystemSlackMessage: vi.fn(),
+}));
+
 import {
   reclaimStaleChannelMessages,
   claimNextChannelMessage,
@@ -48,6 +53,7 @@ import {
 } from "@agentrail/db-postgres";
 import { sendSystemTelegramMessage } from "./telegram-system-message";
 import { sendSystemDiscordMessage } from "./discord-system-message";
+import { sendSystemSlackMessage } from "./slack-system-message";
 import { dispatchQueuedChannelMessages } from "./channel-dispatch";
 
 const mockReclaim = vi.mocked(reclaimStaleChannelMessages);
@@ -62,6 +68,7 @@ const mockGetOrCreateSession = vi.mocked(getOrCreateJaceSession);
 const mockBindEveSession = vi.mocked(bindEveSession);
 const mockSendSystem = vi.mocked(sendSystemTelegramMessage);
 const mockSendSystemDiscord = vi.mocked(sendSystemDiscordMessage);
+const mockSendSystemSlack = vi.mocked(sendSystemSlackMessage);
 const mockLatestRunForIssue = vi.mocked(latestRunForIssue);
 
 const mockFetch = vi.fn();
@@ -96,6 +103,7 @@ beforeEach(() => {
   mockFail.mockResolvedValue("requeued");
   mockSendSystem.mockResolvedValue({ ok: true });
   mockSendSystemDiscord.mockResolvedValue({ ok: true });
+  mockSendSystemSlack.mockResolvedValue({ ok: true });
   mockFetch.mockResolvedValue({
     ok: true,
     status: 200,
@@ -759,6 +767,106 @@ describe("dispatchQueuedChannelMessages — discord rows (#1284)", () => {
     mockGetChatIdentity.mockResolvedValue(DISCORD_IDENTITY);
     mockResolve.mockResolvedValue({ kind: "intro" } as never);
     mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-discord-1" } as never);
+    mockFetch.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockFail).toHaveBeenCalledWith("row-1", expect.stringContaining("hosted-inbound returned 500"));
+    expect(mockComplete).not.toHaveBeenCalled();
+  });
+});
+
+// --- #1285: Slack rows ride the SAME dispatcher, additively -----------------
+//
+// Mirrors the Discord block above exactly: the Slack Events webhook route
+// (connectors/slack/events/route.ts) enqueues a Slack row's target under the
+// SAME internal `chatId` payload field, so extractPayload needs no fork here
+// either.
+
+function slackRow(overrides: Partial<ClaimedChannelInboxRow> & { payload?: unknown } = {}): ClaimedChannelInboxRow {
+  return row({
+    channel: "slack",
+    conversationKey: "D0PNCRP9N",
+    providerMessageId: "D0PNCRP9N:1",
+    payload: { chatId: "D0PNCRP9N", text: "hello jace" },
+    ...overrides,
+  });
+}
+
+const SLACK_IDENTITY = { id: "chat-slack-1", platform: "slack", platformUserId: "U061F7AUR" } as never;
+
+describe("dispatchQueuedChannelMessages — slack rows (#1285)", () => {
+  it("posts to hosted-inbound with channel: 'slack' and a channelId-keyed target (not chatId)", async () => {
+    mockClaim.mockResolvedValueOnce(slackRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-slack-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockGetChatIdentity).toHaveBeenCalledWith("slack", "555");
+    const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string);
+    expect(body.channel).toBe("slack");
+    expect(body.target).toEqual({ channelId: "D0PNCRP9N" });
+    expect(body.target).not.toHaveProperty("chatId");
+    expect(mockBindEveSession).toHaveBeenCalledWith("ledger-slack-1", "eve-sess-1");
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("resolves conversation -> workspace scoped to channel: 'slack'", async () => {
+    mockClaim.mockResolvedValueOnce(slackRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "pinned", workspaceId: "ws-9", sessionId: "s-9", ambiguous: false } as never);
+    mockGetOrCreateSession.mockResolvedValue({ id: "ledger-9" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockResolve).toHaveBeenCalledWith({
+      chatIdentityId: "chat-slack-1",
+      channel: "slack",
+      conversationKey: "D0PNCRP9N",
+    });
+    expect(mockGetOrCreateSession).toHaveBeenCalledWith("ws-9", "slack", "D0PNCRP9N");
+  });
+
+  it("'ask' kind on a slack row sends the workspace-choice message via sendSystemSlackMessage, never the other channels' senders", async () => {
+    const OPTIONS = [{ id: "ws-1", name: "Acme" }, { id: "ws-2", name: "Widgets" }];
+    mockClaim.mockResolvedValueOnce(slackRow({ payload: { chatId: "D0PNCRP9N", text: "hi jace" } })).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "ask", options: OPTIONS } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockSendSystemSlack).toHaveBeenCalledWith("D0PNCRP9N", expect.stringContaining("Acme"));
+    expect(mockSendSystem).not.toHaveBeenCalled();
+    expect(mockSendSystemDiscord).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockComplete).toHaveBeenCalledWith("row-1");
+  });
+
+  it("'ask' kind on a slack row: a valid workspace-name reply pins and sends the pin confirmation via sendSystemSlackMessage", async () => {
+    const OPTIONS = [{ id: "ws-1", name: "Acme" }, { id: "ws-2", name: "Widgets" }];
+    mockClaim.mockResolvedValueOnce(slackRow({ payload: { chatId: "D0PNCRP9N", text: "Acme" } })).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "ask", options: OPTIONS } as never);
+    mockPin.mockResolvedValue({ ok: true, sessionId: "pin-1" } as never);
+
+    await dispatchQueuedChannelMessages();
+
+    expect(mockPin).toHaveBeenCalledWith({
+      chatIdentityId: "chat-slack-1",
+      channel: "slack",
+      conversationKey: "D0PNCRP9N",
+      workspaceId: "ws-1",
+    });
+    expect(mockSendSystemSlack).toHaveBeenCalledWith("D0PNCRP9N", expect.stringContaining("Acme"));
+  });
+
+  it("a sidecar failure fails the row exactly like a telegram/discord row (channel-agnostic error handling)", async () => {
+    mockClaim.mockResolvedValueOnce(slackRow()).mockResolvedValueOnce(null);
+    mockGetChatIdentity.mockResolvedValue(SLACK_IDENTITY);
+    mockResolve.mockResolvedValue({ kind: "intro" } as never);
+    mockGetOrCreateIntro.mockResolvedValue({ id: "ledger-slack-1" } as never);
     mockFetch.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
 
     await dispatchQueuedChannelMessages();

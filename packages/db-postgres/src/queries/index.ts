@@ -301,6 +301,28 @@ export async function getGithubToken(
   return rows[0]?.accessToken ?? null;
 }
 
+/**
+ * The CURRENTLY SIGNED-IN user's own stored GitHub OAuth `access_token`
+ * (`accounts.access_token` where `provider = 'github'` and `user_id = userId`),
+ * used to list the repos THAT user can see for the connect-repo picker (#1293)
+ * and to validate a picked repo's existence/access before a `repositories` row
+ * is created. Distinct from `getGithubToken(workspaceId)`, which reads the
+ * workspace OWNER's token for background connector work: the picker must
+ * reflect the repos of whoever is actually connecting (an owner OR an admin),
+ * not always the owner. Returns null when the user never linked GitHub or no
+ * token is stored. Never logged or returned to the client.
+ */
+export async function getUserGithubAccessToken(
+  userId: string
+): Promise<string | null> {
+  const rows = await db
+    .select({ accessToken: accounts.access_token })
+    .from(accounts)
+    .where(and(eq(accounts.userId, userId), eq(accounts.provider, "github")))
+    .limit(1);
+  return rows[0]?.accessToken ?? null;
+}
+
 export async function getWorkspaceMembership(
   userId: string,
   workspaceId: string

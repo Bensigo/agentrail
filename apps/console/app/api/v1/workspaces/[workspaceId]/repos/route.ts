@@ -9,9 +9,11 @@ import {
   upsertConnector,
   enqueueOnboard,
   workspaceHasExecutionPath,
+  getUserGithubAccessToken,
 } from "@agentrail/db-postgres";
 import { getLatestIndexSnapshotsForWorkspace } from "@agentrail/db-clickhouse";
 import { repoHealth, type HealthStatus } from "../../../../../../lib/repo-health";
+import { checkRepoAccess } from "../../../../../../lib/github-repos";
 
 const ADMIN_ROLES = ["owner", "admin"] as const;
 
@@ -145,6 +147,41 @@ export async function POST(
       { error: "A repository with this name already exists in the workspace" },
       { status: 409 }
     );
+  }
+
+  // AC2 (#1293): existence + access validation via the CONNECTING user's own
+  // GitHub token. Runs for BOTH picker-selected and manually-typed repos when a
+  // token is available — the picker already validated existence at selection
+  // time, and this is the server-side backstop that no `repositories` row is
+  // created for a repo that doesn't exist or the user can't push to. When the
+  // user has no GitHub token (pure manual fallback), we skip and keep the
+  // regex-only validation above; when GitHub itself is unreachable/rate-limited
+  // (`indeterminate`), we DON'T block a legitimate connect on a transient
+  // hiccup — the regex already passed.
+  const githubToken = await getUserGithubAccessToken(session.user.id);
+  if (githubToken) {
+    const [owner, repo] = name.split("/");
+    const access = await checkRepoAccess(githubToken, owner, repo);
+    if (!access.ok && access.kind === "not_found") {
+      return NextResponse.json(
+        {
+          errors: {
+            name: "Repository not found on GitHub, or you don't have access to it",
+          },
+        },
+        { status: 404 }
+      );
+    }
+    if (!access.ok && access.kind === "no_push") {
+      return NextResponse.json(
+        {
+          errors: {
+            name: "You need push (write) access to this repository to connect it",
+          },
+        },
+        { status: 403 }
+      );
+    }
   }
 
   const created = await createRepository({

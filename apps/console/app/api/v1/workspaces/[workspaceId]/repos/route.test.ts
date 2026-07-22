@@ -14,6 +14,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   createRepository: vi.fn(),
   enqueueOnboard: vi.fn(),
   workspaceHasExecutionPath: vi.fn(),
+  getUserGithubAccessToken: vi.fn(),
 }));
 
 vi.mock("@agentrail/db-clickhouse", () => ({
@@ -27,6 +28,7 @@ import {
   createRepository,
   enqueueOnboard,
   workspaceHasExecutionPath,
+  getUserGithubAccessToken,
 } from "@agentrail/db-postgres";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -64,8 +66,21 @@ const createdRepo = {
 };
 
 // ── Tests ──────────────────────────────────────────────────────────────────
+/** Minimal GitHub `GET /repos/{owner}/{repo}` response for checkRepoAccess. */
+function ghRepoResponse(
+  status: number,
+  permissions?: { push?: boolean; admin?: boolean; maintain?: boolean }
+) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => ({ permissions }),
+  };
+}
+
 describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
   const savedOnboardFlag = process.env.AGENTRAIL_ONBOARD_ON_CONNECT;
+  const originalFetch = global.fetch;
 
   beforeEach(() => {
     vi.resetAllMocks();
@@ -73,6 +88,7 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
   });
 
   afterEach(() => {
+    global.fetch = originalFetch;
     if (savedOnboardFlag === undefined) {
       delete process.env.AGENTRAIL_ONBOARD_ON_CONNECT;
     } else {
@@ -249,5 +265,114 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
 
     const res = await POST(makeRequest(validBody), makeParams());
     expect(res.status).toBe(409);
+  });
+
+  // ── AC2 (#1293): existence + push-access validation via the user's token ──
+  it("validates the picked repo against GitHub and creates it when the user has push access", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      userId: "user-1",
+      workspaceId: WORKSPACE_ID,
+      role: "admin",
+    } as never);
+    vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
+    vi.mocked(getUserGithubAccessToken).mockResolvedValue("gho_token");
+    vi.mocked(createRepository).mockResolvedValue(createdRepo as never);
+    const fetchMock = vi.fn().mockResolvedValue(ghRepoResponse(200, { push: true }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await POST(makeRequest(validBody), makeParams());
+
+    expect(res.status).toBe(201);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "https://api.github.com/repos/bensigo/agentrail"
+    );
+    expect(createRepository).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 404 with a name field error when the repo does not exist / is inaccessible", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      userId: "user-1",
+      workspaceId: WORKSPACE_ID,
+      role: "admin",
+    } as never);
+    vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
+    vi.mocked(getUserGithubAccessToken).mockResolvedValue("gho_token");
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(ghRepoResponse(404)) as unknown as typeof fetch;
+
+    const res = await POST(makeRequest(validBody), makeParams());
+    const json = await res.json();
+
+    expect(res.status).toBe(404);
+    expect(json.errors.name).toBeDefined();
+    expect(createRepository).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 with a name field error when the user lacks push access", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      userId: "user-1",
+      workspaceId: WORKSPACE_ID,
+      role: "admin",
+    } as never);
+    vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
+    vi.mocked(getUserGithubAccessToken).mockResolvedValue("gho_token");
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(
+        ghRepoResponse(200, { push: false, admin: false, maintain: false })
+      ) as unknown as typeof fetch;
+
+    const res = await POST(makeRequest(validBody), makeParams());
+    const json = await res.json();
+
+    expect(res.status).toBe(403);
+    expect(json.errors.name).toBeDefined();
+    expect(createRepository).not.toHaveBeenCalled();
+  });
+
+  it("does not block the connect on a transient GitHub failure (indeterminate)", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      userId: "user-1",
+      workspaceId: WORKSPACE_ID,
+      role: "admin",
+    } as never);
+    vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
+    vi.mocked(getUserGithubAccessToken).mockResolvedValue("gho_token");
+    // 401 from GitHub → indeterminate → fall through to regex-only, still creates.
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(ghRepoResponse(401)) as unknown as typeof fetch;
+    vi.mocked(createRepository).mockResolvedValue(createdRepo as never);
+
+    const res = await POST(makeRequest(validBody), makeParams());
+
+    expect(res.status).toBe(201);
+    expect(createRepository).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the GitHub check entirely when the user has no linked token (manual fallback)", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      userId: "user-1",
+      workspaceId: WORKSPACE_ID,
+      role: "admin",
+    } as never);
+    vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
+    vi.mocked(getUserGithubAccessToken).mockResolvedValue(null);
+    vi.mocked(createRepository).mockResolvedValue(createdRepo as never);
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await POST(makeRequest(validBody), makeParams());
+
+    expect(res.status).toBe(201);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(createRepository).toHaveBeenCalledTimes(1);
   });
 });

@@ -11,20 +11,22 @@
  * REAL product surface:
  * 1. stacktrace — the verify gate's red-green rule: the failure is
  *    reproduced as a failing test before the fix counts.
- * 2. ideas      — Jace's ideation door (grill-me / to-issues skills): a
+ * 2. review     — the reviewer subagent (owner round 2026-07-23, replacing
+ *    the research card as the bigger differentiator): reviews a GitHub PR,
+ *    leaves line comments, and escalates findings too big for a comment
+ *    into scoped house-format issues the factory can execute.
+ * 3. ideas      — Jace's ideation door (grill-me / to-issues skills): a
  *    rough goal becomes scoped, house-format GitHub issues.
- * 3. goal       — the goal loop (create_goal + console leash meter):
+ * 4. goal       — the goal loop (create_goal + console leash meter):
  *    goal + repo in, scoped issues worked under a leash the owner sets.
- * 4. qa         — the codebase-qa skill: answers cite the file + line range
+ * 5. qa         — the codebase-qa skill: answers cite the file + line range
  *    the context CLI returned, or say "not found" — never model memory.
- * 5. research   — the researcher subagent: every external-tech claim ships
- *    as claim → source URL → version; unverified claims are dropped.
  */
 
 interface UseCase {
   title: string;
   line: string;
-  visual: "stacktrace" | "ideas" | "goal" | "qa" | "research";
+  visual: "stacktrace" | "review" | "ideas" | "goal" | "qa";
 }
 
 const USE_CASES: UseCase[] = [
@@ -32,6 +34,11 @@ const USE_CASES: UseCase[] = [
     title: "Paste the stack trace",
     line: "Hand me a bug report. I reproduce it with a failing test, then fix until it passes.",
     visual: "stacktrace",
+  },
+  {
+    title: "Review my pull requests",
+    line: "Point me at a pull request. I leave line comments, and findings too big for a comment become scoped issues I can fix.",
+    visual: "review",
   },
   {
     title: "Turn an idea into scoped work",
@@ -47,11 +54,6 @@ const USE_CASES: UseCase[] = [
     title: "Ask about your codebase",
     line: "Answers come from the code and cite the file and line. If I can't find it, I say so.",
     visual: "qa",
-  },
-  {
-    title: "Send me a research question",
-    line: "Which library, which version, what changed. I come back with the source and version for every claim.",
-    visual: "research",
   },
 ];
 
@@ -91,6 +93,15 @@ function CaseVisual({ visual }: { visual: UseCase["visual"] }) {
       </div>
     );
   }
+  if (visual === "review") {
+    return (
+      <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
+        <span>PR #98 · payment retries</span>
+        <span className="text-[var(--gray-12)]">→ 3 line comments</span>
+        <span className="text-[var(--gray-12)]">→ 1 scoped issue filed</span>
+      </div>
+    );
+  }
   if (visual === "ideas") {
     return (
       <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
@@ -109,19 +120,11 @@ function CaseVisual({ visual }: { visual: UseCase["visual"] }) {
       </div>
     );
   }
-  if (visual === "qa") {
-    return (
-      <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
-        <span>you: “where do retries get budgeted?”</span>
-        <span className="text-[var(--gray-12)]">→ run/pricing.py:41–63</span>
-        <span className="text-[var(--gray-12)]">cited, or “not found”</span>
-      </div>
-    );
-  }
   return (
     <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
-      <span>claim → source → version</span>
-      <span className="text-[var(--gray-12)]">no source, no claim</span>
+      <span>you: “where do retries get budgeted?”</span>
+      <span className="text-[var(--gray-12)]">→ run/pricing.py:41–63</span>
+      <span className="text-[var(--gray-12)]">cited, or “not found”</span>
     </div>
   );
 }

@@ -130,11 +130,11 @@ export default async function LandingPage() {
               </span>
             </span>
             <span className="text-heading-2 mt-5 block text-balance">
-              Your{" "}
+              The AI{" "}
               <span className="rounded-sm bg-[var(--accent-fill)] px-1.5 text-[var(--accent-fill-text)]">
                 fractional
               </span>{" "}
-              AI software engineer.
+              software engineer.
             </span>
           </h1>
           <div className="ar-rise mt-10" style={{ animationDelay: "150ms" }}>

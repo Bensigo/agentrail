@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
-  getUserGithubAccessToken,
+  getUserGithubAccount,
+  hasRepoScope,
 } from "@agentrail/db-postgres";
 import { listUserRepos } from "../../../../../../../lib/github-repos";
 
@@ -22,7 +23,10 @@ const ADMIN_ROLES = ["owner", "admin"] as const;
  *
  * Failure modes are surfaced with a machine-readable `code` the UI switches on:
  *   - no linked GitHub account/token → 400 `github_not_connected`
- *   - stored token expired/revoked/under-scoped → 401/403 `github_reconnect`
+ *   - stored token lacks `repo` scope (identity-only sign-in, #1294) → 403
+ *     `github_reconnect` — steers the picker into the in-context `repo`
+ *     escalation before GitHub is ever called
+ *   - stored token expired/revoked at GitHub → 401/403 `github_reconnect`
  *   - GitHub rate limit → 429 `github_rate_limited`
  *   - anything else / unreachable → 502 `github_error`
  * All of these steer the UI toward "Reconnect GitHub" or the manual-entry
@@ -49,8 +53,8 @@ export async function GET(
     );
   }
 
-  const token = await getUserGithubAccessToken(session.user.id);
-  if (!token) {
+  const account = await getUserGithubAccount(session.user.id);
+  if (!account?.accessToken) {
     return NextResponse.json(
       {
         error:
@@ -61,12 +65,30 @@ export async function GET(
     );
   }
 
+  // Incremental OAuth (#1294): sign-in grants identity scopes only, so a token
+  // can predate any `repo` grant. Listing/connecting a repo needs full `repo`,
+  // and an under-scoped token would quietly return only public repos (a 200)
+  // rather than a clean failure — so gate on the STORED scope and steer the
+  // user into the in-context "Grant GitHub access" escalation (the same
+  // `github_reconnect` path the picker already handles). Existing users who
+  // signed in under the old broad scope already carry `repo` and skip this.
+  if (!hasRepoScope(account.scope)) {
+    return NextResponse.json(
+      {
+        error:
+          "AgentRail needs access to your repositories to connect one. Grant repository access to continue.",
+        code: "github_reconnect",
+      },
+      { status: 403 }
+    );
+  }
+
   const url = new URL(request.url);
   const q = url.searchParams.get("q") ?? undefined;
   const pageParam = url.searchParams.get("page");
   const page = pageParam ? Number(pageParam) : undefined;
 
-  const result = await listUserRepos(token, { q, page });
+  const result = await listUserRepos(account.accessToken, { q, page });
   if (!result.ok) {
     const code =
       result.kind === "reconnect"

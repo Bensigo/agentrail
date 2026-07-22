@@ -9,17 +9,22 @@ vi.mock("@agentrail/auth", () => ({
 
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
-  getUserGithubAccessToken: vi.fn(),
+  getUserGithubAccount: vi.fn(),
+  // Keep the real (pure) scope check so the identity-only gate is exercised
+  // against real scope strings; the function itself is unit-tested separately.
+  hasRepoScope: (scope: string | null | undefined) =>
+    !!scope && scope.split(/[\s,]+/).filter(Boolean).includes("repo"),
 }));
 
 import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
-  getUserGithubAccessToken,
+  getUserGithubAccount,
 } from "@agentrail/db-postgres";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 const WORKSPACE_ID = "ws-123";
+const REPO_SCOPE = "read:user,user:email,repo";
 
 function makeRequest(query = ""): NextRequest {
   return new NextRequest(
@@ -33,11 +38,7 @@ function makeParams() {
 
 /** A GitHub `GET /user/repos` response (array body) with an optional
  * x-ratelimit-remaining header for the 403 rate-limit branch. */
-function ghListResponse(
-  status: number,
-  body: unknown,
-  rateRemaining?: string
-) {
+function ghListResponse(status: number, body: unknown, rateRemaining?: string) {
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -103,8 +104,10 @@ describe("GET /api/v1/workspaces/:workspaceId/github/repos", () => {
 
   it("returns 400 github_not_connected when the user has no GitHub token", async () => {
     vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
-    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
-    vi.mocked(getUserGithubAccessToken).mockResolvedValue(null);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      role: "owner",
+    } as never);
+    vi.mocked(getUserGithubAccount).mockResolvedValue(null);
 
     const res = await GET(makeRequest(), makeParams());
     const json = await res.json();
@@ -113,10 +116,36 @@ describe("GET /api/v1/workspaces/:workspaceId/github/repos", () => {
     expect(json.code).toBe("github_not_connected");
   });
 
+  it("returns 403 github_reconnect when the stored token lacks repo scope (identity-only)", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      role: "owner",
+    } as never);
+    vi.mocked(getUserGithubAccount).mockResolvedValue({
+      accessToken: "gho_identity_only",
+      scope: "read:user,user:email",
+    });
+    const fetchSpy = vi.fn();
+    global.fetch = fetchSpy as unknown as typeof fetch;
+
+    const res = await GET(makeRequest(), makeParams());
+    const json = await res.json();
+
+    expect(res.status).toBe(403);
+    expect(json.code).toBe("github_reconnect");
+    // The scope gate short-circuits BEFORE GitHub is ever called.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("returns repos mapped to the snake_case wire contract on success", async () => {
     vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
-    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "admin" } as never);
-    vi.mocked(getUserGithubAccessToken).mockResolvedValue("gho_token");
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      role: "admin",
+    } as never);
+    vi.mocked(getUserGithubAccount).mockResolvedValue({
+      accessToken: "gho_token",
+      scope: REPO_SCOPE,
+    });
     global.fetch = vi
       .fn()
       .mockResolvedValue(ghListResponse(200, RAW_REPOS)) as unknown as typeof fetch;
@@ -139,8 +168,13 @@ describe("GET /api/v1/workspaces/:workspaceId/github/repos", () => {
 
   it("filters by the q query param (client-side substring over full_name)", async () => {
     vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
-    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
-    vi.mocked(getUserGithubAccessToken).mockResolvedValue("gho_token");
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      role: "owner",
+    } as never);
+    vi.mocked(getUserGithubAccount).mockResolvedValue({
+      accessToken: "gho_token",
+      scope: REPO_SCOPE,
+    });
     global.fetch = vi
       .fn()
       .mockResolvedValue(ghListResponse(200, RAW_REPOS)) as unknown as typeof fetch;
@@ -155,8 +189,13 @@ describe("GET /api/v1/workspaces/:workspaceId/github/repos", () => {
 
   it("returns 401 github_reconnect when the stored token is rejected by GitHub", async () => {
     vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
-    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
-    vi.mocked(getUserGithubAccessToken).mockResolvedValue("gho_stale");
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      role: "owner",
+    } as never);
+    vi.mocked(getUserGithubAccount).mockResolvedValue({
+      accessToken: "gho_stale",
+      scope: REPO_SCOPE,
+    });
     global.fetch = vi
       .fn()
       .mockResolvedValue(ghListResponse(401, {})) as unknown as typeof fetch;
@@ -170,8 +209,13 @@ describe("GET /api/v1/workspaces/:workspaceId/github/repos", () => {
 
   it("returns 429 github_rate_limited on a GitHub 403 rate-limit", async () => {
     vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
-    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
-    vi.mocked(getUserGithubAccessToken).mockResolvedValue("gho_token");
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      role: "owner",
+    } as never);
+    vi.mocked(getUserGithubAccount).mockResolvedValue({
+      accessToken: "gho_token",
+      scope: REPO_SCOPE,
+    });
     global.fetch = vi
       .fn()
       .mockResolvedValue(ghListResponse(403, {}, "0")) as unknown as typeof fetch;
@@ -185,8 +229,13 @@ describe("GET /api/v1/workspaces/:workspaceId/github/repos", () => {
 
   it("returns 502 github_error when GitHub is unreachable", async () => {
     vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
-    vi.mocked(getWorkspaceMembership).mockResolvedValue({ role: "owner" } as never);
-    vi.mocked(getUserGithubAccessToken).mockResolvedValue("gho_token");
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      role: "owner",
+    } as never);
+    vi.mocked(getUserGithubAccount).mockResolvedValue({
+      accessToken: "gho_token",
+      scope: REPO_SCOPE,
+    });
     global.fetch = vi
       .fn()
       .mockRejectedValue(new Error("ECONNRESET")) as unknown as typeof fetch;

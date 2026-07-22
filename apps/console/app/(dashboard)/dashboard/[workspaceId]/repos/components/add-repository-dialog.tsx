@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { X, Search, Lock, Globe, Check, Loader2, PenLine } from "lucide-react";
+import { grantGithubRepoAccess } from "../actions";
 
 export interface RepoRow {
   id: string;
@@ -111,6 +112,10 @@ export function AddRepositoryDialog({
   // Submit state.
   const [loading, setLoading] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+
+  // Incremental OAuth escalation (#1294): set while re-authorizing with GitHub
+  // for the `repo` scope the identity-only sign-in token lacks.
+  const [granting, setGranting] = useState(false);
 
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -250,6 +255,18 @@ export function AddRepositoryDialog({
       );
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleGrantAccess() {
+    setGranting(true);
+    try {
+      // Redirects to GitHub for the `repo` grant, then back to this repos page.
+      // A successful call navigates away, so `granting` stays true until unmount.
+      await grantGithubRepoAccess(workspaceId);
+    } catch {
+      // Next handles the redirect thrown by signIn; a real failure re-enables.
+      setGranting(false);
     }
   }
 
@@ -428,9 +445,26 @@ export function AddRepositoryDialog({
               )}
 
               {reconnectNeeded && (
-                <p className="text-xs text-[var(--gray-09)]">
-                  {listError?.message} Or add it by hand below.
-                </p>
+                <div className="mt-1 flex flex-col gap-2">
+                  <p className="text-xs text-[var(--gray-09)]">
+                    {listError?.message}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleGrantAccess}
+                    disabled={granting}
+                    className="inline-flex h-8 items-center justify-center gap-1.5 self-start rounded bg-[var(--yellow-09)] px-3 text-sm font-medium text-black transition-colors hover:bg-[var(--yellow-09-hover)] disabled:opacity-50"
+                  >
+                    {granting ? (
+                      <>
+                        <Loader2 size={13} className="animate-spin" />
+                        Redirecting to GitHub…
+                      </>
+                    ) : (
+                      "Grant GitHub access"
+                    )}
+                  </button>
+                </div>
               )}
 
               <button

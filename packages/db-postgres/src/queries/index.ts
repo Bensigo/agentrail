@@ -274,9 +274,13 @@ export async function setDiscordWebhookUrl(
  * GitHub OAuth connector (MVP): the workspace owner's stored GitHub OAuth
  * `access_token`, used to poll labeled issues, post results, and create issues
  * over the GitHub REST API (no PAT, no `gh` CLI). The token is the one NextAuth
- * persisted in the `accounts` table at login; it carries the `repo` scope only
- * after the owner re-logs in once to grant it. Returns null when the workspace
- * has no owner, the owner never linked GitHub, or no token is stored.
+ * persisted in the `accounts` table. Since #1294 sign-in grants identity scopes
+ * only, so this carries `repo` once the owner has escalated in-context (the
+ * first repo connect/create runs an incremental `repo` authorization; existing
+ * owners who signed in under the old broad scope already carry it). Callers that
+ * need write access should treat a missing `repo` scope as "not yet granted".
+ * Returns null when the workspace has no owner, the owner never linked GitHub,
+ * or no token is stored.
  */
 export async function getGithubToken(
   workspaceId: string
@@ -321,6 +325,82 @@ export async function getUserGithubAccessToken(
     .where(and(eq(accounts.userId, userId), eq(accounts.provider, "github")))
     .limit(1);
   return rows[0]?.accessToken ?? null;
+}
+
+/** GitHub grants the `repo` scope as a single top-level token inside the
+ * granted scope string (GitHub separates scopes by comma; be liberal and also
+ * accept whitespace). AgentRail's connector must push branches, open PRs and
+ * create issues — including on private repos — so it needs full `repo`, not
+ * `public_repo`. Returns true only when `repo` is present. A null/empty scope
+ * (identity-only sign-in since #1294, or an account that never linked GitHub)
+ * is false, which is what routes a new user into the connect-time escalation. */
+export function hasRepoScope(scope: string | null | undefined): boolean {
+  if (!scope) return false;
+  return scope
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .includes("repo");
+}
+
+/**
+ * The signed-in user's stored GitHub OAuth account — the `access_token` AND the
+ * granted `scope`, read together so a caller can decide (via `hasRepoScope`)
+ * whether the token can actually reach that user's repositories without a
+ * second round-trip. Since #1294 narrowed sign-in to identity-only scopes, this
+ * is the source of truth for the connect-time `repo` escalation: a token whose
+ * scope lacks `repo` needs an incremental grant before it can list or connect
+ * repos. Returns null when the user never linked GitHub. Never logged or
+ * returned to the client.
+ */
+export async function getUserGithubAccount(
+  userId: string
+): Promise<{ accessToken: string | null; scope: string | null } | null> {
+  const rows = await db
+    .select({ accessToken: accounts.access_token, scope: accounts.scope })
+    .from(accounts)
+    .where(and(eq(accounts.userId, userId), eq(accounts.provider, "github")))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  return { accessToken: row.accessToken ?? null, scope: row.scope ?? null };
+}
+
+/**
+ * Persist the freshest GitHub OAuth token + granted scope onto the existing
+ * `accounts` row for a provider account. Auth.js writes the account row only
+ * once, on the first link (`linkAccount`); it does NOT update tokens when a
+ * user signs in again (see the NextAuth token-refresh guide). So when a user
+ * re-authorizes to ESCALATE scope (identity-only -> `repo`, #1294) the new
+ * access_token/scope would never reach the DB without this. Called from the
+ * `signIn` callback on every GitHub sign-in: for a brand-new account the row
+ * does not exist yet (0 rows updated; Auth.js then inserts it correctly), and
+ * for an existing account this refreshes the stored token + scope. Fields that
+ * are `undefined` (GitHub returns no refresh_token/expires_at) are omitted by
+ * Drizzle rather than written as NULL.
+ */
+export async function persistGithubAccountTokens(params: {
+  providerAccountId: string;
+  access_token?: string | null;
+  scope?: string | null;
+  token_type?: string | null;
+  expires_at?: number | null;
+  refresh_token?: string | null;
+}): Promise<void> {
+  await db
+    .update(accounts)
+    .set({
+      access_token: params.access_token,
+      scope: params.scope,
+      token_type: params.token_type,
+      expires_at: params.expires_at,
+      refresh_token: params.refresh_token,
+    })
+    .where(
+      and(
+        eq(accounts.provider, "github"),
+        eq(accounts.providerAccountId, params.providerAccountId)
+      )
+    );
 }
 
 export async function getWorkspaceMembership(

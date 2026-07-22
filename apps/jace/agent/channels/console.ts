@@ -27,16 +27,40 @@
 // console's OWN `/chat` GET route (polling) is what a workspace member's
 // browser actually sees.
 //
-// `routes: []` — console has no native inbound webhook; it is ONLY ever
-// reached via the cross-channel `receive()` hand-off above. This mirrors
-// imessage.ts's fully-custom (non-platform) `defineChannel` shape most
-// closely of the existing channels, since — like iMessage — console has no
-// first-class Eve integration to build on; unlike iMessage, it also has no
-// inbound HTTP surface at all (LoopMessage at least receives webhooks).
+// Console has no native inbound webhook of its own; it is ONLY ever reached
+// via the cross-channel `receive()` hand-off above. This mirrors imessage.ts's
+// fully-custom (non-platform) `defineChannel` shape most closely of the
+// existing channels, since — like iMessage — console has no first-class Eve
+// integration to build on; unlike iMessage, it has no genuine inbound HTTP
+// surface at all (LoopMessage at least receives webhooks).
+//
+// PROD BUG FIX (#1288 cross-service reply bug, root-caused after the Railway
+// networking fix landed): this channel used to declare `routes: []`, which
+// made `hosted-inbound.ts`'s `args.receive(console_, ...)` throw
+// `args.receive(): the channel passed as the first argument is not
+// registered in this agent's channels/` on EVERY console turn — Jace saved
+// the member's message but never replied. Root cause, traced through
+// eve@0.19.0's installed `channel/cross-channel-receive.js`:
+// `resolveTargetByReference` first tries to find the passed-in module by
+// OBJECT REFERENCE among the channels Eve's compiled-artifacts graph
+// registered; only when that fails does it fall back to
+// `resolveTargetByRouteFingerprint`, matching by the channel's sorted
+// `METHOD path` route set. A route-less channel can ONLY ever be found by
+// reference (`createRouteFingerprint` explicitly returns `null` when
+// `routes.length === 0`, so the fallback is a no-op for it) — and in a
+// bundled/serverless deployment (Nitro-based; see the `internal/nitro/`
+// tree in eve's dist) each route can be compiled as its own isolated entry
+// point, so `hosted-inbound.ts`'s imported `console_` reference is not
+// guaranteed to be the SAME module instance the graph registered for
+// "console", and reference equality silently fails. The single stub route
+// below exists ONLY to give this channel a non-empty, UNIQUE route
+// fingerprint so the documented fallback can find it — see the
+// `routes` array's own comment. It carries no real inbound contract: console
+// chat is still driven exclusively by the `receive()` hand-off above.
 //
 // NOTE: `defineChannel` shape follows the eve@0.19.0 docs (custom channels
 // guide, "Cross-channel hand-off" + "Define a channel" sections).
-import { defineChannel } from "eve/channels";
+import { defineChannel, POST } from "eve/channels";
 import { postConsoleChatReply } from "../lib/console_chat_reply.core.mjs";
 
 type ConsoleState = { workspaceId: string; conversationKey: string };
@@ -62,7 +86,15 @@ const initialState: ConsoleState = { workspaceId: "", conversationKey: "" };
 export default defineChannel<ConsoleState>({
   kindHint: "console",
   state: initialState,
-  routes: [],
+  routes: [
+    // NOT a real inbound surface — see the header comment above. This exists
+    // solely so this channel has a non-empty, UNIQUE route fingerprint (the
+    // sorted `METHOD path` set eve@0.19.0's `resolveTargetByRouteFingerprint`
+    // matches on) for `args.receive(console_, ...)` to find it by when the
+    // bundler-time object-reference match fails. Nothing should ever call
+    // this path; if something does, it does nothing and answers 404.
+    POST("/eve/v1/console-handoff", async () => new Response(null, { status: 404 })),
+  ],
   context(state: ConsoleState) {
     return { state };
   },

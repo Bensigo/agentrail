@@ -1,0 +1,55 @@
+/**
+ * Landing "also available on" channel cards (#1284 PR ②; #1285 appends its
+ * own resolver alongside this one the same way) — SEPARATE from `_cta.ts`'s
+ * primary Message-Jace CTA (Telegram, #1279), which stays untouched.
+ *
+ * HONESTY GATE (the arc's landing-honesty rule, AC2 on both #1284 and
+ * #1285): a channel card must never claim a channel is live before a real
+ * conversation on that channel has been verified on PROD. Code-complete is
+ * NOT the same as verified — #1284 PR ① wires the inbound door end to end
+ * against MOCKED platform APIs; it has never talked to the real Discord API.
+ * So this resolver is gated behind an EXPLICIT "verified" flag
+ * (`NEXT_PUBLIC_DISCORD_CHANNEL_LIVE`), separate from and in ADDITION to
+ * "is a bot configured" (`NEXT_PUBLIC_DISCORD_INVITE_URL` alone is not
+ * enough to render the card) — unlike `_cta.ts`'s Telegram CTA, which only
+ * checks "is a bot configured" because Telegram's channel was ALREADY
+ * prod-verified when that CTA shipped (#1262/#1263).
+ *
+ * Both env vars default unset, so `resolveDiscordChannelCard` returns `null`
+ * and the landing page renders NOTHING extra today — zero visual diff until
+ * the owner does two things: (1) supplies `NEXT_PUBLIC_DISCORD_INVITE_URL`
+ * (the bot's install/invite link) and (2) flips
+ * `NEXT_PUBLIC_DISCORD_CHANNEL_LIVE=true` — that second flip is the
+ * ONE-LINE change this rule promises, and it must only happen AFTER a real
+ * Discord conversation has been verified on prod (the epic #1257 checklist's
+ * deferred evidence item).
+ *
+ * Pure and unit-testable without rendering `page.tsx`, mirroring `_cta.ts`'s
+ * own split.
+ */
+
+export interface ChannelCard {
+  id: string;
+  label: string;
+  href: string;
+}
+
+function isTrue(value: string | undefined): boolean {
+  return (value ?? "").trim().toLowerCase() === "true";
+}
+
+/**
+ * Resolve the Discord "also available on" card. Returns `null` (render
+ * nothing) unless BOTH the invite URL is configured AND the channel has been
+ * explicitly flagged live post-verification — never a dead link, and never
+ * a claim ahead of the evidence.
+ */
+export function resolveDiscordChannelCard(env: {
+  live: string | undefined;
+  inviteUrl: string | undefined;
+}): ChannelCard | null {
+  if (!isTrue(env.live)) return null;
+  const href = env.inviteUrl?.trim();
+  if (!href) return null;
+  return { id: "discord", label: "Message Jace on Discord", href };
+}

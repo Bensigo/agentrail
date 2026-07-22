@@ -2240,8 +2240,10 @@ export {
   recordRunOutcome,
   mapTerminalStateToRunOutcome,
   getModelOutcomeStats,
+  countRunOutcomes,
   type RunOutcomeValue,
   type ModelOutcomeStatsRow,
+  type RunOutcomeCounts,
 } from "./run_outcomes.js";
 
 // Grantable workspace-trust-setting queries (issue #1278; see

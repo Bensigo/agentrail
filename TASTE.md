@@ -108,7 +108,7 @@ All colors use CSS custom properties with **light-first values — light mode is
 
 **Brand accent (owner, 2026-07-19, verbatim: "our color is lemon"):** LEMON `--accent-fill`/`--brand-accent` `#ffe629` is the brand color — **fill-with-dark-text only** (CTA buttons, chips, marker dots; pair with `--accent-fill-text` `#0c0c0c`, hover `--accent-fill-hover` `#ffdc00`). Lemon is never body/link text on light (illegible); on light surfaces text accents are strong black (`--accent-text` `#0c0c0c`) with weight/underline for affordance; on dark surfaces lemon works as text (`--accent-text` dark = `#ffe629`). The retired mustard `#9e6c00` was agent-invented — never resurrect it as brand. Landing may sit on faint lemon paper `--paper` `#fffbea` with an upright serif display voice (landing-scoped; layout/typography spirit: heyparker.ai). Semantic yellow status ramp is separate from brand.
 
-**The mascot IS Jace:** the raccoon in the lemon hoodie (`apps/console/public/jace.png`, app icon `apps/console/app/icon.png`). Use it as the landing hero avatar and Jace's chat-demo avatar. Never generate replacement mascots; this is the canonical one.
+**The mascot IS Jace:** the raccoon in the lemon hoodie. The canonical set is four owner-supplied renders (2026-07-22): `jace.png` (chat-demo bubbles + closing beat), `jace-avatar.png` (nav + footer mark, phone header), `jace-wave.png` (hero, multiply-blend cutout), `jace-working.png` (overnight use-case card) — all in `apps/console/public/`, app icon `apps/console/app/icon.png`. Never generate replacement mascots or new poses; this set is the canon.
 
 ### Spacing
 
@@ -267,16 +267,35 @@ Arriving with the end-to-end arc: `approvals/` and `chat/` under the
 workspace, per the arc spec. Scorecard and Context Quality were removed
 deliberately — observability stays light; do not reintroduce them.
 
-**The landing page is Jace's resume.** Light, single-column, persona-led —
-in the spirit of boardy.ai, not cursor.com's dark-premium mood. Structure:
-who I am → how I work → track record (real numbers, failures counted) → how
-we work together → **Message me** (primary CTA) with a secondary
-sign-up/sign-in button. The centerpiece demo is a real chat conversation
-with Jace — never a dashboard mockup, and never surfaces the product no
-longer has. Inter body + Berkeley Mono data, plus a landing-scoped upright serif display voice; `--accent-text` deep green accents on the `--paper` warm surface, golden `--accent-fill` as fill-with-dark-text only — never decorative
-glow blobs, pulsing-dot pill badges, or an uppercase-mono eyebrow on every
-section (those read as AI-generated). Voice stays direct, concrete, no hype.
-The page claims only what the live flow does.
+**The landing page is Jace's introduction (landing v2, owner-approved
+2026-07-22 — plan: `docs/superpowers/plans/2026-07-22-landing-v2.md`).**
+Light, persona-led, on `--paper` with the upright serif display voice.
+Layout/typography spirit: heyparker.ai — device-as-stage, short-line
+stacks, inline dashed chips, one full-bleed color act — executed through
+OUR tokens, never cloned. Structure: two-column hero (display line
+`Hey, I'm Jace_` + role line one step down with a lemon marker-highlight;
+the typing-cursor motif appears at most twice page-wide) beside a phone
+playing the real conversation demo — every number computed by the live
+estimate lib, and the Approve tap stays the visitor's own click, never
+scripted; sticky-stack use cases ("What you can hand me"); the named
+5-step loop (Message/Brief/Approve/Pull request/Merge) on the full-bleed
+lemon band; the channel scene ("Where you'll find me") — **owner ruling
+2026-07-22: Telegram, Slack, and Discord present as equal panels**, while
+every button resolves through the honesty-gated URL resolvers (`_cta.ts`,
+`_channel-cards.ts`) and falls back to sign-in, never a dead link; "The
+numbers" — live cached stats (`/api/v1/stats` + hourly `unstable_cache`),
+documented dogfood baseline + real platform outcomes, failures counted,
+the didn't-land card deliberately differentiated from the tilted scraps;
+billing — **owner ruling 2026-07-22: pay-for-what-you-use top-up model**
+(top up → the approved estimate is the cap → charged when the task is
+done) with the free-preview chip carrying today's truth; closing CTA +
+avatar-marked footer. Inter body + Berkeley Mono data; golden
+`--accent-fill` as fill-with-dark-text only — never decorative glow
+blobs, pulsing-dot pill badges, or an uppercase-mono eyebrow on every
+section (those read as AI-generated). Voice stays direct, concrete, no
+hype; at most two "X, not Y" rebuttal lines page-wide; sub-14px text
+never lighter than `--gray-11` on `--paper`. Mechanical enforcement lives
+in `_craft-pins.test.ts`.
 
 **Console pages** use the light-first system defined above: calm in the
 "Your engineer" zone, dense in the engine room.

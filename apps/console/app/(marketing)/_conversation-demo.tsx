@@ -100,7 +100,7 @@ export function ConversationDemo({
             : "flex translate-y-2.5 flex-col items-start gap-1.5 opacity-0"
         }
       >
-        <span className="text-label flex items-center gap-1.5 px-1 text-[var(--gray-09)]">
+        <span className="text-label flex items-center gap-1.5 px-1 text-[var(--gray-11)]">
           <Image src="/jace.png" alt="" width={20} height={20} className="rounded-full" />
           Jace
         </span>

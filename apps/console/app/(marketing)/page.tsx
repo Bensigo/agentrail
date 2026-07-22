@@ -10,14 +10,12 @@ import { MarketingNav } from "./_nav";
 import { PhoneDemo } from "./_phone-demo";
 import { UseCases } from "./_use-cases";
 import { Channels } from "./_channels";
+import { CountUp } from "./_stats";
+import { getLandingStats } from "../../lib/landing-stats";
 import { resolveMessageJaceCta } from "./_cta";
 import type { MessageJaceCta } from "./_cta";
 import { resolveDiscordChannelCard, resolveSlackChannelCard } from "./_channel-cards";
 
-/** Real dogfood track record — full autonomous runs of AgentRail on its own
- *  backlog (issue → implementation → review → PR), not a retrieval benchmark.
- *  Source: docs/benchmarks/results/dogfood-track-record.md. */
-const TRACK_RECORD = { shipped: 33, attempted: 53, failed: 20 };
 
 /** Light token surface scoped to the marketing page.
  *
@@ -120,6 +118,10 @@ export default async function LandingPage() {
   // when the hosted bot is configured, else the honest sign-in fallback
   // (never a dead link) — see `./_cta.ts`.
   const cta = resolveMessageJaceCta(process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME);
+
+  // Landing v2 §6 — live numbers: documented dogfood baseline + platform
+  // terminal outcomes, hourly-cached; baseline-only when the DB is away.
+  const stats = await getLandingStats();
 
   // #1284 AC2 (landing-honesty rule): resolves to null — rendering nothing
   // extra — until BOTH a Discord invite URL is configured AND the channel is
@@ -286,56 +288,104 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 6 — ACT 3: track record as tilted paper-scrap captions — the real
-          numbers, editorial rather than a stats grid. Same claim as before
-          (real dogfood runs, failures counted, not hidden), now also
-          surfacing TRACK_RECORD.attempted, which existed in code but was
-          never rendered. */}
+      {/* 6 — The numbers: live stats (baseline + platform outcomes) as
+          tilted paper scraps, count-up on scroll. The failed card is
+          deliberately DIFFERENT (wider, untilted, sentence label) — the
+          slop audit's LS-1/LS-2 fix: honest numbers shouldn't wear the
+          identical-stat-grid costume. Labels sit at --gray-11 (GQ-1). */}
       <section className="px-6 py-24 sm:py-32">
         <div className="mx-auto max-w-[760px]">
           <Reveal>
-            <h2 className="text-heading-2 text-center">Track record</h2>
+            <h2 className="text-heading-2 text-center">The numbers</h2>
           </Reveal>
-          {/* One honesty rebuttal only (review fix M-5): the failed card's
-              own label carries it; the kicker stays factual. */}
           <p className="ar-rise mx-auto mt-4 max-w-[56ch] text-center text-[var(--gray-11)]">
-            Full autonomous runs on my own backlog, issue to reviewed PR,
-            unattended.
+            Autonomous runs, issue in to reviewed pull request out. Counted
+            from the platform database, refreshed hourly.
           </p>
           <div className="mt-14 flex flex-wrap items-start justify-center gap-6 sm:gap-8">
-            {/* Cards are inlined rather than extracted into a shared
-                component: the mono-on-data craft pin scans 300 chars
-                BACKWARD from each literal {TRACK_RECORD.x} marker for a
-                mono class, so the class has to sit in the same JSX block
-                as the value, not inside a separately-defined component
-                function elsewhere in the file. */}
+            {/* Cards stay inlined: the mono-on-data craft pin scans 300
+                chars BACKWARD from each literal {stats.x} marker for a mono
+                class, so the class must sit in the same JSX block. */}
             <Reveal>
               <div className="w-[168px] -rotate-2 rounded-lg border border-[var(--gray-06)] bg-[var(--paper)] px-5 py-6 text-center shadow-sm sm:w-[188px]">
-                <p className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl">
-                  {TRACK_RECORD.shipped}
-                </p>
-                <p className="text-body-sm mt-2 text-[var(--gray-10)]">shipped</p>
+                <CountUp
+                  className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
+                  value={stats.shipped}
+                />
+                <p className="text-body-sm mt-2 text-[var(--gray-11)]">shipped</p>
               </div>
             </Reveal>
             <Reveal delay={70}>
               <div className="w-[168px] translate-y-3 rotate-1 rounded-lg border border-[var(--gray-06)] bg-[var(--paper)] px-5 py-6 text-center shadow-sm sm:w-[188px]">
-                <p className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl">
-                  {TRACK_RECORD.attempted}
-                </p>
-                <p className="text-body-sm mt-2 text-[var(--gray-10)]">attempted</p>
+                <CountUp
+                  className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
+                  value={stats.workedOn}
+                />
+                <p className="text-body-sm mt-2 text-[var(--gray-11)]">worked on</p>
               </div>
             </Reveal>
             <Reveal delay={140}>
-              <div className="w-[168px] -rotate-1 rounded-lg border border-[var(--gray-06)] bg-[var(--paper)] px-5 py-6 text-center shadow-sm sm:w-[188px]">
-                <p className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl">
-                  {TRACK_RECORD.failed}
-                </p>
-                <p className="text-body-sm mt-2 text-[var(--gray-10)]">
+              <div className="w-[240px] rounded-lg border border-[var(--gray-06)] bg-[var(--gray-00)] px-6 py-6 text-center shadow-sm sm:w-[260px]">
+                <CountUp
+                  className="text-4xl font-mono font-bold text-[var(--gray-12)] sm:text-5xl"
+                  value={stats.didntLand}
+                />
+                <p className="mt-2 text-[var(--gray-11)]">
                   didn&apos;t land — counted, not hidden
                 </p>
               </div>
             </Reveal>
           </div>
+          {stats.source === "baseline-only" ? (
+            <p className="text-body-sm mt-8 text-center text-[var(--gray-11)]">
+              Live counts unavailable right now; these are the documented
+              dogfood record.
+            </p>
+          ) : null}
+        </div>
+      </section>
+
+      {/* 6b — Billing: the pay-for-what-you-use top-up model (owner ruling
+          2026-07-22). States the future model in plain steps while the
+          free-preview chip carries today's truth. */}
+      <section className="px-6 pb-24 sm:pb-32">
+        <div className="mx-auto max-w-[560px]">
+          <Reveal>
+            <h2 className="text-heading-2 text-center">Pay for what you use</h2>
+          </Reveal>
+          <Reveal delay={70}>
+            <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
+              When preview ends, pricing is pay-for-what-you-use.
+            </p>
+          </Reveal>
+          <ol className="mt-10 flex flex-col gap-6">
+            {[
+              "Top up your balance.",
+              "Approve a task. The estimate you approve is the budget cap.",
+              "You're charged when the task is done.",
+            ].map((line, i) => (
+              <Reveal key={i} delay={i * 70}>
+                <li className="flex items-baseline gap-5">
+                  <span
+                    aria-hidden
+                    className="text-mono-data w-5 shrink-0 font-mono font-bold text-[var(--gray-12)]"
+                  >
+                    {i + 1}
+                  </span>
+                  <p className="text-[var(--gray-12)]">{line}</p>
+                </li>
+              </Reveal>
+            ))}
+          </ol>
+          <Reveal delay={240}>
+            <div className="mt-10 flex flex-col items-center gap-4 text-center">
+              <p className="text-[var(--gray-11)]">
+                No seats. No subscription. Every run shows its cost next to
+                its PR.
+              </p>
+              <FreePreviewChip />
+            </div>
+          </Reveal>
         </div>
       </section>
 
@@ -350,9 +400,14 @@ export default async function LandingPage() {
             height={64}
             className="-rotate-3 mx-auto mb-6 rounded-full"
           />
-          <h2 className="text-heading-2">Point me at a repo.</h2>
+          <h2 className="text-heading-2">
+            Point me at a repo
+            <span aria-hidden className="ar-cursor animate-pulse font-mono">
+              _
+            </span>
+          </h2>
           <p className="mx-auto mt-4 max-w-[44ch] text-[var(--gray-11)]">
-            Connect a repo, hand me an issue, and wake up to a reviewed PR.
+            Connect GitHub, hand me an issue, and wake up to a reviewed PR.
           </p>
           <div className="mt-8 flex flex-col items-center gap-3">
             <PrimaryCta cta={cta} />
@@ -364,7 +419,13 @@ export default async function LandingPage() {
       <footer className="border-t border-[var(--gray-04)] px-6 py-10">
         <div className="mx-auto flex max-w-[1120px] flex-col items-center justify-between gap-4 sm:flex-row">
           <div className="flex items-center gap-2.5">
-            <RailMark />
+            <Image
+              src="/jace-avatar.png"
+              alt=""
+              width={20}
+              height={20}
+              className="rounded-full"
+            />
             <span className="font-bold tracking-tight">Jace</span>
           </div>
           <nav className="text-body-sm flex items-center gap-6 text-[var(--gray-11)]">
@@ -416,7 +477,7 @@ export default async function LandingPage() {
               </button>
             </form>
           </nav>
-          <span className="text-label text-[var(--gray-09)]">
+          <span className="text-label text-[var(--gray-11)]">
             © {new Date().getFullYear()} AgentRail
           </span>
         </div>
@@ -473,17 +534,6 @@ function FreePreviewChip() {
 }
 
 /* ---------------------------------------------------------------- icons */
-
-function RailMark() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <rect x="3" y="2" width="2.4" height="16" rx="1.2" fill="var(--brand-accent)" />
-      <rect x="14.6" y="2" width="2.4" height="16" rx="1.2" fill="var(--brand-accent)" />
-      <rect x="2" y="6" width="16" height="1.6" rx="0.8" fill="var(--gray-08)" />
-      <rect x="2" y="12.4" width="16" height="1.6" rx="0.8" fill="var(--gray-08)" />
-    </svg>
-  );
-}
 
 function GitHubIcon() {
   return (

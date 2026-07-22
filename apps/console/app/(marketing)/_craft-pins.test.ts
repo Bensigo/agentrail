@@ -25,6 +25,7 @@ const STYLED_FILES = [
   "_phone-demo.tsx",
   "_use-cases.tsx",
   "_channels.tsx",
+  "_stats.tsx",
 ] as const;
 
 // … while the EXISTENCE assertions (must actually carry the lemon fill +
@@ -192,11 +193,11 @@ describe("(marketing) craft pins — mono on data moments", () => {
     expect(monoAppliesBefore(source, "{getDemoOutcomeMessage()}")).toBe(true);
   });
 
-  it("the track-record numbers render in font-mono, including 'attempted' (wave-4 addition — it existed in TRACK_RECORD but was never rendered before)", () => {
+  it("the live numbers render in font-mono (landing v2: CountUp carries the mono class beside each {stats.*} marker)", () => {
     const source = readSibling("page.tsx");
-    expect(monoAppliesBefore(source, "{TRACK_RECORD.shipped}")).toBe(true);
-    expect(monoAppliesBefore(source, "{TRACK_RECORD.attempted}")).toBe(true);
-    expect(monoAppliesBefore(source, "{TRACK_RECORD.failed}")).toBe(true);
+    expect(monoAppliesBefore(source, "{stats.shipped}")).toBe(true);
+    expect(monoAppliesBefore(source, "{stats.workedOn}")).toBe(true);
+    expect(monoAppliesBefore(source, "{stats.didntLand}")).toBe(true);
   });
 
   it("the how-we-work step markers are mono", () => {
@@ -277,11 +278,13 @@ describe("(marketing) craft pins — narrative flow (wave 4)", () => {
   // examples: "allow the rotation utility, pin the lemon-scene text
   // pairing."
 
-  it("the static tilt uses Tailwind's named rotate scale (rotate-1/2/3, not arbitrary values) on the track-record cards and the closing mascot", () => {
+  it("the static tilt uses Tailwind's named rotate scale (rotate-1/2/3, not arbitrary values) on the stat scraps and the closing mascot", () => {
     const source = readSibling("page.tsx");
     const matches = source.match(/-?rotate-\d/g) ?? [];
-    // 3 track-record cards + 1 closing mascot = 4 static tilts.
-    expect(matches.length).toBeGreaterThanOrEqual(4);
+    // 2 tilted stat scraps + 1 closing mascot = 3 static tilts. The
+    // didn't-land card is DELIBERATELY untilted — its difference from the
+    // other two is the slop audit's LS-1/LS-2 fix; don't "even it up".
+    expect(matches.length).toBeGreaterThanOrEqual(3);
   });
 
   it("the rotation is a static transform, never animated or transitioned", () => {
@@ -316,14 +319,24 @@ describe("(marketing) craft pins — narrative flow (wave 4)", () => {
     expect(sectionOpenTag).not.toMatch(/max-w-/);
   });
 
-  it("page.tsx renders exactly two mascot beats (wave hero + closing), all from the owner-supplied canon set", () => {
+  it("page.tsx renders exactly three mascot beats (wave hero + closing + footer mark), all from the owner-supplied canon set", () => {
     const source = readSibling("page.tsx");
     // Canon renders (TASTE.md): jace.png, jace-avatar.png, jace-wave.png,
     // jace-working.png — owner-supplied, never generated substitutes.
     const canon = source.match(/src="\/jace(?:-avatar|-wave|-working)?\.png"/g) ?? [];
-    expect(canon.length).toBe(2);
+    expect(canon.length).toBe(3);
     const anyJaceImage = source.match(/src="\/jace[^"]*"/g) ?? [];
     expect(anyJaceImage.length).toBe(canon.length);
+  });
+
+  it("sub-14px text never sits in --gray-09/--gray-10 on the landing (slop-audit GQ-1: 4.5:1 floor on --paper)", () => {
+    for (const file of STYLED_FILES) {
+      const source = readSibling(file);
+      const smallText = source.match(/className="[^"]*text-(?:body-sm|label)[^"]*"/g) ?? [];
+      for (const attr of smallText) {
+        expect(attr).not.toMatch(/--gray-(?:09|10)/);
+      }
+    }
   });
 });
 

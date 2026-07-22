@@ -144,7 +144,9 @@ export function ConversationDemo({
               height={20}
               className="mb-0.5 shrink-0 rounded-full"
             />
-            <p className="text-mono-data max-w-[92%] rounded-2xl rounded-bl-sm border border-[var(--green-11)] bg-[var(--gray-00)] px-4 py-2.5 font-mono text-[var(--gray-12)] sm:max-w-[80%]">
+            {/* break-all: the ping carries a full PR URL, which must wrap
+                inside the hero phone's narrow bubble instead of clipping. */}
+            <p className="text-mono-data max-w-[92%] break-all rounded-2xl rounded-bl-sm border border-[var(--green-11)] bg-[var(--gray-00)] px-4 py-2.5 font-mono text-[var(--gray-12)] sm:max-w-[80%]">
               {getDemoOutcomeMessage()}
             </p>
           </div>

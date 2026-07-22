@@ -13,22 +13,23 @@ import { describe, expect, it } from "vitest";
 // `_conversation-demo.tokens-only.test.ts` (no DOM/render harness in this
 // repo) — read the file as text, regex against it.
 
-// _nav.tsx and _scroll-narrative.tsx joined the set with the wave-4
-// narrative-flow redo (review fix M-4): every styled marketing file is held
-// to the BAN rules (weights, ad-hoc sizes, lemon-as-text, text-white on a
-// fill, semantic yellow) …
+// Landing v2 (docs/superpowers/plans/2026-07-22-landing-v2.md): the pinned
+// scroll scene is retired in favor of the hero phone (`_phone-demo.tsx`),
+// which joins the set. Every styled marketing file is held to the BAN rules
+// (weights, ad-hoc sizes, lemon-as-text, text-white on a fill, semantic
+// yellow) …
 const STYLED_FILES = [
   "page.tsx",
   "_conversation-demo.tsx",
   "_nav.tsx",
-  "_scroll-narrative.tsx",
+  "_phone-demo.tsx",
 ] as const;
 
 // … while the EXISTENCE assertions (must actually carry the lemon fill +
 // dark fill-text pairing) apply only to the files that render a filled
-// element. _scroll-narrative.tsx is deliberately absent here: it styles
-// card chrome and scroll plumbing only, and demanding a lemon fill of it
-// would force decoration into a file that has no CTA.
+// element. _phone-demo.tsx is deliberately absent here: it renders chrome
+// around `ConversationDemo` (whose Approve button carries the fill), and
+// demanding a second fill of the frame would force decoration into it.
 const LEMON_FILL_FILES = ["page.tsx", "_conversation-demo.tsx", "_nav.tsx"] as const;
 
 function readSibling(filename: string): string {
@@ -128,9 +129,19 @@ describe("(marketing) craft pins — accent system (lemon family, #1357/#1359)",
 });
 
 describe("(marketing) craft pins — the mascot IS Jace (TASTE.md canon)", () => {
-  it("the hero opens with the canonical mascot, named for assistive tech", () => {
+  it("the hero opens with the canonical wave render, named for assistive tech", () => {
     const source = readSibling("page.tsx");
-    expect(source).toMatch(/src="\/jace\.png"[\s\S]{0,40}alt="Jace"/);
+    expect(source).toMatch(/src="\/jace-wave\.png"[\s\S]{0,40}alt="Jace"/);
+  });
+
+  it("the nav mark is the canonical avatar render (wordmark adjacent carries the name)", () => {
+    const source = readSibling("_nav.tsx");
+    expect(source).toMatch(/src="\/jace-avatar\.png"/);
+  });
+
+  it("the phone header carries the canonical avatar render", () => {
+    const source = readSibling("_phone-demo.tsx");
+    expect(source).toMatch(/src="\/jace-avatar\.png"/);
   });
 
   it("Jace's demo bubbles carry the mascot avatar (decorative alt, name text adjacent)", () => {
@@ -292,9 +303,39 @@ describe("(marketing) craft pins — narrative flow (wave 4)", () => {
     expect(sectionOpenTag).not.toMatch(/max-w-/);
   });
 
-  it("the mascot still appears exactly twice in page.tsx (hero + one more narrative beat), never a third fabricated pose", () => {
+  it("page.tsx renders exactly two mascot beats (wave hero + closing), all from the owner-supplied canon set", () => {
     const source = readSibling("page.tsx");
-    const occurrences = source.match(/src="\/jace\.png"/g) ?? [];
-    expect(occurrences.length).toBe(2);
+    // Canon renders (TASTE.md): jace.png, jace-avatar.png, jace-wave.png,
+    // jace-working.png — owner-supplied, never generated substitutes.
+    const canon = source.match(/src="\/jace(?:-avatar|-wave|-working)?\.png"/g) ?? [];
+    expect(canon.length).toBe(2);
+    const anyJaceImage = source.match(/src="\/jace[^"]*"/g) ?? [];
+    expect(anyJaceImage.length).toBe(canon.length);
+  });
+});
+
+describe("(marketing) craft pins — landing v2 additions", () => {
+  it("styled components other than page.tsx carry zero hex colors (tokens only; page.tsx's LIGHT_SURFACE defines the tokens)", () => {
+    // Comments legitimately hold issue refs ("#1279") that a bare hex regex
+    // would eat — check rendered/code text only, same stripping approach as
+    // the em-dash budget below.
+    const stripComments = (source: string): string =>
+      source
+        .replace(/\/\*\*[\s\S]*?\*\//g, "")
+        .replace(/\{\/\*[\s\S]*?\*\/\}/g, "")
+        .replace(/^\s*\/\/.*$/gm, "");
+    for (const file of STYLED_FILES.filter((f) => f !== "page.tsx")) {
+      const source = stripComments(readSibling(file));
+      expect(source.match(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b(?![0-9])/)).toBeNull();
+    }
+  });
+
+  it("the typing-cursor motif stays within budget: 1–2 ar-cursor markers in page.tsx, nowhere else", () => {
+    const pageCount = (readSibling("page.tsx").match(/ar-cursor/g) ?? []).length;
+    expect(pageCount).toBeGreaterThanOrEqual(1);
+    expect(pageCount).toBeLessThanOrEqual(2);
+    for (const file of STYLED_FILES.filter((f) => f !== "page.tsx")) {
+      expect(readSibling(file)).not.toMatch(/ar-cursor/);
+    }
   });
 });

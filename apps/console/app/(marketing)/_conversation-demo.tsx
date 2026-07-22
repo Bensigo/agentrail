@@ -117,7 +117,7 @@ export function ConversationDemo({
             <button
               type="button"
               onClick={() => setApproved(true)}
-              className="text-label mt-3.5 inline-flex items-center gap-1.5 rounded-md bg-[var(--accent-fill)] px-3.5 py-1.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-150 ease-out hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
+              className="text-label mt-3.5 inline-flex items-center gap-1.5 rounded-md bg-[var(--accent-fill)] px-3.5 py-1.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-150 ease-out hover:bg-[var(--accent-fill-hover)] active:scale-[0.97] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
             >
               ✅ Approve
             </button>

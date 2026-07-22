@@ -83,7 +83,7 @@ export function MarketingNav({
             <form action={signInAction}>
               <button
                 type="submit"
-                className="text-body-sm rounded-md border border-[var(--gray-06)] bg-[var(--gray-02)] px-3.5 py-1.5 text-[var(--gray-11)] transition-colors hover:border-[var(--gray-08)] hover:text-[var(--gray-12)]"
+                className="text-body-sm rounded-md border border-[var(--gray-06)] bg-[var(--gray-02)] px-3.5 py-1.5 text-[var(--gray-11)] transition-colors hover:border-[var(--gray-08)] hover:text-[var(--gray-12)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
               >
                 Sign in
               </button>
@@ -106,7 +106,7 @@ function CondensedCta({
   signInAction: () => Promise<void>;
 }) {
   const classes =
-    "inline-flex items-center gap-1.5 rounded-full bg-[var(--accent-fill)] px-3.5 py-1.5 font-bold text-[var(--accent-fill-text)] transition-colors hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]";
+    "inline-flex items-center gap-1.5 rounded-full bg-[var(--accent-fill)] px-3.5 py-1.5 font-bold text-[var(--accent-fill-text)] transition-colors hover:bg-[var(--accent-fill-hover)] active:scale-[0.97] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]";
   if (cta.kind === "telegram") {
     return (
       <a href={cta.href} target="_blank" rel="noreferrer" className={classes}>

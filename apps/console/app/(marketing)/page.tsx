@@ -423,18 +423,18 @@ export default async function LandingPage() {
             <span className="font-bold tracking-tight">Jace</span>
           </div>
           <nav className="text-body-sm flex items-center gap-6 text-[var(--gray-11)]">
-            <Link href="/docs" className="transition-colors hover:text-[var(--accent-text)]">
+            <Link href="/docs" className="rounded-sm transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]">
               Docs
             </Link>
             <a
               href="https://github.com/Bensigo/agentrail"
-              className="transition-colors hover:text-[var(--accent-text)]"
+              className="rounded-sm transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
             >
               GitHub
             </a>
             <a
               href="https://github.com/Bensigo/agentrail#cli"
-              className="transition-colors hover:text-[var(--accent-text)]"
+              className="rounded-sm transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
             >
               CLI
             </a>
@@ -445,7 +445,7 @@ export default async function LandingPage() {
                 href={discordCard.href}
                 target="_blank"
                 rel="noreferrer"
-                className="transition-colors hover:text-[var(--accent-text)]"
+                className="rounded-sm transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
               >
                 Discord
               </a>
@@ -457,7 +457,7 @@ export default async function LandingPage() {
                 href={slackCard.href}
                 target="_blank"
                 rel="noreferrer"
-                className="transition-colors hover:text-[var(--accent-text)]"
+                className="rounded-sm transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
               >
                 Slack
               </a>
@@ -465,7 +465,7 @@ export default async function LandingPage() {
             <form action={signInWithGithub}>
               <button
                 type="submit"
-                className="text-body-sm text-[var(--gray-11)] transition-colors hover:text-[var(--accent-text)]"
+                className="text-body-sm rounded-sm text-[var(--gray-11)] transition-colors hover:text-[var(--accent-text)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]"
               >
                 Sign in
               </button>
@@ -492,7 +492,7 @@ export default async function LandingPage() {
  *  border + hard offset shadow; hover nudges into the shadow, active lands
  *  flat — a button that feels drawn, then pressed. */
 const INK_BUTTON =
-  "inline-flex items-center gap-2.5 rounded-md border-2 border-[var(--gray-13)] bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] shadow-[4px_4px_0_0_var(--gray-13)] transition-[transform,background-color,box-shadow] duration-150 ease-out hover:translate-x-[2px] hover:translate-y-[2px] hover:bg-[var(--accent-fill-hover)] hover:shadow-[2px_2px_0_0_var(--gray-13)] active:translate-x-[4px] active:translate-y-[4px] active:shadow-none";
+  "inline-flex items-center gap-2.5 rounded-md border-2 border-[var(--gray-13)] bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] shadow-[4px_4px_0_0_var(--gray-13)] transition-[transform,background-color,box-shadow] duration-150 ease-out hover:translate-x-[2px] hover:translate-y-[2px] hover:bg-[var(--accent-fill-hover)] hover:shadow-[2px_2px_0_0_var(--gray-13)] active:translate-x-[4px] active:translate-y-[4px] active:shadow-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--gray-13)]";
 
 function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
   if (cta.kind === "telegram") {

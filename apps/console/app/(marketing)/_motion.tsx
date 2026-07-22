@@ -2,7 +2,15 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-/** Reveals children with a rise+fade the first time they scroll into view. */
+/**
+ * Reveals children with a rise+fade the first time they scroll into view.
+ *
+ * Reduced motion gets a static render (no translate, no transition): the
+ * reveal is decoration, not comprehension, so the gentle equivalent is
+ * simply "already there" (Apple HIG: drop movement, keep meaning). The
+ * easing is the strong ease-out the rest of the page uses — built-in CSS
+ * curves are too weak to read as intentional.
+ */
 export function Reveal({
   children,
   delay = 0,
@@ -14,8 +22,14 @@ export function Reveal({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(false);
 
   useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setReducedMotion(true);
+      setShown(true);
+      return;
+    }
     const el = ref.current;
     if (!el) return;
     const io = new IntersectionObserver(
@@ -35,84 +49,19 @@ export function Reveal({
     <div
       ref={ref}
       className={className}
-      style={{
-        opacity: shown ? 1 : 0,
-        transform: shown ? "none" : "translateY(20px)",
-        transition: `opacity 0.7s cubic-bezier(0.2,0.7,0.2,1) ${delay}ms, transform 0.7s cubic-bezier(0.2,0.7,0.2,1) ${delay}ms`,
-        willChange: "opacity, transform",
-      }}
+      style={
+        reducedMotion
+          ? undefined
+          : {
+              opacity: shown ? 1 : 0,
+              transform: shown ? "none" : "translateY(20px)",
+              transition: `opacity 0.55s cubic-bezier(0.23,1,0.32,1) ${delay}ms, transform 0.55s cubic-bezier(0.23,1,0.32,1) ${delay}ms`,
+              // Hint only while motion is imminent; release once settled.
+              willChange: shown ? "auto" : "opacity, transform",
+            }
+      }
     >
       {children}
     </div>
-  );
-}
-
-/** Animated number that counts up from 0 the first time it enters the viewport. */
-export function CountUp({
-  to,
-  duration = 1500,
-  decimals = 0,
-  prefix = "",
-  suffix = "",
-  compact = false,
-  className = "",
-}: {
-  to: number;
-  duration?: number;
-  decimals?: number;
-  prefix?: string;
-  suffix?: string;
-  compact?: boolean;
-  className?: string;
-}) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const [value, setValue] = useState(0);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    let raf = 0;
-    let started = false;
-    const io = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting && !started) {
-          started = true;
-          const start = performance.now();
-          const tick = (now: number) => {
-            const t = Math.min(1, (now - start) / duration);
-            const eased = 1 - Math.pow(1 - t, 3);
-            setValue(to * eased);
-            if (t < 1) raf = requestAnimationFrame(tick);
-          };
-          raf = requestAnimationFrame(tick);
-          io.disconnect();
-        }
-      },
-      { threshold: 0.5 }
-    );
-    io.observe(el);
-    return () => {
-      io.disconnect();
-      cancelAnimationFrame(raf);
-    };
-  }, [to, duration]);
-
-  const fmt = (n: number) => {
-    if (compact) {
-      if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-      if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
-    }
-    return n.toLocaleString("en-US", {
-      minimumFractionDigits: decimals,
-      maximumFractionDigits: decimals,
-    });
-  };
-
-  return (
-    <span ref={ref} className={className}>
-      {prefix}
-      {fmt(value)}
-      {suffix}
-    </span>
   );
 }

@@ -260,6 +260,49 @@ export async function consumeChatIdentitySignupToken(
   return row ?? null;
 }
 
+/**
+ * NON-CONSUMING, read-only lookup for a sign-up token (issue #1364,
+ * anti-unfurl fix). Unlike `consumeChatIdentitySignupToken` above, this is a
+ * plain `SELECT` — it never writes, never nulls the token columns. It exists
+ * so `/signup/[token]`'s PAGE RENDER (a bare GET) can decide what to show
+ * WITHOUT burning a still-valid token: link-preview unfurl bots
+ * (Telegram/Slack/Discord's own server-side preview fetchers), corporate
+ * link scanners, antivirus, and browser prefetch all issue a GET to a shared
+ * link before any human ever clicks it. If that GET consumed the token (the
+ * bug this function's addition fixes), the feature would fail almost every
+ * time it's actually used over its real delivery channel — the human clicks
+ * an already-dead link. The REAL consume only ever happens inside the page's
+ * Server Action, triggered by an explicit human form submission (mirrors
+ * `/connect/[token]`'s own posture: an unauthenticated GET there only ever
+ * renders a "Sign in with GitHub" form; the token consume happens after the
+ * OAuth round trip, never on the bare GET).
+ *
+ * Checks the SAME token-equality + expiry guard as the atomic consume, so it
+ * can never DISAGREE with what the consume would decide moments later (short
+ * of an intervening redemption by someone else). This is purely a rendering
+ * hint — "should I show the form or the expired screen" — never trusted for
+ * anything security-relevant: the Server Action's own
+ * `consumeChatIdentitySignupToken` call remains the sole authority over
+ * whether a redemption actually succeeds, regardless of what this read
+ * returned moments earlier.
+ */
+export async function findChatIdentityBySignupToken(
+  signupToken: string
+): Promise<ChatIdentityRow | null> {
+  const now = new Date();
+  const [row] = await db
+    .select()
+    .from(chatIdentities)
+    .where(
+      and(
+        eq(chatIdentities.signupToken, signupToken),
+        gt(chatIdentities.signupTokenExpiresAt, now)
+      )
+    )
+    .limit(1);
+  return row ?? null;
+}
+
 export interface ResolveInboundChatIdentityInput {
   platform: string;
   platformUserId: string;

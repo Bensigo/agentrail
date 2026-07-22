@@ -2164,6 +2164,7 @@ export {
   consumeChatIdentityLinkToken,
   setChatIdentitySignupToken,
   consumeChatIdentitySignupToken,
+  findChatIdentityBySignupToken,
   resolveInboundChatIdentity,
   listWorkspacesForChatIdentity,
   type ResolveInboundChatIdentityInput,

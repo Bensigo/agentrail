@@ -32,6 +32,7 @@ import { sessions } from "../src/schema/auth.js";
 import {
   setChatIdentitySignupToken,
   consumeChatIdentitySignupToken,
+  findChatIdentityBySignupToken,
   bindChatIdentityUser,
   getChatIdentityById,
 } from "../src/queries/chat_identities.js";
@@ -106,6 +107,23 @@ async function main() {
     const losers = [raceA, raceB].filter((r) => r === null);
     check("EXACTLY ONE of two concurrent consumes wins (never zero, never two)", winners.length === 1);
     check("the other concurrent consume gets null (loses the race, does not double-bind)", losers.length === 1);
+
+    // --- ANTI-UNFURL (post-review fix): a link-preview bot / prefetcher /
+    // scanner hits /signup/[token] with a bare GET before any human clicks —
+    // the page's GET render calls ONLY this non-consuming read, never the
+    // atomic consume. Prove that against LIVE Postgres: several read-only
+    // lookups in a row, then confirm the token STILL redeems. ---
+    console.log("\nAnti-unfurl (repeated non-consuming reads never burn the token):");
+    const unfurlToken = `unfurl-${randomUUID()}`;
+    await setChatIdentitySignupToken(identity.id, unfurlToken, new Date(Date.now() + 30 * 60 * 1000));
+    for (let i = 0; i < 5; i++) {
+      const preview = await findChatIdentityBySignupToken(unfurlToken);
+      check(`unfurl-bot read #${i + 1} sees the token as still valid (read-only, no mutation)`, preview?.id === identity.id);
+    }
+    const stillValid = await getChatIdentityById(identity.id);
+    check("after 5 read-only lookups, the token column is UNCHANGED", stillValid?.signupToken === unfurlToken);
+    const humanClick = await consumeChatIdentitySignupToken(unfurlToken);
+    check("the human's actual click (the real atomic consume) still succeeds after 5 unfurls", humanClick?.id === identity.id);
 
     // --- account creation + binding + session mint (server-side, from the
     // token alone) ---

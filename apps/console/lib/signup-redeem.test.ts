@@ -14,7 +14,11 @@ vi.mock("./signup-confirmation", () => ({
   sendSignupConfirmation: vi.fn(),
 }));
 
-import { redeemSignupToken } from "./signup-redeem";
+import {
+  redeemSignupToken,
+  buildSignupActionOutcome,
+  SIGNUP_COMPLETE_PATH,
+} from "./signup-redeem";
 import {
   consumeChatIdentitySignupToken,
   createUserForSignup,
@@ -217,5 +221,75 @@ describe("redeemSignupToken", () => {
     mockSendConfirmation.mockRejectedValue(new Error("telegram down"));
 
     await expect(redeemSignupToken("tok-abc")).resolves.toMatchObject({ kind: "signed_up" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildSignupActionOutcome — the Server Action's own decision logic, pulled
+// out so it's testable without cookies()/redirect()/a real Next.js request
+// (post-review anti-unfurl fix: page.tsx's Server Action is now the ONLY
+// caller of redeemSignupToken's atomic consume; this is what it does with
+// the result). Uses the REAL sessionCookieName/sessionCookieOptions (not
+// mocked) — these are simple, deterministic, dependency-free, so letting
+// them run for real keeps these assertions meaningful.
+// ---------------------------------------------------------------------------
+
+describe("buildSignupActionOutcome", () => {
+  const SESSION_EXPIRES = new Date("2026-08-21T00:00:00Z");
+  const SIGNED_UP_RESULT = {
+    kind: "signed_up" as const,
+    sessionToken: "session-tok-abc",
+    sessionExpires: SESSION_EXPIRES,
+    accountLabel: "Ada",
+    ownerElectCompletionLine: null,
+  };
+  const EXPIRED_RESULT = { kind: "expired_or_used" as const };
+
+  it("signed_up over http (dev): unprefixed cookie name, secure:false, redirects to the static complete page", () => {
+    const outcome = buildSignupActionOutcome(SIGNED_UP_RESULT, "tok-abc", false);
+
+    expect(outcome).toEqual({
+      kind: "signed_up",
+      cookie: {
+        name: "authjs.session-token",
+        value: "session-tok-abc",
+        options: { httpOnly: true, sameSite: "lax", path: "/", secure: false, expires: SESSION_EXPIRES },
+      },
+      redirectTo: SIGNUP_COMPLETE_PATH,
+    });
+    expect(SIGNUP_COMPLETE_PATH).toBe("/signup/complete");
+  });
+
+  it("signed_up over https (production): __Secure- prefixed cookie name, secure:true", () => {
+    const outcome = buildSignupActionOutcome(SIGNED_UP_RESULT, "tok-abc", true);
+
+    expect(outcome.cookie).toEqual({
+      name: "__Secure-authjs.session-token",
+      value: "session-tok-abc",
+      options: { httpOnly: true, sameSite: "lax", path: "/", secure: true, expires: SESSION_EXPIRES },
+    });
+  });
+
+  it("expired_or_used: NO cookie field at all — never sets any cookie for a dead/replayed token", () => {
+    const outcome = buildSignupActionOutcome(EXPIRED_RESULT, "dead-token", false);
+
+    expect(outcome).toEqual({ kind: "expired_or_used", redirectTo: "/signup/dead-token" });
+    expect(outcome.cookie).toBeUndefined();
+  });
+
+  it("expired_or_used redirects back to the SAME token's own /signup/<token> URL, not a distinct 'expired' route — the page's own precheck independently reaches the same verdict on re-render", () => {
+    const outcome = buildSignupActionOutcome(EXPIRED_RESULT, "some-other-token-xyz", true);
+
+    expect(outcome.redirectTo).toBe("/signup/some-other-token-xyz");
+  });
+
+  it("the cookie's session token value is exactly the one redeemSignupToken produced — never re-derived or truncated", () => {
+    const outcome = buildSignupActionOutcome(
+      { ...SIGNED_UP_RESULT, sessionToken: "a-totally-different-64-char-token" },
+      "tok-abc",
+      false
+    );
+
+    expect(outcome.cookie?.value).toBe("a-totally-different-64-char-token");
   });
 });

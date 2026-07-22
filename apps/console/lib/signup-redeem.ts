@@ -1,11 +1,33 @@
 /**
  * Pure(ish) redemption core for the `/signup/[token]` magic link (issue
- * #1364, PR ①) — split out from the route handler for the same reason
+ * #1364, PR ①) — split out from the page for the same reason
  * `connect-bind-decision.ts` / `connect-owner-elect-completion.ts` are split
  * from `/connect/[token]/page.tsx`: the security-critical logic needs to be
  * unit-testable without a real request, a real cookie jar, or a database.
- * The route (`route.ts`) is a thin wrapper: call this, then translate the
- * result into an HTTP response + a `Set-Cookie` header.
+ * `page.tsx`'s Server Action is a thin wrapper: call `redeemSignupToken`,
+ * then `buildSignupActionOutcome` (below) to decide what to do with the
+ * result, then perform the actual `cookies().set()` / `redirect()` calls.
+ *
+ * IMPORTANT (anti-unfurl fix, post-review): `redeemSignupToken` — the
+ * ATOMIC CONSUME — must only ever be called from that Server Action, i.e.
+ * from an explicit human form submission, NEVER from the page's own GET
+ * render. Telegram/Slack/Discord all unfurl a shared link by fetching it
+ * server-side to build a preview — a plain GET, with no human behind it —
+ * and browser prefetch / corporate link scanners / antivirus do the same.
+ * An earlier version of this file's caller (a Route Handler that consumed
+ * on GET) burned the token on the FIRST such automated fetch, so by the
+ * time the actual human clicked the link it already read "expired or
+ * already used" — the feature failed almost every time it was used over
+ * its real delivery channel. `page.tsx`'s GET render instead calls the
+ * NON-CONSUMING `findChatIdentityBySignupToken` (a plain SELECT) to decide
+ * whether to show the "finish signing up" form or the expired screen; only
+ * the button's Server Action — which no unfurl bot ever triggers — calls
+ * this module's atomic consume. See `findChatIdentityBySignupToken`'s own
+ * doc-comment in `queries/chat_identities.ts` for the full rationale, and
+ * mirrors exactly how `/connect/[token]/page.tsx` already avoids this class
+ * of bug: an unauthenticated GET there only ever renders a "Sign in with
+ * GitHub" form; `consumeChatIdentityLinkToken` runs only after the human
+ * completes the OAuth round trip, never on the bare GET either.
  *
  * ## What this closes (spec: issue #1364)
  *
@@ -95,6 +117,11 @@ import {
   buildOwnerElectCompletionLine,
 } from "./connect-owner-elect-completion";
 import { sendSignupConfirmation } from "./signup-confirmation";
+import {
+  sessionCookieName,
+  sessionCookieOptions,
+  type SessionCookieOptions,
+} from "./session-cookie";
 
 // 32 bytes -> 64 hex chars: generous entropy for a bearer credential that
 // authenticates a real console session (a materially higher-stakes secret
@@ -177,5 +204,78 @@ export async function redeemSignupToken(token: string): Promise<SignupRedeemResu
     sessionExpires,
     accountLabel,
     ownerElectCompletionLine,
+  };
+}
+
+/**
+ * The static, generic post-sign-up landing (no per-request data — see this
+ * function's own doc-comment below for why). `page.tsx`'s expired branch
+ * re-uses `/signup/[token]` itself (redirecting back to the SAME URL a
+ * dead token naturally re-renders as "expired or already used" via
+ * `findChatIdentityBySignupToken`), so only the SUCCESS case needs a
+ * distinct destination.
+ */
+export const SIGNUP_COMPLETE_PATH = "/signup/complete";
+
+export interface SignupActionCookieWrite {
+  name: string;
+  value: string;
+  options: SessionCookieOptions;
+}
+
+export interface SignupActionOutcome {
+  kind: SignupRedeemResult["kind"];
+  /** Present only on `signed_up` — what the Server Action should pass to
+   * `cookies().set(name, value, options)`. Absent on `expired_or_used`: a
+   * dead/replayed token must never set ANY cookie, session-shaped or not. */
+  cookie?: SignupActionCookieWrite;
+  redirectTo: string;
+}
+
+/**
+ * Pure decision: given a `redeemSignupToken` result (already computed) and
+ * whether this request came in over https, what should the Server Action DO
+ * — which cookie (if any) to set, and where to send the browser next. Split
+ * out from the action itself (which lives in `page.tsx` and therefore can't
+ * be unit-tested directly — see that file's own note) so this decision is
+ * fully testable without `cookies()`/`redirect()`/a real request.
+ *
+ * `expired_or_used` -> redirect back to `/signup/<token>` itself: a token
+ * that just failed to consume is — by construction — no longer valid, so
+ * the SAME page's own GET-time `findChatIdentityBySignupToken` precheck
+ * will independently reach the identical "expired or already used" verdict
+ * on the very next render. No query param, no special "why" flag: the two
+ * checks (this one, and the page's precheck) are guaranteed to agree
+ * because they consult the exact same guard (token equality + expiry), just
+ * a UPDATE vs. a SELECT.
+ *
+ * `signed_up` -> a cookie write (name/value/options from `session-cookie.ts`,
+ * using the caller-supplied `useSecureCookies`) and a redirect to the
+ * static, PERSONALIZATION-FREE `/signup/complete` page — deliberately not a
+ * page that echoes back e.g. the owner-elect completion line via a query
+ * param: that would be a cosmetically spoofable "you're signed up as X"
+ * message anyone could craft by hand (harmless — it grants no session,
+ * everything of substance already happened server-side — but needless
+ * sloppiness this function avoids by construction). The richer, personalized
+ * confirmation (workspace ownership, etc.) is what `sendSignupConfirmation`
+ * already delivers in-thread, authoritatively, from `redeemSignupToken`
+ * itself.
+ */
+export function buildSignupActionOutcome(
+  result: SignupRedeemResult,
+  token: string,
+  useSecureCookies: boolean
+): SignupActionOutcome {
+  if (result.kind === "expired_or_used") {
+    return { kind: "expired_or_used", redirectTo: `/signup/${token}` };
+  }
+  return {
+    kind: "signed_up",
+    cookie: {
+      name: sessionCookieName(useSecureCookies),
+      value: result.sessionToken,
+      options: sessionCookieOptions(useSecureCookies, result.sessionExpires),
+    },
+    redirectTo: SIGNUP_COMPLETE_PATH,
   };
 }

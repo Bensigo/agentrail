@@ -209,3 +209,97 @@ test("normalizeHostedInbound passes auth through UNCHANGED (deep, not just prese
   const out = normalizeHostedInbound({ message: "hi", target: { chatId: 1 }, auth });
   assert.deepEqual(out.auth, auth);
 });
+
+// --- #1288: console's compound target (workspaceId + conversationKey) ------
+
+test("accepts an explicit channel: 'console' with a {workspaceId, conversationKey} target", () => {
+  const out = normalizeHostedInbound({
+    channel: "console",
+    message: "hi from console",
+    target: { workspaceId: "ws-1", conversationKey: "console:user-1:1" },
+    auth: {},
+  });
+  assert.deepEqual(out, {
+    channel: "console",
+    message: "hi from console",
+    target: { workspaceId: "ws-1", conversationKey: "console:user-1:1" },
+    auth: {},
+  });
+});
+
+test("HOSTED_INBOUND_CHANNELS includes console alongside telegram/discord/slack", () => {
+  assert.ok(HOSTED_INBOUND_CHANNELS.includes("console"));
+  assert.ok(HOSTED_INBOUND_CHANNELS.includes("telegram"));
+});
+
+test("console rejects a target missing workspaceId", () => {
+  assert.throws(
+    () =>
+      normalizeHostedInbound({
+        channel: "console",
+        message: "hi",
+        target: { conversationKey: "console:user-1:1" },
+        auth: {},
+      }),
+    /`target\.workspaceId` is required/,
+  );
+});
+
+test("console rejects a target missing conversationKey", () => {
+  assert.throws(
+    () =>
+      normalizeHostedInbound({
+        channel: "console",
+        message: "hi",
+        target: { workspaceId: "ws-1" },
+        auth: {},
+      }),
+    /`target\.conversationKey` is required/,
+  );
+});
+
+test("console rejects blank-string workspaceId/conversationKey", () => {
+  assert.throws(
+    () =>
+      normalizeHostedInbound({
+        channel: "console",
+        message: "hi",
+        target: { workspaceId: "   ", conversationKey: "console:user-1:1" },
+        auth: {},
+      }),
+    /`target\.workspaceId` is required/,
+  );
+  assert.throws(
+    () =>
+      normalizeHostedInbound({
+        channel: "console",
+        message: "hi",
+        target: { workspaceId: "ws-1", conversationKey: "  " },
+        auth: {},
+      }),
+    /`target\.conversationKey` is required/,
+  );
+});
+
+test("console's normalized target never carries a stray chatId/channelId even if present in the raw payload", () => {
+  const out = normalizeHostedInbound({
+    channel: "console",
+    message: "hi",
+    target: { workspaceId: "ws-1", conversationKey: "console:user-1:1", chatId: 999, channelId: "x" },
+    auth: {},
+  });
+  assert.deepEqual(out.target, { workspaceId: "ws-1", conversationKey: "console:user-1:1" });
+});
+
+test("a telegram payload keyed on workspaceId (console's field name) is rejected — console does not fall back to the generic TARGET_KEY", () => {
+  assert.throws(
+    () =>
+      normalizeHostedInbound({
+        channel: "telegram",
+        message: "hi",
+        target: { workspaceId: "ws-1", conversationKey: "console:user-1:1" },
+        auth: {},
+      }),
+    /`target\.chatId` is required/,
+  );
+});

@@ -175,6 +175,22 @@ function extractPayload(payload: unknown): TelegramInboxPayload | null {
   return result;
 }
 
+/** The console (#1288) inbox payload: just the member's text — no chatId,
+ * since the destination is the row's OWN `workspaceId` + `conversationKey`
+ * (already resolved at enqueue time by the authenticated send endpoint, not
+ * derived from any identity spine). */
+interface ConsoleInboxPayload {
+  text: string;
+}
+
+function extractConsolePayload(payload: unknown): ConsoleInboxPayload | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as Record<string, unknown>;
+  const text = p["text"];
+  if (typeof text !== "string" || !text.trim()) return null;
+  return { text };
+}
+
 /**
  * Parse an 'ask' conversation's reply as a workspace choice: an exact
  * case-insensitive workspace-name match, or (only if no name matches) an
@@ -236,6 +252,33 @@ function buildDoorInitiatorAuth(params: {
   };
 }
 
+/**
+ * The initiator identity for a console (#1288) turn — a workspace member
+ * already authenticated in the dashboard, never a chat identity (that spine
+ * exists to resolve STRANGERS to a workspace; a console sender IS a
+ * workspace member by construction — the send endpoint already checked
+ * membership before this row was ever enqueued). `principalType: "user"`
+ * (not `"service"`, unlike `buildDoorInitiatorAuth`'s chat-identity-anchored
+ * channels) distinguishes a real authenticated human from every other
+ * channel's platform-verified-but-unauthenticated sender.
+ */
+function buildConsoleInitiatorAuth(params: {
+  workspaceId: string;
+  userId: string;
+  conversationKey: string;
+}): Record<string, unknown> {
+  return {
+    authenticator: "agentrail",
+    principalType: "user",
+    principalId: params.userId,
+    attributes: {
+      workspaceId: params.workspaceId,
+      channel: "console",
+      conversationKey: params.conversationKey,
+    },
+  };
+}
+
 type EveTurnOutcome =
   | { ok: true; sessionId: string; continuationToken: string }
   | { ok: false; reason: string };
@@ -251,8 +294,18 @@ async function runEveTurn(params: {
    * default "telegram" so every pre-existing call site, which never set
    * this, is byte-unchanged). */
   channel?: string;
-  chatId: number | string;
+  chatId?: number | string;
   messageThreadId?: number | string;
+  /**
+   * Console (#1288): a pre-built target object, used AS-IS instead of the
+   * chatId/channelId-keyed shape every external channel builds below.
+   * Console's destination is a COMPOUND key (`workspaceId` +
+   * `conversationKey`, not a single platform id — see
+   * `hosted_inbound.core.mjs`'s console branch), so it doesn't fit
+   * `HOSTED_INBOUND_TARGET_KEY`'s one-key-per-channel convention. When set,
+   * `chatId` is ignored entirely.
+   */
+  target?: Record<string, unknown>;
   auth: Record<string, unknown>;
 }): Promise<EveTurnOutcome> {
   const channel = params.channel ?? "telegram";
@@ -260,8 +313,17 @@ async function runEveTurn(params: {
   // Discord/Slack `channelId` — see HOSTED_INBOUND_TARGET_KEY above); the
   // VALUE is always `params.chatId` regardless of channel, since every
   // webhook route (telegram/discord/slack) enqueues its conversation id
-  // under that same internal payload field.
+  // under that same internal payload field. Console (#1288) supplies its own
+  // compound `target` instead — see the param doc above.
   const targetKey = HOSTED_INBOUND_TARGET_KEY[channel] ?? "chatId";
+  const target =
+    params.target ??
+    {
+      [targetKey]: params.chatId,
+      ...(params.messageThreadId !== undefined
+        ? { messageThreadId: params.messageThreadId }
+        : {}),
+    };
   let response: Response;
   try {
     response = await fetchWithTimeout(HOSTED_INBOUND_URL, {
@@ -270,12 +332,7 @@ async function runEveTurn(params: {
       body: JSON.stringify({
         message: params.message,
         channel,
-        target: {
-          [targetKey]: params.chatId,
-          ...(params.messageThreadId !== undefined
-            ? { messageThreadId: params.messageThreadId }
-            : {}),
-        },
+        target,
         auth: params.auth,
       }),
     });
@@ -330,6 +387,78 @@ async function withReplyContextPreface(
 }
 
 /**
+ * Process one claimed CONSOLE (#1288) row end to end — the authenticated
+ * dashboard chat path, deliberately NOT routed through `processRow`'s
+ * identity-spine machinery below ('ask'/'intro'/'single'/'pinned'): a
+ * console row's `workspaceId` is already resolved and stamped at enqueue
+ * time by the send endpoint (session + membership already checked there),
+ * so there is no stranger identity to resolve here — only a session ledger
+ * entry to keep continuity across turns, exactly like every other channel.
+ *
+ * Same "never throws" contract as `processRow`: every failure mode resolves
+ * to `"failed"` via `failChannelMessage` so the drain loop always moves on.
+ */
+async function processConsoleRow(row: ClaimedChannelInboxRow): Promise<"completed" | "failed"> {
+  try {
+    if (row.kind !== "message") {
+      await failChannelMessage(
+        row.id,
+        `channel-dispatch: unsupported inbox kind '${row.kind}' for console`
+      );
+      return "failed";
+    }
+
+    const payload = extractConsolePayload(row.payload);
+    if (!payload) {
+      await failChannelMessage(row.id, "channel-dispatch: malformed console payload (missing text)");
+      return "failed";
+    }
+
+    // Invariant this dispatcher assumes but does not enforce: a console row
+    // always carries a real workspace_id (channel_inbox's CHECK constraint
+    // only requires workspace_id OR chat_identity_id, but the console send
+    // endpoint never enqueues without one — there is no "intro" state for an
+    // already-authenticated workspace member).
+    if (!row.workspaceId) {
+      await failChannelMessage(row.id, "channel-dispatch: console row missing workspaceId");
+      return "failed";
+    }
+
+    const session = await getOrCreateJaceSession(row.workspaceId, "console", row.conversationKey);
+
+    const auth = buildConsoleInitiatorAuth({
+      workspaceId: row.workspaceId,
+      userId: row.senderId,
+      conversationKey: row.conversationKey,
+    });
+
+    const turn = await runEveTurn({
+      message: payload.text,
+      channel: "console",
+      auth,
+      target: { workspaceId: row.workspaceId, conversationKey: row.conversationKey },
+    });
+
+    if (!turn.ok) {
+      await failChannelMessage(row.id, `channel-dispatch: ${turn.reason}`);
+      return "failed";
+    }
+
+    await bindEveSession(session.id, turn.sessionId);
+    await completeChannelMessage(row.id);
+    return "completed";
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      await failChannelMessage(row.id, message);
+    } catch (failErr) {
+      console.error("[channel-dispatch] failChannelMessage itself failed (console row):", failErr);
+    }
+    return "failed";
+  }
+}
+
+/**
  * Process exactly one claimed row end to end. NEVER throws: every failure
  * mode — malformed payload, no identity, sidecar down, an unexpected
  * exception anywhere in the chain — resolves to `"failed"` via
@@ -337,6 +466,12 @@ async function withReplyContextPreface(
  * row ("never kill the loop").
  */
 async function processRow(row: ClaimedChannelInboxRow): Promise<"completed" | "failed"> {
+  // Console (#1288) rows skip the identity-spine machinery entirely — see
+  // processConsoleRow's own doc-comment for why.
+  if (row.channel === "console") {
+    return processConsoleRow(row);
+  }
+
   try {
     if (row.kind !== "message") {
       // Approvals ride the Eve-native callback_query path today (out of

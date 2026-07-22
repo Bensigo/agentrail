@@ -8,6 +8,8 @@ import { Send } from "lucide-react";
 import { Reveal } from "./_motion";
 import { MarketingNav } from "./_nav";
 import { PhoneDemo } from "./_phone-demo";
+import { UseCases } from "./_use-cases";
+import { Channels } from "./_channels";
 import { resolveMessageJaceCta } from "./_cta";
 import type { MessageJaceCta } from "./_cta";
 import { resolveDiscordChannelCard, resolveSlackChannelCard } from "./_channel-cards";
@@ -60,28 +62,28 @@ const LIGHT_SURFACE: CSSProperties = {
   ["--paper" as string]: "#fffbea",
 } as CSSProperties;
 
-/** What Jace does — three plain-spoken lines, first person, no mechanism sprawl. */
-const JACE_DOES = [
-  "I work your GitHub and Linear issues overnight. You wake up to pull requests, not a running agent to babysit.",
-  "I never grade my own work: nothing counts as done until a second model and your own tests both agree, and nothing merges without you.",
-  "I run under a hard budget: cheap models first, and I escalate only when a task earns it. Your spend never runs away.",
-];
-
 /**
  * How we work together — the real loop, in order (controller ruling, #1279
  * PR ②: "issue→brief→approve→PR→you merge; merge-permission opt-in is now
- * TRUE and worth saying"). Merge permission is a real, live, owner-only
- * toggle (Settings → Permissions), off by default — so "you merge" stays
- * the honest default step, and step 5 states the opt-in without overclaiming
- * it as automatic. See apps/console/app/api/v1/runner/result/route.ts for
- * the actual enforcement this line describes.
+ * TRUE and worth saying"), now as landing v2's NAMED steps. Merge permission
+ * is a real, live, owner-only toggle (Settings → Permissions), off by
+ * default — so "you merge" stays the honest default step, and the Merge
+ * step states the opt-in without overclaiming it as automatic. See
+ * apps/console/app/api/v1/runner/result/route.ts for the actual enforcement
+ * this line describes.
  */
 const HOW_WE_WORK = [
-  "You message me a task, or hand me a GitHub issue.",
-  "I reply with a brief before I touch any code: task type, model, and a dollar estimate.",
-  "You approve. That confirms the run's budget.",
-  "I open a pull request against your repo.",
-  "You merge it, or turn on merge permission in Settings so I can merge it myself once the gate is green.",
+  { name: "Message", line: "Send me a task in chat, or hand me a GitHub issue." },
+  {
+    name: "Brief",
+    line: "Before I touch code you get a brief: task type, model, and a dollar estimate.",
+  },
+  { name: "Approve", line: "Your approval sets the run's budget. That number is the cap." },
+  { name: "Pull request", line: "I write the code and open a PR against your repo." },
+  {
+    name: "Merge",
+    line: "You merge it. Or turn on merge permission in Settings and I'll merge once the gate is green.",
+  },
 ];
 
 /**
@@ -210,25 +212,17 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 3 — What Jace does: three one-line value points */}
-      <section className="px-6 pb-24 sm:pb-28">
-        <div className="mx-auto max-w-[720px]">
+      {/* 3 — Use cases: four sticky cards that deck over each other as the
+          visitor scrolls (landing v2 §3). Copy absorbs the old What-I-do
+          claims; card 2's chip is the same task the hero phone prices. */}
+      <section className="px-6 pb-24 sm:pb-32">
+        <div className="mx-auto max-w-[860px]">
           <Reveal>
-            <h2 className="text-heading-2 text-center">What I do</h2>
+            <h2 className="text-heading-2 text-center">What you can hand me</h2>
           </Reveal>
-          <ul className="mt-12 flex flex-col gap-8">
-            {JACE_DOES.map((line, i) => (
-              <Reveal key={i} delay={i * 90}>
-                <li className="flex items-start gap-4">
-                  <span
-                    aria-hidden
-                    className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent-text)]"
-                  />
-                  <p className="text-[var(--gray-11)]">{line}</p>
-                </li>
-              </Reveal>
-            ))}
-          </ul>
+        </div>
+        <div className="mt-12">
+          <UseCases />
         </div>
       </section>
 
@@ -245,8 +239,8 @@ export default async function LandingPage() {
             </h2>
           </Reveal>
           <ol className="mt-14 flex flex-col gap-10 sm:mt-20 sm:gap-14">
-            {HOW_WE_WORK.map((line, i) => (
-              <Reveal key={i} delay={i * 70}>
+            {HOW_WE_WORK.map((step, i) => (
+              <Reveal key={step.name} delay={i * 70}>
                 <li className="flex flex-col gap-2 sm:flex-row sm:items-baseline sm:gap-8">
                   <span
                     aria-hidden
@@ -254,13 +248,41 @@ export default async function LandingPage() {
                   >
                     {i + 1}
                   </span>
-                  <p className="text-lg leading-relaxed text-[var(--accent-fill-text)] sm:text-xl">
-                    {line}
-                  </p>
+                  <div>
+                    <p className="font-bold text-[var(--accent-fill-text)]">{step.name}</p>
+                    <p className="mt-1 text-lg leading-relaxed text-[var(--accent-fill-text)] sm:text-xl">
+                      {step.line}
+                    </p>
+                  </div>
                 </li>
               </Reveal>
             ))}
           </ol>
+        </div>
+      </section>
+
+      {/* 5b — Where you'll find me: the channel scene. Panels present all
+          three channels per the owner's 2026-07-22 ruling; every button
+          resolves through the honesty-gated URL resolvers and falls back to
+          sign-in — never a dead link. See _channels.tsx. */}
+      <section className="px-6 py-24 sm:py-28">
+        <div className="mx-auto max-w-[960px]">
+          <Reveal>
+            <h2 className="text-heading-2 text-center">Where you&apos;ll find me</h2>
+          </Reveal>
+          <Reveal delay={70}>
+            <p className="mx-auto mt-4 max-w-[44ch] text-center text-[var(--gray-11)]">
+              Add me where your team already talks.
+            </p>
+          </Reveal>
+          <div className="mt-12">
+            <Channels
+              cta={cta}
+              slack={slackCard}
+              discord={discordCard}
+              signInAction={signInWithGithub}
+            />
+          </div>
         </div>
       </section>
 

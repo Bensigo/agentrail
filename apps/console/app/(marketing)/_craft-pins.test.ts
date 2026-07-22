@@ -23,6 +23,8 @@ const STYLED_FILES = [
   "_conversation-demo.tsx",
   "_nav.tsx",
   "_phone-demo.tsx",
+  "_use-cases.tsx",
+  "_channels.tsx",
 ] as const;
 
 // … while the EXISTENCE assertions (must actually carry the lemon fill +
@@ -30,7 +32,12 @@ const STYLED_FILES = [
 // element. _phone-demo.tsx is deliberately absent here: it renders chrome
 // around `ConversationDemo` (whose Approve button carries the fill), and
 // demanding a second fill of the frame would force decoration into it.
-const LEMON_FILL_FILES = ["page.tsx", "_conversation-demo.tsx", "_nav.tsx"] as const;
+const LEMON_FILL_FILES = [
+  "page.tsx",
+  "_conversation-demo.tsx",
+  "_nav.tsx",
+  "_channels.tsx",
+] as const;
 
 function readSibling(filename: string): string {
   return readFileSync(new URL(filename, import.meta.url), "utf8");
@@ -142,6 +149,12 @@ describe("(marketing) craft pins — the mascot IS Jace (TASTE.md canon)", () =>
   it("the phone header carries the canonical avatar render", () => {
     const source = readSibling("_phone-demo.tsx");
     expect(source).toMatch(/src="\/jace-avatar\.png"/);
+  });
+
+  it("the overnight use-case carries the canonical working render, exactly once", () => {
+    const source = readSibling("_use-cases.tsx");
+    const occurrences = source.match(/src="\/jace-working\.png"/g) ?? [];
+    expect(occurrences.length).toBe(1);
   });
 
   it("Jace's demo bubbles carry the mascot avatar (decorative alt, name text adjacent)", () => {

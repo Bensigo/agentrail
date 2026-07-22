@@ -1,3 +1,6 @@
+import { LIGHT_SURFACE } from "../../../../lib/light-surface";
+import { AUTH_MAIN, AuthCard, JaceAvatar, BackToJace } from "../../_shell";
+
 /**
  * /signup/complete — the static, generic landing a successful `/signup/[token]`
  * Server Action redirects to (issue #1364, PR ①). Deliberately carries NO
@@ -12,23 +15,16 @@
  */
 export default function SignupCompletePage() {
   return (
-    <main
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        fontFamily: "system-ui, sans-serif",
-        gap: "0.75rem",
-        textAlign: "center",
-        padding: "2rem",
-      }}
-    >
-      <h1 style={{ fontSize: "1.5rem" }}>You&apos;re signed up</h1>
-      <p style={{ color: "#666", maxWidth: "40ch" }}>
-        Head back to the chat and ask Jace to set up your workspace — it&apos;ll pick up right here.
-      </p>
+    <main style={LIGHT_SURFACE} className={AUTH_MAIN}>
+      <AuthCard>
+        <JaceAvatar />
+        <h1 className="text-2xl font-bold sm:text-3xl">You&apos;re signed up</h1>
+        <p className="max-w-[36ch] text-[var(--gray-11)]">
+          Head back to the chat and ask Jace to set up your workspace —
+          it&apos;ll pick up right here.
+        </p>
+      </AuthCard>
+      <BackToJace />
     </main>
   );
 }

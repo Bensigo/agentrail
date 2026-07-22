@@ -1,45 +1,38 @@
 import { signIn } from "@agentrail/auth";
+import { LIGHT_SURFACE } from "../../../lib/light-surface";
+import { GithubBrand } from "../../(dashboard)/dashboard/[workspaceId]/connectors/components/brand-icons";
+import { AUTH_MAIN, AUTH_INK_BUTTON, AuthCard, JaceAvatar, BackToJace } from "../_shell";
 
+/** /login — the console's front door, in the landing's language (auth-v2):
+ *  paper surface, ink card, mono voice, lemon press button. Same server
+ *  action as the landing's sign-in seams. */
 export default function LoginPage() {
   return (
-    <main
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        fontFamily: "system-ui, sans-serif",
-      }}
-    >
-      <h1 style={{ marginBottom: "2rem", fontSize: "1.5rem" }}>
-        AgentRail Console
-      </h1>
-      <form
-        action={async () => {
-          "use server";
-          await signIn("github", { redirectTo: "/" });
-        }}
-      >
-        <button
-          type="submit"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "0.5rem",
-            padding: "0.75rem 1.5rem",
-            fontSize: "1rem",
-            fontWeight: 500,
-            background: "#24292e",
-            color: "var(--gray-13)",
-            border: "none",
-            borderRadius: "6px",
-            cursor: "pointer",
+    <main style={LIGHT_SURFACE} className={AUTH_MAIN}>
+      <AuthCard>
+        <JaceAvatar />
+        <h1 className="text-2xl font-bold sm:text-3xl">
+          Sign in to Jace
+          <span aria-hidden className="animate-pulse font-mono">
+            _
+          </span>
+        </h1>
+        <p className="max-w-[34ch] text-[var(--gray-11)]">
+          Connect GitHub and pick up where you left off.
+        </p>
+        <form
+          action={async () => {
+            "use server";
+            await signIn("github", { redirectTo: "/" });
           }}
         >
-          Sign in with GitHub
-        </button>
-      </form>
+          <button type="submit" className={AUTH_INK_BUTTON}>
+            <GithubBrand size={18} />
+            Sign in with GitHub
+          </button>
+        </form>
+      </AuthCard>
+      <BackToJace />
     </main>
   );
 }

@@ -11,11 +11,6 @@ import {
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 import { isConsoleChatEnabled } from "../../../../../../lib/chat/feature-flags";
 import { consoleConversationKey, parseThreadN } from "../../../../../../lib/chat/conversation-key";
-import {
-  DEFAULT_CHAT_MODEL_ID,
-  isChatModelEnabled,
-  isKnownChatModelId,
-} from "../../../../../../lib/chat/models";
 
 const MAX_TEXT_LENGTH = 8000;
 
@@ -134,7 +129,6 @@ export async function POST(
   const body = (await request.json().catch(() => ({}))) as {
     text?: string;
     n?: unknown;
-    model?: unknown;
   };
   const text = typeof body.text === "string" ? body.text.trim() : "";
   if (!text) {
@@ -152,22 +146,6 @@ export async function POST(
   const n = parseThreadN(body.n);
   if (n === null) {
     return NextResponse.json({ error: "n must be a positive integer" }, { status: 400 });
-  }
-
-  // The model the sender picked in the header dropdown. Absent = the default
-  // model. A present model must be one we KNOW and that currently resolves to
-  // a running Jace endpoint (`isChatModelEnabled`) — never a dead selection
-  // that would route nowhere. The dispatcher does the actual endpoint routing.
-  let model = DEFAULT_CHAT_MODEL_ID;
-  if (body.model !== undefined && body.model !== null && body.model !== "") {
-    const requested = String(body.model).trim();
-    if (!isKnownChatModelId(requested)) {
-      return NextResponse.json({ error: "unknown model" }, { status: 400 });
-    }
-    if (!isChatModelEnabled(requested)) {
-      return NextResponse.json({ error: "model is not enabled" }, { status: 400 });
-    }
-    model = requested;
   }
 
   const conversationKey = consoleConversationKey(session.user.id, n);
@@ -189,7 +167,7 @@ export async function POST(
     senderId: session.user.id,
     senderDisplay: session.user.name ?? "",
     providerMessageId: randomUUID(),
-    payload: { text, model },
+    payload: { text },
   });
 
   // Fire-and-forget kick (mirrors every channel webhook route's own

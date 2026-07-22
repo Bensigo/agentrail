@@ -78,14 +78,11 @@ function ThinkingRow() {
 export function ChatThread({
   workspaceId,
   n,
-  model,
   onMaterialize,
 }: {
   workspaceId: string;
   /** Which of this member's own threads this view reads/sends to (`console:<userId>:<n>`). */
   n: number;
-  /** The gateway model id sent with each message (the header picker's selection). */
-  model: string;
   /** Called after the FIRST message in a previously-empty thread lands — lets the
    * parent refresh the history list so the freshly-materialized thread appears. */
   onMaterialize?: () => void;
@@ -186,7 +183,7 @@ export function ChatThread({
       const res = await fetch(`/api/v1/workspaces/${workspaceId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, n, model }),
+        body: JSON.stringify({ text, n }),
       });
       const body = (await res.json().catch(() => ({}))) as {
         message?: ChatMessage;

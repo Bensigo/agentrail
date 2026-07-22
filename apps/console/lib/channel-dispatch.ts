@@ -40,7 +40,6 @@ import { sendSystemTelegramMessage, buildWorkspaceChoiceMessage, buildPinConfirm
 import { sendSystemDiscordMessage } from "./discord-system-message";
 import { sendSystemSlackMessage } from "./slack-system-message";
 import { buildRunOutcomeReplyPreface, type RunOutcomeReplyContext } from "./outcome-format";
-import { DEFAULT_CHAT_MODEL_ID, parseModelEndpoints } from "./chat/models";
 
 /**
  * The NON-SECRET destination key each channel's hosted-inbound `target`
@@ -87,27 +86,6 @@ const EVE_HOST = process.env["EVE_HOST"] || "http://127.0.0.1:2000";
  */
 const HOSTED_INBOUND_URL =
   process.env["JACE_HOSTED_INBOUND_URL"] || `${EVE_HOST}/eve/v1/hosted-inbound`;
-
-/**
- * Console (#1288) model routing: which Jace host answers a turn is a function
- * of the model the sender picked, because a Jace/Eve process is bound to ONE
- * model at boot (see `lib/chat/models.ts`'s header). A model wired in
- * `CONSOLE_MODEL_ENDPOINTS` routes to ITS host's hosted-inbound door; the
- * default model — and any unmapped model — falls back to the default
- * `HOSTED_INBOUND_URL` (the always-running default Jace). This is the entire
- * multi-model mechanism: adding a model is a DEPLOY/CONFIG change (run a Jace
- * pinned to it, add a map entry), with zero code change here.
- *
- * Env is read per-call (not memoized) so a config change takes effect without
- * a restart, matching how `parseModelEndpoints` is designed to be pure.
- */
-function resolveHostedInboundUrl(model?: string): string {
-  if (model && model !== DEFAULT_CHAT_MODEL_ID) {
-    const host = parseModelEndpoints(process.env).get(model);
-    if (host) return `${host}/eve/v1/hosted-inbound`;
-  }
-  return HOSTED_INBOUND_URL;
-}
 
 // An Eve dispatch-acknowledge should be fast: hosted-inbound.ts's
 // args.receive() resolves at DISPATCH time (session created), not at turn
@@ -203,8 +181,6 @@ function extractPayload(payload: unknown): TelegramInboxPayload | null {
  * derived from any identity spine). */
 interface ConsoleInboxPayload {
   text: string;
-  /** The gateway model id the sender picked (#1288). Absent => default model. */
-  model?: string;
 }
 
 function extractConsolePayload(payload: unknown): ConsoleInboxPayload | null {
@@ -212,9 +188,7 @@ function extractConsolePayload(payload: unknown): ConsoleInboxPayload | null {
   const p = payload as Record<string, unknown>;
   const text = p["text"];
   if (typeof text !== "string" || !text.trim()) return null;
-  const modelRaw = p["model"];
-  const model = typeof modelRaw === "string" && modelRaw.trim() ? modelRaw.trim() : undefined;
-  return model ? { text, model } : { text };
+  return { text };
 }
 
 /**
@@ -333,13 +307,6 @@ async function runEveTurn(params: {
    */
   target?: Record<string, unknown>;
   auth: Record<string, unknown>;
-  /**
-   * Console (#1288) only — the gateway model id the sender picked. Selects
-   * WHICH Jace host receives this turn (`resolveHostedInboundUrl`) and rides
-   * along in the POST body so the receiving hosted-inbound door can see it.
-   * Absent for every other channel (they route to the single default host).
-   */
-  model?: string;
 }): Promise<EveTurnOutcome> {
   const channel = params.channel ?? "telegram";
   // The wire-level target key is channel-specific (Telegram `chatId`;
@@ -357,14 +324,9 @@ async function runEveTurn(params: {
         ? { messageThreadId: params.messageThreadId }
         : {}),
     };
-  // Console model routing (#1288): the mapped host for the picked model, or
-  // the default host otherwise — see resolveHostedInboundUrl. `model` is
-  // undefined for every non-console channel, so this is HOSTED_INBOUND_URL for
-  // them, byte-unchanged.
-  const url = resolveHostedInboundUrl(params.model);
   let response: Response;
   try {
-    response = await fetchWithTimeout(url, {
+    response = await fetchWithTimeout(HOSTED_INBOUND_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -372,10 +334,6 @@ async function runEveTurn(params: {
         channel,
         target,
         auth: params.auth,
-        // Sibling of target (not inside it) so the {workspaceId,conversationKey}
-        // console target stays exactly the shape hosted_inbound.core.mjs
-        // validates. Only emitted when set.
-        ...(params.model ? { model: params.model } : {}),
       }),
     });
   } catch (err) {
@@ -479,7 +437,6 @@ async function processConsoleRow(row: ClaimedChannelInboxRow): Promise<"complete
       channel: "console",
       auth,
       target: { workspaceId: row.workspaceId, conversationKey: row.conversationKey },
-      model: payload.model,
     });
 
     if (!turn.ok) {

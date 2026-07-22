@@ -236,7 +236,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/chat", () => {
     });
   });
 
-  it("enqueues the same message into channel_inbox with channel: 'console' and the default model", async () => {
+  it("enqueues the same message into channel_inbox with channel: 'console'", async () => {
     await POST(postReq({ text: "hello jace" }), { params: params() });
     expect(enqueueChannelMessage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -245,7 +245,7 @@ describe("POST /api/v1/workspaces/[workspaceId]/chat", () => {
         conversationKey: `console:${USER}:1`,
         kind: "message",
         senderId: USER,
-        payload: { text: "hello jace", model: "anthropic/claude-sonnet-4.6" },
+        payload: { text: "hello jace" },
       })
     );
   });
@@ -263,27 +263,6 @@ describe("POST /api/v1/workspaces/[workspaceId]/chat", () => {
   it("400s on an invalid body.n", async () => {
     expect((await POST(postReq({ text: "hi", n: 0 }), { params: params() })).status).toBe(400);
     expect((await POST(postReq({ text: "hi", n: "x" }), { params: params() })).status).toBe(400);
-  });
-
-  it("400s on an unknown model", async () => {
-    const res = await POST(postReq({ text: "hi", model: "made/up" }), { params: params() });
-    expect(res.status).toBe(400);
-  });
-
-  it("400s on a known-but-not-enabled model (no dead selection routes nowhere)", async () => {
-    // z-ai/glm-5.2 is a known option but has no endpoint wired in the test env,
-    // so it is not enabled — the route must reject it rather than enqueue it.
-    const res = await POST(postReq({ text: "hi", model: "z-ai/glm-5.2" }), { params: params() });
-    expect(res.status).toBe(400);
-  });
-
-  it("accepts the default model explicitly and enqueues it", async () => {
-    await POST(postReq({ text: "hi", model: "anthropic/claude-sonnet-4.6" }), { params: params() });
-    expect(enqueueChannelMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        payload: { text: "hi", model: "anthropic/claude-sonnet-4.6" },
-      })
-    );
   });
 
   it("kicks the dispatcher after enqueueing (fire-and-forget)", async () => {

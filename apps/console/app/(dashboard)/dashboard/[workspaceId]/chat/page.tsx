@@ -1,7 +1,6 @@
 import { notFound } from "next/navigation";
 import { getMembership, getSession } from "../../../../../lib/cached";
 import { isConsoleChatEnabled } from "../../../../../lib/chat/feature-flags";
-import { chatModelOptions, DEFAULT_CHAT_MODEL_ID } from "../../../../../lib/chat/models";
 import { ChatSurface } from "./components/chat-surface";
 
 /**
@@ -51,18 +50,9 @@ export default async function ChatPage({
 
   if (!isConsoleChatEnabled(workspaceId)) return notFound();
 
-  // Model options + their enabled flags are computed HERE (server-side) from
-  // the routing config so the routing env never reaches the browser — the
-  // client only ever receives `{ id, label, enabled }`. See `lib/chat/models.ts`.
-  const models = chatModelOptions();
-
   return (
     <div className="-m-6 flex h-[calc(100vh-3rem)] flex-col">
-      <ChatSurface
-        workspaceId={workspaceId}
-        models={models}
-        defaultModelId={DEFAULT_CHAT_MODEL_ID}
-      />
+      <ChatSurface workspaceId={workspaceId} />
     </div>
   );
 }

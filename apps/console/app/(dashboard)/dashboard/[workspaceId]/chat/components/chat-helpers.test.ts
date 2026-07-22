@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { defaultUrlTransform } from "react-markdown";
 import {
+  GOAL_REFERENCE_HREF_PREFIX,
   mergeChatMessages,
   highestSeq,
   isAwaitingReply,
@@ -143,18 +145,25 @@ describe("parseGithubLink", () => {
 });
 
 describe("linkifyGoalReferences", () => {
-  it("rewrites a goal stamp into a goal:// markdown link", () => {
+  it("rewrites a goal stamp into a sentinel markdown link (NOT a goal:// URI scheme — react-markdown's default urlTransform strips unrecognized protocols to '', see GOAL_REFERENCE_HREF_PREFIX's own doc-comment)", () => {
     expect(linkifyGoalReferences("Filed toward Goal: reach 80% coverage (goal:coverage-80).")).toBe(
-      "Filed toward Goal: reach 80% coverage [Goal: coverage-80](goal://coverage-80)."
+      "Filed toward Goal: reach 80% coverage [Goal: coverage-80](/__goal_ref__/coverage-80)."
     );
   });
 
   it("rewrites every stamp when there are multiple", () => {
     const input = "(goal:a) and (goal:b)";
-    expect(linkifyGoalReferences(input)).toBe("[Goal: a](goal://a) and [Goal: b](goal://b)");
+    expect(linkifyGoalReferences(input)).toBe(
+      "[Goal: a](/__goal_ref__/a) and [Goal: b](/__goal_ref__/b)"
+    );
   });
 
   it("leaves text with no goal stamp untouched", () => {
     expect(linkifyGoalReferences("just a normal reply")).toBe("just a normal reply");
+  });
+
+  it("regression: the produced href survives react-markdown's REAL defaultUrlTransform unchanged (caught live in the browser: a goal:// URI-scheme version got silently stripped to '' by this exact sanitizer, rendering as unlinked plain text)", () => {
+    const href = `${GOAL_REFERENCE_HREF_PREFIX}coverage-80`;
+    expect(defaultUrlTransform(href)).toBe(href);
   });
 });

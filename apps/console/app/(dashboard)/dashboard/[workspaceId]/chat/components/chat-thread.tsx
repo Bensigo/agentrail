@@ -49,7 +49,11 @@ function JaceAvatar({ className = "" }: { className?: string }) {
       alt=""
       width={22}
       height={22}
-      className={`shrink-0 rounded-full ${className}`}
+      // Explicit h/w pins the box regardless of a `height: auto` reset
+      // stretching it inside a `flex` row (Tailwind's preflight sets that on
+      // every <img>; only `items-start` on the parent stops the stretch —
+      // this is defense in depth so the avatar never depends on that alone).
+      className={`h-[22px] w-[22px] shrink-0 rounded-full ${className}`}
     />
   );
 }
@@ -219,7 +223,7 @@ export function ChatThread({ workspaceId }: { workspaceId: string }) {
   }
 
   return (
-    <div className="flex h-[calc(100vh-160px)] flex-col rounded-xl border border-[var(--gray-05)] bg-[var(--gray-01)]">
+    <div className="flex min-h-0 flex-1 flex-col">
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
         <div className="mx-auto flex max-w-[720px] flex-col gap-6">
           {!loaded ? (
@@ -244,7 +248,7 @@ export function ChatThread({ workspaceId }: { workspaceId: string }) {
                     </p>
                   </div>
                 ) : (
-                  <div key={m.id} className={`flex gap-3 ${isNew ? "chat-msg-enter" : ""}`}>
+                  <div key={m.id} className={`flex items-start gap-3 ${isNew ? "chat-msg-enter" : ""}`}>
                     <JaceAvatar className="mt-0.5" />
                     <div className="min-w-0 flex-1">
                       <ChatMarkdown text={m.text} workspaceId={workspaceId} />
@@ -254,7 +258,7 @@ export function ChatThread({ workspaceId }: { workspaceId: string }) {
               })}
 
               {approvals.map((a) => (
-                <div key={a.id} className="flex gap-3">
+                <div key={a.id} className="flex items-start gap-3">
                   <JaceAvatar className="mt-0.5" />
                   <div className="flex min-w-0 flex-1 flex-col gap-2.5 rounded-xl border border-[var(--gray-05)] bg-[var(--gray-02)] px-4 py-3.5">
                     <div className="flex flex-wrap items-center gap-2">
@@ -294,7 +298,7 @@ export function ChatThread({ workspaceId }: { workspaceId: string }) {
         </div>
       </div>
 
-      <div className="border-t border-[var(--gray-05)] p-3 sm:px-8 sm:py-4">
+      <div className="p-3 sm:px-8 sm:py-4">
         <form ref={formRef} onSubmit={handleSend} className="mx-auto flex max-w-[720px] items-end gap-2">
           <div className="flex flex-1 items-end rounded-2xl border border-[var(--gray-05)] bg-[var(--gray-02)] px-3.5 py-2 transition-colors focus-within:border-[var(--gray-08)]">
             <textarea

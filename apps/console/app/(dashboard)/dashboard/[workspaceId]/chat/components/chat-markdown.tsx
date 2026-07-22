@@ -5,7 +5,12 @@ import Link from "next/link";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, CircleDot, Copy, FileCode, GitPullRequest, Target } from "lucide-react";
-import { linkifyGoalReferences, parseGithubLink, type GithubLinkInfo } from "./chat-helpers";
+import {
+  GOAL_REFERENCE_HREF_PREFIX,
+  linkifyGoalReferences,
+  parseGithubLink,
+  type GithubLinkInfo,
+} from "./chat-helpers";
 
 /**
  * Renders Jace's reply text as real markdown (#1288 chat rework) — headings,
@@ -16,12 +21,16 @@ import { linkifyGoalReferences, parseGithubLink, type GithubLinkInfo } from "./c
  * without `rehype-raw` it never renders raw HTML found in the source text,
  * so no separate sanitizer is added here. `remark-gfm` only adds parsing for
  * tables/strikethrough/autolinks/task lists; it doesn't touch the HTML
- * escaping behavior.
+ * escaping behavior. Note this ALSO means `react-markdown`'s default
+ * `urlTransform` runs on every href (protocol allowlist: http(s)/irc(s)/
+ * mailto/xmpp) — which is exactly why goal references use a relative-path
+ * sentinel (`GOAL_REFERENCE_HREF_PREFIX`) rather than a custom URI scheme;
+ * see that constant's own doc-comment in `chat-helpers.ts`.
  *
  * Rich structured parts, client-side (design decision — see the PR body):
  * rather than a server-emitted `parts`/`blocks` JSON column, this is a
  * client-side-only pass — `linkifyGoalReferences` rewrites the
- * `(goal:<slug>)` stamp convention (`schema/goals.ts`) into a `goal://<slug>`
+ * `(goal:<slug>)` stamp convention (`schema/goals.ts`) into a sentinel
  * markdown link BEFORE handoff to `ReactMarkdown`, so both goal references
  * and GitHub PR/issue/file links flow through the SAME `a` component
  * override below — one link-rendering path, not two renderers.
@@ -52,8 +61,10 @@ export function ChatMarkdown({ text, workspaceId }: { text: string; workspaceId:
     },
     a({ href, children }) {
       if (!href) return <>{children}</>;
-      if (href.startsWith("goal://")) {
-        return <GoalChip workspaceId={workspaceId} slug={href.slice("goal://".length)} />;
+      if (href.startsWith(GOAL_REFERENCE_HREF_PREFIX)) {
+        return (
+          <GoalChip workspaceId={workspaceId} slug={href.slice(GOAL_REFERENCE_HREF_PREFIX.length)} />
+        );
       }
       const info = parseGithubLink(href);
       if (info) return <GithubLinkChip href={href} info={info} />;

@@ -116,15 +116,35 @@ export function parseGithubLink(href: string): GithubLinkInfo | null {
 const GOAL_STAMP_RE = /\(goal:([a-z0-9-]+)\)/gi;
 
 /**
+ * The sentinel href prefix a linkified goal reference resolves to — a
+ * relative-looking PATH, deliberately NOT a custom URI scheme (no
+ * `goal://`): `react-markdown`'s default `urlTransform`
+ * (`defaultUrlTransform`, react-markdown's own security default) only
+ * allows a fixed protocol allowlist (`http(s)`, `irc(s)`, `mailto`, `xmpp`)
+ * and silently rewrites anything that LOOKS like an unrecognized protocol
+ * (a colon before the first `/`/`?`/`#`) down to an empty string — which
+ * `chat-markdown.tsx`'s `a` override would then render as plain, unlinked
+ * text. A string with no colon before its first `/` reads as relative, so
+ * `defaultUrlTransform` passes it through untouched. (Caught live: an
+ * earlier `goal://<slug>` version rendered as bare text in the browser —
+ * see this PR's own verification notes.)
+ */
+export const GOAL_REFERENCE_HREF_PREFIX = "/__goal_ref__/";
+
+/**
  * Rewrite any `(goal:<slug>)` stamp in Jace's raw markdown text into a
- * `goal://<slug>` markdown link BEFORE handing the text to the markdown
- * renderer — this lets every "special renderable reference" (GitHub links,
- * goal references) flow through the ONE link-rendering path
- * (`chat-markdown.tsx`'s `a` component override) instead of adding a second,
- * bespoke text-scanning renderer. The link's own visible text is never
- * shown (the renderer recomputes the chip's label from the `goal://` href),
- * so what's substituted here doesn't matter beyond being non-empty.
+ * sentinel markdown link (`GOAL_REFERENCE_HREF_PREFIX<slug>`) BEFORE handing
+ * the text to the markdown renderer — this lets every "special renderable
+ * reference" (GitHub links, goal references) flow through the ONE
+ * link-rendering path (`chat-markdown.tsx`'s `a` component override)
+ * instead of adding a second, bespoke text-scanning renderer. The link's own
+ * visible text is never shown (the renderer recomputes the chip's label
+ * from the href), so what's substituted here doesn't matter beyond being
+ * non-empty.
  */
 export function linkifyGoalReferences(text: string): string {
-  return text.replace(GOAL_STAMP_RE, (_match, slug: string) => `[Goal: ${slug}](goal://${slug})`);
+  return text.replace(
+    GOAL_STAMP_RE,
+    (_match, slug: string) => `[Goal: ${slug}](${GOAL_REFERENCE_HREF_PREFIX}${slug})`
+  );
 }

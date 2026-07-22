@@ -1,8 +1,8 @@
 import { notFound } from "next/navigation";
 import { getMembership, getSession } from "../../../../../lib/cached";
 import { isConsoleChatEnabled } from "../../../../../lib/chat/feature-flags";
-import { PageHeader } from "../../../../components/page-header";
-import { ChatThread } from "./components/chat-thread";
+import { chatModelOptions, DEFAULT_CHAT_MODEL_ID } from "../../../../../lib/chat/models";
+import { ChatSurface } from "./components/chat-surface";
 
 /**
  * Console chat (#1288; redesign spec §4 Chat) — a workspace member's own
@@ -51,12 +51,18 @@ export default async function ChatPage({
 
   if (!isConsoleChatEnabled(workspaceId)) return notFound();
 
+  // Model options + their enabled flags are computed HERE (server-side) from
+  // the routing config so the routing env never reaches the browser — the
+  // client only ever receives `{ id, label, enabled }`. See `lib/chat/models.ts`.
+  const models = chatModelOptions();
+
   return (
     <div className="-m-6 flex h-[calc(100vh-3rem)] flex-col">
-      <div className="shrink-0 px-6 pt-5 pb-3">
-        <PageHeader title="Chat" subtitle="Talk to Jace right from the dashboard." />
-      </div>
-      <ChatThread workspaceId={workspaceId} />
+      <ChatSurface
+        workspaceId={workspaceId}
+        models={models}
+        defaultModelId={DEFAULT_CHAT_MODEL_ID}
+      />
     </div>
   );
 }

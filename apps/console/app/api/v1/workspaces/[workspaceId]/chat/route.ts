@@ -10,7 +10,12 @@ import {
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 import { isConsoleChatEnabled } from "../../../../../../lib/chat/feature-flags";
-import { consoleConversationKey } from "../../../../../../lib/chat/conversation-key";
+import { consoleConversationKey, parseThreadN } from "../../../../../../lib/chat/conversation-key";
+import {
+  DEFAULT_CHAT_MODEL_ID,
+  isChatModelEnabled,
+  isKnownChatModelId,
+} from "../../../../../../lib/chat/models";
 
 const MAX_TEXT_LENGTH = 8000;
 
@@ -70,7 +75,15 @@ export async function GET(
     afterSeqParam !== null && afterSeqParam !== "" ? parseInt(afterSeqParam, 10) : 0;
   const afterSeq = Number.isFinite(parsedAfterSeq) ? parsedAfterSeq : 0;
 
-  const conversationKey = consoleConversationKey(session.user.id);
+  // Optional `?n=` selects which of this member's own threads to read
+  // (`console:<userId>:<n>`); absent = the default single thread, so pre-
+  // multi-thread callers are unchanged. A present-but-invalid value 400s.
+  const n = parseThreadN(request.nextUrl.searchParams.get("n"));
+  if (n === null) {
+    return NextResponse.json({ error: "n must be a positive integer" }, { status: 400 });
+  }
+
+  const conversationKey = consoleConversationKey(session.user.id, n);
   const [messages, allPending] = await Promise.all([
     listJaceMessagesSince(workspaceId, conversationKey, afterSeq),
     pendingApprovalsForWorkspace(workspaceId),
@@ -118,7 +131,11 @@ export async function POST(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const body = (await request.json().catch(() => ({}))) as { text?: string };
+  const body = (await request.json().catch(() => ({}))) as {
+    text?: string;
+    n?: unknown;
+    model?: unknown;
+  };
   const text = typeof body.text === "string" ? body.text.trim() : "";
   if (!text) {
     return NextResponse.json({ error: "text is required" }, { status: 400 });
@@ -130,7 +147,30 @@ export async function POST(
     );
   }
 
-  const conversationKey = consoleConversationKey(session.user.id);
+  // Which of this member's own threads this send targets (default 1). A
+  // present-but-invalid `n` 400s rather than silently defaulting.
+  const n = parseThreadN(body.n);
+  if (n === null) {
+    return NextResponse.json({ error: "n must be a positive integer" }, { status: 400 });
+  }
+
+  // The model the sender picked in the header dropdown. Absent = the default
+  // model. A present model must be one we KNOW and that currently resolves to
+  // a running Jace endpoint (`isChatModelEnabled`) — never a dead selection
+  // that would route nowhere. The dispatcher does the actual endpoint routing.
+  let model = DEFAULT_CHAT_MODEL_ID;
+  if (body.model !== undefined && body.model !== null && body.model !== "") {
+    const requested = String(body.model).trim();
+    if (!isKnownChatModelId(requested)) {
+      return NextResponse.json({ error: "unknown model" }, { status: 400 });
+    }
+    if (!isChatModelEnabled(requested)) {
+      return NextResponse.json({ error: "model is not enabled" }, { status: 400 });
+    }
+    model = requested;
+  }
+
+  const conversationKey = consoleConversationKey(session.user.id, n);
 
   // Written synchronously so the member's OWN message renders immediately —
   // before Jace's turn even starts, let alone completes.
@@ -149,7 +189,7 @@ export async function POST(
     senderId: session.user.id,
     senderDisplay: session.user.name ?? "",
     providerMessageId: randomUUID(),
-    payload: { text },
+    payload: { text, model },
   });
 
   // Fire-and-forget kick (mirrors every channel webhook route's own

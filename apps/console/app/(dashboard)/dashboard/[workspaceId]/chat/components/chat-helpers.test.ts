@@ -7,8 +7,11 @@ import {
   isAwaitingReply,
   parseGithubLink,
   linkifyGoalReferences,
+  nextThreadN,
+  formatRelativeTime,
   type ChatMessage,
   type ChatApproval,
+  type ChatThreadSummary,
 } from "./chat-helpers";
 
 function msg(seq: number, overrides: Partial<ChatMessage> = {}): ChatMessage {
@@ -165,5 +168,43 @@ describe("linkifyGoalReferences", () => {
   it("regression: the produced href survives react-markdown's REAL defaultUrlTransform unchanged (caught live in the browser: a goal:// URI-scheme version got silently stripped to '' by this exact sanitizer, rendering as unlinked plain text)", () => {
     const href = `${GOAL_REFERENCE_HREF_PREFIX}coverage-80`;
     expect(defaultUrlTransform(href)).toBe(href);
+  });
+});
+
+describe("nextThreadN", () => {
+  function thread(n: number): ChatThreadSummary {
+    return { n, title: "t", last_message_at: new Date().toISOString(), message_count: 1 };
+  }
+
+  it("is 1 when the member has no threads", () => {
+    expect(nextThreadN([])).toBe(1);
+  });
+
+  it("is one past the highest existing n (not just the count)", () => {
+    expect(nextThreadN([thread(1), thread(5), thread(3)])).toBe(6);
+  });
+});
+
+describe("formatRelativeTime", () => {
+  const now = new Date("2026-07-22T12:00:00.000Z");
+
+  it("shows 'just now' under a minute", () => {
+    expect(formatRelativeTime("2026-07-22T11:59:30.000Z", now)).toBe("just now");
+  });
+
+  it("shows minutes, hours, and days", () => {
+    expect(formatRelativeTime("2026-07-22T11:55:00.000Z", now)).toBe("5m");
+    expect(formatRelativeTime("2026-07-22T09:00:00.000Z", now)).toBe("3h");
+    expect(formatRelativeTime("2026-07-20T12:00:00.000Z", now)).toBe("2d");
+  });
+
+  it("falls back to a short date beyond a week", () => {
+    // 10 days earlier — not an m/h/d bucket, so a localized short date.
+    const out = formatRelativeTime("2026-07-12T12:00:00.000Z", now);
+    expect(out).not.toMatch(/^(just now|\d+[mhd])$/);
+  });
+
+  it("never shows a negative age for a future timestamp", () => {
+    expect(formatRelativeTime("2026-07-22T13:00:00.000Z", now)).toBe("just now");
   });
 });

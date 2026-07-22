@@ -8,6 +8,51 @@
 
 export type ChatMessageRole = "user" | "jace";
 
+/**
+ * One console chat thread in the history list (#1288 sessions UI) — the wire
+ * shape of `GET /api/v1/workspaces/:workspaceId/chat/threads` (snake_case,
+ * every console route's convention). A thread is a distinct `n` in this
+ * member's `console:<userId>:<n>` family.
+ */
+export interface ChatThreadSummary {
+  n: number;
+  title: string;
+  last_message_at: string;
+  message_count: number;
+}
+
+/**
+ * The `n` a "New chat" should use: one past the highest existing thread, or 1
+ * when the member has none yet. A brand-new thread lives only as client state
+ * (it isn't in `threads` until its first message materializes a row) — this is
+ * what lets the ＋ affordance open an empty thread without a write, matching
+ * ChatGPT (an empty new chat isn't in history yet).
+ */
+export function nextThreadN(threads: readonly ChatThreadSummary[]): number {
+  return threads.reduce((max, t) => Math.max(max, t.n), 0) + 1;
+}
+
+/**
+ * Compact relative time for the history list ("just now", "5m", "3h", "2d",
+ * else a short date). Pure so it unit-tests without a clock; `now` defaults to
+ * the current time. A future/invalid timestamp falls back to "just now" rather
+ * than showing a negative age.
+ */
+export function formatRelativeTime(iso: string, now: Date = new Date()): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "";
+  const diffMs = now.getTime() - then;
+  if (diffMs < 0) return "just now";
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  return new Date(then).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 export interface ChatMessage {
   id: string;
   seq: number;

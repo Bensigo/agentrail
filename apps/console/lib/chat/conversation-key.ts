@@ -16,3 +16,21 @@ export const CONSOLE_CHAT_THREAD_N = 1;
 export function consoleConversationKey(userId: string, n: number = CONSOLE_CHAT_THREAD_N): string {
   return `console:${userId}:${n}`;
 }
+
+/**
+ * Coerce a caller-supplied thread number (query param or JSON body field,
+ * `unknown`) to a valid positive-integer `n`, or `null` when it is malformed.
+ * ABSENT (`undefined`/`null`/empty string) resolves to the default
+ * `CONSOLE_CHAT_THREAD_N` — so a request that never names a thread keeps the
+ * exact single-thread behavior this surface had before multi-thread existed.
+ * A PRESENT-but-invalid value (non-integer, ≤ 0, garbage) returns `null` so
+ * the route can 400 rather than silently defaulting.
+ */
+export function parseThreadN(value: unknown): number | null {
+  if (value === undefined || value === null || value === "") {
+    return CONSOLE_CHAT_THREAD_N;
+  }
+  const n = typeof value === "number" ? value : Number(String(value).trim());
+  if (!Number.isInteger(n) || n <= 0) return null;
+  return n;
+}

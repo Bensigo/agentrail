@@ -303,3 +303,38 @@ test("a telegram payload keyed on workspaceId (console's field name) is rejected
     /`target\.chatId` is required/,
   );
 });
+
+// --- #1288: optional top-level `model` (the sender's picked gateway model) ---
+
+test("console: a top-level `model` rides through as a top-level field, never inside the target", () => {
+  const out = normalizeHostedInbound({
+    channel: "console",
+    message: "hi",
+    target: { workspaceId: "ws-1", conversationKey: "console:user-1:1" },
+    auth: {},
+    model: "anthropic/claude-sonnet-4.6",
+  });
+  assert.equal(out.model, "anthropic/claude-sonnet-4.6");
+  // The target stays exactly the compound console key — model is a sibling.
+  assert.deepEqual(out.target, { workspaceId: "ws-1", conversationKey: "console:user-1:1" });
+});
+
+test("console: a trimmed model is used; a blank/absent model is omitted entirely", () => {
+  const trimmed = normalizeHostedInbound({
+    channel: "console",
+    message: "hi",
+    target: { workspaceId: "ws-1", conversationKey: "console:user-1:1" },
+    auth: {},
+    model: "  z-ai/glm-5.2  ",
+  });
+  assert.equal(trimmed.model, "z-ai/glm-5.2");
+
+  const blank = normalizeHostedInbound({
+    channel: "console",
+    message: "hi",
+    target: { workspaceId: "ws-1", conversationKey: "console:user-1:1" },
+    auth: {},
+    model: "   ",
+  });
+  assert.equal("model" in blank, false);
+});

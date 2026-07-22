@@ -22,11 +22,17 @@ vi.mock("../db.js", () => ({
       }),
     })),
     select: vi.fn(),
+    execute: vi.fn(),
   },
 }));
 
 import { db } from "../db.js";
-import { appendJaceMessage, listJaceMessagesSince, hasAnyJaceReply } from "./jace_messages.js";
+import {
+  appendJaceMessage,
+  listJaceMessagesSince,
+  hasAnyJaceReply,
+  listConsoleChatThreads,
+} from "./jace_messages.js";
 
 const mockDb = vi.mocked(db);
 
@@ -172,5 +178,104 @@ describe("hasAnyJaceReply", () => {
     const chain = mockSelectRows([]);
     await hasAnyJaceReply("ws-1");
     expect(chain["where"]).toHaveBeenCalled();
+  });
+});
+
+describe("listConsoleChatThreads", () => {
+  const USER = "user-1";
+  const WS = "ws-1";
+
+  function mockExecute(rows: Array<Record<string, unknown>>) {
+    mockDb.execute = vi.fn(() => Promise.resolve(rows as never)) as never;
+  }
+
+  it("derives n from the conversation key, sets the title from the first user text, and passes counts through", async () => {
+    mockExecute([
+      {
+        conversation_key: `console:${USER}:2`,
+        message_count: 4,
+        last_message_at: new Date("2026-07-22T02:00:00Z"),
+        first_user_text: "help me ship the picker",
+      },
+      {
+        conversation_key: `console:${USER}:1`,
+        message_count: 2,
+        last_message_at: new Date("2026-07-22T01:00:00Z"),
+        first_user_text: "hello jace",
+      },
+    ]);
+
+    const threads = await listConsoleChatThreads(WS, USER);
+    expect(threads).toEqual([
+      { n: 2, title: "help me ship the picker", lastMessageAt: new Date("2026-07-22T02:00:00Z"), messageCount: 4 },
+      { n: 1, title: "hello jace", lastMessageAt: new Date("2026-07-22T01:00:00Z"), messageCount: 2 },
+    ]);
+  });
+
+  it("falls back to 'New chat' when a thread has no user message text", async () => {
+    mockExecute([
+      {
+        conversation_key: `console:${USER}:3`,
+        message_count: 1,
+        last_message_at: new Date("2026-07-22T03:00:00Z"),
+        first_user_text: null,
+      },
+      {
+        conversation_key: `console:${USER}:4`,
+        message_count: 1,
+        last_message_at: new Date("2026-07-22T04:00:00Z"),
+        first_user_text: "   ",
+      },
+    ]);
+
+    const threads = await listConsoleChatThreads(WS, USER);
+    expect(threads.map((t) => t.title)).toEqual(["New chat", "New chat"]);
+  });
+
+  it("truncates a long title to 60 chars with an ellipsis", async () => {
+    const long = "x".repeat(200);
+    mockExecute([
+      {
+        conversation_key: `console:${USER}:1`,
+        message_count: 1,
+        last_message_at: new Date("2026-07-22T00:00:00Z"),
+        first_user_text: long,
+      },
+    ]);
+
+    const [thread] = await listConsoleChatThreads(WS, USER);
+    expect(thread!.title).toHaveLength(60);
+    expect(thread!.title.endsWith("…")).toBe(true);
+  });
+
+  it("skips rows whose key suffix is not a positive integer (defensive)", async () => {
+    mockExecute([
+      {
+        conversation_key: `console:${USER}:abc`,
+        message_count: 1,
+        last_message_at: new Date(),
+        first_user_text: "junk",
+      },
+      {
+        conversation_key: `console:${USER}:0`,
+        message_count: 1,
+        last_message_at: new Date(),
+        first_user_text: "zero",
+      },
+      {
+        conversation_key: `console:${USER}:5`,
+        message_count: 1,
+        last_message_at: new Date("2026-07-22T00:00:00Z"),
+        first_user_text: "ok",
+      },
+    ]);
+
+    const threads = await listConsoleChatThreads(WS, USER);
+    expect(threads.map((t) => t.n)).toEqual([5]);
+  });
+
+  it("returns [] when the member has no threads yet", async () => {
+    mockExecute([]);
+    expect(await listConsoleChatThreads(WS, USER)).toEqual([]);
   });
 });

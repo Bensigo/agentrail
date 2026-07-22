@@ -2273,7 +2273,9 @@ export {
   appendJaceMessage,
   listJaceMessagesSince,
   hasAnyJaceReply,
+  listConsoleChatThreads,
   type AppendJaceMessageInput,
+  type ConsoleChatThread,
 } from "./jace_messages.js";
 // Jace goal loop (issue #1289; see `queries/goal_rules.ts` for the pure
 // leash+stuck-rule decision engine this all wraps, and `queries/goals.ts`

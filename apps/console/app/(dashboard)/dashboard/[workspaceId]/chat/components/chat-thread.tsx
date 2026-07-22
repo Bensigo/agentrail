@@ -75,7 +75,21 @@ function ThinkingRow() {
   );
 }
 
-export function ChatThread({ workspaceId }: { workspaceId: string }) {
+export function ChatThread({
+  workspaceId,
+  n,
+  model,
+  onMaterialize,
+}: {
+  workspaceId: string;
+  /** Which of this member's own threads this view reads/sends to (`console:<userId>:<n>`). */
+  n: number;
+  /** The gateway model id sent with each message (the header picker's selection). */
+  model: string;
+  /** Called after the FIRST message in a previously-empty thread lands — lets the
+   * parent refresh the history list so the freshly-materialized thread appears. */
+  onMaterialize?: () => void;
+}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [approvals, setApprovals] = useState<ChatApproval[]>([]);
   const [input, setInput] = useState("");
@@ -99,7 +113,7 @@ export function ChatThread({ workspaceId }: { workspaceId: string }) {
   const poll = useCallback(async () => {
     try {
       const res = await fetch(
-        `/api/v1/workspaces/${workspaceId}/chat?after_seq=${afterSeqRef.current}`
+        `/api/v1/workspaces/${workspaceId}/chat?n=${n}&after_seq=${afterSeqRef.current}`
       );
       if (!res.ok) return;
       const body = (await res.json()) as { messages: ChatMessage[]; approvals: ChatApproval[] };
@@ -119,7 +133,7 @@ export function ChatThread({ workspaceId }: { workspaceId: string }) {
     } finally {
       if (mountedRef.current) setLoaded(true);
     }
-  }, [workspaceId]);
+  }, [workspaceId, n]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -163,13 +177,16 @@ export function ChatThread({ workspaceId }: { workspaceId: string }) {
     e.preventDefault();
     const text = input.trim();
     if (!text || sending) return;
+    // A previously-empty thread becomes real with this send — notify the
+    // parent afterward so the freshly-materialized thread joins history.
+    const wasEmpty = messages.length === 0;
     setSending(true);
     setError(null);
     try {
       const res = await fetch(`/api/v1/workspaces/${workspaceId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, n, model }),
       });
       const body = (await res.json().catch(() => ({}))) as {
         message?: ChatMessage;
@@ -184,6 +201,7 @@ export function ChatThread({ workspaceId }: { workspaceId: string }) {
         return merged;
       });
       setInput("");
+      if (wasEmpty) onMaterialize?.();
       // The member's own send always scrolls to bottom regardless of
       // current scroll position — sending is a deliberate action, unlike a
       // background poll arrival, which respects NEAR_BOTTOM_THRESHOLD_PX.

@@ -1,4 +1,3 @@
-import Image from "next/image";
 import { DEMO_TASK_INPUT } from "./_conversation-demo-data";
 
 /**
@@ -77,16 +76,18 @@ export function UseCases() {
   );
 }
 
+/** One visual grammar for every card (owner feedback 2026-07-22: no
+ *  image-on-one-card-only inconsistency): each case gets a small mono ink
+ *  panel. The mascot renders live outside the stack — hero-adjacent phone,
+ *  channels background, closing wave. */
 function CaseVisual({ visual }: { visual: UseCase["visual"] }) {
   if (visual === "overnight") {
     return (
-      <Image
-        src="/jace-working.png"
-        alt=""
-        width={220}
-        height={220}
-        className="-rotate-2 shrink-0"
-      />
+      <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
+        <span>tonight: hand me issues</span>
+        <span>overnight: I work</span>
+        <span className="text-[var(--gray-12)]">morning: review my PRs</span>
+      </div>
     );
   }
   if (visual === "chat") {

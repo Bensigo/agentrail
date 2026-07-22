@@ -152,10 +152,11 @@ describe("(marketing) craft pins — the mascot IS Jace (TASTE.md canon)", () =>
     expect(source).toMatch(/src="\/jace-avatar\.png"/);
   });
 
-  it("the overnight use-case carries the canonical working render, exactly once", () => {
-    const source = readSibling("_use-cases.tsx");
-    const occurrences = source.match(/src="\/jace-working\.png"/g) ?? [];
-    expect(occurrences.length).toBe(1);
+  it("the channels scene carries the canonical working render as its background, exactly once (use-case cards stay image-free — one visual grammar)", () => {
+    const channels = readSibling("_channels.tsx");
+    expect((channels.match(/src="\/jace-working\.png"/g) ?? []).length).toBe(1);
+    const useCases = readSibling("_use-cases.tsx");
+    expect(useCases).not.toMatch(/src="\/jace/);
   });
 
   it("Jace's demo bubbles carry the mascot avatar (decorative alt, name text adjacent)", () => {

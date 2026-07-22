@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import {
   TelegramBrand,
   SlackBrand,
@@ -142,7 +143,18 @@ export function Channels({
       {staticStack}
       <div ref={containerRef} className="relative hidden h-[280vh] sm:block">
         <div className="sticky top-24 flex h-[calc(100vh-8rem)] items-center">
-          <div className="grid w-full grid-cols-[auto_1fr] items-center gap-16">
+          {/* Jace on his beanbag, working in the corner of the scene —
+              fills the paper (owner feedback 2026-07-22: section read as
+              empty) without competing with the interactive panel. */}
+          <Image
+            src="/jace-working.png"
+            alt=""
+            width={300}
+            height={300}
+            aria-hidden
+            className="pointer-events-none absolute right-0 bottom-0 rotate-2 select-none"
+          />
+          <div className="relative grid w-full grid-cols-[auto_1fr] items-center gap-16">
             {/* Channel rail — the active stop is a lemon ink-bordered chip
                 (no white cards, owner personality pass 2026-07-22). */}
             <div className="flex flex-col gap-3">

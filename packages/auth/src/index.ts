@@ -7,7 +7,37 @@ import {
   accounts,
   sessions,
   verificationTokens,
+  persistGithubAccountTokens,
 } from "@agentrail/db-postgres";
+
+/**
+ * Incremental OAuth (#1294). Sign-in asks GitHub for IDENTITY scopes only, so a
+ * first-time visitor's very first click never faces a full-`repo` consent
+ * prompt before they've seen anything. The broader `repo` scope is requested
+ * in-context later — the first time the user connects or creates a repository —
+ * via an incremental authorization that re-runs GitHub OAuth with
+ * {@link GITHUB_REPO_SCOPE} (see the console's repos connect flow). GitHub shows
+ * the `repo` consent only at that point, and the escalated token + scope are
+ * persisted by the `signIn` callback below.
+ *
+ * MIGRATION: existing users who signed in under the OLD broad scope already hold
+ * a `repo`-scoped token in their `accounts` row and keep working unchanged — the
+ * connect flow reads the ACTUAL stored `accounts.scope` (see `hasRepoScope`), so
+ * only identity-only (new) users are asked to escalate. Whenever a token's scope
+ * does need refreshing, that user re-authorizes with GitHub ONE time (the
+ * "Grant GitHub access" affordance) and the `signIn` callback writes the new
+ * token + scope back.
+ */
+export const GITHUB_IDENTITY_SCOPE = "read:user user:email";
+
+/**
+ * Identity scopes plus full `repo`. Passed as the `authorizationParams.scope`
+ * when a user escalates at connect/create-repo time so the stored OAuth token
+ * can list private repos, push branches, open PRs and create issues for the
+ * GitHub connector. `repo` (not `public_repo`) because the connector must reach
+ * private repositories too.
+ */
+export const GITHUB_REPO_SCOPE = "read:user user:email repo";
 
 const result: NextAuthResult = NextAuth({
   adapter: DrizzleAdapter(db, {
@@ -20,19 +50,47 @@ const result: NextAuthResult = NextAuth({
     GitHub({
       clientId: process.env["GITHUB_CLIENT_ID"]!,
       clientSecret: process.env["GITHUB_CLIENT_SECRET"]!,
-      // Request the `repo` scope so the stored OAuth access_token can read
-      // issues, post comments, and create issues for the GitHub connector
-      // (MVP). The default GitHub scope lacks repo access. Existing users must
-      // re-login once to grant the broadened scope.
+      // Identity-only at sign-in (#1294): the front-door consent stays minimal.
+      // `repo` is escalated in-context at connect/create-repo time, not here.
       authorization: {
-        params: { scope: "read:user user:email repo" },
+        params: { scope: GITHUB_IDENTITY_SCOPE },
       },
     }),
   ],
   pages: {
     signIn: "/login",
+    // Branded, plain-language failure page (denied/failed consent) with a retry
+    // path back to sign-in, instead of NextAuth's unbranded default. #1294 AC3.
+    error: "/auth-error",
   },
   callbacks: {
+    // Persist the freshest GitHub token + granted scope on every GitHub sign-in.
+    // Auth.js writes the accounts row only once (first link via linkAccount) and
+    // does NOT update it on later sign-ins, so a scope ESCALATION
+    // (identity-only -> repo, #1294) would otherwise never reach the DB. On a
+    // brand-new sign-in the row does not exist yet — this updates 0 rows and the
+    // adapter's linkAccount inserts it; on a re-auth/escalation it refreshes the
+    // stored token + scope. Wrapped so a persistence hiccup never blocks login.
+    async signIn({ account }) {
+      if (account?.provider === "github" && account.providerAccountId) {
+        try {
+          await persistGithubAccountTokens({
+            providerAccountId: account.providerAccountId,
+            access_token: account.access_token,
+            scope: account.scope,
+            token_type: account.token_type,
+            expires_at: account.expires_at,
+            refresh_token: account.refresh_token,
+          });
+        } catch (err) {
+          console.error(
+            "[auth] failed to persist GitHub account tokens on sign-in",
+            err
+          );
+        }
+      }
+      return true;
+    },
     async redirect({ url, baseUrl }) {
       // Route to the supplied URL if it's within this app; otherwise root.
       // The root page handles workspace-aware routing to /dashboard/{id} or /setup.

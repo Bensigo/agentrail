@@ -42,7 +42,12 @@ export default defineTool({
     "GitHub repo (connected on the AgentRail console) — no repo/token input " +
     "needed. If the workspace hasn't connected a repo yet, this returns " +
     "{ connected: false, message } with guidance to relay to the user instead " +
-    "of failing.",
+    "of failing. If you stamp the body with a goal reference (\"Goal: " +
+    "<objective> (goal:<slug>)\", as instructed when asked to file the next " +
+    "issue toward a goal) and that goal's leash is already exhausted or the " +
+    "goal is no longer active, this returns { blocked: true, message } " +
+    "INSTEAD of creating anything — relay that message verbatim rather than " +
+    "retrying or filing without the stamp.",
   // Always require a human approve/reject before this tool executes.
   approval: (ctx) => consoleGatedApproval(ctx),
   inputSchema: z.object({

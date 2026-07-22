@@ -65,6 +65,7 @@ import {
   isGoalLoopEnabled,
   createGoal,
   findActiveGoalForIssue,
+  findActiveGoalBySlug,
   recordIssueFiled,
   recordOutcomeAndTransition,
   pauseGoal,
@@ -161,6 +162,20 @@ describe("findActiveGoalForIssue", () => {
     mockState.selectQueue.push([{ goalId: "goal-1" }]);
     mockState.selectQueue.push([activeGoal({ status: "leashed" })]);
     const result = await findActiveGoalForIssue("ws-1", "42");
+    expect(result).toBeNull();
+  });
+});
+
+describe("findActiveGoalBySlug", () => {
+  it("returns the goal when an active goal matches the slug", async () => {
+    mockState.selectQueue.push([activeGoal({ slug: "reach-80-coverage" })]);
+    const result = await findActiveGoalBySlug("ws-1", "reach-80-coverage");
+    expect(result?.slug).toBe("reach-80-coverage");
+  });
+
+  it("returns null when no goal matches the slug (including a slug that names an already-terminal goal — the WHERE clause filters status='active' unconditionally, so this is the pre-file leash gate's own safety net against a stamp naming a leashed/paused/reached/abandoned goal)", async () => {
+    mockState.selectQueue.push([]);
+    const result = await findActiveGoalBySlug("ws-1", "unknown-or-terminal-slug");
     expect(result).toBeNull();
   });
 });

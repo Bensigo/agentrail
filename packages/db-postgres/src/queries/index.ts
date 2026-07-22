@@ -2259,3 +2259,16 @@ export {
   latestGrantEvent,
   type LatestGrantEventRow,
 } from "./workspace_grants.js";
+
+// Console chat message queries (issue #1288; see `schema/jace_messages.ts`
+// for the table shape and the WHY behind the design). appendJaceMessage is
+// the one write path, called both by the console's send endpoint (the
+// member's own `role: "user"` row) and the worker/dispatch path once an Eve
+// turn completes (`role: "jace"` — see `apps/jace/agent/channels/console.ts`).
+// listJaceMessagesSince is the one read path: the initial thread load and
+// every subsequent poll, both keyed by the same `afterSeq` cursor.
+export {
+  appendJaceMessage,
+  listJaceMessagesSince,
+  type AppendJaceMessageInput,
+} from "./jace_messages.js";

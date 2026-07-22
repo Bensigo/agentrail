@@ -12,7 +12,7 @@ import {
 describe("CHAT_MODELS", () => {
   it("lists the default model first (the one Jace actually runs today)", () => {
     expect(CHAT_MODELS[0]!.id).toBe(DEFAULT_CHAT_MODEL_ID);
-    expect(DEFAULT_CHAT_MODEL_ID).toBe("anthropic/claude-sonnet-4.6");
+    expect(DEFAULT_CHAT_MODEL_ID).toBe("z-ai/glm-4.6");
   });
 
   it("has unique ids", () => {
@@ -58,10 +58,10 @@ describe("enabledChatModelIds / isChatModelEnabled", () => {
   });
 
   it("does not enable a non-default model until an endpoint is wired for it", () => {
-    expect(isChatModelEnabled("z-ai/glm-5.2", {})).toBe(false);
+    expect(isChatModelEnabled("moonshotai/kimi-k2", {})).toBe(false);
     expect(
-      isChatModelEnabled("z-ai/glm-5.2", {
-        CONSOLE_MODEL_ENDPOINTS: "z-ai/glm-5.2=http://127.0.0.1:2002",
+      isChatModelEnabled("moonshotai/kimi-k2", {
+        CONSOLE_MODEL_ENDPOINTS: "moonshotai/kimi-k2=http://127.0.0.1:2002",
       })
     ).toBe(true);
   });
@@ -76,9 +76,9 @@ describe("chatModelOptions", () => {
 
   it("flags a wired non-default model as enabled too", () => {
     const options = chatModelOptions({
-      CONSOLE_MODEL_ENDPOINTS: "anthropic/claude-opus-4.8=http://127.0.0.1:2001",
+      CONSOLE_MODEL_ENDPOINTS: "anthropic/claude-sonnet-5=http://127.0.0.1:2001",
     });
     const enabled = options.filter((o) => o.enabled).map((o) => o.id).sort();
-    expect(enabled).toEqual(["anthropic/claude-opus-4.8", DEFAULT_CHAT_MODEL_ID].sort());
+    expect(enabled).toEqual(["anthropic/claude-sonnet-5", DEFAULT_CHAT_MODEL_ID].sort());
   });
 });

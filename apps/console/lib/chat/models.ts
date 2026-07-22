@@ -4,14 +4,18 @@
  * decides which of them actually resolve to a running Jace.
  *
  * WHY A ROUTING MAP (and not a per-turn model switch): a Jace/Eve process is
- * bound to ONE model at boot (`apps/jace/agent/agent.ts` -> `chooseModel`);
- * Eve's turn API (`receive(module, { message, target, auth })`) carries no
- * per-turn model override, so a single running Jace can only ever answer with
- * its one configured model. Multi-model is therefore a DEPLOY concern: stand
- * up a second Jace instance pinned to model X, then map `X -> that instance's
- * host` here. The console dispatcher (`lib/channel-dispatch.ts`) reads the map
- * and POSTs the turn to the mapped host's hosted-inbound door; an unmapped
- * model falls back to the default `EVE_HOST`.
+ * bound to ONE model at boot (`apps/jace/agent/agent.ts` -> `chooseModel`; in
+ * prod that's the OpenRouter openai-compatible endpoint + a single
+ * `JACE_MODEL_ID`). Eve's agent definition types the model as a fixed
+ * `readonly model: LanguageModel` and its turn API (`receive(module, { message,
+ * target, auth })`) carries no per-turn override — so a single running Jace can
+ * only ever answer with its one configured model, EVEN THOUGH OpenRouter itself
+ * serves every model on this list through the same key. Multi-model is
+ * therefore a DEPLOY concern: run a second Jace instance whose `JACE_MODEL_ID`
+ * is model X (same OpenRouter key), then map `X -> that instance's host` here.
+ * The console dispatcher (`lib/channel-dispatch.ts`) reads the map and POSTs the
+ * turn to the mapped host's hosted-inbound door; an unmapped model falls back
+ * to the default `EVE_HOST` (the always-running default Jace).
  *
  * HONESTY RULE (no dead control): the dropdown only lets a member SELECT a
  * model that resolves to a real endpoint — the default model (whose endpoint
@@ -22,41 +26,41 @@
  * is upfront about it, never a switch that silently does nothing.
  *
  * `CONSOLE_MODEL_ENDPOINTS` format: comma-separated `modelId=baseUrl` pairs,
- * e.g. `anthropic/claude-opus-4.8=http://127.0.0.1:2001,z-ai/glm-5.2=http://127.0.0.1:2002`.
+ * e.g. `anthropic/claude-sonnet-5=https://jace-claude.up.railway.app,moonshotai/kimi-k2=https://jace-kimi.up.railway.app`.
  * `baseUrl` is the Jace host root (the dispatcher appends the hosted-inbound
  * path itself), so no trailing `/eve/...`.
  */
 
 export interface ChatModel {
-  /** Gateway model id — MUST match the model the target Jace instance is booted with. */
+  /** OpenRouter model id — MUST exactly match the `JACE_MODEL_ID` the target Jace instance is booted with. */
   id: string;
   /** Human label shown in the dropdown. */
   label: string;
 }
 
 /**
- * The model Jace actually runs today (`apps/jace/agent/lib/model.core.mjs`'s
- * `GATEWAY_MODEL_ID`). Its endpoint is the default `EVE_HOST`, so it is ALWAYS
- * enabled — the one option guaranteed to route to a running Jace out of the box.
+ * The model the DEFAULT Jace actually runs today — the `JACE_MODEL_ID` on the
+ * primary `jace` service (OpenRouter `z-ai/glm-4.6`). Its endpoint is the
+ * default `EVE_HOST`, so it is ALWAYS enabled — the one option guaranteed to
+ * route to a running Jace out of the box. If the default service's
+ * `JACE_MODEL_ID` ever changes, change this in lockstep (they MUST agree, or
+ * the picker mislabels which model actually answers on the default host).
  */
-export const DEFAULT_CHAT_MODEL_ID = "anthropic/claude-sonnet-4.6";
+export const DEFAULT_CHAT_MODEL_ID = "z-ai/glm-4.6";
 
 /**
- * The models the picker offers. Ids/labels are the real gateway ids this repo
- * already references (`apps/console/lib/alignment/candidates.ts`'s
- * `MODEL_SEATS`) so a wired endpoint's model id lines up with a listed option.
- * The default is first. The rest are display options — they only become
- * selectable once an operator adds them to `CONSOLE_MODEL_ENDPOINTS` AND runs
- * a Jace pinned to that id.
+ * The models the picker offers — the exact OpenRouter ids each dedicated Jace
+ * instance is booted with (`JACE_MODEL_ID`), so a wired `CONSOLE_MODEL_ENDPOINTS`
+ * entry, the running instance, and the listed option all share one id. The
+ * default (GLM 4.6, the always-on primary `jace`) is first; each of the others
+ * becomes selectable once its instance is running AND mapped in
+ * `CONSOLE_MODEL_ENDPOINTS`.
  */
 export const CHAT_MODELS: readonly ChatModel[] = [
-  { id: DEFAULT_CHAT_MODEL_ID, label: "Claude Sonnet 4.6" },
-  { id: "anthropic/claude-opus-4.8", label: "Claude Opus 4.8" },
-  { id: "anthropic/claude-haiku-4.5", label: "Claude Haiku 4.5" },
-  { id: "z-ai/glm-5.2", label: "GLM 5.2" },
-  { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro" },
-  { id: "moonshotai/kimi-k3", label: "Kimi K3" },
-  { id: "openai/gpt-5.1-codex", label: "GPT-5.1 Codex" },
+  { id: DEFAULT_CHAT_MODEL_ID, label: "GLM 4.6" },
+  { id: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5" },
+  { id: "moonshotai/kimi-k2", label: "Kimi K2" },
+  { id: "deepseek/deepseek-chat", label: "DeepSeek V3" },
 ];
 
 /** True when `id` is one of the models the picker knows about. */

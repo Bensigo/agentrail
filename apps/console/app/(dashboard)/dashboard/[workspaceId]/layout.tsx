@@ -9,6 +9,7 @@ import {
   getWorkspacesForUser,
   getMembership,
 } from "../../../../lib/cached";
+import { isConsoleChatEnabled } from "../../../../lib/chat/feature-flags";
 
 type SidebarUser = {
   name?: string | null;
@@ -24,11 +25,13 @@ async function SidebarWithWorkspaces({
   workspaceId,
   user,
   signOutAction,
+  chatEnabled,
 }: {
   userId: string;
   workspaceId: string;
   user: SidebarUser;
   signOutAction: () => Promise<void>;
+  chatEnabled: boolean;
 }) {
   const workspaces = await getWorkspacesForUser(userId);
   return (
@@ -37,6 +40,7 @@ async function SidebarWithWorkspaces({
       workspaceId={workspaceId}
       user={user}
       signOutAction={signOutAction}
+      chatEnabled={chatEnabled}
     />
   );
 }
@@ -67,6 +71,8 @@ export default async function WorkspaceLayout({
     await signOut({ redirectTo: "/login" });
   }
 
+  const chatEnabled = isConsoleChatEnabled(workspaceId);
+
   return (
     <div className="flex min-h-screen">
       <Suspense
@@ -76,6 +82,7 @@ export default async function WorkspaceLayout({
             workspaceId={workspaceId}
             user={session.user}
             signOutAction={handleSignOut}
+            chatEnabled={chatEnabled}
           />
         }
       >
@@ -84,6 +91,7 @@ export default async function WorkspaceLayout({
           workspaceId={workspaceId}
           user={session.user}
           signOutAction={handleSignOut}
+          chatEnabled={chatEnabled}
         />
       </Suspense>
       <div className="flex-1 pl-[220px] max-md:pl-12">

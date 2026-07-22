@@ -14,6 +14,7 @@ import {
   Plug,
   GitMerge,
   Cpu,
+  MessageCircle,
 } from "lucide-react";
 
 export interface NavItem {
@@ -49,6 +50,16 @@ export const YOUR_ENGINEER_ZONE: NavZone = {
     { label: "Approvals", href: "approvals", icon: Inbox },
   ],
 };
+
+/**
+ * The console chat (#1288) nav item — deliberately NOT baked into
+ * `YOUR_ENGINEER_ZONE.items` above (that array's exact shape is asserted by
+ * `sidebar-nav.test.ts`, and this item must not appear at all for a
+ * workspace `CONSOLE_CHAT_ENABLED` is off for). `sidebar.tsx` splices this
+ * in only when its `chatEnabled` prop — computed server-side in
+ * `dashboard/[workspaceId]/layout.tsx` via `isConsoleChatEnabled` — is true.
+ */
+export const CHAT_NAV_ITEM: NavItem = { label: "Chat", href: "chat", icon: MessageCircle };
 
 // Demoted, existing evidence pages — collapsed by default, reached primarily
 // by drilling into a work item (spec §3).

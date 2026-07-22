@@ -222,3 +222,80 @@ test("every supported channel has a target key", () => {
     );
   }
 });
+
+// --- #1289 (Jace goal loop) — optional enrichment fields ---
+// The console's notify.ts has sent workspaceId/outcome/issueNumber/costUsd
+// in this payload since before this feature existed (#1338); these are the
+// first tests to exercise them being READ. Every field is additive and
+// best-effort — see the module's own comment on why a missing/malformed
+// value is omitted rather than throwing.
+
+test("normalizeRunOutcome passes through workspaceId/issueExternalId/outcome/costUsd when present and well-formed", () => {
+  const out = normalizeRunOutcome({
+    channel: "telegram",
+    message: "AgentRail: PR ready — issue #42",
+    target: { chatId: "12345" },
+    workspaceId: "ws-1",
+    issueNumber: "42",
+    outcome: "green",
+    costUsd: 1.23,
+  });
+  assert.equal(out.workspaceId, "ws-1");
+  assert.equal(out.issueExternalId, "42");
+  assert.equal(out.outcome, "green");
+  assert.equal(out.costUsd, 1.23);
+});
+
+test("normalizeRunOutcome coerces a numeric issueNumber to a string issueExternalId", () => {
+  const out = normalizeRunOutcome({
+    channel: "telegram",
+    message: "hi",
+    target: { chatId: "1" },
+    issueNumber: 42,
+  });
+  assert.equal(out.issueExternalId, "42");
+});
+
+test("normalizeRunOutcome omits every enrichment field when none are present — byte-identical to before #1289 (existing deepEqual test at the top of this file pins this)", () => {
+  const out = normalizeRunOutcome({
+    channel: "telegram",
+    message: "hi",
+    target: { chatId: "1" },
+  });
+  assert.equal("workspaceId" in out, false);
+  assert.equal("issueExternalId" in out, false);
+  assert.equal("outcome" in out, false);
+  assert.equal("costUsd" in out, false);
+});
+
+test("normalizeRunOutcome omits an unrecognized outcome value rather than throwing (best-effort enrichment, never breaks the core platform-notify path)", () => {
+  const out = normalizeRunOutcome({
+    channel: "telegram",
+    message: "hi",
+    target: { chatId: "1" },
+    outcome: "success", // the run_outcomes-table vocabulary, NOT this wire's vocabulary — deliberately rejected
+  });
+  assert.equal("outcome" in out, false);
+});
+
+test("normalizeRunOutcome omits a non-finite costUsd rather than throwing", () => {
+  const out = normalizeRunOutcome({
+    channel: "telegram",
+    message: "hi",
+    target: { chatId: "1" },
+    costUsd: Number.NaN,
+  });
+  assert.equal("costUsd" in out, false);
+});
+
+test("normalizeRunOutcome omits a blank workspaceId/issueNumber rather than passing through whitespace", () => {
+  const out = normalizeRunOutcome({
+    channel: "telegram",
+    message: "hi",
+    target: { chatId: "1" },
+    workspaceId: "   ",
+    issueNumber: "",
+  });
+  assert.equal("workspaceId" in out, false);
+  assert.equal("issueExternalId" in out, false);
+});

@@ -71,6 +71,18 @@ export const workspaces = pgTable("workspaces", {
   // (queries/workspace_grants.ts) so "who granted/when" always has a durable
   // answer, not just this boolean.
   mergePermission: boolean("merge_permission").notNull().default(false),
+  // Jace goal loop (#1289, PRD docs/prd/jace-goal-loop.md, locked 2026-07-10;
+  // spec Goals #6 "Kill switch"). Rollout-safety flag, not a demo gate:
+  // default false so the entire loop — goal intake, evaluate-on-outcome,
+  // refill — is a strict no-op for every existing AND future workspace
+  // until a human explicitly opts a workspace in. Read at the START of
+  // every goal-loop entry point (apps/jace's run-outcome evaluate call and
+  // the create_goal gated tool's console endpoint) before any goal-table
+  // read/write happens, so flipping this off mid-flight halts new activity
+  // immediately — no caching, mirrors mergePermission's own fresh-read
+  // posture. No UI toggle yet — same "ship the column + enforcement first"
+  // posture as hostedExecution/monthlyBudgetUsd above.
+  jaceGoalLoop: boolean("jace_goal_loop").notNull().default(false),
 });
 
 export type Workspace = typeof workspaces.$inferSelect;

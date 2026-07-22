@@ -2,6 +2,7 @@ import {
   getConnector,
   getWorkspace,
   hasActiveSelfHostedRunner,
+  hasAnyJaceReply,
   listInvites,
   listWorkspaceMembers,
 } from "@agentrail/db-postgres";
@@ -10,6 +11,7 @@ import {
   type OnboardingStep,
   type OnboardingStepsInput,
 } from "./onboarding-steps";
+import { isConsoleChatEnabled } from "./chat/feature-flags";
 
 /**
  * Server-only I/O for the `/setup` onboarding wizard (#1233). Gathers the raw
@@ -38,6 +40,12 @@ export interface OnboardingData {
     skipped: boolean;
     chatId: string | null;
   };
+  chat: {
+    /** Console chat (#1288) is rolled out for this workspace. */
+    enabled: boolean;
+    /** A real jace_messages reply already exists (`hasAnyJaceReply`). */
+    jaceReplied: boolean;
+  };
   invites: {
     count: number;
   };
@@ -56,15 +64,28 @@ export interface OnboardingData {
 export async function loadOnboardingData(
   workspaceId: string
 ): Promise<OnboardingData> {
-  const [githubConnector, telegramConnector, pendingInvites, members, workspace, selfHostedActive] =
-    await Promise.all([
-      getConnector(workspaceId, "github"),
-      getConnector(workspaceId, "telegram"),
-      listInvites(workspaceId), // pending, unexpired only
-      listWorkspaceMembers(workspaceId),
-      getWorkspace(workspaceId),
-      hasActiveSelfHostedRunner(workspaceId),
-    ]);
+  const chatEnabled = isConsoleChatEnabled(workspaceId);
+
+  const [
+    githubConnector,
+    telegramConnector,
+    pendingInvites,
+    members,
+    workspace,
+    selfHostedActive,
+    jaceReplied,
+  ] = await Promise.all([
+    getConnector(workspaceId, "github"),
+    getConnector(workspaceId, "telegram"),
+    listInvites(workspaceId), // pending, unexpired only
+    listWorkspaceMembers(workspaceId),
+    getWorkspace(workspaceId),
+    hasActiveSelfHostedRunner(workspaceId),
+    // Only worth checking once the surface is actually reachable — a
+    // workspace with the flag off can never have a jace_messages row anyway
+    // (the send/reply endpoints 404 while it's off), so skip the query.
+    chatEnabled ? hasAnyJaceReply(workspaceId) : Promise.resolve(false),
+  ]);
 
   // Same disjunct as `workspaceHasExecutionPath` (the named onboard-enqueue
   // gate the connect-time routes use — see its doc-comment in
@@ -90,6 +111,7 @@ export async function loadOnboardingData(
   const input: OnboardingStepsInput = {
     github: { repoCount: repos.length, hasWebhookSecret: Boolean(webhookSecret) },
     channel: { connected: channelConnected, skipped: channelSkipped },
+    chat: { enabled: chatEnabled, jaceReplied },
     invites: { count: invitesCount },
     runner: { connected: hasExecutionPath },
   };
@@ -107,6 +129,7 @@ export async function loadOnboardingData(
       skipped: channelSkipped,
       chatId: telegramConnector?.config.chatId ?? null,
     },
+    chat: { enabled: chatEnabled, jaceReplied },
     invites: { count: invitesCount },
     runner: { connected: hasExecutionPath, selfHosted: selfHostedActive },
   };

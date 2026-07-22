@@ -9,6 +9,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   getConnector: vi.fn(),
   getWorkspace: vi.fn(),
   hasActiveSelfHostedRunner: vi.fn(),
+  hasAnyJaceReply: vi.fn(),
   listInvites: vi.fn(),
   listWorkspaceMembers: vi.fn(),
 }));
@@ -77,6 +78,10 @@ describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
     expect(body.steps).toEqual([
       { id: "connect-github", status: "incomplete" },
       { id: "connect-channel", status: "incomplete" },
+      // Console chat's flag is unset in this test env, so say-hi-to-jace
+      // reads as skipped (never permanently-incomplete for a workspace the
+      // feature hasn't rolled out to) — see onboarding-steps.ts.
+      { id: "say-hi-to-jace", status: "skipped" },
       { id: "invite-team", status: "incomplete" },
       { id: "attach-runner", status: "incomplete" },
     ]);
@@ -113,6 +118,7 @@ describe("GET /api/v1/workspaces/[workspaceId]/onboarding", () => {
     expect(body.steps).toEqual([
       { id: "connect-github", status: "complete" },
       { id: "connect-channel", status: "incomplete" },
+      { id: "say-hi-to-jace", status: "skipped" },
       { id: "invite-team", status: "complete" },
       { id: "attach-runner", status: "complete" },
     ]);

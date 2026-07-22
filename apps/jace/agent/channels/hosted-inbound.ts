@@ -51,6 +51,7 @@ import { normalizeHostedInbound } from "../lib/hosted_inbound.core.mjs";
 import telegram from "./telegram.js";
 import discord from "./discord.js";
 import slack from "./slack.js";
+import console_ from "./console.js";
 
 /**
  * Channel id -> Eve channel module — the SAME set `normalizeHostedInbound`
@@ -59,10 +60,12 @@ import slack from "./slack.js";
  * absent: it has no inbound HTTP surface (LoopMessage is outbound-only, see
  * run_outcome.core.mjs's doc-comment) — normalizeHostedInbound would accept
  * `channel: "imessage"` (it shares run_outcome's TARGET_KEY set), but no
- * webhook route ever sends it, so this map staying telegram/discord/slack is
- * not a gap.
+ * webhook route ever sends it, so this map staying telegram/discord/slack/
+ * console is not a gap. `console` (#1288) is the AgentRail dashboard's own
+ * in-house channel — see `./console.ts`'s header comment for why it rides
+ * this SAME door rather than forking a second dispatch mechanism.
  */
-const CHANNELS: Record<string, unknown> = { telegram, discord, slack };
+const CHANNELS: Record<string, unknown> = { telegram, discord, slack, console: console_ };
 
 /** Small JSON responder (the route contract is machine-to-machine, not a page). */
 function json(body: unknown, status = 200): Response {

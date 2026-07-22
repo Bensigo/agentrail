@@ -26,8 +26,23 @@
 export { TARGET_KEY } from "./run_outcome.core.mjs";
 import { TARGET_KEY as _TARGET_KEY } from "./run_outcome.core.mjs";
 
+/**
+ * Console (#1288) is inbound-only through this door and deliberately does
+ * NOT ride the shared single-key `TARGET_KEY` map above: its destination is
+ * a COMPOUND key (`workspaceId` + `conversationKey`), not one platform id,
+ * because console chat has no external platform identity to key on — see
+ * `normalizeHostedInbound`'s console branch below for the validation this
+ * implies. `run_outcome.core.mjs` (the OUTBOUND direction) stays completely
+ * untouched by this: console chat has no outbound run-outcome-push use case
+ * today, so extending that shared map here would be speculative.
+ */
+const CONSOLE_CHANNEL = "console";
+
 /** Channels this door understands. Unlisted channel ids fall back to "telegram" — see normalizeHostedInbound's `channel` handling below. */
-export const HOSTED_INBOUND_CHANNELS = Object.freeze(Object.keys(_TARGET_KEY));
+export const HOSTED_INBOUND_CHANNELS = Object.freeze([
+  ...Object.keys(_TARGET_KEY),
+  CONSOLE_CHANNEL,
+]);
 
 /**
  * Validate + normalize the dispatcher's POST body into the exact
@@ -76,19 +91,37 @@ export function normalizeHostedInbound(raw) {
   if (target == null || typeof target !== "object" || Array.isArray(target)) {
     throw new Error("hosted-inbound: `target` must be an object.");
   }
-  const key = _TARGET_KEY[channel];
-  const dest = target[key];
-  const destGiven = dest != null && String(dest).trim() !== "";
-  if (!destGiven) {
-    throw new Error(`hosted-inbound: \`target.${key}\` is required.`);
-  }
 
-  const normalizedTarget = { [key]: dest };
-  if (target.conversationId != null) {
-    normalizedTarget.conversationId = target.conversationId;
-  }
-  if (target.messageThreadId != null) {
-    normalizedTarget.messageThreadId = target.messageThreadId;
+  let normalizedTarget;
+  if (channel === CONSOLE_CHANNEL) {
+    // Console's destination is a COMPOUND key — see the CONSOLE_CHANNEL
+    // doc-comment above. Both fields are required; neither rides the shared
+    // single-key TARGET_KEY convention the other channels use below.
+    const workspaceId = typeof target.workspaceId === "string" ? target.workspaceId.trim() : "";
+    if (!workspaceId) {
+      throw new Error("hosted-inbound: `target.workspaceId` is required.");
+    }
+    const conversationKey =
+      typeof target.conversationKey === "string" ? target.conversationKey.trim() : "";
+    if (!conversationKey) {
+      throw new Error("hosted-inbound: `target.conversationKey` is required.");
+    }
+    normalizedTarget = { workspaceId, conversationKey };
+  } else {
+    const key = _TARGET_KEY[channel];
+    const dest = target[key];
+    const destGiven = dest != null && String(dest).trim() !== "";
+    if (!destGiven) {
+      throw new Error(`hosted-inbound: \`target.${key}\` is required.`);
+    }
+
+    normalizedTarget = { [key]: dest };
+    if (target.conversationId != null) {
+      normalizedTarget.conversationId = target.conversationId;
+    }
+    if (target.messageThreadId != null) {
+      normalizedTarget.messageThreadId = target.messageThreadId;
+    }
   }
 
   const auth = raw.auth;

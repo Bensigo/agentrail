@@ -2261,3 +2261,57 @@ export {
   latestGrantEvent,
   type LatestGrantEventRow,
 } from "./workspace_grants.js";
+
+// Console chat message queries (issue #1288; see `schema/jace_messages.ts`
+// for the table shape and the WHY behind the design). appendJaceMessage is
+// the one write path, called both by the console's send endpoint (the
+// member's own `role: "user"` row) and the worker/dispatch path once an Eve
+// turn completes (`role: "jace"` — see `apps/jace/agent/channels/console.ts`).
+// listJaceMessagesSince is the one read path: the initial thread load and
+// every subsequent poll, both keyed by the same `afterSeq` cursor.
+export {
+  appendJaceMessage,
+  listJaceMessagesSince,
+  hasAnyJaceReply,
+  type AppendJaceMessageInput,
+} from "./jace_messages.js";
+// Jace goal loop (issue #1289; see `queries/goal_rules.ts` for the pure
+// leash+stuck-rule decision engine this all wraps, and `queries/goals.ts`
+// for the full design). `isGoalLoopEnabled` is the workspace-flag gate
+// every entry point must check first (default OFF); `createGoal` is the
+// gated create_goal tool's own write; `findActiveGoalForIssue` +
+// `recordIssueFiled` + `recordOutcomeAndTransition` are the issue<->goal
+// mapping and the evaluate-on-outcome path; `findActiveGoalBySlug` is the
+// pre-file leash-check lookup (adversarial-review fix: the create_issue
+// write path resolves a goal-stamped body's slug through this BEFORE
+// filing, so `canFileNextIssue`/`recordIssueFiled` actually run on the real
+// filing path instead of being dead code); `pauseGoal`/`abandonGoal`/
+// `markGoalReached` are the human-only manual controls.
+export {
+  isGoalLoopEnabled,
+  createGoal,
+  type CreateGoalInput,
+  getGoalById,
+  listActiveGoalsForWorkspace,
+  findActiveGoalForIssue,
+  findActiveGoalBySlug,
+  recordIssueFiled,
+  recordOutcomeAndTransition,
+  type RecordOutcomeInput,
+  type RecordOutcomeResult,
+  goalCanFileNextIssue,
+  pauseGoal,
+  abandonGoal,
+  markGoalReached,
+  type GoalOutcome,
+  type GoalAction,
+  type GoalCheckType,
+} from "./goals.js";
+export {
+  decideGoalTransition,
+  canFileNextIssue,
+  type GoalStatus,
+  type GoalLeashState,
+  type GoalOutcomeEvent,
+  type GoalTransitionResult,
+} from "./goal_rules.js";

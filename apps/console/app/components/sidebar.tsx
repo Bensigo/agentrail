@@ -4,18 +4,32 @@ import { usePathname } from "next/navigation";
 import { WorkspaceSwitcher } from "../(dashboard)/components/WorkspaceSwitcher";
 import { EngineRoomGroup } from "./nav-group";
 import { NavLink } from "./nav-link";
-import { ENGINE_ROOM_ZONE, SETTINGS_ZONE, YOUR_ENGINEER_ZONE } from "./sidebar-nav";
+import { CHAT_NAV_ITEM, ENGINE_ROOM_ZONE, SETTINGS_ZONE, YOUR_ENGINEER_ZONE } from "./sidebar-nav";
 
 interface SidebarProps {
   workspaces: { id: string; name: string; slug: string; role: string }[];
   workspaceId: string;
   user: { name?: string | null; email?: string | null; image?: string | null };
   signOutAction: () => Promise<void>;
+  /** Console chat (#1288), default OFF — computed server-side
+   * (`isConsoleChatEnabled`) by the layout that renders this. `undefined`
+   * (the Suspense fallback's render, before the real value is known) reads
+   * as off, so the item never flashes in then disappears. */
+  chatEnabled?: boolean;
 }
 
-export function Sidebar({ workspaces, workspaceId, user, signOutAction }: SidebarProps) {
+export function Sidebar({
+  workspaces,
+  workspaceId,
+  user,
+  signOutAction,
+  chatEnabled = false,
+}: SidebarProps) {
   const pathname = usePathname();
   const basePath = `/dashboard/${workspaceId}`;
+  const engineerItems = chatEnabled
+    ? [...YOUR_ENGINEER_ZONE.items, CHAT_NAV_ITEM]
+    : YOUR_ENGINEER_ZONE.items;
 
   return (
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-[220px] flex-col border-r border-[var(--gray-05)] bg-[var(--gray-01)] max-md:w-12">
@@ -36,7 +50,7 @@ export function Sidebar({ workspaces, workspaceId, user, signOutAction }: Sideba
         <p className="px-2 py-1 text-xs font-normal uppercase tracking-wide text-[var(--gray-09)] max-md:hidden">
           {YOUR_ENGINEER_ZONE.label}
         </p>
-        {YOUR_ENGINEER_ZONE.items.map((item) => (
+        {engineerItems.map((item) => (
           <NavLink key={item.href} item={item} basePath={basePath} pathname={pathname} />
         ))}
 

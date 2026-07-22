@@ -31,6 +31,20 @@
 // covering both "no session" and "no chat identity" so this tool must never
 // treat it as a distinct case; 500) collapses to ONE generic honest string,
 // same posture as send_connect_link's non-2xx handling.
+//
+// issue #1364 PR②: ONE of the 409 family is no longer a plain string. When
+// the caller's chat identity has no linked user yet (AC1's "unbound
+// sender"), the console route (see that file's "Sign-up gate" doc-comment
+// section) mints a sign-up link in-process and returns it alongside the 409
+// as `{ error, signupUrl, expiresAt }` instead of creating anything. This
+// module surfaces THAT specific 409 shape as a structured
+// `{ signupRequired: true, url, expiresAt }` object — not a string — so the
+// tool wrapper (create_workspace.ts) can hand the model something it can put
+// a real, clickable link into its reply from, riding the SAME in-thread
+// delivery pattern send_connect_link already established (mint here, relay
+// verbatim in the model's own next message — no separate "send" step). Any
+// OTHER 409 (already-attached, slug-exhausted) is UNCHANGED: still the plain
+// verbatim-string path above, since neither of those carries a `signupUrl`.
 
 export const CREATE_WORKSPACE_PATH = "/api/v1/runner/workspaces";
 
@@ -69,28 +83,34 @@ export function buildCreateWorkspaceUrl(baseUrl) {
 
 /**
  * Create a workspace for the conversation identified by `eveSessionId`, named
- * `name`. Returns `{ workspaceId, name, url }` on success, or an honest
- * failure string otherwise — never throws. Single attempt, no retry (the
- * console endpoint owns its own slug-collision retry internally).
+ * `name`. Returns `{ workspaceId, name, url }` on success, `{ signupRequired:
+ * true, url, expiresAt }` when the sender needs to sign up first (issue
+ * #1364 PR②), or an honest failure string otherwise — never throws. Single
+ * attempt, no retry (the console endpoint owns its own slug-collision retry
+ * internally).
  *
  *   1. unset console config           -> GENERIC_FAILURE_MESSAGE
  *   2. blank eveSessionId or name     -> GENERIC_FAILURE_MESSAGE (defensive;
  *                                         the framework / zod schema should
  *                                         never hand this a blank value)
  *   3. transport throws               -> GENERIC_FAILURE_MESSAGE
- *   4. status 409                     -> the response body's own `error`
+ *   4. status 409, body has a
+ *      non-empty string `signupUrl`   -> { signupRequired: true, url:
+ *                                         <signupUrl>, expiresAt } — issue
+ *                                         #1364 PR②, see module comment
+ *   5. status 409, no `signupUrl`     -> the response body's own `error`
  *                                         string, VERBATIM, when present;
  *                                         GENERIC_FAILURE_MESSAGE otherwise
  *                                         (malformed body / non-JSON)
- *   5. any other non-2xx status       -> GENERIC_FAILURE_MESSAGE (400, 401,
+ *   6. any other non-2xx status       -> GENERIC_FAILURE_MESSAGE (400, 401,
  *                                         404, 500 alike — see module comment)
- *   6. non-JSON / malformed 2xx body  -> GENERIC_FAILURE_MESSAGE
- *   7. success                        -> { workspaceId, name, url }
+ *   7. non-JSON / malformed 2xx body  -> GENERIC_FAILURE_MESSAGE
+ *   8. success                        -> { workspaceId, name, url }
  *
  * @param {{ eveSessionId: string, name: string, env?: Record<string, string|undefined>,
  *           transport: (url: string, init: { method: string, headers: Record<string,string>, body: string }) =>
  *             Promise<{ status: number, json: () => Promise<unknown> }> }} args
- * @returns {Promise<{ workspaceId: string, name: string, url: string } | string>}
+ * @returns {Promise<{ workspaceId: string, name: string, url: string } | { signupRequired: true, url: string, expiresAt: string } | string>}
  */
 export async function runCreateWorkspace({ eveSessionId, name, env = {}, transport }) {
   const cfg = resolveConsoleConfig(env);
@@ -130,8 +150,21 @@ export async function runCreateWorkspace({ eveSessionId, name, env = {}, transpo
       } catch {
         return GENERIC_FAILURE_MESSAGE;
       }
-      if (errorBody && typeof errorBody === "object" && typeof errorBody.error === "string" && errorBody.error) {
-        return errorBody.error;
+      if (errorBody && typeof errorBody === "object") {
+        // issue #1364 PR②: the sign-up gate's 409 shape, checked FIRST — a
+        // non-empty string `signupUrl` is only ever present on THAT specific
+        // refusal (see module comment), never on already-attached/slug-
+        // exhausted, so this can never misfire on the pre-existing 409s.
+        if (typeof errorBody.signupUrl === "string" && errorBody.signupUrl) {
+          return {
+            signupRequired: true,
+            url: errorBody.signupUrl,
+            expiresAt: typeof errorBody.expiresAt === "string" ? errorBody.expiresAt : "",
+          };
+        }
+        if (typeof errorBody.error === "string" && errorBody.error) {
+          return errorBody.error;
+        }
       }
     }
     return GENERIC_FAILURE_MESSAGE;

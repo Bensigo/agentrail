@@ -60,11 +60,14 @@ export default defineTool({
     "Create a real AgentRail workspace for THIS conversation. Call this " +
     "when the user wants Jace set up and no workspace exists for this " +
     "conversation yet — AFTER confirming the exact name with them, since " +
-    "this is human-approved before it runs. The workspace is bound to this " +
-    "conversation's own chat identity immediately; full console ownership " +
-    "completes once the user connects GitHub (offer send_connect_link " +
-    "next). On success returns { workspaceId, name, url } — relay the url " +
-    "so the user can see the workspace on the console. On failure returns " +
+    "this is human-approved before it runs. On success returns " +
+    "{ workspaceId, name, url } — relay the url so the user can see the " +
+    "workspace on the console. If the sender hasn't signed up yet, returns " +
+    "{ signupRequired: true, url, expiresAt } INSTEAD of creating anything " +
+    "— put that url directly in your reply and ask them to complete it; " +
+    "once they do, Jace will confirm in the same chat and you can call " +
+    "create_workspace again to actually create it (do not retry " +
+    "automatically or loop — wait for them). On any other failure returns " +
     "a short honest message (e.g. this conversation already has a " +
     "workspace) — relay it verbatim rather than inventing your own " +
     "explanation or retrying silently.",

@@ -4,10 +4,10 @@ import {
   getJaceSessionByEveSessionId,
   getChatIdentityById,
   createWorkspace,
-  createWorkspaceOwnerElect,
   pinConversationWorkspace,
 } from "@agentrail/db-postgres";
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
+import { mintSignupLink } from "../../../../../lib/mint-signup-link";
 
 const NAME_MAX = 80;
 // Random hex size: 3 bytes -> 6 hex chars. Used both to break a slug
@@ -20,6 +20,12 @@ const ALREADY_ATTACHED_MESSAGE =
   "this conversation is already attached to a workspace";
 const SLUG_EXHAUSTED_MESSAGE =
   "a workspace with a similar name already exists — try a different name";
+// issue #1364 PR②: the message a caller sees when this route redirects an
+// UNBOUND sender to sign up instead of creating a workspace. Distinct from
+// ALREADY_ATTACHED_MESSAGE (both are 409s, but this one carries `signupUrl`/
+// `expiresAt` alongside it — see the POST doc-comment's "Behavior change"
+// section).
+const SIGNUP_REQUIRED_MESSAGE = "sign up to create a workspace";
 
 interface RawBody {
   eveSessionId: string;
@@ -74,22 +80,22 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 /**
- * Create the workspace itself on the branch its chat identity qualifies for:
- * immediately owned (a workspace_memberships row) when the identity already
- * carries a linked user, owner-elect (bound identity, no membership) when it
- * does not. Both branches still need `pinConversationWorkspace` afterwards —
- * that step is common to both and lives in `POST` below, not here.
+ * Create the OWNED workspace (a `workspace_memberships` row) for an
+ * already-user-linked identity. `POST` below only ever calls this once
+ * `identity.userId` is confirmed non-null — the ownerless/owner-elect branch
+ * this function used to also cover (issue #1264's `createWorkspaceOwnerElect`)
+ * no longer runs from this route as of issue #1364 PR② (see the POST
+ * doc-comment's "Behavior change" section); the split-out shape is kept
+ * anyway so `createWorkspaceWithSlugRetry` stays a thin generic retry
+ * wrapper, unaware of which specific creation function it's retrying.
  */
-async function createWorkspaceForIdentity(input: {
-  identity: { id: string; userId: string | null };
+async function createOwnedWorkspace(input: {
+  identity: { userId: string };
   name: string;
   slug: string;
 }) {
   const { identity, name, slug } = input;
-  if (identity.userId != null) {
-    return createWorkspace({ name, slug, userId: identity.userId });
-  }
-  return createWorkspaceOwnerElect({ name, slug, chatIdentityId: identity.id });
+  return createWorkspace({ name, slug, userId: identity.userId });
 }
 
 /**
@@ -100,16 +106,16 @@ async function createWorkspaceForIdentity(input: {
  * error propagates (thrown), unchanged, to the caller.
  */
 async function createWorkspaceWithSlugRetry(input: {
-  identity: { id: string; userId: string | null };
+  identity: { userId: string };
   name: string;
   baseSlug: string;
 }): Promise<
-  | { ok: true; workspace: Awaited<ReturnType<typeof createWorkspaceForIdentity>> }
+  | { ok: true; workspace: Awaited<ReturnType<typeof createOwnedWorkspace>> }
   | { ok: false }
 > {
   const { identity, name, baseSlug } = input;
   try {
-    const workspace = await createWorkspaceForIdentity({ identity, name, slug: baseSlug });
+    const workspace = await createOwnedWorkspace({ identity, name, slug: baseSlug });
     return { ok: true, workspace };
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
@@ -122,7 +128,7 @@ async function createWorkspaceWithSlugRetry(input: {
   const retrySlug =
     baseSlug.length > 0 ? `${baseSlug}-${retrySuffix}` : `workspace-${retrySuffix}`;
   try {
-    const workspace = await createWorkspaceForIdentity({ identity, name, slug: retrySlug });
+    const workspace = await createOwnedWorkspace({ identity, name, slug: retrySlug });
     return { ok: true, workspace };
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
@@ -188,29 +194,57 @@ async function createWorkspaceWithSlugRetry(input: {
  * with a short random suffix (`createWorkspaceWithSlugRetry`); a second
  * collision is an honest 409, not a 500 or a silent overwrite.
  *
- * Creation branches on the resolved identity: `identity.userId` non-null
- * means it is already linked to a real (GitHub-bound) user, so the existing
- * `createWorkspace` runs — the workspace is owned immediately via a
- * `workspace_memberships` row. `identity.userId` null means no linked user
- * yet, so `createWorkspaceOwnerElect` runs instead — the workspace exists
- * and the identity is bound to it, but ownership completes only once the
- * identity finishes a GitHub bind (issue #1263's connect flow) and issue
- * #1264 PR ② promotes it to an owner membership.
+ * ### Sign-up gate (issue #1364 PR②) — BEHAVIOR CHANGE from issue #1264
  *
- * Either branch is followed by `pinConversationWorkspace`, so the SAME
+ * `identity.userId == null` means this sender has no linked account yet
+ * (AC2's "unbound sender"). Until this PR, that case fell through to
+ * `createWorkspaceOwnerElect` — a REAL workspace, bound to the identity, but
+ * with no owner membership until a LATER GitHub connect (issue #1263)
+ * completed it. Issue #1364's whole point is that ordering: a first-time
+ * sender should sign up FIRST (a magic link — issue #1364 PR①'s
+ * `/signup/[token]`), then create a workspace, not the other way around —
+ * Jace's own words in the dogfood transcript that opened #1364: "If the
+ * user isn't signed up, the system should send a magic link to sign them up
+ * first, then help create the workspace." So as of this PR, an unbound
+ * sender's `create_workspace` call no longer creates ANYTHING here — it
+ * mints a sign-up link (`mintSignupLink`, the SAME mint primitive
+ * `POST /api/v1/runner/signup-link` uses, called in-process rather than over
+ * HTTP) and returns it in the response body (409, alongside
+ * `ALREADY_ATTACHED_MESSAGE`'s existing "honest refusal" posture — see that
+ * section above) instead of a 201. `apps/jace/agent/lib/create_workspace.core.mjs`
+ * (issue #1364 PR②) reads this shape and returns a structured
+ * `{ signupRequired: true, url, expiresAt }` the model relays in-thread —
+ * see that module's own doc-comment for the full contract.
+ *
+ * An ALREADY-known sender (`identity.userId` non-null, AC2) is entirely
+ * unaffected by this change: no eligibility check runs, no link is minted,
+ * straight through to the existing owned-workspace creation below, exactly
+ * as before this PR.
+ *
+ * This intentionally strands `createWorkspaceOwnerElect` (issue #1264 PR①)
+ * as no-longer-called from any route — kept as exported, tested
+ * `@agentrail/db-postgres` infra (its own dedicated test suite,
+ * `__tests__/create-workspace-owner-elect.test.ts`, is untouched and still
+ * green) rather than deleted, since removing tested exported infra is out
+ * of this PR's scope; flagged here as a known candidate for a follow-up
+ * cleanup, not fixed in this PR.
+ *
+ * Creation (once past the sign-up gate): `identity.userId` is now guaranteed
+ * non-null, so `createWorkspace` runs unconditionally — the workspace is
+ * owned immediately via a `workspace_memberships` row.
+ *
+ * Success is followed by `pinConversationWorkspace`, so the SAME
  * conversation that asked for the workspace is also the one pinned to it
  * (not just the identity) — this is what lets a later turn in this same
  * thread route straight to the workspace without re-asking. A refusal from
  * `pinConversationWorkspace` here should be UNREACHABLE: the refusal checks
  * above already guarantee neither the session nor the identity carries an
  * existing workspace, and the workspace this call just created is
- * immediately reachable from the identity (via its own `workspace_id` for
- * the owner-elect branch, or via the fresh `workspace_memberships` row for
- * the owned branch — see `listWorkspacesForChatIdentity`). A refusal here
- * means a race or a gap in that invariant, so it is treated as a 500-level
- * inconsistency (thrown, not swallowed into a misleading 201) rather than
- * silently reported as success for a conversation that isn't actually
- * pinned.
+ * immediately reachable from the identity's fresh `workspace_memberships`
+ * row (see `listWorkspacesForChatIdentity`). A refusal here means a race or
+ * a gap in that invariant, so it is treated as a 500-level inconsistency
+ * (thrown, not swallowed into a misleading 201) rather than silently
+ * reported as success for a conversation that isn't actually pinned.
  *
  * Response: 201 { workspaceId, name, slug, url }, where `url` is
  * `<request origin>/dashboard/<workspaceId>` — built from the incoming
@@ -257,8 +291,28 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: ALREADY_ATTACHED_MESSAGE }, { status: 409 });
   }
 
+  // Sign-up gate (issue #1364 PR②) — see the POST doc-comment's own section
+  // for the full rationale. AC2: an already-linked identity (userId
+  // non-null) skips this entirely and falls straight through, unaffected.
+  // Captured into its own `const` (rather than re-reading `identity.userId`
+  // below) purely so TypeScript narrows it to `string` past this guard —
+  // `createWorkspaceWithSlugRetry` below requires a non-null userId.
+  const identityUserId = identity.userId;
+  if (identityUserId == null) {
+    const origin = new URL(request.url).origin;
+    const minted = await mintSignupLink(identity.id, origin);
+    return NextResponse.json(
+      {
+        error: SIGNUP_REQUIRED_MESSAGE,
+        signupUrl: minted.url,
+        expiresAt: minted.expiresAt,
+      },
+      { status: 409 }
+    );
+  }
+
   const created = await createWorkspaceWithSlugRetry({
-    identity,
+    identity: { userId: identityUserId },
     name,
     baseSlug: slugifyWithFallback(name),
   });

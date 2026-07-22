@@ -206,6 +206,60 @@ export async function consumeChatIdentityLinkToken(
   return row ?? null;
 }
 
+/**
+ * Set (or replace) the one-time SIGN-UP link token + expiry on a chat
+ * identity (issue #1364) — the plain account-creation seam, separate from
+ * `setChatIdentityLinkToken`'s GitHub-connect slot (see the column's own
+ * doc-comment in `schema/chat_identities.ts` for why the two never share a
+ * column). Last-write-wins, same as `setChatIdentityLinkToken`: re-minting
+ * for the same identity simply overwrites whatever token was already there.
+ */
+export async function setChatIdentitySignupToken(
+  chatIdentityId: string,
+  signupToken: string,
+  signupTokenExpiresAt: Date
+): Promise<void> {
+  await db
+    .update(chatIdentities)
+    .set({ signupToken, signupTokenExpiresAt, updatedAt: new Date() })
+    .where(eq(chatIdentities.id, chatIdentityId));
+}
+
+/**
+ * Atomically consume a one-time sign-up link token (issue #1364) — the SAME
+ * single-statement UPDATE ... RETURNING pattern as
+ * `consumeChatIdentityLinkToken` above, guarding token equality AND expiry in
+ * ONE statement so there is no read-then-write window a concurrent
+ * (double-click) redemption could land in. This is what makes AC3's
+ * single-use guarantee hold even under a race: two concurrent calls with the
+ * same token can both reach this function, but the UPDATE's WHERE clause only
+ * ever matches the row for the FIRST one to commit — the token columns are
+ * already nulled by then, so the second call's WHERE matches zero rows and it
+ * gets `null` back, indistinguishable from an expired or unknown token (same
+ * anti-enumeration posture as the connect-link flow's AC3, spec §4.2).
+ *
+ * Returns the row on success (server-side truth for who this token was
+ * minted for — see `signup-redeem.ts` for why nothing past this point ever
+ * needs a caller-supplied identity), or `null` covering an expired,
+ * already-consumed, or unknown token alike.
+ */
+export async function consumeChatIdentitySignupToken(
+  signupToken: string
+): Promise<ChatIdentityRow | null> {
+  const now = new Date();
+  const [row] = await db
+    .update(chatIdentities)
+    .set({ signupToken: null, signupTokenExpiresAt: null, updatedAt: now })
+    .where(
+      and(
+        eq(chatIdentities.signupToken, signupToken),
+        gt(chatIdentities.signupTokenExpiresAt, now)
+      )
+    )
+    .returning();
+  return row ?? null;
+}
+
 export interface ResolveInboundChatIdentityInput {
   platform: string;
   platformUserId: string;

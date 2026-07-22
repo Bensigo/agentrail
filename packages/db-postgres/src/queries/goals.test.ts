@@ -27,8 +27,18 @@ vi.mock("../db.js", () => {
       from: (_table: unknown) => ({
         where: () => ({
           limit: async () => mockState.selectQueue.shift() ?? [],
+          // Must satisfy BOTH call shapes: `.where().orderBy().limit(n)`
+          // (findActiveGoalForIssue/findActiveGoalBySlug) AND a directly
+          // awaited `.where().orderBy()` with no `.limit()`
+          // (listActiveGoalsForWorkspace/listGoalsForWorkspace) — a plain
+          // thenable satisfies the latter without breaking the former,
+          // since `.limit()`'s own return value (a real async function
+          // call) is what actually gets awaited on that path, not this
+          // intermediate object.
           orderBy: () => ({
             limit: async () => mockState.selectQueue.shift() ?? [],
+            then: (resolve: (v: unknown) => void) =>
+              resolve(mockState.selectQueue.shift() ?? []),
           }),
         }),
         orderBy: () => Promise.resolve(mockState.selectQueue.shift() ?? []),
@@ -71,6 +81,7 @@ import {
   pauseGoal,
   abandonGoal,
   markGoalReached,
+  listGoalsForWorkspace,
 } from "./goals.js";
 
 function activeGoal(overrides: Record<string, unknown> = {}) {
@@ -334,5 +345,35 @@ describe("manual controls", () => {
   it("returns null when the goal doesn't exist", async () => {
     mockState.selectQueue.push([]);
     expect(await pauseGoal("missing", "x")).toBeNull();
+  });
+});
+
+describe("listGoalsForWorkspace", () => {
+  it("returns active and done goals as separate lists — the dashboard's two sections", async () => {
+    // Promise.all([listActiveGoalsForWorkspace(...), db.select()...]) builds
+    // both promises synchronously left-to-right, so the mock's FIFO queue is
+    // consumed in [active, done] order.
+    mockState.selectQueue.push([activeGoal({ id: "goal-active" })]); // listActiveGoalsForWorkspace
+    mockState.selectQueue.push([
+      activeGoal({ id: "goal-reached", status: "reached", statusReason: "check reached: 5/5 green outcomes" }),
+      activeGoal({ id: "goal-leashed", status: "leashed", statusReason: "leash exhausted: issues filed 10/10" }),
+    ]); // done (terminal statuses)
+
+    const result = await listGoalsForWorkspace("ws-1");
+
+    expect(result.active).toHaveLength(1);
+    expect(result.active[0]?.id).toBe("goal-active");
+    expect(result.done).toHaveLength(2);
+    expect(result.done.map((g) => g.id)).toEqual(["goal-reached", "goal-leashed"]);
+    expect(result.done[0]?.statusReason).toBe("check reached: 5/5 green outcomes");
+  });
+
+  it("returns empty active/done arrays when the workspace has no goals", async () => {
+    mockState.selectQueue.push([]);
+    mockState.selectQueue.push([]);
+
+    const result = await listGoalsForWorkspace("ws-empty");
+
+    expect(result).toEqual({ active: [], done: [] });
   });
 });

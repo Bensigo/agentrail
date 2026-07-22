@@ -6,6 +6,7 @@ import {
   appendJaceMessage,
   listJaceMessagesSince,
   enqueueChannelMessage,
+  pendingApprovalsForWorkspace,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 import { isConsoleChatEnabled } from "../../../../../../lib/chat/feature-flags";
@@ -34,6 +35,16 @@ const MAX_TEXT_LENGTH = 8000;
  * `POST /api/v1/runner/chat-reply` once the Eve turn completes — this route
  * never waits for it; the client discovers it by polling GET with
  * `after_seq` set to the highest `seq` it has already rendered.
+ *
+ * GET also returns `approvals`: this member's own pending tool-call
+ * approvals (AC2 — "approval prompts render inline with the same seam
+ * buttons"), reusing `pendingApprovalsForWorkspace` (the Approvals page's
+ * own read) filtered down to `channel: "console"` +
+ * THIS member's `conversationKey` — never the whole workspace's pending set,
+ * since a chat thread is private to the member it belongs to. Resolving one
+ * (approve/deny) is the client's job, POSTing to the EXACT SAME
+ * `/api/v1/workspaces/:workspaceId/approvals/:id` route the Approvals page
+ * itself uses — one seam, not a second one forked for chat.
  */
 export async function GET(
   request: NextRequest,
@@ -60,7 +71,16 @@ export async function GET(
   const afterSeq = Number.isFinite(parsedAfterSeq) ? parsedAfterSeq : 0;
 
   const conversationKey = consoleConversationKey(session.user.id);
-  const messages = await listJaceMessagesSince(workspaceId, conversationKey, afterSeq);
+  const [messages, allPending] = await Promise.all([
+    listJaceMessagesSince(workspaceId, conversationKey, afterSeq),
+    pendingApprovalsForWorkspace(workspaceId),
+  ]);
+
+  // Scoped to THIS member's own console thread — a chat thread is private,
+  // never the whole workspace's pending set (that's the Approvals page's job).
+  const approvals = allPending.filter(
+    (a) => a.channel === "console" && a.conversationKey === conversationKey
+  );
 
   return NextResponse.json({
     messages: messages.map((m) => ({
@@ -69,6 +89,12 @@ export async function GET(
       role: m.role,
       text: m.text,
       created_at: m.createdAt.toISOString(),
+    })),
+    approvals: approvals.map((a) => ({
+      id: a.id,
+      tool_name: a.toolName,
+      tool_input: a.toolInput,
+      created_at: a.createdAt.toISOString(),
     })),
   });
 }

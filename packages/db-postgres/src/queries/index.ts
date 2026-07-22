@@ -2270,5 +2270,6 @@ export {
 export {
   appendJaceMessage,
   listJaceMessagesSince,
+  hasAnyJaceReply,
   type AppendJaceMessageInput,
 } from "./jace_messages.js";

@@ -78,3 +78,21 @@ export async function listJaceMessagesSince(
     .orderBy(asc(jaceMessages.seq))
     .limit(limit);
 }
+
+/**
+ * Whether Jace has ever replied in ANY console conversation for this
+ * workspace — the onboarding wizard's "Say hi to Jace" step (#1288 AC3,
+ * spec §5 step 3) derives its completion from exactly this: a
+ * `jace_messages` row with `role: "jace"` existing at all means a member got
+ * a real reply, workspace-wide (not scoped to one member's own thread —
+ * "someone said hi and Jace answered" is the signal, not "this specific
+ * user did").
+ */
+export async function hasAnyJaceReply(workspaceId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: jaceMessages.id })
+    .from(jaceMessages)
+    .where(and(eq(jaceMessages.workspaceId, workspaceId), eq(jaceMessages.role, "jace")))
+    .limit(1);
+  return Boolean(row);
+}

@@ -38,6 +38,7 @@ import {
 } from "@agentrail/db-postgres";
 import { sendSystemTelegramMessage, buildWorkspaceChoiceMessage, buildPinConfirmationMessage } from "./telegram-system-message";
 import { sendSystemDiscordMessage } from "./discord-system-message";
+import { sendSystemSlackMessage } from "./slack-system-message";
 import { buildRunOutcomeReplyPreface, type RunOutcomeReplyContext } from "./outcome-format";
 
 /**
@@ -45,25 +46,25 @@ import { buildRunOutcomeReplyPreface, type RunOutcomeReplyContext } from "./outc
  * carries — the SAME mapping `apps/jace/agent/lib/run_outcome.core.mjs`
  * (outbound) and its generalized `hosted_inbound.core.mjs` (inbound) use, so
  * this door and that one can never drift apart. Telegram `chatId`; Discord
- * (and, once #1285 lands, Slack) `channelId` — every webhook route for those
- * channels enqueues its conversation id under the SAME internal `chatId`
- * payload field Telegram already uses (see `extractPayload` below, left
- * byte-unchanged), and this map only renames it at the LAST moment, when
- * building the outgoing hosted-inbound request.
+ * and Slack `channelId` — every webhook route for those channels enqueues
+ * its conversation id under the SAME internal `chatId` payload field
+ * Telegram already uses (see `extractPayload` below, left byte-unchanged),
+ * and this map only renames it at the LAST moment, when building the
+ * outgoing hosted-inbound request.
  */
 const HOSTED_INBOUND_TARGET_KEY: Record<string, "chatId" | "channelId"> = {
   telegram: "chatId",
   discord: "channelId",
+  slack: "channelId",
 };
 
 /**
  * Dispatch a system (non-model) message to the right channel's own sender —
  * additive: Telegram's `sendSystemTelegramMessage` import above and every
  * one of its call sites in `processRow`'s 'ask' branch are UNCHANGED by this
- * (#1284); this only adds the discord case alongside it (issue #1364 is in
- * flight on the same Telegram 'ask'/signup path — keeping that code
- * untouched minimizes the eventual merge conflict). #1285 (Slack) appends its
- * own case here the same way.
+ * (#1284/#1285); this only adds the discord/slack cases alongside it (issue
+ * #1364 is in flight on the same Telegram 'ask'/signup path — keeping that
+ * code untouched minimizes the eventual merge conflict).
  */
 async function sendSystemChannelMessage(
   channel: string,
@@ -72,6 +73,7 @@ async function sendSystemChannelMessage(
   messageThreadId?: string
 ) {
   if (channel === "discord") return sendSystemDiscordMessage(targetId, text);
+  if (channel === "slack") return sendSystemSlackMessage(targetId, text);
   return sendSystemTelegramMessage(targetId, text, messageThreadId);
 }
 

@@ -480,3 +480,27 @@ class GitHubOAuthClient:
             body=body,
             url=created.get("html_url") or "",
         )
+
+    def update_issue(self, *, repo: str, number: int, title: str, body: str) -> IssueRef:
+        """Edit an EXISTING GitHub issue's title/body (house-format body edit only).
+
+        Deliberately narrow, mirroring :meth:`create_issue`'s own single-purpose
+        scope: this never touches labels, open/closed state, or comments — just
+        the two house-format fields. Issue #1345's revise loop is the first
+        caller: it lets Jace reshape an issue's scope (e.g. after a human denies
+        its alignment brief and asks for something cheaper) without ever opening
+        a second issue.
+        """
+        url = f"{GITHUB_API}/repos/{repo}/issues/{number}"
+        payload = json.dumps({"title": title, "body": body})
+        _status, updated = self._transport(
+            "PATCH", url, headers=self._headers(), body=payload
+        )
+        updated = updated if isinstance(updated, dict) else {}
+        return IssueRef(
+            repo=repo,
+            number=int(updated.get("number", number)),
+            title=updated.get("title") or title,
+            body=body,
+            url=updated.get("html_url") or "",
+        )

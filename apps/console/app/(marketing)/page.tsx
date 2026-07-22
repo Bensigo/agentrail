@@ -10,7 +10,7 @@ import { MarketingNav } from "./_nav";
 import { PinnedConversationScene } from "./_scroll-narrative";
 import { resolveMessageJaceCta } from "./_cta";
 import type { MessageJaceCta } from "./_cta";
-import { resolveDiscordChannelCard } from "./_channel-cards";
+import { resolveDiscordChannelCard, resolveSlackChannelCard } from "./_channel-cards";
 
 /** Real dogfood track record — full autonomous runs of AgentRail on its own
  *  backlog (issue → implementation → review → PR), not a retrieval benchmark.
@@ -125,6 +125,13 @@ export default async function LandingPage() {
   const discordCard = resolveDiscordChannelCard({
     live: process.env.NEXT_PUBLIC_DISCORD_CHANNEL_LIVE,
     inviteUrl: process.env.NEXT_PUBLIC_DISCORD_INVITE_URL,
+  });
+  // #1285 AC2 (landing-honesty rule): resolves to null — rendering nothing
+  // extra — until BOTH a Slack install URL is configured AND the channel is
+  // explicitly flagged live post-prod-verification. See `./_channel-cards.ts`.
+  const slackCard = resolveSlackChannelCard({
+    live: process.env.NEXT_PUBLIC_SLACK_CHANNEL_LIVE,
+    installUrl: process.env.NEXT_PUBLIC_SLACK_INSTALL_URL,
   });
 
   return (
@@ -352,6 +359,18 @@ export default async function LandingPage() {
                 className="transition-colors hover:text-[var(--accent-text)]"
               >
                 Discord
+              </a>
+            ) : null}
+            {/* #1285 AC2: only renders once Slack is both configured AND
+                flagged live post-prod-verification — see _channel-cards.ts. */}
+            {slackCard ? (
+              <a
+                href={slackCard.href}
+                target="_blank"
+                rel="noreferrer"
+                className="transition-colors hover:text-[var(--accent-text)]"
+              >
+                Slack
               </a>
             ) : null}
             <form action={signInWithGithub}>

@@ -7,16 +7,25 @@
  * decides each step's status. No I/O here, so it is fully unit-testable
  * without a database.
  *
- * Steps (spec §5, step 3 "Say hi to Jace" ships with ⑦ console chat — omitted
- * here). Step ids below name the underlying mechanic; `ONBOARDING_STEP_LABELS`
- * is what the wizard/banner actually display and reads chat-first (#1281) —
- * the two are allowed to diverge (e.g. id `connect-channel` / label "Talk to
- * Jace", id `attach-runner` / label "Execution"):
+ * Steps (spec §5). Step ids below name the underlying mechanic;
+ * `ONBOARDING_STEP_LABELS` is what the wizard/banner actually display and
+ * reads chat-first (#1281) — the two are allowed to diverge (e.g. id
+ * `connect-channel` / label "Talk to Jace", id `attach-runner` / label
+ * "Execution"):
  *   1. Connect GitHub    — complete when the github connector has ≥1 repo AND
  *      a stored webhook secret (`connectors.config.webhookSecret`).
  *   2. Connect a channel — complete when Telegram has a stored credential;
  *      skippable, and the skip is remembered per workspace (also persisted on
  *      the telegram connector row's jsonb config — see `onboarding-data.ts`).
+ *   3. Say hi to Jace    — ships with #1288 (console chat). Complete once
+ *      `jace_messages` has ANY `role: "jace"` row for the workspace (a real
+ *      reply happened, in ANY member's console thread — see
+ *      `hasAnyJaceReply`). Distinct from step 2 ("Talk to Jace" — a channel
+ *      is CONNECTED) — this step is "you actually said hi and Jace answered."
+ *      `skipped` (not `incomplete`) whenever console chat is off for this
+ *      workspace (`CONSOLE_CHAT_ENABLED`/allowlist) — the step must not sit
+ *      permanently incomplete (blocking `onboardingProgress.allDone`
+ *      forever) for a workspace the feature hasn't rolled out to yet.
  *   4. Invite your team  — complete once the workspace has reached at least
  *      one teammate beyond the owner (a pending invite or an accepted one).
  *   5. Attach a runner   — complete when the workspace has an execution path:
@@ -34,6 +43,7 @@
 export type OnboardingStepId =
   | "connect-github"
   | "connect-channel"
+  | "say-hi-to-jace"
   | "invite-team"
   | "attach-runner";
 
@@ -48,6 +58,7 @@ export interface OnboardingStep {
 export const ONBOARDING_STEP_ORDER: readonly OnboardingStepId[] = [
   "connect-github",
   "connect-channel",
+  "say-hi-to-jace",
   "invite-team",
   "attach-runner",
 ];
@@ -58,6 +69,7 @@ export const ONBOARDING_STEP_LABELS: Record<OnboardingStepId, string> = {
   // shared-bot deep link, not a form — the label should say what the user
   // is doing (message Jace), not the plumbing underneath.
   "connect-channel": "Talk to Jace",
+  "say-hi-to-jace": "Say hi to Jace",
   "invite-team": "Invite your team",
   // Chat-first relabel (#1281): hosted execution is the default for every
   // fresh workspace (see runner-step.tsx) — "Attach a runner" implied an
@@ -79,6 +91,13 @@ export interface OnboardingStepsInput {
     connected: boolean;
     /** The user explicitly chose "Skip for now" for this workspace. */
     skipped: boolean;
+  };
+  chat: {
+    /** Console chat (#1288) is rolled out for this workspace
+     * (`CONSOLE_CHAT_ENABLED` / the per-workspace allowlist). */
+    enabled: boolean;
+    /** `hasAnyJaceReply` — a real `jace_messages` reply already exists. */
+    jaceReplied: boolean;
   };
   invites: {
     /** Teammates reached beyond the owner: pending invites + accepted members. */
@@ -110,6 +129,11 @@ export function deriveOnboardingSteps(
       : input.channel.skipped
         ? "skipped"
         : "incomplete",
+    "say-hi-to-jace": input.chat.jaceReplied
+      ? "complete"
+      : input.chat.enabled
+        ? "incomplete"
+        : "skipped",
     "invite-team": input.invites.count > 0 ? "complete" : "incomplete",
     "attach-runner": input.runner.connected ? "complete" : "incomplete",
   };

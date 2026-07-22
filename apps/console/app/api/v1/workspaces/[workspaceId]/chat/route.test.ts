@@ -9,6 +9,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   appendJaceMessage: vi.fn(),
   listJaceMessagesSince: vi.fn(),
   enqueueChannelMessage: vi.fn(),
+  pendingApprovalsForWorkspace: vi.fn(),
 }));
 vi.mock("../../../../../../lib/channel-dispatch", () => ({
   dispatchQueuedChannelMessages: vi.fn(),
@@ -24,6 +25,7 @@ import {
   appendJaceMessage,
   listJaceMessagesSince,
   enqueueChannelMessage,
+  pendingApprovalsForWorkspace,
 } from "@agentrail/db-postgres";
 import { dispatchQueuedChannelMessages } from "../../../../../../lib/channel-dispatch";
 import { isConsoleChatEnabled } from "../../../../../../lib/chat/feature-flags";
@@ -55,6 +57,7 @@ beforeEach(() => {
   vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "member" } as never);
   vi.mocked(isConsoleChatEnabled).mockReturnValue(true);
   vi.mocked(listJaceMessagesSince).mockResolvedValue([]);
+  vi.mocked(pendingApprovalsForWorkspace).mockResolvedValue([]);
   vi.mocked(dispatchQueuedChannelMessages).mockResolvedValue({ processed: 0, failed: 0 });
   vi.mocked(enqueueChannelMessage).mockResolvedValue({ id: "row-1", deduped: false });
   vi.mocked(appendJaceMessage).mockResolvedValue({
@@ -126,6 +129,60 @@ describe("GET /api/v1/workspaces/[workspaceId]/chat", () => {
       { id: "m1", seq: 1, role: "user", text: "hi", created_at: "2026-07-22T00:00:00.000Z" },
       { id: "m2", seq: 2, role: "jace", text: "hello!", created_at: "2026-07-22T00:00:01.000Z" },
     ]);
+  });
+
+  describe("approvals (#1288 AC2 — inline, same seam)", () => {
+    it("includes only THIS member's own console-conversation approvals, never another member's or another channel's", async () => {
+      vi.mocked(pendingApprovalsForWorkspace).mockResolvedValue([
+        {
+          id: "appr-1",
+          toolName: "create_issue",
+          toolInput: { title: "Fix the bug" },
+          approveOptionId: "approve",
+          denyOptionId: "deny",
+          channel: "console",
+          conversationKey: `console:${USER}:1`,
+          createdAt: new Date("2026-07-22T00:00:00.000Z"),
+        },
+        {
+          id: "appr-2",
+          toolName: "create_repo",
+          toolInput: {},
+          approveOptionId: "approve",
+          denyOptionId: "deny",
+          channel: "console",
+          conversationKey: "console:some-other-user:1",
+          createdAt: new Date(),
+        },
+        {
+          id: "appr-3",
+          toolName: "create_workspace",
+          toolInput: {},
+          approveOptionId: "approve",
+          denyOptionId: "deny",
+          channel: "telegram",
+          conversationKey: "555",
+          createdAt: new Date(),
+        },
+      ] as never);
+
+      const res = await GET(getReq(), { params: params() });
+      const json = await res.json();
+      expect(json.approvals).toEqual([
+        {
+          id: "appr-1",
+          tool_name: "create_issue",
+          tool_input: { title: "Fix the bug" },
+          created_at: "2026-07-22T00:00:00.000Z",
+        },
+      ]);
+    });
+
+    it("returns an empty approvals array when nothing is pending", async () => {
+      const res = await GET(getReq(), { params: params() });
+      const json = await res.json();
+      expect(json.approvals).toEqual([]);
+    });
   });
 });
 

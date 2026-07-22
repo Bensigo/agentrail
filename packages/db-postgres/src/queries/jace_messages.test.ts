@@ -26,7 +26,7 @@ vi.mock("../db.js", () => ({
 }));
 
 import { db } from "../db.js";
-import { appendJaceMessage, listJaceMessagesSince } from "./jace_messages.js";
+import { appendJaceMessage, listJaceMessagesSince, hasAnyJaceReply } from "./jace_messages.js";
 
 const mockDb = vi.mocked(db);
 
@@ -144,5 +144,33 @@ describe("listJaceMessagesSince", () => {
     const chain = mockSelectRows([]);
     await listJaceMessagesSince("ws-1", "console:u:1", 0, 10);
     expect(chain["limit"]).toHaveBeenCalledWith(10);
+  });
+});
+
+describe("hasAnyJaceReply", () => {
+  function mockSelectRows(rows: Array<Record<string, unknown>>) {
+    const chain: Record<string, unknown> = {};
+    for (const m of ["from", "where"]) {
+      chain[m] = vi.fn(() => chain);
+    }
+    chain["limit"] = vi.fn(() => Promise.resolve(rows));
+    mockDb.select = vi.fn(() => chain as ReturnType<typeof db.select>);
+    return chain;
+  }
+
+  it("true when at least one role: 'jace' row exists for the workspace", async () => {
+    mockSelectRows([{ id: "m-1" }]);
+    expect(await hasAnyJaceReply("ws-1")).toBe(true);
+  });
+
+  it("false when no jace reply exists yet", async () => {
+    mockSelectRows([]);
+    expect(await hasAnyJaceReply("ws-1")).toBe(false);
+  });
+
+  it("scopes the check to the workspace via the WHERE clause", async () => {
+    const chain = mockSelectRows([]);
+    await hasAnyJaceReply("ws-1");
+    expect(chain["where"]).toHaveBeenCalled();
   });
 });

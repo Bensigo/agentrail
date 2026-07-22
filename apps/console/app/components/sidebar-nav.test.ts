@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CHAT_NAV_ITEM,
   ENGINE_ROOM_ZONE,
   NAV_ZONES,
   SETTINGS_ZONE,
@@ -32,6 +33,13 @@ describe("NAV_ZONES data structure", () => {
       ["Work", "work"],
       ["Approvals", "approvals"],
     ]);
+  });
+
+  it("CHAT_NAV_ITEM (#1288) is NOT baked into YOUR_ENGINEER_ZONE.items — sidebar.tsx splices it in only when the flag is on", () => {
+    expect(YOUR_ENGINEER_ZONE.items.map((i) => i.href)).not.toContain("chat");
+    expect(CHAT_NAV_ITEM.label).toBe("Chat");
+    expect(CHAT_NAV_ITEM.href).toBe("chat");
+    expect(CHAT_NAV_ITEM.icon).toBeDefined();
   });
 
   it("Engine room zone contains exactly the demoted evidence pages, plus Budget (#1272) and Model selection (#1338 PR③)", () => {

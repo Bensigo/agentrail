@@ -11,6 +11,7 @@ import {
 import { StepCard } from "./step-card";
 import { GithubStep } from "./github-step";
 import { ChannelStep } from "./channel-step";
+import { SayHiStep } from "./say-hi-step";
 import { InviteStep } from "./invite-step";
 import { RunnerStep } from "./runner-step";
 
@@ -18,6 +19,7 @@ interface OnboardingData {
   steps: OnboardingStep[];
   github: { repoCount: number; repos: string[]; hasWebhookSecret: boolean };
   channel: { connected: boolean; skipped: boolean; chatId: string | null };
+  chat: { enabled: boolean; jaceReplied: boolean };
   invites: { count: number };
   runner: { connected: boolean; selfHosted: boolean };
 }
@@ -105,7 +107,7 @@ export function OnboardingWizard({ workspaceId }: { workspaceId: string }) {
   if (!data) {
     return (
       <div className="flex flex-col gap-2.5">
-        {[0, 1, 2, 3].map((i) => (
+        {[0, 1, 2, 3, 4].map((i) => (
           <div
             key={i}
             className="h-14 animate-pulse rounded border border-[var(--gray-05)] bg-[var(--gray-01)]"
@@ -154,6 +156,13 @@ export function OnboardingWizard({ workspaceId }: { workspaceId: string }) {
                   skipped={data.channel.skipped}
                   chatId={data.channel.chatId}
                   onChanged={refresh}
+                />
+              )}
+              {id === "say-hi-to-jace" && (
+                <SayHiStep
+                  workspaceId={workspaceId}
+                  enabled={data.chat.enabled}
+                  jaceReplied={data.chat.jaceReplied}
                 />
               )}
               {id === "invite-team" && (

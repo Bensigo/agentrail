@@ -9,11 +9,12 @@ import {
   type OnboardingStepsInput,
 } from "./onboarding-steps";
 
-/** A baseline input where every step is incomplete. */
+/** A baseline input where every step is incomplete (chat enabled, no reply yet). */
 function baseInput(): OnboardingStepsInput {
   return {
     github: { repoCount: 0, hasWebhookSecret: false },
     channel: { connected: false, skipped: false },
+    chat: { enabled: true, jaceReplied: false },
     invites: { count: 0 },
     runner: { connected: false },
   };
@@ -30,19 +31,24 @@ describe("ONBOARDING_STEP_LABELS (#1281 chat-first relabel)", () => {
     expect(ONBOARDING_STEP_LABELS["connect-channel"]).toBe("Talk to Jace");
   });
 
+  it("labels say-hi-to-jace (#1288)", () => {
+    expect(ONBOARDING_STEP_LABELS["say-hi-to-jace"]).toBe("Say hi to Jace");
+  });
+
   it("relabels attach-runner to 'Execution', not the old install-first wording", () => {
     expect(ONBOARDING_STEP_LABELS["attach-runner"]).toBe("Execution");
     expect(ONBOARDING_STEP_LABELS["attach-runner"]).not.toMatch(/runner/i);
   });
 
-  it("attach-runner (now 'Execution') stays 4th — no steps added or removed", () => {
-    expect(ONBOARDING_STEP_ORDER[3]).toBe("attach-runner");
-    expect(ONBOARDING_STEP_ORDER).toHaveLength(4);
+  it("say-hi-to-jace sits 3rd, attach-runner ('Execution') sits 5th — spec §5 ordering, five steps total", () => {
+    expect(ONBOARDING_STEP_ORDER[2]).toBe("say-hi-to-jace");
+    expect(ONBOARDING_STEP_ORDER[4]).toBe("attach-runner");
+    expect(ONBOARDING_STEP_ORDER).toHaveLength(5);
   });
 });
 
 describe("deriveOnboardingSteps", () => {
-  it("returns all four steps, in the fixed render order, incomplete on a fresh workspace", () => {
+  it("returns all five steps, in the fixed render order, incomplete on a fresh (chat-enabled) workspace", () => {
     const steps = deriveOnboardingSteps(baseInput());
     expect(steps.map((s) => s.id)).toEqual([...ONBOARDING_STEP_ORDER]);
     expect(steps.every((s) => s.status === "incomplete")).toBe(true);
@@ -134,6 +140,45 @@ describe("deriveOnboardingSteps", () => {
     });
   });
 
+  // -- say-hi-to-jace (#1288) --------------------------------------------------
+  describe("say-hi-to-jace", () => {
+    it("is incomplete when chat is enabled but Jace hasn't replied yet", () => {
+      const input = baseInput();
+      input.chat = { enabled: true, jaceReplied: false };
+      const steps = deriveOnboardingSteps(input);
+      expect(steps.find((s) => s.id === "say-hi-to-jace")!.status).toBe(
+        "incomplete"
+      );
+    });
+
+    it("is complete once a jace_messages reply exists", () => {
+      const input = baseInput();
+      input.chat = { enabled: true, jaceReplied: true };
+      const steps = deriveOnboardingSteps(input);
+      expect(steps.find((s) => s.id === "say-hi-to-jace")!.status).toBe(
+        "complete"
+      );
+    });
+
+    it("is skipped (not incomplete) when console chat is not enabled for this workspace — never permanently blocks allDone", () => {
+      const input = baseInput();
+      input.chat = { enabled: false, jaceReplied: false };
+      const steps = deriveOnboardingSteps(input);
+      expect(steps.find((s) => s.id === "say-hi-to-jace")!.status).toBe(
+        "skipped"
+      );
+    });
+
+    it("a reply outranks the flag being off (jaceReplied always wins, even if enabled somehow flips back false later)", () => {
+      const input = baseInput();
+      input.chat = { enabled: false, jaceReplied: true };
+      const steps = deriveOnboardingSteps(input);
+      expect(steps.find((s) => s.id === "say-hi-to-jace")!.status).toBe(
+        "complete"
+      );
+    });
+  });
+
   // -- invite-team --------------------------------------------------------
   describe("invite-team", () => {
     it("is incomplete with zero teammates reached", () => {
@@ -201,6 +246,7 @@ describe("deriveOnboardingSteps", () => {
     const input: OnboardingStepsInput = {
       github: { repoCount: 3, hasWebhookSecret: true },
       channel: { connected: false, skipped: true },
+      chat: { enabled: true, jaceReplied: true },
       invites: { count: 2 },
       runner: { connected: true },
     };
@@ -210,6 +256,7 @@ describe("deriveOnboardingSteps", () => {
     expect(a).toEqual([
       { id: "connect-github", status: "complete" },
       { id: "connect-channel", status: "skipped" },
+      { id: "say-hi-to-jace", status: "complete" },
       { id: "invite-team", status: "complete" },
       { id: "attach-runner", status: "complete" },
     ]);
@@ -219,6 +266,7 @@ describe("deriveOnboardingSteps", () => {
     const allComplete: OnboardingStepsInput = {
       github: { repoCount: 1, hasWebhookSecret: true },
       channel: { connected: true, skipped: false },
+      chat: { enabled: true, jaceReplied: true },
       invites: { count: 1 },
       runner: { connected: true },
     };
@@ -226,6 +274,7 @@ describe("deriveOnboardingSteps", () => {
     const flips: Array<[Partial<OnboardingStepsInput>, OnboardingStepId]> = [
       [{ github: { repoCount: 0, hasWebhookSecret: true } }, "connect-github"],
       [{ channel: { connected: false, skipped: false } }, "connect-channel"],
+      [{ chat: { enabled: true, jaceReplied: false } }, "say-hi-to-jace"],
       [{ invites: { count: 0 } }, "invite-team"],
       [{ runner: { connected: false } }, "attach-runner"],
     ];
@@ -248,23 +297,25 @@ describe("onboardingProgress", () => {
     const steps = deriveOnboardingSteps({
       github: { repoCount: 1, hasWebhookSecret: true }, // complete
       channel: { connected: false, skipped: true }, // skipped
+      chat: { enabled: false, jaceReplied: false }, // skipped
       invites: { count: 0 }, // incomplete
       runner: { connected: false }, // incomplete
     });
     const progress = onboardingProgress(steps);
-    expect(progress).toEqual({ done: 2, total: 4, allDone: false });
+    expect(progress).toEqual({ done: 3, total: 5, allDone: false });
   });
 
   it("allDone is true once nothing is incomplete (mix of complete + skipped)", () => {
     const steps = deriveOnboardingSteps({
       github: { repoCount: 1, hasWebhookSecret: true },
       channel: { connected: false, skipped: true },
+      chat: { enabled: false, jaceReplied: false },
       invites: { count: 3 },
       runner: { connected: true },
     });
     expect(onboardingProgress(steps)).toEqual({
-      done: 4,
-      total: 4,
+      done: 5,
+      total: 5,
       allDone: true,
     });
   });
@@ -273,22 +324,24 @@ describe("onboardingProgress", () => {
     const steps = deriveOnboardingSteps({
       github: { repoCount: 1, hasWebhookSecret: true },
       channel: { connected: true, skipped: false },
+      chat: { enabled: true, jaceReplied: false },
       invites: { count: 3 },
       runner: { connected: false },
     });
     expect(onboardingProgress(steps).allDone).toBe(false);
   });
 
-  it("a fresh workspace has zero done of four", () => {
+  it("a fresh workspace has zero done of five", () => {
     const steps = deriveOnboardingSteps({
       github: { repoCount: 0, hasWebhookSecret: false },
       channel: { connected: false, skipped: false },
+      chat: { enabled: true, jaceReplied: false },
       invites: { count: 0 },
       runner: { connected: false },
     });
     expect(onboardingProgress(steps)).toEqual({
       done: 0,
-      total: 4,
+      total: 5,
       allDone: false,
     });
   });
@@ -299,6 +352,7 @@ describe("shouldShowOnboardingBanner", () => {
     const steps = deriveOnboardingSteps({
       github: { repoCount: 1, hasWebhookSecret: true },
       channel: { connected: false, skipped: true },
+      chat: { enabled: false, jaceReplied: false },
       invites: { count: 1 },
       runner: { connected: false },
     });
@@ -309,16 +363,18 @@ describe("shouldShowOnboardingBanner", () => {
     const steps = deriveOnboardingSteps({
       github: { repoCount: 1, hasWebhookSecret: true },
       channel: { connected: true, skipped: false },
+      chat: { enabled: true, jaceReplied: true },
       invites: { count: 1 },
       runner: { connected: true },
     });
     expect(shouldShowOnboardingBanner(steps)).toBe(false);
   });
 
-  it("hides the banner when the only remaining step is skipped, not incomplete", () => {
+  it("hides the banner when the only remaining steps are skipped, not incomplete", () => {
     const steps = deriveOnboardingSteps({
       github: { repoCount: 1, hasWebhookSecret: true },
       channel: { connected: false, skipped: true },
+      chat: { enabled: false, jaceReplied: false },
       invites: { count: 1 },
       runner: { connected: true },
     });
@@ -329,6 +385,7 @@ describe("shouldShowOnboardingBanner", () => {
     const steps = deriveOnboardingSteps({
       github: { repoCount: 0, hasWebhookSecret: false },
       channel: { connected: false, skipped: false },
+      chat: { enabled: true, jaceReplied: false },
       invites: { count: 0 },
       runner: { connected: false },
     });

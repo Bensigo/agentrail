@@ -201,9 +201,9 @@ describe("(marketing) craft pins — mono on data moments", () => {
     expect(monoAppliesBefore(source, "{stats.didntLand}")).toBe(true);
   });
 
-  it("the how-we-work step markers are mono", () => {
+  it("no decorative index numerals anywhere on the page (owner ruling 2026-07-22: rendered {i + 1} counters are slop-catalog LS-5)", () => {
     const source = readSibling("page.tsx");
-    expect(monoAppliesBefore(source, "{i + 1}")).toBe(true);
+    expect(source).not.toContain("{i + 1}");
   });
 });
 

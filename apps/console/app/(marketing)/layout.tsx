@@ -14,7 +14,10 @@ import { Source_Serif_4 } from "next/font/google";
  */
 const displaySerif = Source_Serif_4({
   subsets: ["latin"],
-  weight: ["600", "700"],
+  // 400 joined the set with the owner's 2026-07-22 ruling: the landing
+  // renders BODY copy in the serif too (Inter is off this surface
+  // entirely); 600 stays the display weight, 700 for bold emphasis.
+  weight: ["400", "600", "700"],
   display: "swap",
   variable: "--font-display",
 });
@@ -40,6 +43,17 @@ const displaySerif = Source_Serif_4({
  * clipping between the hero's two lines.
  */
 const TYPE_SCALE_CSS = `
+  /* The landing speaks in its own faces only (owner ruling 2026-07-22:
+     no Inter on this surface): the serif inherits to every descendant —
+     including buttons, via preflight's font:inherit — while .font-mono /
+     .text-mono-data set Berkeley Mono directly and therefore win. Base
+     size steps up to 16px for the marketing voice; the explicit
+     text-label/body-sm/mono-data sizes below still override. */
+  .marketing-root {
+    font-family: var(--font-display), Georgia, "Times New Roman", serif;
+    font-size: 1rem;
+  }
+
   .text-heading-1,
   .text-heading-2 {
     font-family: var(--font-display), Georgia, "Times New Roman", serif;
@@ -97,7 +111,10 @@ export default function MarketingLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className={displaySerif.variable} style={{ display: "contents" }}>
+    <div
+      className={`${displaySerif.variable} marketing-root`}
+      style={{ display: "contents" }}
+    >
       <style>{TYPE_SCALE_CSS}</style>
       {children}
     </div>

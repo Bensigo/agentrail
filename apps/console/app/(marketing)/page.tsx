@@ -241,17 +241,14 @@ export default async function LandingPage() {
                 delay={i * 70}
                 className={i < 3 ? "lg:col-span-2" : "lg:col-span-3"}
               >
+                {/* No decorative numerals (owner ruling 2026-07-22 — they
+                    read as slop-catalog LS-5): the serif step NAME is the
+                    panel's anchor; the grid order carries the sequence. */}
                 <li className="flex h-full flex-col rounded-xl border-2 border-[var(--accent-fill-text)] bg-[var(--paper)] p-6 shadow-[5px_5px_0_0_var(--accent-fill-text)] sm:p-8">
-                  <span
-                    aria-hidden
-                    className="text-7xl leading-none font-mono font-bold text-[var(--accent-fill-text)]"
-                  >
-                    {i + 1}
-                  </span>
-                  <p className="mt-4 font-bold text-[var(--accent-fill-text)]">
+                  <h3 className="text-heading-2 text-[var(--accent-fill-text)]">
                     {step.name}
-                  </p>
-                  <p className="mt-2 leading-relaxed text-[var(--accent-fill-text)]">
+                  </h3>
+                  <p className="mt-3 leading-relaxed text-[var(--accent-fill-text)]">
                     {step.line}
                   </p>
                 </li>
@@ -363,13 +360,11 @@ export default async function LandingPage() {
               "You're charged when the task is done.",
             ].map((line, i) => (
               <Reveal key={i} delay={i * 70}>
-                <li className="flex items-baseline gap-5">
+                <li className="flex items-baseline gap-4">
                   <span
                     aria-hidden
-                    className="text-mono-data w-5 shrink-0 font-mono font-bold text-[var(--gray-12)]"
-                  >
-                    {i + 1}
-                  </span>
+                    className="h-2.5 w-2.5 shrink-0 rounded-sm border border-[var(--gray-13)] bg-[var(--accent-fill)]"
+                  />
                   <p className="text-[var(--gray-12)]">{line}</p>
                 </li>
               </Reveal>

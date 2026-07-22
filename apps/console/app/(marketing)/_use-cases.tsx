@@ -2,35 +2,46 @@ import Image from "next/image";
 import { DEMO_TASK_INPUT } from "./_conversation-demo-data";
 
 /**
- * Landing v2's use-case stack (plan: docs/superpowers/plans/2026-07-22-landing-v2.md,
- * "What you can hand me") — four sticky cards that deck on top of each other
- * as the visitor scrolls. Pure CSS (`position: sticky` + staggered top
- * offsets): no scroll listeners, nothing to degrade — reduced-motion and
- * mobile get the same markup, which simply reads as stacked cards.
+ * Landing v2's use-case stack ("Use cases", heading + content per owner
+ * feedback 2026-07-22) — sticky cards that deck on top of each other as the
+ * visitor scrolls. Pure CSS (`position: sticky` + staggered top offsets):
+ * no scroll listeners, nothing to degrade — reduced-motion and mobile get
+ * the same markup, which simply reads as stacked cards.
  *
- * Card 2's dashed chip is `DEMO_TASK_INPUT.title` — the SAME task the hero
- * phone prices, so the page tells one story, not two. No fabricated
- * transcripts, no invented numbers (the gate panel names the real gates:
- * second-model review + the repo's own tests — see
- * apps/console/lib/../verify gate wiring the how-we-work section describes).
+ * Every card maps to a REAL product surface, not marketing invention:
+ * 1. overnight  — the work queue drains GitHub/Linear issues into PRs
+ *    (dashboard → Work / Runs).
+ * 2. chat       — chat-born tasks: message → alignment brief → approval →
+ *    PR (the same DEMO_TASK_INPUT the hero phone prices).
+ * 3. ideas      — Jace's ideation door: a rough goal becomes scoped,
+ *    house-format GitHub issues (the coordinator's issue contract).
+ * 4. gates      — the verify gate: second-model review + the repo's own
+ *    tests; failures land in the console's Failures view, counted.
+ * 5. budget     — budget caps + cheap-first model selection; every run's
+ *    cost sits beside its PR (dashboard → Costs).
  */
 
 interface UseCase {
   title: string;
   line: string;
-  visual: "overnight" | "chat" | "gates" | "budget";
+  visual: "overnight" | "chat" | "ideas" | "gates" | "budget";
 }
 
 const USE_CASES: UseCase[] = [
   {
     title: "Clear the backlog overnight",
-    line: "Queue up issues before you log off. By morning each one is a pull request with a review trail.",
+    line: "Queue up GitHub or Linear issues before you log off. By morning each one is a pull request with a review trail.",
     visual: "overnight",
   },
   {
     title: "Text me a task",
     line: "A message becomes a brief, a budget, and a PR after you approve.",
     visual: "chat",
+  },
+  {
+    title: "Turn an idea into scoped work",
+    line: "Describe what you want in chat. I ask the hard questions, then file scoped issues your whole team can read.",
+    visual: "ideas",
   },
   {
     title: "Fixes that prove themselves",
@@ -54,7 +65,7 @@ export function UseCases() {
           style={{ top: 88 + i * 16 }}
         >
           <div className="flex flex-col items-start gap-6 sm:flex-row sm:items-center sm:justify-between sm:gap-10">
-            <div className="max-w-[46ch]">
+            <div className="max-w-[44ch]">
               <h3 className="text-heading-2">{useCase.title}</h3>
               <p className="mt-3 text-[var(--gray-11)]">{useCase.line}</p>
             </div>
@@ -72,9 +83,9 @@ function CaseVisual({ visual }: { visual: UseCase["visual"] }) {
       <Image
         src="/jace-working.png"
         alt=""
-        width={170}
-        height={170}
-        className="-rotate-2 shrink-0 mix-blend-multiply"
+        width={220}
+        height={220}
+        className="-rotate-2 shrink-0"
       />
     );
   }
@@ -87,6 +98,15 @@ function CaseVisual({ visual }: { visual: UseCase["visual"] }) {
         <span className="text-mono-data px-1 font-mono text-[var(--gray-11)]">
           brief → approve → PR
         </span>
+      </div>
+    );
+  }
+  if (visual === "ideas") {
+    return (
+      <div className="text-mono-data flex shrink-0 flex-col gap-1.5 rounded-md border border-[var(--gray-05)] bg-[var(--gray-01)] px-4 py-3 font-mono text-[var(--gray-11)]">
+        <span>you: “billing needs retries”</span>
+        <span className="text-[var(--gray-12)]">→ issue #1 webhook backoff</span>
+        <span className="text-[var(--gray-12)]">→ issue #2 failure ledger</span>
       </div>
     );
   }

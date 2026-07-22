@@ -157,15 +157,16 @@ export default async function LandingPage() {
       <section className="px-6 pt-14 pb-20 sm:pt-16 sm:pb-24">
         <div className="mx-auto flex max-w-[1120px] flex-col items-center gap-12 text-center lg:grid lg:grid-cols-[1.1fr_auto] lg:items-center lg:gap-16 lg:text-left">
           <div className="flex flex-col items-center lg:items-start">
-            {/* mix-blend-multiply drops the render's white matte into the
-                paper surface — a cutout, not a white box. */}
+            {/* True-alpha cutout (white matte stripped from the PNG itself,
+                owner feedback 2026-07-22) at real presence — the renders
+                are the brand, not a favicon. */}
             <Image
               src="/jace-wave.png"
               alt="Jace"
-              width={140}
-              height={140}
+              width={240}
+              height={240}
               priority
-              className="ar-rise mb-6 mix-blend-multiply"
+              className="ar-rise mb-6"
             />
 
             <h1 className="ar-rise" style={{ animationDelay: "60ms" }}>
@@ -214,13 +215,13 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 3 — Use cases: four sticky cards that deck over each other as the
-          visitor scrolls (landing v2 §3). Copy absorbs the old What-I-do
-          claims; card 2's chip is the same task the hero phone prices. */}
+      {/* 3 — Use cases: sticky cards that deck over each other as the
+          visitor scrolls (landing v2 §3, heading per owner 2026-07-22).
+          Every card maps to a real product surface — see _use-cases.tsx. */}
       <section className="px-6 pb-24 sm:pb-32">
         <div className="mx-auto max-w-[860px]">
           <Reveal>
-            <h2 className="text-heading-2 text-center">What you can hand me</h2>
+            <h2 className="text-heading-2 text-center">Use cases</h2>
           </Reveal>
         </div>
         <div className="mt-12">
@@ -228,34 +229,35 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* 5 — ACT 2: how we work together, as one loud full-bleed lemon
-          scene — the page's one moment of scale. Content is the exact same
-          5-step loop as before; see HOW_WE_WORK's own comment above for why
-          step 5 phrases merge permission as an opt-in rather than the
-          default. */}
+      {/* 5 — ACT 2: how I work, as one loud full-bleed lemon scene — the
+          page's one moment of scale, restyled per owner feedback 2026-07-22
+          ("boring") into an editorial rail: five columns under ink top-bars,
+          numerals at poster size. Content is the exact same 5-step loop;
+          see HOW_WE_WORK's own comment above for why the Merge step phrases
+          merge permission as an opt-in rather than the default. */}
       <section className="w-full bg-[var(--accent-fill)] px-6 py-24 sm:py-32">
-        <div className="mx-auto max-w-[760px]">
+        <div className="mx-auto max-w-[1120px]">
           <Reveal>
             <h2 className="text-heading-2 text-[var(--accent-fill-text)]">
-              How we work together
+              How I work
             </h2>
           </Reveal>
-          <ol className="mt-14 flex flex-col gap-10 sm:mt-20 sm:gap-14">
+          <ol className="mt-14 grid grid-cols-1 gap-10 sm:mt-20 sm:grid-cols-2 sm:gap-x-8 sm:gap-y-14 lg:grid-cols-5 lg:gap-6">
             {HOW_WE_WORK.map((step, i) => (
               <Reveal key={step.name} delay={i * 70}>
-                <li className="flex flex-col gap-2 sm:flex-row sm:items-baseline sm:gap-8">
+                <li className="flex h-full flex-col border-t-2 border-[var(--accent-fill-text)] pt-5">
                   <span
                     aria-hidden
-                    className="text-5xl leading-none font-mono font-bold text-[var(--accent-fill-text)] sm:w-16 sm:shrink-0 sm:text-6xl"
+                    className="text-7xl leading-none font-mono font-bold text-[var(--accent-fill-text)]"
                   >
                     {i + 1}
                   </span>
-                  <div>
-                    <p className="font-bold text-[var(--accent-fill-text)]">{step.name}</p>
-                    <p className="mt-1 text-lg leading-relaxed text-[var(--accent-fill-text)] sm:text-xl">
-                      {step.line}
-                    </p>
-                  </div>
+                  <p className="mt-4 font-bold text-[var(--accent-fill-text)]">
+                    {step.name}
+                  </p>
+                  <p className="mt-2 leading-relaxed text-[var(--accent-fill-text)]">
+                    {step.line}
+                  </p>
                 </li>
               </Reveal>
             ))}
@@ -396,8 +398,8 @@ export default async function LandingPage() {
           <Image
             src="/jace.png"
             alt=""
-            width={64}
-            height={64}
+            width={96}
+            height={96}
             className="-rotate-3 mx-auto mb-6 rounded-full"
           />
           <h2 className="text-heading-2">
@@ -508,14 +510,18 @@ function PrimaryCta({ cta }: { cta: MessageJaceCta }) {
       </a>
     );
   }
+  // No hosted bot configured: the button still reads as Jace's own ask
+  // (owner directive 2026-07-22 — "this should be a message me button");
+  // sign-in IS the door to messaging him when no public bot exists, and
+  // the action stays the same honest server action either way.
   return (
     <form action={signInWithGithub}>
       <button
         type="submit"
         className="inline-flex items-center gap-2.5 rounded-md bg-[var(--accent-fill)] px-7 py-3.5 font-bold text-[var(--accent-fill-text)] transition-[transform,background-color] duration-200 hover:-translate-y-0.5 hover:bg-[var(--accent-fill-hover)] active:scale-[0.97]"
       >
-        <GitHubIcon />
-        Sign in with GitHub
+        <Send size={17} aria-hidden />
+        Message Jace
       </button>
     </form>
   );
@@ -533,12 +539,3 @@ function FreePreviewChip() {
   );
 }
 
-/* ---------------------------------------------------------------- icons */
-
-function GitHubIcon() {
-  return (
-    <svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
-      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
-    </svg>
-  );
-}

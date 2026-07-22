@@ -65,11 +65,18 @@ export function ConversationDemo({
   // in white — colors via the frame's --tg-* vars (lib/telegram-surface.ts),
   // never hex here (tokens-only pin).
   return (
-    <div className="flex flex-col gap-5 px-5 py-6 sm:px-8 sm:py-8">
+    <div className="flex flex-col gap-4 px-4 py-5 sm:px-6 sm:py-6">
+      {/* The translucent date pill, like the owner's real screenshot. */}
+      <div aria-hidden className="flex justify-center">
+        <span className="text-label rounded-full bg-[var(--tg-pill)] px-3 py-1 font-bold text-[var(--gray-00)]">
+          Today
+        </span>
+      </div>
+
       {/* The user's message — typed out character-by-character when
           `typedChars` is provided; the full message immediately otherwise.
-          The 18:02 + double-check trailer appears once the message has
-          fully "sent" (outgoing-only, like the real client). */}
+          The time + green double-check trailer appears once the message
+          has fully "sent" (outgoing-only, like the real client). */}
       <div className="flex justify-end">
         <p className="max-w-[85%] rounded-2xl rounded-br-sm bg-[var(--tg-bubble-out)] px-4 py-2.5 text-[var(--gray-12)]">
           {shownMessage}
@@ -82,7 +89,7 @@ export function ConversationDemo({
               aria-hidden
               className="text-label ml-2 inline-flex translate-y-0.5 items-center gap-1 whitespace-nowrap text-[var(--gray-11)]"
             >
-              18:02
+              6:08 PM
               <CheckCheck size={14} className="text-[var(--tg-check)]" />
             </span>
           )}
@@ -125,6 +132,9 @@ export function ConversationDemo({
           <p className="text-mono-data mt-1.5 font-mono text-[var(--gray-11)]">
             Approving sets this run&apos;s budget: ~${brief.estimateUsd.toFixed(2)}
           </p>
+          <span aria-hidden className="text-label mt-1 block text-right text-[var(--gray-11)]">
+            6:08 PM
+          </span>
         </div>
 
         {/* The inline keyboard — how the REAL bot renders Approve
@@ -167,6 +177,9 @@ export function ConversationDemo({
                 messages; the mono wire text carries the moment. */}
             <p className="text-mono-data max-w-[92%] break-all rounded-2xl rounded-bl-sm bg-[var(--gray-00)] px-4 py-2.5 font-mono text-[var(--gray-12)] sm:max-w-[80%]">
               {getDemoOutcomeMessage()}
+              <span aria-hidden className="text-label ml-2 whitespace-nowrap text-[var(--gray-11)]">
+                6:09 PM
+              </span>
             </p>
           </div>
         ) : null}

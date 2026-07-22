@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import { ChevronLeft, MoreVertical, Smile, Paperclip, Mic } from "lucide-react";
+import { ChevronLeft, Paperclip, Mic, Smile } from "lucide-react";
 import { ConversationDemo } from "./_conversation-demo";
 import { DEMO_USER_MESSAGE } from "./_conversation-demo-data";
 import { TELEGRAM_SURFACE } from "../../lib/telegram-surface";
@@ -71,33 +71,41 @@ export function PhoneDemo() {
     };
   }, []);
 
-  // Telegram chrome (owner directive 2026-07-22): the demo reads as the
-  // REAL channel Jace lives on — blue app bar, cool chat backdrop, message
-  // input row — familiar at a glance. Colors come exclusively from the
-  // TELEGRAM_SURFACE vars (lib/telegram-surface.ts) applied on the frame;
-  // the ink cartoon frame around it stays OURS. Decorative chrome (back
-  // chevron, menu, input row) is aria-hidden: it illustrates the app, it
-  // is not an interface.
+  // Telegram chrome matched to the owner's REAL iOS screenshot of the Jace
+  // bot chat (2026-07-22): green doodle-wallpaper gradient, translucent
+  // centered header (chevron left, name+bot centered, avatar RIGHT), white
+  // incoming / green outgoing bubbles, floating paperclip–Message–mic input
+  // row. Colors come exclusively from the TELEGRAM_SURFACE vars
+  // (lib/telegram-surface.ts) applied on the frame; the ink cartoon frame
+  // around it stays OURS. The translucent blur layers are justified real
+  // layering — they depict iOS chrome floating over the wallpaper.
+  // Decorative chrome is aria-hidden: it illustrates the app, it is not an
+  // interface.
   return (
     <div
       ref={frameRef}
       style={TELEGRAM_SURFACE}
-      className="w-[340px] overflow-hidden rounded-[2rem] border-2 border-[var(--gray-13)] bg-[var(--tg-bg)] shadow-[6px_6px_0_0_var(--gray-13)] sm:w-[400px]"
+      className="w-[340px] overflow-hidden rounded-[2rem] border-2 border-[var(--gray-13)] shadow-[6px_6px_0_0_var(--gray-13)] [background:var(--tg-wallpaper)] sm:w-[400px]"
     >
-      <div className="flex items-center gap-2.5 bg-[var(--tg-header)] px-3 py-2.5 text-[var(--tg-header-text)]">
-        <ChevronLeft size={20} aria-hidden className="shrink-0" />
-        <Image src="/jace-avatar.png" alt="" width={32} height={32} className="rounded-full" />
-        <div className="flex min-w-0 flex-col">
-          <span className="font-bold leading-tight">Jace</span>
-          <span className="text-label opacity-75">bot</span>
+      <div className="grid grid-cols-[2rem_1fr_2.5rem] items-center bg-[var(--gray-00)]/70 px-3 py-2 text-[var(--gray-13)] backdrop-blur-sm">
+        <ChevronLeft size={22} aria-hidden className="shrink-0" />
+        <div className="flex min-w-0 flex-col items-center leading-tight">
+          <span className="font-bold">Jace</span>
+          <span className="text-label text-[var(--gray-11)]">bot</span>
         </div>
-        <MoreVertical size={18} aria-hidden className="ml-auto shrink-0 opacity-90" />
+        <Image
+          src="/jace-avatar.png"
+          alt=""
+          width={34}
+          height={34}
+          className="justify-self-end rounded-full"
+        />
       </div>
 
       {/* Fixed conversation height (owner fix 2026-07-22): the frame is
           full-size from first paint — typing, the brief, and the outcome
           ping all land INSIDE it instead of growing the phone stepwise. */}
-      <div className="min-h-[530px]">
+      <div className="min-h-[560px]">
         {choreographed === null ? null : choreographed ? (
           <ConversationDemo typedChars={typed} briefRevealed={briefRevealed} />
         ) : (
@@ -105,12 +113,18 @@ export function PhoneDemo() {
         )}
       </div>
 
-      {/* Message input row — decorative, completes the Telegram picture. */}
-      <div aria-hidden className="flex items-center gap-3 border-t border-[var(--gray-04)] bg-[var(--gray-00)] px-4 py-2.5 text-[var(--gray-11)]">
-        <Smile size={20} className="shrink-0" />
-        <span className="flex-1 text-left">Message</span>
-        <Paperclip size={19} className="shrink-0" />
-        <Mic size={20} className="shrink-0" />
+      {/* Floating input row — decorative, completes the iOS picture. */}
+      <div aria-hidden className="flex items-center gap-2 px-3 pt-1 pb-3 text-[var(--gray-11)]">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--gray-00)]/80">
+          <Paperclip size={18} />
+        </span>
+        <span className="flex h-9 flex-1 items-center justify-between rounded-full bg-[var(--gray-00)]/80 px-4">
+          Message
+          <Smile size={18} />
+        </span>
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--gray-00)]/80">
+          <Mic size={18} />
+        </span>
       </div>
     </div>
   );

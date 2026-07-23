@@ -97,7 +97,7 @@ orientation).
 
 | Decision | Choice |
 |---|---|
-| Artifact name | **Repo Wiki**; pages are `sourceType="wiki_doc"` index records; files under `.agentrail/context/wiki/` (generated cache, never committed) |
+| Artifact name | **Repo Wiki**; pages are `sourceType="wiki_doc"` index records; local files under `.agentrail/context/wiki/` are a **disposable per-clone materialization** (generated cache) — never committed or PR'd into the user's repo |
 | Page grain | One **repo overview** page + one page per **Codebase Unit** (existing detection, `index.py detect_codebase_units`; 8 units on this repo). Explicitly NOT per-file or per-symbol in v1 — symbol node IDs are path+name+line-keyed and rename-fragile; unit IDs are the only stable grain |
 | Structure vs prose | Skeleton is 100% deterministic (unit file roster, exported symbols from `symbolTable`, unit→unit dependency edges, test coverage counts, manifests). The LLM writes only the prose (responsibilities, relationships, invariants) grounded in the skeleton — it organizes, it does not invent structure |
 | New graph data | `unit_depends_on` edges: deterministic aggregation of existing `imports_file` edges through `contains_file` membership. `deterministic: true` — this is rollup, not Graph Enrichment; the `enrichment` stub stays `not_used` |
@@ -106,9 +106,9 @@ orientation).
 | Authority | New authority tier `generated`: below `context_doc`/`taste_doc` (human, critical), above Memory Lane (untrusted). Wiki prose must never outrank code, tests, or human docs; every page carries citations and a provenance header |
 | LLM call pattern | Headless `claude -p` with a cheap default (`claude-haiku-4-5`), same as `onboard.py _call_model` and `llm_rerank.py` — fail-open to skeleton-only pages, never hard-block on missing keys |
 | Pack integration | New `repoOverview` key in the **stable cache-eligible prefix** of `PACK_SECTION_KEYS` (the comment at `packs.py:22-25` already separates stable from dynamic — overview content is identical across tasks, i.e. prompt-cache-friendly). Unit pages become rank-eligible `wiki_doc` retrieval candidates |
-| Server storage | New Postgres `wiki_pages` table (workspace + repo scoped), pushed at onboard/index like memory items; replace-by-`(repository_id, slug)` semantics mirroring `replaceMemoryItemsByWriter` |
+| System of record | **The server** — new Postgres `wiki_pages` table (workspace + repo scoped). Clones are ephemeral (`tempfile.mkdtemp` + `rmtree` on every path), so the checkout can never be the wiki's home: knowledge must persist independently of clones. Pushed at onboard/index like memory items; replace-by-`(repository_id, slug)` semantics mirroring `replaceMemoryItemsByWriter` |
 | Jace surface | New read-only `fetch_repo_wiki` tool (list / get / search), untrusted-framed like `fetch_workspace_memory`; instructions route customer-repo architecture questions to wiki first, memory for team decisions |
-| Factory self-containment | Honors D6: the factory reads wiki pages only from the **local index**; it never fetches them over the network mid-run. The server copy exists for Jace and the console |
+| Factory self-containment | Honors D6: packs read wiki only from the **local index**; no mid-run network reads. A fresh clone **hydrates** its local wiki cache from `wiki_pages` once, at context-setup time — the same pattern and failure mode as `memory_fetch.py`'s snapshot pull (TTL'd, non-fatal) — then hash-diff regenerates only stale pages |
 | Memory boundary restored | The onboarder stops writing `architecture`/`conventions`/`commands`/`glossary` into `memory_items` once the wiki flag graduates; `memory_items` returns to interaction-derived knowledge only (decisions, preferences, failures) |
 | Rollout | Everything behind `AGENTRAIL_CONTEXT_REPO_WIKI` + config, default OFF; graduates only by the two-set eval gate (no regress on seen + held-out, improvement on one) |
 
@@ -167,6 +167,11 @@ build_index (index.py)
   … existing stages: records → chunks → graph → symbolTable → postings …
   + unit_depends_on rollup            (deterministic, always on — PR 1)
   + if summary.mode != "disabled" and AGENTRAIL_CONTEXT_REPO_WIKI:
+      hydrate .agentrail/context/wiki/ from server wiki_pages
+        (setup-time fetch, memory_fetch.py pattern: TTL'd local snapshot,
+         non-fatal — a fresh ephemeral clone starts from the durable server
+         copy, never from zero; a persistent self-host checkout makes this
+         a no-op)
       for each unit: inputsHash diff → unchanged? keep page : regenerate
         skeleton = deterministic render from index/graph        ($0)
         prose    = headless `claude -p` over skeleton + bounded file heads
@@ -187,6 +192,12 @@ change touches 1-2 units → 2-3 Haiku calls per re-index (~cents); onboard pays
 The `.agentrail/context/` exclusion in `config.py` (generated caches) keeps
 the wiki dir out of the *file walk*; wiki records are injected by the compile
 step directly, so the index never re-reads its own output as user source.
+
+Why hydration is load-bearing: without it, every fresh fleet clone finds an
+empty wiki dir, hash-diffs every page as changed, and recompiles the whole
+wiki per run — LLM cost and latency exactly where the design promises
+amortization. The server row, not the checkout, is the artifact; the local
+dir is a working copy that dies with the clone, by design.
 
 ### 4.3 Consumption — factory
 
@@ -262,6 +273,11 @@ contributor docs, `onboard.py:69-79`).
   treat like memory on the read side (untrusted framing in Jace tool
   results; fence-marker neutralization reused from
   `memory_lane._neutralize_fence_markers` where content is fenced).
+- Nothing wiki-related ever lands in the customer's repository: no committed
+  files, no wiki content in factory PRs, no writes outside the
+  `.agentrail/context/` generated-cache namespace of a disposable clone. The
+  only durable copy is `wiki_pages`; deleting a workspace deletes its wiki
+  (fk cascade), same as memory.
 - Red line from the eval harness: wiki pages must be excluded from eval
   workspaces' agent-visible trees when the arm is OFF, or the A/B is
   contaminated — the arm bridge handles this via the env flag.
@@ -318,7 +334,7 @@ from this spec after review):
 | 1 | `unit_depends_on` rollup + per-unit export summary in index/graph | Edges deterministic from `imports_file`×`contains_file`; counts in `ingestionHealth`; graph tests extended; no retrieval behavior change |
 | 2 | Wiki compiler: skeleton renderer + prose layer + `.agentrail/context/wiki/` + `wiki_doc` records + inputs-hash freshness + `agentrail context wiki build/status/show` | `summary.mode` honored (the `not_implemented` raise retired); fail-open skeleton-only on LLM error; cost event emitted; hash-unchanged pages byte-identical across rebuilds |
 | 3 | Pack `repoOverview` (stable prefix) + `wiki_doc` retrieval + authority tier `generated` + orientation-probe fixtures | Flag-OFF pack bytes identical to today; probes runnable via `agentrail context evaluate`; wiki never satisfies a code-file required-source |
-| 4 | Server: `wiki_pages` migration + ingest route + push from onboard/index + custody switch | Secret-scan on ingest; replace-by-slug idempotent; migration follows house journal rules; onboarder dual-writes behind flag |
+| 4 | Server: `wiki_pages` migration + ingest route + push from onboard/index + **hydration fetch client** + custody switch | Secret-scan on ingest; replace-by-slug idempotent; hydration test: a fresh clone with server creds regenerates **zero** unchanged pages; migration follows house journal rules; onboarder dual-writes behind flag. (Until this PR, PR 2's compiler is local-only — fine for persistent self-host/dev checkouts, not the fleet) |
 | 5 | Jace `fetch_repo_wiki` + instructions routing | Read-only, untrusted-framed, stale-marked; workspace resolved server-side from session (per the subagent session-id rule); no second write path |
 | 6 | Eval arm + corpus high-scatter tasks + A/B report → graduation decision | `full-plus-repo_wiki` runnable; ≥3 new tasks (≥1 held-out); two-set verdict recorded; graduation or shelving PR includes the report |
 
@@ -339,8 +355,10 @@ from this spec after review):
 > A compiled, per-repository set of cited overview pages (repo overview + one
 > per Codebase Unit) generated at index/onboard time — structure from the
 > deterministic Code Graph, prose from a bounded cheap-model pass — stored
-> locally as `wiki_doc` sources and server-side per workspace, freshness-
-> tracked by input hashes, ranked below human context docs and above memory.
+> durably in the server's `wiki_pages` (checkouts are ephemeral and customer
+> repos are never written to), materialized per-clone as `wiki_doc` sources,
+> freshness-tracked by input hashes, ranked below human context docs and
+> above memory.
 > It tells agents where to look; the source stays the truth.
 > _Avoid_: Treating wiki prose as evidence; storing repository knowledge in
 > workspace memory; per-file page explosions; documentation-for-humans goals;

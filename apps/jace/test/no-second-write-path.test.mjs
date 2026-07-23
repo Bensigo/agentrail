@@ -3,11 +3,12 @@
 // The name of this file overstates the invariant it actually enforces: it is
 // NOT "no second write path" full stop — an ungated write path exists here by
 // design (`send_connect_link`, issue #1263 PR ②), and the gated set has grown
-// to SIX (`create_workspace`, issue #1264 PR ①; `create_repo`, issue #1265
+// to NINE (`create_workspace`, issue #1264 PR ①; `create_repo`, issue #1265
 // PR ②; `update_issue`, issue #1345 PR ①; `create_goal`, issue #1289;
-// `post_pr_review`, the reviewer subagent's gated write path). What this test
-// actually proves is narrower and precise: every mutating tool is gated, and
-// every ungated tool is self-scoped.
+// `post_pr_review`, the reviewer subagent's gated write path; and the three
+// backlog-grooming writes `backlog_label` / `backlog_close` / `backlog_dedupe`,
+// issue #1291). What this test actually proves is narrower and precise: every
+// mutating tool is gated, and every ungated tool is self-scoped.
 //
 //   - Every GATED/mutating tool — authored with `defineTool` and
 //     `approval: (ctx) => consoleGatedApproval(ctx)` (issue #1273 PR ②;
@@ -112,11 +113,15 @@ function stripComments(src) {
 // The known, reviewed tool set. A file appearing here or not is a deliberate
 // human decision, not something a maker should silently expand.
 const EXPECTED_TOOL_FILES = [
+  "backlog_close.ts", // gated (issue #1291): closes ONE existing open issue during backlog grooming (optional reason comment) — same gate class as create_issue; no child_process (HTTP to the console, like post_pr_review)
+  "backlog_dedupe.ts", // gated (issue #1291): closes ONE existing open issue as a duplicate of a canonical issue — same gate class as create_issue; no child_process (HTTP to the console, like post_pr_review)
+  "backlog_label.ts", // gated (issue #1291): adds/removes labels on ONE existing open issue during backlog grooming — same gate class as create_issue; no child_process (HTTP to the console, like post_pr_review)
   "codebase_query.ts",
   "create_goal.ts", // gated (issue #1289): creates a real workspace goal the Jace goal loop then pursues — same gate class as create_issue; no child_process (HTTP to the console, like create_workspace/create_repo)
   "create_issue.ts",
   "create_repo.ts", // gated: creates a real GitHub repo under the user's own account + connects it to the workspace — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
+  "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
   "post_pr_review.ts", // gated: posts an ADVISORY, COMMENT-only PR review (the console hardcodes the GitHub review event server-side) — same gate class as create_issue; no child_process (HTTP to the console, like create_repo/create_goal)
   "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process
@@ -135,6 +140,14 @@ const EXPECTED_MUTATING_TOOLS = [
   "update_issue.ts",
   "create_goal.ts",
   "post_pr_review.ts",
+  // issue #1291 — the backlog-grooming write path. Each mutates ONE EXISTING
+  // open issue (label / close / dedupe) and applies over HTTP to the console
+  // (getGithubToken server-side), never child_process — same gate class and
+  // shape as post_pr_review. Grooming NEVER files new issues (that stays
+  // create_issue's job) and NEVER writes without an approved decision.
+  "backlog_label.ts",
+  "backlog_close.ts",
+  "backlog_dedupe.ts",
 ].sort();
 const EXPECTED_CHILD_PROCESS_SITES = [
   "agent/tools/codebase_query.ts",

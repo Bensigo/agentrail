@@ -107,7 +107,9 @@ orientation).
 | LLM call pattern | Headless `claude -p` with a cheap default (`claude-haiku-4-5`), same as `onboard.py _call_model` and `llm_rerank.py` — fail-open to skeleton-only pages, never hard-block on missing keys |
 | Pack integration | New `repoOverview` key in the **stable cache-eligible prefix** of `PACK_SECTION_KEYS` (the comment at `packs.py:22-25` already separates stable from dynamic — overview content is identical across tasks, i.e. prompt-cache-friendly). Unit pages become rank-eligible `wiki_doc` retrieval candidates |
 | System of record | **The server** — new Postgres `wiki_pages` table (workspace + repo scoped). Clones are ephemeral (`tempfile.mkdtemp` + `rmtree` on every path), so the checkout can never be the wiki's home: knowledge must persist independently of clones. Pushed at onboard/index like memory items; replace-by-`(repository_id, slug)` semantics mirroring `replaceMemoryItemsByWriter` |
+| Page record shape | One row per page, structure promoted out of the blob: `body_md` (the canonical artifact agents consume) + `skeleton` jsonb (the deterministic inputs) + `links` jsonb (the page graph) + promoted columns for identity/provenance/freshness. Maps 1:1 onto the pattern's required properties — stable identity (`slug`), predictable organization (`kind` + slug tree), explicit relationships (`links`), provenance (`commit_sha`/`citations`/`model`/`written_by`), ownership (workspace/repo fk), freshness (`inputs_hash`/`stale`) |
 | Jace surface | New read-only `fetch_repo_wiki` tool (list / get / search), untrusted-framed like `fetch_workspace_memory`; instructions route customer-repo architecture questions to wiki first, memory for team decisions |
+| Console surface | In scope (not optional): a read-only Engine-room Wiki view rendering `body_md` **verbatim from the same rows the LLM consumes** — one content source, zero console-side editing. Human corrections flow through `.agentrail/context.md` (higher authority, feeds the next compile), never through the wiki |
 | Factory self-containment | Honors D6: packs read wiki only from the **local index**; no mid-run network reads. A fresh clone **hydrates** its local wiki cache from `wiki_pages` once, at context-setup time — the same pattern and failure mode as `memory_fetch.py`'s snapshot pull (TTL'd, non-fatal) — then hash-diff regenerates only stale pages |
 | Memory boundary restored | The onboarder stops writing `architecture`/`conventions`/`commands`/`glossary` into `memory_items` once the wiki flag graduates; `memory_items` returns to interaction-derived knowledge only (decisions, preferences, failures) |
 | Rollout | Everything behind `AGENTRAIL_CONTEXT_REPO_WIKI` + config, default OFF; graduates only by the two-set eval gate (no regress on seen + held-out, improvement on one) |
@@ -216,13 +218,27 @@ dir is a working copy that dies with the clone, by design.
 
 ### 4.4 Consumption — Jace and the server
 
-- New table `wiki_pages`: `id, workspace_id (fk), repository_id (fk), slug,
-  title, kind, content, citations jsonb, commit_sha, inputs_hash, model,
-  generated_at, stale bool, written_by`. Ingest route
+- New table `wiki_pages` — the system of record, one row per page:
+  `id, workspace_id (fk cascade), repository_id (fk), slug, title, kind,
+  body_md text, skeleton jsonb, links jsonb, citations jsonb, commit_sha,
+  inputs_hash, model, written_by, generated_at, stale bool`, unique on
+  `(repository_id, slug)`, GIN FTS index on `body_md` (the
+  `memory_items_content_fts_idx` pattern). `body_md` is the canonical
+  compiled artifact — exactly what agents receive; `skeleton` holds the
+  deterministic inputs (file roster, exports, unit deps, test counts) so
+  the console can render structure and the compiler can hash-diff without
+  parsing markdown; `links` holds the `[[slug]]` graph + `unit_depends_on`
+  rollup so navigation needs no markdown parsing either. Ingest route
   `POST /api/v1/ingest/wiki-pages`: bearer-authed, `scanForSecrets` on
   content (same guard as memory ingest), replace-by-`(repository_id, slug)`.
   Pushed by `run_onboard` and by `agentrail context index` when linked
   (same pattern as `snapshot_push.py` + memory push).
+- Compile evidence goes to ClickHouse, mirroring `index_snapshots`: a
+  `wiki_compile_events` row per compile (`workspace_id, repository_id,
+  commit_sha, pages_written, pages_reused, cost_usd, model, duration_ms,
+  event_id` dedupe). Postgres serves the current wiki; ClickHouse keeps the
+  append-only history the console's provenance and cost display read from —
+  run history is never overwritten, compiled state is always replaceable.
 - New Jace tool `fetch_repo_wiki` (`apps/jace/agent/tools/`): modes
   `list` (slugs + titles — the navigation index), `get(slug)`,
   `search(query)` (FTS over content, GIN index like
@@ -235,8 +251,7 @@ dir is a working copy that dies with the clone, by design.
   what's the architecture" → `fetch_repo_wiki` first; `fetch_workspace_memory`
   stays for team decisions/preferences/failures; `codebase_query` stays
   home-repo-only.
-- Console (later, optional): the wiki is evidence — a read-only page under
-  the repo detail view rendering the same rows. Not in scope for v1 PRs.
+- The console surface is §4.5 — in scope, read-only, same rows.
 
 **Source custody.** Wiki pages are distilled prose + path citations — the
 same custody class as the onboard memory items already pushed today, but the
@@ -244,7 +259,42 @@ policy gets named instead of implied: `sourceCustody.wikiUploadAllowed`
 (default true, per-workspace off-switch). Self-hosters who disable it keep a
 fully local wiki (Jace then answers from memory items as today).
 
-### 4.5 The memory boundary, restored
+### 4.5 Consumption — humans (the console)
+
+The wiki is evidence of what Jace knows about your repo, so it lives in the
+**Engine room** (sibling of Memory in the nav; repo picker at the top like
+the other engine-room pages). It stays LLM-first through one rule:
+
+**What you see is what the LLM sees.** The page view renders `body_md`
+verbatim from the same `wiki_pages` row that `fetch_repo_wiki` and pack
+hydration read. There is no console-side content source, no rich-text
+editor, no "improve this page" — a page a human polished would be a page
+the compiler clobbers on the next hash change. The correction path is the
+one that survives regeneration: edit `.agentrail/context.md` (human doc,
+`critical` authority, above the wiki), and the next compile — whose digest
+reads it first — propagates the correction into the prose. Humans steer the
+compiler; they never patch its output.
+
+The view:
+
+- **Nav tree** from `links` jsonb: overview on top, unit pages beneath,
+  `unit_depends_on` in/out shown per page — the same navigation index
+  `fetch_repo_wiki list` serves Jace.
+- **Provenance bar** on every page: compiled from `<short-sha>` ·
+  `generated_at` · model · last compile cost (from `wiki_compile_events`).
+  Stale pages carry a visible stale badge (current `inputs_hash` mismatch),
+  consistent with the console display rule — staleness age and stale-page
+  count are falsifiable numbers; there is no "knowledge score".
+- **Citations deep-link** to the repo host at the pinned `commit_sha` (blob
+  URL), so every prose claim is one click from the source that grounds it —
+  names over IDs everywhere, per house rule.
+- **Recompile** is the only affordance: a button that enqueues the existing
+  `onboard`-kind entry (the repos-table "Re-index" precedent) — audited,
+  queue-driven, no direct console-to-LLM path.
+- Empty state (flag OFF or never compiled): "No wiki compiled yet", with
+  the re-index affordance — never a fake page.
+
+### 4.6 The memory boundary, restored
 
 After graduation, the boundary matches CONTEXT.md's definitions:
 
@@ -261,7 +311,7 @@ two highest-signal files it currently skips: `.agentrail/context.md` /
 `CONTEXT.md` and `TASTE.md` (today `_DIGEST_FILES` samples only generic
 contributor docs, `onboard.py:69-79`).
 
-### 4.6 Safety and authority invariants
+### 4.7 Safety and authority invariants
 
 - Wiki prose never becomes graph truth: no LLM-derived edges enter
   `graph.edges`; `enrichment.status` stays `"not_used"`; the server
@@ -290,8 +340,9 @@ contributor docs, `onboard.py:69-79`).
   usage data).
 - An LLM concept graph, embeddings store, or any new retrieval engine — BM25
   + existing rerank rank the pages.
-- A human documentation product. Humans reading pages in the console is a
-  side effect; the consumer is the agent.
+- A human documentation product. The console view (§4.5) renders the
+  agent's artifact read-only; there is no console editing, no separate
+  human content source, no doc site. The consumer is the agent.
 - Any factory-runtime network dependency (D6 stands).
 - Chat-time wiki *writes* by Jace — compile is the only writer.
 
@@ -334,9 +385,10 @@ from this spec after review):
 | 1 | `unit_depends_on` rollup + per-unit export summary in index/graph | Edges deterministic from `imports_file`×`contains_file`; counts in `ingestionHealth`; graph tests extended; no retrieval behavior change |
 | 2 | Wiki compiler: skeleton renderer + prose layer + `.agentrail/context/wiki/` + `wiki_doc` records + inputs-hash freshness + `agentrail context wiki build/status/show` | `summary.mode` honored (the `not_implemented` raise retired); fail-open skeleton-only on LLM error; cost event emitted; hash-unchanged pages byte-identical across rebuilds |
 | 3 | Pack `repoOverview` (stable prefix) + `wiki_doc` retrieval + authority tier `generated` + orientation-probe fixtures | Flag-OFF pack bytes identical to today; probes runnable via `agentrail context evaluate`; wiki never satisfies a code-file required-source |
-| 4 | Server: `wiki_pages` migration + ingest route + push from onboard/index + **hydration fetch client** + custody switch | Secret-scan on ingest; replace-by-slug idempotent; hydration test: a fresh clone with server creds regenerates **zero** unchanged pages; migration follows house journal rules; onboarder dual-writes behind flag. (Until this PR, PR 2's compiler is local-only — fine for persistent self-host/dev checkouts, not the fleet) |
+| 4 | Server: `wiki_pages` migration + `wiki_compile_events` (ClickHouse) + ingest route + push from onboard/index + **hydration fetch client** + custody switch | Secret-scan on ingest; replace-by-slug idempotent; hydration test: a fresh clone with server creds regenerates **zero** unchanged pages; migration follows house journal rules; onboarder dual-writes behind flag. (Until this PR, PR 2's compiler is local-only — fine for persistent self-host/dev checkouts, not the fleet) |
 | 5 | Jace `fetch_repo_wiki` + instructions routing | Read-only, untrusted-framed, stale-marked; workspace resolved server-side from session (per the subagent session-id rule); no second write path |
-| 6 | Eval arm + corpus high-scatter tasks + A/B report → graduation decision | `full-plus-repo_wiki` runnable; ≥3 new tasks (≥1 held-out); two-set verdict recorded; graduation or shelving PR includes the report |
+| 6 | Console Engine-room Wiki view (§4.5) — can land parallel to 5 | Renders `body_md` verbatim from `wiki_pages`; nav from `links`; provenance bar + stale badge + last-compile cost from `wiki_compile_events`; citations deep-link at pinned `commit_sha`; only write affordance = audited re-index enqueue; empty state honest; **browser-verified via minted DB session (CI skips console tests)** |
+| 7 | Eval arm + corpus high-scatter tasks + A/B report → graduation decision | `full-plus-repo_wiki` runnable; ≥3 new tasks (≥1 held-out); two-set verdict recorded; graduation or shelving PR includes the report |
 
 ## 8. Open questions
 
@@ -361,5 +413,6 @@ from this spec after review):
 > above memory.
 > It tells agents where to look; the source stays the truth.
 > _Avoid_: Treating wiki prose as evidence; storing repository knowledge in
-> workspace memory; per-file page explosions; documentation-for-humans goals;
-> any factory-runtime network fetch of wiki content.
+> workspace memory; per-file page explosions; console-side page editing or
+> any second human content source (the console renders the agent's artifact
+> read-only); any factory-runtime network fetch of wiki content.

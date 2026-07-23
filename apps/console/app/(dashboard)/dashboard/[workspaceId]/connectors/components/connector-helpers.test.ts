@@ -16,7 +16,7 @@ import {
 } from "./connector-helpers";
 
 describe("projectConnectors", () => {
-  it("returns one row per catalog entry, grouped https → mcp → gateway", () => {
+  it("returns one row per catalog entry, grouped issue-source → mcp → gateway", () => {
     const rows = projectConnectors([]);
     expect(rows.map((r) => r.kind)).toEqual([
       "github",
@@ -28,9 +28,12 @@ describe("projectConnectors", () => {
       "telegram",
     ]);
     // Each row carries its catalog type so the page can section the cards.
+    // #1292: GitHub AND Linear are both `issue-source` (they feed the Issue
+    // Queue — Linear via its real-time webhook); only Figma / Context7 remain
+    // tools-only `mcp`.
     expect(rows.map((r) => r.type)).toEqual([
-      "https",
-      "mcp",
+      "issue-source",
+      "issue-source",
       "mcp",
       "mcp",
       "gateway",
@@ -56,14 +59,16 @@ describe("projectConnectors", () => {
     expect(github.ingestLabel).toBe(DEFAULT_INGEST_LABEL);
   });
 
-  it("marks Linear (MCP) connected when an API key is stored", () => {
-    // Linear is an MCP key connector now — connected derives from hasSecret, not
-    // a bare connected flag (its falsifiable signal is a stored credential).
+  it("marks Linear (issue source) connected when an API key is stored", () => {
+    // Linear is a secret-connected connector — connected derives from hasSecret,
+    // not a bare connected flag (its falsifiable signal is a stored credential).
+    // #1292: it is now categorized as an `issue-source` (its primary role) rather
+    // than `mcp`, even though it still exposes MCP tools.
     const linear = projectConnectors([
       { kind: "linear", hasSecret: true, ingestLabel: "afk-ready" },
     ]).find((r) => r.kind === "linear")!;
     expect(linear.availability).toBe("available");
-    expect(linear.type).toBe("mcp");
+    expect(linear.type).toBe("issue-source");
     expect(linear.connectMethod).toBe("secret");
     expect(linear.status).toBe("connected");
     expect(linear.ingestLabel).toBe("afk-ready");

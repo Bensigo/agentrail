@@ -289,8 +289,12 @@ function v2Enabled(): boolean {
 
 // Map the persisted `source` string to the rate-limit writer class. Verbatim from
 // `queue_store._SOURCE_TO_WRITER` / `_writer_for_source` (defaults to human-github).
+// `linear` is a human-authored issue source exactly like `github` (both admit
+// issues a person filed in a tracker), so it shares the HUMAN_GITHUB budget —
+// matching `queue_store._SOURCE_TO_WRITER["linear"]` on the Python side (#1292).
 const SOURCE_TO_WRITER: Readonly<Record<string, WriterClass>> = {
   github: WriterClass.HUMAN_GITHUB,
+  linear: WriterClass.HUMAN_GITHUB,
   eval: WriterClass.EVAL_AUTOTICKET,
   jace: WriterClass.JACE,
 };
@@ -458,9 +462,36 @@ function uuid5Url(name: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
 
-/** The durable row id for a (workspace, source, externalId), matching Python. */
-function entryId(workspaceId: string, source: string, externalId: string): string {
+/**
+ * The durable row id for a (workspace, source, externalId), matching Python's
+ * `queue_store._entry_uuid`. Exported (#1292) so the cross-path exactly-once
+ * guarantee is directly assertable in tests: a webhook-admitted and a
+ * heartbeat/poll-admitted row of the SAME issue collide on this id (both insert
+ * `ON CONFLICT (id) DO NOTHING`) iff they pass the SAME `(workspaceId, source,
+ * externalId)` triple here. For Linear that triple is
+ * `(workspaceId, "linear", `${issueId}#${number}`)` — see
+ * {@link linearExternalId} and {@link enqueueLinearIssue}.
+ */
+export function entryId(workspaceId: string, source: string, externalId: string): string {
   return uuid5Url(`agentrail-queue:${workspaceId}:${source}:${externalId}`);
+}
+
+/**
+ * The `external_id` a Linear issue is admitted under, in BOTH the webhook path
+ * ({@link enqueueLinearIssue}) and the legacy Python heartbeat/poll path. It MUST
+ * be byte-identical across the two or the deterministic {@link entryId} diverges
+ * and the shared `ON CONFLICT` no longer dedupes — reintroducing the double-claim
+ * #1292 closes. The Python contract is `agentrail/heartbeat/runtime.py::
+ * _external_id` -> `f"{ref.repo}#{ref.number}"`, where `ref.repo` carries the
+ * Linear opaque issue id (`agentrail/connectors/linear.py::LinearPollClient.poll`
+ * stashes `node["id"]` in `IssueRef.repo`) and `ref.number` is Linear's
+ * team-scoped integer `issue.number`. So the shape is `${linearIssueId}#${number}`
+ * — NOT the bare Linear id (a bare id hashes to a DIFFERENT uuid5 and would
+ * silently double-claim; pinned by the parity test). Single source of truth for
+ * that format so the webhook and any future TS poll can never drift from it.
+ */
+export function linearExternalId(issueId: string, number: number): string {
+  return `${issueId}#${number}`;
 }
 
 // --- workspace resolution -----------------------------------------------------
@@ -1603,6 +1634,154 @@ export async function enqueueGithubIssue(data: {
   // `parkedFor` says "the console still needs to post a brief", not "this
   // enqueue was otherwise clean" — see the alignment-gate block above and
   // `EnqueueResult.parkedFor`'s own doc-comment for the full picture.
+  return {
+    enqueued: true,
+    id,
+    state,
+    blockedBy,
+    ...(reason !== undefined ? { reason } : {}),
+    ...(parkedFor !== undefined ? { parkedFor } : {}),
+  };
+}
+
+/**
+ * Admit a LINEAR issue into the durable queue (#1292) — the webhook-half twin of
+ * {@link enqueueGithubIssue}, so a Linear issue that reaches the trigger label is
+ * ingested in REAL TIME (via the console Linear webhook route) instead of only by
+ * the legacy `agentrail heartbeat` poll, which double-claims when run alongside
+ * the runner path. Deliberately mirrors `enqueueGithubIssue` step-for-step — same
+ * AC gate, same v2 guardrail screen, same alignment gate, same `ON CONFLICT DO
+ * NOTHING` insert — differing ONLY where Linear genuinely differs from GitHub:
+ *
+ *  - `source: "linear"` (not "github"), so the rate-limit writer, the queue
+ *    `source` column, and the deterministic row id are all Linear-scoped.
+ *  - `externalId = `${issueId}#${number}`` via {@link linearExternalId} — the
+ *    EXACT format the Python heartbeat/poll path uses
+ *    (`agentrail/heartbeat/runtime.py::_external_id`). THIS IS THE EXACTLY-ONCE
+ *    HEART (AC1): because `entryId(workspaceId, "linear", externalId)` is
+ *    deterministic and identical across the TS webhook path and the Python poll
+ *    path, a row admitted by BOTH collides on `id` and the shared `ON CONFLICT
+ *    (id) DO NOTHING` keeps exactly one `queue_entries` row — no double-claim.
+ *  - no dependency parsing: "blocked by #N (same repo)" is a GitHub-issue-body
+ *    convention (`unmetBlockers` resolves siblings by `repoFullName#N`); a Linear
+ *    issue has no such repo-scoped sibling space, so a Linear entry never
+ *    dependency-parks (`blockedBy: []`). The v2 guardrail and alignment gates
+ *    below can still park it.
+ *  - the alignment gate posts a FRESH brief (there is no chat-born
+ *    create_issue->published-GitHub-URL flow for Linear, so
+ *    `findConfirmedAlignmentBriefApproval`'s URL match — GitHub-only — is not
+ *    consulted; a required-alignment Linear entry always parks "awaiting
+ *    alignment" with `parkedFor` set, and the console route composes+posts the
+ *    brief exactly as for a github-born entry — #1274 parity, AC2). The
+ *    source-agnostic reconciler (`findAlignmentBriefCandidates`, no `source`
+ *    filter) sweeps any that slip through.
+ */
+export async function enqueueLinearIssue(data: {
+  workspaceId: string;
+  /** The Linear opaque issue id (`issue.id` in the webhook payload / `node.id`
+   *  in the poll GraphQL) — rides into the deterministic id as the `external_id`
+   *  prefix, matching the Python `IssueRef.repo`. */
+  issueId: string;
+  /** Linear's team-scoped integer `issue.number` — the `external_id` suffix,
+   *  matching the Python `IssueRef.number`. */
+  number: number;
+  title: string;
+  body: string;
+  // Test-only: inject a ledger so a suite can exercise the stateful v2 checks
+  // (dup / rate-limit) deterministically. Production uses the process ledger.
+  ledger?: AdmissionLedger;
+  // Test-only: inject the wall clock (epoch seconds) so a suite can drive the
+  // rate-limit window across a boundary deterministically (issue #1113).
+  nowSeconds?: number;
+}): Promise<EnqueueResult> {
+  const gate = validateAcceptanceCriteria(data.body);
+  if (!gate.ok) return { enqueued: false, reason: gate.reason };
+
+  // MUST match the Python heartbeat/poll `external_id` byte-for-byte (see
+  // {@link linearExternalId}) so the deterministic id dedupes webhook+poll to ONE
+  // row (AC1). A bare `data.issueId` here would hash to a different uuid5 and
+  // silently reintroduce the double-claim.
+  const externalId = linearExternalId(data.issueId, data.number);
+  const id = entryId(data.workspaceId, "linear", externalId);
+
+  // No dependency parking for Linear (see this function's doc-comment). A Linear
+  // entry starts `queued`; the v2 guardrail / alignment gates below may park it.
+  const blockedBy: number[] = [];
+  let state: "queued" | "parked" = "queued";
+  let reason: string | undefined;
+  let parkReason: string | null = null;
+
+  // Input-Contract v2 (issue #1034), default-OFF behind V2_FLAG — identical
+  // threading to `enqueueGithubIssue`, keyed to the "linear" writer so the
+  // per-writer rate limit is scoped correctly (SOURCE_TO_WRITER["linear"] ===
+  // HUMAN_GITHUB, matching Python). `injectionPark` is on at this live entrance:
+  // a positive screen PARKS (never a silent drop) for human review.
+  const usingV2 = v2Enabled();
+  let v2Parked = false;
+  if (usingV2) {
+    const ledgerIn = data.ledger ?? processLedger;
+    const verdict = screenV2({
+      body: data.body,
+      writer: writerForSource("linear"),
+      ledger: ledgerIn,
+      injectionPark: true,
+      nowSeconds: data.nowSeconds,
+    });
+    if (verdict.decision === "reject") {
+      return { enqueued: false, reason: verdict.reason };
+    }
+    if (verdict.decision === "park") {
+      state = "parked";
+      reason = verdict.reason;
+      parkReason = verdict.reason;
+      v2Parked = true;
+    }
+    if (data.ledger === undefined) processLedger = verdict.ledger;
+  }
+
+  // Alignment gate (#1274 parity, AC2): a linear-born entry gets a brief exactly
+  // like a github-born one. Skipped for a v2-guardrail park (same short-circuit
+  // as `enqueueGithubIssue`: a guardrail park has no automatic unpark, so the
+  // finding-1 interaction can't arise). There is no Linear equivalent of the
+  // chat-born confirmed-brief URL match (that lookup is GitHub-issue-URL keyed),
+  // so a required-alignment Linear entry always parks "awaiting alignment" and
+  // signals `parkedFor` for the console route to compose+post the brief.
+  let parkedFor: "awaiting_alignment" | undefined;
+  if (!v2Parked) {
+    const requireAlignment = await workspaceRequiresAlignment(db, data.workspaceId);
+    if (requireAlignment) {
+      parkedFor = "awaiting_alignment";
+      if (state === "queued") {
+        state = "parked";
+        parkReason = ALIGNMENT_PARK_REASON;
+      }
+    }
+  }
+
+  const inserted = await db
+    .insert(queueEntries)
+    .values({
+      id,
+      workspaceId: data.workspaceId,
+      source: "linear",
+      externalId,
+      title: data.title,
+      body: data.body,
+      tier: 0,
+      remainingBudget: 5,
+      state,
+      blockedBy,
+      parkReason,
+    })
+    .onConflictDoNothing({ target: queueEntries.id })
+    .returning({ id: queueEntries.id });
+
+  if (inserted.length === 0) {
+    // The row already existed — a re-delivered Linear webhook, OR a heartbeat
+    // poll that already admitted this exact issue. The shared deterministic id +
+    // ON CONFLICT is what makes this the exactly-once dedupe (AC1).
+    return { enqueued: false, reason: "already queued (deduped)" };
+  }
   return {
     enqueued: true,
     id,

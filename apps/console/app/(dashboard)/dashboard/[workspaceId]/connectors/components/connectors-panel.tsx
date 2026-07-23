@@ -51,7 +51,7 @@ const KIND_TINT: Record<ConnectorKind, string> = {
   telegram: "text-[#26a5e4]",
 };
 
-const SECTION_ORDER: ConnectorType[] = ["https", "mcp", "gateway"];
+const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "gateway"];
 
 // --------------------------------------------------------------------------- //
 // Trigger controls (#816) — folded into each connected ingest connector card.

@@ -53,7 +53,26 @@ def _make_execute(creds):
             # dropped here.
             from agentrail.runner.onboard import run_onboard
             return run_onboard(item, base_url=creds.base_url, api_key=creds.token)
-        run_env = dict(os.environ)
+        # Build a NARROW run env — NOT a blanket ``dict(os.environ)`` (#1295 G1).
+        # The host-native runner (``native_runner.build_native_child_env``)
+        # pulls the justified allowlist (``ANTHROPIC_*`` model auth, the hosted
+        # markers, the baked claude command, …) straight from THIS process's env
+        # itself, so we only add the per-claim vars here. Copying os.environ
+        # would smuggle ``FLEET_CONSOLE_TOKEN`` and every other operator secret
+        # back into the untrusted agent's environment through ``env`` (which the
+        # runner passes through untouched — the eval harness relies on that
+        # passthrough for its own non-secret feature-flag vars, so the runner
+        # cannot re-filter it). See the threat model's gap G1.
+        run_env: dict = {}
+        # Non-secret CONTROL flags the runner reads off ``env`` (which agent to
+        # run; the optional whole-process sandbox wrapper). Forward them from
+        # this process's env when an operator has set them so the override still
+        # takes effect; they are not secrets and the runner needs them to build
+        # the run command, not to authenticate anything.
+        for _flag in ("AGENTRAIL_AGENT", "AGENTRAIL_SANDBOX_RUNTIME"):
+            _flag_val = os.environ.get(_flag)
+            if _flag_val is not None:
+                run_env[_flag] = _flag_val
         # Link this run to the backend so cost/telemetry land on the dashboard.
         # Needs all three (base, key, repo) or load_link ignores it.
         run_env["AGENTRAIL_SERVER_BASE_URL"] = creds.base_url
@@ -81,6 +100,13 @@ def _make_execute(creds):
         # agentrail/runner/onboard.py (run_onboard) for the full rationale.
         if item.github_token:
             run_env["GIT_TOKEN"] = item.github_token
+        elif os.environ.get("GIT_TOKEN"):
+            # Back-compat fallback: an older backend (or a workspace with no
+            # linked GitHub owner) carries no claim token — a locally configured
+            # GIT_TOKEN (PAT) in this process's own env still works. Forwarded
+            # EXPLICITLY now that run_env is no longer a full os.environ copy
+            # (#1295 G1); the claim token above still wins when present.
+            run_env["GIT_TOKEN"] = os.environ["GIT_TOKEN"]
         kwargs = dict(
             repo_url=item.repo_url,
             ref=item.ref,

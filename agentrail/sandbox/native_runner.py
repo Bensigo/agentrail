@@ -226,6 +226,77 @@ def _checkout_command(ref: str) -> List[str]:
     return ["git", "checkout", "--quiet", ref]
 
 
+# ---------------------------------------------------------------------------
+# Git credential handoff (#1295 G5) — never write the token into .git/config
+# ---------------------------------------------------------------------------
+#
+# Before #1295 the workspace's GitHub token was spliced straight into the clone
+# URL (``_authenticated_clone_url`` → ``https://x-access-token:TOKEN@github…``),
+# so it persisted in the clone's ``.git/config`` origin remote — readable by
+# the untrusted agent the run then executes INSIDE that clone (threat model
+# §2 B6, gap G5), and by any concurrent sibling run on the shared filesystem.
+#
+# Instead we clone the TOKEN-FREE URL and hand git the token out-of-band via a
+# ``GIT_ASKPASS`` helper that reads it from the environment. The token never
+# lands in ``.git/config`` (origin stays token-free) nor on argv (it is not a
+# command-line argument to git). The same env drives the later ``git push`` in
+# :func:`_publish_green` and any push the agent makes, so legitimate clone AND
+# push both still authenticate as THIS workspace.
+#
+# The credential-helper reset is load-bearing on the hosted fleet: the runner
+# entrypoint runs ``gh auth setup-git`` (``deploy/runner/entrypoint.sh``), which
+# installs a global git credential helper answering with the operator's SHARED
+# fallback PAT. Without resetting it, git would consult that helper first and
+# authenticate as the shared identity instead of THIS workspace's token (a
+# correctness regression for private per-workspace repos the shared PAT cannot
+# reach). We clear the inherited helper list via the ``GIT_CONFIG_*`` env
+# interface (git ≥ 2.31) so the reset itself never lands on argv or in
+# ``.git/config`` either, then git falls through to ``GIT_ASKPASS``.
+_GIT_ASKPASS_SCRIPT = """#!/bin/sh
+# AgentRail host-native git credential helper (#1295 G5). Supplies the
+# per-workspace GitHub token to git over HTTPS from the environment, so the
+# token is NEVER written into the clone's .git/config. git invokes this with
+# the credential prompt string as $1 ("Username for ..."/"Password for ...").
+case "$1" in
+  *[Uu]sername*) printf '%s' 'x-access-token' ;;
+  *)             printf '%s' "${GIT_TOKEN:-}" ;;
+esac
+"""
+
+_GIT_ASKPASS_FILENAME = ".agentrail-git-askpass.sh"
+
+
+def _install_git_askpass(work_dir: Path) -> str:
+    """Write the :data:`_GIT_ASKPASS_SCRIPT` into ``work_dir`` (the per-run,
+    always-torn-down working dir — NOT the clone), make it executable, and
+    return its path. The script carries NO secret itself; it reads the token
+    from ``GIT_TOKEN`` in the environment at invocation time.
+    """
+    script = Path(work_dir) / _GIT_ASKPASS_FILENAME
+    script.write_text(_GIT_ASKPASS_SCRIPT)
+    script.chmod(0o700)
+    return str(script)
+
+
+def _git_credential_env(askpass_path: str) -> Dict[str, str]:
+    """Env that routes git's HTTPS auth through the askpass helper at
+    ``askpass_path`` (reading ``GIT_TOKEN``) and resets any inherited
+    credential helper so THIS workspace's token wins over the fleet's shared
+    fallback PAT. Nothing here embeds the token in ``.git/config`` or on argv.
+    """
+    return {
+        "GIT_ASKPASS": askpass_path,
+        # Never block on an interactive prompt if askpass somehow yields nothing.
+        "GIT_TERMINAL_PROMPT": "0",
+        # Reset the inherited credential.helper list (empty value resets it),
+        # supplied via the GIT_CONFIG_* env interface so it stays off argv and
+        # out of .git/config; git then falls through to GIT_ASKPASS.
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "credential.helper",
+        "GIT_CONFIG_VALUE_0": "",
+    }
+
+
 def _build_run_command(
     *, issue_ref: str, agent: str, model: Optional[str], log_dir: str,
     sandbox_runtime: bool, run_id: str, prompt: Optional[str] = None,
@@ -476,10 +547,12 @@ def run_issue_on_host(
     # expired token just surfaces as a normal git/gh auth failure.
     git_token = (env.get("GIT_TOKEN") or "").strip()
 
-    # Child-process env: inherit our environment, layer the caller's env, and set
-    # the compacted handoff (the execute phase reads it from this var).
-    child_env = dict(os.environ)
-    child_env.update(env)
+    # Child-process env (#1295 G1): a MINIMAL non-secret system base + the
+    # justified allowlist pulled from THIS process's env + the caller's OWN
+    # explicit env — NOT a blanket copy of os.environ, which on the hosted
+    # fleet would hand the untrusted agent FLEET_CONSOLE_TOKEN and every other
+    # operator secret. See build_native_child_env for the full contract.
+    child_env = build_native_child_env(os.environ, env)
     if failure_handoff is not None:
         child_env[ENV_FAILURE_HANDOFF] = failure_handoff
     if git_token and not child_env.get("GH_TOKEN") and not child_env.get("GITHUB_TOKEN"):
@@ -499,14 +572,24 @@ def run_issue_on_host(
     repo_dir = work_dir / "repo"
     log_dir = work_dir / _LOG_SUBDIR
 
+    # GitHub auth handoff (#1295 G5): route git's HTTPS auth through a
+    # GIT_ASKPASS helper reading GIT_TOKEN from the env, instead of splicing the
+    # token into the clone URL where it would persist in .git/config for the
+    # untrusted agent to read. The env drives the clone here AND the later push
+    # in _publish_green / the agent's own pushes, so both still authenticate as
+    # this workspace. No-op when there is no token (unchanged behaviour: a plain
+    # clone that relies on the host's own git credential config, if any).
+    if git_token:
+        child_env["GIT_TOKEN"] = git_token  # the askpass helper reads this
+        child_env.update(_git_credential_env(_install_git_askpass(work_dir)))
+
     try:
-        # 1. Clone at ref. The clone URL carries the token (if any) as HTTP Basic
-        # auth so a private repo authenticates; repo_url itself (token-free) is
-        # what's echoed anywhere we log/report the repo being run.
-        clone_url = _authenticated_clone_url(repo_url, git_token)
+        # 1. Clone at ref, TOKEN-FREE (#1295 G5). The token never enters the URL
+        # (and so never .git/config); auth rides the GIT_ASKPASS env set above.
+        # repo_url is also exactly what's echoed anywhere we log/report the run.
         try:
             clone = runner.run(
-                _clone_command(clone_url, ref, str(repo_dir)),
+                _clone_command(repo_url, ref, str(repo_dir)),
                 cwd=str(work_dir), env=child_env, timeout=timeout,
             )
         except HostTimeout as exc:
@@ -873,6 +956,101 @@ def filter_docker_sandbox_env(env: Dict[str, str]) -> Dict[str, str]:
         for k, v in (env or {}).items()
         if k in _DOCKER_SANDBOX_ENV_ALLOWLIST or k.startswith(_DOCKER_SANDBOX_ENV_PREFIX_ALLOWLIST)
     }
+
+
+# ---------------------------------------------------------------------------
+# Host-native child-env boundary (#1295 G1) — allowlist the native path too
+# ---------------------------------------------------------------------------
+#
+# The host-native path runs the coding agent as a subprocess ON the fleet host,
+# so the child's environment is whatever we hand it. Before #1295 that was a
+# blanket copy of the ENTIRE fleet-process environment (``dict(os.environ)``,
+# the old ``run_issue_on_host`` lines below), which on the hosted fleet
+# includes ``FLEET_CONSOLE_TOKEN`` (mints EVERY tenant's runner token), the raw
+# ``OPENROUTER_API_KEY``, a shared fallback ``GITHUB_TOKEN``, and — on the
+# single-tenant compose shape — ``DATABASE_URL`` / ``AUTH_SECRET`` /
+# ``CONNECTOR_SECRET_KEY`` / ``POSTGRES_PASSWORD``. A malicious repo/issue
+# driving the agent could ``printenv`` any of them (threat model §2 B1, §3,
+# gap G1: "the top cross-tenant escalation").
+#
+# The docker sandbox path already reduces the env to a justified allowlist
+# (``_DOCKER_SANDBOX_ENV_ALLOWLIST``) before the container ever sees it. This
+# builds the SAME boundary for the host-native path: the child env is a MINIMAL
+# non-secret system/toolchain base + that same allowlist pulled from the
+# process env + the caller's OWN explicit env. Nothing secret outside the
+# allowlist survives.
+#
+# NOTE — the caller half of the fix: the boundary only holds because the caller
+# (``agentrail.cli.commands.runner._make_execute``, reused verbatim by the
+# fleet) no longer hands us a blanket ``dict(os.environ)`` as ``env``. This
+# function passes the caller's ``env`` through UNTOUCHED by design — the eval
+# harness legitimately threads narrow, NON-secret feature-flag vars
+# (``AGENTRAIL_EVAL_LAYER_*`` …) that must reach the child and are not in the
+# allowlist — so if a caller ever went back to copying the whole environment
+# into ``env``, the secrets would ride back in through it. ``_make_execute``'s
+# own tests pin that it builds a narrow env.
+#
+# Essential, NON-SECRET system/toolchain vars the agent's own toolchain (git,
+# gh, node/npx, python, claude, TLS) needs to function at all. These are ambient
+# OS configuration, never credentials. Everything a run legitimately needs
+# beyond these arrives explicitly via the allowlist above + the caller's env.
+_NATIVE_SYSTEM_ENV_PASSTHROUGH = frozenset(
+    {
+        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD",
+        "LANG", "LANGUAGE", "TERM", "TZ",
+        "TMPDIR", "TEMP", "TMP",
+        # XDG base dirs some tools resolve config/cache under.
+        "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
+        # TLS / proxy — non-secret infra config commonly required for the
+        # agent's OWN outbound HTTPS (model API, GitHub, console) behind a proxy
+        # or with a custom CA bundle. Dropping these would silently break such
+        # deployments while removing nothing secret.
+        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "no_proxy",
+        "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO",
+    }
+)
+# Locale is a whole family (LC_ALL, LC_CTYPE, …), not a fixed set of names.
+_NATIVE_SYSTEM_ENV_PREFIX_PASSTHROUGH = ("LC_",)
+
+
+def _is_native_system_env(key: str) -> bool:
+    return key in _NATIVE_SYSTEM_ENV_PASSTHROUGH or key.startswith(
+        _NATIVE_SYSTEM_ENV_PREFIX_PASSTHROUGH
+    )
+
+
+def build_native_child_env(
+    process_env: Dict[str, str], caller_env: Dict[str, str]
+) -> Dict[str, str]:
+    """Build the host-native agent's child environment as a MINIMAL, non-secret
+    base rather than a blanket copy of the fleet process env (#1295 G1). See the
+    section header above for the threat this closes.
+
+    Order (later wins):
+
+      1. essential NON-SECRET system/toolchain vars from ``process_env``;
+      2. the justified allowlist (:func:`filter_docker_sandbox_env`) pulled from
+         ``process_env`` — the SAME proven set the docker sandbox forwards
+         (``ANTHROPIC_*`` model auth, ``GIT_TOKEN``, ``AGENTRAIL_SERVER_*``, the
+         hosted markers, the per-provider MCP connector keys);
+      3. the caller's OWN explicit ``caller_env``, passed through untouched.
+
+    A ``process_env`` secret that is neither a system var nor allowlisted —
+    ``FLEET_CONSOLE_TOKEN``, ``DATABASE_URL``, ``AUTH_SECRET``,
+    ``CONNECTOR_SECRET_KEY``, ``POSTGRES_PASSWORD``, the raw
+    ``OPENROUTER_API_KEY``, a shared ``GITHUB_TOKEN`` — is ABSENT from the
+    result, so a malicious repo/issue driving the agent cannot read it out of
+    its own environment. Exported so the probe suite can assert on the boundary
+    directly.
+    """
+    child: Dict[str, str] = {
+        k: v for k, v in (process_env or {}).items() if _is_native_system_env(k)
+    }
+    child.update(filter_docker_sandbox_env(process_env))
+    child.update(caller_env or {})
+    return child
 
 
 def _wrap_docker_sandbox_env(fn: Callable[..., RunResult]) -> Callable[..., RunResult]:

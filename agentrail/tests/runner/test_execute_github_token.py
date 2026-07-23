@@ -92,3 +92,48 @@ def test_no_claim_token_and_no_local_token_leaves_git_token_unset(monkeypatch):
     execute = runner_cmd._make_execute(_creds())
     execute(_work_item(github_token=""))
     assert "GIT_TOKEN" not in fake.calls[0]["env"]
+
+
+# ---------------------------------------------------------------------------
+# #1295 G1 — the caller half: the fleet reuses this execute callback verbatim
+# (agentrail/cli/commands/fleet.py). It must NOT hand the runner a blanket
+# dict(os.environ): that env is passed through untouched to the untrusted
+# agent, so a FLEET_CONSOLE_TOKEN (or any operator secret) sitting in it would
+# reach the agent. The narrow run env must still carry the per-claim link +
+# credentials so the agent keeps its legitimate access (the #1 rule).
+# ---------------------------------------------------------------------------
+
+def test_g1_execute_env_drops_fleet_secrets(monkeypatch):
+    # Simulate the hosted fleet process env: operator secrets present.
+    for k, v in {
+        "FLEET_CONSOLE_TOKEN": "fct_mints_every_token",
+        "OPENROUTER_API_KEY": "sk-or-raw",
+        "GITHUB_TOKEN": "ghp_shared_pat",
+        "DATABASE_URL": "postgres://u:p@postgres:5432/app",
+        "AUTH_SECRET": "authjs_secret",
+    }.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("GIT_TOKEN", raising=False)
+    fake = _execute_with_fake(monkeypatch)
+    execute = runner_cmd._make_execute(_creds())
+    execute(_work_item(github_token="gho_workspace"))
+    env = fake.calls[0]["env"]
+    # FAIL CLOSED: none of the operator secrets ride in the env passed on.
+    for secret in ("FLEET_CONSOLE_TOKEN", "OPENROUTER_API_KEY", "GITHUB_TOKEN",
+                   "DATABASE_URL", "AUTH_SECRET"):
+        assert secret not in env, f"{secret} must not reach the runner env"
+
+
+def test_g1_execute_env_keeps_console_link_and_git_token(monkeypatch):
+    for k, v in {"FLEET_CONSOLE_TOKEN": "fct", "OPENROUTER_API_KEY": "sk-or"}.items():
+        monkeypatch.setenv(k, v)
+    fake = _execute_with_fake(monkeypatch)
+    execute = runner_cmd._make_execute(_creds())
+    execute(_work_item(github_token="gho_workspace"))
+    env = fake.calls[0]["env"]
+    # POSITIVE: the per-claim console link + repo id + git token still flow, so
+    # the run reports cost/telemetry and authenticates clone/push.
+    assert env["AGENTRAIL_SERVER_BASE_URL"] == "https://app.agentrail.dev"
+    assert env["AGENTRAIL_SERVER_API_KEY"] == "rt_secret"
+    assert env["AGENTRAIL_SERVER_REPOSITORY_ID"] == "repo-1"
+    assert env["GIT_TOKEN"] == "gho_workspace"

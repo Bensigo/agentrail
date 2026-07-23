@@ -4,7 +4,7 @@ import {
   touchApiKeyLastUsed,
   hasActiveSelfHostedRunner,
   getMcpConnectorKeys,
-  getGithubToken,
+  ensureFreshGithubToken,
   getWorkspaceBudgetState,
   sumWorkspaceSpendSince,
   markBudgetExhaustedNotified,
@@ -188,24 +188,28 @@ export async function GET(request: NextRequest) {
     console.error("[runner/claim] failed to load MCP keys:", err);
   }
 
-  // Hand the run the workspace's connected GitHub OAuth token (the same token
-  // getGithubToken already resolves for the heartbeat's GitHub polling) so the
-  // runner can authenticate `git clone`/`git push`/`gh pr create` for THIS
-  // workspace's repo over the already-authenticated claim link — no separately
-  // configured PAT required. "" when the workspace owner hasn't linked GitHub
-  // (or the stored token is null); the runner then falls back to its own
-  // locally configured GIT_TOKEN, if any (back-compat).
+  // Hand the run the workspace's connected GitHub OAuth token so the runner can
+  // authenticate `git clone`/`git push`/`gh pr create` for THIS workspace's
+  // repo over the already-authenticated claim link — no separately configured
+  // PAT required. "" when the workspace owner hasn't linked GitHub (or the
+  // stored token is null); the runner then falls back to its own locally
+  // configured GIT_TOKEN, if any (back-compat).
   //
-  // NOTE: this is the OAuth access_token NextAuth persisted at login — it can
-  // expire and there is no refresh flow here (out of scope for this fix). An
-  // expired token surfaces as an ordinary git/gh auth failure on the runner
-  // side. Never logged: only caught error OBJECTS are logged below, never the
-  // token value itself.
+  // Refresh-on-claim (#1391): a claim must never hand out a token whose
+  // remaining TTL is less than the execution ceiling — a run that outlives its
+  // token fails at PUSH time, after all the compute is spent. `ensureFreshGithubToken`
+  // refreshes FIRST when the stored token is near expiry, persisting the
+  // rotated token, and is a strict NO-OP (no GitHub round-trip) when the token
+  // has ample TTL — today's common case, so the working loop is byte-identical
+  // then. It NEVER throws: a refresh hiccup degrades to the (possibly stale)
+  // stored token, and the runner's mid-run recovery is the backstop. Never
+  // logged: the token value never leaves this authenticated response.
   let githubToken = "";
   try {
-    githubToken = (await getGithubToken(workspaceId)) ?? "";
+    const fresh = await ensureFreshGithubToken(workspaceId);
+    githubToken = fresh.accessToken ?? "";
   } catch (err) {
-    console.error("[runner/claim] failed to load GitHub token:", err);
+    console.error("[runner/claim] failed to resolve GitHub token:", err);
   }
 
   return NextResponse.json({

@@ -6,7 +6,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   touchApiKeyLastUsed: vi.fn(),
   hasActiveSelfHostedRunner: vi.fn(),
   getMcpConnectorKeys: vi.fn(),
-  getGithubToken: vi.fn(),
+  ensureFreshGithubToken: vi.fn(),
   getWorkspaceBudgetState: vi.fn(),
   sumWorkspaceSpendSince: vi.fn(),
   markBudgetExhaustedNotified: vi.fn(),
@@ -33,7 +33,7 @@ import {
   touchApiKeyLastUsed,
   hasActiveSelfHostedRunner,
   getMcpConnectorKeys,
-  getGithubToken,
+  ensureFreshGithubToken,
   getWorkspaceBudgetState,
   sumWorkspaceSpendSince,
   markBudgetExhaustedNotified,
@@ -49,7 +49,7 @@ const mockClaim = vi.mocked(claimQueueEntry);
 const mockTouch = vi.mocked(touchApiKeyLastUsed);
 const mockHasActiveSelfHosted = vi.mocked(hasActiveSelfHostedRunner);
 const mockGetMcpKeys = vi.mocked(getMcpConnectorKeys);
-const mockGetGithubToken = vi.mocked(getGithubToken);
+const mockEnsureFresh = vi.mocked(ensureFreshGithubToken);
 const mockRecordLifecycle = vi.mocked(recordRunLifecycleEvent);
 const mockRequireBearer = vi.mocked(requireBearer);
 const mockGetBudgetState = vi.mocked(getWorkspaceBudgetState);
@@ -99,7 +99,10 @@ beforeEach(() => {
   mockHasActiveSelfHosted.mockResolvedValue(false);
   mockClaim.mockResolvedValue(null);
   mockGetMcpKeys.mockResolvedValue({});
-  mockGetGithubToken.mockResolvedValue("");
+  // #1391: default to "no linked GitHub" so pre-existing tests that assert
+  // github_token:"" stay byte-identical. ensureFreshGithubToken is the
+  // refresh-on-claim seam — a no-op for ample TTL, refresh when near expiry.
+  mockEnsureFresh.mockResolvedValue({ accessToken: "", outcome: "no-account" });
   mockRecordLifecycle.mockResolvedValue(undefined as never);
   // Uncapped by default (the product default — see #1269 PR ②a's own suite
   // below for every capped-path behavior) so every PRE-EXISTING test above
@@ -169,13 +172,15 @@ describe("GET /api/v1/runner/claim — baseline (pre-#1267 behavior)", () => {
   it("200 with the claimed item plus mcp_keys/github_token when something is queued", async () => {
     mockClaim.mockResolvedValue(WORK_ITEM as never);
     mockGetMcpKeys.mockResolvedValue({ linear: "mcp-key-1" });
-    mockGetGithubToken.mockResolvedValue("gh-token-1");
+    mockEnsureFresh.mockResolvedValue({ accessToken: "gh-token-1", outcome: "no-op" });
 
     const res = await GET(req(WS));
     const body = await res.json();
 
     expect(res.status).toBe(200);
     expect(body).toEqual({ ...WORK_ITEM, mcp_keys: { linear: "mcp-key-1" }, github_token: "gh-token-1" });
+    // Refresh-on-claim is consulted for THIS workspace before the token ships.
+    expect(mockEnsureFresh).toHaveBeenCalledWith(WS);
     expect(mockRecordLifecycle).toHaveBeenCalledWith(
       WS,
       WORK_ITEM.id,
@@ -225,9 +230,55 @@ describe("GET /api/v1/runner/claim — baseline (pre-#1267 behavior)", () => {
     expect(body.mcp_keys).toEqual({});
   });
 
-  it("still returns 200 (github_token: '') when getGithubToken throws — best-effort", async () => {
+  it("still returns 200 (github_token: '') when ensureFreshGithubToken throws — best-effort", async () => {
     mockClaim.mockResolvedValue(WORK_ITEM as never);
-    mockGetGithubToken.mockRejectedValue(new Error("token fetch failed"));
+    mockEnsureFresh.mockRejectedValue(new Error("token fetch failed"));
+
+    const res = await GET(req(WS));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.github_token).toBe("");
+  });
+
+  it("#1391: hands out the REFRESHED token when the stored one was near expiry", async () => {
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+    // ensureFreshGithubToken refreshed a near-expiry token and returns the fresh one.
+    mockEnsureFresh.mockResolvedValue({
+      accessToken: "gh-fresh-token",
+      outcome: "refreshed",
+    });
+
+    const res = await GET(req(WS));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.github_token).toBe("gh-fresh-token");
+    expect(mockEnsureFresh).toHaveBeenCalledWith(WS);
+  });
+
+  it("#1391: hands out the stored token unchanged on the no-op (ample TTL) path", async () => {
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+    mockEnsureFresh.mockResolvedValue({
+      accessToken: "gh-ample-token",
+      outcome: "no-op",
+    });
+
+    const res = await GET(req(WS));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.github_token).toBe("gh-ample-token");
+  });
+
+  it("#1391: still returns 200 (github_token: '') when refresh failed — degrades to no token, mid-run recovery is the backstop", async () => {
+    mockClaim.mockResolvedValue(WORK_ITEM as never);
+    // A refresh-failed outcome may carry a stale token or null; the route hands
+    // out whatever accessToken it got (here null → "") and never fails the claim.
+    mockEnsureFresh.mockResolvedValue({
+      accessToken: null,
+      outcome: "refresh-failed",
+    });
 
     const res = await GET(req(WS));
     const body = await res.json();

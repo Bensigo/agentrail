@@ -85,6 +85,58 @@ SANDBOX_MODE_DOCKER = "docker"
 # one; a mismatch silently turns every refusal back into a normal retry.
 HOSTED_REFUSAL_PREFIX = "hosted-refusal: "
 
+# #1391: the DISTINCT infrastructure-error classification a run records when its
+# publish push could not authenticate to GitHub even after a token refresh — the
+# workspace's OAuth token expired mid-run and the refresh was unrecoverable.
+# Surfaced as ``status='error'`` (never a generic ``red``) with this
+# ``gate_reason`` so run evidence shows a distinct infra error: the compute was
+# NOT wasted for a code reason, so the loop must not spend a code-retry budget
+# chasing it. Stands alone without #1389's attempt-history (which isn't merged
+# yet) — the distinct status + reason are the whole classification here.
+GITHUB_TOKEN_REFRESH_FAILED = "infra: github token expired and refresh failed"
+
+# Substrings (case-insensitive) that mark a ``git push`` failure as a GitHub
+# AUTHENTICATION failure — the only push failures the #1391 mid-run token
+# refresh should try to recover. A non-auth push failure (network blip, hook
+# rejection) keeps the prior best-effort behavior and never triggers a refresh.
+_GIT_AUTH_FAILURE_MARKERS = (
+    "authentication failed",
+    "invalid username or token",
+    "invalid username or password",
+    "could not read username",
+    "could not read password",
+    "bad credentials",
+    "support for password authentication",
+    "terminal prompts disabled",
+    "error: 403",
+    "error: 401",
+    "http 403",
+    "http 401",
+    "token expired",
+    "requested url returned error: 403",
+    "requested url returned error: 401",
+)
+
+
+def _looks_like_git_auth_failure(push_result: Optional[object]) -> bool:
+    """True when a failed ``git push`` result reads as a GitHub AUTH failure.
+
+    Inspects the captured stdout/stderr for the known credential-rejection
+    markers (:data:`_GIT_AUTH_FAILURE_MARKERS`). ``None`` (the push raised) is
+    NOT treated as auth — a raised subprocess is an environment error, not a
+    401. Conservative on purpose: a false negative just keeps today's
+    best-effort behavior, whereas a false positive would spend a token refresh
+    on an unrelated failure.
+    """
+    if push_result is None:
+        return False
+    text = (
+        f"{getattr(push_result, 'stdout', '') or ''}\n"
+        f"{getattr(push_result, 'stderr', '') or ''}"
+    ).lower()
+    return any(marker in text for marker in _GIT_AUTH_FAILURE_MARKERS)
+
+
 # The run id + log dir we drive ``agentrail run issue`` to write under, so the
 # verdict/cost artifacts land at a known path inside the isolated working dir.
 RUN_ID = "host-run"
@@ -475,6 +527,7 @@ def run_issue_on_host(
     run_env: Optional[Dict[str, str]] = None,
     run_dir_factory: Optional[Callable[[], Path]] = None,
     post_checkout: Optional[Callable[[Path], None]] = None,
+    github_token_refresher: Optional[Callable[[], Optional[str]]] = None,
     runner=subprocess,
 ) -> RunResult:
     """Run a single issue on the HOST (provider sandbox), not in Docker.
@@ -732,12 +785,28 @@ def run_issue_on_host(
         # PR). Best-effort: a publish failure downgrades to a gate_reason, never
         # crashes the run.
         if result.status == "green" and publish_pr:
-            branch, pr_url = _publish_green(
-                runner, repo_dir, issue_ref, pr_title, base_ref=ref, env=child_env
+            branch, pr_url, push_auth_infra = _publish_green(
+                runner, repo_dir, issue_ref, pr_title, base_ref=ref, env=child_env,
+                repo_url=repo_url, github_token_refresher=github_token_refresher,
             )
             from dataclasses import replace
 
-            result = replace(result, pr_url=pr_url, branch=branch or result.branch)
+            if push_auth_infra:
+                # #1391 AC3: the gate went green but the publish push could not
+                # authenticate to GitHub even after a token refresh — an
+                # INFRASTRUCTURE failure (the workspace's OAuth token expired),
+                # not a code failure. Downgrade to a DISTINCT infra-error
+                # classification so run evidence shows it as such and the loop
+                # never spends a code-retry budget on it. The agent's work is
+                # committed to ``branch`` locally but remains unpushed.
+                result = replace(
+                    result,
+                    status="error",
+                    gate_reason=GITHUB_TOKEN_REFRESH_FAILED,
+                    branch=branch or result.branch,
+                )
+            else:
+                result = replace(result, pr_url=pr_url, branch=branch or result.branch)
         return result
     finally:
         # Teardown is unconditional; a failure to clean up is swallowed (a leftover
@@ -761,14 +830,27 @@ _GIT_IDENTITY = [
 def _publish_green(
     runner, repo_dir: Path, issue_ref: str, pr_title: Optional[str],
     *, base_ref: str, env: Dict[str, str],
-) -> tuple[str, str]:
+    repo_url: str = "",
+    github_token_refresher: Optional[Callable[[], Optional[str]]] = None,
+) -> tuple[str, str, bool]:
     """Commit the agent's work to a feature branch, push it, open a PR.
 
-    Returns ``(branch, pr_url)``; either may be ``""`` on failure. Best-effort:
-    every step is guarded so a publish failure never raises into the run. Uses
-    the host's git/gh auth (the same that the agent's own pushes use). The branch
-    matches the dashboard run's ``afk/github-<n>`` convention is NOT used here —
-    we use ``agentrail/issue-<n>`` so the PR branch is self-describing.
+    Returns ``(branch, pr_url, push_auth_infra)``. ``branch``/``pr_url`` may be
+    ``""`` on failure. ``push_auth_infra`` is ``True`` ONLY when the push failed
+    GitHub AUTH and the #1391 token-refresh recovery could not fix it — the
+    caller then records the distinct infra-error classification. Best-effort
+    otherwise: every step is guarded so a publish failure never raises into the
+    run. The branch is ``agentrail/issue-<n>`` so the PR branch is
+    self-describing.
+
+    Mid-run token refresh (#1391): when the push fails and it reads as an auth
+    failure (:func:`_looks_like_git_auth_failure`) AND ``github_token_refresher``
+    is provided, refresh the workspace's GitHub token ONCE, re-point ``origin``
+    at the fresh token, and retry the push a single time. A successful retry
+    proceeds to open the PR exactly as a first-try push would. ``None``
+    refresher (the single-workspace default, or a workspace with no OAuth token)
+    keeps the prior best-effort behavior byte-for-byte: a push failure just
+    returns no PR.
     """
     number = re.search(r"(\d+)\s*$", str(issue_ref))
     n = number.group(1) if number else str(issue_ref)
@@ -791,15 +873,41 @@ def _publish_green(
 
     # Move the uncommitted work onto a fresh feature branch and commit it.
     if _run(["git", *_GIT_IDENTITY, "checkout", "-B", branch]) is None:
-        return "", ""
+        return "", "", False
     _run(["git", "add", "-A"])
     commit = _run(["git", *_GIT_IDENTITY, "commit", "-m", f"{title} (#{n})"])
     if commit is None or getattr(commit, "returncode", 1) != 0:
-        return branch, ""  # nothing to commit / commit failed
+        return branch, "", False  # nothing to commit / commit failed
 
     push = _run(["git", "push", "--force", "-u", "origin", f"HEAD:{branch}"])
     if push is None or getattr(push, "returncode", 1) != 0:
-        return branch, ""
+        # #1391 mid-run recovery: only an AUTH failure with a refresher available
+        # triggers a refresh + single retry; every other push failure keeps the
+        # prior best-effort "green, no PR" behavior.
+        if github_token_refresher is not None and _looks_like_git_auth_failure(push):
+            fresh: Optional[str] = None
+            try:
+                fresh = github_token_refresher()
+            except Exception:  # noqa: BLE001 — refresh is best-effort, never fatal
+                fresh = None
+            if not fresh:
+                # The refresh itself failed (bad_refresh_token / network / no
+                # refresh token) — unrecoverable; classify as infra error.
+                return branch, "", True
+            # Re-point origin at the fresh token and retry the push ONCE. Reassign
+            # ``env`` (a local) so the ``gh pr create`` below authenticates with
+            # the fresh token too — the nested ``_run`` reads ``env`` at call time.
+            _run(["git", "remote", "set-url", "origin",
+                  _authenticated_clone_url(repo_url, fresh)])
+            env = {**env, "GH_TOKEN": fresh, "GIT_TOKEN": fresh}
+            push = _run(["git", "push", "--force", "-u", "origin", f"HEAD:{branch}"])
+            if push is None or getattr(push, "returncode", 1) != 0:
+                # Refresh succeeded but the retried push still failed — the token
+                # is not the (only) problem; still an unrecoverable infra push.
+                return branch, "", True
+            # Fresh-token push succeeded — fall through to open the PR.
+        else:
+            return branch, "", False
 
     pr = _run([
         "gh", "pr", "create",
@@ -811,9 +919,9 @@ def _publish_green(
         # Branch is pushed; a PR may already exist — try to surface its URL.
         view = _run(["gh", "pr", "view", branch, "--json", "url", "-q", ".url"])
         url = (getattr(view, "stdout", "") or "").strip() if view else ""
-        return branch, url
+        return branch, url, False
     url = (getattr(pr, "stdout", "") or "").strip().splitlines()[-1:] or [""]
-    return branch, url[0]
+    return branch, url[0], False
 
 
 # ---------------------------------------------------------------------------

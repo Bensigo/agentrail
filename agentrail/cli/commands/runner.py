@@ -40,6 +40,10 @@ def _make_execute(creds):
     accepts_pr_title = "pr_title" in _params
     accepts_model = "model" in _params
     accepts_budget = "budget_usd" in _params
+    # #1391: the host runner accepts a mid-run GitHub-token refresher; the Docker
+    # sandbox backend does not (its push happens in the container entrypoint), so
+    # gate on the signature exactly like the other optional kwargs above.
+    accepts_token_refresher = "github_token_refresher" in _params
 
     def execute(item: WorkItem) -> RunResult:
         if item.kind == "onboard":
@@ -114,6 +118,23 @@ def _make_execute(creds):
             workspace_id=item.workspace_id,
             env=run_env,
         )
+        # #1391 mid-run recovery: give the host runner a callback to refresh THIS
+        # workspace's GitHub token over the runner-authed channel if a publish
+        # push 401s because the OAuth token expired in-flight. Only wired when the
+        # claim actually carried a workspace OAuth token (item.github_token) — a
+        # locally configured PAT fallback (no github_token) is not an OAuth token
+        # and cannot be refreshed this way. Constructs a per-workspace client
+        # lazily so the refresh is authed exactly like claim/result.
+        if accepts_token_refresher and item.github_token:
+            def _refresh_github_token() -> "str | None":
+                client = RunnerClient(
+                    base_url=creds.base_url,
+                    token=creds.token,
+                    workspace_id=item.workspace_id,
+                )
+                return client.refresh_github_token(item.workspace_id)
+
+            kwargs["github_token_refresher"] = _refresh_github_token
         if accepts_run_id:
             # Use the dashboard run id so ingested cost events join to it.
             kwargs["run_id"] = item.id

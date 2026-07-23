@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import List, Optional
 
@@ -28,11 +29,16 @@ from agentrail.sandbox.native_runner import (
     HOSTED_REFUSAL_PREFIX,
     HostError,
     HostTimeout,
+    _GIT_ASKPASS_SCRIPT,
     _authenticated_clone_url,
     _build_run_command,
+    _git_credential_env,
     _inject_hosted_config,
+    _install_git_askpass,
     _redact_token,
     _result_from_run_json,
+    build_native_child_env,
+    filter_docker_sandbox_env,
     run_issue_on_host,
 )
 from agentrail.sandbox.docker_runner import RunResult
@@ -425,21 +431,42 @@ class TestGitTokenThreadedIntoRun:
         kwargs.update(over)
         return run_issue_on_host(**kwargs), dirs
 
-    def test_clone_url_carries_the_token(self, tmp_path) -> None:
+    def test_clone_url_is_token_free_auth_rides_askpass_env(self, tmp_path) -> None:
+        # #1295 G5: the token is NEVER embedded in the clone URL (it would then
+        # persist in .git/config, readable by the untrusted agent the run
+        # executes inside the clone). The clone URL is the plain, token-free
+        # repo URL; auth is handed to git OUT-OF-BAND via a GIT_ASKPASS helper
+        # reading GIT_TOKEN from the env, with the inherited credential helper
+        # reset so THIS workspace's token wins over the fleet's shared PAT.
         runner = FakeRunner([_Completed(128, stdout="", stderr="fatal: not found")])
         self._run(tmp_path, runner)
-        clone_cmd = runner.command_with("clone")
-        joined = " ".join(clone_cmd)
-        assert "x-access-token:ght-secret@github.com" in joined
-        # ...but never the plain, unauthenticated URL — the token IS embedded.
-        assert "https://github.com/acme/widgets.git" not in clone_cmd
+        clone_call = next(c for c in runner.calls if "clone" in c["cmd"])
+        joined = " ".join(clone_call["cmd"])
+        # The token is on neither the URL nor the argv.
+        assert "ght-secret" not in joined
+        assert "x-access-token" not in joined
+        # git clones the plain, token-free URL.
+        assert "https://github.com/acme/widgets.git" in clone_call["cmd"]
+        # Auth rides the env: askpass helper + the token + prompt disabled +
+        # inherited credential.helper reset (off argv, off .git/config).
+        env = clone_call["env"]
+        assert env.get("GIT_ASKPASS")
+        assert env.get("GIT_TOKEN") == "ght-secret"
+        assert env.get("GIT_TERMINAL_PROMPT") == "0"
+        assert env.get("GIT_CONFIG_KEY_0") == "credential.helper"
+        assert env.get("GIT_CONFIG_VALUE_0") == ""
 
-    def test_no_token_clones_the_plain_url(self, tmp_path) -> None:
+    def test_no_token_clones_the_plain_url_without_askpass(self, tmp_path) -> None:
+        # No token → plain clone that relies on the host's own git credential
+        # config (unchanged behaviour); no askpass/credential-reset env is set.
         runner = FakeRunner([_Completed(128, stdout="", stderr="fatal: not found")])
         self._run(tmp_path, runner, env={})
-        clone_cmd = runner.command_with("clone")
-        assert "https://github.com/acme/widgets.git" in clone_cmd
-        assert "x-access-token" not in " ".join(clone_cmd)
+        clone_call = next(c for c in runner.calls if "clone" in c["cmd"])
+        assert "https://github.com/acme/widgets.git" in clone_call["cmd"]
+        assert "x-access-token" not in " ".join(clone_call["cmd"])
+        # No token ⇒ we do NOT touch git's credential resolution at all.
+        assert "GIT_ASKPASS" not in clone_call["env"]
+        assert "GIT_CONFIG_COUNT" not in clone_call["env"]
 
     def test_clone_failure_never_leaks_the_token_in_logs_tail(self, tmp_path) -> None:
         # Simulate git itself echoing the authenticated URL back on a 403 — the
@@ -1361,3 +1388,266 @@ class TestHostedConfigTemplateShape:
         assert models["execute"]
         assert models["verify"]
         assert models["execute"] != models["verify"]
+
+
+# ===========================================================================
+# #1295 G1 — host-native env allowlist. The default (host-native) execution
+# path used to hand the untrusted agent a blanket copy of the fleet process
+# environment (dict(os.environ)), including FLEET_CONSOLE_TOKEN (mints every
+# tenant's runner token) and other operator secrets (threat model §2 B1, §3).
+# These probes must FAIL CLOSED: the secrets are absent from the agent's child
+# env — while the agent's own legitimate access (model API, GitHub, console
+# link) is PRESERVED.
+# ===========================================================================
+
+# The operator-only secrets that must NEVER reach the agent's child env.
+_FLEET_SECRETS = {
+    "FLEET_CONSOLE_TOKEN": "fct_mints_every_tenants_token",
+    "DATABASE_URL": "postgres://user:pw@postgres:5432/app",
+    "AUTH_SECRET": "authjs_signing_secret",
+    "CONNECTOR_SECRET_KEY": "decrypts_every_connector_secret",
+    "POSTGRES_PASSWORD": "pg_superuser_pw",
+    "OPENROUTER_API_KEY": "sk-or-raw-operator-key",
+    "GITHUB_TOKEN": "ghp_shared_fallback_pat",
+}
+
+# The legitimate access the agent MUST keep — the #1 rule (do not break the
+# fleet): reach the model API, clone/push the repo, call the console runner
+# routes. Split into what rides the process env (allowlisted) vs. what the
+# per-claim caller sets explicitly.
+_PROCESS_ENV_LEGIT = {
+    "ANTHROPIC_BASE_URL": "https://openrouter.ai/api",
+    "ANTHROPIC_AUTH_TOKEN": "the-model-credential",
+    "ANTHROPIC_API_KEY": "",
+    "CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK": "1",
+    "AGENTRAIL_HOSTED": "1",
+    "AGENTRAIL_HOSTED_CONFIG": "/opt/agentrail/agentrail-config.hosted.json",
+    "AGENTRAIL_CLAUDE_COMMAND": "claude --bare -p --dangerously-skip-permissions",
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "HOME": "/root",
+}
+_CALLER_ENV_LEGIT = {
+    "GIT_TOKEN": "gho_this_workspace_token",
+    "AGENTRAIL_SERVER_BASE_URL": "https://console.internal",
+    "AGENTRAIL_SERVER_API_KEY": "per_workspace_runner_token",
+    "AGENTRAIL_SERVER_REPOSITORY_ID": "repo-42",
+    "AGENTRAIL_MCP_LINEAR_KEY": "lin_workspace_key",
+}
+
+
+class TestG1BuildNativeChildEnvUnit:
+    """Direct unit tests on the boundary function (no clone, no subprocess)."""
+
+    def test_fleet_secrets_are_dropped(self) -> None:
+        process_env = {**_FLEET_SECRETS, **_PROCESS_ENV_LEGIT}
+        child = build_native_child_env(process_env, {})
+        for secret in _FLEET_SECRETS:
+            assert secret not in child, f"{secret} must NOT reach the agent"
+
+    def test_allowlisted_process_env_is_forwarded(self) -> None:
+        process_env = {**_FLEET_SECRETS, **_PROCESS_ENV_LEGIT}
+        child = build_native_child_env(process_env, {})
+        # Model auth + hosted markers + baked claude command ride through.
+        assert child["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
+        assert child["ANTHROPIC_AUTH_TOKEN"] == "the-model-credential"
+        assert child["AGENTRAIL_HOSTED"] == "1"
+        assert child["AGENTRAIL_CLAUDE_COMMAND"].startswith("claude --bare")
+        # Essential non-secret system vars ride through.
+        assert child["PATH"] == "/usr/local/bin:/usr/bin:/bin"
+        assert child["HOME"] == "/root"
+
+    def test_caller_env_passes_through_untouched(self) -> None:
+        # The caller's OWN explicit env is trusted (the eval threads non-secret
+        # feature flags this way); it is not reduced to the allowlist.
+        child = build_native_child_env(
+            _PROCESS_ENV_LEGIT, {"AGENTRAIL_EVAL_LAYER_CRITIC": "1", **_CALLER_ENV_LEGIT}
+        )
+        assert child["AGENTRAIL_EVAL_LAYER_CRITIC"] == "1"
+        assert child["GIT_TOKEN"] == "gho_this_workspace_token"
+        assert child["AGENTRAIL_SERVER_API_KEY"] == "per_workspace_runner_token"
+        assert child["AGENTRAIL_MCP_LINEAR_KEY"] == "lin_workspace_key"
+
+    def test_caller_env_cannot_be_used_to_leak_when_narrow(self) -> None:
+        # A caller that (correctly) does NOT copy os.environ cannot leak a
+        # process-env secret — it simply isn't in either input.
+        child = build_native_child_env(_PROCESS_ENV_LEGIT, _CALLER_ENV_LEGIT)
+        for secret in _FLEET_SECRETS:
+            assert secret not in child
+
+
+class TestG1EnvAllowlistEndToEnd:
+    """End-to-end (faked subprocess) probe: with the FULL fleet secret set in
+    os.environ, the env the agent's `agentrail run` step actually receives
+    carries none of the secrets and all of the legitimate access vars."""
+
+    def _capture_run_env(self, tmp_path, caller_env):
+        run_dir = tmp_path / "run-1"
+        captured = {}
+
+        def _do_run(cmd, cwd, env):
+            captured.update(env or {})
+            log_dir = _extract_log_dir(cmd, run_dir)
+            run_id = _extract_run_id(cmd) or "host-run"
+            _write_run_json(Path(log_dir) / run_id, _green_run_json())
+            return _Completed(0, stdout="ran")
+
+        runner = FakeRunner([_Completed(0, stdout="cloned"), _do_run])
+        dirs = _RunDirs(tmp_path)
+        run_issue_on_host(
+            repo_url="https://github.com/acme/widgets.git",
+            ref="main", issue_ref="7", workspace_id="ws-123",
+            env=dict(caller_env), run_dir_factory=dirs, runner=runner,
+            publish_pr=False,
+        )
+        return captured
+
+    def test_probe_secrets_absent_from_agent_env(self, tmp_path, monkeypatch) -> None:
+        # Simulate the hosted fleet process env: every secret present.
+        for k, v in {**_FLEET_SECRETS, **_PROCESS_ENV_LEGIT}.items():
+            monkeypatch.setenv(k, v)
+        captured = self._capture_run_env(tmp_path, _CALLER_ENV_LEGIT)
+        # FAIL CLOSED: none of the operator secrets are visible to the agent.
+        for secret in _FLEET_SECRETS:
+            assert secret not in captured, f"{secret} leaked into the agent env"
+
+    def test_positive_agent_keeps_model_github_console_access(self, tmp_path, monkeypatch) -> None:
+        for k, v in {**_FLEET_SECRETS, **_PROCESS_ENV_LEGIT}.items():
+            monkeypatch.setenv(k, v)
+        captured = self._capture_run_env(tmp_path, _CALLER_ENV_LEGIT)
+        # POSITIVE — the #1 rule: the agent can still do its legitimate job.
+        # Model API auth (from the process env allowlist):
+        assert captured.get("ANTHROPIC_BASE_URL") == "https://openrouter.ai/api"
+        assert captured.get("ANTHROPIC_AUTH_TOKEN") == "the-model-credential"
+        # GitHub push auth (per-workspace token from the caller):
+        assert captured.get("GIT_TOKEN") == "gho_this_workspace_token"
+        # Console runner-route link (per-claim, from the caller):
+        assert captured.get("AGENTRAIL_SERVER_BASE_URL") == "https://console.internal"
+        assert captured.get("AGENTRAIL_SERVER_API_KEY") == "per_workspace_runner_token"
+        # Baked hosted config + claude command still reach the run:
+        assert captured.get("AGENTRAIL_HOSTED") == "1"
+        assert captured.get("AGENTRAIL_CLAUDE_COMMAND", "").startswith("claude --bare")
+
+
+# ===========================================================================
+# #1295 G5 — the workspace GitHub token must not persist in the clone's
+# .git/config (threat model §2 B6). These probes prove: (a) a REAL clone leaves
+# no token in .git/config / remote.origin.url; (b) the askpass helper still
+# supplies the token so clone + push authenticate (legitimate access preserved).
+# ===========================================================================
+
+class TestG5AskpassMechanism:
+    """Unit tests on the credential handoff (no network)."""
+
+    def test_credential_env_routes_through_askpass_and_resets_helper(self) -> None:
+        env = _git_credential_env("/work/askpass.sh")
+        assert env["GIT_ASKPASS"] == "/work/askpass.sh"
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+        # Inherited credential.helper is reset (empty value) so THIS workspace's
+        # token wins over the fleet entrypoint's shared-PAT helper.
+        assert env["GIT_CONFIG_COUNT"] == "1"
+        assert env["GIT_CONFIG_KEY_0"] == "credential.helper"
+        assert env["GIT_CONFIG_VALUE_0"] == ""
+
+    def test_installed_askpass_returns_username_then_token(self, tmp_path) -> None:
+        path = _install_git_askpass(tmp_path)
+        assert Path(path).exists() and os.access(path, os.X_OK)
+        run_env = {**os.environ, "GIT_TOKEN": "gho_secret_token"}
+        # git prompts for the username first, then the password — the helper
+        # must answer x-access-token, then the token from GIT_TOKEN.
+        user = subprocess.run(
+            [path, "Username for 'https://github.com': "],
+            capture_output=True, text=True, env=run_env,
+        ).stdout
+        pw = subprocess.run(
+            [path, "Password for 'https://x-access-token@github.com': "],
+            capture_output=True, text=True, env=run_env,
+        ).stdout
+        assert user == "x-access-token"
+        assert pw == "gho_secret_token"
+
+    def test_askpass_script_carries_no_secret_itself(self) -> None:
+        # The script reads the token from the env at call time — the file on
+        # disk must contain no credential of its own.
+        assert "GIT_TOKEN" in _GIT_ASKPASS_SCRIPT  # reads it from env
+        assert "gho" not in _GIT_ASKPASS_SCRIPT
+        assert "x-access-token" in _GIT_ASKPASS_SCRIPT  # the username, not a secret
+
+
+def _git(args, cwd=None, env=None):
+    return subprocess.run(
+        ["git", *args], cwd=cwd, env=env, capture_output=True, text=True
+    )
+
+
+@pytest.mark.skipif(
+    subprocess.run(["git", "--version"], capture_output=True).returncode != 0,
+    reason="git not available",
+)
+class TestG5GitConfigNeverCarriesToken:
+    """REAL git (no network): a run that clones with a token present must leave
+    the clone's .git/config token-free — the canonical G5 fail-closed probe (#8
+    in the threat model's suite) — while the clone itself still succeeds."""
+
+    def _origin_bare_repo(self, tmp_path) -> str:
+        """A local bare repo with one commit on `main`, standing in for the
+        customer's GitHub remote (no network)."""
+        work = tmp_path / "seed"
+        work.mkdir()
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        _git(["init", "-q", "-b", "main", str(work)], env=env)
+        (work / "README.md").write_text("seed\n")
+        _git(["-C", str(work), "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], env=env)
+        _git(["-C", str(work), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], env=env)
+        bare = tmp_path / "origin.git"
+        _git(["clone", "-q", "--bare", str(work), str(bare)], env=env)
+        return str(bare)
+
+    def test_real_run_leaves_no_token_in_git_config(self, tmp_path) -> None:
+        origin = self._origin_bare_repo(tmp_path)
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+
+        class _RealGitFakeAgent:
+            """Runs git for real; fakes the `agentrail run` step (so no agent /
+            network is needed) by writing a green run.json."""
+
+            def run(self, cmd, *, cwd=None, env=None, timeout=None, **kwargs):
+                prog = cmd[0]
+                is_agentrail = prog == "agentrail" or (
+                    len(cmd) > 2 and "agentrail.cli.main" in cmd
+                )
+                if is_agentrail:
+                    log_dir = _extract_log_dir(list(cmd), run_dir)
+                    run_id = _extract_run_id(list(cmd)) or "host-run"
+                    _write_run_json(Path(log_dir) / run_id, _green_run_json())
+                    return _Completed(0, stdout="ran")
+                return subprocess.run(
+                    list(cmd), cwd=cwd, env=env, timeout=timeout,
+                    capture_output=True, text=True,
+                )
+
+        run_issue_on_host(
+            repo_url=origin,
+            ref="main",
+            issue_ref="7",
+            workspace_id="ws-123",
+            env={"GIT_TOKEN": "gho_should_never_persist"},
+            run_dir_factory=lambda: run_dir,
+            runner=_RealGitFakeAgent(),
+            publish_pr=False,
+        )
+
+        repo = run_dir / "repo"
+        # POSITIVE: the legitimate clone actually happened.
+        assert (repo / ".git").exists(), "clone must succeed"
+        assert (repo / "README.md").exists()
+        # FAIL CLOSED: the token is in neither the stored remote URL nor
+        # anywhere in .git/config.
+        origin_url = _git(
+            ["config", "--get", "remote.origin.url"], cwd=str(repo)
+        ).stdout.strip()
+        assert "gho_should_never_persist" not in origin_url
+        assert "x-access-token" not in origin_url
+        config_text = (repo / ".git" / "config").read_text()
+        assert "gho_should_never_persist" not in config_text
+        assert "x-access-token" not in config_text

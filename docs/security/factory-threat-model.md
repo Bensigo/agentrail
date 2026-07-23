@@ -1,8 +1,17 @@
 # Factory multi-tenant isolation — threat model
 
 > **Status:** PR① of #1295 (Wave 5, epic #1257) — **AC1: "Threat model reviewed and committed."**
-> This document is the *current-state, honest* picture. It changes **no code**. The
-> hardening it recommends is PR②, gated on the owner reviewing this doc first (AC2).
+> This document was the *current-state, honest* picture at PR①. It changed **no code**.
+> The hardening it recommends is PR②, gated on the owner reviewing this doc first (AC2).
+>
+> **PR② update (hardening landed):** the code sections below still describe the
+> **PRE-fix** state (kept for provenance — each gap's "probe that must fail closed"
+> was written against it). What PR② actually changed is tracked per-gap in §5 via a
+> **`Status (PR②)`** line (closed / partial + infra follow-up / deferred) and
+> summarised in the new **§5.0 PR② scorecard**. Fully closed in PR②: **G1** (native
+> env allowlist) and **G5** (git token no longer persists in `.git/config`), each with
+> a fail-closed probe **and** a positive "legitimate access preserved" test. G2/G3/G4
+> are partial-with-infra-followup or deferred, enumerated in §5.0.
 >
 > **Scope:** the *factory* — the hosted **fleet** that executes dispatched issues for
 > many customer workspaces from one process (`agentrail fleet`, `deploy/fleet/railway.json`).
@@ -180,6 +189,30 @@ just with a live credential instead of corpus answer keys.
 Ranked by **severity × exploitability**. Each gap gives a concrete **probe that must fail
 closed** once PR② lands (these seed AC2's probe suite, §6).
 
+### 5.0 — PR② scorecard (what actually shipped)
+
+| Gap | Severity | PR② status | Where |
+|---|---|---|---|
+| **G1** env allowlist (native path) | CRITICAL | **CLOSED** | `native_runner.build_native_child_env` + `runner._make_execute` narrowing; probes in `test_native_runner.py::TestG1*`, `test_execute_github_token.py::test_g1_*` |
+| **G5** git token in `.git/config` | HIGH | **CLOSED (issue-run path)** — onboard clone is a documented lower-priority follow-up | `native_runner` GIT_ASKPASS handoff; probes in `test_native_runner.py::TestG5*` |
+| **G2** non-root + per-task token store | CRITICAL | **DEFERRED** — coordinated user+volume change; needs a live-fleet smoke | see G2 below |
+| **G3** egress deny-by-default | CRITICAL | **PARTIAL → infra follow-up** — the deployed (host-native) shape can't be fenced purely in-repo; required infra egress policy documented below | see G3 below |
+| **G4** per-task credential scope/TTL | HIGH | **DEFERRED** — needs token-minting infra (out of scope). G1 already **removed** the redundant raw `OPENROUTER_API_KEY` copy and the shared `GITHUB_TOKEN` fallback PAT from the agent's env | see G4 below |
+| G6/G7/G8 | HIGH–MED | **DEFERRED** — G6 is subsumed by G2's per-task boundary; G7/G8 unchanged | — |
+
+**The #1 rule — legitimate access preserved (verified by positive tests):** every hardening
+change ships a paired positive assertion that the agent can still (a) reach the model API
+(`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` survive the allowlist —
+`TestG1EnvAllowlistEndToEnd::test_positive_agent_keeps_model_github_console_access`), (b)
+clone **and** push the repo (`GIT_TOKEN` survives; the GIT_ASKPASS handoff authenticates
+clone/push while keeping the token out of `.git/config` —
+`TestG5GitConfigNeverCarriesToken::test_real_run_leaves_no_token_in_git_config` asserts a real
+clone succeeds), and (c) call the console runner routes (`AGENTRAIL_SERVER_*` survive —
+same positive test). **Not verifiable here (owner-side live-fleet smoke required):** the real
+end-to-end fleet run against OpenRouter + the live console (no OpenRouter key / live console in
+the build env). G1/G5 are proven at the unit + real-git-integration level; the first hosted
+claim after deploy should confirm the agent still authenticates to the model and pushes a PR.
+
 ### G1 — No env allowlist on the default (host-native) path → full secret exfiltration + cross-tenant takeover  ·  **CRITICAL**
 The agent inherits the entire fleet env, including `FLEET_CONSOLE_TOKEN` and the OpenRouter
 credential (`native_runner.py:481-482`; §3). Exploitability: trivial (`printenv`).
@@ -189,6 +222,19 @@ credential (`native_runner.py:481-482`; §3). Exploitability: trivial (`printenv
   `CONNECTOR_SECRET_KEY`, and any other workspace's token must never be in the set.
 - **Probe (must fail closed):** a task that runs `env` / reads `/proc/self/environ` must
   see **no** `FLEET_CONSOLE_TOKEN`, no `DATABASE_URL`, no `AUTH_SECRET`.
+- **Status (PR②): CLOSED.** The host-native child env is now built by
+  `native_runner.build_native_child_env(os.environ, caller_env)` = a minimal non-secret
+  system/toolchain base (`PATH`/`HOME`/`LC_*`/proxy+TLS config) **+** the same justified
+  allowlist the docker path uses (`filter_docker_sandbox_env`: `ANTHROPIC_*`, `GIT_TOKEN`,
+  `AGENTRAIL_SERVER_*`, the hosted markers, MCP keys) **+** the caller's own explicit env —
+  **not** `dict(os.environ)`. The caller half is fixed too: `runner._make_execute` (reused
+  verbatim by the fleet) no longer seeds `run_env = dict(os.environ)`; it builds a narrow
+  per-claim env, so no secret can ride back in through `env` (which the runner passes through
+  untouched so the eval's non-secret feature-flag vars still reach the child). `FLEET_CONSOLE_TOKEN`,
+  `DATABASE_URL`, `AUTH_SECRET`, `CONNECTOR_SECRET_KEY`, `POSTGRES_PASSWORD`, the raw
+  `OPENROUTER_API_KEY`, and the shared `GITHUB_TOKEN` fallback PAT are all now **absent** from
+  the agent's env. Fail-closed probe + positive "model/GitHub/console access preserved" test:
+  `test_native_runner.py::TestG1EnvAllowlistEndToEnd` and `test_execute_github_token.py::test_g1_*`.
 
 ### G2 — Shared fleet container holds every tenant's token; agent runs as root  ·  **CRITICAL**
 `fleet-credentials.json` (all workspaces) + the running container are readable by a root
@@ -198,6 +244,20 @@ agent (§2 B3, `fleet_credentials.py:40-66`, `Dockerfile:203`).
   injected), run **non-root**, and keep the credential store outside the execution mount.
 - **Probe:** a task must not be able to read `~/.agentrail/fleet-credentials.json` or any
   other workspace's token; `id -u` inside the run must not be 0.
+- **Status (PR②): DEFERRED (honest, prod-safety call).** Going non-root is a *coordinated*
+  change, not a one-line `USER` directive: the entrypoint's `agentrail login` +
+  `gh auth setup-git` write to `$HOME/.agentrail` / `$HOME/.config/gh`, and
+  `deploy/docker-compose.prod.yml` mounts a **named volume at `/root/.agentrail`**. Adding a
+  non-root user without simultaneously (a) creating its home, (b) re-pointing `HOME` and the
+  volume mount, and (c) fixing volume ownership would break credential persistence and wedge the
+  fleet — and the real validation (volume ownership on the *deployed* named volume, `agentrail
+  login` writing to the right path) **cannot be smoke-tested in this build env** (no live console
+  / OpenRouter). Per the #1 rule (do not break the fleet), G2 is deferred to its own slice with
+  this concrete plan: add `useradd`, `RUN chown -R` the workdir + home, set `HOME`/`WORKDIR` to
+  the new home, move the compose/railway volume mount to it, `USER` last — then a **live-fleet
+  smoke** (`id -u` ≠ 0, `agentrail login` persists, a claim clones+pushes) before enabling. The
+  per-task-token-store half (moving `fleet-credentials.json` out of the execution mount) rides on
+  G2's per-task boundary and is deferred with it.
 
 ### G3 — Unrestricted network egress → exfiltration + internal-service reach  ·  **CRITICAL**
 No egress policy on either path (§2 B4). Docker path has no `--network`
@@ -209,6 +269,27 @@ No egress policy on either path (§2 B4). Docker path has no `--network`
 - **Probe:** a task that `curl`s the internal Postgres host, the console's internal
   address, or an arbitrary attacker host must be **refused/blocked**; only the allowlisted
   endpoints connect.
+- **Status (PR②): PARTIAL → infra follow-up (documented; no in-repo code change).** The
+  **deployed** shape is host-native (`select_sandbox_runner` → `run_issue_on_host`): the agent
+  runs as a subprocess sharing the fleet host's network namespace, so egress **cannot** be fenced
+  from inside this repo — it needs a platform-level policy, not a code change. Adding a
+  `--network` allowlist to the *docker* sandbox path would be **dormant** (that path is off by
+  default and is not the deployed shape) while risking the documented docker-sandbox interface, so
+  PR② deliberately ships **no** egress code and documents the required infra instead:
+  - **Fleet (Railway):** run the fleet service in an egress-restricted network posture — allow
+    outbound to only the model gateway (`openrouter.ai`), `github.com` + `api.github.com` +
+    `codeload.github.com`, and the console host; deny all else. It must **not** be able to reach
+    an internal Postgres/console address. (Railway does not expose per-service egress firewalls
+    today, so the interim control is: the fleet service holds **no** `DATABASE_URL` and no
+    internal-service creds — G1 keeps it that way — plus network segmentation at the platform.)
+  - **Single-tenant compose (`docker-compose.prod.yml`):** move the `runner` off the shared
+    default network that reaches `postgres:5432`; put Postgres on an internal-only network the
+    runner is not attached to, and give the runner an egress-restricted network with the allowlist
+    above (e.g. a sidecar egress proxy). This is the concrete change tracked as the G3 infra slice.
+  - **When per-task docker isolation is turned on** (`AGENTRAIL_SANDBOX=docker`): set
+    `--network` to a dedicated egress-allowlist network on the `docker run` in
+    `docker_runner.build_run_command` (the natural place for the code half, once that path is the
+    deployed shape).
 
 ### G4 — Per-task credential is the wrong scope/lifetime  ·  **HIGH**
 The OpenRouter credential is deployment-wide and long-lived and is *intentionally* placed
@@ -219,6 +300,15 @@ per-run narrowing (`client.py:110-116`, `deploy/fleet/README.md` env table).
   deployment-wide secret.
 - **Probe:** the model/git credential visible to a task must be rejected when replayed
   after the run's TTL, and must not authenticate against a *different* workspace's repo.
+- **Status (PR②): DEFERRED — but exposure reduced.** True per-task, short-lived, least-privilege
+  credentials require token-minting infrastructure (a scoped/expiring model token and a
+  repo-scoped, time-boxed git token minted per claim), which is explicitly out of scope for this
+  PR. What PR② *did* achieve as a contained improvement: G1 **removed** the two redundant/over-broad
+  credentials from the agent's env — the raw deployment-wide `OPENROUTER_API_KEY` copy (the agent
+  keeps only `ANTHROPIC_AUTH_TOKEN`, which it genuinely needs to reach the model) and the shared
+  cross-workspace `GITHUB_TOKEN` fallback PAT (the agent keeps only its own per-workspace
+  `GIT_TOKEN`). The credentials that remain are still deployment-wide/long-lived; narrowing their
+  **scope and lifetime** is the next slice.
 
 ### G5 — Clone `.git/config` carries a live credential; no sparse-checkout on prod path  ·  **HIGH**
 §4 (#1174 status) + §2 B6. The token persists in the clone the untrusted agent runs inside.
@@ -226,6 +316,27 @@ per-run narrowing (`client.py:110-116`, `deploy/fleet/README.md` env table).
   `http.extraHeader` that never lands in `.git/config`); scrub before the agent runs.
 - **Probe:** `git config --get remote.origin.url` and `cat .git/config` inside the run must
   contain **no** `x-access-token:` / credential.
+- **Status (PR②): CLOSED on the issue-run path** (the primary vector); onboard clone is a
+  documented lower-priority follow-up. `native_runner.run_issue_on_host` now clones the
+  **token-free** URL and hands git the workspace token out-of-band via a `GIT_ASKPASS` helper
+  that reads `GIT_TOKEN` from the env (`_install_git_askpass` / `_git_credential_env`). The token
+  never enters the clone URL, so it never lands in `.git/config` (origin stays token-free) nor on
+  argv; the same env drives the later `git push` in `_publish_green` and the agent's own pushes,
+  so clone **and** push still authenticate as this workspace. Because the fleet entrypoint's
+  `gh auth setup-git` installs a global credential helper answering with the *shared* fallback PAT,
+  the handoff also resets the inherited `credential.helper` (via the `GIT_CONFIG_*` env interface,
+  so the reset itself never lands on argv or in `.git/config`) so **this workspace's** token wins.
+  Real-git fail-closed probe (`.git/config` token-free after a real local clone) **and** positive
+  "clone succeeds / auth preserved" test: `test_native_runner.py::TestG5GitConfigNeverCarriesToken`
+  + `TestG5AskpassMechanism`; the clone-URL contract change is pinned by
+  `test_clone_url_is_token_free_auth_rides_askpass_env`.
+  - **Follow-up (onboard):** `agentrail/runner/onboard.py:_clone` still embeds the token via
+    `authenticated_clone_url`. Its exposure is **lower** than the issue-run path: onboard's agent
+    (`claude -p` on a digest string) does **not** run a shell inside the clone and onboard never
+    pushes, so the "agent `cat`s its own clone's `.git/config`" vector doesn't apply — only the
+    weaker "concurrent sibling reads it off the shared filesystem" (B2+B6) does. Since onboard never
+    pushes, the clean fix is a post-clone `git remote set-url origin <token-free>` (no askpass
+    needed); tracked as the G5-onboard slice.
 
 ### G6 — Cross-task residue on shared filesystem between concurrent tenants  ·  **HIGH**
 `mkdtemp` under a shared `/tmp` (`native_runner.py:496`); concurrent runs coexist (§2 B2).
@@ -255,7 +366,15 @@ seccomp (`docker_runner.py:230-241`).
 ## 6. Documented probes (the adversarial suite PR② must make fail-closed)
 
 PR② should ship these as tests/probes that a task run **cannot** pass. Listed with the gap
-each defends:
+each defends.
+
+**PR② implementation status:** probes **1** (G1 env-secret exposure) and **8** (G5 git
+credential not in clone) are shipped as fail-closed tests **with paired positive
+"legitimate access preserved" assertions** — see §5.0. Probes **2/6** (G2 non-root +
+token-store), **3/4/5** (G3 egress), **7** (G4 credential TTL), **9/10/11** (G6/G7/G8) are
+**not yet fail-closed** — they depend on the deferred/infra slices in §5 (per-task boundary,
+non-root, infra egress policy, credential-minting) and remain the acceptance targets for the
+follow-up PRs. They are listed here unchanged so the suite stays the source of truth.
 
 1. **Env secret exposure (G1):** a task that reads its own environment
    (`env`, `/proc/self/environ`) sees no `FLEET_CONSOLE_TOKEN`, `DATABASE_URL`, `AUTH_SECRET`,

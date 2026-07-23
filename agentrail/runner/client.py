@@ -331,6 +331,27 @@ class RunnerClient:
         resp = self._transport("POST", url, headers=self._headers(), body=payload)
         return 200 <= resp.status < 300
 
+    def report_liveness(self, item: WorkItem) -> bool:
+        """POST an execution-liveness ping for an IN-FLIGHT claim (#1388).
+
+        Stamps ``last_liveness_at`` on the run/queue entry via the
+        runner-authed ``POST /api/v1/runner/liveness`` (same Bearer auth as
+        ``claim``/``result``), so the backend's stale-run reclaim can tell a
+        still-alive long run from a silently-dead runner in minutes rather than
+        waiting out the wall-clock fallback. ``True`` on a 2xx.
+
+        This is a SIGNAL only — it changes no run state and opens no new
+        terminal outcome. Callers treat it as best-effort (the fleet worker
+        swallows any failure): a dead console or a transient blip must never
+        abort a healthy run.
+        """
+        url = f"{self._base}/api/v1/runner/liveness"
+        payload = json.dumps(
+            {"id": item.id, "workspace_id": item.workspace_id}
+        ).encode("utf-8")
+        resp = self._transport("POST", url, headers=self._headers(), body=payload)
+        return 200 <= resp.status < 300
+
     def _post_json(self, url: str, payload: object) -> None:
         """POST a JSON body, ignoring the response (best-effort emitters)."""
         body = json.dumps(payload).encode("utf-8")

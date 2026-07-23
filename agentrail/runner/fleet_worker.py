@@ -33,10 +33,69 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Set
 
 from agentrail.runner.client import RunnerAuthError
+from agentrail.runner.liveness import LIVENESS_INTERVAL_SECONDS
 from agentrail.runner.worker import Execute, _report
 from agentrail.sandbox.docker_runner import RunResult
 
 _log = logging.getLogger("agentrail.runner.fleet_worker")
+
+
+def _liveness_loop(
+    client,
+    item,
+    *,
+    interval: float,
+    stop: threading.Event,
+) -> None:
+    """Ping execution-liveness for one in-flight claim until ``stop`` is set (#1388).
+
+    Pings ONCE immediately (a freshly-claimed run has no ``last_liveness_at``
+    yet — claim leaves it null), then re-pings every ``interval`` seconds. The
+    wait between pings is ``stop.wait(interval)``, so the loop exits PROMPTLY
+    the moment execution finishes rather than sleeping out a full interval.
+
+    Best-effort by construction: a ping that raises (console down, transient
+    network blip) is logged at debug and swallowed — this thread never
+    propagates, so a failed ping can never abort the healthy run executing on
+    another thread (#1388 AC3).
+    """
+    while True:
+        try:
+            client.report_liveness(item)
+        except Exception as exc:  # noqa: BLE001 - a ping failure must never kill a run
+            _log.debug("liveness ping failed for %s (ignored): %s", item.id, exc)
+        if stop.wait(interval):
+            return
+
+
+def _execute_with_liveness(
+    slot: "WorkspaceSlot",
+    item,
+    *,
+    interval: float = float(LIVENESS_INTERVAL_SECONDS),
+) -> RunResult:
+    """Run ``slot.execute(item)`` while a background thread pings liveness (#1388).
+
+    The pinger starts before execution and is stopped in a ``finally`` the
+    instant execution returns OR raises — so any exception from ``execute``
+    propagates UNCHANGED to the caller's existing handler (the fleet slot maps
+    it to an ``error`` RunResult exactly as before). The liveness thread is a
+    pure side-channel: it never alters the result and never suppresses an error.
+    """
+    stop = threading.Event()
+    pinger = threading.Thread(
+        target=_liveness_loop,
+        args=(slot.client, item),
+        kwargs=dict(interval=interval, stop=stop),
+        daemon=True,
+        name=f"liveness-{item.id}",
+    )
+    pinger.start()
+    try:
+        return slot.execute(item)
+    finally:
+        stop.set()
+        pinger.join(timeout=5.0)
 
 
 @dataclass(frozen=True)
@@ -311,7 +370,11 @@ def _fleet_slot(
             continue
         rotation.note_claim()
         try:
-            result = slot.execute(item)
+            # Report execution-liveness (~every 60s) while this claim runs so a
+            # silently-dead runner is reclaimed within the liveness-staleness
+            # window instead of the wall-clock fallback (#1388). Best-effort:
+            # a ping failure never touches the result below.
+            result = _execute_with_liveness(slot, item)
         except Exception as exc:  # noqa: BLE001 - one issue must not kill the loop
             _log.warning("execution failed for %s (workspace %s): %s",
                          item.id, slot.workspace_id, exc)

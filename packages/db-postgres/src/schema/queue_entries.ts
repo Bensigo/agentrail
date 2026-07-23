@@ -127,6 +127,14 @@ export const queueEntries = pgTable("queue_entries", {
   // here. Read by `queries/run_outcomes.ts::getModelOutcomeStats` (via the
   // denormalized copy on `run_outcomes`, not this column directly).
   taskType: text("task_type"),
+  // #1388: execution-**liveness** timestamp, mirrored onto the durable queue
+  // entry (its id equals the runs id) so the reclaim sweep's queue_entries pass
+  // keys on liveness staleness too. Stamped by POST /api/v1/runner/liveness
+  // while the entry is `running`; NULL for an entry whose runner never pings, in
+  // which case `reconcileStaleRuns` falls back to the wall-clock `updated_at`
+  // sweep unchanged. Kept SEPARATE from `updated_at` on purpose — a liveness
+  // ping must not reorder the queue view or masquerade as a state change.
+  lastLivenessAt: timestamp("last_liveness_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

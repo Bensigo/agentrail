@@ -13,12 +13,29 @@ Every number/behavior below is cited against the merged code it comes from
    safe.** Scale to 0 / stop the deployment. Claims stop immediately. Any run
    that was mid-execution dies with the container — it does not just vanish:
    the next claim attempt against that workspace (fleet or a self-hosted
-   runner, whichever polls first) sweeps it back to `queued`/`failed` once
-   it's sat `running` past `STALE_RUN_MINUTES` =
-   **90 minutes**<!-- packages/db-postgres/src/queries/runner.ts:321 -->,
-   reconciled on every claim automatically<!-- packages/db-postgres/src/queries/runner.ts:445-453 (claimQueueEntry calls reconcileStaleRuns before claiming) -->.
-   Expect up to a 90-minute gap before an interrupted run reappears as
-   requeued rather than "stuck running."
+   runner, whichever polls first) sweeps it back to `queued`/`failed` via
+   `reconcileStaleRuns`, reconciled on every claim automatically<!-- packages/db-postgres/src/queries/runner.ts (claimQueueEntry calls reconcileStaleRuns before claiming) -->.
+   How fast it reappears depends on whether the dead run was reporting
+   execution **liveness** (#1388):
+
+   - **Fleet runs (report liveness ~every 60s while executing):** reclaimed
+     once no liveness ping has arrived for `LIVENESS_STALENESS_SECONDS` =
+     **5 minutes**<!-- packages/db-postgres/src/queries/runner.ts LIVENESS_STALENESS_SECONDS; single-sourced from agentrail/runner/liveness_config.json -->.
+     A container stop that kills the fleet mid-run therefore self-heals in
+     ~5 minutes, not 90. A healthy long run is untouched as long as its pings
+     keep arriving, however long it runs.
+   - **Non-pinging runs (a self-hosted runner, or an older fleet build):**
+     fall back to the wall-clock sweep on `started_at`/`updated_at` past
+     `STALE_RUN_MINUTES` = **90 minutes**<!-- packages/db-postgres/src/queries/runner.ts STALE_RUN_MINUTES -->.
+     Expect up to a 90-minute gap for these before the interrupted run
+     reappears as requeued rather than "stuck running."
+
+   These windows are single-sourced and their orderings are enforced by
+   construction (see `agentrail/runner/liveness.py`): the 5-minute liveness
+   window sits above the 60s ping interval (a few missed pings never falsely
+   reap a live run), and the 90-minute wall-clock fallback sits above the 1h
+   subprocess execution ceiling (a legitimately long non-pinging run is never
+   reaped mid-flight).
 
 2. **Unsetting `FLEET_CONSOLE_TOKEN` does NOT stop claims.** Get this wrong
    during an incident and you'll believe you've killed the fleet when you
@@ -69,7 +86,9 @@ Safe by construction — a crash, redeploy, or manual bounce is a non-event:
   an old instance finishing shutdown and a new one starting can never
   double-claim the same row.
 - The stale-run reconcile sweep (Kill switch #1) runs on every claim, so
-  anything the old process left `running` self-heals within 90 minutes.
+  anything the old process left `running` self-heals — within ~5 minutes for a
+  fleet run that was reporting execution liveness, or within 90 minutes for a
+  non-pinging run (see Kill switch #1 for the split).
 - The token store is a file on the mounted volume, written atomically (temp
   file + `os.replace`, `0600`)<!-- agentrail/runner/fleet_credentials.py:108-142 -->,
   so a restart reads back exactly what the last sync wrote — no

@@ -56,7 +56,12 @@ from agentrail.sandbox.clone_auth import (
     redact_token as _redact_token,
 )
 
-DEFAULT_TIMEOUT = 3600  # seconds — hard ceiling on the whole host run.
+# The subprocess execution ceiling is sourced from the ONE liveness config
+# (#1388 AC4) so it can never drift from the stale-run reclaim window that must
+# stay above it — see agentrail/runner/liveness.py. Value unchanged (3600s).
+from agentrail.runner.liveness import EXECUTION_CEILING_SECONDS
+
+DEFAULT_TIMEOUT = EXECUTION_CEILING_SECONDS  # seconds — hard ceiling on the whole host run.
 DEFAULT_AGENT = "claude"  # host login + claude's native bash sandbox.
 ENV_AGENT = "AGENTRAIL_AGENT"
 ENV_SANDBOX_RUNTIME = "AGENTRAIL_SANDBOX_RUNTIME"

@@ -353,15 +353,53 @@ function issueNumberOf(externalId: string): string {
   return m ? m[1]! : "0";
 }
 
-/** Runs older than this with no terminal status are considered dead/abandoned. */
+/**
+ * #1388 — liveness reclaim timings, the ONE source of truth shared with the
+ * Python runtime. These MIRROR `agentrail/runner/liveness_config.json`; the
+ * lockstep test `queries/liveness.lockstep.test.ts` reads that JSON and fails
+ * if these drift from it, so the console reclaim window can never wander away
+ * from the interval the fleet worker actually pings at, nor from the execution
+ * ceiling the wall-clock fallback must stay above (AC4).
+ */
+/** How often the fleet worker pings liveness while a claim runs (seconds). */
+export const LIVENESS_INTERVAL_SECONDS = 60;
+/**
+ * A run that HAS liveness pings is reclaimed once none has arrived for this
+ * long (seconds). Well above {@link LIVENESS_INTERVAL_SECONDS} so a handful of
+ * missed pings (a slow network, a GC pause) never falsely reaps a live run.
+ */
+export const LIVENESS_STALENESS_SECONDS = 300;
+
+/**
+ * Wall-clock reclaim window (minutes) for a run that NEVER pinged — a
+ * self-hosted or an older fleet runner. Kept above the 1h execution ceiling so
+ * a legitimately long non-pinging run is never reaped mid-flight (the #1388 AC4
+ * invariant, `agentrail/runner/liveness.py` asserts it by construction). This
+ * is the pre-#1388 behavior, preserved exactly as the backward-compatible
+ * fallback. Named `STALE_RUN_MINUTES` still — the RUNBOOK and dashboards
+ * reference it — but it is now the FALLBACK, not the only path.
+ */
 export const STALE_RUN_MINUTES = 90;
 
 /**
- * Mark runs stuck in `running` past {@link STALE_RUN_MINUTES} as `failed`. A
- * killed or crashed runner never reports a result, so without this the run shows
- * `running` forever on the dashboard. Called on every claim so the sweep is
- * automatic. The threshold sits above the run timeout (1h) so a legitimately
- * long run is never reaped. Returns the number reconciled.
+ * Mark dead runs `failed` and re-admit their queue entries, on every claim.
+ *
+ * A killed or crashed runner never reports a result, so without this sweep the
+ * run shows `running` forever and its queue entry sits in the active queue
+ * forever. #1388 makes this LIVENESS-aware:
+ *
+ *   - A run that reported liveness (`last_liveness_at` set — a fleet run) is
+ *     reclaimed once no ping has arrived for {@link LIVENESS_STALENESS_SECONDS}
+ *     — minutes after a silent death, not the old up-to-90-minute wait (AC1).
+ *     While pings keep arriving it is NEVER reclaimed, however long it runs
+ *     (AC2).
+ *   - A run that never pinged (`last_liveness_at` IS NULL — a self-hosted or
+ *     older runner) falls back to the pre-#1388 wall-clock sweep on
+ *     `started_at`/`updated_at` past {@link STALE_RUN_MINUTES}, byte-identical
+ *     to before — so switching to liveness never reaps a healthy non-pinging
+ *     runner after 5 minutes.
+ *
+ * Returns the number of runs reconciled.
  */
 export async function reconcileStaleRuns(workspaceId: string): Promise<number> {
   const rows = await db.execute(sql`
@@ -369,24 +407,73 @@ export async function reconcileStaleRuns(workspaceId: string): Promise<number> {
     SET status = 'failed', finished_at = now(), updated_at = now()
     WHERE workspace_id = ${workspaceId}
       AND status = 'running'
-      AND started_at < now() - (${STALE_RUN_MINUTES} || ' minutes')::interval
+      AND CASE
+        WHEN last_liveness_at IS NOT NULL
+          THEN last_liveness_at < now() - (${LIVENESS_STALENESS_SECONDS} || ' seconds')::interval
+        ELSE started_at < now() - (${STALE_RUN_MINUTES} || ' minutes')::interval
+      END
     RETURNING id
   `);
 
   // Mirror the sweep onto the durable queue: a queue entry stuck in `running`
-  // past the threshold (its runner died mid-flight) would otherwise sit in the
-  // active queue forever. Re-admit it as `queued` so it gets another attempt
-  // rather than masquerading as in-progress. `updated_at` gates the staleness so
-  // a fresh claim is never reaped.
+  // whose runner died mid-flight would otherwise sit in the active queue
+  // forever. Re-admit it as `queued` so it gets another attempt rather than
+  // masquerading as in-progress. Same liveness-vs-wall-clock split as the runs
+  // sweep above — an entry that pinged is gated on its own `last_liveness_at`;
+  // one that never pinged falls back to `updated_at`, exactly as before.
   await db.execute(sql`
     UPDATE queue_entries
     SET state = 'queued', updated_at = now()
     WHERE workspace_id = ${workspaceId}
       AND state = 'running'
-      AND updated_at < now() - (${STALE_RUN_MINUTES} || ' minutes')::interval
+      AND CASE
+        WHEN last_liveness_at IS NOT NULL
+          THEN last_liveness_at < now() - (${LIVENESS_STALENESS_SECONDS} || ' seconds')::interval
+        ELSE updated_at < now() - (${STALE_RUN_MINUTES} || ' minutes')::interval
+      END
   `);
 
   return Array.from(rows).length;
+}
+
+/**
+ * Stamp execution-liveness for an in-flight claim (#1388). The fleet worker
+ * calls this (~every 60s) through the runner-authed `POST /api/v1/runner/liveness`
+ * route while a claim executes, so {@link reconcileStaleRuns} can distinguish a
+ * still-alive long run from a silently-dead runner.
+ *
+ * Stamps `last_liveness_at = now()` on BOTH the `runs` row and its
+ * `queue_entries` row (they share the id) — but ONLY while each is still
+ * `running`, so a late ping arriving after the run already reached a terminal
+ * never resurrects a finished run/entry. This is a SIGNAL only: it moves no
+ * state and opens no terminal outcome. Returns `{ updated }` — false when no
+ * running run with that id exists in the workspace (already terminal, or an
+ * unknown/foreign id).
+ */
+export async function recordRunnerLiveness(data: {
+  id: string;
+  workspaceId: string;
+}): Promise<{ updated: boolean }> {
+  const runRows = Array.from(
+    await db.execute(sql`
+      UPDATE runs
+      SET last_liveness_at = now()
+      WHERE id = ${data.id}
+        AND workspace_id = ${data.workspaceId}
+        AND status = 'running'
+      RETURNING id
+    `)
+  );
+
+  await db.execute(sql`
+    UPDATE queue_entries
+    SET last_liveness_at = now()
+    WHERE id = ${data.id}
+      AND workspace_id = ${data.workspaceId}
+      AND state = 'running'
+  `);
+
+  return { updated: runRows.length > 0 };
 }
 
 /** A run resolved for a specific issue — the shape a reply-context preface needs. */

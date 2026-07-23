@@ -3,15 +3,18 @@
  * expansion).
  *
  * A **Connector** (CONTEXT.md, ADR 0010) is the seam between an external tool and
- * AgentRail. The catalog now spans three **connector types**, each with its own
- * connect mechanism — the surface groups the cards by type:
+ * AgentRail. The catalog groups the cards by ROLE (what the connector is FOR),
+ * not by connect mechanism — the three groups are:
  *
- *   - **https**  — connected at OAuth login. GitHub: the workspace owner logs in
- *     with GitHub, so the connector is live once a repo is linked (no secret to
- *     paste). Two-way issue ingest + post-result.
- *   - **mcp**    — Model-Context-Protocol tool servers the agent can call. Linear,
- *     Figma, Context7: each stores a per-workspace API key/token (write-only) and
- *     exposes its tools to a run.
+ *   - **issue-source** — feeds the Issue Queue: a labeled issue from the source
+ *     is admitted into the queue through the input-contract gate, and results
+ *     post back. GitHub (connected at OAuth login) and Linear (a per-workspace
+ *     API key + a real-time webhook — #1292) are both issue sources; Linear ALSO
+ *     exposes its tools over MCP, but its PRIMARY role is ingest, so it lives
+ *     here, next to GitHub, rather than being misfiled as a mere tool.
+ *   - **mcp**    — Model-Context-Protocol tool servers the agent can call, with
+ *     NO ingest. Figma, Context7: each stores a per-workspace API key/token
+ *     (write-only) and exposes its tools to a run.
  *   - **gateway** — outbound communication channels (notify). Discord, Slack,
  *     Telegram: each posts run completion / escalation messages to a channel.
  *
@@ -33,8 +36,14 @@ export type ConnectorKind =
   | "slack"
   | "telegram";
 
-/** Which catalog group a connector belongs to (drives the page sections). */
-export type ConnectorType = "https" | "mcp" | "gateway";
+/**
+ * Which catalog group a connector belongs to (drives the page sections). Grouped
+ * by ROLE: `issue-source` (GitHub, Linear — feed the Issue Queue), `mcp`
+ * (Figma, Context7 — tools only), `gateway` (Discord, Slack, Telegram — notify).
+ * (#1292 renamed the former connect-mechanism `https` group to the role-based
+ * `issue-source`, and moved Linear into it from `mcp`.)
+ */
+export type ConnectorType = "issue-source" | "mcp" | "gateway";
 
 /**
  * How a connector is connected:
@@ -147,10 +156,10 @@ export const CONNECTOR_TYPE_META: Record<
   ConnectorType,
   { label: string; description: string }
 > = {
-  https: {
-    label: "HTTPS",
+  "issue-source": {
+    label: "Issue sources",
     description:
-      "Connected at login over HTTPS — links your code host so labeled issues flow into the Issue Queue and results post back.",
+      "Connect an issue tracker so its labeled issues flow into the Issue Queue and run results post back. GitHub delivers over its webhook; Linear over its own real-time webhook.",
   },
   mcp: {
     label: "MCP",
@@ -165,16 +174,17 @@ export const CONNECTOR_TYPE_META: Record<
 };
 
 /**
- * The connector catalog, grouped by type (https → mcp → gateway). GitHub is the
- * OAuth-login connector; Linear / Figma / Context7 are MCP key connectors;
+ * The connector catalog, grouped by ROLE (issue-source → mcp → gateway). GitHub
+ * and Linear are the issue sources (both feed the Issue Queue — Linear via its
+ * real-time webhook, #1292); Figma / Context7 are tools-only MCP connectors;
  * Discord / Slack / Telegram are gateway notify channels. Order here drives the
  * page sections.
  */
 export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
-  // -- https ---------------------------------------------------------------- //
+  // -- issue-source --------------------------------------------------------- //
   {
     kind: "github",
-    type: "https",
+    type: "issue-source",
     connectMethod: "oauth",
     label: "GitHub",
     description:
@@ -182,10 +192,9 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
     availability: "available",
     capabilities: { ingest: true, postResult: true, notify: false },
   },
-  // -- mcp ------------------------------------------------------------------ //
   {
     kind: "linear",
-    type: "mcp",
+    type: "issue-source",
     connectMethod: "secret",
     label: "Linear",
     description:
@@ -204,6 +213,7 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       ],
     },
   },
+  // -- mcp ------------------------------------------------------------------ //
   {
     kind: "figma",
     type: "mcp",

@@ -295,11 +295,21 @@ def _fleet_slot(
     idle_seconds: float,
     should_continue: Callable[[], bool],
     on_auth_drop: OnAuthDrop,
+    is_active: Callable[[], bool] = lambda: True,
 ) -> None:
     """One fleet slot: pull the next workspace from ``rotation``, claim, execute,
     report — forever (until ``should_continue()`` is false). Mirrors
     ``worker.py:_run_slot`` turn for turn, with the single-client claim swapped
     for "the next workspace in the shared rotation."
+
+    ``is_active`` is the single-active-fleet lease gate (#1390), checked at the
+    TOP of every turn — i.e. the top of each sweep, before any claim. When this
+    instance does NOT hold the lease (a deploy-overlap standby), the slot claims
+    NOTHING and just idles, polling for promotion; the human-visible "standby"
+    log line is emitted once per transition by the lease loop
+    (:func:`agentrail.runner.fleet_lease.run_lease_loop`), not here per-slot, to
+    avoid ``concurrency``-fold log spam. The default ``lambda: True`` keeps the
+    single-instance / no-lease path byte-identical to before this hook existed.
 
     Idle semantics are PER PASS, not per empty claim: empty turns advance the
     rotation immediately (a sweep of N workspaces is N cheap back-to-back
@@ -314,6 +324,13 @@ def _fleet_slot(
     """
     seen_idle_gen = rotation.idle_generation()
     while should_continue():
+        if not is_active():
+            # Lease standby (#1390): another fleet instance holds the
+            # single-active lease, so this one claims nothing. Idle and poll —
+            # the lease loop promotes us (and logs the transition) the moment
+            # the holder releases or its lease expires.
+            sleep(idle_seconds)
+            continue
         current_gen = rotation.idle_generation()
         if current_gen != seen_idle_gen:
             # A fully-empty pass completed somewhere in the fleet — honor it
@@ -402,6 +419,7 @@ def run_fleet_worker(
     should_continue: Callable[[], bool] = lambda: True,
     concurrency: int = 2,
     on_auth_drop: OnAuthDrop = _default_on_auth_drop,
+    is_active: Callable[[], bool] = lambda: True,
 ) -> None:
     """Run ``concurrency`` fleet slots against the shared ``rotation`` until
     ``should_continue()`` is false. ``idle_seconds`` reuses
@@ -410,6 +428,11 @@ def run_fleet_worker(
     ``_fleet_slot``'s docstring) — per-workspace poll latency when the fleet
     is idle is therefore ~(one sweep of claim calls + idle_seconds),
     independent of how many workspaces the fleet serves.
+
+    ``is_active`` is the single-active-fleet lease gate (#1390): every slot
+    checks it at the top of each sweep and claims nothing while this instance is
+    a standby. All slots share the ONE process-level gate. The default
+    ``lambda: True`` keeps the single-instance path unchanged.
     """
     concurrency = max(1, int(concurrency))
 
@@ -420,6 +443,7 @@ def run_fleet_worker(
             idle_seconds=idle_seconds,
             should_continue=should_continue,
             on_auth_drop=on_auth_drop,
+            is_active=is_active,
         )
         return
 
@@ -432,6 +456,7 @@ def run_fleet_worker(
                 idle_seconds=idle_seconds,
                 should_continue=should_continue,
                 on_auth_drop=on_auth_drop,
+                is_active=is_active,
             ),
             daemon=True,
             name=f"fleet-slot-{i}",

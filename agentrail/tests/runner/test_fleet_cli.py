@@ -345,3 +345,139 @@ def test_fleet_single_workspace_execute_matches_agentrail_runner_single_workspac
     # Sanity: prove this actually asserts something non-trivial.
     assert fake_old.calls[0]["env"]["GIT_TOKEN"] == "gho_workspace_token"
     assert fake_old.calls[0]["env"]["AGENTRAIL_SERVER_API_KEY"] == "rt_secret"
+
+
+# --- Single-active-fleet lease wiring (#1390) --------------------------------
+
+
+def test_make_lease_is_none_when_no_database_url():
+    # No DATABASE_URL -> lease coordination disabled -> sole active instance,
+    # exactly as before this feature.
+    with patch.dict(os.environ, {}, clear=True):
+        assert fleet_cmd._make_lease() is None
+
+
+def test_make_lease_builds_a_fleet_lease_when_database_url_set():
+    with patch.dict(os.environ, {"DATABASE_URL": "postgres://x/y"}, clear=True), \
+         patch.object(fleet_cmd, "PostgresLeaseExecutor", return_value=object()):
+        lease = fleet_cmd._make_lease()
+    assert isinstance(lease, fleet_cmd.FleetLease)
+    assert lease.ttl_seconds == fleet_cmd.DEFAULT_LEASE_TTL_SECONDS
+
+
+def test_make_lease_honors_ttl_env_and_its_floor():
+    with patch.dict(os.environ, {"DATABASE_URL": "postgres://x/y", "FLEET_LEASE_TTL_SECONDS": "12"}, clear=True), \
+         patch.object(fleet_cmd, "PostgresLeaseExecutor", return_value=object()):
+        assert fleet_cmd._make_lease().ttl_seconds == 12.0
+    # Below the floor -> clamped (a tiny TTL would hammer the DB with renewals).
+    with patch.dict(os.environ, {"DATABASE_URL": "postgres://x/y", "FLEET_LEASE_TTL_SECONDS": "0.1"}, clear=True), \
+         patch.object(fleet_cmd, "PostgresLeaseExecutor", return_value=object()):
+        assert fleet_cmd._make_lease().ttl_seconds == fleet_cmd._MIN_LEASE_TTL_SECONDS
+
+
+# --- AC3: token-store sync runs only on the lease holder ---------------------
+
+
+def test_standby_sync_loop_skips_the_sync_cycle_entirely(tmp_path):
+    rotation = _rotation_of("ws-old")
+    stop = _ScriptedStop([False, False, True])  # two ticks, then shutdown
+    with patch.object(fleet_cmd, "run_sync_cycle") as mock_sync:
+        fleet_cmd._run_sync_loop(
+            stop,
+            base_url="https://app.agentrail.dev",
+            console_token="fleet-secret",
+            home=tmp_path,
+            sync_interval=60.0,
+            rotation=rotation,
+            is_active=lambda: False,  # standby: not the holder
+        )
+    mock_sync.assert_not_called()  # AC3: a standby never syncs tokens
+    assert rotation.workspace_ids() == ["ws-old"]  # store untouched
+
+
+def test_holder_sync_loop_runs_the_sync_cycle(tmp_path):
+    rotation = _rotation_of("ws-old")
+    stop = _ScriptedStop([False, True])
+    new_tokens = {"ws-new": FleetWorkspaceToken(workspace_id="ws-new", slug="n", token="rt_n")}
+    with patch.object(fleet_cmd, "run_sync_cycle", return_value=new_tokens) as mock_sync:
+        fleet_cmd._run_sync_loop(
+            stop,
+            base_url="https://app.agentrail.dev",
+            console_token="fleet-secret",
+            home=tmp_path,
+            sync_interval=60.0,
+            rotation=rotation,
+            is_active=lambda: True,  # holder: syncs as normal
+        )
+    mock_sync.assert_called_once()
+    assert rotation.workspace_ids() == ["ws-new"]
+
+
+# --- Boot wiring: holder boot-syncs, standby serves the warm store -----------
+
+
+def _fake_lease(*, active: bool) -> MagicMock:
+    lease = MagicMock()
+    lease.acquire_or_renew.return_value = active
+    lease.is_held.return_value = active
+    lease.renew_interval = 10.0
+    return lease
+
+
+def test_boot_as_holder_syncs_and_gates_the_worker_on_the_lease():
+    lease = _fake_lease(active=True)
+    tokens = {"ws1": FleetWorkspaceToken(workspace_id="ws1", slug="a", token="rt1")}
+    with patch.dict(os.environ, _clean_env(), clear=True), \
+         patch.object(fleet_cmd, "_make_lease", return_value=lease), \
+         patch.object(fleet_cmd, "run_sync_cycle", return_value=tokens) as mock_sync, \
+         patch.object(fleet_cmd, "run_lease_loop"), \
+         patch.object(fleet_cmd, "run_fleet_worker") as mock_worker:
+        rc = fleet_cmd.run_fleet([])
+    assert rc == 0
+    mock_sync.assert_called()  # holder boot-syncs
+    # The worker is gated on the lease's own hold state.
+    assert mock_worker.call_args.kwargs["is_active"] is lease.is_held
+    lease.release.assert_called()  # graceful shutdown hands the lease over
+
+
+def test_boot_as_standby_does_not_sync_and_serves_the_warm_store():
+    lease = _fake_lease(active=False)
+    warm = {"wsW": FleetWorkspaceToken(workspace_id="wsW", slug="w", token="rtW")}
+    with patch.dict(os.environ, _clean_env(), clear=True), \
+         patch.object(fleet_cmd, "_make_lease", return_value=lease), \
+         patch.object(fleet_cmd, "run_sync_cycle") as mock_sync, \
+         patch.object(fleet_cmd, "load_fleet_store", return_value=warm) as mock_load, \
+         patch.object(fleet_cmd, "run_lease_loop"), \
+         patch.object(fleet_cmd, "run_fleet_worker") as mock_worker:
+        rc = fleet_cmd.run_fleet([])
+    assert rc == 0
+    mock_sync.assert_not_called()  # AC1/AC3: a standby must not boot-sync
+    mock_load.assert_called_once()  # serves the last-good store from the volume
+    rotation = mock_worker.call_args.args[0]
+    assert rotation.workspace_ids() == ["wsW"]
+    assert mock_worker.call_args.kwargs["is_active"] is lease.is_held
+
+
+def test_no_lease_worker_is_active_defaults_true_sole_instance():
+    # No DATABASE_URL -> _make_lease None -> worker's gate is a constant True,
+    # i.e. this instance always claims (today's behavior).
+    with patch.dict(os.environ, _clean_env(), clear=True), \
+         patch.object(fleet_cmd, "run_sync_cycle", return_value={}), \
+         patch.object(fleet_cmd, "run_fleet_worker") as mock_worker:
+        rc = fleet_cmd.run_fleet([])
+    assert rc == 0
+    is_active = mock_worker.call_args.kwargs["is_active"]
+    assert is_active() is True
+
+
+def test_boot_sync_failure_as_holder_releases_the_lease_and_exits(capsys):
+    lease = _fake_lease(active=True)
+    with patch.dict(os.environ, _clean_env(), clear=True), \
+         patch.object(fleet_cmd, "_make_lease", return_value=lease), \
+         patch.object(fleet_cmd, "run_sync_cycle", side_effect=FleetSyncError("HTTP 404")), \
+         patch.object(fleet_cmd, "run_lease_loop"), \
+         patch.object(fleet_cmd, "run_fleet_worker") as mock_worker:
+        rc = fleet_cmd.run_fleet([])
+    assert rc == 1
+    mock_worker.assert_not_called()
+    lease.release.assert_called()  # don't leave a held lease behind on a boot abort

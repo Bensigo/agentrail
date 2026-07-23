@@ -68,9 +68,15 @@ that workspace — you don't need to intervene there.
 
 - The knob is `FLEET_CONCURRENCY` (default 2) — concurrent claims across the
   WHOLE fleet, not per workspace<!-- agentrail/cli/commands/fleet.py:30-32,214 -->.
-- Never `numReplicas`. The on-disk token store is last-writer-wins with no
-  cross-replica coordination; see the README's own 1-replica constraint. Scale
-  up via `FLEET_CONCURRENCY`, not out.
+- Never `numReplicas` for throughput — a second replica just stands by idle
+  (the single-active-fleet lease, #1390, keeps exactly one instance active).
+  Scale up via `FLEET_CONCURRENCY`, not out. The lease is not a horizontal pool;
+  it exists only to make the unavoidable deploy-overlap window safe (see
+  Restart, below, and the README's 1-replica note). With `DATABASE_URL` set, an
+  overlapping old+new pair coordinates to one active + one standby; **without**
+  `DATABASE_URL` the lease is disabled and the old-instance/new-instance pair
+  races the last-writer-wins token store — so make sure `DATABASE_URL` is set on
+  this service.
 - Idle cadence: the fleet doesn't sleep per empty claim, it sweeps the whole
   rotation and sleeps once per **fully-empty pass** (every workspace polled
   empty in a row), default 10s<!-- agentrail/runner/fleet_worker.py:77-91,256-265; agentrail/cli/commands/fleet.py:78 -->.
@@ -95,12 +101,46 @@ Safe by construction — a crash, redeploy, or manual bounce is a non-event:
   re-provisioning storm.
 
 Expect on boot: `Fleet active — N workspace(s) @ <base_url>. C concurrent
-slot(s), re-sync every Ss.`<!-- agentrail/cli/commands/fleet.py:234-238 --> A
+slot(s), re-sync every Ss.`<!-- agentrail/cli/commands/fleet.py --> A
 boot sync failure (bad/missing `FLEET_CONSOLE_TOKEN`, console unreachable) is
 fatal by design — the process exits rather than start not knowing who to
-serve<!-- agentrail/cli/commands/fleet.py:219-232 -->. If the boot sync
+serve<!-- agentrail/cli/commands/fleet.py -->. If the boot sync
 succeeds but reports drift or per-workspace failures, their warnings print
 right after that "Fleet active" line — see Logs below.
+
+### Deploy handoff — the single-active-fleet lease (#1390)
+
+With `DATABASE_URL` set, a rolling deploy is a clean, self-managing handoff and
+needs no operator action. What you'll observe:
+
+- The **new** instance boots while the **old** one is still running. Because the
+  old instance holds the lease, the new one boots on standby and prints
+  `Fleet standby — another instance holds the fleet lease; N workspace(s) warm
+  @ <base_url>. Polling every Ss to take over.`<!-- agentrail/cli/commands/fleet.py --> —
+  it claims **nothing** and does **not** sync tokens while standing by (only the
+  holder syncs, so the two never race the token store).
+- When the old instance shuts down it **releases** the lease. The new instance
+  acquires it on its next poll and prints
+  `agentrail fleet: fleet lease: acquired (holder=…) — this instance is now
+  ACTIVE and resuming claims/token-sync`<!-- agentrail/runner/fleet_lease.py -->,
+  runs an immediate catch-up token sync, and resumes claiming.
+- If the old instance **crashes** instead of shutting down cleanly (no release),
+  its lease simply expires; the standby takes over within one
+  `FLEET_LEASE_TTL_SECONDS` (default 30s) — **no manual unlock, ever.**
+- A **lone** instance restarting against its own not-yet-expired stale lease
+  boots on standby and recovers within one lease TTL as that stale lease
+  expires — a small, bounded gap, not a wedge.
+
+If `DATABASE_URL` is **unset**, none of the above applies: you'll see
+`agentrail fleet: lease coordination disabled (DATABASE_URL not set) …`<!-- agentrail/cli/commands/fleet.py -->
+at boot and the process runs as the sole active instance (the pre-#1390
+last-writer-wins behavior during any overlap). Set `DATABASE_URL` to get the
+handoff above.
+
+Underneath, claim safety is unchanged: even during any overlap window claims use
+`FOR UPDATE SKIP LOCKED`<!-- packages/db-postgres/src/queries/runner.ts --> so no
+queue row is ever double-claimed. The lease protects the *token-store sync* and
+future fleet-singleton work, which that row-level lock does not cover.
 
 ## Logs — what to grep, what it means
 
@@ -111,6 +151,10 @@ right after that "Fleet active" line — see Logs below.
 | `dropped from rotation: its fleet token was rejected` | One workspace's token was rejected (401) — usually because it was revoked/disabled on purpose<!-- agentrail/runner/fleet_worker.py:213-229 --> | If this workspace should still be served, revoke the (now-dead) key in the console — the next sync mints a fresh one and it rejoins automatically |
 | `claims paused (workspace-budget)` | This workspace hit its monthly `$` ceiling — empty claims here are on purpose, not an outage<!-- agentrail/runner/fleet_worker.py:298-303; agentrail/runner/client.py:67-68 --> | Check the workspace's Budget page (`/dashboard/<workspaceId>/budget`) |
 | `hosted-refusal:` (inside a run's `gate_reason`/`park_reason`) | A run refused at startup — a static config gap (e.g. no Independent Reviewer configured, #1270), not a transient failure. Jumps straight to `escalated-to-human`, spends no retry budget<!-- agentrail/sandbox/native_runner.py:64-71,128-141; packages/db-postgres/src/queries/runner.ts:538-548,598-601 --> | Read the text after the prefix — it names the fix. Look at the run/queue record, not the fleet process |
+| `Fleet standby — another instance holds the fleet lease` | This instance booted while another holds the single-active lease (routine on a rolling deploy)<!-- agentrail/cli/commands/fleet.py --> | Nothing — normal deploy overlap. It takes over automatically when the holder releases/expires (see Restart → Deploy handoff) |
+| `fleet lease: acquired (holder=…) — this instance is now ACTIVE` | A standby was promoted to active (the previous holder released or its lease expired)<!-- agentrail/runner/fleet_lease.py --> | Nothing — expected end of a handoff. Claims/token-sync resume on this instance |
+| `fleet lease: could not reach the lease store` | The lease DB is unreachable; the fleet **fails open** (assumes active) so a lone instance keeps serving<!-- agentrail/runner/fleet_lease.py --> | Check Postgres/`DATABASE_URL`. During the outage overlapping instances may both be active (reverts to pre-#1390 token-store racing); it self-heals to one active within one lease TTL once the DB is reachable. Logged once per outage, and once more when it recovers |
+| `lease coordination disabled (DATABASE_URL not set)` | `DATABASE_URL` is unset, so there is NO deploy-overlap protection — the fleet runs as the sole active instance<!-- agentrail/cli/commands/fleet.py --> | Set `DATABASE_URL` on this service (README env table) unless you are certain no two instances ever overlap |
 
 ## Incident playbooks
 

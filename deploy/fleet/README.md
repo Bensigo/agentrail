@@ -45,17 +45,22 @@ guesses) can express for this service:
   file itself and Railway's GraphQL API docs — some prose examples in
   Railway's docs show a lowercase `"never"`; the schema's own declared enum
   is uppercase, so that's what's used here.)
-- **Run this service at exactly 1 replica.** The schema HAS a
-  `deploy.numReplicas` field (Railway allows up to 200) and nothing
-  platform-side will warn you — but the per-workspace token store
-  (`fleet-credentials.json` on the volume) is last-writer-wins with no
-  cross-replica coordination: two replicas syncing the same console race
-  each other's mints, and whichever wrote the file last wins while the
-  other's freshly minted (hash-only, unrecoverable) tokens are silently
-  lost. `numReplicas` is deliberately omitted from `railway.json` so it
-  stays at Railway's default of 1; do not raise it in the dashboard either.
-  Scale a busy fleet UP via `FLEET_CONCURRENCY` (more concurrent claims in
-  the one process), not OUT via replicas.
+- **Run this service at 1 replica in steady state — but deploy overlap is now
+  safe.** Set `DATABASE_URL` (see the env table below) to enable the
+  **single-active-fleet lease** (#1390): with it, exactly ONE instance is
+  *active* (claims + token sync) at a time and any others stand by, so the
+  old+new pair Railway runs during **every rolling deploy** no longer races the
+  last-writer-wins token store — the new instance stands by until the old one
+  releases (or its lease expires), then takes over. Without `DATABASE_URL` the
+  lease is disabled and the old caveat holds in full: two live instances race
+  each other's mints and whichever writes `fleet-credentials.json` last wins
+  while the other's freshly minted (hash-only, unrecoverable) tokens are
+  silently lost. Either way, a *steady-state* second replica buys you nothing —
+  it just stands by idle. `deploy.numReplicas` is omitted from `railway.json` so
+  it stays at Railway's default of 1; scale a busy fleet UP via
+  `FLEET_CONCURRENCY` (more concurrent claims in the one process), not OUT via
+  replicas. The lease exists to make the unavoidable *deploy-overlap* window
+  safe, not to run a horizontal pool.
 - **Not expressible in this schema, confirmed absent from
   `railway.schema.json`'s properties list**: volumes, and any environment
   variable. Both are dashboard-only (or `railway variables set` via the
@@ -92,6 +97,8 @@ guesses) can express for this service:
    | `AGENTRAIL_FLEET_HOME` | No | Default `~/.agentrail` (= `/root/.agentrail`, see step 3). Only set this if you're mounting the volume somewhere else. |
    | `FLEET_CONCURRENCY` | No | Default `2` — claims executing at once across the WHOLE fleet, not per workspace. This is the knob for scaling a busy fleet (never replicas — see the 1-replica constraint above). |
    | `FLEET_SYNC_INTERVAL_SECONDS` | No | Default `300`, floor `30` — how often the fleet re-syncs its token set after the initial boot sync. Values below 30 are clamped (with a warning): a tiny interval would busy-loop the console's sync endpoint. |
+   | `DATABASE_URL` | Recommended | Enables the **single-active-fleet lease** (#1390) — the thing that makes deploy overlap safe (see the 1-replica note above). Point it at the **same Postgres the console uses** (the console's own `DATABASE_URL`); the fleet only ever touches the one `fleet_leases` row. Unset → lease coordination is disabled and the fleet runs as the sole active instance (prints a one-line notice at boot), which is fine only if you are certain no two instances ever overlap — and Railway overlaps them on every deploy, so **set this**. |
+   | `FLEET_LEASE_TTL_SECONDS` | No | Default `30`, floor `5`. Only used when `DATABASE_URL` is set. The lease lifetime: after the active instance stops (deploy, crash), a standby takes over within ~one TTL (the holder renews every TTL/3). Smaller = faster handoff, more DB traffic. The default is a good balance. |
    | `AGENTRAIL_SANDBOX` | No | `host` (default, via the legacy trigger — see the Isolation section below) or `docker`. This daemon's `ANTHROPIC_API_KEY` is always empty (OpenRouter auth rides `ANTHROPIC_AUTH_TOKEN` instead), so the legacy ANTHROPIC_API_KEY-presence trigger can never select Docker mode here on its own — `AGENTRAIL_SANDBOX=docker` is the ONLY way to turn on per-task container isolation for this service. Requires the Docker socket + the separate sandbox image; see the Isolation section. |
 
    **Do NOT set `AGENTRAIL_WORKSPACE_ID`** here under any circumstances — see

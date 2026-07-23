@@ -513,3 +513,62 @@ def test_fleet_never_logs_blocked_when_header_absent():
 
     assert not hasattr(client, "last_claim_blocked")
     assert not [r for r in with_caplog if "claims paused" in r.getMessage()]
+
+
+# --- Single-active-fleet lease gate (#1390) ----------------------------------
+# The `is_active` gate is checked at the TOP of every sweep. A standby instance
+# (lease held by another) must claim NOTHING; an active/holder instance claims
+# exactly as before. Default is `lambda: True`, so every test above (which omits
+# it) exercises the unchanged single-instance path.
+
+
+def test_standby_instance_claims_nothing():
+    client = FakeClient("ws1", items=[_item("ws1", "1")])
+    rotation = WorkspaceRotation([_slot("ws1", client)])
+    run_fleet_worker(
+        rotation, sleep=lambda _s: None, idle_seconds=1,
+        should_continue=_stop_after(6), concurrency=1,
+        is_active=lambda: False,  # this instance is a lease standby
+    )
+    assert client.claim_calls == 0  # never claimed while standing by
+
+
+def test_active_instance_claims_as_normal():
+    client = FakeClient("ws1", items=[_item("ws1", "1")])
+    rotation = WorkspaceRotation([_slot("ws1", client)])
+    run_fleet_worker(
+        rotation, sleep=lambda _s: None, idle_seconds=1,
+        should_continue=_stop_after(3), concurrency=1,
+        is_active=lambda: True,  # this instance holds the lease
+    )
+    assert client.claim_calls >= 1
+
+
+def test_slot_starts_claiming_the_moment_it_is_promoted_mid_run():
+    # Standby for the first two turns, then promoted (lease acquired) -> claims.
+    checks = {"n": 0}
+
+    def is_active() -> bool:
+        checks["n"] += 1
+        return checks["n"] > 2
+
+    client = FakeClient("ws1", items=[_item("ws1", "1")])
+    rotation = WorkspaceRotation([_slot("ws1", client)])
+    run_fleet_worker(
+        rotation, sleep=lambda _s: None, idle_seconds=1,
+        should_continue=_stop_after(6), concurrency=1,
+        is_active=is_active,
+    )
+    assert client.claim_calls >= 1  # resumed claiming after promotion
+
+
+def test_default_is_active_is_true_single_instance_path_unchanged():
+    # No is_active passed -> default lambda: True -> byte-identical to before
+    # the lease hook existed (the sole-instance / no-DATABASE_URL path).
+    client = FakeClient("ws1", items=[_item("ws1", "1")])
+    rotation = WorkspaceRotation([_slot("ws1", client)])
+    run_fleet_worker(
+        rotation, sleep=lambda _s: None, idle_seconds=1,
+        should_continue=_stop_after(3), concurrency=1,
+    )
+    assert client.claim_calls >= 1

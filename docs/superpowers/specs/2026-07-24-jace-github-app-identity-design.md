@@ -66,7 +66,7 @@ A distinct step from login, surfaced in onboarding and workspace settings:
 1. Workspace owner clicks "Connect GitHub" → redirected to `https://github.com/apps/<GITHUB_APP_SLUG>/installations/new?state=<signed workspaceId>`.
 2. Owner picks which repos to grant Jace access to, on GitHub's own installation UI.
 3. GitHub redirects back to a new callback route (e.g. `GET /api/v1/workspaces/[workspaceId]/connectors/github/install-callback`) with `installation_id` and the `state` value.
-4. The callback verifies `state` against the signed workspaceId, then stores `installation_id` on the workspace (new column `workspaces.githubInstallationId`, following the existing flat-column convention on that table — e.g. `discordWebhookUrl`).
+4. The callback verifies `state` **against the caller's own authenticated session** — not merely well-formed — before writing anything: `state` must be minted server-side (signed/HMAC'd, short-lived) at step 1 for the specific workspace the signed-in user is a member of, and the callback re-checks that membership at redemption. This is the same class of cross-tenant-hijack risk this codebase's own reviews have caught before in adjacent flows (magic-link workspace binding); a client-suppliable or replayable `state` would let one workspace's install get bound to another. Only then is `installation_id` stored on the workspace (new column `workspaces.githubInstallationId`, following the existing flat-column convention on that table — e.g. `discordWebhookUrl`).
 5. Repo listing (`runner/repos/route.ts`, currently `GET /user/repos` with the personal token) switches to `GET /installation/repositories` using the installation token — this also naturally scopes the list to exactly the repos the owner granted, rather than everything their personal account can see. The existing `repositories` table (per-workspace connected repos) is populated from this list the same way it is today; no schema change needed there.
 
 ## 6. Installation-token minting
@@ -90,7 +90,7 @@ All 8 current `getGithubToken(workspaceId)` call sites move to `getInstallationT
 | `apps/console/app/api/v1/runner/claim/route.ts` | hands the runner a token for `git clone`/`push`/`gh pr create` |
 | `apps/console/app/api/v1/runner/repos/route.ts` | list repos, register repo webhook |
 | `apps/console/app/api/v1/runner/result/route.ts` | post run results |
-| `apps/console/app/api/v1/workspaces/[workspaceId]/connectors/github/webhook/route.ts` | register repo webhook (intake mechanism itself untouched, see §9) |
+| `apps/console/app/api/v1/workspaces/[workspaceId]/connectors/github/webhook/route.ts` | register repo webhook (intake mechanism itself untouched, see §9) — note: a GitHub App would normally make per-repo webhook registration redundant (installed repos already push events to the App's own webhook), but per §2 this pass deliberately keeps the existing per-workspace webhook as-is, just re-pointed at the new token; consolidating onto the App's webhook is the §9 follow-up |
 | `apps/console/app/api/v1/workspaces/[workspaceId]/failures/[failureId]/issue/route.ts` | create a GitHub issue for a failure |
 | `apps/console/app/api/v1/workspaces/[workspaceId]/review-gates/[gateId]/issue/route.ts` | create a GitHub issue for a review gate |
 | `packages/db-postgres/src/queries/ci-reconcile.ts` | read PR/check-run status for CI reconciliation |

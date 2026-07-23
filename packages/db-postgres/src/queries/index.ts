@@ -2451,3 +2451,16 @@ export {
   type ChargeCompletedTaskInput,
   type ChargeCompletedTaskResult,
 } from "./wallet.js";
+
+// GitHub OAuth token refresh for long runs (issue #1391; see
+// `queries/github_token_refresh.ts` for the full WHY + verified GitHub OAuth
+// refresh mechanics). `ensureFreshGithubToken` is used by the claim route to
+// refresh-on-claim (a no-op when the token has ample TTL) and by the
+// runner-authed mid-run refresh route to force a refresh after a push 401.
+export {
+  ensureFreshGithubToken,
+  EXECUTION_CEILING_SECONDS,
+  type EnsureFreshGithubTokenOptions,
+  type EnsureFreshGithubTokenResult,
+  type FetchLike,
+} from "./github_token_refresh.js";

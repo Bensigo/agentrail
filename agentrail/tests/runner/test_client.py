@@ -672,3 +672,53 @@ def test_workitem_defaults_model_override_to_none():
         external_id="42", repo_url="", ref="main", title="", body="",
     )
     assert item.model_override is None
+
+
+# --- refresh_github_token (#1391): mid-run GitHub OAuth token refresh ---------
+
+
+def test_refresh_github_token_returns_fresh_token_on_200():
+    transport = FakeTransport([Response(status=200, body=b'{"github_token":"ghu_fresh"}')])
+    client = _client(transport)
+    assert client.refresh_github_token("ws1") == "ghu_fresh"
+    call = transport.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"].endswith("/api/v1/runner/refresh-github-token")
+    # Runner-authed exactly like claim/result — same bearer header.
+    assert call["headers"]["Authorization"] == "Bearer rt_secret"
+    # Workspace id travels in the body, never the URL query string.
+    import json as _json
+
+    assert _json.loads(call["body"].decode("utf-8"))["workspace_id"] == "ws1"
+    assert "ws1" not in call["url"]
+
+
+def test_refresh_github_token_defaults_workspace_to_clients_own():
+    import json as _json
+
+    transport = FakeTransport([Response(status=200, body=b'{"github_token":"ghu_fresh"}')])
+    client = _client(transport)
+    assert client.refresh_github_token() == "ghu_fresh"
+    assert _json.loads(transport.calls[0]["body"].decode("utf-8"))["workspace_id"] == "ws1"
+
+
+def test_refresh_github_token_returns_none_on_502_refresh_failed():
+    # An unrecoverable refresh (bad_refresh_token / no refresh token / network)
+    # surfaces from the route as a 502; the client returns None so the caller
+    # records the distinct infra-error classification rather than retrying.
+    transport = FakeTransport([Response(status=502, body=b'{"error":"refresh_failed"}')])
+    client = _client(transport)
+    assert client.refresh_github_token("ws1") is None
+
+
+def test_refresh_github_token_returns_none_on_empty_or_tokenless_body():
+    transport = FakeTransport([Response(status=200, body=b'{"github_token":""}')])
+    assert _client(transport).refresh_github_token("ws1") is None
+    transport2 = FakeTransport([Response(status=200, body=b"")])
+    assert _client(transport2).refresh_github_token("ws1") is None
+
+
+def test_refresh_github_token_raises_runner_auth_error_on_401():
+    transport = FakeTransport([Response(status=401, body=b'{"error":"Unauthorized"}')])
+    with pytest.raises(RunnerAuthError):
+        _client(transport).refresh_github_token("ws1")

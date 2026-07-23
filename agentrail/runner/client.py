@@ -352,6 +352,37 @@ class RunnerClient:
         resp = self._transport("POST", url, headers=self._headers(), body=payload)
         return 200 <= resp.status < 300
 
+    def refresh_github_token(self, workspace_id: Optional[str] = None) -> Optional[str]:
+        """Ask the backend to refresh this workspace's GitHub OAuth token (#1391).
+
+        The runner-authed mid-run backstop: when a push 401s because the
+        workspace's GitHub token expired in-flight, the runner calls this ONCE
+        and retries the push with the returned fresh token. Authenticated over
+        the SAME runner bearer as ``claim_next``/``report_result``.
+
+        Returns the fresh access token on a 200, or ``None`` when the refresh
+        is UNRECOVERABLE — a 502 (no refresh token / ``bad_refresh_token`` /
+        network error / no linked GitHub owner) OR any other non-2xx. ``None``
+        is the caller's cue to record a distinct infrastructure-error
+        classification rather than retry blindly. The token is never logged.
+        """
+        ws = workspace_id or self._workspace_id
+        url = f"{self._base}/api/v1/runner/refresh-github-token"
+        payload = json.dumps({"workspace_id": ws}).encode("utf-8")
+        resp = self._transport("POST", url, headers=self._headers(), body=payload)
+        if resp.status in (401, 403):
+            raise RunnerAuthError(
+                "runner token was rejected — run `agentrail login` again"
+            )
+        if not (200 <= resp.status < 300) or not resp.body:
+            return None
+        try:
+            data = json.loads(resp.body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return None
+        token = data.get("github_token") if isinstance(data, dict) else None
+        return token if isinstance(token, str) and token else None
+
     def _post_json(self, url: str, payload: object) -> None:
         """POST a JSON body, ignoring the response (best-effort emitters)."""
         body = json.dumps(payload).encode("utf-8")

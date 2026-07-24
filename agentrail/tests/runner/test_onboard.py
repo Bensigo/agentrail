@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import urllib.error
 from contextlib import contextmanager
@@ -19,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agentrail.context import wiki as wiki_module
 from agentrail.context.wiki import REPO_WIKI_ENV as _REPO_WIKI_ENV
 from agentrail.runner.client import WorkItem
 from agentrail.runner.onboard import (
@@ -27,6 +29,7 @@ from agentrail.runner.onboard import (
     _DIGEST_FILES,
     _DIGEST_HEAD_LINES,
     _ONBOARD_WIKI_ENV,
+    _WIKI_OPENAI_COMPATIBLE_KEY_ENV,
     MEMORY_TYPES,
     ONBOARD_CATEGORIES,
     ONBOARD_FORCE_BODY,
@@ -36,8 +39,10 @@ from agentrail.runner.onboard import (
     _ensure_wiki_summary_config,
     _is_forced_onboard,
     _postprocess_items,
+    _push_index_snapshot,
     _repo_digest,
     _repo_full_name,
+    _select_wiki_summary_mode,
     check_onboard_freshness,
     generate_onboard_items,
     onboard_wiki_enabled,
@@ -218,6 +223,7 @@ def test_run_onboard_happy_path_is_green():
         push_fn=lambda *a, **k: (True, "HTTP 202"),
         freshness_fn=_no_freshness,
         work_dir_factory=lambda: _mkdtemp(),
+        push_snapshot_fn=lambda *a, **k: True,
     )
 
     assert result.status == "green"
@@ -306,6 +312,7 @@ def test_run_onboard_push_failure_is_red():
         push_fn=lambda *a, **k: (False, "boom"),
         freshness_fn=_no_freshness,
         work_dir_factory=lambda: _mkdtemp(),
+        push_snapshot_fn=lambda *a, **k: True,
     )
 
     assert result.status == "red"
@@ -350,6 +357,7 @@ def test_run_onboard_clears_committed_index_before_building():
         push_fn=lambda *a, **k: (True, "ok"),
         freshness_fn=_no_freshness,
         work_dir_factory=work_dir_factory,
+        push_snapshot_fn=lambda *a, **k: True,
     )
 
     assert seen.get("ran"), "index_fn must have been invoked"
@@ -398,6 +406,7 @@ def test_run_onboard_none_freshness_proceeds_to_clone():
         push_fn=lambda *a, **k: (True, "ok"),
         freshness_fn=lambda *a, **k: None,
         work_dir_factory=lambda: _mkdtemp(),
+        push_snapshot_fn=lambda *a, **k: True,
     )
 
     assert result.status == "green"
@@ -420,6 +429,7 @@ def test_run_onboard_stale_onboarding_proceeds_to_clone():
         push_fn=lambda *a, **k: (True, "ok"),
         freshness_fn=lambda *a, **k: stale,
         work_dir_factory=lambda: _mkdtemp(),
+        push_snapshot_fn=lambda *a, **k: True,
     )
 
     assert result.status == "green"
@@ -479,6 +489,7 @@ def test_run_onboard_force_marker_skips_the_freshness_gate_entirely():
         push_fn=lambda *a, **k: (True, "ok"),
         freshness_fn=freshness_fn,
         work_dir_factory=lambda: _mkdtemp(),
+        push_snapshot_fn=lambda *a, **k: True,
     )
 
     assert result.status == "green"
@@ -559,6 +570,7 @@ def test_run_onboard_wiki_flag_off_is_byte_identical_to_today():
             push_fn=lambda *a, **k: (True, "HTTP 202"),
             freshness_fn=_no_freshness,
             work_dir_factory=lambda: _mkdtemp(),
+            push_snapshot_fn=lambda *a, **k: True,
             fetch_wiki_fn=lambda *a, **k: fetch_calls.append((a, k)) or True,
             assemble_wiki_fn=lambda *a, **k: assemble_calls.append((a, k)) or ([], None),
             push_wiki_fn=lambda *a, **k: push_calls.append((a, k)) or True,
@@ -578,10 +590,16 @@ def test_run_onboard_wiki_flag_off_is_byte_identical_to_today():
     assert push_calls == []
 
 
-def test_run_onboard_wiki_flag_on_compiles_pushes_and_memory_items_still_happen():
+def test_run_onboard_wiki_flag_on_compiles_pushes_and_memory_items_still_happen(monkeypatch):
     """Flag ON (all fakes): hydrate -> compile (env + temp config satisfy
     wiki.py's two gates) -> push, entirely independent of — and without
-    perturbing — the memory-item flow (dual-write per spec §4.6)."""
+    perturbing — the memory-item flow (dual-write per spec §4.6).
+
+    shutil.which is pinned so the fallback-chain's default provider choice
+    (see _select_wiki_summary_mode) is deterministic regardless of whether
+    the host running this test suite happens to have a `claude` binary on
+    PATH (e.g. this very dev sandbox does; CI likely does not)."""
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude" if name == "claude" else None)
     fetch_calls: List[tuple] = []
     assemble_calls: List[Path] = []
     push_calls: List[tuple] = []
@@ -621,6 +639,7 @@ def test_run_onboard_wiki_flag_on_compiles_pushes_and_memory_items_still_happen(
             push_fn=lambda *a, **k: (True, "HTTP 202"),
             freshness_fn=_no_freshness,
             work_dir_factory=lambda: _mkdtemp(),
+            push_snapshot_fn=lambda *a, **k: True,
             fetch_wiki_fn=lambda repo_dir, repo_full_name: fetch_calls.append((repo_dir, repo_full_name)) or True,
             assemble_wiki_fn=lambda repo_dir: assemble_calls.append(repo_dir) or (fake_pages, fake_compile_event),
             push_wiki_fn=lambda repo_dir, repo_full_name, pages, compile_event: push_calls.append((repo_dir, repo_full_name, pages, compile_event)) or True,
@@ -677,6 +696,7 @@ def test_run_onboard_wiki_flag_on_skips_push_when_compile_produced_no_wiki_repor
             push_fn=lambda *a, **k: (True, "ok"),
             freshness_fn=_no_freshness,
             work_dir_factory=lambda: _mkdtemp(),
+            push_snapshot_fn=lambda *a, **k: True,
             fetch_wiki_fn=lambda *a, **k: True,
             assemble_wiki_fn=lambda *a, **k: assemble_calls.append(1) or ([], None),
             push_wiki_fn=lambda *a, **k: push_calls.append(1) or True,
@@ -705,7 +725,12 @@ def test_ensure_wiki_summary_config_preserves_an_already_configured_provider(tmp
     assert written["context"]["codebaseUnits"] == ["x"]
 
 
-def test_ensure_wiki_summary_config_fills_a_missing_or_disabled_mode(tmp_path: Path):
+def test_ensure_wiki_summary_config_fills_a_missing_or_disabled_mode(tmp_path: Path, monkeypatch):
+    """shutil.which is pinned to "claude present" so this exercises the
+    fallback chain's FIRST branch deterministically -- see
+    test_select_wiki_summary_mode_* for the other two branches."""
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude" if name == "claude" else None)
+
     # No config.json at all yet -- the common case for a customer repo that
     # never ran `agentrail init`.
     _ensure_wiki_summary_config(tmp_path)
@@ -718,6 +743,27 @@ def test_ensure_wiki_summary_config_fills_a_missing_or_disabled_mode(tmp_path: P
         json.dumps({"context": {"summary": {"mode": "disabled"}}}), encoding="utf-8"
     )
     _ensure_wiki_summary_config(tmp_path)
+    written = json.loads((tmp_path / ".agentrail" / "config.json").read_text(encoding="utf-8"))
+    assert written["context"]["summary"]["mode"] == "claude-cli"
+
+
+def test_ensure_wiki_summary_config_openai_compatible_branch(tmp_path: Path, monkeypatch):
+    """claude absent + OPENROUTER_API_KEY present -> openai-compatible,
+    written WITHOUT a model key (wiki.py applies its own default)."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with _env("OPENROUTER_API_KEY", "or-secret"):
+        _ensure_wiki_summary_config(tmp_path)
+    written = json.loads((tmp_path / ".agentrail" / "config.json").read_text(encoding="utf-8"))
+    assert written["context"]["summary"] == {"mode": "openai-compatible"}
+
+
+def test_ensure_wiki_summary_config_last_resort_still_writes_claude_cli(tmp_path: Path, monkeypatch):
+    """Neither claude nor OPENROUTER_API_KEY available -> falls back to
+    claude-cli anyway (wiki.py's OWN claude-cli gate then degrades that
+    ONE compile to skeleton-only -- never a crash here)."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with _env("OPENROUTER_API_KEY", None):
+        _ensure_wiki_summary_config(tmp_path)
     written = json.loads((tmp_path / ".agentrail" / "config.json").read_text(encoding="utf-8"))
     assert written["context"]["summary"]["mode"] == "claude-cli"
 
@@ -1055,6 +1101,268 @@ def test_push_onboard_items_non_202_is_not_ok():
     )
     assert ok is False
     assert "500" in detail
+
+
+# ---------------------------------------------------------------------------
+# _select_wiki_summary_mode: explicit, logged fallback chain (Fix 1 of the
+# owner feedback "the wiki has no knowledge in it" -- the hosted fleet
+# carries OPENROUTER_API_KEY and no `claude` binary, so prod compiles
+# previously always fell open to skeleton-only via a hard-coded claude-cli
+# default that could never actually run there).
+# ---------------------------------------------------------------------------
+
+
+def test_select_wiki_summary_mode_prefers_claude_cli_when_available(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude" if name == "claude" else None)
+    with _env(_WIKI_OPENAI_COMPATIBLE_KEY_ENV, "should-not-matter"):
+        mode, model = _select_wiki_summary_mode()
+    assert mode == "claude-cli"
+    assert model  # a non-empty claude-cli-style model id
+
+
+def test_select_wiki_summary_mode_falls_back_to_openai_compatible(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with _env(_WIKI_OPENAI_COMPATIBLE_KEY_ENV, "or-secret"):
+        mode, model = _select_wiki_summary_mode()
+    assert mode == "openai-compatible"
+    assert model == "", "empty model -- wiki.py applies its own default"
+
+
+def test_select_wiki_summary_mode_last_resort_is_claude_cli(monkeypatch):
+    """Neither option available: still returns claude-cli (never crashes,
+    never returns an unsupported mode) -- wiki.py's own claude-cli-binary
+    gate then degrades THAT compile to skeleton-only pages."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with _env(_WIKI_OPENAI_COMPATIBLE_KEY_ENV, None):
+        mode, model = _select_wiki_summary_mode()
+    assert mode == "claude-cli"
+    assert model
+
+
+def test_select_wiki_summary_mode_logs_every_branch(monkeypatch, caplog):
+    """Never silent -- each of the three branches must log something."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="agentrail.runner.onboard")
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude" if name == "claude" else None)
+    with _env(_WIKI_OPENAI_COMPATIBLE_KEY_ENV, None):
+        _select_wiki_summary_mode()
+    assert any("claude-cli" in rec.message for rec in caplog.records)
+    caplog.clear()
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with _env(_WIKI_OPENAI_COMPATIBLE_KEY_ENV, "or-secret"):
+        _select_wiki_summary_mode()
+    assert any("openai-compatible" in rec.message for rec in caplog.records)
+    caplog.clear()
+
+    with _env(_WIKI_OPENAI_COMPATIBLE_KEY_ENV, None):
+        _select_wiki_summary_mode()
+    assert any("skeleton-only" in rec.message for rec in caplog.records)
+
+
+def test_wiki_openai_compatible_key_env_matches_wiki_module():
+    """Cross-language-style pinned constant (like ONBOARD_FORCE_BODY):
+    onboard.py's local string must stay byte-identical to
+    wiki.DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV, or the fallback chain would
+    check a DIFFERENT env var than the one wiki.py's own openai-compatible
+    provider actually reads."""
+    assert _WIKI_OPENAI_COMPATIBLE_KEY_ENV == wiki_module.DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV
+
+
+# ---------------------------------------------------------------------------
+# _push_index_snapshot: unconditional repo-health push (Fix 3 of the owner
+# feedback -- run_onboard built the index without ever pushing a snapshot,
+# so fleet-onboarded repos' wiki header read "last indexed: never /
+# critical" forever).
+# ---------------------------------------------------------------------------
+
+
+def test_push_index_snapshot_calls_through_with_repo_dir_and_summary(tmp_path: Path):
+    calls: List[tuple] = []
+    _push_index_snapshot(tmp_path, {"indexed": 1, "commitSha": "x"}, lambda repo_dir, summary: calls.append((repo_dir, summary)) or True)
+    assert calls == [(tmp_path, {"indexed": 1, "commitSha": "x"})]
+
+
+def test_push_index_snapshot_skipped_when_index_summary_is_none(tmp_path: Path):
+    calls: List[tuple] = []
+    _push_index_snapshot(tmp_path, None, lambda *a, **k: calls.append(a) or True)
+    assert calls == [], "nothing meaningful to report when the index build itself failed"
+
+
+def test_push_index_snapshot_skipped_when_index_summary_is_not_a_dict(tmp_path: Path):
+    calls: List[tuple] = []
+    _push_index_snapshot(tmp_path, "not-a-dict", lambda *a, **k: calls.append(a) or True)  # type: ignore[arg-type]
+    assert calls == []
+
+
+def test_push_index_snapshot_is_non_fatal_on_failure(tmp_path: Path):
+    def boom(repo_dir, summary):
+        raise RuntimeError("network down")
+
+    # Must not raise -- best-effort, exactly like _push_wiki.
+    _push_index_snapshot(tmp_path, {"indexed": 1}, boom)
+
+
+def test_push_index_snapshot_default_seam_lazily_imports_the_real_function(tmp_path: Path, monkeypatch):
+    """push_snapshot_fn=None (the run_onboard default) must resolve to the
+    REAL snapshot_push.push_index_snapshot -- verified by monkeypatching
+    that real function and confirming it gets invoked."""
+    calls: List[tuple] = []
+    import agentrail.context.snapshot_push as snapshot_push_module
+
+    monkeypatch.setattr(snapshot_push_module, "push_index_snapshot", lambda repo_dir, summary: calls.append((repo_dir, summary)) or True)
+    _push_index_snapshot(tmp_path, {"indexed": 1}, None)
+    assert calls == [(tmp_path, {"indexed": 1})]
+
+
+# ---------------------------------------------------------------------------
+# run_onboard: the snapshot push is wired in, UNCONDITIONALLY
+# ---------------------------------------------------------------------------
+
+
+def test_run_onboard_pushes_index_snapshot_after_successful_build_wiki_off():
+    snapshot_calls: List[tuple] = []
+
+    with _env(_ONBOARD_WIKI_ENV, None):
+        result = run_onboard(
+            _work_item(),
+            base_url="https://app.agentrail.dev",
+            api_key="rt_secret",
+            clone_fn=lambda *a, **k: None,
+            index_fn=lambda p: {"indexed": 5, "graphNodes": 1, "commitSha": "abc"},
+            brief_fn=lambda *a, **k: list(_FOUR_ITEMS),
+            push_fn=lambda *a, **k: (True, "ok"),
+            freshness_fn=_no_freshness,
+            work_dir_factory=lambda: _mkdtemp(),
+            push_snapshot_fn=lambda repo_dir, summary: snapshot_calls.append((repo_dir, summary)) or True,
+        )
+
+    assert result.status == "green"
+    assert len(snapshot_calls) == 1, "the snapshot push must fire even with the wiki flag OFF"
+    _repo_dir, summary = snapshot_calls[0]
+    assert summary == {"indexed": 5, "graphNodes": 1, "commitSha": "abc"}
+
+
+def test_run_onboard_snapshot_push_sees_the_server_link_env(monkeypatch):
+    """The push_snapshot_fn seam bypasses AGENTRAIL_SERVER_* entirely (it
+    receives repo_dir/summary directly), so this instead proves the env
+    vars snapshot_push.load_link needs are ACTUALLY active for the
+    duration of the index build by observing them from inside index_fn --
+    exactly mirroring the wiki flag-ON test's index_env_seen pattern, but
+    for the UNCONDITIONAL (flag-OFF) path."""
+    seen: Dict[str, Any] = {}
+
+    def index_fn(repo_dir: Path) -> dict:
+        seen["base_url"] = os.environ.get("AGENTRAIL_SERVER_BASE_URL")
+        seen["api_key"] = os.environ.get("AGENTRAIL_SERVER_API_KEY")
+        seen["repo_id"] = os.environ.get("AGENTRAIL_SERVER_REPOSITORY_ID")
+        return {"indexed": 1, "graphNodes": 0, "commitSha": "x"}
+
+    with _env(_ONBOARD_WIKI_ENV, None):
+        result = run_onboard(
+            _work_item(repository_id="repo-42"),
+            base_url="https://app.agentrail.dev",
+            api_key="rt_secret",
+            clone_fn=lambda *a, **k: None,
+            index_fn=index_fn,
+            brief_fn=lambda *a, **k: list(_FOUR_ITEMS),
+            push_fn=lambda *a, **k: (True, "ok"),
+            freshness_fn=_no_freshness,
+            work_dir_factory=lambda: _mkdtemp(),
+            push_snapshot_fn=lambda *a, **k: True,
+        )
+
+    assert result.status == "green"
+    assert seen["base_url"] == "https://app.agentrail.dev"
+    assert seen["api_key"] == "rt_secret"
+    assert seen["repo_id"] == "repo-42"
+    # Never leaks past the call.
+    assert os.environ.get("AGENTRAIL_SERVER_BASE_URL") is None
+
+
+def test_run_onboard_snapshot_push_failure_is_non_fatal():
+    """A failed/raising snapshot push must never change the RunResult --
+    the memory-item flow is what determines status, exactly like a wiki
+    push failure never does either."""
+
+    def boom(repo_dir, summary):
+        raise RuntimeError("snapshot ingest down")
+
+    with _env(_ONBOARD_WIKI_ENV, None):
+        result = run_onboard(
+            _work_item(),
+            base_url="https://app.agentrail.dev",
+            api_key="rt_secret",
+            clone_fn=lambda *a, **k: None,
+            index_fn=lambda p: {"indexed": 1, "graphNodes": 0, "commitSha": "x"},
+            brief_fn=lambda *a, **k: list(_FOUR_ITEMS),
+            push_fn=lambda *a, **k: (True, "ok"),
+            freshness_fn=_no_freshness,
+            work_dir_factory=lambda: _mkdtemp(),
+            push_snapshot_fn=boom,
+        )
+
+    assert result.status == "green"
+    assert "4" in result.gate_reason
+
+
+def test_run_onboard_skips_snapshot_push_when_index_build_failed():
+    snapshot_calls: List[tuple] = []
+
+    def failing_index_fn(repo_dir: Path) -> dict:
+        raise RuntimeError("index build exploded")
+
+    with _env(_ONBOARD_WIKI_ENV, None):
+        result = run_onboard(
+            _work_item(),
+            base_url="https://app.agentrail.dev",
+            api_key="rt_secret",
+            clone_fn=lambda *a, **k: None,
+            index_fn=failing_index_fn,
+            brief_fn=lambda *a, **k: list(_FOUR_ITEMS),
+            push_fn=lambda *a, **k: (True, "ok"),
+            freshness_fn=_no_freshness,
+            work_dir_factory=lambda: _mkdtemp(),
+            push_snapshot_fn=lambda *a, **k: snapshot_calls.append(1) or True,
+        )
+
+    # index build failure is itself best-effort -- run_onboard still
+    # completes green off the deterministic default memory items.
+    assert result.status == "green"
+    assert snapshot_calls == [], "nothing to push when the index build produced no summary"
+
+
+def test_run_onboard_pushes_index_snapshot_when_wiki_flag_is_also_on(monkeypatch):
+    """The snapshot push and the wiki push are independent -- both fire
+    together when the wiki flag is on and the compile succeeds."""
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude" if name == "claude" else None)
+    snapshot_calls: List[tuple] = []
+
+    def index_fn(repo_dir: Path) -> dict:
+        return {"indexed": 1, "graphNodes": 0, "commitSha": "abc123", "wikiReport": {"pagesWritten": 1, "pagesReused": 0}}
+
+    with _env(_ONBOARD_WIKI_ENV, "1"):
+        result = run_onboard(
+            _work_item(repo_url="https://github.com/acme/widgets"),
+            base_url="https://app.agentrail.dev",
+            api_key="rt_secret",
+            clone_fn=lambda *a, **k: None,
+            index_fn=index_fn,
+            brief_fn=lambda *a, **k: list(_FOUR_ITEMS),
+            push_fn=lambda *a, **k: (True, "ok"),
+            freshness_fn=_no_freshness,
+            work_dir_factory=lambda: _mkdtemp(),
+            push_snapshot_fn=lambda repo_dir, summary: snapshot_calls.append(summary) or True,
+            fetch_wiki_fn=lambda *a, **k: True,
+            assemble_wiki_fn=lambda *a, **k: ([], None),
+            push_wiki_fn=lambda *a, **k: True,
+        )
+
+    assert result.status == "green"
+    assert len(snapshot_calls) == 1
+    assert snapshot_calls[0]["wikiReport"] == {"pagesWritten": 1, "pagesReused": 0}
 
 
 # ---------------------------------------------------------------------------

@@ -63,6 +63,7 @@ COPY apps/console/package.json apps/console/package.json
 COPY packages/auth/package.json packages/auth/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/db-postgres/package.json packages/db-postgres/package.json
+COPY packages/github-app/package.json packages/github-app/package.json
 COPY packages/db-clickhouse/package.json packages/db-clickhouse/package.json
 COPY packages/ui/package.json packages/ui/package.json
 # @agentrail/mcp is NOT a console dependency, but its manifest is copied anyway:
@@ -90,11 +91,15 @@ COPY apps/console apps/console
 COPY packages/auth packages/auth
 COPY packages/contracts packages/contracts
 COPY packages/db-postgres packages/db-postgres
+COPY packages/github-app packages/github-app
 COPY packages/db-clickhouse packages/db-clickhouse
 COPY packages/ui packages/ui
 
 ENV NODE_ENV=production
-# Compile the ONE workspace package that resolves to dist/, not raw source.
+# Compile the TWO workspace packages that resolve to dist/, not raw source —
+# github-app FIRST: db-postgres's tsc resolves @agentrail/github-app through
+# its built dist (GitHub App identity arc; same ordering as ci.yml's node job).
+RUN pnpm --filter @agentrail/github-app build
 RUN pnpm --filter @agentrail/db-postgres build
 # Regenerate fumadocs' generated `.source/` (gitignored, driven by
 # apps/console/source.config.ts + content/docs/**/*.mdx) explicitly, matching
@@ -128,6 +133,11 @@ RUN mkdir -p /migrator/dist /migrator/drizzle \
   && cp -r packages/db-postgres/dist/. /migrator/dist/ \
   && cp -r packages/db-postgres/drizzle/. /migrator/drizzle/ \
   && cp packages/db-postgres/package.json /migrator/package.json \
+  # Strip the workspace:* dep before the plain-npm install: npm cannot resolve
+  # the workspace protocol, and dist/migrate.js never loads the package barrel
+  # (postgres + drizzle only — verified imports), so @agentrail/github-app is
+  # build-time-only as far as the migrator is concerned.
+  && node -e "const f='/migrator/package.json';const p=require(f);delete p.dependencies['@agentrail/github-app'];require('fs').writeFileSync(f,JSON.stringify(p,null,2))" \
   && cd /migrator && npm install --omit=dev --no-audit --no-fund \
   && test -f /migrator/dist/migrate.js \
   && test -f /migrator/drizzle/migrations/meta/_journal.json

@@ -14,7 +14,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   createRepository: vi.fn(),
   enqueueOnboard: vi.fn(),
   workspaceHasExecutionPath: vi.fn(),
-  getUserGithubAccessToken: vi.fn(),
+  getInstallationToken: vi.fn(),
 }));
 
 vi.mock("@agentrail/db-clickhouse", () => ({
@@ -28,7 +28,7 @@ import {
   createRepository,
   enqueueOnboard,
   workspaceHasExecutionPath,
-  getUserGithubAccessToken,
+  getInstallationToken,
 } from "@agentrail/db-postgres";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -66,15 +66,15 @@ const createdRepo = {
 };
 
 // ── Tests ──────────────────────────────────────────────────────────────────
-/** Minimal GitHub `GET /repos/{owner}/{repo}` response for checkRepoAccess. */
-function ghRepoResponse(
-  status: number,
-  permissions?: { push?: boolean; admin?: boolean; maintain?: boolean }
-) {
+/** A GitHub `GET /installation/repositories` response — the WRAPPER shape
+ * `checkRepoAccess` now reads via `listInstallationRepos` (membership check,
+ * not a per-repo permissions probe — see lib/github-repos.ts). */
+function ghInstallationResponse(status: number, repositories: unknown[] = []) {
   return {
     ok: status >= 200 && status < 300,
     status,
-    json: async () => ({ permissions }),
+    headers: { get: () => null },
+    json: async () => ({ total_count: repositories.length, repositories }),
   };
 }
 
@@ -267,8 +267,8 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
     expect(res.status).toBe(409);
   });
 
-  // ── AC2 (#1293): existence + push-access validation via the user's token ──
-  it("validates the picked repo against GitHub and creates it when the user has push access", async () => {
+  // ── AC2 (#1293), migrated to installation-membership (Task 6 delta) ──
+  it("validates the picked repo against the workspace's installation and creates it when it's a member", async () => {
     vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
     vi.mocked(getWorkspaceMembership).mockResolvedValue({
       userId: "user-1",
@@ -276,9 +276,11 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
       role: "admin",
     } as never);
     vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
-    vi.mocked(getUserGithubAccessToken).mockResolvedValue("gho_token");
+    vi.mocked(getInstallationToken).mockResolvedValue("installation-token");
     vi.mocked(createRepository).mockResolvedValue(createdRepo as never);
-    const fetchMock = vi.fn().mockResolvedValue(ghRepoResponse(200, { push: true }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(ghInstallationResponse(200, [{ full_name: "bensigo/agentrail", html_url: "https://github.com/bensigo/agentrail" }]));
     global.fetch = fetchMock as unknown as typeof fetch;
 
     const res = await POST(makeRequest(validBody), makeParams());
@@ -286,12 +288,12 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
     expect(res.status).toBe(201);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0][0])).toContain(
-      "https://api.github.com/repos/bensigo/agentrail"
+      "https://api.github.com/installation/repositories"
     );
     expect(createRepository).toHaveBeenCalledTimes(1);
   });
 
-  it("returns 404 with a name field error when the repo does not exist / is inaccessible", async () => {
+  it("returns 404 with a name field error when the repo is not in the installation's granted list", async () => {
     vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
     vi.mocked(getWorkspaceMembership).mockResolvedValue({
       userId: "user-1",
@@ -299,38 +301,15 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
       role: "admin",
     } as never);
     vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
-    vi.mocked(getUserGithubAccessToken).mockResolvedValue("gho_token");
+    vi.mocked(getInstallationToken).mockResolvedValue("installation-token");
     global.fetch = vi
       .fn()
-      .mockResolvedValue(ghRepoResponse(404)) as unknown as typeof fetch;
+      .mockResolvedValue(ghInstallationResponse(200, [])) as unknown as typeof fetch;
 
     const res = await POST(makeRequest(validBody), makeParams());
     const json = await res.json();
 
     expect(res.status).toBe(404);
-    expect(json.errors.name).toBeDefined();
-    expect(createRepository).not.toHaveBeenCalled();
-  });
-
-  it("returns 403 with a name field error when the user lacks push access", async () => {
-    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
-    vi.mocked(getWorkspaceMembership).mockResolvedValue({
-      userId: "user-1",
-      workspaceId: WORKSPACE_ID,
-      role: "admin",
-    } as never);
-    vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
-    vi.mocked(getUserGithubAccessToken).mockResolvedValue("gho_token");
-    global.fetch = vi
-      .fn()
-      .mockResolvedValue(
-        ghRepoResponse(200, { push: false, admin: false, maintain: false })
-      ) as unknown as typeof fetch;
-
-    const res = await POST(makeRequest(validBody), makeParams());
-    const json = await res.json();
-
-    expect(res.status).toBe(403);
     expect(json.errors.name).toBeDefined();
     expect(createRepository).not.toHaveBeenCalled();
   });
@@ -343,11 +322,11 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
       role: "admin",
     } as never);
     vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
-    vi.mocked(getUserGithubAccessToken).mockResolvedValue("gho_token");
+    vi.mocked(getInstallationToken).mockResolvedValue("installation-token");
     // 401 from GitHub → indeterminate → fall through to regex-only, still creates.
     global.fetch = vi
       .fn()
-      .mockResolvedValue(ghRepoResponse(401)) as unknown as typeof fetch;
+      .mockResolvedValue(ghInstallationResponse(401)) as unknown as typeof fetch;
     vi.mocked(createRepository).mockResolvedValue(createdRepo as never);
 
     const res = await POST(makeRequest(validBody), makeParams());
@@ -356,7 +335,7 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
     expect(createRepository).toHaveBeenCalledTimes(1);
   });
 
-  it("skips the GitHub check entirely when the user has no linked token (manual fallback)", async () => {
+  it("skips the GitHub check entirely when the workspace has no installation token (manual fallback)", async () => {
     vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
     vi.mocked(getWorkspaceMembership).mockResolvedValue({
       userId: "user-1",
@@ -364,7 +343,7 @@ describe("POST /api/v1/workspaces/:workspaceId/repos", () => {
       role: "admin",
     } as never);
     vi.mocked(getRepositoryByName).mockResolvedValue(null as never);
-    vi.mocked(getUserGithubAccessToken).mockResolvedValue(null);
+    vi.mocked(getInstallationToken).mockResolvedValue(null);
     vi.mocked(createRepository).mockResolvedValue(createdRepo as never);
     const fetchMock = vi.fn();
     global.fetch = fetchMock as unknown as typeof fetch;

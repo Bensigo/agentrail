@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { X, Search, Lock, Globe, Check, Loader2, PenLine } from "lucide-react";
-import { grantGithubRepoAccess } from "../actions";
 
 export interface RepoRow {
   id: string;
@@ -113,9 +112,14 @@ export function AddRepositoryDialog({
   const [loading, setLoading] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
 
-  // Incremental OAuth escalation (#1294): set while re-authorizing with GitHub
-  // for the `repo` scope the identity-only sign-in token lacks.
+  // Install-link (re)install flow (GitHub App identity design, spec §5/§6 —
+  // Task 6 delta): set while minting the install URL and redirecting to
+  // GitHub. Replaces the old #1294 OAuth-scope-escalation affordance, which
+  // is structurally dead under App credentials (GitHub Apps ignore
+  // login-time scope params — repo access comes only from the installation
+  // grant).
   const [granting, setGranting] = useState(false);
+  const [grantError, setGrantError] = useState<string | null>(null);
 
   const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -260,13 +264,26 @@ export function AddRepositoryDialog({
 
   async function handleGrantAccess() {
     setGranting(true);
+    setGrantError(null);
     try {
-      // Redirects to GitHub for the `repo` grant, then back to this repos page.
-      // A successful call navigates away, so `granting` stays true until unmount.
-      await grantGithubRepoAccess(workspaceId);
-    } catch {
-      // Next handles the redirect thrown by signIn; a real failure re-enables.
+      // Mint a single-use install URL (Task 3's endpoint) and send the
+      // browser to GitHub's own install screen — same round-trip the
+      // Connectors card's "Connect GitHub" button uses. A successful call
+      // navigates away, so `granting` stays true until unmount.
+      const res = await fetch(
+        `/api/v1/workspaces/${workspaceId}/connectors/github/install-link`,
+        { method: "POST" }
+      );
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.error ?? "Could not start the install");
+      }
+      window.location.href = body.url;
+    } catch (err) {
       setGranting(false);
+      setGrantError(
+        err instanceof Error ? err.message : "Could not start the install"
+      );
     }
   }
 
@@ -461,9 +478,12 @@ export function AddRepositoryDialog({
                         Redirecting to GitHub…
                       </>
                     ) : (
-                      "Grant GitHub access"
+                      "Reconnect GitHub"
                     )}
                   </button>
+                  {grantError && (
+                    <p className="text-xs text-[var(--red-11)]">{grantError}</p>
+                  )}
                 </div>
               )}
 

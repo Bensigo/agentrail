@@ -39,6 +39,14 @@
 // resolution-failure case; 500; 502 GitHub-call failures) collapses to ONE
 // generic honest string, same posture as create_workspace's non-2xx
 // handling.
+//
+// GUIDED variant (Task 6 delta, spec §2's create_repo decision): a
+// personal-account installation makes the route return
+// `200 { guided: true, createUrl, installUrl, name }` instead of ever
+// calling GitHub — App tokens structurally can't call `POST /user/repos`.
+// This is success, not failure (the tool did what it could): it resolves to
+// `{ guided: true, message }` rather than an error string, and the tool
+// description tells Jace to relay `message` verbatim.
 
 export const CREATE_REPO_PATH = "/api/v1/runner/repos";
 
@@ -94,9 +102,10 @@ export function buildCreateRepoUrl(baseUrl) {
 /**
  * Create a GitHub repository for the conversation identified by
  * `eveSessionId`, named `name` (optionally `private`). Returns
- * `{ url, fullName, private, webhookCreated, onboardQueued }` on success, or
- * an honest failure string otherwise — never throws. Single attempt, no
- * retry (the console endpoint owns the GitHub call and the connect chain
+ * `{ url, fullName, private, webhookCreated, onboardQueued }` on success,
+ * `{ guided: true, message }` on the personal-account guided variant, or an
+ * honest failure string otherwise — never throws. Single attempt, no retry
+ * (the console endpoint owns the GitHub call and the connect chain
  * internally).
  *
  *   1. unset console config           -> GENERIC_FAILURE_MESSAGE
@@ -108,7 +117,7 @@ export function buildCreateRepoUrl(baseUrl) {
  *                                          string PLUS a retry nudge (AC3)
  *   5. status 409, any other shape     -> the response body's own `error`
  *                                          string, VERBATIM (no-workspace /
- *                                          no-token / stale-credentials
+ *                                          no-installation / stale-credentials
  *                                          already tell the user what to do)
  *   6. status 409, malformed body      -> GENERIC_FAILURE_MESSAGE
  *   7. status 400, valid error body    -> the route's own validation message
@@ -119,14 +128,18 @@ export function buildCreateRepoUrl(baseUrl) {
  *                                          500, 502 alike — see module
  *                                          comment)
  *  10. non-JSON / malformed 2xx body   -> GENERIC_FAILURE_MESSAGE
- *  11. success                         -> { url, fullName, private,
+ *  11. status 200, guided: true        -> { guided: true, message } (Task 6
+ *                                          delta: personal-account
+ *                                          installation, no GitHub call was
+ *                                          made — see module comment)
+ *  12. status 201, success             -> { url, fullName, private,
  *                                          webhookCreated, onboardQueued }
  *
  * @param {{ eveSessionId: string, name: string, private?: boolean,
  *           env?: Record<string, string|undefined>,
  *           transport: (url: string, init: { method: string, headers: Record<string,string>, body: string }) =>
  *             Promise<{ status: number, json: () => Promise<unknown> }> }} args
- * @returns {Promise<{ url: string, fullName: string, private: boolean, webhookCreated: boolean, onboardQueued: boolean } | string>}
+ * @returns {Promise<{ url: string, fullName: string, private: boolean, webhookCreated: boolean, onboardQueued: boolean } | { guided: true, message: string } | string>}
  */
 export async function runCreateRepo({ eveSessionId, name, private: isPrivate, env = {}, transport }) {
   const cfg = resolveConsoleConfig(env);
@@ -196,6 +209,21 @@ export async function runCreateRepo({ eveSessionId, name, private: isPrivate, en
     body = await res.json();
   } catch {
     return GENERIC_FAILURE_MESSAGE;
+  }
+
+  if (status === 200 && body && body.guided === true) {
+    const name = typeof body.name === "string" ? body.name : "the repo";
+    const createUrl = typeof body.createUrl === "string" ? body.createUrl : "https://github.com/new";
+    const installUrl = typeof body.installUrl === "string" ? body.installUrl : "";
+    return {
+      guided: true,
+      message:
+        `GitHub doesn't let apps create repos on personal accounts, so this one's a two-click job: ` +
+        `1) create "${name}" here: ${createUrl}  ` +
+        `2) add it to my installation here: ${installUrl}  ` +
+        `Then add it to the workspace from the console's Repos page (Add repository) — ` +
+        `or tell me once it exists and I'll walk you through.`,
+    };
   }
 
   const repo = body && typeof body === "object" ? body.repo : null;

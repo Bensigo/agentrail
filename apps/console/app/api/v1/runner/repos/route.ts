@@ -3,13 +3,15 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getJaceSessionByEveSessionId,
   getChatIdentityById,
-  getGithubToken,
+  getGithubInstallation,
+  getInstallationToken,
   createRepository,
   getConnector,
   upsertConnector,
   enqueueOnboard,
   workspaceHasExecutionPath,
 } from "@agentrail/db-postgres";
+import { resolveGithubAppConfig } from "@agentrail/github-app";
 import { requireJaceConsoleSecret } from "../../../../../lib/jace-console-auth";
 
 const NAME_MAX = 100;
@@ -138,7 +140,7 @@ async function createRepoWebhook(
   token: string,
   targetUrl: string,
   secret: string
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; status?: number; error?: string }> {
   let res: Response;
   try {
     res = await fetchWithTimeout(`https://api.github.com/repos/${fullName}/hooks`, {
@@ -155,7 +157,7 @@ async function createRepoWebhook(
     return { ok: false, error: "Could not reach GitHub to create the webhook." };
   }
   if (!res.ok) {
-    return { ok: false, error: `GitHub rejected the webhook (HTTP ${res.status}).` };
+    return { ok: false, status: res.status, error: `GitHub rejected the webhook (HTTP ${res.status}).` };
   }
   return { ok: true };
 }
@@ -188,16 +190,18 @@ async function createRepoWebhook(
  * A session row with a null `chat_identity_id`, or no session row at all,
  * collapses into the SAME 404 as "chat identity not found" — a
  * distinguishable response would let any valid caller enumerate which
- * sessions exist. The GitHub token is the WORKSPACE OWNER's stored OAuth
- * `access_token` (`getGithubToken`), read fresh at the point of use and
- * never returned to the caller or logged.
+ * sessions exist. The GitHub credential is the WORKSPACE's App installation
+ * token (`getInstallationToken`, spec §5/§6 — Task 6 delta of the drift
+ * addendum), minted fresh at the point of use and never returned to the
+ * caller or logged.
  *
- * WORKSPACE + TOKEN
+ * WORKSPACE + INSTALLATION (org vs personal split — spec §2's create_repo
+ * decision)
  * `workspace = session.workspaceId ?? identity.workspaceId` — an honest 409
  * ("this conversation has no workspace yet") when neither is set, since
  * `create_workspace` (#1264) is the fix and Jace can relay that verbatim. A
- * missing GitHub token is a separate, distinct 409 (the connect-link flow,
- * #1263, is the fix for that one) — both refusals are DISTINCT from the
+ * missing installation is a separate, distinct 409 (the install-link flow,
+ * Task 3, is the fix for that one) — both refusals are DISTINCT from the
  * upstream 404, unlike connect-link's folded posture, because a human
  * already approved THIS SPECIFIC call in THIS SPECIFIC conversation before
  * this route ever runs: there is no scripted-probing surface here to protect
@@ -205,18 +209,29 @@ async function createRepoWebhook(
  * more useful than a bare 404 it cannot act on (same reasoning #1264 uses for
  * its own two 409s).
  *
+ * GitHub structurally blocks App installation tokens from calling
+ * `POST /user/repos` (no user context — a GitHub App limitation, not a
+ * permissions gap; see community discussions 65724/116331/171040) — so a
+ * PERSONAL-account installation (`accountType !== "Organization"`) never
+ * calls GitHub at all: it returns `200 { guided: true, createUrl,
+ * installUrl, name }`, and the human creates the repo themselves via those
+ * two links. An ORGANIZATION installation creates via `POST
+ * /orgs/{login}/repos`, which App tokens with Administration permission CAN
+ * call, and continues through the full connect chain below exactly as
+ * before.
+ *
  * VALIDATION
  * `name`: trimmed, 1-100 chars, `[A-Za-z0-9._-]` only — checked before any DB
  * or network call. `private` defaults to `true` when omitted: a repo Jace
  * creates on the user's behalf should default to the safe (non-public)
  * choice rather than GitHub's own API default of `false`.
  *
- * GITHUB CALL
- * `POST /user/repos` with `auto_init: true` — without it a freshly created
- * repo has no default branch / no commits, so the runner's later clone (and
- * the onboard indexer) would have nothing to check out.
+ * GITHUB CALL (org path only)
+ * `POST /orgs/{login}/repos` with `auto_init: true` — without it a freshly
+ * created repo has no default branch / no commits, so the runner's later
+ * clone (and the onboard indexer) would have nothing to check out.
  *
- * CONNECT CHAIN (each step's failure surfaces honestly rather than
+ * CONNECT CHAIN (org path only; each step's failure surfaces honestly rather than
  * pretending — the repo EXISTS on GitHub the moment the create call
  * succeeds, so nothing past that point may silently imply otherwise):
  *  (1) repository row + connector `config.repos` self-configure. The row
@@ -243,13 +258,23 @@ async function createRepoWebhook(
  *      brand-new, runner-less (hosted) workspace at connect time. No new
  *      queue kind invented.
  *
- * RESPONSE 201: `{ repo: { fullName, url, private }, connected: true,
- * webhookCreated, onboardQueued, warnings }`. `connected` is always `true`
- * in a built response (the code either reaches this line with the repository
- * row created, or has already returned/thrown earlier); `webhookCreated` /
- * `onboardQueued` are each honest per their own step; `warnings` is always an
- * array (possibly empty) rather than a conditionally-present key, so a caller
- * never has to branch on its existence.
+ * RESPONSE 201 (org path): `{ repo: { fullName, url, private }, connected:
+ * true, webhookCreated, onboardQueued, warnings }`. `connected` is always
+ * `true` in a built response (the code either reaches this line with the
+ * repository row created, or has already returned/thrown earlier);
+ * `webhookCreated` / `onboardQueued` are each honest per their own step;
+ * `warnings` is always an array (possibly empty) rather than a
+ * conditionally-present key, so a caller never has to branch on its
+ * existence. A webhook-creation 403/404 gets one EXTRA warning
+ * (spec §8 reachability note): when an org owner picked "Only select
+ * repositories" for the installation, a freshly org-API-created repo may not
+ * be part of it yet, so the webhook call can fail even though repo creation
+ * itself succeeded — the extra warning names `installUrl` as the fix.
+ *
+ * RESPONSE 200 (personal-account path): `{ guided: true, createUrl:
+ * "https://github.com/new", installUrl, name }` — no GitHub call, no connect
+ * chain; the human finishes the two steps themselves and either returns to
+ * chat or uses the console's "Add repository" flow.
  */
 export async function POST(request: NextRequest) {
   const authError = requireJaceConsoleSecret(request);
@@ -297,29 +322,72 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const token = await getGithubToken(workspaceId);
+  const installation = await getGithubInstallation(workspaceId);
+  if (!installation) {
+    return NextResponse.json(
+      {
+        error:
+          "GitHub is not connected for this workspace — install the Jace GitHub App first",
+      },
+      { status: 409 }
+    );
+  }
+
+  // installUrl is resolved unconditionally (not just on the personal-account
+  // path below) — the org path also needs it, for the webhook-failure
+  // "may not be in the installation" warning (spec §8 reachability note).
+  const cfg = resolveGithubAppConfig(process.env);
+  const installUrl = cfg.ok
+    ? `https://github.com/apps/${cfg.slug}/installations/new`
+    : "https://github.com/settings/installations";
+
+  // Personal accounts: GitHub structurally blocks App tokens from creating
+  // user-owned repos (POST /user/repos has no App equivalent — spec §2's
+  // create_repo decision, community discussions 65724/116331/171040). Hand
+  // back a guided flow instead of a doomed API call: the user creates the
+  // repo on GitHub's own /new page, adds it to the installation, and connects
+  // it — the tool relays these exact links.
+  if (installation.accountType !== "Organization") {
+    return NextResponse.json(
+      {
+        guided: true as const,
+        createUrl: "https://github.com/new",
+        installUrl,
+        name: requestedName,
+      },
+      { status: 200 }
+    );
+  }
+
+  const token = await getInstallationToken(workspaceId);
   if (!token) {
     return NextResponse.json(
-      { error: "no GitHub account with repo access is connected for this workspace yet" },
+      {
+        error:
+          "GitHub rejected the workspace's App installation — reconnect GitHub from the console",
+      },
       { status: 409 }
     );
   }
 
   let ghRes: Response;
   try {
-    ghRes = await fetchWithTimeout("https://api.github.com/user/repos", {
-      method: "POST",
-      headers: githubHeaders(token),
-      body: JSON.stringify({ name: requestedName, private: isPrivate, auto_init: true }),
-    });
+    ghRes = await fetchWithTimeout(
+      `https://api.github.com/orgs/${installation.accountLogin}/repos`,
+      {
+        method: "POST",
+        headers: githubHeaders(token),
+        body: JSON.stringify({ name: requestedName, private: isPrivate, auto_init: true }),
+      }
+    );
   } catch {
     return NextResponse.json({ error: "Could not reach GitHub." }, { status: 502 });
   }
 
   if (!ghRes.ok) {
-    // 401/403: the stored OAuth token is stale/revoked/under-scoped — the
-    // connect-link flow (#1263) is the fix, so say so plainly rather than a
-    // bare HTTP status Jace can't act on.
+    // 401/403: the App installation token was rejected — the install-link
+    // flow (Task 3) is the fix, so say so plainly rather than a bare HTTP
+    // status Jace can't act on.
     if (ghRes.status === 401 || ghRes.status === 403) {
       return NextResponse.json(
         { error: "GitHub rejected the stored credentials" },
@@ -419,6 +487,17 @@ export async function POST(request: NextRequest) {
     webhookCreated = hookResult.ok;
     if (!hookResult.ok && hookResult.error) {
       warnings.push(hookResult.error);
+      // Spec §8 reachability note: when the org owner picked "Only select
+      // repositories" for the installation, a repo just created via the org
+      // API may not be part of the installation yet — GitHub answers the
+      // webhook call with 403/404 in that case. No new reachability
+      // round-trip needed: the existing webhookCreated:false + warnings
+      // already surface the failure honestly; this just names the fix.
+      if (hookResult.status === 403 || hookResult.status === 404) {
+        warnings.push(
+          `the new repo may not be in the Jace installation — add it at ${installUrl} if the webhook is missing`
+        );
+      }
     }
   }
 

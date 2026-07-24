@@ -9,7 +9,7 @@ import {
   upsertConnector,
   enqueueOnboard,
   workspaceHasExecutionPath,
-  getUserGithubAccessToken,
+  getInstallationToken,
 } from "@agentrail/db-postgres";
 import { getLatestIndexSnapshotsForWorkspace } from "@agentrail/db-clickhouse";
 import { repoHealth, type HealthStatus } from "../../../../../../lib/repo-health";
@@ -149,16 +149,20 @@ export async function POST(
     );
   }
 
-  // AC2 (#1293): existence + access validation via the CONNECTING user's own
-  // GitHub token. Runs for BOTH picker-selected and manually-typed repos when a
-  // token is available — the picker already validated existence at selection
-  // time, and this is the server-side backstop that no `repositories` row is
-  // created for a repo that doesn't exist or the user can't push to. When the
-  // user has no GitHub token (pure manual fallback), we skip and keep the
-  // regex-only validation above; when GitHub itself is unreachable/rate-limited
-  // (`indeterminate`), we DON'T block a legitimate connect on a transient
-  // hiccup — the regex already passed.
-  const githubToken = await getUserGithubAccessToken(session.user.id);
+  // AC2 (#1293), migrated off per-user OAuth (Task 6 delta, spec §5/§6):
+  // existence + access validation via the WORKSPACE's App installation
+  // token, checked as membership in the installation's granted repo list
+  // (see lib/github-repos.ts's module comment for why that supersedes the
+  // old per-repo push-permission probe). Runs for BOTH picker-selected and
+  // manually-typed repos when a token is available — the picker already
+  // validated membership at selection time, and this is the server-side
+  // backstop that no `repositories` row is created for a repo the
+  // installation wasn't granted (or that doesn't exist). When the workspace
+  // has no installation (pure manual fallback), we skip and keep the
+  // regex-only validation above; when GitHub itself is unreachable/rate-
+  // limited (`indeterminate`), we DON'T block a legitimate connect on a
+  // transient hiccup — the regex already passed.
+  const githubToken = await getInstallationToken(workspaceId);
   if (githubToken) {
     const [owner, repo] = name.split("/");
     const access = await checkRepoAccess(githubToken, owner, repo);
@@ -170,16 +174,6 @@ export async function POST(
           },
         },
         { status: 404 }
-      );
-    }
-    if (!access.ok && access.kind === "no_push") {
-      return NextResponse.json(
-        {
-          errors: {
-            name: "You need push (write) access to this repository to connect it",
-          },
-        },
-        { status: 403 }
       );
     }
   }

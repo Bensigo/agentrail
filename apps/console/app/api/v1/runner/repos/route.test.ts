@@ -4,27 +4,50 @@ import { NextRequest } from "next/server";
 vi.mock("@agentrail/db-postgres", () => ({
   getJaceSessionByEveSessionId: vi.fn(),
   getChatIdentityById: vi.fn(),
-  getGithubToken: vi.fn(),
+  getGithubInstallation: vi.fn(),
+  getInstallationToken: vi.fn(),
   createRepository: vi.fn(),
   getConnector: vi.fn(),
   upsertConnector: vi.fn(),
   enqueueOnboard: vi.fn(),
   workspaceHasExecutionPath: vi.fn(),
 }));
+vi.mock("@agentrail/github-app", () => ({
+  resolveGithubAppConfig: vi.fn(),
+}));
 import { POST } from "./route";
 import {
   getJaceSessionByEveSessionId,
   getChatIdentityById,
-  getGithubToken,
+  getGithubInstallation,
+  getInstallationToken,
   createRepository,
   getConnector,
   upsertConnector,
   enqueueOnboard,
   workspaceHasExecutionPath,
 } from "@agentrail/db-postgres";
+import { resolveGithubAppConfig } from "@agentrail/github-app";
 
 const NOW = new Date("2026-07-18T00:00:00.000Z");
 const MOCK_TOKEN = "gho_mock_token_abc123";
+
+// Default installation: an Organization — the common case that reaches the
+// full GitHub-create + connect chain. Personal-account (accountType: "User")
+// and no-installation cases override this per-test (Task 6 delta).
+const ORG_INSTALLATION = {
+  installationId: "install-777",
+  accountLogin: "acme",
+  accountType: "Organization" as const,
+};
+
+const APP_CFG = {
+  ok: true as const,
+  appId: "app-1",
+  privateKey: "test-key",
+  slug: "jace",
+  botUserId: "bot-1",
+};
 
 // Central-secret auth (2026-07-20 fix): the route now authenticates via
 // requireJaceConsoleSecret / JACE_CONSOLE_TOKEN instead of a per-workspace
@@ -109,7 +132,9 @@ beforeEach(() => {
   process.env[ENV_KEY] = SECRET;
   vi.mocked(getJaceSessionByEveSessionId).mockResolvedValue(PINNED_SESSION as never);
   vi.mocked(getChatIdentityById).mockResolvedValue(BOUND_IDENTITY as never);
-  vi.mocked(getGithubToken).mockResolvedValue(MOCK_TOKEN);
+  vi.mocked(getGithubInstallation).mockResolvedValue(ORG_INSTALLATION as never);
+  vi.mocked(getInstallationToken).mockResolvedValue(MOCK_TOKEN);
+  vi.mocked(resolveGithubAppConfig).mockReturnValue(APP_CFG as never);
   vi.mocked(createRepository).mockResolvedValue({
     id: "repo-1",
     workspaceId: "ws-1",
@@ -161,7 +186,7 @@ describe("POST /api/v1/runner/repos", () => {
     expect(res.status).toBe(401);
     expect(getJaceSessionByEveSessionId).not.toHaveBeenCalled();
     expect(getChatIdentityById).not.toHaveBeenCalled();
-    expect(getGithubToken).not.toHaveBeenCalled();
+    expect(getGithubInstallation).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(createRepository).not.toHaveBeenCalled();
   });
@@ -323,7 +348,7 @@ describe("POST /api/v1/runner/repos", () => {
     expect(await res.json()).toEqual({
       error: "this conversation has no workspace yet — create one first",
     });
-    expect(getGithubToken).not.toHaveBeenCalled();
+    expect(getGithubInstallation).not.toHaveBeenCalled();
   });
 
   it("falls back to the identity's workspace when the session itself has none", async () => {
@@ -339,7 +364,7 @@ describe("POST /api/v1/runner/repos", () => {
 
     await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
 
-    expect(getGithubToken).toHaveBeenCalledWith("ws-from-identity");
+    expect(getGithubInstallation).toHaveBeenCalledWith("ws-from-identity");
     expect(createRepository).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: "ws-from-identity" })
     );
@@ -354,27 +379,110 @@ describe("POST /api/v1/runner/repos", () => {
 
     await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
 
-    expect(getGithubToken).toHaveBeenCalledWith("ws-1"); // PINNED_SESSION.workspaceId
+    expect(getGithubInstallation).toHaveBeenCalledWith("ws-1"); // PINNED_SESSION.workspaceId
   });
 
   // ---------------------------------------------------------------------
-  // token resolution (409)
+  // installation / token resolution (409) — Task 6 delta, brief Step 1 case 3
   // ---------------------------------------------------------------------
 
-  it("409 when the workspace has no stored GitHub token", async () => {
-    vi.mocked(getGithubToken).mockResolvedValue(null);
+  it("409 when the workspace has no GitHub App installation bound", async () => {
+    vi.mocked(getGithubInstallation).mockResolvedValue(null);
 
     const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
 
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
-      error: "no GitHub account with repo access is connected for this workspace yet",
+      error:
+        "GitHub is not connected for this workspace — install the Jace GitHub App first",
+    });
+    expect(getInstallationToken).not.toHaveBeenCalled();
+    expect(createRepository).not.toHaveBeenCalled();
+  });
+
+  it("409 when the installation exists but minting a token fails (revoked/unconfigured)", async () => {
+    vi.mocked(getInstallationToken).mockResolvedValue(null);
+
+    const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error:
+        "GitHub rejected the workspace's App installation — reconnect GitHub from the console",
     });
     expect(createRepository).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------
-  // the GitHub create-repo call itself
+  // org vs personal split (Task 6 / brief Step 1, cases 1 + 2)
+  // ---------------------------------------------------------------------
+
+  it("org installation: creates via POST /orgs/{login}/repos (NOT /user/repos), same body, existing 201 connect-chain response", async () => {
+    vi.mocked(getGithubInstallation).mockResolvedValue({
+      installationId: "777",
+      accountLogin: "acme",
+      accountType: "Organization",
+    } as never);
+    const fetchMock = mockFetchSequence(githubCreateResponse(), githubHookResponse());
+
+    const res = await POST(
+      req({ eveSessionId: "eve-session-1", name: "widgets", private: false })
+    );
+
+    expect(res.status).toBe(201);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.github.com/orgs/acme/repos",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ name: "widgets", private: false, auto_init: true }),
+      })
+    );
+  });
+
+  it("personal-account installation: no GitHub fetch at all — returns 200 { guided, createUrl, installUrl, name }", async () => {
+    vi.mocked(getGithubInstallation).mockResolvedValue({
+      installationId: "42",
+      accountLogin: "ada",
+      accountType: "User",
+    } as never);
+    const fetchMock = mockFetchSequence();
+
+    const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({
+      guided: true,
+      createUrl: "https://github.com/new",
+      installUrl: "https://github.com/apps/jace/installations/new",
+      name: "widgets",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getInstallationToken).not.toHaveBeenCalled();
+    expect(createRepository).not.toHaveBeenCalled();
+  });
+
+  it("personal-account installation: falls back to the settings/installations URL when the App env isn't configured", async () => {
+    vi.mocked(getGithubInstallation).mockResolvedValue({
+      installationId: "42",
+      accountLogin: "ada",
+      accountType: "User",
+    } as never);
+    vi.mocked(resolveGithubAppConfig).mockReturnValue({
+      ok: false,
+      missing: ["GITHUB_APP_ID"],
+    } as never);
+
+    const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.installUrl).toBe("https://github.com/settings/installations");
+  });
+
+  // ---------------------------------------------------------------------
+  // the GitHub create-repo call itself (org path)
   // ---------------------------------------------------------------------
 
   it("calls GitHub with the exact URL, auth header (the mocked token, not a literal), and body", async () => {
@@ -384,7 +492,7 @@ describe("POST /api/v1/runner/repos", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "https://api.github.com/user/repos",
+      "https://api.github.com/orgs/acme/repos",
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
@@ -701,6 +809,23 @@ describe("POST /api/v1/runner/repos", () => {
     expect(json.webhookCreated).toBe(false);
     expect(json.warnings.length).toBeGreaterThan(0);
     expect(json.warnings[0]).toMatch(/webhook/i);
+  });
+
+  it("201 with an EXTRA installation-membership warning when the webhook call 403s or 404s (spec §8 reachability note)", async () => {
+    for (const status of [403, 404]) {
+      mockFetchSequence(githubCreateResponse(), githubHookResponse(false, status));
+
+      const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
+      const json = await res.json();
+
+      expect(res.status).toBe(201);
+      expect(json.webhookCreated).toBe(false);
+      expect(json.warnings.length).toBe(2);
+      expect(json.warnings[0]).toMatch(/webhook/i);
+      expect(json.warnings[1]).toBe(
+        "the new repo may not be in the Jace installation — add it at https://github.com/apps/jace/installations/new if the webhook is missing"
+      );
+    }
   });
 
   it("201 with webhookCreated:false + a warning when the webhook fetch throws", async () => {

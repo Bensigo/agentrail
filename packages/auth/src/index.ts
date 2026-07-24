@@ -10,20 +10,6 @@ import {
   persistGithubAccountTokens,
 } from "@agentrail/db-postgres";
 
-/**
- * Full `repo` on top of whatever identity scopes GitHub grants the App's
- * login OAuth by default. Passed as the `authorizationParams.scope` when a
- * user escalates at connect/create-repo time so the stored OAuth token can
- * list private repos, push branches, open PRs and create issues for the
- * GitHub connector (see the console's repos connect flow, `signIn`'s
- * `authorizationParams` override). `repo` (not `public_repo`) because the
- * connector must reach private repositories too. Unrelated to Jace's own repo
- * access, which comes exclusively from the workspace's App installation
- * (installation tokens) — this scope only widens the user's own login token
- * for the separate GitHub connector feature.
- */
-export const GITHUB_REPO_SCOPE = "read:user user:email repo";
-
 const result: NextAuthResult = NextAuth({
   adapter: DrizzleAdapter(db, {
     usersTable: users,

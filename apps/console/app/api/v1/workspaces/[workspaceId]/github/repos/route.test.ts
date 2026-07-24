@@ -9,22 +9,14 @@ vi.mock("@agentrail/auth", () => ({
 
 vi.mock("@agentrail/db-postgres", () => ({
   getWorkspaceMembership: vi.fn(),
-  getUserGithubAccount: vi.fn(),
-  // Keep the real (pure) scope check so the identity-only gate is exercised
-  // against real scope strings; the function itself is unit-tested separately.
-  hasRepoScope: (scope: string | null | undefined) =>
-    !!scope && scope.split(/[\s,]+/).filter(Boolean).includes("repo"),
+  getInstallationToken: vi.fn(),
 }));
 
 import { auth } from "@agentrail/auth";
-import {
-  getWorkspaceMembership,
-  getUserGithubAccount,
-} from "@agentrail/db-postgres";
+import { getWorkspaceMembership, getInstallationToken } from "@agentrail/db-postgres";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 const WORKSPACE_ID = "ws-123";
-const REPO_SCOPE = "read:user,user:email,repo";
 
 function makeRequest(query = ""): NextRequest {
   return new NextRequest(
@@ -36,9 +28,14 @@ function makeParams() {
   return { params: Promise.resolve({ workspaceId: WORKSPACE_ID }) };
 }
 
-/** A GitHub `GET /user/repos` response (array body) with an optional
- * x-ratelimit-remaining header for the 403 rate-limit branch. */
-function ghListResponse(status: number, body: unknown, rateRemaining?: string) {
+/** A GitHub `GET /installation/repositories` response — WRAPPER object, not
+ * a bare array — with an optional x-ratelimit-remaining header for the 403
+ * rate-limit branch. */
+function ghInstallationResponse(
+  status: number,
+  repositories: unknown[],
+  rateRemaining?: string
+) {
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -48,7 +45,7 @@ function ghListResponse(status: number, body: unknown, rateRemaining?: string) {
           ? (rateRemaining ?? null)
           : null,
     },
-    json: async () => body,
+    json: async () => ({ total_count: repositories.length, repositories }),
   };
 }
 
@@ -102,38 +99,20 @@ describe("GET /api/v1/workspaces/:workspaceId/github/repos", () => {
     expect(res.status).toBe(403);
   });
 
-  it("returns 400 github_not_connected when the user has no GitHub token", async () => {
+  it("returns 400 github_not_connected when the workspace has no installation token, and never calls GitHub", async () => {
     vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
     vi.mocked(getWorkspaceMembership).mockResolvedValue({
       role: "owner",
     } as never);
-    vi.mocked(getUserGithubAccount).mockResolvedValue(null);
-
-    const res = await GET(makeRequest(), makeParams());
-    const json = await res.json();
-
-    expect(res.status).toBe(400);
-    expect(json.code).toBe("github_not_connected");
-  });
-
-  it("returns 403 github_reconnect when the stored token lacks repo scope (identity-only)", async () => {
-    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
-    vi.mocked(getWorkspaceMembership).mockResolvedValue({
-      role: "owner",
-    } as never);
-    vi.mocked(getUserGithubAccount).mockResolvedValue({
-      accessToken: "gho_identity_only",
-      scope: "read:user,user:email",
-    });
+    vi.mocked(getInstallationToken).mockResolvedValue(null);
     const fetchSpy = vi.fn();
     global.fetch = fetchSpy as unknown as typeof fetch;
 
     const res = await GET(makeRequest(), makeParams());
     const json = await res.json();
 
-    expect(res.status).toBe(403);
-    expect(json.code).toBe("github_reconnect");
-    // The scope gate short-circuits BEFORE GitHub is ever called.
+    expect(res.status).toBe(400);
+    expect(json.code).toBe("github_not_connected");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -142,13 +121,10 @@ describe("GET /api/v1/workspaces/:workspaceId/github/repos", () => {
     vi.mocked(getWorkspaceMembership).mockResolvedValue({
       role: "admin",
     } as never);
-    vi.mocked(getUserGithubAccount).mockResolvedValue({
-      accessToken: "gho_token",
-      scope: REPO_SCOPE,
-    });
+    vi.mocked(getInstallationToken).mockResolvedValue("installation-token");
     global.fetch = vi
       .fn()
-      .mockResolvedValue(ghListResponse(200, RAW_REPOS)) as unknown as typeof fetch;
+      .mockResolvedValue(ghInstallationResponse(200, RAW_REPOS)) as unknown as typeof fetch;
 
     const res = await GET(makeRequest(), makeParams());
     const json = await res.json();
@@ -162,8 +138,29 @@ describe("GET /api/v1/workspaces/:workspaceId/github/repos", () => {
       html_url: "https://github.com/bensigo/agentrail",
     });
     // no token, no extra github fields leaked
-    expect(JSON.stringify(json)).not.toContain("gho_token");
+    expect(JSON.stringify(json)).not.toContain("installation-token");
     expect(json.repos[0].id).toBeUndefined();
+  });
+
+  it("calls GitHub's installation-repositories endpoint with the installation token, not /user/repos", async () => {
+    vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({
+      role: "owner",
+    } as never);
+    vi.mocked(getInstallationToken).mockResolvedValue("installation-token");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(ghInstallationResponse(200, RAW_REPOS));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await GET(makeRequest(), makeParams());
+
+    expect(getInstallationToken).toHaveBeenCalledWith(WORKSPACE_ID);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain("https://api.github.com/installation/repositories");
+    expect((init as RequestInit).headers).toMatchObject({
+      Authorization: "Bearer installation-token",
+    });
   });
 
   it("filters by the q query param (client-side substring over full_name)", async () => {
@@ -171,13 +168,10 @@ describe("GET /api/v1/workspaces/:workspaceId/github/repos", () => {
     vi.mocked(getWorkspaceMembership).mockResolvedValue({
       role: "owner",
     } as never);
-    vi.mocked(getUserGithubAccount).mockResolvedValue({
-      accessToken: "gho_token",
-      scope: REPO_SCOPE,
-    });
+    vi.mocked(getInstallationToken).mockResolvedValue("installation-token");
     global.fetch = vi
       .fn()
-      .mockResolvedValue(ghListResponse(200, RAW_REPOS)) as unknown as typeof fetch;
+      .mockResolvedValue(ghInstallationResponse(200, RAW_REPOS)) as unknown as typeof fetch;
 
     const res = await GET(makeRequest("?q=acme"), makeParams());
     const json = await res.json();
@@ -187,18 +181,15 @@ describe("GET /api/v1/workspaces/:workspaceId/github/repos", () => {
     expect(json.repos[0].full_name).toBe("acme/website");
   });
 
-  it("returns 401 github_reconnect when the stored token is rejected by GitHub", async () => {
+  it("returns 401 github_reconnect when GitHub rejects the installation token", async () => {
     vi.mocked(auth).mockResolvedValue({ user: { id: "user-1" } } as never);
     vi.mocked(getWorkspaceMembership).mockResolvedValue({
       role: "owner",
     } as never);
-    vi.mocked(getUserGithubAccount).mockResolvedValue({
-      accessToken: "gho_stale",
-      scope: REPO_SCOPE,
-    });
+    vi.mocked(getInstallationToken).mockResolvedValue("installation-token");
     global.fetch = vi
       .fn()
-      .mockResolvedValue(ghListResponse(401, {})) as unknown as typeof fetch;
+      .mockResolvedValue(ghInstallationResponse(401, [])) as unknown as typeof fetch;
 
     const res = await GET(makeRequest(), makeParams());
     const json = await res.json();
@@ -212,13 +203,10 @@ describe("GET /api/v1/workspaces/:workspaceId/github/repos", () => {
     vi.mocked(getWorkspaceMembership).mockResolvedValue({
       role: "owner",
     } as never);
-    vi.mocked(getUserGithubAccount).mockResolvedValue({
-      accessToken: "gho_token",
-      scope: REPO_SCOPE,
-    });
+    vi.mocked(getInstallationToken).mockResolvedValue("installation-token");
     global.fetch = vi
       .fn()
-      .mockResolvedValue(ghListResponse(403, {}, "0")) as unknown as typeof fetch;
+      .mockResolvedValue(ghInstallationResponse(403, [], "0")) as unknown as typeof fetch;
 
     const res = await GET(makeRequest(), makeParams());
     const json = await res.json();
@@ -232,10 +220,7 @@ describe("GET /api/v1/workspaces/:workspaceId/github/repos", () => {
     vi.mocked(getWorkspaceMembership).mockResolvedValue({
       role: "owner",
     } as never);
-    vi.mocked(getUserGithubAccount).mockResolvedValue({
-      accessToken: "gho_token",
-      scope: REPO_SCOPE,
-    });
+    vi.mocked(getInstallationToken).mockResolvedValue("installation-token");
     global.fetch = vi
       .fn()
       .mockRejectedValue(new Error("ECONNRESET")) as unknown as typeof fetch;

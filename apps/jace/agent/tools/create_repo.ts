@@ -76,7 +76,10 @@ export default defineTool({
     "the user can see the repo, and be honest about webhookCreated: if " +
     "false, tell them the webhook could not be created and to connect it " +
     "from the console, rather than implying it worked; mention " +
-    "onboardQueued only when it's true. On failure returns a short, " +
+    "onboardQueued only when it's true. On personal GitHub accounts this " +
+    "returns { guided, message } instead — relay the message verbatim " +
+    "(GitHub blocks apps from creating personal repos; the user creates it " +
+    "via the links and you connect it after). On failure returns a short, " +
     "honest, ready-to-relay message — e.g. a taken name already comes with " +
     "a nudge to pick another — relay it verbatim rather than inventing " +
     "your own explanation or retrying silently.",

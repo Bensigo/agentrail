@@ -495,7 +495,24 @@ function GithubManage({
     }
   }
 
-  if (connector.status === "connected") {
+  // Install button + error, shared by the two states that need it (not
+  // connected at all, and connected-via-repos-only with no App installed) —
+  // one handler, rendered from both branches instead of duplicated.
+  const installButton = (
+    <div className="flex flex-col gap-2">
+      <button
+        type="button"
+        onClick={connect}
+        disabled={busy}
+        className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+      >
+        {busy ? "Connecting…" : "Connect GitHub"}
+      </button>
+      {error && <p className="text-xs text-[var(--red-11)]">{error}</p>}
+    </div>
+  );
+
+  if (connector.status === "connected" && connector.appInstalled) {
     return (
       <p className="text-xs leading-relaxed text-[var(--gray-09)]">
         Jace is installed on your GitHub. Issues labeled{" "}
@@ -506,21 +523,27 @@ function GithubManage({
       </p>
     );
   }
+
+  if (connector.status === "connected" && !connector.appInstalled) {
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+          Repos are linked from the legacy flow, but the Jace GitHub App
+          isn&apos;t installed yet — install it so Jace can review, push, and
+          open PRs as itself.
+        </p>
+        {installButton}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-2">
       <p className="text-xs leading-relaxed text-[var(--gray-09)]">
         Install the Jace GitHub App to let Jace review, push, and open PRs on
         the repos you pick — every action shows as Jace, not you.
       </p>
-      <button
-        type="button"
-        onClick={connect}
-        disabled={busy}
-        className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
-      >
-        {busy ? "Connecting…" : "Connect GitHub"}
-      </button>
-      {error && <p className="text-xs text-[var(--red-11)]">{error}</p>}
+      {installButton}
     </div>
   );
 }

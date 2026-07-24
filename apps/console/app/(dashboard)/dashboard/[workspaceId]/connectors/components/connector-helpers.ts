@@ -105,6 +105,14 @@ export interface ConnectorConfigInput {
   kind: ConnectorKind;
   /** OAuth connectors (GitHub): truthy when the workspace has linked it. */
   connected?: boolean;
+  /**
+   * GitHub only: the Jace GitHub App is actually installed on the account
+   * (`getGithubInstallation` returned a row) — distinct from `connected`,
+   * which also goes true for a pre-App workspace whose repos were linked via
+   * the old OAuth flow. Lets the card offer the install affordance even while
+   * `connected` is already true. Defaults false when absent.
+   */
+  appInstalled?: boolean;
   /** Secret connectors (mcp + slack/telegram): a credential is stored. */
   hasSecret?: boolean;
   /** The label a connector ingests issues by (GitHub: the AFK ready label). */
@@ -145,6 +153,11 @@ export interface ConnectorView {
   target: string | null;
   chatId: string | null;
   connect: ConnectorConnectMeta | null;
+  /**
+   * GitHub only: the Jace GitHub App is installed (see the doc-comment on
+   * {@link ConnectorConfigInput.appInstalled}). False for every other kind.
+   */
+  appInstalled: boolean;
   /** Heartbeat trigger config the Connectors page manages (folded in #816). */
   enabled: boolean;
   triggerLabel: string;
@@ -415,6 +428,7 @@ export function projectConnectors(
       target,
       chatId: cfg?.chatId ?? null,
       connect: entry.connect ?? null,
+      appInstalled: entry.kind === "github" && Boolean(cfg?.appInstalled),
       // Heartbeat trigger config the card manages (folded in #816). Defaults when
       // no connector row exists: a connector defaults enabled once connected.
       enabled: cfg?.enabled ?? connected,

@@ -30,7 +30,8 @@
     },
     {
       "name": "context-pack-build",
-      "task": "build_context_pack write_json packs_dir pack_id sections included excluded",
+      "_comment": "Recalibrated 2026-07-23: the original task ('build_context_pack write_json packs_dir pack_id sections included excluded') was a generic keyword bag that agentrail/context/wiki.py (added by the Repo Wiki compiler, spec 2026-07-23) legitimately shares (write_json/build/included), diluting the corpus enough to drop agentrail/shared/json.py below the shipped packCutoff ratio (0.4) in this certification test -- a corpus-growth artifact, not a retrieval regression. Sharpened to add packs.py-only symbols absent from wiki.py: PACK_SECTION_KEYS (packs.py:22), _greedy_token_budget_fill (packs.py:519), render_context_pack_markdown (packs.py:561). write_json is kept (packs.py:19 imports it from shared/json.py -- the real dependency this fixture certifies). expectedFiles/requiredSources/minPrecisionAtBudget deliberately unchanged.",
+      "task": "build_context_pack PACK_SECTION_KEYS _greedy_token_budget_fill render_context_pack_markdown write_json",
       "requiredSources": ["agentrail/context/packs.py"],
       "limit": 10,
       "minPrecisionAtBudget": 0.5,

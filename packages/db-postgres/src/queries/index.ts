@@ -2149,6 +2149,10 @@ export {
 // consumeChatIdentityLinkToken (issue #1263) is the single-use,
 // expiry-checked consume primitive the /connect/[token] bind flow calls
 // after `setChatIdentityLinkToken` mints a link.
+// listChatIdentitiesForWorkspace (connectors Channels cutover) is the
+// reverse direction: every identity a workspace has linked, the connected-
+// state read for the connectors page's Channels cards and the onboarding
+// wizard's channel-step signal.
 export {
   insertChatIdentity,
   getChatIdentity,
@@ -2163,6 +2167,7 @@ export {
   findChatIdentityBySignupToken,
   resolveInboundChatIdentity,
   listWorkspacesForChatIdentity,
+  listChatIdentitiesForWorkspace,
   type ResolveInboundChatIdentityInput,
   type ResolveInboundChatIdentityResult,
   type ReachableWorkspace,

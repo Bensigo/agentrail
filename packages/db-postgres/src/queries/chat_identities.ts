@@ -449,3 +449,33 @@ export async function listWorkspacesForChatIdentity(
     .where(inArray(workspaces.id, Array.from(workspaceIds)))
     .orderBy(workspaces.name);
 }
+
+/**
+ * List every chat identity bound to a workspace (`workspace_id` match),
+ * ordered by `created_at` ascending for a deterministic list. This is the
+ * read the connectors page's Channels section and the onboarding wizard's
+ * channel-step completion signal both use: a platform is "connected" iff
+ * this returns ≥1 row for it (see
+ * docs/superpowers/specs/2026-07-24-connectors-channels-section-design.md).
+ * Read-only; returns `[]` for a workspace with none — never throws on that
+ * (normal, e.g. brand-new workspace) case.
+ */
+export async function listChatIdentitiesForWorkspace(
+  workspaceId: string
+): Promise<
+  Array<{
+    platform: string;
+    platformUserId: string;
+    displayName: string | null;
+  }>
+> {
+  return db
+    .select({
+      platform: chatIdentities.platform,
+      platformUserId: chatIdentities.platformUserId,
+      displayName: chatIdentities.displayName,
+    })
+    .from(chatIdentities)
+    .where(eq(chatIdentities.workspaceId, workspaceId))
+    .orderBy(chatIdentities.createdAt);
+}

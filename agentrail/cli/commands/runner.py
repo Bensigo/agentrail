@@ -111,6 +111,20 @@ def _make_execute(creds):
             # EXPLICITLY now that run_env is no longer a full os.environ copy
             # (#1295 G1); the claim token above still wins when present.
             run_env["GIT_TOKEN"] = os.environ["GIT_TOKEN"]
+        # Bot commit identity (GitHub App swap spec §6): the claim carries
+        # git_bot_name/git_bot_email when the console's App env is configured
+        # (composed there via resolveGithubAppConfig+botCommitIdentity), so
+        # pushed commits attribute to <slug>[bot] instead of the neutral
+        # "AgentRail Runner" fallback. Threaded independently, each ONLY when
+        # non-empty — native_runner._publish_green is the layer that requires
+        # BOTH present before it will use them, falling back to its own
+        # neutral identity otherwise. "" (an unconfigured App env, or an
+        # older backend that predates this field) leaves the env key unset,
+        # same shape as the GIT_TOKEN fallback above.
+        if item.git_bot_name:
+            run_env["AGENTRAIL_GIT_BOT_NAME"] = item.git_bot_name
+        if item.git_bot_email:
+            run_env["AGENTRAIL_GIT_BOT_EMAIL"] = item.git_bot_email
         kwargs = dict(
             repo_url=item.repo_url,
             ref=item.ref,

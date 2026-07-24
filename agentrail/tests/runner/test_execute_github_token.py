@@ -28,7 +28,9 @@ def _creds() -> SimpleNamespace:
     )
 
 
-def _work_item(github_token: str = "") -> WorkItem:
+def _work_item(
+    github_token: str = "", git_bot_name: str = "", git_bot_email: str = ""
+) -> WorkItem:
     return WorkItem(
         id="wi-1",
         workspace_id="ws1",
@@ -40,6 +42,8 @@ def _work_item(github_token: str = "") -> WorkItem:
         body="b",
         repository_id="repo-1",
         github_token=github_token,
+        git_bot_name=git_bot_name,
+        git_bot_email=git_bot_email,
     )
 
 
@@ -92,6 +96,53 @@ def test_no_claim_token_and_no_local_token_leaves_git_token_unset(monkeypatch):
     execute = runner_cmd._make_execute(_creds())
     execute(_work_item(github_token=""))
     assert "GIT_TOKEN" not in fake.calls[0]["env"]
+
+
+# ---------------------------------------------------------------------------
+# Bot commit identity (GitHub App swap spec §6): the claim carries
+# git_bot_name/git_bot_email when the console's App env is configured;
+# ``_make_execute`` threads them into AGENTRAIL_GIT_BOT_NAME/
+# AGENTRAIL_GIT_BOT_EMAIL so ``native_runner._publish_green`` can attribute
+# its commit to the bot user instead of the neutral fallback identity.
+# ---------------------------------------------------------------------------
+
+def test_git_bot_identity_threaded_into_env_when_present(monkeypatch):
+    fake = _execute_with_fake(monkeypatch)
+    execute = runner_cmd._make_execute(_creds())
+    execute(
+        _work_item(
+            git_bot_name="jace[bot]",
+            git_bot_email="98765+jace[bot]@users.noreply.github.com",
+        )
+    )
+    env = fake.calls[0]["env"]
+    assert env["AGENTRAIL_GIT_BOT_NAME"] == "jace[bot]"
+    assert env["AGENTRAIL_GIT_BOT_EMAIL"] == "98765+jace[bot]@users.noreply.github.com"
+
+
+def test_git_bot_identity_env_keys_absent_when_claim_carries_none(monkeypatch):
+    # The console omits the fields entirely when its App env is unconfigured,
+    # so WorkItem.from_dict parses them as "" — never set an empty-string env
+    # var (native_runner's fallback check is presence-based).
+    fake = _execute_with_fake(monkeypatch)
+    execute = runner_cmd._make_execute(_creds())
+    execute(_work_item())
+    env = fake.calls[0]["env"]
+    assert "AGENTRAIL_GIT_BOT_NAME" not in env
+    assert "AGENTRAIL_GIT_BOT_EMAIL" not in env
+
+
+def test_git_bot_name_threaded_independently_of_email(monkeypatch):
+    # _make_execute threads each var independently when its own claim field is
+    # non-empty; native_runner._publish_green is what requires BOTH present
+    # before it will use the bot identity (see test_native_runner.py) — this
+    # layer just forwards whatever the claim carried.
+    fake = _execute_with_fake(monkeypatch)
+    execute = runner_cmd._make_execute(_creds())
+    execute(_work_item(git_bot_name="jace[bot]", git_bot_email=""))
+    env = fake.calls[0]["env"]
+    assert env["AGENTRAIL_GIT_BOT_NAME"] == "jace[bot]"
+    assert "AGENTRAIL_GIT_BOT_EMAIL" not in env
 
 
 # ---------------------------------------------------------------------------

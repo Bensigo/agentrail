@@ -589,6 +589,44 @@ def test_workitem_defaults_github_token_to_empty():
     assert item.github_token == ""
 
 
+# --- WorkItem.from_dict: bot commit identity (GitHub App swap spec §6) -------
+
+
+def test_from_dict_parses_git_bot_name_and_email():
+    item = WorkItem.from_dict(
+        _claim_payload(
+            git_bot_name="jace[bot]",
+            git_bot_email="98765+jace[bot]@users.noreply.github.com",
+        )
+    )
+    assert item.git_bot_name == "jace[bot]"
+    assert item.git_bot_email == "98765+jace[bot]@users.noreply.github.com"
+
+
+def test_from_dict_defaults_git_bot_identity_to_empty_when_absent():
+    # The console omits these fields entirely when the GitHub App env is
+    # unconfigured (spec §6) — a claim payload from that state, or from an
+    # older backend that predates bot identity, must still parse cleanly.
+    item = WorkItem.from_dict(_claim_payload())
+    assert item.git_bot_name == ""
+    assert item.git_bot_email == ""
+
+
+def test_from_dict_coerces_null_git_bot_identity_to_empty():
+    item = WorkItem.from_dict(_claim_payload(git_bot_name=None, git_bot_email=None))
+    assert item.git_bot_name == ""
+    assert item.git_bot_email == ""
+
+
+def test_workitem_defaults_git_bot_identity_to_empty():
+    item = WorkItem(
+        id="x", workspace_id="w", source="github",
+        external_id="42", repo_url="", ref="main", title="", body="",
+    )
+    assert item.git_bot_name == ""
+    assert item.git_bot_email == ""
+
+
 def test_workitem_defaults_kind_to_issue():
     # Constructing a WorkItem without passing kind defaults to "issue".
     item = WorkItem(

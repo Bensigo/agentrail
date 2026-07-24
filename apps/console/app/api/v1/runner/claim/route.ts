@@ -4,7 +4,7 @@ import {
   touchApiKeyLastUsed,
   hasActiveSelfHostedRunner,
   getMcpConnectorKeys,
-  ensureFreshGithubToken,
+  getInstallationToken,
   getWorkspaceBudgetState,
   sumWorkspaceSpendSince,
   markBudgetExhaustedNotified,
@@ -12,6 +12,7 @@ import {
   peekNextClaimEstimateUsd,
   walletCanAdmit,
 } from "@agentrail/db-postgres";
+import { resolveGithubAppConfig, botCommitIdentity } from "@agentrail/github-app";
 import { recordRunLifecycleEvent } from "@agentrail/db-clickhouse";
 import { requireBearer } from "../../../../../lib/bearer-auth";
 import { notifyWorkspaceBudgetExhausted } from "./notify";
@@ -188,33 +189,46 @@ export async function GET(request: NextRequest) {
     console.error("[runner/claim] failed to load MCP keys:", err);
   }
 
-  // Hand the run the workspace's connected GitHub OAuth token so the runner can
+  // Hand the run a fresh GitHub App installation token so the runner can
   // authenticate `git clone`/`git push`/`gh pr create` for THIS workspace's
   // repo over the already-authenticated claim link — no separately configured
-  // PAT required. "" when the workspace owner hasn't linked GitHub (or the
-  // stored token is null); the runner then falls back to its own locally
-  // configured GIT_TOKEN, if any (back-compat).
+  // PAT required. "" when the workspace has no bound installation, the App
+  // env is unconfigured, or GitHub is unreachable; the runner then falls back
+  // to its own locally configured GIT_TOKEN, if any (back-compat).
   //
-  // Refresh-on-claim (#1391): a claim must never hand out a token whose
-  // remaining TTL is less than the execution ceiling — a run that outlives its
-  // token fails at PUSH time, after all the compute is spent. `ensureFreshGithubToken`
-  // refreshes FIRST when the stored token is near expiry, persisting the
-  // rotated token, and is a strict NO-OP (no GitHub round-trip) when the token
-  // has ample TTL — today's common case, so the working loop is byte-identical
-  // then. It NEVER throws: a refresh hiccup degrades to the (possibly stale)
-  // stored token, and the runner's mid-run recovery is the backstop. Never
-  // logged: the token value never leaves this authenticated response.
+  // Installation tokens live ~1h (spec §2) and are minted fresh on EVERY
+  // claim — there is nothing to refresh or cache here, unlike the OAuth token
+  // this replaced. A run that legitimately outlives that hour is covered by
+  // the existing push-401 → POST /api/v1/runner/refresh-github-token → retry
+  // backstop (issue #1391), not by anything in this route. `getInstallationToken`
+  // never throws (it swallows its own failures and returns null); the try/catch
+  // here is defense-in-depth so a claim is never lost to this best-effort
+  // lookup. Never logged: the token value never leaves this authenticated
+  // response.
   let githubToken = "";
   try {
-    const fresh = await ensureFreshGithubToken(workspaceId);
-    githubToken = fresh.accessToken ?? "";
+    githubToken = (await getInstallationToken(workspaceId)) ?? "";
   } catch (err) {
     console.error("[runner/claim] failed to resolve GitHub token:", err);
   }
+
+  // Bot commit identity (spec §6): so pushed commits render as <slug>[bot]
+  // instead of a neutral "AgentRail Runner" author. Composed from the same
+  // App env the token mint above reads; omitted ENTIRELY (no key, not even
+  // an empty string) when that env is unconfigured — a self-host running
+  // without App credentials degrades to native_runner's own neutral fallback
+  // identity rather than shipping empty/garbage values.
+  const appCfg = resolveGithubAppConfig(process.env);
+  const botIdentity = appCfg.ok
+    ? botCommitIdentity(appCfg.slug, appCfg.botUserId)
+    : null;
 
   return NextResponse.json({
     ...item,
     mcp_keys: mcpKeys,
     github_token: githubToken,
+    ...(botIdentity
+      ? { git_bot_name: botIdentity.name, git_bot_email: botIdentity.email }
+      : {}),
   });
 }

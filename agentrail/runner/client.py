@@ -114,6 +114,16 @@ class WorkItem:
     # git/gh auth failure. Never logged — see native_runner's redaction of
     # captured process output before it is reported back as telemetry.
     github_token: str = ""
+    # The GitHub App bot commit identity for this workspace (GitHub App swap
+    # spec §6), attached by the claim route from
+    # resolveGithubAppConfig()+botCommitIdentity() so pushed commits render as
+    # <slug>[bot] instead of the neutral "AgentRail Runner" fallback. Both
+    # default to "" — the console OMITS these fields entirely (not just sends
+    # them empty) when the App env is unconfigured, and an older backend that
+    # predates bot identity never sends them either; either way "" here means
+    # native_runner falls back to its own neutral identity constant.
+    git_bot_name: str = ""
+    git_bot_email: str = ""
     # #1275 (estimate→enforcement threading): the alignment brief's confirmed
     # per-issue $ ceiling. Owner rule (2026-07-18): "confirming the brief =
     # sanctioning the ceiling" — when present, ``_make_execute`` (see
@@ -195,6 +205,8 @@ class WorkItem:
             tier=tier,
             mcp_keys=mcp_keys,
             github_token=str(d.get("github_token") or ""),
+            git_bot_name=str(d.get("git_bot_name") or ""),
+            git_bot_email=str(d.get("git_bot_email") or ""),
             estimated_budget_usd=estimated_budget_usd,
             model_override=model_override,
         )

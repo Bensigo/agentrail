@@ -1,6 +1,6 @@
 /**
  * Pure model for the **Connectors** management surface (M038, AC3 + catalog
- * expansion).
+ * expansion; #1292 issue-source rename; Gateway → Channels cutover).
  *
  * A **Connector** (CONTEXT.md, ADR 0010) is the seam between an external tool and
  * AgentRail. The catalog groups the cards by ROLE (what the connector is FOR),
@@ -15,15 +15,20 @@
  *   - **mcp**    — Model-Context-Protocol tool servers the agent can call, with
  *     NO ingest. Figma, Context7: each stores a per-workspace API key/token
  *     (write-only) and exposes its tools to a run.
- *   - **gateway** — outbound communication channels (notify). Discord, Slack,
- *     Telegram: each posts run completion / escalation messages to a channel.
+ *   - **channel** — Jace-native chat channels: Discord, Slack, Telegram. There is
+ *     NO credential to paste and nothing stored here to "connect" one — a user
+ *     DMs the shared Jace bot, and that conversation is recorded as a
+ *     `chat_identities` row keyed to the workspace. A channel kind reads as
+ *     `connected` once the workspace has ≥1 linked identity for its platform;
+ *     see `projectConnectors`'s `identities` parameter. No notification promises
+ *     live here — that's `notify.ts`, untouched by this cutover.
  *
  * This module is the pure projection the console reads (no I/O, unit-testable):
  * the catalog, the per-provider connect metadata, and how a connector's
- * *connected* state is derived from the workspace's stored config. The adapter
- * implementations live in `agentrail/connectors/`; this surface only lets a team
- * connect and manage them — it never decides admission (the input-contract gate's
- * job, server-side).
+ * *connected* state is derived from the workspace's stored config (and, for
+ * channel kinds, its linked chat identities). The adapter implementations live
+ * in `agentrail/connectors/`; this surface only lets a team connect and manage
+ * them — it never decides admission (the input-contract gate's job, server-side).
  */
 
 /** The external tools AgentRail can connect (M038 catalog). */
@@ -39,19 +44,24 @@ export type ConnectorKind =
 /**
  * Which catalog group a connector belongs to (drives the page sections). Grouped
  * by ROLE: `issue-source` (GitHub, Linear — feed the Issue Queue), `mcp`
- * (Figma, Context7 — tools only), `gateway` (Discord, Slack, Telegram — notify).
- * (#1292 renamed the former connect-mechanism `https` group to the role-based
- * `issue-source`, and moved Linear into it from `mcp`.)
+ * (Figma, Context7 — tools only), `channel` (Discord, Slack, Telegram —
+ * Jace-native chat; no credentials collected here, connection = a linked chat
+ * identity). (#1292 renamed the former connect-mechanism `https` group to the
+ * role-based `issue-source`, and moved Linear into it from `mcp`. The Gateway →
+ * Channels cutover renamed `gateway` to `channel` and dropped its BYO-credential
+ * forms — self-host remains docs-only, per the design ruling.)
  */
-export type ConnectorType = "issue-source" | "mcp" | "gateway";
+export type ConnectorType = "issue-source" | "mcp" | "channel";
 
 /**
- * How a connector is connected:
+ * How a connector's catalog entry is classified for its connect flow:
  *  - `oauth`   — comes online at login (GitHub); nothing to paste here.
- *  - `secret`  — store a per-workspace API key / token (mcp + slack/telegram).
- *  - `webhook` — store a channel webhook URL on the workspace (Discord, legacy).
+ *  - `secret`  — store a per-workspace API key / token (Linear, Figma,
+ *    Context7). Channel kinds (Discord, Slack, Telegram) also carry this
+ *    value, but — post-cutover — they don't actually collect a secret; they
+ *    connect via a linked chat identity instead. See `projectConnectors`.
  */
-export type ConnectorConnectMethod = "oauth" | "secret" | "webhook";
+export type ConnectorConnectMethod = "oauth" | "secret";
 
 /** Whether an adapter is implemented today, vs. planned in a follow-up. */
 export type ConnectorAvailability = "available" | "planned";
@@ -69,11 +79,13 @@ export interface ConnectorCapabilities {
   notify: boolean;
   /** Exposes MCP tools / context to a run. */
   tools?: boolean;
+  /** A Jace chat channel — the conversation is the interface. */
+  chat?: boolean;
 }
 
 /** Per-provider connect metadata the card renders (label, placeholder, how-to). */
 export interface ConnectorConnectMeta {
-  /** Field label for the credential input (e.g. "API key", "Webhook URL"). */
+  /** Field label for the credential input (e.g. "Linear API key", "Figma access token"). */
   credentialLabel: string;
   /** Placeholder hinting the expected shape (e.g. `lin_api_…`). */
   credentialPlaceholder: string;
@@ -81,10 +93,8 @@ export interface ConnectorConnectMeta {
   credentialHint: string;
   /** Link to the provider's setup docs. */
   helpUrl: string;
-  /** Short, ordered "how to create the app / key" steps (gateway/mcp setup). */
+  /** Short, ordered "how to create the app / key" steps. */
   setupSteps: string[];
-  /** Telegram also needs a target chat id alongside the bot token. */
-  needsChatId?: boolean;
 }
 
 /** Static catalog entry for a connector kind. */
@@ -96,7 +106,10 @@ export interface ConnectorCatalogEntry {
   description: string;
   availability: ConnectorAvailability;
   capabilities: ConnectorCapabilities;
-  /** Connect metadata — absent for oauth connectors (nothing to paste). */
+  /**
+   * Connect metadata — absent for oauth connectors (nothing to paste) and for
+   * every channel kind (Jace-native chat; no credential collected here either).
+   */
   connect?: ConnectorConnectMeta;
 }
 
@@ -113,20 +126,12 @@ export interface ConnectorConfigInput {
    * `connected` is already true. Defaults false when absent.
    */
   appInstalled?: boolean;
-  /** Secret connectors (mcp + slack/telegram): a credential is stored. */
+  /** Secret connectors (Linear, Figma, Context7): a credential is stored. */
   hasSecret?: boolean;
   /** The label a connector ingests issues by (GitHub: the AFK ready label). */
   ingestLabel?: string | null;
-  /** Repo / project / channel the connector is bound to, for display. */
+  /** Repo / project the connector is bound to, for display (GitHub OAuth). */
   target?: string | null;
-  /** Telegram gateway: the target chat id (non-secret; displayed). */
-  chatId?: string | null;
-  /**
-   * Discord notify connector: the configured webhook URL. Present + non-empty
-   * means the channel is wired. Never sent back to the client in full — the read
-   * model masks it to a display target; see {@link maskWebhook}.
-   */
-  webhookUrl?: string | null;
   /**
    * Heartbeat trigger config, folded in from the standalone heartbeat config
    * (#816). Absent → defaults (enabled, 'ready-for-agent', 60s).
@@ -151,7 +156,12 @@ export interface ConnectorView {
   capabilities: ConnectorCapabilities;
   ingestLabel: string | null;
   target: string | null;
-  chatId: string | null;
+  /**
+   * Linked chat identities for a channel kind (that kind's platform, e.g. every
+   * `telegram` identity on the workspace) — `[]` for a non-channel kind, and
+   * `[]` for a channel kind with none linked yet.
+   */
+  linkedIdentities: { displayName: string | null }[];
   connect: ConnectorConnectMeta | null;
   /**
    * GitHub only: the Jace GitHub App is installed (see the doc-comment on
@@ -162,6 +172,16 @@ export interface ConnectorView {
   enabled: boolean;
   triggerLabel: string;
   pollIntervalSeconds: number;
+}
+
+/**
+ * A workspace's linked chat identity for one platform, as `projectConnectors`
+ * consumes it (mirrors `listChatIdentitiesForWorkspace`'s row shape, minus the
+ * platform user id this projection has no use for).
+ */
+export interface ChannelIdentity {
+  platform: string;
+  displayName: string | null;
 }
 
 /** Human-facing section metadata for each connector type. */
@@ -179,19 +199,20 @@ export const CONNECTOR_TYPE_META: Record<
     description:
       "Model-Context-Protocol tool servers — codebase-level. Adding an API key writes the server into your repo's MCP config (.mcp.json) at run time, so the coding agent can call its tools during a run.",
   },
-  gateway: {
-    label: "Gateway",
+  channel: {
+    label: "Channels",
     description:
-      "Communication channels — platform-level. AgentRail (not your code) posts run completion and escalation-to-human notifications to the channel you connect.",
+      "Where you and your team talk to Jace. Message the bot once — that conversation becomes your channel.",
   },
 };
 
 /**
- * The connector catalog, grouped by ROLE (issue-source → mcp → gateway). GitHub
+ * The connector catalog, grouped by ROLE (issue-source → mcp → channel). GitHub
  * and Linear are the issue sources (both feed the Issue Queue — Linear via its
  * real-time webhook, #1292); Figma / Context7 are tools-only MCP connectors;
- * Discord / Slack / Telegram are gateway notify channels. Order here drives the
- * page sections.
+ * Discord / Slack / Telegram are Jace-native chat channels (Telegram available;
+ * Discord / Slack planned — no BYO credential forms for any of them). Order
+ * here drives the page sections.
  */
 export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
   // -- issue-source --------------------------------------------------------- //
@@ -269,92 +290,39 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
       ],
     },
   },
-  // -- gateway -------------------------------------------------------------- //
+  // -- channel --------------------------------------------------------------- //
   {
     kind: "discord",
-    type: "gateway",
-    connectMethod: "webhook",
+    type: "channel",
+    connectMethod: "secret",
     label: "Discord",
-    description:
-      "Notify a channel on run completion or escalation-to-human via a webhook.",
-    availability: "available",
-    capabilities: { ingest: false, postResult: false, notify: true },
-    connect: {
-      credentialLabel: "Channel webhook URL",
-      credentialPlaceholder: "https://discord.com/api/webhooks/…",
-      credentialHint: "A Discord channel webhook — under discord.com/api/webhooks/.",
-      helpUrl:
-        "https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks",
-      setupSteps: [
-        "In Discord, open the target channel → Edit Channel → Integrations → Webhooks.",
-        "Click “New Webhook”, pick the channel, then “Copy Webhook URL”.",
-        "Paste it here and connect.",
-      ],
-    },
+    description: "Chat with Jace in your Discord server.",
+    availability: "planned",
+    capabilities: { ingest: false, postResult: false, notify: false, chat: true },
   },
   {
     kind: "slack",
-    type: "gateway",
+    type: "channel",
     connectMethod: "secret",
     label: "Slack",
-    description:
-      "Notify a Slack channel on run completion or escalation-to-human via an incoming webhook.",
-    availability: "available",
-    capabilities: { ingest: false, postResult: false, notify: true },
-    connect: {
-      credentialLabel: "Incoming webhook URL",
-      credentialPlaceholder: "https://hooks.slack.com/services/…",
-      credentialHint: "A Slack incoming webhook — under hooks.slack.com/services/.",
-      helpUrl: "https://api.slack.com/messaging/webhooks",
-      setupSteps: [
-        "Go to api.slack.com/apps → Create New App → From scratch, pick your workspace.",
-        "Open “Incoming Webhooks”, toggle it on, then “Add New Webhook to Workspace”.",
-        "Choose the channel, Authorize, then copy the hooks.slack.com/services/… URL.",
-        "Paste it here and connect.",
-      ],
-    },
+    description: "Chat with Jace in Slack.",
+    availability: "planned",
+    capabilities: { ingest: false, postResult: false, notify: false, chat: true },
   },
   {
     kind: "telegram",
-    type: "gateway",
+    type: "channel",
     connectMethod: "secret",
     label: "Telegram",
     description:
-      "Notify a Telegram chat on run completion or escalation-to-human via a bot.",
+      "Chat with Jace in a Telegram DM — message the bot and that conversation becomes your channel.",
     availability: "available",
-    capabilities: { ingest: false, postResult: false, notify: true },
-    connect: {
-      credentialLabel: "Bot token",
-      credentialPlaceholder: "123456789:ABCdef…",
-      credentialHint:
-        "A BotFather token (digits:token). Chat id is optional — leave it blank for a direct chat with the bot; add one to post to a group/channel. On connect the bot sends a welcome message.",
-      helpUrl: "https://core.telegram.org/bots#how-do-i-create-a-bot",
-      needsChatId: true,
-      setupSteps: [
-        "In Telegram, message @BotFather → /newbot, set a name + username, copy the token.",
-        "Direct chat: open your bot and send it any message (e.g. /start), then connect with the chat id left blank — we resolve your DM automatically.",
-        "Group/channel: add the bot there, then paste that chat id (numeric or @channel).",
-        "Connect — the bot replies with a welcome message confirming the channel.",
-      ],
-    },
+    capabilities: { ingest: false, postResult: false, notify: false, chat: true },
   },
 ];
 
 /** Default ingest label, matching the AFK CLI's ready label / GitHubConnector. */
 export const DEFAULT_INGEST_LABEL = "ready-for-agent";
-
-/**
- * Mask a Discord webhook URL into a safe, recognizable display target — never
- * leak the secret token. A Discord webhook looks like
- * `https://discord.com/api/webhooks/<id>/<token>`; we show the id and elide the
- * token. Falsy / unparseable input yields `null` (nothing to display).
- */
-export function maskWebhook(url: string | null | undefined): string | null {
-  if (!url) return null;
-  const m = url.match(/\/webhooks\/(\d+)\//);
-  if (m) return `webhook ${m[1]}`;
-  return "webhook configured";
-}
 
 /** Look up a catalog entry by kind (total over the catalog). */
 export function catalogEntry(kind: ConnectorKind): ConnectorCatalogEntry {
@@ -363,9 +331,11 @@ export function catalogEntry(kind: ConnectorKind): ConnectorCatalogEntry {
 }
 
 /**
- * Derive whether a connector is connected from its stored config, by connect
- * method. OAuth → the `connected` flag (GitHub repos linked); webhook → a webhook
- * is set; secret → a credential is stored (`hasSecret`).
+ * Derive whether a non-channel connector is connected from its stored config,
+ * by connect method. OAuth → the `connected` flag (GitHub repos linked);
+ * secret → a credential is stored (`hasSecret`). Channel kinds never reach
+ * this function — their connected state is identity-based; see
+ * `projectConnectors`.
  */
 function isConnected(
   entry: ConnectorCatalogEntry,
@@ -374,46 +344,59 @@ function isConnected(
   switch (entry.connectMethod) {
     case "oauth":
       return Boolean(cfg?.connected);
-    case "webhook":
-      return Boolean(cfg?.webhookUrl);
     case "secret":
       return Boolean(cfg?.hasSecret);
   }
 }
 
 /**
- * Project the catalog against the workspace's stored connector config into the
- * rows the surface renders. Pure and total: a kind with no config row is
- * `disconnected`; only an `available` connector that is actually connected (per
- * its connect method) shows `connected`.
+ * Project the catalog against the workspace's stored connector config — and,
+ * for channel kinds, its linked chat identities — into the rows the surface
+ * renders. Pure and total: a kind with no config/identity is `disconnected`;
+ * only an `available` connector that is actually connected shows `connected` —
+ * per its connect method for issue-source/mcp kinds, or ≥1 linked identity of
+ * its platform for channel kinds.
  */
 export function projectConnectors(
-  configs: ConnectorConfigInput[]
+  configs: ConnectorConfigInput[],
+  identities: ChannelIdentity[] = []
 ): ConnectorView[] {
   const byKind = new Map<ConnectorKind, ConnectorConfigInput>();
   for (const c of configs) byKind.set(c.kind, c);
 
+  const identitiesByPlatform = new Map<string, ChannelIdentity[]>();
+  for (const identity of identities) {
+    const existing = identitiesByPlatform.get(identity.platform);
+    if (existing) existing.push(identity);
+    else identitiesByPlatform.set(identity.platform, [identity]);
+  }
+
   return CONNECTOR_CATALOG.map((entry) => {
     const cfg = byKind.get(entry.kind);
-    const connected = entry.availability === "available" && isConnected(entry, cfg);
+    // NOTE: a `planned` channel kind's `linkedIdentities` can be non-empty
+    // even while `status` stays `disconnected` below — consumers must keep
+    // gating affordances on `status`/`availability`, not identity presence,
+    // once Discord/Slack graduate from planned.
+    const kindIdentities =
+      entry.type === "channel" ? identitiesByPlatform.get(entry.kind) ?? [] : [];
+
+    const connected =
+      entry.availability === "available" &&
+      (entry.type === "channel"
+        ? kindIdentities.length > 0
+        : isConnected(entry, cfg));
     const status: ConnectorStatus = connected ? "connected" : "disconnected";
 
-    // A notify-only / tools-only connector has no ingest label; only ingest does.
+    // A notify-only / tools-only / channel connector has no ingest label; only
+    // ingest does.
     const ingestLabel =
       status === "connected" && entry.capabilities.ingest
         ? cfg?.ingestLabel ?? DEFAULT_INGEST_LABEL
         : null;
 
-    // Display target by connect method: webhook → masked; telegram → chat id;
-    // oauth → the stored target (repo); other secret connectors → none.
-    let target: string | null = null;
-    if (entry.connectMethod === "webhook") {
-      target = maskWebhook(cfg?.webhookUrl);
-    } else if (entry.kind === "telegram") {
-      target = status === "connected" ? cfg?.chatId ?? null : null;
-    } else if (entry.connectMethod === "oauth") {
-      target = cfg?.target ?? null;
-    }
+    // Display target: oauth → the stored target (repo); everything else → none
+    // (a channel's "target" is its linkedIdentities, not a single string).
+    const target = entry.connectMethod === "oauth" ? cfg?.target ?? null : null;
 
     return {
       kind: entry.kind,
@@ -426,7 +409,9 @@ export function projectConnectors(
       capabilities: entry.capabilities,
       ingestLabel,
       target,
-      chatId: cfg?.chatId ?? null,
+      linkedIdentities: kindIdentities.map((identity) => ({
+        displayName: identity.displayName,
+      })),
       connect: entry.connect ?? null,
       appInstalled: entry.kind === "github" && Boolean(cfg?.appInstalled),
       // Heartbeat trigger config the card manages (folded in #816). Defaults when
@@ -443,8 +428,8 @@ export function projectConnectors(
 export function activeHeartbeatConnectors(
   views: ConnectorView[]
 ): ConnectorView[] {
-  // Only ingest connectors actually drive the heartbeat loop; a notify/tools
-  // connector being connected doesn't poll for work.
+  // Only ingest connectors actually drive the heartbeat loop; a notify/tools/
+  // chat connector being connected doesn't poll for work.
   return views.filter(
     (v) => v.status === "connected" && v.enabled && v.capabilities.ingest
   );
@@ -461,8 +446,35 @@ export function capabilitySummary(caps: ConnectorCapabilities): string {
   if (caps.ingest) parts.push("Ingest");
   if (caps.postResult) parts.push("Post result");
   if (caps.notify) parts.push("Notify");
+  if (caps.chat) parts.push("Chat");
   if (caps.tools) parts.push("Tools");
   return parts.join(" · ") || "—";
+}
+
+/**
+ * One line summarizing a channel's linked identities. Shared between the
+ * connectors page (`connectors-panel.tsx`) and the setup wizard's channel
+ * step (`channel-step.tsx`) so a connected channel reads identically in both
+ * places — lifted here (was a private helper in `connectors-panel.tsx`)
+ * rather than duplicated, per the connectors-channels wizard cutover (T5).
+ * Takes bare display names, not full identity objects: this is a pure
+ * formatting rule over the one field either caller ever has to show, and
+ * keeping the parameter that narrow means neither caller needs to fabricate
+ * or unwrap an object shape it doesn't otherwise have (the wizard only ever
+ * has names, never a platform user id, by design).
+ *
+ * Simplest honest form: a linked identity can have a null displayName (a
+ * `chat_identities` row with no profile name), so when NONE of them have a
+ * name there's nothing to list — just the count. Otherwise list the names we
+ * do have and fold the nameless ones into a trailing "+N" rather than pad the
+ * list with placeholders.
+ */
+export function linkedIdentitiesLine(displayNames: (string | null)[]): string {
+  const names = displayNames.filter((name): name is string => name !== null);
+  if (names.length === 0) return `${displayNames.length} linked`;
+  const unnamed = displayNames.length - names.length;
+  const joined = names.join(", ");
+  return unnamed > 0 ? `Linked: ${joined} +${unnamed}` : `Linked: ${joined}`;
 }
 
 // --------------------------------------------------------------------------- //
@@ -474,40 +486,15 @@ export function capabilitySummary(caps: ConnectorCapabilities): string {
 
 export type CredentialCheck = { ok: true } | { ok: false; error: string };
 
-/** Is `url` a Slack incoming webhook (https, hooks.slack.com/services/…)? */
-export function isSlackWebhook(url: string): boolean {
-  try {
-    const u = new URL(url);
-    return (
-      u.protocol === "https:" &&
-      u.hostname.toLowerCase() === "hooks.slack.com" &&
-      u.pathname.startsWith("/services/")
-    );
-  } catch {
-    return false;
-  }
-}
-
-/** Is `token` shaped like a BotFather token (`<digits>:<35+ token chars>`)? */
-export function isTelegramToken(token: string): boolean {
-  return /^\d{6,}:[A-Za-z0-9_-]{30,}$/.test(token.trim());
-}
-
-/** Is `id` a plausible Telegram chat id (numeric, optionally -100…, or @name)? */
-export function isTelegramChatId(id: string): boolean {
-  const v = id.trim();
-  return /^-?\d{1,32}$/.test(v) || /^@[A-Za-z0-9_]{4,}$/.test(v);
-}
-
 /**
- * Validate a connector's credential for connect. `secret` is the API key / token
- * / webhook URL; `chatId` is required for Telegram. Returns `{ok:true}` or a
- * human error. OAuth connectors (GitHub) have no credential to validate here.
+ * Validate a connector's credential for connect. `secret` is the API key /
+ * token. Returns `{ok:true}` or a human error. OAuth (GitHub) and every
+ * channel kind (Discord, Slack, Telegram — Jace-native chat, nothing to paste)
+ * have no credential to validate here.
  */
 export function validateConnectorCredential(
   kind: ConnectorKind,
-  secret: string,
-  chatId?: string
+  secret: string
 ): CredentialCheck {
   const s = secret.trim();
   if (s.length === 0) return { ok: false, error: "A credential is required." };
@@ -524,27 +511,12 @@ export function validateConnectorCredential(
       return /^ctx7sk[-_]/.test(s)
         ? { ok: true }
         : { ok: false, error: "Context7 keys start with ctx7sk." };
-    case "slack":
-      return isSlackWebhook(s)
-        ? { ok: true }
-        : { ok: false, error: "Provide a Slack hooks.slack.com/services/… URL." };
-    case "telegram": {
-      if (!isTelegramToken(s))
-        return { ok: false, error: "Provide a BotFather token (digits:token)." };
-      // Chat id is OPTIONAL: leave it blank for a direct chat — message your
-      // bot first and connect resolves your DM chat id automatically. When a
-      // value IS supplied (a group/channel), it must be well-formed.
-      if (chatId && chatId.trim() && !isTelegramChatId(chatId))
-        return {
-          ok: false,
-          error:
-            "Chat id must be numeric or @channel — or leave it blank for a direct chat.",
-        };
-      return { ok: true };
-    }
     case "discord":
     case "github":
-      // Discord uses its dedicated webhook route; GitHub is OAuth — no secret here.
+    case "slack":
+    case "telegram":
+      // GitHub is OAuth; Discord/Slack/Telegram are Jace-native channels —
+      // none of them are credential-based here.
       return { ok: false, error: "This connector is not credential-based." };
   }
 }

@@ -6,17 +6,15 @@ import {
   activeHeartbeatConnectors,
   capabilitySummary,
   connectorStatusLabel,
-  isSlackWebhook,
-  isTelegramChatId,
-  isTelegramToken,
-  maskWebhook,
+  linkedIdentitiesLine,
   projectConnectors,
   validateConnectorCredential,
+  type ChannelIdentity,
   type ConnectorConfigInput,
 } from "./connector-helpers";
 
 describe("projectConnectors", () => {
-  it("returns one row per catalog entry, grouped issue-source → mcp → gateway", () => {
+  it("returns one row per catalog entry, grouped issue-source → mcp → channel", () => {
     const rows = projectConnectors([]);
     expect(rows.map((r) => r.kind)).toEqual([
       "github",
@@ -30,15 +28,16 @@ describe("projectConnectors", () => {
     // Each row carries its catalog type so the page can section the cards.
     // #1292: GitHub AND Linear are both `issue-source` (they feed the Issue
     // Queue — Linear via its real-time webhook); only Figma / Context7 remain
-    // tools-only `mcp`.
+    // tools-only `mcp`. The Gateway → Channels cutover renamed the third group
+    // from `gateway` to `channel` (Discord / Slack / Telegram).
     expect(rows.map((r) => r.type)).toEqual([
       "issue-source",
       "issue-source",
       "mcp",
       "mcp",
-      "gateway",
-      "gateway",
-      "gateway",
+      "channel",
+      "channel",
+      "channel",
     ]);
   });
 
@@ -82,57 +81,10 @@ describe("projectConnectors", () => {
     expect(figma.status).toBe("disconnected");
   });
 
-  it("marks Slack / Telegram (gateway) connected from a stored secret", () => {
-    const rows = projectConnectors([
-      { kind: "slack", hasSecret: true },
-      { kind: "telegram", hasSecret: true, chatId: "-1001234567890" },
-    ]);
-    const slack = rows.find((r) => r.kind === "slack")!;
-    const telegram = rows.find((r) => r.kind === "telegram")!;
-    expect(slack.status).toBe("connected");
-    expect(telegram.status).toBe("connected");
-    // Telegram surfaces its (non-secret) chat id as the display target.
-    expect(telegram.target).toBe("-1001234567890");
-  });
-
-  it("never reports discord connected from a bare connected flag — only a real webhook counts", () => {
-    // Discord's falsifiable signal is a configured webhook, so a config that
-    // merely claims connected:true (no webhook) can't fake a connection.
-    const discord = projectConnectors([
-      { kind: "discord", connected: true },
-    ]).find((r) => r.kind === "discord")!;
-    expect(discord.availability).toBe("available");
-    expect(discord.status).toBe("disconnected");
-    expect(discord.ingestLabel).toBeNull();
-  });
-
   it("treats a kind with no config as disconnected", () => {
     const github = projectConnectors([]).find((r) => r.kind === "github")!;
     expect(github.status).toBe("disconnected");
     expect(github.ingestLabel).toBeNull();
-  });
-
-  it("marks Discord connected when a webhook is configured (M038 AC3)", () => {
-    const discord = projectConnectors([
-      {
-        kind: "discord",
-        connected: false, // notify connectors derive from webhookUrl, not this
-        webhookUrl: "https://discord.com/api/webhooks/12345/secret-token",
-      },
-    ]).find((r) => r.kind === "discord")!;
-    expect(discord.availability).toBe("available");
-    expect(discord.status).toBe("connected");
-    // Notify-only: no ingest label, and the target masks the secret token.
-    expect(discord.ingestLabel).toBeNull();
-    expect(discord.target).toBe("webhook 12345");
-  });
-
-  it("treats Discord as disconnected without a webhook", () => {
-    const discord = projectConnectors([{ kind: "discord", connected: true }]).find(
-      (r) => r.kind === "discord"
-    )!;
-    expect(discord.status).toBe("disconnected");
-    expect(discord.target).toBeNull();
   });
 
   it("folds in the heartbeat trigger config from the connector row (#816)", () => {
@@ -163,18 +115,66 @@ describe("projectConnectors", () => {
     const github = projectConnectors([]).find((r) => r.kind === "github")!;
     expect(github.enabled).toBe(false);
   });
+
+  // -- channel identities (Gateway → Channels cutover) ----------------------- //
+
+  it("marks Telegram connected via a linked chat identity and carries linkedIdentities, preserving a null display name", () => {
+    const identities: ChannelIdentity[] = [
+      { platform: "telegram", displayName: "Ben" },
+      { platform: "telegram", displayName: null },
+    ];
+    const telegram = projectConnectors([], identities).find(
+      (r) => r.kind === "telegram"
+    )!;
+    expect(telegram.status).toBe("connected");
+    expect(telegram.linkedIdentities).toEqual([
+      { displayName: "Ben" },
+      { displayName: null },
+    ]);
+  });
+
+  it("treats a channel kind with no linked identity as disconnected, with empty linkedIdentities", () => {
+    const telegram = projectConnectors([]).find((r) => r.kind === "telegram")!;
+    expect(telegram.status).toBe("disconnected");
+    expect(telegram.linkedIdentities).toEqual([]);
+    // No second argument at all (default param) — same result.
+    const telegramDefaulted = projectConnectors([]).find(
+      (r) => r.kind === "telegram"
+    )!;
+    expect(telegramDefaulted.status).toBe("disconnected");
+  });
+
+  it("never connects a planned channel kind (discord/slack) even with a linked identity for its platform", () => {
+    const identities: ChannelIdentity[] = [
+      { platform: "discord", displayName: "Team" },
+      { platform: "slack", displayName: "Team" },
+    ];
+    const rows = projectConnectors([], identities);
+    const discord = rows.find((r) => r.kind === "discord")!;
+    const slack = rows.find((r) => r.kind === "slack")!;
+    expect(discord.availability).toBe("planned");
+    expect(discord.status).toBe("disconnected");
+    expect(slack.availability).toBe("planned");
+    expect(slack.status).toBe("disconnected");
+  });
+
+  it("never populates linkedIdentities for a non-channel kind, even if identities carry its kind as platform", () => {
+    // Defensive: identities are keyed by platform strings that only ever come
+    // from telegram/slack/discord in practice, but the projection should never
+    // leak them onto an issue-source/mcp row regardless.
+    const identities: ChannelIdentity[] = [{ platform: "github", displayName: "x" }];
+    const github = projectConnectors([], identities).find(
+      (r) => r.kind === "github"
+    )!;
+    expect(github.linkedIdentities).toEqual([]);
+  });
 });
 
 describe("activeHeartbeatConnectors", () => {
-  it("returns only connected + enabled connectors", () => {
+  it("returns only connected + enabled ingest connectors", () => {
     const views = projectConnectors([
       { kind: "github", connected: true, enabled: true },
-      {
-        kind: "discord",
-        connected: false,
-        webhookUrl: "https://discord.com/api/webhooks/1/t",
-        enabled: false,
-      },
+      { kind: "linear", hasSecret: true, enabled: false },
     ]);
     const active = activeHeartbeatConnectors(views);
     expect(active.map((v) => v.kind)).toEqual(["github"]);
@@ -186,19 +186,13 @@ describe("activeHeartbeatConnectors", () => {
     ]);
     expect(activeHeartbeatConnectors(views)).toEqual([]);
   });
-});
 
-describe("maskWebhook", () => {
-  it("masks a discord webhook to its id, never the token", () => {
-    expect(
-      maskWebhook("https://discord.com/api/webhooks/98765/super-secret")
-    ).toBe("webhook 98765");
-  });
-
-  it("returns null for missing input and a generic label otherwise", () => {
-    expect(maskWebhook(null)).toBeNull();
-    expect(maskWebhook("")).toBeNull();
-    expect(maskWebhook("https://example.com/hook")).toBe("webhook configured");
+  it("never counts a connected channel kind — chat channels don't drive the ingest heartbeat", () => {
+    const views = projectConnectors(
+      [],
+      [{ platform: "telegram", displayName: "Ben" }]
+    );
+    expect(activeHeartbeatConnectors(views)).toEqual([]);
   });
 });
 
@@ -230,16 +224,78 @@ describe("capabilitySummary", () => {
     }
   });
 
-  it("summarizes the gateway adapters as notify-only", () => {
+  it("summarizes the channel adapters (discord/slack/telegram) as chat-only", () => {
     for (const kind of ["discord", "slack", "telegram"] as const) {
       const e = CONNECTOR_CATALOG.find((c) => c.kind === kind)!;
-      expect(capabilitySummary(e.capabilities)).toBe("Notify");
+      expect(capabilitySummary(e.capabilities)).toBe("Chat");
+    }
+  });
+});
+
+describe("linkedIdentitiesLine (lifted from connectors-panel.tsx, connectors-channels cutover T5 — shared with the setup wizard's channel step)", () => {
+  it("lists comma-joined display names when every identity has one", () => {
+    expect(linkedIdentitiesLine(["Ben", "Ada"])).toBe("Linked: Ben, Ada");
+  });
+
+  it("a single named identity needs no +N suffix", () => {
+    expect(linkedIdentitiesLine(["Ben"])).toBe("Linked: Ben");
+  });
+
+  it("falls back to a bare count when none of the identities have a display name", () => {
+    expect(linkedIdentitiesLine([null, null])).toBe("2 linked");
+  });
+
+  it("folds nameless identities into a trailing +N alongside the named ones", () => {
+    expect(linkedIdentitiesLine(["Ben", null, null])).toBe("Linked: Ben +2");
+  });
+
+  it("an empty list reads as 0 linked — total, never throws", () => {
+    expect(linkedIdentitiesLine([])).toBe("0 linked");
+  });
+});
+
+describe("connector catalog — channel group (Gateway → Channels cutover)", () => {
+  it("carries no connect meta for any channel kind — no BYO credential forms", () => {
+    for (const kind of ["discord", "slack", "telegram"] as const) {
+      const e = CONNECTOR_CATALOG.find((c) => c.kind === kind)!;
+      expect(e.type).toBe("channel");
+      expect(e.connect).toBeUndefined();
+    }
+  });
+
+  it("Telegram is available; Discord and Slack are planned", () => {
+    expect(
+      CONNECTOR_CATALOG.find((c) => c.kind === "telegram")!.availability
+    ).toBe("available");
+    expect(
+      CONNECTOR_CATALOG.find((c) => c.kind === "discord")!.availability
+    ).toBe("planned");
+    expect(
+      CONNECTOR_CATALOG.find((c) => c.kind === "slack")!.availability
+    ).toBe("planned");
+  });
+
+  it("leaves GitHub, Linear, Figma, Context7 catalog entries unchanged (type/availability)", () => {
+    expect(CONNECTOR_CATALOG.find((c) => c.kind === "github")!.type).toBe(
+      "issue-source"
+    );
+    expect(CONNECTOR_CATALOG.find((c) => c.kind === "linear")!.type).toBe(
+      "issue-source"
+    );
+    expect(CONNECTOR_CATALOG.find((c) => c.kind === "figma")!.type).toBe("mcp");
+    expect(CONNECTOR_CATALOG.find((c) => c.kind === "context7")!.type).toBe(
+      "mcp"
+    );
+    for (const kind of ["github", "linear", "figma", "context7"] as const) {
+      expect(CONNECTOR_CATALOG.find((c) => c.kind === kind)!.availability).toBe(
+        "available"
+      );
     }
   });
 });
 
 describe("validateConnectorCredential", () => {
-  it("accepts well-formed MCP keys and rejects malformed ones", () => {
+  it("accepts well-formed credential-based keys (linear/figma/context7) and rejects malformed ones", () => {
     expect(validateConnectorCredential("linear", "lin_api_abc123")).toEqual({
       ok: true,
     });
@@ -255,49 +311,25 @@ describe("validateConnectorCredential", () => {
     expect(validateConnectorCredential("context7", "sk-abc").ok).toBe(false);
   });
 
-  it("validates a Slack incoming webhook URL", () => {
-    expect(
-      validateConnectorCredential(
-        "slack",
-        "https://hooks.slack.com/services/T0/B0/abcDEF"
-      )
-    ).toEqual({ ok: true });
-    expect(isSlackWebhook("https://example.com/x")).toBe(false);
-    expect(validateConnectorCredential("slack", "http://hooks.slack.com/x").ok).toBe(
-      false
-    );
-  });
-
-  it("requires a valid Telegram token and treats chat id as OPTIONAL", () => {
-    const token = "123456789:AAH" + "a".repeat(32);
-    expect(isTelegramToken(token)).toBe(true);
-    expect(isTelegramChatId("-1001234567890")).toBe(true);
-    expect(isTelegramChatId("@my_channel")).toBe(true);
-    // Token + explicit (group/channel) chat id is valid.
-    expect(validateConnectorCredential("telegram", token, "-100123")).toEqual({
-      ok: true,
-    });
-    // Valid token with NO chat id is now valid (direct-chat flow; the chat id
-    // is resolved at connect time from the bot's updates).
-    expect(validateConnectorCredential("telegram", token)).toEqual({ ok: true });
-    expect(validateConnectorCredential("telegram", token, "")).toEqual({
-      ok: true,
-    });
-    expect(validateConnectorCredential("telegram", token, "   ")).toEqual({
-      ok: true,
-    });
-    // A supplied-but-malformed chat id is still rejected.
-    expect(validateConnectorCredential("telegram", token, "not a chat").ok).toBe(
-      false
-    );
-    // Bad token is rejected even with a chat id.
-    expect(validateConnectorCredential("telegram", "nope", "-100123").ok).toBe(
-      false
-    );
-  });
-
-  it("rejects credentials for non-credential connectors (github/discord)", () => {
+  it("rejects credentials for non-credential kinds — github (oauth) and the channel kinds discord/slack/telegram (Jace-native, nothing to paste)", () => {
     expect(validateConnectorCredential("github", "x").ok).toBe(false);
     expect(validateConnectorCredential("discord", "x").ok).toBe(false);
+    expect(validateConnectorCredential("slack", "x").ok).toBe(false);
+    expect(validateConnectorCredential("telegram", "x").ok).toBe(false);
+  });
+
+  it("rejects a slack/telegram credential even in its old well-formed shape — no format special-cases the fallback catches everything", () => {
+    // These were VALID shapes under the old (pre-cutover) webhook/bot-token
+    // validators. Proves the fallback isn't reachable only for malformed
+    // input — telegram/slack simply have no credential path anymore.
+    const wellFormedSlackWebhook = "https://hooks.slack.com/services/T0/B0/abcDEF";
+    const wellFormedTelegramToken = "123456789:AAH" + "a".repeat(32);
+    expect(validateConnectorCredential("slack", wellFormedSlackWebhook)).toEqual({
+      ok: false,
+      error: "This connector is not credential-based.",
+    });
+    expect(validateConnectorCredential("telegram", wellFormedTelegramToken)).toEqual(
+      { ok: false, error: "This connector is not credential-based." }
+    );
   });
 });

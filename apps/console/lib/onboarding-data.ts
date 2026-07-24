@@ -3,6 +3,7 @@ import {
   getWorkspace,
   hasActiveSelfHostedRunner,
   hasAnyJaceReply,
+  listChatIdentitiesForWorkspace,
   listInvites,
   listWorkspaceMembers,
 } from "@agentrail/db-postgres";
@@ -17,9 +18,10 @@ import { isConsoleChatEnabled } from "./chat/feature-flags";
  * Server-only I/O for the `/setup` onboarding wizard (#1233). Gathers the raw
  * signals `deriveOnboardingSteps` (pure, `onboarding-steps.ts`) needs, plus a
  * little extra display data the wizard UI wants (the repo list, the stored
- * webhook secret, the resolved channel chat id). Mirrors the digest split
- * (`digest/digest-helpers.ts` is pure; `digest/route.ts` does the I/O) — this
- * file does the I/O, the derivation stays pure and unit-tested on its own.
+ * webhook secret, the linked channel identities' display names). Mirrors the
+ * digest split (`digest/digest-helpers.ts` is pure; `digest/route.ts` does the
+ * I/O) — this file does the I/O, the derivation stays pure and unit-tested on
+ * its own.
  *
  * Called from two places: the `GET /onboarding` route (the wizard polls it)
  * and the Home progress banner (a server component — no HTTP round trip,
@@ -38,7 +40,12 @@ export interface OnboardingData {
   channel: {
     connected: boolean;
     skipped: boolean;
-    chatId: string | null;
+    /**
+     * Display names of the workspace's linked telegram chat identities —
+     * `[]` when none are linked yet. Names only: `platformUserId` is not for
+     * the client (see `listChatIdentitiesForWorkspace`).
+     */
+    linkedNames: (string | null)[];
   };
   chat: {
     /** Console chat (#1288) is rolled out for this workspace. */
@@ -69,6 +76,7 @@ export async function loadOnboardingData(
   const [
     githubConnector,
     telegramConnector,
+    chatIdentities,
     pendingInvites,
     members,
     workspace,
@@ -76,7 +84,10 @@ export async function loadOnboardingData(
     jaceReplied,
   ] = await Promise.all([
     getConnector(workspaceId, "github"),
+    // Still read for `channelSkippedAt` — the skip mechanism is unchanged.
+    // `hasSecret` on this row no longer drives `channelConnected` below.
     getConnector(workspaceId, "telegram"),
+    listChatIdentitiesForWorkspace(workspaceId),
     listInvites(workspaceId), // pending, unexpired only
     listWorkspaceMembers(workspaceId),
     getWorkspace(workspaceId),
@@ -99,7 +110,16 @@ export async function loadOnboardingData(
 
   const repos = githubConnector?.config.repos ?? [];
   const webhookSecret = githubConnector?.config.webhookSecret ?? null;
-  const channelConnected = Boolean(telegramConnector?.hasSecret);
+  // Spine-backed signal (connectors-channels cutover, T5): connected once the
+  // workspace has ≥1 linked chat identity for telegram — a user DM'd the
+  // shared bot and that conversation was recorded — never a stored
+  // credential. `listChatIdentitiesForWorkspace` returns every platform for
+  // the workspace, so filter down to telegram's own (the only channel kind
+  // the wizard supports today).
+  const telegramIdentities = chatIdentities.filter(
+    (identity) => identity.platform === "telegram"
+  );
+  const channelConnected = telegramIdentities.length > 0;
   const channelSkipped = Boolean(telegramConnector?.config.channelSkippedAt);
   // "Reached a teammate" = a still-pending invite, or a membership beyond the
   // owner (an accepted invite becomes a membership row and drops out of
@@ -127,7 +147,8 @@ export async function loadOnboardingData(
     channel: {
       connected: channelConnected,
       skipped: channelSkipped,
-      chatId: telegramConnector?.config.chatId ?? null,
+      // Display names only — never platformUserId (see the interface doc).
+      linkedNames: telegramIdentities.map((identity) => identity.displayName),
     },
     chat: { enabled: chatEnabled, jaceReplied },
     invites: { count: invitesCount },

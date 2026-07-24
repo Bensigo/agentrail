@@ -13,11 +13,9 @@ export default async function ConnectorsPage({
         Connectors
       </h1>
       <p className="mb-4 text-xs text-[var(--gray-09)]">
-        Two-way links between the tools your team already uses and the Issue
-        Queue: connectors ingest human-created issues into the queue and post run
-        results back. Connecting a connector also configures the autonomous
-        Heartbeat for it — manage each connector&apos;s trigger (enabled, label,
-        poll interval) on its card below.
+        Connect the tools your team already uses. Issue sources feed the Issue
+        Queue (and configure the autonomous Heartbeat on their cards); MCP
+        servers give runs extra tools; Channels are where you talk to Jace.
       </p>
       <ConnectorsPanel workspaceId={workspaceId} />
     </div>

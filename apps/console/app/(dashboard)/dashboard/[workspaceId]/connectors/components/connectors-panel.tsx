@@ -23,11 +23,20 @@ import {
   activeHeartbeatConnectors,
   capabilitySummary,
   CONNECTOR_TYPE_META,
+  linkedIdentitiesLine,
   validateConnectorCredential,
   type ConnectorKind,
   type ConnectorType,
   type ConnectorView,
 } from "./connector-helpers";
+// Relative (not @/…) because both targets live outside app/ or src/, the only
+// roots the @/* alias covers — mirrors how channel-step-helpers.ts itself
+// imports lib/telegram-bot.
+import {
+  resolveHostedBotUsername,
+  telegramDeepLink,
+} from "../../../../../../lib/telegram-bot";
+import { SELF_HOST_TELEGRAM_DOCS_URL } from "../../../../setup/components/channel-step-helpers";
 
 /** Brand glyph per connector kind (lucide carries no logos — see brand-icons). */
 const KIND_ICON: Record<ConnectorKind, ComponentType<BrandIconProps>> = {
@@ -51,7 +60,7 @@ const KIND_TINT: Record<ConnectorKind, string> = {
   telegram: "text-[#26a5e4]",
 };
 
-const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "gateway"];
+const SECTION_ORDER: ConnectorType[] = ["issue-source", "mcp", "channel"];
 
 // --------------------------------------------------------------------------- //
 // Trigger controls (#816) — folded into each connected ingest connector card.
@@ -228,9 +237,10 @@ function SetupHelp({ connector }: { connector: ConnectorView }) {
 }
 
 // --------------------------------------------------------------------------- //
-// Secret connector management — MCP keys (linear/figma/context7) + slack/telegram.
-// Posts the credential to the write-only /connectors/secret route; the value is
-// never read back. Telegram additionally needs a target chat id.
+// Secret connector management — MCP-key connectors only now (linear/figma/
+// context7). Posts the credential to the write-only /connectors/secret route;
+// the value is never read back. Channel kinds (discord/slack/telegram) never
+// reach this component post-cutover — see ChannelManage below.
 // --------------------------------------------------------------------------- //
 function SecretManage({
   connector,
@@ -245,14 +255,12 @@ function SecretManage({
 }) {
   const isConnected = connector.status === "connected";
   const [secret, setSecret] = useState("");
-  const [chatId, setChatId] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const meta = connector.connect;
-  const needsChatId = Boolean(meta?.needsChatId);
 
   const save = useCallback(
-    async (body: { secret: string | null; chatId?: string }) => {
+    async (body: { secret: string | null }) => {
       setSaving(true);
       setErr(null);
       try {
@@ -269,7 +277,6 @@ function SecretManage({
           throw new Error((b as { error?: string }).error ?? `HTTP ${res.status}`);
         }
         setSecret("");
-        setChatId("");
         onChanged();
       } catch (e) {
         setErr(e instanceof Error ? e.message : "Failed to save");
@@ -308,19 +315,12 @@ function SecretManage({
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        const check = validateConnectorCredential(
-          connector.kind,
-          secret,
-          needsChatId ? chatId : undefined
-        );
+        const check = validateConnectorCredential(connector.kind, secret);
         if (!check.ok) {
           setErr(check.error);
           return;
         }
-        save({
-          secret: secret.trim(),
-          ...(needsChatId ? { chatId: chatId.trim() } : {}),
-        });
+        save({ secret: secret.trim() });
       }}
       className="flex flex-col gap-2"
     >
@@ -334,17 +334,6 @@ function SecretManage({
         onChange={(e) => setSecret(e.target.value)}
         className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
       />
-      {needsChatId && (
-        <input
-          aria-label="Chat id (optional)"
-          type="text"
-          placeholder="chat id — optional, blank for a direct chat"
-          value={chatId}
-          disabled={!canManage}
-          onChange={(e) => setChatId(e.target.value)}
-          className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 font-mono text-xs text-[var(--gray-12)] placeholder:text-[var(--gray-07)] outline-none focus:border-[var(--gray-08)] disabled:opacity-50"
-        />
-      )}
       {meta?.credentialHint && (
         <p className="text-xs text-[var(--gray-08)]">{meta.credentialHint}</p>
       )}
@@ -362,104 +351,79 @@ function SecretManage({
 }
 
 // --------------------------------------------------------------------------- //
-// Discord notify connector — its dedicated webhook route (kept as-is).
+// Channel management — Discord/Slack/Telegram are Jace-native chat: there is
+// no credential to paste and nothing to disconnect here (CONTEXT.md / the
+// helpers' module doc). Telegram (the only `available` channel kind today)
+// resolves the hosted shared bot's deep link when the env is set; self-host
+// deploys get a quiet docs link instead of a dead button. Discord/Slack
+// (`planned`) render nothing beyond the card's own description + status
+// chip — never a fake affordance.
 // --------------------------------------------------------------------------- //
-function DiscordManage({
-  connector,
-  workspaceId,
-  canManage,
-  onChanged,
-}: {
-  connector: ConnectorView;
-  workspaceId: string;
-  canManage: boolean;
-  onChanged: () => void;
-}) {
-  const isConnected = connector.status === "connected";
-  const [webhookUrl, setWebhookUrl] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
 
-  const save = useCallback(
-    async (url: string | null) => {
-      setSaving(true);
-      setErr(null);
-      try {
-        const res = await fetch(
-          `/api/v1/workspaces/${workspaceId}/connectors/discord`,
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ webhookUrl: url }),
-          }
-        );
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(
-            (body as { error?: string }).error ?? `HTTP ${res.status}`
-          );
-        }
-        setWebhookUrl("");
-        onChanged();
-      } catch (e) {
-        setErr(e instanceof Error ? e.message : "Failed to save webhook");
-      } finally {
-        setSaving(false);
-      }
-    },
-    [workspaceId, onChanged]
+function ChannelManage({ connector }: { connector: ConnectorView }) {
+  // Discord/Slack: no adapter yet, so no credential to collect and no
+  // affordance to dangle — the card's status chip already reads "Coming".
+  if (connector.availability === "planned") return null;
+
+  const hostedBotUsername = resolveHostedBotUsername(
+    process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME
   );
 
-  if (isConnected) {
+  if (connector.status === "connected") {
     return (
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-1.5">
         <p className="flex items-center gap-1.5 text-xs text-[var(--gray-10)]">
           <CheckCircle2 size={13} className="text-[var(--green-11)]" />
-          Posting to{" "}
-          <code className="font-mono text-[var(--gray-11)]">
-            {connector.target ?? "the configured webhook"}
-          </code>
+          {linkedIdentitiesLine(
+            connector.linkedIdentities.map((i) => i.displayName)
+          )}
         </p>
-        <button
-          onClick={() => save(null)}
-          disabled={!canManage || saving}
-          className="h-7 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-02)] text-xs font-medium text-[var(--gray-11)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+        {hostedBotUsername && (
+          <a
+            href={telegramDeepLink(hostedBotUsername)}
+            target="_blank"
+            rel="noreferrer"
+            className="self-start text-xs text-[var(--blue-11-alt)] hover:underline"
+          >
+            Open Telegram
+          </a>
+        )}
+      </div>
+    );
+  }
+
+  if (hostedBotUsername) {
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+          Message the bot once — that chat becomes your channel.
+        </p>
+        {/* font-bold accent fill — same primary-CTA convention as the setup
+            wizard's hosted branch (channel-step.tsx). */}
+        <a
+          href={telegramDeepLink(hostedBotUsername)}
+          target="_blank"
+          rel="noreferrer"
+          className="flex h-8 w-full items-center justify-center rounded bg-[var(--brand-accent)] px-3 text-xs font-bold text-black transition-colors hover:opacity-90"
         >
-          {saving ? "Disconnecting…" : "Disconnect"}
-        </button>
-        {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
+          Message @{hostedBotUsername} on Telegram
+        </a>
       </div>
     );
   }
 
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (webhookUrl.trim()) save(webhookUrl.trim());
-      }}
-      className="flex flex-col gap-2"
-    >
-      <input
-        aria-label="Channel webhook URL"
-        type="url"
-        inputMode="url"
-        placeholder={connector.connect?.credentialPlaceholder}
-        value={webhookUrl}
-        disabled={!canManage}
-        onChange={(e) => setWebhookUrl(e.target.value)}
-        className="h-8 w-full rounded border border-[var(--gray-05)] bg-[var(--gray-01)] px-2 text-xs font-mono text-[var(--gray-12)] placeholder:text-[var(--gray-07)] focus:border-[var(--gray-08)] outline-none disabled:opacity-50"
-      />
-      <button
-        type="submit"
-        disabled={!canManage || saving || !webhookUrl.trim()}
-        className="h-8 w-full rounded border border-[var(--gray-06)] bg-[var(--gray-03)] text-xs font-medium text-[var(--gray-12)] hover:border-[var(--gray-08)] transition-colors disabled:opacity-50"
+    <p className="text-xs text-[var(--gray-09)]">
+      Self-hosting?{" "}
+      <a
+        href={SELF_HOST_TELEGRAM_DOCS_URL}
+        target="_blank"
+        rel="noreferrer"
+        className="text-[var(--blue-11-alt)] hover:underline"
       >
-        {saving ? "Connecting…" : "Connect"}
-      </button>
-      {err && <p className="text-xs text-[var(--red-11)]">{err}</p>}
-      <SetupHelp connector={connector} />
-    </form>
+        Bring your own bot
+      </a>
+    </p>
   );
 }
 
@@ -621,13 +585,8 @@ function ConnectorCard({
 
           {connector.connectMethod === "oauth" ? (
             <GithubManage connector={connector} workspaceId={workspaceId} />
-          ) : connector.kind === "discord" ? (
-            <DiscordManage
-              connector={connector}
-              workspaceId={workspaceId}
-              canManage={canManage}
-              onChanged={onChanged}
-            />
+          ) : connector.type === "channel" ? (
+            <ChannelManage connector={connector} />
           ) : (
             <SecretManage
               connector={connector}
@@ -706,7 +665,7 @@ function HeartbeatStatusHeader({ connectors }: { connectors: ConnectorView[] }) 
 }
 
 // --------------------------------------------------------------------------- //
-// One catalog-type section (HTTPS / MCP / Gateway) of compact cards.
+// One catalog-type section (Issue sources / MCP / Channels) of compact cards.
 // --------------------------------------------------------------------------- //
 function ConnectorSection({
   type,

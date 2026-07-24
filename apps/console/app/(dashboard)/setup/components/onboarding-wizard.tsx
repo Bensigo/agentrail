@@ -18,7 +18,7 @@ import { RunnerStep } from "./runner-step";
 interface OnboardingData {
   steps: OnboardingStep[];
   github: { repoCount: number; repos: string[]; hasWebhookSecret: boolean };
-  channel: { connected: boolean; skipped: boolean; chatId: string | null };
+  channel: { connected: boolean; skipped: boolean; linkedNames: (string | null)[] };
   chat: { enabled: boolean; jaceReplied: boolean };
   invites: { count: number };
   runner: { connected: boolean; selfHosted: boolean };
@@ -154,7 +154,7 @@ export function OnboardingWizard({ workspaceId }: { workspaceId: string }) {
                   workspaceId={workspaceId}
                   connected={data.channel.connected}
                   skipped={data.channel.skipped}
-                  chatId={data.channel.chatId}
+                  linkedNames={data.channel.linkedNames}
                   onChanged={refresh}
                 />
               )}

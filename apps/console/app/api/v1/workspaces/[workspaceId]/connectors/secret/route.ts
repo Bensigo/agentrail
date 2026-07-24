@@ -10,18 +10,21 @@ import {
   type ConnectorKind,
 } from "../../../../../../../app/(dashboard)/dashboard/[workspaceId]/connectors/components/connector-helpers";
 import { verifyConnectorCredential } from "./verify";
-import { resolveTelegramChatId, sendTelegramWelcome } from "./telegram";
 
 /**
- * Credential-based connector management (M038 catalog expansion). A workspace
- * owner/admin connects an **MCP** tool (Linear, Figma, Context7) or a **gateway**
- * channel that authenticates with a token (Slack incoming webhook, Telegram bot)
- * by saving its credential, or disconnects by clearing it. The credential is
- * write-only: it is stored in `connectors.secret` and NEVER returned to the
- * client — the read model (GET ../connectors) exposes only a `hasSecret`-derived
- * status. Discord keeps its dedicated webhook route; GitHub is OAuth (no secret).
+ * Credential-based connector management (M038 catalog expansion; Gateway →
+ * Channels cutover). A workspace owner/admin connects an **MCP** tool (Linear,
+ * Figma, Context7) by saving its credential, or disconnects by clearing it.
+ * The credential is write-only: it is stored in `connectors.secret` and NEVER
+ * returned to the client — the read model (GET ../connectors) exposes only a
+ * `hasSecret`-derived status. GitHub is OAuth (no secret). Discord, Slack and
+ * Telegram are Jace-native chat channels: none of them has a credential to
+ * paste — connecting is DMing the shared Jace bot, recorded as a
+ * `chat_identities` row (read by GET ../connectors), not a secret written
+ * here — so none of the three is in this route's allowlist. Discord's former
+ * dedicated webhook route is deleted for the same reason.
  *
- * Body: `{ provider, secret, chatId? }`. A null / empty `secret` disconnects.
+ * Body: `{ provider, secret }`. A null / empty `secret` disconnects.
  */
 
 /** Providers this route manages — the credential-based ones only. */
@@ -29,8 +32,6 @@ const CREDENTIAL_PROVIDERS = new Set<ConnectorProvider>([
   "linear",
   "figma",
   "context7",
-  "slack",
-  "telegram",
 ]);
 
 export async function PUT(
@@ -54,7 +55,7 @@ export async function PUT(
     );
   }
 
-  let body: { provider?: unknown; secret?: unknown; chatId?: unknown };
+  let body: { provider?: unknown; secret?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -67,15 +68,13 @@ export async function PUT(
     !CREDENTIAL_PROVIDERS.has(provider as ConnectorProvider)
   ) {
     return NextResponse.json(
-      { error: "provider must be one of linear, figma, context7, slack, telegram" },
+      { error: "provider must be one of linear, figma, context7" },
       { status: 400 }
     );
   }
   const kind = provider as ConnectorKind;
 
   const rawSecret = body.secret;
-  const rawChatId =
-    typeof body.chatId === "string" ? body.chatId.trim() : undefined;
 
   // null / empty → disconnect (clear the stored credential, disable the row).
   if (rawSecret === null || rawSecret === undefined || rawSecret === "") {
@@ -99,48 +98,20 @@ export async function PUT(
   }
 
   // Gate 1 (cheap): the credential must have the upstream's true shape.
-  const check = validateConnectorCredential(kind, rawSecret, rawChatId);
+  const check = validateConnectorCredential(kind, rawSecret);
   if (!check.ok) {
     return NextResponse.json({ error: check.error }, { status: 400 });
   }
 
   // Gate 2 (real): the provider must actually accept the credential, so a
   // well-formed-but-wrong key is rejected before we ever store it.
-  const verified = await verifyConnectorCredential(kind, rawSecret, rawChatId);
+  const verified = await verifyConnectorCredential(kind, rawSecret);
   if (!verified.ok) {
     return NextResponse.json({ error: verified.error }, { status: 400 });
   }
 
-  // Telegram connect-time flow: chat id is optional. With no chat id, resolve
-  // the user's direct-chat id from the bot's recent updates (they must have
-  // messaged the bot first). Then send a one-time welcome so the user gets
-  // immediate confirmation. A resolution/welcome failure is reported and the
-  // credential is NOT stored (don't save a half-connected channel).
-  let resolvedChatId = rawChatId;
-  if (kind === "telegram") {
-    const token = rawSecret.trim();
-    if (!resolvedChatId) {
-      const resolved = await resolveTelegramChatId(token);
-      if (!resolved.ok) {
-        return NextResponse.json({ error: resolved.error }, { status: 400 });
-      }
-      resolvedChatId = resolved.chatId;
-    }
-    const welcome = await sendTelegramWelcome(token, resolvedChatId);
-    if (!welcome.ok) {
-      return NextResponse.json({ error: welcome.error }, { status: 400 });
-    }
-  }
-
   try {
-    await setConnectorSecret(
-      workspaceId,
-      provider as ConnectorProvider,
-      rawSecret.trim(),
-      {
-        chatId: kind === "telegram" ? resolvedChatId : undefined,
-      }
-    );
+    await setConnectorSecret(workspaceId, provider as ConnectorProvider, rawSecret.trim());
     return NextResponse.json({ connected: true });
   } catch (err) {
     console.error("[connectors/secret] failed to save credential:", err);

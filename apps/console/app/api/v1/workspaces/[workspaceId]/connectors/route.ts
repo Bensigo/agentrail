@@ -3,7 +3,7 @@ import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
   listWorkspaceRepositories,
-  getDiscordWebhookUrl,
+  listChatIdentitiesForWorkspace,
   getConnectors,
   getGithubInstallation,
   upsertConnector,
@@ -33,9 +33,13 @@ import {
  * before the App migration (repo-linked, no installation row) reading as
  * connected, and a freshly-installed workspace with zero repos yet reading as
  * connected too, instead of dead-ending on "not installed" copy until it
- * happens to link a repo. Discord counts as connected when a webhook is set;
- * Linear once a key is stored (not yet). The stored connector row overlays the
- * enabled/label/interval config the daemon reads.
+ * happens to link a repo. Linear/Figma/Context7 count as connected once their
+ * API key/token is stored (`hasSecret`). Channel kinds — Discord, Slack,
+ * Telegram (Gateway → Channels cutover) — have no credential to store here at
+ * all: each counts as connected once the workspace has ≥1 linked chat identity
+ * for that platform (`listChatIdentitiesForWorkspace`), recorded when someone
+ * DMs the shared Jace bot. The stored connector row, where one exists, still
+ * overlays the enabled/label/interval Heartbeat config the daemon reads.
  */
 export async function GET(
   _request: NextRequest,
@@ -53,24 +57,24 @@ export async function GET(
   }
 
   try {
-    const [repos, discordWebhookUrl, storedConnectors, githubInstallation] =
+    const [repos, identities, storedConnectors, githubInstallation] =
       await Promise.all([
         listWorkspaceRepositories(workspaceId),
-        getDiscordWebhookUrl(workspaceId),
+        listChatIdentitiesForWorkspace(workspaceId),
         getConnectors(workspaceId),
         getGithubInstallation(workspaceId),
       ]);
     const byProvider = new Map(storedConnectors.map((c) => [c.provider, c]));
     const githubRow = byProvider.get("github");
-    const discordRow = byProvider.get("discord");
 
     // Connected once the App is installed OR a repo is linked — see the
     // module doc-comment above for why this is an OR, not a replacement.
     const githubConnected = githubInstallation !== null || repos.length > 0;
 
-    // Project a credential (mcp / slack / telegram) connector from its stored
-    // row: connected iff a credential is stored (`hasSecret`), with the folded-in
-    // trigger config. The raw secret never leaves the DB layer.
+    // Project a credential (mcp) connector from its stored row: connected iff
+    // a credential is stored (`hasSecret`), with the folded-in trigger config.
+    // The raw secret never leaves the DB layer. Channel kinds (discord/slack/
+    // telegram) never derive `connected` this way — see `triggerConfig` below.
     const secretConfig = (
       kind: ConnectorConfigInput["kind"]
     ): ConnectorConfigInput => {
@@ -79,7 +83,24 @@ export async function GET(
         kind,
         hasSecret: Boolean(row?.hasSecret),
         ingestLabel: row?.config.triggerLabel ?? "ready-for-agent",
-        chatId: row?.config.chatId ?? null,
+        enabled: row?.enabled,
+        triggerLabel: row?.config.triggerLabel,
+        pollIntervalSeconds: row?.config.pollIntervalSeconds,
+      };
+    };
+
+    // A channel kind (discord/slack/telegram) may still have a connector row
+    // (e.g. telegram's onboarding `channelSkippedAt`) carrying Heartbeat
+    // trigger config — but that row no longer contributes `connected` state:
+    // `projectConnectors` derives a channel kind's `connected` solely from
+    // `identities` below. Pass the trigger-config fields through generically,
+    // the same shape any provider's row carries.
+    const triggerConfig = (
+      kind: ConnectorConfigInput["kind"]
+    ): ConnectorConfigInput => {
+      const row = byProvider.get(kind);
+      return {
+        kind,
         enabled: row?.enabled,
         triggerLabel: row?.config.triggerLabel,
         pollIntervalSeconds: row?.config.pollIntervalSeconds,
@@ -115,21 +136,24 @@ export async function GET(
       secretConfig("linear"),
       secretConfig("figma"),
       secretConfig("context7"),
-      {
-        // Discord notify connector: connected iff a webhook is set. The read
-        // model only ever exposes the masked target, never the token.
-        kind: "discord",
-        webhookUrl: discordWebhookUrl,
-        enabled: discordRow?.enabled,
-        triggerLabel: discordRow?.config.triggerLabel,
-        pollIntervalSeconds: discordRow?.config.pollIntervalSeconds,
-      },
-      // Slack / Telegram gateways — connected once their credential is stored.
-      secretConfig("slack"),
-      secretConfig("telegram"),
+      // Channels — Jace-native chat; `connected` derives from a linked chat
+      // identity (`identities`, passed to `projectConnectors` below), never
+      // from a stored credential or webhook.
+      triggerConfig("discord"),
+      triggerConfig("slack"),
+      triggerConfig("telegram"),
     ];
     return NextResponse.json({
-      connectors: projectConnectors(configs),
+      connectors: projectConnectors(
+        configs,
+        // Map to the fields `projectConnectors` actually consumes — never
+        // forward `platformUserId` into the response (`linkedIdentities` is a
+        // display-name-only surface; see `ConnectorView`).
+        identities.map((identity) => ({
+          platform: identity.platform,
+          displayName: identity.displayName,
+        }))
+      ),
       canManage: membership.role === "owner" || membership.role === "admin",
     });
   } catch (err) {

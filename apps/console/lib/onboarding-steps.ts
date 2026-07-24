@@ -14,9 +14,12 @@
  * "Execution"):
  *   1. Connect GitHub    — complete when the github connector has ≥1 repo AND
  *      a stored webhook secret (`connectors.config.webhookSecret`).
- *   2. Connect a channel — complete when Telegram has a stored credential;
- *      skippable, and the skip is remembered per workspace (also persisted on
- *      the telegram connector row's jsonb config — see `onboarding-data.ts`).
+ *   2. Connect a channel — complete when the workspace has ≥1 linked chat
+ *      identity for Telegram (`listChatIdentitiesForWorkspace` — a user DM'd
+ *      the shared bot and that conversation was recorded), not a stored
+ *      credential; skippable, and the skip is remembered per workspace (still
+ *      persisted on the telegram connector row's jsonb config — see
+ *      `onboarding-data.ts`).
  *   3. Say hi to Jace    — ships with #1288 (console chat). Complete once
  *      `jace_messages` has ANY `role: "jace"` row for the workspace (a real
  *      reply happened, in ANY member's console thread — see

@@ -34,6 +34,7 @@ import {
   findChatIdentityBySignupToken,
   resolveInboundChatIdentity,
   listWorkspacesForChatIdentity,
+  listChatIdentitiesForWorkspace,
 } from "./chat_identities.js";
 
 const mockDb = vi.mocked(db);
@@ -705,5 +706,54 @@ describe("listWorkspacesForChatIdentity", () => {
       renderCondition(inArray(workspaces.id, ["ws-1"]))
     );
     expect(result).toEqual([{ id: "ws-1", name: "Beta" }]);
+  });
+});
+
+describe("listChatIdentitiesForWorkspace", () => {
+  it("returns [] for a workspace with no identities", async () => {
+    const selectChain = makeChain("orderBy", []);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await listChatIdentitiesForWorkspace("ws-empty");
+
+    expect(result).toEqual([]);
+  });
+
+  it("returns only the given workspace's identities across mixed platforms, with displayName null passthrough", async () => {
+    // Simulates two workspaces existing in the table: this row set is what
+    // the WHERE below scopes to for ws-1 alone — a ws-2 identity would never
+    // appear here because the query is scoped by workspace_id, not filtered
+    // in application code.
+    const rows = [
+      { platform: "telegram", platformUserId: "tg-1", displayName: "Ada" },
+      { platform: "discord", platformUserId: "disc-1", displayName: null },
+    ];
+    const selectChain = makeChain("orderBy", rows);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    const result = await listChatIdentitiesForWorkspace("ws-1");
+
+    expect(result).toEqual(rows);
+    const whereArgs = (selectChain.where as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(renderCondition(whereArgs)).toEqual(
+      renderCondition(eq(chatIdentities.workspaceId, "ws-1"))
+    );
+  });
+
+  it("orders by created_at ascending", async () => {
+    const selectChain = makeChain("orderBy", [MOCK_IDENTITY]);
+    mockDb.select = vi.fn(() => selectChain as ReturnType<typeof db.select>);
+
+    await listChatIdentitiesForWorkspace("ws-1");
+
+    // Bare column reference = ascending (drizzle's default), the same
+    // convention this file's own listWorkspacesForChatIdentity uses via
+    // `.orderBy(workspaces.name)`. A bare Column has no `.toQuery` (unlike
+    // the eq()/desc()-wrapped SQL nodes asserted elsewhere in this file via
+    // renderCondition), so this checks reference equality instead.
+    const orderByArgs = (selectChain.orderBy as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0];
+    expect(orderByArgs).toBe(chatIdentities.createdAt);
   });
 });

@@ -97,6 +97,25 @@ export const workspaces = pgTable("workspaces", {
   // checkout + the public pricing page) is what actually funds a wallet and
   // is where a workspace first gets flipped on.
   billingEnabled: boolean("billing_enabled").notNull().default(false),
+  // GitHub App installation (spec 2026-07-24-jace-github-app-identity §5).
+  // The workspace's bound installation of the Jace GitHub App — the ONLY
+  // GitHub credential source after the cutover (getInstallationToken mints
+  // short-lived ghs_ tokens from it; the old accounts.access_token path is
+  // deleted). Null = GitHub not connected; every GitHub-touching route
+  // surfaces a clear "Connect GitHub" error in that case. Account login/type
+  // are captured at install-callback time (GET /app/installations/{id}) so
+  // create_repo can branch org-vs-personal without a live GitHub call.
+  githubInstallationId: text("github_installation_id"),
+  githubInstallationAccountLogin: text("github_installation_account_login"),
+  githubInstallationAccountType: text("github_installation_account_type"),
+  // Single-use install-flow state token (house connect-link pattern —
+  // chat_identities.link_token): minted when the owner clicks "Connect
+  // GitHub", carried through GitHub's install redirect as ?state=, consumed
+  // atomically (UPDATE … RETURNING) at the callback. Deliberately NOT HMAC.
+  githubInstallState: text("github_install_state"),
+  githubInstallStateExpiresAt: timestamp("github_install_state_expires_at", {
+    withTimezone: true,
+  }),
 });
 
 export type Workspace = typeof workspaces.$inferSelect;

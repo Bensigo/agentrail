@@ -73,6 +73,13 @@ jobs:
           version: 9
       - name: workspace — install
         run: pnpm install --frozen-lockfile
+      # @agentrail/db-postgres imports @agentrail/github-app via its built dist
+      # (one-directional package dep, GitHub App identity arc) — build + test the
+      # pure client first or the db-postgres tsc build cannot resolve it.
+      - name: github-app — build
+        run: pnpm --filter @agentrail/github-app build
+      - name: github-app — vitest
+        run: pnpm --filter @agentrail/github-app test
       # The console imports @agentrail/db-postgres via its built dist barrel, so
       # build it before running any console test that touches the barrel.
       - name: db-postgres — build

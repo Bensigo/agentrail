@@ -12,3 +12,13 @@ export {
   usdToCents,
   taskPriceCents,
 } from "./billing/pricing.js";
+// GitHub App installation credentials (spec:
+// docs/superpowers/specs/2026-07-24-jace-github-app-identity-design.md
+// §5/§6). getInstallationToken is the drop-in getGithubToken replacement.
+export {
+  getInstallationToken,
+  getGithubInstallation,
+  bindWorkspaceGithubInstallation,
+  mintGithubInstallState,
+  consumeGithubInstallState,
+} from "./queries/github-app-token.js";

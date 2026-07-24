@@ -151,6 +151,9 @@ importers:
 
   packages/db-postgres:
     dependencies:
+      '@agentrail/github-app':
+        specifier: workspace:*
+        version: link:../github-app
       drizzle-orm:
         specifier: ^0.44.7
         version: 0.44.7(postgres@3.4.9)

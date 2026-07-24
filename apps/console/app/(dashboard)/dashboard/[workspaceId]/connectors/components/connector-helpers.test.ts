@@ -8,35 +8,29 @@ import {
   connectorStatusLabel,
   projectConnectors,
   validateConnectorCredential,
-  type ChannelIdentity,
   type ConnectorConfigInput,
 } from "./connector-helpers";
 
 describe("projectConnectors", () => {
-  it("returns one row per catalog entry, grouped issue-source → mcp → channel", () => {
+  it("returns one row per catalog entry, grouped issue-source → mcp", () => {
     const rows = projectConnectors([]);
     expect(rows.map((r) => r.kind)).toEqual([
       "github",
       "linear",
       "figma",
       "context7",
-      "discord",
-      "slack",
-      "telegram",
     ]);
     // Each row carries its catalog type so the page can section the cards.
     // #1292: GitHub AND Linear are both `issue-source` (they feed the Issue
     // Queue — Linear via its real-time webhook); only Figma / Context7 remain
-    // tools-only `mcp`. The Gateway → Channels cutover renamed the third group
-    // from `gateway` to `channel` (Discord / Slack / Telegram).
+    // tools-only `mcp`. Gateways-page T4 removed the third group, `channel`
+    // (Discord / Slack / Telegram) — those now live on their own Gateways
+    // surface.
     expect(rows.map((r) => r.type)).toEqual([
       "issue-source",
       "issue-source",
       "mcp",
       "mcp",
-      "channel",
-      "channel",
-      "channel",
     ]);
   });
 
@@ -114,59 +108,6 @@ describe("projectConnectors", () => {
     const github = projectConnectors([]).find((r) => r.kind === "github")!;
     expect(github.enabled).toBe(false);
   });
-
-  // -- channel identities (Gateway → Channels cutover) ----------------------- //
-
-  it("marks Telegram connected via a linked chat identity and carries linkedIdentities, preserving a null display name", () => {
-    const identities: ChannelIdentity[] = [
-      { platform: "telegram", displayName: "Ben" },
-      { platform: "telegram", displayName: null },
-    ];
-    const telegram = projectConnectors([], identities).find(
-      (r) => r.kind === "telegram"
-    )!;
-    expect(telegram.status).toBe("connected");
-    expect(telegram.linkedIdentities).toEqual([
-      { displayName: "Ben" },
-      { displayName: null },
-    ]);
-  });
-
-  it("treats a channel kind with no linked identity as disconnected, with empty linkedIdentities", () => {
-    const telegram = projectConnectors([]).find((r) => r.kind === "telegram")!;
-    expect(telegram.status).toBe("disconnected");
-    expect(telegram.linkedIdentities).toEqual([]);
-    // No second argument at all (default param) — same result.
-    const telegramDefaulted = projectConnectors([]).find(
-      (r) => r.kind === "telegram"
-    )!;
-    expect(telegramDefaulted.status).toBe("disconnected");
-  });
-
-  it("never connects a planned channel kind (discord/slack) even with a linked identity for its platform", () => {
-    const identities: ChannelIdentity[] = [
-      { platform: "discord", displayName: "Team" },
-      { platform: "slack", displayName: "Team" },
-    ];
-    const rows = projectConnectors([], identities);
-    const discord = rows.find((r) => r.kind === "discord")!;
-    const slack = rows.find((r) => r.kind === "slack")!;
-    expect(discord.availability).toBe("planned");
-    expect(discord.status).toBe("disconnected");
-    expect(slack.availability).toBe("planned");
-    expect(slack.status).toBe("disconnected");
-  });
-
-  it("never populates linkedIdentities for a non-channel kind, even if identities carry its kind as platform", () => {
-    // Defensive: identities are keyed by platform strings that only ever come
-    // from telegram/slack/discord in practice, but the projection should never
-    // leak them onto an issue-source/mcp row regardless.
-    const identities: ChannelIdentity[] = [{ platform: "github", displayName: "x" }];
-    const github = projectConnectors([], identities).find(
-      (r) => r.kind === "github"
-    )!;
-    expect(github.linkedIdentities).toEqual([]);
-  });
 });
 
 describe("activeHeartbeatConnectors", () => {
@@ -183,14 +124,6 @@ describe("activeHeartbeatConnectors", () => {
     const views = projectConnectors([
       { kind: "github", connected: true, enabled: false },
     ]);
-    expect(activeHeartbeatConnectors(views)).toEqual([]);
-  });
-
-  it("never counts a connected channel kind — chat channels don't drive the ingest heartbeat", () => {
-    const views = projectConnectors(
-      [],
-      [{ platform: "telegram", displayName: "Ben" }]
-    );
     expect(activeHeartbeatConnectors(views)).toEqual([]);
   });
 });
@@ -222,37 +155,10 @@ describe("capabilitySummary", () => {
       expect(capabilitySummary(e.capabilities)).toBe("Tools");
     }
   });
-
-  it("summarizes the channel adapters (discord/slack/telegram) as chat-only", () => {
-    for (const kind of ["discord", "slack", "telegram"] as const) {
-      const e = CONNECTOR_CATALOG.find((c) => c.kind === kind)!;
-      expect(capabilitySummary(e.capabilities)).toBe("Chat");
-    }
-  });
 });
 
-describe("connector catalog — channel group (Gateway → Channels cutover)", () => {
-  it("carries no connect meta for any channel kind — no BYO credential forms", () => {
-    for (const kind of ["discord", "slack", "telegram"] as const) {
-      const e = CONNECTOR_CATALOG.find((c) => c.kind === kind)!;
-      expect(e.type).toBe("channel");
-      expect(e.connect).toBeUndefined();
-    }
-  });
-
-  it("Telegram is available; Discord and Slack are planned", () => {
-    expect(
-      CONNECTOR_CATALOG.find((c) => c.kind === "telegram")!.availability
-    ).toBe("available");
-    expect(
-      CONNECTOR_CATALOG.find((c) => c.kind === "discord")!.availability
-    ).toBe("planned");
-    expect(
-      CONNECTOR_CATALOG.find((c) => c.kind === "slack")!.availability
-    ).toBe("planned");
-  });
-
-  it("leaves GitHub, Linear, Figma, Context7 catalog entries unchanged (type/availability)", () => {
+describe("connector catalog — issue-source / mcp entries", () => {
+  it("pins GitHub, Linear, Figma, Context7 catalog entries (type/availability)", () => {
     expect(CONNECTOR_CATALOG.find((c) => c.kind === "github")!.type).toBe(
       "issue-source"
     );
@@ -288,25 +194,10 @@ describe("validateConnectorCredential", () => {
     expect(validateConnectorCredential("context7", "sk-abc").ok).toBe(false);
   });
 
-  it("rejects credentials for non-credential kinds — github (oauth) and the channel kinds discord/slack/telegram (Jace-native, nothing to paste)", () => {
-    expect(validateConnectorCredential("github", "x").ok).toBe(false);
-    expect(validateConnectorCredential("discord", "x").ok).toBe(false);
-    expect(validateConnectorCredential("slack", "x").ok).toBe(false);
-    expect(validateConnectorCredential("telegram", "x").ok).toBe(false);
-  });
-
-  it("rejects a slack/telegram credential even in its old well-formed shape — no format special-cases the fallback catches everything", () => {
-    // These were VALID shapes under the old (pre-cutover) webhook/bot-token
-    // validators. Proves the fallback isn't reachable only for malformed
-    // input — telegram/slack simply have no credential path anymore.
-    const wellFormedSlackWebhook = "https://hooks.slack.com/services/T0/B0/abcDEF";
-    const wellFormedTelegramToken = "123456789:AAH" + "a".repeat(32);
-    expect(validateConnectorCredential("slack", wellFormedSlackWebhook)).toEqual({
+  it("rejects a credential for github (oauth) — nothing is pasted here", () => {
+    expect(validateConnectorCredential("github", "x")).toEqual({
       ok: false,
       error: "This connector is not credential-based.",
     });
-    expect(validateConnectorCredential("telegram", wellFormedTelegramToken)).toEqual(
-      { ok: false, error: "This connector is not credential-based." }
-    );
   });
 });

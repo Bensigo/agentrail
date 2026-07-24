@@ -3,7 +3,6 @@ import { auth } from "@agentrail/auth";
 import {
   getWorkspaceMembership,
   listWorkspaceRepositories,
-  listChatIdentitiesForWorkspace,
   getConnectors,
   getGithubInstallation,
   upsertConnector,
@@ -34,12 +33,12 @@ import {
  * connected, and a freshly-installed workspace with zero repos yet reading as
  * connected too, instead of dead-ending on "not installed" copy until it
  * happens to link a repo. Linear/Figma/Context7 count as connected once their
- * API key/token is stored (`hasSecret`). Channel kinds — Discord, Slack,
- * Telegram (Gateway → Channels cutover) — have no credential to store here at
- * all: each counts as connected once the workspace has ≥1 linked chat identity
- * for that platform (`listChatIdentitiesForWorkspace`), recorded when someone
- * DMs the shared Jace bot. The stored connector row, where one exists, still
- * overlays the enabled/label/interval Heartbeat config the daemon reads.
+ * API key/token is stored (`hasSecret`).
+ *
+ * Chat channels (Discord, Slack, Telegram) are no longer projected by this
+ * route — gateways-page T4 moved them to their own surface entirely
+ * (`api/v1/workspaces/[workspaceId]/gateways/route.ts`, which reads
+ * `listChatIdentitiesForWorkspace` directly).
  */
 export async function GET(
   _request: NextRequest,
@@ -57,13 +56,11 @@ export async function GET(
   }
 
   try {
-    const [repos, identities, storedConnectors, githubInstallation] =
-      await Promise.all([
-        listWorkspaceRepositories(workspaceId),
-        listChatIdentitiesForWorkspace(workspaceId),
-        getConnectors(workspaceId),
-        getGithubInstallation(workspaceId),
-      ]);
+    const [repos, storedConnectors, githubInstallation] = await Promise.all([
+      listWorkspaceRepositories(workspaceId),
+      getConnectors(workspaceId),
+      getGithubInstallation(workspaceId),
+    ]);
     const byProvider = new Map(storedConnectors.map((c) => [c.provider, c]));
     const githubRow = byProvider.get("github");
 
@@ -73,8 +70,7 @@ export async function GET(
 
     // Project a credential (mcp) connector from its stored row: connected iff
     // a credential is stored (`hasSecret`), with the folded-in trigger config.
-    // The raw secret never leaves the DB layer. Channel kinds (discord/slack/
-    // telegram) never derive `connected` this way — see `triggerConfig` below.
+    // The raw secret never leaves the DB layer.
     const secretConfig = (
       kind: ConnectorConfigInput["kind"]
     ): ConnectorConfigInput => {
@@ -83,24 +79,6 @@ export async function GET(
         kind,
         hasSecret: Boolean(row?.hasSecret),
         ingestLabel: row?.config.triggerLabel ?? "ready-for-agent",
-        enabled: row?.enabled,
-        triggerLabel: row?.config.triggerLabel,
-        pollIntervalSeconds: row?.config.pollIntervalSeconds,
-      };
-    };
-
-    // A channel kind (discord/slack/telegram) may still have a connector row
-    // (e.g. telegram's onboarding `channelSkippedAt`) carrying Heartbeat
-    // trigger config — but that row no longer contributes `connected` state:
-    // `projectConnectors` derives a channel kind's `connected` solely from
-    // `identities` below. Pass the trigger-config fields through generically,
-    // the same shape any provider's row carries.
-    const triggerConfig = (
-      kind: ConnectorConfigInput["kind"]
-    ): ConnectorConfigInput => {
-      const row = byProvider.get(kind);
-      return {
-        kind,
         enabled: row?.enabled,
         triggerLabel: row?.config.triggerLabel,
         pollIntervalSeconds: row?.config.pollIntervalSeconds,
@@ -136,24 +114,9 @@ export async function GET(
       secretConfig("linear"),
       secretConfig("figma"),
       secretConfig("context7"),
-      // Channels — Jace-native chat; `connected` derives from a linked chat
-      // identity (`identities`, passed to `projectConnectors` below), never
-      // from a stored credential or webhook.
-      triggerConfig("discord"),
-      triggerConfig("slack"),
-      triggerConfig("telegram"),
     ];
     return NextResponse.json({
-      connectors: projectConnectors(
-        configs,
-        // Map to the fields `projectConnectors` actually consumes — never
-        // forward `platformUserId` into the response (`linkedIdentities` is a
-        // display-name-only surface; see `ConnectorView`).
-        identities.map((identity) => ({
-          platform: identity.platform,
-          displayName: identity.displayName,
-        }))
-      ),
+      connectors: projectConnectors(configs),
       canManage: membership.role === "owner" || membership.role === "admin",
     });
   } catch (err) {

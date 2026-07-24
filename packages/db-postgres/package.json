@@ -21,6 +21,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@agentrail/github-app": "workspace:*",
     "drizzle-orm": "^0.44.7",
     "postgres": "^3.4.9"
   },

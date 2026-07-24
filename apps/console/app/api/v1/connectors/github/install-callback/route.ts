@@ -4,6 +4,7 @@ import {
   consumeGithubInstallState,
   bindWorkspaceGithubInstallation,
   getWorkspaceMembership,
+  upsertConnector,
 } from "@agentrail/db-postgres";
 import {
   resolveGithubAppConfig,
@@ -66,6 +67,24 @@ export async function GET(request: NextRequest) {
     accountLogin,
     accountType,
   });
+
+  // Self-configure the github connector row (same idiom as runner/repos/route.ts
+  // step 1b and the webhook route's upsertConnector call) so the Connectors
+  // page's GithubManage card — driven by the connectors GET route's installed
+  // check — flips to "connected" right away, instead of dead-ending on the
+  // pre-install copy until a repo happens to get linked separately.
+  // Best-effort: a write failure here must NEVER lose the installation binding
+  // above or change this redirect — the callback already did the thing that
+  // matters.
+  try {
+    await upsertConnector(consumed.workspaceId, "github", { enabled: true });
+  } catch (err) {
+    console.error(
+      "[install-callback] failed to self-configure the github connector row:",
+      err
+    );
+  }
+
   return dest(
     `/dashboard/${consumed.workspaceId}/connectors?github_install=connected`
   );

@@ -8,6 +8,7 @@ vi.mock("@agentrail/db-postgres", () => ({
   consumeGithubInstallState: vi.fn(),
   bindWorkspaceGithubInstallation: vi.fn(),
   getWorkspaceMembership: vi.fn(),
+  upsertConnector: vi.fn(),
 }));
 vi.mock("@agentrail/github-app", () => ({
   resolveGithubAppConfig: vi.fn(),
@@ -20,6 +21,7 @@ import {
   consumeGithubInstallState,
   bindWorkspaceGithubInstallation,
   getWorkspaceMembership,
+  upsertConnector,
 } from "@agentrail/db-postgres";
 import { resolveGithubAppConfig, getInstallationAccount } from "@agentrail/github-app";
 
@@ -45,6 +47,7 @@ beforeEach(() => {
     slug: "jace",
     botUserId: "999",
   } as never);
+  vi.mocked(upsertConnector).mockResolvedValue({} as never);
 });
 
 describe("GET /api/v1/connectors/github/install-callback", () => {
@@ -53,6 +56,7 @@ describe("GET /api/v1/connectors/github/install-callback", () => {
     expect(res.status).toBe(302);
     expect(locationOf(res)).toBe("/dashboard?github_install=unlinked");
     expect(consumeGithubInstallState).not.toHaveBeenCalled();
+    expect(upsertConnector).not.toHaveBeenCalled();
   });
 
   it("unknown/expired state → 302 to /dashboard?github_install=expired, no bind", async () => {
@@ -61,6 +65,7 @@ describe("GET /api/v1/connectors/github/install-callback", () => {
     expect(res.status).toBe(302);
     expect(locationOf(res)).toBe("/dashboard?github_install=expired");
     expect(bindWorkspaceGithubInstallation).not.toHaveBeenCalled();
+    expect(upsertConnector).not.toHaveBeenCalled();
   });
 
   it("signed-out visitor → 302 to /login, state NOT consumed", async () => {
@@ -69,6 +74,7 @@ describe("GET /api/v1/connectors/github/install-callback", () => {
     expect(res.status).toBe(302);
     expect(locationOf(res)).toBe("/login");
     expect(consumeGithubInstallState).not.toHaveBeenCalled();
+    expect(upsertConnector).not.toHaveBeenCalled();
   });
 
   it("membership re-check fails → 302 to /dashboard?github_install=forbidden, no bind", async () => {
@@ -78,9 +84,10 @@ describe("GET /api/v1/connectors/github/install-callback", () => {
     expect(res.status).toBe(302);
     expect(locationOf(res)).toBe("/dashboard?github_install=forbidden");
     expect(bindWorkspaceGithubInstallation).not.toHaveBeenCalled();
+    expect(upsertConnector).not.toHaveBeenCalled();
   });
 
-  it("happy path → binds installation and redirects to the workspace connectors page", async () => {
+  it("happy path → binds installation, self-configures the github connector row, and redirects to the workspace connectors page", async () => {
     vi.mocked(consumeGithubInstallState).mockResolvedValue({ workspaceId: "ws-1" });
     vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
     vi.mocked(getInstallationAccount).mockResolvedValue({
@@ -97,6 +104,31 @@ describe("GET /api/v1/connectors/github/install-callback", () => {
       accountLogin: "acme",
       accountType: "Organization",
     });
+    expect(upsertConnector).toHaveBeenCalledWith("ws-1", "github", {
+      enabled: true,
+    });
+  });
+
+  it("best-effort: a failed connector self-configure still redirects to connected (binding already succeeded)", async () => {
+    vi.mocked(consumeGithubInstallState).mockResolvedValue({ workspaceId: "ws-1" });
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
+    vi.mocked(getInstallationAccount).mockResolvedValue({
+      ok: true,
+      login: "acme",
+      type: "Organization",
+    } as never);
+    vi.mocked(upsertConnector).mockRejectedValue(new Error("db unavailable"));
+
+    const res = await GET(req("?installation_id=777&state=abc"));
+    expect(res.status).toBe(302);
+    expect(locationOf(res)).toBe("/dashboard/ws-1/connectors?github_install=connected");
+    // The installation binding is the thing that matters — it must have gone
+    // through even though the best-effort connector-row write blew up after.
+    expect(bindWorkspaceGithubInstallation).toHaveBeenCalledWith("ws-1", {
+      installationId: "777",
+      accountLogin: "acme",
+      accountType: "Organization",
+    });
   });
 
   it("missing installation_id with valid state → 302 to /dashboard?github_install=error, no bind", async () => {
@@ -107,5 +139,6 @@ describe("GET /api/v1/connectors/github/install-callback", () => {
     expect(res.status).toBe(302);
     expect(locationOf(res)).toBe("/dashboard?github_install=error");
     expect(bindWorkspaceGithubInstallation).not.toHaveBeenCalled();
+    expect(upsertConnector).not.toHaveBeenCalled();
   });
 });

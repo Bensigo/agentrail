@@ -122,6 +122,7 @@ const EXPECTED_TOOL_FILES = [
   "create_repo.ts", // gated: creates a real GitHub repo under the user's own account + connects it to the workspace — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "create_workspace.ts", // gated: creates a real workspace (owned or owner-elect) — same gate class as create_issue; no child_process (HTTP to the console, like send_connect_link)
   "fetch_backlog.ts", // read-only (issue #1291): reads the workspace's OPEN backlog over the console token API for grooming; no approval, no child_process
+  "fetch_repo_wiki.ts", // read-only (wiki spec PR 5): reads the connected repo's COMPILED wiki (list/get/search) over the console token API; no approval, no child_process
   "fetch_workspace_memory.ts", // read-only: reads workspace memory over the console bearer API; no approval, no child_process
   "post_pr_review.ts", // gated: posts an ADVISORY, COMMENT-only PR review (the console hardcodes the GitHub review event server-side) — same gate class as create_issue; no child_process (HTTP to the console, like create_repo/create_goal)
   "send_connect_link.ts", // ungated write, but narrow + self-scoped (mints a link for the CALLING conversation's own chat identity only, never the factory); no child_process

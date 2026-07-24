@@ -18,6 +18,18 @@
 // approval change, the enumerated tool set unchanged) are already proven by
 // no-second-write-path.test.mjs — this file does not re-implement that
 // enumeration, it only pins the new prose.
+//
+// UPDATE (wiki spec PR 5, docs/superpowers/specs/2026-07-23-repo-wiki-
+// compiled-repo-knowledge-design.md §4.4/§7 row 5): a connected repo's
+// ARCHITECTURE questions ("how does X work" / "where is Y") now route to the
+// new `fetch_repo_wiki` tool FIRST — see fetch_repo_wiki.core.test.mjs for
+// its own coverage. `fetch_workspace_memory` narrows to TEAM KNOWLEDGE
+// (decisions/preferences/lessons/failures) and stays the architecture
+// fallback for when the wiki is thin/stale/unavailable. The first test below
+// is updated to pin that two-tier split instead of the single-source routing
+// it originally proved; the rest of this file's guarantees (codebase-qa
+// separation, the honest onboarding-index fallback, no approval change) are
+// unaffected and still hold.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -37,19 +49,34 @@ function section(src, heading) {
   return m ? m[0] : "";
 }
 
-test("instructions.md routes REPO/codebase questions on a workspace-bound conversation to fetch_workspace_memory FIRST", () => {
+test("instructions.md routes a connected repo's ARCHITECTURE questions to fetch_repo_wiki FIRST, and TEAM KNOWLEDGE questions to fetch_workspace_memory FIRST (wiki spec PR 5)", () => {
   const src = readFileSync(instructionsPath, "utf8");
+  const wikiSection = section(src, "Repo wiki \\(read-only\\)");
   const memorySection = section(src, "Workspace memory \\(read-only\\)");
+  assert.ok(wikiSection, "instructions.md must have a Repo wiki section");
   assert.ok(memorySection, "instructions.md must have a Workspace memory section");
+  // Prose wraps at ~80 chars in the .md source, so tolerate a line-wrap
+  // (whitespace, not necessarily a single space) between the tokens.
   assert.match(
-    memorySection,
-    /workspace-bound conversation/i,
-    "the routing guidance must be scoped to a workspace-bound conversation",
+    wikiSection,
+    /call `fetch_repo_wiki`\s+FIRST/,
+    "must direct a connected repo's architecture questions to fetch_repo_wiki FIRST",
   );
   assert.match(
     memorySection,
-    /call `fetch_workspace_memory` FIRST/,
-    "must direct repo/codebase questions to fetch_workspace_memory FIRST",
+    /call\s+`fetch_workspace_memory`\s+FIRST/,
+    "must direct a connected repo's team-knowledge questions to fetch_workspace_memory FIRST",
+  );
+  // The two-tier handoff must be explicit in both directions, not just implied.
+  assert.match(
+    memorySection,
+    /fetch_repo_wiki/,
+    "workspace memory's own section must point to fetch_repo_wiki for architecture questions",
+  );
+  assert.match(
+    wikiSection,
+    /workspace memory/i,
+    "repo wiki's own section must point to workspace memory for team-knowledge questions",
   );
 });
 

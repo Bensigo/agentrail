@@ -438,9 +438,16 @@ class FailOpenTests(unittest.TestCase):
 
     def test_claude_cli_never_shells_out_in_this_test_suite(self) -> None:
         """Guard against accidentally invoking a real `claude -p` subprocess:
-        _call_claude_cli is monkeypatched, never allowed to run for real."""
+        _call_claude_cli is monkeypatched, never allowed to run for real.
+
+        shutil.which is also pinned: without it, the fail-open binary-missing
+        preflight (see test above) short-circuits before _call_claude_cli on
+        hosts without a `claude` binary (e.g. CI), and the guard asserts an
+        environment-dependent path instead of the invocation contract."""
         root = make_repo(summary_mode="claude-cli")
-        with _wiki_on(), mock.patch("agentrail.context.wiki._call_claude_cli") as fake_call:
+        with _wiki_on(), mock.patch(
+            "agentrail.context.wiki.shutil.which", return_value="/usr/local/bin/claude"
+        ), mock.patch("agentrail.context.wiki._call_claude_cli") as fake_call:
             fake_call.return_value = (
                 json.dumps({"responsibility": "x", "fileNotes": {}, "relationships": "y"}),
                 {"inputTokens": 10, "outputTokens": 5},

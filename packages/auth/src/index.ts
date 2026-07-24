@@ -11,31 +11,16 @@ import {
 } from "@agentrail/db-postgres";
 
 /**
- * Incremental OAuth (#1294). Sign-in asks GitHub for IDENTITY scopes only, so a
- * first-time visitor's very first click never faces a full-`repo` consent
- * prompt before they've seen anything. The broader `repo` scope is requested
- * in-context later — the first time the user connects or creates a repository —
- * via an incremental authorization that re-runs GitHub OAuth with
- * {@link GITHUB_REPO_SCOPE} (see the console's repos connect flow). GitHub shows
- * the `repo` consent only at that point, and the escalated token + scope are
- * persisted by the `signIn` callback below.
- *
- * MIGRATION: existing users who signed in under the OLD broad scope already hold
- * a `repo`-scoped token in their `accounts` row and keep working unchanged — the
- * connect flow reads the ACTUAL stored `accounts.scope` (see `hasRepoScope`), so
- * only identity-only (new) users are asked to escalate. Whenever a token's scope
- * does need refreshing, that user re-authorizes with GitHub ONE time (the
- * "Grant GitHub access" affordance) and the `signIn` callback writes the new
- * token + scope back.
- */
-export const GITHUB_IDENTITY_SCOPE = "read:user user:email";
-
-/**
- * Identity scopes plus full `repo`. Passed as the `authorizationParams.scope`
- * when a user escalates at connect/create-repo time so the stored OAuth token
- * can list private repos, push branches, open PRs and create issues for the
- * GitHub connector. `repo` (not `public_repo`) because the connector must reach
- * private repositories too.
+ * Full `repo` on top of whatever identity scopes GitHub grants the App's
+ * login OAuth by default. Passed as the `authorizationParams.scope` when a
+ * user escalates at connect/create-repo time so the stored OAuth token can
+ * list private repos, push branches, open PRs and create issues for the
+ * GitHub connector (see the console's repos connect flow, `signIn`'s
+ * `authorizationParams` override). `repo` (not `public_repo`) because the
+ * connector must reach private repositories too. Unrelated to Jace's own repo
+ * access, which comes exclusively from the workspace's App installation
+ * (installation tokens) — this scope only widens the user's own login token
+ * for the separate GitHub connector feature.
  */
 export const GITHUB_REPO_SCOPE = "read:user user:email repo";
 

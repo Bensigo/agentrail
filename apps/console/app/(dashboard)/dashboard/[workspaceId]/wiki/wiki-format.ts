@@ -112,13 +112,39 @@ export function formatCostUsd(usd: number): string {
   return `$${usd.toFixed(4)}`;
 }
 
-/** TASTE.md's Severity & Health Mapping: healthy=green, stale=yellow,
- * critical=red — the same three-way split `StatHeader`'s `StatColor` and
- * the former repos-table's dot/text classes used. */
-export function healthStatColor(status: HealthStatus): "green" | "yellow" | "red" {
-  if (status === "healthy") return "green";
-  if (status === "stale") return "yellow";
-  return "red";
+/** Title-case health word for display ("healthy" -> "Healthy") — mirrors the
+ * platform's other status-label maps (`run-status-label.ts`'s
+ * `runStatusLabel`), rather than showing the raw lowercase enum value the
+ * former repos-table's cells used verbatim. */
+export function healthStatusLabel(status: HealthStatus): string {
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+/** "1 page" / "12 pages" — the wiki-first header's page-count fact. */
+export function formatPageCount(count: number): string {
+  return `${count} ${count === 1 ? "page" : "pages"}`;
+}
+
+/**
+ * Wiki UX hierarchy fix (owner feedback: knowledge was buried under a repo
+ * table — "am I supposed to click the repo to see the wiki?"). The
+ * multi-repo header's compact picker row has no room for the repo's full
+ * health detail (last-indexed age, commit, source count) alongside the
+ * picker control itself — spec: that detail collapses into a one-line
+ * subheader for the SELECTED repo only, rather than living inline like the
+ * single-repo header can afford (`wiki-repo-header.tsx`). One plain
+ * "·"-joined string: every segment here shares identical muted styling, so
+ * there's no need for the per-segment JSX `ProvenanceBar` uses when parts
+ * carry different colors/weights.
+ */
+export function formatRepoDetailLine(repo: RepoListItem, now: number = Date.now()): string {
+  const parts = [
+    healthStatusLabel(repo.healthStatus),
+    `last indexed ${repo.lastIndexedAt ? formatRelativeAge(repo.lastIndexedAt, now) : "never"}`,
+    repo.lastCommitSha ? `commit ${shortSha(repo.lastCommitSha)}` : null,
+    repo.sourceCount !== null ? `${repo.sourceCount.toLocaleString()} sources` : null,
+  ];
+  return parts.filter((p): p is string => p !== null).join(" · ");
 }
 
 /**

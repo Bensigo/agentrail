@@ -46,7 +46,7 @@ interface RecompileButtonProps {
  * their own runner instead of the hosted queue, not the primary action.
  *
  * `canManage=false` hides the button entirely — the same precedent
- * `WikiRepoList`'s "Add repository" affordance uses (owner/admin only).
+ * `WikiRepoHeader`'s "Add repository" affordance uses (owner/admin only).
  */
 export function RecompileButton({
   variant = "link",

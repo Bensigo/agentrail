@@ -3,11 +3,14 @@ import {
   computeWikiSummaryStats,
   groupWikiPages,
   formatRelativeAge,
+  formatPageCount,
+  formatRepoDetailLine,
   shortSha,
   formatCostUsd,
-  healthStatColor,
+  healthStatusLabel,
   wikiMdFilename,
   buildWikiMarkdownDownload,
+  type RepoListItem,
   type WikiPageDTO,
 } from "./wiki-format";
 
@@ -24,6 +27,18 @@ function page(overrides: Partial<WikiPageDTO> = {}): WikiPageDTO {
     generatedAt: "2026-07-23T14:00:00.000Z",
     stale: false,
     skeleton: {},
+    ...overrides,
+  };
+}
+
+function repo(overrides: Partial<RepoListItem> = {}): RepoListItem {
+  return {
+    id: "repo-1",
+    name: "bensigo/agentrail",
+    healthStatus: "healthy",
+    lastIndexedAt: "2026-07-24T10:00:00.000Z",
+    lastCommitSha: "129103aabbccdd",
+    sourceCount: 1204,
     ...overrides,
   };
 }
@@ -129,11 +144,58 @@ describe("formatCostUsd", () => {
   });
 });
 
-describe("healthStatColor", () => {
-  it("maps healthy/stale/critical to TASTE.md's green/yellow/red", () => {
-    expect(healthStatColor("healthy")).toBe("green");
-    expect(healthStatColor("stale")).toBe("yellow");
-    expect(healthStatColor("critical")).toBe("red");
+describe("healthStatusLabel", () => {
+  it("title-cases the health word for display", () => {
+    expect(healthStatusLabel("healthy")).toBe("Healthy");
+    expect(healthStatusLabel("stale")).toBe("Stale");
+    expect(healthStatusLabel("critical")).toBe("Critical");
+  });
+});
+
+describe("formatPageCount", () => {
+  it("singular for exactly 1", () => {
+    expect(formatPageCount(1)).toBe("1 page");
+  });
+
+  it("plural for 0 and >1 — a healthy zero-state stays representable", () => {
+    expect(formatPageCount(0)).toBe("0 pages");
+    expect(formatPageCount(12)).toBe("12 pages");
+  });
+});
+
+describe("formatRepoDetailLine", () => {
+  const NOW = new Date("2026-07-24T12:00:00.000Z").getTime();
+
+  it("joins health, last-indexed age, short commit, and source count with middots", () => {
+    const r = repo({
+      healthStatus: "healthy",
+      lastIndexedAt: "2026-07-24T10:00:00.000Z",
+      lastCommitSha: "129103aabbccdd",
+      sourceCount: 1204,
+    });
+    expect(formatRepoDetailLine(r, NOW)).toBe(
+      "Healthy · last indexed 2h ago · commit 129103aa · 1,204 sources"
+    );
+  });
+
+  it("falls back to 'never' when the repo has no index snapshot yet", () => {
+    const r = repo({ lastIndexedAt: null });
+    expect(formatRepoDetailLine(r, NOW)).toContain("last indexed never");
+  });
+
+  it("omits the commit segment when there is no commit sha", () => {
+    const r = repo({ lastCommitSha: null });
+    expect(formatRepoDetailLine(r, NOW)).not.toContain("commit");
+  });
+
+  it("omits the sources segment when the source count is null", () => {
+    const r = repo({ sourceCount: null });
+    expect(formatRepoDetailLine(r, NOW)).not.toContain("sources");
+  });
+
+  it("never indexed AND never counted: health word alone", () => {
+    const r = repo({ lastIndexedAt: null, lastCommitSha: null, sourceCount: null });
+    expect(formatRepoDetailLine(r, NOW)).toBe("Healthy · last indexed never");
   });
 });
 

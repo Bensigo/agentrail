@@ -67,7 +67,12 @@ App from step 3, so those can wait.
      ("Redirect on update" checked; Webhook → Active UNCHECKED)
    - Repository permissions: Contents RW, Pull requests RW, Issues RW,
      Webhooks RW, Administration RW, Checks RO (Metadata RO is automatic)
+   - Organization permissions: Members RO — REQUIRED: the install callback
+     verifies the connecting user is an org admin; without it every org
+     install fails closed with `verify_failed`
    - Account permissions: Email addresses RO
+   - "Expire user authorization tokens": UNCHECK — the login token backs the
+     install ownership check and there is no user-token refresh path
    - Where can it be installed: Any account
 
    After creating: copy the App ID + slug from the App page, generate a

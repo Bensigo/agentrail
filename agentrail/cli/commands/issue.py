@@ -208,12 +208,16 @@ NOT_CONNECTED_EXIT_CODE = 3
 
 
 def _github_oauth_token() -> Optional[str]:
-    """Return the user's stored GitHub OAuth access token from the environment.
+    """Return a self-host/PAT override token from the environment, if set.
 
-    Reads the preferred ``GITHUB_OAUTH_TOKEN`` first, then ``GITHUB_TOKEN``. The
-    token originates from the NextAuth ``accounts`` table (the console exposes it
-    to the CLI); here we accept it via env so the connector never shells out to
-    the ``gh`` CLI (which needs its own separate auth).
+    Reads the preferred ``GITHUB_OAUTH_TOKEN`` first, then ``GITHUB_TOKEN``. This
+    env pair is now the self-host/PAT override only: hosted deployments leave it
+    unset, since GitHub App installation tokens are minted server-side (see
+    ``agentrail/github_app.py`` and ``agentrail.heartbeat.token_provider.
+    get_github_token``) rather than read from a stored NextAuth OAuth token. A
+    self-hosted runner without the App configured can still set one of these env
+    vars to authenticate directly, so the connector never shells out to the
+    ``gh`` CLI (which needs its own separate auth).
     """
     for name in _GH_TOKEN_ENV:
         value = os.environ.get(name)

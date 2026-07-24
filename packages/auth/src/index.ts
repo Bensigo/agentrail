@@ -2,13 +2,7 @@ import NextAuth, { type NextAuthResult } from "next-auth";
 import GitHub from "next-auth/providers/github";
 import { DrizzleAdapter } from "@auth/drizzle-adapter";
 import { db } from "@agentrail/db-postgres";
-import {
-  users,
-  accounts,
-  sessions,
-  verificationTokens,
-  persistGithubAccountTokens,
-} from "@agentrail/db-postgres";
+import { users, accounts, sessions, verificationTokens } from "@agentrail/db-postgres";
 
 const result: NextAuthResult = NextAuth({
   adapter: DrizzleAdapter(db, {
@@ -38,33 +32,6 @@ const result: NextAuthResult = NextAuth({
     error: "/auth-error",
   },
   callbacks: {
-    // Persist the freshest GitHub token + granted scope on every GitHub sign-in.
-    // Auth.js writes the accounts row only once (first link via linkAccount) and
-    // does NOT update it on later sign-ins, so a scope ESCALATION
-    // (identity-only -> repo, #1294) would otherwise never reach the DB. On a
-    // brand-new sign-in the row does not exist yet — this updates 0 rows and the
-    // adapter's linkAccount inserts it; on a re-auth/escalation it refreshes the
-    // stored token + scope. Wrapped so a persistence hiccup never blocks login.
-    async signIn({ account }) {
-      if (account?.provider === "github" && account.providerAccountId) {
-        try {
-          await persistGithubAccountTokens({
-            providerAccountId: account.providerAccountId,
-            access_token: account.access_token,
-            scope: account.scope,
-            token_type: account.token_type,
-            expires_at: account.expires_at,
-            refresh_token: account.refresh_token,
-          });
-        } catch (err) {
-          console.error(
-            "[auth] failed to persist GitHub account tokens on sign-in",
-            err
-          );
-        }
-      }
-      return true;
-    },
     async redirect({ url, baseUrl }) {
       // Route to the supplied URL if it's within this app; otherwise root.
       // The root page handles workspace-aware routing to /dashboard/{id} or /setup.

@@ -104,15 +104,20 @@ class WorkItem:
     # AGENTRAIL_MCP_<PROVIDER>_KEY so native_runner writes the agent's MCP config
     # into the clone. Empty when no MCP connector is connected.
     mcp_keys: Dict[str, str] = field(default_factory=dict)
-    # The workspace's connected GitHub OAuth access_token (the console's
-    # getGithubToken, attached by the claim route), so the runner can
-    # authenticate git clone/push + `gh pr create` for THIS workspace without a
-    # separately-configured PAT. "" when the workspace owner hasn't linked
-    # GitHub — the runner then falls back to whatever GIT_TOKEN it already has
-    # in its own environment (back-compat). NOTE: this OAuth token can expire;
-    # there is no refresh here, an expired token just surfaces as a normal
-    # git/gh auth failure. Never logged — see native_runner's redaction of
-    # captured process output before it is reported back as telemetry.
+    # A freshly minted, short-lived GitHub App installation token for this
+    # workspace (the console's getInstallationToken, attached by the claim
+    # route), so the runner can authenticate git clone/push + `gh pr create`
+    # for THIS workspace without a separately-configured PAT. "" when the
+    # workspace has no bound GitHub App installation (or the App itself is
+    # unconfigured) — the runner then falls back to whatever GIT_TOKEN it
+    # already has in its own environment (back-compat). NOTE: installation
+    # tokens have a ~1h TTL; there is no proactive refresh here — an expired
+    # token surfaces as a normal git/gh auth failure, which the reactive
+    # push-401 -> POST /api/v1/runner/refresh-github-token -> retry-once
+    # backstop (native_runner._publish_green, via github_token_refresher)
+    # recovers from without failing the whole run. Never logged — see
+    # native_runner's redaction of captured process output before it is
+    # reported back as telemetry.
     github_token: str = ""
     # The GitHub App bot commit identity for this workspace (GitHub App swap
     # spec §6), attached by the claim route from

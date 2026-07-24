@@ -242,7 +242,7 @@ describe("GET /api/v1/runner/pr-review", () => {
     const res = await GET(getReq({ eveSessionId: "eve-session-1", repo: "ada/widgets", prNumber: "98" }));
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
-      error: "no GitHub account with repo access is connected for this workspace yet",
+      error: "GitHub is not connected for this workspace — install the Jace GitHub App first",
     });
   });
 

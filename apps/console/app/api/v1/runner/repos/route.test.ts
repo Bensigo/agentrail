@@ -604,23 +604,27 @@ describe("POST /api/v1/runner/repos", () => {
     expect(createRepository).not.toHaveBeenCalled();
   });
 
-  it("409 'GitHub rejected the stored credentials' on a 401", async () => {
+  it("409 'GitHub rejected the workspace's App installation credentials' on a 401", async () => {
     mockFetchSequence(githubErrorResponse(401, JSON.stringify({ message: "Bad credentials" })));
 
     const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
 
     expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: "GitHub rejected the stored credentials" });
+    expect(await res.json()).toEqual({
+      error: "GitHub rejected the workspace's App installation credentials — reconnect GitHub from the console",
+    });
     expect(createRepository).not.toHaveBeenCalled();
   });
 
-  it("409 'GitHub rejected the stored credentials' on a 403", async () => {
+  it("409 'GitHub rejected the workspace's App installation credentials' on a 403", async () => {
     mockFetchSequence(githubErrorResponse(403, JSON.stringify({ message: "Forbidden" })));
 
     const res = await POST(req({ eveSessionId: "eve-session-1", name: "widgets" }));
 
     expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: "GitHub rejected the stored credentials" });
+    expect(await res.json()).toEqual({
+      error: "GitHub rejected the workspace's App installation credentials — reconnect GitHub from the console",
+    });
   });
 
   it("502 honest on an unmapped non-2xx (e.g. 500)", async () => {

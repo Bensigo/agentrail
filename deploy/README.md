@@ -25,10 +25,10 @@ appears below and in `deploy/Caddyfile`.
 
 ## 0. Before you start: what you need to have ready
 
-- A GitHub OAuth App (client id + secret) — created in step 3 below, needs the
-  server's public URL first, so it comes after DNS/Caddy is live.
-- A GitHub token with `repo` scope (PAT is simplest) for `GITHUB_OAUTH_TOKEN`
-  and the runner's git/gh auth.
+- The Jace GitHub App — created in step 3 below, needs the server's public URL
+  first, so it comes after DNS/Caddy is live. Every hosted GitHub call
+  (console, Jace, the runner's git/gh auth) rides this App's installation
+  tokens; no separate PAT is required.
 - An [OpenRouter](https://openrouter.ai/keys) API key.
 - Optionally: a Telegram bot token (via [@BotFather](https://t.me/BotFather))
   and/or a [Langfuse Cloud](https://cloud.langfuse.com) project.
@@ -54,19 +54,35 @@ Fill in every `REQUIRED` value (see the comments in that file — each one says
 exactly where it's consumed and, for anything you need to go create yourself,
 how). At minimum before first boot: `POSTGRES_PASSWORD`, `DATABASE_URL`,
 `AUTH_SECRET`, `CONNECTOR_SECRET_KEY`, `JACE_MODEL_API_KEY`,
-`GITHUB_OAUTH_TOKEN`/`GITHUB_TOKEN`, `JACE_TARGET_REPO`,
-`OPENROUTER_API_KEY`. `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` need the
-OAuth App from step 3, so those two can wait.
+`JACE_TARGET_REPO`, `OPENROUTER_API_KEY`. The `GITHUB_APP_*` sextet needs the
+App from step 3, so those can wait.
 
-## 3. GitHub OAuth App + webhook
+## 3. GitHub App + webhook
 
-1. **OAuth App** (user login): [github.com/settings/developers](https://github.com/settings/developers)
-   → New OAuth App:
+1. **GitHub App** (identity for login + repo access): [github.com/settings/apps](https://github.com/settings/apps)
+   → New GitHub App:
    - Homepage URL: `https://65.20.91.127.sslip.io`
-   - Authorization callback URL: `https://65.20.91.127.sslip.io/api/auth/callback/github`
+   - Callback URL: `https://65.20.91.127.sslip.io/api/auth/callback/github`
+   - Setup URL: `https://65.20.91.127.sslip.io/api/v1/connectors/github/install-callback`
+     ("Redirect on update" checked; Webhook → Active UNCHECKED)
+   - Repository permissions: Contents RW, Pull requests RW, Issues RW,
+     Webhooks RW, Administration RW, Checks RO (Metadata RO is automatic)
+   - Organization permissions: Members RO — REQUIRED: the install callback
+     verifies the connecting user is an org admin; without it every org
+     install fails closed with `verify_failed`
+   - Account permissions: Email addresses RO
+   - "Expire user authorization tokens": UNCHECK — the login token backs the
+     install ownership check and there is no user-token refresh path
+   - Where can it be installed: Any account
 
-   Copy the client id/secret into `deploy/.env`'s `GITHUB_CLIENT_ID` /
-   `GITHUB_CLIENT_SECRET`.
+   After creating: copy the App ID + slug from the App page, generate a
+   client secret and a private key (`.pem`) there too, and fetch the bot
+   user id (`curl -s https://api.github.com/users/<slug>%5Bbot%5D | jq .id`).
+   Fill all six into `deploy/.env`'s `GITHUB_APP_ID` / `GITHUB_APP_SLUG` /
+   `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` /
+   `GITHUB_APP_PRIVATE_KEY` / `GITHUB_APP_BOT_USER_ID`. Then install the App
+   on the account(s) you want to connect and click "Connect GitHub" in the
+   console's Connectors page per workspace.
 
 2. **Issues webhook** (fills the queue): on the target repo → Settings →
    Webhooks → Add webhook:

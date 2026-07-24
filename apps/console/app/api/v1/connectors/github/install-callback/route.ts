@@ -5,12 +5,13 @@ import {
   bindWorkspaceGithubInstallation,
   getWorkspaceMembership,
   upsertConnector,
-  getUserGithubAccessTokenById,
+  getUserGithubIdentityById,
 } from "@agentrail/db-postgres";
 import {
   resolveGithubAppConfig,
   getInstallationAccount,
-  listUserInstallationIds,
+  listUserInstallations,
+  getUserOrgRole,
 } from "@agentrail/github-app";
 
 // installation_id arrives as a query param — GitHub's real IDs are numeric,
@@ -39,10 +40,20 @@ const NUMERIC_ID = /^\d+$/;
  * ownership check, an attacker who is an admin of their OWN workspace can
  * mint a legit `state` there, then forge this GET with a victim's
  * `installation_id` and bind the victim's installation to the attacker's
- * workspace. The ownership gate below — `getUserGithubAccessTokenById` +
- * `listUserInstallationIds` — is the actual anti-IDOR boundary: it proves
- * the CALLER's own GitHub login token can see this installation before any
- * bind is allowed to happen.
+ * workspace.
+ *
+ * The REAL ownership boundary is GitHub's own install boundary: only
+ * account ADMINS can install or manage an App. `listUserInstallations`
+ * (`GET /user/installations`) is NOT that boundary by itself — GitHub
+ * returns an installation whenever the caller shares ANY repo with it
+ * (user ∩ app), so an outside collaborator with read access to one repo of
+ * an org's installation would otherwise pass. So this gate is two layers:
+ * (1) narrow to installations the caller's own login token can see at all,
+ * (2) prove actual admin standing on the matched installation's account —
+ * numeric-id equality against the caller's own GitHub user id for a
+ * PERSONAL account (rename-proof; a login can change, the id can't), or an
+ * explicit org-admin check (`getUserOrgRole`) for an ORGANIZATION account.
+ * Only a verified "yes" on both layers reaches the bind below.
  */
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
@@ -74,13 +85,13 @@ export async function GET(request: NextRequest) {
     return dest("/dashboard?github_install=error");
   }
 
-  // Ownership gate (anti-IDOR): confirm the CALLER's own GitHub login token
-  // can see this installation_id before allowing any bind. Fails CLOSED on
-  // every branch except an explicit "yes, it's in the caller's list".
-  const loginToken = await getUserGithubAccessTokenById(session.user.id);
-  if (!loginToken) return dest("/dashboard?github_install=verify_failed");
+  // Ownership gate (anti-IDOR), layer 1: confirm the CALLER's own GitHub
+  // login token can see this installation_id at all. Fails CLOSED on every
+  // branch except an explicit "yes, it's in the caller's list".
+  const identity = await getUserGithubIdentityById(session.user.id);
+  if (!identity) return dest("/dashboard?github_install=verify_failed");
 
-  const owned = await listUserInstallationIds(loginToken);
+  const owned = await listUserInstallations(identity.accessToken);
   if (!owned.ok) {
     // "unauthorized" = the caller's stored login token itself is stale/
     // expired/revoked (sign out/in and retry) — distinct reason, same fail-
@@ -88,11 +99,41 @@ export async function GET(request: NextRequest) {
     // GitHub rejection): never bind on anything short of a verified "yes".
     return dest("/dashboard?github_install=verify_failed");
   }
-  if (!owned.ids.includes(installationId)) {
+  const matched = owned.installations.find((i) => i.id === installationId);
+  if (!matched) {
     // Forged id and a genuinely foreign installation get the identical
     // treatment — this redirect must never distinguish "not yours" from
     // "doesn't exist" (anti-enumeration).
     return dest("/dashboard?github_install=forbidden");
+  }
+
+  // Ownership gate, layer 2: GitHub's own install boundary. Layer 1 alone
+  // over-admits — a collaborator who shares one repo with the installation
+  // shows up in /user/installations too. Personal account: the numeric
+  // account id must match the caller's own GitHub user id (rename-proof —
+  // logins change, ids don't). Organization: the caller must hold ADMIN
+  // role in that org (GitHub only lets org admins install/manage Apps).
+  if (matched.accountType === "User") {
+    if (matched.accountId !== identity.providerAccountId) {
+      return dest("/dashboard?github_install=forbidden");
+    }
+  } else {
+    const orgRole = await getUserOrgRole(identity.accessToken, matched.accountLogin);
+    if (!orgRole.ok) {
+      // "unauthorized" (stale login token) gets the same "try signing in
+      // again" redirect as the layer-1 unauthorized case above.
+      // "not_a_member" is a definitive non-admin — forbidden, not a
+      // verify failure. Any other failure (network hiccup, GitHub
+      // rejection) fails CLOSED: never bind without a verified "admin".
+      return dest(
+        orgRole.reason === "not_a_member"
+          ? "/dashboard?github_install=forbidden"
+          : "/dashboard?github_install=verify_failed"
+      );
+    }
+    if (orgRole.role !== "admin") {
+      return dest("/dashboard?github_install=forbidden");
+    }
   }
 
   // Capture account login/type once so create_repo can branch org-vs-personal

@@ -9,12 +9,13 @@ vi.mock("@agentrail/db-postgres", () => ({
   bindWorkspaceGithubInstallation: vi.fn(),
   getWorkspaceMembership: vi.fn(),
   upsertConnector: vi.fn(),
-  getUserGithubAccessTokenById: vi.fn(),
+  getUserGithubIdentityById: vi.fn(),
 }));
 vi.mock("@agentrail/github-app", () => ({
   resolveGithubAppConfig: vi.fn(),
   getInstallationAccount: vi.fn(),
-  listUserInstallationIds: vi.fn(),
+  listUserInstallations: vi.fn(),
+  getUserOrgRole: vi.fn(),
 }));
 
 import { GET } from "./route";
@@ -24,12 +25,13 @@ import {
   bindWorkspaceGithubInstallation,
   getWorkspaceMembership,
   upsertConnector,
-  getUserGithubAccessTokenById,
+  getUserGithubIdentityById,
 } from "@agentrail/db-postgres";
 import {
   resolveGithubAppConfig,
   getInstallationAccount,
-  listUserInstallationIds,
+  listUserInstallations,
+  getUserOrgRole,
 } from "@agentrail/github-app";
 
 const USER = "user-1";
@@ -55,14 +57,22 @@ beforeEach(() => {
     botUserId: "999",
   } as never);
   vi.mocked(upsertConnector).mockResolvedValue({} as never);
-  // Ownership-gate defaults: the caller's stored login token exists and
-  // lists installation "777" (the id every pre-existing test drives
-  // through) — individual tests override these to exercise the gate.
-  vi.mocked(getUserGithubAccessTokenById).mockResolvedValue("gho_login_token");
-  vi.mocked(listUserInstallationIds).mockResolvedValue({
+  // Ownership-gate defaults: the caller's own identity, an installations
+  // list containing "777" as an ORGANIZATION ("acme"), and org-admin role —
+  // together this is a fully-verified org install that every pre-existing
+  // test drives through unmodified. Individual tests override pieces of
+  // this to exercise the two gate layers.
+  vi.mocked(getUserGithubIdentityById).mockResolvedValue({
+    accessToken: "gho_login_token",
+    providerAccountId: "555",
+  });
+  vi.mocked(listUserInstallations).mockResolvedValue({
     ok: true,
-    ids: ["777"],
+    installations: [
+      { id: "777", accountId: "666", accountLogin: "acme", accountType: "Organization" },
+    ],
   } as never);
+  vi.mocked(getUserOrgRole).mockResolvedValue({ ok: true, role: "admin" } as never);
 });
 
 describe("GET /api/v1/connectors/github/install-callback", () => {
@@ -102,7 +112,7 @@ describe("GET /api/v1/connectors/github/install-callback", () => {
     expect(upsertConnector).not.toHaveBeenCalled();
   });
 
-  it("happy path → binds installation, self-configures the github connector row, and redirects to the workspace connectors page", async () => {
+  it("happy path (org, admin) → binds installation, self-configures the github connector row, and redirects to the workspace connectors page", async () => {
     vi.mocked(consumeGithubInstallState).mockResolvedValue({ workspaceId: "ws-1" });
     vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
     vi.mocked(getInstallationAccount).mockResolvedValue({
@@ -114,6 +124,7 @@ describe("GET /api/v1/connectors/github/install-callback", () => {
     const res = await GET(req("?installation_id=777&state=abc"));
     expect(res.status).toBe(302);
     expect(locationOf(res)).toBe("/dashboard/ws-1/connectors?github_install=connected");
+    expect(getUserOrgRole).toHaveBeenCalledWith("gho_login_token", "acme");
     expect(bindWorkspaceGithubInstallation).toHaveBeenCalledWith("ws-1", {
       installationId: "777",
       accountLogin: "acme",
@@ -165,18 +176,21 @@ describe("GET /api/v1/connectors/github/install-callback", () => {
     expect(res.status).toBe(302);
     expect(locationOf(res)).toBe("/dashboard?github_install=error");
     expect(bindWorkspaceGithubInstallation).not.toHaveBeenCalled();
-    expect(getUserGithubAccessTokenById).not.toHaveBeenCalled();
-    expect(listUserInstallationIds).not.toHaveBeenCalled();
+    expect(getUserGithubIdentityById).not.toHaveBeenCalled();
+    expect(listUserInstallations).not.toHaveBeenCalled();
   });
 
-  it("SECURITY: forged installation_id not owned by the caller → 302 forbidden, bind NEVER called", async () => {
+  it("SECURITY: forged installation_id not in the caller's own installations list → 302 forbidden, bind NEVER called", async () => {
     vi.mocked(consumeGithubInstallState).mockResolvedValue({ workspaceId: "ws-1" });
     vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
     // The caller's own installations are ["111", "222"] — "999" (the
     // victim's installation id) is NOT among them.
-    vi.mocked(listUserInstallationIds).mockResolvedValue({
+    vi.mocked(listUserInstallations).mockResolvedValue({
       ok: true,
-      ids: ["111", "222"],
+      installations: [
+        { id: "111", accountId: "555", accountLogin: "alice", accountType: "User" },
+        { id: "222", accountId: "777", accountLogin: "other-org", accountType: "Organization" },
+      ],
     } as never);
 
     const res = await GET(req("?installation_id=999&state=abc"));
@@ -189,7 +203,7 @@ describe("GET /api/v1/connectors/github/install-callback", () => {
   it("SECURITY: caller's stored login token is expired/unauthorized → verify_failed, no bind", async () => {
     vi.mocked(consumeGithubInstallState).mockResolvedValue({ workspaceId: "ws-1" });
     vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
-    vi.mocked(listUserInstallationIds).mockResolvedValue({
+    vi.mocked(listUserInstallations).mockResolvedValue({
       ok: false,
       reason: "unauthorized",
     } as never);
@@ -201,23 +215,23 @@ describe("GET /api/v1/connectors/github/install-callback", () => {
     expect(upsertConnector).not.toHaveBeenCalled();
   });
 
-  it("SECURITY: no stored login token for the caller → verify_failed, no bind (fail closed)", async () => {
+  it("SECURITY: no stored identity for the caller → verify_failed, no bind (fail closed)", async () => {
     vi.mocked(consumeGithubInstallState).mockResolvedValue({ workspaceId: "ws-1" });
     vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
-    vi.mocked(getUserGithubAccessTokenById).mockResolvedValue(null);
+    vi.mocked(getUserGithubIdentityById).mockResolvedValue(null);
 
     const res = await GET(req("?installation_id=777&state=abc"));
     expect(res.status).toBe(302);
     expect(locationOf(res)).toBe("/dashboard?github_install=verify_failed");
     expect(bindWorkspaceGithubInstallation).not.toHaveBeenCalled();
-    expect(listUserInstallationIds).not.toHaveBeenCalled();
+    expect(listUserInstallations).not.toHaveBeenCalled();
     expect(upsertConnector).not.toHaveBeenCalled();
   });
 
-  it("SECURITY: any other ownership-check failure (github_unreachable/github_rejected) fails CLOSED → verify_failed, no bind", async () => {
+  it("SECURITY: any other layer-1 ownership-check failure (github_unreachable/github_rejected) fails CLOSED → verify_failed, no bind", async () => {
     vi.mocked(consumeGithubInstallState).mockResolvedValue({ workspaceId: "ws-1" });
     vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
-    vi.mocked(listUserInstallationIds).mockResolvedValue({
+    vi.mocked(listUserInstallations).mockResolvedValue({
       ok: false,
       reason: "github_unreachable",
     } as never);
@@ -229,24 +243,110 @@ describe("GET /api/v1/connectors/github/install-callback", () => {
     expect(upsertConnector).not.toHaveBeenCalled();
   });
 
-  it("happy path (ownership verified): installation_id present in the caller's own installations list → bind proceeds", async () => {
+  it("happy path (personal account, matching id) → bind proceeds without an org-role check", async () => {
     vi.mocked(consumeGithubInstallState).mockResolvedValue({ workspaceId: "ws-1" });
     vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
+    vi.mocked(listUserInstallations).mockResolvedValue({
+      ok: true,
+      installations: [
+        { id: "777", accountId: "555", accountLogin: "alice", accountType: "User" },
+      ],
+    } as never);
     vi.mocked(getInstallationAccount).mockResolvedValue({
       ok: true,
-      login: "acme",
-      type: "Organization",
+      login: "alice",
+      type: "User",
     } as never);
 
     const res = await GET(req("?installation_id=777&state=abc"));
     expect(res.status).toBe(302);
     expect(locationOf(res)).toBe("/dashboard/ws-1/connectors?github_install=connected");
-    expect(getUserGithubAccessTokenById).toHaveBeenCalledWith(USER);
-    expect(listUserInstallationIds).toHaveBeenCalledWith("gho_login_token");
+    expect(getUserGithubIdentityById).toHaveBeenCalledWith(USER);
+    expect(listUserInstallations).toHaveBeenCalledWith("gho_login_token");
+    expect(getUserOrgRole).not.toHaveBeenCalled();
     expect(bindWorkspaceGithubInstallation).toHaveBeenCalledWith("ws-1", {
       installationId: "777",
-      accountLogin: "acme",
-      accountType: "Organization",
+      accountLogin: "alice",
+      accountType: "User",
     });
+  });
+
+  it("SECURITY: collaborator on a personal installation (id in list, but account id doesn't match the caller) → forbidden, no bind", async () => {
+    vi.mocked(consumeGithubInstallState).mockResolvedValue({ workspaceId: "ws-1" });
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
+    // /user/installations lists "777" because the caller (providerAccountId
+    // "555") shares a repo with it, but the installation's OWN account id
+    // ("999") is someone else's — GitHub's user∩app semantics over-admit.
+    vi.mocked(listUserInstallations).mockResolvedValue({
+      ok: true,
+      installations: [
+        { id: "777", accountId: "999", accountLogin: "victim", accountType: "User" },
+      ],
+    } as never);
+
+    const res = await GET(req("?installation_id=777&state=abc"));
+    expect(res.status).toBe(302);
+    expect(locationOf(res)).toBe("/dashboard?github_install=forbidden");
+    expect(getUserOrgRole).not.toHaveBeenCalled();
+    expect(bindWorkspaceGithubInstallation).not.toHaveBeenCalled();
+    expect(upsertConnector).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY: org MEMBER (not admin) on the matched installation → forbidden, no bind", async () => {
+    vi.mocked(consumeGithubInstallState).mockResolvedValue({ workspaceId: "ws-1" });
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
+    vi.mocked(getUserOrgRole).mockResolvedValue({ ok: true, role: "member" } as never);
+
+    const res = await GET(req("?installation_id=777&state=abc"));
+    expect(res.status).toBe(302);
+    expect(locationOf(res)).toBe("/dashboard?github_install=forbidden");
+    expect(getUserOrgRole).toHaveBeenCalledWith("gho_login_token", "acme");
+    expect(bindWorkspaceGithubInstallation).not.toHaveBeenCalled();
+    expect(upsertConnector).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY: caller is not an org member at all (not_a_member) → forbidden, no bind", async () => {
+    vi.mocked(consumeGithubInstallState).mockResolvedValue({ workspaceId: "ws-1" });
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
+    vi.mocked(getUserOrgRole).mockResolvedValue({
+      ok: false,
+      reason: "not_a_member",
+    } as never);
+
+    const res = await GET(req("?installation_id=777&state=abc"));
+    expect(res.status).toBe(302);
+    expect(locationOf(res)).toBe("/dashboard?github_install=forbidden");
+    expect(bindWorkspaceGithubInstallation).not.toHaveBeenCalled();
+    expect(upsertConnector).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY: org-role fetch unauthorized (stale login token) → verify_failed, no bind", async () => {
+    vi.mocked(consumeGithubInstallState).mockResolvedValue({ workspaceId: "ws-1" });
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
+    vi.mocked(getUserOrgRole).mockResolvedValue({
+      ok: false,
+      reason: "unauthorized",
+    } as never);
+
+    const res = await GET(req("?installation_id=777&state=abc"));
+    expect(res.status).toBe(302);
+    expect(locationOf(res)).toBe("/dashboard?github_install=verify_failed");
+    expect(bindWorkspaceGithubInstallation).not.toHaveBeenCalled();
+    expect(upsertConnector).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY: any other org-role fetch failure (network/rejected) fails CLOSED → verify_failed, no bind", async () => {
+    vi.mocked(consumeGithubInstallState).mockResolvedValue({ workspaceId: "ws-1" });
+    vi.mocked(getWorkspaceMembership).mockResolvedValue({ id: "m1", role: "owner" } as never);
+    vi.mocked(getUserOrgRole).mockResolvedValue({
+      ok: false,
+      reason: "github_unreachable",
+    } as never);
+
+    const res = await GET(req("?installation_id=777&state=abc"));
+    expect(res.status).toBe(302);
+    expect(locationOf(res)).toBe("/dashboard?github_install=verify_failed");
+    expect(bindWorkspaceGithubInstallation).not.toHaveBeenCalled();
+    expect(upsertConnector).not.toHaveBeenCalled();
   });
 });

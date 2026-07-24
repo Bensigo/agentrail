@@ -113,32 +113,46 @@ export async function consumeGithubInstallState(
 }
 
 /**
- * The signed-in user's stored GitHub App **user access token**
- * (`accounts.access_token` where `provider = 'github'` and
- * `user_id = userId`) — the token minted at LOGIN time by the App's OAuth
- * flow (see cd2c0c92 "console login via the Jace GitHub App's OAuth").
+ * The signed-in user's stored GitHub App **user access token** AND their
+ * `provider_account_id` (`accounts.access_token` /
+ * `accounts.provider_account_id` where `provider = 'github'` and
+ * `user_id = userId`) — minted at LOGIN time by the App's OAuth flow (see
+ * cd2c0c92 "console login via the Jace GitHub App's OAuth").
  *
- * Used ONLY by the install callback's ownership gate, to call
- * `GET /user/installations` and confirm a caller-supplied `installation_id`
- * actually belongs to this user before binding it to a workspace (the
- * anti-IDOR check — see install-callback/route.ts). It is NOT a repo
- * credential: per spec §4, all repo access rides installation tokens
- * (`getInstallationToken`) exclusively, never this one. Returns null when
- * the user never linked GitHub or no token is stored. Never logged or
- * returned to the client.
+ * Used ONLY by the install callback's ownership gate:
+ *   - `accessToken` calls `GET /user/installations` /
+ *     `GET /user/memberships/orgs/{org}` to narrow down and verify a
+ *     caller-supplied `installation_id`.
+ *   - `providerAccountId` is the caller's OWN numeric GitHub user id, used
+ *     for rename-proof equality against a PERSONAL installation's
+ *     `account.id` (a GitHub login can be renamed; the numeric id cannot) —
+ *     see install-callback/route.ts's doc-comment.
+ * Neither is a repo credential: per spec §4, all repo access rides
+ * installation tokens (`getInstallationToken`) exclusively. Returns null
+ * when the user never linked GitHub, or either field is missing (fail
+ * closed — a partial identity is not enough to verify ownership). Never
+ * logged or returned to the client.
  *
  * Deliberately a distinct, separately-named function from
  * `getUserGithubAccessToken` in `queries/index.ts` (a different, #1294-era
  * workspace-owner-based helper being retired later in this stack) — do not
  * merge the two.
  */
-export async function getUserGithubAccessTokenById(
+export async function getUserGithubIdentityById(
   userId: string
-): Promise<string | null> {
+): Promise<{ accessToken: string; providerAccountId: string } | null> {
   const rows = await db
-    .select({ accessToken: accounts.access_token })
+    .select({
+      accessToken: accounts.access_token,
+      providerAccountId: accounts.providerAccountId,
+    })
     .from(accounts)
     .where(and(eq(accounts.userId, userId), eq(accounts.provider, "github")))
     .limit(1);
-  return rows[0]?.accessToken ?? null;
+  const row = rows[0];
+  if (!row?.accessToken || !row?.providerAccountId) return null;
+  return {
+    accessToken: row.accessToken,
+    providerAccountId: row.providerAccountId,
+  };
 }

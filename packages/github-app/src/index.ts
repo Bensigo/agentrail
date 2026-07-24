@@ -173,6 +173,13 @@ export type ListUserInstallationsFailure = {
   reason: "unauthorized" | "github_unreachable" | "github_rejected";
 };
 
+export interface UserInstallationEntry {
+  id: string;
+  accountId: string;
+  accountLogin: string;
+  accountType: "User" | "Organization";
+}
+
 // Bound mirrors the backlog sweep's per-repo page cap (route.ts's
 // MAX_PAGES_PER_REPO): a pathological account with thousands of
 // installations must never hang the ownership check.
@@ -180,30 +187,40 @@ const MAX_INSTALLATION_PAGES = 10;
 const INSTALLATIONS_PER_PAGE = 100;
 
 /**
- * Lists the installation ids a GitHub App **user access token** can see, via
+ * Lists the installations a GitHub App **user access token** can see, via
  * `GET /user/installations` (GitHub's documented endpoint for this token
  * type — distinct from the App-JWT-authenticated `appFetch` calls above,
  * which act on ANY installation of the App and carry no ownership
- * information). This is the anti-IDOR primitive: the install callback calls
- * it with the CALLER's own stored token to confirm a caller-supplied
- * `installation_id` is actually one of theirs before binding it to a
- * workspace.
+ * information).
+ *
+ * IMPORTANT — this endpoint is NOT an ownership check on its own: GitHub
+ * returns an installation whenever the token's user shares ANY repo access
+ * with it (user ∩ app repo sets), so an outside collaborator with read on
+ * one repo of an org installation shows up here too. The install callback
+ * uses this ONLY to narrow to "installations this user can see at all",
+ * then layers `getUserOrgRole` (Organization) / account-id equality (User)
+ * on top as the real ownership boundary — see install-callback/route.ts's
+ * doc-comment.
  *
  * Response is a wrapper (`{ total_count, installations: [...] }`), not a
  * bare array; paginated `per_page=100` with the same short-page-stop idiom
  * as the backlog sweep (`sweepRepo` in
  * app/api/v1/runner/backlog/route.ts) — stop as soon as a page returns
- * fewer than `per_page` entries, bounded by MAX_INSTALLATION_PAGES.
+ * fewer than `per_page` entries, bounded by MAX_INSTALLATION_PAGES. Each
+ * entry's `account.id`/`account.login`/`account.type` are carried through
+ * so the caller can resolve identity without a second round-trip.
  *
  * Never throws; never logs the token. 401 → `unauthorized`; network
  * failure → `github_unreachable`; any other non-2xx or malformed body →
  * `github_rejected`.
  */
-export async function listUserInstallationIds(
+export async function listUserInstallations(
   userToken: string,
   fetchImpl: typeof fetch = fetch
-): Promise<{ ok: true; ids: string[] } | ListUserInstallationsFailure> {
-  const ids: string[] = [];
+): Promise<
+  { ok: true; installations: UserInstallationEntry[] } | ListUserInstallationsFailure
+> {
+  const installations: UserInstallationEntry[] = [];
   let page = 1;
   while (page <= MAX_INSTALLATION_PAGES) {
     const controller = new AbortController();
@@ -234,18 +251,88 @@ export async function listUserInstallationIds(
     const body = (await res.json().catch(() => null)) as
       | { installations?: unknown }
       | null;
-    const installations = body?.installations;
-    if (!Array.isArray(installations)) {
+    const page_installations = body?.installations;
+    if (!Array.isArray(page_installations)) {
       return { ok: false, reason: "github_rejected" };
     }
-    for (const entry of installations) {
+    for (const entry of page_installations) {
       const id = (entry as { id?: unknown } | null)?.id;
-      if (id !== undefined && id !== null) ids.push(String(id));
+      if (id === undefined || id === null) continue;
+      const account = (entry as { account?: { id?: unknown; login?: unknown; type?: unknown } } | null)
+        ?.account;
+      const accountId = account?.id;
+      installations.push({
+        id: String(id),
+        accountId: accountId !== undefined && accountId !== null ? String(accountId) : "",
+        accountLogin: typeof account?.login === "string" ? account.login : "",
+        accountType: account?.type === "Organization" ? "Organization" : "User",
+      });
     }
-    if (installations.length < INSTALLATIONS_PER_PAGE) break;
+    if (page_installations.length < INSTALLATIONS_PER_PAGE) break;
     page += 1;
   }
-  return { ok: true, ids };
+  return { ok: true, installations };
+}
+
+export type GetUserOrgRoleFailure = {
+  ok: false;
+  // "not_a_member" (404) is distinct from "unauthorized" (401): the former
+  // means the org itself rejects this user outright (→ forbidden), the
+  // latter means the caller's stored login token is stale (→ verify_failed,
+  // ask them to sign out/in).
+  reason: "not_a_member" | "unauthorized" | "github_unreachable" | "github_rejected";
+};
+
+/**
+ * The CALLING user's own role in `org`, via
+ * `GET /user/memberships/orgs/{org}` (requires the App's Organization
+ * Members read-only permission, granted to the user access token at
+ * login). This is the real ownership boundary for an ORGANIZATION
+ * installation: GitHub only lets account ADMINS install/manage Apps, so
+ * "is this user an admin of the org" is the install callback's anti-IDOR
+ * check for org accounts — `listUserInstallations` alone over-admits any
+ * collaborator who merely shares one repo with the installation.
+ *
+ * 404 → `not_a_member` (the org doesn't recognize this user as a member at
+ * all). `role` is `"admin"` or `"member"`; anything else GitHub returns
+ * (e.g. `"billing_manager"`) is treated as `"member"` — never silently
+ * promoted to admin. 401 → `unauthorized`. Network failure →
+ * `github_unreachable`. Any other non-2xx → `github_rejected`. Never
+ * throws; never logs the token.
+ */
+export async function getUserOrgRole(
+  userToken: string,
+  org: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<{ ok: true; role: "admin" | "member" } | GetUserOrgRoleFailure> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GITHUB_FETCH_TIMEOUT_MS);
+  let res: { ok: boolean; status: number; json: () => Promise<unknown> };
+  try {
+    res = await fetchImpl(
+      `https://api.github.com/user/memberships/orgs/${encodeURIComponent(org)}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${userToken}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "agentrail-console",
+        },
+        signal: controller.signal,
+      } as RequestInit
+    );
+  } catch {
+    return { ok: false, reason: "github_unreachable" };
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) {
+    if (res.status === 404) return { ok: false, reason: "not_a_member" };
+    if (res.status === 401) return { ok: false, reason: "unauthorized" };
+    return { ok: false, reason: "github_rejected" };
+  }
+  const body = (await res.json().catch(() => null)) as { role?: unknown } | null;
+  return { ok: true, role: body?.role === "admin" ? "admin" : "member" };
 }
 
 /**

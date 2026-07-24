@@ -16,7 +16,7 @@ import {
 import {
   getInstallationToken,
   consumeGithubInstallState,
-  getUserGithubAccessTokenById,
+  getUserGithubIdentityById,
 } from "../queries/github-app-token.js";
 
 const mockDb = vi.mocked(db);
@@ -107,26 +107,40 @@ describe("consumeGithubInstallState", () => {
   });
 });
 
-describe("getUserGithubAccessTokenById", () => {
-  it("returns the stored access_token for (userId, provider='github')", async () => {
+describe("getUserGithubIdentityById", () => {
+  it("returns { accessToken, providerAccountId } for (userId, provider='github')", async () => {
     mockDb.select.mockReturnValue(
-      selectChain([{ accessToken: "gho_login_token" }]) as never
+      selectChain([
+        { accessToken: "gho_login_token", providerAccountId: "555" },
+      ]) as never
     );
-    expect(await getUserGithubAccessTokenById("user-1")).toBe(
-      "gho_login_token"
-    );
+    expect(await getUserGithubIdentityById("user-1")).toEqual({
+      accessToken: "gho_login_token",
+      providerAccountId: "555",
+    });
     expect(mockDb.select).toHaveBeenCalledTimes(1);
   });
 
   it("returns null when the user has no linked GitHub account", async () => {
     mockDb.select.mockReturnValue(selectChain([]) as never);
-    expect(await getUserGithubAccessTokenById("user-2")).toBeNull();
+    expect(await getUserGithubIdentityById("user-2")).toBeNull();
   });
 
   it("returns null when the stored access_token is null", async () => {
     mockDb.select.mockReturnValue(
-      selectChain([{ accessToken: null }]) as never
+      selectChain([
+        { accessToken: null, providerAccountId: "555" },
+      ]) as never
     );
-    expect(await getUserGithubAccessTokenById("user-3")).toBeNull();
+    expect(await getUserGithubIdentityById("user-3")).toBeNull();
+  });
+
+  it("returns null when the stored provider_account_id is null", async () => {
+    mockDb.select.mockReturnValue(
+      selectChain([
+        { accessToken: "gho_login_token", providerAccountId: null },
+      ]) as never
+    );
+    expect(await getUserGithubIdentityById("user-4")).toBeNull();
   });
 });

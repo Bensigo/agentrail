@@ -48,13 +48,16 @@ const result: NextAuthResult = NextAuth({
   }),
   providers: [
     GitHub({
-      clientId: process.env["GITHUB_CLIENT_ID"]!,
-      clientSecret: process.env["GITHUB_CLIENT_SECRET"]!,
-      // Identity-only at sign-in (#1294): the front-door consent stays minimal.
-      // `repo` is escalated in-context at connect/create-repo time, not here.
-      authorization: {
-        params: { scope: GITHUB_IDENTITY_SCOPE },
-      },
+      // The Jace GitHub App's OAuth credentials (spec
+      // docs/superpowers/specs/2026-07-24-jace-github-app-identity-design.md
+      // §4) — same App as the installation flow, so the consent screen says
+      // "Authorize Jace". No scope override: GitHub Apps don't grant repo
+      // access via login-time OAuth scopes; repo access comes exclusively
+      // from the workspace's App installation (installation tokens). The
+      // access_token the adapter stores is inert login plumbing — nothing
+      // reads it (getGithubToken is deleted; see getInstallationToken).
+      clientId: process.env["GITHUB_APP_CLIENT_ID"]!,
+      clientSecret: process.env["GITHUB_APP_CLIENT_SECRET"]!,
     }),
   ],
   pages: {

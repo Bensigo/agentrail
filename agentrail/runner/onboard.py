@@ -712,9 +712,9 @@ _WIKI_OPENAI_COMPATIBLE_KEY_ENV = "OPENROUTER_API_KEY"
 
 def _select_wiki_summary_mode() -> Tuple[str, str]:
     """Explicit, LOGGED fallback chain for the onboarder's default wiki
-    prose provider (never silent): claude-cli (binary on PATH) ->
-    openai-compatible (binary absent, but the fleet's OPENROUTER_API_KEY is
-    present) -> claude-cli as the last resort, which then degrades to
+    prose provider (never silent): claude-cli (binary AND Anthropic
+    credentials) -> openai-compatible (gateway key present) -> claude-cli
+    (binary only, hoping for local auth state) as the last resort, which then degrades to
     skeleton-only pages via wiki.py's OWN claude-cli-availability gate
     (``_generate_prose``) — fail-open, never a crash, just no prose for
     that run. This is the fix for the hosted fleet, whose containers carry
@@ -726,15 +726,34 @@ def _select_wiki_summary_mode() -> Tuple[str, str]:
     ``anthropic/claude-haiku-4.5``) rather than this module's claude-cli-
     style ``_DEFAULT_MODEL``.
     """
-    if shutil.which("claude") is not None:
-        _log.info("onboard: wiki prose provider = claude-cli (binary on PATH)")
+    # Binary presence is NOT sufficient for claude-cli: the fleet image ships
+    # the `claude` binary as the run harness, but the worker environment has
+    # no Anthropic credentials, so every headless `claude -p` exits 1 (observed
+    # in prod 2026-07-24: 60+ "prose call failed (mode=claude-cli)" per
+    # compile while OPENROUTER_API_KEY sat unused). Select claude-cli only
+    # when it can actually authenticate (ANTHROPIC_API_KEY present, or no
+    # better option exists); prefer the gateway whenever its key is present
+    # and Anthropic credentials are not.
+    has_claude = shutil.which("claude") is not None
+    has_anthropic_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    has_gateway_key = bool(os.environ.get(_WIKI_OPENAI_COMPATIBLE_KEY_ENV))
+    if has_claude and has_anthropic_key:
+        _log.info("onboard: wiki prose provider = claude-cli (binary + ANTHROPIC_API_KEY)")
         return "claude-cli", _DEFAULT_MODEL
-    if os.environ.get(_WIKI_OPENAI_COMPATIBLE_KEY_ENV):
+    if has_gateway_key:
         _log.info(
-            "onboard: wiki prose provider = openai-compatible (no claude binary; %s present)",
+            "onboard: wiki prose provider = openai-compatible (%s present; claude-cli %s)",
             _WIKI_OPENAI_COMPATIBLE_KEY_ENV,
+            "binary present but no ANTHROPIC_API_KEY" if has_claude else "binary absent",
         )
         return "openai-compatible", ""
+    if has_claude:
+        _log.info(
+            "onboard: wiki prose provider = claude-cli (binary on PATH, no %s; "
+            "may rely on local claude auth state)",
+            _WIKI_OPENAI_COMPATIBLE_KEY_ENV,
+        )
+        return "claude-cli", _DEFAULT_MODEL
     _log.info(
         "onboard: wiki prose fallback chain exhausted (no claude binary, no %s); "
         "compile will ship skeleton-only pages",

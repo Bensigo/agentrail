@@ -1112,12 +1112,35 @@ def test_push_onboard_items_non_202_is_not_ok():
 # ---------------------------------------------------------------------------
 
 
-def test_select_wiki_summary_mode_prefers_claude_cli_when_available(monkeypatch):
+def test_select_wiki_summary_mode_claude_cli_needs_credentials_not_just_binary(monkeypatch):
+    """Regression pin for the 2026-07-24 prod failure: the fleet image SHIPS a
+    `claude` binary (the run harness) but the worker env has no Anthropic
+    credentials, so every headless call exits 1. Binary presence alone must
+    NOT select claude-cli when the gateway key is available."""
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude" if name == "claude" else None)
-    with _env(_WIKI_OPENAI_COMPATIBLE_KEY_ENV, "should-not-matter"):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with _env(_WIKI_OPENAI_COMPATIBLE_KEY_ENV, "gateway-key"):
+        mode, model = _select_wiki_summary_mode()
+    assert mode == "openai-compatible"
+    assert model == ""
+
+
+def test_select_wiki_summary_mode_prefers_claude_cli_with_anthropic_key(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude" if name == "claude" else None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    with _env(_WIKI_OPENAI_COMPATIBLE_KEY_ENV, "gateway-key-loses"):
         mode, model = _select_wiki_summary_mode()
     assert mode == "claude-cli"
     assert model  # a non-empty claude-cli-style model id
+
+
+def test_select_wiki_summary_mode_binary_only_is_last_resort(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude" if name == "claude" else None)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv(_WIKI_OPENAI_COMPATIBLE_KEY_ENV, raising=False)
+    mode, model = _select_wiki_summary_mode()
+    assert mode == "claude-cli"
+    assert model
 
 
 def test_select_wiki_summary_mode_falls_back_to_openai_compatible(monkeypatch):

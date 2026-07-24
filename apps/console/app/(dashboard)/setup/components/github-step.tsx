@@ -81,10 +81,31 @@ export function GithubStep({
   const [creating, setCreating] = useState(false);
   const [result, setResult] = useState<WebhookResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [installBusy, setInstallBusy] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
 
   function handleAdded() {
     setShowAddDialog(false);
     onChanged();
+  }
+
+  async function handleConnectGithub() {
+    setInstallBusy(true);
+    setInstallError(null);
+    try {
+      const res = await fetch(
+        `/api/v1/workspaces/${workspaceId}/connectors/github/install-link`,
+        { method: "POST" }
+      );
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "Could not start the install");
+      window.location.href = body.url;
+    } catch (e) {
+      setInstallError(
+        e instanceof Error ? e.message : "Could not start the install"
+      );
+      setInstallBusy(false);
+    }
   }
 
   async function handleCreateWebhook() {
@@ -112,6 +133,27 @@ export function GithubStep({
 
   return (
     <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-2 border-b border-[var(--gray-04)] pb-3">
+        <p className="text-xs leading-relaxed text-[var(--gray-09)]">
+          Install the Jace GitHub App first — it lets Jace review, push, and
+          open PRs on the repos you pick, with every action showing as Jace,
+          not you. Then add the repositories below.
+        </p>
+        {/* font-bold: primary CTA (colored fill) — same treatment as the
+            webhook step's "Create webhook automatically" button. */}
+        <button
+          type="button"
+          onClick={handleConnectGithub}
+          disabled={installBusy}
+          className="h-8 self-start rounded bg-[var(--brand-accent)] px-3 text-xs font-bold text-black transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {installBusy ? "Connecting…" : "Connect GitHub App"}
+        </button>
+        {installError && (
+          <p className="text-xs text-[var(--red-11)]">{installError}</p>
+        )}
+      </div>
+
       <p className="text-xs leading-relaxed text-[var(--gray-09)]">
         Link the repositories Jace should work in, then create the webhook that
         lets labeled issues flow into the queue.

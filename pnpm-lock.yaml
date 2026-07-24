@@ -22,6 +22,9 @@ importers:
       '@agentrail/db-postgres':
         specifier: workspace:*
         version: link:../../packages/db-postgres
+      '@agentrail/github-app':
+        specifier: workspace:*
+        version: link:../../packages/github-app
       '@agentrail/ui':
         specifier: workspace:*
         version: link:../../packages/ui

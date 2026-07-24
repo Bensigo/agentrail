@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { telegramDeepLink } from "../../../../../../lib/telegram-bot";
 import {
-  DISCORD_SEND_MESSAGES_PERMISSION,
   GATEWAY_CATALOG,
   discordInviteUrl,
   isGatewayConfigured,
@@ -114,15 +113,21 @@ describe("isGatewayConfigured", () => {
 });
 
 describe("discordInviteUrl", () => {
-  it("builds the OAuth2 authorize URL: bot+applications.commands scopes, Send-Messages-only permissions", () => {
+  it("builds Discord's provided install link — bare client_id, no query params", () => {
     const url = discordInviteUrl("123456789012345678");
     expect(url).toBe(
-      "https://discord.com/oauth2/authorize?client_id=123456789012345678&scope=bot%20applications.commands&permissions=2048"
+      "https://discord.com/oauth2/authorize?client_id=123456789012345678"
     );
   });
 
-  it("pins the permissions constant to SEND_MESSAGES only (bit 1<<11 = decimal 2048)", () => {
-    expect(DISCORD_SEND_MESSAGES_PERMISSION).toBe(2048);
+  // Regression guard for the behavior difference documented on the builder:
+  // a `scope=`/`permissions=` URL selects Discord's LEGACY guild-only invite
+  // flow, which drops the user-install path (no server, no way in). Scopes
+  // live in the portal's Default Install Settings, never here.
+  it("emits no scope or permissions params, so the Add-App flow offers user install too", () => {
+    const url = discordInviteUrl("123456789012345678");
+    expect(url).not.toContain("scope=");
+    expect(url).not.toContain("permissions=");
   });
 });
 

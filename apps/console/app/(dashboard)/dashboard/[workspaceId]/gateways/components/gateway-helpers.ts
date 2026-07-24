@@ -161,31 +161,39 @@ export function isGatewayConfigured(kind: GatewayKind, env: GatewayEnv): boolean
  * docs.discord.com/developers/topics/permissions since Discord's doc-site
  * migration), checked 2026-07-25: SEND_MESSAGES is listed at bit `1 << 11`.
  */
-export const DISCORD_SEND_MESSAGES_PERMISSION = 1 << 11; // SEND_MESSAGES = 2048
-
 /**
- * Discord's OAuth2 "invite bot to a server" URL (guild-scoped — the catalog's
- * "Chat with Jace in your Discord server" gateway). Scopes `bot` (join the
- * guild as a bot user) + `applications.commands` (register the `/jace` slash
- * command the webhook expects — see `discord-bot.ts` / the discord webhook
- * route's doc-comment) — both required for the v1 interactions flow.
- * `permissions` grants only {@link DISCORD_SEND_MESSAGES_PERMISSION}.
+ * Discord's install URL for the Jace app — DELIBERATELY the bare
+ * `?client_id=` form, with NO `scope=` / `permissions=` query parameters.
  *
- * Shape confirmed against Discord's OAuth2 docs,
- * https://discord.com/developers/docs/topics/oauth2 (canonical
- * docs.discord.com/developers/topics/oauth2), checked 2026-07-25: base
- * `https://discord.com/oauth2/authorize` (not the `/api/` variant), scopes
- * space-separated as url-encoded `%20` per that page's own wording, and a
- * documented example of exactly this shape (`?client_id=...&scope=bot&
- * permissions=1`). No `redirect_uri`/`response_type` needed for a bare bot
- * invite (those are for the separate user-authorization OAuth flow, unused
- * here).
+ * This is the "Discord Provided Link" the Developer Portal's Installation tab
+ * shows verbatim, and it is not merely a shorter equivalent of a hand-built
+ * invite URL. The two behave differently:
+ *
+ *  - Bare link  → Discord's modern Add-App flow, which reads the app's
+ *    **Default Install Settings** and offers BOTH install contexts: user
+ *    install ("Try it now" — Jace lives on the user's account and is usable
+ *    in any DM, no server required) and guild install ("Add to Server").
+ *  - `scope=`/`permissions=` link → the legacy guild-only bot-invite flow.
+ *    It pins the request to those literal params and drops the user-install
+ *    path entirely, so anyone without their own server has no way in.
+ *
+ * Since the whole point of a gateway is "click it and start talking", losing
+ * user install would be a real regression — hence the bare form. Scopes and
+ * permissions are therefore owned by the PORTAL, not by this code: the Jace
+ * app is configured (verified in-portal 2026-07-25) with guild install =
+ * `applications.commands` + `bot` + Send Messages, and user install =
+ * `applications.commands`. The `bot` scope + Send Messages matter because
+ * Jace's real answer is posted separately through the Bot API
+ * (`sendDiscordChannelMessage` → `POST /channels/{id}/messages`); without
+ * them the interaction ack still appears and the actual reply never lands.
+ *
+ * Keep this in sync with the portal, not with a constant here: changing the
+ * granted scopes is a portal edit, and this URL needs no code change for it.
  */
 export function discordInviteUrl(clientId: string): string {
-  const scope = encodeURIComponent("bot applications.commands");
   return `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(
     clientId
-  )}&scope=${scope}&permissions=${DISCORD_SEND_MESSAGES_PERMISSION}`;
+  )}`;
 }
 
 /**

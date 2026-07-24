@@ -674,3 +674,56 @@ class WikiCliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Skeleton pages are never hash-reused when prose is available (prod
+# regression 2026-07-24: wiki/overview and the agentrail root hub survived a
+# prose-enabled recompile as skeletons — their hub inputsHash, child slugs +
+# direct files, was stable by design, and the reuse gate was blind to the
+# stored page being a degraded fail-open artifact)
+# ---------------------------------------------------------------------------
+
+
+def _swap_summary_config(root: Path, *, mode: str, command: Optional[str] = None) -> None:
+    config_path = root / ".agentrail" / "config.json"
+    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    summary: Dict[str, Any] = {"mode": mode}
+    if command is not None:
+        summary.update({"provider": "mock", "model": "mock-model", "customCommand": command})
+    cfg["context"]["summary"] = summary
+    config_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+
+class SkeletonNeverReusedTests(unittest.TestCase):
+    def test_skeleton_page_regenerates_when_prose_available(self) -> None:
+        mock_dir = Path(tempfile.mkdtemp())
+        command = _write_mock(mock_dir)
+        root = make_repo(summary_mode="claude-cli")
+        with _wiki_on(), mock.patch("agentrail.context.wiki.shutil.which", return_value=None):
+            build_index(root)
+        overview = wiki.wiki_dir_for(root) / "overview.md"
+        self.assertIn("skeleton-only", overview.read_text(encoding="utf-8"))
+        # Same inputs (hashes unchanged), now with a WORKING provider: the
+        # skeleton page must regenerate, not hash-reuse.
+        _swap_summary_config(root, mode="custom-command", command=command)
+        with _wiki_on():
+            build_index(root)
+        second = overview.read_text(encoding="utf-8")
+        self.assertIn("Mock responsibility.", second)
+        self.assertNotIn("_Prose unavailable", second)
+
+    def test_skeleton_page_still_reused_when_provider_still_unavailable(self) -> None:
+        root = make_repo(summary_mode="claude-cli")
+        with _wiki_on(), mock.patch("agentrail.context.wiki.shutil.which", return_value=None):
+            build_index(root)
+        overview = wiki.wiki_dir_for(root) / "overview.md"
+        before = overview.read_text(encoding="utf-8")
+        mtime = overview.stat().st_mtime_ns
+        # Provider unchanged and still unavailable -> claude-cli mode is NOT
+        # "disabled", so skeleton pages regenerate (still skeleton, new
+        # attempt) — but with mode="disabled" reuse stays byte-identical.
+        _swap_summary_config(root, mode="disabled")
+        build_index(root)
+        self.assertEqual(overview.read_text(encoding="utf-8"), before)
+        self.assertEqual(overview.stat().st_mtime_ns, mtime)

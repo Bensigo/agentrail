@@ -166,6 +166,8 @@ PROMPT_CHAR_BUDGET = 4000
 # elsewhere for provider input caps — see embeddings.py's MAX_EMBED_CHARS).
 MAX_PROSE_CHARS = 1200 * 4
 
+SKELETON_ONLY_MODEL = "skeleton-only"
+
 _PROSE_UNAVAILABLE = "_Prose unavailable (provider error, cost ceiling reached, or nothing to describe); skeleton-only._"
 
 _OVERVIEW_DOC_CANDIDATES = ("README.md", ".agentrail/context.md", "CONTEXT.md")
@@ -348,12 +350,26 @@ def parse_page(text: str) -> Tuple[Dict[str, Any], str]:
     return fields, body
 
 
-def _existing_page_hash(page_path: Path) -> Optional[str]:
+def _existing_page_hash(page_path: Path, *, allow_skeleton: bool) -> Optional[str]:
+    """Return the on-disk page's ``inputsHash`` iff the page is REUSABLE.
+
+    A skeleton-only page (frontmatter ``model: skeleton-only``) is a DEGRADED
+    fail-open artifact, not compiled knowledge — when this compile has a
+    working prose provider (``allow_skeleton=False``) it must never be
+    hash-reused, or a transient provider outage pins placeholder pages
+    forever (observed in prod 2026-07-24: ``wiki/overview`` and the
+    ``agentrail`` root hub survived a prose-enabled recompile as skeletons
+    because their hub hashes — child slugs + direct files — were stable by
+    design). With prose disabled this compile, a skeleton page is the best
+    possible page, so reuse stays allowed.
+    """
     try:
         text = page_path.read_text(encoding="utf-8")
     except OSError:
         return None
     fields, _ = parse_page(text)
+    if not allow_skeleton and fields.get("model") == SKELETON_ONLY_MODEL:
+        return None
     value = fields.get("inputsHash")
     return value if isinstance(value, str) else None
 
@@ -1724,6 +1740,7 @@ def compile_wiki(
     start = time.monotonic()
     force = force or _env_force_enabled()
     mode = cfg.summary.mode
+    prose_disabled = mode == "disabled"
     model = cfg.summary.model or _default_prose_model(mode)
     wiki_dir = wiki_dir_for(root)
 
@@ -1818,7 +1835,7 @@ def compile_wiki(
             page_path = wiki_dir / slug_to_filename(slug)
             skeleton = _build_unit_skeleton(unit, node, unit_files, symbol_table, units_by_id, id_to_name, unit_depends_on_edges)
 
-            existing_hash = None if force else _existing_page_hash(page_path)
+            existing_hash = None if force else _existing_page_hash(page_path, allow_skeleton=prose_disabled)
             if existing_hash == inputs_hash and page_path.is_file():
                 full_text = page_path.read_text(encoding="utf-8")
                 pages_reused += 1
@@ -1872,7 +1889,7 @@ def compile_wiki(
                     related = sorted(set(child_slugs) | ({parent_slug} if parent_slug else set()) | {OVERVIEW_SLUG})
 
                 page_path = wiki_dir / slug_to_filename(slug)
-                existing_hash = None if force else _existing_page_hash(page_path)
+                existing_hash = None if force else _existing_page_hash(page_path, allow_skeleton=prose_disabled)
                 if existing_hash == inputs_hash and page_path.is_file():
                     full_text = page_path.read_text(encoding="utf-8")
                     pages_reused += 1
@@ -1932,7 +1949,7 @@ def compile_wiki(
             related = sorted(set(depends_on_slugs) | set(depended_by_slugs) | ({parent_slug} if parent_slug else set()) | {OVERVIEW_SLUG})
 
             page_path = wiki_dir / slug_to_filename(slug)
-            existing_hash = None if force else _existing_page_hash(page_path)
+            existing_hash = None if force else _existing_page_hash(page_path, allow_skeleton=prose_disabled)
             if existing_hash == inputs_hash and page_path.is_file():
                 full_text = page_path.read_text(encoding="utf-8")
                 pages_reused += 1
@@ -1984,7 +2001,7 @@ def compile_wiki(
         "dependedOnBy": [],
     }
     overview_links = {"related": overview_related, "dependsOn": [], "dependedOnBy": []}
-    existing_overview_hash = None if force else _existing_page_hash(overview_path)
+    existing_overview_hash = None if force else _existing_page_hash(overview_path, allow_skeleton=prose_disabled)
     if existing_overview_hash == overview_hash and overview_path.is_file():
         overview_text = overview_path.read_text(encoding="utf-8")
         pages_reused += 1

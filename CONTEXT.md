@@ -60,6 +60,10 @@ _Avoid_: Treating inferred relationships as equal to parsed code, tests, explici
 A meaningful part of a repository detected from manifests, workspace files, build files, dependency edges, ownership files, import structure, tests, or explicit configuration.
 _Avoid_: Assuming every enterprise repo uses the same app, package, service, or module layout.
 
+**Repo Wiki**:
+A compiled, per-repository set of cited overview pages (repo overview + one per Codebase Unit) generated at index/onboard time — structure from the deterministic Code Graph, prose from a bounded cheap-model pass — stored durably in the server's `wiki_pages` (checkouts are ephemeral and customer repos are never written to), materialized per-clone as `wiki_doc` sources, freshness-tracked by input hashes, ranked below human context docs and above memory. It tells agents where to look; the source stays the truth.
+_Avoid_: Treating wiki prose as evidence; storing repository knowledge in workspace memory; per-file page explosions; console-side page editing or any second human content source (the console renders the agent's artifact read-only); any factory-runtime network fetch of wiki content.
+
 **Context Memory**:
 Advisory, source-linked knowledge from prior decisions, lessons, preferences, and failure patterns that must be checked against current code and docs.
 _Avoid_: Hidden memory, permanent truth.

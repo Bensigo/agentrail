@@ -19,7 +19,7 @@ const nextConfig: NextConfig = {
   // stopping at apps/console — otherwise the standalone server is missing
   // modules at runtime. See https://nextjs.org/docs/app/api-reference/config/next-config-js/output#automatically-copying-traced-files
   outputFileTracingRoot: join(__dirname, "../../"),
-  transpilePackages: ["@agentrail/ui", "@agentrail/contracts", "@agentrail/auth", "@agentrail/db-postgres"],
+  transpilePackages: ["@agentrail/ui", "@agentrail/contracts", "@agentrail/auth", "@agentrail/db-postgres", "@agentrail/github-app"],
   experimental: {
     // nodeMiddleware is supported at runtime in Next 15.5 (next-server.js) but
     // is not yet declared on ExperimentalConfig's types.

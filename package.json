@@ -29,7 +29,7 @@
     "typecheck": "pnpm --filter @agentrail/console typecheck",
     "typecheck:python": "bash agentrail/scripts/typecheck-python",
     "build": "pnpm --filter @agentrail/console build",
-    "predev": "pnpm --filter @agentrail/db-postgres --filter @agentrail/mcp build",
+    "predev": "pnpm --filter @agentrail/db-postgres --filter @agentrail/github-app --filter @agentrail/mcp build",
     "dev": "pnpm --parallel --filter @agentrail/console --filter @agentrail/db-postgres --filter @agentrail/mcp dev",
     "lint": "pnpm --filter @agentrail/console lint",
     "db:generate": "pnpm --filter @agentrail/db-postgres db:generate",

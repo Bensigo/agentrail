@@ -221,7 +221,7 @@ export async function GET(request: NextRequest) {
   const token = await getInstallationToken(workspaceId);
   if (!token) {
     return NextResponse.json(
-      { error: "no GitHub account with repo access is connected for this workspace yet" },
+      { error: "GitHub is not connected for this workspace — install the Jace GitHub App first" },
       { status: 409 }
     );
   }

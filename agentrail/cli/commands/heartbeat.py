@@ -4,8 +4,10 @@ This is the only place the **real** adapters are constructed and handed to the
 otherwise-hermetic :class:`~agentrail.heartbeat.runtime.HeartbeatRuntime`:
 
 - the Issue Queue store on the production ``PostgresExecutor`` (DATABASE_URL);
-- the GitHub OAuth client, polling the workspace's linked repos with the
-  owner's stored ``access_token`` (resolved via the Python token provider);
+- the GitHub poll client, polling the workspace's linked repos with a
+  freshly minted GitHub App installation token (resolved via the Python
+  token provider, ``agentrail.heartbeat.token_provider.get_github_token`` —
+  no stored OAuth ``access_token`` is read);
 - (optional, issue #1036) a symmetric Linear poll client, added when the
   workspace has an enabled Linear connector AND ``AGENTRAIL_MCP_LINEAR_KEY`` is
   set — trigger-labeled Linear issues then flow through the SAME shared
@@ -201,8 +203,9 @@ def _build_runtime(
     token = get_github_token(workspace_id, executor)
     if not token:
         raise _UsageError(
-            f"heartbeat: no GitHub OAuth token for workspace {workspace_id!r}; "
-            "connect GitHub in the dashboard first",
+            f"heartbeat: no GitHub App installation for workspace "
+            f"{workspace_id!r}; install the Jace GitHub App in the dashboard "
+            "first",
             code=1,
         )
 
@@ -479,11 +482,11 @@ def serve_heartbeat(
     """``agentrail heartbeat serve`` entry point.
 
     Starts the webhook receiver, wiring the real adapters (PostgresExecutor store,
-    the active GitHub connector for the trigger label, the escalation runtime, the
-    GitHub OAuth token). ``server_factory`` is injectable so the CLI control flow
-    (flag parsing, the printed ``gh webhook forward`` hint, ``serve_forever``
-    dispatch) is unit-tested with a fake server — never touching Postgres / a real
-    socket.
+    the active GitHub connector for the trigger label, the escalation runtime, a
+    freshly minted GitHub App installation token). ``server_factory`` is
+    injectable so the CLI control flow (flag parsing, the printed
+    ``gh webhook forward`` hint, ``serve_forever`` dispatch) is unit-tested with
+    a fake server — never touching Postgres / a real socket.
     """
     if args and args[1:] and args[1] in ("-h", "--help"):
         print(_serve_usage(), end="")

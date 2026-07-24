@@ -143,8 +143,8 @@ const EXPECTED_MUTATING_TOOLS = [
   "post_pr_review.ts",
   // issue #1291 — the backlog-grooming write path. Each mutates ONE EXISTING
   // open issue (label / close / dedupe) and applies over HTTP to the console
-  // (getGithubToken server-side), never child_process — same gate class and
-  // shape as post_pr_review. Grooming NEVER files new issues (that stays
+  // (getInstallationToken server-side), never child_process — same gate class
+  // and shape as post_pr_review. Grooming NEVER files new issues (that stays
   // create_issue's job) and NEVER writes without an approved decision.
   "backlog_label.ts",
   "backlog_close.ts",

@@ -16,7 +16,7 @@ export function ConnectorStatusBadge({
   if (availability === "planned") {
     return (
       <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-xs font-medium bg-[var(--yellow-09)]/15 text-[var(--yellow-11)] border border-[var(--yellow-09)]/30">
-        Planned
+        Coming
       </span>
     );
   }

@@ -8,6 +8,9 @@ import {
   getRunnerContextEfficiency,
   getRunnerCostStats,
   listCostAnomalies,
+  deriveWikiCompileEventId,
+  insertWikiCompileEvents,
+  type WikiCompileEventInput,
 } from "./queries";
 
 function fakeQueryClient(responses: Array<Record<string, unknown>[]>) {
@@ -89,6 +92,133 @@ describe("deriveSnapshotEventId", () => {
     expect(deriveSnapshotEventId("ws", "repo2", "abc123", "2026-06-12T00:00:00.000Z")).not.toBe(base);
     expect(deriveSnapshotEventId("ws2", "repo", "abc123", "2026-06-12T00:00:00.000Z")).not.toBe(base);
     expect(deriveSnapshotEventId("ws", "repo", "def456", "2026-06-12T00:00:00.000Z")).not.toBe(base);
+  });
+});
+
+describe("deriveWikiCompileEventId", () => {
+  it("is deterministic for the same content fields", () => {
+    const a = deriveWikiCompileEventId("ws", "repo", "abc123", 3, 21, 0.04, "claude-haiku-4-5", 5200);
+    const b = deriveWikiCompileEventId("ws", "repo", "abc123", 3, 21, 0.04, "claude-haiku-4-5", 5200);
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it("differs when duration_ms differs — a genuine re-compile is never mistaken for a retry", () => {
+    const base = deriveWikiCompileEventId("ws", "repo", "abc123", 3, 21, 0.04, "claude-haiku-4-5", 5200);
+    expect(deriveWikiCompileEventId("ws", "repo", "abc123", 3, 21, 0.04, "claude-haiku-4-5", 5300)).not.toBe(
+      base
+    );
+  });
+
+  it("differs when any other content field differs", () => {
+    const base = deriveWikiCompileEventId("ws", "repo", "abc123", 3, 21, 0.04, "claude-haiku-4-5", 5200);
+    expect(deriveWikiCompileEventId("ws2", "repo", "abc123", 3, 21, 0.04, "claude-haiku-4-5", 5200)).not.toBe(
+      base
+    );
+    expect(deriveWikiCompileEventId("ws", "repo2", "abc123", 3, 21, 0.04, "claude-haiku-4-5", 5200)).not.toBe(
+      base
+    );
+    expect(deriveWikiCompileEventId("ws", "repo", "def456", 3, 21, 0.04, "claude-haiku-4-5", 5200)).not.toBe(
+      base
+    );
+    expect(deriveWikiCompileEventId("ws", "repo", "abc123", 4, 21, 0.04, "claude-haiku-4-5", 5200)).not.toBe(
+      base
+    );
+    expect(deriveWikiCompileEventId("ws", "repo", "abc123", 3, 22, 0.04, "claude-haiku-4-5", 5200)).not.toBe(
+      base
+    );
+    expect(deriveWikiCompileEventId("ws", "repo", "abc123", 3, 21, 0.05, "claude-haiku-4-5", 5200)).not.toBe(
+      base
+    );
+    expect(deriveWikiCompileEventId("ws", "repo", "abc123", 3, 21, 0.04, "claude-opus-4-8", 5200)).not.toBe(
+      base
+    );
+  });
+});
+
+describe("insertWikiCompileEvents", () => {
+  const event = (overrides: Partial<WikiCompileEventInput> = {}): WikiCompileEventInput => ({
+    workspace_id: "ws-1",
+    repository_id: "repo-1",
+    commit_sha: "abc123",
+    pages_written: 3,
+    pages_reused: 21,
+    cost_usd: 0.04,
+    model: "claude-haiku-4-5",
+    duration_ms: 5200,
+    created_at: "2026-07-24T00:00:00.000Z",
+    ...overrides,
+  });
+
+  it("returns 0 for an empty batch without calling the client", async () => {
+    const fake = fakeInsertClient([]);
+    const result = await insertWikiCompileEvents([], fake.client);
+    expect(result).toBe(0);
+    expect(fake.calls).toHaveLength(0);
+    expect(fake.inserts).toHaveLength(0);
+  });
+
+  it("inserts a new event and returns 1", async () => {
+    const fake = fakeInsertClient([[]]); // pre-existence check: no matching event_id
+    const result = await insertWikiCompileEvents([event()], fake.client);
+
+    expect(result).toBe(1);
+    expect(fake.inserts).toHaveLength(1);
+    expect(fake.inserts[0]!.table).toBe("wiki_compile_events");
+    const [row] = fake.inserts[0]!.values;
+    expect(row).toMatchObject({
+      workspace_id: "ws-1",
+      repository_id: "repo-1",
+      commit_sha: "abc123",
+      pages_written: 3,
+      pages_reused: 21,
+      cost_usd: 0.04,
+      model: "claude-haiku-4-5",
+      duration_ms: 5200,
+    });
+    expect(row!.event_id).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it("dedupes an event whose event_id already exists, inserting nothing", async () => {
+    const id = deriveWikiCompileEventId(
+      "ws-1",
+      "repo-1",
+      "abc123",
+      3,
+      21,
+      0.04,
+      "claude-haiku-4-5",
+      5200
+    );
+    const fake = fakeInsertClient([[{ event_id: id }]]); // pre-existence check finds it
+
+    const result = await insertWikiCompileEvents([event()], fake.client);
+
+    expect(result).toBe(0);
+    expect(fake.inserts).toHaveLength(0);
+  });
+
+  it("inserts only the non-duplicate events from a mixed batch", async () => {
+    const dupeId = deriveWikiCompileEventId(
+      "ws-1",
+      "repo-1",
+      "abc123",
+      3,
+      21,
+      0.04,
+      "claude-haiku-4-5",
+      5200
+    );
+    const fake = fakeInsertClient([[{ event_id: dupeId }]]);
+
+    const result = await insertWikiCompileEvents(
+      [event(), event({ duration_ms: 6000 })],
+      fake.client
+    );
+
+    expect(result).toBe(1);
+    expect(fake.inserts[0]!.values).toHaveLength(1);
+    expect(fake.inserts[0]!.values[0]).toMatchObject({ duration_ms: 6000 });
   });
 });
 

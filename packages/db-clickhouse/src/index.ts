@@ -25,6 +25,7 @@ export {
   ALTER_COST_EVENTS_ADD_OUTPUT_TOKENS,
   ALTER_COST_EVENTS_ADD_CACHE_TOKENS,
   CREATE_AFK_RUN_EVENTS_TABLE,
+  CREATE_WIKI_COMPILE_EVENTS_TABLE,
 } from "./schema";
 export type {
   TelemetryEventRecord,
@@ -34,6 +35,7 @@ export type {
   IndexSnapshotRecord,
   CostEventRecord,
   AfkRunEventRecord,
+  WikiCompileEventRecord,
 } from "./schema";
 export {
   getRunEvents,
@@ -47,6 +49,8 @@ export {
   insertAfkRunEvents,
   insertIndexSnapshots,
   deriveSnapshotEventId,
+  insertWikiCompileEvents,
+  deriveWikiCompileEventId,
   insertFailureEvents,
   deriveFailureEventId,
   insertCostEvents,
@@ -78,6 +82,7 @@ export type {
   AggregateCostsOptions,
   AfkRunEventInput,
   IndexSnapshotInput,
+  WikiCompileEventInput,
   FailureEventInput,
   CostEventInput,
   ContextPackInput,

@@ -119,6 +119,27 @@ class ProviderConfig:
 
 
 @dataclass
+class WikiConfig:
+    """Repo Wiki source-custody switch (spec open question 1:
+    docs/superpowers/specs/2026-07-23-repo-wiki-compiled-repo-knowledge-design.md
+    §4.2 "Source custody" — `sourceCustody.wikiUploadAllowed`). This dataclass
+    does not decide the enterprise default (that is the open question); it
+    only wires the per-workspace off-switch through to the push client.
+
+    When ``upload`` is False, ``agentrail/context/wiki_push.py`` skips the
+    network entirely — self-hosters who disable it keep a fully local wiki
+    (Jace then answers from workspace memory, as today).
+    """
+
+    upload: bool = True
+
+    @classmethod
+    def from_dict(cls: Type["WikiConfig"], value: Dict[str, Any] | None) -> "WikiConfig":
+        data = value or {}
+        return cls(upload=bool(data.get("upload", True)))
+
+
+@dataclass
 class ContextConfig:
     includeGlobs: List[str] = field(default_factory=lambda: ["**/*"])
     excludeGlobs: List[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE_GLOBS))
@@ -132,6 +153,7 @@ class ContextConfig:
     codebaseUnits: List[Dict[str, Any]] = field(default_factory=list)
     daemonAutoSpawn: bool = False
     packCutoff: PackCutoffConfig = field(default_factory=PackCutoffConfig)
+    wiki: WikiConfig = field(default_factory=WikiConfig)
 
 
 def read_context_config(target_dir: Path) -> ContextConfig:
@@ -171,4 +193,5 @@ def read_context_config(target_dir: Path) -> ContextConfig:
         codebaseUnits=context.get("codebaseUnits") if isinstance(context.get("codebaseUnits"), list) else [],
         daemonAutoSpawn=bool(context.get("daemonAutoSpawn", False)),
         packCutoff=pack_cutoff,
+        wiki=WikiConfig.from_dict(context.get("wiki") if isinstance(context.get("wiki"), dict) else None),
     )

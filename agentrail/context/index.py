@@ -554,12 +554,94 @@ def detect_workspace_units(root: Path) -> List[Dict[str, Any]]:
     return units
 
 
+# Root-manifest ecosystems considered ALONGSIDE npm workspace units (the
+# repo-wiki "the Python factory has no page" gap: this repo's own root
+# pyproject.toml + agentrail/ never became a unit because npm workspaces won
+# outright). package.json is deliberately EXCLUDED here -- it is the npm
+# ecosystem's OWN manifest, so when npm workspace units already exist there
+# is no "different ecosystem" root-npm unit left to add; it stays in the
+# plain (no-workspaces) fallback set below instead.
+_OTHER_ECOSYSTEM_ROOT_MANIFESTS = {"pyproject.toml", "go.mod", "Cargo.toml", "pom.xml", "build.gradle", "settings.gradle"}
+
+
+def _pyproject_project_name(text: str) -> Optional[str]:
+    """Best-effort ``[project] name = "..."`` (PEP 621) or
+    ``[tool.poetry] name = "..."`` extraction from a pyproject.toml's raw
+    text. Hand-rolled rather than a TOML dependency: pyproject.toml itself
+    declares ``requires-python = ">=3.9"``, below stdlib ``tomllib``'s 3.11
+    floor, and this codebase avoids adding a parsing dependency for a single
+    scalar field (mirrors wiki.py's hand-rolled frontmatter parser avoiding
+    pyyaml for the same reason). Deliberately narrow: only the first
+    top-level ``name = "..."`` line under a ``[project]`` or
+    ``[tool.poetry]`` table; returns ``None`` on anything else (missing
+    table, missing name, malformed TOML) rather than raising.
+    """
+    table_match = re.search(r"^\[(?:project|tool\.poetry)\]\s*$(.*?)(?=^\[|\Z)", text, re.MULTILINE | re.DOTALL)
+    if not table_match:
+        return None
+    name_match = re.search(r'^\s*name\s*=\s*"([^"]+)"\s*$', table_match.group(1), re.MULTILINE)
+    return name_match.group(1).strip() if name_match else None
+
+
+def _root_ecosystem_unit_path(root: Path, manifest: str) -> str:
+    """The best PATH for a root-manifest unit of a non-npm ecosystem.
+
+    For a Python project (``pyproject.toml``) whose declared project name
+    matches an existing top-level package directory (e.g. this repo:
+    ``name = "agentrail"`` -> ``agentrail/``), prefer that directory over
+    the generic repo root ``"."`` -- a dedicated unit path renders a far
+    more useful wiki page (roster/responsibility scoped to the actual
+    package) than a ``"."`` unit that mixes in every unrelated top-level
+    file. Falls back to ``"."`` for every other ecosystem, or whenever the
+    derived directory does not actually exist as a real Python package --
+    deliberately conservative, never guesses a path that isn't really there.
+    """
+    if manifest == "pyproject.toml":
+        try:
+            text = (root / manifest).read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        name = _pyproject_project_name(text)
+        if name:
+            candidate = name.replace("-", "_")
+            if (root / candidate).is_dir() and (root / candidate / "__init__.py").is_file():
+                return candidate
+    return "."
+
+
+def _root_ecosystem_unit(root: Path, manifest: str) -> Dict[str, Any]:
+    unit_path = _root_ecosystem_unit_path(root, manifest)
+    if unit_path == ".":
+        return codebase_unit("root", root.name, ".", "root_manifest", manifest_path=manifest)
+    return codebase_unit(unit_path, Path(unit_path).name, unit_path, "root_manifest", manifest_path=manifest)
+
+
 def detect_manifest_units(root: Path, records: List[SourceRecord]) -> List[Dict[str, Any]]:
     workspace_units = detect_workspace_units(root)
-    if workspace_units:
-        return workspace_units
-    root_manifests = {"package.json", "pyproject.toml", "go.mod", "Cargo.toml", "pom.xml", "build.gradle", "settings.gradle"}
     record_paths = {record.path for record in records}
+
+    if workspace_units:
+        # UNION case (repo-wiki gap fix): npm workspaces win the
+        # package.json slot outright, but a root manifest of a DIFFERENT
+        # ecosystem living alongside them (e.g. a python factory in an npm
+        # monorepo -- this repo's own agentrail/ + pyproject.toml) still
+        # deserves its own unit/wiki page rather than being silently
+        # dropped. Deterministic: at most ONE other-ecosystem unit is added
+        # (the first manifest present, in sorted order), and it is skipped
+        # entirely if its derived path collides with an existing workspace
+        # unit's path -- _unit_id_for_path's longest-path-wins ownership
+        # already makes a "." fallback unit safe (it only ever picks up
+        # files no more-specific unit claims), so no other dedup is needed.
+        other_manifest = next((path for path in sorted(_OTHER_ECOSYSTEM_ROOT_MANIFESTS) if path in record_paths), None)
+        if other_manifest is None:
+            return workspace_units
+        extra_unit = _root_ecosystem_unit(root, other_manifest)
+        workspace_paths = {unit["path"] for unit in workspace_units}
+        if extra_unit["path"] in workspace_paths:
+            return workspace_units
+        return [*workspace_units, extra_unit]
+
+    root_manifests = {"package.json", *_OTHER_ECOSYSTEM_ROOT_MANIFESTS}
     manifest = next((path for path in sorted(root_manifests) if path in record_paths), None)
     if manifest:
         return [codebase_unit("root", root.name, ".", "root_manifest", manifest_path=manifest)]

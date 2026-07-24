@@ -37,6 +37,7 @@ import re
 import shutil
 import subprocess
 import time
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -77,6 +78,34 @@ AUTHORITY = "generated"
 DEFAULT_PROSE_MODEL = "claude-haiku-4-5-20251001"
 _CLAUDE_CLI_BIN = "claude"
 _CALL_TIMEOUT_SECONDS = 60
+
+# openai-compatible prose provider (fleet activation): the hosted fleet
+# container carries OPENROUTER_API_KEY and no `claude` binary, so prod
+# compiles previously always fell open to skeleton-only. Defaults mirror
+# embeddings.py's openai-compatible provider conventions (baseUrl/apiKeyEnv
+# indirection via ProviderConfig) with an OpenRouter-specific default
+# endpoint/key-env and a dedicated model-id env override. Model id spelling
+# ("anthropic/claude-haiku-4.5") matches this repo's OWN OpenRouter gateway
+# naming convention -- see apps/jace/agent/lib/model.core.mjs's
+# HAIKU_GATEWAY_MODEL_ID -- NOT wiki.py's own claude-cli-style ids.
+WIKI_PROSE_MODEL_ENV = "AGENTRAIL_WIKI_PROSE_MODEL"
+DEFAULT_OPENAI_COMPATIBLE_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV = "OPENROUTER_API_KEY"
+DEFAULT_OPENAI_COMPATIBLE_MODEL = "anthropic/claude-haiku-4.5"
+
+
+def _default_prose_model(mode: str) -> str:
+    """The model id to use when ``context.summary.model`` is unset.
+
+    openai-compatible mode reads ``AGENTRAIL_WIKI_PROSE_MODEL`` (an operator
+    override) before falling back to :data:`DEFAULT_OPENAI_COMPATIBLE_MODEL`
+    -- every other mode keeps :data:`DEFAULT_PROSE_MODEL`'s claude-cli-style
+    id, byte-identical to before this function existed.
+    """
+    if mode == "openai-compatible":
+        return os.environ.get(WIKI_PROSE_MODEL_ENV) or DEFAULT_OPENAI_COMPATIBLE_MODEL
+    return DEFAULT_PROSE_MODEL
+
 
 OVERVIEW_SLUG = "wiki/overview"
 _UNIT_SLUG_PREFIX = "wiki/unit/"
@@ -300,6 +329,13 @@ class _CostTracker:
     total_usd: float = 0.0
     calls: int = 0
     provider_errors: int = 0
+    # Set when a priced call used a model id absent from pricing.PRICE_TABLE
+    # (expected for arbitrary openai-compatible/OpenRouter model ids) -- see
+    # _generate_prose: that call's cost is recorded as an honest $0 rather
+    # than cost_for's chars/4 sonnet-class fallback estimate, and this flag
+    # surfaces the fact in the compile report so nobody mistakes $0 for
+    # "no calls were made".
+    unpriced_model: bool = False
 
     @property
     def exceeded(self) -> bool:
@@ -384,11 +420,74 @@ def _call_custom_command(root: Path, provider_cfg: ProviderConfig, prompt: str) 
     return text, usage
 
 
+def _openai_compatible_key_present(provider_cfg: ProviderConfig) -> bool:
+    """Cheap preflight for ``openai-compatible`` mode -- mirrors the
+    ``claude-cli`` binary-presence check in :func:`_generate_prose` so an
+    unconfigured provider fails open to "unavailable" (skeleton-only)
+    WITHOUT attempting a network call first. A local endpoint (e.g. Ollama)
+    never needs a key, exactly like ``embeddings.run_openai_compatible``.
+    """
+    base_url = (provider_cfg.baseUrl or DEFAULT_OPENAI_COMPATIBLE_BASE_URL).rstrip("/")
+    if any(host in base_url for host in ("localhost", "127.0.0.1", "0.0.0.0")):
+        return True
+    api_key_env = provider_cfg.apiKeyEnv or DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV
+    return bool(os.environ.get(api_key_env))
+
+
+def _call_openai_compatible(model: str, prompt: str, provider_cfg: ProviderConfig) -> Tuple[str, Dict[str, int]]:
+    """The ONE network seam for ``openai-compatible`` mode (monkeypatch in
+    tests, exactly like ``_call_claude_cli``/``_call_custom_command``).
+
+    Mirrors ``embeddings.run_openai_compatible``'s conventions exactly:
+    baseUrl/apiKeyEnv indirection via ``ProviderConfig`` (defaulting to
+    OpenRouter -- see the module-level ``DEFAULT_OPENAI_COMPATIBLE_*``
+    constants), a local-host bypass for an unauthenticated local server, and
+    a bare ``RuntimeError`` when a required key is missing. Unlike
+    embeddings, this posts to CHAT COMPLETIONS (``{baseUrl}/chat/
+    completions``) -- the shape the fleet's OpenRouter credentials actually
+    serve -- with the SAME prompt ``_call_claude_cli`` sends, and returns
+    raw text for the caller's existing ``_parse_prose_json`` to parse (the
+    SAME ``{responsibility, fileNotes, relationships}`` JSON contract every
+    mode produces). A bounded ``timeout=_CALL_TIMEOUT_SECONDS`` keeps this
+    module's fail-open promise real -- a hanging gateway call must never
+    hang an onboard.
+    """
+    base_url = (provider_cfg.baseUrl or DEFAULT_OPENAI_COMPATIBLE_BASE_URL).rstrip("/")
+    is_local = any(host in base_url for host in ("localhost", "127.0.0.1", "0.0.0.0"))
+    api_key_env = provider_cfg.apiKeyEnv or DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV
+    api_key = os.environ.get(api_key_env)
+    if not api_key and not is_local:
+        raise RuntimeError(f"{api_key_env} is required for openai-compatible wiki prose mode")
+    api_key = api_key or "local"  # local servers (e.g. Ollama) ignore the bearer token
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}]}).encode("utf-8"),
+        headers={"content-type": "application/json", "authorization": f"Bearer {api_key}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=_CALL_TIMEOUT_SECONDS) as response:
+        parsed = json.loads(response.read().decode("utf-8"))
+    choices = parsed.get("choices") if isinstance(parsed, dict) else None
+    first_choice = choices[0] if isinstance(choices, list) and choices else None
+    message = first_choice.get("message") if isinstance(first_choice, dict) else None
+    text = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(text, str):
+        raise ValueError("openai-compatible wiki prose response missing message content")
+    raw_usage = parsed.get("usage") if isinstance(parsed, dict) and isinstance(parsed.get("usage"), dict) else {}
+    usage = {
+        "inputTokens": int(raw_usage.get("prompt_tokens", 0) or 0),
+        "outputTokens": int(raw_usage.get("completion_tokens", 0) or 0),
+    }
+    return text, usage
+
+
 def _call_prose_model(mode: str, root: Path, provider_cfg: ProviderConfig, model: str, prompt: str) -> Tuple[str, Dict[str, int]]:
     if mode == "claude-cli":
         return _call_claude_cli(model, prompt)
     if mode == "custom-command":
         return _call_custom_command(root, provider_cfg, prompt)
+    if mode == "openai-compatible":
+        return _call_openai_compatible(model, prompt, provider_cfg)
     raise RuntimeError(f"unsupported wiki summary mode: {mode}")
 
 
@@ -436,14 +535,30 @@ def _generate_prose(root: Path, provider_cfg: ProviderConfig, mode: str, model: 
         return None, "cost_ceiling"
     if mode == "claude-cli" and shutil.which(_CLAUDE_CLI_BIN) is None:
         return None, "unavailable"
+    if mode == "openai-compatible" and not _openai_compatible_key_present(provider_cfg):
+        return None, "unavailable"
     try:
         text, usage = _call_prose_model(mode, root, provider_cfg, model, prompt)
     except Exception as exc:  # noqa: BLE001 - any provider failure falls open
         tracker.provider_errors += 1
         _log.warning("wiki: prose call failed (mode=%s): %s", mode, exc)
         return None, "error"
-    cost = cost_for(model, input_tokens=int(usage.get("inputTokens", 0) or 0), output_tokens=int(usage.get("outputTokens", 0) or 0))["dollars"]
-    tracker.add(cost)
+    priced = cost_for(model, input_tokens=int(usage.get("inputTokens", 0) or 0), output_tokens=int(usage.get("outputTokens", 0) or 0))
+    if mode == "openai-compatible" and priced["estimate"]:
+        # openai-compatible model ids are operator/env-supplied and
+        # essentially arbitrary (AGENTRAIL_WIKI_PROSE_MODEL, any OpenRouter
+        # slug) -- when one isn't in pricing.PRICE_TABLE, record an honest
+        # $0 rather than cost_for's chars/4 sonnet-class fallback, which
+        # would silently misprice an unknown gateway model.
+        # tracker.unpriced_model surfaces this in the compile report; never
+        # crash either way. Scoped to openai-compatible ONLY -- claude-cli/
+        # custom-command keep cost_for's existing fallback-estimate
+        # behavior unchanged (pre-existing tests pin real, non-zero costs
+        # for their own unpriced test-double model ids).
+        tracker.unpriced_model = True
+        tracker.add(0.0)
+    else:
+        tracker.add(priced["dollars"])
     parsed = _parse_prose_json(text)
     if parsed is None:
         # The call itself succeeded (already priced above -- a malformed
@@ -854,7 +969,7 @@ def _compile_unit_page_text(
     structure_lines = skeleton["structure_lines"]
     related = skeleton["related_slugs"]
 
-    provider_available = mode in {"claude-cli", "custom-command"}
+    provider_available = mode in {"claude-cli", "custom-command", "openai-compatible"}
     prose: Dict[str, Any] = {}
     used_model = "skeleton-only"
     if roster and provider_available:
@@ -900,7 +1015,7 @@ def _compile_overview_page_text(
     dependency_lines = _overview_dependency_lines(id_to_name, unit_depends_on_edges)
     related = sorted(unit_slug(unit) for unit in included)
 
-    provider_available = mode in {"claude-cli", "custom-command"}
+    provider_available = mode in {"claude-cli", "custom-command", "openai-compatible"}
     prose: Dict[str, Any] = {}
     used_model = "skeleton-only"
     if included and provider_available:
@@ -999,7 +1114,7 @@ def compile_wiki(
     start = time.monotonic()
     force = force or _env_force_enabled()
     mode = cfg.summary.mode
-    model = cfg.summary.model or DEFAULT_PROSE_MODEL
+    model = cfg.summary.model or _default_prose_model(mode)
     wiki_dir = wiki_dir_for(root)
 
     unit_nodes = [node for node in graph.get("nodes", []) if node.get("kind") == "codebase_unit"]
@@ -1132,6 +1247,7 @@ def compile_wiki(
         "llmCalls": tracker.calls,
         "costCeilingUsd": tracker.ceiling,
         "costCeilingExceeded": tracker.exceeded,
+        "unpricedModel": tracker.unpriced_model,
     }
     write_json(wiki_dir / "compile-report.json", report)
     append_audit(root, {

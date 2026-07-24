@@ -28,7 +28,7 @@ import urllib.request
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
 from agentrail.run.proc import sanitized_env
 from agentrail.sandbox.clone_auth import authenticated_clone_url, redact_token
@@ -667,25 +667,80 @@ def _temp_env(**pairs: str):
 
 
 @contextmanager
-def _wiki_onboard_env(item, base_url: str, api_key: str):
-    """Temp env vars satisfying, for one onboard compile+push: (a) wiki.py's
-    rollout-flag gate (``REPO_WIKI_ENV``), and (b) ``wiki_push``'s /
-    ``wiki_fetch``'s ``load_link`` fallback (``AGENTRAIL_SERVER_*``) — the
-    SAME ephemeral-worktree fallback AFK's pipeline already relies on (see
-    ``agentrail.context.snapshot_push.load_link``'s docstring): this
-    disposable clone never carries a ``.agentrail/server.json`` of its own,
-    but ``base_url``/``api_key``/``item.repository_id`` are already exactly
-    what this handler was called with.
+def _server_link_env(item, base_url: str, api_key: str):
+    """Temp env vars satisfying ``snapshot_push``'s / ``wiki_push``'s /
+    ``wiki_fetch``'s ``load_link`` ephemeral-worktree fallback
+    (``AGENTRAIL_SERVER_*``) — the SAME fallback AFK's pipeline already
+    relies on (see ``agentrail.context.snapshot_push.load_link``'s
+    docstring): this disposable clone never carries a
+    ``.agentrail/server.json`` of its own, but ``base_url``/``api_key``/
+    ``item.repository_id`` are already exactly what this handler was called
+    with. ALWAYS active for the duration of the index build (regardless of
+    the wiki flag) — the index-snapshot push (repo health / "last indexed")
+    is UNCONDITIONAL, since index building itself always has been; see
+    :func:`_wiki_onboard_env` for the ADDITIONAL wiki-only env var.
     """
-    from agentrail.context.wiki import REPO_WIKI_ENV  # lazy: keeps the flag-OFF path wiki.py-import-free
-
     with _temp_env(**{
-        REPO_WIKI_ENV: "1",
         "AGENTRAIL_SERVER_BASE_URL": base_url,
         "AGENTRAIL_SERVER_API_KEY": api_key,
         "AGENTRAIL_SERVER_REPOSITORY_ID": str(item.repository_id),
     }):
         yield
+
+
+@contextmanager
+def _wiki_onboard_env():
+    """Sets wiki.py's rollout-flag gate (``REPO_WIKI_ENV``) for the duration
+    of one onboard compile+push. Nests inside the always-on
+    :func:`_server_link_env`, which already supplies the
+    ``AGENTRAIL_SERVER_*`` trio both this and the unconditional index-
+    snapshot push share.
+    """
+    from agentrail.context.wiki import REPO_WIKI_ENV  # lazy: keeps the flag-OFF path wiki.py-import-free
+
+    with _temp_env(**{REPO_WIKI_ENV: "1"}):
+        yield
+
+
+# Plain string, not imported from wiki.py (keeps this module's flag-OFF
+# path wiki.py-import-free, matching this file's existing lazy-import
+# convention for everything wiki-specific) -- MUST match
+# wiki.DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV exactly; pinned by
+# test_select_wiki_summary_mode_key_env_matches_wiki_module.
+_WIKI_OPENAI_COMPATIBLE_KEY_ENV = "OPENROUTER_API_KEY"
+
+
+def _select_wiki_summary_mode() -> Tuple[str, str]:
+    """Explicit, LOGGED fallback chain for the onboarder's default wiki
+    prose provider (never silent): claude-cli (binary on PATH) ->
+    openai-compatible (binary absent, but the fleet's OPENROUTER_API_KEY is
+    present) -> claude-cli as the last resort, which then degrades to
+    skeleton-only pages via wiki.py's OWN claude-cli-availability gate
+    (``_generate_prose``) — fail-open, never a crash, just no prose for
+    that run. This is the fix for the hosted fleet, whose containers carry
+    OPENROUTER_API_KEY and no ``claude`` binary, so prod compiles
+    previously always fell open to skeleton-only.
+
+    Returns ``(mode, model)``; ``model`` is ``""`` for openai-compatible so
+    wiki.py applies its OWN default (``AGENTRAIL_WIKI_PROSE_MODEL`` env, or
+    ``anthropic/claude-haiku-4.5``) rather than this module's claude-cli-
+    style ``_DEFAULT_MODEL``.
+    """
+    if shutil.which("claude") is not None:
+        _log.info("onboard: wiki prose provider = claude-cli (binary on PATH)")
+        return "claude-cli", _DEFAULT_MODEL
+    if os.environ.get(_WIKI_OPENAI_COMPATIBLE_KEY_ENV):
+        _log.info(
+            "onboard: wiki prose provider = openai-compatible (no claude binary; %s present)",
+            _WIKI_OPENAI_COMPATIBLE_KEY_ENV,
+        )
+        return "openai-compatible", ""
+    _log.info(
+        "onboard: wiki prose fallback chain exhausted (no claude binary, no %s); "
+        "compile will ship skeleton-only pages",
+        _WIKI_OPENAI_COMPATIBLE_KEY_ENV,
+    )
+    return "claude-cli", _DEFAULT_MODEL
 
 
 def _ensure_wiki_summary_config(repo_dir: Path) -> None:
@@ -696,8 +751,10 @@ def _ensure_wiki_summary_config(repo_dir: Path) -> None:
     persisted or pushed anywhere). Preserves any config.json the repo
     already ships — only the ``context.summary`` key is touched, and only
     when the repo hasn't already configured a working (non-disabled) one
-    itself. Best-effort: a write failure here just means the compile stays
-    gated off for this run, never a hard failure.
+    itself. The default provider comes from :func:`_select_wiki_summary_mode`'s
+    explicit fallback chain, never hard-coded to claude-cli. Best-effort: a
+    write failure here just means the compile stays gated off for this run,
+    never a hard failure.
     """
     config_path = repo_dir / ".agentrail" / "config.json"
     try:
@@ -709,7 +766,8 @@ def _ensure_wiki_summary_config(repo_dir: Path) -> None:
             context_cfg = {}
         summary_cfg = context_cfg.get("summary")
         if not isinstance(summary_cfg, dict) or summary_cfg.get("mode") in (None, "", "disabled"):
-            context_cfg["summary"] = {"mode": "claude-cli", "model": _DEFAULT_MODEL}
+            mode, model = _select_wiki_summary_mode()
+            context_cfg["summary"] = {"mode": mode, "model": model} if model else {"mode": mode}
         existing["context"] = context_cfg
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(existing), encoding="utf-8")
@@ -756,6 +814,34 @@ def _push_wiki(
         _log.warning("onboard: wiki push failed for %s: %s", repo_full_name, exc)
 
 
+def _push_index_snapshot(
+    repo_dir: Path,
+    index_summary: Optional[dict],
+    push_snapshot_fn: Optional[Callable[[Path, dict], bool]],
+) -> None:
+    """Push a metadata-only index snapshot for repo health ("last indexed")
+    — best-effort, mirrors :func:`_push_wiki`'s non-fatal contract exactly.
+    UNCONDITIONAL (independent of :func:`onboard_wiki_enabled`): index
+    building itself has always been unconditional in this handler, so repo
+    health must reflect it regardless of whether the wiki compile is on —
+    this is the fix for fleet-onboarded repos whose wiki header read
+    "last indexed: never / critical" forever because nothing ever pushed a
+    snapshot. Skipped when the index build itself failed (``index_summary``
+    is ``None``/not a dict) — nothing meaningful to report in that case.
+    Relies on :func:`_server_link_env` already being active on the caller's
+    stack for ``push_index_snapshot``'s ``load_link`` fallback to resolve.
+    """
+    if not isinstance(index_summary, dict):
+        return
+    push = push_snapshot_fn
+    if push is None:
+        from agentrail.context.snapshot_push import push_index_snapshot as push  # lazy
+    try:
+        push(repo_dir, index_summary)
+    except Exception as exc:  # noqa: BLE001 - snapshot push is best-effort
+        _log.warning("onboard: index snapshot push failed: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Handler
 # ---------------------------------------------------------------------------
@@ -774,6 +860,7 @@ def run_onboard(
     fetch_wiki_fn: Optional[Callable[..., bool]] = None,
     assemble_wiki_fn: Optional[Callable[[Path], tuple]] = None,
     push_wiki_fn: Optional[Callable[..., bool]] = None,
+    push_snapshot_fn: Optional[Callable[[Path, dict], bool]] = None,
 ) -> RunResult:
     """Onboard a freshly connected repo into workspace memory (best-effort).
 
@@ -783,6 +870,14 @@ def run_onboard(
     is ``red`` (documents the PR3 enqueue dependency), a clone failure is
     ``error``, and a failed push is ``red`` — nothing raises out of here. The temp
     dir is always torn down.
+
+    UNCONDITIONALLY (independent of the wiki flag below), a successful index
+    build also pushes a metadata-only index snapshot for repo health
+    (``push_snapshot_fn`` seam, defaulting to the real
+    ``snapshot_push.push_index_snapshot``) — fixes fleet-onboarded repos
+    whose wiki header read "last indexed: never / critical" forever because
+    nothing ever pushed one. Best-effort/non-fatal, exactly like the
+    memory-item push, but never able to change this call's RunResult.
 
     Behind :func:`onboard_wiki_enabled` (``AGENTRAIL_ONBOARD_WIKI``, default
     OFF), this ALSO hydrates + compiles + pushes the Repo Wiki for the same
@@ -859,33 +954,39 @@ def run_onboard(
 
         # Build the context index for a repo digest (best-effort — a repo whose
         # summary mode isn't "disabled" raises, and we simply skip the stats).
+        # A successful build ALSO pushes a metadata-only index snapshot for
+        # repo health (_push_index_snapshot, UNCONDITIONAL — see its
+        # docstring), independent of the wiki flag below.
         #
         # Repo Wiki (AGENTRAIL_ONBOARD_WIKI, default OFF — see the section
         # above): when ON, this block ALSO hydrates from the server before
         # the compile, forces the compile on for this ONE invocation via a
         # temp config override local to the disposable clone, and pushes
         # whatever the compile produced afterward. When OFF, `nullcontext()`
-        # makes this identical to the try/except that has always lived here.
+        # makes the wiki-specific piece identical to before this flag existed
+        # — the snapshot push (and its _server_link_env) stays active either way.
         index_summary: Optional[dict] = None
         wiki_on = onboard_wiki_enabled()
         repo_full_name = _repo_full_name(item) if wiki_on else ""
 
-        with _wiki_onboard_env(item, base_url, api_key) if wiki_on else nullcontext():
-            if wiki_on:
-                _ensure_wiki_summary_config(repo_dir)
-                if repo_full_name:
-                    _fetch_wiki(repo_dir, repo_full_name, fetch_wiki_fn)
-            try:
-                if index_fn is not None:
-                    index_summary = index_fn(repo_dir)
-                else:
-                    from agentrail.context.index import build_index  # lazy: heavy import
+        with _server_link_env(item, base_url, api_key):
+            with _wiki_onboard_env() if wiki_on else nullcontext():
+                if wiki_on:
+                    _ensure_wiki_summary_config(repo_dir)
+                    if repo_full_name:
+                        _fetch_wiki(repo_dir, repo_full_name, fetch_wiki_fn)
+                try:
+                    if index_fn is not None:
+                        index_summary = index_fn(repo_dir)
+                    else:
+                        from agentrail.context.index import build_index  # lazy: heavy import
 
-                    index_summary = build_index(repo_dir)
-            except Exception as exc:  # noqa: BLE001 - index is best-effort
-                _log.warning("onboard: index build failed for %s: %s", item.repo_url, exc)
-            if wiki_on and repo_full_name and isinstance(index_summary, dict) and index_summary.get("wikiReport") is not None:
-                _push_wiki(repo_dir, repo_full_name, assemble_wiki_fn, push_wiki_fn)
+                        index_summary = build_index(repo_dir)
+                except Exception as exc:  # noqa: BLE001 - index is best-effort
+                    _log.warning("onboard: index build failed for %s: %s", item.repo_url, exc)
+                _push_index_snapshot(repo_dir, index_summary, push_snapshot_fn)
+                if wiki_on and repo_full_name and isinstance(index_summary, dict) and index_summary.get("wikiReport") is not None:
+                    _push_wiki(repo_dir, repo_full_name, assemble_wiki_fn, push_wiki_fn)
 
         digest = _repo_digest(repo_dir, index_summary)
         items = brief_fn(digest, model=_DEFAULT_MODEL)

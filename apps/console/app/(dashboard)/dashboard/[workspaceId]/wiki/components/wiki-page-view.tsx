@@ -1,14 +1,18 @@
 "use client";
 
-import { AlertTriangle, ExternalLink, FileCode } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, Download, ExternalLink, FileCode } from "lucide-react";
 import { buildCitationUrl } from "../citation-url";
 import {
+  buildWikiMarkdownDownload,
   formatCostUsd,
   formatRelativeAge,
   shortSha,
   type WikiPageDTO,
 } from "../wiki-format";
+import { buildFileRosterTree } from "../wiki-tree";
 import { WikiMarkdown } from "./wiki-markdown";
+import { WikiFileRoster } from "./wiki-file-roster";
 import { RecompileButton } from "./recompile-button";
 
 export interface LatestCompileDTO {
@@ -180,12 +184,86 @@ function CitationsList({
   );
 }
 
+/** "Rendered | Source" segmented toggle — the spec's "what you see is what
+ * the LLM sees" made literal: Source shows `bodyMd` with zero transforms. */
+function ViewModeToggle({
+  mode,
+  onChange,
+}: {
+  mode: "rendered" | "source";
+  onChange: (mode: "rendered" | "source") => void;
+}) {
+  const optionClass = (active: boolean) =>
+    `rounded-sm px-2 py-1 text-xs font-medium transition-colors ${
+      active
+        ? "bg-[var(--gray-04)] text-[var(--gray-12)]"
+        : "text-[var(--gray-09)] hover:text-[var(--gray-12)]"
+    }`;
+  return (
+    <div
+      role="tablist"
+      aria-label="View mode"
+      className="inline-flex items-center gap-0.5 rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-0.5"
+    >
+      <button
+        type="button"
+        role="tab"
+        aria-selected={mode === "rendered"}
+        onClick={() => onChange("rendered")}
+        className={optionClass(mode === "rendered")}
+      >
+        Rendered
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={mode === "source"}
+        onClick={() => onChange("source")}
+        className={optionClass(mode === "source")}
+      >
+        Source
+      </button>
+    </div>
+  );
+}
+
+/** Client-side `.md` export — a frontmatter header (slug/title/kind/commitSha/
+ * generatedAt/model/citations) over `bodyMd` verbatim, downloaded as a Blob.
+ * No new server route: the content is already in hand from the page fetch. */
+function DownloadMarkdownButton({ page }: { page: WikiPageDTO }) {
+  function handleDownload() {
+    const { filename, content } = buildWikiMarkdownDownload(page);
+    const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleDownload}
+      className="inline-flex items-center gap-1 text-xs text-[var(--gray-10)] transition-colors hover:text-[var(--gray-12)]"
+      title="Download this page as a standalone .md file"
+    >
+      <Download size={12} />
+      Download .md
+    </button>
+  );
+}
+
 /**
- * The page view: title, provenance bar, dependency chips, VERBATIM body,
- * citations. "What you see is what the LLM sees" (spec §4.5) — everything
- * here is either a direct field off the `wiki_pages` row or a pure display
- * transform of one (short sha, relative age, a built URL); nothing is
- * console-authored content.
+ * The page view: title, provenance bar, dependency chips, VERBATIM body (in
+ * either Rendered or Source form), file roster, citations. "What you see is
+ * what the LLM sees" (spec §4.5) — everything here is either a direct field
+ * off the `wiki_pages` row or a pure display transform of one (short sha,
+ * relative age, a built URL, a built tree); nothing is console-authored
+ * content.
  */
 export function WikiPageView({
   page,
@@ -194,7 +272,9 @@ export function WikiPageView({
   pagesBySlug,
   onSelectSlug,
 }: WikiPageViewProps) {
+  const [viewMode, setViewMode] = useState<"rendered" | "source">("rendered");
   const { dependsOn, dependedOnBy, related } = page.links;
+  const fileRosterTree = buildFileRosterTree(page);
 
   return (
     <div className="flex flex-col gap-4">
@@ -207,7 +287,9 @@ export function WikiPageView({
             </div>
             <ProvenanceBar page={page} latestCompile={latestCompile} />
           </div>
-          <div className="shrink-0">
+          <div className="flex shrink-0 items-center gap-3">
+            <ViewModeToggle mode={viewMode} onChange={setViewMode} />
+            <DownloadMarkdownButton page={page} />
             <RecompileButton variant="link" />
           </div>
         </div>
@@ -236,9 +318,17 @@ export function WikiPageView({
         </div>
       )}
 
-      <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
-        <WikiMarkdown text={page.bodyMd} />
-      </div>
+      {viewMode === "rendered" ? (
+        <div className="rounded border border-[var(--gray-05)] bg-[var(--gray-02)] p-4">
+          <WikiMarkdown text={page.bodyMd} />
+        </div>
+      ) : (
+        <pre className="overflow-x-auto rounded border border-[var(--gray-05)] bg-[var(--gray-01)] p-4 font-mono text-xs leading-relaxed text-[var(--gray-12)] whitespace-pre-wrap">
+          {page.bodyMd}
+        </pre>
+      )}
+
+      {fileRosterTree && <WikiFileRoster tree={fileRosterTree} />}
 
       {page.citations.length > 0 && (
         <CitationsList citations={page.citations} repoUrl={repoUrl} commitSha={page.commitSha} />

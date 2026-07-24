@@ -16,6 +16,7 @@ vi.mock("@agentrail/db-postgres", () => ({
 
 vi.mock("@agentrail/db-clickhouse", () => ({
   getLatestWikiCompileEvent: vi.fn(),
+  getLatestIndexSnapshotsForWorkspace: vi.fn(),
 }));
 
 import { auth } from "@agentrail/auth";
@@ -25,7 +26,10 @@ import {
   getRepository,
   listWikiPages,
 } from "@agentrail/db-postgres";
-import { getLatestWikiCompileEvent } from "@agentrail/db-clickhouse";
+import {
+  getLatestWikiCompileEvent,
+  getLatestIndexSnapshotsForWorkspace,
+} from "@agentrail/db-clickhouse";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 const WORKSPACE_ID = "ws-123";
@@ -41,12 +45,12 @@ function makeParams() {
   return { params: Promise.resolve({ workspaceId: WORKSPACE_ID }) };
 }
 
-function mockAuthed() {
+function mockAuthed(role: string = "member") {
   vi.mocked(auth).mockResolvedValue({ user: { id: USER_ID } } as never);
   vi.mocked(getWorkspaceMembership).mockResolvedValue({
     userId: USER_ID,
     workspaceId: WORKSPACE_ID,
-    role: "member",
+    role,
   } as never);
 }
 
@@ -101,12 +105,28 @@ const compileEvent = {
   event_id: "deadbeef",
 };
 
+/** A fresh (30s-old) index snapshot for a repo — unambiguously "healthy"
+ * however long the test suite takes to run, avoiding fake timers. */
+function freshSnapshot(repositoryId: string, overrides: Record<string, unknown> = {}) {
+  return {
+    workspace_id: WORKSPACE_ID,
+    repository_id: repositoryId,
+    commit_sha: "129103aa",
+    indexed_at: new Date(Date.now() - 30_000).toISOString(),
+    source_count: 31,
+    graph_edge_count: 76000,
+    event_id: "snap-1",
+    ...overrides,
+  };
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 describe("GET /api/v1/workspaces/:workspaceId/wiki", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(listWikiPages).mockResolvedValue([pageRow] as never);
     vi.mocked(getLatestWikiCompileEvent).mockResolvedValue(compileEvent as never);
+    vi.mocked(getLatestIndexSnapshotsForWorkspace).mockResolvedValue([] as never);
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -124,23 +144,88 @@ describe("GET /api/v1/workspaces/:workspaceId/wiki", () => {
     expect(listWorkspaceRepositories).not.toHaveBeenCalled();
   });
 
-  it("multi-repo workspace with no ?repoId returns the picker list only — no wiki round trip", async () => {
+  it("multi-repo workspace with no ?repoId returns the health-enriched repo list — no wiki round trip", async () => {
     mockAuthed();
     vi.mocked(listWorkspaceRepositories).mockResolvedValue([repoA, repoB] as never);
+    vi.mocked(getLatestIndexSnapshotsForWorkspace).mockResolvedValue([
+      freshSnapshot("repo-a"),
+    ] as never);
 
     const res = await GET(makeRequest(), makeParams());
     const json = await res.json();
 
     expect(res.status).toBe(200);
     expect(json.repos).toEqual([
-      { id: "repo-a", name: "bensigo/agentrail" },
-      { id: "repo-b", name: "bensigo/other" },
+      {
+        id: "repo-a",
+        name: "bensigo/agentrail",
+        healthStatus: "healthy",
+        lastIndexedAt: expect.any(String),
+        lastCommitSha: "129103aa",
+        sourceCount: 31,
+      },
+      {
+        id: "repo-b",
+        name: "bensigo/other",
+        // Never indexed (no snapshot) -> critical, per repoHealth's own contract.
+        healthStatus: "critical",
+        lastIndexedAt: null,
+        lastCommitSha: null,
+        sourceCount: null,
+      },
     ]);
     expect(json.selectedRepoId).toBeNull();
     expect(json.pages).toBeNull();
     expect(json.latestCompile).toBeNull();
     expect(listWikiPages).not.toHaveBeenCalled();
     expect(getLatestWikiCompileEvent).not.toHaveBeenCalled();
+  });
+
+  it("includes canManage: true for an owner/admin, false for a plain member", async () => {
+    vi.mocked(listWorkspaceRepositories).mockResolvedValue([repoA, repoB] as never);
+
+    mockAuthed("owner");
+    const ownerRes = await GET(makeRequest(), makeParams());
+    expect((await ownerRes.json()).canManage).toBe(true);
+
+    mockAuthed("admin");
+    const adminRes = await GET(makeRequest(), makeParams());
+    expect((await adminRes.json()).canManage).toBe(true);
+
+    mockAuthed("member");
+    const memberRes = await GET(makeRequest(), makeParams());
+    expect((await memberRes.json()).canManage).toBe(false);
+  });
+
+  it("degrades gracefully when the index-snapshot lookup throws — the repo list still renders, every repo reads critical", async () => {
+    mockAuthed();
+    // Two repos so this stays on the "picker list only" branch — the point
+    // of this test is the snapshot-lookup failure, not repo auto-select.
+    vi.mocked(listWorkspaceRepositories).mockResolvedValue([repoA, repoB] as never);
+    vi.mocked(getLatestIndexSnapshotsForWorkspace).mockRejectedValue(new Error("ClickHouse down"));
+
+    const res = await GET(makeRequest(), makeParams());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.repos).toEqual([
+      {
+        id: "repo-a",
+        name: "bensigo/agentrail",
+        healthStatus: "critical",
+        lastIndexedAt: null,
+        lastCommitSha: null,
+        sourceCount: null,
+      },
+      {
+        id: "repo-b",
+        name: "bensigo/other",
+        healthStatus: "critical",
+        lastIndexedAt: null,
+        lastCommitSha: null,
+        sourceCount: null,
+      },
+    ]);
   });
 
   it("single-repo workspace auto-selects without a ?repoId (spec §4.5)", async () => {
@@ -158,7 +243,7 @@ describe("GET /api/v1/workspaces/:workspaceId/wiki", () => {
     expect(listWikiPages).toHaveBeenCalledWith(WORKSPACE_ID, "repo-a");
   });
 
-  it("maps wiki page rows to the wire shape (verbatim bodyMd, no skeleton/id/writtenBy leaked)", async () => {
+  it("maps wiki page rows to the wire shape (verbatim bodyMd, skeleton passed through opaque, no id/writtenBy leaked)", async () => {
     mockAuthed();
     vi.mocked(listWorkspaceRepositories).mockResolvedValue([repoA] as never);
     vi.mocked(getRepository).mockResolvedValue(repoA as never);
@@ -178,9 +263,9 @@ describe("GET /api/v1/workspaces/:workspaceId/wiki", () => {
         model: "claude-haiku-4-5",
         generatedAt: "2026-07-23T14:00:00.000Z",
         stale: false,
+        skeleton: { fileCount: 31 },
       },
     ]);
-    expect(json.pages[0]).not.toHaveProperty("skeleton");
     expect(json.pages[0]).not.toHaveProperty("id");
     expect(json.pages[0]).not.toHaveProperty("writtenBy");
   });

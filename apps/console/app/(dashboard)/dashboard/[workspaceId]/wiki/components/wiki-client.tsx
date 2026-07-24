@@ -1,28 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { StatHeader } from "../../../../components/stat-header";
 import { EmptyState } from "../../../../components/empty-state";
 import { ErrorState } from "../../../../components/error-state";
 import { LoadingState } from "../../../../components/loading-state";
 import { WikiNavTree } from "./wiki-nav-tree";
 import { WikiPageView, type LatestCompileDTO } from "./wiki-page-view";
+import { WikiRepoList } from "./wiki-repo-list";
 import { RecompileButton } from "./recompile-button";
 import {
   computeWikiSummaryStats,
   formatRelativeAge,
   groupWikiPages,
+  healthStatColor,
+  type RepoListItem,
   type WikiPageDTO,
 } from "../wiki-format";
 
-interface RepoOption {
-  id: string;
-  name: string;
-}
-
 interface WikiApiResponse {
-  repos: RepoOption[];
+  repos: RepoListItem[];
+  canManage: boolean;
   selectedRepoId: string | null;
   repoUrl: string | null;
   pages: WikiPageDTO[] | null;
@@ -30,7 +28,8 @@ interface WikiApiResponse {
 }
 
 export function WikiClient({ workspaceId }: { workspaceId: string }) {
-  const [repos, setRepos] = useState<RepoOption[]>([]);
+  const [repos, setRepos] = useState<RepoListItem[]>([]);
+  const [canManage, setCanManage] = useState(false);
   const [repoId, setRepoId] = useState<string | null>(null);
   const [repoUrl, setRepoUrl] = useState<string | null>(null);
   const [pages, setPages] = useState<WikiPageDTO[] | null>(null);
@@ -54,6 +53,7 @@ export function WikiClient({ workspaceId }: { workspaceId: string }) {
         }
         const json = (await res.json()) as WikiApiResponse;
         setRepos(json.repos);
+        setCanManage(json.canManage);
         setRepoId(json.selectedRepoId);
         setRepoUrl(json.repoUrl);
         setPages(json.pages);
@@ -84,23 +84,43 @@ export function WikiClient({ workspaceId }: { workspaceId: string }) {
     [pages]
   );
   const selectedPage = selectedSlug ? pagesBySlug.get(selectedSlug) ?? null : null;
+  const selectedRepo = repoId ? repos.find((r) => r.id === repoId) ?? null : null;
 
   const stats = useMemo(() => {
     if (!pages) return [];
     const s = computeWikiSummaryStats(pages);
-    return [
+    type Stat = {
+      label: string;
+      value: string | number;
+      color?: "green" | "red" | "orange" | "yellow" | "gray";
+    };
+    const items: Stat[] = [
       { label: "Pages", value: s.pageCount },
       {
         label: "Stale",
         value: s.staleCount,
-        color: s.staleCount > 0 ? ("yellow" as const) : ("gray" as const),
+        color: s.staleCount > 0 ? "yellow" : "gray",
       },
       {
         label: "Oldest page",
         value: s.oldestGeneratedAt ? formatRelativeAge(s.oldestGeneratedAt) : "—",
       },
     ];
-  }, [pages]);
+    // Wiki freshness (above) and index freshness (below) are different
+    // facts — labeled distinctly rather than folded into one stat.
+    if (selectedRepo) {
+      items.push({
+        label: "Last indexed",
+        value: selectedRepo.lastIndexedAt ? formatRelativeAge(selectedRepo.lastIndexedAt) : "never",
+        color: healthStatColor(selectedRepo.healthStatus),
+      });
+    }
+    return items;
+  }, [pages, selectedRepo]);
+
+  function handleRepoAdded(repo: RepoListItem) {
+    setRepos((prev) => [repo, ...prev]);
+  }
 
   if (loading) {
     return <LoadingState variant="list" rows={6} />;
@@ -110,28 +130,19 @@ export function WikiClient({ workspaceId }: { workspaceId: string }) {
     return <ErrorState message={error} onRetry={() => load(repoId)} />;
   }
 
-  if (repos.length === 0) {
-    return (
-      <EmptyState
-        message="No repositories connected yet."
-        action={
-          <Link
-            href={`/dashboard/${workspaceId}/repos`}
-            className="text-sm text-[var(--blue-11)] hover:underline"
-          >
-            Add your first repository →
-          </Link>
-        }
-      />
-    );
-  }
-
   return (
     <div className="flex flex-col gap-4">
-      <RepoPicker repos={repos} selectedId={repoId} onChange={(id) => load(id)} />
+      <WikiRepoList
+        workspaceId={workspaceId}
+        repos={repos}
+        selectedId={repoId}
+        canManage={canManage}
+        onSelect={(id) => load(id)}
+        onAdded={handleRepoAdded}
+      />
 
-      {repoId === null ? (
-        <EmptyState message="Select a repository to view its wiki." />
+      {repos.length === 0 ? null : repoId === null ? (
+        <EmptyState message="Select a repository above to view its wiki." />
       ) : pages === null || pages.length === 0 ? (
         <EmptyState
           message="No wiki compiled yet for this repository."
@@ -152,6 +163,7 @@ export function WikiClient({ workspaceId }: { workspaceId: string }) {
             <div className="min-w-0">
               {selectedPage && (
                 <WikiPageView
+                  key={selectedPage.slug}
                   page={selectedPage}
                   repoUrl={repoUrl}
                   latestCompile={latestCompile}
@@ -164,42 +176,5 @@ export function WikiClient({ workspaceId }: { workspaceId: string }) {
         </>
       )}
     </div>
-  );
-}
-
-/**
- * Single-repo workspaces auto-select and never see a picker (spec §4.5,
- * TASTE.md "prefer fewer, clearer states") — just the repo name for
- * orientation. Multi-repo workspaces get a plain `<select>` (TASTE.md Inputs).
- */
-function RepoPicker({
-  repos,
-  selectedId,
-  onChange,
-}: {
-  repos: RepoOption[];
-  selectedId: string | null;
-  onChange: (id: string) => void;
-}) {
-  if (repos.length === 1) {
-    return <p className="font-mono text-xs text-[var(--gray-09)]">{repos[0]!.name}</p>;
-  }
-
-  return (
-    <select
-      value={selectedId ?? ""}
-      onChange={(e) => onChange(e.target.value)}
-      aria-label="Repository"
-      className="h-8 w-fit rounded border border-[var(--gray-05)] bg-[var(--gray-02)] px-2 text-sm text-[var(--gray-12)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-text)] focus:ring-offset-2 focus:ring-offset-[var(--gray-00)]"
-    >
-      <option value="" disabled>
-        Select a repository…
-      </option>
-      {repos.map((r) => (
-        <option key={r.id} value={r.id}>
-          {r.name}
-        </option>
-      ))}
-    </select>
   );
 }

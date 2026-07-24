@@ -8,7 +8,6 @@ import {
   ShieldCheck,
   DollarSign,
   Wallet,
-  Database,
   Brain,
   BookOpen,
   Users,
@@ -115,7 +114,12 @@ export const SETTINGS_ZONE: NavZone = {
   collapsible: false,
   items: [
     { label: "Connectors", href: "connectors", icon: Plug },
-    { label: "Repos & Health", href: "repos", icon: Database },
+    // No separate "Repos & Health" item: Repos & Health folded into the Wiki
+    // view (owner ruling) — the wiki is now the per-repo evidence page (repo
+    // list with health chips + the compiled wiki, one surface instead of
+    // two). /repos is a redirect stub to /wiki, same shape as /queue -> /work
+    // and teams/page.tsx -> /members: old deep links keep working, nav entry
+    // gone.
     // No separate Teams item: teams/page.tsx is a redirect stub to /members —
     // the combined Team page covers the spec's Settings-zone "Teams" entry.
     { label: "Team", href: "members", icon: Users },

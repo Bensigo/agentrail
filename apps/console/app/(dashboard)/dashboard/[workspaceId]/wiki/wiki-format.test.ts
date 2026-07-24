@@ -5,6 +5,9 @@ import {
   formatRelativeAge,
   shortSha,
   formatCostUsd,
+  healthStatColor,
+  wikiMdFilename,
+  buildWikiMarkdownDownload,
   type WikiPageDTO,
 } from "./wiki-format";
 
@@ -20,6 +23,7 @@ function page(overrides: Partial<WikiPageDTO> = {}): WikiPageDTO {
     model: "claude-haiku-4-5",
     generatedAt: "2026-07-23T14:00:00.000Z",
     stale: false,
+    skeleton: {},
     ...overrides,
   };
 }
@@ -122,5 +126,87 @@ describe("formatCostUsd", () => {
 
   it("formats sub-cent costs to 6 decimals", () => {
     expect(formatCostUsd(0.000031)).toBe("$0.000031");
+  });
+});
+
+describe("healthStatColor", () => {
+  it("maps healthy/stale/critical to TASTE.md's green/yellow/red", () => {
+    expect(healthStatColor("healthy")).toBe("green");
+    expect(healthStatColor("stale")).toBe("yellow");
+    expect(healthStatColor("critical")).toBe("red");
+  });
+});
+
+describe("wikiMdFilename", () => {
+  it("strips the wiki/ prefix for the overview page", () => {
+    expect(wikiMdFilename("wiki/overview")).toBe("overview.md");
+  });
+
+  it("replaces remaining slashes with __ for a unit page", () => {
+    expect(wikiMdFilename("wiki/unit/apps-console")).toBe("unit__apps-console.md");
+  });
+
+  it("handles a deeper nested slug", () => {
+    expect(wikiMdFilename("wiki/unit/packages-db-postgres")).toBe(
+      "unit__packages-db-postgres.md"
+    );
+  });
+
+  it("falls back to a safe name for an empty/degenerate slug", () => {
+    expect(wikiMdFilename("wiki/")).toBe("wiki-page.md");
+    expect(wikiMdFilename("")).toBe("wiki-page.md");
+  });
+});
+
+describe("buildWikiMarkdownDownload", () => {
+  it("builds a frontmatter-style header over bodyMd verbatim, filename from the slug", () => {
+    const p = page({
+      slug: "wiki/unit/agentrail-context",
+      title: "agentrail/context — Context Compiler",
+      kind: "unit",
+      bodyMd: "## Responsibility\nCompiles context.",
+      commitSha: "129103aa",
+      generatedAt: "2026-07-23T14:00:00.000Z",
+      model: "claude-haiku-4-5",
+      citations: ["agentrail/context/index.py", "agentrail/context/packs.py"],
+    });
+
+    const result = buildWikiMarkdownDownload(p);
+
+    expect(result.filename).toBe("unit__agentrail-context.md");
+    expect(result.content).toBe(
+      [
+        "---",
+        "slug: wiki/unit/agentrail-context",
+        "title: agentrail/context — Context Compiler",
+        "kind: unit",
+        "commitSha: 129103aa",
+        "generatedAt: 2026-07-23T14:00:00.000Z",
+        "model: claude-haiku-4-5",
+        "citations: [agentrail/context/index.py, agentrail/context/packs.py]",
+        "---",
+        "",
+        "## Responsibility\nCompiles context.",
+      ].join("\n")
+    );
+  });
+
+  it("omits the model line for a fail-open skeleton-only page (model: null)", () => {
+    const p = page({ model: null });
+    const result = buildWikiMarkdownDownload(p);
+    expect(result.content).not.toContain("model:");
+  });
+
+  it("omits the citations line when there are none", () => {
+    const p = page({ citations: [] });
+    const result = buildWikiMarkdownDownload(p);
+    expect(result.content).not.toContain("citations:");
+  });
+
+  it("bodyMd appears byte-for-byte, exactly what the toggle's Source view shows", () => {
+    const bodyMd = "line one\n\n> a blockquote\n\n- a\n- b\n";
+    const p = page({ bodyMd });
+    const result = buildWikiMarkdownDownload(p);
+    expect(result.content.endsWith(bodyMd)).toBe(true);
   });
 });

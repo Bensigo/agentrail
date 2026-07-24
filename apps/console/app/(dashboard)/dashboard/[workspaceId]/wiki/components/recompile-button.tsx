@@ -2,21 +2,22 @@
 
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
-// Reused verbatim, not duplicated: the repos table's "Re-index" affordance
-// (repos-table.tsx) is the ONLY existing mechanism that triggers a repo
-// re-index today, and per Repo Wiki spec §4.5 the wiki compile piggybacks on
-// the exact same `agentrail context index` run (§4.2 "Compile trigger" —
-// `build_index` is where the wiki compile step lives). Importing the same
-// function is "REUSE that exact mechanism" in the most literal sense
-// available, and — deliberately — touches no write route: there is no
-// existing button/endpoint that enqueues a manual re-onboard for an
-// ALREADY-connected repo (`enqueueOnboard` is one-shot-per-repo, fired only
-// on first connect, `apps/console/app/api/v1/workspaces/[workspaceId]/repos/route.ts`
-// POST), so inventing one here would violate "do not invent a new write
-// route." This mirrors the repos table's actual shipped UX (a command to
+// Reused verbatim, not duplicated: this WAS the repos table's "Re-index"
+// affordance before Repos & Health folded into the Wiki view (owner ruling)
+// — `reindex-command.ts` relocated alongside it, unchanged. Per Repo Wiki
+// spec §4.5 the wiki compile piggybacks on the exact same
+// `agentrail context index` run (§4.2 "Compile trigger" — `build_index` is
+// where the wiki compile step lives). This is "REUSE that exact mechanism"
+// in the most literal sense available, and — deliberately — touches no
+// write route: there is no existing button/endpoint that enqueues a manual
+// re-onboard for an ALREADY-connected repo (`enqueueOnboard` is
+// one-shot-per-repo, fired only on first connect,
+// `apps/console/app/api/v1/workspaces/[workspaceId]/repos/route.ts` POST),
+// so inventing one here would violate "do not invent a new write route."
+// This mirrors the original repos-table's actual shipped UX (a command to
 // copy, not a server enqueue) rather than the aspirational "queue-driven
 // button" language — see the PR body for the full reasoning.
-import { reindexCommand } from "../../repos/components/reindex-command";
+import { reindexCommand } from "./reindex-command";
 
 /**
  * The "Recompile" affordance (Repo Wiki spec §4.5): relabeled, contextual

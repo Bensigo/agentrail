@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import List, Tuple
@@ -27,6 +28,44 @@ from agentrail.context.client import _resolve_context_client
 
 def _resolve_target(value: str | None) -> Path:
     return Path(value or ".").resolve()
+
+
+# Best-effort GitHub owner/repo resolution from the LOCAL git checkout's
+# `origin` remote. Needed because push_wiki_pages's wire contract is scoped
+# by repo FULL NAME, not id (agentrail/context/wiki_push.py's docstring),
+# while this CLI path only ever has a repository UUID via
+# .agentrail/server.json. Mirrors
+# agentrail.afk.hosted_repo_guard.parse_repo_slug /
+# agentrail.cli.commands.afk._origin_repo_slug's exact regex and resolution
+# strategy — duplicated locally rather than cross-imported, both for the
+# self-containment convention hosted_repo_guard.py's own docstring documents
+# ("import-free of its sibling seam modules") and to keep this CLI-only
+# git-remote parsing out of the agentrail.context package (wiki_push.py's
+# docstring explicitly flags that boundary as one to avoid).
+_GITHUB_REMOTE_RE = re.compile(r"github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?/?$")
+
+
+def _origin_repo_full_name(target: Path) -> str | None:
+    """Best-effort lowercase ``owner/repo`` for ``target``'s git ``origin``
+    remote. ``None`` when there is no origin remote, ``target`` isn't a git
+    checkout, or the URL isn't a recognizable GitHub remote (including SSH
+    host aliases — this deliberately does no ssh-config parsing) — the
+    caller treats that as "nothing to push/hydrate wiki pages under", never
+    an error.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(target), "remote", "get-url", "origin"],
+        check=False, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    match = _GITHUB_REMOTE_RE.search(result.stdout.strip())
+    if not match:
+        return None
+    owner, repo = match.group(1), match.group(2)
+    if not owner or not repo:
+        return None
+    return f"{owner}/{repo}".lower()
 
 
 def _touch_context_marker(target: Path) -> None:
@@ -357,6 +396,21 @@ def run_context(args: List[str]) -> int:
             remaining = [a for a in remaining if a != "--no-push"]
             if remaining:
                 raise SystemExit(f"Unknown option: {remaining[0]}")
+            # Repo Wiki hydration (spec S4.2): BEFORE the compile's own
+            # inputsHash diff, so a checkout that never compiled locally
+            # starts from the server's copy and regenerates only
+            # genuinely-stale pages, not every page. Non-fatal, gated on the
+            # same rollout flag build_index itself checks; a repo whose
+            # origin isn't a recognizable GitHub remote (or isn't linked
+            # yet) just falls through to a purely local compile.
+            wiki_repo_full_name: str | None = None
+            if not no_push:
+                from agentrail.context.wiki import repo_wiki_enabled
+                if repo_wiki_enabled():
+                    wiki_repo_full_name = _origin_repo_full_name(target)
+                    if wiki_repo_full_name:
+                        from agentrail.context.wiki_fetch import fetch_wiki_snapshot
+                        fetch_wiki_snapshot(target, wiki_repo_full_name)
             result = build_index(target)
             _print_json(result)
             if not no_push:
@@ -368,6 +422,18 @@ def run_context(args: List[str]) -> int:
                         "warning: failed to push index snapshot; repo health may stay stale",
                         file=sys.stderr,
                     )
+                # Only when this build actually compiled a wiki this run
+                # (wikiReport present -- absent for every repo that hasn't
+                # opted into AGENTRAIL_CONTEXT_REPO_WIKI, so this stays a
+                # no-op by default).
+                if "wikiReport" in result and wiki_repo_full_name:
+                    from agentrail.context.wiki import assemble_wiki_pages
+                    from agentrail.context.wiki_push import push_wiki_pages
+                    pages, compile_event = assemble_wiki_pages(target)
+                    if push_wiki_pages(target, wiki_repo_full_name, pages, compile_event):
+                        print("pushed wiki pages to dashboard", file=sys.stderr)
+                    elif load_link(target) is not None:
+                        print("warning: failed to push wiki pages", file=sys.stderr)
             return 0
         if kind == "embed" and rest and rest[0] == "setup":
             preset = rest[1] if len(rest) > 1 and not rest[1].startswith("--") else ""

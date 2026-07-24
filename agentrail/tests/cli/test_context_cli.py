@@ -391,5 +391,58 @@ class ContextMarkerTests(unittest.TestCase):
         self.assertTrue(marker.exists())
 
 
+class OriginRepoFullNameTests(unittest.TestCase):
+    """``_origin_repo_full_name`` — the CLI `context index` push path's
+    best-effort git-remote-to-owner/repo resolution (Repo Wiki spec §4.4:
+    push_wiki_pages is scoped by repo FULL NAME, not id). Mirrors
+    agentrail.afk.hosted_repo_guard.parse_repo_slug's exact regex; these
+    tests exercise it against REAL local git repos (git remote add origin),
+    not a mocked subprocess, since the resolution is cheap and local.
+    """
+
+    def _repo_with_origin(self, url: str | None) -> Path:
+        root = Path(tempfile.mkdtemp())
+        subprocess.run(["git", "-C", str(root), "init", "--quiet"], check=True)
+        if url is not None:
+            subprocess.run(["git", "-C", str(root), "remote", "add", "origin", url], check=True)
+        return root
+
+    def test_https_origin_resolves_lowercase_owner_repo(self) -> None:
+        from agentrail.cli.commands.context import _origin_repo_full_name
+
+        root = self._repo_with_origin("https://github.com/Acme/Widgets.git")
+        self.assertEqual(_origin_repo_full_name(root), "acme/widgets")
+
+    def test_https_origin_without_dot_git_suffix_also_resolves(self) -> None:
+        from agentrail.cli.commands.context import _origin_repo_full_name
+
+        root = self._repo_with_origin("https://github.com/acme/widgets")
+        self.assertEqual(_origin_repo_full_name(root), "acme/widgets")
+
+    def test_ssh_origin_resolves_the_same_slug_as_https(self) -> None:
+        from agentrail.cli.commands.context import _origin_repo_full_name
+
+        root = self._repo_with_origin("git@github.com:acme/widgets.git")
+        self.assertEqual(_origin_repo_full_name(root), "acme/widgets")
+
+    def test_no_origin_remote_returns_none(self) -> None:
+        from agentrail.cli.commands.context import _origin_repo_full_name
+
+        root = self._repo_with_origin(None)
+        self.assertIsNone(_origin_repo_full_name(root))
+
+    def test_non_github_origin_returns_none(self) -> None:
+        from agentrail.cli.commands.context import _origin_repo_full_name
+
+        root = self._repo_with_origin("https://gitlab.com/acme/widgets.git")
+        self.assertIsNone(_origin_repo_full_name(root))
+
+    def test_not_a_git_checkout_returns_none(self) -> None:
+        from agentrail.cli.commands.context import _origin_repo_full_name
+
+        root = Path(tempfile.mkdtemp())  # never git-inited
+        self.assertIsNone(_origin_repo_full_name(root))
+
+
 if __name__ == "__main__":
     unittest.main()
